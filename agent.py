@@ -515,16 +515,15 @@ class LocalToolAgent:
             "- 不要编造工具结果；没有验证就说明未验证。\n"
             "- 如果需要修改代码，先读取相关文件，尽量小步改动，并在完成后用命令验证。"
         )
-        # 渐进式披露：列出所有可用 Skill 的元数据，AI 自行用 read_file 加载所需 Skill
-        if self._skill_manager is not None:
-            all_skills = self._skill_manager.list_all()
-            if all_skills:
-                skill_section = self._skill_manager.format_skills_for_prompt(all_skills)
-                if skill_section:
-                    system_prompt += f"\n{skill_section}"
         # 手动调用 /skill:name 时注入 Skill 全文
         if self._skill_manager is not None and self._active_skills:
             system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)
+        # 渐进式披露：列出所有可用 Skill 的元数据，AI 自行用 read_file 加载
+        elif self._skill_manager is not None:
+            metas = self._skill_manager.list_all()
+            skill_section = self._skill_manager.format_skills_for_prompt(metas)
+            if skill_section:
+                system_prompt += f"\n{skill_section}"
         if self._agents_instructions:
             system_prompt = f"{self._agents_instructions}\n\n---\n\n{system_prompt}"
         return system_prompt
