@@ -629,19 +629,19 @@ class FullScreenTUI:
         if char == "\b":
             if self._input_cursor > 0:
                 updated = self._input_text[: self._input_cursor - 1] + self._input_text[self._input_cursor :]
-                self._set_input_state(updated, self._input_cursor - 1)
                 self._update_autocomplete(updated)
+                self._set_input_state(updated, self._input_cursor - 1)
             return None
         if char == "\x7f":
             if self._input_cursor < len(self._input_text):
                 updated = self._input_text[: self._input_cursor] + self._input_text[self._input_cursor + 1 :]
-                self._set_input_state(updated, self._input_cursor)
                 self._update_autocomplete(updated)
+                self._set_input_state(updated, self._input_cursor)
             return None
         if char.isprintable() or char.isspace():
             updated = self._input_text[: self._input_cursor] + char + self._input_text[self._input_cursor :]
-            self._set_input_state(updated, self._input_cursor + 1)
             self._update_autocomplete(updated)
+            self._set_input_state(updated, self._input_cursor + 1)
         return None
 
     def _handle_windows_extended_key(self) -> None:
@@ -697,14 +697,13 @@ class FullScreenTUI:
     # ── 自动补全 ──────────────────────────────────────
 
     def _update_autocomplete(self, text: str) -> None:
-        """根据当前输入更新自动补全匹配列表。"""
-        if text.startswith("/") and len(text) >= 1:
+        """根据当前输入更新自动补全匹配列表（仅更新状态，不触发渲染）。"""
+        if text.startswith("/"):
             matches = [cmd for cmd in self._slash_commands if cmd.startswith(text)]
             if matches:
                 self._autocomplete_visible = True
                 self._autocomplete_matches = matches
                 self._autocomplete_index = 0
-                self.render_locked()
                 return
         self._autocomplete_visible = False
         self._autocomplete_matches.clear()
@@ -923,7 +922,7 @@ class FullScreenTUI:
         rows.append((input_separator_row, "─" * width, MUTED, None))
         rows.append((input_row, self._input_line(width), WHITE, None))
         if self._autocomplete_visible:
-            autocomplete_rows = self._autocomplete_overlay_rows(width, input_separator_row)
+            autocomplete_rows = self._autocomplete_overlay_rows(width, status_row)
             rows.extend(autocomplete_rows)
         if self._confirm_prompt is not None:
             rows.extend(self._confirmation_overlay_rows(width, height))
@@ -1079,15 +1078,14 @@ class FullScreenTUI:
     def _autocomplete_overlay_rows(
         self,
         width: int,
-        input_separator_row: int,
+        above_row: int,
     ) -> list[tuple[int, str, str | None, list[MarkdownSpan] | None]]:
-        """生成自动补全菜单行，出现在输入分隔线上方。"""
+        """生成自动补全菜单行，显示在 above_row 上方，不覆盖该行。"""
         if not self._autocomplete_visible or not self._autocomplete_matches:
             return []
 
         max_items = min(len(self._autocomplete_matches), 8)
         selected = self._autocomplete_index
-        # 滚动窗口：让选中项始终可见
         start = 0
         if selected >= max_items:
             start = selected - max_items + 1
@@ -1106,7 +1104,7 @@ class FullScreenTUI:
             lines.append(f"│ {content}{' ' * pad} │")
         lines.append("└" + "─" * (box_width - 2) + "┘")
 
-        top = input_separator_row - len(lines)
+        top = max(1, above_row - len(lines))
         left_padding = " " * max(0, (width - box_width) // 2)
         result: list[tuple[int, str, str | None, list[MarkdownSpan] | None]] = []
         for index, line in enumerate(lines):

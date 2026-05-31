@@ -294,12 +294,9 @@ def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
             if cursor > 0:
                 text = text[:cursor - 1] + text[cursor:]
                 cursor -= 1
-                print(f"\b \b", end="", flush=True)
-                # 重绘后续文本
                 remaining = text[cursor:]
-                print(remaining, end="")
-                print(" " * 1, end="")
-                print(f"\b" * (len(remaining) + 1), end="", flush=True)
+                print(f"\b{remaining} ", end="")
+                print(f"\033[{len(remaining) + 1}D", end="", flush=True)
                 _update_matches()
             continue
 
@@ -307,9 +304,8 @@ def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
             if cursor < len(text):
                 text = text[:cursor] + text[cursor + 1:]
                 remaining = text[cursor:]
-                print(remaining + " ", end="")
-                back = len(remaining) + 1
-                print(f"\033[{back}D", end="", flush=True)
+                print(f"{remaining} ", end="")
+                print(f"\033[{len(remaining) + 1}D", end="", flush=True)
                 _update_matches()
             continue
 
