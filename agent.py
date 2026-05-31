@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from llm import LLMConfig, OpenAIResponseLLM, VALID_REASONING_EFFORTS, load_llm_config
+from skill import SkillManager, SkillMatchResult
 
 
 AGENTS_INSTRUCTIONS_FILE = "AGENTS.md"
@@ -165,6 +166,8 @@ class AgentConfig:
     )
     max_history_turns: int = 6
     max_tool_output_chars: int = 6000
+    skills_enabled: bool = True
+    skill_paths: list[str] = field(default_factory=list)
     command_timeout_seconds: int = field(
         default_factory=lambda: _read_int_env(
             "AGENT_COMMAND_TIMEOUT_SECONDS", 120, min_value=1, max_value=300
@@ -206,6 +209,14 @@ class LocalToolAgent:
         self._pending_task_messages: list[dict[str, str]] | None = None
         self._tools = self._build_tools()
         self._agents_instructions = self._load_agents_instructions()
+        self._skill_manager: SkillManager | None = None
+        self._active_skills: list[SkillMatchResult] = []
+        if self.config.skills_enabled:
+            self._skill_manager = SkillManager()
+            self._skill_manager.discover(
+                cwd=self.workspace_root,
+                extra_paths=self.config.skill_paths,
+            )
 
         if not self.config.llm.api_key.strip():
             raise AgentError("缺少 API Key，请在 config.json 的 llm.api_key 中配置，或设置 OPENAI_API_KEY。")
@@ -219,6 +230,11 @@ class LocalToolAgent:
             api_key=self.config.llm.api_key,
             base_url=self.config.llm.base_url,
         )
+
+    @property
+    def skill_manager(self) -> SkillManager | None:
+        """公开 SkillManager 供 main.py 查询 /skills 列表。"""
+        return self._skill_manager
 
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""
@@ -242,6 +258,27 @@ class LocalToolAgent:
             raise AgentError("用户输入为空，无法发送给 Agent。")
 
         status = on_status or (lambda _message: None)
+
+        # 处理 /skill:name 命令和自动匹配
+        self._active_skills = []
+        if self._skill_manager is not None:
+            if text.startswith("/skill:"):
+                parts = text.split(None, 1)
+                skill_name = parts[0][len("/skill:"):].strip()
+                skill = self._skill_manager.match_by_name(skill_name)
+                if skill is not None:
+                    self._active_skills = [
+                        SkillMatchResult(skill=skill, score=1.0, reason=f"手动调用：{skill_name}")
+                    ]
+                    status(f"已加载 Skill：{skill_name}")
+                    text = parts[1] if len(parts) > 1 else f"请执行 {skill_name} 技能。"
+                else:
+                    status(f"未找到 Skill：{skill_name}")
+                    available = ", ".join(m.name for m in self._skill_manager.list_all()) or "无"
+                    text = f"Skill「{skill_name}」不存在。当前可用的 Skill：{available}"
+            elif not text.startswith("/"):
+                self._active_skills = self._skill_manager.match(text)
+
         if self._pending_task_messages and self._is_continue_request(text):
             working_messages = [
                 *self._pending_task_messages,
@@ -480,8 +517,10 @@ class LocalToolAgent:
             "- 不要编造工具结果；没有验证就说明未验证。\n"
             "- 如果需要修改代码，先读取相关文件，尽量小步改动，并在完成后用命令验证。"
         )
+        if self._skill_manager is not None and self._active_skills:
+            system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)
         if self._agents_instructions:
-            return f"{self._agents_instructions}\n\n---\n\n{system_prompt}"
+            system_prompt = f"{self._agents_instructions}\n\n---\n\n{system_prompt}"
         return system_prompt
 
     def _load_agents_instructions(self) -> str:

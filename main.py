@@ -527,6 +527,10 @@ def _run_fullscreen_chat(
                 tui.add_system_message("对话结束。")
                 break
 
+            if user_text.strip() == "/skills":
+                _show_skills_in_tui(agent, tui)
+                continue
+
             waiting_indicator = FullScreenWaitingIndicator(tui, "AI 正在思考")
             prefix_blinker = AssistantPrefixBlinker(tui)
             speech_player = FullScreenSpeechPlayer(
@@ -599,6 +603,10 @@ def _run_inline_chat(
             print("对话结束。")
             break
 
+        if user_text.strip() == "/skills":
+            _print_skills_list(agent)
+            continue
+
         status_line = StatusLine(ui, ui.inline_turn_base(user_text))
         waiting_indicator = WaitingIndicator(status_line)
         speech_player = StreamingSpeechPlayer(
@@ -637,6 +645,34 @@ def _run_inline_chat(
             continue
 
 
+def _format_skills_list(agent: LocalToolAgent) -> str:
+    """格式化 Skill 列表为可展示文本。"""
+    sm = agent.skill_manager
+    if sm is None:
+        return "Skill 子系统未启用。"
+
+    metas = sm.list_all()
+    if not metas:
+        return "当前没有已加载的 Skill。在 .claude/skills/ 或 ~/.tui-agent/skills/ 下创建 SKILL.md 来添加。"
+
+    lines = [f"已加载 {sm.count} 个 Skill："]
+    for meta in metas:
+        suffix = " [手动]" if meta.disable_model_invocation else ""
+        lines.append(f"  {meta.name}{suffix}  ({meta.scope})")
+        lines.append(f"    {meta.description}")
+    return "\n".join(lines)
+
+
+def _print_skills_list(agent: LocalToolAgent) -> None:
+    """行内 UI 打印 Skill 列表。"""
+    print(_format_skills_list(agent))
+
+
+def _show_skills_in_tui(agent: LocalToolAgent, tui) -> None:
+    """全屏 TUI 展示 Skill 列表。"""
+    tui.add_system_message(_format_skills_list(agent))
+
+
 def main() -> None:
     """命令行语音 AI Agent 入口。"""
 
@@ -671,6 +707,12 @@ def main() -> None:
     except AgentError as exc:
         print(f"Agent 初始化失败：{exc}")
         return
+
+    # 显示 Skill 加载情况
+    if agent.skill_manager is not None and agent.skill_manager.count > 0:
+        print(f"已加载 {agent.skill_manager.count} 个 Skill，输入 /skills 查看列表。")
+        for diag in agent.skill_manager.get_diagnostics():
+            print(f"  [诊断] {diag.message}（{diag.path}）")
 
     try:
         if supports_fullscreen_tui():
