@@ -346,6 +346,8 @@ class FullScreenTUI:
         self._pending_windows_extended_key_until = 0.0
         self._lock = threading.RLock()
         self._active = False
+        self._input_active = False       # True 时 stdin 由 read_line/confirm 独占
+        self._scroll_poll_thread: threading.Thread | None = None
         # 自动补全
         self._slash_commands: list[str] = sorted(slash_commands or [])
         self._autocomplete_visible = False
@@ -355,6 +357,7 @@ class FullScreenTUI:
     def __enter__(self) -> FullScreenTUI:
         self._active = True
         self._enable_virtual_terminal_input()
+        self._start_scroll_poller()
         sys.stdout.write(f"{ALT_SCREEN_ON}{MOUSE_TRACKING_ON}{CURSOR_SHOW}{CURSOR_BLOCK}{CURSOR_HOME}")
         sys.stdout.flush()
         self.render()
@@ -362,6 +365,7 @@ class FullScreenTUI:
 
     def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
         self._active = False
+        self._scroll_poll_thread = None
         sys.stdout.write(f"{RESET}{CURSOR_SHOW}{CURSOR_DEFAULT}{MOUSE_TRACKING_OFF}{ALT_SCREEN_OFF}")
         sys.stdout.flush()
         self._restore_console_input_mode()
@@ -467,6 +471,7 @@ class FullScreenTUI:
             answer = input("确认？[Enter=YES / n=NO] ").strip().lower()
             return answer not in {"n", "no", "否", "false"}
 
+        self._input_active = True
         try:
             while True:
                 char = msvcrt.getwch()
@@ -499,6 +504,7 @@ class FullScreenTUI:
                         self._pending_windows_extended_key_until = time.monotonic() + 0.25
                     continue
         finally:
+            self._input_active = False
             with self._lock:
                 self._confirm_prompt = None
                 self._confirm_selection_yes = True
@@ -569,6 +575,31 @@ class FullScreenTUI:
             self._stdin_handle = None
             self._stdin_mode = None
 
+    def _start_scroll_poller(self) -> None:
+        """启动后台线程，在 TUI 空闲时处理鼠标滚轮等输入事件。"""
+        if os.name != "nt":
+            return
+        try:
+            import msvcrt  # noqa: F811
+        except ImportError:
+            return
+
+        def _poll() -> None:
+            while self._active and self._scroll_poll_thread is not None:
+                if not self._input_active:
+                    try:
+                        while msvcrt.kbhit():
+                            char = msvcrt.getwch()
+                            if char == "\x1b":
+                                sequence = self._read_pending_escape_sequence()
+                                self._handle_mouse_sequence(sequence)
+                    except Exception:
+                        pass
+                time.sleep(0.08)
+
+        self._scroll_poll_thread = threading.Thread(target=_poll, daemon=True)
+        self._scroll_poll_thread.start()
+
     def read_line(self) -> str:
         """读取底部输入栏的一行文本。"""
 
@@ -577,12 +608,16 @@ class FullScreenTUI:
         except ImportError:
             return input(f"{USER_PREFIX}").strip()
 
-        self.set_input("")
-        while True:
-            char = msvcrt.getwch()
-            submitted = self._handle_input_char(char)
-            if submitted is not None:
-                return submitted
+        self._input_active = True
+        try:
+            self.set_input("")
+            while True:
+                char = msvcrt.getwch()
+                submitted = self._handle_input_char(char)
+                if submitted is not None:
+                    return submitted
+        finally:
+            self._input_active = False
 
     def poll_submitted_line(self, buffer: list[str]) -> str | None:
         """非阻塞读取底部输入栏，适合朗读期间打断或输入下一句。"""
@@ -592,12 +627,16 @@ class FullScreenTUI:
         except ImportError:
             return None
 
-        while msvcrt.kbhit():
-            submitted = self._handle_input_char(msvcrt.getwch())
-            buffer[:] = list(self._input_text)
-            if submitted is not None:
-                return submitted
-        return None
+        self._input_active = True
+        try:
+            while msvcrt.kbhit():
+                submitted = self._handle_input_char(msvcrt.getwch())
+                buffer[:] = list(self._input_text)
+                if submitted is not None:
+                    return submitted
+            return None
+        finally:
+            self._input_active = False
 
     def _handle_input_char(self, char: str) -> str | None:
         if char == "\x1b":
