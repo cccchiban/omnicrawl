@@ -130,6 +130,8 @@ class SkillManager:
         self._body_cache: dict[str, str] = {}   # name → body（避免二次读取）
         self._diagnostics: list[SkillDiagnostic] = []
         self._real_paths: set[str] = set()
+        self._last_cwd: Path | None = None
+        self._last_extra_paths: list[str] = []
 
     # ── 发现 ──────────────────────────────────────────
 
@@ -153,7 +155,9 @@ class SkillManager:
         self._body_cache.clear()
         self._diagnostics.clear()
         self._real_paths.clear()
-        work_dir = (cwd or Path.cwd()).resolve()
+        self._last_cwd = (cwd or Path.cwd()).resolve()
+        self._last_extra_paths = list(extra_paths or [])
+        work_dir = self._last_cwd
         home_dir = Path.home()
 
         for scope, path_spec in SKILL_SCOPES:
@@ -391,11 +395,26 @@ class SkillManager:
         return results[:max_results]
 
     def match_by_name(self, name: str) -> Skill | None:
-        """按名称精确获取 Skill（用于 /skill:name 命令）。"""
+        """按名称精确获取 Skill（用于 /skill:name 命令）。
+
+        索引未命中时自动 re-discover 一次，覆盖 AI 在当前会话内安装
+        新 Skill 的场景。
+        """
         meta = self._index.get(name)
+        if meta is None:
+            # 可能是 AI 在本次会话中新安装的 Skill，重新扫描
+            self.reload()
+            meta = self._index.get(name)
         if meta is None:
             return None
         return self._load_skill(meta)
+
+    def reload(self) -> None:
+        """重新扫描所有作用域目录，捕获新增/变更的 Skill。
+
+        保留当前 cwd，与 __init__ 后的 discover 行为一致。
+        """
+        self.discover(cwd=self._last_cwd, extra_paths=self._last_extra_paths)
 
     def _score_match(self, input_lower: str, meta: SkillMeta) -> tuple[float, str]:
         """对单个 Skill 计算匹配得分。
