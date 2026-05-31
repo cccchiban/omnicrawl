@@ -259,7 +259,7 @@ class LocalToolAgent:
 
         status = on_status or (lambda _message: None)
 
-        # 处理 /skill:name 命令和自动匹配
+        # 处理 /skill:name 命令
         self._active_skills = []
         if self._skill_manager is not None:
             if text.startswith("/skill:"):
@@ -276,8 +276,6 @@ class LocalToolAgent:
                     status(f"未找到 Skill：{skill_name}")
                     available = ", ".join(m.name for m in self._skill_manager.list_all()) or "无"
                     text = f"Skill「{skill_name}」不存在。当前可用的 Skill：{available}"
-            elif not text.startswith("/"):
-                self._active_skills = self._skill_manager.match(text)
 
         if self._pending_task_messages and self._is_continue_request(text):
             working_messages = [
@@ -517,6 +515,14 @@ class LocalToolAgent:
             "- 不要编造工具结果；没有验证就说明未验证。\n"
             "- 如果需要修改代码，先读取相关文件，尽量小步改动，并在完成后用命令验证。"
         )
+        # 渐进式披露：列出所有可用 Skill 的元数据，AI 自行用 read_file 加载所需 Skill
+        if self._skill_manager is not None:
+            all_skills = self._skill_manager.list_all()
+            if all_skills:
+                skill_section = self._skill_manager.format_skills_for_prompt(all_skills)
+                if skill_section:
+                    system_prompt += f"\n{skill_section}"
+        # 手动调用 /skill:name 时注入 Skill 全文
         if self._skill_manager is not None and self._active_skills:
             system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)
         if self._agents_instructions:

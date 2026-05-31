@@ -452,7 +452,40 @@ class SkillManager:
         en_words = re.findall(r"[a-zA-Z]{3,}", text)
         return set(cn_words) | {w.lower() for w in en_words}
 
-    # ── 注入 ──────────────────────────────────────────
+    # ── 渐进式披露（Pi 风格）──────────────────────────
+
+    @staticmethod
+    def format_skills_for_prompt(skills: list[SkillMeta]) -> str:
+        """将所有 Skill 的元数据以 XML 格式输出，注入 system prompt。
+
+        Pi 风格渐进式披露：只列出 name + description + location，
+        AI 自己用 read_file 工具加载需要的 SKILL.md 全文。
+        disable_model_invocation=True 的技能不列出。
+        """
+        visible = [s for s in skills if not s.disable_model_invocation]
+        if not visible:
+            return ""
+
+        lines = [
+            "",
+            "以下 Skill 提供了针对特定任务的专用指令。"
+            "当你判断当前任务匹配某个 Skill 的描述时，"
+            "请使用 read_file 工具加载对应的 SKILL.md 文件，"
+            "然后严格遵循其中的指令执行。"
+            "Skill 文件中引用的相对路径应相对于 SKILL.md 所在目录解析。",
+            "",
+            "<available_skills>",
+        ]
+        for s in visible:
+            lines.append("  <skill>")
+            lines.append(f"    <name>{SkillManager._escape_xml(s.name)}</name>")
+            lines.append(f"    <description>{SkillManager._escape_xml(s.description)}</description>")
+            lines.append(f"    <location>{SkillManager._escape_xml(str(s.source_path))}</location>")
+            lines.append("  </skill>")
+        lines.append("</available_skills>")
+        return "\n".join(lines)
+
+    # ── 注入（手动调用 /skill:name 时使用）─────────────
 
     def inject(self, matches: list[SkillMatchResult], system_prompt: str) -> str:
         """将匹配到的 Skill 指令注入 system prompt 头部。
