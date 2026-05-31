@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +127,7 @@ class SkillManager:
 
     def __init__(self) -> None:
         self._index: dict[str, SkillMeta] = {}
+        self._body_cache: dict[str, str] = {}   # name → body（避免二次读取）
         self._diagnostics: list[SkillDiagnostic] = []
         self._real_paths: set[str] = set()
 
@@ -149,6 +150,7 @@ class SkillManager:
         符号链接去重：同一 real path 只加载一次。
         """
         self._index.clear()
+        self._body_cache.clear()
         self._diagnostics.clear()
         self._real_paths.clear()
         work_dir = (cwd or Path.cwd()).resolve()
@@ -181,9 +183,9 @@ class SkillManager:
             if resolved.is_dir():
                 self._scan_directory(resolved, "path")
             elif resolved.is_file() and resolved.suffix == ".md":
-                result = self._parse_skill_file(resolved, "path")
-                if result:
-                    self._add_skill(result)
+                parsed = self._parse_skill_file(resolved, "path", self._diagnostics)
+                if parsed is not None:
+                    self._add_skill(*parsed)
             else:
                 self._diagnostics.append(SkillDiagnostic(
                     type="warning",
@@ -220,9 +222,9 @@ class SkillManager:
             if entry.is_dir():
                 skill_md = entry / SKILL_FILE_NAME
                 if skill_md.is_file():
-                    result = self._parse_skill_file(skill_md, scope)
-                    if result:
-                        self._add_skill(result)
+                    parsed = self._parse_skill_file(skill_md, scope, self._diagnostics)
+                    if parsed is not None:
+                        self._add_skill(*parsed)
                     # 找到 SKILL.md → 不再递归深入
                     continue
                 # 递归扫描子目录
@@ -230,11 +232,11 @@ class SkillManager:
 
             elif entry.is_file() and entry.suffix == ".md" and entry.name != SKILL_FILE_NAME:
                 # 根目录下的 .md 文件作为独立 Skill
-                result = self._parse_skill_file(entry, scope)
-                if result:
-                    self._add_skill(result)
+                parsed = self._parse_skill_file(entry, scope, self._diagnostics)
+                if parsed is not None:
+                    self._add_skill(*parsed)
 
-    def _add_skill(self, meta: SkillMeta) -> None:
+    def _add_skill(self, meta: SkillMeta, body: str) -> None:
         """添加 Skill 到索引，处理符号链接去重和同名冲突。"""
         # 符号链接去重
         try:
@@ -262,24 +264,48 @@ class SkillManager:
             return
 
         self._index[meta.name] = meta
+        self._body_cache[meta.name] = body
 
     # ── 解析 ──────────────────────────────────────────
 
-    @staticmethod
-    def _parse_skill_file(file_path: Path, scope: str) -> SkillMeta | None:
-        """解析 SKILL.md 的 YAML frontmatter，返回 SkillMeta。
+    @classmethod
+    def _parse_skill_file(
+        cls,
+        file_path: Path,
+        scope: str,
+        diagnostics: list[SkillDiagnostic] | None = None,
+    ) -> tuple[SkillMeta, str] | None:
+        """解析 SKILL.md 的 YAML frontmatter。
 
-        Frontmatter 必须是文件开头的 --- 包裹块，每行一个 key: value。
-        解析失败或缺少必填字段时返回 None，不抛异常。
+        返回 (SkillMeta, body) 或 None（缺少必填字段/读取失败）。
+        校验警告会追加到 diagnostics 列表中。
         """
+        diags = diagnostics if diagnostics is not None else []
+
         try:
             raw = file_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             return None
 
-        frontmatter, _body = SkillManager._parse_frontmatter(raw)
+        frontmatter, body = cls._parse_frontmatter(raw)
         name = frontmatter.get("name", "").strip() or file_path.parent.name
         description = frontmatter.get("description", "").strip()
+
+        # 校验 name
+        for error in validate_skill_name(name):
+            diags.append(SkillDiagnostic(
+                type="warning",
+                message=error,
+                path=str(file_path),
+            ))
+
+        # 校验 description
+        for error in validate_skill_description(description):
+            diags.append(SkillDiagnostic(
+                type="warning",
+                message=error,
+                path=str(file_path),
+            ))
 
         # 缺少 description → 不加载
         if not description:
@@ -289,7 +315,7 @@ class SkillManager:
         if isinstance(disable_model, str):
             disable_model = disable_model.lower() == "true"
 
-        return SkillMeta(
+        meta = SkillMeta(
             name=name,
             description=description,
             source_path=file_path.resolve(),
@@ -297,6 +323,7 @@ class SkillManager:
             scope=scope,
             disable_model_invocation=bool(disable_model),
         )
+        return meta, body
 
     @staticmethod
     def _parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
@@ -473,14 +500,9 @@ class SkillManager:
     # ── 加载 ──────────────────────────────────────────
 
     def _load_skill(self, meta: SkillMeta) -> Skill:
-        """从文件加载完整 Skill 正文。"""
-        try:
-            raw = meta.source_path.read_text(encoding="utf-8")
-        except OSError:
-            return Skill(meta=meta, body="[无法读取 Skill 文件]")
-
-        _frontmatter, body = self._parse_frontmatter(raw)
-        return Skill(meta=meta, body=body or "")
+        """获取完整 Skill 正文，优先使用缓存的 body。"""
+        body = self._body_cache.get(meta.name, "")
+        return Skill(meta=meta, body=body)
 
     # ── 查询 ──────────────────────────────────────────
 
