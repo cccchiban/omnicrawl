@@ -188,11 +188,162 @@ def _create_text_to_speech() -> TextToSpeech | None:
         return None
 
 
-def _get_user_text(speech_to_text: SpeechToText | None, ui: TerminalUI) -> str:
+def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
+    """逐字符读取输入，在输入 / 时实时显示匹配命令。
+
+    Tab 补全当前唯一或最佳匹配，Enter 提交。
+    """
+    import msvcrt
+
+    print(prompt, end="", flush=True)
+    text = ""
+    cursor = 0
+    matches: list[str] = []
+    match_index = 0
+    shown_lines = 0
+
+    def _clear_matches() -> None:
+        nonlocal shown_lines
+        for _ in range(shown_lines):
+            print(f"\033[1A\033[2K", end="")
+        shown_lines = 0
+
+    def _show_matches() -> None:
+        nonlocal shown_lines, match_index
+        _clear_matches()
+        if matches:
+            match_index = min(match_index, len(matches) - 1)
+            display = [f"  > {m}" if i == match_index else f"    {m}"
+                       for i, m in enumerate(matches[:8])]
+            for line in display:
+                print(f"\n\033[2K{line}", end="")
+            shown_lines = len(display)
+            if shown_lines:
+                # 移动光标回输入行
+                print(f"\033[{shown_lines}A", end="")
+                cursor_offset = len(prompt) + cursor
+                if cursor_offset > 0:
+                    print(f"\033[{cursor_offset}G", end="")
+            print(flush=True)
+
+    def _update_matches() -> None:
+        nonlocal matches, match_index
+        if text.startswith("/") and len(text) >= 1:
+            matches = [c for c in commands if c.startswith(text)]
+        else:
+            matches.clear()
+        match_index = 0
+        _show_matches()
+
+    while True:
+        char = msvcrt.getwch()
+
+        if char in {"\r", "\n"}:
+            _clear_matches()
+            print()
+            return text.strip()
+
+        if char == "\t":
+            if matches:
+                text = matches[match_index]
+                cursor = len(text)
+                match_index = 0
+                matches.clear()
+                print(f"\r\033[2K{prompt}{text}", end="", flush=True)
+                _show_matches()
+            continue
+
+        if char == "\x1b":
+            # 读取转义序列
+            seq_parts: list[str] = []
+            import time as _time
+            deadline = _time.monotonic() + 0.02
+            while _time.monotonic() < deadline:
+                if msvcrt.kbhit():
+                    seq_parts.append(msvcrt.getwch())
+                    if seq_parts[0] in {"[", "O"} and len(seq_parts) >= 2:
+                        break
+                    if seq_parts[0] not in {"[", "O"}:
+                        break
+                else:
+                    _time.sleep(0.001)
+            sequence = "".join(seq_parts)
+
+            if not sequence:
+                # 纯 Escape：关闭补全菜单
+                matches.clear()
+                match_index = 0
+                _show_matches()
+                continue
+            if sequence in {"[A", "OA"}:  # Up
+                if matches and match_index > 0:
+                    match_index -= 1
+                    _show_matches()
+                continue
+            if sequence in {"[B", "OB"}:  # Down
+                if matches and match_index < len(matches) - 1:
+                    match_index += 1
+                    _show_matches()
+                continue
+            continue
+
+        if char == "\x03":
+            raise KeyboardInterrupt
+
+        if char == "\b":
+            if cursor > 0:
+                text = text[:cursor - 1] + text[cursor:]
+                cursor -= 1
+                print(f"\b \b", end="", flush=True)
+                # 重绘后续文本
+                remaining = text[cursor:]
+                print(remaining, end="")
+                print(" " * 1, end="")
+                print(f"\b" * (len(remaining) + 1), end="", flush=True)
+                _update_matches()
+            continue
+
+        if char == "\x7f":
+            if cursor < len(text):
+                text = text[:cursor] + text[cursor + 1:]
+                remaining = text[cursor:]
+                print(remaining + " ", end="")
+                back = len(remaining) + 1
+                print(f"\033[{back}D", end="", flush=True)
+                _update_matches()
+            continue
+
+        if char.isprintable() or char.isspace():
+            text = text[:cursor] + char + text[cursor:]
+            cursor += 1
+            print(char, end="", flush=True)
+            remaining = text[cursor:]
+            if remaining:
+                print(remaining, end="")
+                print(f"\033[{len(remaining)}D", end="", flush=True)
+            _update_matches()
+
+
+def _get_user_text(
+    speech_to_text: SpeechToText | None,
+    ui: TerminalUI,
+    slash_commands: list[str] | None = None,
+) -> str:
     """读取一轮用户输入。
 
     直接回车表示开始录音；输入文字则跳过录音，便于在麦克风不可用时继续调试。
+    支持斜杠命令 Tab 补全（Windows 下）。
     """
+
+    if os.name == "nt" and slash_commands:
+        try:
+            import msvcrt
+        except ImportError:
+            pass
+        else:
+            text = _read_line_autocomplete(ui.prompt(), slash_commands)
+            if text:
+                return text
 
     command = input(ui.prompt()).strip()
     if command:
@@ -504,6 +655,7 @@ def _run_fullscreen_chat(
         thinking_type=thinking_type,
         reasoning_effort=reasoning_effort,
         config_label=config_label,
+        slash_commands=_build_slash_commands(agent),
     ) as tui:
         agent.set_confirm_handler(
             lambda tool_name, arguments: tui.confirm_yes_no(
@@ -594,7 +746,7 @@ def _run_inline_chat(
             user_text = pending_user_text
             pending_user_text = None
         else:
-            user_text = _get_user_text(speech_to_text, ui)
+            user_text = _get_user_text(speech_to_text, ui, _build_slash_commands(agent))
 
         if not user_text:
             continue
@@ -671,6 +823,16 @@ def _print_skills_list(agent: LocalToolAgent) -> None:
 def _show_skills_in_tui(agent: LocalToolAgent, tui) -> None:
     """全屏 TUI 展示 Skill 列表。"""
     tui.add_system_message(_format_skills_list(agent))
+
+
+def _build_slash_commands(agent: LocalToolAgent) -> list[str]:
+    """构建所有可用的斜杠命令列表（含内置命令和动态 Skill 命令）。"""
+    commands = ["/skills"]
+    sm = agent.skill_manager
+    if sm is not None:
+        for meta in sm.list_all():
+            commands.append(f"/skill:{meta.name}")
+    return commands
 
 
 def main() -> None:
