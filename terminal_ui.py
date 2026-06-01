@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import os
 import random
+import shutil
 import sys
 import threading
 import ctypes
+import unicodedata
 from dataclasses import dataclass
 
 
 AI_PREFIX = "^"
-USER_PREFIX = "*"
+USER_PREFIX = ">"
 ANSI_CLEAR_LINE = "\033[2K"
 ANSI_PREVIOUS_LINE = "\033[1A"
 ANSI_MUTED = "\033[2;90m"
+ANSI_GRAY = "\033[90m"
+ANSI_LIGHT_BLUE = "\033[94m"
 ANSI_RESET = "\033[0m"
 WAITING_KAOMOJI = (
     "(｡･ω･｡)",
@@ -23,6 +27,31 @@ WAITING_KAOMOJI = (
     "(๑•̀ㅂ•́)و",
 )
 WAITING_DOTS = ("", ".", "..", "...", "..", ".")
+
+
+def _char_display_width(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+
+
+def _display_width(text: str) -> int:
+    return sum(_char_display_width(char) for char in text)
+
+
+def _take_display_width(text: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+
+    width = 0
+    chars: list[str] = []
+    for char in text:
+        char_width = _char_display_width(char)
+        if width + char_width > max_width:
+            break
+        chars.append(char)
+        width += char_width
+    return "".join(chars)
 
 
 @dataclass(frozen=True)
@@ -91,8 +120,47 @@ class TerminalUI:
             return text
         return f"{ANSI_MUTED}{text}{ANSI_RESET}"
 
+    def print_startup_panel(self, title: str, lines: list[str]) -> None:
+        """打印普通终端内的启动面板。
+
+        这里不接管屏幕缓冲区，只输出一次带灰色边框的配置摘要，保持终端历史可滚动；
+        面板宽度会按终端宽度收缩，避免长配置路径把右侧边框挤出可视范围。
+        """
+
+        terminal_width = shutil.get_terminal_size((100, 30)).columns
+        max_box_width = max(24, terminal_width - 2)
+        desired_content_width = max(_display_width(title), *(_display_width(line) for line in lines), 36)
+        content_width = min(max_box_width - 4, desired_content_width)
+
+        def render_row(text: str) -> str:
+            content = _take_display_width(text, content_width)
+            padding = " " * max(0, content_width - _display_width(content))
+            if not self.capabilities.ansi:
+                return f"| {content}{padding} |"
+            return (
+                f"{ANSI_GRAY}│ {ANSI_RESET}"
+                f"{ANSI_LIGHT_BLUE}{content}{ANSI_RESET}"
+                f"{padding}"
+                f"{ANSI_GRAY} │{ANSI_RESET}"
+            )
+
+        horizontal = "─" * (content_width + 2)
+        if self.capabilities.ansi:
+            top = f"{ANSI_GRAY}┌{horizontal}┐{ANSI_RESET}"
+            bottom = f"{ANSI_GRAY}└{horizontal}┘{ANSI_RESET}"
+        else:
+            top = f"+{'-' * (content_width + 2)}+"
+            bottom = top
+
+        with self._lock:
+            print(top)
+            print(render_row(title))
+            for line in lines:
+                print(render_row(line))
+            print(bottom)
+
     def prompt(self) -> str:
-        return f"\n{USER_PREFIX}"
+        return f"\n{USER_PREFIX} "
 
     def inline_turn_base(self, user_text: str) -> str:
         """把刚提交的输入行改写成对话行前半段。
@@ -100,7 +168,7 @@ class TerminalUI:
         支持 ANSI 时会回到上一行重绘；不支持时退化为新起一行。
         """
 
-        base_text = f"{USER_PREFIX}{user_text} "
+        base_text = f"{USER_PREFIX} {user_text} "
         with self._lock:
             if self.capabilities.ansi:
                 print(f"{ANSI_PREVIOUS_LINE}\r{ANSI_CLEAR_LINE}{base_text}", end="", flush=True)
@@ -109,7 +177,7 @@ class TerminalUI:
 
     def print_ai_prefix(self) -> None:
         with self._lock:
-            print(AI_PREFIX, end="", flush=True)
+            print(f"{AI_PREFIX} ", end="", flush=True)
 
     def write(self, text: str) -> None:
         with self._lock:
@@ -199,7 +267,7 @@ class StatusLine:
         with self._ui._lock:
             if self._ui.capabilities.ansi:
                 print(f"\r{ANSI_CLEAR_LINE}", end="", flush=True)
-            print(prefix, end="", flush=True)
+            print(f"{prefix} ", end="", flush=True)
             self._visible = False
 
 

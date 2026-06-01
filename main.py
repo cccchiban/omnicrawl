@@ -14,7 +14,6 @@ from fullscreen_tui import (
     AssistantPrefixBlinker,
     FullScreenTUI,
     FullScreenWaitingIndicator,
-    supports_fullscreen_tui,
 )
 from llm import LLMError, load_llm_config
 from runtime_config import resolve_config_path
@@ -23,7 +22,7 @@ from speech_to_text import MicrophoneInfo, SpeechConfig, SpeechToText, SpeechToT
 from text_to_speech import TextToSpeech, TextToSpeechError
 
 
-EXIT_WORDS = {"q", "quit", "exit", "退出", "结束", "再见"}
+EXIT_WORDS = {"退出", "结束", "再见"}
 POWERSHELL_CHILD_ENV = "AI_VOICE_CHAT_IN_POWERSHELL"
 TTS_SENTENCE_PATTERN = re.compile(r"(.+?[。！？!?；;\n])")
 
@@ -346,13 +345,13 @@ def _get_user_text(
         return command
 
     if speech_to_text is None:
-        return input(USER_PREFIX).strip()
+        return input(f"{USER_PREFIX} ").strip()
 
     try:
         return speech_to_text.listen_once().strip()
     except SpeechToTextError as exc:
         print(f"语音识别失败：{exc}")
-        return input(f"{USER_PREFIX}").strip()
+        return input(f"{USER_PREFIX} ").strip()
 
 
 def _read_speech_interrupt_keypress(
@@ -533,7 +532,7 @@ class StreamingSpeechPlayer:
 
 
 class FullScreenSpeechPlayer:
-    """全屏 TUI 下的 AI 输出和语音播报适配器。"""
+    """保留给全屏 TUI 的 AI 输出和语音播报适配器。"""
 
     def __init__(
         self,
@@ -604,7 +603,7 @@ class FullScreenSpeechPlayer:
                 self._tui.set_status("已打断朗读")
                 return True, submitted or None
 
-        self._tui.set_status("Enter 发送，空 Enter 录音，q 退出")
+        self._tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 或输入“退出”结束")
         if input_buffer:
             return False, "".join(input_buffer).strip() or None
         return False, None
@@ -614,7 +613,7 @@ def _get_user_text_fullscreen(
     speech_to_text: SpeechToText | None,
     tui: FullScreenTUI,
 ) -> str:
-    """全屏 TUI 下读取一轮用户输入。"""
+    """保留给全屏 TUI 的单轮用户输入读取。"""
 
     text = tui.read_line().strip()
     if text:
@@ -626,7 +625,7 @@ def _get_user_text_fullscreen(
     tui.set_status("正在录音...")
     try:
         recognized = speech_to_text.listen_once().strip()
-        tui.set_status("Enter 发送，空 Enter 录音，q 退出")
+        tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 或输入“退出”结束")
         return recognized
     except SpeechToTextError as exc:
         tui.add_system_message(f"语音识别失败：{exc}")
@@ -644,7 +643,7 @@ def _run_fullscreen_chat(
     reasoning_effort: str,
     config_label: str,
 ) -> None:
-    """运行全屏 TUI 对话主循环。"""
+    """运行保留的全屏 TUI 对话主循环。"""
 
     with FullScreenTUI(
         model=model,
@@ -729,7 +728,7 @@ def _run_inline_chat(
     text_to_speech: TextToSpeech | None,
     ui: TerminalUI,
 ) -> None:
-    """运行旧版行内 UI，对不支持全屏 TUI 的终端自动降级。"""
+    """运行默认的普通终端内联 UI。"""
 
     agent.set_confirm_handler(
         lambda tool_name, arguments: ui.prompt_yes_no(
@@ -817,7 +816,7 @@ def _print_skills_list(agent: LocalToolAgent) -> None:
 
 
 def _show_skills_in_tui(agent: LocalToolAgent, tui) -> None:
-    """全屏 TUI 展示 Skill 列表。"""
+    """保留给全屏 TUI 的 Skill 列表展示。"""
     tui.add_system_message(_format_skills_list(agent))
 
 
@@ -844,18 +843,18 @@ def main() -> None:
 
     config_path = resolve_config_path()
 
-    print("AI 语音 Agent 已启动。")
-    if config_path.exists():
-        print(f"配置文件：{config_path}")
-    else:
-        print(f"配置文件：未找到 {config_path.name}，将回退到环境变量。")
-    print(f"当前模型：{config.model}，可在 config.json 的 llm.model 中修改。")
     enabled_label = "已启用" if config.thinking_enabled else "已禁用"
     reasoning_info = f"，推理强度：{config.reasoning_effort}" if config.reasoning_effort else ""
-    print(f"思考模式：{enabled_label}{reasoning_info}，可在 config.json 中修改。")
-    print("接口使用 OpenAI Responses API 兼容格式。")
-    print("Agent 可长任务工作并调用本地工具；工具执行前会由程序弹出确认。")
-    print("命令工具已开放为弹窗确认后执行任意命令；确认界面默认 YES，右箭头/N 选择 NO。")
+    config_label = str(config_path) if config_path.exists() else f"未找到 {config_path.name}，回退到环境变量"
+    ui.print_startup_panel(
+        "AI 语音 Agent",
+        [
+            f"model: {config.model}",
+            f"thinking: {enabled_label}{reasoning_info}",
+            f"config: {config_label}",
+            "Ctrl+C 或关闭窗口结束会话",
+        ],
+    )
 
     speech_to_text = _create_speech_to_text()
     text_to_speech = _create_text_to_speech()
@@ -868,24 +867,14 @@ def main() -> None:
 
     # 显示 Skill 加载情况
     if agent.skill_manager is not None and agent.skill_manager.count > 0:
-        print(f"已加载 {agent.skill_manager.count} 个 Skill，输入 /skills 查看列表。")
+        print(ui.muted(f"已加载 {agent.skill_manager.count} 个 Skill，输入 /skills 查看列表。"))
         for diag in agent.skill_manager.get_diagnostics():
-            print(f"  [诊断] {diag.message}（{diag.path}）")
+            print(ui.muted(f"  [诊断] {diag.message}（{diag.path}）"))
 
     try:
-        if supports_fullscreen_tui():
-            _run_fullscreen_chat(
-                agent,
-                speech_to_text,
-                text_to_speech,
-                model=config.model,
-                thinking_type=config.thinking_type,
-                reasoning_effort=config.reasoning_effort,
-                config_label=str(config_path),
-            )
-        else:
-            print("当前终端不支持全屏 TUI，已自动切换到行内界面。")
-            _run_inline_chat(agent, speech_to_text, text_to_speech, ui)
+        _run_inline_chat(agent, speech_to_text, text_to_speech, ui)
+    except KeyboardInterrupt:
+        print("\n对话结束。")
     finally:
         if text_to_speech is not None:
             text_to_speech.stop()

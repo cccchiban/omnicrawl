@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from typing import Any
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 SKILL_FILE_NAME = "SKILL.md"
+SKILL_MANIFEST_FILE_NAME = "manifest.json"
 DEFAULT_MATCH_THRESHOLD = 0.3
 DEFAULT_MAX_RESULTS = 3
 
@@ -292,8 +294,30 @@ class SkillManager:
             return None
 
         frontmatter, body = cls._parse_frontmatter(raw)
-        name = frontmatter.get("name", "").strip() or file_path.parent.name
+        manifest = cls._read_manifest(file_path.parent)
+        name = (
+            frontmatter.get("name", "").strip()
+            or str(manifest.get("skill_name", "")).strip()
+            or file_path.parent.name
+        )
+        normalized_name = cls._normalize_skill_name(name)
+        if normalized_name != name:
+            diags.append(SkillDiagnostic(
+                type="warning",
+                message=f'Skill 名称 "{name}" 已兼容为 "{normalized_name}"',
+                path=str(file_path),
+            ))
+            name = normalized_name
+
         description = frontmatter.get("description", "").strip()
+        if not description and file_path.name == SKILL_FILE_NAME:
+            description = cls._infer_description(raw, body)
+            if description:
+                diags.append(SkillDiagnostic(
+                    type="warning",
+                    message="Skill 缺少 description，已从 Markdown 内容推断",
+                    path=str(file_path),
+                ))
 
         # 校验 name
         for error in validate_skill_name(name):
@@ -366,6 +390,44 @@ class SkillManager:
             result[key] = value
 
         return result, body
+
+    @staticmethod
+    def _read_manifest(skill_dir: Path) -> dict[str, Any]:
+        manifest_path = skill_dir / SKILL_MANIFEST_FILE_NAME
+        if not manifest_path.is_file():
+            return {}
+
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _normalize_skill_name(name: str) -> str:
+        normalized = re.sub(r"[^a-z0-9-]+", "-", name.strip().lower())
+        normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
+        return normalized or name
+
+    @staticmethod
+    def _infer_description(raw: str, body: str) -> str:
+        source = body or raw
+        lines = [line.strip() for line in source.splitlines()]
+
+        for line in lines:
+            if not line.startswith("#"):
+                continue
+            heading = line.lstrip("#").strip()
+            if heading:
+                return heading[:MAX_DESCRIPTION_LENGTH]
+
+        for line in lines:
+            if not line or line.startswith("---"):
+                continue
+            clean = re.sub(r"^[>\-\*\d、.()\s]+", "", line).strip()
+            if clean:
+                return clean[:MAX_DESCRIPTION_LENGTH]
+        return ""
 
     # ── 匹配 ──────────────────────────────────────────
 

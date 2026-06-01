@@ -13,22 +13,27 @@ from dataclasses import dataclass
 from terminal_ui import AI_PREFIX, USER_PREFIX, WAITING_DOTS, WAITING_KAOMOJI, detect_capabilities
 
 
-ALT_SCREEN_ON = "\033[?1049h"
-ALT_SCREEN_OFF = "\033[?1049l"
 CURSOR_HOME = "\033[H"
 CURSOR_SHOW = "\033[?25h"
 CURSOR_HIDE = "\033[?25l"
 CURSOR_BLOCK = "\033[1 q"
 CURSOR_DEFAULT = "\033[0 q"
-MOUSE_TRACKING_ON = "\033[?1000h\033[?1006h"
-MOUSE_TRACKING_OFF = "\033[?1006l\033[?1000l"
+MOUSE_TRACKING_RESET = "\033[?1003l\033[?1002l\033[?1000l\033[?1015l\033[?1006l\033[?1005l"
+MOUSE_TRACKING_ON = f"{MOUSE_TRACKING_RESET}\033[?1006h\033[?1000h"
+MOUSE_TRACKING_OFF = MOUSE_TRACKING_RESET
 ERASE_LINE = "\033[K"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 MUTED = "\033[2;90m"
+GRAY = "\033[90m"
 LIGHT_BLUE = "\033[94m"
 WHITE = "\033[37m"
 SCROLL_LINES_PER_WHEEL = 4
+ESCAPE_SEQUENCE_TIMEOUT_SECONDS = 0.08
+ESCAPE_SEQUENCE_MAX_CHARS = 64
+WINDOWS_EXTENDED_KEY_PENDING_SECONDS = 0.75
+MOUSE_FRAGMENT_SUPPRESSION_SECONDS = 0.25
+MOUSE_FRAGMENT_CHARS = frozenset("0123456789[]<>;MmHhPpKkSs")
 
 
 @dataclass
@@ -61,7 +66,7 @@ class MarkdownLine:
 
 
 def supports_fullscreen_tui() -> bool:
-    """判断当前终端是否适合启用全屏 TUI。"""
+    """判断当前终端是否适合启用 ANSI TUI。"""
 
     if os.getenv("AI_DISABLE_FULLSCREEN_TUI") == "1":
         return False
@@ -304,7 +309,7 @@ def _render_markdown(text: str, default_style: str | None) -> list[MarkdownLine]
 
 
 class FullScreenTUI:
-    """基于 ANSI alternate screen 的全屏终端界面。
+    """基于 ANSI 光标控制的终端界面。
 
     该实现刻意保持轻量：只负责固定布局、状态栏、消息区和单行输入。
     复杂输入编辑、历史补全和多光标体验应交给后续的 prompt_toolkit 版本。
@@ -332,7 +337,7 @@ class FullScreenTUI:
             f"AI 语音 Agent\nmodel={self.model}  {thinking_display}\nconfig: {self.config_label}",
         )
         self._messages: list[TUIMessage] = [self._header_message]
-        self._status = "Enter 发送，空 Enter 录音，q 退出"
+        self._status = "Enter 发送，空 Enter 录音，Ctrl+C 或输入“退出”结束"
         self._input_text = ""
         self._input_cursor = 0
         self._active_assistant_index: int | None = None
@@ -344,6 +349,7 @@ class FullScreenTUI:
         self._stdin_handle: int | None = None
         self._stdin_mode: int | None = None
         self._pending_windows_extended_key_until = 0.0
+        self._suppress_mouse_fragments_until = 0.0
         self._lock = threading.RLock()
         self._active = False
         self._input_active = False       # True 时 stdin 由 read_line/confirm 独占
@@ -358,7 +364,7 @@ class FullScreenTUI:
         self._active = True
         self._enable_virtual_terminal_input()
         self._start_scroll_poller()
-        sys.stdout.write(f"{ALT_SCREEN_ON}{MOUSE_TRACKING_ON}{CURSOR_SHOW}{CURSOR_BLOCK}{CURSOR_HOME}")
+        sys.stdout.write(f"{MOUSE_TRACKING_ON}{CURSOR_SHOW}{CURSOR_BLOCK}{CURSOR_HOME}")
         sys.stdout.flush()
         self.render()
         return self
@@ -366,7 +372,7 @@ class FullScreenTUI:
     def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
         self._active = False
         self._scroll_poll_thread = None
-        sys.stdout.write(f"{RESET}{CURSOR_SHOW}{CURSOR_DEFAULT}{MOUSE_TRACKING_OFF}{ALT_SCREEN_OFF}")
+        sys.stdout.write(f"{RESET}{CURSOR_SHOW}{CURSOR_DEFAULT}{MOUSE_TRACKING_OFF}")
         sys.stdout.flush()
         self._restore_console_input_mode()
 
@@ -501,7 +507,7 @@ class FullScreenTUI:
                         self._set_confirm_selection(False)
                         continue
                     if not key_code or key_code in {"\x00", "\xe0"}:
-                        self._pending_windows_extended_key_until = time.monotonic() + 0.25
+                        self._mark_pending_windows_extended_key()
                     continue
         finally:
             self._input_active = False
@@ -520,7 +526,7 @@ class FullScreenTUI:
             return False
 
         if char in {"\x00", "\xe0"}:
-            self._pending_windows_extended_key_until = time.monotonic() + 0.25
+            self._mark_pending_windows_extended_key()
             return True
 
         self._pending_windows_extended_key_until = 0.0
@@ -593,6 +599,12 @@ class FullScreenTUI:
                             if char == "\x1b":
                                 sequence = self._read_pending_escape_sequence()
                                 self._handle_mouse_sequence(sequence)
+                            elif char in {"\x00", "\xe0"}:
+                                self._handle_windows_extended_key()
+                            elif self._consume_mouse_fragment(char):
+                                continue
+                            else:
+                                self._consume_pending_windows_extended_key(char)
                     except Exception:
                         pass
                 time.sleep(0.08)
@@ -649,6 +661,8 @@ class FullScreenTUI:
                 # 否则当作普通转义序列处理
                 return self._handle_escape_with_sequence(sequence)
             return self._handle_escape_sequence()
+        if self._consume_mouse_fragment(char):
+            return None
         if self._consume_pending_windows_extended_key(char):
             return None
         if char == "\t":
@@ -676,6 +690,10 @@ class FullScreenTUI:
                 updated = self._input_text[: self._input_cursor] + self._input_text[self._input_cursor + 1 :]
                 self._update_autocomplete(updated)
                 self._set_input_state(updated, self._input_cursor)
+            elif self._input_cursor > 0:
+                updated = self._input_text[: self._input_cursor - 1] + self._input_text[self._input_cursor :]
+                self._update_autocomplete(updated)
+                self._set_input_state(updated, self._input_cursor - 1)
             return None
         if char.isprintable() or char.isspace():
             updated = self._input_text[: self._input_cursor] + char + self._input_text[self._input_cursor :]
@@ -685,48 +703,48 @@ class FullScreenTUI:
 
     def _handle_windows_extended_key(self) -> None:
         key_code = self._read_windows_extended_key()
+        if not key_code or key_code in {"\x00", "\xe0"}:
+            self._mark_pending_windows_extended_key()
+            return
+        self._handle_windows_extended_key_code(key_code)
+
+    def _handle_windows_extended_key_code(self, key_code: str) -> bool:
         if key_code == "H":
             self.scroll_messages(SCROLL_LINES_PER_WHEEL)
-        elif key_code == "P":
-            self.scroll_messages(-SCROLL_LINES_PER_WHEEL)
-        elif key_code == "K":
-            self._move_input_cursor(-1)
-        elif key_code == "M":
-            self._move_input_cursor(1)
-        elif key_code == "S":
-            if self._input_cursor < len(self._input_text):
-                updated = self._input_text[: self._input_cursor] + self._input_text[self._input_cursor + 1 :]
-                self._set_input_state(updated, self._input_cursor)
-        elif not key_code or key_code in {"\x00", "\xe0"}:
-            self._pending_windows_extended_key_until = time.monotonic() + 0.25
-
-    def _consume_pending_windows_extended_key(self, char: str) -> bool:
-        if time.monotonic() > self._pending_windows_extended_key_until:
-            return False
-
-        if char in {"\x00", "\xe0"}:
-            self._pending_windows_extended_key_until = time.monotonic() + 0.25
             return True
-
-        self._pending_windows_extended_key_until = 0.0
-        if char == "H":
-            self.scroll_messages(SCROLL_LINES_PER_WHEEL)
-            return True
-        if char == "P":
+        if key_code == "P":
             self.scroll_messages(-SCROLL_LINES_PER_WHEEL)
             return True
-        if char == "K":
+        if key_code == "K":
             self._move_input_cursor(-1)
             return True
-        if char == "M":
+        if key_code == "M":
             self._move_input_cursor(1)
             return True
-        if char == "S":
+        if key_code == "S":
             if self._input_cursor < len(self._input_text):
                 updated = self._input_text[: self._input_cursor] + self._input_text[self._input_cursor + 1 :]
+                self._update_autocomplete(updated)
                 self._set_input_state(updated, self._input_cursor)
             return True
         return False
+
+    def _mark_pending_windows_extended_key(self) -> None:
+        self._pending_windows_extended_key_until = (
+            time.monotonic() + WINDOWS_EXTENDED_KEY_PENDING_SECONDS
+        )
+
+    def _consume_pending_windows_extended_key(self, char: str) -> bool:
+        if time.monotonic() > self._pending_windows_extended_key_until:
+            self._pending_windows_extended_key_until = 0.0
+            return False
+
+        if char in {"\x00", "\xe0"}:
+            self._mark_pending_windows_extended_key()
+            return True
+
+        self._pending_windows_extended_key_until = 0.0
+        return self._handle_windows_extended_key_code(char)
 
     def _move_input_cursor(self, delta: int) -> None:
         with self._lock:
@@ -804,6 +822,9 @@ class FullScreenTUI:
     def _handle_escape_with_sequence(self, sequence: str) -> str | None:
         if self._handle_mouse_sequence(sequence):
             return None
+        if sequence.startswith("[<") or sequence.startswith("[M"):
+            self._mark_mouse_fragment_suppression()
+            return None
         if self._handle_arrow_sequence(sequence):
             return None
         return None
@@ -843,7 +864,7 @@ class FullScreenTUI:
         return False
 
     @staticmethod
-    def _read_pending_escape_sequence(timeout_seconds: float = 0.02) -> str:
+    def _read_pending_escape_sequence(timeout_seconds: float = ESCAPE_SEQUENCE_TIMEOUT_SECONDS) -> str:
         try:
             import msvcrt
         except ImportError:
@@ -851,37 +872,77 @@ class FullScreenTUI:
 
         deadline = time.monotonic() + timeout_seconds
         chars: list[str] = []
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and len(chars) < ESCAPE_SEQUENCE_MAX_CHARS:
             if not msvcrt.kbhit():
                 time.sleep(0.001)
                 continue
 
             chars.append(msvcrt.getwch())
-            if chars and chars[0] not in {"[", "O"}:
-                break
-            if len(chars) >= 5 and "".join(chars[:2]) == "[M":
-                break
-            if chars and re.fullmatch(r"\[<\d+;\d+;\d+[mM]", "".join(chars)):
-                break
-            if len(chars) == 2 and re.fullmatch(r"\[[A-LN-Za-z~]", "".join(chars)):
-                break
-            if len(chars) == 3 and re.fullmatch(r"\[\d+~", "".join(chars)):
-                break
-            if len(chars) == 2 and chars[0] == "O":
+
+            sequence = "".join(chars)
+            if FullScreenTUI._is_escape_sequence_complete(sequence):
                 break
 
+            # VT 鼠标序列可能包含多位坐标，例如 ESC [ < 35 ; 120 ; 40 M。
+            # 每读到一个字符后刷新等待窗口，避免长序列被 20ms 总超时截断，
+            # 否则剩余的数字、分号或 M 会被后续输入循环当作用户文本插入。
+            deadline = time.monotonic() + timeout_seconds
+
         return "".join(chars)
+
+    @staticmethod
+    def _is_escape_sequence_complete(sequence: str) -> bool:
+        if not sequence:
+            return False
+
+        if sequence[0] not in {"[", "O"}:
+            return True
+
+        if sequence.startswith("[M"):
+            return len(sequence) >= 5
+
+        if sequence[0] == "O":
+            return len(sequence) >= 2
+
+        return len(sequence) >= 2 and FullScreenTUI._is_csi_final_char(sequence[-1])
+
+    @staticmethod
+    def _is_csi_final_char(char: str) -> bool:
+        return bool(char) and 0x40 <= ord(char) <= 0x7E
 
     def _handle_mouse_sequence(self, sequence: str) -> bool:
         match = re.fullmatch(r"\[<(\d+);(\d+);(\d+)([mM])", sequence)
         if match is not None:
             button_code = int(match.group(1))
+            self._mark_mouse_fragment_suppression()
             return self._handle_mouse_button(button_code)
 
         if len(sequence) >= 5 and sequence.startswith("[M"):
             button_code = max(0, ord(sequence[2]) - 32)
+            self._mark_mouse_fragment_suppression()
             return self._handle_mouse_button(button_code)
 
+        return False
+
+    def _mark_mouse_fragment_suppression(self) -> None:
+        self._suppress_mouse_fragments_until = (
+            time.monotonic() + MOUSE_FRAGMENT_SUPPRESSION_SECONDS
+        )
+
+    def _consume_mouse_fragment(self, char: str) -> bool:
+        if time.monotonic() > self._suppress_mouse_fragments_until:
+            self._suppress_mouse_fragments_until = 0.0
+            return False
+
+        if char == "\x1b":
+            self._mark_mouse_fragment_suppression()
+            return True
+
+        if char in MOUSE_FRAGMENT_CHARS:
+            self._mark_mouse_fragment_suppression()
+            return True
+
+        self._suppress_mouse_fragments_until = 0.0
         return False
 
     @staticmethod
@@ -1098,14 +1159,30 @@ class FullScreenTUI:
             sys.stdout.write(f"{truncated}{ERASE_LINE}")
 
     def _build_header_box_lines(self, width: int) -> list[TUIRenderLine]:
-        box_lines = ["┌" + "─" * (width - 2) + "┐"]
-        inner_width = max(1, width - 4)
+        box_width = max(4, width - 2)
+        inner_width = max(1, box_width - 4)
+        top_spans = [MarkdownSpan("┌" + "─" * (box_width - 2) + "┐", GRAY)]
+        lines = [TUIRenderLine(_plain_text(top_spans), None, top_spans)]
         for raw_line in self._header_message.text.splitlines():
             wrapped = _wrap_display(raw_line, inner_width)
             for line in wrapped:
-                box_lines.append(self._box_row(line, width))
-        box_lines.append("└" + "─" * (width - 2) + "┘")
-        return [TUIRenderLine(line, LIGHT_BLUE) for line in box_lines]
+                row_spans = self._header_box_row_spans(line, box_width)
+                lines.append(TUIRenderLine(_plain_text(row_spans), None, row_spans))
+        bottom_spans = [MarkdownSpan("└" + "─" * (box_width - 2) + "┘", GRAY)]
+        lines.append(TUIRenderLine(_plain_text(bottom_spans), None, bottom_spans))
+        return lines
+
+    @staticmethod
+    def _header_box_row_spans(text: str, width: int) -> list[MarkdownSpan]:
+        inner_width = max(0, width - 4)
+        content = _take_display_width(text, inner_width)
+        padding = max(0, inner_width - _display_width(content))
+        return [
+            MarkdownSpan("│ ", GRAY),
+            MarkdownSpan(content, LIGHT_BLUE),
+            MarkdownSpan(" " * padding, None),
+            MarkdownSpan(" │", GRAY),
+        ]
 
     @staticmethod
     def _box_row(text: str, width: int) -> str:
@@ -1190,7 +1267,7 @@ class FullScreenTUI:
 
 
 class FullScreenWaitingIndicator:
-    """全屏 TUI 状态栏等待动画。"""
+    """ANSI TUI 状态栏等待动画。"""
 
     def __init__(self, tui: FullScreenTUI, base_text: str) -> None:
         self._tui = tui

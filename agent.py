@@ -51,7 +51,7 @@ class ToolDefinition:
 
 
 class _AgentReplyStreamer:
-    """流式输出最终回复，同时避免把工具调用协议文本泄露到对话区。"""
+    """流式输出显式最终回复，同时避免工具调用前言打乱对话顺序。"""
 
     _OPEN_TAG = "<final>"
     _CLOSE_TAG = "</final>"
@@ -90,8 +90,10 @@ class _AgentReplyStreamer:
                 self._prefix_buffer = ""
                 return
 
-            self._emit(self._prefix_buffer)
-            self._prefix_buffer = ""
+            # 普通文本可能只是工具调用前的说明，例如“好的，开始安装。”后面紧跟
+            # <tool>。这里先暂存不输出，等本次模型回复完整返回后，由 Agent
+            # 判断它不是工具调用时再作为最终回答展示，避免 TUI 中助手消息提前占位，
+            # 导致后续工具请求记录显示在最终回复下方。
             return
 
         self._push_final_text(delta)
