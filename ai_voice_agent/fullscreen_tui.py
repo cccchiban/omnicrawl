@@ -10,7 +10,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 
-from terminal_ui import AI_PREFIX, USER_PREFIX, WAITING_DOTS, WAITING_KAOMOJI, detect_capabilities
+from .terminal_ui import AI_PREFIX, USER_PREFIX, WAITING_DOTS, WAITING_KAOMOJI, detect_capabilities
 
 
 CURSOR_HOME = "\033[H"
@@ -450,12 +450,14 @@ class FullScreenTUI:
         with self._lock:
             self._input_text = text
             self._input_cursor = len(text)
+            self._update_autocomplete(text)
             self.render_locked()
 
     def _set_input_state(self, text: str, cursor: int) -> None:
         with self._lock:
             self._input_text = text
             self._input_cursor = max(0, min(cursor, len(text)))
+            self._update_autocomplete(text)
             self.render_locked()
 
     def confirm_yes_no(self, prompt: str) -> bool:
@@ -682,22 +684,18 @@ class FullScreenTUI:
         if char == "\b":
             if self._input_cursor > 0:
                 updated = self._input_text[: self._input_cursor - 1] + self._input_text[self._input_cursor :]
-                self._update_autocomplete(updated)
                 self._set_input_state(updated, self._input_cursor - 1)
             return None
         if char == "\x7f":
             if self._input_cursor < len(self._input_text):
                 updated = self._input_text[: self._input_cursor] + self._input_text[self._input_cursor + 1 :]
-                self._update_autocomplete(updated)
                 self._set_input_state(updated, self._input_cursor)
             elif self._input_cursor > 0:
                 updated = self._input_text[: self._input_cursor - 1] + self._input_text[self._input_cursor :]
-                self._update_autocomplete(updated)
                 self._set_input_state(updated, self._input_cursor - 1)
             return None
         if char.isprintable() or char.isspace():
             updated = self._input_text[: self._input_cursor] + char + self._input_text[self._input_cursor :]
-            self._update_autocomplete(updated)
             self._set_input_state(updated, self._input_cursor + 1)
         return None
 
@@ -710,9 +708,15 @@ class FullScreenTUI:
 
     def _handle_windows_extended_key_code(self, key_code: str) -> bool:
         if key_code == "H":
+            if self._autocomplete_visible:
+                self._autocomplete_prev()
+                return True
             self.scroll_messages(SCROLL_LINES_PER_WHEEL)
             return True
         if key_code == "P":
+            if self._autocomplete_visible:
+                self._autocomplete_next()
+                return True
             self.scroll_messages(-SCROLL_LINES_PER_WHEEL)
             return True
         if key_code == "K":
@@ -724,7 +728,6 @@ class FullScreenTUI:
         if key_code == "S":
             if self._input_cursor < len(self._input_text):
                 updated = self._input_text[: self._input_cursor] + self._input_text[self._input_cursor + 1 :]
-                self._update_autocomplete(updated)
                 self._set_input_state(updated, self._input_cursor)
             return True
         return False
@@ -1207,7 +1210,8 @@ class FullScreenTUI:
             start = selected - max_items + 1
         visible = self._autocomplete_matches[start:start + max_items]
 
-        box_width = min(max(20, max((len(m) for m in visible), default=0) + 4), width - 4)
+        command_width = max((_display_width(m) for m in visible), default=0)
+        box_width = min(max(20, command_width + 4), width - 4)
         inner_width = max(1, box_width - 4)
 
         lines: list[str] = []

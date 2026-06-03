@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from llm import LLMConfig, OpenAIResponseLLM, VALID_REASONING_EFFORTS, load_llm_config
-from skill import SkillManager, SkillMatchResult
+from .llm import LLMConfig, OpenAIResponseLLM, VALID_REASONING_EFFORTS, load_llm_config
+from .skill import SkillManager, SkillMatchResult
 
 
 AGENTS_INSTRUCTIONS_FILE = "AGENTS.md"
@@ -51,21 +51,28 @@ class ToolDefinition:
 
 
 class _AgentReplyStreamer:
-    """流式输出显式最终回复，同时避免工具调用前言打乱对话顺序。"""
+    """流式输出最终回复，同时避免工具调用前言打乱对话顺序。"""
 
     _OPEN_TAG = "<final>"
     _CLOSE_TAG = "</final>"
+    _TOOL_TAG = "<tool>"
+    _PLAIN_FINAL_LOOKAHEAD_CHARS = 10
 
     def __init__(self, on_delta: Callable[[str], None]) -> None:
         self._on_delta = on_delta
         self._prefix_buffer = ""
         self._tail_buffer = ""
         self._inside_final = False
+        self._inside_plain_final = False
         self._closed = False
         self.streamed = False
 
     def push(self, delta: str) -> None:
         if self._closed or not delta:
+            return
+
+        if self._inside_plain_final:
+            self._emit(delta)
             return
 
         if not self._inside_final:
@@ -81,22 +88,35 @@ class _AgentReplyStreamer:
                 self._prefix_buffer = ""
                 return
 
-            if self._OPEN_TAG.startswith(lowered) or "<tool>".startswith(lowered):
+            if self._OPEN_TAG.startswith(lowered) or self._TOOL_TAG.startswith(lowered):
                 return
 
             first_char = stripped[0]
-            if first_char in {"<", "{"}:
+            if first_char in {"<", "{"} or "<tool" in lowered:
                 self._closed = True
                 self._prefix_buffer = ""
                 return
 
             # 普通文本可能只是工具调用前的说明，例如“好的，开始安装。”后面紧跟
-            # <tool>。这里先暂存不输出，等本次模型回复完整返回后，由 Agent
-            # 判断它不是工具调用时再作为最终回答展示，避免 TUI 中助手消息提前占位，
-            # 导致后续工具请求记录显示在最终回复下方。
+            # <tool>。因此先留一个很短的观察窗口；一旦内容已经明显是自然语言
+            # 最终回答，就提前放行，避免没有 <final> 标签时整段回复等到结尾才显示。
+            if self._looks_like_plain_final(stripped, lowered):
+                self._inside_plain_final = True
+                self._prefix_buffer = ""
+                self._emit(stripped)
             return
 
         self._push_final_text(delta)
+
+    @classmethod
+    def _looks_like_plain_final(cls, stripped: str, lowered: str) -> bool:
+        if not stripped or lowered.startswith((cls._OPEN_TAG, cls._TOOL_TAG)):
+            return False
+        if "<final" in lowered or "<tool" in lowered:
+            return False
+        if re.match(r"^\s{0,3}(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)", stripped):
+            return True
+        return len(stripped) >= cls._PLAIN_FINAL_LOOKAHEAD_CHARS
 
     def finish(self) -> None:
         if self._inside_final and not self._closed and self._tail_buffer:

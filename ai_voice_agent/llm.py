@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
-from runtime_config import RuntimeConfigError, get_section, load_config_data
+from .runtime_config import RuntimeConfigError, get_section, load_config_data
 
 
 DEFAULT_THINKING_TYPE = "disabled"

@@ -5,7 +5,7 @@
 1. 麦克风录音并识别为文字。
 2. 使用 OpenAI Python SDK 调用 `https://xxx.xx/v1` 的 Responses API 兼容接口。
 3. AI 会按 Agent 循环处理任务：理解目标、读取项目文件、搜索文本、写文件或执行命令；程序会在工具执行前拦截确认。
-4. AI 回复会在命令行中显示，并由 `text_to_speech.py` 按句子分段排队播报。
+4. AI 回复会在命令行中显示，并由 `ai_voice_agent/text_to_speech.py` 按句子分段排队播报。
 
 ## Agent 能力
 
@@ -66,6 +66,17 @@ python main.py
 - 按 `Ctrl+C` 或关闭窗口结束程序；也可以输入 `退出`、`结束`。
 
 终端 UI 的设计和限制见 `docs/TERMINAL_UI.md`。当前版本不新增第三方依赖，使用普通终端内联 UI。
+
+## 项目结构
+
+```text
+.
+├── main.py                  # 程序启动入口，保持 python main.py 运行方式
+├── ai_voice_agent/          # Agent、LLM、语音和终端 UI 业务模块
+├── docs/                    # 设计说明和实现文档
+├── config.example.json      # 本地配置模板
+└── requirements.txt         # Python 依赖
+```
 
 ## 可选配置
 

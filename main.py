@@ -3,28 +3,38 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from agent import AgentConfig, AgentError, LocalToolAgent, UserDeclinedOperation
-from fullscreen_tui import (
+from ai_voice_agent.agent import AgentConfig, AgentError, LocalToolAgent, UserDeclinedOperation
+from ai_voice_agent.fullscreen_tui import (
     AssistantPrefixBlinker,
     FullScreenTUI,
     FullScreenWaitingIndicator,
 )
-from llm import LLMError, load_llm_config
-from runtime_config import resolve_config_path
-from terminal_ui import USER_PREFIX, StatusLine, TerminalUI, WaitingIndicator
-from speech_to_text import MicrophoneInfo, SpeechConfig, SpeechToText, SpeechToTextError
-from text_to_speech import TextToSpeech, TextToSpeechError
+from ai_voice_agent.llm import LLMError, load_llm_config
+from ai_voice_agent.runtime_config import resolve_config_path
+from ai_voice_agent.terminal_ui import (
+    USER_PREFIX,
+    MarkdownStreamState,
+    StatusLine,
+    TerminalUI,
+    WaitingIndicator,
+    _display_width as _terminal_display_width,
+    _take_display_width as _terminal_take_display_width,
+)
+from ai_voice_agent.speech_to_text import MicrophoneInfo, SpeechConfig, SpeechToText, SpeechToTextError
+from ai_voice_agent.text_to_speech import TextToSpeech, TextToSpeechError
 
 
 EXIT_WORDS = {"退出", "结束", "再见"}
 POWERSHELL_CHILD_ENV = "AI_VOICE_CHAT_IN_POWERSHELL"
 TTS_SENTENCE_PATTERN = re.compile(r"(.+?[。！？!?；;\n])")
+INLINE_COMPLETION_LIMIT = 8
 
 
 def _configure_console_encoding() -> None:
@@ -187,58 +197,259 @@ def _create_text_to_speech() -> TextToSpeech | None:
         return None
 
 
-def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
+def _prompt_visible_width(prompt: str, ui: TerminalUI | None) -> int:
+    """返回当前输入提示符在终端里实际占用的列数。"""
+
+    if ui is not None:
+        return ui.prompt_width()
+    return _terminal_display_width(prompt.rsplit("\n", 1)[-1])
+
+
+def _truncate_menu_text(text: str, max_width: int) -> str:
+    """按字符近似截断菜单项，避免长命令把终端行撑乱。"""
+
+    if max_width <= 3:
+        return _terminal_take_display_width(text, max(0, max_width))
+    if _terminal_display_width(text) <= max_width:
+        return text
+    return f"{_terminal_take_display_width(text, max_width - 3)}..."
+
+
+def _slash_command_matches(text: str, commands: list[str]) -> list[str]:
+    """只在整行以 / 开头时启用命令候选，避免普通文本中误触发。"""
+
+    if not text.startswith("/"):
+        return []
+    return [command for command in commands if command.startswith(text)]
+
+
+def _visible_completion_window(
+    matches: list[str],
+    selected_index: int,
+    *,
+    limit: int = INLINE_COMPLETION_LIMIT,
+) -> tuple[int, list[str]]:
+    """返回当前选中项附近的一段候选，保证选中项始终在可见窗口内。"""
+
+    if not matches:
+        return 0, []
+
+    selected_index = max(0, min(selected_index, len(matches) - 1))
+    limit = max(1, limit)
+    start = 0
+    if selected_index >= limit:
+        start = selected_index - limit + 1
+    return start, matches[start : start + limit]
+
+
+def _format_completion_menu_lines(
+    matches: list[str],
+    selected_index: int,
+    *,
+    terminal_width: int,
+) -> list[str]:
+    """把候选命令格式化成稳定的菜单行，供行内 TUI 重绘。"""
+
+    if not matches:
+        return []
+
+    start, visible = _visible_completion_window(matches, selected_index)
+    command_width = max(8, terminal_width - 8)
+    lines: list[str] = []
+    for offset, command in enumerate(visible):
+        actual_index = start + offset
+        marker = "> " if actual_index == selected_index else "  "
+        lines.append(f"  {marker}{_truncate_menu_text(command, command_width)}")
+    return lines
+
+
+def _is_inline_escape_sequence_complete(sequence: str) -> bool:
+    """判断行内输入读取到的 ESC 序列是否完整。"""
+
+    if not sequence:
+        return False
+    if sequence[0] not in {"[", "O"}:
+        return True
+    if sequence[0] == "O":
+        return len(sequence) >= 2
+    return len(sequence) >= 2 and 0x40 <= ord(sequence[-1]) <= 0x7E
+
+
+class _InlineCompletionMenu:
+    """管理输入行下方的临时候选区域。
+
+    旧实现每次清理候选时从输入行向上擦除，菜单可见时继续输入会误删上方对话内容。
+    这里把候选区固定为“输入行下方的若干临时行”：绘制、清理都只向下操作，
+    最后再把光标放回输入位置，从根上避免错行和残留。
+    """
+
+    def __init__(self, ui: TerminalUI | None) -> None:
+        self._ui = ui
+        self._rendered_lines = 0
+        self._allocated_lines = 0
+
+    @property
+    def _ansi_enabled(self) -> bool:
+        return self._ui is not None and self._ui.capabilities.ansi
+
+    def render(
+        self,
+        *,
+        matches: list[str],
+        selected_index: int,
+        cursor_column: int,
+    ) -> None:
+        if not self._ansi_enabled:
+            return
+
+        terminal_width = shutil.get_terminal_size((100, 30)).columns
+        lines = _format_completion_menu_lines(
+            matches,
+            selected_index,
+            terminal_width=terminal_width,
+        )
+        if not lines and self._ui is not None and self._ui.model_label:
+            lines = [self._ui.muted(f"- {self._ui.model_label}")]
+
+        self._replace_lines(lines, cursor_column)
+
+    def clear(self, *, cursor_column: int) -> None:
+        if not self._ansi_enabled:
+            return
+        self._replace_lines([], cursor_column)
+
+    def _replace_lines(self, lines: list[str], cursor_column: int) -> None:
+        assert self._ui is not None
+
+        self._ensure_allocated(len(lines), cursor_column)
+        lines_to_clear = max(self._rendered_lines, len(lines))
+        if lines_to_clear == 0:
+            return
+
+        parts: list[str] = []
+        for index in range(lines_to_clear):
+            parts.append("\033[1B\r\033[2K")
+            if index < len(lines):
+                parts.append(lines[index])
+        parts.append(f"\033[{lines_to_clear}A")
+        parts.append(f"\033[{max(1, cursor_column)}G")
+
+        with self._ui._lock:
+            print("".join(parts), end="", flush=True)
+        self._rendered_lines = len(lines)
+
+    def _ensure_allocated(self, line_count: int, cursor_column: int) -> None:
+        assert self._ui is not None
+
+        missing_lines = max(0, line_count - self._allocated_lines)
+        if missing_lines == 0:
+            return
+
+        # 在输入行下面预留真实终端行，避免光标已经在窗口底部时 CSI 向下移动失败。
+        with self._ui._lock:
+            print("\n" * missing_lines, end="")
+            print(f"\033[{missing_lines}A\033[{max(1, cursor_column)}G", end="", flush=True)
+        self._allocated_lines = line_count
+
+
+def _read_line_autocomplete(prompt: str, commands: list[str], ui: TerminalUI | None = None) -> str:
     """逐字符读取输入，在输入 / 时实时显示匹配命令。
 
     Tab 补全当前唯一或最佳匹配，Enter 提交。
     """
     import msvcrt
 
+    if ui is None or not ui.capabilities.ansi:
+        return input(prompt).strip()
+
+    prompt_text = prompt.rsplit("\n", 1)[-1]
+    prompt_width = _prompt_visible_width(prompt, ui)
+    menu = _InlineCompletionMenu(ui)
     print(prompt, end="", flush=True)
     text = ""
     cursor = 0
     matches: list[str] = []
     match_index = 0
-    shown_lines = 0
 
-    def _clear_matches() -> None:
-        nonlocal shown_lines
-        for _ in range(shown_lines):
-            print(f"\033[1A\033[2K", end="")
-        shown_lines = 0
+    def _cursor_column() -> int:
+        return prompt_width + _terminal_display_width(text[:cursor]) + 1
 
-    def _show_matches() -> None:
-        nonlocal shown_lines, match_index
-        _clear_matches()
-        if matches:
-            match_index = min(match_index, len(matches) - 1)
-            display = [f"  > {m}" if i == match_index else f"    {m}"
-                       for i, m in enumerate(matches[:8])]
-            for line in display:
-                print(f"\n\033[2K{line}", end="")
-            shown_lines = len(display)
-            if shown_lines:
-                # 移动光标回输入行
-                print(f"\033[{shown_lines}A", end="")
-                cursor_offset = len(prompt) + cursor
-                if cursor_offset > 0:
-                    print(f"\033[{cursor_offset}G", end="")
-            print(flush=True)
+    def _redraw_input() -> None:
+        print(f"\r\033[2K{prompt_text}{text}\033[{_cursor_column()}G", end="", flush=True)
 
-    def _update_matches() -> None:
+    def _render_menu() -> None:
+        menu.render(
+            matches=matches,
+            selected_index=match_index,
+            cursor_column=_cursor_column(),
+        )
+
+    def _update_matches(*, reset_selection: bool = True) -> None:
         nonlocal matches, match_index
-        if text.startswith("/") and len(text) >= 1:
-            matches = [c for c in commands if c.startswith(text)]
+        matches = _slash_command_matches(text, commands)
+        if reset_selection:
+            match_index = 0
+        elif matches:
+            match_index = max(0, min(match_index, len(matches) - 1))
         else:
-            matches.clear()
+            match_index = 0
+        _render_menu()
+
+    def _hide_matches() -> None:
+        nonlocal matches, match_index
+        matches = []
         match_index = 0
-        _show_matches()
+        _render_menu()
+
+    def _move_selection(delta: int) -> None:
+        nonlocal match_index
+        if not matches:
+            return
+        match_index = (match_index + delta) % len(matches)
+        _render_menu()
+
+    def _move_cursor(delta: int) -> None:
+        nonlocal cursor
+        cursor = max(0, min(len(text), cursor + delta))
+        _redraw_input()
+        _render_menu()
+
+    def _handle_navigation_key(key: str) -> None:
+        nonlocal text, cursor
+        if key == "H":
+            _move_selection(-1)
+            return
+        if key == "P":
+            _move_selection(1)
+            return
+        if key == "K":
+            _move_cursor(-1)
+            return
+        if key == "M":
+            _move_cursor(1)
+            return
+        if key == "G":
+            cursor = 0
+            _redraw_input()
+            _render_menu()
+            return
+        if key == "O":
+            cursor = len(text)
+            _redraw_input()
+            _render_menu()
+            return
+        if key == "S" and cursor < len(text):
+            text = text[:cursor] + text[cursor + 1 :]
+            _redraw_input()
+            _update_matches()
+
+    _render_menu()
 
     while True:
         char = msvcrt.getwch()
 
         if char in {"\r", "\n"}:
-            _clear_matches()
+            menu.clear(cursor_column=_cursor_column())
             print()
             return text.strip()
 
@@ -246,10 +457,8 @@ def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
             if matches:
                 text = matches[match_index]
                 cursor = len(text)
-                match_index = 0
-                matches.clear()
-                print(f"\r\033[2K{prompt}{text}", end="", flush=True)
-                _show_matches()
+                _redraw_input()
+                _hide_matches()
             continue
 
         if char == "\x1b":
@@ -260,9 +469,7 @@ def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
             while _time.monotonic() < deadline:
                 if msvcrt.kbhit():
                     seq_parts.append(msvcrt.getwch())
-                    if seq_parts[0] in {"[", "O"} and len(seq_parts) >= 2:
-                        break
-                    if seq_parts[0] not in {"[", "O"}:
+                    if _is_inline_escape_sequence_complete("".join(seq_parts)):
                         break
                 else:
                     _time.sleep(0.001)
@@ -270,20 +477,39 @@ def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
 
             if not sequence:
                 # 纯 Escape：关闭补全菜单
-                matches.clear()
-                match_index = 0
-                _show_matches()
+                _hide_matches()
                 continue
             if sequence in {"[A", "OA"}:  # Up
-                if matches and match_index > 0:
-                    match_index -= 1
-                    _show_matches()
+                _move_selection(-1)
                 continue
             if sequence in {"[B", "OB"}:  # Down
-                if matches and match_index < len(matches) - 1:
-                    match_index += 1
-                    _show_matches()
+                _move_selection(1)
                 continue
+            if sequence in {"[D", "OD"}:  # Left
+                _move_cursor(-1)
+                continue
+            if sequence in {"[C", "OC"}:  # Right
+                _move_cursor(1)
+                continue
+            if sequence in {"[H", "[1~"}:
+                cursor = 0
+                _redraw_input()
+                _render_menu()
+                continue
+            if sequence in {"[F", "[4~"}:
+                cursor = len(text)
+                _redraw_input()
+                _render_menu()
+                continue
+            if sequence == "[3~" and cursor < len(text):
+                text = text[:cursor] + text[cursor + 1 :]
+                _redraw_input()
+                _update_matches()
+                continue
+            continue
+
+        if char in {"\x00", "\xe0"}:
+            _handle_navigation_key(msvcrt.getwch())
             continue
 
         if char == "\x03":
@@ -293,29 +519,21 @@ def _read_line_autocomplete(prompt: str, commands: list[str]) -> str:
             if cursor > 0:
                 text = text[:cursor - 1] + text[cursor:]
                 cursor -= 1
-                remaining = text[cursor:]
-                print(f"\b{remaining} ", end="")
-                print(f"\033[{len(remaining) + 1}D", end="", flush=True)
+                _redraw_input()
                 _update_matches()
             continue
 
         if char == "\x7f":
             if cursor < len(text):
                 text = text[:cursor] + text[cursor + 1:]
-                remaining = text[cursor:]
-                print(f"{remaining} ", end="")
-                print(f"\033[{len(remaining) + 1}D", end="", flush=True)
+                _redraw_input()
                 _update_matches()
             continue
 
         if char.isprintable() or char.isspace():
             text = text[:cursor] + char + text[cursor:]
             cursor += 1
-            print(char, end="", flush=True)
-            remaining = text[cursor:]
-            if remaining:
-                print(remaining, end="")
-                print(f"\033[{len(remaining)}D", end="", flush=True)
+            _redraw_input()
             _update_matches()
 
 
@@ -330,27 +548,32 @@ def _get_user_text(
     支持斜杠命令 Tab 补全（Windows 下）。
     """
 
+    used_autocomplete = False
     if os.name == "nt" and slash_commands:
         try:
             import msvcrt
         except ImportError:
             pass
         else:
-            text = _read_line_autocomplete(ui.prompt(), slash_commands)
+            used_autocomplete = True
+            text = _read_line_autocomplete(ui.prompt(), slash_commands, ui)
             if text:
                 return text
+            if speech_to_text is None:
+                return input(f"{USER_PREFIX} ").strip()
 
-    command = input(ui.prompt()).strip()
-    if command:
-        return command
+    if not used_autocomplete:
+        command = input(ui.prompt()).strip()
+        if command:
+            return command
 
-    if speech_to_text is None:
-        return input(f"{USER_PREFIX} ").strip()
+        if speech_to_text is None:
+            return input(f"{USER_PREFIX} ").strip()
 
     try:
-        return speech_to_text.listen_once().strip()
+        return speech_to_text.listen_once(ui.replace_current_input_with_status).strip()
     except SpeechToTextError as exc:
-        print(f"语音识别失败：{exc}")
+        ui.replace_current_input_with_status(f"语音识别失败：{exc}")
         return input(f"{USER_PREFIX} ").strip()
 
 
@@ -452,6 +675,7 @@ class StreamingSpeechPlayer:
         self._before_first_output = before_first_output
         self._buffer = ""
         self._has_output = False
+        self._markdown_state = MarkdownStreamState()
 
     def handle_delta(self, delta: str) -> None:
         """显示增量文本，并在形成完整短句后提交后台播报。"""
@@ -462,7 +686,7 @@ class StreamingSpeechPlayer:
             self._status_line.clear()
             self._ui.print_ai_prefix()
             self._has_output = True
-        self._ui.write(delta)
+        self._ui.write_markdown_delta(delta, self._markdown_state)
         if self._text_to_speech is None:
             return
 
@@ -480,6 +704,7 @@ class StreamingSpeechPlayer:
     def flush(self) -> None:
         """本轮回复结束后，把没有标点结尾的尾句也提交播报。"""
 
+        self._ui.flush_markdown(self._markdown_state)
         if self._text_to_speech is None:
             return
 
@@ -624,7 +849,7 @@ def _get_user_text_fullscreen(
 
     tui.set_status("正在录音...")
     try:
-        recognized = speech_to_text.listen_once().strip()
+        recognized = speech_to_text.listen_once(tui.set_status).strip()
         tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 或输入“退出”结束")
         return recognized
     except SpeechToTextError as exc:
@@ -834,12 +1059,12 @@ def main() -> None:
     """命令行语音 AI Agent 入口。"""
 
     _configure_console_encoding()
-    ui = TerminalUI()
     try:
         config = load_llm_config()
     except LLMError as exc:
         print(f"配置加载失败：{exc}")
         return
+    ui = TerminalUI(model_label=config.model)
 
     config_path = resolve_config_path()
 
@@ -849,15 +1074,17 @@ def main() -> None:
     ui.print_startup_panel(
         "AI 语音 Agent",
         [
-            f"model: {config.model}",
             f"thinking: {enabled_label}{reasoning_info}",
             f"config: {config_label}",
             "Ctrl+C 或关闭窗口结束会话",
         ],
     )
 
+    transient_output_marked = ui.mark_transient_output_start()
     speech_to_text = _create_speech_to_text()
     text_to_speech = _create_text_to_speech()
+    if transient_output_marked and speech_to_text is not None and text_to_speech is not None:
+        ui.clear_transient_output()
 
     try:
         agent = LocalToolAgent(AgentConfig(llm=config, workspace_root=Path(__file__).resolve().parent))
@@ -868,8 +1095,6 @@ def main() -> None:
     # 显示 Skill 加载情况
     if agent.skill_manager is not None and agent.skill_manager.count > 0:
         print(ui.muted(f"已加载 {agent.skill_manager.count} 个 Skill，输入 /skills 查看列表。"))
-        for diag in agent.skill_manager.get_diagnostics():
-            print(ui.muted(f"  [诊断] {diag.message}（{diag.path}）"))
 
     try:
         _run_inline_chat(agent, speech_to_text, text_to_speech, ui)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from typing import Callable
 
 
 class SpeechToTextError(RuntimeError):
@@ -196,27 +197,33 @@ class SpeechToText:
 
         raise SpeechToTextError(f"未找到名称包含“{self.config.device_name_keyword}”的麦克风。")
 
-    def listen_once(self) -> str:
+    def listen_once(self, status_handler: Callable[[str], None] | None = None) -> str:
         """从默认麦克风录制一句话，并转换为文字。
 
         返回空字符串表示没有听到可用语音；抛出 SpeechToTextError 表示设备或网络等能力不可用。
         """
 
+        def emit_status(message: str) -> None:
+            if status_handler is None:
+                print(message)
+            else:
+                status_handler(message)
+
         try:
             with self._sr.Microphone(device_index=self._device_index) as source:
-                print(f"当前麦克风：{self.selected_microphone_label}")
-                print("正在校准环境噪声，请先保持安静...")
+                emit_status(f"当前麦克风：{self.selected_microphone_label}")
+                emit_status("正在校准环境噪声，请先保持安静...")
                 self._recognizer.adjust_for_ambient_noise(
                     source, duration=self.config.adjust_noise_seconds
                 )
-                print("请开始说话...")
+                emit_status("请开始说话...")
                 audio = self._recognizer.listen(
                     source,
                     timeout=self.config.timeout,
                     phrase_time_limit=self.config.phrase_time_limit,
                 )
         except self._sr.WaitTimeoutError:
-            print("未检测到语音。请确认选择的是正在使用的麦克风，并在提示后再开始说话。")
+            emit_status("未检测到语音。请确认选择的是正在使用的麦克风，并在提示后再开始说话。")
             return ""
         except OSError as exc:
             raise SpeechToTextError("无法打开麦克风，请检查录音设备或 PyAudio 安装。") from exc
@@ -224,7 +231,7 @@ class SpeechToText:
         try:
             return self._recognizer.recognize_google(audio, language=self.config.language)
         except self._sr.UnknownValueError:
-            print("没有识别出清晰文字，请再说一次。")
+            emit_status("没有识别出清晰文字，请再说一次。")
             return ""
         except self._sr.RequestError as exc:
             raise SpeechToTextError(
