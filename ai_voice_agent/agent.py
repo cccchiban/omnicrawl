@@ -369,8 +369,9 @@ class LocalToolAgent:
                     output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
                 )
             else:
-                status(f"Agent 第 {step} 步请求工具：{tool_call.name}")
+                status(f"步骤 {step} — 请求 {tool_call.name}")
                 tool_result = self._run_tool(tool, tool_call.arguments)
+                status("")  # 通知调用方重新启动等待动画
 
             assistant_msg: dict[str, str] = {"role": "assistant", "content": raw_reply}
             if reasoning:

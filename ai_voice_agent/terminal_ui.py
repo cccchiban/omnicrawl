@@ -8,7 +8,7 @@ import sys
 import threading
 import ctypes
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 AI_PREFIX = "^"
@@ -96,6 +96,10 @@ class MarkdownStreamState:
     preview_needs_newline: bool = False
     passthrough_line: bool = False
     passthrough_printed_chars: int = 0
+    table_header_candidate: str | None = None
+    table_header_cells: list[str] | None = None
+    table_alignments: list[str] | None = None
+    table_rows: list[list[str]] = field(default_factory=list)
 
 
 def _style(*styles: str | None) -> str | None:
@@ -151,7 +155,164 @@ def _parse_inline_markdown(text: str, default_style: str | None = None) -> list[
     return spans or [MarkdownSpan("", default_style)]
 
 
-def _render_markdown_stream_line(
+def _spans_display_width(spans: list[MarkdownSpan]) -> int:
+    return sum(_display_width(span.text) for span in spans)
+
+
+def _split_markdown_table_row(raw_line: str) -> list[str] | None:
+    """按未转义的管道符拆分 Markdown 表格行。
+
+    这里仅识别标准管道表格的文本边界，不做完整 Markdown 语法解析。单元格内的
+    `\|` 会还原成普通竖线，避免把常见转义内容误切成新列。
+    """
+
+    line = raw_line.strip()
+    if "|" not in line:
+        return None
+
+    cells: list[str] = []
+    chars: list[str] = []
+    saw_pipe = False
+    escaped = False
+    for char in line:
+        if escaped:
+            if char == "|":
+                chars.append("|")
+            else:
+                chars.append("\\")
+                chars.append(char)
+            escaped = False
+            continue
+
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "|":
+            saw_pipe = True
+            cells.append("".join(chars).strip())
+            chars = []
+            continue
+        chars.append(char)
+
+    if escaped:
+        chars.append("\\")
+    cells.append("".join(chars).strip())
+
+    if not saw_pipe:
+        return None
+    if cells and cells[0] == "" and line.startswith("|"):
+        cells = cells[1:]
+    if cells and cells[-1] == "" and line.endswith("|"):
+        cells = cells[:-1]
+    if len(cells) < 2:
+        return None
+    return cells
+
+
+def _parse_markdown_table_delimiter(raw_line: str) -> list[str] | None:
+    cells = _split_markdown_table_row(raw_line)
+    if cells is None:
+        return None
+
+    alignments: list[str] = []
+    for cell in cells:
+        marker = re.sub(r"\s+", "", cell)
+        if re.fullmatch(r":?-{3,}:?", marker) is None:
+            return None
+        if marker.startswith(":") and marker.endswith(":"):
+            alignments.append("center")
+        elif marker.endswith(":"):
+            alignments.append("right")
+        else:
+            alignments.append("left")
+    return alignments
+
+
+def _append_table_cell(
+    spans: list[MarkdownSpan],
+    cell: str,
+    width: int,
+    alignment: str,
+    style: str | None,
+) -> None:
+    cell_spans = _parse_inline_markdown(cell, style)
+    cell_width = _spans_display_width(cell_spans)
+    padding = max(0, width - cell_width)
+    if alignment == "right":
+        left_padding = padding
+        right_padding = 0
+    elif alignment == "center":
+        left_padding = padding // 2
+        right_padding = padding - left_padding
+    else:
+        left_padding = 0
+        right_padding = padding
+
+    _append_markdown_span(spans, " " * left_padding, style)
+    for span in cell_spans:
+        _append_markdown_span(spans, span.text, span.style)
+    _append_markdown_span(spans, " " * right_padding, style)
+
+
+def _render_markdown_table_separator(widths: list[int]) -> list[MarkdownSpan]:
+    spans: list[MarkdownSpan] = []
+    for index, width in enumerate(widths):
+        if index > 0:
+            _append_markdown_span(spans, "─┼─", ANSI_MUTED)
+        _append_markdown_span(spans, "─" * width, ANSI_MUTED)
+    return spans
+
+
+def _render_markdown_table_row(
+    cells: list[str],
+    widths: list[int],
+    alignments: list[str],
+    style: str | None,
+) -> list[MarkdownSpan]:
+    spans: list[MarkdownSpan] = []
+    for index, width in enumerate(widths):
+        if index > 0:
+            _append_markdown_span(spans, " │ ", ANSI_MUTED)
+        _append_table_cell(spans, cells[index], width, alignments[index], style)
+    return spans or [MarkdownSpan("", style)]
+
+
+def _render_markdown_table(
+    header_cells: list[str],
+    alignments: list[str],
+    rows: list[list[str]],
+    default_style: str | None,
+) -> list[list[MarkdownSpan]]:
+    column_count = len(header_cells)
+    table_rows = [row for row in rows if len(row) == column_count]
+    header_style = _style(ANSI_BOLD, default_style)
+    widths: list[int] = []
+    for column_index in range(column_count):
+        column_cells = [header_cells[column_index], *(row[column_index] for row in table_rows)]
+        cell_width = max(
+            (_spans_display_width(_parse_inline_markdown(cell, default_style)) for cell in column_cells),
+            default=0,
+        )
+        widths.append(max(3, cell_width))
+
+    return [
+        _render_markdown_table_row(header_cells, widths, alignments, header_style),
+        _render_markdown_table_separator(widths),
+        *(
+            _render_markdown_table_row(row, widths, alignments, default_style)
+            for row in table_rows
+        ),
+    ]
+
+
+def _clear_markdown_table_state(state: MarkdownStreamState) -> None:
+    state.table_header_candidate = None
+    state.table_header_cells = None
+    state.table_alignments = None
+    state.table_rows.clear()
+
+
+def _render_basic_markdown_stream_line(
     raw_line: str,
     state: MarkdownStreamState,
     default_style: str | None = None,
@@ -204,6 +365,73 @@ def _render_markdown_stream_line(
     return _parse_inline_markdown(raw_line, default_style)
 
 
+def _flush_markdown_table_state(
+    state: MarkdownStreamState,
+    default_style: str | None = None,
+) -> list[list[MarkdownSpan]]:
+    if state.table_alignments is not None and state.table_header_cells is not None:
+        rendered = _render_markdown_table(
+            state.table_header_cells,
+            state.table_alignments,
+            state.table_rows,
+            default_style,
+        )
+        _clear_markdown_table_state(state)
+        return rendered
+
+    if state.table_header_candidate is not None:
+        raw_line = state.table_header_candidate
+        _clear_markdown_table_state(state)
+        spans = _render_basic_markdown_stream_line(raw_line, state, default_style)
+        return [] if spans is None else [spans]
+
+    return []
+
+
+def _render_markdown_stream_lines(
+    raw_line: str,
+    state: MarkdownStreamState,
+    default_style: str | None = None,
+) -> list[list[MarkdownSpan]]:
+    """渲染一条完整 Markdown 输入行。
+
+    管道表格必须看到"表头行 + 分隔行"才能确认。普通流式输出会提前逐行写入，
+    因此这里为疑似表头保留一行缓冲；确认进入表格后，再等到表格块结束时统一
+    输出等宽列，避免用户看到先打印原始表头、再补画表格的抖动。
+    """
+
+    rendered: list[list[MarkdownSpan]] = []
+
+    if state.table_alignments is not None:
+        cells = _split_markdown_table_row(raw_line)
+        if cells is not None and len(cells) == len(state.table_alignments):
+            state.table_rows.append(cells)
+            return rendered
+        rendered.extend(_flush_markdown_table_state(state, default_style))
+    elif state.table_header_candidate is not None:
+        alignments = _parse_markdown_table_delimiter(raw_line)
+        if (
+            alignments is not None
+            and state.table_header_cells is not None
+            and len(alignments) == len(state.table_header_cells)
+        ):
+            state.table_alignments = alignments
+            return rendered
+        rendered.extend(_flush_markdown_table_state(state, default_style))
+
+    if not state.in_code_block:
+        cells = _split_markdown_table_row(raw_line)
+        if cells is not None and _parse_markdown_table_delimiter(raw_line) is None:
+            state.table_header_candidate = raw_line
+            state.table_header_cells = cells
+            return rendered
+
+    spans = _render_basic_markdown_stream_line(raw_line, state, default_style)
+    if spans is not None:
+        rendered.append(spans)
+    return rendered
+
+
 def _render_markdown_preview_line(
     raw_line: str,
     state: MarkdownStreamState,
@@ -212,11 +440,7 @@ def _render_markdown_preview_line(
     """渲染当前未提交行的预览，不改变代码块等跨行状态。"""
 
     preview_state = MarkdownStreamState(in_code_block=state.in_code_block)
-    return _render_markdown_stream_line(raw_line, preview_state, default_style)
-
-
-def _spans_display_width(spans: list[MarkdownSpan]) -> int:
-    return sum(_display_width(span.text) for span in spans)
+    return _render_basic_markdown_stream_line(raw_line, preview_state, default_style)
 
 
 def detect_capabilities() -> TerminalCapabilities:
@@ -479,6 +703,10 @@ class TerminalUI:
             line = state.pending_line
             state.pending_line = ""
             self._write_markdown_line(line, state, line_already_started=False)
+            self._write_pending_markdown_table(state)
+            return
+
+        self._write_pending_markdown_table(state)
 
     def _write_markdown_line(
         self,
@@ -487,20 +715,38 @@ class TerminalUI:
         *,
         line_already_started: bool = False,
     ) -> None:
-        spans = _render_markdown_stream_line(line, state)
-        if spans is None:
+        span_lines = _render_markdown_stream_lines(line, state)
+        self._write_markdown_span_lines(
+            span_lines,
+            state,
+            line_already_started=line_already_started,
+        )
+
+    def _write_pending_markdown_table(self, state: MarkdownStreamState) -> None:
+        span_lines = _flush_markdown_table_state(state)
+        self._write_markdown_span_lines(span_lines, state, line_already_started=False)
+
+    def _write_markdown_span_lines(
+        self,
+        span_lines: list[list[MarkdownSpan]],
+        state: MarkdownStreamState,
+        *,
+        line_already_started: bool,
+    ) -> None:
+        if not span_lines:
             return
 
         with self._lock:
-            if state.rendered_lines > 0 and not line_already_started:
-                print()
-            for span in spans:
-                if self.capabilities.ansi and span.style:
-                    print(f"{span.style}{span.text}{ANSI_RESET}", end="")
-                else:
-                    print(span.text, end="")
+            for line_index, spans in enumerate(span_lines):
+                if line_index > 0 or (state.rendered_lines > 0 and not line_already_started):
+                    print()
+                for span in spans:
+                    if self.capabilities.ansi and span.style:
+                        print(f"{span.style}{span.text}{ANSI_RESET}", end="")
+                    else:
+                        print(span.text, end="")
+                state.rendered_lines += 1
             sys.stdout.flush()
-        state.rendered_lines += 1
 
     def _write_markdown_preview(self, state: MarkdownStreamState) -> None:
         if not state.pending_line or not self.capabilities.ansi:
@@ -508,6 +754,17 @@ class TerminalUI:
 
         if state.passthrough_line:
             self._write_passthrough_delta(state)
+            return
+
+        if (
+            not state.in_code_block
+            and (
+                state.table_header_candidate is not None
+                or state.table_alignments is not None
+                or _split_markdown_table_row(state.pending_line) is not None
+            )
+        ):
+            self._clear_markdown_preview(state)
             return
 
         spans = _render_markdown_preview_line(state.pending_line, state)
@@ -575,7 +832,7 @@ class TerminalUI:
 
         # 直写长行时不再重排 Markdown，但仍让围栏状态随完整行推进，
         # 避免长代码行之后的代码块状态错乱。
-        _render_markdown_stream_line(line, state)
+        _render_basic_markdown_stream_line(line, state)
         state.rendered_lines += 1
         state.passthrough_line = False
         state.passthrough_printed_chars = 0
@@ -604,33 +861,80 @@ class TerminalUI:
         with self._lock:
             print(self.muted(message), flush=True)
 
-    def prompt_yes_no(self, prompt: str) -> bool:
+    def prompt_yes_no(self, prompt: str, confirmed_label: str = "") -> bool:
         """以默认 YES 的方式确认一次高风险操作。
 
-        Windows 下优先支持单键输入：回车确认，右箭头或 N 取消。其他平台退化为
-        传统文本输入，仍保持回车默认确认。
+        显示编号选项 + ❯ 指针。支持上下/左右方向键切换选项，Enter 确认当前选中项。
+        确认后若提供了 confirmed_label，则用单行缩略替换整个确认块。
         """
+
+        pointer = " ❯ " if self.capabilities.ansi else " > "
+        selected_yes = True
+        _prompt_lines = prompt.count("\n") + 1  # prompt 占用的行数
 
         with self._lock:
             print(f"\n{prompt}")
-            print(self.muted("Enter=YES，右箭头/N=NO"), flush=True)
+
+        def _print_options() -> None:
+            with self._lock:
+                print()
+                if selected_yes:
+                    print(f"{pointer}1. Yes{ANSI_CLEAR_TO_LINE_END}")
+                    print(f"    2. No{ANSI_CLEAR_TO_LINE_END}")
+                else:
+                    print(f"    1. Yes{ANSI_CLEAR_TO_LINE_END}")
+                    print(f"{pointer}2. No{ANSI_CLEAR_TO_LINE_END}")
+                print()
+                print(self.muted("↑↓/←→ 选择  Enter 确认  N 取消"), flush=True)
+
+        _print_options()
 
         try:
             import msvcrt
         except ImportError:
             answer = input("确认？[Enter=YES / n=NO] ").strip().lower()
-            return answer not in {"n", "no", "否", "false"}
+            return answer not in {"n", "no", "否", "false", "2"}
 
         while True:
             char = msvcrt.getwch()
             if char in {"\r", "\n"}:
+                self._collapse_and_label(confirmed_label, _prompt_lines, confirmed=selected_yes)
+                return selected_yes
+            if char in {"1", "y", "Y"}:
+                self._collapse_and_label(confirmed_label, _prompt_lines, confirmed=True)
                 return True
-            if char in {"n", "N"}:
+            if char in {"n", "N", "2"}:
+                self._collapse_and_label(confirmed_label, _prompt_lines, confirmed=False)
                 return False
             if char in {"\x00", "\xe0"}:
                 key = msvcrt.getwch()
-                if key == "M":
-                    return False
+                if key in {"H", "K"}:
+                    if not selected_yes:
+                        selected_yes = True
+                        self._redraw_options(_print_options)
+                elif key in {"P", "M"}:
+                    if selected_yes:
+                        selected_yes = False
+                        self._redraw_options(_print_options)
+                continue
+            # 任意其他键忽略，继续等待
+
+    @staticmethod
+    def _redraw_options(print_fn) -> None:
+        """回到选项区起始位置，用当前选中状态重绘 5 行。"""
+        print("\033[5A", end="")  # 上移 5 行
+        print_fn()
+
+    def _collapse_and_label(self, label: str, prompt_lines: int, confirmed: bool = True) -> None:
+        """选中后把完整确认块收折为单行缩略。"""
+        if not label or not self.capabilities.ansi:
+            return
+
+        symbol = "✓" if confirmed else "✗"
+        total_lines = prompt_lines + 5  # prompt + 选项区 5 行
+        with self._lock:
+            # 回到 prompt 起始行，清除到屏尾，打印缩略
+            print(f"\033[{total_lines}A\033[J{ANSI_GRAY}  {symbol} {label}{ANSI_RESET}", flush=True)
 
 
 class StatusLine:
