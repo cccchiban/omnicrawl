@@ -21,6 +21,8 @@ CURSOR_DEFAULT = "\033[0 q"
 MOUSE_TRACKING_RESET = "\033[?1003l\033[?1002l\033[?1000l\033[?1015l\033[?1006l\033[?1005l"
 MOUSE_TRACKING_ON = f"{MOUSE_TRACKING_RESET}\033[?1006h\033[?1000h"
 MOUSE_TRACKING_OFF = MOUSE_TRACKING_RESET
+BRACKETED_PASTE_ON = "\033[?2004h"
+BRACKETED_PASTE_OFF = "\033[?2004l"
 ERASE_LINE = "\033[K"
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -34,6 +36,8 @@ ESCAPE_SEQUENCE_MAX_CHARS = 64
 WINDOWS_EXTENDED_KEY_PENDING_SECONDS = 0.75
 MOUSE_FRAGMENT_SUPPRESSION_SECONDS = 0.25
 MOUSE_FRAGMENT_CHARS = frozenset("0123456789[]<>;MmHhPpKkSs")
+PASTE_SEQUENCE_TIMEOUT_SECONDS = 0.5
+PASTE_BURST_QUIET_SECONDS = 0.03
 
 
 @dataclass
@@ -47,6 +51,20 @@ class TUIRenderLine:
     text: str
     style: str | None
     spans: list[MarkdownSpan] | None = None
+
+
+@dataclass(frozen=True)
+class TUIInputLayout:
+    lines: list[str]
+    cursor_line: int
+    cursor_column: int
+
+
+@dataclass(frozen=True)
+class TUIInputViewport:
+    lines: list[str]
+    cursor_row_offset: int
+    cursor_column: int
 
 
 @dataclass
@@ -135,6 +153,12 @@ def _wrap_display(text: str, max_width: int) -> list[str]:
             remaining = remaining[len(chunk) :]
 
     return lines or [""]
+
+
+def _normalize_pasted_text(text: str) -> str:
+    """统一粘贴文本换行，保留代码缩进和首尾空白。"""
+
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _style(*styles: str | None) -> str | None:
@@ -311,7 +335,7 @@ def _render_markdown(text: str, default_style: str | None) -> list[MarkdownLine]
 class FullScreenTUI:
     """基于 ANSI 光标控制的终端界面。
 
-    该实现刻意保持轻量：只负责固定布局、状态栏、消息区和单行输入。
+    该实现刻意保持轻量：只负责固定布局、状态栏、消息区和底部输入区。
     复杂输入编辑、历史补全和多光标体验应交给后续的 prompt_toolkit 版本。
     """
 
@@ -350,6 +374,8 @@ class FullScreenTUI:
         self._stdin_mode: int | None = None
         self._pending_windows_extended_key_until = 0.0
         self._suppress_mouse_fragments_until = 0.0
+        self._paste_burst_until = 0.0
+        self._skip_next_lf_after_cr_paste = False
         self._lock = threading.RLock()
         self._active = False
         self._input_active = False       # True 时 stdin 由 read_line/confirm 独占
@@ -364,7 +390,9 @@ class FullScreenTUI:
         self._active = True
         self._enable_virtual_terminal_input()
         self._start_scroll_poller()
-        sys.stdout.write(f"{MOUSE_TRACKING_ON}{CURSOR_SHOW}{CURSOR_BLOCK}{CURSOR_HOME}")
+        sys.stdout.write(
+            f"{MOUSE_TRACKING_ON}{BRACKETED_PASTE_ON}{CURSOR_SHOW}{CURSOR_BLOCK}{CURSOR_HOME}"
+        )
         sys.stdout.flush()
         self.render()
         return self
@@ -372,7 +400,9 @@ class FullScreenTUI:
     def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
         self._active = False
         self._scroll_poll_thread = None
-        sys.stdout.write(f"{RESET}{CURSOR_SHOW}{CURSOR_DEFAULT}{MOUSE_TRACKING_OFF}")
+        sys.stdout.write(
+            f"{RESET}{CURSOR_SHOW}{CURSOR_DEFAULT}{BRACKETED_PASTE_OFF}{MOUSE_TRACKING_OFF}"
+        )
         sys.stdout.flush()
         self._restore_console_input_mode()
 
@@ -667,15 +697,17 @@ class FullScreenTUI:
             return None
         if self._consume_pending_windows_extended_key(char):
             return None
+        if char in {"\r", "\n"} and self._consume_pasted_newline(char):
+            return None
         if char == "\t":
             self._autocomplete_complete()
             return None
         if char in {"\r", "\n"}:
-            text = self._input_text.strip()
+            text = self._input_text
             self.set_input("")
             self._autocomplete_visible = False
             self._autocomplete_matches.clear()
-            return text
+            return text if text.strip() else ""
         if char in {"\x00", "\xe0"}:
             self._handle_windows_extended_key()
             return None
@@ -695,9 +727,73 @@ class FullScreenTUI:
                 self._set_input_state(updated, self._input_cursor - 1)
             return None
         if char.isprintable() or char.isspace():
-            updated = self._input_text[: self._input_cursor] + char + self._input_text[self._input_cursor :]
-            self._set_input_state(updated, self._input_cursor + 1)
+            self._insert_input_text(char)
+            self._extend_active_paste_burst()
         return None
+
+    def _insert_input_text(self, text: str) -> None:
+        """在当前光标处插入文本；粘贴内容的 CRLF 会先统一为 LF。"""
+
+        if not text:
+            return
+        normalized = _normalize_pasted_text(text)
+        updated = (
+            self._input_text[: self._input_cursor]
+            + normalized
+            + self._input_text[self._input_cursor :]
+        )
+        self._set_input_state(updated, self._input_cursor + len(normalized))
+
+    def _consume_pasted_newline(self, char: str) -> bool:
+        """把粘贴流里的换行插入输入框，只有真正按 Enter 时才提交。"""
+
+        if char == "\n" and self._skip_next_lf_after_cr_paste:
+            self._skip_next_lf_after_cr_paste = False
+            return True
+
+        if not self._is_paste_burst_active() and not self._has_queued_input(
+            PASTE_BURST_QUIET_SECONDS
+        ):
+            return False
+
+        self._insert_input_text("\n")
+        self._skip_next_lf_after_cr_paste = char == "\r"
+        self._mark_paste_burst_if_more_input()
+        return True
+
+    def _is_paste_burst_active(self) -> bool:
+        if time.monotonic() <= self._paste_burst_until:
+            return True
+
+        self._paste_burst_until = 0.0
+        return False
+
+    def _mark_paste_burst_if_more_input(self) -> None:
+        """若控制台队列里还有连续字符，则把当前输入视为一次粘贴突发流。"""
+
+        if not self._has_queued_input() and not self._is_paste_burst_active():
+            return
+
+        self._paste_burst_until = time.monotonic() + PASTE_BURST_QUIET_SECONDS
+
+    def _extend_active_paste_burst(self) -> None:
+        if self._is_paste_burst_active():
+            self._paste_burst_until = time.monotonic() + PASTE_BURST_QUIET_SECONDS
+
+    @staticmethod
+    def _has_queued_input(timeout_seconds: float = 0.0) -> bool:
+        try:
+            import msvcrt
+        except ImportError:
+            return False
+
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while True:
+            if msvcrt.kbhit():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.001)
 
     def _handle_windows_extended_key(self) -> None:
         key_code = self._read_windows_extended_key()
@@ -823,6 +919,9 @@ class FullScreenTUI:
         return self._handle_escape_with_sequence(sequence)
 
     def _handle_escape_with_sequence(self, sequence: str) -> str | None:
+        if sequence == "[200~":
+            self._insert_input_text(self._read_bracketed_paste())
+            return None
         if self._handle_mouse_sequence(sequence):
             return None
         if sequence.startswith("[<") or sequence.startswith("[M"):
@@ -831,6 +930,38 @@ class FullScreenTUI:
         if self._handle_arrow_sequence(sequence):
             return None
         return None
+
+    @staticmethod
+    def _read_bracketed_paste(
+        timeout_seconds: float = PASTE_SEQUENCE_TIMEOUT_SECONDS,
+    ) -> str:
+        """读取 ESC[200~ 和 ESC[201~ 之间的粘贴内容。"""
+
+        try:
+            import msvcrt
+        except ImportError:
+            return ""
+
+        chars: list[str] = []
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if not msvcrt.kbhit():
+                time.sleep(0.001)
+                continue
+
+            char = msvcrt.getwch()
+            deadline = time.monotonic() + timeout_seconds
+            if char != "\x1b":
+                chars.append(char)
+                continue
+
+            sequence = FullScreenTUI._read_pending_escape_sequence(timeout_seconds)
+            if sequence == "[201~":
+                break
+
+            chars.append("\x1b" + sequence)
+
+        return "".join(chars)
 
     def _handle_arrow_sequence(self, sequence: str) -> bool:
         if self._autocomplete_visible:
@@ -917,13 +1048,14 @@ class FullScreenTUI:
         match = re.fullmatch(r"\[<(\d+);(\d+);(\d+)([mM])", sequence)
         if match is not None:
             button_code = int(match.group(1))
+            is_press = match.group(4) == "M"
             self._mark_mouse_fragment_suppression()
-            return self._handle_mouse_button(button_code)
+            return self._handle_mouse_button(button_code, is_press=is_press)
 
         if len(sequence) >= 5 and sequence.startswith("[M"):
             button_code = max(0, ord(sequence[2]) - 32)
             self._mark_mouse_fragment_suppression()
-            return self._handle_mouse_button(button_code)
+            return self._handle_mouse_button(button_code, is_press=button_code != 3)
 
         return False
 
@@ -956,14 +1088,62 @@ class FullScreenTUI:
     def _is_left_arrow_sequence(sequence: str) -> bool:
         return sequence in {"[D", "OD"}
 
-    def _handle_mouse_button(self, button_code: int) -> bool:
+    def _handle_mouse_button(self, button_code: int, *, is_press: bool = True) -> bool:
         if button_code == 64:
             self.scroll_messages(SCROLL_LINES_PER_WHEEL)
             return True
         if button_code == 65:
             self.scroll_messages(-SCROLL_LINES_PER_WHEEL)
             return True
+        if is_press and self._input_active and button_code == 2:
+            self._paste_clipboard_into_input()
+            return True
         return True
+
+    def _paste_clipboard_into_input(self) -> None:
+        """鼠标跟踪会拦截终端默认右键粘贴，这里主动读取剪贴板补上体验。"""
+
+        text = self._read_windows_clipboard_text()
+        if text:
+            self._insert_input_text(text)
+
+    @staticmethod
+    def _read_windows_clipboard_text() -> str:
+        if os.name != "nt":
+            return ""
+
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+            user32.GetClipboardData.argtypes = [ctypes.c_uint]
+            user32.GetClipboardData.restype = ctypes.c_void_p
+            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalLock.restype = ctypes.c_void_p
+            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            if not user32.OpenClipboard(None):
+                return ""
+
+            try:
+                CF_UNICODETEXT = 13
+                handle = user32.GetClipboardData(CF_UNICODETEXT)
+                if not handle:
+                    return ""
+
+                pointer = kernel32.GlobalLock(handle)
+                if not pointer:
+                    return ""
+
+                try:
+                    return ctypes.wstring_at(pointer)
+                finally:
+                    kernel32.GlobalUnlock(handle)
+            finally:
+                user32.CloseClipboard()
+        except Exception:
+            return ""
 
     def scroll_messages(self, delta_lines: int) -> None:
         """滚动消息区；正数看更早内容，负数回到底部。"""
@@ -977,12 +1157,15 @@ class FullScreenTUI:
         width, height = shutil.get_terminal_size((100, 30))
         height = max(height, 14)
         width = max(width, 40)
-        message_height = self._message_height(height)
+        input_height = len(self._input_viewport(width, height).lines)
+        message_height = self._message_height(height, input_height)
         return max(0, len(self._build_message_lines(width)) - message_height)
 
     @staticmethod
-    def _message_height(height: int) -> int:
-        status_row = height - 2
+    def _message_height(height: int, input_height: int = 1) -> int:
+        input_start_row = height - max(1, input_height) + 1
+        input_separator_row = input_start_row - 1
+        status_row = input_separator_row - 1
         status_separator_row = status_row - 1
         message_top = 1
         message_bottom = max(message_top, status_separator_row - 1)
@@ -999,12 +1182,14 @@ class FullScreenTUI:
         width, height = shutil.get_terminal_size((100, 30))
         height = max(height, 14)
         width = max(width, 40)
-        status_row = height - 2
-        input_row = height
+        input_viewport = self._input_viewport(width, height)
+        input_height = len(input_viewport.lines)
+        input_start_row = height - input_height + 1
+        input_separator_row = input_start_row - 1
+        status_row = input_separator_row - 1
         status_separator_row = status_row - 1
-        input_separator_row = input_row - 1
         message_top = 1
-        message_height = self._message_height(height)
+        message_height = self._message_height(height, input_height)
 
         rows: list[tuple[int, str, str | None, list[MarkdownSpan] | None]] = []
 
@@ -1023,7 +1208,8 @@ class FullScreenTUI:
         rows.append((status_separator_row, "─" * width, MUTED, None))
         rows.append((status_row, self._status, MUTED, None))
         rows.append((input_separator_row, "─" * width, MUTED, None))
-        rows.append((input_row, self._input_line(width), WHITE, None))
+        for offset, input_line in enumerate(input_viewport.lines):
+            rows.append((input_start_row + offset, input_line, WHITE, None))
         if self._autocomplete_visible:
             autocomplete_rows = self._autocomplete_overlay_rows(width, status_row)
             rows.extend(autocomplete_rows)
@@ -1042,8 +1228,9 @@ class FullScreenTUI:
                 sys.stdout.write(ERASE_LINE)
 
         if self._should_show_input_cursor():
-            cursor_col = self._input_cursor_column(width)
-            sys.stdout.write(f"\033[{input_row};{max(1, cursor_col)}H{CURSOR_SHOW}")
+            cursor_row = input_start_row + input_viewport.cursor_row_offset
+            cursor_col = input_viewport.cursor_column
+            sys.stdout.write(f"\033[{cursor_row};{max(1, cursor_col)}H{CURSOR_SHOW}")
         sys.stdout.flush()
 
     def _should_show_input_cursor(self) -> bool:
@@ -1116,26 +1303,61 @@ class FullScreenTUI:
             return WHITE
         return None
 
-    def _input_line(self, width: int) -> str:
+    def _input_viewport(self, width: int, height: int) -> TUIInputViewport:
+        layout = self._input_layout(width)
+        max_input_height = self._max_input_height(height)
+        visible_height = min(len(layout.lines), max_input_height)
+        visible_start = min(
+            max(0, layout.cursor_line - visible_height + 1),
+            max(0, len(layout.lines) - visible_height),
+        )
+        visible_lines = layout.lines[visible_start : visible_start + visible_height]
+        return TUIInputViewport(
+            lines=visible_lines,
+            cursor_row_offset=max(0, layout.cursor_line - visible_start),
+            cursor_column=layout.cursor_column,
+        )
+
+    @staticmethod
+    def _max_input_height(height: int) -> int:
+        # 至少保留消息区、状态分隔线、状态行和输入分隔线；长粘贴从底部向上展开。
+        return max(1, height - 5)
+
+    def _input_layout(self, width: int) -> TUIInputLayout:
+        lines = self._input_render_lines(width, self._input_text)
+        cursor_probe = self._input_render_lines(width, self._input_text[: self._input_cursor])
+        cursor_line = max(0, len(cursor_probe) - 1)
+        cursor_column = min(_display_width(cursor_probe[-1]) + 1, width + 1)
+        return TUIInputLayout(lines, cursor_line, cursor_column)
+
+    def _input_render_lines(self, width: int, text: str) -> list[str]:
         prompt = f"{USER_PREFIX} "
-        max_text_width = max(1, width - _display_width(prompt))
-        return prompt + self._visible_input_text(max_text_width)
+        prompt_width = _display_width(prompt)
+        terminal_width = max(1, width)
+        first_line_width = max(1, terminal_width - prompt_width)
+        normalized = _normalize_pasted_text(text)
 
-    def _visible_input_text(self, max_width: int) -> str:
-        if max_width <= 0:
-            return ""
+        rendered: list[str] = []
+        is_first_visual_line = True
+        for logical_line in normalized.split("\n"):
+            if logical_line == "":
+                rendered.append(prompt if is_first_visual_line else "")
+                is_first_visual_line = False
+                continue
 
-        before_cursor = self._input_text[: self._input_cursor]
-        visible_before = _take_tail_display_width(before_cursor, max_width)
-        remaining_width = max_width - _display_width(visible_before)
-        visible_after = _take_display_width(self._input_text[self._input_cursor :], remaining_width)
-        return visible_before + visible_after
+            remaining = logical_line
+            while remaining:
+                prefix = prompt if is_first_visual_line else ""
+                max_text_width = first_line_width if is_first_visual_line else terminal_width
+                chunk = _take_display_width(remaining, max_text_width)
+                if not chunk:
+                    # 宽度极窄且遇到双宽字符时仍要前进，避免渲染循环卡住。
+                    chunk = remaining[0]
+                rendered.append(prefix + chunk)
+                remaining = remaining[len(chunk) :]
+                is_first_visual_line = False
 
-    def _input_cursor_column(self, width: int) -> int:
-        prompt = f"{USER_PREFIX} "
-        max_text_width = max(1, width - _display_width(prompt))
-        visible_before = _take_tail_display_width(self._input_text[: self._input_cursor], max_text_width)
-        return min(_display_width(prompt + visible_before) + 1, width + 1)
+        return rendered or [prompt]
 
     def _write_row(
         self,

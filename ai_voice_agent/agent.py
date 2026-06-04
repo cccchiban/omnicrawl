@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .llm import LLMConfig, OpenAIResponseLLM, VALID_REASONING_EFFORTS, load_llm_config
+from .memory import (
+    MemoryStore,
+    MemoryStoreError,
+    MemoryWriteRequest,
+    record_to_dict,
+    search_result_to_dict,
+)
 from .skill import SkillManager, SkillMatchResult
 
 
@@ -190,6 +197,8 @@ class AgentConfig:
     max_tool_output_chars: int = 6000
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
+    memory_enabled: bool = True
+    memory_directory: str = "memory"
     command_timeout_seconds: int = field(
         default_factory=lambda: _read_int_env(
             "AGENT_COMMAND_TIMEOUT_SECONDS", 120, min_value=1, max_value=300
@@ -206,6 +215,8 @@ class AgentConfig:
             min_value=1,
             max_value=300,
         )
+        if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
+            raise AgentError("memory_directory 必须是非空字符串。")
 
 
 class LocalToolAgent:
@@ -229,6 +240,7 @@ class LocalToolAgent:
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
         self._pending_task_messages: list[dict[str, str]] | None = None
+        self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._tools = self._build_tools()
         self._agents_instructions = self._load_agents_instructions()
         self._skill_manager: SkillManager | None = None
@@ -258,10 +270,35 @@ class LocalToolAgent:
         """公开 SkillManager 供 main.py 查询 /skills 列表。"""
         return self._skill_manager
 
+    def clean_memory(self) -> list[str]:
+        """手动清理过期记忆，供 /memory:clean 命令调用。"""
+
+        store = self._require_memory_store()
+        try:
+            return store.clean_expired_memories()
+        except MemoryStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""
 
         self._confirm = confirm
+
+    def _create_memory_store(self) -> MemoryStore:
+        """创建记忆存储，并把目录限制在工作区内。
+
+        记忆目录由专用工具读写，普通文件工具会把 memory/ 视为受保护目录。
+        这里不复用 _safe_path，是为了允许 MemoryStore 自己访问该受保护目录。
+        """
+
+        raw_directory = self.config.memory_directory.strip()
+        candidate = Path(raw_directory)
+        if not candidate.is_absolute():
+            candidate = self.workspace_root / candidate
+        resolved = candidate.resolve()
+        if not self._is_relative_to(resolved, self.workspace_root):
+            raise AgentError(f"记忆目录必须位于工作区内：{raw_directory}")
+        return MemoryStore(resolved)
 
     def run_stream(
         self,
@@ -505,6 +542,47 @@ class LocalToolAgent:
                 run=self._tool_run_command,
             ),
         ]
+        if self._memory_store is not None:
+            tools.extend(
+                [
+                    ToolDefinition(
+                        name="memory_search",
+                        description="按当前任务检索候选长期记忆摘要，不返回完整正文。",
+                        argument_schema=(
+                            '{"query":"用户偏好或项目主题","reason":"为什么当前需要查记忆",'
+                            '"candidate_directories":["project-context/general"],"max_results":5}'
+                        ),
+                        requires_confirmation=False,
+                        run=self._tool_memory_search,
+                    ),
+                    ToolDefinition(
+                        name="memory_read",
+                        description="按记忆 id 读取完整长期记忆内容，并对实际读取的记忆加深回忆。",
+                        argument_schema='{"memory_ids":["20260603-164500"]}',
+                        requires_confirmation=False,
+                        run=self._tool_memory_read,
+                    ),
+                    ToolDefinition(
+                        name="memory_expand_related",
+                        description="沿已读记忆的关联目录扩展候选摘要，默认只展开一层关系。",
+                        argument_schema='{"memory_ids":["20260603-164500"],"max_depth":1,"max_results":5}',
+                        requires_confirmation=False,
+                        run=self._tool_memory_expand_related,
+                    ),
+                    ToolDefinition(
+                        name="memory_write",
+                        description="写入或合并具有长期价值的记忆，内容应短而准确。",
+                        argument_schema=(
+                            '{"memories":[{"content":"用户偏好中文交付摘要。",'
+                            '"related_directories":["user-preferences/communication-style"],'
+                            '"storage_directory":"user-preferences/communication-style",'
+                            '"source_event":"本轮对话"}]}'
+                        ),
+                        requires_confirmation=False,
+                        run=self._tool_memory_write,
+                    ),
+                ]
+            )
         return {tool.name: tool for tool in tools}
 
     def _system_prompt(self) -> str:
@@ -537,6 +615,11 @@ class LocalToolAgent:
             "- 不要编造工具结果；没有验证就说明未验证。\n"
             "- 如果需要修改代码，先读取相关文件，尽量小步改动，并在完成后用命令验证。"
         )
+        if self._memory_store is not None:
+            try:
+                system_prompt += f"\n\n{self._memory_store.format_prompt_section()}"
+            except MemoryStoreError as exc:
+                system_prompt += f"\n\n记忆系统当前不可用：{exc}"
         # 手动调用 /skill:name 时注入 Skill 全文
         if self._skill_manager is not None and self._active_skills:
             system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)
@@ -713,6 +796,122 @@ class LocalToolAgent:
             output_parts.append(f"stderr:\n{completed.stderr.strip()}")
         return ToolResult(ok=completed.returncode == 0, output="\n\n".join(output_parts))
 
+    def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        store = self._require_memory_store()
+        query = str(arguments.get("query") or "").strip()
+        reason = str(arguments.get("reason") or "").strip()
+        if not query:
+            return ToolResult(ok=False, output="query 不能为空。")
+        if not reason:
+            return ToolResult(ok=False, output="reason 不能为空。")
+
+        try:
+            results = store.search(
+                query=query,
+                candidate_directories=self._read_optional_string_list(
+                    arguments,
+                    "candidate_directories",
+                ),
+                max_results=self._read_limited_int(arguments, "max_results", default=5, maximum=20),
+            )
+        except MemoryStoreError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+        return ToolResult(
+            ok=True,
+            output=json.dumps(
+                [search_result_to_dict(result) for result in results],
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+
+    def _tool_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        store = self._require_memory_store()
+        memory_ids = self._read_required_string_list(arguments, "memory_ids")
+        if not memory_ids:
+            return ToolResult(ok=False, output="memory_ids 不能为空。")
+
+        try:
+            records = store.read(memory_ids)
+        except MemoryStoreError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+        return ToolResult(
+            ok=True,
+            output=json.dumps([record_to_dict(record) for record in records], ensure_ascii=False, indent=2),
+        )
+
+    def _tool_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        store = self._require_memory_store()
+        memory_ids = self._read_required_string_list(arguments, "memory_ids")
+        if not memory_ids:
+            return ToolResult(ok=False, output="memory_ids 不能为空。")
+
+        try:
+            results = store.expand_related(
+                memory_ids,
+                max_depth=self._read_limited_int(arguments, "max_depth", default=1, maximum=3),
+                max_results=self._read_limited_int(arguments, "max_results", default=5, maximum=20),
+            )
+        except MemoryStoreError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+        return ToolResult(
+            ok=True,
+            output=json.dumps(
+                [search_result_to_dict(result) for result in results],
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+
+    def _tool_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        store = self._require_memory_store()
+        raw_memories = arguments.get("memories")
+        if not isinstance(raw_memories, list) or not raw_memories:
+            return ToolResult(ok=False, output="memories 必须是非空列表。")
+
+        requests: list[MemoryWriteRequest] = []
+        for index, raw_memory in enumerate(raw_memories, start=1):
+            if not isinstance(raw_memory, dict):
+                return ToolResult(ok=False, output=f"第 {index} 条记忆必须是 JSON 对象。")
+
+            content = str(raw_memory.get("content") or "").strip()
+            if not content:
+                return ToolResult(ok=False, output=f"第 {index} 条记忆 content 不能为空。")
+
+            related = raw_memory.get("related_directories", [])
+            if not isinstance(related, list) or not all(isinstance(item, str) for item in related):
+                return ToolResult(ok=False, output=f"第 {index} 条记忆 related_directories 必须是字符串列表。")
+
+            storage_directory = raw_memory.get("storage_directory")
+            if storage_directory is not None and not isinstance(storage_directory, str):
+                return ToolResult(ok=False, output=f"第 {index} 条记忆 storage_directory 必须是字符串或 null。")
+
+            source_event = raw_memory.get("source_event")
+            if source_event is not None and not isinstance(source_event, str):
+                return ToolResult(ok=False, output=f"第 {index} 条记忆 source_event 必须是字符串或 null。")
+
+            requests.append(
+                MemoryWriteRequest(
+                    content=content,
+                    related_directories=list(related),
+                    storage_directory=storage_directory,
+                    source_event=source_event,
+                )
+            )
+
+        try:
+            records = store.write(requests)
+        except MemoryStoreError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+        return ToolResult(
+            ok=True,
+            output=json.dumps([record_to_dict(record) for record in records], ensure_ascii=False, indent=2),
+        )
+
     def _iter_search_files(self, root: Path) -> list[Path]:
         """递归搜索时在目录层剪枝，避免进入 .git、虚拟环境或本地密钥目录。"""
 
@@ -732,6 +931,44 @@ class LocalToolAgent:
 
         return files
 
+    def _require_memory_store(self) -> MemoryStore:
+        if self._memory_store is None:
+            raise AgentError("记忆系统未启用。")
+        return self._memory_store
+
+    @staticmethod
+    def _read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:
+        value = arguments.get(key)
+        if not isinstance(value, list):
+            return []
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+    @classmethod
+    def _read_optional_string_list(cls, arguments: dict[str, Any], key: str) -> list[str] | None:
+        value = arguments.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            return None
+        return cls._read_required_string_list(arguments, key)
+
+    @staticmethod
+    def _read_limited_int(
+        arguments: dict[str, Any],
+        key: str,
+        *,
+        default: int,
+        maximum: int,
+    ) -> int:
+        value = arguments.get(key, default)
+        if isinstance(value, bool):
+            return default
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return max(1, min(maximum, parsed))
+
     def _safe_path(self, raw_path: str) -> Path:
         """把模型给出的路径限制在工作区内，阻止 ../ 越界访问。"""
 
@@ -747,6 +984,8 @@ class LocalToolAgent:
             raise AgentError(f"拒绝访问工作区外路径：{raw_path}")
         if self._is_protected_path(resolved):
             raise AgentError(f"拒绝访问受保护路径：{self._relative_path(resolved)}")
+        if self._is_memory_path(resolved):
+            raise AgentError(f"请使用 memory_* 工具访问记忆目录：{self._relative_path(resolved)}")
         return resolved
 
     def _relative_path(self, path: Path) -> str:
@@ -756,7 +995,7 @@ class LocalToolAgent:
             return str(path)
 
     def _should_skip_path(self, path: Path) -> bool:
-        return self._is_protected_path(path)
+        return self._is_protected_path(path) or self._is_memory_path(path)
 
     @staticmethod
     def _is_protected_path(path: Path) -> bool:
@@ -773,6 +1012,17 @@ class LocalToolAgent:
             "config.json",
         }
         return any(part in protected_names or part.startswith(".env.") for part in path.parts)
+
+    def _is_memory_path(self, path: Path) -> bool:
+        """普通文件工具不直接访问记忆目录，统一走 memory_* 工具。"""
+
+        if self._memory_store is None:
+            return False
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        return resolved == self._memory_store.root or self._is_relative_to(resolved, self._memory_store.root)
 
     def _read_text(self, path: Path) -> str:
         try:

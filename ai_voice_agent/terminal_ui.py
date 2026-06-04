@@ -420,6 +420,9 @@ class TerminalUI:
         不再把等待动画挂在用户文本后面，避免 AI 回复和问题挤到同一行。
         """
 
+        if "\n" in user_text:
+            return ""
+
         text = f"{USER_PREFIX} {user_text}"
         with self._lock:
             if self.capabilities.ansi:
