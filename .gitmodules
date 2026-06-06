@@ -4,3 +4,6 @@
 [submodule ".claude/skills/kimi-skills"]
 	path = .claude/skills/kimi-skills
 	url = https://github.com/thvroyal/kimi-skills.git
+[submodule ".claude/skills/myskill"]
+	path = .claude/skills/myskill
+	url = https://github.com/gurafborna/myskill

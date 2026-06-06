@@ -114,6 +114,17 @@ class SpeechToText:
         return re.sub(r"\s+", " ", name).strip()
 
     @staticmethod
+    def _normalize_recognized_text(text: str) -> str:
+        """清理语音识别结果中常见的中文逐字空格。
+
+        Google 语音识别偶尔会把中文句子转成“目 前 我 的”这种形式。只合并
+        CJK 字符之间的空白，保留英文、数字、路径和产品名之间的正常空格。
+        """
+
+        normalized = re.sub(r"(?<=[\u3400-\u9fff])\s+(?=[\u3400-\u9fff])", "", text)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
     def _is_hidden_system_input(name: str) -> bool:
         normalized = name.strip().lower()
         if not normalized or normalized in {"input", "input ()"}:
@@ -237,7 +248,8 @@ class SpeechToText:
         self._save_debug_audio(audio)
 
         try:
-            return self._recognizer.recognize_google(audio, language=self.config.language)
+            recognized_text = self._recognizer.recognize_google(audio, language=self.config.language)
+            return self._normalize_recognized_text(recognized_text)
         except self._sr.UnknownValueError:
             emit_status("没有识别出清晰文字，请再说一次。")
             return ""

@@ -87,14 +87,10 @@ def format_tool_confirmation(tool_name: str, arguments: dict[str, Any]) -> str:
     description = _TOOL_HUMAN_DESCRIPTIONS.get(tool_name, "执行操作")
     detail = _format_dangerous_tool_detail(tool_name, arguments)
 
-    lines = [
-        " Tool use",
-        "",
-        f"  Agent 想要{description}。",
-    ]
+    lines = [f"Agent 想要{description}。"]
     if detail:
-        lines.append(f"  {detail}")
-    lines.extend(["", " Do you want to proceed?"])
+        lines.append(detail)
+    lines.extend(["", "是否允许执行？"])
 
     return "\n".join(lines)
 

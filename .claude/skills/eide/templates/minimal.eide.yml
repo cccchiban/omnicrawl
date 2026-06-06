@@ -1,0 +1,16 @@
+# Minimal EIDE project template
+# Copy this to .eide/eide.yml in your project root
+version: "4.1"
+name: MyProject
+type: ARM
+deviceName: -AT32F403AVGT7
+packDir: .pack/Vendor/DeviceDFP.1.0.0
+srcDirs: []
+virtualFolder:
+  name: <virtual_root>
+  files: []
+  folders:
+    - name: Sources
+      files:
+        - path: ../../src/main.c
+      folders: []

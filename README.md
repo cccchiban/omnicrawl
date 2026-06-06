@@ -65,10 +65,12 @@ python main.py
 - 直接按 Enter：开始录音识别。
 - 直接输入文字：跳过录音，用键盘内容交给 Agent 处理。
 - 输入 `/new`：清空模型对话历史，开启新对话。
+- 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 执行中按 `Ctrl+C`：取消当前操作并回到输入栏。
 - 输入栏按 `Ctrl+C`：第一次取消输入，连续第二次退出程序；也可以输入 `退出`、`结束` 或关闭窗口。
 
 终端 UI 的设计和限制见 `docs/TERMINAL_UI.md`。当前版本不新增第三方依赖，使用普通终端内联 UI。
+Skill 安装、编写和渐进式披露规范见 `docs/SKILL_INSTALLATION.md`。
 
 ## 项目结构
 
@@ -94,11 +96,20 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
     "base_url": "https://xxx.xx/v1",
     "model": "deepseek-v4-flash",
     "thinking_type": "disabled"
+  },
+  "voice": {
+    "speech_to_text_enabled": true,
+    "text_to_speech_enabled": true
   }
 }
 ```
 
 `config.json` 已加入 `.gitignore`，不要把真实密钥写进 `config.example.json` 或源码。
+
+语音功能可在 `config.json` 的 `voice` 段分别开关：
+
+- `speech_to_text_enabled`：是否启用语音转文字。设为 `false` 后，直接按 Enter 不再录音，本次会话改用键盘输入。
+- `text_to_speech_enabled`：是否启用文字转语音。设为 `false` 后，AI 回复只显示在命令行，不再朗读。
 
 如果没有 `config.json`，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
 

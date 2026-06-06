@@ -151,6 +151,35 @@ class StreamingSpeechPlayer:
         if tail:
             self._text_to_speech.enqueue(tail)
 
+    def flush_display(self) -> None:
+        """只提交当前终端显示，不触发语音播报。
+
+        模型可能先流式输出一句说明，随后才请求工具。工具状态行写入前必须把
+        这句说明从“当前行预览态”落成真实行，否则后续清预览会回退到工具状态行，
+        造成长任务日志里中文重复、状态错位或残留。
+        """
+
+        self._ui.flush_markdown(self._markdown_state)
+
+    @property
+    def has_display_output(self) -> bool:
+        """当前 Agent 轮次里是否已经显示过模型文本。"""
+
+        return self._has_output
+
+    def start_new_display_segment(self) -> None:
+        """让下一段模型文本重新清理等待状态并打印 AI 前缀。
+
+        一轮 Agent 可能经历“模型说明 -> 工具 -> 模型总结”的多段输出。每次工具
+        执行后都会重新显示等待动画，因此下一段模型文本不能沿用上一段的
+        `_has_output=True`，否则文本会直接追加到等待动画所在行。
+        """
+
+        if self._has_output:
+            self.flush_display()
+            self._markdown_state = MarkdownStreamState()
+            self._has_output = False
+
     def wait_until_done(self) -> None:
         """等待本轮已经提交的语音播报完成。"""
 

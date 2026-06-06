@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from ai_voice_agent.agent import AgentConfig, AgentError, LocalToolAgent
-from ai_voice_agent.audio_setup import create_speech_to_text, create_text_to_speech
+from ai_voice_agent.audio_setup import (
+    VoiceConfigError,
+    create_speech_to_text,
+    create_text_to_speech,
+    load_voice_config,
+)
 from ai_voice_agent.chat_session import run_inline_chat
 from ai_voice_agent.llm import LLMError, load_llm_config
 from ai_voice_agent.runtime_config import resolve_config_path
@@ -17,7 +22,11 @@ def main() -> None:
     configure_console_encoding()
     try:
         config = load_llm_config()
+        voice_config = load_voice_config()
     except LLMError as exc:
+        print(f"配置加载失败：{exc}")
+        return
+    except VoiceConfigError as exc:
         print(f"配置加载失败：{exc}")
         return
     ui = TerminalUI(model_label=config.model)
@@ -27,19 +36,32 @@ def main() -> None:
     enabled_label = "已启用" if config.thinking_enabled else "已禁用"
     reasoning_info = f"，推理强度：{config.reasoning_effort}" if config.reasoning_effort else ""
     config_label = str(config_path) if config_path.exists() else f"未找到 {config_path.name}，回退到环境变量"
+    stt_label = "开启" if voice_config.speech_to_text_enabled else "关闭"
+    tts_label = "开启" if voice_config.text_to_speech_enabled else "关闭"
     ui.print_startup_panel(
         "AI 语音 Agent",
         [
             f"thinking: {enabled_label}{reasoning_info}",
+            f"voice: 语音转文字 {stt_label}，文字转语音 {tts_label}",
             f"config: {config_label}",
             "输入栏 Ctrl+C 两次或关闭窗口结束会话",
         ],
     )
 
     transient_output_marked = ui.mark_transient_output_start()
-    speech_to_text = create_speech_to_text()
-    text_to_speech = create_text_to_speech()
-    if transient_output_marked and speech_to_text is not None and text_to_speech is not None:
+    speech_to_text = None
+    text_to_speech = None
+    speech_to_text_ready = not voice_config.speech_to_text_enabled
+    text_to_speech_ready = not voice_config.text_to_speech_enabled
+
+    if voice_config.speech_to_text_enabled:
+        speech_to_text = create_speech_to_text(voice_config)
+        speech_to_text_ready = speech_to_text is not None
+    if voice_config.text_to_speech_enabled:
+        text_to_speech = create_text_to_speech(voice_config)
+        text_to_speech_ready = text_to_speech is not None
+
+    if transient_output_marked and speech_to_text_ready and text_to_speech_ready:
         ui.clear_transient_output()
 
     try:

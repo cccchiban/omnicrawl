@@ -5,5 +5,9 @@
     "model": "deepseek-v4-flash",
     "thinking_type": "disabled",
     "reasoning_effort": ""
+  },
+  "voice": {
+    "speech_to_text_enabled": true,
+    "text_to_speech_enabled": true
   }
 }

@@ -20,6 +20,7 @@ ANSI_MUTED = "\033[2;90m"
 ANSI_GRAY = "\033[90m"
 ANSI_LIGHT_BLUE = "\033[94m"
 ANSI_BOLD = "\033[1m"
+ANSI_MARKDOWN_STRONG = "\033[1;96m"
 ANSI_DIM_YELLOW = "\033[2;33m"
 ANSI_GREEN = "\033[32m"
 ANSI_RED = "\033[31m"
@@ -28,18 +29,20 @@ ANSI_SAVE_CURSOR = "\033[s"
 ANSI_RESTORE_CURSOR = "\033[u"
 ANSI_ERASE_TO_END = "\033[J"
 WAITING_KAOMOJI = (
-    "(｡･ω･｡)",
-    "(｀・ω・´)",
-    "(´･ω･`)",
-    "(。-ω-)zzz",
-    "(っ˘ω˘ς)",
-    "(๑•̀ㅂ•́)و",
+    "(^_^)",
+    "(._.)",
+    "(-_-)",
+    "(o_o)",
 )
 WAITING_DOTS = ("", ".", "..", "...", "..", ".")
+INLINE_INPUT_WINDOW_ROWS = 8
 
 
 def _char_display_width(char: str) -> int:
-    if unicodedata.combining(char):
+    category = unicodedata.category(char)
+    if unicodedata.combining(char) or category in {"Mn", "Me", "Cf"}:
+        return 0
+    if category.startswith("C"):
         return 0
     return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
 
@@ -61,6 +64,43 @@ def _take_display_width(text: str, max_width: int) -> str:
         chars.append(char)
         width += char_width
     return "".join(chars)
+
+
+def _contains_complex_display_width(text: str) -> bool:
+    """判断文本是否含有不适合 ANSI 原地预览重绘的字符。
+
+    Windows 终端、字体和代码页对 CJK、emoji、组合符号的列宽处理并不完全一致。
+    对这些字符继续使用“光标左移 N 列后整行重绘”容易留下旧字符，表现为
+    “获获取取”这类重复字。遇到复杂宽度字符时改用追加输出，避免依赖列宽回退。
+    """
+
+    return any(_char_display_width(char) != 1 for char in text)
+
+
+def _normalize_terminal_text(text: str) -> str:
+    """统一终端文本换行，避免 CRLF 在行数计算里被当成额外字符。"""
+
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _split_display_rows(text: str, max_width: int) -> list[str]:
+    """按终端视觉宽度拆分文本行，不包含输入提示符。"""
+
+    max_width = max(1, max_width)
+    rows: list[str] = []
+    for raw_line in _normalize_terminal_text(text).split("\n"):
+        remaining = raw_line
+        if not remaining:
+            rows.append("")
+            continue
+        while remaining:
+            chunk = _take_display_width(remaining, max_width)
+            if not chunk:
+                # 极端情况下单个字符宽度大于可用宽度，仍要消费一个字符避免死循环。
+                chunk = remaining[0]
+            rows.append(chunk)
+            remaining = remaining[len(chunk) :]
+    return rows or [""]
 
 
 @dataclass(frozen=True)
@@ -108,6 +148,16 @@ def _style(*styles: str | None) -> str | None:
     return "".join(style for style in styles if style) or None
 
 
+def _markdown_strong_style(default_style: str | None = None) -> str | None:
+    """返回 Markdown 加粗样式。
+
+    真实终端对 SGR 1 的支持不稳定，尤其中文字体可能看不出明显字重变化。
+    这里叠加高亮色，让 `**重点**` 即使在不支持粗体字重的终端里也能被识别。
+    """
+
+    return _style(default_style, ANSI_MARKDOWN_STRONG)
+
+
 def _append_markdown_span(
     spans: list[MarkdownSpan],
     text: str,
@@ -140,7 +190,7 @@ def _parse_inline_markdown(text: str, default_style: str | None = None) -> list[
         if token.startswith("`") and token.endswith("`"):
             _append_markdown_span(spans, token[1:-1], _style(ANSI_BOLD, default_style))
         elif token.startswith(("**", "__")) and token.endswith(("**", "__")):
-            _append_markdown_span(spans, token[2:-2], _style(ANSI_BOLD, default_style))
+            _append_markdown_span(spans, token[2:-2], _markdown_strong_style(default_style))
         elif token.startswith("["):
             link_match = re.fullmatch(r"\[([^\]]+)\]\(([^)]+)\)", token)
             if link_match is not None:
@@ -155,6 +205,64 @@ def _parse_inline_markdown(text: str, default_style: str | None = None) -> list[
 
     _append_markdown_span(spans, text[cursor:], default_style)
     return spans or [MarkdownSpan("", default_style)]
+
+
+def _parse_final_inline_markdown(text: str, default_style: str | None = None) -> list[MarkdownSpan]:
+    """最终落盘时解析行内 Markdown，并容错未闭合的常见标记。"""
+
+    spans = _parse_inline_markdown(text, default_style)
+    if len(spans) != 1 or spans[0].text != text or spans[0].style != default_style:
+        return spans
+
+    delimiter_positions = [
+        (position, delimiter)
+        for delimiter in ("**", "__", "`")
+        if (position := text.find(delimiter)) >= 0
+    ]
+    if not delimiter_positions:
+        return spans
+
+    position, delimiter = min(delimiter_positions)
+    marker_style = _markdown_strong_style(default_style)
+    return [
+        MarkdownSpan(text[:position], default_style),
+        MarkdownSpan(text[position + len(delimiter) :], marker_style),
+    ]
+
+
+def _stable_inline_markdown_prefix_length(text: str, *, final: bool = False) -> int:
+    """返回可安全渲染的行内 Markdown 前缀长度。
+
+    AI 回复是逐字/逐片段流式到达的，`**结论**` 可能先到达 `**结`。
+    如果此时立即渲染，用户会短暂看到裸露的 Markdown 标记；这里会把未闭合
+    的加粗或行内代码标记留在缓冲区，等闭合标记到达后再一次性按样式输出。
+    """
+
+    if final:
+        return len(text)
+
+    pending_indexes: list[int] = []
+    for delimiter in ("**", "__", "`"):
+        unmatched_index: int | None = None
+        index = 0
+        while True:
+            delimiter_index = text.find(delimiter, index)
+            if delimiter_index < 0:
+                break
+            if unmatched_index is None:
+                unmatched_index = delimiter_index
+            else:
+                unmatched_index = None
+            index = delimiter_index + len(delimiter)
+
+        if unmatched_index is not None:
+            pending_indexes.append(unmatched_index)
+
+    for delimiter in ("*", "_"):
+        if text.endswith(delimiter) and not text.endswith(delimiter * 2):
+            pending_indexes.append(len(text) - 1)
+
+    return min(pending_indexes) if pending_indexes else len(text)
 
 
 def _spans_display_width(spans: list[MarkdownSpan]) -> int:
@@ -287,7 +395,7 @@ def _render_markdown_table(
 ) -> list[list[MarkdownSpan]]:
     column_count = len(header_cells)
     table_rows = [row for row in rows if len(row) == column_count]
-    header_style = _style(ANSI_BOLD, default_style)
+    header_style = _markdown_strong_style(default_style)
     widths: list[int] = []
     for column_index in range(column_count):
         column_cells = [header_cells[column_index], *(row[column_index] for row in table_rows)]
@@ -318,6 +426,8 @@ def _render_basic_markdown_stream_line(
     raw_line: str,
     state: MarkdownStreamState,
     default_style: str | None = None,
+    *,
+    final: bool = False,
 ) -> list[MarkdownSpan] | None:
     """把一行 Markdown 转成终端可写的片段。
 
@@ -335,9 +445,11 @@ def _render_basic_markdown_stream_line(
     if not stripped:
         return [MarkdownSpan("", default_style)]
 
+    inline_parser = _parse_final_inline_markdown if final else _parse_inline_markdown
+
     heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", raw_line)
     if heading_match is not None:
-        return _parse_inline_markdown(heading_match.group(2), _style(ANSI_BOLD, default_style))
+        return inline_parser(heading_match.group(2), _markdown_strong_style(default_style))
 
     if re.match(r"^\s{0,3}([-*_]\s*){3,}$", raw_line):
         return [MarkdownSpan("─" * 20, ANSI_MUTED)]
@@ -345,7 +457,7 @@ def _render_basic_markdown_stream_line(
     quote_match = re.match(r"^\s{0,3}>\s?(.*)$", raw_line)
     if quote_match is not None:
         spans = [MarkdownSpan("│ ", ANSI_LIGHT_BLUE)]
-        spans.extend(_parse_inline_markdown(quote_match.group(1), default_style))
+        spans.extend(inline_parser(quote_match.group(1), default_style))
         return spans
 
     task_match = re.match(r"^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$", raw_line)
@@ -353,7 +465,7 @@ def _render_basic_markdown_stream_line(
         indent, checked, body = task_match.groups()
         marker = "[x] " if checked.lower() == "x" else "[ ] "
         spans = [MarkdownSpan(indent + marker, default_style)]
-        spans.extend(_parse_inline_markdown(body, default_style))
+        spans.extend(inline_parser(body, default_style))
         return spans
 
     list_match = re.match(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$", raw_line)
@@ -361,15 +473,17 @@ def _render_basic_markdown_stream_line(
         indent, marker, body = list_match.groups()
         normalized_marker = f"{marker} " if marker[0].isdigit() else "- "
         spans = [MarkdownSpan(indent + normalized_marker, default_style)]
-        spans.extend(_parse_inline_markdown(body, default_style))
+        spans.extend(inline_parser(body, default_style))
         return spans
 
-    return _parse_inline_markdown(raw_line, default_style)
+    return inline_parser(raw_line, default_style)
 
 
 def _flush_markdown_table_state(
     state: MarkdownStreamState,
     default_style: str | None = None,
+    *,
+    final: bool = False,
 ) -> list[list[MarkdownSpan]]:
     if state.table_alignments is not None and state.table_header_cells is not None:
         rendered = _render_markdown_table(
@@ -384,7 +498,12 @@ def _flush_markdown_table_state(
     if state.table_header_candidate is not None:
         raw_line = state.table_header_candidate
         _clear_markdown_table_state(state)
-        spans = _render_basic_markdown_stream_line(raw_line, state, default_style)
+        spans = _render_basic_markdown_stream_line(
+            raw_line,
+            state,
+            default_style,
+            final=final,
+        )
         return [] if spans is None else [spans]
 
     return []
@@ -394,6 +513,8 @@ def _render_markdown_stream_lines(
     raw_line: str,
     state: MarkdownStreamState,
     default_style: str | None = None,
+    *,
+    final: bool = False,
 ) -> list[list[MarkdownSpan]]:
     """渲染一条完整 Markdown 输入行。
 
@@ -409,7 +530,7 @@ def _render_markdown_stream_lines(
         if cells is not None and len(cells) == len(state.table_alignments):
             state.table_rows.append(cells)
             return rendered
-        rendered.extend(_flush_markdown_table_state(state, default_style))
+        rendered.extend(_flush_markdown_table_state(state, default_style, final=final))
     elif state.table_header_candidate is not None:
         alignments = _parse_markdown_table_delimiter(raw_line)
         if (
@@ -419,7 +540,7 @@ def _render_markdown_stream_lines(
         ):
             state.table_alignments = alignments
             return rendered
-        rendered.extend(_flush_markdown_table_state(state, default_style))
+        rendered.extend(_flush_markdown_table_state(state, default_style, final=final))
 
     if not state.in_code_block:
         cells = _split_markdown_table_row(raw_line)
@@ -428,7 +549,12 @@ def _render_markdown_stream_lines(
             state.table_header_cells = cells
             return rendered
 
-    spans = _render_basic_markdown_stream_line(raw_line, state, default_style)
+    spans = _render_basic_markdown_stream_line(
+        raw_line,
+        state,
+        default_style,
+        final=final,
+    )
     if spans is not None:
         rendered.append(spans)
     return rendered
@@ -508,10 +634,10 @@ class TerminalUI:
 
         result = "成功" if ok else "失败"
         with self._lock:
-            print()
-            print(self.muted("执行记录"))
-            print(self.muted("|"))
-            print(f"{self.muted('—')}{self.result_text(ok, result)}", flush=True)
+            print(
+                f"{self.muted('执行记录：')}{self.result_text(ok, result)}",
+                flush=True,
+            )
 
     def print_startup_panel(
         self,
@@ -649,17 +775,37 @@ class TerminalUI:
     def inline_turn_base(self, user_text: str) -> str:
         """把已提交的用户输入固定成独立对话行。
 
-        输入读取结束后终端已经换到下一行。这里只在当前空行位置重绘上一行，
-        不再把等待动画挂在用户文本后面，避免 AI 回复和问题挤到同一行。
+        输入编辑态可能只显示一个滚动窗口，尤其粘贴多行长文本时，提交后直接依赖
+        编辑态残留会丢失前几行或留下旧字符。这里统一回到输入块顶部并重绘完整
+        用户消息，让后续等待动画和 AI 回复都有稳定的起点。
         """
 
-        if "\n" in user_text:
+        if not self.capabilities.ansi:
             return ""
 
-        text = f"{USER_PREFIX} {user_text}"
+        text = _normalize_terminal_text(user_text)
+        prompt_width = self.prompt_width()
+        terminal_width, terminal_height = shutil.get_terminal_size((100, 30))
+        content_width = max(1, max(40, terminal_width) - prompt_width - 1)
+        all_rows = _split_display_rows(text, content_width)
+        visible_rows = min(
+            len(all_rows),
+            max(3, min(INLINE_INPUT_WINDOW_ROWS, max(14, terminal_height) - 8)),
+        )
+        continuation_prefix = " " * prompt_width
+        lines = [
+            f"{USER_PREFIX} {row}" if index == 0 else f"{continuation_prefix}{row}"
+            for index, row in enumerate(all_rows)
+        ]
         with self._lock:
-            if self.capabilities.ansi:
-                print(f"{ANSI_PREVIOUS_LINE}\r{ANSI_CLEAR_LINE}{text}\n", end="", flush=True)
+            print(f"\033[{visible_rows}A", end="")
+            for index in range(visible_rows):
+                print(f"\r{ANSI_CLEAR_LINE}", end="")
+                if index < visible_rows - 1:
+                    print("\033[1B", end="")
+            if visible_rows > 1:
+                print(f"\033[{visible_rows - 1}A", end="")
+            print("\n".join(lines), flush=True)
         return ""
 
     def print_ai_prefix(self) -> None:
@@ -681,7 +827,7 @@ class TerminalUI:
         while "\n" in state.pending_line:
             line, state.pending_line = state.pending_line.split("\n", 1)
             if state.passthrough_line:
-                self._finish_passthrough_line(line, state, newline=True)
+                self._finish_passthrough_line(line, state, newline=True, final=True)
             else:
                 line_already_previewed = state.preview_visible
                 self._clear_markdown_preview(state)
@@ -698,14 +844,22 @@ class TerminalUI:
 
         if state.pending_line:
             if state.passthrough_line:
-                self._finish_passthrough_line(state.pending_line, state, newline=False)
+                self._finish_passthrough_line(
+                    state.pending_line,
+                    state,
+                    newline=False,
+                    final=True,
+                )
                 state.pending_line = ""
+                self._write_pending_markdown_table(state)
                 return
 
             if state.preview_visible:
+                self._clear_markdown_preview(state)
+                line = state.pending_line
                 state.pending_line = ""
-                state.preview_visible = False
-                state.preview_width = 0
+                self._write_markdown_line(line, state, line_already_started=False)
+                self._write_pending_markdown_table(state)
                 return
 
             self._clear_markdown_preview(state)
@@ -724,7 +878,7 @@ class TerminalUI:
         *,
         line_already_started: bool = False,
     ) -> None:
-        span_lines = _render_markdown_stream_lines(line, state)
+        span_lines = _render_markdown_stream_lines(line, state, final=True)
         self._write_markdown_span_lines(
             span_lines,
             state,
@@ -732,7 +886,7 @@ class TerminalUI:
         )
 
     def _write_pending_markdown_table(self, state: MarkdownStreamState) -> None:
-        span_lines = _flush_markdown_table_state(state)
+        span_lines = _flush_markdown_table_state(state, final=True)
         self._write_markdown_span_lines(span_lines, state, line_already_started=False)
 
     def _write_markdown_span_lines(
@@ -772,8 +926,19 @@ class TerminalUI:
             self._clear_markdown_preview(state)
             return
 
+        if _contains_complex_display_width(state.pending_line):
+            self._start_passthrough_line(state)
+            return
+
+        stable_preview_text, _remaining_text = self._split_stable_inline_markdown(
+            state.pending_line
+        )
+        if not stable_preview_text:
+            self._clear_markdown_preview(state)
+            return
+
         preview_state = MarkdownStreamState(in_code_block=state.in_code_block)
-        spans = _render_basic_markdown_stream_line(state.pending_line, preview_state)
+        spans = _render_basic_markdown_stream_line(stable_preview_text, preview_state)
         if spans is None:
             return
         if _spans_display_width(spans) > self._markdown_preview_max_width():
@@ -811,18 +976,25 @@ class TerminalUI:
             with self._lock:
                 print()
             state.preview_needs_newline = False
+        stable_text, remaining_text = self._split_stable_inline_markdown(state.pending_line)
         with self._lock:
-            print(state.pending_line, end="", flush=True)
+            self._write_passthrough_text(stable_text, state)
+            sys.stdout.flush()
         state.passthrough_line = True
-        state.passthrough_printed_chars = len(state.pending_line)
+        state.pending_line = remaining_text
+        state.passthrough_printed_chars = 0
 
     def _write_passthrough_delta(self, state: MarkdownStreamState) -> None:
-        unprinted = state.pending_line[state.passthrough_printed_chars :]
-        if not unprinted:
+        stable_text, remaining_text = self._split_stable_inline_markdown(
+            state.pending_line[state.passthrough_printed_chars :]
+        )
+        if not stable_text:
             return
         with self._lock:
-            print(unprinted, end="", flush=True)
-        state.passthrough_printed_chars = len(state.pending_line)
+            self._write_passthrough_text(stable_text, state)
+            sys.stdout.flush()
+        state.pending_line = remaining_text
+        state.passthrough_printed_chars = 0
 
     def _finish_passthrough_line(
         self,
@@ -830,11 +1002,15 @@ class TerminalUI:
         state: MarkdownStreamState,
         *,
         newline: bool,
+        final: bool = False,
     ) -> None:
         unprinted = line[state.passthrough_printed_chars :]
+        stable_length = _stable_inline_markdown_prefix_length(unprinted, final=final)
+        stable_text = unprinted[:stable_length]
+        remaining_text = unprinted[stable_length:]
         with self._lock:
-            if unprinted:
-                print(unprinted, end="")
+            if stable_text:
+                self._write_passthrough_text_with_mode(stable_text, state, final=final)
             if newline:
                 print()
             sys.stdout.flush()
@@ -845,7 +1021,34 @@ class TerminalUI:
         state.rendered_lines += 1
         state.passthrough_line = False
         state.passthrough_printed_chars = 0
+        if not newline and not final:
+            state.pending_line = remaining_text
         state.preview_needs_newline = False
+
+    @staticmethod
+    def _split_stable_inline_markdown(text: str) -> tuple[str, str]:
+        stable_length = _stable_inline_markdown_prefix_length(text)
+        return text[:stable_length], text[stable_length:]
+
+    def _write_passthrough_text(self, text: str, state: MarkdownStreamState) -> None:
+        """写入长行直通文本；普通文本解析行内 Markdown，代码块保持原样。"""
+
+        self._write_passthrough_text_with_mode(text, state, final=False)
+
+    def _write_passthrough_text_with_mode(
+        self,
+        text: str,
+        state: MarkdownStreamState,
+        *,
+        final: bool,
+    ) -> None:
+        if not text:
+            return
+        if state.in_code_block:
+            print(text, end="")
+            return
+        parser = _parse_final_inline_markdown if final else _parse_inline_markdown
+        self._write_markdown_spans(parser(text))
 
     def _clear_markdown_preview(self, state: MarkdownStreamState) -> None:
         if not state.preview_visible or not self.capabilities.ansi:
@@ -862,9 +1065,10 @@ class TerminalUI:
         with self._lock:
             print()
 
-    def status(self, message: str) -> None:
+    def status(self, message: str, *, leading_blank: bool = True) -> None:
         with self._lock:
-            print(f"\n{self.muted(f'[{message}]')}", flush=True)
+            prefix = "\n" if leading_blank else ""
+            print(f"{prefix}{self.muted(f'[{message}]')}", flush=True)
 
     def notice(self, message: str) -> None:
         with self._lock:
@@ -879,7 +1083,10 @@ class TerminalUI:
 
         pointer = " ❯ " if self.capabilities.ansi else " > "
         selected_yes = True
-        _prompt_lines = prompt.count("\n") + 1  # prompt 占用的行数
+        # 下方用 `print(f"\n{prompt}")` 让确认框和上一个状态块保持间隔。
+        # 收折确认框时必须把这个前置空行也算进去；否则 ANSI 光标上移会少一行，
+        # 正好留下确认提示的第一行（例如“Agent 想要执行命令。”）。
+        _prompt_lines = prompt.count("\n") + 2
 
         with self._lock:
             print(f"\n{prompt}")
@@ -1022,6 +1229,6 @@ class WaitingIndicator:
         dot_index = 0
         while not self._stop.is_set():
             dots = WAITING_DOTS[dot_index % len(WAITING_DOTS)]
-            self._status_line.show(f"按 Enter 打断  {kaomoji}{dots}")
+            self._status_line.show(f"处理中  {kaomoji}{dots}")
             dot_index += 1
             self._stop.wait(0.35)

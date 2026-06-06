@@ -31,6 +31,16 @@ def _get_user_text(
     支持斜杠命令 Tab 补全（Windows 下）。
     """
 
+    if speech_to_text is None:
+        if os.name == "nt" and slash_commands:
+            try:
+                import msvcrt
+            except ImportError:
+                pass
+            else:
+                return read_line_autocomplete(ui.prompt(), slash_commands, ui).strip()
+        return input(ui.prompt()).strip()
+
     used_autocomplete = False
     if os.name == "nt" and slash_commands:
         try:
@@ -123,11 +133,24 @@ def run_inline_chat(
 
         def handle_agent_status(message: str) -> None:
             if message:
+                had_display_output = speech_player.has_display_output
+                speech_player.flush_display()
                 waiting_indicator.stop()
-                ui.status(message)
+                ui.status(message, leading_blank=had_display_output)
             else:
-                ui.newline()
+                speech_player.start_new_display_segment()
                 waiting_indicator.start()
+
+        def handle_tool_result(_tool_call, result) -> None:
+            """工具执行完成时先收起等待动画，再输出执行摘要。
+
+            这能避免等待状态行残留在工具结果或后续模型回复前面，尤其是在
+            Windows 终端里 ANSI 清行和普通 print 混用时更容易出现同一行串字。
+            """
+
+            speech_player.flush_display()
+            waiting_indicator.stop()
+            ui.print_tool_result_record(result.ok)
 
         try:
             waiting_indicator.start()
@@ -135,7 +158,7 @@ def run_inline_chat(
                 user_text,
                 speech_player.handle_delta,
                 on_status=handle_agent_status,
-                on_tool_result=lambda _tool_call, result: ui.print_tool_result_record(result.ok),
+                on_tool_result=handle_tool_result,
             )
             waiting_indicator.stop()
             speech_player.flush()
