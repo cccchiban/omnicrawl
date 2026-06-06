@@ -434,17 +434,6 @@ def _render_markdown_stream_lines(
     return rendered
 
 
-def _render_markdown_preview_line(
-    raw_line: str,
-    state: MarkdownStreamState,
-    default_style: str | None = None,
-) -> list[MarkdownSpan] | None:
-    """渲染当前未提交行的预览，不改变代码块等跨行状态。"""
-
-    preview_state = MarkdownStreamState(in_code_block=state.in_code_block)
-    return _render_basic_markdown_stream_line(raw_line, preview_state, default_style)
-
-
 def detect_capabilities() -> TerminalCapabilities:
     """根据环境判断是否启用 ANSI 样式和行重绘。"""
 
@@ -760,11 +749,7 @@ class TerminalUI:
             for line_index, spans in enumerate(span_lines):
                 if line_index > 0 or (state.rendered_lines > 0 and not line_already_started):
                     print()
-                for span in spans:
-                    if self.capabilities.ansi and span.style:
-                        print(f"{span.style}{span.text}{ANSI_RESET}", end="")
-                    else:
-                        print(span.text, end="")
+                self._write_markdown_spans(spans)
                 state.rendered_lines += 1
             sys.stdout.flush()
 
@@ -787,7 +772,8 @@ class TerminalUI:
             self._clear_markdown_preview(state)
             return
 
-        spans = _render_markdown_preview_line(state.pending_line, state)
+        preview_state = MarkdownStreamState(in_code_block=state.in_code_block)
+        spans = _render_basic_markdown_stream_line(state.pending_line, preview_state)
         if spans is None:
             return
         if _spans_display_width(spans) > self._markdown_preview_max_width():
@@ -800,14 +786,17 @@ class TerminalUI:
                 state.preview_needs_newline = False
             elif state.preview_visible and state.preview_width > 0:
                 print(f"\033[{state.preview_width}D", end="")
-            for span in spans:
-                if span.style:
-                    print(f"{span.style}{span.text}{ANSI_RESET}", end="")
-                else:
-                    print(span.text, end="")
+            self._write_markdown_spans(spans)
             print(ANSI_CLEAR_TO_LINE_END, end="", flush=True)
         state.preview_width = _spans_display_width(spans)
         state.preview_visible = True
+
+    def _write_markdown_spans(self, spans: list[MarkdownSpan]) -> None:
+        for span in spans:
+            if self.capabilities.ansi and span.style:
+                print(f"{span.style}{span.text}{ANSI_RESET}", end="")
+            else:
+                print(span.text, end="")
 
     @staticmethod
     def _markdown_preview_max_width() -> int:
@@ -931,16 +920,20 @@ class TerminalUI:
                 raise KeyboardInterrupt
             if char in {"\x00", "\xe0"}:
                 key = msvcrt.getwch()
-                if key in {"H", "K"}:
-                    if not selected_yes:
-                        selected_yes = True
-                        self._redraw_options(_print_options)
-                elif key in {"P", "M"}:
-                    if selected_yes:
-                        selected_yes = False
-                        self._redraw_options(_print_options)
+                next_selected_yes = self._selection_from_key(key, selected_yes)
+                if next_selected_yes != selected_yes:
+                    selected_yes = next_selected_yes
+                    self._redraw_options(_print_options)
                 continue
             # 任意其他键忽略，继续等待
+
+    @staticmethod
+    def _selection_from_key(key: str, selected_yes: bool) -> bool:
+        if key in {"H", "K"}:
+            return True
+        if key in {"P", "M"}:
+            return False
+        return selected_yes
 
     @staticmethod
     def _redraw_options(print_fn) -> None:
@@ -973,7 +966,6 @@ class StatusLine:
 
     def __init__(self, ui: TerminalUI, base_text: str = "") -> None:
         self._ui = ui
-        self._base_text = base_text
         self._visible = False
 
     def show(self, text: str) -> None:
@@ -993,12 +985,6 @@ class StatusLine:
         with self._ui._lock:
             if not self._visible:
                 return
-            if self._ui.capabilities.ansi:
-                print(f"\r{ANSI_CLEAR_LINE}", end="", flush=True)
-            self._visible = False
-
-    def clear_all(self) -> None:
-        with self._ui._lock:
             if self._ui.capabilities.ansi:
                 print(f"\r{ANSI_CLEAR_LINE}", end="", flush=True)
             self._visible = False

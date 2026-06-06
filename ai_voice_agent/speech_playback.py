@@ -5,7 +5,6 @@ import re
 import threading
 from typing import Callable
 
-from .fullscreen_tui import AssistantPrefixBlinker, FullScreenTUI
 from .terminal_ui import USER_PREFIX, MarkdownStreamState, StatusLine, TerminalUI
 from .text_to_speech import TextToSpeech
 
@@ -192,82 +191,4 @@ class StreamingSpeechPlayer:
             buffered_text = _read_buffered_console_line(input_buffer)
             return False, buffered_text or None
 
-        return False, None
-
-
-class FullScreenSpeechPlayer:
-    """保留给全屏 TUI 的 AI 输出和语音播报适配器。"""
-
-    def __init__(
-        self,
-        text_to_speech: TextToSpeech | None,
-        tui: FullScreenTUI,
-        prefix_blinker: AssistantPrefixBlinker,
-        before_first_output: Callable[[], None] | None = None,
-    ) -> None:
-        self._text_to_speech = text_to_speech
-        self._tui = tui
-        self._prefix_blinker = prefix_blinker
-        self._before_first_output = before_first_output
-        self._buffer = ""
-        self._has_output = False
-
-    def handle_delta(self, delta: str) -> None:
-        if not self._has_output:
-            if self._before_first_output is not None:
-                self._before_first_output()
-            self._tui.start_assistant_message()
-            self._prefix_blinker.start()
-            self._has_output = True
-
-        self._tui.append_assistant(delta)
-        if self._text_to_speech is None:
-            return
-
-        self._buffer += delta
-        while True:
-            match = TTS_SENTENCE_PATTERN.match(self._buffer)
-            if match is None:
-                break
-
-            sentence = match.group(1).strip()
-            self._buffer = self._buffer[match.end() :]
-            if sentence:
-                self._text_to_speech.enqueue(sentence)
-
-    def flush(self) -> None:
-        if self._text_to_speech is not None:
-            tail = self._buffer.strip()
-            self._buffer = ""
-            if tail:
-                self._text_to_speech.enqueue(tail)
-        self._prefix_blinker.stop()
-        self._tui.finish_assistant_message()
-
-    def wait_until_done_or_interrupt(self) -> tuple[bool, str | None]:
-        if self._text_to_speech is None:
-            return False, None
-
-        done = threading.Event()
-        input_buffer: list[str] = []
-
-        def wait_for_queue() -> None:
-            self._text_to_speech.wait_until_done()
-            done.set()
-
-        waiter = threading.Thread(target=wait_for_queue, daemon=True)
-        waiter.start()
-
-        self._tui.set_status("按 Enter 打断朗读；输入文字后 Enter 可直接提交下一句")
-        while not done.wait(timeout=0.05):
-            submitted = self._tui.poll_submitted_line(input_buffer)
-            if submitted is not None:
-                self._text_to_speech.interrupt(wait_timeout_seconds=0)
-                done.wait(timeout=5.0)
-                self._tui.set_status("已打断朗读")
-                return True, submitted or None
-
-        self._tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 两次退出")
-        if input_buffer:
-            return False, "".join(input_buffer).strip() or None
         return False, None

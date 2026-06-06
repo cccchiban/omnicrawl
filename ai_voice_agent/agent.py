@@ -63,6 +63,7 @@ class _AgentReplyStreamer:
     _OPEN_TAG = "<final>"
     _CLOSE_TAG = "</final>"
     _TOOL_TAG = "<tool>"
+    _PROTOCOL_TAG_STARTS = ("<tool", "<final")
     _PLAIN_FINAL_LOOKAHEAD_CHARS = 10
 
     def __init__(self, on_delta: Callable[[str], None]) -> None:
@@ -85,15 +86,9 @@ class _AgentReplyStreamer:
             # 被当成普通文本直接展示在终端。
             combined = self._prefix_buffer + delta
             lowered = combined.lower()
-            if "<tool" in lowered or "<final" in lowered:
-                # 找到标签起始位置，只发送标签前的安全文本
-                tool_pos = lowered.find("<tool")
-                final_pos = lowered.find("<final")
-                tag_pos = len(lowered)
-                if tool_pos >= 0:
-                    tag_pos = min(tag_pos, tool_pos)
-                if final_pos >= 0:
-                    tag_pos = min(tag_pos, final_pos)
+            tag_pos = self._first_protocol_tag_index(lowered)
+            if tag_pos is not None:
+                # 找到标签起始位置，只发送标签前的安全文本。
                 if tag_pos > 0:
                     self._emit(combined[:tag_pos])
                 self._closed = True
@@ -120,11 +115,11 @@ class _AgentReplyStreamer:
                 self._prefix_buffer = ""
                 return
 
-            if self._OPEN_TAG.startswith(lowered) or self._TOOL_TAG.startswith(lowered):
+            if self._is_incomplete_protocol_tag(lowered):
                 return
 
             first_char = stripped[0]
-            if first_char in {"<", "{"} or "<tool" in lowered:
+            if first_char in {"<", "{"} or self._TOOL_TAG.rstrip(">") in lowered:
                 self._closed = True
                 self._prefix_buffer = ""
                 return
@@ -142,13 +137,30 @@ class _AgentReplyStreamer:
 
     @classmethod
     def _looks_like_plain_final(cls, stripped: str, lowered: str) -> bool:
-        if not stripped or lowered.startswith((cls._OPEN_TAG, cls._TOOL_TAG)):
+        if not stripped or cls._is_incomplete_protocol_tag(lowered):
             return False
-        if "<final" in lowered or "<tool" in lowered:
+        if cls._first_protocol_tag_index(lowered) is not None:
             return False
         if re.match(r"^\s{0,3}(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)", stripped):
             return True
         return len(stripped) >= cls._PLAIN_FINAL_LOOKAHEAD_CHARS
+
+    @classmethod
+    def _is_incomplete_protocol_tag(cls, lowered: str) -> bool:
+        """识别被流式增量拆开的协议标签前缀。"""
+
+        return any(tag.startswith(lowered) for tag in (cls._OPEN_TAG, cls._TOOL_TAG))
+
+    @classmethod
+    def _first_protocol_tag_index(cls, lowered: str) -> int | None:
+        """返回文本中最早出现的工具或最终回答标签位置。"""
+
+        positions = [
+            position
+            for tag_start in cls._PROTOCOL_TAG_STARTS
+            if (position := lowered.find(tag_start)) >= 0
+        ]
+        return min(positions) if positions else None
 
     def finish(self) -> None:
         if self._inside_final and not self._closed and self._tail_buffer:
@@ -281,7 +293,6 @@ class LocalToolAgent:
         self.workspace_root = self.config.workspace_root.resolve()
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
-        self._pending_task_messages: list[dict[str, str]] | None = None
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._tools = self._build_tools()
         self._agents_instructions = self._load_agents_instructions()
@@ -322,10 +333,9 @@ class LocalToolAgent:
             raise AgentError(str(exc)) from exc
 
     def reset_conversation(self) -> None:
-        """开启新对话：清空对话历史和未完成任务缓存，保留工具、记忆和 Skill 配置。"""
+        """开启新对话：清空对话历史，保留工具、记忆和 Skill 配置。"""
 
         self._history.clear()
-        self._pending_task_messages = None
         self._active_skills = []
 
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
@@ -369,32 +379,8 @@ class LocalToolAgent:
         status = on_status or (lambda _message: None)
         report_tool_result = on_tool_result or (lambda _tool_call, _result: None)
 
-        # 处理 /skill:name 命令
-        self._active_skills = []
-        if self._skill_manager is not None:
-            if text.startswith("/skill:"):
-                parts = text.split(None, 1)
-                skill_name = parts[0][len("/skill:"):].strip()
-                skill = self._skill_manager.match_by_name(skill_name)
-                if skill is not None:
-                    self._active_skills = [
-                        SkillMatchResult(skill=skill, score=1.0, reason=f"手动调用：{skill_name}")
-                    ]
-                    status(f"已加载 Skill：{skill_name}")
-                    text = parts[1] if len(parts) > 1 else f"请执行 {skill_name} 技能。"
-                else:
-                    status(f"未找到 Skill：{skill_name}")
-                    available = ", ".join(m.name for m in self._skill_manager.list_all()) or "无"
-                    text = f"Skill「{skill_name}」不存在。当前可用的 Skill：{available}"
-
-        if self._pending_task_messages and self._is_continue_request(text):
-            working_messages = [
-                *self._pending_task_messages,
-                {"role": "user", "content": "请继续处理上一个未完成任务。"},
-            ]
-        else:
-            self._pending_task_messages = None
-            working_messages = [*self._history, {"role": "user", "content": text}]
+        text = self._apply_skill_command(text, status)
+        working_messages = [*self._history, {"role": "user", "content": text}]
 
         all_reasoning_parts: list[str] = []
         has_tool_calls = False
@@ -408,7 +394,6 @@ class LocalToolAgent:
                 final_reply = self._parse_final_reply(raw_reply)
                 if not streamed_final:
                     on_delta(final_reply)
-                self._pending_task_messages = None
                 combined_reasoning = "\n".join(all_reasoning_parts) if has_tool_calls else ""
                 self._append_history(text, final_reply, combined_reasoning)
                 return final_reply
@@ -426,12 +411,9 @@ class LocalToolAgent:
             report_tool_result(tool_call, tool_result)
             status("")  # 通知调用方重新启动等待动画
 
-            assistant_msg: dict[str, str] = {"role": "assistant", "content": raw_reply}
-            if reasoning:
-                assistant_msg["reasoning_content"] = reasoning
             working_messages.extend(
                 [
-                    assistant_msg,
+                    self._assistant_message(raw_reply, reasoning),
                     {
                         "role": "user",
                         "content": self._format_tool_observation(tool_call, tool_result),
@@ -439,6 +421,27 @@ class LocalToolAgent:
                 ]
             )
             step += 1
+
+    def _apply_skill_command(self, text: str, status: Callable[[str], None]) -> str:
+        """处理 /skill:name，并在每轮开始时清空上一轮手动 Skill 注入。"""
+
+        self._active_skills = []
+        if self._skill_manager is None or not text.startswith("/skill:"):
+            return text
+
+        parts = text.split(None, 1)
+        skill_name = parts[0][len("/skill:") :].strip()
+        skill = self._skill_manager.match_by_name(skill_name)
+        if skill is None:
+            status(f"未找到 Skill：{skill_name}")
+            available = ", ".join(m.name for m in self._skill_manager.list_all()) or "无"
+            return f"Skill「{skill_name}」不存在。当前可用的 Skill：{available}"
+
+        self._active_skills = [
+            SkillMatchResult(skill=skill, score=1.0, reason=f"手动调用：{skill_name}")
+        ]
+        status(f"已加载 Skill：{skill_name}")
+        return parts[1] if len(parts) > 1 else f"请执行 {skill_name} 技能。"
 
     def _request_agent_reply(
         self,
@@ -884,14 +887,7 @@ class LocalToolAgent:
         except MemoryStoreError as exc:
             return ToolResult(ok=False, output=str(exc))
 
-        return ToolResult(
-            ok=True,
-            output=json.dumps(
-                [search_result_to_dict(result) for result in results],
-                ensure_ascii=False,
-                indent=2,
-            ),
-        )
+        return self._json_tool_result([search_result_to_dict(result) for result in results])
 
     def _tool_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
         store = self._require_memory_store()
@@ -904,10 +900,7 @@ class LocalToolAgent:
         except MemoryStoreError as exc:
             return ToolResult(ok=False, output=str(exc))
 
-        return ToolResult(
-            ok=True,
-            output=json.dumps([record_to_dict(record) for record in records], ensure_ascii=False, indent=2),
-        )
+        return self._json_tool_result([record_to_dict(record) for record in records])
 
     def _tool_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
         store = self._require_memory_store()
@@ -924,14 +917,7 @@ class LocalToolAgent:
         except MemoryStoreError as exc:
             return ToolResult(ok=False, output=str(exc))
 
-        return ToolResult(
-            ok=True,
-            output=json.dumps(
-                [search_result_to_dict(result) for result in results],
-                ensure_ascii=False,
-                indent=2,
-            ),
-        )
+        return self._json_tool_result([search_result_to_dict(result) for result in results])
 
     def _tool_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
         store = self._require_memory_store()
@@ -974,10 +960,7 @@ class LocalToolAgent:
         except MemoryStoreError as exc:
             return ToolResult(ok=False, output=str(exc))
 
-        return ToolResult(
-            ok=True,
-            output=json.dumps([record_to_dict(record) for record in records], ensure_ascii=False, indent=2),
-        )
+        return self._json_tool_result([record_to_dict(record) for record in records])
 
     def _iter_search_files(self, root: Path) -> list[Path]:
         """递归搜索时在目录层剪枝，避免进入 .git、虚拟环境或本地密钥目录。"""
@@ -1035,6 +1018,10 @@ class LocalToolAgent:
         except (TypeError, ValueError):
             return default
         return max(1, min(maximum, parsed))
+
+    @staticmethod
+    def _json_tool_result(data: Any) -> ToolResult:
+        return ToolResult(ok=True, output=json.dumps(data, ensure_ascii=False, indent=2))
 
     def _safe_path(self, raw_path: str) -> Path:
         """把模型给出的路径限制在工作区内，阻止 ../ 越界访问。"""
@@ -1114,25 +1101,25 @@ class LocalToolAgent:
             "若还需要更多信息，请继续用 <tool> 调用一个工具。"
         )
 
+    @staticmethod
+    def _assistant_message(assistant_text: str, reasoning: str = "") -> dict[str, str]:
+        message = {"role": "assistant", "content": assistant_text}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        return message
+
     def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
         """写入对话历史；有工具调用时附带 reasoning_content 供后续轮次回传。"""
 
-        assistant_msg: dict[str, str] = {"role": "assistant", "content": assistant_text}
-        if reasoning:
-            assistant_msg["reasoning_content"] = reasoning
         self._history.extend(
             [
                 {"role": "user", "content": user_text},
-                assistant_msg,
+                self._assistant_message(assistant_text, reasoning),
             ]
         )
         max_messages = self.config.max_history_turns * 2
         if len(self._history) > max_messages:
             self._history = self._history[-max_messages:]
-
-    @staticmethod
-    def _is_continue_request(user_text: str) -> bool:
-        return user_text.strip().lower() in {"继续", "接着做", "继续处理", "continue", "c"}
 
     @staticmethod
     def _confirm_in_terminal(tool_name: str, arguments: dict[str, Any]) -> bool:

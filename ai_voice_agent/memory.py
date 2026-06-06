@@ -18,14 +18,32 @@ DEFAULT_STORAGE_DIRECTORIES = (
     "external-context/general",
 )
 
-_KNOWN_TOP_LEVEL_DIRECTORIES = {
-    "user-preferences",
-    "project-context",
-    "task-history",
-    "code-knowledge",
-    "error-lessons",
-    "external-context",
-}
+_CLASSIFICATION_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "user-preferences/communication-style",
+        ("偏好", "喜欢", "不喜欢", "习惯", "沟通", "回答风格", "输出", "称呼"),
+    ),
+    (
+        "project-context/general",
+        ("项目", "仓库", "架构", "约束", "配置", "入口", "workspace", "repository"),
+    ),
+    (
+        "code-knowledge/general",
+        ("代码", "函数", "类", "模块", "接口", "实现", "源码", "class", "function"),
+    ),
+    (
+        "error-lessons/general",
+        ("错误", "失败", "异常", "修复", "调试", "踩坑", "bug", "error", "exception"),
+    ),
+    (
+        "external-context/general",
+        ("api", "外部服务", "环境变量", "域名", "权限", "token", "模型", "网关"),
+    ),
+    (
+        "task-history/general",
+        ("任务", "完成", "决策", "待办", "跟进", "历史", "计划"),
+    ),
+)
 
 
 class MemoryStoreError(RuntimeError):
@@ -306,7 +324,6 @@ class MemoryStore:
                     )
 
                 records.append(record)
-                self._replace_entry(entries, record, prepared.storage_directory)
 
             self._save_entries(entries)
         except Exception:
@@ -469,32 +486,6 @@ class MemoryStore:
             timestamp=timestamp,
             related_directories=list(entry.related_directories),
             content=merged_content,
-        )
-
-    def _replace_entry(
-        self,
-        entries: list[MemoryIndexEntry],
-        record: MemoryRecord,
-        fallback_storage_directory: str,
-    ) -> None:
-        for entry in entries:
-            if entry.id != record.id:
-                continue
-            entry.timestamp = record.timestamp
-            entry.related_directories = list(record.related_directories)
-            entry.summary = _make_summary(record.content)
-            return
-
-        entries.append(
-            MemoryIndexEntry(
-                id=record.id,
-                path=f"{fallback_storage_directory}/{record.id}.md",
-                storage_directory=fallback_storage_directory,
-                timestamp=record.timestamp,
-                touch_count=0,
-                related_directories=list(record.related_directories),
-                summary=_make_summary(record.content),
-            )
         )
 
     def _find_duplicate_entry(
@@ -725,41 +716,9 @@ def _read_markdown_body(path: Path) -> str:
 
 def _classify_storage_directory(content: str) -> str:
     text = content.lower()
-    rules: list[tuple[str, str, tuple[str, ...]]] = [
-        (
-            "user-preferences/communication-style",
-            "user-preferences/general",
-            ("偏好", "喜欢", "不喜欢", "习惯", "沟通", "回答风格", "输出", "称呼"),
-        ),
-        (
-            "project-context/general",
-            "project-context/general",
-            ("项目", "仓库", "架构", "约束", "配置", "入口", "workspace", "repository"),
-        ),
-        (
-            "code-knowledge/general",
-            "code-knowledge/general",
-            ("代码", "函数", "类", "模块", "接口", "实现", "源码", "class", "function"),
-        ),
-        (
-            "error-lessons/general",
-            "error-lessons/general",
-            ("错误", "失败", "异常", "修复", "调试", "踩坑", "bug", "error", "exception"),
-        ),
-        (
-            "external-context/general",
-            "external-context/general",
-            ("api", "外部服务", "环境变量", "域名", "权限", "token", "模型", "网关"),
-        ),
-        (
-            "task-history/general",
-            "task-history/general",
-            ("任务", "完成", "决策", "待办", "跟进", "历史", "计划"),
-        ),
-    ]
-    for preferred, fallback, keywords in rules:
+    for directory, keywords in _CLASSIFICATION_RULES:
         if any(keyword in text for keyword in keywords):
-            return preferred if preferred.split("/", 1)[0] in _KNOWN_TOP_LEVEL_DIRECTORIES else fallback
+            return directory
     return "task-history/general"
 
 

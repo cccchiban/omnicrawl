@@ -99,19 +99,6 @@ def format_tool_confirmation(tool_name: str, arguments: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_tool_confirmation_compact(tool_name: str, arguments: dict[str, Any]) -> str:
-    """全屏 TUI 确认弹窗专用：简洁格式，盒子由 TUI 自行绘制。"""
-
-    description = _TOOL_HUMAN_DESCRIPTIONS.get(tool_name, "执行操作")
-    detail = _format_dangerous_tool_detail(tool_name, arguments)
-
-    lines = [f"Agent 想要{description}。"]
-    if detail:
-        lines.append(detail)
-
-    return "\n".join(lines)
-
-
 def format_skills_list(agent: LocalToolAgent) -> str:
     """格式化 Skill 列表为可展示文本。"""
 
@@ -137,12 +124,6 @@ def print_skills_list(agent: LocalToolAgent) -> None:
     print(format_skills_list(agent))
 
 
-def show_skills_in_tui(agent: LocalToolAgent, tui: Any) -> None:
-    """保留给全屏 TUI 的 Skill 列表展示。"""
-
-    tui.add_system_message(format_skills_list(agent))
-
-
 def format_memory_clean_result(agent: LocalToolAgent) -> str:
     """执行过期记忆清理，并返回适合终端展示的结果。"""
 
@@ -160,12 +141,6 @@ def print_memory_clean_result(agent: LocalToolAgent) -> None:
     """行内 UI 打印记忆清理结果。"""
 
     print(format_memory_clean_result(agent))
-
-
-def clean_memory_in_tui(agent: LocalToolAgent, tui: Any) -> None:
-    """保留给全屏 TUI 的记忆清理结果展示。"""
-
-    tui.add_system_message(format_memory_clean_result(agent))
 
 
 def build_slash_commands(agent: LocalToolAgent) -> list[str]:
