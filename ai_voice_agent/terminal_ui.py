@@ -21,6 +21,8 @@ ANSI_GRAY = "\033[90m"
 ANSI_LIGHT_BLUE = "\033[94m"
 ANSI_BOLD = "\033[1m"
 ANSI_DIM_YELLOW = "\033[2;33m"
+ANSI_GREEN = "\033[32m"
+ANSI_RED = "\033[31m"
 ANSI_RESET = "\033[0m"
 ANSI_SAVE_CURSOR = "\033[s"
 ANSI_RESTORE_CURSOR = "\033[u"
@@ -504,6 +506,24 @@ class TerminalUI:
             return text
         return f"{ANSI_MUTED}{text}{ANSI_RESET}"
 
+    def result_text(self, ok: bool, text: str) -> str:
+        """按工具执行结果给单个结果词着色，避免整段记录被误读成模型回复。"""
+
+        if not self.capabilities.ansi:
+            return text
+        color = ANSI_GREEN if ok else ANSI_RED
+        return f"{color}{text}{ANSI_RESET}"
+
+    def print_tool_result_record(self, ok: bool) -> None:
+        """打印工具执行记录，只暴露成功/失败，不把工具 stdout 混入用户界面。"""
+
+        result = "成功" if ok else "失败"
+        with self._lock:
+            print()
+            print(self.muted("执行记录"))
+            print(self.muted("|"))
+            print(f"{self.muted('—')}{self.result_text(ok, result)}", flush=True)
+
     def print_startup_panel(
         self,
         title: str,
@@ -906,6 +926,9 @@ class TerminalUI:
             if char in {"n", "N", "2"}:
                 self._collapse_and_label(confirmed_label, _prompt_lines, confirmed=False)
                 return False
+            if char == "\x03":
+                self._collapse_and_label("", _prompt_lines, confirmed=False)
+                raise KeyboardInterrupt
             if char in {"\x00", "\xe0"}:
                 key = msvcrt.getwch()
                 if key in {"H", "K"}:
@@ -927,14 +950,18 @@ class TerminalUI:
 
     def _collapse_and_label(self, label: str, prompt_lines: int, confirmed: bool = True) -> None:
         """选中后把完整确认块收折为单行缩略。"""
-        if not label or not self.capabilities.ansi:
+        if not self.capabilities.ansi:
             return
 
         symbol = "✓" if confirmed else "✗"
         total_lines = prompt_lines + 5  # prompt + 选项区 5 行
         with self._lock:
-            # 回到 prompt 起始行，清除到屏尾，打印缩略
-            print(f"\033[{total_lines}A\033[J{ANSI_GRAY}  {symbol} {label}{ANSI_RESET}", flush=True)
+            # 回到 prompt 起始行并清除确认块；工具结果会在真实执行完成后单独打印。
+            print(f"\033[{total_lines}A\033[J", end="")
+            if label:
+                print(f"{ANSI_GRAY}  {symbol} {label}{ANSI_RESET}", flush=True)
+            else:
+                print("", flush=True)
 
 
 class StatusLine:

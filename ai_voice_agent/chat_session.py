@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from .agent import AgentError, LocalToolAgent, UserDeclinedOperation
+from .agent import AgentError, LocalToolAgent
 from .fullscreen_tui import (
     AssistantPrefixBlinker,
     FullScreenTUI,
@@ -14,7 +14,6 @@ from .slash_commands import (
     clean_memory_in_tui,
     format_tool_confirmation,
     format_tool_confirmation_compact,
-    format_tool_result_label,
     print_memory_clean_result,
     print_skills_list,
     show_skills_in_tui,
@@ -26,6 +25,7 @@ from .text_to_speech import TextToSpeech
 
 
 EXIT_WORDS = {"退出", "结束", "再见"}
+NEW_CHAT_COMMAND = "/new"
 
 
 def _get_user_text(
@@ -84,7 +84,7 @@ def _get_user_text_fullscreen(
     tui.set_status("正在录音...")
     try:
         recognized = speech_to_text.listen_once(tui.set_status).strip()
-        tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 或输入“退出”结束")
+        tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 两次退出")
         return recognized
     except SpeechToTextError as exc:
         tui.add_system_message(f"语音识别失败：{exc}")
@@ -117,14 +117,26 @@ def run_fullscreen_chat(
             )
         )
         pending_user_text: str | None = None
+        input_interrupt_count = 0
 
         while True:
-            if pending_user_text is not None:
-                user_text = pending_user_text
-                pending_user_text = None
-            else:
-                user_text = _get_user_text_fullscreen(speech_to_text, tui)
+            try:
+                if pending_user_text is not None:
+                    user_text = pending_user_text
+                    pending_user_text = None
+                else:
+                    user_text = _get_user_text_fullscreen(speech_to_text, tui)
+            except KeyboardInterrupt:
+                input_interrupt_count += 1
+                tui.set_input("")
+                if input_interrupt_count >= 2:
+                    tui.add_system_message("对话结束。")
+                    break
+                tui.add_system_message("已取消输入，再按一次 Ctrl+C 退出。")
+                tui.set_status("已取消输入，再按一次 Ctrl+C 退出")
+                continue
 
+            input_interrupt_count = 0
             if not user_text:
                 continue
 
@@ -132,6 +144,11 @@ def run_fullscreen_chat(
             if user_text.strip().lower() in EXIT_WORDS:
                 tui.add_system_message("对话结束。")
                 break
+
+            if user_text.strip() == NEW_CHAT_COMMAND:
+                agent.reset_conversation()
+                tui.add_system_message("已开启新对话。")
+                continue
 
             if user_text.strip() == "/skills":
                 show_skills_in_tui(agent, tui)
@@ -166,6 +183,7 @@ def run_fullscreen_chat(
                     user_text,
                     speech_player.handle_delta,
                     on_status=handle_agent_status,
+                    on_tool_result=lambda _tool_call, result: tui.add_tool_result_message(result.ok),
                 )
                 waiting_indicator.stop("正在朗读回复" if text_to_speech is not None else "回复完成")
                 speech_player.flush()
@@ -174,12 +192,16 @@ def run_fullscreen_chat(
                     tui.add_status_message("已打断朗读。")
                 if buffered_text:
                     pending_user_text = buffered_text
-            except UserDeclinedOperation as exc:
-                waiting_indicator.stop("操作已取消")
+            except KeyboardInterrupt:
+                waiting_indicator.stop("已取消当前操作")
                 prefix_blinker.stop()
                 tui.hide_thinking_indicator()
-                tui.add_system_message(str(exc))
-                break
+                tui.finish_assistant_message()
+                if text_to_speech is not None:
+                    text_to_speech.interrupt(wait_timeout_seconds=0)
+                tui.add_system_message("已取消当前操作。")
+                tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 两次退出")
+                continue
             except AgentError as exc:
                 waiting_indicator.stop("Agent 请求失败")
                 prefix_blinker.stop()
@@ -199,23 +221,38 @@ def run_inline_chat(
     agent.set_confirm_handler(
         lambda tool_name, arguments: ui.prompt_yes_no(
             format_tool_confirmation(tool_name, arguments),
-            confirmed_label=format_tool_result_label(tool_name, arguments),
+            confirmed_label="",
         )
     )
     pending_user_text: str | None = None
+    input_interrupt_count = 0
     while True:
-        if pending_user_text is not None:
-            user_text = pending_user_text
-            pending_user_text = None
-        else:
-            user_text = _get_user_text(speech_to_text, ui, build_slash_commands(agent))
+        try:
+            if pending_user_text is not None:
+                user_text = pending_user_text
+                pending_user_text = None
+            else:
+                user_text = _get_user_text(speech_to_text, ui, build_slash_commands(agent))
+        except KeyboardInterrupt:
+            input_interrupt_count += 1
+            if input_interrupt_count >= 2:
+                print("\n对话结束。")
+                break
+            ui.notice("\n已取消输入，再按一次 Ctrl+C 退出。")
+            continue
 
+        input_interrupt_count = 0
         if not user_text:
             continue
 
         if user_text.strip().lower() in EXIT_WORDS:
             print("对话结束。")
             break
+
+        if user_text.strip() == NEW_CHAT_COMMAND:
+            agent.reset_conversation()
+            ui.notice("已开启新对话。")
+            continue
 
         if user_text.strip() == "/skills":
             print_skills_list(agent)
@@ -248,6 +285,7 @@ def run_inline_chat(
                 user_text,
                 speech_player.handle_delta,
                 on_status=handle_agent_status,
+                on_tool_result=lambda _tool_call, result: ui.print_tool_result_record(result.ok),
             )
             waiting_indicator.stop()
             speech_player.flush()
@@ -257,10 +295,13 @@ def run_inline_chat(
                 ui.notice("已打断朗读。")
             if buffered_text:
                 pending_user_text = buffered_text
-        except UserDeclinedOperation as exc:
+        except KeyboardInterrupt:
             waiting_indicator.stop()
-            print(str(exc))
-            break
+            if text_to_speech is not None:
+                text_to_speech.interrupt(wait_timeout_seconds=0)
+            ui.newline()
+            ui.notice("已取消当前操作。")
+            continue
         except AgentError as exc:
             waiting_indicator.stop()
             print(f"Agent 请求失败：{exc}")

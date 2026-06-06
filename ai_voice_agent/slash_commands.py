@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from typing import Any
 
 from .agent import AgentError, LocalToolAgent
@@ -85,14 +84,10 @@ def format_tool_confirmation(tool_name: str, arguments: dict[str, Any]) -> str:
     只读工具仅显示描述，写入/执行工具额外展示关键内容供审查。
     """
 
-    width = shutil.get_terminal_size((100, 30)).columns
-    separator = "─" * width
-
     description = _TOOL_HUMAN_DESCRIPTIONS.get(tool_name, "执行操作")
     detail = _format_dangerous_tool_detail(tool_name, arguments)
 
     lines = [
-        separator,
         " Tool use",
         "",
         f"  Agent 想要{description}。",
@@ -102,37 +97,6 @@ def format_tool_confirmation(tool_name: str, arguments: dict[str, Any]) -> str:
     lines.extend(["", " Do you want to proceed?"])
 
     return "\n".join(lines)
-
-
-def format_tool_result_label(tool_name: str, arguments: dict[str, Any]) -> str:
-    """工具确认后的单行缩略结果，替换完整确认块。"""
-
-    if tool_name == "run_command":
-        return "CURL / 执行命令"
-    if tool_name == "read_file":
-        path = arguments.get("path", "")
-        return f"READ  {path}" if isinstance(path, str) and path else "READ 文件"
-    if tool_name == "write_file":
-        path = arguments.get("path", "")
-        return f"WRITE  {path}" if isinstance(path, str) and path else "WRITE 文件"
-    if tool_name == "replace_text":
-        path = arguments.get("path", "")
-        return f"EDIT  {path}" if isinstance(path, str) and path else "EDIT 文件"
-    if tool_name == "list_files":
-        return "LS 目录"
-    if tool_name == "search_text":
-        return "GREP 文本"
-    if tool_name == "memory_search":
-        return "MEMORY 搜索"
-    if tool_name == "memory_read":
-        return "MEMORY 读取"
-    if tool_name == "memory_write":
-        memories = arguments.get("memories", [])
-        count = len(memories) if isinstance(memories, list) else 0
-        return f"MEMORY 写入 {count} 条" if count else "MEMORY 写入"
-    if tool_name == "memory_expand_related":
-        return "MEMORY 展开"
-    return tool_name
 
 
 def format_tool_confirmation_compact(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -207,7 +171,7 @@ def clean_memory_in_tui(agent: LocalToolAgent, tui: Any) -> None:
 def build_slash_commands(agent: LocalToolAgent) -> list[str]:
     """构建所有可用的斜杠命令列表（含内置命令和动态 Skill 命令）。"""
 
-    commands = ["/skills", "/memory:clean"]
+    commands = ["/new", "/skills", "/memory:clean"]
     sm = agent.skill_manager
     if sm is not None:
         for meta in sm.list_all():

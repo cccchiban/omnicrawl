@@ -30,6 +30,8 @@ MUTED = "\033[2;90m"
 GRAY = "\033[90m"
 LIGHT_BLUE = "\033[94m"
 WHITE = "\033[37m"
+GREEN = "\033[32m"
+RED = "\033[31m"
 SCROLL_LINES_PER_WHEEL = 4
 ESCAPE_SEQUENCE_TIMEOUT_SECONDS = 0.08
 ESCAPE_SEQUENCE_MAX_CHARS = 64
@@ -267,24 +269,212 @@ def _parse_inline_markdown(text: str, default_style: str | None) -> list[Markdow
     return spans or [MarkdownSpan("", default_style)]
 
 
+def _spans_display_width(spans: list[MarkdownSpan]) -> int:
+    return _display_width(_plain_text(spans))
+
+
+def _split_markdown_table_row(raw_line: str) -> list[str] | None:
+    """按未转义管道符拆分 Markdown 表格行，保留单元格内的转义竖线。
+
+    全屏 TUI 会反复重绘完整消息区，所以这里可以先确认整块表格，再统一计算列宽。
+    只识别课程环境里最常见的管道表格，不尝试覆盖 HTML、rowspan 等复杂扩展。
+    """
+
+    line = raw_line.strip()
+    if "|" not in line:
+        return None
+
+    cells: list[str] = []
+    chars: list[str] = []
+    saw_pipe = False
+    escaped = False
+    for char in line:
+        if escaped:
+            if char == "|":
+                chars.append("|")
+            else:
+                chars.append("\\")
+                chars.append(char)
+            escaped = False
+            continue
+
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "|":
+            saw_pipe = True
+            cells.append("".join(chars).strip())
+            chars = []
+            continue
+        chars.append(char)
+
+    if escaped:
+        chars.append("\\")
+    cells.append("".join(chars).strip())
+
+    if not saw_pipe:
+        return None
+    if cells and cells[0] == "" and line.startswith("|"):
+        cells = cells[1:]
+    if cells and cells[-1] == "" and line.endswith("|"):
+        cells = cells[:-1]
+    if len(cells) < 2:
+        return None
+    return cells
+
+
+def _parse_markdown_table_delimiter(raw_line: str) -> list[str] | None:
+    cells = _split_markdown_table_row(raw_line)
+    if cells is None:
+        return None
+
+    alignments: list[str] = []
+    for cell in cells:
+        marker = re.sub(r"\s+", "", cell)
+        if re.fullmatch(r":?-{3,}:?", marker) is None:
+            return None
+        if marker.startswith(":") and marker.endswith(":"):
+            alignments.append("center")
+        elif marker.endswith(":"):
+            alignments.append("right")
+        else:
+            alignments.append("left")
+    return alignments
+
+
+def _append_table_cell(
+    spans: list[MarkdownSpan],
+    cell: str,
+    width: int,
+    alignment: str,
+    style: str | None,
+) -> None:
+    cell_spans = _parse_inline_markdown(cell, style)
+    cell_width = _spans_display_width(cell_spans)
+    padding = max(0, width - cell_width)
+    if alignment == "right":
+        left_padding = padding
+        right_padding = 0
+    elif alignment == "center":
+        left_padding = padding // 2
+        right_padding = padding - left_padding
+    else:
+        left_padding = 0
+        right_padding = padding
+
+    _append_span(spans, " " * left_padding, style)
+    for span in cell_spans:
+        _append_span(spans, span.text, span.style)
+    _append_span(spans, " " * right_padding, style)
+
+
+def _render_markdown_table_separator(widths: list[int]) -> MarkdownLine:
+    spans: list[MarkdownSpan] = []
+    for index, width in enumerate(widths):
+        if index > 0:
+            _append_span(spans, "─┼─", MUTED)
+        _append_span(spans, "─" * width, MUTED)
+    return MarkdownLine(spans, MUTED)
+
+
+def _render_markdown_table_row(
+    cells: list[str],
+    widths: list[int],
+    alignments: list[str],
+    style: str | None,
+) -> MarkdownLine:
+    spans: list[MarkdownSpan] = []
+    for index, width in enumerate(widths):
+        if index > 0:
+            _append_span(spans, " │ ", MUTED)
+        _append_table_cell(spans, cells[index], width, alignments[index], style)
+    return MarkdownLine(spans or [MarkdownSpan("", style)], style)
+
+
+def _render_markdown_table(
+    header_cells: list[str],
+    alignments: list[str],
+    rows: list[list[str]],
+    default_style: str | None,
+) -> list[MarkdownLine]:
+    column_count = len(header_cells)
+    table_rows = [row for row in rows if len(row) == column_count]
+    header_style = _style(BOLD, default_style)
+    widths: list[int] = []
+    for column_index in range(column_count):
+        column_cells = [header_cells[column_index], *(row[column_index] for row in table_rows)]
+        cell_width = max(
+            (_spans_display_width(_parse_inline_markdown(cell, default_style)) for cell in column_cells),
+            default=0,
+        )
+        widths.append(max(3, cell_width))
+
+    return [
+        _render_markdown_table_row(header_cells, widths, alignments, header_style),
+        _render_markdown_table_separator(widths),
+        *(
+            _render_markdown_table_row(row, widths, alignments, default_style)
+            for row in table_rows
+        ),
+    ]
+
+
+def _try_render_markdown_table(
+    raw_lines: list[str],
+    start_index: int,
+    default_style: str | None,
+) -> tuple[list[MarkdownLine], int] | None:
+    if start_index + 1 >= len(raw_lines):
+        return None
+
+    header_cells = _split_markdown_table_row(raw_lines[start_index])
+    alignments = _parse_markdown_table_delimiter(raw_lines[start_index + 1])
+    if header_cells is None or alignments is None or len(header_cells) != len(alignments):
+        return None
+
+    rows: list[list[str]] = []
+    index = start_index + 2
+    while index < len(raw_lines):
+        cells = _split_markdown_table_row(raw_lines[index])
+        if cells is None or len(cells) != len(header_cells):
+            break
+        rows.append(cells)
+        index += 1
+
+    return _render_markdown_table(header_cells, alignments, rows, default_style), index
+
+
 def _render_markdown(text: str, default_style: str | None) -> list[MarkdownLine]:
     """把 Markdown 转成适合 ANSI TUI 的逻辑行，不引入第三方依赖。"""
 
     lines: list[MarkdownLine] = []
     in_code_block = False
+    raw_lines = text.splitlines() or [""]
+    index = 0
 
-    for raw_line in text.splitlines() or [""]:
+    while index < len(raw_lines):
+        raw_line = raw_lines[index]
         stripped = raw_line.strip()
         if stripped.startswith("```"):
             in_code_block = not in_code_block
+            index += 1
             continue
 
         if in_code_block:
             lines.append(MarkdownLine([MarkdownSpan(f"    {raw_line}", default_style)], default_style))
+            index += 1
+            continue
+
+        table_result = _try_render_markdown_table(raw_lines, index, default_style)
+        if table_result is not None:
+            table_lines, next_index = table_result
+            lines.extend(table_lines)
+            index = next_index
             continue
 
         if not stripped:
             lines.append(MarkdownLine([MarkdownSpan("", default_style)], default_style))
+            index += 1
             continue
 
         heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", raw_line)
@@ -296,10 +486,12 @@ def _render_markdown(text: str, default_style: str | None) -> list[MarkdownLine]
                     heading_style,
                 )
             )
+            index += 1
             continue
 
         if re.match(r"^\s{0,3}([-*_]\s*){3,}$", raw_line):
             lines.append(MarkdownLine([MarkdownSpan("─" * 20, MUTED)], MUTED))
+            index += 1
             continue
 
         quote_match = re.match(r"^\s{0,3}>\s?(.*)$", raw_line)
@@ -307,6 +499,7 @@ def _render_markdown(text: str, default_style: str | None) -> list[MarkdownLine]
             quote_spans = [MarkdownSpan("│ ", LIGHT_BLUE)]
             quote_spans.extend(_parse_inline_markdown(quote_match.group(1), default_style))
             lines.append(MarkdownLine(quote_spans, default_style))
+            index += 1
             continue
 
         task_match = re.match(r"^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$", raw_line)
@@ -316,6 +509,7 @@ def _render_markdown(text: str, default_style: str | None) -> list[MarkdownLine]
             spans = [MarkdownSpan(indent + marker, default_style)]
             spans.extend(_parse_inline_markdown(body, default_style))
             lines.append(MarkdownLine(spans, default_style))
+            index += 1
             continue
 
         list_match = re.match(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$", raw_line)
@@ -325,9 +519,11 @@ def _render_markdown(text: str, default_style: str | None) -> list[MarkdownLine]
             spans = [MarkdownSpan(indent + normalized_marker, default_style)]
             spans.extend(_parse_inline_markdown(body, default_style))
             lines.append(MarkdownLine(spans, default_style))
+            index += 1
             continue
 
         lines.append(MarkdownLine(_parse_inline_markdown(raw_line, default_style), default_style))
+        index += 1
 
     return lines or [MarkdownLine([MarkdownSpan("", default_style)], default_style)]
 
@@ -361,7 +557,7 @@ class FullScreenTUI:
             f"AI 语音 Agent\nmodel={self.model}  {thinking_display}\nconfig: {self.config_label}",
         )
         self._messages: list[TUIMessage] = [self._header_message]
-        self._status = "Enter 发送，空 Enter 录音，Ctrl+C 或输入“退出”结束"
+        self._status = "Enter 发送，空 Enter 录音，Ctrl+C 两次退出"
         self._input_text = ""
         self._input_cursor = 0
         self._active_assistant_index: int | None = None
@@ -422,6 +618,15 @@ class FullScreenTUI:
     def add_status_message(self, text: str) -> None:
         with self._lock:
             self._messages.append(TUIMessage("status", text))
+            self._scroll_offset = 0
+            self.render_locked()
+
+    def add_tool_result_message(self, ok: bool) -> None:
+        """在消息区追加工具执行记录，只显示成功或失败，详细输出仍只回传给模型。"""
+
+        role = "tool_success" if ok else "tool_failure"
+        with self._lock:
+            self._messages.append(TUIMessage(role, ""))
             self._scroll_offset = 0
             self.render_locked()
 
@@ -520,6 +725,8 @@ class FullScreenTUI:
                 if char in {"n", "N"}:
                     self._set_confirm_selection(False)
                     return False
+                if char == "\x03":
+                    raise KeyboardInterrupt
                 if char == "\x1b":
                     sequence = self._read_pending_escape_sequence()
                     if self._is_left_arrow_sequence(sequence):
@@ -1249,6 +1456,9 @@ class FullScreenTUI:
             if message.role == "header":
                 lines.extend(self._build_header_box_lines(width))
                 continue
+            if message.role in {"tool_success", "tool_failure"}:
+                lines.extend(self._build_tool_result_lines(message.role))
+                continue
 
             prefix = self._message_prefix(message.role, message_index)
             style = self._message_style(message.role)
@@ -1297,6 +1507,10 @@ class FullScreenTUI:
             return WHITE
         if role == "status":
             return MUTED
+        if role == "tool_success":
+            return GREEN
+        if role == "tool_failure":
+            return RED
         if role == "header":
             return LIGHT_BLUE
         if role == "system":
@@ -1396,6 +1610,16 @@ class FullScreenTUI:
         bottom_spans = [MarkdownSpan("└" + "─" * (box_width - 2) + "┘", GRAY)]
         lines.append(TUIRenderLine(_plain_text(bottom_spans), None, bottom_spans))
         return lines
+
+    def _build_tool_result_lines(self, role: str) -> list[TUIRenderLine]:
+        result = "成功" if role == "tool_success" else "失败"
+        result_style = GREEN if role == "tool_success" else RED
+        rows = [
+            [MarkdownSpan("· 执行记录", MUTED)],
+            [MarkdownSpan("  |", MUTED)],
+            [MarkdownSpan("  —", MUTED), MarkdownSpan(result, result_style)],
+        ]
+        return [TUIRenderLine(_plain_text(row), None, row) for row in rows]
 
     @staticmethod
     def _header_box_row_spans(text: str, width: int) -> list[MarkdownSpan]:

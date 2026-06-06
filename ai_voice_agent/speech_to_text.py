@@ -32,7 +32,7 @@ class SpeechConfig:
     timeout: float = 12.0
     phrase_time_limit: float = 20.0
     pause_threshold: float = 0.8
-    adjust_noise_seconds: float = 0.4
+    adjust_noise_seconds: float = 1.5
     device_index: int | None = None
     device_name_keyword: str | None = None
 
@@ -201,6 +201,8 @@ class SpeechToText:
         """从默认麦克风录制一句话，并转换为文字。
 
         返回空字符串表示没有听到可用语音；抛出 SpeechToTextError 表示设备或网络等能力不可用。
+
+        环境变量 DEBUG_SAVE_AUDIO=1 可将录制音频保存为 WAV 文件，便于排查麦克风问题。
         """
 
         def emit_status(message: str) -> None:
@@ -216,6 +218,10 @@ class SpeechToText:
                 self._recognizer.adjust_for_ambient_noise(
                     source, duration=self.config.adjust_noise_seconds
                 )
+                # 针对 Realtek 阵列等设备：校准后稍微下调阈值，避免弱信号语音被截断。
+                self._recognizer.energy_threshold = max(
+                    50, int(self._recognizer.energy_threshold * 0.7)
+                )
                 emit_status("请开始说话...")
                 audio = self._recognizer.listen(
                     source,
@@ -228,6 +234,8 @@ class SpeechToText:
         except OSError as exc:
             raise SpeechToTextError("无法打开麦克风，请检查录音设备或 PyAudio 安装。") from exc
 
+        self._save_debug_audio(audio)
+
         try:
             return self._recognizer.recognize_google(audio, language=self.config.language)
         except self._sr.UnknownValueError:
@@ -237,3 +245,23 @@ class SpeechToText:
             raise SpeechToTextError(
                 "语音识别服务请求失败，请检查网络连接，或临时改用键盘输入。"
             ) from exc
+
+    def _save_debug_audio(self, audio: object) -> None:
+        """当 DEBUG_SAVE_AUDIO=1 时将录制音频写入 WAV 文件，用于排查麦克风问题。"""
+
+        if os.getenv("DEBUG_SAVE_AUDIO") != "1":
+            return
+
+        try:
+            import time
+            from pathlib import Path
+
+            debug_dir = Path.cwd() / "debug_audio"
+            debug_dir.mkdir(exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = debug_dir / f"mic_{self._device_index or 'default'}_{timestamp}.wav"
+            with open(filename, "wb") as wav_file:
+                wav_file.write(audio.get_wav_data())  # type: ignore[union-attr]
+            # 不通过 status_handler 输出，避免干扰终端 UI；静默写入。
+        except Exception:
+            pass  # 调试保存失败不影响主流程

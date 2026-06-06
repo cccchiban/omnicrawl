@@ -26,8 +26,8 @@ class AgentError(RuntimeError):
     """Agent 循环、工具调用或安全校验失败时抛出。"""
 
 
-class UserDeclinedOperation(AgentError):
-    """用户在确认弹窗中选择 NO 时抛出。"""
+class _EmptyAgentReply(RuntimeError):
+    """网关请求成功但没有返回可用文本，交由上层按策略重试。"""
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,32 @@ class _AgentReplyStreamer:
             return
 
         if self._inside_plain_final:
-            self._emit(delta)
+            # 即使已进入普通文本模式，后续增量仍可能包含 <tool> 或 <final>
+            # 标签。例如模型先输出"好的，开始安装。"再输出 <tool>...</tool>。
+            # 保留尾部少量字符用于跨 delta 边界的标签检测，避免工具 JSON
+            # 被当成普通文本直接展示在终端。
+            combined = self._prefix_buffer + delta
+            lowered = combined.lower()
+            if "<tool" in lowered or "<final" in lowered:
+                # 找到标签起始位置，只发送标签前的安全文本
+                tool_pos = lowered.find("<tool")
+                final_pos = lowered.find("<final")
+                tag_pos = len(lowered)
+                if tool_pos >= 0:
+                    tag_pos = min(tag_pos, tool_pos)
+                if final_pos >= 0:
+                    tag_pos = min(tag_pos, final_pos)
+                if tag_pos > 0:
+                    self._emit(combined[:tag_pos])
+                self._closed = True
+                self._prefix_buffer = ""
+                return
+            keep = min(len(combined), len(self._TOOL_TAG))
+            if len(combined) > keep:
+                self._emit(combined[:-keep])
+                self._prefix_buffer = combined[-keep:]
+            else:
+                self._prefix_buffer = combined
             return
 
         if not self._inside_final:
@@ -129,6 +154,9 @@ class _AgentReplyStreamer:
         if self._inside_final and not self._closed and self._tail_buffer:
             self._emit(self._tail_buffer)
             self._tail_buffer = ""
+        if self._inside_plain_final and not self._closed and self._prefix_buffer:
+            self._emit(self._prefix_buffer)
+            self._prefix_buffer = ""
 
     def _push_final_text(self, text: str) -> None:
         self._tail_buffer += text
@@ -185,16 +213,21 @@ class AgentConfig:
     """本地 Agent 配置。
 
     workspace_root 约束所有文件工具的访问范围，避免模型误读或误写项目外路径。
-    max_steps 控制单轮任务最多可连续调用多少次模型/工具，防止协议异常时无限循环。
+    request_retry_count 控制空响应重试次数；request_timeout_seconds 控制每次模型请求超时。
     """
 
     llm: LLMConfig = field(default_factory=load_llm_config)
     workspace_root: Path = field(default_factory=lambda: Path.cwd())
-    max_steps: int = field(
-        default_factory=lambda: _read_int_env("AGENT_MAX_STEPS", 16, min_value=1, max_value=100)
-    )
     max_history_turns: int = 6
     max_tool_output_chars: int = 6000
+    request_retry_count: int = field(
+        default_factory=lambda: _read_int_env("AGENT_REQUEST_RETRY_COUNT", 5, min_value=1, max_value=10)
+    )
+    request_timeout_seconds: int = field(
+        default_factory=lambda: _read_int_env(
+            "AGENT_REQUEST_TIMEOUT_SECONDS", 180, min_value=1, max_value=600
+        )
+    )
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
     memory_enabled: bool = True
@@ -206,8 +239,17 @@ class AgentConfig:
     )
 
     def __post_init__(self) -> None:
-        self.max_steps = _validate_int_range(
-            "AGENT_MAX_STEPS", self.max_steps, min_value=1, max_value=100
+        self.request_retry_count = _validate_int_range(
+            "AGENT_REQUEST_RETRY_COUNT",
+            self.request_retry_count,
+            min_value=1,
+            max_value=10,
+        )
+        self.request_timeout_seconds = _validate_int_range(
+            "AGENT_REQUEST_TIMEOUT_SECONDS",
+            self.request_timeout_seconds,
+            min_value=1,
+            max_value=600,
         )
         self.command_timeout_seconds = _validate_int_range(
             "AGENT_COMMAND_TIMEOUT_SECONDS",
@@ -279,6 +321,13 @@ class LocalToolAgent:
         except MemoryStoreError as exc:
             raise AgentError(str(exc)) from exc
 
+    def reset_conversation(self) -> None:
+        """开启新对话：清空对话历史和未完成任务缓存，保留工具、记忆和 Skill 配置。"""
+
+        self._history.clear()
+        self._pending_task_messages = None
+        self._active_skills = []
+
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""
 
@@ -305,6 +354,7 @@ class LocalToolAgent:
         user_text: str,
         on_delta: Callable[[str], None],
         on_status: Callable[[str], None] | None = None,
+        on_tool_result: Callable[[ToolCall, ToolResult], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
 
@@ -317,6 +367,7 @@ class LocalToolAgent:
             raise AgentError("用户输入为空，无法发送给 Agent。")
 
         status = on_status or (lambda _message: None)
+        report_tool_result = on_tool_result or (lambda _tool_call, _result: None)
 
         # 处理 /skill:name 命令
         self._active_skills = []
@@ -347,7 +398,8 @@ class LocalToolAgent:
 
         all_reasoning_parts: list[str] = []
         has_tool_calls = False
-        for step in range(1, self.config.max_steps + 1):
+        step = 1
+        while True:
             raw_reply, reasoning, streamed_final = self._request_agent_reply(working_messages, on_delta)
             if reasoning:
                 all_reasoning_parts.append(reasoning)
@@ -371,7 +423,8 @@ class LocalToolAgent:
             else:
                 status(f"步骤 {step} — 请求 {tool_call.name}")
                 tool_result = self._run_tool(tool, tool_call.arguments)
-                status("")  # 通知调用方重新启动等待动画
+            report_tool_result(tool_call, tool_result)
+            status("")  # 通知调用方重新启动等待动画
 
             assistant_msg: dict[str, str] = {"role": "assistant", "content": raw_reply}
             if reasoning:
@@ -385,15 +438,7 @@ class LocalToolAgent:
                     },
                 ]
             )
-
-        final_reply = (
-            f"已达到本轮最多 {self.config.max_steps} 步限制，任务尚未完全结束。"
-            "请回复「继续」让我基于现有上下文接着处理。"
-        )
-        self._pending_task_messages = working_messages
-        on_delta(final_reply)
-        self._append_history(text, final_reply)
-        return final_reply
+            step += 1
 
     def _request_agent_reply(
         self,
@@ -406,6 +451,26 @@ class LocalToolAgent:
         保留在 working_messages 里并持续回传 API。
         """
 
+        last_empty_reply: _EmptyAgentReply | None = None
+        for attempt in range(1, self.config.request_retry_count + 1):
+            try:
+                return self._request_agent_reply_once(messages, on_delta)
+            except _EmptyAgentReply as exc:
+                last_empty_reply = exc
+                if attempt >= self.config.request_retry_count:
+                    break
+
+        raise AgentError(
+            f"Agent 连续 {self.config.request_retry_count} 次返回空响应，已停止本轮请求。"
+        ) from last_empty_reply
+
+    def _request_agent_reply_once(
+        self,
+        messages: list[dict[str, str]],
+        on_delta: Callable[[str], None],
+    ) -> tuple[str, str, bool]:
+        """执行一次模型流式请求；空响应由调用方统一重试。"""
+
         try:
             stream = self._client.responses.create(
                 model=self.config.llm.model,
@@ -413,6 +478,7 @@ class LocalToolAgent:
                 input=messages,
                 stream=True,
                 extra_body=self._build_extra_body(),
+                timeout=self.config.request_timeout_seconds,
             )
         except Exception as exc:
             raise AgentError(f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}") from exc
@@ -433,8 +499,8 @@ class LocalToolAgent:
 
         final_streamer.finish()
         reply = "".join(chunks)
-        if not reply:
-            raise AgentError("Agent 返回内容为空或格式不可解析。")
+        if not reply.strip():
+            raise _EmptyAgentReply("Agent 返回内容为空或格式不可解析。")
 
         reasoning = "".join(reasoning_chunks).strip()
         return reply.strip(), reasoning, final_streamer.streamed
@@ -482,7 +548,7 @@ class LocalToolAgent:
         """执行工具；所有工具调用都先经过人工确认。"""
 
         if tool.requires_confirmation and not self._confirm(tool.name, arguments):
-            raise UserDeclinedOperation(f"用户选择 NO，已取消执行：{tool.name}。")
+            return ToolResult(ok=False, output=f"用户取消执行：{tool.name}。")
 
         try:
             result = tool.run(arguments)

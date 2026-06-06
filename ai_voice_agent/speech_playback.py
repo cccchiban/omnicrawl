@@ -267,7 +267,7 @@ class FullScreenSpeechPlayer:
                 self._tui.set_status("已打断朗读")
                 return True, submitted or None
 
-        self._tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 或输入“退出”结束")
+        self._tui.set_status("Enter 发送，空 Enter 录音，Ctrl+C 两次退出")
         if input_buffer:
             return False, "".join(input_buffer).strip() or None
         return False, None
