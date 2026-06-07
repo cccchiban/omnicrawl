@@ -8,6 +8,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .approval import (
+    APPROVAL_MODE_AUTO,
+    APPROVAL_MODE_REVIEW,
+    load_approval_mode,
+    normalize_approval_mode,
+)
 from .llm import LLMConfig, OpenAIResponseLLM, VALID_REASONING_EFFORTS, load_llm_config
 from .memory import (
     MemoryStore,
@@ -20,6 +26,14 @@ from .skill import SkillManager, SkillMatchResult
 
 
 AGENTS_INSTRUCTIONS_FILE = "AGENTS.md"
+TOOL_REVIEW_SYSTEM_PROMPT = (
+    "你是本地 AI Agent 的工具调用安全审查器。"
+    "你只判断这一次工具调用是否可以自动批准，不执行工具，也不补写方案。"
+    "请用严格 JSON 回复：{\"approve\": true/false, \"reason\": \"一句中文理由\"}。"
+    "当请求明显越界访问、读取密钥、破坏系统、删除大量文件、修改真实生产数据、"
+    "执行无法判断影响的危险命令，或参数不足以判断时，必须拒绝。"
+    "普通读取工作区文件、搜索文本、局部写入项目文件、运行构建测试命令可以批准。"
+)
 
 
 class AgentError(RuntimeError):
@@ -244,6 +258,7 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     memory_enabled: bool = True
     memory_directory: str = "memory"
+    approval_mode: str = field(default_factory=load_approval_mode)
     command_timeout_seconds: int = field(
         default_factory=lambda: _read_int_env(
             "AGENT_COMMAND_TIMEOUT_SECONDS", 120, min_value=1, max_value=300
@@ -271,6 +286,7 @@ class AgentConfig:
         )
         if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
             raise AgentError("memory_directory 必须是非空字符串。")
+        self.approval_mode = normalize_approval_mode(self.approval_mode)
 
 
 class LocalToolAgent:
@@ -337,6 +353,17 @@ class LocalToolAgent:
 
         self._history.clear()
         self._active_skills = []
+
+    @property
+    def approval_mode(self) -> str:
+        """当前工具审批模式，供 TUI 展示和斜杠命令切换。"""
+
+        return self.config.approval_mode
+
+    def set_approval_mode(self, mode: str) -> None:
+        """运行时切换审批模式；持久化由调用方负责写入 config.json。"""
+
+        self.config.approval_mode = normalize_approval_mode(mode)
 
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""
@@ -548,10 +575,13 @@ class LocalToolAgent:
         return raw_reply.strip()
 
     def _run_tool(self, tool: ToolDefinition, arguments: dict[str, Any]) -> ToolResult:
-        """执行工具；所有工具调用都先经过人工确认。"""
+        """执行工具；需要审批的工具按当前模式决定是否放行。"""
 
-        if tool.requires_confirmation and not self._confirm(tool.name, arguments):
-            return ToolResult(ok=False, output=f"用户取消执行：{tool.name}。")
+        if tool.requires_confirmation:
+            approved, denial_reason = self._approve_tool_call(tool, arguments)
+            if not approved:
+                reason = denial_reason or f"未批准执行：{tool.name}。"
+                return ToolResult(ok=False, output=reason)
 
         try:
             result = tool.run(arguments)
@@ -562,6 +592,77 @@ class LocalToolAgent:
             ok=result.ok,
             output=self._truncate_tool_output(result.output),
         )
+
+    def _approve_tool_call(
+        self,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """根据审批模式处理工具许可，返回 (是否批准, 拒绝原因)。"""
+
+        mode = self.config.approval_mode
+        if mode == APPROVAL_MODE_AUTO:
+            return True, ""
+        if mode == APPROVAL_MODE_REVIEW:
+            return self._review_tool_call(tool, arguments)
+        return self._confirm(tool.name, arguments), f"用户取消执行：{tool.name}。"
+
+    def _review_tool_call(
+        self,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """用同一模型的非思考模式审查工具调用是否可自动批准。"""
+
+        review_payload = {
+            "tool": tool.name,
+            "description": tool.description,
+            "arguments": arguments,
+            "workspace_root": str(self.workspace_root),
+        }
+        try:
+            response = self._client.responses.create(
+                model=self.config.llm.model,
+                instructions=TOOL_REVIEW_SYSTEM_PROMPT,
+                input=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(review_payload, ensure_ascii=False, indent=2),
+                    }
+                ],
+                extra_body={"thinking": {"type": "disabled"}},
+                timeout=min(self.config.request_timeout_seconds, 60),
+            )
+        except Exception as exc:
+            return False, f"自动审查请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
+
+        review_text = OpenAIResponseLLM._extract_text(response)
+        approved, reason = self._parse_tool_review_response(review_text)
+        if approved:
+            return True, ""
+        return False, f"自动审查拒绝执行：{reason or '模型未给出批准结论。'}"
+
+    @staticmethod
+    def _parse_tool_review_response(review_text: str) -> tuple[bool, str]:
+        """解析审查模型 JSON；不可解析时按拒绝处理。"""
+
+        text = review_text.strip()
+        if not text:
+            return False, "审查模型返回为空。"
+
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        payload = match.group(0) if match else text
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return False, f"审查模型返回不是 JSON：{text}"
+
+        if not isinstance(data, dict):
+            return False, "审查模型返回不是 JSON 对象。"
+
+        reason_value = data.get("reason", "")
+        reason = reason_value.strip() if isinstance(reason_value, str) else ""
+        return data.get("approve") is True, reason
 
     def _build_tools(self) -> dict[str, ToolDefinition]:
         """注册内置工具；所有工具执行前统一走确认门。"""

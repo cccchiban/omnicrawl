@@ -20,6 +20,7 @@
 ┌────────────────────────────────────────┐
 │ AI 语音 Agent                          │
 │ thinking: 已启用，推理强度：max         │
+│ approval: 人工确认                      │
 │ config: D:\...\config.json             │
 │ 输入栏 Ctrl+C 两次或关闭窗口结束会话    │
 └────────────────────────────────────────┘
@@ -49,11 +50,14 @@ AI 正在思考  (｡･ω･｡)...
 Agent 工具调用属于次级状态，显示在消息区：
 
 ```text
-· Agent 第 1 步请求工具：read_file
-· 执行记录
-  |
-  —成功
+[步骤 2 — 请求 run_command]
+执行记录：成功
 ```
+
+当 `approval.mode` 为 `manual` 时，受限工具会先显示确认页；当模式为 `auto` 或
+`review` 时，不显示确认页，只显示步骤与执行记录。输入 `/approval:manual`、
+`/approval:auto`、`/approval:review` 可以在 TUI 中切换模式，并同步写入
+`config.json`。
 
 ## 技术方案
 
@@ -66,6 +70,8 @@ Agent 工具调用属于次级状态，显示在消息区：
 - 输出锁：所有动态状态行通过同一个渲染器写入，降低错行概率。
 - 轻量 Markdown 渲染：当前行用 ANSI 重绘做实时预览，完整行边界处理标题、列表、引用、代码块、管道表格、加粗、行内代码和链接。
 - `msvcrt`：Windows 下读取单字符输入，用于斜杠命令补全和朗读期间打断。
+- 审批模式：`manual` 走 TUI 确认页，`auto` 直接放行，`review` 使用同一模型但强制
+  `thinking` 为 `disabled` 审查本次工具调用。
 
 程序会尝试在 Windows 控制台中开启 Virtual Terminal Processing；不支持 ANSI 时会退化为无颜色输出。
 

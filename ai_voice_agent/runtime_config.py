@@ -66,6 +66,25 @@ def load_config_data(config_path: str | Path | None = None) -> dict[str, Any]:
     return data
 
 
+def save_config_data(data: Mapping[str, Any], config_path: str | Path | None = None) -> Path:
+    """把运行配置写回 JSON 文件，供 TUI 斜杠命令持久化开关状态。"""
+
+    if not isinstance(data, Mapping):
+        raise RuntimeConfigError("配置数据必须是 JSON 对象。")
+
+    path = resolve_config_path(config_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(dict(data), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise RuntimeConfigError(f"写入配置文件失败：{path}，{exc}") from exc
+
+    return path
+
+
 def get_section(data: Mapping[str, Any], key: str) -> dict[str, Any]:
     """安全读取 JSON 子对象。"""
 

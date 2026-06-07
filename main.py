@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ai_voice_agent.agent import AgentConfig, AgentError, LocalToolAgent
+from ai_voice_agent.approval import approval_mode_label, load_approval_mode
 from ai_voice_agent.audio_setup import (
     VoiceConfigError,
     create_speech_to_text,
@@ -11,7 +12,7 @@ from ai_voice_agent.audio_setup import (
 )
 from ai_voice_agent.chat_session import run_inline_chat
 from ai_voice_agent.llm import LLMError, load_llm_config
-from ai_voice_agent.runtime_config import resolve_config_path
+from ai_voice_agent.runtime_config import RuntimeConfigError, resolve_config_path
 from ai_voice_agent.terminal_ui import TerminalUI
 from ai_voice_agent.windows_launcher import configure_console_encoding, launch_in_powershell_window
 
@@ -23,10 +24,14 @@ def main() -> None:
     try:
         config = load_llm_config()
         voice_config = load_voice_config()
+        approval_mode = load_approval_mode()
     except LLMError as exc:
         print(f"配置加载失败：{exc}")
         return
     except VoiceConfigError as exc:
+        print(f"配置加载失败：{exc}")
+        return
+    except RuntimeConfigError as exc:
         print(f"配置加载失败：{exc}")
         return
     ui = TerminalUI(model_label=config.model)
@@ -42,6 +47,7 @@ def main() -> None:
         "AI 语音 Agent",
         [
             f"thinking: {enabled_label}{reasoning_info}",
+            f"approval: {approval_mode_label(approval_mode)}",
             f"voice: 语音转文字 {stt_label}，文字转语音 {tts_label}",
             f"config: {config_label}",
             "输入栏 Ctrl+C 两次或关闭窗口结束会话",
@@ -65,7 +71,13 @@ def main() -> None:
         ui.clear_transient_output()
 
     try:
-        agent = LocalToolAgent(AgentConfig(llm=config, workspace_root=Path(__file__).resolve().parent))
+        agent = LocalToolAgent(
+            AgentConfig(
+                llm=config,
+                workspace_root=Path(__file__).resolve().parent,
+                approval_mode=approval_mode,
+            )
+        )
     except AgentError as exc:
         print(f"Agent 初始化失败：{exc}")
         return

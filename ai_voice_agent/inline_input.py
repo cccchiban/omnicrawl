@@ -16,6 +16,8 @@ INLINE_PASTE_BURST_QUIET_SECONDS = 0.03
 INLINE_BRACKETED_PASTE_ON = "\033[?2004h"
 INLINE_BRACKETED_PASTE_OFF = "\033[?2004l"
 INLINE_INPUT_WINDOW_ROWS = 8
+INLINE_INPUT_HISTORY_LIMIT = 100
+_INLINE_INPUT_HISTORY: list[str] = []
 
 
 def _prompt_visible_width(prompt: str, ui: TerminalUI | None) -> int:
@@ -165,6 +167,69 @@ def _format_completion_menu_lines(
     return lines
 
 
+def _append_inline_input_history(
+    history: list[str],
+    text: str,
+    *,
+    limit: int = INLINE_INPUT_HISTORY_LIMIT,
+) -> None:
+    """记录已提交输入，跳过空输入和连续重复项，避免历史里塞满噪声。"""
+
+    if not text.strip():
+        return
+    if history and history[-1] == text:
+        return
+
+    history.append(text)
+    overflow = len(history) - max(1, limit)
+    if overflow > 0:
+        del history[:overflow]
+
+
+class _InlineInputHistoryBrowser:
+    """维护单次输入编辑中的历史浏览状态。
+
+    `history` 列表跨多次读取复用；浏览器只保存当前输入框的临时位置和草稿。
+    第一次按上键时保存正在编辑的草稿，按下键越过最新历史后会恢复这份草稿。
+    """
+
+    def __init__(self, history: list[str]) -> None:
+        self._history = history
+        self._index: int | None = None
+        self._draft = ""
+
+    @property
+    def is_browsing(self) -> bool:
+        return self._index is not None
+
+    def reset(self) -> None:
+        self._index = None
+        self._draft = ""
+
+    def previous(self, current_text: str) -> str | None:
+        if not self._history:
+            return None
+
+        if self._index is None:
+            self._draft = current_text
+            self._index = len(self._history) - 1
+        else:
+            self._index = max(0, self._index - 1)
+        return self._history[self._index]
+
+    def next(self) -> str | None:
+        if self._index is None:
+            return None
+
+        if self._index < len(self._history) - 1:
+            self._index += 1
+            return self._history[self._index]
+
+        draft = self._draft
+        self.reset()
+        return draft
+
+
 def _is_inline_escape_sequence_complete(sequence: str) -> bool:
     """判断行内输入读取到的 ESC 序列是否完整。"""
 
@@ -309,14 +374,17 @@ def read_line_autocomplete(
     prompt: str,
     commands: list[str],
     ui: TerminalUI | None = None,
+    history: list[str] | None = None,
 ) -> str:
-    """逐字符读取输入，在输入 / 时实时显示匹配命令。"""
+    """逐字符读取输入，在输入 / 时实时显示匹配命令，并支持上下键浏览历史。"""
 
     import msvcrt
 
     if ui is None or not ui.capabilities.ansi:
         return input(prompt).strip()
 
+    input_history = _INLINE_INPUT_HISTORY if history is None else history
+    history_browser = _InlineInputHistoryBrowser(input_history)
     prompt_text = prompt.rsplit("\n", 1)[-1]
     prompt_width = _prompt_visible_width(prompt, ui)
     menu = _InlineCompletionMenu(ui)
@@ -383,6 +451,9 @@ def read_line_autocomplete(
         terminal_width = shutil.get_terminal_size((100, 30)).columns
         content_width = max(1, terminal_width - prompt_width - 1)
         return "\n" not in text and len(_split_inline_input_rows_with_offsets(text, content_width)) == 1
+
+    def _completion_menu_active() -> bool:
+        return _supports_completion_menu() and bool(matches)
 
     def _redraw_input() -> None:
         nonlocal rendered_input_lines, rendered_cursor_row
@@ -498,7 +569,7 @@ def read_line_autocomplete(
         _redraw_input()
         _render_menu()
 
-    def _move_cursor_vertical(delta: int) -> None:
+    def _move_cursor_vertical(delta: int) -> bool:
         nonlocal cursor
         (
             rows,
@@ -513,20 +584,57 @@ def read_line_autocomplete(
         ) = _input_layout()
         target_row = max(0, min(len(rows) - 1, current_row + delta))
         if target_row == current_row:
-            return
+            return False
         target_text, target_start, _target_end = rows[target_row]
         target_prefix = _terminal_take_display_width(target_text, current_col)
         cursor = target_start + len(target_prefix)
         _redraw_input()
         _render_menu()
+        return True
+
+    def _replace_input_text(next_text: str) -> None:
+        nonlocal text, cursor
+        text = next_text
+        cursor = len(text)
+        _redraw_input()
+        _update_matches()
+
+    def _show_previous_history() -> None:
+        previous_text = history_browser.previous(text)
+        if previous_text is not None:
+            _replace_input_text(previous_text)
+
+    def _show_next_history() -> None:
+        next_text = history_browser.next()
+        if next_text is not None:
+            _replace_input_text(next_text)
+
+    def _handle_up_key() -> None:
+        if _completion_menu_active():
+            _move_selection(-1)
+            return
+        if history_browser.is_browsing:
+            _show_previous_history()
+            return
+        if not _move_cursor_vertical(-1):
+            _show_previous_history()
+
+    def _handle_down_key() -> None:
+        if _completion_menu_active():
+            _move_selection(1)
+            return
+        if history_browser.is_browsing:
+            _show_next_history()
+            return
+        _move_cursor_vertical(1)
 
     def _handle_navigation_key(key: str) -> None:
         nonlocal text, cursor
         if key == "H":
-            _move_selection(-1)
+            _handle_up_key()
             return
         if key == "P":
-            _move_selection(1)
+            _handle_down_key()
             return
         if key == "K":
             _move_cursor(-1)
@@ -545,6 +653,7 @@ def read_line_autocomplete(
             _render_menu()
             return
         if key == "S" and cursor < len(text):
+            history_browser.reset()
             text = text[:cursor] + text[cursor + 1 :]
             _redraw_input()
             _update_matches()
@@ -553,6 +662,7 @@ def read_line_autocomplete(
         nonlocal text, cursor
         if not inserted:
             return
+        history_browser.reset()
         normalized = _normalize_inline_pasted_text(inserted)
         text = text[:cursor] + normalized + text[cursor:]
         cursor += len(normalized)
@@ -615,10 +725,12 @@ def read_line_autocomplete(
             )
             _restore_bracketed_paste()
             _clear_input_area_for_submit()
+            _append_inline_input_history(input_history, text)
             return text if text.strip() else ""
 
         if char == "\t":
             if _supports_completion_menu() and matches:
+                history_browser.reset()
                 text = matches[match_index]
                 cursor = len(text)
                 _redraw_input()
@@ -645,16 +757,10 @@ def read_line_autocomplete(
                 _hide_matches()
                 continue
             if sequence in {"[A", "OA"}:
-                if _supports_completion_menu():
-                    _move_selection(-1)
-                else:
-                    _move_cursor_vertical(-1)
+                _handle_up_key()
                 continue
             if sequence in {"[B", "OB"}:
-                if _supports_completion_menu():
-                    _move_selection(1)
-                else:
-                    _move_cursor_vertical(1)
+                _handle_down_key()
                 continue
             if sequence in {"[D", "OD"}:
                 _move_cursor(-1)
@@ -673,6 +779,7 @@ def read_line_autocomplete(
                 _render_menu()
                 continue
             if sequence == "[3~" and cursor < len(text):
+                history_browser.reset()
                 text = text[:cursor] + text[cursor + 1 :]
                 _redraw_input()
                 _update_matches()
@@ -685,16 +792,10 @@ def read_line_autocomplete(
         if char in {"\x00", "\xe0"}:
             key_code = msvcrt.getwch()
             if key_code == "H":
-                if _supports_completion_menu():
-                    _move_selection(-1)
-                else:
-                    _move_cursor_vertical(-1)
+                _handle_up_key()
                 continue
             if key_code == "P":
-                if _supports_completion_menu():
-                    _move_selection(1)
-                else:
-                    _move_cursor_vertical(1)
+                _handle_down_key()
                 continue
             _handle_navigation_key(key_code)
             continue
@@ -705,6 +806,7 @@ def read_line_autocomplete(
 
         if char == "\b":
             if cursor > 0:
+                history_browser.reset()
                 text = text[:cursor - 1] + text[cursor:]
                 cursor -= 1
                 _redraw_input()
@@ -713,6 +815,7 @@ def read_line_autocomplete(
 
         if char == "\x7f":
             if cursor < len(text):
+                history_browser.reset()
                 text = text[:cursor] + text[cursor + 1:]
                 _redraw_input()
                 _update_matches()

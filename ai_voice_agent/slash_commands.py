@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from .approval import (
+    APPROVAL_MODE_AUTO,
+    APPROVAL_MODE_MANUAL,
+    APPROVAL_MODE_REVIEW,
+    approval_mode_label,
+    save_approval_mode,
+)
 from .agent import AgentError, LocalToolAgent
+from .runtime_config import RuntimeConfigError
 
 
 # ── 工具确认展示 ──────────────────────────────────────────────
@@ -139,10 +147,47 @@ def print_memory_clean_result(agent: LocalToolAgent) -> None:
     print(format_memory_clean_result(agent))
 
 
+def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理审批模式斜杠命令；返回 None 表示不是审批命令。"""
+
+    normalized = command.strip().lower()
+    mode_by_command = {
+        "/approval:manual": APPROVAL_MODE_MANUAL,
+        "/approval:auto": APPROVAL_MODE_AUTO,
+        "/approval:review": APPROVAL_MODE_REVIEW,
+        "/auto-approve:off": APPROVAL_MODE_MANUAL,
+        "/auto-approve:on": APPROVAL_MODE_AUTO,
+        "/auto-review:on": APPROVAL_MODE_REVIEW,
+    }
+    if normalized == "/approval":
+        return f"当前工具审批模式：{approval_mode_label(agent.approval_mode)}。"
+    if normalized not in mode_by_command:
+        return None
+
+    mode = mode_by_command[normalized]
+    agent.set_approval_mode(mode)
+    try:
+        path = save_approval_mode(mode)
+    except RuntimeConfigError as exc:
+        return f"审批模式已临时切换为 {approval_mode_label(mode)}，但写入 config.json 失败：{exc}"
+    return f"审批模式已切换为 {approval_mode_label(mode)}，并已同步到 {path}。"
+
+
 def build_slash_commands(agent: LocalToolAgent) -> list[str]:
     """构建所有可用的斜杠命令列表（含内置命令和动态 Skill 命令）。"""
 
-    commands = ["/new", "/skills", "/memory:clean"]
+    commands = [
+        "/new",
+        "/skills",
+        "/memory:clean",
+        "/approval",
+        "/approval:manual",
+        "/approval:auto",
+        "/approval:review",
+        "/auto-approve:off",
+        "/auto-approve:on",
+        "/auto-review:on",
+    ]
     sm = agent.skill_manager
     if sm is not None:
         for meta in sm.list_all():

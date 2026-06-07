@@ -8,3 +8,4 @@
 - `skill_system_impl.md`：Agent Skill 子系统的设计与实现记录。
 - `SKILL_INSTALLATION.md`：AI Skill 安装、编写、验证和渐进式披露使用规范。
 - `memory_system_design.md`：Agent 记忆系统的流程、存储结构和清理机制设计。
+- `MCP_DESIGN_TECHNICAL.md`：MCP 子系统设计、技术方案、安全策略和实施路线。
