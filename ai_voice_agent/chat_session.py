@@ -9,6 +9,7 @@ from .slash_commands import (
     format_tool_confirmation,
     handle_approval_command,
     print_memory_clean_result,
+    print_mcp_status,
     print_skills_list,
 )
 from .speech_playback import StreamingSpeechPlayer
@@ -121,6 +122,10 @@ def run_inline_chat(
 
         if user_text.strip() == "/memory:clean":
             print_memory_clean_result(agent)
+            continue
+
+        if user_text.strip() == "/mcp":
+            print_mcp_status(agent)
             continue
 
         approval_message = handle_approval_command(agent, user_text)

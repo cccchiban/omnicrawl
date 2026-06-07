@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from .approval import (
@@ -83,6 +84,9 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
             return f"写入 {len(memories)} 条记忆"
         return ""
 
+    if "." in tool_name and arguments:
+        return f"参数：{_truncate_for_display(json.dumps(arguments, ensure_ascii=False), 240)}"
+
     return ""
 
 
@@ -92,7 +96,11 @@ def format_tool_confirmation(tool_name: str, arguments: dict[str, Any]) -> str:
     只读工具仅显示描述，写入/执行工具额外展示关键内容供审查。
     """
 
-    description = _TOOL_HUMAN_DESCRIPTIONS.get(tool_name, "执行操作")
+    description = _TOOL_HUMAN_DESCRIPTIONS.get(tool_name)
+    if description is None and "." in tool_name:
+        description = f"执行 MCP 工具 {tool_name}"
+    if description is None:
+        description = "执行操作"
     detail = _format_dangerous_tool_detail(tool_name, arguments)
 
     lines = [f"Agent 想要{description}。"]
@@ -147,6 +155,18 @@ def print_memory_clean_result(agent: LocalToolAgent) -> None:
     print(format_memory_clean_result(agent))
 
 
+def format_mcp_status(agent: LocalToolAgent) -> str:
+    """格式化 MCP 状态为可展示文本。"""
+
+    return agent.format_mcp_status()
+
+
+def print_mcp_status(agent: LocalToolAgent) -> None:
+    """行内 UI 打印 MCP 状态。"""
+
+    print(format_mcp_status(agent))
+
+
 def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
     """处理审批模式斜杠命令；返回 None 表示不是审批命令。"""
 
@@ -180,6 +200,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/new",
         "/skills",
         "/memory:clean",
+        "/mcp",
         "/approval",
         "/approval:manual",
         "/approval:auto",

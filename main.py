@@ -70,6 +70,7 @@ def main() -> None:
     if transient_output_marked and speech_to_text_ready and text_to_speech_ready:
         ui.clear_transient_output()
 
+    agent: LocalToolAgent | None = None
     try:
         agent = LocalToolAgent(
             AgentConfig(
@@ -91,6 +92,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n对话结束。")
     finally:
+        if agent is not None:
+            agent.close()
         if text_to_speech is not None:
             text_to_speech.stop()
 

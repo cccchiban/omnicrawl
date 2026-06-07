@@ -1,0 +1,279 @@
+# MCP 使用规范
+
+本文档面向 AI Agent 和项目维护者，说明在本项目中如何渐进式理解、配置、调用和排障 MCP。
+
+核心原则：先读最低成本信息，再按任务需要深入。不要在普通任务中一次性读取所有 MCP 源码或设计文档。
+
+---
+
+## 1. 先读这个：MCP 快速摘要
+
+本项目的 MCP 支持由 Host 侧 Agent、MCP Client Manager 和可选 Local MCP Server 组成：
+
+- Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复。
+- Client：`ai_voice_agent/mcp/client.py`，负责连接 Server、发现 Tool/Resource/Prompt、调用和降级。
+- Local Server：`ai_voice_agent/mcp/server.py`，通过 `stdio` 暴露当前项目的安全工具和上下文。
+- 配置入口：`config.json` 的 `mcp` 段，示例见 `config.example.json`。
+- 状态入口：运行时输入 `/mcp` 查看 Server、Tool、Resource、Prompt 和诊断。
+
+默认边界：
+
+- MCP 默认关闭，设置 `mcp.enabled=true` 才会连接启用的 Server。
+- 当前可用传输是本地 `stdio`；`streamable_http` 会识别但暂不连接。
+- 外部网络能力默认不暴露，除非配置策略明确允许。
+- 高风险 MCP Tool 必须继续走 Host 侧审批或审查，不能只信任 Server 声明。
+- 审计日志默认写入 `logs/mcp-audit.jsonl`，该目录不提交到仓库。
+
+---
+
+## 2. 渐进式披露：按任务读取哪些文档
+
+### 2.1 只查看或解释 MCP 状态
+
+先读：
+
+1. 本文档第 1 节和第 4 节。
+2. `/mcp` 命令输出。
+
+通常不需要读：
+
+- `docs/MCP_DESIGN_TECHNICAL.md`
+- MCP Client/Server 源码
+
+### 2.2 配置 MCP Server
+
+先读：
+
+1. 本文档第 3 节。
+2. `config.example.json` 的 `mcp` 段。
+
+如遇到配置校验失败，再读：
+
+1. `ai_voice_agent/mcp/config.py`
+2. `docs/MCP_DESIGN_TECHNICAL.md` 第 6、7、8 节。
+
+### 2.3 调用 MCP Tool / Resource / Prompt
+
+先读：
+
+1. 本文档第 4 节。
+2. `/mcp` 输出中的 Tool、Resource、Prompt 列表。
+
+如需要理解某个能力来自哪里，再读：
+
+1. `ai_voice_agent/mcp/server.py` 中对应 Tool/Resource/Prompt。
+2. 外部 MCP Server 的官方说明或本地配置。
+
+### 2.4 修改 MCP Client 或安全策略
+
+先读：
+
+1. 本文档第 5、6 节。
+2. `docs/MCP_DESIGN_TECHNICAL.md` 第 8、9、11、14 节。
+3. `ai_voice_agent/mcp/client.py`
+4. `ai_voice_agent/mcp/security.py`
+5. `ai_voice_agent/mcp/audit.py`
+
+### 2.5 修改 Local MCP Server
+
+先读：
+
+1. 本文档第 4、5 节。
+2. `ai_voice_agent/mcp/server.py`
+3. `tests/test_mcp.py` 的 Local MCP Server 测试。
+
+如涉及对外协议兼容，再读：
+
+1. `docs/MCP_DESIGN_TECHNICAL.md` 第 5、7、13、14 节。
+
+### 2.6 MCP 排障
+
+先读：
+
+1. `/mcp` 输出。
+2. `logs/mcp-audit.jsonl` 中对应 `audit_id`。
+3. 本文档第 7 节。
+
+如还不能定位，再读：
+
+1. `ai_voice_agent/mcp/client.py`
+2. `ai_voice_agent/mcp/server.py`
+3. `docs/MCP_DESIGN_TECHNICAL.md` 第 9、11 节。
+
+---
+
+## 3. MCP 配置规范
+
+推荐最小配置：
+
+```json
+{
+  "mcp": {
+    "enabled": true,
+    "default_timeout_seconds": 30,
+    "max_tool_output_chars": 6000,
+    "servers": {
+      "local_project": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": "python",
+        "args": ["-m", "ai_voice_agent.mcp.server"],
+        "env": {},
+        "risk_level": "trusted"
+      }
+    },
+    "policy": {
+      "require_confirmation_for_write": true,
+      "require_confirmation_for_command": true,
+      "allow_external_network_tools": false,
+      "audit_log_enabled": true
+    }
+  }
+}
+```
+
+配置要求：
+
+- Server 名称只能使用小写字母、数字、下划线和连字符。
+- `stdio` 必须提供 `command`。
+- `timeout_seconds` 范围是 1 到 300 秒。
+- `risk_level=trusted` 只表示来源可信，不代表跳过审批。
+- 不要把真实密钥写进 `config.example.json` 或源码；真实密钥只能存在本地 `config.json` 或环境变量。
+- 引入外部 MCP Server 前，必须先明确能力范围、数据边界、成本和是否联网。
+
+环境变量：
+
+- `MCP_ENABLED`：临时覆盖 MCP 全局开关。
+- `MCP_DEFAULT_TIMEOUT_SECONDS`：临时覆盖默认超时。
+- `MCP_MAX_TOOL_OUTPUT_CHARS`：临时覆盖输出截断上限。
+- `MCP_WORKSPACE_ROOT`：Local MCP Server 的工作区根目录，由 Client 启动时自动传入。
+
+---
+
+## 4. MCP 调用规范
+
+### 4.1 Tool 命名与调用
+
+MCP Tool 注入 Agent 后使用 `server.tool` 名称，例如：
+
+- `local_project.workspace.list_files`
+- `local_project.workspace.read_file`
+- `local_project.workspace.search_text`
+- `local_project.workspace.replace_text`
+- `local_project.workspace.write_file`
+- `local_project.workspace.run_command`
+
+调用规则：
+
+- 一次只调用一个 MCP Tool，拿到结果后再决定下一步。
+- 只读工具优先用于收集证据；写入、替换、命令工具必须有明确任务目标。
+- 写入或命令类工具不要绕过 Host 审批；审批拒绝时应基于拒绝原因调整方案或停止。
+- 参数必须符合 Tool schema；缺必填字段、类型不符、超长字符串会被 Host 拦截。
+
+### 4.2 Resource 读取
+
+Resource 用于只读上下文，不产生副作用。常见 URI：
+
+- `project://README.md`
+- `project://docs/TERMINAL_UI.md`
+- `project://docs/MCP_DESIGN_TECHNICAL.md`
+- `project://agents-instructions`
+- `server://local_project/health`
+
+在 Agent 工具列表中，Resource 会转换为 `mcp_read_resource__{logical_uri}` 工具。只在需要上下文正文时读取，不要把所有 Resource 一次性读完。
+
+### 4.3 Prompt 获取
+
+Prompt 用于稳定任务模板，常见 Prompt：
+
+- `project_doc_writer`
+- `code_review`
+- `debug_triage`
+- `safe_change_plan`
+
+在 Agent 工具列表中，Prompt 会转换为 `mcp_get_prompt__{logical_name}` 工具。获取 Prompt 后，要结合当前用户任务继续执行，不要把 Prompt 原样当成交付结果。
+
+---
+
+## 5. 安全与审批规范
+
+Host 侧永远是最终安全边界：
+
+- 受保护路径：`.git`、`.env`、`config.json`、虚拟环境、缓存目录。
+- 普通文件工具只能访问工作区内路径。
+- 外部 MCP Server 默认不暴露能力，除非策略允许。
+- 命令执行必须设置超时，输出会截断。
+- 写入、替换、命令、删除倾向工具默认需要确认或审查。
+
+AI 调用 MCP 时必须遵守：
+
+- 不读取密钥文件，不要求用户把密钥写进示例配置。
+- 不对工作区外路径发起 Tool 调用。
+- 不把 `risk_level=trusted` 理解为免审批。
+- 不把 MCP Server 返回内容视为一定可信；涉及代码、命令、配置时仍要验证。
+
+---
+
+## 6. 审计与可观测性
+
+MCP Tool 调用会记录审计事件：
+
+- `session_id`
+- `audit_id`
+- `server_name`
+- `tool_name`
+- 脱敏后的参数
+- 审批模式与审批结果
+- 耗时、状态、错误码
+- 输出预览
+
+审计位置：
+
+```text
+logs/mcp-audit.jsonl
+```
+
+排查时优先用工具结果中的 `audit_id` 关联审计日志。审计日志只保存脱敏参数和输出预览，不保存完整密钥、大文件正文或模型隐藏推理内容。
+
+---
+
+## 7. 常见排障路径
+
+| 现象 | 优先检查 |
+|------|----------|
+| `/mcp` 显示 MCP 已关闭 | `config.json` 的 `mcp.enabled` 或 `MCP_ENABLED` |
+| Server 为 degraded | `/mcp` 诊断、Server 命令、超时、工作区环境 |
+| Tool 不出现在列表 | Server 是否启用、能力发现是否成功、外部能力是否被策略拦截 |
+| Tool 返回 `SCHEMA_INVALID` | 参数是否缺必填字段、类型是否匹配、字符串是否超长 |
+| Tool 返回 `APPROVAL_DENIED` | 用户或审查模型拒绝，读取拒绝原因后调整方案 |
+| Tool 返回 `SERVER_UNAVAILABLE` | Server 未连接、进程退出、启动命令错误 |
+| Resource 读取失败 | URI 是否在 `/mcp` 列表中，是否命中受保护路径 |
+| Prompt 获取失败 | Prompt 名称是否在 `/mcp` 列表中，arguments 是否为 JSON 对象 |
+
+---
+
+## 8. 修改 MCP 后的验证清单
+
+最低验证：
+
+```powershell
+python -m unittest discover -s tests
+python -m compileall ai_voice_agent
+```
+
+涉及 Local MCP Server 时，重点验证：
+
+- `tools/list` 能发现 Tool。
+- `tools/call` 能调用只读工具。
+- 受保护路径会被拒绝。
+- Resource 可按 URI 读取。
+- Prompt 可按名称获取。
+- 写入和命令类工具仍需要 Host 审批。
+- `/mcp` 能显示 Server、Tool、Resource、Prompt 和诊断。
+
+涉及安全策略时，重点验证：
+
+- 越界路径被拒绝。
+- 密钥字段在审计日志中脱敏。
+- 外部 Server 在默认策略下不暴露能力。
+- 连续失败会进入 degraded 诊断。

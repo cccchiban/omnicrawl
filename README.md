@@ -26,6 +26,7 @@
 - `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；确认界面默认选中 `YES`，左右箭头可切换 `YES`/`NO`；按 Enter 提交当前选项，按 `Y` 直接执行，按 `N` 直接取消并把失败结果返回给 AI 继续处理。
 - `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时会用同一模型的非思考模式审查本次工具调用，审查通过才执行。自动模式不显示确认页，只显示步骤和执行记录。
 - 命令工具不是系统级沙箱；程序会用 `shell=True` 执行用户确认后的命令字符串。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
+- MCP 默认关闭；开启后会在启动时发现已启用的 MCP Server，并把 Tool 以 `server.tool` 名称追加到 Agent 工具列表，同时按需读取 Resource 和 Prompt。单个 Server 失败只会显示降级诊断，不影响内置工具。
 - Agent 不再限制单轮连续工具步骤；AI 返回空响应时会最多重试 5 次，每次请求超时 180 秒。可通过环境变量调整：
 
 ```powershell
@@ -67,12 +68,14 @@ python main.py
 - 直接输入文字：跳过录音，用键盘内容交给 Agent 处理。
 - 输入 `/new`：清空模型对话历史，开启新对话。
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
+- 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
 - 输入 `/approval`：查看当前工具审批模式；输入 `/approval:manual`、`/approval:auto`、`/approval:review` 可切换审批模式并同步写入 `config.json`。
 - 执行中按 `Ctrl+C`：取消当前操作并回到输入栏。
 - 输入栏按 `Ctrl+C`：第一次取消输入，连续第二次退出程序；也可以输入 `退出`、`结束` 或关闭窗口。
 
 终端 UI 的设计和限制见 `docs/TERMINAL_UI.md`。当前版本不新增第三方依赖，使用普通终端内联 UI。
 Skill 安装、编写和渐进式披露规范见 `docs/SKILL_INSTALLATION.md`。
+运行时系统提示词模板见 `ai_voice_agent/system_prompt.md`；模板只保留工具协议和按场景读取文档的路由说明，具体规范按需读取对应文档。
 
 ## 项目结构
 
@@ -80,6 +83,7 @@ Skill 安装、编写和渐进式披露规范见 `docs/SKILL_INSTALLATION.md`。
 .
 ├── main.py                  # 程序启动入口，保持 python main.py 运行方式
 ├── ai_voice_agent/          # Agent、LLM、语音和终端 UI 业务模块
+│   └── system_prompt.md     # 运行时系统提示词模板
 ├── docs/                    # 设计说明和实现文档
 ├── config.example.json      # 本地配置模板
 └── requirements.txt         # Python 依赖
@@ -105,6 +109,27 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
   },
   "approval": {
     "mode": "manual"
+  },
+  "mcp": {
+    "enabled": false,
+    "default_timeout_seconds": 30,
+    "max_tool_output_chars": 6000,
+    "servers": {
+      "local_project": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": "python",
+        "args": ["-m", "ai_voice_agent.mcp.server"],
+        "env": {},
+        "risk_level": "trusted"
+      }
+    },
+    "policy": {
+      "require_confirmation_for_write": true,
+      "require_confirmation_for_command": true,
+      "allow_external_network_tools": false,
+      "audit_log_enabled": true
+    }
   }
 }
 ```
@@ -121,6 +146,8 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 - `manual`：默认人工确认。
 - `auto`：完全自动批准所有受限工具调用。
 - `review`：使用同一模型的非思考模式审查工具调用，审查通过后自动执行。
+
+MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。内置 `local_project` Server 可通过 `python -m ai_voice_agent.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
 
 如果没有 `config.json`，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
 

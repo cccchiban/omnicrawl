@@ -22,10 +22,11 @@ from .memory import (
     record_to_dict,
     search_result_to_dict,
 )
+from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
 from .skill import SkillManager, SkillMatchResult
 
 
-AGENTS_INSTRUCTIONS_FILE = "AGENTS.md"
+SYSTEM_PROMPT_FILE = "system_prompt.md"
 TOOL_REVIEW_SYSTEM_PROMPT = (
     "你是本地 AI Agent 的工具调用安全审查器。"
     "你只判断这一次工具调用是否可以自动批准，不执行工具，也不补写方案。"
@@ -258,6 +259,7 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     memory_enabled: bool = True
     memory_directory: str = "memory"
+    mcp_config: MCPConfig | None = None
     approval_mode: str = field(default_factory=load_approval_mode)
     command_timeout_seconds: int = field(
         default_factory=lambda: _read_int_env(
@@ -310,16 +312,8 @@ class LocalToolAgent:
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
-        self._tools = self._build_tools()
-        self._agents_instructions = self._load_agents_instructions()
         self._skill_manager: SkillManager | None = None
         self._active_skills: list[SkillMatchResult] = []
-        if self.config.skills_enabled:
-            self._skill_manager = SkillManager()
-            self._skill_manager.discover(
-                cwd=self.workspace_root,
-                extra_paths=self.config.skill_paths,
-            )
 
         if not self.config.llm.api_key.strip():
             raise AgentError("缺少 API Key，请在 config.json 的 llm.api_key 中配置，或设置 OPENAI_API_KEY。")
@@ -333,11 +327,25 @@ class LocalToolAgent:
             api_key=self.config.llm.api_key,
             base_url=self.config.llm.base_url,
         )
+        self._mcp_manager = self._create_mcp_manager()
+        self._tools = self._build_tools()
+        self._system_prompt_template = self._load_system_prompt_template()
+        if self.config.skills_enabled:
+            self._skill_manager = SkillManager()
+            self._skill_manager.discover(
+                cwd=self.workspace_root,
+                extra_paths=self.config.skill_paths,
+            )
 
     @property
     def skill_manager(self) -> SkillManager | None:
         """公开 SkillManager 供 main.py 查询 /skills 列表。"""
         return self._skill_manager
+
+    def format_mcp_status(self) -> str:
+        """返回 MCP 子系统状态，供 `/mcp` 斜杠命令展示。"""
+
+        return self._mcp_manager.format_status()
 
     def clean_memory(self) -> list[str]:
         """手动清理过期记忆，供 /memory:clean 命令调用。"""
@@ -353,6 +361,13 @@ class LocalToolAgent:
 
         self._history.clear()
         self._active_skills = []
+
+    def close(self) -> None:
+        """关闭 Agent 持有的外部资源，当前主要是 MCP stdio 子进程。"""
+
+        manager = getattr(self, "_mcp_manager", None)
+        if manager is not None:
+            manager.close()
 
     @property
     def approval_mode(self) -> str:
@@ -385,6 +400,27 @@ class LocalToolAgent:
         if not self._is_relative_to(resolved, self.workspace_root):
             raise AgentError(f"记忆目录必须位于工作区内：{raw_directory}")
         return MemoryStore(resolved)
+
+    def _create_mcp_manager(self) -> MCPClientManager:
+        """加载并初始化 MCP Client Manager。
+
+        MCP 是增量能力：配置关闭时不影响内置工具；启用后单个 Server 失败也只进入
+        诊断信息，保留基础对话和内置工具可用性。配置本身不合法则阻止启动，避免用户
+        误以为 MCP 已经按预期暴露能力。
+        """
+
+        try:
+            mcp_config = self.config.mcp_config or load_mcp_config()
+            manager = MCPClientManager(
+                mcp_config,
+                workspace_root=self.workspace_root,
+                approval_mode_getter=lambda: self.config.approval_mode,
+            )
+            if mcp_config.enabled:
+                manager.discover()
+            return manager
+        except MCPConfigError as exc:
+            raise AgentError(str(exc)) from exc
 
     def run_stream(
         self,
@@ -581,6 +617,8 @@ class LocalToolAgent:
             approved, denial_reason = self._approve_tool_call(tool, arguments)
             if not approved:
                 reason = denial_reason or f"未批准执行：{tool.name}。"
+                if tool.name in self._mcp_manager.registry.tools:
+                    self._mcp_manager.record_denied_tool_call(tool.name, arguments, reason)
                 return ToolResult(ok=False, output=reason)
 
         try:
@@ -754,7 +792,53 @@ class LocalToolAgent:
                     ),
                 ]
             )
+        tools.extend(self._build_mcp_tools())
         return {tool.name: tool for tool in tools}
+
+    def _build_mcp_tools(self) -> list[ToolDefinition]:
+        """把 MCP Tool 元数据适配为现有文本协议工具。
+
+        这里不改变模型侧协议，只把 MCP Tool 以 `server.tool` 名称追加到工具列表。
+        审批仍复用 `_run_tool` 的统一入口，具体是否需要确认由 MCP Host 策略决定。
+        """
+
+        definitions: list[ToolDefinition] = []
+        for meta in self._mcp_manager.registry.tools.values():
+            definitions.append(
+                ToolDefinition(
+                    name=meta.logical_name,
+                    description=f"{meta.description}（MCP Server：{meta.server_name}）",
+                    argument_schema=meta.argument_schema,
+                    requires_confirmation=meta.requires_confirmation,
+                    run=lambda arguments, tool_meta=meta: self._tool_mcp_call(tool_meta, arguments),
+                )
+            )
+        for meta in self._mcp_manager.registry.resources.values():
+            definitions.append(
+                ToolDefinition(
+                    name=f"mcp_read_resource__{meta.logical_uri}",
+                    description=f"读取 MCP Resource：{meta.logical_uri}（MCP Server：{meta.server_name}）",
+                    argument_schema='{}',
+                    requires_confirmation=False,
+                    run=lambda _arguments, logical_uri=meta.logical_uri: self._tool_mcp_read_resource(
+                        logical_uri
+                    ),
+                )
+            )
+        for meta in self._mcp_manager.registry.prompts.values():
+            definitions.append(
+                ToolDefinition(
+                    name=f"mcp_get_prompt__{meta.logical_name}",
+                    description=f"获取 MCP Prompt：{meta.logical_name}（MCP Server：{meta.server_name}）",
+                    argument_schema='{"arguments": {}}',
+                    requires_confirmation=False,
+                    run=lambda arguments, logical_name=meta.logical_name: self._tool_mcp_get_prompt(
+                        logical_name,
+                        arguments,
+                    ),
+                )
+            )
+        return definitions
 
     def _system_prompt(self) -> str:
         """构造工具协议提示词；每轮强制一个工具或一个最终回答，降低解析复杂度。"""
@@ -766,42 +850,7 @@ class LocalToolAgent:
             )
             for tool in self._tools.values()
         )
-        system_prompt = (
-            "你是一个可以长期处理本地项目任务的中文 AI Agent。"
-            "你需要先理解用户目标，再在必要时调用工具收集证据、修改文件或验证结果。"
-            "简单问答不需要工具，直接回答即可。\n\n"
-            "工作区根目录："
-            f"{self.workspace_root}\n\n"
-            "可用工具：\n"
-            f"{tool_lines}\n\n"
-            "输出协议：每一轮只能输出以下两种格式之一，不要混用。\n"
-            "1. 调用一个工具：\n"
-            '<tool>{"name":"read_file","arguments":{"path":"main.py"}}</tool>\n'
-            "2. 给用户最终回答：\n"
-            "<final>这里写自然、简洁、可朗读的中文回答。</final>\n\n"
-            "工具使用规则：\n"
-            "- 一次只调用一个工具，拿到工具结果后再决定下一步。\n"
-            "- 需要工具或命令时直接输出工具调用，不要把工具执行许可作为问题询问用户。\n"
-            "- 文件工具只能访问工作区内路径；命令工具可执行目标所需的本地、系统或联网操作。\n"
-            "- 不要编造工具结果；没有验证就说明未验证。\n"
-            "- 如果需要修改代码，先读取相关文件，尽量小步改动，并在完成后用命令验证。\n\n"
-            "Skill 安装默认策略：\n"
-            "- 当用户明确要求安装 Skill，并提供 GitHub URL、仓库地址或本地路径时，"
-            "默认需求已足够明确，不要再询问安装位置、安装方式或安装后动作。\n"
-            "- 默认安装到项目级 `.claude/skills/`；外部仓库优先按渐进式披露处理："
-            "先检查仓库结构和 `SKILL.md` 元数据，再复制必要的 Skill 目录。\n"
-            "- 如果仓库中只有一个可安装 Skill，直接安装；如果发现多个可安装 Skill 且"
-            "用户没有指定名称，只询问用户选择哪一个。\n"
-            "- 默认只完成下载、复制、校验和 `/skills` 可见性验证；除非用户同时给出任务，"
-            "不要安装后立即执行 Skill 正文里的任务。\n"
-            "- 涉及联网下载、写文件或执行命令时，直接调用工具；程序会展示工具级确认，"
-            "不要额外用自然语言向用户索要许可。"
-        )
-        if self._memory_store is not None:
-            try:
-                system_prompt += f"\n\n{self._memory_store.format_prompt_section()}"
-            except MemoryStoreError as exc:
-                system_prompt += f"\n\n记忆系统当前不可用：{exc}"
+        system_prompt = self._render_system_prompt_template(tool_lines)
         # 手动调用 /skill:name 时注入 Skill 全文
         if self._skill_manager is not None and self._active_skills:
             system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)
@@ -811,35 +860,32 @@ class LocalToolAgent:
             skill_section = self._skill_manager.format_skills_for_prompt(metas)
             if skill_section:
                 system_prompt += f"\n{skill_section}"
-        if self._agents_instructions:
-            system_prompt = f"{self._agents_instructions}\n\n---\n\n{system_prompt}"
         return system_prompt
 
-    def _load_agents_instructions(self) -> str:
-        """读取项目级 AGENTS.md，让模型在每轮上下文开头先看到协作规范。"""
+    def _render_system_prompt_template(self, tool_lines: str) -> str:
+        """替换系统提示词模板占位符，同时允许模板中保留 JSON 示例花括号。"""
 
-        agents_path = self.workspace_root / AGENTS_INSTRUCTIONS_FILE
-        if not agents_path.is_file():
-            return ""
+        return (
+            self._system_prompt_template.replace("{workspace_root}", str(self.workspace_root))
+            .replace("{tool_lines}", tool_lines)
+        )
 
+    def _load_system_prompt_template(self) -> str:
+        """读取独立系统提示词模板，避免把长规范硬编码在 Python 代码里。"""
+
+        prompt_path = Path(__file__).resolve().parent / SYSTEM_PROMPT_FILE
         try:
-            instructions = agents_path.read_text(encoding="utf-8").strip()
-            return self._strip_runtime_irrelevant_agents_sections(instructions)
+            template = prompt_path.read_text(encoding="utf-8").strip()
         except UnicodeDecodeError as exc:
-            raise AgentError(f"{AGENTS_INSTRUCTIONS_FILE} 必须是 UTF-8 文本。") from exc
+            raise AgentError(f"{SYSTEM_PROMPT_FILE} 必须是 UTF-8 文本。") from exc
         except OSError as exc:
-            raise AgentError(f"读取 {AGENTS_INSTRUCTIONS_FILE} 失败：{exc}") from exc
+            raise AgentError(f"读取 {SYSTEM_PROMPT_FILE} 失败：{exc}") from exc
 
-    @staticmethod
-    def _strip_runtime_irrelevant_agents_sections(instructions: str) -> str:
-        """运行时工具审批由程序层处理，不把对应协作边界交给模型执行。"""
-
-        return re.sub(
-            r"\n## 10\. 用户确认边界\n.*?(?=\n## 11\. 工具策略\n)",
-            "\n",
-            instructions,
-            flags=re.DOTALL,
-        ).strip()
+        required_placeholders = ("{workspace_root}", "{tool_lines}")
+        missing = [placeholder for placeholder in required_placeholders if placeholder not in template]
+        if missing:
+            raise AgentError(f"{SYSTEM_PROMPT_FILE} 缺少占位符：{', '.join(missing)}")
+        return template
 
     def _tool_list_files(self, arguments: dict[str, Any]) -> ToolResult:
         path = self._safe_path(str(arguments.get("path") or "."))
@@ -1073,6 +1119,55 @@ class LocalToolAgent:
             return ToolResult(ok=False, output=str(exc))
 
         return self._json_tool_result([record_to_dict(record) for record in records])
+
+    def _tool_mcp_call(self, meta: MCPToolMeta, arguments: dict[str, Any]) -> ToolResult:
+        """执行 MCP Tool，并把 MCP 结构化结果压平为现有 ToolResult。"""
+
+        result = self._mcp_manager.call_tool(meta.logical_name, arguments)
+        output_parts = [
+            f"MCP Tool：{result.server_name}.{result.tool_name}",
+            f"审计 ID：{result.audit_id}",
+            f"耗时：{result.duration_ms} ms",
+        ]
+        if result.error_code:
+            output_parts.append(f"错误码：{result.error_code}")
+        if result.retryable:
+            output_parts.append("可重试：是")
+        output_parts.append(f"输出：\n{result.output}")
+        return ToolResult(ok=result.ok, output="\n".join(output_parts))
+
+    def _tool_mcp_read_resource(self, logical_uri: str) -> ToolResult:
+        """读取 MCP Resource，供模型按需拉取只读上下文。"""
+
+        result = self._mcp_manager.read_resource(logical_uri)
+        output_parts = [
+            f"MCP Resource：{result.server_name}:{result.uri}",
+            f"耗时：{result.duration_ms} ms",
+        ]
+        if result.error_code:
+            output_parts.append(f"错误码：{result.error_code}")
+        if result.retryable:
+            output_parts.append("可重试：是")
+        output_parts.append(f"输出：\n{result.output}")
+        return ToolResult(ok=result.ok, output="\n".join(output_parts))
+
+    def _tool_mcp_get_prompt(self, logical_name: str, arguments: dict[str, Any]) -> ToolResult:
+        """获取 MCP Prompt 模板，供模型使用稳定任务提示。"""
+
+        raw_arguments = arguments.get("arguments", {})
+        if not isinstance(raw_arguments, dict):
+            return ToolResult(ok=False, output="arguments 必须是 JSON 对象。")
+        result = self._mcp_manager.get_prompt(logical_name, raw_arguments)
+        output_parts = [
+            f"MCP Prompt：{result.server_name}.{result.prompt_name}",
+            f"耗时：{result.duration_ms} ms",
+        ]
+        if result.error_code:
+            output_parts.append(f"错误码：{result.error_code}")
+        if result.retryable:
+            output_parts.append("可重试：是")
+        output_parts.append(f"输出：\n{result.output}")
+        return ToolResult(ok=result.ok, output="\n".join(output_parts))
 
     def _iter_search_files(self, root: Path) -> list[Path]:
         """递归搜索时在目录层剪枝，避免进入 .git、虚拟环境或本地密钥目录。"""
