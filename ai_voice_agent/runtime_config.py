@@ -49,7 +49,10 @@ def load_config_data(config_path: str | Path | None = None) -> dict[str, Any]:
         return {}
 
     try:
-        text = path.read_text(encoding="utf-8")
+        # `utf-8-sig` 兼容普通 UTF-8，同时会消费文件头的 BOM。这样即使
+        # Windows 编辑器把本地 config.json 保存成带 BOM，也不会让 json.loads
+        # 在第 1 列报错；后续保存仍由 save_config_data 写回无 BOM 的 UTF-8。
+        text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise RuntimeConfigError(f"读取配置文件失败：{path}，{exc}") from exc
 

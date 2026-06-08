@@ -1,5 +1,0 @@
-si {interface}
-speed {speed}
-connect
-mem32 {address},{length}
-exit

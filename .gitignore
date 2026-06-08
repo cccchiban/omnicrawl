@@ -11,5 +11,7 @@ env/
 config.json
 
 .codex-ref/
+.claude/
+node_modules/
 memory/
 logs/
