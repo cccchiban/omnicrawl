@@ -16,7 +16,23 @@ KNOWN_AVAILABLE_MODELS = (
     "gpt-5.2",
     "gpt-5.4-mini",
 )
-VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "max"}
+VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
+_REASONING_EFFORT_ALIASES = {
+    "": DEFAULT_REASONING_EFFORT,
+    "disabled": "disabled",
+    "off": "disabled",
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "med": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "x_high": "xhigh",
+    "extra_high": "xhigh",
+    "very_high": "xhigh",
+    "max": "max",
+    "maximum": "max",
+}
 
 
 class LLMError(RuntimeError):
@@ -50,8 +66,8 @@ class LLMConfig:
         self.api_key = self.api_key.strip()
         self.base_url = self.base_url.strip()
         self.model = self.model.strip()
-        self.thinking_type = self.thinking_type.strip() or DEFAULT_THINKING_TYPE
-        self.reasoning_effort = self.reasoning_effort.strip()
+        self.thinking_type = (self.thinking_type.strip() or DEFAULT_THINKING_TYPE).lower()
+        self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         _require_non_empty("api_key", self.api_key, "OPENAI_API_KEY")
         _require_non_empty("base_url", self.base_url, "OPENAI_BASE_URL")
         _require_non_empty("model", self.model, "OPENAI_MODEL")
@@ -59,7 +75,9 @@ class LLMConfig:
     @property
     def thinking_enabled(self) -> bool:
         """推理强度非空且不是 none/disabled 时启用思考模式。"""
-        if self.reasoning_effort and self.reasoning_effort not in {"none", "disabled"}:
+        if self.reasoning_effort in {"none", "disabled"}:
+            return False
+        if self.reasoning_effort:
             return True
         return self.thinking_type not in {"", "disabled"}
 
@@ -70,6 +88,25 @@ def _require_non_empty(key: str, value: str, env_name: str) -> None:
             f"缺少配置 llm.{key}，请在 config.json 中填写 llm.{key}，"
             f"或设置环境变量 {env_name}。"
         )
+
+
+def normalize_reasoning_effort(value: Any) -> str:
+    """把配置里的思考深度规范化为网关可识别的字符串。
+
+    课程网关常见写法是 `low`、`medium`、`high`、`xhigh`、`max`；这里同时
+    兼容大小写、连字符和下划线，避免用户在 config.json 或环境变量中写成
+    `X-HIGH` / `x_high` 后静默丢失推理强度参数。
+    """
+
+    if not isinstance(value, str):
+        raise LLMError("配置项 llm.reasoning_effort 必须是字符串。")
+
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    effort = _REASONING_EFFORT_ALIASES.get(normalized)
+    if effort is None:
+        allowed = ", ".join(sorted([*VALID_REASONING_EFFORTS, "disabled"]))
+        raise LLMError(f"llm.reasoning_effort 仅支持 {allowed}，当前值：{value}。")
+    return effort
 
 
 def _read_required_config_text(
@@ -358,6 +395,25 @@ class OpenAIResponseLLM:
                 yield text
 
     @staticmethod
+    def extract_token_usage(payload: Any) -> tuple[int, int] | None:
+        """从 Responses 响应或流式事件中提取输入/输出 token 数。
+
+        不同网关会把 usage 放在事件自身、`response` 字段或 SDK 对象属性上；
+        这里只做结构兼容，不假设某一种固定返回形态。找不到 usage 时返回 None，
+        由 UI 保留最近一次已知统计。
+        """
+
+        usage = _find_usage_payload(payload)
+        if usage is None:
+            return None
+
+        input_tokens = _read_usage_int(usage, ("input_tokens", "prompt_tokens"))
+        output_tokens = _read_usage_int(usage, ("output_tokens", "completion_tokens"))
+        if input_tokens is None and output_tokens is None:
+            return None
+        return input_tokens or 0, output_tokens or 0
+
+    @staticmethod
     def _extract_reasoning(response: Any) -> str:
         """从非流式 Responses API 响应中提取思维链文本。"""
 
@@ -403,3 +459,45 @@ class OpenAIResponseLLM:
             return f"{message}\n当前网关可用模型示例：{models}。可在 config.json 中配置 llm.model，或设置 OPENAI_MODEL 切换。"
 
         return message
+
+
+def _to_mapping(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        data = value.model_dump()
+        return data if isinstance(data, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _find_usage_payload(value: Any) -> Any | None:
+    usage = getattr(value, "usage", None)
+    if usage is not None:
+        return usage
+
+    response = getattr(value, "response", None)
+    response_usage = getattr(response, "usage", None) if response is not None else None
+    if response_usage is not None:
+        return response_usage
+
+    data = _to_mapping(value)
+    usage = data.get("usage")
+    if usage is not None:
+        return usage
+
+    response_data = data.get("response")
+    if isinstance(response_data, dict):
+        return response_data.get("usage")
+    return None
+
+
+def _read_usage_int(usage: Any, keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = getattr(usage, key, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+
+    data = _to_mapping(usage)
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None

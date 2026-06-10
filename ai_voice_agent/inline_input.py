@@ -15,6 +15,7 @@ INLINE_PASTE_SEQUENCE_TIMEOUT_SECONDS = 0.5
 INLINE_PASTE_BURST_QUIET_SECONDS = 0.03
 INLINE_BRACKETED_PASTE_ON = "\033[?2004h"
 INLINE_BRACKETED_PASTE_OFF = "\033[?2004l"
+INLINE_CLEAR_TO_LINE_END = "\033[K"
 INLINE_INPUT_WINDOW_ROWS = 8
 INLINE_INPUT_HISTORY_LIMIT = 100
 _INLINE_INPUT_HISTORY: list[str] = []
@@ -311,7 +312,7 @@ class _InlineCompletionMenu:
             terminal_width=terminal_width,
         )
         if not lines and self._ui is not None and self._ui.model_label:
-            lines = [self._ui.muted(f"- {self._ui.model_label}")]
+            lines = [self._ui.prompt_status_line()]
 
         self._replace_lines(lines, cursor_column, rows_below_cursor)
 
@@ -496,6 +497,9 @@ def read_line_autocomplete(
             if index > 0:
                 parts.append("\n")
             parts.append(line)
+            # 删除字符后新行可能比旧行短；显式清掉行尾，避免终端没及时擦除
+            # 旧字符，表现成“删不掉，继续输入才覆盖”。
+            parts.append(INLINE_CLEAR_TO_LINE_END)
         rows_below_cursor = len(rendered_lines) - 1 - cursor_row
         if rows_below_cursor > 0:
             parts.append(f"\033[{rows_below_cursor}A")
@@ -507,7 +511,8 @@ def read_line_autocomplete(
             if rows_to_after_new_block > 0:
                 parts.append(f"\033[{rows_to_after_new_block}A")
         parts.append(f"\033[{max(1, cursor_col)}G")
-        print("".join(parts), end="", flush=True)
+        with ui._lock:
+            print("".join(parts), end="", flush=True)
         rendered_input_lines = len(rendered_lines)
         rendered_cursor_row = cursor_row
 
@@ -652,11 +657,8 @@ def read_line_autocomplete(
             _redraw_input()
             _render_menu()
             return
-        if key == "S" and cursor < len(text):
-            history_browser.reset()
-            text = text[:cursor] + text[cursor + 1 :]
-            _redraw_input()
-            _update_matches()
+        if key == "S":
+            _delete_current_char()
 
     def _insert_text(inserted: str) -> None:
         nonlocal text, cursor
@@ -666,6 +668,25 @@ def read_line_autocomplete(
         normalized = _normalize_inline_pasted_text(inserted)
         text = text[:cursor] + normalized + text[cursor:]
         cursor += len(normalized)
+        _redraw_input()
+        _update_matches()
+
+    def _delete_previous_char() -> None:
+        nonlocal text, cursor
+        if cursor <= 0:
+            return
+        history_browser.reset()
+        text = text[: cursor - 1] + text[cursor:]
+        cursor -= 1
+        _redraw_input()
+        _update_matches()
+
+    def _delete_current_char() -> None:
+        nonlocal text
+        if cursor >= len(text):
+            return
+        history_browser.reset()
+        text = text[:cursor] + text[cursor + 1 :]
         _redraw_input()
         _update_matches()
 
@@ -713,6 +734,8 @@ def read_line_autocomplete(
     _render_menu()
 
     while True:
+        # 输入等待期间不再做定时状态行刷新；所有重绘都由真实按键事件触发。
+        # 这样删除、光标移动和状态行不会在同一时间竞争终端光标位置。
         char = msvcrt.getwch()
 
         if char in {"\r", "\n"} and _consume_pasted_newline(char):
@@ -778,11 +801,8 @@ def read_line_autocomplete(
                 _redraw_input()
                 _render_menu()
                 continue
-            if sequence == "[3~" and cursor < len(text):
-                history_browser.reset()
-                text = text[:cursor] + text[cursor + 1 :]
-                _redraw_input()
-                _update_matches()
+            if sequence == "[3~":
+                _delete_current_char()
                 continue
             if sequence == "[200~":
                 _insert_text(_read_inline_bracketed_paste())
@@ -804,21 +824,10 @@ def read_line_autocomplete(
             _restore_bracketed_paste()
             raise KeyboardInterrupt
 
-        if char == "\b":
-            if cursor > 0:
-                history_browser.reset()
-                text = text[:cursor - 1] + text[cursor:]
-                cursor -= 1
-                _redraw_input()
-                _update_matches()
-            continue
-
-        if char == "\x7f":
-            if cursor < len(text):
-                history_browser.reset()
-                text = text[:cursor] + text[cursor + 1:]
-                _redraw_input()
-                _update_matches()
+        if char in {"\b", "\x7f"}:
+            # Windows 控制台通常把退格返回为 \b；部分终端/键盘映射会返回 DEL。
+            # Delete 键仍通过 ESC[3~ 或扩展键 S 走“删除光标处字符”的分支。
+            _delete_previous_char()
             continue
 
         if char.isprintable() or char.isspace():

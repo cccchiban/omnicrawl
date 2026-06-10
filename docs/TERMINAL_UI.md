@@ -18,11 +18,8 @@
 
 ```text
 ┌────────────────────────────────────────┐
-│ AI 语音 Agent                          │
-│ thinking: 已启用，推理强度：max         │
+│ thinking: 已启用，推理强度：xhigh       │
 │ approval: 人工确认                      │
-│ config: D:\...\config.json             │
-│ 输入栏 Ctrl+C 两次或关闭窗口结束会话    │
 └────────────────────────────────────────┘
 
 > 石狮市的天气怎么样
@@ -70,8 +67,8 @@ Agent 工具调用属于次级状态，显示在消息区：
 - 输出锁：所有动态状态行通过同一个渲染器写入，降低错行概率。
 - 轻量 Markdown 渲染：当前行用 ANSI 重绘做实时预览，完整行边界处理标题、列表、引用、代码块、管道表格、加粗、行内代码和链接。
 - `msvcrt`：Windows 下读取单字符输入，用于斜杠命令补全和朗读期间打断。
-- 审批模式：`manual` 走 TUI 确认页，`auto` 直接放行，`review` 使用同一模型但强制
-  `thinking` 为 `disabled` 审查本次工具调用。
+- 审批模式：`manual` 走 TUI 确认页，`auto` 直接放行，`review` 只把疑似删除行为交给
+  同一模型审查，并强制 `thinking` 为 `disabled`；非删除工具调用自动放行。
 
 程序会尝试在 Windows 控制台中开启 Virtual Terminal Processing；不支持 ANSI 时会退化为无颜色输出。
 

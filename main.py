@@ -12,7 +12,7 @@ from ai_voice_agent.audio_setup import (
 )
 from ai_voice_agent.chat_session import run_inline_chat
 from ai_voice_agent.llm import LLMError, load_llm_config
-from ai_voice_agent.runtime_config import RuntimeConfigError, resolve_config_path
+from ai_voice_agent.runtime_config import RuntimeConfigError
 from ai_voice_agent.terminal_ui import TerminalUI
 from ai_voice_agent.windows_launcher import configure_console_encoding, launch_in_powershell_window
 
@@ -36,11 +36,8 @@ def main() -> None:
         return
     ui = TerminalUI(model_label=config.model)
 
-    config_path = resolve_config_path()
-
     enabled_label = "已启用" if config.thinking_enabled else "已禁用"
     reasoning_info = f"，推理强度：{config.reasoning_effort}" if config.reasoning_effort else ""
-    config_label = str(config_path) if config_path.exists() else f"未找到 {config_path.name}，回退到环境变量"
     stt_label = "开启" if voice_config.speech_to_text_enabled else "关闭"
     tts_label = "开启" if voice_config.text_to_speech_enabled else "关闭"
     ui.print_startup_panel(
@@ -49,8 +46,6 @@ def main() -> None:
             f"thinking: {enabled_label}{reasoning_info}",
             f"approval: {approval_mode_label(approval_mode)}",
             f"voice: 语音转文字 {stt_label}，文字转语音 {tts_label}",
-            f"config: {config_label}",
-            "输入栏 Ctrl+C 两次或关闭窗口结束会话",
         ],
     )
 

@@ -18,6 +18,7 @@ ANSI_CLEAR_TO_LINE_END = "\033[K"
 ANSI_PREVIOUS_LINE = "\033[1A"
 ANSI_MUTED = "\033[2;90m"
 ANSI_GRAY = "\033[90m"
+ANSI_BRIGHT_WHITE = "\033[97m"
 ANSI_LIGHT_BLUE = "\033[94m"
 ANSI_BOLD = "\033[1m"
 ANSI_MARKDOWN_STRONG = "\033[1;96m"
@@ -36,6 +37,10 @@ WAITING_KAOMOJI = (
 )
 WAITING_DOTS = ("", ".", "..", "...", "..", ".")
 INLINE_INPUT_WINDOW_ROWS = 8
+
+
+def _dialog_continuation_prefix(prefix: str) -> str:
+    return " " * _display_width(f"{prefix} ")
 
 
 def _char_display_width(char: str) -> int:
@@ -138,6 +143,7 @@ class MarkdownStreamState:
     preview_needs_newline: bool = False
     passthrough_line: bool = False
     passthrough_printed_chars: int = 0
+    content_column: int = 0
     table_header_candidate: str | None = None
     table_header_cells: list[str] | None = None
     table_alignments: list[str] | None = None
@@ -443,7 +449,7 @@ def _render_basic_markdown_stream_line(
         return [MarkdownSpan(f"    {raw_line}", default_style)]
 
     if not stripped:
-        return [MarkdownSpan("", default_style)]
+        return None
 
     inline_parser = _parse_final_inline_markdown if final else _parse_inline_markdown
 
@@ -615,6 +621,8 @@ class TerminalUI:
         self.capabilities = capabilities or detect_capabilities()
         self.model_label = model_label
         self._lock = threading.Lock()
+        self._input_tokens = 0
+        self._output_tokens = 0
 
     def muted(self, text: str) -> str:
         if not self.capabilities.ansi:
@@ -629,13 +637,26 @@ class TerminalUI:
         color = ANSI_GREEN if ok else ANSI_RED
         return f"{color}{text}{ANSI_RESET}"
 
+    def bright(self, text: str) -> str:
+        if not self.capabilities.ansi:
+            return text
+        return f"{ANSI_BRIGHT_WHITE}{text}{ANSI_RESET}"
+
+    def update_token_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """更新最近一次模型 token 统计；输入框下方状态行在下次按键时即时重绘。"""
+
+        with self._lock:
+            self._input_tokens = max(0, int(input_tokens))
+            self._output_tokens = max(0, int(output_tokens))
+
     def print_tool_result_record(self, ok: bool) -> None:
         """打印工具执行记录，只暴露成功/失败，不把工具 stdout 混入用户界面。"""
 
         result = "成功" if ok else "失败"
+        indent = _dialog_continuation_prefix(AI_PREFIX)
         with self._lock:
             print(
-                f"{self.muted('执行记录：')}{self.result_text(ok, result)}",
+                f"{indent}{self.muted('执行记录：')}{self.result_text(ok, result)}",
                 flush=True,
             )
 
@@ -675,10 +696,10 @@ class TerminalUI:
             top = f"+{'-' * (content_width + 2)}+"
             bottom = top
 
+        visible_lines = [line for line in lines if line.strip()]
         with self._lock:
             print(top)
-            print(render_row(title))
-            for line in lines:
+            for line in visible_lines:
                 print(render_row(line))
             print(bottom)
 
@@ -713,12 +734,12 @@ class TerminalUI:
         if not self.model_label or not self.capabilities.ansi:
             return
 
-        line = f"- {self.model_label}"
+        line = self.prompt_status_line()
         cursor_target = max(1, self.prompt_width() + cursor_column + 1)
 
         with self._lock:
             print(
-                f"\n{ANSI_CLEAR_LINE}{ANSI_DIM_YELLOW}{line}{ANSI_RESET}"
+                f"\n{ANSI_CLEAR_LINE}{line}"
                 f"{ANSI_PREVIOUS_LINE}\033[{cursor_target}G",
                 end="",
                 flush=True,
@@ -732,6 +753,18 @@ class TerminalUI:
 
         with self._lock:
             print(f"\n{ANSI_CLEAR_LINE}{ANSI_PREVIOUS_LINE}", end="", flush=True)
+
+    def prompt_status_line(self) -> str:
+        """返回输入框下方的模型和 token 状态行。"""
+
+        label = self.model_label or ""
+        token_text = f"[Input Token: {self._input_tokens} Output Token: {self._output_tokens}]"
+        if not self.capabilities.ansi:
+            return f"- {label} {token_text}".strip()
+
+        model = f"{ANSI_BRIGHT_WHITE}- {label}{ANSI_RESET}" if label else ""
+        token = f"{ANSI_MUTED}{token_text}{ANSI_RESET}"
+        return f"{model} {token}".strip()
 
     def replace_current_input_with_status(self, message: str) -> None:
         """用灰色弱提示覆盖当前输入行，用于录音过程中的临时状态。
@@ -858,7 +891,7 @@ class TerminalUI:
                 self._clear_markdown_preview(state)
                 line = state.pending_line
                 state.pending_line = ""
-                self._write_markdown_line(line, state, line_already_started=False)
+                self._write_markdown_line(line, state, line_already_started=True)
                 self._write_pending_markdown_table(state)
                 return
 
@@ -902,8 +935,8 @@ class TerminalUI:
         with self._lock:
             for line_index, spans in enumerate(span_lines):
                 if line_index > 0 or (state.rendered_lines > 0 and not line_already_started):
-                    print()
-                self._write_markdown_spans(spans)
+                    self._write_ai_continuation_prefix(state)
+                self._write_markdown_spans(spans, state)
                 state.rendered_lines += 1
             sys.stdout.flush()
 
@@ -947,21 +980,83 @@ class TerminalUI:
 
         with self._lock:
             if state.preview_needs_newline:
-                print()
+                self._write_ai_continuation_prefix(state)
                 state.preview_needs_newline = False
             elif state.preview_visible and state.preview_width > 0:
                 print(f"\033[{state.preview_width}D", end="")
-            self._write_markdown_spans(spans)
+                state.content_column = 0
+            self._write_markdown_spans(spans, state)
             print(ANSI_CLEAR_TO_LINE_END, end="", flush=True)
         state.preview_width = _spans_display_width(spans)
         state.preview_visible = True
 
-    def _write_markdown_spans(self, spans: list[MarkdownSpan]) -> None:
+    def _write_markdown_spans(self, spans: list[MarkdownSpan], state: MarkdownStreamState) -> None:
         for span in spans:
-            if self.capabilities.ansi and span.style:
-                print(f"{span.style}{span.text}{ANSI_RESET}", end="")
+            self._write_wrapped_ai_text(span.text, state, style=span.style)
+
+    def _write_ai_continuation_prefix(self, state: MarkdownStreamState) -> None:
+        """换到 AI 回复的下一行，并保持整段文本与 `^ ` 后方对齐。"""
+
+        print()
+        print(_dialog_continuation_prefix(AI_PREFIX), end="")
+        state.content_column = 0
+
+    def _write_wrapped_ai_text(
+        self,
+        text: str,
+        state: MarkdownStreamState,
+        *,
+        style: str | None = None,
+    ) -> None:
+        """按终端宽度手动换行，避免长中文行触发终端自动折行后丢失缩进。
+
+        这里把 `content_column` 当作 AI 正文区内的列号，而不是整行终端列号。
+        首行的 `^ ` 由调用方先打印，续行则由 `_write_ai_continuation_prefix`
+        打印等宽空白，因此所有视觉行都能与正文起点对齐。
+        """
+
+        if not text:
+            return
+
+        width_limit = self._ai_content_width()
+        chunk_chars: list[str] = []
+        chunk_width = 0
+
+        def flush_chunk() -> None:
+            nonlocal chunk_chars, chunk_width
+            if not chunk_chars:
+                return
+            chunk = "".join(chunk_chars)
+            if self.capabilities.ansi and style:
+                print(f"{style}{chunk}{ANSI_RESET}", end="")
             else:
-                print(span.text, end="")
+                print(chunk, end="")
+            state.content_column += chunk_width
+            chunk_chars = []
+            chunk_width = 0
+
+        for char in text:
+            if char == "\n":
+                flush_chunk()
+                self._write_ai_continuation_prefix(state)
+                continue
+
+            char_width = _char_display_width(char)
+            if char_width > 0 and state.content_column + chunk_width > 0:
+                if state.content_column + chunk_width + char_width > width_limit:
+                    flush_chunk()
+                    self._write_ai_continuation_prefix(state)
+
+            chunk_chars.append(char)
+            chunk_width += char_width
+        flush_chunk()
+
+    @staticmethod
+    def _ai_content_width() -> int:
+        terminal_width = shutil.get_terminal_size((100, 30)).columns
+        indent_width = _display_width(_dialog_continuation_prefix(AI_PREFIX))
+        # 留 1 列余量，避开不同 Windows 终端在最后一列触发自动换行的差异。
+        return max(20, terminal_width - indent_width - 1)
 
     @staticmethod
     def _markdown_preview_max_width() -> int:
@@ -974,7 +1069,7 @@ class TerminalUI:
         self._clear_markdown_preview(state)
         if state.preview_needs_newline:
             with self._lock:
-                print()
+                self._write_ai_continuation_prefix(state)
             state.preview_needs_newline = False
         stable_text, remaining_text = self._split_stable_inline_markdown(state.pending_line)
         with self._lock:
@@ -1012,7 +1107,7 @@ class TerminalUI:
             if stable_text:
                 self._write_passthrough_text_with_mode(stable_text, state, final=final)
             if newline:
-                print()
+                self._write_ai_continuation_prefix(state)
             sys.stdout.flush()
 
         # 直写长行时不再重排 Markdown，但仍让围栏状态随完整行推进，
@@ -1045,10 +1140,10 @@ class TerminalUI:
         if not text:
             return
         if state.in_code_block:
-            print(text, end="")
+            self._write_wrapped_ai_text(text, state)
             return
         parser = _parse_final_inline_markdown if final else _parse_inline_markdown
-        self._write_markdown_spans(parser(text))
+        self._write_markdown_spans(parser(text), state)
 
     def _clear_markdown_preview(self, state: MarkdownStreamState) -> None:
         if not state.preview_visible or not self.capabilities.ansi:
@@ -1060,6 +1155,7 @@ class TerminalUI:
             print(ANSI_CLEAR_TO_LINE_END, end="", flush=True)
         state.preview_width = 0
         state.preview_visible = False
+        state.content_column = 0
 
     def newline(self) -> None:
         with self._lock:
@@ -1068,7 +1164,8 @@ class TerminalUI:
     def status(self, message: str, *, leading_blank: bool = True) -> None:
         with self._lock:
             prefix = "\n" if leading_blank else ""
-            print(f"{prefix}{self.muted(f'[{message}]')}", flush=True)
+            indent = _dialog_continuation_prefix(AI_PREFIX)
+            print(f"{prefix}{indent}{self.muted(f'[{message}]')}", flush=True)
 
     def notice(self, message: str) -> None:
         with self._lock:
@@ -1179,13 +1276,13 @@ class StatusLine:
         with self._ui._lock:
             if self._ui.capabilities.ansi:
                 print(
-                    f"\r{ANSI_CLEAR_LINE}{self._ui.muted(text)}",
+                    f"\r{ANSI_CLEAR_LINE}{self._ui.bright(text)}",
                     end="",
                     flush=True,
                 )
                 self._visible = True
             elif not self._visible:
-                print(self._ui.muted(text), flush=True)
+                print(text, flush=True)
                 self._visible = True
 
     def clear(self) -> None:

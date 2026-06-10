@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import time
@@ -565,6 +566,20 @@ class _DiscoveredCapabilities:
     prompts: list[dict[str, Any]]
 
 
+def _resolve_stdio_command(command: str) -> str:
+    """解析 stdio Server 命令到真实可执行路径。
+
+    Windows 的 CreateProcess 在 shell=False 且传入列表参数时，不总是按
+    PATHEXT 找到 `npx.cmd` 这类 shim；先用 shutil.which 解析，可以保留
+    非 shell 启动方式，同时兼容 Node/npm 等常见命令。
+    """
+
+    stripped = command.strip()
+    if not stripped:
+        raise MCPClientError("stdio MCP Server 缺少 command。")
+    return shutil.which(stripped) or stripped
+
+
 class _StdioMCPConnection:
     """最小 MCP stdio JSON-RPC 客户端。
 
@@ -648,7 +663,7 @@ class _StdioMCPConnection:
         if not self.server.command:
             raise MCPClientError("stdio MCP Server 缺少 command。")
 
-        command = [self.server.command, *self.server.args]
+        command = [_resolve_stdio_command(self.server.command), *self.server.args]
         env = os.environ.copy()
         env.update(self.server.env)
         env.setdefault("MCP_WORKSPACE_ROOT", str(self.workspace_root))

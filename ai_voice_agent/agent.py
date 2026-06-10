@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -29,12 +31,220 @@ from .skill import SkillManager, SkillMatchResult
 SYSTEM_PROMPT_FILE = "system_prompt.md"
 TOOL_REVIEW_SYSTEM_PROMPT = (
     "你是本地 AI Agent 的工具调用安全审查器。"
+    "review 模式下，Host 只会把疑似删除行为的工具调用交给你审查；非删除行为由 Host 自动放行。"
     "你只判断这一次工具调用是否可以自动批准，不执行工具，也不补写方案。"
     "请用严格 JSON 回复：{\"approve\": true/false, \"reason\": \"一句中文理由\"}。"
-    "当请求明显越界访问、读取密钥、破坏系统、删除大量文件、修改真实生产数据、"
-    "执行无法判断影响的危险命令，或参数不足以判断时，必须拒绝。"
-    "普通读取工作区文件、搜索文本、局部写入项目文件、运行构建测试命令可以批准。"
+    "删除目标清晰、位于工作区内、影响范围明确时可以批准。"
+    "当请求明显越界访问、读取密钥、破坏系统、递归或批量删除大量文件、修改真实生产数据、"
+    "执行无法判断影响的危险删除命令，或参数不足以判断时，必须拒绝。"
+    "如果工具调用经判断不是删除行为，可以批准并说明无需删除审批。"
 )
+
+_DELETE_COMMAND_PATTERN = re.compile(
+    r"(?<![\w.-])(?:rm|rmdir|del|erase|rd|remove-item|ri|unlink|clean)"
+    r"(?:\.exe|\.cmd|\.bat|\.ps1)?(?=\s|$|[;&|])",
+    re.IGNORECASE,
+)
+_GIT_CLEAN_PATTERN = re.compile(r"(?<![\w.-])git(?:\.exe)?\s+clean(?=\s|$|[;&|])", re.IGNORECASE)
+_FIND_DELETE_PATTERN = re.compile(r"(?<![\w.-])find(?:\.exe)?\b.*(?:\s-delete\b|\s-exec\s+rm\b)", re.IGNORECASE)
+_DELETE_INTENT_PATTERN = re.compile(
+    r"(^|[._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink|删除|移除|清空)($|[._:/\\-])",
+    re.IGNORECASE,
+)
+_DELETE_TEXT_INTENT_PATTERN = re.compile(
+    r"(^|[\s._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
+    re.IGNORECASE,
+)
+_DELETE_DESCRIPTION_START_PATTERN = re.compile(
+    r"^(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
+    re.IGNORECASE,
+)
+_DELETE_LOCALIZED_TERMS = ("删除", "移除", "清空")
+_DELETE_INTENT_KEYS = {
+    "action",
+    "command",
+    "cmd",
+    "method",
+    "mode",
+    "op",
+    "operation",
+    "script",
+    "verb",
+}
+_MCP_DELETE_INTENT_KEYS = _DELETE_INTENT_KEYS
+
+
+def _runtime_environment_context(workspace_root: Path) -> str:
+    """生成注入给模型的运行环境摘要。
+
+    这里只暴露低敏、稳定且会影响工具选择的信息；不枚举完整环境变量，
+    避免把 API Key、Token、代理配置等敏感值塞进模型上下文。
+    """
+
+    window_hint = _detect_agent_window_hint()
+    command_shell_hint = _detect_command_shell_hint()
+    terminal_hint = _detect_terminal_hint()
+    lines = [
+        "运行环境：",
+        f"- 操作系统：{platform.system() or os.name} {platform.release()} ({platform.machine()})",
+        f"- Python：{platform.python_version()}",
+        f"- Python 可执行文件：{sys.executable}",
+        f"- 工作区根目录：{workspace_root}",
+        f"- 当前进程目录：{Path.cwd().resolve()}",
+        f"- 路径分隔符：{os.sep}",
+    ]
+    if window_hint:
+        lines.append(f"- Agent 运行窗口：{window_hint}")
+    if command_shell_hint:
+        lines.append(f"- run_command 默认 Shell：{command_shell_hint}")
+    if terminal_hint:
+        lines.append(f"- 终端环境变量：{terminal_hint}")
+    return "\n".join(lines)
+
+
+def _detect_command_shell_hint() -> str:
+    """检测 run_command 使用 shell=True 时最应遵循的命令语法。"""
+
+    if os.name == "nt":
+        comspec = os.getenv("COMSPEC", "").strip()
+        shell = comspec or "cmd.exe"
+        return f"{shell}（默认按 CMD 语法解析；PowerShell 语法需显式调用 powershell.exe -Command）"
+    return os.getenv("SHELL", "").strip()
+
+
+def _detect_agent_window_hint() -> str:
+    """检测 Agent 所在的交互窗口或父进程链，帮助模型选择兼容命令。"""
+
+    if os.name != "nt":
+        shell = os.getenv("SHELL", "").strip()
+        terminal = _detect_terminal_hint()
+        if shell and terminal:
+            return f"Shell={Path(shell).name}；终端={terminal}"
+        return f"Shell={Path(shell).name}" if shell else terminal
+
+    process_chain = _windows_process_name_chain()
+    lowered_chain = [name.lower() for name in process_chain]
+    shell_label = _windows_shell_label(lowered_chain)
+    terminal_label = _windows_terminal_label(lowered_chain)
+
+    if not shell_label and os.getenv("AI_VOICE_CHAT_IN_POWERSHELL") == "1":
+        shell_label = "Windows PowerShell（由启动器创建）"
+
+    parts: list[str] = []
+    if terminal_label:
+        parts.append(f"终端={terminal_label}")
+    if shell_label:
+        parts.append(f"Shell={shell_label}")
+    if process_chain:
+        parts.append(f"进程链={' <- '.join(process_chain[:8])}")
+    return "；".join(parts) or "Windows 控制台（未识别具体 Shell）"
+
+
+def _windows_shell_label(lowered_process_chain: list[str]) -> str:
+    shell_labels = {
+        "pwsh.exe": "PowerShell 7+",
+        "powershell.exe": "Windows PowerShell",
+        "cmd.exe": "CMD",
+    }
+    for name in lowered_process_chain:
+        label = shell_labels.get(name)
+        if label:
+            return label
+    return ""
+
+
+def _windows_terminal_label(lowered_process_chain: list[str]) -> str:
+    labels: list[str] = []
+    if os.getenv("WT_SESSION", "").strip() or "windowsterminal.exe" in lowered_process_chain:
+        labels.append("Windows Terminal")
+    term_program = os.getenv("TERM_PROGRAM", "").strip()
+    if term_program:
+        labels.append(term_program)
+    if "code.exe" in lowered_process_chain:
+        labels.append("VS Code Terminal")
+    if "conhost.exe" in lowered_process_chain:
+        labels.append("Console Host")
+    return " / ".join(dict.fromkeys(labels))
+
+
+def _windows_process_name_chain(limit: int = 12) -> list[str]:
+    """返回当前进程到祖先进程的 exe 名称链；失败时返回空列表。
+
+    使用 Win32 Toolhelp API 避免依赖 psutil，也避免通过 shell 再启动子进程。
+    """
+
+    if os.name != "nt":
+        return []
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return []
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+    if snapshot == wintypes.HANDLE(-1).value:
+        return []
+
+    process_table: dict[int, tuple[int, str]] = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return []
+        while True:
+            process_table[int(entry.th32ProcessID)] = (
+                int(entry.th32ParentProcessID),
+                str(entry.szExeFile),
+            )
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+    chain: list[str] = []
+    seen: set[int] = set()
+    pid = os.getpid()
+    for _index in range(max(1, limit)):
+        if pid in seen:
+            break
+        seen.add(pid)
+        item = process_table.get(pid)
+        if item is None:
+            break
+        parent_pid, name = item
+        if name:
+            chain.append(name)
+        if parent_pid <= 0:
+            break
+        pid = parent_pid
+    return chain
+
+
+def _detect_terminal_hint() -> str:
+    """返回终端类型线索，只使用常见非敏感变量名。"""
+
+    hints: list[str] = []
+    for name in ("WT_SESSION", "TERM_PROGRAM", "TERM"):
+        value = os.getenv(name, "").strip()
+        if value:
+            hints.append(name if name == "WT_SESSION" else f"{name}={value}")
+    return ", ".join(hints)
 
 
 class AgentError(RuntimeError):
@@ -299,8 +509,41 @@ class LocalToolAgent:
     OpenAI Responses 的文本流部分这一现实约束。
     """
 
-    _TOOL_PATTERN = re.compile(r"<tool>\s*(.*?)\s*</tool>", re.DOTALL | re.IGNORECASE)
+    _TOOL_OPEN_PATTERN = re.compile(r"^\s*(?:\^\s*)?<tool\b[^>]*>\s*", re.IGNORECASE)
     _FINAL_PATTERN = re.compile(r"<final>\s*(.*?)\s*</final>", re.DOTALL | re.IGNORECASE)
+    _TOOL_NAME_ALIASES = {
+        "listfiles": "list_files",
+        "readfile": "read_file",
+        "searchtext": "search_text",
+        "replacetext": "replace_text",
+        "writefile": "write_file",
+        "runcommand": "run_command",
+        "bb-browser.browser.tablist": "bb-browser.browser.tab_list",
+        "bb-browser.browser.tabnew": "bb-browser.browser.tab_new",
+        "bb-browser.browser.sitelist": "bb-browser.browser.site_list",
+        "bb-browser.browser.siteinfo": "bb-browser.browser.site_info",
+        "bb-browser.browser.siterun": "bb-browser.browser.site_run",
+        "bb-browser.browser.type": "bb-browser.browser.type_text",
+    }
+    _ARGUMENT_NAME_ALIASES = {
+        "cmd": "command",
+        "caseSensitive": "case_sensitive",
+        "casesensitive": "case_sensitive",
+        "maxLines": "max_lines",
+        "maxlines": "max_lines",
+        "maxResults": "max_results",
+        "maxresults": "max_results",
+        "newText": "new_text",
+        "newtext": "new_text",
+        "oldText": "old_text",
+        "oldtext": "old_text",
+        "startLine": "start_line",
+        "startline": "start_line",
+        "tabId": "tab",
+        "tabid": "tab",
+        "timeoutSeconds": "timeout_seconds",
+        "timeoutseconds": "timeout_seconds",
+    }
 
     def __init__(
         self,
@@ -428,6 +671,7 @@ class LocalToolAgent:
         on_delta: Callable[[str], None],
         on_status: Callable[[str], None] | None = None,
         on_tool_result: Callable[[ToolCall, ToolResult], None] | None = None,
+        on_token_usage: Callable[[int, int], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
 
@@ -441,6 +685,7 @@ class LocalToolAgent:
 
         status = on_status or (lambda _message: None)
         report_tool_result = on_tool_result or (lambda _tool_call, _result: None)
+        report_token_usage = on_token_usage or (lambda _input_tokens, _output_tokens: None)
 
         text = self._apply_skill_command(text, status)
         working_messages = [*self._history, {"role": "user", "content": text}]
@@ -449,7 +694,11 @@ class LocalToolAgent:
         has_tool_calls = False
         step = 1
         while True:
-            raw_reply, reasoning, streamed_final = self._request_agent_reply(working_messages, on_delta)
+            raw_reply, reasoning, streamed_final = self._request_agent_reply(
+                working_messages,
+                on_delta,
+                report_token_usage,
+            )
             if reasoning:
                 all_reasoning_parts.append(reasoning)
             tool_call = self._parse_tool_call(raw_reply)
@@ -461,6 +710,7 @@ class LocalToolAgent:
                 self._append_history(text, final_reply, combined_reasoning)
                 return final_reply
 
+            tool_call = self._normalize_tool_call(tool_call)
             has_tool_calls = True
             tool = self._tools.get(tool_call.name)
             if tool is None:
@@ -510,6 +760,7 @@ class LocalToolAgent:
         self,
         messages: list[dict[str, str]],
         on_delta: Callable[[str], None],
+        on_token_usage: Callable[[int, int], None],
     ) -> tuple[str, str, bool]:
         """请求模型给出下一步：要么调用一个工具，要么输出最终回答。
 
@@ -520,7 +771,7 @@ class LocalToolAgent:
         last_empty_reply: _EmptyAgentReply | None = None
         for attempt in range(1, self.config.request_retry_count + 1):
             try:
-                return self._request_agent_reply_once(messages, on_delta)
+                return self._request_agent_reply_once(messages, on_delta, on_token_usage)
             except _EmptyAgentReply as exc:
                 last_empty_reply = exc
                 if attempt >= self.config.request_retry_count:
@@ -534,6 +785,7 @@ class LocalToolAgent:
         self,
         messages: list[dict[str, str]],
         on_delta: Callable[[str], None],
+        on_token_usage: Callable[[int, int], None],
     ) -> tuple[str, str, bool]:
         """执行一次模型流式请求；空响应由调用方统一重试。"""
 
@@ -551,9 +803,13 @@ class LocalToolAgent:
 
         chunks: list[str] = []
         reasoning_chunks: list[str] = []
+        latest_token_usage: tuple[int, int] | None = None
         final_streamer = _AgentReplyStreamer(on_delta)
         try:
             for event in stream:
+                event_usage = OpenAIResponseLLM.extract_token_usage(event)
+                if event_usage is not None:
+                    latest_token_usage = event_usage
                 for delta in OpenAIResponseLLM.extract_stream_text(event):
                     chunks.append(delta)
                     final_streamer.push(delta)
@@ -569,6 +825,8 @@ class LocalToolAgent:
             raise _EmptyAgentReply("Agent 返回内容为空或格式不可解析。")
 
         reasoning = "".join(reasoning_chunks).strip()
+        if latest_token_usage is not None:
+            on_token_usage(*latest_token_usage)
         return reply.strip(), reasoning, final_streamer.streamed
 
     def _build_extra_body(self) -> dict[str, Any]:
@@ -584,8 +842,9 @@ class LocalToolAgent:
     def _parse_tool_call(self, raw_reply: str) -> ToolCall | None:
         """从模型回复中解析工具调用；解析失败时退化为最终回答，避免卡死。"""
 
-        match = self._TOOL_PATTERN.search(raw_reply)
-        payload = match.group(1).strip() if match else raw_reply.strip()
+        payload = self._extract_tool_payload(raw_reply)
+        if payload is None:
+            return None
 
         try:
             data = json.loads(payload)
@@ -600,7 +859,122 @@ class LocalToolAgent:
         if not isinstance(name, str) or not isinstance(arguments, dict):
             return None
 
-        return ToolCall(name=name.strip(), arguments=arguments)
+        return ToolCall(name=self._normalize_tool_name(name), arguments=arguments)
+
+    @classmethod
+    def _extract_tool_payload(cls, raw_reply: str) -> str | None:
+        """提取工具调用 JSON。
+
+        标准协议要求 `<tool>{...}</tool>`，但实际模型可能把闭合标签漏掉，
+        或在第一个工具 JSON 后继续追加第二个 `<tool>`。这里只接受回复起始处
+        的工具标签或原始 JSON，并用 JSONDecoder 提取第一个完整对象，避免把
+        普通回答中间的 `<tool>` 误当成真实工具调用。
+        """
+
+        stripped = raw_reply.strip()
+        if stripped.startswith("{"):
+            return cls._extract_first_json_payload(stripped)
+
+        open_match = cls._TOOL_OPEN_PATTERN.match(stripped)
+        if not open_match:
+            return None
+        payload = stripped[open_match.end() :].strip()
+        if not payload:
+            return None
+        return cls._extract_first_json_payload(payload)
+
+    @staticmethod
+    def _extract_first_json_payload(text: str) -> str | None:
+        """返回文本开头第一个完整 JSON 对象，允许后面跟闭合标签或下一次工具调用。"""
+
+        try:
+            decoded, end_index = json.JSONDecoder().raw_decode(text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(decoded, dict):
+            return None
+        return text[:end_index].strip()
+
+    def _normalize_tool_call(self, tool_call: ToolCall) -> ToolCall:
+        """在执行前归一化模型常见的工具名和参数名误写。"""
+
+        name = self._normalize_tool_name(tool_call.name)
+        return ToolCall(
+            name=name,
+            arguments=self._normalize_tool_arguments(name, tool_call.arguments),
+        )
+
+    def _normalize_tool_name(self, raw_name: str) -> str:
+        """把 readfile/tablist 这类常见误写映射为当前 Host 真实工具名。"""
+
+        name = re.sub(r"\s+", "", raw_name.strip())
+        tools = getattr(self, "_tools", {})
+        if isinstance(tools, dict) and name in tools:
+            return name
+
+        alias = self._TOOL_NAME_ALIASES.get(name) or self._TOOL_NAME_ALIASES.get(
+            self._normalize_identifier(name)
+        )
+        if alias:
+            return alias
+
+        if isinstance(tools, dict) and tools:
+            normalized_name = self._normalize_identifier(name)
+            matches = [
+                tool_name
+                for tool_name in tools
+                if self._normalize_identifier(tool_name) == normalized_name
+            ]
+            if len(matches) == 1:
+                return matches[0]
+        return name
+
+    def _normalize_tool_arguments(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """按工具 schema 归一化参数名，兼容 startline/maxlines/tabId 等写法。"""
+
+        canonical_keys = self._tool_argument_keys(tool_name)
+        normalized_to_key = {
+            self._normalize_identifier(key): key
+            for key in canonical_keys
+        }
+        normalized: dict[str, Any] = {}
+        for key, value in arguments.items():
+            canonical_key = key
+            alias_key = self._ARGUMENT_NAME_ALIASES.get(key) or self._ARGUMENT_NAME_ALIASES.get(
+                self._normalize_identifier(key)
+            )
+            if alias_key in canonical_keys:
+                canonical_key = alias_key
+            else:
+                canonical_key = normalized_to_key.get(self._normalize_identifier(key), key)
+            normalized[canonical_key] = value
+        return normalized
+
+    def _tool_argument_keys(self, tool_name: str) -> set[str]:
+        tools = getattr(self, "_tools", {})
+        tool = tools.get(tool_name) if isinstance(tools, dict) else None
+        if tool is None:
+            return set()
+
+        try:
+            schema = json.loads(tool.argument_schema)
+        except json.JSONDecodeError:
+            return set()
+        if not isinstance(schema, dict):
+            return set()
+
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            return {key for key in properties if isinstance(key, str)}
+        return {key for key in schema if isinstance(key, str)}
+
+    @staticmethod
+    def _normalize_identifier(value: str) -> str:
+        return re.sub(r"[\s_-]+", "", value).lower()
 
     def _parse_final_reply(self, raw_reply: str) -> str:
         """提取最终回答；没有显式 final 标签时直接使用模型原文。"""
@@ -642,8 +1016,97 @@ class LocalToolAgent:
         if mode == APPROVAL_MODE_AUTO:
             return True, ""
         if mode == APPROVAL_MODE_REVIEW:
+            if not self._is_delete_behavior_tool_call(tool, arguments):
+                return True, ""
             return self._review_tool_call(tool, arguments)
         return self._confirm(tool.name, arguments), f"用户取消执行：{tool.name}。"
+
+    @classmethod
+    def _is_delete_behavior_tool_call(
+        cls,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+    ) -> bool:
+        """判断工具调用是否带有显式删除意图，供 review 模式决定是否进入审查。
+
+        review 模式的目标是减少普通读写、搜索和测试命令的审批噪音，只把真正需要
+        守住的删除类动作交给审查模型。这里优先识别工具名和命令字符串，
+        同时检查 MCP 常见的 action/operation/method 等意图字段；避免扫描 content
+        这类正文参数，以免用户写入的普通文本里出现 delete 一词就被误判。
+        """
+
+        if cls._text_has_delete_intent(tool.name):
+            return True
+
+        command = arguments.get("command")
+        if isinstance(command, str) and cls._command_has_delete_intent(command):
+            return True
+
+        if not cls._tool_accepts_shell_command(tool) and cls._description_has_delete_intent(
+            tool.description
+        ):
+            return True
+
+        return cls._arguments_have_delete_intent(arguments, intent_keys=_MCP_DELETE_INTENT_KEYS)
+
+    @staticmethod
+    def _tool_accepts_shell_command(tool: ToolDefinition) -> bool:
+        return "command" in tool.argument_schema.lower() or "cmd" in tool.argument_schema.lower()
+
+    @classmethod
+    def _arguments_have_delete_intent(
+        cls,
+        value: Any,
+        *,
+        intent_keys: set[str] = _DELETE_INTENT_KEYS,
+    ) -> bool:
+        if isinstance(value, dict):
+            for raw_key, item in value.items():
+                if not isinstance(raw_key, str):
+                    continue
+
+                key = raw_key.strip().lower()
+                if cls._text_has_delete_intent(key):
+                    return True
+                if key in intent_keys and isinstance(item, str):
+                    if cls._command_has_delete_intent(item) or cls._text_has_delete_intent(item):
+                        return True
+                elif isinstance(item, dict):
+                    if cls._arguments_have_delete_intent(item, intent_keys=intent_keys):
+                        return True
+                elif isinstance(item, list):
+                    if any(
+                        cls._arguments_have_delete_intent(child, intent_keys=intent_keys)
+                        for child in item
+                    ):
+                        return True
+        elif isinstance(value, list):
+            return any(cls._arguments_have_delete_intent(item, intent_keys=intent_keys) for item in value)
+        return False
+
+    @staticmethod
+    def _command_has_delete_intent(command: str) -> bool:
+        return bool(
+            _DELETE_COMMAND_PATTERN.search(command)
+            or _GIT_CLEAN_PATTERN.search(command)
+            or _FIND_DELETE_PATTERN.search(command)
+            or _DELETE_INTENT_PATTERN.search(command)
+        )
+
+    @staticmethod
+    def _text_has_delete_intent(text: str) -> bool:
+        if any(term in text for term in _DELETE_LOCALIZED_TERMS):
+            return True
+        normalized_text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+        return bool(_DELETE_TEXT_INTENT_PATTERN.search(normalized_text))
+
+    @staticmethod
+    def _description_has_delete_intent(text: str) -> bool:
+        stripped = text.lstrip(" \t\r\n-_*:;,.")
+        if any(stripped.startswith(term) for term in _DELETE_LOCALIZED_TERMS):
+            return True
+        normalized_text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", stripped)
+        return bool(_DELETE_DESCRIPTION_START_PATTERN.search(normalized_text))
 
     def _review_tool_call(
         self,
@@ -705,52 +1168,55 @@ class LocalToolAgent:
     def _build_tools(self) -> dict[str, ToolDefinition]:
         """注册内置工具；所有工具执行前统一走确认门。"""
 
-        tools = [
-            ToolDefinition(
-                name="list_files",
-                description="列出工作区内的文件和目录，可选择递归。",
-                argument_schema='{"path": ".", "recursive": false}',
-                requires_confirmation=True,
-                run=self._tool_list_files,
-            ),
-            ToolDefinition(
-                name="read_file",
-                description="读取 UTF-8 文本文件，可指定起始行和最多行数。",
-                argument_schema='{"path": "main.py", "start_line": 1, "max_lines": 200}',
-                requires_confirmation=True,
-                run=self._tool_read_file,
-            ),
-            ToolDefinition(
-                name="search_text",
-                description="在工作区文本文件中搜索正则或普通文本。",
-                argument_schema='{"pattern": "class Agent", "path": ".", "case_sensitive": false, "max_results": 50}',
-                requires_confirmation=True,
-                run=self._tool_search_text,
-            ),
-            ToolDefinition(
-                name="replace_text",
-                description="在单个文件中替换指定文本，适合小范围代码修改。",
-                argument_schema='{"path": "main.py", "old_text": "...", "new_text": "...", "count": 1}',
-                requires_confirmation=True,
-                run=self._tool_replace_text,
-            ),
-            ToolDefinition(
-                name="write_file",
-                description="写入或追加 UTF-8 文本文件。",
-                argument_schema='{"path": "notes.md", "content": "...", "mode": "overwrite"}',
-                requires_confirmation=True,
-                run=self._tool_write_file,
-            ),
-            ToolDefinition(
-                name="run_command",
-                description=(
-                    "以工作区为当前目录执行任意本地命令、脚本或 shell 片段。"
+        tools = self._build_mcp_tools()
+        tools.extend(
+            [
+                ToolDefinition(
+                    name="list_files",
+                    description="列出工作区内的文件和目录，可选择递归。",
+                    argument_schema='{"path": ".", "recursive": false}',
+                    requires_confirmation=True,
+                    run=self._tool_list_files,
                 ),
-                argument_schema='{"command": "python -m py_compile main.py", "timeout_seconds": 120}',
-                requires_confirmation=True,
-                run=self._tool_run_command,
-            ),
-        ]
+                ToolDefinition(
+                    name="read_file",
+                    description="读取 UTF-8 文本文件，可指定起始行和最多行数。",
+                    argument_schema='{"path": "main.py", "start_line": 1, "max_lines": 200}',
+                    requires_confirmation=True,
+                    run=self._tool_read_file,
+                ),
+                ToolDefinition(
+                    name="search_text",
+                    description="在工作区文本文件中搜索正则或普通文本。",
+                    argument_schema='{"pattern": "class Agent", "path": ".", "case_sensitive": false, "max_results": 50}',
+                    requires_confirmation=True,
+                    run=self._tool_search_text,
+                ),
+                ToolDefinition(
+                    name="replace_text",
+                    description="在单个文件中替换指定文本，适合小范围代码修改。",
+                    argument_schema='{"path": "main.py", "old_text": "...", "new_text": "...", "count": 1}',
+                    requires_confirmation=True,
+                    run=self._tool_replace_text,
+                ),
+                ToolDefinition(
+                    name="write_file",
+                    description="写入或追加 UTF-8 文本文件。",
+                    argument_schema='{"path": "notes.md", "content": "...", "mode": "overwrite"}',
+                    requires_confirmation=True,
+                    run=self._tool_write_file,
+                ),
+                ToolDefinition(
+                    name="run_command",
+                    description=(
+                        "以工作区为当前目录执行任意本地命令、脚本或 shell 片段。"
+                    ),
+                    argument_schema='{"command": "python -m py_compile main.py", "timeout_seconds": 120}',
+                    requires_confirmation=True,
+                    run=self._tool_run_command,
+                ),
+            ]
+        )
         if self._memory_store is not None:
             tools.extend(
                 [
@@ -792,7 +1258,6 @@ class LocalToolAgent:
                     ),
                 ]
             )
-        tools.extend(self._build_mcp_tools())
         return {tool.name: tool for tool in tools}
 
     def _build_mcp_tools(self) -> list[ToolDefinition]:
@@ -851,6 +1316,7 @@ class LocalToolAgent:
             for tool in self._tools.values()
         )
         system_prompt = self._render_system_prompt_template(tool_lines)
+        system_prompt = f"{_runtime_environment_context(self.workspace_root)}\n\n{system_prompt}"
         # 手动调用 /skill:name 时注入 Skill 全文
         if self._skill_manager is not None and self._active_skills:
             system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)

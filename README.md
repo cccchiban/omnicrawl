@@ -24,7 +24,7 @@
 
 - 文件工具只能访问当前项目目录内的路径；`config.json`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
 - `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；确认界面默认选中 `YES`，左右箭头可切换 `YES`/`NO`；按 Enter 提交当前选项，按 `Y` 直接执行，按 `N` 直接取消并把失败结果返回给 AI 继续处理。
-- `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时会用同一模型的非思考模式审查本次工具调用，审查通过才执行。自动模式不显示确认页，只显示步骤和执行记录。
+- `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时只把疑似删除行为交给同一模型的非思考模式审查，其他工具调用自动执行。自动模式不显示确认页，只显示步骤和执行记录。
 - 命令工具不是系统级沙箱；程序会用 `shell=True` 执行用户确认后的命令字符串。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
 - MCP 默认关闭；开启后会在启动时发现已启用的 MCP Server，并把 Tool 以 `server.tool` 名称追加到 Agent 工具列表，同时按需读取 Resource 和 Prompt。单个 Server 失败只会显示降级诊断，不影响内置工具。
 - Agent 不再限制单轮连续工具步骤；AI 返回空响应时会最多重试 5 次，每次请求超时 180 秒。可通过环境变量调整：
@@ -101,7 +101,8 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
     "api_key": "你的 API Key",
     "base_url": "https://xxx.xx/v1",
     "model": "deepseek-v4-flash",
-    "thinking_type": "disabled"
+    "thinking_type": "disabled",
+    "reasoning_effort": ""
   },
   "voice": {
     "speech_to_text_enabled": true,
@@ -145,7 +146,9 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 
 - `manual`：默认人工确认。
 - `auto`：完全自动批准所有受限工具调用。
-- `review`：使用同一模型的非思考模式审查工具调用，审查通过后自动执行。
+- `review`：仅对疑似删除行为使用同一模型的非思考模式审查，审查通过后自动执行；非删除工具调用自动放行，不再进入模型审查。
+
+思考深度可在 `config.json` 的 `llm.reasoning_effort` 配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
 
 MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。内置 `local_project` Server 可通过 `python -m ai_voice_agent.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
 

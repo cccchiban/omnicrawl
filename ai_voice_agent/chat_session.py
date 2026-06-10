@@ -170,6 +170,7 @@ def run_inline_chat(
                 speech_player.handle_delta,
                 on_status=handle_agent_status,
                 on_tool_result=handle_tool_result,
+                on_token_usage=ui.update_token_usage,
             )
             waiting_indicator.stop()
             speech_player.flush()

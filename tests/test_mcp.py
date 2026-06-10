@@ -5,10 +5,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ai_voice_agent.agent import LocalToolAgent
-from ai_voice_agent.mcp.client import MCPClientManager
+from ai_voice_agent.mcp.client import MCPClientManager, _resolve_stdio_command
 from ai_voice_agent.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
+from ai_voice_agent.mcp.bb_browser_server import BBBrowserMCPServer
 from ai_voice_agent.mcp.registry import MCPPromptMeta, MCPResourceMeta, MCPToolMeta, namespace_capability_name
 from ai_voice_agent.mcp.server import LocalMCPServer
 from ai_voice_agent.mcp.security import mcp_tool_requires_confirmation
@@ -160,6 +162,16 @@ class MCPManagerTest(unittest.TestCase):
         self.assertEqual(result.error_code, "SERVER_UNAVAILABLE")
         self.assertTrue(result.retryable)
 
+    def test_resolve_stdio_command_uses_path_lookup(self) -> None:
+        with patch(
+            "ai_voice_agent.mcp.client.shutil.which",
+            return_value=r"C:\Program Files\nodejs\npx.CMD",
+        ) as which:
+            resolved = _resolve_stdio_command("npx")
+
+        which.assert_called_once_with("npx")
+        self.assertEqual(resolved, r"C:\Program Files\nodejs\npx.CMD")
+
     def test_stdio_local_server_discovers_and_calls_capabilities(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -282,6 +294,31 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertIn("mcp_get_prompt__trusted.code_review", tools)
         self.assertFalse(tools["trusted.echo"].requires_confirmation)
 
+    def test_agent_prioritizes_mcp_tools_in_prompt_order(self) -> None:
+        manager = MCPClientManager(MCPConfig(enabled=True))
+        manager.registry.add_tool(
+            MCPToolMeta(
+                logical_name="trusted.workspace.read_file",
+                server_name="trusted",
+                tool_name="workspace.read_file",
+                description="Read file through MCP",
+                input_schema={"type": "object"},
+                requires_confirmation=False,
+                risk_level="trusted",
+            )
+        )
+        agent = object.__new__(LocalToolAgent)
+        agent._mcp_manager = manager
+        agent._memory_store = None
+
+        tools = LocalToolAgent._build_tools(agent)
+        tool_names = list(tools)
+
+        self.assertLess(
+            tool_names.index("trusted.workspace.read_file"),
+            tool_names.index("read_file"),
+        )
+
     def test_system_prompt_mentions_mcp_progressive_docs(self) -> None:
         manager = MCPClientManager(MCPConfig(enabled=False))
         agent = object.__new__(LocalToolAgent)
@@ -293,12 +330,30 @@ class MCPAgentCommandTest(unittest.TestCase):
         agent._mcp_manager = manager
         agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
 
-        prompt = LocalToolAgent._system_prompt(agent)
+        with (
+            patch("ai_voice_agent.agent._detect_agent_window_hint", return_value="Shell=CMD"),
+            patch(
+                "ai_voice_agent.agent._detect_command_shell_hint",
+                return_value="cmd.exe（默认按 CMD 语法解析）",
+            ),
+            patch("ai_voice_agent.agent._detect_terminal_hint", return_value="WT_SESSION"),
+        ):
+            prompt = LocalToolAgent._system_prompt(agent)
 
+        self.assertTrue(prompt.startswith("运行环境："))
+        self.assertIn("操作系统", prompt)
+        self.assertIn("Python", prompt)
+        self.assertIn("工作区根目录", prompt)
+        self.assertIn("Agent 运行窗口：Shell=CMD", prompt)
+        self.assertIn("run_command 默认 Shell：cmd.exe", prompt)
+        self.assertIn("终端环境变量：WT_SESSION", prompt)
         self.assertIn("docs/MCP_USAGE.md", prompt)
         self.assertIn("docs/MCP_DESIGN_TECHNICAL.md", prompt)
+        self.assertIn("优先调用 MCP 能力", prompt)
         self.assertIn("AGENTS.md", prompt)
         self.assertIn("docs/SKILL_INSTALLATION.md", prompt)
+        self.assertIn("天气、新闻、价格", prompt)
+        self.assertIn("run_command", prompt)
         self.assertNotIn("risk_level=trusted", prompt)
 
 
@@ -392,6 +447,65 @@ class LocalMCPServerTest(unittest.TestCase):
         result = response["result"]
         self.assertTrue(result["isError"])
         self.assertIn("退出码：7", result["content"][0]["text"])
+
+
+class BBBrowserMCPServerTest(unittest.TestCase):
+    def test_bb_browser_server_lists_tools(self) -> None:
+        server = BBBrowserMCPServer(Path.cwd())
+
+        response = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+
+        tools = response["result"]["tools"]
+        names = {tool["name"] for tool in tools}
+        self.assertIn("browser.status", names)
+        self.assertIn("browser.open", names)
+        self.assertIn("browser.site_run", names)
+
+    def test_bb_browser_server_runs_cli_arguments(self) -> None:
+        server = BBBrowserMCPServer(Path.cwd())
+
+        with patch.object(server, "_run_bb_browser", return_value='{"ok":true}') as run_bb_browser:
+            response = server.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "browser.open",
+                        "arguments": {"url": "https://example.com", "tab": "current"},
+                    },
+                }
+            )
+
+        self.assertFalse(response["result"]["isError"])
+        run_bb_browser.assert_called_once_with(
+            ["open", "https://example.com", "--json", "--tab", "current"]
+        )
+
+    def test_bb_browser_stdio_server_discovers_capabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = MCPConfig(
+                enabled=True,
+                servers={
+                    "bb-browser": MCPServerConfig(
+                        name="bb-browser",
+                        enabled=True,
+                        transport="stdio",
+                        command="python",
+                        args=["-m", "ai_voice_agent.mcp.bb_browser_server"],
+                        timeout_seconds=5,
+                        risk_level="trusted",
+                    )
+                },
+            )
+            manager = MCPClientManager(config, workspace_root=workspace, approval_mode_getter=lambda: "manual")
+
+            manager.discover()
+            manager.close()
+
+        self.assertIn("bb-browser.browser.status", manager.registry.tools)
+        self.assertIn("bb-browser.browser.open", manager.registry.tools)
 
 
 if __name__ == "__main__":
