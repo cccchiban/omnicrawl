@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from ai_voice_agent.terminal_ui import (
     MarkdownStreamState,
+    StatusLine,
     TerminalCapabilities,
     TerminalUI,
     _contains_complex_display_width,
@@ -114,6 +115,36 @@ class TerminalUITest(unittest.TestCase):
         self.assertNotIn("\n\n", rendered)
         self.assertIn("^ 第一段。\n  第二段。", rendered)
 
+    def test_markdown_table_allows_blank_line_between_header_and_delimiter(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        state = MarkdownStreamState()
+        output = io.StringIO()
+        text = (
+            "当前查询结果如下：\n\n"
+            "| 项目 | 数据 |\n\n"
+            "|---|---|\n"
+            "| 天气 | Overcast，阴 / 阴天 |\n"
+            "| 当前气温 | 23℃ |\n"
+            "\n结论：数据已查询。"
+        )
+
+        with redirect_stdout(output):
+            ui.print_ai_prefix()
+            ui.write_markdown_delta(text, state)
+            ui.flush_markdown(state)
+
+        rendered = output.getvalue()
+        self.assertIn("项目", rendered)
+        self.assertIn("│ 数据", rendered)
+        self.assertIn("─", rendered)
+        self.assertIn("┼", rendered)
+        self.assertIn("天气", rendered)
+        self.assertIn("Overcast，阴 / 阴天", rendered)
+        self.assertIn("当前气温", rendered)
+        self.assertIn("23℃", rendered)
+        self.assertIn("结论：数据已查询。", rendered)
+        self.assertNotIn("|---|---|", rendered)
+
     def test_split_bold_marker_is_not_printed_raw(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         state = MarkdownStreamState()
@@ -136,6 +167,128 @@ class TerminalUITest(unittest.TestCase):
             ui.status("步骤 1 - 请求 run_command", leading_blank=False)
 
         self.assertEqual(output.getvalue(), "  [步骤 1 - 请求 run_command]\n")
+
+    def test_status_line_aligns_with_prompt_content_and_keeps_blank_spacing(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        status_line = StatusLine(ui)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            status_line.show("处理中  (-_-)...")
+            status_line.show("处理中  (-_-)..")
+
+        rendered = output.getvalue()
+        self.assertTrue(rendered.startswith("\n\033[2K"))
+        self.assertIn("\033[97m  处理中  (-_-)...\033[0m", rendered)
+        self.assertIn("\r\033[2K\033[97m  处理中  (-_-)..\033[0m", rendered)
+
+    def test_status_line_plain_mode_keeps_blank_spacing_and_indent(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        status_line = StatusLine(ui)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            status_line.show("处理中  (-_-)...")
+
+        self.assertEqual(output.getvalue(), "\n  处理中  (-_-)...\n")
+
+    def test_tool_call_start_shows_command_detail_and_running_marker(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            ui.print_tool_call_start(
+                2,
+                "run_command",
+                {"command": "echo hello"},
+                leading_blank=False,
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("* 步骤 2 — 请求 run_command", rendered)
+        self.assertIn("  Ran echo hello", rendered)
+
+    def test_tool_result_record_shows_exit_code_and_stdout_preview(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            ui.print_tool_result_record(
+                True,
+                "退出码：0\n\nstdout:\nhello\n\nstderr:\n",
+                tool_name="run_command",
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("执行记录：成功（退出码 0）", rendered)
+        self.assertIn("  └ hello", rendered)
+
+    def test_consecutive_tool_steps_are_separated_by_blank_line(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            ui.print_tool_call_start(
+                1,
+                "run_command",
+                {"command": "echo first"},
+                leading_blank=False,
+            )
+            ui.print_tool_result_record(
+                True,
+                "退出码：0\n\nstdout:\nfirst\n\nstderr:\n",
+                tool_name="run_command",
+            )
+            ui.print_tool_call_start(
+                2,
+                "run_command",
+                {"command": "echo second"},
+                leading_blank=False,
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("  └ first\n\n  * 步骤 2 — 请求 run_command", rendered)
+
+    def test_tool_call_start_uses_ansi_color_and_blink(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            ui.print_tool_call_start(
+                1,
+                "run_command",
+                {"command": "echo hi"},
+                leading_blank=False,
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("\033[5m*\033[0m", rendered)
+        self.assertIn("\033[94mrun_command\033[0m", rendered)
+        self.assertIn("\033[97mecho hi\033[0m", rendered)
+
+    def test_tool_result_refreshes_running_marker_when_ansi_enabled(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            state = ui.print_tool_call_start(
+                1,
+                "run_command",
+                {"command": "echo hi"},
+                leading_blank=False,
+            )
+            ui.print_tool_result_record(
+                True,
+                "退出码：0\n\nstdout:\nhi",
+                tool_name="run_command",
+                display_state=state,
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("\033[2A", rendered)
+        self.assertIn("\033[32m✓\033[0m", rendered)
+        self.assertIn("执行记录：", rendered)
+        self.assertIn("\033[32m成功\033[0m", rendered)
 
     def test_prompt_status_line_contains_bright_model_and_tokens(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")

@@ -133,7 +133,8 @@ def run_inline_chat(
             ui.notice(approval_message)
             continue
 
-        status_line = StatusLine(ui, ui.inline_turn_base(user_text))
+        ui.inline_turn_base(user_text)
+        status_line = StatusLine(ui)
         waiting_indicator = WaitingIndicator(status_line)
         speech_player = StreamingSpeechPlayer(
             text_to_speech,
@@ -141,6 +142,7 @@ def run_inline_chat(
             status_line,
             before_first_output=waiting_indicator.stop,
         )
+        tool_display_state = None
 
         def handle_agent_status(message: str) -> None:
             if message:
@@ -152,6 +154,20 @@ def run_inline_chat(
                 speech_player.start_new_display_segment()
                 waiting_indicator.start()
 
+        def handle_tool_start(step: int, tool_call) -> None:
+            """工具开始执行时立即展示调用详情和运行态标记。"""
+
+            nonlocal tool_display_state
+            had_display_output = speech_player.has_display_output
+            speech_player.flush_display()
+            waiting_indicator.stop()
+            tool_display_state = ui.print_tool_call_start(
+                step,
+                tool_call.name,
+                tool_call.arguments,
+                leading_blank=had_display_output,
+            )
+
         def handle_tool_result(_tool_call, result) -> None:
             """工具执行完成时先收起等待动画，再输出执行摘要。
 
@@ -159,9 +175,16 @@ def run_inline_chat(
             Windows 终端里 ANSI 清行和普通 print 混用时更容易出现同一行串字。
             """
 
+            nonlocal tool_display_state
             speech_player.flush_display()
             waiting_indicator.stop()
-            ui.print_tool_result_record(result.ok)
+            ui.print_tool_result_record(
+                result.ok,
+                result.output,
+                tool_name=_tool_call.name,
+                display_state=tool_display_state,
+            )
+            tool_display_state = None
 
         try:
             waiting_indicator.start()
@@ -169,6 +192,7 @@ def run_inline_chat(
                 user_text,
                 speech_player.handle_delta,
                 on_status=handle_agent_status,
+                on_tool_start=handle_tool_start,
                 on_tool_result=handle_tool_result,
                 on_token_usage=ui.update_token_usage,
             )

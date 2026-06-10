@@ -29,6 +29,7 @@ from .skill import SkillManager, SkillMatchResult
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
+AGENTS_INSTRUCTIONS_FILE = "AGENTS.md"
 TOOL_REVIEW_SYSTEM_PROMPT = (
     "你是本地 AI Agent 的工具调用安全审查器。"
     "review 模式下，Host 只会把疑似删除行为的工具调用交给你审查；非删除行为由 Host 自动放行。"
@@ -340,7 +341,7 @@ class _AgentReplyStreamer:
                 self._prefix_buffer = ""
                 return
 
-            if self._is_incomplete_protocol_tag(lowered):
+            if self._is_protocol_tag_prefix(lowered):
                 return
 
             first_char = stripped[0]
@@ -362,7 +363,7 @@ class _AgentReplyStreamer:
 
     @classmethod
     def _looks_like_plain_final(cls, stripped: str, lowered: str) -> bool:
-        if not stripped or cls._is_incomplete_protocol_tag(lowered):
+        if not stripped or cls._is_protocol_tag_prefix(lowered):
             return False
         if cls._first_protocol_tag_index(lowered) is not None:
             return False
@@ -371,8 +372,12 @@ class _AgentReplyStreamer:
         return len(stripped) >= cls._PLAIN_FINAL_LOOKAHEAD_CHARS
 
     @classmethod
-    def _is_incomplete_protocol_tag(cls, lowered: str) -> bool:
-        """识别被流式增量拆开的协议标签前缀。"""
+    def _is_protocol_tag_prefix(cls, lowered: str) -> bool:
+        """当前文本是否可能是协议标签的前缀（含完整标签本身）。
+
+        完整标签也返回 True，因为模型可能先输出无参数的 <tool> 再增量输出 JSON；
+        此时应继续缓冲，避免把标签裸文本刷到终端。
+        """
 
         return any(tag.startswith(lowered) for tag in (cls._OPEN_TAG, cls._TOOL_TAG))
 
@@ -670,6 +675,7 @@ class LocalToolAgent:
         user_text: str,
         on_delta: Callable[[str], None],
         on_status: Callable[[str], None] | None = None,
+        on_tool_start: Callable[[int, ToolCall], None] | None = None,
         on_tool_result: Callable[[ToolCall, ToolResult], None] | None = None,
         on_token_usage: Callable[[int, int], None] | None = None,
     ) -> str:
@@ -684,11 +690,16 @@ class LocalToolAgent:
             raise AgentError("用户输入为空，无法发送给 Agent。")
 
         status = on_status or (lambda _message: None)
+        report_tool_start = on_tool_start or (lambda _step, _tool_call: None)
         report_tool_result = on_tool_result or (lambda _tool_call, _result: None)
         report_token_usage = on_token_usage or (lambda _input_tokens, _output_tokens: None)
 
         text = self._apply_skill_command(text, status)
-        working_messages = [*self._history, {"role": "user", "content": text}]
+        working_messages = [
+            *self._project_instructions_messages(),
+            *self._history,
+            {"role": "user", "content": text},
+        ]
 
         all_reasoning_parts: list[str] = []
         has_tool_calls = False
@@ -719,8 +730,14 @@ class LocalToolAgent:
                     output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
                 )
             else:
-                status(f"步骤 {step} — 请求 {tool_call.name}")
-                tool_result = self._run_tool(tool, tool_call.arguments)
+                tool_result = self._run_tool(
+                    tool,
+                    tool_call.arguments,
+                    on_start=lambda step=step, tool_call=tool_call: report_tool_start(
+                        step,
+                        tool_call,
+                    ),
+                )
             report_tool_result(tool_call, tool_result)
             status("")  # 通知调用方重新启动等待动画
 
@@ -755,6 +772,42 @@ class LocalToolAgent:
         ]
         status(f"已加载 Skill：{skill_name}")
         return parts[1] if len(parts) > 1 else f"请执行 {skill_name} 技能。"
+
+    def _project_instructions_messages(self) -> list[dict[str, str]]:
+        """构造每次请求最前方的项目规范上下文消息。
+
+        这个消息不写入 `_history`，但会在每次发起模型请求时放在 input 列表开头。
+        对无服务端会话状态的 Responses 调用来说，模型只能看到本次请求携带的
+        input；因此项目规范必须随每次请求发送一次，但不能累积进本地历史，否则
+        多轮对话会出现多份重复 AGENTS.md。
+        """
+
+        instructions = self._load_agents_instructions()
+        if not instructions:
+            return []
+        return [
+            {
+                "role": "user",
+                "content": (
+                    "<project_instructions file=\"AGENTS.md\">\n"
+                    f"{instructions}\n"
+                    "</project_instructions>"
+                ),
+            }
+        ]
+
+    def _load_agents_instructions(self) -> str:
+        """读取工作区根目录的 AGENTS.md；缺失时保持原 user prompt。"""
+
+        path = self.workspace_root / AGENTS_INSTRUCTIONS_FILE
+        if not path.is_file():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise AgentError(f"{AGENTS_INSTRUCTIONS_FILE} 必须是 UTF-8 文本。") from exc
+        except OSError as exc:
+            raise AgentError(f"读取 {AGENTS_INSTRUCTIONS_FILE} 失败：{exc}") from exc
 
     def _request_agent_reply(
         self,
@@ -883,10 +936,31 @@ class LocalToolAgent:
             return None
         return cls._extract_first_json_payload(payload)
 
-    @staticmethod
-    def _extract_first_json_payload(text: str) -> str | None:
-        """返回文本开头第一个完整 JSON 对象，允许后面跟闭合标签或下一次工具调用。"""
+    @classmethod
+    def _extract_first_json_payload(cls, text: str) -> str | None:
+        """返回文本开头第一个 JSON 对象，容忍常见的协议拼接错误。
 
+        模型偶尔会输出 `<tool>{"name":...,"arguments":{...}</tool>`，也就是
+        `arguments` 对象闭合了，但最外层工具对象少了一个 `}`。这类错误如果
+        直接退化成最终回答，会把裸 `<tool>` 标签刷到 TUI。这里仅在文本位于
+        协议边界前、且只缺少 JSON 对象/数组闭合符时补齐，其他语法错误仍然
+        返回 None，避免把普通文本误当成可执行工具。
+        """
+
+        text = text.strip()
+        if not text:
+            return None
+
+        decoded_payload = cls._try_extract_json_prefix(text)
+        if decoded_payload is not None:
+            return decoded_payload
+
+        boundary_index = cls._first_tool_payload_boundary_index(text)
+        candidate = text[:boundary_index].strip() if boundary_index is not None else text
+        return cls._try_complete_json_object(candidate)
+
+    @staticmethod
+    def _try_extract_json_prefix(text: str) -> str | None:
         try:
             decoded, end_index = json.JSONDecoder().raw_decode(text)
         except json.JSONDecodeError:
@@ -895,8 +969,67 @@ class LocalToolAgent:
             return None
         return text[:end_index].strip()
 
+    @staticmethod
+    def _first_tool_payload_boundary_index(text: str) -> int | None:
+        lowered = text.lower()
+        positions = [
+            position
+            for marker in ("</tool>", "<tool", "<final")
+            if (position := lowered.find(marker)) >= 0
+        ]
+        return min(positions) if positions else None
+
+    @classmethod
+    def _try_complete_json_object(cls, text: str) -> str | None:
+        text = text.strip()
+        if not text.startswith("{"):
+            return None
+
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        for char in text:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+            elif char in "{[":
+                stack.append(char)
+            elif char in "}]":
+                if not stack:
+                    return None
+                opening = stack.pop()
+                if (opening, char) not in {("{", "}"), ("[", "]")}:
+                    return None
+
+        if in_string or escaped or not stack:
+            return None
+
+        suffix = "".join("}" if opening == "{" else "]" for opening in reversed(stack))
+        return cls._try_extract_json_prefix(f"{text}{suffix}")
+
     def _normalize_tool_call(self, tool_call: ToolCall) -> ToolCall:
         """在执行前归一化模型常见的工具名和参数名误写。"""
+
+        tools = getattr(self, "_tools", {})
+        raw_name = re.sub(r"\s+", "", tool_call.name.strip())
+        if isinstance(tools, dict) and raw_name not in tools:
+            resource_fallback = self._mcp_resource_tool_fallback(raw_name, tools)
+            if resource_fallback is not None:
+                fallback_name, fallback_path = resource_fallback
+                arguments = dict(tool_call.arguments)
+                arguments.setdefault("path", fallback_path)
+                return ToolCall(
+                    name=fallback_name,
+                    arguments=self._normalize_tool_arguments(fallback_name, arguments),
+                )
 
         name = self._normalize_tool_name(tool_call.name)
         return ToolCall(
@@ -928,6 +1061,41 @@ class LocalToolAgent:
             if len(matches) == 1:
                 return matches[0]
         return name
+
+    def _mcp_resource_tool_fallback(
+        self,
+        requested_name: str,
+        tools: dict[str, ToolDefinition],
+    ) -> tuple[str, str] | None:
+        """兼容模型把项目文档 Resource 工具名写成未注册具体 URI 的情况。
+
+        Local MCP Server 会把实际发现到的 Resource 生成
+        `mcp_read_resource__{server}:{uri}` 工具。模型有时会根据文档里的命名规则
+        拼出一个当前未注册的项目文档 URI；如果它仍指向工作区内的 Markdown 文档，
+        就退回到对应 Server 的 `workspace.read_file`，避免本可读取的文档因工具名
+        精确匹配失败而中断。
+        """
+
+        prefix = "mcp_read_resource__"
+        if not requested_name.startswith(prefix):
+            return None
+
+        logical_uri = requested_name[len(prefix) :]
+        server_name, separator, resource_uri = logical_uri.partition(":")
+        if not separator or not server_name or not resource_uri.startswith("project://"):
+            return None
+
+        relative_path = resource_uri[len("project://") :].strip().lstrip("/\\")
+        if not relative_path or "\\" in relative_path:
+            return None
+        path = Path(relative_path)
+        if path.is_absolute() or ".." in path.parts or path.suffix.lower() != ".md":
+            return None
+
+        fallback_name = f"{server_name}.workspace.read_file"
+        if fallback_name not in tools:
+            return None
+        return fallback_name, relative_path
 
     def _normalize_tool_arguments(
         self,
@@ -984,7 +1152,13 @@ class LocalToolAgent:
             return match.group(1).strip()
         return raw_reply.strip()
 
-    def _run_tool(self, tool: ToolDefinition, arguments: dict[str, Any]) -> ToolResult:
+    def _run_tool(
+        self,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+        *,
+        on_start: Callable[[], None] | None = None,
+    ) -> ToolResult:
         """执行工具；需要审批的工具按当前模式决定是否放行。"""
 
         if tool.requires_confirmation:
@@ -996,6 +1170,8 @@ class LocalToolAgent:
                 return ToolResult(ok=False, output=reason)
 
         try:
+            if on_start is not None:
+                on_start()
             result = tool.run(arguments)
         except Exception as exc:
             return ToolResult(ok=False, output=str(exc))

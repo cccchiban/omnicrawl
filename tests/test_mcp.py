@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_voice_agent.agent import LocalToolAgent
+from ai_voice_agent.agent import LocalToolAgent, ToolCall, ToolDefinition
 from ai_voice_agent.mcp.client import MCPClientManager, _resolve_stdio_command
 from ai_voice_agent.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
 from ai_voice_agent.mcp.bb_browser_server import BBBrowserMCPServer
@@ -294,6 +294,32 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertIn("mcp_get_prompt__trusted.code_review", tools)
         self.assertFalse(tools["trusted.echo"].requires_confirmation)
 
+    def test_mcp_resource_tool_name_falls_back_to_workspace_read_file(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent._tools = {
+            "local_project.workspace.read_file": ToolDefinition(
+                name="local_project.workspace.read_file",
+                description="读取文件。",
+                argument_schema=(
+                    '{"type":"object","properties":{"path":{"type":"string"},'
+                    '"start_line":{"type":"integer"},"max_lines":{"type":"integer"}}}'
+                ),
+                requires_confirmation=False,
+                run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+            )
+        }
+
+        call = LocalToolAgent._normalize_tool_call(
+            agent,
+            ToolCall(
+                name="mcp_read_resource__local_project:project://docs/SKILL_INSTALLATION.md",
+                arguments={},
+            ),
+        )
+
+        self.assertEqual(call.name, "local_project.workspace.read_file")
+        self.assertEqual(call.arguments["path"], "docs/SKILL_INSTALLATION.md")
+
     def test_agent_prioritizes_mcp_tools_in_prompt_order(self) -> None:
         manager = MCPClientManager(MCPConfig(enabled=True))
         manager.registry.add_tool(
@@ -399,6 +425,9 @@ class LocalMCPServerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             (workspace / "README.md").write_text("resource text", encoding="utf-8")
+            docs_dir = workspace / "docs"
+            docs_dir.mkdir()
+            (docs_dir / "SKILL_INSTALLATION.md").write_text("skill docs", encoding="utf-8")
             server = LocalMCPServer(workspace)
 
             resources = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "resources/list"})
@@ -423,6 +452,12 @@ class LocalMCPServerTest(unittest.TestCase):
             )
 
         self.assertTrue(any(item["uri"] == "project://README.md" for item in resources["result"]["resources"]))
+        self.assertTrue(
+            any(
+                item["uri"] == "project://docs/SKILL_INSTALLATION.md"
+                for item in resources["result"]["resources"]
+            )
+        )
         self.assertIn("resource text", resource["result"]["contents"][0]["text"])
         self.assertIn("高风险改动", prompt["result"]["messages"][0]["content"]["text"])
 

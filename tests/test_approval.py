@@ -164,6 +164,24 @@ class ApprovalCommandTest(unittest.TestCase):
         self.assertEqual(tool_call.name, "read_file")
         self.assertEqual(tool_call.arguments["startline"], 1)
 
+    def test_parse_tool_call_repairs_missing_outer_brace_before_close_tag(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+
+        tool_call = LocalToolAgent._parse_tool_call(
+            agent,
+            (
+                '<tool>{"name":"runcommand","arguments":'
+                '{"command":"echo hi","timeoutseconds":30}</tool>'
+                '<tool>{"name":"read_file","arguments":{"path":"README.md"}}</tool>'
+            ),
+        )
+
+        self.assertIsNotNone(tool_call)
+        assert tool_call is not None
+        self.assertEqual(tool_call.name, "run_command")
+        self.assertEqual(tool_call.arguments["command"], "echo hi")
+        self.assertEqual(tool_call.arguments["timeoutseconds"], 30)
+
     def test_normalize_tool_call_accepts_common_tool_and_argument_aliases(self) -> None:
         agent = object.__new__(LocalToolAgent)
         agent._tools = {

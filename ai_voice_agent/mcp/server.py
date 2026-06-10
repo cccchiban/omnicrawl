@@ -263,7 +263,16 @@ class LocalMCPServer:
                 "mimeType": "text/plain",
             },
         ]
-        for relative in ("README.md", "docs/TERMINAL_UI.md", "docs/MCP_DESIGN_TECHNICAL.md"):
+        document_paths = ["README.md"]
+        docs_dir = self.workspace_root / "docs"
+        if docs_dir.is_dir() and not self._should_skip_path(docs_dir):
+            document_paths.extend(
+                f"docs/{path.name}"
+                for path in sorted(docs_dir.glob("*.md"), key=lambda value: value.name.lower())
+                if path.is_file() and not self._should_skip_path(path)
+            )
+
+        for relative in dict.fromkeys(document_paths):
             path = self.workspace_root / relative
             if path.is_file() and not self._should_skip_path(path):
                 resources.append(

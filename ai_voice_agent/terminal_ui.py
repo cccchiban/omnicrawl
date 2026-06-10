@@ -7,8 +7,10 @@ import shutil
 import sys
 import threading
 import ctypes
+import json
 import unicodedata
 from dataclasses import dataclass, field
+from typing import Any
 
 
 AI_PREFIX = "^"
@@ -21,6 +23,7 @@ ANSI_GRAY = "\033[90m"
 ANSI_BRIGHT_WHITE = "\033[97m"
 ANSI_LIGHT_BLUE = "\033[94m"
 ANSI_BOLD = "\033[1m"
+ANSI_BLINK = "\033[5m"
 ANSI_MARKDOWN_STRONG = "\033[1;96m"
 ANSI_DIM_YELLOW = "\033[2;33m"
 ANSI_GREEN = "\033[32m"
@@ -37,6 +40,8 @@ WAITING_KAOMOJI = (
 )
 WAITING_DOTS = ("", ".", "..", "...", "..", ".")
 INLINE_INPUT_WINDOW_ROWS = 8
+TOOL_DETAIL_MAX_ROWS = 3
+TOOL_OUTPUT_MAX_ROWS = 6
 
 
 def _dialog_continuation_prefix(prefix: str) -> str:
@@ -71,6 +76,18 @@ def _take_display_width(text: str, max_width: int) -> str:
     return "".join(chars)
 
 
+def _ellipsize_display_text(text: str, max_width: int) -> str:
+    """按视觉宽度截断单行文本，并保留省略号空间。"""
+
+    if max_width <= 0:
+        return ""
+    if _display_width(text) <= max_width:
+        return text
+    if max_width <= 3:
+        return _take_display_width(text, max_width)
+    return f"{_take_display_width(text, max_width - 3)}..."
+
+
 def _contains_complex_display_width(text: str) -> bool:
     """判断文本是否含有不适合 ANSI 原地预览重绘的字符。
 
@@ -86,6 +103,15 @@ def _normalize_terminal_text(text: str) -> str:
     """统一终端文本换行，避免 CRLF 在行数计算里被当成额外字符。"""
 
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _compact_json(value: Any) -> str:
+    """把工具参数压成单行 JSON，供 TUI 摘要展示。"""
+
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _split_display_rows(text: str, max_width: int) -> list[str]:
@@ -106,6 +132,31 @@ def _split_display_rows(text: str, max_width: int) -> list[str]:
             rows.append(chunk)
             remaining = remaining[len(chunk) :]
     return rows or [""]
+
+
+def _preview_display_rows(
+    text: str,
+    max_width: int,
+    max_rows: int,
+    *,
+    empty_text: str,
+) -> list[str]:
+    """生成适合工具记录展示的有限行预览。
+
+    工具参数和命令输出可能很长；TUI 只展示前几行和省略计数，完整内容仍在
+    Agent 的工具观察里交给模型使用，避免终端主线被大段 stdout 淹没。
+    """
+
+    normalized = _normalize_terminal_text(text).strip()
+    if not normalized:
+        return [empty_text]
+
+    rows = _split_display_rows(normalized, max_width)
+    if len(rows) <= max_rows:
+        return rows
+    visible_count = max(1, max_rows)
+    hidden_count = len(rows) - visible_count
+    return [*rows[:visible_count], f"... +{hidden_count} lines"]
 
 
 @dataclass(frozen=True)
@@ -148,6 +199,15 @@ class MarkdownStreamState:
     table_header_cells: list[str] | None = None
     table_alignments: list[str] | None = None
     table_rows: list[list[str]] = field(default_factory=list)
+
+
+@dataclass
+class ToolDisplayState:
+    """记录一次工具执行块，供执行完成后把运行态标记更新为完成态。"""
+
+    step: int
+    tool_name: str
+    line_count: int
 
 
 def _style(*styles: str | None) -> str | None:
@@ -538,6 +598,12 @@ def _render_markdown_stream_lines(
             return rendered
         rendered.extend(_flush_markdown_table_state(state, default_style, final=final))
     elif state.table_header_candidate is not None:
+        if not raw_line.strip():
+            # 模型常会在表头和分隔行之间插入空行。标准 Markdown 不允许这样写，
+            # 但在终端里直接打印 `|---|---|` 更糟；这里忽略这些空行，继续等待
+            # 分隔行，以便把整张表按对齐后的 TUI 表格输出。
+            return rendered
+
         alignments = _parse_markdown_table_delimiter(raw_line)
         if (
             alignments is not None
@@ -637,6 +703,11 @@ class TerminalUI:
         color = ANSI_GREEN if ok else ANSI_RED
         return f"{color}{text}{ANSI_RESET}"
 
+    def accent(self, text: str) -> str:
+        if not self.capabilities.ansi:
+            return text
+        return f"{ANSI_LIGHT_BLUE}{text}{ANSI_RESET}"
+
     def bright(self, text: str) -> str:
         if not self.capabilities.ansi:
             return text
@@ -649,16 +720,195 @@ class TerminalUI:
             self._input_tokens = max(0, int(input_tokens))
             self._output_tokens = max(0, int(output_tokens))
 
-    def print_tool_result_record(self, ok: bool) -> None:
-        """打印工具执行记录，只暴露成功/失败，不把工具 stdout 混入用户界面。"""
+    def print_tool_call_start(
+        self,
+        step: int,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        leading_blank: bool = True,
+    ) -> ToolDisplayState:
+        """打印工具开始执行的结构化记录。
+
+        首行保留“步骤”语义，前置闪烁星号表示当前工具正在运行；后续行只展示
+        命令或参数摘要，完整输出仍通过工具结果传给模型，避免 TUI 被长日志淹没。
+        """
+
+        indent = _dialog_continuation_prefix(AI_PREFIX)
+        marker = f"{ANSI_BLINK}*{ANSI_RESET}" if self.capabilities.ansi else "*"
+        line_width = shutil.get_terminal_size((100, 30)).columns
+        tool_width = max(
+            1,
+            line_width
+            - _display_width(indent)
+            - _display_width("* 步骤 ")
+            - _display_width(str(max(1, step)))
+            - _display_width(" — 请求 ")
+            - 1,
+        )
+        visible_tool_name = _ellipsize_display_text(tool_name, tool_width)
+        header = (
+            f"{indent}{marker} {self.muted('步骤 ')}"
+            f"{self.result_text(True, str(max(1, step)))}"
+            f"{self.muted(' — 请求 ')}{self.accent(visible_tool_name)}"
+        )
+        detail_rows = self._tool_call_detail_rows(tool_name, arguments)
+        prefix = "\n" if leading_blank or step > 1 else ""
+        line_count = 1 + len(detail_rows)
+
+        with self._lock:
+            print(f"{prefix}{header}")
+            for row in detail_rows:
+                print(f"{indent}{row}")
+            sys.stdout.flush()
+        return ToolDisplayState(step=max(1, step), tool_name=tool_name, line_count=line_count)
+
+    def print_tool_result_record(
+        self,
+        ok: bool,
+        output: str | None = None,
+        *,
+        tool_name: str = "",
+        display_state: ToolDisplayState | None = None,
+    ) -> None:
+        """打印工具执行结果摘要，并用有限行展示 stdout/结果预览。"""
 
         result = "成功" if ok else "失败"
         indent = _dialog_continuation_prefix(AI_PREFIX)
+        suffix = self._tool_result_suffix(tool_name, output or "")
+        output_rows = self._tool_result_output_rows(tool_name, output or "")
+
         with self._lock:
+            if display_state is not None:
+                self._refresh_tool_call_header(display_state, ok)
             print(
-                f"{indent}{self.muted('执行记录：')}{self.result_text(ok, result)}",
-                flush=True,
+                f"{indent}{self.muted('执行记录：')}"
+                f"{self.result_text(ok, result)}{suffix}",
             )
+            for row in output_rows:
+                print(f"{indent}{row}")
+            sys.stdout.flush()
+
+    def _refresh_tool_call_header(self, display_state: ToolDisplayState, ok: bool) -> None:
+        """把正在运行的闪烁星号改成完成态标记。
+
+        只有 ANSI 终端才能可靠回到已打印的工具块首行重绘；普通终端保持原样，
+        仍能通过随后的“执行记录”看出工具已经结束。
+        """
+
+        if not self.capabilities.ansi or display_state.line_count <= 0:
+            return
+
+        indent = _dialog_continuation_prefix(AI_PREFIX)
+        marker = self.result_text(ok, "✓" if ok else "✗")
+        line_width = shutil.get_terminal_size((100, 30)).columns
+        tool_width = max(
+            1,
+            line_width
+            - _display_width(indent)
+            - _display_width("✓ 步骤 ")
+            - _display_width(str(display_state.step))
+            - _display_width(" — 请求 ")
+            - 1,
+        )
+        visible_tool_name = _ellipsize_display_text(display_state.tool_name, tool_width)
+        label = (
+            f"{indent}{marker} {self.muted('步骤 ')}"
+            f"{self.result_text(True, str(display_state.step))}"
+            f"{self.muted(' — 请求 ')}{self.accent(visible_tool_name)}"
+        )
+        print(
+            f"\033[{display_state.line_count}A"
+            f"\r{ANSI_CLEAR_LINE}{label}"
+            f"\033[{display_state.line_count}B"
+            f"\r",
+            end="",
+        )
+
+    def _tool_call_detail_rows(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> list[str]:
+        width = self._tool_detail_width()
+        if tool_name == "run_command":
+            command = str(arguments.get("command") or "")
+            rows = _preview_display_rows(
+                command,
+                max(1, width - _display_width("Ran ")),
+                TOOL_DETAIL_MAX_ROWS,
+                empty_text="(empty command)",
+            )
+            first, *rest = rows
+            rendered = [f"{self.muted('Ran ')}{self.bright(first)}"]
+            rendered.extend(f"{self.muted('│ ')}{self.bright(row)}" for row in rest)
+            return rendered
+
+        rows = _preview_display_rows(
+            _compact_json(arguments),
+            width,
+            TOOL_DETAIL_MAX_ROWS,
+            empty_text="{}",
+        )
+        rendered = [f"{self.muted('│ ')}{self.bright(row)}" for row in rows]
+        return rendered
+
+    def _tool_result_suffix(self, tool_name: str, output: str) -> str:
+        if tool_name != "run_command":
+            return ""
+        match = re.search(r"^退出码：(-?\d+)", output)
+        if match is None:
+            return ""
+        return f"{self.muted('（退出码 ')}{self.bright(match.group(1))}{self.muted('）')}"
+
+    def _tool_result_output_rows(self, tool_name: str, output: str) -> list[str]:
+        width = self._tool_detail_width()
+        if tool_name == "run_command":
+            rows = _preview_display_rows(
+                self._extract_command_visible_output(output),
+                width,
+                TOOL_OUTPUT_MAX_ROWS,
+                empty_text="(no output)",
+            )
+        else:
+            rows = _preview_display_rows(
+                output,
+                width,
+                TOOL_OUTPUT_MAX_ROWS,
+                empty_text="(no output)",
+            )
+        return self._render_branch_rows(rows)
+
+    @staticmethod
+    def _extract_command_visible_output(output: str) -> str:
+        stdout_match = re.search(
+            r"(?:^|\n\n)stdout:\n(.*?)(?=\n\nstderr:\n|\Z)",
+            output,
+            re.DOTALL,
+        )
+        stderr_match = re.search(r"(?:^|\n\n)stderr:\n(.*)\Z", output, re.DOTALL)
+        visible_parts: list[str] = []
+        if stdout_match is not None and stdout_match.group(1).strip():
+            visible_parts.append(stdout_match.group(1).strip())
+        if stderr_match is not None and stderr_match.group(1).strip():
+            stderr_text = stderr_match.group(1).strip()
+            visible_parts.append(f"stderr:\n{stderr_text}")
+        return "\n".join(visible_parts)
+
+    def _render_branch_rows(self, rows: list[str]) -> list[str]:
+        rendered: list[str] = []
+        last_index = len(rows) - 1
+        for index, row in enumerate(rows):
+            branch = "└ " if index == last_index else "│ "
+            style = self.muted(branch)
+            rendered.append(f"{style}{self.bright(row)}")
+        return rendered
+
+    @staticmethod
+    def _tool_detail_width() -> int:
+        terminal_width = shutil.get_terminal_size((100, 30)).columns
+        indent_width = _display_width(_dialog_continuation_prefix(AI_PREFIX))
+        return max(20, terminal_width - indent_width - 4)
 
     def print_startup_panel(
         self,
@@ -1268,21 +1518,24 @@ class StatusLine:
     避免把转义字符显示给用户。
     """
 
-    def __init__(self, ui: TerminalUI, base_text: str = "") -> None:
+    def __init__(self, ui: TerminalUI) -> None:
         self._ui = ui
         self._visible = False
 
     def show(self, text: str) -> None:
+        indent = " " * self._ui.prompt_width()
+        rendered = f"{indent}{text}"
         with self._ui._lock:
             if self._ui.capabilities.ansi:
+                prefix = "\n" if not self._visible else "\r"
                 print(
-                    f"\r{ANSI_CLEAR_LINE}{self._ui.bright(text)}",
+                    f"{prefix}{ANSI_CLEAR_LINE}{self._ui.bright(rendered)}",
                     end="",
                     flush=True,
                 )
                 self._visible = True
             elif not self._visible:
-                print(text, flush=True)
+                print(f"\n{rendered}", flush=True)
                 self._visible = True
 
     def clear(self) -> None:
