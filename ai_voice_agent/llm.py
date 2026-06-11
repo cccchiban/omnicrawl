@@ -415,6 +415,8 @@ class OpenAIResponseLLM:
             return None
 
         input_tokens = _read_usage_int(usage, ("input_tokens", "prompt_tokens"))
+        if input_tokens is None:
+            input_tokens = _read_deepseek_input_tokens(usage)
         output_tokens = _read_usage_int(usage, ("output_tokens", "completion_tokens"))
         if input_tokens is None and output_tokens is None:
             return None
@@ -490,7 +492,7 @@ class OpenAIResponseLLM:
             return _format_http_status_error(status_code)
 
         if _contains_any(lowered, ("peer closed connection", "incomplete chunked read")):
-            return "模型服务流式连接提前断开。系统会按重试策略重新请求；如果持续失败，请稍后重试或检查网关稳定性。"
+            return "模型服务连接提前断开。系统会按重试策略重新请求；如果持续失败，请稍后重试或检查网关稳定性。"
 
         if _contains_any(
             lowered,
@@ -634,8 +636,21 @@ def _read_usage_int(usage: Any, keys: tuple[str, ...]) -> int | None:
     return None
 
 
+def _read_deepseek_input_tokens(usage: Any) -> int | None:
+    hit_tokens = _read_usage_int(usage, ("prompt_cache_hit_tokens",))
+    miss_tokens = _read_usage_int(usage, ("prompt_cache_miss_tokens",))
+    if hit_tokens is None or miss_tokens is None:
+        return None
+    return hit_tokens + miss_tokens
+
+
 def _read_cached_input_tokens(usage: Any) -> int | None:
-    for key in ("cached_tokens", "cached_input_tokens", "input_cached_tokens"):
+    for key in (
+        "cached_tokens",
+        "cached_input_tokens",
+        "input_cached_tokens",
+        "prompt_cache_hit_tokens",
+    ):
         value = getattr(usage, key, None)
         if isinstance(value, int) and not isinstance(value, bool):
             return value
@@ -647,7 +662,12 @@ def _read_cached_input_tokens(usage: Any) -> int | None:
             return value
 
     data = _to_mapping(usage)
-    for key in ("cached_tokens", "cached_input_tokens", "input_cached_tokens"):
+    for key in (
+        "cached_tokens",
+        "cached_input_tokens",
+        "input_cached_tokens",
+        "prompt_cache_hit_tokens",
+    ):
         value = data.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             return value

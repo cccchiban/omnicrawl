@@ -66,6 +66,18 @@ class LLMConfigTest(unittest.TestCase):
             ),
             (7, 3, 4),
         )
+        self.assertEqual(
+            OpenAIResponseLLM.extract_token_usage(
+                {
+                    "usage": {
+                        "completion_tokens": 2,
+                        "prompt_cache_hit_tokens": 9,
+                        "prompt_cache_miss_tokens": 5,
+                    }
+                }
+            ),
+            (14, 2, 9),
+        )
 
     def test_format_request_error_hides_html_gateway_body(self) -> None:
         raw_error = RuntimeError(
@@ -82,12 +94,12 @@ class LLMConfigTest(unittest.TestCase):
         self.assertNotIn("<html>", message)
         self.assertNotIn("openresty", message)
 
-    def test_format_request_error_normalizes_stream_disconnect(self) -> None:
+    def test_format_request_error_normalizes_connection_disconnect(self) -> None:
         message = OpenAIResponseLLM.format_request_error(
             RuntimeError("peer closed connection without sending complete message body (incomplete chunked read)")
         )
 
-        self.assertIn("模型服务流式连接提前断开", message)
+        self.assertIn("模型服务连接提前断开", message)
         self.assertNotIn("peer closed connection", message)
         self.assertNotIn("incomplete chunked read", message)
 

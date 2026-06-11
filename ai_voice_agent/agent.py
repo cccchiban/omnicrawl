@@ -296,6 +296,32 @@ def _is_unsupported_prompt_cache_error(exc: Exception) -> bool:
     )
 
 
+def _is_retryable_model_request_error(exc: Exception) -> bool:
+    """识别请求建立阶段可直接重试的临时模型服务错误。"""
+
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int) and status_code in {408, 409, 500, 502, 503, 504}:
+        return True
+
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "peer closed connection",
+            "incomplete chunked read",
+            "remote protocol error",
+            "server disconnected",
+            "connection reset",
+            "connection aborted",
+            "broken pipe",
+            "timeout",
+            "timed out",
+            "readtimeout",
+            "connecttimeout",
+        )
+    )
+
+
 class AgentError(RuntimeError):
     """Agent 循环、工具调用或安全校验失败时抛出。"""
 
@@ -305,7 +331,7 @@ class _EmptyAgentReply(RuntimeError):
 
 
 class _RetryableAgentRequestError(RuntimeError):
-    """模型请求已建立但流式读取中断，可按请求重试策略重新发起。"""
+    """模型请求遇到临时连接或服务端错误，可按请求重试策略重新发起。"""
 
 
 @dataclass(frozen=True)
@@ -314,6 +340,8 @@ class ToolCall:
 
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
+    id: str = ""
+    function_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -325,6 +353,17 @@ class ToolResult:
 
 
 @dataclass(frozen=True)
+class AgentModelReply:
+    """Chat Completions 一次回复的结构化结果。"""
+
+    message: dict[str, Any]
+    content: str
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    reasoning: str = ""
+    content_streamed: bool = False
+
+
+@dataclass(frozen=True)
 class ToolDefinition:
     """Agent 可用工具的说明与执行函数。"""
 
@@ -333,261 +372,6 @@ class ToolDefinition:
     argument_schema: str
     requires_confirmation: bool
     run: Callable[[dict[str, Any]], ToolResult]
-
-
-class _AgentReplyStreamer:
-    """流式输出用户可见文本，同时隐藏工具协议正文。
-
-    模型现在允许先给一段简短进度，再另起一行输出 `<tool>...</tool>`。
-    因此流式层需要把工具标签前的进度刷给用户，但仍要拦住工具 JSON，
-    避免协议正文混进终端或语音播报。
-    """
-
-    _OPEN_TAG = "<final>"
-    _CLOSE_TAG = "</final>"
-    _TOOL_TAG = "<tool>"
-    _PROTOCOL_TAG_STARTS = ("<tool", "<final")
-    _PLAIN_FINAL_LOOKAHEAD_CHARS = 10
-
-    def __init__(
-        self,
-        on_delta: Callable[[str], None],
-        on_protocol_wait: Callable[[], None] | None = None,
-    ) -> None:
-        self._on_delta = on_delta
-        self._on_protocol_wait = on_protocol_wait
-        self._prefix_buffer = ""
-        self._tail_buffer = ""
-        self._inside_final = False
-        self._inside_plain_final = False
-        self._closed = False
-        self.streamed = False
-        self._protocol_wait_started = False
-
-    def push(self, delta: str) -> None:
-        if self._closed or not delta:
-            return
-
-        if self._inside_plain_final:
-            # 即使已进入普通文本模式，后续增量仍可能包含 <tool> 或 <final>
-            # 标签。例如模型先输出"好的，开始安装。"再输出 <tool>...</tool>。
-            # 保留尾部少量字符用于跨 delta 边界的标签检测，避免工具 JSON
-            # 被当成普通文本直接展示在终端。
-            combined = self._prefix_buffer + delta
-            lowered = combined.lower()
-            line_start_tool_pos = self._first_line_start_tool_tag_index(lowered)
-            if line_start_tool_pos is not None:
-                if line_start_tool_pos > 0:
-                    self._emit(combined[:line_start_tool_pos])
-                self._start_protocol_wait_if_needed()
-                self._closed = True
-                self._prefix_buffer = ""
-                return
-            partial_tool_pos = self._trailing_line_start_tool_prefix_index(lowered)
-            if partial_tool_pos is not None:
-                if partial_tool_pos > 0:
-                    self._emit(combined[:partial_tool_pos])
-                self._start_protocol_wait_if_needed()
-                self._prefix_buffer = combined[partial_tool_pos:]
-                return
-            tag_pos = self._first_protocol_tag_index(lowered)
-            if tag_pos is not None:
-                # 找到标签起始位置，只发送标签前的安全文本。
-                if tag_pos > 0:
-                    self._emit(combined[:tag_pos])
-                self._closed = True
-                self._prefix_buffer = ""
-                return
-            partial_tool_pos = self._trailing_tool_prefix_index(lowered)
-            if partial_tool_pos is not None:
-                if partial_tool_pos > 0:
-                    self._emit(combined[:partial_tool_pos])
-                self._prefix_buffer = combined[partial_tool_pos:]
-                return
-            keep = min(len(combined), len(self._TOOL_TAG))
-            if len(combined) > keep:
-                self._emit(combined[:-keep])
-                self._prefix_buffer = combined[-keep:]
-            else:
-                self._prefix_buffer = combined
-            return
-
-        if not self._inside_final:
-            self._prefix_buffer += delta
-            stripped = self._prefix_buffer.lstrip()
-            lowered = stripped.lower()
-            if not stripped:
-                return
-
-            if lowered.startswith(self._OPEN_TAG):
-                self._inside_final = True
-                self._push_final_text(stripped[len(self._OPEN_TAG) :])
-                self._prefix_buffer = ""
-                return
-
-            if self._is_protocol_tag_prefix(lowered):
-                return
-
-            first_char = stripped[0]
-            line_start_tool_pos = self._first_line_start_tool_tag_index(lowered)
-            if line_start_tool_pos is not None:
-                if line_start_tool_pos > 0:
-                    self._emit(stripped[:line_start_tool_pos])
-                self._start_protocol_wait_if_needed()
-                self._closed = True
-                self._prefix_buffer = ""
-                return
-            partial_tool_pos = self._trailing_line_start_tool_prefix_index(lowered)
-            if partial_tool_pos is not None:
-                if partial_tool_pos > 0:
-                    self._inside_plain_final = True
-                    self._emit(stripped[:partial_tool_pos])
-                self._start_protocol_wait_if_needed()
-                self._prefix_buffer = stripped[partial_tool_pos:]
-                return
-            partial_tool_pos = self._trailing_tool_prefix_index(lowered)
-            if partial_tool_pos is not None:
-                if partial_tool_pos > 0:
-                    self._inside_plain_final = True
-                    self._emit(stripped[:partial_tool_pos])
-                self._prefix_buffer = stripped[partial_tool_pos:]
-                return
-            inline_tool_pos = lowered.find(self._TOOL_TAG.rstrip(">"))
-            if inline_tool_pos >= 0:
-                if inline_tool_pos > 0:
-                    self._emit(stripped[:inline_tool_pos])
-                self._closed = True
-                self._prefix_buffer = ""
-                return
-            if first_char in {"<", "{"} or self._TOOL_TAG.rstrip(">") in lowered:
-                self._closed = True
-                self._prefix_buffer = ""
-                return
-
-            # 普通文本可能只是工具调用前的说明，例如“好的，开始安装。”后面紧跟
-            # <tool>。因此先留一个很短的观察窗口；一旦内容已经明显是自然语言
-            # 最终回答，就提前放行，避免没有 <final> 标签时整段回复等到结尾才显示。
-            if self._looks_like_plain_final(stripped, lowered):
-                self._inside_plain_final = True
-                self._prefix_buffer = ""
-                self._emit(stripped)
-            return
-
-        self._push_final_text(delta)
-
-    @classmethod
-    def _looks_like_plain_final(cls, stripped: str, lowered: str) -> bool:
-        if not stripped or cls._is_protocol_tag_prefix(lowered):
-            return False
-        if cls._first_protocol_tag_index(lowered) is not None:
-            return False
-        if re.match(r"^\s{0,3}(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)", stripped):
-            return True
-        return len(stripped) >= cls._PLAIN_FINAL_LOOKAHEAD_CHARS
-
-    @classmethod
-    def _is_protocol_tag_prefix(cls, lowered: str) -> bool:
-        """当前文本是否可能是协议标签的前缀（含完整标签本身）。
-
-        完整标签也返回 True，因为模型可能先输出无参数的 <tool> 再增量输出 JSON；
-        此时应继续缓冲，避免把标签裸文本刷到终端。
-        """
-
-        return any(tag.startswith(lowered) for tag in (cls._OPEN_TAG, cls._TOOL_TAG))
-
-    @classmethod
-    def _first_protocol_tag_index(cls, lowered: str) -> int | None:
-        """返回文本中最早出现的工具或最终回答标签位置。"""
-
-        positions = [
-            position
-            for tag_start in cls._PROTOCOL_TAG_STARTS
-            if (position := lowered.find(tag_start)) >= 0
-        ]
-        return min(positions) if positions else None
-
-    @classmethod
-    def _first_line_start_tool_tag_index(cls, lowered: str) -> int | None:
-        """返回独立行工具标签的起始位置；同一行里的 `<tool>` 仍视为普通文本风险。"""
-
-        for match in re.finditer(r"<tool\b", lowered, re.IGNORECASE):
-            tag_index = match.start()
-            line_start = cls._line_start_index(lowered, tag_index)
-            leading = lowered[line_start:tag_index]
-            if leading.strip() == "" or re.fullmatch(r"\s*\^\s*", leading):
-                return line_start
-        return None
-
-    @classmethod
-    def _trailing_line_start_tool_prefix_index(cls, lowered: str) -> int | None:
-        """检测缓冲区末尾是否可能是独立行 `<tool>` 的半截前缀。
-
-        流式增量可能把 `<tool>` 拆成 `\n<to` + `ol>` 两段。这里保留半截
-        标签，避免为了实时显示进度而把协议标签残片提前打印出来。
-        """
-
-        tool_start = cls._TOOL_TAG.rstrip(">")
-        for size in range(min(len(tool_start) - 1, len(lowered)), 0, -1):
-            if not lowered.endswith(tool_start[:size]):
-                continue
-            tag_index = len(lowered) - size
-            line_start = cls._line_start_index(lowered, tag_index)
-            leading = lowered[line_start:tag_index]
-            if leading.strip() == "" or re.fullmatch(r"\s*\^\s*", leading):
-                return line_start
-        return None
-
-    @classmethod
-    def _trailing_tool_prefix_index(cls, lowered: str) -> int | None:
-        """检测缓冲区末尾任意位置的 `<tool>` 半截前缀，防止标签残片泄漏。"""
-
-        tool_start = cls._TOOL_TAG.rstrip(">")
-        for size in range(min(len(tool_start) - 1, len(lowered)), 0, -1):
-            if lowered.endswith(tool_start[:size]):
-                return len(lowered) - size
-        return None
-
-    @staticmethod
-    def _line_start_index(text: str, index: int) -> int:
-        return text.rfind("\n", 0, index) + 1
-
-    def finish(self) -> None:
-        if self._inside_final and not self._closed and self._tail_buffer:
-            self._emit(self._tail_buffer)
-            self._tail_buffer = ""
-        if self._inside_plain_final and not self._closed and self._prefix_buffer:
-            self._emit(self._prefix_buffer)
-            self._prefix_buffer = ""
-
-    def _push_final_text(self, text: str) -> None:
-        self._tail_buffer += text
-        close_index = self._tail_buffer.lower().find(self._CLOSE_TAG)
-        if close_index >= 0:
-            self._emit(self._tail_buffer[:close_index])
-            self._tail_buffer = ""
-            self._closed = True
-            return
-
-        keep_chars = len(self._CLOSE_TAG) - 1
-        if len(self._tail_buffer) <= keep_chars:
-            return
-
-        self._emit(self._tail_buffer[:-keep_chars])
-        self._tail_buffer = self._tail_buffer[-keep_chars:]
-
-    def _emit(self, text: str) -> None:
-        if not text:
-            return
-        self.streamed = True
-        self._on_delta(text)
-
-    def _start_protocol_wait_if_needed(self) -> None:
-        """进度文本已显示、工具协议被隐藏时，通知 TUI 继续显示等待动画。"""
-
-        if self._protocol_wait_started or not self.streamed or self._on_protocol_wait is None:
-            return
-        self._protocol_wait_started = True
-        self._on_protocol_wait()
 
 
 def _read_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -685,13 +469,11 @@ class LocalToolAgent:
     """能在本地项目内读文件、检索、按确认执行写入/命令的简化 Agent Harness。
 
     参考 pi 的核心思想：Agent 不是一次问答，而是"模型 -> 工具 -> 观察 -> 下一轮模型"的循环。
-    当前实现选择文本协议而不是原生 Responses tool call，是为了兼容课程网关可能只实现
-    OpenAI Responses 的文本流部分这一现实约束。
+    当前实现使用 DeepSeek 官方 Chat Completions Tool Calls 协议：Host 通过
+    tools 参数声明工具，模型通过 tool_calls 返回结构化调用，Host 执行后
+    以 role=tool 消息回传结果。
     """
 
-    _TOOL_OPEN_PATTERN = re.compile(r"^\s*(?:\^\s*)?<tool\b[^>]*>\s*", re.IGNORECASE)
-    _TOOL_LINE_PATTERN = re.compile(r"(?im)^(?:\s*\^\s*)?<tool\b[^>]*>\s*")
-    _FINAL_PATTERN = re.compile(r"<final>\s*(.*?)\s*</final>", re.DOTALL | re.IGNORECASE)
     _TOOL_NAME_ALIASES = {
         "listfiles": "list_files",
         "readfile": "read_file",
@@ -888,7 +670,7 @@ class LocalToolAgent:
         report_token_usage = on_token_usage or (
             lambda _input_tokens, _output_tokens, _cached_input_tokens: None
         )
-        report_protocol_wait = on_protocol_wait or (lambda: None)
+        _report_protocol_wait = on_protocol_wait or (lambda: None)
         report_retry_status = on_retry_status or status
 
         text = self._apply_skill_command(text, status)
@@ -902,58 +684,49 @@ class LocalToolAgent:
         ]
 
         all_reasoning_parts: list[str] = []
-        has_tool_calls = False
         step = 1
         while True:
-            raw_reply, reasoning, streamed_final = self._request_agent_reply(
+            reply = self._request_agent_reply(
                 working_messages,
                 on_delta,
                 report_token_usage,
-                report_protocol_wait,
+                _report_protocol_wait,
                 report_retry_status,
             )
-            if reasoning:
-                all_reasoning_parts.append(reasoning)
-            tool_call = self._parse_tool_call(raw_reply)
-            if tool_call is None:
-                final_reply = self._parse_final_reply(raw_reply)
-                if not streamed_final:
+            if reply.reasoning:
+                all_reasoning_parts.append(reply.reasoning)
+
+            if not reply.tool_calls:
+                final_reply = reply.content.strip()
+                if final_reply and not reply.content_streamed:
                     on_delta(final_reply)
-                combined_reasoning = "\n".join(all_reasoning_parts) if has_tool_calls else ""
+                combined_reasoning = "\n".join(all_reasoning_parts)
                 self._append_history(text, final_reply, combined_reasoning)
                 self._pending_user_text = None
                 return final_reply
 
-            tool_call = self._normalize_tool_call(tool_call)
-            has_tool_calls = True
-            tool = self._tools.get(tool_call.name)
-            if tool is None:
-                tool_result = ToolResult(
-                    ok=False,
-                    output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
-                )
-            else:
-                tool_result = self._run_tool(
-                    tool,
-                    tool_call.arguments,
-                    on_start=lambda step=step, tool_call=tool_call: report_tool_start(
-                        step,
-                        tool_call,
-                    ),
-                )
-            report_tool_result(tool_call, tool_result)
+            working_messages.append(reply.message)
+            for raw_tool_call in reply.tool_calls:
+                tool_call = self._normalize_tool_call(raw_tool_call)
+                tool = self._tools.get(tool_call.name)
+                if tool is None:
+                    tool_result = ToolResult(
+                        ok=False,
+                        output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
+                    )
+                else:
+                    tool_result = self._run_tool(
+                        tool,
+                        tool_call.arguments,
+                        on_start=lambda step=step, tool_call=tool_call: report_tool_start(
+                            step,
+                            tool_call,
+                        ),
+                    )
+                report_tool_result(tool_call, tool_result)
+                working_messages.append(self._tool_result_message(tool_call, tool_result))
+                step += 1
             status("")  # 通知调用方重新启动等待动画
-
-            working_messages.extend(
-                [
-                    self._assistant_message(raw_reply, reasoning),
-                    {
-                        "role": "user",
-                        "content": self._format_tool_observation(tool_call, tool_result),
-                    },
-                ]
-            )
-            step += 1
 
     def _apply_skill_command(self, text: str, status: Callable[[str], None]) -> str:
         """处理 /skill:name，并在每轮开始时清空上一轮手动 Skill 注入。"""
@@ -1000,9 +773,9 @@ class LocalToolAgent:
     def _project_instructions_messages(self) -> list[dict[str, str]]:
         """构造每次请求最前方的项目规范上下文消息。
 
-        这个消息不写入 `_history`，但会在每次发起模型请求时放在 input 列表开头。
-        对无服务端会话状态的 Responses 调用来说，模型只能看到本次请求携带的
-        input；因此项目规范必须随每次请求发送一次，但不能累积进本地历史，否则
+        这个消息不写入 `_history`，但会在每次发起模型请求时放在 messages 列表开头。
+        对无服务端会话状态的 Chat Completions 调用来说，模型只能看到本次请求携带的
+        messages；因此项目规范必须随每次请求发送一次，但不能累积进本地历史，否则
         多轮对话会出现多份重复 AGENTS.md。
         """
 
@@ -1035,17 +808,13 @@ class LocalToolAgent:
 
     def _request_agent_reply(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         on_delta: Callable[[str], None],
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
         on_retry_status: Callable[[str], None],
-    ) -> tuple[str, str, bool]:
-        """请求模型给出下一步：要么调用一个工具，要么输出最终回答。
-
-        返回 (reply, reasoning, streamed_final)。工具调用场景中 reasoning 会被
-        保留在 working_messages 里并持续回传 API。
-        """
+    ) -> AgentModelReply:
+        """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
 
         last_retryable_error: Exception | None = None
         for attempt in range(1, self.config.request_retry_count + 1):
@@ -1067,10 +836,10 @@ class LocalToolAgent:
                 last_retryable_error = exc
                 if attempt < self.config.request_retry_count:
                     on_retry_status(
-                        f"模型流式连接中断，正在重试 {attempt + 1}/{self.config.request_retry_count}：{exc}"
+                        f"模型请求中断，正在重试 {attempt + 1}/{self.config.request_retry_count}：{exc}"
                     )
                     continue
-                raise AgentError(f"Agent 流式回复中断：{exc}") from exc
+                raise AgentError(f"Agent 模型请求中断：{exc}") from exc
 
         raise AgentError(
             f"Agent 连续 {self.config.request_retry_count} 次返回空响应，已停止本轮请求。"
@@ -1078,18 +847,23 @@ class LocalToolAgent:
 
     def _request_agent_reply_once(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         on_delta: Callable[[str], None],
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
-    ) -> tuple[str, str, bool]:
-        """执行一次模型流式请求；空响应由调用方统一重试。"""
+    ) -> AgentModelReply:
+        """执行一次 DeepSeek Chat Completions 流式工具调用请求。
+
+        使用 stream=True 实现增量文本推送，提升 TUI 实时反馈体验；
+        同时累积 tool_calls 增量块，流结束后统一解析为结构化 ToolCall 列表。
+        """
 
         system_prompt = self._system_prompt()
         request_kwargs: dict[str, Any] = {
             "model": self.config.llm.model,
-            "instructions": system_prompt,
-            "input": messages,
+            "messages": [{"role": "system", "content": system_prompt}, *messages],
+            "tools": self._chat_completion_tools(),
+            "tool_choice": "auto",
             "stream": True,
             "extra_body": self._build_extra_body(),
             "timeout": self.config.request_timeout_seconds,
@@ -1099,53 +873,84 @@ class LocalToolAgent:
             request_kwargs["prompt_cache_key"] = prompt_cache_key
 
         try:
-            stream = self._client.responses.create(**request_kwargs)
+            stream = self._client.chat.completions.create(**request_kwargs)
         except Exception as exc:
             if "prompt_cache_key" in request_kwargs and _is_unsupported_prompt_cache_error(exc):
                 request_kwargs.pop("prompt_cache_key", None)
                 try:
-                    stream = self._client.responses.create(**request_kwargs)
+                    stream = self._client.chat.completions.create(**request_kwargs)
                 except Exception as retry_exc:
                     raise AgentError(
                         f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(retry_exc)}"
                     ) from retry_exc
+            elif _is_retryable_model_request_error(exc):
+                raise _RetryableAgentRequestError(OpenAIResponseLLM.format_request_error(exc)) from exc
             else:
                 raise AgentError(
                     f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
                 ) from exc
 
-        chunks: list[str] = []
-        reasoning_chunks: list[str] = []
-        latest_token_usage: tuple[int, int, int] | None = None
-        final_streamer = _AgentReplyStreamer(on_delta, on_protocol_wait)
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_call_delta_buffers: dict[int, dict[str, Any]] = {}
+        latest_usage: tuple[int, int, int] | None = None
+        has_streamed_visible = False
+        protocol_wait_sent = False
+
         try:
             for event in stream:
-                event_usage = OpenAIResponseLLM.extract_token_usage(event)
-                if event_usage is not None:
-                    latest_token_usage = event_usage
-                for delta in OpenAIResponseLLM.extract_stream_text(event):
-                    chunks.append(delta)
-                    final_streamer.push(delta)
-                if self.config.llm.thinking_enabled:
-                    for delta in OpenAIResponseLLM.extract_stream_reasoning(event):
-                        reasoning_chunks.append(delta)
+                usage = OpenAIResponseLLM.extract_token_usage(event)
+                if usage is not None:
+                    latest_usage = usage
+
+                delta = self._extract_stream_delta(event)
+                if delta is None:
+                    continue
+
+                delta_content = LocalToolAgent._read_attr_or_key(delta, "content")
+                if isinstance(delta_content, str) and delta_content:
+                    content_parts.append(delta_content)
+                    on_delta(delta_content)
+                    has_streamed_visible = True
+
+                delta_reasoning = LocalToolAgent._read_attr_or_key(delta, "reasoning_content")
+                if isinstance(delta_reasoning, str):
+                    reasoning_parts.append(delta_reasoning)
+
+                tc_deltas = LocalToolAgent._read_attr_or_key(delta, "tool_calls")
+                if isinstance(tc_deltas, list) and tc_deltas:
+                    if has_streamed_visible and not protocol_wait_sent:
+                        on_protocol_wait()
+                        protocol_wait_sent = True
+                    self._accumulate_tool_call_deltas(tc_deltas, tool_call_delta_buffers)
         except Exception as exc:
             raise _RetryableAgentRequestError(OpenAIResponseLLM.format_request_error(exc)) from exc
 
-        final_streamer.finish()
-        reply = "".join(chunks)
-        if not reply.strip():
-            raise _EmptyAgentReply("Agent 返回内容为空或格式不可解析。")
+        if latest_usage is not None:
+            on_token_usage(*latest_usage)
 
-        reasoning = "".join(reasoning_chunks).strip()
-        if latest_token_usage is not None:
-            on_token_usage(*latest_token_usage)
-        return reply.strip(), reasoning, final_streamer.streamed
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts).strip()
+
+        tool_calls = self._build_tool_calls_from_deltas(tool_call_delta_buffers)
+
+        if not content.strip() and not tool_calls:
+            raise _EmptyAgentReply("Agent 返回内容为空，且未返回工具调用。")
+
+        message = self._assistant_tool_call_message({}, content, tool_calls, reasoning)
+
+        return AgentModelReply(
+            message=message,
+            content=content,
+            tool_calls=tool_calls,
+            reasoning=reasoning,
+            content_streamed=has_streamed_visible,
+        )
 
     def _build_prompt_cache_key(
         self,
         system_prompt: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
     ) -> str:
         """为 GPT/OpenAI 请求提供稳定缓存路由 key。
 
@@ -1174,128 +979,219 @@ class LocalToolAgent:
                 body["reasoning_effort"] = self.config.llm.reasoning_effort
         return body
 
-    def _parse_tool_call(self, raw_reply: str) -> ToolCall | None:
-        """从模型回复中解析工具调用；解析失败时退化为最终回答，避免卡死。"""
+    @staticmethod
+    def _extract_chat_message(response: Any) -> Any:
+        choices = getattr(response, "choices", None)
+        if choices and len(choices) > 0:
+            return getattr(choices[0], "message", None) or {}
 
-        payload = self._extract_tool_payload(raw_reply)
-        if payload is None:
-            return None
-
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            return None
-
-        if not isinstance(data, dict):
-            return None
-
-        name = data.get("name") or data.get("tool")
-        arguments = data.get("arguments") or data.get("args") or {}
-        if not isinstance(name, str) or not isinstance(arguments, dict):
-            return None
-
-        return ToolCall(name=self._normalize_tool_name(name), arguments=arguments)
-
-    @classmethod
-    def _extract_tool_payload(cls, raw_reply: str) -> str | None:
-        """提取工具调用 JSON。
-
-        标准协议要求 `<tool>{...}</tool>`，但实际模型可能先输出一小段
-        用户可见进度，再另起一行输出工具标签。这里接受回复起始处或独立行
-        的工具标签，并用 JSONDecoder 提取第一个完整对象；同一行普通文本中
-        间的 `<tool>` 仍不执行，避免把示例或说明误当成真实工具调用。
-        """
-
-        stripped = raw_reply.strip()
-        if stripped.startswith("{"):
-            return cls._extract_first_json_payload(stripped)
-
-        open_match = cls._TOOL_OPEN_PATTERN.match(stripped) or cls._TOOL_LINE_PATTERN.search(stripped)
-        if not open_match:
-            return None
-        payload = stripped[open_match.end() :].strip()
-        if not payload:
-            return None
-        return cls._extract_first_json_payload(payload)
-
-    @classmethod
-    def _extract_first_json_payload(cls, text: str) -> str | None:
-        """返回文本开头第一个 JSON 对象，容忍常见的协议拼接错误。
-
-        模型偶尔会输出 `<tool>{"name":...,"arguments":{...}</tool>`，也就是
-        `arguments` 对象闭合了，但最外层工具对象少了一个 `}`。这类错误如果
-        直接退化成最终回答，会把裸 `<tool>` 标签刷到 TUI。这里仅在文本位于
-        协议边界前、且只缺少 JSON 对象/数组闭合符时补齐，其他语法错误仍然
-        返回 None，避免把普通文本误当成可执行工具。
-        """
-
-        text = text.strip()
-        if not text:
-            return None
-
-        decoded_payload = cls._try_extract_json_prefix(text)
-        if decoded_payload is not None:
-            return decoded_payload
-
-        boundary_index = cls._first_tool_payload_boundary_index(text)
-        candidate = text[:boundary_index].strip() if boundary_index is not None else text
-        return cls._try_complete_json_object(candidate)
+        data = response.model_dump() if hasattr(response, "model_dump") else response
+        if isinstance(data, dict):
+            choices_data = data.get("choices")
+            if isinstance(choices_data, list) and choices_data:
+                first = choices_data[0]
+                if isinstance(first, dict):
+                    return first.get("message") or {}
+        return {}
 
     @staticmethod
-    def _try_extract_json_prefix(text: str) -> str | None:
-        try:
-            decoded, end_index = json.JSONDecoder().raw_decode(text)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(decoded, dict):
-            return None
-        return text[:end_index].strip()
+    def _extract_chat_message_content(message: Any) -> str:
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                elif isinstance(item, dict):
+                    value = item.get("text") or item.get("content")
+                    if isinstance(value, str):
+                        parts.append(value)
+            return "".join(parts)
 
-    @staticmethod
-    def _first_tool_payload_boundary_index(text: str) -> int | None:
-        lowered = text.lower()
-        positions = [
-            position
-            for marker in ("</tool>", "<tool", "<final")
-            if (position := lowered.find(marker)) >= 0
-        ]
-        return min(positions) if positions else None
+        data = message.model_dump() if hasattr(message, "model_dump") else message
+        if isinstance(data, dict):
+            value = data.get("content")
+            if isinstance(value, str):
+                return value
+        return ""
 
-    @classmethod
-    def _try_complete_json_object(cls, text: str) -> str | None:
-        text = text.strip()
-        if not text.startswith("{"):
-            return None
+    def _extract_chat_tool_calls(self, message: Any) -> list[ToolCall]:
+        raw_tool_calls = getattr(message, "tool_calls", None)
+        if raw_tool_calls is None:
+            data = message.model_dump() if hasattr(message, "model_dump") else message
+            raw_tool_calls = data.get("tool_calls") if isinstance(data, dict) else None
+        if not isinstance(raw_tool_calls, list):
+            return []
 
-        stack: list[str] = []
-        in_string = False
-        escaped = False
-        for char in text:
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
+        calls: list[ToolCall] = []
+        for index, raw_call in enumerate(raw_tool_calls, start=1):
+            call_id = self._read_attr_or_key(raw_call, "id") or f"call_{index}"
+            function = self._read_attr_or_key(raw_call, "function")
+            name = self._read_attr_or_key(function, "name")
+            raw_arguments = self._read_attr_or_key(function, "arguments")
+            if not isinstance(name, str) or not name.strip():
                 continue
+            arguments = self._parse_tool_arguments(raw_arguments)
+            calls.append(
+                ToolCall(
+                    name=self._tool_name_from_function_name(name),
+                    arguments=arguments,
+                    id=str(call_id),
+                    function_name=name,
+                )
+            )
+        return calls
 
-            if char == '"':
-                in_string = True
-            elif char in "{[":
-                stack.append(char)
-            elif char in "}]":
-                if not stack:
-                    return None
-                opening = stack.pop()
-                if (opening, char) not in {("{", "}"), ("[", "]")}:
-                    return None
+    @staticmethod
+    def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
+        if isinstance(raw_arguments, dict):
+            return raw_arguments
+        if isinstance(raw_arguments, str) and raw_arguments.strip():
+            try:
+                parsed = json.loads(raw_arguments)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
 
-        if in_string or escaped or not stack:
+    @staticmethod
+    def _extract_chat_reasoning(message: Any) -> str:
+        for key in ("reasoning_content", "reasoning"):
+            value = getattr(message, key, None)
+            if isinstance(value, str):
+                return value.strip()
+        data = message.model_dump() if hasattr(message, "model_dump") else message
+        if isinstance(data, dict):
+            for key in ("reasoning_content", "reasoning"):
+                value = data.get(key)
+                if isinstance(value, str):
+                    return value.strip()
+        return ""
+
+    @staticmethod
+    def _read_attr_or_key(value: Any, key: str) -> Any:
+        if value is None:
             return None
+        attr = getattr(value, key, None)
+        if attr is not None:
+            return attr
+        if isinstance(value, dict):
+            return value.get(key)
+        if hasattr(value, "model_dump"):
+            data = value.model_dump()
+            return data.get(key) if isinstance(data, dict) else None
+        return None
 
-        suffix = "".join("}" if opening == "{" else "]" for opening in reversed(stack))
-        return cls._try_extract_json_prefix(f"{text}{suffix}")
+    @staticmethod
+    def _extract_stream_delta(event: Any) -> Any | None:
+        """从流式事件中提取 choices[0].delta，兼容 SDK 模型与字典。"""
+
+        choices = getattr(event, "choices", None)
+        if isinstance(choices, list) and choices:
+            delta = getattr(choices[0], "delta", None)
+            if delta is not None:
+                return delta
+            first = choices[0]
+            if isinstance(first, dict):
+                return first.get("delta")
+        elif isinstance(event, dict):
+            choices_data = event.get("choices")
+            if isinstance(choices_data, list) and choices_data:
+                first = choices_data[0]
+                if isinstance(first, dict):
+                    return first.get("delta")
+        return None
+
+    @classmethod
+    def _accumulate_tool_call_deltas(
+        cls,
+        tc_deltas: list[Any],
+        buffers: dict[int, dict[str, Any]],
+    ) -> None:
+        """把流式 tool_calls 增量块按 index 累积到缓冲区。
+
+        OpenAI/DeepSeek 流式 tool_calls 分多次推送：第一次带 id + function.name，
+        后续只带 function.arguments 片段。这里按 index 聚合完整的 id/name/arguments。
+        """
+
+        for tc in tc_deltas:
+            idx = cls._read_attr_or_key(tc, "index")
+            if not isinstance(idx, int):
+                idx = 0
+            if idx not in buffers:
+                buffers[idx] = {
+                    "id": "",
+                    "function": {"name": "", "arguments": ""},
+                }
+            buf = buffers[idx]
+            tc_id = cls._read_attr_or_key(tc, "id")
+            if tc_id:
+                buf["id"] = str(tc_id)
+            func = cls._read_attr_or_key(tc, "function")
+            if isinstance(func, dict):
+                fn_name = func.get("name")
+                if fn_name:
+                    buf["function"]["name"] += str(fn_name)
+                fn_args = func.get("arguments")
+                if fn_args:
+                    buf["function"]["arguments"] += str(fn_args)
+            elif func is not None:
+                fn_name = getattr(func, "name", None)
+                if fn_name:
+                    buf["function"]["name"] += str(fn_name)
+                fn_args = getattr(func, "arguments", None)
+                if fn_args:
+                    buf["function"]["arguments"] += str(fn_args)
+
+    def _build_tool_calls_from_deltas(
+        self,
+        buffers: dict[int, dict[str, Any]],
+    ) -> list[ToolCall]:
+        """把累积的流式 tool_call 增量块解析为结构化 ToolCall 列表。"""
+
+        calls: list[ToolCall] = []
+        for idx in sorted(buffers.keys()):
+            buf = buffers[idx]
+            fn_name = buf["function"]["name"].strip()
+            if not fn_name:
+                continue
+            calls.append(
+                ToolCall(
+                    name=self._tool_name_from_function_name(fn_name),
+                    arguments=self._parse_tool_arguments(buf["function"]["arguments"]),
+                    id=buf["id"],
+                    function_name=fn_name,
+                )
+            )
+        return calls
+
+    def _assistant_tool_call_message(
+        self,
+        raw_message: Any,
+        content: str,
+        tool_calls: list[ToolCall],
+        reasoning: str,
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": content or None}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if tool_calls:
+            message["tool_calls"] = [
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function_name
+                        or self._function_name_for_tool(tool_call.name),
+                        "arguments": json.dumps(tool_call.arguments, ensure_ascii=False),
+                    },
+                }
+                for tool_call in tool_calls
+            ]
+        return message
 
     def _normalize_tool_call(self, tool_call: ToolCall) -> ToolCall:
         """在执行前归一化模型常见的工具名和参数名误写。"""
@@ -1311,12 +1207,16 @@ class LocalToolAgent:
                 return ToolCall(
                     name=fallback_name,
                     arguments=self._normalize_tool_arguments(fallback_name, arguments),
+                    id=tool_call.id,
+                    function_name=tool_call.function_name,
                 )
 
         name = self._normalize_tool_name(tool_call.name)
         return ToolCall(
             name=name,
             arguments=self._normalize_tool_arguments(name, tool_call.arguments),
+            id=tool_call.id,
+            function_name=tool_call.function_name,
         )
 
     def _normalize_tool_name(self, raw_name: str) -> str:
@@ -1426,13 +1326,67 @@ class LocalToolAgent:
     def _normalize_identifier(value: str) -> str:
         return re.sub(r"[\s_-]+", "", value).lower()
 
-    def _parse_final_reply(self, raw_reply: str) -> str:
-        """提取最终回答；没有显式 final 标签时直接使用模型原文。"""
+    def _chat_completion_tools(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": self._function_name_for_tool(tool.name),
+                    "description": tool.description,
+                    "parameters": self._tool_parameters_schema(tool),
+                },
+            }
+            for tool in self._tools.values()
+        ]
 
-        match = self._FINAL_PATTERN.search(raw_reply)
-        if match:
-            return match.group(1).strip()
-        return raw_reply.strip()
+    def _function_name_for_tool(self, tool_name: str) -> str:
+        readable = re.sub(r"[^A-Za-z0-9_]+", "_", tool_name).strip("_").lower()
+        readable = readable or "tool"
+        digest = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()[:10]
+        return f"tool_{readable[:40]}_{digest}"
+
+    def _tool_name_from_function_name(self, function_name: str) -> str:
+        for tool_name in getattr(self, "_tools", {}):
+            if self._function_name_for_tool(tool_name) == function_name:
+                return tool_name
+        return function_name
+
+    def _tool_parameters_schema(self, tool: ToolDefinition) -> dict[str, Any]:
+        try:
+            raw_schema = json.loads(tool.argument_schema)
+        except json.JSONDecodeError:
+            raw_schema = {}
+        if not isinstance(raw_schema, dict):
+            raw_schema = {}
+        if raw_schema.get("type") == "object" and isinstance(raw_schema.get("properties"), dict):
+            schema = dict(raw_schema)
+        else:
+            properties = {
+                key: self._infer_tool_property_schema(value)
+                for key, value in raw_schema.items()
+                if isinstance(key, str)
+            }
+            schema = {
+                "type": "object",
+                "properties": properties,
+            }
+        schema.setdefault("type", "object")
+        schema.setdefault("properties", {})
+        return schema
+
+    @staticmethod
+    def _infer_tool_property_schema(example: Any) -> dict[str, Any]:
+        if isinstance(example, bool):
+            return {"type": "boolean"}
+        if isinstance(example, int) and not isinstance(example, bool):
+            return {"type": "integer"}
+        if isinstance(example, (float, int)) and not isinstance(example, bool):
+            return {"type": "number"}
+        if isinstance(example, list):
+            return {"type": "array", "items": {"type": "string"}}
+        if isinstance(example, dict):
+            return {"type": "object"}
+        return {"type": "string"}
 
     def _run_tool(
         self,
@@ -1725,10 +1679,10 @@ class LocalToolAgent:
         return {tool.name: tool for tool in tools}
 
     def _build_mcp_tools(self) -> list[ToolDefinition]:
-        """把 MCP Tool 元数据适配为现有文本协议工具。
+        """把 MCP Tool 元数据适配为 Chat Completions function tool。
 
-        这里不改变模型侧协议，只把 MCP Tool 以 `server.tool` 名称追加到工具列表。
-        审批仍复用 `_run_tool` 的统一入口，具体是否需要确认由 MCP Host 策略决定。
+        Host 内部继续使用 `server.tool` 这类可读名称；对外发送给 DeepSeek 时
+        会统一映射成合法 function name，执行时再映射回真实工具名。
         """
 
         definitions: list[ToolDefinition] = []
@@ -1775,7 +1729,7 @@ class LocalToolAgent:
         tool_lines = "\n".join(
             (
                 f"- {tool.name}: {tool.description}\n"
-                f"  参数示例：{tool.argument_schema}\n"
+                f"  参数结构：{tool.argument_schema}\n"
             )
             for tool in self._tools.values()
         )
@@ -2240,24 +2194,24 @@ class LocalToolAgent:
         return output[: self.config.max_tool_output_chars] + "\n... 工具输出已截断。"
 
     @staticmethod
-    def _format_tool_observation(tool_call: ToolCall, result: ToolResult) -> str:
-        return (
-            f"工具 {tool_call.name} 执行完成。\n"
+    def _tool_result_message(tool_call: ToolCall, result: ToolResult) -> dict[str, Any]:
+        content = (
             f"状态：{'成功' if result.ok else '失败'}\n"
-            f"结果：\n{result.output}\n\n"
-            "请基于该工具结果继续。若任务已经完成，请用 <final> 输出最终回答；"
-            "若还需要更多信息，请继续用 <tool> 调用一个工具。"
+            f"工具：{tool_call.name}\n"
+            f"结果：\n{result.output}"
         )
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call.id or tool_call.name,
+            "content": content,
+        }
 
     @staticmethod
-    def _assistant_message(assistant_text: str, reasoning: str = "") -> dict[str, str]:
-        message = {"role": "assistant", "content": assistant_text}
-        if reasoning:
-            message["reasoning_content"] = reasoning
-        return message
+    def _assistant_message(assistant_text: str, reasoning: str = "") -> dict[str, Any]:
+        return {"role": "assistant", "content": assistant_text}
 
     def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
-        """写入对话历史；有工具调用时附带 reasoning_content 供后续轮次回传。"""
+        """写入对话历史；reasoning 仅用于本地兼容签名，不回传给 Chat Completions。"""
 
         self._history.extend(
             [

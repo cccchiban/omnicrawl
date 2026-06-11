@@ -94,110 +94,37 @@ class ApprovalCommandTest(unittest.TestCase):
         self.assertFalse(approved)
         self.assertIn("不是 JSON", reason)
 
-    def test_parse_tool_call_accepts_missing_close_tag(self) -> None:
+    def test_extract_chat_tool_calls_maps_official_function_name_to_tool(self) -> None:
         agent = object.__new__(LocalToolAgent)
+        agent._tools = {
+            "read_file": ToolDefinition(
+                name="read_file",
+                description="读取文件。",
+                argument_schema='{"path":"main.py"}',
+                requires_confirmation=False,
+                run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+            )
+        }
+        function_name = LocalToolAgent._function_name_for_tool(agent, "read_file")
+        message = {
+            "tool_calls": [
+                {
+                    "id": "call_read",
+                    "type": "function",
+                    "function": {
+                        "name": function_name,
+                        "arguments": '{"path":"main.py"}',
+                    },
+                }
+            ]
+        }
 
-        tool_call = LocalToolAgent._parse_tool_call(
-            agent,
-            '<tool>{"name":"bb-browser.browser.evaluate","arguments":{"tab":"9404","script":"document.title"}}',
-        )
+        calls = LocalToolAgent._extract_chat_tool_calls(agent, message)
 
-        self.assertIsNotNone(tool_call)
-        assert tool_call is not None
-        self.assertEqual(tool_call.name, "bb-browser.browser.evaluate")
-        self.assertEqual(tool_call.arguments["tab"], "9404")
-
-    def test_parse_tool_call_keeps_plain_text_as_final_answer(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-
-        tool_call = LocalToolAgent._parse_tool_call(
-            agent,
-            '我会说明一下 <tool>{"name":"read_file","arguments":{"path":"main.py"}}',
-        )
-
-        self.assertIsNone(tool_call)
-
-    def test_parse_tool_call_accepts_progress_before_tool_on_new_line(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-
-        tool_call = LocalToolAgent._parse_tool_call(
-            agent,
-            (
-                "【进度】1/3\n"
-                "- ⏳ 正在读取入口文件\n"
-                '<tool>{"name":"read_file","arguments":{"path":"main.py"}}</tool>'
-            ),
-        )
-
-        self.assertIsNotNone(tool_call)
-        assert tool_call is not None
-        self.assertEqual(tool_call.name, "read_file")
-        self.assertEqual(tool_call.arguments["path"], "main.py")
-
-    def test_parse_tool_call_still_accepts_raw_json_payload(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-
-        tool_call = LocalToolAgent._parse_tool_call(
-            agent,
-            '{"name":"read_file","arguments":{"path":"main.py"}}',
-        )
-
-        self.assertIsNotNone(tool_call)
-        assert tool_call is not None
-        self.assertEqual(tool_call.name, "read_file")
-        self.assertEqual(tool_call.arguments["path"], "main.py")
-
-    def test_parse_tool_call_extracts_first_tool_from_chained_output(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-
-        tool_call = LocalToolAgent._parse_tool_call(
-            agent,
-            (
-                '  <tool>{"name":"bb-browser.browser.open",'
-                '"arguments":{"url":"https://chiban.fyi/"}}</tool>'
-                '<tool>{"name":"bb-browser.browser.status","arguments":{}}</tool>'
-            ),
-        )
-
-        self.assertIsNotNone(tool_call)
-        assert tool_call is not None
-        self.assertEqual(tool_call.name, "bb-browser.browser.open")
-        self.assertEqual(tool_call.arguments["url"], "https://chiban.fyi/")
-
-    def test_parse_tool_call_accepts_newline_open_tag_and_trailing_tool(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-
-        tool_call = LocalToolAgent._parse_tool_call(
-            agent,
-            (
-                '<tool\n>{"name":"readfile","arguments":'
-                '{"path":"README.md","startline":1,"maxlines":20}}'
-                '<tool>{"name":"runcommand","arguments":{"command":"echo nope"}}</tool>'
-            ),
-        )
-
-        self.assertIsNotNone(tool_call)
-        assert tool_call is not None
-        self.assertEqual(tool_call.name, "read_file")
-        self.assertEqual(tool_call.arguments["startline"], 1)
-
-    def test_parse_tool_call_repairs_missing_outer_brace_before_close_tag(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-
-        tool_call = LocalToolAgent._parse_tool_call(
-            agent,
-            (
-                '<tool>{"name":"runcommand","arguments":'
-                '{"command":"echo hi","timeoutseconds":30}</tool>'
-                '<tool>{"name":"read_file","arguments":{"path":"README.md"}}</tool>'
-            ),
-        )
-
-        self.assertIsNotNone(tool_call)
-        assert tool_call is not None
-        self.assertEqual(tool_call.name, "run_command")
-        self.assertEqual(tool_call.arguments["command"], "echo hi")
-        self.assertEqual(tool_call.arguments["timeoutseconds"], 30)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].id, "call_read")
+        self.assertEqual(calls[0].name, "read_file")
+        self.assertEqual(calls[0].arguments["path"], "main.py")
 
     def test_normalize_tool_call_accepts_common_tool_and_argument_aliases(self) -> None:
         agent = object.__new__(LocalToolAgent)

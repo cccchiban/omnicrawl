@@ -7,12 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from ai_voice_agent.agent import (
+    AgentModelReply,
     AgentConfig,
     AgentError,
     LocalToolAgent,
+    ToolCall,
     ToolDefinition,
     ToolResult,
-    _AgentReplyStreamer,
 )
 from ai_voice_agent.temp_workspace import AgentTempWorkspaceConfig
 
@@ -93,7 +94,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_retry_status,
             ):
                 captured_messages.append(messages)
-                return "<final>完成</final>", "", False
+                return AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成")
 
             agent._request_agent_reply = fake_request  # type: ignore[method-assign]
             deltas: list[str] = []
@@ -173,7 +174,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_retry_status,
             ):
                 captured_messages.append(messages)
-                return "<final>已继续</final>", "", False
+                return AgentModelReply(message={"role": "assistant", "content": "已继续"}, content="已继续")
 
             agent._request_agent_reply = fake_request  # type: ignore[method-assign]
             deltas: list[str] = []
@@ -216,7 +217,7 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         self.assertEqual(agent._pending_user_text, "检查项目并修复启动失败")
 
-    def test_run_stream_executes_repaired_tool_call_without_streaming_protocol_text(self) -> None:
+    def test_run_stream_executes_official_tool_call_and_returns_tool_result_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             agent = object.__new__(LocalToolAgent)
             agent.workspace_root = Path(temp_dir)
@@ -242,17 +243,38 @@ class AgentContextInjectionTest(unittest.TestCase):
                     run=run_tool,
                 )
             }
+            function_name = LocalToolAgent._function_name_for_tool(agent, "run_command")
             replies = iter(
                 [
-                    (
-                        '<tool>{"name":"runcommand","arguments":'
-                        '{"command":"echo hi","timeoutseconds":30}</tool>',
-                        "",
-                        False,
+                    AgentModelReply(
+                        message={
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": function_name,
+                                        "arguments": '{"command":"echo hi","timeoutseconds":30}',
+                                    },
+                                }
+                            ],
+                        },
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                name="runcommand",
+                                arguments={"command": "echo hi", "timeoutseconds": 30},
+                                id="call_1",
+                                function_name=function_name,
+                            )
+                        ],
                     ),
-                    ("<final>完成</final>", "", False),
+                    AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成"),
                 ]
             )
+            captured_messages: list[list[dict[str, object]]] = []
 
             def fake_request(
                 messages,
@@ -261,6 +283,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_protocol_wait,
                 _on_retry_status,
             ):
+                captured_messages.append(messages)
                 return next(replies)
 
             agent._request_agent_reply = fake_request  # type: ignore[method-assign]
@@ -271,31 +294,25 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(result, "完成")
         self.assertEqual(deltas, ["完成"])
         self.assertEqual(executed_arguments, [{"command": "echo hi", "timeout_seconds": 30}])
-        self.assertNotIn("<tool>", "".join(deltas))
+        self.assertEqual(captured_messages[1][-1]["role"], "tool")
+        self.assertEqual(captured_messages[1][-1]["tool_call_id"], "call_1")
+        self.assertIn("状态：成功", str(captured_messages[1][-1]["content"]))
 
-    def test_stream_interruption_retries_and_reports_retry_status(self) -> None:
-        class BrokenStream:
-            def __init__(self) -> None:
-                self._events = iter([SimpleNamespace(type="response.output_text.delta", delta="【进度】1/2\n")])
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                try:
-                    return next(self._events)
-                except StopIteration as exc:
-                    raise RuntimeError("peer closed connection without sending complete message body") from exc
-
-        class FakeResponses:
+    def test_retryable_request_errors_retry_and_report_status(self) -> None:
+        class FakeChatCompletions:
             def __init__(self) -> None:
                 self.calls = 0
 
             def create(self, **_kwargs):
                 self.calls += 1
                 if self.calls == 1:
-                    return BrokenStream()
-                return iter([SimpleNamespace(type="response.output_text.delta", delta="<final>完成</final>")])
+                    raise RuntimeError("peer closed connection without sending complete message body")
+                return [
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content="完成", tool_calls=None))],
+                    ),
+                    SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1)),
+                ]
 
         agent = object.__new__(LocalToolAgent)
         agent.config = SimpleNamespace(
@@ -307,40 +324,157 @@ class AgentContextInjectionTest(unittest.TestCase):
                 reasoning_effort="",
             ),
         )
-        agent._client = SimpleNamespace(responses=FakeResponses())
+        completions = FakeChatCompletions()
+        agent._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
         agent._system_prompt = lambda: "system"  # type: ignore[method-assign]
         agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+        agent._chat_completion_tools = lambda: []  # type: ignore[method-assign]
 
         deltas: list[str] = []
         retry_statuses: list[str] = []
 
-        reply, _reasoning, streamed = LocalToolAgent._request_agent_reply(
+        reply = LocalToolAgent._request_agent_reply(
             agent,
             [{"role": "user", "content": "安装 Skill"}],
             deltas.append,
-            lambda _input_tokens, _output_tokens: None,
+            lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
             lambda: None,
             retry_statuses.append,
         )
 
-        self.assertEqual(reply, "<final>完成</final>")
-        self.assertTrue(streamed)
+        self.assertEqual(reply.content, "完成")
+        self.assertEqual(completions.calls, 2)
         self.assertEqual(deltas, ["完成"])
         self.assertEqual(len(retry_statuses), 1)
-        self.assertIn("模型流式连接中断，正在重试 2/2", retry_statuses[0])
-        self.assertIn("模型服务流式连接提前断开", retry_statuses[0])
+        self.assertIn("模型请求中断，正在重试 2/2", retry_statuses[0])
+        self.assertIn("模型服务连接提前断开", retry_statuses[0])
         self.assertNotIn("peer closed connection", retry_statuses[0])
 
+    def test_chat_completion_request_uses_official_tool_calls_shape(self) -> None:
+        class FakeChatCompletions:
+            def __init__(self) -> None:
+                self.call: dict[str, object] | None = None
+
+            def create(self, **kwargs):
+                self.call = kwargs
+                return [
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content="完成", tool_calls=None))],
+                    ),
+                    SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1)),
+                ]
+
+        completions = FakeChatCompletions()
+        agent = object.__new__(LocalToolAgent)
+        agent.workspace_root = Path("D:/workspace/project")
+        agent.config = SimpleNamespace(
+            request_timeout_seconds=180,
+            llm=SimpleNamespace(
+                model="deepseek-v4-pro",
+                thinking_enabled=False,
+                reasoning_effort="",
+            ),
+        )
+        agent._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+        agent._system_prompt = lambda: "system prompt"  # type: ignore[method-assign]
+        agent._build_extra_body = lambda: {"thinking": {"type": "disabled"}}  # type: ignore[method-assign]
+        agent._tools = {
+            "local_project.workspace.read_file": ToolDefinition(
+                name="local_project.workspace.read_file",
+                description="读取文件。",
+                argument_schema=(
+                    '{"type":"object","properties":{"path":{"type":"string"}},'
+                    '"required":["path"]}'
+                ),
+                requires_confirmation=False,
+                run=lambda _arguments: ToolResult(ok=True, output="ok"),
+            )
+        }
+
+        LocalToolAgent._request_agent_reply_once(
+            agent,
+            [{"role": "user", "content": "读取 README"}],
+            lambda _delta: None,
+            lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
+            lambda: None,
+        )
+
+        self.assertIsNotNone(completions.call)
+        call = completions.call or {}
+        self.assertEqual(call["model"], "deepseek-v4-pro")
+        self.assertEqual(call["tool_choice"], "auto")
+        self.assertEqual(call["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertNotIn("instructions", call)
+        self.assertNotIn("input", call)
+        self.assertTrue(call.get("stream"))
+        messages = call["messages"]
+        assert isinstance(messages, list)
+        self.assertEqual(messages[0], {"role": "system", "content": "system prompt"})
+        self.assertEqual(messages[1], {"role": "user", "content": "读取 README"})
+        tools = call["tools"]
+        assert isinstance(tools, list)
+        self.assertEqual(tools[0]["type"], "function")
+        function = tools[0]["function"]
+        self.assertRegex(function["name"], r"^[A-Za-z0-9_-]{1,64}$")
+        self.assertNotIn(".", function["name"])
+        self.assertNotIn(":", function["name"])
+        self.assertEqual(function["description"], "读取文件。")
+        self.assertEqual(function["parameters"]["type"], "object")
+        self.assertEqual(function["parameters"]["required"], ["path"])
+
+    def test_assistant_tool_call_message_preserves_official_function_name_only(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent._tools = {
+            "read_file": ToolDefinition(
+                name="read_file",
+                description="读取文件。",
+                argument_schema='{"path":"README.md"}',
+                requires_confirmation=False,
+                run=lambda _arguments: ToolResult(ok=True, output="ok"),
+            )
+        }
+        function_name = LocalToolAgent._function_name_for_tool(agent, "read_file")
+        tool_call = ToolCall(
+            name="read_file",
+            arguments={"path": "README.md"},
+            id="call_1",
+            function_name=function_name,
+        )
+
+        message = LocalToolAgent._assistant_tool_call_message(
+            agent,
+            {},
+            "",
+            [tool_call],
+            "内部推理不应回传。",
+        )
+
+        self.assertEqual(message["role"], "assistant")
+        self.assertIsNone(message["content"])
+        self.assertEqual(message["tool_calls"][0]["id"], "call_1")
+        self.assertEqual(message["tool_calls"][0]["type"], "function")
+        self.assertEqual(message["tool_calls"][0]["function"]["name"], function_name)
+        self.assertEqual(
+            message["tool_calls"][0]["function"]["arguments"],
+            '{"path": "README.md"}',
+        )
+        self.assertEqual(message["reasoning_content"], "内部推理不应回传。")
+
     def test_gpt_requests_include_stable_prompt_cache_key(self) -> None:
-        class FakeResponses:
+        class FakeChatCompletions:
             def __init__(self) -> None:
                 self.calls: list[dict[str, object]] = []
 
             def create(self, **kwargs):
                 self.calls.append(kwargs)
-                return iter([SimpleNamespace(type="response.output_text.delta", delta="<final>完成</final>")])
+                return [
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content="完成", tool_calls=None))],
+                    ),
+                    SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1)),
+                ]
 
-        responses = FakeResponses()
+        completions = FakeChatCompletions()
         agent = object.__new__(LocalToolAgent)
         agent.workspace_root = Path("D:/workspace/project")
         agent.config = SimpleNamespace(
@@ -351,9 +485,10 @@ class AgentContextInjectionTest(unittest.TestCase):
                 reasoning_effort="",
             ),
         )
-        agent._client = SimpleNamespace(responses=responses)
+        agent._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
         agent._system_prompt = lambda: "stable system prompt"  # type: ignore[method-assign]
         agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+        agent._chat_completion_tools = lambda: []  # type: ignore[method-assign]
         messages_a = [
             {"role": "user", "content": "<project_instructions file=\"AGENTS.md\">\nstable\n</project_instructions>"},
             {"role": "user", "content": "第一轮问题"},
@@ -378,19 +513,24 @@ class AgentContextInjectionTest(unittest.TestCase):
             lambda: None,
         )
 
-        self.assertIn("prompt_cache_key", responses.calls[0])
-        self.assertEqual(responses.calls[0]["prompt_cache_key"], responses.calls[1]["prompt_cache_key"])
+        self.assertIn("prompt_cache_key", completions.calls[0])
+        self.assertEqual(completions.calls[0]["prompt_cache_key"], completions.calls[1]["prompt_cache_key"])
 
     def test_non_gpt_requests_skip_prompt_cache_key(self) -> None:
-        class FakeResponses:
+        class FakeChatCompletions:
             def __init__(self) -> None:
                 self.call: dict[str, object] | None = None
 
             def create(self, **kwargs):
                 self.call = kwargs
-                return iter([SimpleNamespace(type="response.output_text.delta", delta="<final>完成</final>")])
+                return [
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content="完成", tool_calls=None))],
+                    ),
+                    SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1)),
+                ]
 
-        responses = FakeResponses()
+        completions = FakeChatCompletions()
         agent = object.__new__(LocalToolAgent)
         agent.workspace_root = Path("D:/workspace/project")
         agent.config = SimpleNamespace(
@@ -401,9 +541,10 @@ class AgentContextInjectionTest(unittest.TestCase):
                 reasoning_effort="",
             ),
         )
-        agent._client = SimpleNamespace(responses=responses)
+        agent._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
         agent._system_prompt = lambda: "stable system prompt"  # type: ignore[method-assign]
         agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+        agent._chat_completion_tools = lambda: []  # type: ignore[method-assign]
 
         LocalToolAgent._request_agent_reply_once(
             agent,
@@ -413,58 +554,8 @@ class AgentContextInjectionTest(unittest.TestCase):
             lambda: None,
         )
 
-        self.assertIsNotNone(responses.call)
-        self.assertNotIn("prompt_cache_key", responses.call or {})
-
-    def test_reply_streamer_emits_progress_before_line_start_tool_only(self) -> None:
-        deltas: list[str] = []
-        streamer = _AgentReplyStreamer(deltas.append)
-
-        streamer.push("【进度】1/3\n")
-        streamer.push("- 正在读取项目\n<to")
-        streamer.push('ol>{"name":"read_file","arguments":{"path":"main.py"}}</tool>')
-        streamer.finish()
-
-        text = "".join(deltas)
-        self.assertIn("正在读取项目", text)
-        self.assertNotIn("<tool>", text)
-        self.assertNotIn("read_file", text)
-
-    def test_reply_streamer_notifies_wait_when_hiding_line_start_tool(self) -> None:
-        deltas: list[str] = []
-        wait_events: list[str] = []
-        streamer = _AgentReplyStreamer(deltas.append, lambda: wait_events.append("wait"))
-
-        streamer.push("【进度】1/3\n")
-        streamer.push("- 正在读取项目\n<to")
-        streamer.push('ol>{"name":"read_file","arguments":{"path":"main.py"}}</tool>')
-        streamer.finish()
-
-        self.assertEqual(wait_events, ["wait"])
-        self.assertIn("正在读取项目", "".join(deltas))
-
-    def test_reply_streamer_does_not_notify_wait_without_visible_progress(self) -> None:
-        deltas: list[str] = []
-        wait_events: list[str] = []
-        streamer = _AgentReplyStreamer(deltas.append, lambda: wait_events.append("wait"))
-
-        streamer.push('<tool>{"name":"read_file","arguments":{"path":"main.py"}}</tool>')
-        streamer.finish()
-
-        self.assertEqual(wait_events, [])
-        self.assertEqual(deltas, [])
-
-    def test_reply_streamer_hides_inline_tool_text_as_protocol_risk(self) -> None:
-        deltas: list[str] = []
-        streamer = _AgentReplyStreamer(deltas.append)
-
-        streamer.push('我会说明一下 <tool>{"name":"read_file","arguments":{"path":"main.py"}}')
-        streamer.finish()
-
-        text = "".join(deltas)
-        self.assertIn("我会说明一下", text)
-        self.assertNotIn("<tool>", text)
-        self.assertNotIn("read_file", text)
+        self.assertIsNotNone(completions.call)
+        self.assertNotIn("prompt_cache_key", completions.call or {})
 
     def test_agents_md_body_is_not_added_to_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

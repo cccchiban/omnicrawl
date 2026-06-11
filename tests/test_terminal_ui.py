@@ -194,10 +194,10 @@ class TerminalUITest(unittest.TestCase):
         output = io.StringIO()
 
         with redirect_stdout(output):
-            ui.status("模型流式连接中断，正在重试 2/5", leading_blank=False, italic=True)
+            ui.status("模型请求中断，正在重试 2/5", leading_blank=False, italic=True)
 
         rendered = output.getvalue()
-        self.assertIn("\033[3;90m[模型流式连接中断，正在重试 2/5]\033[0m", rendered)
+        self.assertIn("\033[3;90m[模型请求中断，正在重试 2/5]\033[0m", rendered)
 
     def test_status_line_aligns_with_prompt_content_and_keeps_blank_spacing(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
