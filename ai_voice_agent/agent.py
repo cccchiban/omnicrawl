@@ -63,6 +63,18 @@ _DELETE_TEXT_INTENT_PATTERN = re.compile(
     r"(^|[\s._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
     re.IGNORECASE,
 )
+_CONTINUE_LAST_TASK_TEXTS = {
+    "继续",
+    "继续上次",
+    "继续上一轮",
+    "接着来",
+    "接着做",
+    "重试",
+    "再试一次",
+    "再试试",
+    "retry",
+    "continue",
+}
 _DELETE_DESCRIPTION_START_PATTERN = re.compile(
     r"^(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
     re.IGNORECASE,
@@ -82,7 +94,7 @@ _DELETE_INTENT_KEYS = {
 _MCP_DELETE_INTENT_KEYS = _DELETE_INTENT_KEYS
 
 
-def _runtime_environment_context(workspace_root: Path) -> str:
+def _runtime_environment_context(workspace_root: Path, workspace_detection_summary: str = "") -> str:
     """生成注入给模型的运行环境摘要。
 
     这里只暴露低敏、稳定且会影响工具选择的信息；不枚举完整环境变量，
@@ -101,6 +113,8 @@ def _runtime_environment_context(workspace_root: Path) -> str:
         f"- 当前进程目录：{Path.cwd().resolve()}",
         f"- 路径分隔符：{os.sep}",
     ]
+    if workspace_detection_summary.strip():
+        lines.append(f"- 工作区检测：{workspace_detection_summary.strip()}")
     if window_hint:
         lines.append(f"- Agent 运行窗口：{window_hint}")
     if command_shell_hint:
@@ -629,6 +643,7 @@ class AgentConfig:
     memory_directory: str = "memory"
     mcp_config: MCPConfig | None = None
     approval_mode: str = field(default_factory=load_approval_mode)
+    workspace_detection_summary: str = ""
     temp_workspace: AgentTempWorkspaceConfig = field(
         default_factory=load_agent_temp_workspace_config
     )
@@ -661,6 +676,8 @@ class AgentConfig:
             raise AgentError("memory_directory 必须是非空字符串。")
         if not isinstance(self.temp_workspace, AgentTempWorkspaceConfig):
             raise AgentError("temp_workspace 必须是 AgentTempWorkspaceConfig。")
+        if not isinstance(self.workspace_detection_summary, str):
+            raise AgentError("workspace_detection_summary 必须是字符串。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
 
 
@@ -718,12 +735,14 @@ class LocalToolAgent:
         self.workspace_root = self.config.workspace_root.resolve()
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
+        self._pending_user_text: str | None = None
         try:
             self._temp_workspace = AgentTempWorkspace(
                 self.workspace_root,
                 self.config.temp_workspace,
             )
             self._temp_workspace.ensure()
+            self._temp_workspace.clean_if_due()
         except AgentTempWorkspaceError as exc:
             raise AgentError(str(exc)) from exc
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
@@ -776,6 +795,7 @@ class LocalToolAgent:
         """开启新对话：清空对话历史，保留工具、记忆和 Skill 配置。"""
 
         self._history.clear()
+        self._pending_user_text = None
         self._active_skills = []
 
     def close(self) -> None:
@@ -872,6 +892,9 @@ class LocalToolAgent:
         report_retry_status = on_retry_status or status
 
         text = self._apply_skill_command(text, status)
+        pending_text = getattr(self, "_pending_user_text", None)
+        text = self._resolve_continue_request(text)
+        self._pending_user_text = pending_text or text
         working_messages = [
             *self._project_instructions_messages(),
             *self._history,
@@ -898,6 +921,7 @@ class LocalToolAgent:
                     on_delta(final_reply)
                 combined_reasoning = "\n".join(all_reasoning_parts) if has_tool_calls else ""
                 self._append_history(text, final_reply, combined_reasoning)
+                self._pending_user_text = None
                 return final_reply
 
             tool_call = self._normalize_tool_call(tool_call)
@@ -951,6 +975,27 @@ class LocalToolAgent:
         ]
         status(f"已加载 Skill：{skill_name}")
         return parts[1] if len(parts) > 1 else f"请执行 {skill_name} 技能。"
+
+    def _resolve_continue_request(self, text: str) -> str:
+        """把短“继续/重试”恢复为上一轮未完成的真实用户任务。"""
+
+        if not self._is_continue_last_task_request(text):
+            return text
+
+        pending_text = (getattr(self, "_pending_user_text", None) or "").strip()
+        if not pending_text:
+            return text
+
+        return (
+            "继续上一轮未完成任务。上一轮任务内容如下，请不要要求用户重复说明，"
+            "直接基于这个任务继续执行或重试：\n"
+            f"{pending_text}"
+        )
+
+    @staticmethod
+    def _is_continue_last_task_request(text: str) -> bool:
+        normalized = re.sub(r"[\s，。.!！?？]+", "", text.strip()).lower()
+        return normalized in _CONTINUE_LAST_TASK_TEXTS
 
     def _project_instructions_messages(self) -> list[dict[str, str]]:
         """构造每次请求最前方的项目规范上下文消息。
@@ -1735,7 +1780,15 @@ class LocalToolAgent:
             for tool in self._tools.values()
         )
         system_prompt = self._render_system_prompt_template(tool_lines)
-        system_prompt = f"{_runtime_environment_context(self.workspace_root)}\n\n{system_prompt}"
+        workspace_detection_summary = getattr(
+            getattr(self, "config", None),
+            "workspace_detection_summary",
+            "",
+        )
+        system_prompt = (
+            f"{_runtime_environment_context(self.workspace_root, workspace_detection_summary)}\n\n"
+            f"{system_prompt}"
+        )
         # 手动调用 /skill:name 时注入 Skill 全文
         if self._skill_manager is not None and self._active_skills:
             system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)

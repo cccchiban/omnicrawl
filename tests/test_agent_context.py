@@ -4,16 +4,49 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from ai_voice_agent.agent import (
+    AgentConfig,
+    AgentError,
     LocalToolAgent,
     ToolDefinition,
     ToolResult,
     _AgentReplyStreamer,
 )
+from ai_voice_agent.temp_workspace import AgentTempWorkspaceConfig
 
 
 class AgentContextInjectionTest(unittest.TestCase):
+    def test_agent_initialization_runs_due_temp_cleanup_before_llm_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            calls: list[str] = []
+
+            class FakeTempWorkspace:
+                display_path = ".agent_tmp"
+
+                def __init__(self, *_args, **_kwargs) -> None:
+                    calls.append("init")
+
+                def ensure(self) -> None:
+                    calls.append("ensure")
+
+                def clean_if_due(self) -> None:
+                    calls.append("clean_if_due")
+
+            config = AgentConfig(
+                llm=SimpleNamespace(api_key=""),
+                workspace_root=Path(temp_dir),
+                memory_enabled=False,
+                temp_workspace=AgentTempWorkspaceConfig(),
+            )
+
+            with patch("ai_voice_agent.agent.AgentTempWorkspace", FakeTempWorkspace):
+                with self.assertRaisesRegex(AgentError, "缺少 API Key"):
+                    LocalToolAgent(config)
+
+        self.assertEqual(calls, ["init", "ensure", "clean_if_due"])
+
     def test_agents_md_is_first_context_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -91,6 +124,97 @@ class AgentContextInjectionTest(unittest.TestCase):
             messages = LocalToolAgent._project_instructions_messages(agent)
 
         self.assertEqual(messages, [])
+
+    def test_failed_request_keeps_pending_user_task_for_continue(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = Path(temp_dir)
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {}
+            agent._pending_user_text = None
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                raise AgentError("Agent 请求失败：无法连接模型服务。")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            with self.assertRaisesRegex(AgentError, "无法连接模型服务"):
+                LocalToolAgent.run_stream(agent, "检查项目并修复启动失败", lambda _delta: None)
+
+        self.assertEqual(agent._pending_user_text, "检查项目并修复启动失败")
+        self.assertEqual(agent._history, [])
+
+    def test_continue_after_failed_request_reuses_pending_user_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = Path(temp_dir)
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {}
+            agent._pending_user_text = "检查项目并修复启动失败"
+            captured_messages: list[list[dict[str, str]]] = []
+
+            def fake_request(
+                messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                captured_messages.append(messages)
+                return "<final>已继续</final>", "", False
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+            deltas: list[str] = []
+
+            result = LocalToolAgent.run_stream(agent, "继续", deltas.append)
+
+        self.assertEqual(result, "已继续")
+        self.assertEqual(deltas, ["已继续"])
+        self.assertEqual(agent._pending_user_text, None)
+        self.assertEqual(len(captured_messages), 1)
+        sent_text = captured_messages[0][-1]["content"]
+        self.assertIn("继续上一轮未完成任务", sent_text)
+        self.assertIn("检查项目并修复启动失败", sent_text)
+        self.assertNotEqual(sent_text, "继续")
+
+    def test_repeated_continue_after_failure_keeps_original_pending_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = Path(temp_dir)
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {}
+            agent._pending_user_text = "检查项目并修复启动失败"
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                raise AgentError("Agent 请求失败：无法连接模型服务。")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            with self.assertRaisesRegex(AgentError, "无法连接模型服务"):
+                LocalToolAgent.run_stream(agent, "继续", lambda _delta: None)
+
+        self.assertEqual(agent._pending_user_text, "检查项目并修复启动失败")
 
     def test_run_stream_executes_repaired_tool_call_without_streaming_protocol_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -361,6 +485,24 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         self.assertIn("AGENTS.md", prompt)
         self.assertNotIn("这句正文不应进入 system prompt。", prompt)
+
+    def test_workspace_detection_summary_is_added_to_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(
+                workspace_detection_summary=f"从启动目录发现 .git，选定：{workspace}"
+            )
+            agent._tools = {}
+            agent._memory_store = None
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
+
+            prompt = LocalToolAgent._system_prompt(agent)
+
+        self.assertIn("工作区检测：从启动目录发现 .git", prompt)
 
 
 if __name__ == "__main__":

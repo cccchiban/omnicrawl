@@ -17,7 +17,7 @@
     "enabled": true,
     "directory": ".agent_tmp",
     "cleanup_enabled": true,
-    "cleanup_hour": 4
+    "cleanup_interval_hours": 24
   },
   "mcp": {
     "enabled": false,

@@ -20,11 +20,13 @@
 └── scripts/  # 只为当前任务服务的临时脚本
 ```
 
-Agent 启动时会自动创建该目录；Agent 进程运行期间会在每日 04:00 清理临时内容。`.agent_tmp/README.md` 和 `.agent_tmp/.gitignore` 会被保留，其他临时内容会被清理后重建分类子目录。
+Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` 的文件时间记录上次清理时间；距离上次清理超过 24 小时时，启动阶段会立即补清理一次，运行期间也会继续按间隔清理。`.agent_tmp/README.md`、`.agent_tmp/.gitignore` 和 `.agent_tmp/.last_cleanup` 会被保留，其他临时内容会被清理后重建分类子目录。
 
 ## Agent 能力
 
 程序启动后，普通对话会直接进入 Agent 模式，不需要额外输入 `/agent`。
+
+启动时会自动检测当前要操作的项目路径：优先使用 `AI_WORKSPACE_ROOT` 环境变量；否则使用启动 Agent 时的目录，并向上查找 `.git`、`AGENTS.md`、`pyproject.toml`、`package.json`、`requirements.txt` 等常见项目标记。检测到的工作区会显示在启动面板的 `workspace` 行，并注入系统提示词，后续文件工具都会以该目录作为访问边界。
 
 内置工具：
 
@@ -92,6 +94,13 @@ python main.py
 Skill 安装、编写和渐进式披露规范见 `docs/SKILL_INSTALLATION.md`。
 运行时系统提示词模板见 `ai_voice_agent/system_prompt.md`；模板只保留工具协议和按场景读取文档的路由说明，具体规范按需读取对应文档。
 
+如果需要从固定位置启动 Agent 但操作另一个项目，可以显式指定工作区：
+
+```powershell
+$env:AI_WORKSPACE_ROOT = "D:\path\to\your-project"
+python main.py
+```
+
 ## 项目结构
 
 ```text
@@ -130,7 +139,7 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
     "enabled": true,
     "directory": ".agent_tmp",
     "cleanup_enabled": true,
-    "cleanup_hour": 4
+    "cleanup_interval_hours": 24
   },
   "mcp": {
     "enabled": false,
