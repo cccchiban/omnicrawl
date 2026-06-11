@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
@@ -17,6 +18,11 @@ KNOWN_AVAILABLE_MODELS = (
     "gpt-5.4-mini",
 )
 VALID_REASONING_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max"}
+_HTML_ERROR_RE = re.compile(
+    r"<!doctype\s+html|<html\b|<head\b|<body\b|<h1\b|</html>",
+    re.IGNORECASE,
+)
+_HTTP_STATUS_RE = re.compile(r"\b([45]\d{2})\b")
 _REASONING_EFFORT_ALIASES = {
     "": DEFAULT_REASONING_EFFORT,
     "disabled": "disabled",
@@ -395,11 +401,12 @@ class OpenAIResponseLLM:
                 yield text
 
     @staticmethod
-    def extract_token_usage(payload: Any) -> tuple[int, int] | None:
+    def extract_token_usage(payload: Any) -> tuple[int, int, int] | None:
         """从 Responses 响应或流式事件中提取输入/输出 token 数。
 
         不同网关会把 usage 放在事件自身、`response` 字段或 SDK 对象属性上；
-        这里只做结构兼容，不假设某一种固定返回形态。找不到 usage 时返回 None，
+        这里只做结构兼容，不假设某一种固定返回形态。返回值为
+        (input_tokens, output_tokens, cached_input_tokens)。找不到 usage 时返回 None，
         由 UI 保留最近一次已知统计。
         """
 
@@ -411,7 +418,8 @@ class OpenAIResponseLLM:
         output_tokens = _read_usage_int(usage, ("output_tokens", "completion_tokens"))
         if input_tokens is None and output_tokens is None:
             return None
-        return input_tokens or 0, output_tokens or 0
+        cached_input_tokens = _read_cached_input_tokens(usage)
+        return input_tokens or 0, output_tokens or 0, cached_input_tokens or 0
 
     @staticmethod
     def _extract_reasoning(response: Any) -> str:
@@ -451,14 +459,137 @@ class OpenAIResponseLLM:
 
     @staticmethod
     def format_request_error(exc: Exception) -> str:
-        """给常见接口错误补充可操作提示，避免只看到 SDK 原始异常。"""
+        """把 SDK、网关和网络异常归一化为用户可读提示。
 
-        message = str(exc)
-        if "model not found" in message.lower() or "invalid_model" in message.lower():
+        模型网关失败时常把 HTML 错误页、JSON 原始响应体或底层网络异常直接塞进
+        exception message。这里不回显原文，只保留可操作的错误类别、HTTP 状态码
+        和下一步建议，避免终端暴露大段响应正文或服务端实现细节。
+        """
+
+        message = str(exc).strip()
+        lowered = message.lower()
+        status_code = _extract_http_status_code(exc, message)
+
+        if "model not found" in lowered or "invalid_model" in lowered:
             models = "、".join(KNOWN_AVAILABLE_MODELS)
-            return f"{message}\n当前网关可用模型示例：{models}。可在 config.json 中配置 llm.model，或设置 OPENAI_MODEL 切换。"
+            return (
+                "模型不存在或当前账号无权使用该模型。"
+                f"当前网关可用模型示例：{models}。"
+                "可在 config.json 中配置 llm.model，或设置 OPENAI_MODEL 切换。"
+            )
 
-        return message
+        if _looks_like_html_error(message):
+            if status_code is not None:
+                return _format_http_status_error(status_code)
+            return (
+                "模型服务返回了非 JSON 错误页面，可能是网关、反向代理或上游服务异常。"
+                "请稍后重试，或检查 OPENAI_BASE_URL 对应的服务状态。"
+            )
+
+        if status_code is not None:
+            return _format_http_status_error(status_code)
+
+        if _contains_any(lowered, ("peer closed connection", "incomplete chunked read")):
+            return "模型服务流式连接提前断开。系统会按重试策略重新请求；如果持续失败，请稍后重试或检查网关稳定性。"
+
+        if _contains_any(
+            lowered,
+            (
+                "remote protocol error",
+                "server disconnected",
+                "connection reset",
+                "connection aborted",
+                "broken pipe",
+            ),
+        ):
+            return "模型服务连接被中途断开。请稍后重试；如果频繁出现，请检查网络或模型网关稳定性。"
+
+        if _contains_any(lowered, ("timeout", "timed out", "readtimeout", "connecttimeout")):
+            return "模型服务请求超时。请稍后重试，或适当调大 AGENT_REQUEST_TIMEOUT_SECONDS。"
+
+        if _contains_any(
+            lowered,
+            (
+                "rate limit",
+                "too many requests",
+                "insufficient_quota",
+                "quota",
+                "429",
+            ),
+        ):
+            return "模型服务限流或额度不足。请稍后重试，或检查账号额度和并发限制。"
+
+        if _contains_any(lowered, ("invalid_api_key", "authentication", "unauthorized", "401")):
+            return "模型服务鉴权失败。请检查 API Key 是否正确、是否过期，以及当前网关是否接受该 Key。"
+
+        if _contains_any(lowered, ("permission", "forbidden", "403")):
+            return "当前 API Key 没有访问该模型或接口的权限。请检查模型权限、账号权限或网关配置。"
+
+        if _contains_any(
+            lowered,
+            (
+                "connection",
+                "connecterror",
+                "dns",
+                "name resolution",
+                "temporary failure",
+                "failed to resolve",
+                "nodename",
+            ),
+        ):
+            return "无法连接模型服务。请检查网络、代理配置和 OPENAI_BASE_URL 是否可达。"
+
+        if _contains_any(lowered, ("ssl", "certificate", "tls")):
+            return "模型服务 TLS/证书校验失败。请检查网关证书、代理或本机证书配置。"
+
+        return f"模型请求失败，但未能识别具体原因。请检查网络、模型服务地址和本地配置。错误类型：{type(exc).__name__}。"
+
+
+def _extract_http_status_code(exc: Exception, message: str) -> int | None:
+    for value in (
+        getattr(exc, "status_code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        if isinstance(value, int) and 400 <= value <= 599:
+            return value
+
+    match = _HTTP_STATUS_RE.search(message)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _looks_like_html_error(message: str) -> bool:
+    return bool(_HTML_ERROR_RE.search(message))
+
+
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _format_http_status_error(status_code: int) -> str:
+    if status_code == 400:
+        return "模型服务拒绝了请求参数（HTTP 400）。请检查模型名称、思考配置、消息格式或网关兼容性。"
+    if status_code == 401:
+        return "模型服务鉴权失败（HTTP 401）。请检查 API Key 是否正确、是否过期，以及当前网关是否接受该 Key。"
+    if status_code == 403:
+        return "当前 API Key 没有访问该模型或接口的权限（HTTP 403）。请检查模型权限、账号权限或网关配置。"
+    if status_code == 404:
+        models = "、".join(KNOWN_AVAILABLE_MODELS)
+        return f"模型或接口地址不存在（HTTP 404）。请检查 OPENAI_BASE_URL 和 llm.model。当前网关可用模型示例：{models}。"
+    if status_code == 408:
+        return "模型服务请求超时（HTTP 408）。请稍后重试，或适当调大 AGENT_REQUEST_TIMEOUT_SECONDS。"
+    if status_code == 409:
+        return "模型服务暂时无法处理该请求（HTTP 409）。请稍后重试。"
+    if status_code == 422:
+        return "模型服务无法处理当前请求内容（HTTP 422）。请检查模型参数、消息格式或网关兼容性。"
+    if status_code == 429:
+        return "模型服务限流或额度不足（HTTP 429）。请稍后重试，或检查账号额度和并发限制。"
+    if status_code in {500, 502, 503, 504}:
+        return f"模型服务网关暂时不可用（HTTP {status_code}）。请稍后重试；如果持续出现，请检查网关或上游模型服务状态。"
+    if 500 <= status_code <= 599:
+        return f"模型服务端异常（HTTP {status_code}）。请稍后重试；如果持续出现，请检查网关或上游模型服务状态。"
+    return f"模型服务返回错误状态（HTTP {status_code}）。请检查模型配置、网络和网关状态。"
 
 
 def _to_mapping(value: Any) -> dict[str, Any]:
@@ -499,5 +630,31 @@ def _read_usage_int(usage: Any, keys: tuple[str, ...]) -> int | None:
     for key in keys:
         value = data.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _read_cached_input_tokens(usage: Any) -> int | None:
+    for key in ("cached_tokens", "cached_input_tokens", "input_cached_tokens"):
+        value = getattr(usage, key, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+
+    for details_key in ("input_tokens_details", "prompt_tokens_details"):
+        details = getattr(usage, details_key, None)
+        value = _read_usage_int(details, ("cached_tokens",)) if details is not None else None
+        if value is not None:
+            return value
+
+    data = _to_mapping(usage)
+    for key in ("cached_tokens", "cached_input_tokens", "input_cached_tokens"):
+        value = data.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+
+    for details_key in ("input_tokens_details", "prompt_tokens_details"):
+        details = data.get(details_key)
+        value = _read_usage_int(details, ("cached_tokens",)) if details is not None else None
+        if value is not None:
             return value
     return None

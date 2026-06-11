@@ -7,6 +7,21 @@
 3. AI 会按 Agent 循环处理任务：理解目标、读取项目文件、搜索文本、写文件或执行命令；默认会在工具执行前拦截确认，也可开启自动审批模式。
 4. AI 回复会在命令行中显示，并由 `ai_voice_agent/text_to_speech.py` 按句子分段排队播报。
 
+## Agent 临时目录
+
+项目内置 `.agent_tmp/` 作为 Agent 专用临时目录，用于存放一次性文件、图片、代码、视频和脚本，避免把临时产物散落在项目根目录。
+
+```text
+.agent_tmp/
+├── files/    # 普通临时文件和中间结果
+├── images/   # 截图、生成图片和图像处理中间文件
+├── code/     # 一次性验证代码、草稿代码和临时样例
+├── videos/   # 临时视频、录屏和转码中间文件
+└── scripts/  # 只为当前任务服务的临时脚本
+```
+
+Agent 启动时会自动创建该目录；Agent 进程运行期间会在每日 04:00 清理临时内容。`.agent_tmp/README.md` 和 `.agent_tmp/.gitignore` 会被保留，其他临时内容会被清理后重建分类子目录。
+
 ## Agent 能力
 
 程序启动后，普通对话会直接进入 Agent 模式，不需要额外输入 `/agent`。
@@ -110,6 +125,12 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
   },
   "approval": {
     "mode": "manual"
+  },
+  "agent_temp": {
+    "enabled": true,
+    "directory": ".agent_tmp",
+    "cleanup_enabled": true,
+    "cleanup_hour": 4
   },
   "mcp": {
     "enabled": false,

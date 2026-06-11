@@ -145,6 +145,27 @@ class TerminalUITest(unittest.TestCase):
         self.assertIn("结论：数据已查询。", rendered)
         self.assertNotIn("|---|---|", rendered)
 
+    def test_cjk_markdown_blocks_do_not_fall_back_to_raw_passthrough(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        state = MarkdownStreamState()
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            ui.print_ai_prefix()
+            ui.write_markdown_delta("## ", state)
+            ui.write_markdown_delta("主要内容总结\n", state)
+            ui.write_markdown_delta("### 1. 日本：数量下降\n", state)
+            ui.write_markdown_delta("> 流浪汉问题并不只是贫困问题。", state)
+            ui.flush_markdown(state)
+
+        rendered = ANSI_PATTERN.sub("", output.getvalue())
+        self.assertIn("^ 主要内容总结", rendered)
+        self.assertIn("1. 日本：数量下降", rendered)
+        self.assertIn("│ 流浪汉问题并不只是贫困问题。", rendered)
+        self.assertNotIn("##", rendered)
+        self.assertNotIn("###", rendered)
+        self.assertNotIn("> 流浪汉", rendered)
+
     def test_split_bold_marker_is_not_printed_raw(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         state = MarkdownStreamState()
@@ -167,6 +188,16 @@ class TerminalUITest(unittest.TestCase):
             ui.status("步骤 1 - 请求 run_command", leading_blank=False)
 
         self.assertEqual(output.getvalue(), "  [步骤 1 - 请求 run_command]\n")
+
+    def test_status_can_render_gray_italic(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            ui.status("模型流式连接中断，正在重试 2/5", leading_blank=False, italic=True)
+
+        rendered = output.getvalue()
+        self.assertIn("\033[3;90m[模型流式连接中断，正在重试 2/5]\033[0m", rendered)
 
     def test_status_line_aligns_with_prompt_content_and_keeps_blank_spacing(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -292,13 +323,13 @@ class TerminalUITest(unittest.TestCase):
 
     def test_prompt_status_line_contains_bright_model_and_tokens(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
-        ui.update_token_usage(123, 45)
+        ui.update_token_usage(123, 45, 67)
 
         line = ui.prompt_status_line()
         plain_line = ANSI_PATTERN.sub("", line)
 
         self.assertIn("gpt-5.5", line)
-        self.assertIn("Input Token: 123 Output Token: 45", plain_line)
+        self.assertIn("Input Token: 123 Cached: 67 Output Token: 45", plain_line)
         self.assertIn("\033[97m", line)
 
 

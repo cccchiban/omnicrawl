@@ -13,13 +13,22 @@ class AgentLifecycleTest(unittest.TestCase):
             def close(self) -> None:
                 self.closed = True
 
+        class FakeTempWorkspace:
+            closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
         agent = object.__new__(LocalToolAgent)
         manager = FakeMCPManager()
+        temp_workspace = FakeTempWorkspace()
         agent._mcp_manager = manager
+        agent._temp_workspace = temp_workspace
 
         LocalToolAgent.close(agent)
 
         self.assertTrue(manager.closed)
+        self.assertTrue(temp_workspace.closed)
 
 
 if __name__ == "__main__":

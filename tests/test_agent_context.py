@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from ai_voice_agent.agent import LocalToolAgent, ToolDefinition, ToolResult
+from ai_voice_agent.agent import (
+    LocalToolAgent,
+    ToolDefinition,
+    ToolResult,
+    _AgentReplyStreamer,
+)
 
 
 class AgentContextInjectionTest(unittest.TestCase):
@@ -47,7 +52,13 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._tools = {}
             captured_messages: list[list[dict[str, str]]] = []
 
-            def fake_request(messages, _on_delta, _on_token_usage):
+            def fake_request(
+                messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
                 captured_messages.append(messages)
                 return "<final>完成</final>", "", False
 
@@ -119,7 +130,13 @@ class AgentContextInjectionTest(unittest.TestCase):
                 ]
             )
 
-            def fake_request(messages, _on_delta, _on_token_usage):
+            def fake_request(
+                messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
                 return next(replies)
 
             agent._request_agent_reply = fake_request  # type: ignore[method-assign]
@@ -131,6 +148,199 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(deltas, ["完成"])
         self.assertEqual(executed_arguments, [{"command": "echo hi", "timeout_seconds": 30}])
         self.assertNotIn("<tool>", "".join(deltas))
+
+    def test_stream_interruption_retries_and_reports_retry_status(self) -> None:
+        class BrokenStream:
+            def __init__(self) -> None:
+                self._events = iter([SimpleNamespace(type="response.output_text.delta", delta="【进度】1/2\n")])
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                try:
+                    return next(self._events)
+                except StopIteration as exc:
+                    raise RuntimeError("peer closed connection without sending complete message body") from exc
+
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return BrokenStream()
+                return iter([SimpleNamespace(type="response.output_text.delta", delta="<final>完成</final>")])
+
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            request_retry_count=2,
+            request_timeout_seconds=180,
+            llm=SimpleNamespace(
+                model="test-model",
+                thinking_enabled=False,
+                reasoning_effort="",
+            ),
+        )
+        agent._client = SimpleNamespace(responses=FakeResponses())
+        agent._system_prompt = lambda: "system"  # type: ignore[method-assign]
+        agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+
+        deltas: list[str] = []
+        retry_statuses: list[str] = []
+
+        reply, _reasoning, streamed = LocalToolAgent._request_agent_reply(
+            agent,
+            [{"role": "user", "content": "安装 Skill"}],
+            deltas.append,
+            lambda _input_tokens, _output_tokens: None,
+            lambda: None,
+            retry_statuses.append,
+        )
+
+        self.assertEqual(reply, "<final>完成</final>")
+        self.assertTrue(streamed)
+        self.assertEqual(deltas, ["完成"])
+        self.assertEqual(len(retry_statuses), 1)
+        self.assertIn("模型流式连接中断，正在重试 2/2", retry_statuses[0])
+        self.assertIn("模型服务流式连接提前断开", retry_statuses[0])
+        self.assertNotIn("peer closed connection", retry_statuses[0])
+
+    def test_gpt_requests_include_stable_prompt_cache_key(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return iter([SimpleNamespace(type="response.output_text.delta", delta="<final>完成</final>")])
+
+        responses = FakeResponses()
+        agent = object.__new__(LocalToolAgent)
+        agent.workspace_root = Path("D:/workspace/project")
+        agent.config = SimpleNamespace(
+            request_timeout_seconds=180,
+            llm=SimpleNamespace(
+                model="gpt-5.5",
+                thinking_enabled=False,
+                reasoning_effort="",
+            ),
+        )
+        agent._client = SimpleNamespace(responses=responses)
+        agent._system_prompt = lambda: "stable system prompt"  # type: ignore[method-assign]
+        agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+        messages_a = [
+            {"role": "user", "content": "<project_instructions file=\"AGENTS.md\">\nstable\n</project_instructions>"},
+            {"role": "user", "content": "第一轮问题"},
+        ]
+        messages_b = [
+            {"role": "user", "content": "<project_instructions file=\"AGENTS.md\">\nstable\n</project_instructions>"},
+            {"role": "user", "content": "第二轮问题"},
+        ]
+
+        LocalToolAgent._request_agent_reply_once(
+            agent,
+            messages_a,
+            lambda _delta: None,
+            lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
+            lambda: None,
+        )
+        LocalToolAgent._request_agent_reply_once(
+            agent,
+            messages_b,
+            lambda _delta: None,
+            lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
+            lambda: None,
+        )
+
+        self.assertIn("prompt_cache_key", responses.calls[0])
+        self.assertEqual(responses.calls[0]["prompt_cache_key"], responses.calls[1]["prompt_cache_key"])
+
+    def test_non_gpt_requests_skip_prompt_cache_key(self) -> None:
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.call: dict[str, object] | None = None
+
+            def create(self, **kwargs):
+                self.call = kwargs
+                return iter([SimpleNamespace(type="response.output_text.delta", delta="<final>完成</final>")])
+
+        responses = FakeResponses()
+        agent = object.__new__(LocalToolAgent)
+        agent.workspace_root = Path("D:/workspace/project")
+        agent.config = SimpleNamespace(
+            request_timeout_seconds=180,
+            llm=SimpleNamespace(
+                model="deepseek-v4-flash",
+                thinking_enabled=False,
+                reasoning_effort="",
+            ),
+        )
+        agent._client = SimpleNamespace(responses=responses)
+        agent._system_prompt = lambda: "stable system prompt"  # type: ignore[method-assign]
+        agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+
+        LocalToolAgent._request_agent_reply_once(
+            agent,
+            [{"role": "user", "content": "问题"}],
+            lambda _delta: None,
+            lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
+            lambda: None,
+        )
+
+        self.assertIsNotNone(responses.call)
+        self.assertNotIn("prompt_cache_key", responses.call or {})
+
+    def test_reply_streamer_emits_progress_before_line_start_tool_only(self) -> None:
+        deltas: list[str] = []
+        streamer = _AgentReplyStreamer(deltas.append)
+
+        streamer.push("【进度】1/3\n")
+        streamer.push("- 正在读取项目\n<to")
+        streamer.push('ol>{"name":"read_file","arguments":{"path":"main.py"}}</tool>')
+        streamer.finish()
+
+        text = "".join(deltas)
+        self.assertIn("正在读取项目", text)
+        self.assertNotIn("<tool>", text)
+        self.assertNotIn("read_file", text)
+
+    def test_reply_streamer_notifies_wait_when_hiding_line_start_tool(self) -> None:
+        deltas: list[str] = []
+        wait_events: list[str] = []
+        streamer = _AgentReplyStreamer(deltas.append, lambda: wait_events.append("wait"))
+
+        streamer.push("【进度】1/3\n")
+        streamer.push("- 正在读取项目\n<to")
+        streamer.push('ol>{"name":"read_file","arguments":{"path":"main.py"}}</tool>')
+        streamer.finish()
+
+        self.assertEqual(wait_events, ["wait"])
+        self.assertIn("正在读取项目", "".join(deltas))
+
+    def test_reply_streamer_does_not_notify_wait_without_visible_progress(self) -> None:
+        deltas: list[str] = []
+        wait_events: list[str] = []
+        streamer = _AgentReplyStreamer(deltas.append, lambda: wait_events.append("wait"))
+
+        streamer.push('<tool>{"name":"read_file","arguments":{"path":"main.py"}}</tool>')
+        streamer.finish()
+
+        self.assertEqual(wait_events, [])
+        self.assertEqual(deltas, [])
+
+    def test_reply_streamer_hides_inline_tool_text_as_protocol_risk(self) -> None:
+        deltas: list[str] = []
+        streamer = _AgentReplyStreamer(deltas.append)
+
+        streamer.push('我会说明一下 <tool>{"name":"read_file","arguments":{"path":"main.py"}}')
+        streamer.finish()
+
+        text = "".join(deltas)
+        self.assertIn("我会说明一下", text)
+        self.assertNotIn("<tool>", text)
+        self.assertNotIn("read_file", text)
 
     def test_agents_md_body_is_not_added_to_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

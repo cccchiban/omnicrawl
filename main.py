@@ -13,6 +13,11 @@ from ai_voice_agent.audio_setup import (
 from ai_voice_agent.chat_session import run_inline_chat
 from ai_voice_agent.llm import LLMError, load_llm_config
 from ai_voice_agent.runtime_config import RuntimeConfigError
+from ai_voice_agent.temp_workspace import (
+    AgentTempWorkspaceError,
+    agent_temp_status_label,
+    load_agent_temp_workspace_config,
+)
 from ai_voice_agent.terminal_ui import TerminalUI
 from ai_voice_agent.windows_launcher import configure_console_encoding, launch_in_powershell_window
 
@@ -25,6 +30,7 @@ def main() -> None:
         config = load_llm_config()
         voice_config = load_voice_config()
         approval_mode = load_approval_mode()
+        temp_workspace_config = load_agent_temp_workspace_config()
     except LLMError as exc:
         print(f"配置加载失败：{exc}")
         return
@@ -32,6 +38,9 @@ def main() -> None:
         print(f"配置加载失败：{exc}")
         return
     except RuntimeConfigError as exc:
+        print(f"配置加载失败：{exc}")
+        return
+    except AgentTempWorkspaceError as exc:
         print(f"配置加载失败：{exc}")
         return
     ui = TerminalUI(model_label=config.model)
@@ -46,6 +55,7 @@ def main() -> None:
             f"thinking: {enabled_label}{reasoning_info}",
             f"approval: {approval_mode_label(approval_mode)}",
             f"voice: 语音转文字 {stt_label}，文字转语音 {tts_label}",
+            f"temp: {agent_temp_status_label(temp_workspace_config)}",
         ],
     )
 
@@ -72,6 +82,7 @@ def main() -> None:
                 llm=config,
                 workspace_root=Path(__file__).resolve().parent,
                 approval_mode=approval_mode,
+                temp_workspace=temp_workspace_config,
             )
         )
     except AgentError as exc:

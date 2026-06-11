@@ -117,6 +117,23 @@ class ApprovalCommandTest(unittest.TestCase):
 
         self.assertIsNone(tool_call)
 
+    def test_parse_tool_call_accepts_progress_before_tool_on_new_line(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+
+        tool_call = LocalToolAgent._parse_tool_call(
+            agent,
+            (
+                "【进度】1/3\n"
+                "- ⏳ 正在读取入口文件\n"
+                '<tool>{"name":"read_file","arguments":{"path":"main.py"}}</tool>'
+            ),
+        )
+
+        self.assertIsNotNone(tool_call)
+        assert tool_call is not None
+        self.assertEqual(tool_call.name, "read_file")
+        self.assertEqual(tool_call.arguments["path"], "main.py")
+
     def test_parse_tool_call_still_accepts_raw_json_payload(self) -> None:
         agent = object.__new__(LocalToolAgent)
 

@@ -378,6 +378,8 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertIn("优先调用 MCP 能力", prompt)
         self.assertIn("AGENTS.md", prompt)
         self.assertIn("docs/SKILL_INSTALLATION.md", prompt)
+        self.assertIn("Skill 多协作原则", prompt)
+        self.assertIn("主 Skill 和辅助 Skill", prompt)
         self.assertIn("天气、新闻、价格", prompt)
         self.assertIn("run_command", prompt)
         self.assertNotIn("risk_level=trusted", prompt)

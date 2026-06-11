@@ -52,14 +52,60 @@ class LLMConfigTest(unittest.TestCase):
             OpenAIResponseLLM.extract_token_usage(
                 {"response": {"usage": {"input_tokens": 12, "output_tokens": 5}}}
             ),
-            (12, 5),
+            (12, 5, 0),
         )
         self.assertEqual(
             OpenAIResponseLLM.extract_token_usage(
-                {"usage": {"prompt_tokens": 7, "completion_tokens": 3}}
+                {
+                    "usage": {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 3,
+                        "prompt_tokens_details": {"cached_tokens": 4},
+                    }
+                }
             ),
-            (7, 3),
+            (7, 3, 4),
         )
+
+    def test_format_request_error_hides_html_gateway_body(self) -> None:
+        raw_error = RuntimeError(
+            "<html>\n"
+            "<head><title>504 Gateway Time-out</title></head>\n"
+            "<body><center><h1>504 Gateway Time-out</h1></center><hr><center>openresty</center></body>\n"
+            "</html>"
+        )
+
+        message = OpenAIResponseLLM.format_request_error(raw_error)
+
+        self.assertIn("HTTP 504", message)
+        self.assertIn("模型服务网关暂时不可用", message)
+        self.assertNotIn("<html>", message)
+        self.assertNotIn("openresty", message)
+
+    def test_format_request_error_normalizes_stream_disconnect(self) -> None:
+        message = OpenAIResponseLLM.format_request_error(
+            RuntimeError("peer closed connection without sending complete message body (incomplete chunked read)")
+        )
+
+        self.assertIn("模型服务流式连接提前断开", message)
+        self.assertNotIn("peer closed connection", message)
+        self.assertNotIn("incomplete chunked read", message)
+
+    def test_format_request_error_normalizes_timeout(self) -> None:
+        message = OpenAIResponseLLM.format_request_error(RuntimeError("ReadTimeout: request timed out"))
+
+        self.assertIn("模型服务请求超时", message)
+        self.assertIn("AGENT_REQUEST_TIMEOUT_SECONDS", message)
+
+    def test_format_request_error_uses_status_code_attribute(self) -> None:
+        class FakeHTTPError(Exception):
+            status_code = 429
+
+        message = OpenAIResponseLLM.format_request_error(FakeHTTPError("raw rate limit body"))
+
+        self.assertIn("HTTP 429", message)
+        self.assertIn("限流", message)
+        self.assertNotIn("raw rate limit body", message)
 
 
 if __name__ == "__main__":

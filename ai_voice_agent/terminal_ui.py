@@ -20,6 +20,7 @@ ANSI_CLEAR_TO_LINE_END = "\033[K"
 ANSI_PREVIOUS_LINE = "\033[1A"
 ANSI_MUTED = "\033[2;90m"
 ANSI_GRAY = "\033[90m"
+ANSI_GRAY_ITALIC = "\033[3;90m"
 ANSI_BRIGHT_WHITE = "\033[97m"
 ANSI_LIGHT_BLUE = "\033[94m"
 ANSI_BOLD = "\033[1m"
@@ -329,6 +330,29 @@ def _stable_inline_markdown_prefix_length(text: str, *, final: bool = False) -> 
             pending_indexes.append(len(text) - 1)
 
     return min(pending_indexes) if pending_indexes else len(text)
+
+
+def _looks_like_block_markdown_line(text: str) -> bool:
+    """判断当前行是否应等到换行后按块级 Markdown 渲染。
+
+    含中文的标题、列表和引用会触发直通输出；如果不先识别块级语法，
+    `##`、`>` 这类标记会被当普通字符打印出来。这里宁可少做逐字预览，
+    也要保证最终落到终端时是统一的 TUI 文本格式。
+    """
+
+    if not text.strip():
+        return False
+    return any(
+        re.match(pattern, text) is not None
+        for pattern in (
+            r"^\s{0,3}#{1,6}(?:\s|$)",
+            r"^\s{0,3}>\s?",
+            r"^\s{0,3}```",
+            r"^\s*[-*+]\s+(?:\[[ xX]\]\s+)?",
+            r"^\s*\d+[.)]\s+",
+            r"^\s{0,3}([-*_]\s*){3,}$",
+        )
+    )
 
 
 def _spans_display_width(spans: list[MarkdownSpan]) -> int:
@@ -689,11 +713,17 @@ class TerminalUI:
         self._lock = threading.Lock()
         self._input_tokens = 0
         self._output_tokens = 0
+        self._cached_input_tokens = 0
 
     def muted(self, text: str) -> str:
         if not self.capabilities.ansi:
             return text
         return f"{ANSI_MUTED}{text}{ANSI_RESET}"
+
+    def muted_italic(self, text: str) -> str:
+        if not self.capabilities.ansi:
+            return text
+        return f"{ANSI_GRAY_ITALIC}{text}{ANSI_RESET}"
 
     def result_text(self, ok: bool, text: str) -> str:
         """按工具执行结果给单个结果词着色，避免整段记录被误读成模型回复。"""
@@ -713,12 +743,18 @@ class TerminalUI:
             return text
         return f"{ANSI_BRIGHT_WHITE}{text}{ANSI_RESET}"
 
-    def update_token_usage(self, input_tokens: int, output_tokens: int) -> None:
+    def update_token_usage(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cached_input_tokens: int = 0,
+    ) -> None:
         """更新最近一次模型 token 统计；输入框下方状态行在下次按键时即时重绘。"""
 
         with self._lock:
             self._input_tokens = max(0, int(input_tokens))
             self._output_tokens = max(0, int(output_tokens))
+            self._cached_input_tokens = max(0, int(cached_input_tokens))
 
     def print_tool_call_start(
         self,
@@ -1008,7 +1044,11 @@ class TerminalUI:
         """返回输入框下方的模型和 token 状态行。"""
 
         label = self.model_label or ""
-        token_text = f"[Input Token: {self._input_tokens} Output Token: {self._output_tokens}]"
+        token_text = (
+            f"[Input Token: {self._input_tokens} "
+            f"Cached: {self._cached_input_tokens} "
+            f"Output Token: {self._output_tokens}]"
+        )
         if not self.capabilities.ansi:
             return f"- {label} {token_text}".strip()
 
@@ -1206,6 +1246,10 @@ class TerminalUI:
                 or _split_markdown_table_row(state.pending_line) is not None
             )
         ):
+            self._clear_markdown_preview(state)
+            return
+
+        if not state.in_code_block and _looks_like_block_markdown_line(state.pending_line):
             self._clear_markdown_preview(state)
             return
 
@@ -1411,11 +1455,12 @@ class TerminalUI:
         with self._lock:
             print()
 
-    def status(self, message: str, *, leading_blank: bool = True) -> None:
+    def status(self, message: str, *, leading_blank: bool = True, italic: bool = False) -> None:
         with self._lock:
             prefix = "\n" if leading_blank else ""
             indent = _dialog_continuation_prefix(AI_PREFIX)
-            print(f"{prefix}{indent}{self.muted(f'[{message}]')}", flush=True)
+            style = self.muted_italic if italic else self.muted
+            print(f"{prefix}{indent}{style(f'[{message}]')}", flush=True)
 
     def notice(self, message: str) -> None:
         with self._lock:
@@ -1563,6 +1608,8 @@ class WaitingIndicator:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()

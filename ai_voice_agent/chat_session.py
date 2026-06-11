@@ -154,6 +154,14 @@ def run_inline_chat(
                 speech_player.start_new_display_segment()
                 waiting_indicator.start()
 
+        def handle_retry_status(message: str) -> None:
+            """流式连接可恢复中断时，用弱提示说明自动重试，不进入语音播报。"""
+
+            had_display_output = speech_player.has_display_output
+            speech_player.flush_display()
+            waiting_indicator.stop()
+            ui.status(message, leading_blank=had_display_output, italic=True)
+
         def handle_tool_start(step: int, tool_call) -> None:
             """工具开始执行时立即展示调用详情和运行态标记。"""
 
@@ -186,6 +194,12 @@ def run_inline_chat(
             )
             tool_display_state = None
 
+        def handle_protocol_wait() -> None:
+            """模型已显示进度、正在继续输出隐藏工具协议时恢复等待动画。"""
+
+            speech_player.flush_display()
+            waiting_indicator.start()
+
         try:
             waiting_indicator.start()
             agent.run_stream(
@@ -195,6 +209,8 @@ def run_inline_chat(
                 on_tool_start=handle_tool_start,
                 on_tool_result=handle_tool_result,
                 on_token_usage=ui.update_token_usage,
+                on_protocol_wait=handle_protocol_wait,
+                on_retry_status=handle_retry_status,
             )
             waiting_indicator.stop()
             speech_player.flush()
@@ -213,5 +229,6 @@ def run_inline_chat(
             continue
         except AgentError as exc:
             waiting_indicator.stop()
-            print(f"Agent 请求失败：{exc}")
+            message = str(exc).strip() or "Agent 请求失败，请检查配置或稍后重试。"
+            print(message if message.startswith("Agent ") else f"Agent 请求失败：{message}")
             continue

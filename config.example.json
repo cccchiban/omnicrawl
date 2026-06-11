@@ -13,6 +13,12 @@
   "approval": {
     "mode": "manual"
   },
+  "agent_temp": {
+    "enabled": true,
+    "directory": ".agent_tmp",
+    "cleanup_enabled": true,
+    "cleanup_hour": 4
+  },
   "mcp": {
     "enabled": false,
     "default_timeout_seconds": 30,

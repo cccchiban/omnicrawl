@@ -6,6 +6,7 @@ import platform
 import re
 import subprocess
 import sys
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -26,6 +27,12 @@ from .memory import (
 )
 from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
 from .skill import SkillManager, SkillMatchResult
+from .temp_workspace import (
+    AgentTempWorkspace,
+    AgentTempWorkspaceConfig,
+    AgentTempWorkspaceError,
+    load_agent_temp_workspace_config,
+)
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
@@ -248,12 +255,43 @@ def _detect_terminal_hint() -> str:
     return ", ".join(hints)
 
 
+def _is_openai_gpt_model(model: str) -> bool:
+    """只为 OpenAI GPT 系列模型启用官方 prompt_cache_key 参数。"""
+
+    return model.startswith("gpt-") or model.startswith("chatgpt-") or bool(re.match(r"^o\d", model))
+
+
+def _is_unsupported_prompt_cache_error(exc: Exception) -> bool:
+    """兼容网关不认识 prompt_cache_key 时，自动移除该参数重试一次。"""
+
+    message = str(exc).lower()
+    return (
+        "prompt_cache_key" in message
+        and any(
+            marker in message
+            for marker in (
+                "unknown",
+                "unsupported",
+                "unexpected",
+                "unrecognized",
+                "extra",
+                "invalid",
+                "not permitted",
+            )
+        )
+    )
+
+
 class AgentError(RuntimeError):
     """Agent 循环、工具调用或安全校验失败时抛出。"""
 
 
 class _EmptyAgentReply(RuntimeError):
     """网关请求成功但没有返回可用文本，交由上层按策略重试。"""
+
+
+class _RetryableAgentRequestError(RuntimeError):
+    """模型请求已建立但流式读取中断，可按请求重试策略重新发起。"""
 
 
 @dataclass(frozen=True)
@@ -284,7 +322,12 @@ class ToolDefinition:
 
 
 class _AgentReplyStreamer:
-    """流式输出最终回复，同时避免工具调用前言打乱对话顺序。"""
+    """流式输出用户可见文本，同时隐藏工具协议正文。
+
+    模型现在允许先给一段简短进度，再另起一行输出 `<tool>...</tool>`。
+    因此流式层需要把工具标签前的进度刷给用户，但仍要拦住工具 JSON，
+    避免协议正文混进终端或语音播报。
+    """
 
     _OPEN_TAG = "<final>"
     _CLOSE_TAG = "</final>"
@@ -292,14 +335,20 @@ class _AgentReplyStreamer:
     _PROTOCOL_TAG_STARTS = ("<tool", "<final")
     _PLAIN_FINAL_LOOKAHEAD_CHARS = 10
 
-    def __init__(self, on_delta: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        on_delta: Callable[[str], None],
+        on_protocol_wait: Callable[[], None] | None = None,
+    ) -> None:
         self._on_delta = on_delta
+        self._on_protocol_wait = on_protocol_wait
         self._prefix_buffer = ""
         self._tail_buffer = ""
         self._inside_final = False
         self._inside_plain_final = False
         self._closed = False
         self.streamed = False
+        self._protocol_wait_started = False
 
     def push(self, delta: str) -> None:
         if self._closed or not delta:
@@ -312,6 +361,21 @@ class _AgentReplyStreamer:
             # 被当成普通文本直接展示在终端。
             combined = self._prefix_buffer + delta
             lowered = combined.lower()
+            line_start_tool_pos = self._first_line_start_tool_tag_index(lowered)
+            if line_start_tool_pos is not None:
+                if line_start_tool_pos > 0:
+                    self._emit(combined[:line_start_tool_pos])
+                self._start_protocol_wait_if_needed()
+                self._closed = True
+                self._prefix_buffer = ""
+                return
+            partial_tool_pos = self._trailing_line_start_tool_prefix_index(lowered)
+            if partial_tool_pos is not None:
+                if partial_tool_pos > 0:
+                    self._emit(combined[:partial_tool_pos])
+                self._start_protocol_wait_if_needed()
+                self._prefix_buffer = combined[partial_tool_pos:]
+                return
             tag_pos = self._first_protocol_tag_index(lowered)
             if tag_pos is not None:
                 # 找到标签起始位置，只发送标签前的安全文本。
@@ -319,6 +383,12 @@ class _AgentReplyStreamer:
                     self._emit(combined[:tag_pos])
                 self._closed = True
                 self._prefix_buffer = ""
+                return
+            partial_tool_pos = self._trailing_tool_prefix_index(lowered)
+            if partial_tool_pos is not None:
+                if partial_tool_pos > 0:
+                    self._emit(combined[:partial_tool_pos])
+                self._prefix_buffer = combined[partial_tool_pos:]
                 return
             keep = min(len(combined), len(self._TOOL_TAG))
             if len(combined) > keep:
@@ -345,6 +415,36 @@ class _AgentReplyStreamer:
                 return
 
             first_char = stripped[0]
+            line_start_tool_pos = self._first_line_start_tool_tag_index(lowered)
+            if line_start_tool_pos is not None:
+                if line_start_tool_pos > 0:
+                    self._emit(stripped[:line_start_tool_pos])
+                self._start_protocol_wait_if_needed()
+                self._closed = True
+                self._prefix_buffer = ""
+                return
+            partial_tool_pos = self._trailing_line_start_tool_prefix_index(lowered)
+            if partial_tool_pos is not None:
+                if partial_tool_pos > 0:
+                    self._inside_plain_final = True
+                    self._emit(stripped[:partial_tool_pos])
+                self._start_protocol_wait_if_needed()
+                self._prefix_buffer = stripped[partial_tool_pos:]
+                return
+            partial_tool_pos = self._trailing_tool_prefix_index(lowered)
+            if partial_tool_pos is not None:
+                if partial_tool_pos > 0:
+                    self._inside_plain_final = True
+                    self._emit(stripped[:partial_tool_pos])
+                self._prefix_buffer = stripped[partial_tool_pos:]
+                return
+            inline_tool_pos = lowered.find(self._TOOL_TAG.rstrip(">"))
+            if inline_tool_pos >= 0:
+                if inline_tool_pos > 0:
+                    self._emit(stripped[:inline_tool_pos])
+                self._closed = True
+                self._prefix_buffer = ""
+                return
             if first_char in {"<", "{"} or self._TOOL_TAG.rstrip(">") in lowered:
                 self._closed = True
                 self._prefix_buffer = ""
@@ -392,6 +492,51 @@ class _AgentReplyStreamer:
         ]
         return min(positions) if positions else None
 
+    @classmethod
+    def _first_line_start_tool_tag_index(cls, lowered: str) -> int | None:
+        """返回独立行工具标签的起始位置；同一行里的 `<tool>` 仍视为普通文本风险。"""
+
+        for match in re.finditer(r"<tool\b", lowered, re.IGNORECASE):
+            tag_index = match.start()
+            line_start = cls._line_start_index(lowered, tag_index)
+            leading = lowered[line_start:tag_index]
+            if leading.strip() == "" or re.fullmatch(r"\s*\^\s*", leading):
+                return line_start
+        return None
+
+    @classmethod
+    def _trailing_line_start_tool_prefix_index(cls, lowered: str) -> int | None:
+        """检测缓冲区末尾是否可能是独立行 `<tool>` 的半截前缀。
+
+        流式增量可能把 `<tool>` 拆成 `\n<to` + `ol>` 两段。这里保留半截
+        标签，避免为了实时显示进度而把协议标签残片提前打印出来。
+        """
+
+        tool_start = cls._TOOL_TAG.rstrip(">")
+        for size in range(min(len(tool_start) - 1, len(lowered)), 0, -1):
+            if not lowered.endswith(tool_start[:size]):
+                continue
+            tag_index = len(lowered) - size
+            line_start = cls._line_start_index(lowered, tag_index)
+            leading = lowered[line_start:tag_index]
+            if leading.strip() == "" or re.fullmatch(r"\s*\^\s*", leading):
+                return line_start
+        return None
+
+    @classmethod
+    def _trailing_tool_prefix_index(cls, lowered: str) -> int | None:
+        """检测缓冲区末尾任意位置的 `<tool>` 半截前缀，防止标签残片泄漏。"""
+
+        tool_start = cls._TOOL_TAG.rstrip(">")
+        for size in range(min(len(tool_start) - 1, len(lowered)), 0, -1):
+            if lowered.endswith(tool_start[:size]):
+                return len(lowered) - size
+        return None
+
+    @staticmethod
+    def _line_start_index(text: str, index: int) -> int:
+        return text.rfind("\n", 0, index) + 1
+
     def finish(self) -> None:
         if self._inside_final and not self._closed and self._tail_buffer:
             self._emit(self._tail_buffer)
@@ -421,6 +566,14 @@ class _AgentReplyStreamer:
             return
         self.streamed = True
         self._on_delta(text)
+
+    def _start_protocol_wait_if_needed(self) -> None:
+        """进度文本已显示、工具协议被隐藏时，通知 TUI 继续显示等待动画。"""
+
+        if self._protocol_wait_started or not self.streamed or self._on_protocol_wait is None:
+            return
+        self._protocol_wait_started = True
+        self._on_protocol_wait()
 
 
 def _read_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -476,6 +629,9 @@ class AgentConfig:
     memory_directory: str = "memory"
     mcp_config: MCPConfig | None = None
     approval_mode: str = field(default_factory=load_approval_mode)
+    temp_workspace: AgentTempWorkspaceConfig = field(
+        default_factory=load_agent_temp_workspace_config
+    )
     command_timeout_seconds: int = field(
         default_factory=lambda: _read_int_env(
             "AGENT_COMMAND_TIMEOUT_SECONDS", 120, min_value=1, max_value=300
@@ -503,6 +659,8 @@ class AgentConfig:
         )
         if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
             raise AgentError("memory_directory 必须是非空字符串。")
+        if not isinstance(self.temp_workspace, AgentTempWorkspaceConfig):
+            raise AgentError("temp_workspace 必须是 AgentTempWorkspaceConfig。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
 
 
@@ -515,6 +673,7 @@ class LocalToolAgent:
     """
 
     _TOOL_OPEN_PATTERN = re.compile(r"^\s*(?:\^\s*)?<tool\b[^>]*>\s*", re.IGNORECASE)
+    _TOOL_LINE_PATTERN = re.compile(r"(?im)^(?:\s*\^\s*)?<tool\b[^>]*>\s*")
     _FINAL_PATTERN = re.compile(r"<final>\s*(.*?)\s*</final>", re.DOTALL | re.IGNORECASE)
     _TOOL_NAME_ALIASES = {
         "listfiles": "list_files",
@@ -559,6 +718,14 @@ class LocalToolAgent:
         self.workspace_root = self.config.workspace_root.resolve()
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
+        try:
+            self._temp_workspace = AgentTempWorkspace(
+                self.workspace_root,
+                self.config.temp_workspace,
+            )
+            self._temp_workspace.ensure()
+        except AgentTempWorkspaceError as exc:
+            raise AgentError(str(exc)) from exc
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._skill_manager: SkillManager | None = None
         self._active_skills: list[SkillMatchResult] = []
@@ -584,6 +751,7 @@ class LocalToolAgent:
                 cwd=self.workspace_root,
                 extra_paths=self.config.skill_paths,
             )
+        self._temp_workspace.start_scheduler()
 
     @property
     def skill_manager(self) -> SkillManager | None:
@@ -616,6 +784,9 @@ class LocalToolAgent:
         manager = getattr(self, "_mcp_manager", None)
         if manager is not None:
             manager.close()
+        temp_workspace = getattr(self, "_temp_workspace", None)
+        if temp_workspace is not None:
+            temp_workspace.close()
 
     @property
     def approval_mode(self) -> str:
@@ -677,7 +848,9 @@ class LocalToolAgent:
         on_status: Callable[[str], None] | None = None,
         on_tool_start: Callable[[int, ToolCall], None] | None = None,
         on_tool_result: Callable[[ToolCall, ToolResult], None] | None = None,
-        on_token_usage: Callable[[int, int], None] | None = None,
+        on_token_usage: Callable[[int, int, int], None] | None = None,
+        on_protocol_wait: Callable[[], None] | None = None,
+        on_retry_status: Callable[[str], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
 
@@ -692,7 +865,11 @@ class LocalToolAgent:
         status = on_status or (lambda _message: None)
         report_tool_start = on_tool_start or (lambda _step, _tool_call: None)
         report_tool_result = on_tool_result or (lambda _tool_call, _result: None)
-        report_token_usage = on_token_usage or (lambda _input_tokens, _output_tokens: None)
+        report_token_usage = on_token_usage or (
+            lambda _input_tokens, _output_tokens, _cached_input_tokens: None
+        )
+        report_protocol_wait = on_protocol_wait or (lambda: None)
+        report_retry_status = on_retry_status or status
 
         text = self._apply_skill_command(text, status)
         working_messages = [
@@ -709,6 +886,8 @@ class LocalToolAgent:
                 working_messages,
                 on_delta,
                 report_token_usage,
+                report_protocol_wait,
+                report_retry_status,
             )
             if reasoning:
                 all_reasoning_parts.append(reasoning)
@@ -813,7 +992,9 @@ class LocalToolAgent:
         self,
         messages: list[dict[str, str]],
         on_delta: Callable[[str], None],
-        on_token_usage: Callable[[int, int], None],
+        on_token_usage: Callable[[int, int, int], None],
+        on_protocol_wait: Callable[[], None],
+        on_retry_status: Callable[[str], None],
     ) -> tuple[str, str, bool]:
         """请求模型给出下一步：要么调用一个工具，要么输出最终回答。
 
@@ -821,43 +1002,77 @@ class LocalToolAgent:
         保留在 working_messages 里并持续回传 API。
         """
 
-        last_empty_reply: _EmptyAgentReply | None = None
+        last_retryable_error: Exception | None = None
         for attempt in range(1, self.config.request_retry_count + 1):
             try:
-                return self._request_agent_reply_once(messages, on_delta, on_token_usage)
+                return self._request_agent_reply_once(
+                    messages,
+                    on_delta,
+                    on_token_usage,
+                    on_protocol_wait,
+                )
             except _EmptyAgentReply as exc:
-                last_empty_reply = exc
-                if attempt >= self.config.request_retry_count:
-                    break
+                last_retryable_error = exc
+                if attempt < self.config.request_retry_count:
+                    continue
+                raise AgentError(
+                    f"Agent 连续 {self.config.request_retry_count} 次返回空响应，已停止本轮请求。"
+                ) from exc
+            except _RetryableAgentRequestError as exc:
+                last_retryable_error = exc
+                if attempt < self.config.request_retry_count:
+                    on_retry_status(
+                        f"模型流式连接中断，正在重试 {attempt + 1}/{self.config.request_retry_count}：{exc}"
+                    )
+                    continue
+                raise AgentError(f"Agent 流式回复中断：{exc}") from exc
 
         raise AgentError(
             f"Agent 连续 {self.config.request_retry_count} 次返回空响应，已停止本轮请求。"
-        ) from last_empty_reply
+        ) from last_retryable_error
 
     def _request_agent_reply_once(
         self,
         messages: list[dict[str, str]],
         on_delta: Callable[[str], None],
-        on_token_usage: Callable[[int, int], None],
+        on_token_usage: Callable[[int, int, int], None],
+        on_protocol_wait: Callable[[], None],
     ) -> tuple[str, str, bool]:
         """执行一次模型流式请求；空响应由调用方统一重试。"""
 
+        system_prompt = self._system_prompt()
+        request_kwargs: dict[str, Any] = {
+            "model": self.config.llm.model,
+            "instructions": system_prompt,
+            "input": messages,
+            "stream": True,
+            "extra_body": self._build_extra_body(),
+            "timeout": self.config.request_timeout_seconds,
+        }
+        prompt_cache_key = self._build_prompt_cache_key(system_prompt, messages)
+        if prompt_cache_key:
+            request_kwargs["prompt_cache_key"] = prompt_cache_key
+
         try:
-            stream = self._client.responses.create(
-                model=self.config.llm.model,
-                instructions=self._system_prompt(),
-                input=messages,
-                stream=True,
-                extra_body=self._build_extra_body(),
-                timeout=self.config.request_timeout_seconds,
-            )
+            stream = self._client.responses.create(**request_kwargs)
         except Exception as exc:
-            raise AgentError(f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}") from exc
+            if "prompt_cache_key" in request_kwargs and _is_unsupported_prompt_cache_error(exc):
+                request_kwargs.pop("prompt_cache_key", None)
+                try:
+                    stream = self._client.responses.create(**request_kwargs)
+                except Exception as retry_exc:
+                    raise AgentError(
+                        f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(retry_exc)}"
+                    ) from retry_exc
+            else:
+                raise AgentError(
+                    f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
+                ) from exc
 
         chunks: list[str] = []
         reasoning_chunks: list[str] = []
-        latest_token_usage: tuple[int, int] | None = None
-        final_streamer = _AgentReplyStreamer(on_delta)
+        latest_token_usage: tuple[int, int, int] | None = None
+        final_streamer = _AgentReplyStreamer(on_delta, on_protocol_wait)
         try:
             for event in stream:
                 event_usage = OpenAIResponseLLM.extract_token_usage(event)
@@ -870,7 +1085,7 @@ class LocalToolAgent:
                     for delta in OpenAIResponseLLM.extract_stream_reasoning(event):
                         reasoning_chunks.append(delta)
         except Exception as exc:
-            raise AgentError(f"Agent 流式回复中断：{OpenAIResponseLLM.format_request_error(exc)}") from exc
+            raise _RetryableAgentRequestError(OpenAIResponseLLM.format_request_error(exc)) from exc
 
         final_streamer.finish()
         reply = "".join(chunks)
@@ -881,6 +1096,28 @@ class LocalToolAgent:
         if latest_token_usage is not None:
             on_token_usage(*latest_token_usage)
         return reply.strip(), reasoning, final_streamer.streamed
+
+    def _build_prompt_cache_key(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, str]],
+    ) -> str:
+        """为 GPT/OpenAI 请求提供稳定缓存路由 key。
+
+        Prompt caching 依赖稳定的长前缀。这里用系统提示词和项目级说明生成短 hash，
+        让同一项目、同一工具/Skill/AGENTS 配置尽量落到同一缓存路由；历史和当前
+        用户输入不参与 hash，避免每轮对话都换 key。
+        """
+
+        model = self.config.llm.model.strip().lower()
+        if not _is_openai_gpt_model(model):
+            return ""
+
+        stable_parts = [self.config.llm.model.strip(), str(self.workspace_root), system_prompt]
+        if messages and messages[0].get("content", "").startswith("<project_instructions"):
+            stable_parts.append(messages[0]["content"])
+        digest = hashlib.sha256("\n\n".join(stable_parts).encode("utf-8")).hexdigest()[:32]
+        return f"local-agent-{digest}"
 
     def _build_extra_body(self) -> dict[str, Any]:
         """构造网关扩展参数；根据 reasoning_effort 决定是否启用思考模式。"""
@@ -918,17 +1155,17 @@ class LocalToolAgent:
     def _extract_tool_payload(cls, raw_reply: str) -> str | None:
         """提取工具调用 JSON。
 
-        标准协议要求 `<tool>{...}</tool>`，但实际模型可能把闭合标签漏掉，
-        或在第一个工具 JSON 后继续追加第二个 `<tool>`。这里只接受回复起始处
-        的工具标签或原始 JSON，并用 JSONDecoder 提取第一个完整对象，避免把
-        普通回答中间的 `<tool>` 误当成真实工具调用。
+        标准协议要求 `<tool>{...}</tool>`，但实际模型可能先输出一小段
+        用户可见进度，再另起一行输出工具标签。这里接受回复起始处或独立行
+        的工具标签，并用 JSONDecoder 提取第一个完整对象；同一行普通文本中
+        间的 `<tool>` 仍不执行，避免把示例或说明误当成真实工具调用。
         """
 
         stripped = raw_reply.strip()
         if stripped.startswith("{"):
             return cls._extract_first_json_payload(stripped)
 
-        open_match = cls._TOOL_OPEN_PATTERN.match(stripped)
+        open_match = cls._TOOL_OPEN_PATTERN.match(stripped) or cls._TOOL_LINE_PATTERN.search(stripped)
         if not open_match:
             return None
         payload = stripped[open_match.end() :].strip()
@@ -1377,8 +1614,14 @@ class LocalToolAgent:
                 ),
                 ToolDefinition(
                     name="write_file",
-                    description="写入或追加 UTF-8 文本文件。",
-                    argument_schema='{"path": "notes.md", "content": "...", "mode": "overwrite"}',
+                    description=(
+                        "写入或追加 UTF-8 文本文件；一次性脚本、中间文件和临时交付物"
+                        "应优先写入 Agent 临时目录。"
+                    ),
+                    argument_schema=(
+                        '{"path": ".agent_tmp/files/notes.md", "content": "...", '
+                        '"mode": "overwrite"}'
+                    ),
                     requires_confirmation=True,
                     run=self._tool_write_file,
                 ),
@@ -1507,8 +1750,11 @@ class LocalToolAgent:
     def _render_system_prompt_template(self, tool_lines: str) -> str:
         """替换系统提示词模板占位符，同时允许模板中保留 JSON 示例花括号。"""
 
+        temp_workspace = getattr(self, "_temp_workspace", None)
+        agent_temp_dir = temp_workspace.display_path if temp_workspace is not None else ".agent_tmp"
         return (
             self._system_prompt_template.replace("{workspace_root}", str(self.workspace_root))
+            .replace("{agent_temp_dir}", agent_temp_dir)
             .replace("{tool_lines}", tool_lines)
         )
 
@@ -1523,7 +1769,7 @@ class LocalToolAgent:
         except OSError as exc:
             raise AgentError(f"读取 {SYSTEM_PROMPT_FILE} 失败：{exc}") from exc
 
-        required_placeholders = ("{workspace_root}", "{tool_lines}")
+        required_placeholders = ("{workspace_root}", "{agent_temp_dir}", "{tool_lines}")
         missing = [placeholder for placeholder in required_placeholders if placeholder not in template]
         if missing:
             raise AgentError(f"{SYSTEM_PROMPT_FILE} 缺少占位符：{', '.join(missing)}")
