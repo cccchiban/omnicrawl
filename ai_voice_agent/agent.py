@@ -4,7 +4,6 @@ import json
 import os
 import platform
 import re
-import subprocess
 import sys
 import hashlib
 from dataclasses import dataclass, field
@@ -33,6 +32,7 @@ from .temp_workspace import (
     AgentTempWorkspaceError,
     load_agent_temp_workspace_config,
 )
+from .workspace_tools import WorkspaceToolError, WorkspaceTools
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
@@ -528,6 +528,11 @@ class LocalToolAgent:
         except AgentTempWorkspaceError as exc:
             raise AgentError(str(exc)) from exc
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
+        self._workspace_tools = WorkspaceTools(
+            self.workspace_root,
+            command_timeout_seconds=self.config.command_timeout_seconds,
+            extra_protection_message=self._workspace_extra_protection_message,
+        )
         self._skill_manager: SkillManager | None = None
         self._active_skills: list[SkillMatchResult] = []
 
@@ -980,72 +985,6 @@ class LocalToolAgent:
         return body
 
     @staticmethod
-    def _extract_chat_message(response: Any) -> Any:
-        choices = getattr(response, "choices", None)
-        if choices and len(choices) > 0:
-            return getattr(choices[0], "message", None) or {}
-
-        data = response.model_dump() if hasattr(response, "model_dump") else response
-        if isinstance(data, dict):
-            choices_data = data.get("choices")
-            if isinstance(choices_data, list) and choices_data:
-                first = choices_data[0]
-                if isinstance(first, dict):
-                    return first.get("message") or {}
-        return {}
-
-    @staticmethod
-    def _extract_chat_message_content(message: Any) -> str:
-        content = getattr(message, "content", None)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                text = getattr(item, "text", None)
-                if isinstance(text, str):
-                    parts.append(text)
-                elif isinstance(item, dict):
-                    value = item.get("text") or item.get("content")
-                    if isinstance(value, str):
-                        parts.append(value)
-            return "".join(parts)
-
-        data = message.model_dump() if hasattr(message, "model_dump") else message
-        if isinstance(data, dict):
-            value = data.get("content")
-            if isinstance(value, str):
-                return value
-        return ""
-
-    def _extract_chat_tool_calls(self, message: Any) -> list[ToolCall]:
-        raw_tool_calls = getattr(message, "tool_calls", None)
-        if raw_tool_calls is None:
-            data = message.model_dump() if hasattr(message, "model_dump") else message
-            raw_tool_calls = data.get("tool_calls") if isinstance(data, dict) else None
-        if not isinstance(raw_tool_calls, list):
-            return []
-
-        calls: list[ToolCall] = []
-        for index, raw_call in enumerate(raw_tool_calls, start=1):
-            call_id = self._read_attr_or_key(raw_call, "id") or f"call_{index}"
-            function = self._read_attr_or_key(raw_call, "function")
-            name = self._read_attr_or_key(function, "name")
-            raw_arguments = self._read_attr_or_key(function, "arguments")
-            if not isinstance(name, str) or not name.strip():
-                continue
-            arguments = self._parse_tool_arguments(raw_arguments)
-            calls.append(
-                ToolCall(
-                    name=self._tool_name_from_function_name(name),
-                    arguments=arguments,
-                    id=str(call_id),
-                    function_name=name,
-                )
-            )
-        return calls
-
-    @staticmethod
     def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
         if isinstance(raw_arguments, dict):
             return raw_arguments
@@ -1056,20 +995,6 @@ class LocalToolAgent:
                 return {}
             return parsed if isinstance(parsed, dict) else {}
         return {}
-
-    @staticmethod
-    def _extract_chat_reasoning(message: Any) -> str:
-        for key in ("reasoning_content", "reasoning"):
-            value = getattr(message, key, None)
-            if isinstance(value, str):
-                return value.strip()
-        data = message.model_dump() if hasattr(message, "model_dump") else message
-        if isinstance(data, dict):
-            for key in ("reasoning_content", "reasoning"):
-                value = data.get(key)
-                if isinstance(value, str):
-                    return value.strip()
-        return ""
 
     @staticmethod
     def _read_attr_or_key(value: Any, key: str) -> Any:
@@ -1783,141 +1708,41 @@ class LocalToolAgent:
         return template
 
     def _tool_list_files(self, arguments: dict[str, Any]) -> ToolResult:
-        path = self._safe_path(str(arguments.get("path") or "."))
-        recursive = bool(arguments.get("recursive", False))
-        if not path.exists():
-            return ToolResult(ok=False, output=f"路径不存在：{self._relative_path(path)}")
-        if path.is_file():
-            return ToolResult(ok=True, output=self._relative_path(path))
-
-        entries: list[str] = []
-        iterator = path.rglob("*") if recursive else path.iterdir()
-        for entry in sorted(iterator, key=lambda item: str(item).lower()):
-            if self._should_skip_path(entry):
-                continue
-            suffix = "/" if entry.is_dir() else ""
-            entries.append(f"{self._relative_path(entry)}{suffix}")
-            if len(entries) >= 500:
-                entries.append("... 已截断，结果超过 500 项。")
-                break
-
-        return ToolResult(ok=True, output="\n".join(entries) or "目录为空。")
+        try:
+            return ToolResult(ok=True, output=self._workspace_toolbox().list_files(arguments))
+        except WorkspaceToolError as exc:
+            return ToolResult(ok=False, output=str(exc))
 
     def _tool_read_file(self, arguments: dict[str, Any]) -> ToolResult:
-        path = self._safe_path(str(arguments.get("path") or ""))
-        start_line = max(1, int(arguments.get("start_line") or 1))
-        max_lines = max(1, min(500, int(arguments.get("max_lines") or 200)))
-        if not path.is_file():
-            return ToolResult(ok=False, output=f"不是文件：{self._relative_path(path)}")
-
-        text = self._read_text(path)
-        lines = text.splitlines()
-        start_index = start_line - 1
-        selected = lines[start_index : start_index + max_lines]
-        numbered = [f"{line_no}: {line}" for line_no, line in enumerate(selected, start=start_line)]
-        if start_index + max_lines < len(lines):
-            numbered.append("... 已截断，可提高 start_line 继续读取。")
-        return ToolResult(ok=True, output="\n".join(numbered))
+        try:
+            return ToolResult(ok=True, output=self._workspace_toolbox().read_file(arguments))
+        except WorkspaceToolError as exc:
+            return ToolResult(ok=False, output=str(exc))
 
     def _tool_search_text(self, arguments: dict[str, Any]) -> ToolResult:
-        pattern = str(arguments.get("pattern") or "")
-        if not pattern:
-            return ToolResult(ok=False, output="pattern 不能为空。")
-
-        root = self._safe_path(str(arguments.get("path") or "."))
-        case_sensitive = bool(arguments.get("case_sensitive", False))
-        max_results = max(1, min(200, int(arguments.get("max_results") or 50)))
-        flags = 0 if case_sensitive else re.IGNORECASE
-
         try:
-            regex = re.compile(pattern, flags)
-        except re.error:
-            regex = re.compile(re.escape(pattern), flags)
-
-        files = [root] if root.is_file() else self._iter_search_files(root)
-        results: list[str] = []
-        for file_path in files:
-            if self._should_skip_path(file_path):
-                continue
-            try:
-                lines = self._read_text(file_path).splitlines()
-            except AgentError:
-                continue
-            for line_no, line in enumerate(lines, start=1):
-                if regex.search(line):
-                    results.append(f"{self._relative_path(file_path)}:{line_no}: {line}")
-                    if len(results) >= max_results:
-                        return ToolResult(ok=True, output="\n".join(results) + "\n... 已达到 max_results。")
-
-        return ToolResult(ok=True, output="\n".join(results) or "未找到匹配结果。")
+            return ToolResult(ok=True, output=self._workspace_toolbox().search_text(arguments))
+        except WorkspaceToolError as exc:
+            return ToolResult(ok=False, output=str(exc))
 
     def _tool_replace_text(self, arguments: dict[str, Any]) -> ToolResult:
-        path = self._safe_path(str(arguments.get("path") or ""))
-        old_text = str(arguments.get("old_text") or "")
-        new_text = str(arguments.get("new_text") or "")
-        count = int(arguments.get("count") or 1)
-        if not path.is_file():
-            return ToolResult(ok=False, output=f"不是文件：{self._relative_path(path)}")
-        if not old_text:
-            return ToolResult(ok=False, output="old_text 不能为空。")
-
-        original = self._read_text(path)
-        occurrences = original.count(old_text)
-        if occurrences == 0:
-            return ToolResult(ok=False, output="未找到 old_text，文件未修改。")
-
-        replace_count = occurrences if count <= 0 else min(count, occurrences)
-        updated = original.replace(old_text, new_text, replace_count)
-        path.write_text(updated, encoding="utf-8")
-        return ToolResult(
-            ok=True,
-            output=f"已修改 {self._relative_path(path)}，替换 {replace_count} 处。",
-        )
+        try:
+            return ToolResult(ok=True, output=self._workspace_toolbox().replace_text(arguments))
+        except WorkspaceToolError as exc:
+            return ToolResult(ok=False, output=str(exc))
 
     def _tool_write_file(self, arguments: dict[str, Any]) -> ToolResult:
-        path = self._safe_path(str(arguments.get("path") or ""))
-        content = str(arguments.get("content") or "")
-        mode = str(arguments.get("mode") or "overwrite").lower()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if mode == "append":
-            with path.open("a", encoding="utf-8") as file:
-                file.write(content)
-            action = "追加"
-        elif mode in {"overwrite", "write"}:
-            path.write_text(content, encoding="utf-8")
-            action = "写入"
-        else:
-            return ToolResult(ok=False, output="mode 仅支持 overwrite 或 append。")
-
-        return ToolResult(ok=True, output=f"已{action} {self._relative_path(path)}，字符数：{len(content)}。")
+        try:
+            return ToolResult(ok=True, output=self._workspace_toolbox().write_file(arguments))
+        except WorkspaceToolError as exc:
+            return ToolResult(ok=False, output=str(exc))
 
     def _tool_run_command(self, arguments: dict[str, Any]) -> ToolResult:
-        command = str(arguments.get("command") or "").strip()
-        if not command:
-            return ToolResult(ok=False, output="command 不能为空。")
-
-        timeout = int(arguments.get("timeout_seconds") or self.config.command_timeout_seconds)
-        timeout = max(1, min(timeout, 300))
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(self.workspace_root),
-                shell=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return ToolResult(ok=False, output=f"命令执行超过 {timeout} 秒，已终止。")
-
-        output_parts = [f"退出码：{completed.returncode}"]
-        if completed.stdout.strip():
-            output_parts.append(f"stdout:\n{completed.stdout.strip()}")
-        if completed.stderr.strip():
-            output_parts.append(f"stderr:\n{completed.stderr.strip()}")
-        return ToolResult(ok=completed.returncode == 0, output="\n\n".join(output_parts))
+            result = self._workspace_toolbox().run_command(arguments)
+        except WorkspaceToolError as exc:
+            return ToolResult(ok=False, output=str(exc))
+        return ToolResult(ok=result.ok, output=result.output)
 
     def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
         store = self._require_memory_store()
@@ -2064,25 +1889,6 @@ class LocalToolAgent:
         output_parts.append(f"输出：\n{result.output}")
         return ToolResult(ok=result.ok, output="\n".join(output_parts))
 
-    def _iter_search_files(self, root: Path) -> list[Path]:
-        """递归搜索时在目录层剪枝，避免进入 .git、虚拟环境或本地密钥目录。"""
-
-        files: list[Path] = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            current_dir = Path(dirpath)
-            dirnames[:] = [
-                dirname
-                for dirname in sorted(dirnames, key=lambda s: s.lower())
-                if not self._should_skip_path(current_dir / dirname)
-            ]
-
-            for filename in sorted(filenames, key=lambda s: s.lower()):
-                file_path = current_dir / filename
-                if not self._should_skip_path(file_path):
-                    files.append(file_path)
-
-        return files
-
     def _require_memory_store(self) -> MemoryStore:
         if self._memory_store is None:
             raise AgentError("记忆系统未启用。")
@@ -2125,49 +1931,28 @@ class LocalToolAgent:
     def _json_tool_result(data: Any) -> ToolResult:
         return ToolResult(ok=True, output=json.dumps(data, ensure_ascii=False, indent=2))
 
-    def _safe_path(self, raw_path: str) -> Path:
-        """把模型给出的路径限制在工作区内，阻止 ../ 越界访问。"""
+    def _workspace_toolbox(self) -> WorkspaceTools:
+        toolbox = getattr(self, "_workspace_tools", None)
+        if toolbox is not None:
+            return toolbox
+        command_timeout = getattr(getattr(self, "config", None), "command_timeout_seconds", 120)
+        toolbox = WorkspaceTools(
+            self.workspace_root,
+            command_timeout_seconds=command_timeout,
+            extra_protection_message=self._workspace_extra_protection_message,
+        )
+        self._workspace_tools = toolbox
+        return toolbox
 
-        raw_path = raw_path.strip()
-        if not raw_path:
-            raise AgentError("路径不能为空。")
+    def _workspace_extra_protection_message(self, path: Path) -> str | None:
+        """为 Agent 内置工具补充记忆目录保护，MCP Server 不共享这条业务限制。"""
 
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = self.workspace_root / candidate
-        resolved = candidate.resolve()
-        if not self._is_relative_to(resolved, self.workspace_root):
-            raise AgentError(f"拒绝访问工作区外路径：{raw_path}")
-        if self._is_protected_path(resolved):
-            raise AgentError(f"拒绝访问受保护路径：{self._relative_path(resolved)}")
-        if self._is_memory_path(resolved):
-            raise AgentError(f"请使用 memory_* 工具访问记忆目录：{self._relative_path(resolved)}")
-        return resolved
+        if self._is_memory_path(path):
+            return f"请使用 memory_* 工具访问记忆目录：{self._relative_path(path)}"
+        return None
 
     def _relative_path(self, path: Path) -> str:
-        try:
-            return str(path.resolve().relative_to(self.workspace_root))
-        except ValueError:
-            return str(path)
-
-    def _should_skip_path(self, path: Path) -> bool:
-        return self._is_protected_path(path) or self._is_memory_path(path)
-
-    @staticmethod
-    def _is_protected_path(path: Path) -> bool:
-        """避免自动工具读取缓存、虚拟环境、Git 内部文件或本地密钥文件。"""
-
-        protected_names = {
-            ".git",
-            ".venv",
-            "venv",
-            "env",
-            "__pycache__",
-            ".codex-ref",
-            ".env",
-            "config.json",
-        }
-        return any(part in protected_names or part.startswith(".env.") for part in path.parts)
+        return self._workspace_toolbox().relative_path(path)
 
     def _is_memory_path(self, path: Path) -> bool:
         """普通文件工具不直接访问记忆目录，统一走 memory_* 工具。"""
@@ -2179,14 +1964,6 @@ class LocalToolAgent:
         except OSError:
             resolved = path
         return resolved == self._memory_store.root or self._is_relative_to(resolved, self._memory_store.root)
-
-    def _read_text(self, path: Path) -> str:
-        try:
-            return path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise AgentError(f"文件不是 UTF-8 文本或包含二进制内容：{self._relative_path(path)}") from exc
-        except OSError as exc:
-            raise AgentError(f"读取文件失败：{self._relative_path(path)}，{exc}") from exc
 
     def _truncate_tool_output(self, output: str) -> str:
         if len(output) <= self.config.max_tool_output_chars:

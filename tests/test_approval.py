@@ -94,38 +94,6 @@ class ApprovalCommandTest(unittest.TestCase):
         self.assertFalse(approved)
         self.assertIn("不是 JSON", reason)
 
-    def test_extract_chat_tool_calls_maps_official_function_name_to_tool(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-        agent._tools = {
-            "read_file": ToolDefinition(
-                name="read_file",
-                description="读取文件。",
-                argument_schema='{"path":"main.py"}',
-                requires_confirmation=False,
-                run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
-            )
-        }
-        function_name = LocalToolAgent._function_name_for_tool(agent, "read_file")
-        message = {
-            "tool_calls": [
-                {
-                    "id": "call_read",
-                    "type": "function",
-                    "function": {
-                        "name": function_name,
-                        "arguments": '{"path":"main.py"}',
-                    },
-                }
-            ]
-        }
-
-        calls = LocalToolAgent._extract_chat_tool_calls(agent, message)
-
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0].id, "call_read")
-        self.assertEqual(calls[0].name, "read_file")
-        self.assertEqual(calls[0].arguments["path"], "main.py")
-
     def test_normalize_tool_call_accepts_common_tool_and_argument_aliases(self) -> None:
         agent = object.__new__(LocalToolAgent)
         agent._tools = {

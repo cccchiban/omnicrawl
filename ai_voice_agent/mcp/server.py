@@ -2,29 +2,17 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-
-MAX_FILE_READ_CHARS = 200_000
-MAX_SEARCH_RESULTS = 200
-MAX_LIST_ENTRIES = 500
-DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
-
-PROTECTED_NAMES = {
-    ".git",
-    ".venv",
-    "venv",
-    "env",
-    "__pycache__",
-    ".codex-ref",
-    ".env",
-    "config.json",
-}
+from ..workspace_tools import (
+    DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    MAX_FILE_READ_CHARS,
+    WorkspaceToolError,
+    WorkspaceTools,
+)
 
 
 class LocalMCPServerError(RuntimeError):
@@ -44,6 +32,10 @@ class LocalMCPServer:
 
     def __init__(self, workspace_root: Path | None = None) -> None:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
+        self._workspace_tools = WorkspaceTools(
+            self.workspace_root,
+            max_file_read_chars=MAX_FILE_READ_CHARS,
+        )
         self._tools = self._build_tools()
         self._prompts = self._build_prompts()
 
@@ -325,195 +317,55 @@ class LocalMCPServer:
         }
 
     def _tool_list_files(self, arguments: dict[str, Any]) -> str:
-        path = self._safe_path(str(arguments.get("path") or "."))
-        recursive = bool(arguments.get("recursive", False))
-        if not path.exists():
-            raise LocalMCPServerError(f"路径不存在：{self._relative_path(path)}")
-        if path.is_file():
-            return self._relative_path(path)
-
-        entries: list[str] = []
-        iterator = path.rglob("*") if recursive else path.iterdir()
-        for entry in sorted(iterator, key=lambda item: str(item).lower()):
-            if self._should_skip_path(entry):
-                continue
-            suffix = "/" if entry.is_dir() else ""
-            entries.append(f"{self._relative_path(entry)}{suffix}")
-            if len(entries) >= MAX_LIST_ENTRIES:
-                entries.append(f"... 已截断，结果超过 {MAX_LIST_ENTRIES} 项。")
-                break
-        return "\n".join(entries) or "目录为空。"
+        try:
+            return self._workspace_tools.list_files(arguments)
+        except WorkspaceToolError as exc:
+            raise LocalMCPServerError(str(exc)) from exc
 
     def _tool_read_file(self, arguments: dict[str, Any]) -> str:
-        path = self._safe_path(str(arguments.get("path") or ""))
-        start_line = _read_limited_int(arguments, "start_line", default=1, minimum=1, maximum=100_000)
-        max_lines = _read_limited_int(arguments, "max_lines", default=200, minimum=1, maximum=500)
-        if not path.is_file():
-            raise LocalMCPServerError(f"不是文件：{self._relative_path(path)}")
-        text = self._read_text(path)
-        lines = text.splitlines()
-        start_index = start_line - 1
-        selected = lines[start_index : start_index + max_lines]
-        numbered = [f"{line_no}: {line}" for line_no, line in enumerate(selected, start=start_line)]
-        if start_index + max_lines < len(lines):
-            numbered.append("... 已截断，可提高 start_line 继续读取。")
-        return "\n".join(numbered)
+        try:
+            return self._workspace_tools.read_file(arguments)
+        except WorkspaceToolError as exc:
+            raise LocalMCPServerError(str(exc)) from exc
 
     def _tool_search_text(self, arguments: dict[str, Any]) -> str:
-        pattern = str(arguments.get("pattern") or "")
-        if not pattern:
-            raise LocalMCPServerError("pattern 不能为空。")
-        root = self._safe_path(str(arguments.get("path") or "."))
-        case_sensitive = bool(arguments.get("case_sensitive", False))
-        max_results = _read_limited_int(
-            arguments,
-            "max_results",
-            default=50,
-            minimum=1,
-            maximum=MAX_SEARCH_RESULTS,
-        )
-        flags = 0 if case_sensitive else re.IGNORECASE
         try:
-            regex = re.compile(pattern, flags)
-        except re.error:
-            regex = re.compile(re.escape(pattern), flags)
-
-        files = [root] if root.is_file() else self._iter_search_files(root)
-        results: list[str] = []
-        for file_path in files:
-            try:
-                lines = self._read_text(file_path).splitlines()
-            except LocalMCPServerError:
-                continue
-            for line_no, line in enumerate(lines, start=1):
-                if regex.search(line):
-                    results.append(f"{self._relative_path(file_path)}:{line_no}: {line}")
-                    if len(results) >= max_results:
-                        return "\n".join(results) + "\n... 已达到 max_results。"
-        return "\n".join(results) or "未找到匹配结果。"
+            return self._workspace_tools.search_text(arguments)
+        except WorkspaceToolError as exc:
+            raise LocalMCPServerError(str(exc)) from exc
 
     def _tool_replace_text(self, arguments: dict[str, Any]) -> str:
-        path = self._safe_path(str(arguments.get("path") or ""))
-        old_text = str(arguments.get("old_text") or "")
-        new_text = str(arguments.get("new_text") or "")
-        count = _read_limited_int(arguments, "count", default=1, minimum=0, maximum=10_000)
-        if not path.is_file():
-            raise LocalMCPServerError(f"不是文件：{self._relative_path(path)}")
-        if not old_text:
-            raise LocalMCPServerError("old_text 不能为空。")
-
-        original = self._read_text(path)
-        occurrences = original.count(old_text)
-        if occurrences == 0:
-            raise LocalMCPServerError("未找到 old_text，文件未修改。")
-        replace_count = occurrences if count <= 0 else min(count, occurrences)
-        path.write_text(original.replace(old_text, new_text, replace_count), encoding="utf-8")
-        return f"已修改 {self._relative_path(path)}，替换 {replace_count} 处。"
+        try:
+            return self._workspace_tools.replace_text(arguments)
+        except WorkspaceToolError as exc:
+            raise LocalMCPServerError(str(exc)) from exc
 
     def _tool_write_file(self, arguments: dict[str, Any]) -> str:
-        path = self._safe_path(str(arguments.get("path") or ""))
-        content = str(arguments.get("content") or "")
-        mode = str(arguments.get("mode") or "overwrite").lower()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if mode == "append":
-            with path.open("a", encoding="utf-8") as file:
-                file.write(content)
-            action = "追加"
-        elif mode in {"overwrite", "write"}:
-            path.write_text(content, encoding="utf-8")
-            action = "写入"
-        else:
-            raise LocalMCPServerError("mode 仅支持 overwrite 或 append。")
-        return f"已{action} {self._relative_path(path)}，字符数：{len(content)}。"
+        try:
+            return self._workspace_tools.write_file(arguments)
+        except WorkspaceToolError as exc:
+            raise LocalMCPServerError(str(exc)) from exc
 
     def _tool_run_command(self, arguments: dict[str, Any]) -> str:
-        command = str(arguments.get("command") or "").strip()
-        if not command:
-            raise LocalMCPServerError("command 不能为空。")
-        timeout = _read_limited_int(
-            arguments,
-            "timeout_seconds",
-            default=DEFAULT_COMMAND_TIMEOUT_SECONDS,
-            minimum=1,
-            maximum=300,
-        )
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(self.workspace_root),
-                shell=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            raise LocalMCPServerError(f"命令执行超过 {timeout} 秒，已终止。")
-
-        output_parts = [f"退出码：{completed.returncode}"]
-        if completed.stdout.strip():
-            output_parts.append(f"stdout:\n{completed.stdout.strip()}")
-        if completed.stderr.strip():
-            output_parts.append(f"stderr:\n{completed.stderr.strip()}")
-        if completed.returncode != 0:
-            raise LocalMCPServerError("\n\n".join(output_parts))
-        return "\n\n".join(output_parts)
-
-    def _safe_path(self, raw_path: str) -> Path:
-        raw_path = raw_path.strip()
-        if not raw_path:
-            raise LocalMCPServerError("路径不能为空。")
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = self.workspace_root / candidate
-        resolved = candidate.resolve()
-        if not _is_relative_to(resolved, self.workspace_root):
-            raise LocalMCPServerError(f"拒绝访问工作区外路径：{raw_path}")
-        if self._should_skip_path(resolved):
-            raise LocalMCPServerError(f"拒绝访问受保护路径：{self._relative_path(resolved)}")
-        return resolved
+            result = self._workspace_tools.run_command(arguments)
+        except WorkspaceToolError as exc:
+            raise LocalMCPServerError(str(exc)) from exc
+        if not result.ok:
+            raise LocalMCPServerError(result.output)
+        return result.output
 
     def _read_project_text(self, raw_path: str) -> str:
-        path = self._safe_path(raw_path)
-        if not path.is_file():
-            raise LocalMCPServerError(f"不是文件：{self._relative_path(path)}")
-        return self._read_text(path)
-
-    def _read_text(self, path: Path) -> str:
         try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError as exc:
-            raise LocalMCPServerError(f"文件不是 UTF-8 文本：{self._relative_path(path)}") from exc
-        except OSError as exc:
-            raise LocalMCPServerError(f"读取文件失败：{self._relative_path(path)}，{exc}") from exc
-        if len(text) > MAX_FILE_READ_CHARS:
-            return text[:MAX_FILE_READ_CHARS] + "\n... 文件内容已截断。"
-        return text
-
-    def _iter_search_files(self, root: Path) -> list[Path]:
-        files: list[Path] = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            current_dir = Path(dirpath)
-            dirnames[:] = [
-                dirname
-                for dirname in sorted(dirnames, key=lambda value: value.lower())
-                if not self._should_skip_path(current_dir / dirname)
-            ]
-            for filename in sorted(filenames, key=lambda value: value.lower()):
-                file_path = current_dir / filename
-                if not self._should_skip_path(file_path):
-                    files.append(file_path)
-        return files
+            return self._workspace_tools.read_project_text(raw_path)
+        except WorkspaceToolError as exc:
+            raise LocalMCPServerError(str(exc)) from exc
 
     def _should_skip_path(self, path: Path) -> bool:
-        return any(part in PROTECTED_NAMES or part.startswith(".env.") for part in path.parts)
+        return self._workspace_tools.should_skip_path(path)
 
     def _relative_path(self, path: Path) -> str:
-        try:
-            return str(path.resolve().relative_to(self.workspace_root))
-        except ValueError:
-            return str(path)
+        return self._workspace_tools.relative_path(path)
 
 
 def main() -> None:
@@ -601,32 +453,6 @@ def _parse_content_length(header: bytes) -> int:
                 raise LocalMCPServerError("MCP Content-Length 超出允许范围。")
             return length
     raise LocalMCPServerError("MCP 请求缺少 Content-Length。")
-
-
-def _read_limited_int(
-    arguments: dict[str, Any],
-    key: str,
-    *,
-    default: int,
-    minimum: int,
-    maximum: int,
-) -> int:
-    value = arguments.get(key, default)
-    if isinstance(value, bool):
-        return default
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(minimum, min(maximum, parsed))
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
 
 
 if __name__ == "__main__":
