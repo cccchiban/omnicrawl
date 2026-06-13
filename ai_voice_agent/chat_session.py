@@ -14,7 +14,7 @@ from .slash_commands import (
 )
 from .speech_playback import StreamingSpeechPlayer
 from .speech_to_text import SpeechToText, SpeechToTextError
-from .terminal_ui import USER_PREFIX, StatusLine, TerminalUI, WaitingIndicator
+from .terminal_ui import USER_PREFIX, InputBar, StatusLine, TerminalUI, WaitingIndicator
 from .text_to_speech import TextToSpeech
 
 
@@ -135,12 +135,22 @@ def run_inline_chat(
 
         ui.inline_turn_base(user_text)
         status_line = StatusLine(ui)
-        waiting_indicator = WaitingIndicator(status_line)
+        input_bar = InputBar(ui)
+        waiting_indicator = WaitingIndicator(status_line, input_bar=input_bar)
+
+        def _collect_pre_input() -> None:
+            """停止 spinner 并收集预输入到 pending_user_text。"""
+            nonlocal pending_user_text
+            pre = waiting_indicator.stop()
+            if pre and pending_user_text is None:
+                pending_user_text = pre
+
         speech_player = StreamingSpeechPlayer(
             text_to_speech,
             ui,
             status_line,
-            before_first_output=waiting_indicator.stop,
+            before_first_output=_collect_pre_input,
+            input_bar=input_bar,
         )
         tool_display_state = None
 
@@ -148,8 +158,10 @@ def run_inline_chat(
             if message:
                 had_display_output = speech_player.has_display_output
                 speech_player.flush_display()
-                waiting_indicator.stop()
+                _collect_pre_input()
+                input_bar.push_up()
                 ui.status(message, leading_blank=had_display_output)
+                input_bar.pop_down()
             else:
                 speech_player.start_new_display_segment()
                 waiting_indicator.start()
@@ -159,8 +171,10 @@ def run_inline_chat(
 
             had_display_output = speech_player.has_display_output
             speech_player.flush_display()
-            waiting_indicator.stop()
+            _collect_pre_input()
+            input_bar.push_up()
             ui.status(message, leading_blank=had_display_output, italic=True)
+            input_bar.pop_down()
 
         def handle_tool_start(step: int, tool_call) -> None:
             """工具开始执行时立即展示调用详情和运行态标记。"""
@@ -168,30 +182,30 @@ def run_inline_chat(
             nonlocal tool_display_state
             had_display_output = speech_player.has_display_output
             speech_player.flush_display()
-            waiting_indicator.stop()
+            _collect_pre_input()
+            input_bar.push_up()
             tool_display_state = ui.print_tool_call_start(
                 step,
                 tool_call.name,
                 tool_call.arguments,
                 leading_blank=had_display_output,
             )
+            input_bar.pop_down()
 
         def handle_tool_result(_tool_call, result) -> None:
-            """工具执行完成时先收起等待动画，再输出执行摘要。
-
-            这能避免等待状态行残留在工具结果或后续模型回复前面，尤其是在
-            Windows 终端里 ANSI 清行和普通 print 混用时更容易出现同一行串字。
-            """
+            """工具执行完成时先收起等待动画，再输出执行摘要。"""
 
             nonlocal tool_display_state
             speech_player.flush_display()
-            waiting_indicator.stop()
+            _collect_pre_input()
+            input_bar.push_up()
             ui.print_tool_result_record(
                 result.ok,
                 result.output,
                 tool_name=_tool_call.name,
                 display_state=tool_display_state,
             )
+            input_bar.pop_down()
             tool_display_state = None
 
         def handle_protocol_wait() -> None:
@@ -212,23 +226,32 @@ def run_inline_chat(
                 on_protocol_wait=handle_protocol_wait,
                 on_retry_status=handle_retry_status,
             )
-            waiting_indicator.stop()
+            _collect_pre_input()
+            input_bar.push_up()
             speech_player.flush()
             ui.newline()
+            input_bar.pop_down()
+            input_bar.clear()
             interrupted, buffered_text = speech_player.wait_until_done_or_interrupt()
             if interrupted:
                 ui.notice("已打断朗读。")
-            if buffered_text:
+            if buffered_text and pending_user_text is None:
                 pending_user_text = buffered_text
         except KeyboardInterrupt:
-            waiting_indicator.stop()
+            _collect_pre_input()
+            input_bar.push_up()
             if text_to_speech is not None:
                 text_to_speech.interrupt(wait_timeout_seconds=0)
             ui.newline()
+            input_bar.pop_down()
+            input_bar.clear()
             ui.notice("已取消当前操作。")
             continue
         except AgentError as exc:
-            waiting_indicator.stop()
+            _collect_pre_input()
+            input_bar.push_up()
             message = str(exc).strip() or "Agent 请求失败，请检查配置或稍后重试。"
             print(message if message.startswith("Agent ") else f"Agent 请求失败：{message}")
+            input_bar.pop_down()
+            input_bar.clear()
             continue

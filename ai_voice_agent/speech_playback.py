@@ -5,7 +5,7 @@ import re
 import threading
 from typing import Callable
 
-from .terminal_ui import USER_PREFIX, MarkdownStreamState, StatusLine, TerminalUI
+from .terminal_ui import USER_PREFIX, InputBar, MarkdownStreamState, StatusLine, TerminalUI
 from .text_to_speech import TextToSpeech
 
 
@@ -105,11 +105,13 @@ class StreamingSpeechPlayer:
         ui: TerminalUI,
         status_line: StatusLine,
         before_first_output: Callable[[], None] | None = None,
+        input_bar: InputBar | None = None,
     ) -> None:
         self._text_to_speech = text_to_speech
         self._ui = ui
         self._status_line = status_line
         self._before_first_output = before_first_output
+        self._input_bar = input_bar
         self._buffer = ""
         self._has_output = False
         self._markdown_state = MarkdownStreamState()
@@ -121,10 +123,16 @@ class StreamingSpeechPlayer:
             if self._before_first_output is not None:
                 self._before_first_output()
             self._status_line.clear()
+            if self._input_bar is not None:
+                self._input_bar.push_up()
             self._ui.newline()
             self._ui.print_ai_prefix()
             self._has_output = True
+        if self._input_bar is not None:
+            self._input_bar.push_up()
         self._ui.write_markdown_delta(delta, self._markdown_state)
+        if self._input_bar is not None:
+            self._input_bar.pop_down()
         if self._text_to_speech is None:
             return
 
@@ -142,7 +150,11 @@ class StreamingSpeechPlayer:
     def flush(self) -> None:
         """本轮回复结束后，把没有标点结尾的尾句也提交播报。"""
 
+        if self._input_bar is not None:
+            self._input_bar.push_up()
         self._ui.flush_markdown(self._markdown_state)
+        if self._input_bar is not None:
+            self._input_bar.pop_down()
         if self._text_to_speech is None:
             return
 
@@ -155,11 +167,15 @@ class StreamingSpeechPlayer:
         """只提交当前终端显示，不触发语音播报。
 
         模型可能先流式输出一句说明，随后才请求工具。工具状态行写入前必须把
-        这句说明从“当前行预览态”落成真实行，否则后续清预览会回退到工具状态行，
+        这句说明从预览态落成真实行，否则后续清预览会回退到工具状态行，
         造成长任务日志里中文重复、状态错位或残留。
         """
 
+        if self._input_bar is not None:
+            self._input_bar.push_up()
         self._ui.flush_markdown(self._markdown_state)
+        if self._input_bar is not None:
+            self._input_bar.pop_down()
 
     @property
     def has_display_output(self) -> bool:
@@ -170,9 +186,9 @@ class StreamingSpeechPlayer:
     def start_new_display_segment(self) -> None:
         """让下一段模型文本重新清理等待状态并打印 AI 前缀。
 
-        一轮 Agent 可能经历“模型说明 -> 工具 -> 模型总结”的多段输出。每次工具
-        执行后都会重新显示等待动画，因此下一段模型文本不能沿用上一段的
-        `_has_output=True`，否则文本会直接追加到等待动画所在行。
+        一轮 Agent 可能经历多段输出。每次工具执行后都会重新显示等待动画，
+        因此下一段模型文本不能沿用上一段的 _has_output=True，否则文本会
+        直接追加到等待动画所在行。
         """
 
         if self._has_output:

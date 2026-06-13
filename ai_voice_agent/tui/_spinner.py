@@ -1,0 +1,348 @@
+"""等待动画（spinner），带预输入支持和持久输入栏。"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+from typing import Any
+
+from ._capabilities import TerminalCapabilities
+from ._colors import ANSI_CLEAR_LINE, ANSI_PREVIOUS_LINE, color_text
+from ._status import StatusLine, prompt_status_line
+
+# Spinner 动画帧
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# 轮播状态文字
+_STATUS_LABELS = ["正在思考", "正在分析", "正在生成"]
+_STATUS_LABEL_INTERVAL_SECONDS = 2.0
+
+
+class InputBar:
+    """终端底部持久输入栏（▸ + token 状态行）。
+
+    在 AI 输出期间以“输出前清除、输出后追加”的方式维护，避免直接在
+    模型输出位置原地重绘时覆盖正文。输入栏同时收集用户预输入。
+    """
+
+    def __init__(self, ui: Any, *, caps: TerminalCapabilities | None = None) -> None:
+        self._ui = ui
+        self._caps = caps or ui.capabilities
+        self._pre_input: str = ""
+        self._submitted_pre_input: str = ""
+        self._visible = False
+        # 预输入行数：1 行输入 + (0 或 1) 行 token 状态
+        self._info_lines = 1  # 至少输入行
+
+    @property
+    def info_lines(self) -> int:
+        """当前输入栏占用的终端行数（不含 spinner）。"""
+        return self._info_lines
+
+    @property
+    def pre_input(self) -> str:
+        """当前已收集但未必提交的预输入草稿。"""
+        return self._pre_input
+
+    @property
+    def submitted_pre_input(self) -> str:
+        """用户按 Enter 提交的预输入文本。"""
+        return self._submitted_pre_input
+
+    def _pre_input_enabled(self) -> bool:
+        return self._caps.ansi and os.name == "nt"
+
+    def _build_token_line(self) -> str:
+        if not self._ui.model_label:
+            return ""
+        return prompt_status_line(
+            self._ui.model_label, self._ui._input_tokens,
+            self._ui._output_tokens, self._ui._cached_input_tokens,
+            caps=self._caps,
+        )
+
+    def show(self, spinner_text: str = "") -> None:
+        """渲染输入栏。spinner_text 非空时同时显示 spinner 行。"""
+        if not self._caps.ansi:
+            return
+        if not self._pre_input_enabled():
+            return
+
+        ui = self._ui
+        prompt_prefix = color_text("▸", "primary", self._caps)
+        pre_input_text = self._pre_input
+        token_line = self._build_token_line()
+
+        has_spinner = bool(spinner_text)
+        lines: list[str] = []
+        if has_spinner:
+            indent = " " * ui.prompt_width()
+            lines.append(f"{ANSI_CLEAR_LINE}{ui.bright(f'{indent}{spinner_text}')}")
+        lines.append(f"{prompt_prefix} {pre_input_text}")
+        if token_line:
+            lines.append(token_line)
+
+        with ui._lock:
+            if self._visible:
+                self._clear_visible_locked()
+                leading = ""
+            else:
+                leading = "\n"
+            rendered_lines = "\n".join(lines)
+            print(f"{leading}{rendered_lines}", end="", flush=True)
+            self._visible = True
+            self._info_lines = len(lines)
+
+    def push_up(self) -> None:
+        """清除输入栏，为 AI 输出腾出空间。"""
+        if not self._visible or not self._caps.ansi:
+            return
+        with self._ui._lock:
+            self._clear_visible_locked()
+
+    def pop_down(self) -> None:
+        """AI 输出后，在当前位置下方重新追加输入栏。"""
+        if not self._pre_input_enabled():
+            return
+        self.show()
+
+    def clear(self) -> str:
+        """清除输入栏，返回已提交的预输入文本。"""
+        pre = self._submitted_pre_input
+        if self._visible and self._caps.ansi:
+            with self._ui._lock:
+                self._clear_visible_locked()
+        return pre
+
+    def _clear_visible_locked(self) -> None:
+        """从输入栏最后一行向上清理，调用方必须持有 UI 锁。"""
+        for index in range(max(0, self._info_lines)):
+            print(f"\r{ANSI_CLEAR_LINE}", end="")
+            if index < self._info_lines - 1:
+                print(ANSI_PREVIOUS_LINE, end="")
+        self._visible = False
+        self._info_lines = 0
+
+    def poll_pre_input(self) -> None:
+        """非阻塞轮询键盘输入。"""
+        if not self._pre_input_enabled():
+            return
+        try:
+            import msvcrt
+        except ImportError:
+            return
+
+        while msvcrt.kbhit():
+            char = msvcrt.getwch()
+            if char in {"\r", "\n"}:
+                submitted = self._pre_input.strip()
+                if submitted:
+                    self._submitted_pre_input = submitted
+                continue
+            if char == "\x03":
+                raise KeyboardInterrupt
+            if char in {"\x00", "\xe0"}:
+                if msvcrt.kbhit():
+                    msvcrt.getwch()
+                continue
+            if char in {"\b", "\x7f"}:
+                if self._pre_input:
+                    self._pre_input = self._pre_input[:-1]
+                continue
+            if char.isprintable() or char == " ":
+                self._pre_input += char
+
+
+class WaitingIndicator:
+    """模型返回前的现代 spinner 等待动画。
+
+    带轮播状态文字、经过时间计数，以及预输入收集。
+    spinner 运行时同时显示输入栏（▸ + token 状态行）。
+    """
+
+    def __init__(self, status_line: StatusLine, *, caps: TerminalCapabilities | None = None, input_bar: InputBar | None = None) -> None:
+        self._status_line = status_line
+        self._caps = caps or status_line._ui.capabilities
+        self._input_bar = input_bar
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._frame_index = 0
+        self._start_time: float = 0.0
+        self._has_info_lines = False
+        self._rendered_info_lines = 0
+        # 无 InputBar 时的后备存储
+        self._pre_input: str = ""
+        self._submitted_pre_input: str = ""
+
+    @property
+    def input_bar(self) -> InputBar | None:
+        return self._input_bar
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._frame_index = 0
+        self._start_time = time.monotonic()
+        self._has_info_lines = False
+        self._rendered_info_lines = 0
+        if self._input_bar is not None:
+            self._input_bar.clear()
+            self._input_bar._pre_input = ""
+            self._input_bar._submitted_pre_input = ""
+        else:
+            self._pre_input = ""
+            self._submitted_pre_input = ""
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> str:
+        """停止 spinner，保留输入栏，返回已提交的预输入文本。"""
+
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+        pre = self._input_bar._submitted_pre_input if self._input_bar else self._submitted_pre_input
+
+        if self._has_info_lines and self._caps.ansi:
+            with self._status_line._ui._lock:
+                for index in range(max(0, self._rendered_info_lines)):
+                    print(f"\r{ANSI_CLEAR_LINE}", end="")
+                    if index < self._rendered_info_lines - 1:
+                        print(ANSI_PREVIOUS_LINE, end="")
+                print("", end="", flush=True)
+            self._has_info_lines = False
+            self._rendered_info_lines = 0
+        else:
+            self._status_line.clear()
+
+        # spinner 停止后，立即以无 spinner 文本的方式重新渲染输入栏
+        if self._input_bar is not None and self._input_bar._pre_input_enabled():
+            self._input_bar.show()
+
+        return pre
+
+    @property
+    def pre_input(self) -> str:
+        """当前已收集但未必提交的预输入草稿。"""
+
+        if self._input_bar is not None:
+            return self._input_bar.pre_input
+        return self._pre_input
+
+    def _pre_input_enabled(self) -> bool:
+        """仅在可控的 Windows ANSI 终端中启用预输入布局。"""
+        return self._caps.ansi and os.name == "nt"
+
+    def _render_status(self, text: str) -> None:
+        """渲染等待状态；预输入模式下维护 spinner 行、输入行和 token 状态行。"""
+
+        if not self._pre_input_enabled():
+            self._status_line.show(text)
+            return
+
+        ui = self._status_line._ui
+        indent = " " * ui.prompt_width()
+        rendered_status = ui.bright(f"{indent}{text}")
+        prompt_prefix = color_text("▸", "primary", self._caps)
+        pre_input_text = self._input_bar._pre_input if self._input_bar else self._pre_input
+
+        # 构建 token 状态行
+        token_line = ""
+        if ui.model_label:
+            token_line = prompt_status_line(
+                ui.model_label, ui._input_tokens,
+                ui._output_tokens, ui._cached_input_tokens,
+                caps=self._caps,
+            )
+
+        lines: list[str] = [
+            f"{ANSI_CLEAR_LINE}{rendered_status}",
+            f"{prompt_prefix} {pre_input_text}",
+        ]
+        if token_line:
+            lines.append(token_line)
+
+        with ui._lock:
+            if self._has_info_lines:
+                for index in range(max(0, self._rendered_info_lines)):
+                    print(f"\r{ANSI_CLEAR_LINE}", end="")
+                    if index < self._rendered_info_lines - 1:
+                        print(ANSI_PREVIOUS_LINE, end="")
+                leading = ""
+            else:
+                leading = "\n"
+            rendered_lines = "\n".join(lines)
+            print(f"{leading}{rendered_lines}", end="", flush=True)
+            self._has_info_lines = True
+            self._rendered_info_lines = len(lines)
+
+    def _poll_pre_input(self) -> None:
+        """非阻塞轮询键盘输入。"""
+
+        if not self._pre_input_enabled():
+            return
+        try:
+            import msvcrt
+        except ImportError:
+            return
+
+        while msvcrt.kbhit():
+            char = msvcrt.getwch()
+            if char in {"\r", "\n"}:
+                # Enter 提交预输入
+                draft = self._input_bar._pre_input if self._input_bar else self._pre_input
+                submitted = draft.strip()
+                if submitted:
+                    if self._input_bar is not None:
+                        self._input_bar._submitted_pre_input = submitted
+                    else:
+                        self._submitted_pre_input = submitted
+                    self._stop.set()
+                continue
+            if char == "\x03":
+                self._stop.set()
+                continue
+            if char in {"\x00", "\xe0"}:
+                if msvcrt.kbhit():
+                    msvcrt.getwch()
+                continue
+            if char in {"\b", "\x7f"}:
+                if self._input_bar is not None:
+                    if self._input_bar._pre_input:
+                        self._input_bar._pre_input = self._input_bar._pre_input[:-1]
+                elif self._pre_input:
+                    self._pre_input = self._pre_input[:-1]
+                continue
+            if char.isprintable() or char == " ":
+                if self._input_bar is not None:
+                    self._input_bar._pre_input += char
+                else:
+                    self._pre_input += char
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._poll_pre_input()
+            if self._stop.is_set():
+                break
+
+            frame = SPINNER_FRAMES[self._frame_index % len(SPINNER_FRAMES)]
+
+            # 轮播状态文字
+            elapsed = time.monotonic() - self._start_time
+            label_index = int(elapsed / _STATUS_LABEL_INTERVAL_SECONDS) % len(_STATUS_LABELS)
+            label = _STATUS_LABELS[label_index]
+
+            # 时间计数
+            seconds = int(elapsed)
+
+            rendered_frame = color_text(frame, "primary", self._caps) if self._caps.ansi else frame
+            rendered_label = color_text(label, "muted", self._caps)
+            rendered_time = color_text(f"{seconds}s", "secondary", self._caps) if self._caps.ansi else f"{seconds}s"
+
+            self._render_status(f"{rendered_frame} {rendered_label} · {rendered_time}")
+            self._frame_index += 1
+            self._stop.wait(0.08)

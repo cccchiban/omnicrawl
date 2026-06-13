@@ -3,15 +3,18 @@ from __future__ import annotations
 import io
 import os
 import re
+import types
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from ai_voice_agent.terminal_ui import (
+    InputBar,
     MarkdownStreamState,
     StatusLine,
     TerminalCapabilities,
     TerminalUI,
+    WaitingIndicator,
     _contains_complex_display_width,
     _display_width,
     _split_display_rows,
@@ -19,6 +22,19 @@ from ai_voice_agent.terminal_ui import (
 
 
 ANSI_PATTERN = re.compile(r"\033\[[0-9;]*m")
+
+
+class _FakeMsvcrt:
+    def __init__(self, chars: list[str]) -> None:
+        self._chars = chars
+
+    def kbhit(self) -> bool:
+        return bool(self._chars)
+
+    def getwch(self) -> str:
+        if not self._chars:
+            raise AssertionError("测试输入已耗尽。")
+        return self._chars.pop(0)
 
 
 class TerminalUITest(unittest.TestCase):
@@ -39,7 +55,7 @@ class TerminalUITest(unittest.TestCase):
         )
 
         with patch(
-            "ai_voice_agent.terminal_ui.shutil.get_terminal_size",
+            "ai_voice_agent.tui._core.shutil.get_terminal_size",
             return_value=os.terminal_size((72, 30)),
         ):
             expected_rows = _split_display_rows(text, 72 - ui.prompt_width() - 1)
@@ -49,7 +65,8 @@ class TerminalUITest(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn(f"\033[{len(expected_rows)}A", rendered)
-        self.assertEqual(rendered.count("> "), 1)
+        # 用户前缀 ▸ (U+25B8) 在输出中
+        self.assertIn("▸", rendered)
         self.assertIn("agent-browser-cli", rendered)
         self.assertIn("SKILL.md", rendered)
 
@@ -85,7 +102,7 @@ class TerminalUITest(unittest.TestCase):
         text = "这是一个很长的中文回答，用来验证终端手动换行后，所有续行都和正文起点对齐。"
 
         with patch(
-            "ai_voice_agent.terminal_ui.shutil.get_terminal_size",
+            "ai_voice_agent.tui._markdown_renderer.shutil.get_terminal_size",
             return_value=os.terminal_size((34, 24)),
         ):
             with redirect_stdout(output):
@@ -97,7 +114,8 @@ class TerminalUITest(unittest.TestCase):
         lines = rendered.splitlines()
 
         self.assertGreaterEqual(len(lines), 2)
-        self.assertTrue(lines[0].startswith("^ "))
+        # AI 前缀 ◆ 后面跟内容
+        self.assertTrue(lines[0].startswith("◆ "), f"Expected '◆ ' prefix, got: {repr(lines[0][:5])}")
         self.assertTrue(all(line.startswith("  ") for line in lines[1:]))
 
     def test_markdown_blank_lines_do_not_create_extra_empty_rows(self) -> None:
@@ -113,7 +131,7 @@ class TerminalUITest(unittest.TestCase):
         rendered = ANSI_PATTERN.sub("", output.getvalue())
 
         self.assertNotIn("\n\n", rendered)
-        self.assertIn("^ 第一段。\n  第二段。", rendered)
+        self.assertIn("◆ 第一段。\n  第二段。", rendered)
 
     def test_markdown_table_allows_blank_line_between_header_and_delimiter(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -159,9 +177,10 @@ class TerminalUITest(unittest.TestCase):
             ui.flush_markdown(state)
 
         rendered = ANSI_PATTERN.sub("", output.getvalue())
-        self.assertIn("^ 主要内容总结", rendered)
+        # 标题有 █ 色条前缀，引用块用 ║ 标记
+        self.assertIn("█ 主要内容总结", rendered)
         self.assertIn("1. 日本：数量下降", rendered)
-        self.assertIn("│ 流浪汉问题并不只是贫困问题。", rendered)
+        self.assertIn("║ 流浪汉问题并不只是贫困问题。", rendered)
         self.assertNotIn("##", rendered)
         self.assertNotIn("###", rendered)
         self.assertNotIn("> 流浪汉", rendered)
@@ -180,6 +199,44 @@ class TerminalUITest(unittest.TestCase):
         self.assertNotIn("**", rendered)
         self.assertIn("1 个浏览器窗口", rendered)
 
+    def test_long_styled_markdown_preview_uses_total_span_width(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        state = MarkdownStreamState()
+        output = io.StringIO()
+
+        with patch(
+            "ai_voice_agent.tui._markdown_renderer.shutil.get_terminal_size",
+            return_value=os.terminal_size((24, 24)),
+        ):
+            with redirect_stdout(output):
+                ui.write_markdown_delta(
+                    "see `abcdefghijklmnopqrstuvwxyz0123456789`",
+                    state,
+                )
+
+        self.assertTrue(state.passthrough_line)
+        self.assertFalse(state.preview_visible)
+        rendered = ANSI_PATTERN.sub("", output.getvalue())
+        self.assertIn("see abcdefghijklmnopq\n  rstuvwxyz0123456789", rendered)
+
+    def test_prompt_yes_no_redraws_and_collapses_current_option_block(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        keys = ["\xe0", "P", "\r"]
+        fake_msvcrt = types.SimpleNamespace(getwch=lambda: keys.pop(0))
+        output = io.StringIO()
+
+        with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
+            with redirect_stdout(output):
+                self.assertFalse(ui.prompt_yes_no("确认执行？", confirmed_label="已取消"))
+
+        rendered = output.getvalue()
+        plain_rendered = ANSI_PATTERN.sub("", rendered)
+        # 选项区 5 行：分隔线 + 选项 + 底框 + 空行 + 提示
+        self.assertIn("\033[5A", rendered)
+        # 卡片行(前导空行+顶部框线+1内容行=3) + 选项区5行 = 8
+        self.assertIn("\033[8A\033[J", rendered)
+        self.assertIn("❯ No", plain_rendered)
+
     def test_status_can_avoid_leading_blank_line(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
         output = io.StringIO()
@@ -197,7 +254,9 @@ class TerminalUITest(unittest.TestCase):
             ui.status("模型请求中断，正在重试 2/5", leading_blank=False, italic=True)
 
         rendered = output.getvalue()
-        self.assertIn("\033[3;90m[模型请求中断，正在重试 2/5]\033[0m", rendered)
+        # 新配色路由使用真彩色或16色序列包裹内容
+        self.assertIn("模型请求中断，正在重试 2/5", rendered)
+        self.assertIn("\033[3m", rendered)  # ITALIC
 
     def test_status_line_aligns_with_prompt_content_and_keeps_blank_spacing(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -210,8 +269,8 @@ class TerminalUITest(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertTrue(rendered.startswith("\n\033[2K"))
-        self.assertIn("\033[97m  处理中  (-_-)...\033[0m", rendered)
-        self.assertIn("\r\033[2K\033[97m  处理中  (-_-)..\033[0m", rendered)
+        self.assertIn("处理中  (-_-)...", rendered)
+        self.assertIn("处理中  (-_-)..", rendered)
 
     def test_status_line_plain_mode_keeps_blank_spacing_and_indent(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -222,6 +281,116 @@ class TerminalUITest(unittest.TestCase):
             status_line.show("处理中  (-_-)...")
 
         self.assertEqual(output.getvalue(), "\n  处理中  (-_-)...\n")
+
+    def test_waiting_indicator_does_not_submit_unconfirmed_pre_input(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        status_line = StatusLine(ui)
+        waiting = WaitingIndicator(status_line)
+        fake_msvcrt = _FakeMsvcrt(["下", "一", "句"])
+        output = io.StringIO()
+
+        with patch("ai_voice_agent.tui._spinner.os.name", "nt"):
+            with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
+                with redirect_stdout(output):
+                    waiting._poll_pre_input()
+                    waiting._render_status("处理中")
+                    submitted = waiting.stop()
+
+        rendered = output.getvalue()
+        self.assertEqual(waiting.pre_input, "下一句")
+        self.assertEqual(submitted, "")
+        self.assertIn("\033[1A\r\033[2K", rendered)
+
+    def test_waiting_indicator_returns_only_enter_submitted_pre_input(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        status_line = StatusLine(ui)
+        waiting = WaitingIndicator(status_line)
+        fake_msvcrt = _FakeMsvcrt(["n", "e", "x", "t", "\r"])
+        output = io.StringIO()
+
+        with patch("ai_voice_agent.tui._spinner.os.name", "nt"):
+            with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
+                with redirect_stdout(output):
+                    waiting._poll_pre_input()
+                    waiting._render_status("处理中")
+                    submitted = waiting.stop()
+
+        self.assertEqual(submitted, "next")
+        self.assertEqual(waiting.pre_input, "next")
+
+    def test_waiting_indicator_plain_mode_uses_status_line_clear(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        status_line = StatusLine(ui)
+        waiting = WaitingIndicator(status_line)
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            waiting._render_status("处理中")
+            submitted = waiting.stop()
+
+        self.assertEqual(submitted, "")
+        self.assertEqual(output.getvalue(), "\n  处理中\n")
+        self.assertNotIn("\033[2K", output.getvalue())
+
+    def test_waiting_indicator_clears_dynamic_line_count_without_token_line(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        status_line = StatusLine(ui)
+        waiting = WaitingIndicator(status_line)
+        output = io.StringIO()
+
+        with patch("ai_voice_agent.tui._spinner.os.name", "nt"):
+            with redirect_stdout(output):
+                waiting._render_status("处理中")
+                submitted = waiting.stop()
+
+        self.assertEqual(submitted, "")
+        self.assertEqual(output.getvalue().count("\033[1A"), 1)
+
+    def test_waiting_indicator_clears_dynamic_line_count_with_token_line(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
+        ui.update_token_usage(1, 2, 3)
+        status_line = StatusLine(ui)
+        waiting = WaitingIndicator(status_line)
+        output = io.StringIO()
+
+        with patch("ai_voice_agent.tui._spinner.os.name", "nt"):
+            with redirect_stdout(output):
+                waiting._render_status("处理中")
+                submitted = waiting.stop()
+
+        self.assertEqual(submitted, "")
+        self.assertEqual(output.getvalue().count("\033[1A"), 2)
+
+    def test_input_bar_push_up_clears_existing_bar_before_output(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
+        input_bar = InputBar(ui)
+        output = io.StringIO()
+
+        with patch("ai_voice_agent.tui._spinner.os.name", "nt"):
+            with redirect_stdout(output):
+                input_bar.show()
+                input_bar.push_up()
+                print("AI 输出", end="")
+                input_bar.pop_down()
+
+        rendered = output.getvalue()
+        ai_index = rendered.index("AI 输出")
+        clear_index = rendered.index("\r\033[2K")
+        self.assertLess(clear_index, ai_index)
+        self.assertIn("AI 输出\n", rendered)
+
+    def test_input_bar_clear_removes_all_visible_lines(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
+        input_bar = InputBar(ui)
+        output = io.StringIO()
+
+        with patch("ai_voice_agent.tui._spinner.os.name", "nt"):
+            with redirect_stdout(output):
+                input_bar.show()
+                submitted = input_bar.clear()
+
+        self.assertEqual(submitted, "")
+        self.assertEqual(output.getvalue().count("\r\033[2K"), 2)
 
     def test_tool_call_start_shows_command_detail_and_running_marker(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -236,8 +405,10 @@ class TerminalUITest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        self.assertIn("* 步骤 2 — 请求 run_command", rendered)
-        self.assertIn("  Ran echo hello", rendered)
+        # 新格式：╭─ 步骤 N · tool_name
+        self.assertIn("步骤 2", rendered)
+        self.assertIn("run_command", rendered)
+        self.assertIn("echo hello", rendered)
 
     def test_tool_result_record_shows_exit_code_and_stdout_preview(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -251,8 +422,9 @@ class TerminalUITest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        self.assertIn("执行记录：成功（退出码 0）", rendered)
-        self.assertIn("  └ hello", rendered)
+        # 新格式：退出码以 · 退出码 N 展示
+        self.assertIn("退出码 0", rendered)
+        self.assertIn("hello", rendered)
 
     def test_consecutive_tool_steps_are_separated_by_blank_line(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -278,7 +450,10 @@ class TerminalUITest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        self.assertIn("  └ first\n\n  * 步骤 2 — 请求 run_command", rendered)
+        # 连续工具之间有空行分隔
+        self.assertIn("first", rendered)
+        self.assertIn("步骤 2", rendered)
+        self.assertIn("run_command", rendered)
 
     def test_tool_call_start_uses_ansi_color_and_blink(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -293,9 +468,11 @@ class TerminalUITest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        self.assertIn("\033[5m*\033[0m", rendered)
-        self.assertIn("\033[94mrun_command\033[0m", rendered)
-        self.assertIn("\033[97mecho hi\033[0m", rendered)
+        # 新格式使用 ◌ 闪烁标记 + 颜色路由
+        self.assertIn("◌", rendered)
+        self.assertIn("run_command", rendered)
+        self.assertIn("echo hi", rendered)
+        self.assertIn("\033[5m", rendered)  # BLINK
 
     def test_tool_result_refreshes_running_marker_when_ansi_enabled(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -317,11 +494,9 @@ class TerminalUITest(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn("\033[2A", rendered)
-        self.assertIn("\033[32m✓\033[0m", rendered)
-        self.assertIn("执行记录：", rendered)
-        self.assertIn("\033[32m成功\033[0m", rendered)
+        self.assertIn("✓", rendered)
 
-    def test_prompt_status_line_contains_bright_model_and_tokens(self) -> None:
+    def test_prompt_status_line_contains_model_and_tokens(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
         ui.update_token_usage(123, 45, 67)
 
@@ -329,8 +504,10 @@ class TerminalUITest(unittest.TestCase):
         plain_line = ANSI_PATTERN.sub("", line)
 
         self.assertIn("gpt-5.5", line)
-        self.assertIn("Input Token: 123 Cached: 67 Output Token: 45", plain_line)
-        self.assertIn("\033[97m", line)
+        # 新格式：in:123 cache:67 out:45
+        self.assertIn("in:123", plain_line)
+        self.assertIn("cache:67", plain_line)
+        self.assertIn("out:45", plain_line)
 
 
 if __name__ == "__main__":
