@@ -29,6 +29,7 @@ from ._display import (
     _split_display_rows,
     _take_display_width,
 )
+from ..ui.base import BaseUI
 from ._markdown_renderer import _MarkdownRendererMixin
 from ._tools import ToolDisplayState
 
@@ -36,7 +37,7 @@ from ._tools import ToolDisplayState
 INLINE_INPUT_WINDOW_ROWS = 8
 
 
-class TerminalUI(_MarkdownRendererMixin):
+class TerminalUI(_MarkdownRendererMixin, BaseUI):
     """集中管理终端输出样式，避免多个调用点各自拼 ANSI。"""
 
     def __init__(
@@ -45,8 +46,8 @@ class TerminalUI(_MarkdownRendererMixin):
         *,
         model_label: str | None = None,
     ) -> None:
+        super().__init__(model_label=model_label)
         self.capabilities = capabilities or detect_capabilities()
-        self.model_label = model_label
         self._lock = threading.Lock()
         self._input_tokens = 0
         self._output_tokens = 0
@@ -122,6 +123,9 @@ class TerminalUI(_MarkdownRendererMixin):
             self._input_tokens = max(0, int(input_tokens))
             self._output_tokens = max(0, int(output_tokens))
             self._cached_input_tokens = max(0, int(cached_input_tokens))
+
+    def set_model_label(self, text: str) -> None:
+        super().set_model_label(text)
 
     # ── 工具调用显示 ──────────────────────────────────────────
 

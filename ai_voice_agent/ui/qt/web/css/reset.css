@@ -1,0 +1,99 @@
+/* ═══════════════════════════════════════════════════════════════
+   reset.css — 全局 Reset
+   ═══════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 文本选择色 */
+::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: var(--text-primary);
+}
+
+/* ── Focus Ring（键盘导航可见性）──────────────── */
+/* 为所有可交互元素提供可见的 focus 样式 */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:not([tabindex="-1"]):focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 移除默认 outline，由上面的 focus-visible 接管 */
+a:focus,
+button:focus,
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+}
+
+/* 特定组件：发送按钮 focus */
+#send-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* 特定组件：输入框 focus（已有 focus-within，这里补充 focus-visible） */
+#chat-input:focus-visible {
+  outline: none;
+}
+
+/* 特定组件：模型选择器 focus */
+.model-selector:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 特定组件：导出按钮 focus */
+.export-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 特定组件：导航项 focus */
+.nav-item:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+
+/* 特定组件：停止按钮 focus */
+.stop-btn:focus-visible {
+  outline: 2px solid var(--accent-red);
+  outline-offset: 2px;
+}
+
+/* 特定组件：工具展开按钮 focus */
+.tool-expand:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* 特定组件：模型选项 focus */
+.model-option:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}

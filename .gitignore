@@ -12,6 +12,7 @@ config.json
 
 .codex-ref/
 .claude/
+.agents/
 .agent_tmp/*
 !.agent_tmp/.gitignore
 !.agent_tmp/README.md

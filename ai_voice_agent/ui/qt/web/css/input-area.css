@@ -1,0 +1,111 @@
+/* ═══════════════════════════════════════════════════════════════
+   input-area.css — 底部悬浮输入框（Codex 风格）
+   ═══════════════════════════════════════════════════════════════ */
+
+#input-area {
+  padding: var(--space-md) var(--space-xl) var(--space-lg);
+  background: linear-gradient(to top, var(--bg-main) 60%, transparent);
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.input-container {
+  width: 100%;
+  max-width: var(--input-max-width);
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+}
+
+.input-container:focus-within {
+  border-color: var(--border-input-focus);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+}
+
+.input-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+#chat-input {
+  width: 100%;
+  background: transparent;
+  color: var(--text-primary);
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 10px 0;
+  min-height: var(--input-min-height);
+  max-height: var(--input-max-height);
+  overflow-y: auto;
+}
+
+#chat-input::placeholder { color: var(--text-placeholder); }
+
+#chat-input:disabled {
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+}
+
+/* 发送按钮（圆形） */
+#send-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.persona-btn {
+  background: var(--text-tertiary);
+  color: var(--bg-app);
+  border: none;
+  border-radius: var(--radius-full);
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-base);
+  flex-shrink: 0;
+}
+
+.persona-btn:hover:not(:disabled) {
+  background: var(--text-primary);
+}
+
+/* 有输入内容时的激活态 */
+.persona-btn.ready:not(:disabled) {
+  background: var(--text-primary);
+  color: var(--bg-app);
+}
+
+.persona-btn:disabled {
+  background: var(--border-light);
+  color: var(--text-tertiary);
+  cursor: not-allowed;
+  transform: none;
+  opacity: 0.6;
+}
+
+.btn-icon {
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}

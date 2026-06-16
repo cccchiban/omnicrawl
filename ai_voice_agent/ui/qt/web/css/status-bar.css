@@ -1,0 +1,93 @@
+/* ═══════════════════════════════════════════════════════════════
+   status-bar.css — 内联状态指示器
+   ═══════════════════════════════════════════════════════════════ */
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--space-xl);
+  border-top: 1px solid var(--border-light);
+  font-size: 12px;
+  flex-shrink: 0;
+  background: var(--bg-main);
+}
+
+.status-left, .status-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.status-left { flex: 1; }
+.status-right { flex-shrink: 0; }
+
+#status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* 打字指示器 */
+.typing-dots {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  padding: 0 2px;
+}
+
+.typing-dots span {
+  width: 4px;
+  height: 4px;
+  background: var(--accent-blue);
+  border-radius: 50%;
+  animation: dot-bounce 1.4s ease-in-out infinite;
+}
+
+.typing-dots span:nth-child(2) { animation-delay: 0.16s; }
+.typing-dots span:nth-child(3) { animation-delay: 0.32s; }
+
+.voice-icon { font-size: 13px; }
+
+.token-info {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+
+/* 停止生成按钮 */
+.stop-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  color: var(--accent-red);
+  border-radius: var(--radius-full);
+  padding: 3px 12px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  transition: all var(--transition-fast);
+}
+
+.stop-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.stop-btn svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+}

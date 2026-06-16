@@ -606,6 +606,20 @@ class LocalToolAgent:
 
         self.config.approval_mode = normalize_approval_mode(mode)
 
+    @property
+    def current_model(self) -> str:
+        """当前会话实际用于下一次请求的模型名称。"""
+
+        return self.config.llm.model
+
+    def set_model(self, model: str) -> None:
+        """运行时切换模型；持久化由斜杠命令或 UI 调用方负责。"""
+
+        model_id = model.strip()
+        if not model_id:
+            raise AgentError("模型 ID 不能为空。")
+        self.config.llm.model = model_id
+
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""
 

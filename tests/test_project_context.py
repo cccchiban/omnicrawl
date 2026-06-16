@@ -30,6 +30,18 @@ class ProjectContextTest(unittest.TestCase):
         self.assertEqual(root, workspace.resolve())
         self.assertEqual(marker, "pyproject.toml")
 
+    def test_find_project_root_ignores_too_broad_parent_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_home = Path(temp_dir) / "home"
+            nested = fake_home / "scratch" / "child"
+            nested.mkdir(parents=True)
+            (fake_home / "AGENTS.md").write_text("# broad home marker\n", encoding="utf-8")
+
+            with patch("ai_voice_agent.project_context.Path.home", return_value=fake_home):
+                detected = find_project_root(nested)
+
+        self.assertIsNone(detected)
+
     def test_detect_project_context_uses_launch_cwd_marker(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             app_root = Path(temp_dir) / "agent_app"

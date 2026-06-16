@@ -1,0 +1,39 @@
+/* ═══════════════════════════════════════════════════════════════
+   chat-area.css — 聊天滚动区
+   ═══════════════════════════════════════════════════════════════ */
+
+#chat-area {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+  padding: var(--space-xl) 0;
+}
+
+/* 自定义滚动条 */
+#chat-area::-webkit-scrollbar { width: 5px; }
+#chat-area::-webkit-scrollbar-track { background: transparent; }
+#chat-area::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: var(--radius-full);
+}
+#chat-area::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+#messages {
+  display: flex;
+  flex-direction: column;
+  max-width: var(--chat-max-width);
+  margin: 0 auto;
+  padding: 0 var(--space-lg);
+}
+
+/* 空状态：当消息区无任何内容时显示引导文案 */
+#messages:empty::after {
+  content: "开始与 AI 对话吧";
+  display: block;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 14px;
+  padding: var(--space-3xl) var(--space-lg);
+  margin-top: var(--space-3xl);
+}

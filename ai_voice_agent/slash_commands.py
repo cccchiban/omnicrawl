@@ -11,6 +11,14 @@ from .approval import (
     save_approval_mode,
 )
 from .agent import AgentError, LocalToolAgent
+from .model_catalog import (
+    ModelCatalogError,
+    detect_model_options,
+    ensure_current_model_option,
+    format_model_options,
+    model_env_override_active,
+    save_llm_model,
+)
 from .runtime_config import RuntimeConfigError
 
 
@@ -193,11 +201,102 @@ def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
     return f"审批模式已切换为 {approval_mode_label(mode)}，并已同步到 {path}。"
 
 
+def handle_model_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理模型查看与切换命令；返回 None 表示不是模型命令。"""
+
+    text = command.strip()
+    normalized = text.lower()
+    if normalized == "/models":
+        text = "/model"
+        normalized = text
+    if normalized != "/model" and not normalized.startswith("/model "):
+        return None
+
+    parts = text.split(None, 1)
+    if len(parts) == 1:
+        return _format_detected_models(agent)
+
+    model_id = parts[1].strip()
+    if not model_id:
+        return "用法：/model 查看模型列表，或 /model <模型ID> 切换当前模型。"
+
+    validation_message = _validate_model_id_against_base_url(agent, model_id)
+    if validation_message is not None:
+        return validation_message
+
+    try:
+        agent.set_model(model_id)
+    except AgentError as exc:
+        return f"模型切换失败：{exc}"
+
+    save_message = _save_model_change(model_id)
+    env_message = _model_env_override_message()
+    suffix = "".join(part for part in (save_message, env_message) if part)
+    return f"当前模型已切换为 {model_id}{suffix}"
+
+
+def _format_detected_models(agent: LocalToolAgent) -> str:
+    current_model = agent.current_model
+    try:
+        options = ensure_current_model_option(
+            detect_model_options(agent.config.llm),
+            current_model,
+        )
+    except ModelCatalogError as exc:
+        return f"当前模型：{current_model}\n模型列表检测失败：{exc}"
+
+    if not options:
+        return f"当前模型：{current_model}\n模型列表为空。"
+
+    lines = [
+        f"当前模型：{current_model}",
+        f"从 {agent.config.llm.base_url.rstrip('/')}/models 检测到 {len(options)} 个模型：",
+        format_model_options(options, current_model=current_model),
+        "",
+        "切换模型：/model <模型ID>",
+    ]
+    return "\n".join(lines).rstrip()
+
+
+def _validate_model_id_against_base_url(agent: LocalToolAgent, model_id: str) -> str | None:
+    try:
+        options = detect_model_options(agent.config.llm)
+    except ModelCatalogError:
+        # 有些 OpenAI 兼容网关不开放 /models。此时仍允许手动切换，
+        # 但下一次模型请求会由真实接口继续校验模型是否可用。
+        return None
+
+    if any(option.id == model_id for option in options):
+        return None
+
+    available = format_model_options(options, current_model=agent.current_model, limit=20)
+    return (
+        f"模型 {model_id} 不在当前 base_url 的 /models 返回列表中，未切换。\n"
+        f"可用模型：\n{available}"
+    )
+
+
+def _save_model_change(model_id: str) -> str:
+    try:
+        path = save_llm_model(model_id)
+    except ModelCatalogError as exc:
+        return f"，但写入 config.json 失败：{exc}。"
+    return f"，并已同步到 {path}。"
+
+
+def _model_env_override_message() -> str:
+    if not model_env_override_active():
+        return ""
+    return " 注意：当前存在 OPENAI_MODEL 环境变量，重启后会优先使用环境变量。"
+
+
 def build_slash_commands(agent: LocalToolAgent) -> list[str]:
     """构建所有可用的斜杠命令列表（含内置命令和动态 Skill 命令）。"""
 
     commands = [
         "/new",
+        "/model",
+        "/models",
         "/skills",
         "/memory:clean",
         "/mcp",

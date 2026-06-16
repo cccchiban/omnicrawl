@@ -107,6 +107,8 @@ def find_project_root(start_path: Path) -> tuple[Path, str] | None:
 
     current = _directory_for_detection(start_path.expanduser().resolve())
     for candidate in (current, *current.parents):
+        if _is_too_broad_workspace(candidate):
+            break
         marker = _first_existing_marker(candidate)
         if marker is not None:
             return candidate, marker
@@ -167,7 +169,14 @@ def _first_existing_marker(directory: Path) -> str | None:
 
 
 def _is_too_broad_workspace(path: Path) -> bool:
-    resolved = path.resolve()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        try:
+            home = Path.home()
+        except OSError:
+            return False
+        return path == home or str(path).casefold() == str(home).casefold()
     if resolved.parent == resolved:
         return True
 

@@ -7,6 +7,7 @@ from .inline_input import read_line_autocomplete
 from .slash_commands import (
     build_slash_commands,
     format_tool_confirmation,
+    handle_model_command,
     handle_approval_command,
     print_memory_clean_result,
     print_mcp_status,
@@ -126,6 +127,14 @@ def run_inline_chat(
 
         if user_text.strip() == "/mcp":
             print_mcp_status(agent)
+            continue
+
+        before_model = agent.current_model
+        model_message = handle_model_command(agent, user_text)
+        if model_message is not None:
+            if agent.current_model != before_model:
+                ui.set_model_label(agent.current_model)
+            ui.notice(model_message)
             continue
 
         approval_message = handle_approval_command(agent, user_text)

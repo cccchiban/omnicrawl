@@ -1,0 +1,226 @@
+"""ChatWindow — QWebEngineView 容器，Persona 风格聊天界面。
+
+核心架构：
+  QWebEngineView 加载本地 HTML/CSS/JS 前端
+  QWebChannel 实现双向通信
+  BackendBridge 暴露给 JS 调用，同时通过 call_js() 调用前端回调
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import threading
+
+from PyQt5.QtCore import QUrl
+from PyQt5.QtWidgets import QVBoxLayout, QWidget
+from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
+from PyQt5.QtWebChannel import QWebChannel
+
+from ._bridge import BackendBridge
+
+
+class _CustomWebPage(QWebEnginePage):
+    """自定义 WebEnginePage — 抑制 JS 控制台错误弹窗。"""
+
+    def javaScriptConsoleMessage(self, level, message, line, _sourceID):
+        prefix = {0: "INFO", 1: "WARN", 2: "ERROR"}.get(level, "LOG")
+        print(f"[WebEngine:{prefix}] {message} (line {line})")
+
+
+class ChatWindow(QWidget):
+    """Persona 风格聊天主窗口 — QWebEngineView 容器。"""
+
+    def __init__(self, bridge: BackendBridge, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._bridge = bridge
+        self._input_queue: queue.Queue[str] = queue.Queue()
+        self._cancel_event = threading.Event()
+        self._export_queue: queue.Queue[str] = queue.Queue()
+        self._closed = threading.Event()
+
+        # 关联桥和队列
+        self._bridge.set_input_queue(self._input_queue)
+        self._bridge.set_cancel_event(self._cancel_event)
+        self._bridge.set_export_queue(self._export_queue)
+
+        self.setWindowTitle("AI Voice Agent")
+        self.setMinimumSize(900, 650)
+        self.resize(1200, 800)
+
+        self._init_ui()
+        self._setup_channel()
+        self._load_page()
+
+    def _init_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Web 视图（全屏，标题栏由 HTML 渲染）────────────
+        self._web_view = QWebEngineView(self)
+        self._web_page = _CustomWebPage(self._web_view)
+        self._web_view.setPage(self._web_page)
+        self._web_view.loadFinished.connect(self._on_load_finished)
+        self._bridge.close_requested.connect(self.close)
+
+        # 传递 page 引用给 bridge
+        self._bridge.set_web_page(self._web_page)
+
+        root.addWidget(self._web_view, stretch=1)
+
+    def _setup_channel(self) -> None:
+        """设置 QWebChannel 双向通信。"""
+        self._channel = QWebChannel(self)
+        self._channel.registerObject("bridge", self._bridge)
+        self._web_page.setWebChannel(self._channel)
+
+    def _load_page(self) -> None:
+        """加载本地 HTML 文件。"""
+        self._bridge.reset_frontend_ready()
+        web_dir = os.path.join(os.path.dirname(__file__), "web")
+        html_path = os.path.join(web_dir, "index.html")
+        url = QUrl.fromLocalFile(html_path)
+        self._web_view.setUrl(url)
+
+    def _on_load_finished(self, ok: bool) -> None:
+        """Web 前端加载完成后释放积压的 Python → JS 调用。"""
+        if ok:
+            self._bridge.mark_frontend_ready()
+            # 连接模型切换信号到处理槽
+            self._bridge.model_changed.connect(self._on_model_changed)
+            self._bridge.model_list_refresh_requested.connect(self._on_model_list_refresh_requested)
+        else:
+            print("[WebEngine:ERROR] Qt HTML 前端加载失败")
+
+    def _on_model_changed(self, model_id: str) -> None:
+        """用户在前端下拉菜单选择了新模型。"""
+        self._current_model = model_id
+        # 通知后端模型已切换（通过输入队列发送特殊指令）
+        if self._input_queue is not None:
+            self._input_queue.put(f"/model {model_id}")
+
+    def _on_model_list_refresh_requested(self) -> None:
+        """用户打开模型下拉时，请后端按当前 base_url 刷新真实模型列表。"""
+        if self._input_queue is not None:
+            self._input_queue.put("__REFRESH_MODELS__")
+
+    # ── 输入 / 确认接口 ─────────────────────────────────────
+
+    def wait_for_input(self, timeout: float | None = None) -> str | None:
+        """阻塞等待用户输入。"""
+        if self._closed.is_set():
+            return "__WINDOW_CLOSED__"
+        try:
+            return self._input_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def is_closed(self) -> bool:
+        return self._closed.is_set()
+
+    def prepare_confirm(self, confirm_id: str) -> threading.Event:
+        return self._bridge.prepare_confirm(confirm_id)
+
+    def wait_for_confirm(
+        self,
+        confirm_id: str,
+        event: threading.Event | None = None,
+    ) -> bool:
+        return self._bridge.wait_for_confirm(
+            confirm_id, event, closed_event=self._closed
+        )
+
+    # ── 前端调用入口（由 QtUI 使用）─────────────────────────
+
+    def append_user_msg(self, text: str) -> None:
+        self._bridge.call_js("appendUserMsg", text)
+
+    def append_ai_text(self, text: str) -> None:
+        self._bridge.call_js("appendAIText", text)
+
+    def finish_ai_msg(self) -> None:
+        self._bridge.call_js("finishAIMsg")
+
+    def set_status(self, message: str, italic: bool) -> None:
+        self._bridge.call_js("setStatus", message, italic)
+
+    def show_notice(self, message: str) -> None:
+        self._bridge.call_js("showNotice", message)
+
+    def show_startup(self, title: str, lines: list[str]) -> None:
+        self._bridge.call_js("showStartup", title, lines)
+
+    def show_tool_start(self, step: int, tool_name: str, args_json: str) -> None:
+        self._bridge.call_js("showToolStart", step, tool_name, args_json)
+
+    def show_tool_result(self, ok: bool, output: str, tool_name: str) -> None:
+        self._bridge.call_js("showToolResult", ok, output, tool_name)
+
+    def update_token_display(self, text: str) -> None:
+        self._bridge.call_js("updateTokenDisplay", text)
+
+    def show_confirm_dialog(self, confirm_id: str, prompt: str) -> None:
+        self._bridge.call_js("showConfirmDialog", confirm_id, prompt)
+
+    def hide_confirm_dialog(self) -> None:
+        self._bridge.call_js("hideConfirmDialog")
+
+    def clear_input(self) -> None:
+        self._bridge.call_js("clearInput")
+
+    def set_input_enabled(self, enabled: bool) -> None:
+        self._bridge.call_js("setInputEnabled", enabled)
+
+    def set_input_placeholder(self, text: str) -> None:
+        self._bridge.call_js("setInputPlaceholder", text)
+
+    def set_speaking(self, active: bool) -> None:
+        self._bridge.call_js("setSpeaking", active)
+
+    def set_listening(self, active: bool) -> None:
+        self._bridge.call_js("setListening", active)
+
+    def set_waiting(self, active: bool) -> None:
+        self._bridge.call_js("setWaiting", active)
+
+    def scroll_to_bottom(self) -> None:
+        self._bridge.call_js("scrollToEnd")
+
+    # ── 取消与导出 ─────────────────────────────────────────────
+
+    def cancel_generation(self) -> None:
+        """设置取消事件（由外部线程调用）。"""
+        self._bridge.set_cancel_event(self._cancel_event)
+
+    def get_export_text(self, timeout: float | None = None) -> str | None:
+        """阻塞等待导出文本。"""
+        if self._closed.is_set():
+            return None
+        try:
+            return self._export_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def set_model_label(self, text: str) -> None:
+        self._bridge.call_js("setModelLabel", text)
+
+    def update_model_list(self, models: list[dict[str, str]], current_model: str) -> None:
+        self._bridge.call_js("updateModelList", models, current_model)
+
+    def set_current_model(self, model_id: str, model_name: str | None = None) -> None:
+        self._bridge.call_js("setCurrentModel", model_id, model_name or model_id)
+
+    def show_model_list_error(self, message: str) -> None:
+        self._bridge.call_js("showModelListError", message)
+
+    # ── 窗口关闭 ─────────────────────────────────────────────
+
+    def closeEvent(self, event) -> None:
+        self._closed.set()
+        self._input_queue.put("__WINDOW_CLOSED__")
+        with self._bridge._confirm_lock:
+            events = list(self._bridge._confirm_events.values())
+        for confirm_event in events:
+            confirm_event.set()
+        super().closeEvent(event)

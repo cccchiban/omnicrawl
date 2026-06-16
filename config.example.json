@@ -1,4 +1,7 @@
 {
+  "frontend": {
+    "type": "qt"
+  },
   "llm": {
     "api_key": "",
     "base_url": "https://xxx.xx/v1",

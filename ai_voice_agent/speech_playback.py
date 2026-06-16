@@ -3,10 +3,36 @@ from __future__ import annotations
 import os
 import re
 import threading
-from typing import Callable
+from typing import Callable, Protocol
 
-from .terminal_ui import USER_PREFIX, InputBar, MarkdownStreamState, StatusLine, TerminalUI
 from .text_to_speech import TextToSpeech
+from .ui.base import BaseUI
+
+
+# ── 协议定义（解耦 TUI / Qt 特有类）──────────────────────────
+
+class StatusLineProto(Protocol):
+    """StatusLine 最小接口协议。"""
+    def show(self, text: str) -> None: ...
+    def clear(self) -> None: ...
+    def new_line_for_input(self, prefix: str = "▸") -> None: ...
+
+
+class InputBarProto(Protocol):
+    """InputBar 最小接口协议。"""
+    def push_up(self) -> None: ...
+    def pop_down(self) -> None: ...
+    def clear(self) -> None: ...
+
+
+# 兼容导入：TUI 的实际类仍然可用
+try:
+    from .terminal_ui import USER_PREFIX, InputBar, MarkdownStreamState, StatusLine
+except ImportError:
+    USER_PREFIX = "▸"
+    MarkdownStreamState = None  # type: ignore[assignment, misc]
+    StatusLine = None  # type: ignore[assignment, misc]
+    InputBar = None  # type: ignore[assignment, misc]
 
 
 TTS_SENTENCE_PATTERN = re.compile(r"(.+?[。！？!?；;\n])")
@@ -102,10 +128,10 @@ class StreamingSpeechPlayer:
     def __init__(
         self,
         text_to_speech: TextToSpeech | None,
-        ui: TerminalUI,
-        status_line: StatusLine,
+        ui: BaseUI,
+        status_line: StatusLineProto,
         before_first_output: Callable[[], None] | None = None,
-        input_bar: InputBar | None = None,
+        input_bar: InputBarProto | None = None,
     ) -> None:
         self._text_to_speech = text_to_speech
         self._ui = ui
