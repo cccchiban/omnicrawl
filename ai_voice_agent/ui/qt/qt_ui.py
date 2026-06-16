@@ -239,3 +239,19 @@ class QtUI(BaseUI):
     def show_model_list_error(self, message: str) -> None:
         if self._window is not None:
             self._window.show_model_list_error(message)
+
+    def update_session_list(self, sessions: list[dict[str, Any]]) -> None:
+        if self._window is not None:
+            self._window.update_session_list(sessions)
+
+    def render_session_messages(self, messages: list[dict[str, Any]]) -> None:
+        if self._window is not None:
+            self._window.render_session_messages(messages)
+
+    def set_current_session(self, session_id: str, title: str) -> None:
+        if self._window is not None:
+            self._window.set_current_session(session_id, title)
+
+    def show_session_list_error(self, message: str) -> None:
+        if self._window is not None:
+            self._window.show_session_list_error(message)

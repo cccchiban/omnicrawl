@@ -37,6 +37,10 @@
     showModelListError: null,
     showModelSelect: null,
     setReasoningEffort: null,
+    updateSessionList: null,
+    renderSessionMessages: null,
+    setCurrentSession: null,
+    showSessionListError: null,
   };
 
   /**
@@ -63,6 +67,11 @@
         onModelSelect: function() {},
         onModelChange: function() {},
         setReasoningEffort: function() {},
+        onNewSession: function() {},
+        onRequestSessions: function() {},
+        onResumeSession: function() {},
+        onRenameSession: function() {},
+        onCompactSession: function() {},
       };
     }
   }

@@ -240,6 +240,15 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
         except AgentError as exc:
             return f"会话压缩失败：{exc}"
         return f"已压缩当前会话，后续恢复将从摘要边界继续。\n{summary}"
+    if normalized == "/rename" or normalized.startswith("/rename "):
+        parts = text.split(None, 1)
+        if len(parts) == 1 or not parts[1].strip():
+            return "用法：/rename <会话标题>。"
+        try:
+            state = agent.rename_current_session(parts[1].strip())
+        except AgentError as exc:
+            return f"会话重命名失败：{exc}"
+        return f"当前会话已重命名为：{state.title}"
     if normalized != "/resume" and not normalized.startswith("/resume "):
         return None
 
@@ -427,6 +436,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/resume",
         "/history",
         "/compact",
+        "/rename",
         "/approval",
         "/approval:manual",
         "/approval:auto",

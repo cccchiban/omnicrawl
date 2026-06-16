@@ -461,6 +461,69 @@ class SessionStore:
         self._update_entry_after_event(entry, event)
         return event
 
+    def rename_session(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        now: datetime | None = None,
+    ) -> SessionState:
+        """更新会话标题，并把重命名动作写入转录。
+
+        标题属于会话可恢复元数据，不能只改 `index.json`；追加
+        `session_renamed` 事件后，即使索引未来需要重建，也能从 JSONL
+        中还原用户最后一次命名。
+        """
+
+        cleaned_title = _clean_title(title)
+        if not cleaned_title:
+            raise SessionStoreError("会话标题不能为空。")
+        self.append_event(
+            session_id,
+            "session_renamed",
+            {"title": cleaned_title},
+            now=now,
+        )
+        return self.load_session(session_id)
+
+    def export_session_markdown(
+        self,
+        session_id: str,
+        markdown_text: str,
+        *,
+        now: datetime | None = None,
+    ) -> Path:
+        """把用户主动导出的会话 Markdown 保存到正式会话导出目录。
+
+        `.agent_tmp/` 仍用于一次性临时导出；这里写入 `.agent_sessions/exports/`
+        是为了让恢复型会话拥有长期归档出口。导出事件只记录文件相对路径，
+        不把整份 Markdown 再写回 JSONL，避免转录重复膨胀。
+        """
+
+        if not isinstance(markdown_text, str) or not markdown_text.strip():
+            raise SessionStoreError("导出内容不能为空。")
+
+        self.ensure()
+        normalized_id = _normalize_session_id(session_id)
+        self._entry_by_id(normalized_id)
+        timestamp = (_utc_now() if now is None else _ensure_timezone(now)).astimezone(timezone.utc)
+        filename = f"chat_export_{normalized_id}_{timestamp.strftime('%Y%m%d_%H%M%S')}.md"
+        path = (self.exports_dir / filename).resolve()
+        if not _is_relative_to(path, self.root):
+            raise SessionStoreError(f"导出路径越界：{filename}")
+        try:
+            path.write_text(markdown_text, encoding="utf-8")
+        except OSError as exc:
+            raise SessionStoreError(f"写入会话导出失败：{path}，{exc}") from exc
+        relative_path = path.relative_to(self.root).as_posix()
+        self.append_event(
+            normalized_id,
+            "session_exported",
+            {"path": relative_path, "format": "markdown"},
+            now=timestamp,
+        )
+        return path
+
     def load_session(self, session_id: str) -> SessionState:
         """读取 JSONL 并重建可恢复的模型历史。"""
 
@@ -494,6 +557,13 @@ class SessionStore:
             last_event_type=last_event_type,
             event_count=len(events),
         )
+
+    def read_session_events(self, session_id: str) -> list[SessionEvent]:
+        """读取指定会话的完整事件流，供 UI 回放和正式导出使用。"""
+
+        normalized_id = _normalize_session_id(session_id)
+        entry = self._entry_by_id(normalized_id)
+        return self._read_events(entry)
 
     def list_sessions(
         self,
@@ -577,6 +647,10 @@ class SessionStore:
                 content = event.payload.get("content", "")
                 if isinstance(content, str) and content.strip():
                     title = _clean_title(content)
+            elif event.type == "session_renamed":
+                renamed_title = event.payload.get("title", "")
+                if isinstance(renamed_title, str) and renamed_title.strip():
+                    title = _clean_title(renamed_title)
             updated_entries.append(
                 SessionIndexEntry(
                     session_id=item.session_id,

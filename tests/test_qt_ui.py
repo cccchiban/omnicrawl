@@ -11,6 +11,8 @@ from unittest.mock import patch
 from ai_voice_agent.ui.qt.export import save_chat_export
 from ai_voice_agent.ui.qt._bridge import BackendBridge
 from ai_voice_agent.ui.qt.qt_ui import QtUI
+from ai_voice_agent.qt_chat_session import _session_events_to_ui
+from ai_voice_agent.session import SessionEvent
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +61,26 @@ class FakeModelWindow:
 
     def update_token_display(self, text: str) -> None:
         self.token_updates.append(text)
+
+
+class FakeSessionWindow:
+    def __init__(self) -> None:
+        self.session_lists: list[list[dict]] = []
+        self.rendered_messages: list[list[dict]] = []
+        self.current_sessions: list[tuple[str, str]] = []
+        self.session_errors: list[str] = []
+
+    def update_session_list(self, sessions: list[dict]) -> None:
+        self.session_lists.append(sessions)
+
+    def render_session_messages(self, messages: list[dict]) -> None:
+        self.rendered_messages.append(messages)
+
+    def set_current_session(self, session_id: str, title: str) -> None:
+        self.current_sessions.append((session_id, title))
+
+    def show_session_list_error(self, message: str) -> None:
+        self.session_errors.append(message)
 
 
 class QtUITest(unittest.TestCase):
@@ -253,6 +275,72 @@ class QtUITest(unittest.TestCase):
         self.assertEqual(path.parent.name, "files")
         self.assertEqual(path.parent.parent.name, ".agent_tmp")
         self.assertEqual(saved_text, "# AI Voice Agent 对话记录\n")
+
+    def test_should_expose_qt_session_controls_and_callbacks(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
+        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+            encoding="utf-8"
+        )
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="session-list"', index_source)
+        self.assertIn('id="nav-rename"', index_source)
+        self.assertIn('id="nav-compact"', index_source)
+        self.assertIn("window.SessionSidebar", app_source)
+        self.assertIn("onRequestSessions", app_source)
+        self.assertIn("onResumeSession", app_source)
+        self.assertIn("onRenameSession", app_source)
+        self.assertIn("onCompactSession", app_source)
+        self.assertIn("renderSessionMessages", callback_source)
+        self.assertIn("updateSessionList", callback_source)
+        self.assertIn("onNewSession", bridge_source)
+        self.assertIn("sessions_refresh_requested", backend_bridge)
+        self.assertIn("_on_session_resume_requested", window_source)
+
+    def test_qt_ui_should_forward_session_updates_to_window(self) -> None:
+        ui = QtUI()
+        window = FakeSessionWindow()
+        ui._window = window
+
+        ui.update_session_list([{"id": "s1"}])
+        ui.render_session_messages([{"type": "user", "content": "你好"}])
+        ui.set_current_session("s1", "标题")
+        ui.show_session_list_error("失败")
+
+        self.assertEqual(window.session_lists, [[{"id": "s1"}]])
+        self.assertEqual(window.rendered_messages, [[{"type": "user", "content": "你好"}]])
+        self.assertEqual(window.current_sessions, [("s1", "标题")])
+        self.assertEqual(window.session_errors, ["失败"])
+
+    def test_qt_session_event_projection_replays_messages_and_tools(self) -> None:
+        session_id = "20260616-093005-abcdef"
+        events = [
+            SessionEvent.create(session_id=session_id, event_type="user_message", payload={"content": "读文件"}),
+            SessionEvent.create(
+                session_id=session_id,
+                event_type="tool_call_requested",
+                payload={"tool": "read_file", "arguments": {"path": "README.md"}},
+            ),
+            SessionEvent.create(
+                session_id=session_id,
+                event_type="tool_result",
+                payload={"tool": "read_file", "ok": True, "output": "README"},
+            ),
+            SessionEvent.create(session_id=session_id, event_type="assistant_message", payload={"content": "完成"}),
+        ]
+
+        projected = _session_events_to_ui(events)
+
+        self.assertEqual(projected[0]["type"], "user")
+        self.assertEqual(projected[1]["type"], "tool_start")
+        self.assertEqual(projected[1]["step"], 1)
+        self.assertEqual(projected[2]["type"], "tool_result")
+        self.assertEqual(projected[3]["type"], "assistant")
 
     def test_should_not_duplicate_user_message_when_frontend_already_echoed_input(self) -> None:
         ui = QtUI()

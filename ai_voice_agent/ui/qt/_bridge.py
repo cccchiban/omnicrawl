@@ -31,6 +31,12 @@ class BackendBridge(QObject):
     reasoning_effort_changed = pyqtSignal(str)
     # 导出请求信号：把前端传来的 Markdown 交给后端保存
     export_requested = pyqtSignal(str)
+    # 会话控制信号：侧边栏会话列表、新建、恢复、重命名和压缩。
+    sessions_refresh_requested = pyqtSignal()
+    new_session_requested = pyqtSignal()
+    session_resume_requested = pyqtSignal(str)
+    session_rename_requested = pyqtSignal(str)
+    session_compact_requested = pyqtSignal()
     # 窗口关闭信号：允许后台线程通过 Qt 信号请求主线程关闭窗口
     close_requested = pyqtSignal()
 
@@ -140,6 +146,31 @@ class BackendBridge(QObject):
         self.export_requested.emit(markdown_text)
         if self._export_queue is not None:
             self._export_queue.put(markdown_text)
+
+    @pyqtSlot()
+    def onNewSession(self) -> None:
+        """用户点击新对话按钮。"""
+        self.new_session_requested.emit()
+
+    @pyqtSlot()
+    def onRequestSessions(self) -> None:
+        """用户请求刷新会话列表。"""
+        self.sessions_refresh_requested.emit()
+
+    @pyqtSlot(str)
+    def onResumeSession(self, session_id: str) -> None:
+        """用户从侧边栏选择恢复某个会话。"""
+        self.session_resume_requested.emit(session_id)
+
+    @pyqtSlot(str)
+    def onRenameSession(self, title: str) -> None:
+        """用户为当前会话设置标题。"""
+        self.session_rename_requested.emit(title)
+
+    @pyqtSlot()
+    def onCompactSession(self) -> None:
+        """用户手动压缩当前会话。"""
+        self.session_compact_requested.emit()
 
     @pyqtSlot()
     def onModelSelect(self) -> None:

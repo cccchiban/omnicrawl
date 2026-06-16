@@ -48,7 +48,7 @@ var Messages = (function() {
 
   // ── 用户消息 ──────────────────────────────────────
 
-  function appendUserMsg(text) {
+  function appendUserMsg(text, timeText) {
     if (!text) return;
     finishCurrentAI();
 
@@ -64,7 +64,7 @@ var Messages = (function() {
       '<div class="msg-body">' +
         '<div class="msg-header">' +
           '<span class="msg-role">你</span>' +
-          '<span class="msg-time">' + timeNow() + '</span>' +
+          '<span class="msg-time">' + escHtml(timeText || timeNow()) + '</span>' +
         '</div>' +
         '<div class="bubble">' + escHtml(text) + '</div>' +
       '</div>';
@@ -74,7 +74,7 @@ var Messages = (function() {
 
   // ── AI 消息（流式） ───────────────────────────────
 
-  function appendAIText(text) {
+  function appendAIText(text, timeText) {
     if (AppState.currentAIBubble === null || AppState.currentAIBubble === undefined) {
       var container = messagesEl();
       if (!container) return;
@@ -85,7 +85,7 @@ var Messages = (function() {
         '<div class="msg-body">' +
           '<div class="msg-header">' +
             '<span class="msg-role">' + escHtml(AppState.currentModelName) + '</span>' +
-            '<span class="msg-time">' + timeNow() + '</span>' +
+            '<span class="msg-time">' + escHtml(timeText || timeNow()) + '</span>' +
           '</div>' +
           '<div class="bubble"><span class="typing-cursor"></span></div>' +
         '</div>';
@@ -120,6 +120,49 @@ var Messages = (function() {
     if (AppState.currentAIBubble) {
       finishAIMsg();
     }
+  }
+
+  function appendFinishedAIMsg(text, timeText) {
+    if (!text) return;
+    appendAIText(text, timeText);
+    finishAIMsg();
+  }
+
+  function clear() {
+    AppState.resetAI();
+    AppState.resetTool();
+    AppState.fallbackToolStep = 1;
+    var container = messagesEl();
+    if (container) container.innerHTML = '';
+  }
+
+  function renderSessionMessages(items) {
+    clear();
+    if (!Array.isArray(items) || items.length === 0) {
+      return;
+    }
+    for (var i = 0; i < items.length; i++) {
+      var item = items[i] || {};
+      if (item.type === 'user') {
+        appendUserMsg(String(item.content || ''), item.time || '');
+      } else if (item.type === 'assistant') {
+        appendFinishedAIMsg(String(item.content || ''), item.time || '');
+      } else if (item.type === 'tool_start' && window.Tools && Tools.showToolStart) {
+        Tools.showToolStart(
+          Number(item.step || AppState.fallbackToolStep),
+          String(item.tool || 'tool'),
+          JSON.stringify(item.arguments || {})
+        );
+      } else if (item.type === 'tool_result' && window.Tools && Tools.showToolResult) {
+        Tools.showToolResult(
+          Boolean(item.ok),
+          String(item.output || ''),
+          String(item.tool || 'tool')
+        );
+      }
+    }
+    finishCurrentAI();
+    scrollToEnd();
   }
 
   // ── 内联确认卡片 ─────────────────────────────────
@@ -275,6 +318,9 @@ var Messages = (function() {
     appendAIText: appendAIText,
     finishAIMsg: finishAIMsg,
     finishCurrentAI: finishCurrentAI,
+    appendFinishedAIMsg: appendFinishedAIMsg,
+    clear: clear,
+    renderSessionMessages: renderSessionMessages,
     showConfirmCard: showConfirmCard,
     showStartup: showStartup,
     scrollToEnd: scrollToEnd,

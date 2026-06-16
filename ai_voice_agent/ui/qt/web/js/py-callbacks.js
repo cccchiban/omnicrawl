@@ -35,6 +35,16 @@ window.pyCallbacks = {
   showModelListError: function(message) {
     if (window.ModelSelector) window.ModelSelector.showError(message);
   },
+  updateSessionList: function(sessions) {
+    if (window.SessionSidebar) window.SessionSidebar.updateSessionList(sessions);
+  },
+  renderSessionMessages: Messages.renderSessionMessages,
+  setCurrentSession: function(sessionId, title) {
+    if (window.SessionSidebar) window.SessionSidebar.setCurrentSession(sessionId, title);
+  },
+  showSessionListError: function(message) {
+    if (window.SessionSidebar) window.SessionSidebar.showError(message);
+  },
 
   // ── 输入 ──────────────────────────────────────
   clearInput:         Input.clear,

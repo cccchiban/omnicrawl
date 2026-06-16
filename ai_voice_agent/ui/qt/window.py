@@ -100,6 +100,11 @@ class ChatWindow(QWidget):
         self._bridge.model_changed.connect(self._on_model_changed)
         self._bridge.reasoning_effort_changed.connect(self._on_reasoning_effort_changed)
         self._bridge.model_list_refresh_requested.connect(self._on_model_list_refresh_requested)
+        self._bridge.sessions_refresh_requested.connect(self._on_sessions_refresh_requested)
+        self._bridge.new_session_requested.connect(self._on_new_session_requested)
+        self._bridge.session_resume_requested.connect(self._on_session_resume_requested)
+        self._bridge.session_rename_requested.connect(self._on_session_rename_requested)
+        self._bridge.session_compact_requested.connect(self._on_session_compact_requested)
         self._frontend_signals_connected = True
 
     def _on_model_changed(self, model_id: str) -> None:
@@ -118,6 +123,31 @@ class ChatWindow(QWidget):
         """用户在前端切换推理强度。"""
         if self._input_queue is not None:
             self._input_queue.put(f"/reasoning {effort}")
+
+    def _on_sessions_refresh_requested(self) -> None:
+        """用户请求刷新会话列表。"""
+        if self._input_queue is not None:
+            self._input_queue.put("__REFRESH_SESSIONS__")
+
+    def _on_new_session_requested(self) -> None:
+        """用户点击新对话。"""
+        if self._input_queue is not None:
+            self._input_queue.put("/new")
+
+    def _on_session_resume_requested(self, session_id: str) -> None:
+        """用户点击某个会话条目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__RESUME_SESSION__ {session_id}")
+
+    def _on_session_rename_requested(self, title: str) -> None:
+        """用户提交当前会话标题。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__RENAME_SESSION__ {title}")
+
+    def _on_session_compact_requested(self) -> None:
+        """用户点击手动压缩。"""
+        if self._input_queue is not None:
+            self._input_queue.put("/compact")
 
     # ── 输入 / 确认接口 ─────────────────────────────────────
 
@@ -227,6 +257,18 @@ class ChatWindow(QWidget):
 
     def show_model_list_error(self, message: str) -> None:
         self._bridge.call_js("showModelListError", message)
+
+    def update_session_list(self, sessions: list[dict[str, str | int | bool]]) -> None:
+        self._bridge.call_js("updateSessionList", sessions)
+
+    def render_session_messages(self, messages: list[dict[str, object]]) -> None:
+        self._bridge.call_js("renderSessionMessages", messages)
+
+    def set_current_session(self, session_id: str, title: str) -> None:
+        self._bridge.call_js("setCurrentSession", session_id, title)
+
+    def show_session_list_error(self, message: str) -> None:
+        self._bridge.call_js("showSessionListError", message)
 
     # ── 窗口关闭 ─────────────────────────────────────────────
 

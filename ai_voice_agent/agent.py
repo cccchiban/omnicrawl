@@ -36,6 +36,7 @@ from .session import (
     COMPACT_SUMMARY_PREFIX,
     PromptHistoryEntry,
     SessionIndexEntry,
+    SessionEvent,
     SessionState,
     SessionStore,
     SessionStoreError,
@@ -625,6 +626,60 @@ class LocalToolAgent:
             return store.list_sessions(workspace_root=self.workspace_root, limit=limit)
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc
+
+    def load_session_events(self, session_id: str) -> list[SessionEvent]:
+        """读取指定会话的原始事件流，供 Qt 恢复时重新渲染消息列表。
+
+        `_history` 只保留模型上下文窗口；Qt 需要完整 UI 转录，因此这里通过
+        明确方法暴露只读事件，而不是让 UI 层直接访问 `.agent_sessions/` 文件。
+        """
+
+        store = self._require_session_store()
+        try:
+            state = store.load_session(session_id)
+            if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
+                raise AgentError(f"不能读取其他工作区的会话：{state.workspace_root}")
+            return store.read_session_events(session_id)
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def rename_current_session(self, title: str) -> SessionState:
+        """重命名当前会话，并同步更新内存中的 `SessionState`。"""
+
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise AgentError("会话系统未启用。")
+        store = self._require_session_store()
+        try:
+            renamed_state = store.rename_session(state.session_id, title)
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+        self._session_state = SessionState(
+            session_id=renamed_state.session_id,
+            title=renamed_state.title,
+            workspace_root=renamed_state.workspace_root,
+            path=renamed_state.path,
+            created_at=renamed_state.created_at,
+            updated_at=renamed_state.updated_at,
+            messages=self._history,
+            last_event_type=renamed_state.last_event_type,
+            event_count=renamed_state.event_count,
+        )
+        return self._session_state
+
+    def export_current_session_markdown(self, markdown_text: str) -> Path:
+        """导出当前会话 Markdown 到 `.agent_sessions/exports/`。"""
+
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise AgentError("会话系统未启用。")
+        store = self._require_session_store()
+        try:
+            path = store.export_session_markdown(state.session_id, markdown_text)
+            self._session_state = store.load_session(state.session_id)
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+        return path
 
     def search_prompt_history(
         self,

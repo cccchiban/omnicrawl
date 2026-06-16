@@ -117,15 +117,26 @@ document.addEventListener('DOMContentLoaded', () => {
       exportChat();
     });
   }
+  const navExport = document.getElementById('nav-export');
+  if (navExport) {
+    navExport.addEventListener('click', (event) => {
+      event.preventDefault();
+      exportChat();
+    });
+  }
 
   // 5. QWebChannel 连接成功前禁用输入，避免消息发送到尚未就绪的 bridge。
   Input.setBridgeReady(false);
   window.addEventListener('bridge-ready', () => {
     Input.setBridgeReady(true);
+    if (window.SessionSidebar) {
+      SessionSidebar.requestRefresh();
+    }
   });
 
   // 6. 模型选择器 — 下拉菜单交互
   initModelSelector();
+  initSessionSidebar();
 
   console.log('[app] AI Voice Agent 前端已就绪');
 });
@@ -165,6 +176,119 @@ function initSidebarToggle() {
       // 本地存储不可用时只影响偏好持久化，不影响本次折叠交互。
     }
   }
+}
+
+function initSessionSidebar() {
+  const listEl = document.getElementById('session-list');
+  const newBtn = document.getElementById('nav-new-chat');
+  const refreshBtn = document.getElementById('session-refresh-btn');
+  const renameBtn = document.getElementById('nav-rename');
+  const compactBtn = document.getElementById('nav-compact');
+  let currentSessionId = '';
+  let currentSessionTitle = '新会话';
+
+  if (!listEl) return;
+
+  function requestRefresh() {
+    if (window.bridge && window.bridge.onRequestSessions) {
+      window.bridge.onRequestSessions();
+    }
+  }
+
+  function renderEmpty(text) {
+    listEl.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'session-empty';
+    empty.textContent = text;
+    listEl.appendChild(empty);
+  }
+
+  function updateSessionList(sessions) {
+    listEl.innerHTML = '';
+    if (!Array.isArray(sessions) || sessions.length === 0) {
+      renderEmpty('暂无会话');
+      return;
+    }
+    sessions.forEach((session) => {
+      const item = document.createElement('button');
+      item.className = 'session-item' + (session.current ? ' active' : '');
+      item.dataset.sessionId = session.id || '';
+      item.title = session.title || session.id || '未命名会话';
+      item.innerHTML = `
+        <span class="session-title"></span>
+        <span class="session-meta"></span>
+      `;
+      const titleEl = item.querySelector('.session-title');
+      const metaEl = item.querySelector('.session-meta');
+      if (titleEl) titleEl.textContent = session.title || '未命名会话';
+      if (metaEl) {
+        metaEl.textContent = `${session.updatedAt || ''} · ${session.messageCount || 0} 条`;
+      }
+      item.addEventListener('click', () => {
+        if (window.bridge && window.bridge.onResumeSession && item.dataset.sessionId) {
+          window.bridge.onResumeSession(item.dataset.sessionId);
+        }
+      });
+      listEl.appendChild(item);
+    });
+  }
+
+  function setCurrentSession(sessionId, title) {
+    currentSessionId = sessionId || '';
+    currentSessionTitle = title || '未命名会话';
+    listEl.querySelectorAll('.session-item').forEach((item) => {
+      item.classList.toggle('active', item.dataset.sessionId === currentSessionId);
+    });
+  }
+
+  function showError(message) {
+    renderEmpty(message || '会话列表读取失败');
+    if (window.Notice && Notice.show) {
+      Notice.show(message || '会话列表读取失败');
+    }
+  }
+
+  if (newBtn) {
+    newBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      if (window.bridge && window.bridge.onNewSession) {
+        window.bridge.onNewSession();
+      }
+    });
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      requestRefresh();
+    });
+  }
+
+  if (renameBtn) {
+    renameBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      const nextTitle = window.prompt('当前会话标题', currentSessionTitle);
+      if (nextTitle && window.bridge && window.bridge.onRenameSession) {
+        window.bridge.onRenameSession(nextTitle);
+      }
+    });
+  }
+
+  if (compactBtn) {
+    compactBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      if (window.bridge && window.bridge.onCompactSession) {
+        window.bridge.onCompactSession();
+      }
+    });
+  }
+
+  window.SessionSidebar = {
+    requestRefresh: requestRefresh,
+    updateSessionList: updateSessionList,
+    setCurrentSession: setCurrentSession,
+    showError: showError,
+  };
 }
 
 /**

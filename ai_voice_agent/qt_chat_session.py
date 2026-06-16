@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 from .agent import AgentError, LocalToolAgent
-from .ui.qt.export import save_chat_export
+from .session import COMPACT_SUMMARY_PREFIX, SessionEvent, SessionIndexEntry
 from .slash_commands import (
     format_memory_clean_result,
     format_mcp_status,
@@ -55,6 +55,77 @@ class _QtStatusLine:
         pass
 
 
+def _session_entry_to_ui(entry: SessionIndexEntry, current_session_id: str) -> dict[str, object]:
+    """把会话索引转换为 Qt Web 前端使用的轻量 JSON。
+
+    Qt 前端只需要渲染列表和高亮当前会话，不直接读取 `index.json`。
+    后端在这里裁剪字段，可以避免把本地完整路径等不必要细节暴露给 UI。
+    """
+
+    return {
+        "id": entry.session_id,
+        "title": entry.title or "未命名会话",
+        "updatedAt": entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M"),
+        "messageCount": entry.message_count,
+        "current": entry.session_id == current_session_id,
+    }
+
+
+def _session_events_to_ui(events: list[SessionEvent]) -> list[dict[str, object]]:
+    """把 JSONL 事件流转换为 Qt 可回放的消息列表。"""
+
+    messages: list[dict[str, object]] = []
+    tool_step = 1
+    for event in events:
+        payload = event.payload
+        created_at = event.created_at.astimezone().strftime("%H:%M")
+        if event.type == "user_message":
+            content = payload.get("content", "")
+            if isinstance(content, str) and content.strip():
+                messages.append({"type": "user", "content": content, "time": created_at})
+        elif event.type == "assistant_message":
+            content = payload.get("content", "")
+            if isinstance(content, str) and content.strip():
+                messages.append({"type": "assistant", "content": content, "time": created_at})
+        elif event.type == "compact_summary":
+            content = payload.get("content", "")
+            if isinstance(content, str) and content.strip():
+                messages.append(
+                    {
+                        "type": "assistant",
+                        "content": f"{COMPACT_SUMMARY_PREFIX}{content}",
+                        "time": created_at,
+                    }
+                )
+        elif event.type == "tool_call_requested":
+            tool = payload.get("tool", "")
+            arguments = payload.get("arguments", {})
+            if isinstance(tool, str) and tool.strip():
+                messages.append(
+                    {
+                        "type": "tool_start",
+                        "step": tool_step,
+                        "tool": tool,
+                        "arguments": arguments if isinstance(arguments, dict) else {},
+                    }
+                )
+                tool_step += 1
+        elif event.type == "tool_result":
+            tool = payload.get("tool", "")
+            output = payload.get("output", "")
+            ok = payload.get("ok", False)
+            if isinstance(tool, str) and isinstance(output, str):
+                messages.append(
+                    {
+                        "type": "tool_result",
+                        "tool": tool,
+                        "ok": bool(ok),
+                        "output": output,
+                    }
+                )
+    return messages
+
+
 def run_qt_chat(
     agent: LocalToolAgent,
     text_to_speech: TextToSpeech | None,
@@ -96,6 +167,109 @@ def run_qt_chat(
 
     pending_user_text: str | None = None
 
+    def refresh_session_list() -> None:
+        """刷新 Qt 侧边栏会话列表和当前会话标题。"""
+
+        try:
+            entries = agent.list_sessions(limit=20)
+        except AgentError as exc:
+            ui.show_session_list_error(str(exc))
+            return
+
+        current_id = agent.current_session_id
+        ui.update_session_list([_session_entry_to_ui(entry, current_id) for entry in entries])
+        current_entry = next((entry for entry in entries if entry.session_id == current_id), None)
+        if current_entry is not None:
+            ui.set_current_session(current_entry.session_id, current_entry.title or "未命名会话")
+
+    def render_session(session_id: str) -> None:
+        """从 JSONL 事件流重建 Qt 消息区。"""
+
+        events = agent.load_session_events(session_id)
+        ui.render_session_messages(_session_events_to_ui(events))
+
+    def resume_session_for_qt(session_id: str) -> None:
+        """恢复会话并同步 Qt 消息列表、标题和侧边栏高亮。"""
+
+        state = agent.resume_session(session_id)
+        render_session(state.session_id)
+        ui.set_current_session(state.session_id, state.title or "未命名会话")
+        refresh_session_list()
+        ui.notice(f"已恢复会话：{state.title or state.session_id}")
+
+    def handle_session_control_text(user_text: str) -> bool:
+        """处理 Qt 会话控制指令，避免它们进入模型请求。"""
+
+        text = user_text.strip()
+        normalized = text.lower()
+        if text == "__REFRESH_SESSIONS__":
+            refresh_session_list()
+            return True
+
+        if text.startswith("__RESUME_SESSION__ "):
+            session_id = text.split(None, 1)[1].strip()
+            try:
+                resume_session_for_qt(session_id)
+            except AgentError as exc:
+                ui.show_session_list_error(str(exc))
+            return True
+
+        if text.startswith("__RENAME_SESSION__ "):
+            title = text.split(None, 1)[1].strip()
+            try:
+                state = agent.rename_current_session(title)
+            except AgentError as exc:
+                ui.notice(f"会话重命名失败：{exc}")
+                return True
+            ui.set_current_session(state.session_id, state.title or "未命名会话")
+            refresh_session_list()
+            ui.notice(f"当前会话已重命名为：{state.title}")
+            return True
+
+        if normalized == NEW_CHAT_COMMAND:
+            agent.reset_conversation()
+            ui.render_session_messages([])
+            refresh_session_list()
+            ui.notice("已开启新对话。")
+            return True
+
+        if normalized == "/resume" or normalized.startswith("/resume "):
+            parts = text.split(None, 1)
+            if len(parts) == 1 or not parts[1].strip():
+                ui.notice("用法：/resume <session_id>。可先用 /sessions 查看最近会话。")
+                return True
+            try:
+                resume_session_for_qt(parts[1].strip())
+            except AgentError as exc:
+                ui.notice(f"会话恢复失败：{exc}")
+            return True
+
+        if normalized == "/rename" or normalized.startswith("/rename "):
+            message = handle_session_command(agent, text)
+            if message is None:
+                return False
+            refresh_session_list()
+            ui.notice(message)
+            return True
+
+        if normalized == "/compact":
+            message = handle_session_command(agent, text)
+            if message is None:
+                return False
+            refresh_session_list()
+            ui.notice(message)
+            return True
+
+        if normalized == "/sessions":
+            refresh_session_list()
+            message = handle_session_command(agent, text)
+            if message is not None:
+                ui.write(message)
+                ui.flush_markdown(None)
+            return True
+
+        return False
+
     def handle_model_control_text(user_text: str) -> bool:
         """处理 Qt 前端产生的模型控制指令，避免它们进入聊天请求。"""
 
@@ -132,13 +306,15 @@ def run_qt_chat(
         """保存前端导出的 Markdown 对话，并给用户明确反馈。"""
 
         try:
-            path = save_chat_export(markdown_text, workspace_root=agent.workspace_root)
-        except OSError as exc:
+            path = agent.export_current_session_markdown(markdown_text)
+        except AgentError as exc:
             ui.notice(f"导出失败：{exc}")
             return
-        ui.notice(f"对话已导出：{path}")
+        refresh_session_list()
+        ui.notice(f"当前会话已导出：{path}")
 
     ui.export_requested.connect(handle_export_request)
+    refresh_session_list()
 
     while True:
         if stop_requested():
@@ -173,9 +349,7 @@ def run_qt_chat(
             ui.notice("对话结束。")
             break
 
-        if user_text.strip() == NEW_CHAT_COMMAND:
-            agent.reset_conversation()
-            ui.notice("已开启新对话。")
+        if handle_session_control_text(user_text):
             continue
 
         if user_text.strip() == "/skills":
@@ -197,6 +371,7 @@ def run_qt_chat(
         if session_message is not None:
             ui.write(session_message)
             ui.flush_markdown(None)
+            refresh_session_list()
             continue
 
         if handle_model_control_text(user_text):
@@ -274,6 +449,7 @@ def run_qt_chat(
             )
             speech_player.flush()
             ui.newline()
+            refresh_session_list()
 
             # 朗读完成后的处理
             if text_to_speech is not None:

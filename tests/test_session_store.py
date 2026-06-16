@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ai_voice_agent.session import SessionStore, SessionStoreError
@@ -133,6 +134,53 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(len(all_lines), 4)
         self.assertEqual([entry.display for entry in results], ["检查 Qt 会话列表", "帮我实现会话历史"])
         self.assertTrue(all(entry.project == str(workspace.resolve()) for entry in results))
+
+    def test_rename_session_updates_index_and_writes_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+
+            renamed = store.rename_session(state.session_id, "  Qt 会话列表  ")
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            sessions = store.list_sessions(workspace_root=workspace)
+
+        self.assertEqual(renamed.title, "Qt 会话列表")
+        self.assertEqual(sessions[0].title, "Qt 会话列表")
+        self.assertEqual(events[-1]["type"], "session_renamed")
+        self.assertEqual(events[-1]["payload"]["title"], "Qt 会话列表")
+
+    def test_export_session_markdown_writes_exports_file_and_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+
+            path = store.export_session_markdown(
+                state.session_id,
+                "# AI Voice Agent 对话记录\n",
+                now=datetime(2026, 6, 16, 9, 30, 5, tzinfo=timezone.utc),
+            )
+            saved_text = path.read_text(encoding="utf-8")
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(path.parent.name, "exports")
+        self.assertEqual(path.parent.parent.name, ".agent_sessions")
+        self.assertIn(state.session_id, path.name)
+        self.assertEqual(saved_text, "# AI Voice Agent 对话记录\n")
+        self.assertEqual(events[-1]["type"], "session_exported")
+        self.assertEqual(events[-1]["payload"]["format"], "markdown")
+        self.assertTrue(events[-1]["payload"]["path"].startswith("exports/"))
 
 
 if __name__ == "__main__":
