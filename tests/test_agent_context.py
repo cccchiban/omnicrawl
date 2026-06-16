@@ -451,6 +451,32 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIsNone(agent._pending_user_text)
         self.assertEqual(agent._active_skills, [])
 
+    def test_start_or_resume_session_uses_configured_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            store.append_event(state.session_id, "user_message", {"content": "启动前问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "启动前回答"})
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6, resume_session_id=state.session_id)
+            agent._session_store = store
+            agent._session_state = None
+            agent._history = []
+            agent._pending_user_text = "旧的未完成任务"
+            agent._active_skills = ["placeholder"]
+
+            restored = LocalToolAgent._start_or_resume_session(agent)
+            sessions = store.list_sessions(workspace_root=workspace)
+
+        self.assertEqual(restored.session_id, state.session_id)
+        self.assertEqual(agent._history, restored.messages)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(agent._pending_user_text, None)
+        self.assertEqual(agent._active_skills, [])
+
     def test_agent_reads_events_renames_and_exports_current_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -596,6 +622,47 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(agent._history[-1]["content"], "第三轮回答")
         self.assertEqual(restored.messages[0], agent._history[0])
         self.assertEqual(restored.messages[-2]["content"], "第三轮问题")
+
+    def test_run_stream_records_cancelled_turn_separately_from_interruption(self) -> None:
+        class UserCancelled(RuntimeError):
+            pass
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {}
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            agent._session_store = store
+            agent._session_state = state
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                raise UserCancelled("用户取消")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            with self.assertRaises(UserCancelled):
+                LocalToolAgent.run_stream(agent, "取消这一轮", lambda _delta: None)
+
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertEqual(events[-1]["type"], "turn_cancelled")
+        self.assertEqual(events[-1]["payload"]["user_text"], "取消这一轮")
 
     def test_compact_command_writes_summary_and_is_listed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

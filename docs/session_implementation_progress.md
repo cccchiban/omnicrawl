@@ -6,16 +6,16 @@
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| 当前阶段 | 已完成 | 第一阶段：`SessionStore` + JSONL 追加写 + `session_id`；第二阶段基础 `/sessions`、`/resume`、第三阶段提示历史基础能力、第四阶段确定性会话压缩、第五阶段 Qt 会话列表与正式导出基础闭环、第六阶段大工具输出 artifact、基础脱敏与手动归档已同步落地。 |
+| 当前阶段 | 已完成 | 第一阶段：`SessionStore` + JSONL 追加写 + `session_id`；第二阶段基础 `/sessions`、`/resume` 与启动参数 `--resume`；第三阶段提示历史基础能力、第四阶段确定性会话压缩、第五阶段 Qt 会话列表与正式导出基础闭环、第六阶段大工具输出 artifact、基础脱敏与手动归档已同步落地。 |
 | 开始时间 | 2026-06-16 | 按会话设计文档从最小可用闭环开始实现。 |
-| 当前目标 | 已完成 | 会话能自动创建、记录转录、列出最近会话、记录提示历史，通过 `/resume` 恢复 `_history`，在长会话中通过 `compact_summary` 保留早期上下文摘要，在 Qt GUI 中完成会话列表、恢复、重命名、压缩和正式导出，并对大工具输出做 artifact 分级存储、基础敏感信息脱敏和手动归档。 |
+| 当前目标 | 已完成 | 会话能自动创建、记录转录、列出最近会话、记录提示历史，通过 `/resume` 或启动参数 `--resume <session_id>` 恢复 `_history`，在长会话中通过 `compact_summary` 保留早期上下文摘要，在 Qt GUI 中完成会话列表、恢复、重命名、压缩和正式导出，并对大工具输出做 artifact 分级存储、基础敏感信息脱敏和手动归档；正常退出写入 `session_closed`，用户取消生成写入 `turn_cancelled`。 |
 
 ## 阶段清单
 
 | 阶段 | 内容 | 状态 | 验收标准 |
 |------|------|------|----------|
 | 第一期 | `SessionStore`、`.agent_sessions/index.json`、`sessions/<id>.jsonl`、自动 `session_id` | 已完成 | 每轮对话生成可读 JSONL，索引随事件更新。 |
-| 第二期 | `/sessions`、`/resume <session_id>`、恢复 `_history` | 已完成 | 可以列出当前项目会话，恢复后继续追问能看到旧上下文。 |
+| 第二期 | `/sessions`、`/resume <session_id>`、启动参数 `--resume <session_id>`、恢复 `_history` | 已完成 | 可以列出当前项目会话，运行中或启动时恢复指定会话，恢复后继续追问能看到旧上下文。 |
 | 第三期 | 提示历史 `history.jsonl` | 已完成 | 用户输入历史可按当前项目复用，不自动进入模型上下文。 |
 | 第四期 | `compact_summary` 长会话压缩 | 已完成 | 超过历史上限时生成摘要并保留任务主线。 |
 | 第五期 | Qt 会话列表与正式导出 | 已完成 | GUI 可恢复、重命名、压缩、导出当前会话。 |
@@ -42,6 +42,8 @@
 | 2026-06-16 | 接入基础脱敏 | 会话事件写入前递归脱敏常见 `api_key`、`token`、`password`、`secret`、`authorization`、`cookie` 等字段，并对文本中的常见密钥赋值、Bearer Token 和 `sk/ak/ah-` 形态密钥做基础替换。 |
 | 2026-06-16 | 恢复工具事件摘要 | `/resume` 恢复时把 `tool_call_requested`、`tool_call_denied` 和 `tool_result` 转为 assistant 摘要消息进入 `_history`，避免直接回放不完整 `role=tool` 链。 |
 | 2026-06-16 | 接入手动会话归档 | `SessionStore` 支持 `archive/` 转录目录和 `archived_at` 索引字段；新增 `/archive`、`/archives`，恢复归档会话时自动移回 `sessions/` 并继续写入。 |
+| 2026-06-17 | 补齐启动恢复入口 | 新增 `main.py --resume <session_id>`，`AgentConfig.resume_session_id` 在 Agent 初始化时恢复指定会话；Windows TUI 弹出 PowerShell 子窗口时会转发该参数。 |
+| 2026-06-17 | 补齐会话生命周期事件 | `LocalToolAgent.close()` 正常退出时写入 `session_closed`；用户取消或 Ctrl+C 中断当前生成时记录 `turn_cancelled`，真实异常仍记录 `session_interrupted`。 |
 
 ## 已知限制
 
@@ -53,3 +55,4 @@
 | 基础脱敏不是安全边界 | 已覆盖常见密钥字段和部分文本模式，但无法保证识别所有秘密、业务口令或私有数据。 | `.agent_sessions/` 仍默认由 `.gitignore` 忽略；后续可增加可配置规则、导出前扫描和用户确认。 |
 | TUI 历史种子仅取当前工作区提示 | 不同工作区之间不会共享上箭头历史。 | 符合当前项目隔离要求；后续如需跨项目检索再扩展。 |
 | 会话归档为手动触发 | 不会自动清理或迁移旧会话，避免用户看不到仍在使用的会话。 | 后续如需自动归档，可基于 `updated_at`、消息数量和用户配置增加保守策略。 |
+| 启动恢复只支持精确 session_id | `--resume` 需要用户提供完整会话 ID，暂不支持启动时交互选择最近会话。 | 可后续增加 `--resume latest` 或启动会话选择器。 |

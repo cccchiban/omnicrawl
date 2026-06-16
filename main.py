@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import threading
 from pathlib import Path
 
@@ -30,6 +31,19 @@ from ai_voice_agent.ui import UIStartupError, create_ui
 from ai_voice_agent.windows_launcher import configure_console_encoding, launch_in_powershell_window
 
 
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """解析启动参数；当前只暴露会话恢复入口。"""
+
+    parser = argparse.ArgumentParser(description="AI 语音 Agent")
+    parser.add_argument(
+        "--resume",
+        metavar="SESSION_ID",
+        default="",
+        help="启动时恢复指定会话 ID",
+    )
+    return parser.parse_args(argv)
+
+
 def _speech_to_text_status_label(frontend_type: str, voice_config: VoiceConfig) -> str:
     """返回启动面板中的语音输入状态。
 
@@ -49,10 +63,11 @@ def _should_initialize_speech_to_text(frontend_type: str, voice_config: VoiceCon
     return frontend_type != "qt" and voice_config.speech_to_text_enabled
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """命令行语音 AI Agent 入口。"""
 
     configure_console_encoding()
+    args = _parse_args(argv)
     app_root = Path(__file__).resolve().parent
     try:
         config = load_llm_config()
@@ -135,6 +150,7 @@ def main() -> None:
                 workspace_detection_summary=project_context.detection_summary,
                 approval_mode=approval_mode,
                 temp_workspace=temp_workspace_config,
+                resume_session_id=args.resume,
             )
         )
     except AgentError as exc:

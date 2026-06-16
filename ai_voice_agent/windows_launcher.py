@@ -24,7 +24,7 @@ def _running_in_powershell_child() -> bool:
     return os.getenv(POWERSHELL_CHILD_ENV) == "1"
 
 
-def launch_in_powershell_window(script_path: Path) -> bool:
+def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None) -> bool:
     """从 IDE 或测试窗口启动时，弹出独立 PowerShell 运行本脚本。"""
 
     if os.name != "nt" or _running_in_powershell_child():
@@ -32,11 +32,13 @@ def launch_in_powershell_window(script_path: Path) -> bool:
 
     script_path = script_path.resolve()
     launch_cwd = Path.cwd().resolve()
+    args = list(sys.argv[1:] if argv is None else argv)
+    script_args = "".join(f" {_powershell_single_quoted(argument)}" for argument in args)
     command = (
         f"$env:{POWERSHELL_CHILD_ENV}='1'; "
         f"$env:{LAUNCH_CWD_ENV}={_powershell_single_quoted(str(launch_cwd))}; "
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
-        f"& {_powershell_single_quoted(sys.executable)} {_powershell_single_quoted(str(script_path))}; "
+        f"& {_powershell_single_quoted(sys.executable)} {_powershell_single_quoted(str(script_path))}{script_args}; "
         "Write-Host ''; "
         "Read-Host '对话已结束，按 Enter 关闭窗口'"
     )

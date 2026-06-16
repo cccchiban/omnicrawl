@@ -446,6 +446,7 @@ class AgentConfig:
     memory_directory: str = "memory"
     session_enabled: bool = True
     session_directory: str = ".agent_sessions"
+    resume_session_id: str = ""
     mcp_config: MCPConfig | None = None
     approval_mode: str = field(default_factory=load_approval_mode)
     workspace_detection_summary: str = ""
@@ -481,6 +482,11 @@ class AgentConfig:
             raise AgentError("memory_directory 必须是非空字符串。")
         if not isinstance(self.session_directory, str) or not self.session_directory.strip():
             raise AgentError("session_directory 必须是非空字符串。")
+        if not isinstance(self.resume_session_id, str):
+            raise AgentError("resume_session_id 必须是字符串。")
+        self.resume_session_id = self.resume_session_id.strip()
+        if self.resume_session_id and not self.session_enabled:
+            raise AgentError("指定恢复会话时必须启用会话系统。")
         if not isinstance(self.temp_workspace, AgentTempWorkspaceConfig):
             raise AgentError("temp_workspace 必须是 AgentTempWorkspaceConfig。")
         if not isinstance(self.workspace_detection_summary, str):
@@ -541,6 +547,8 @@ class LocalToolAgent:
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
         self._pending_user_text: str | None = None
+        self._active_skills: list[SkillMatchResult] = []
+        self._closed = False
         try:
             self._temp_workspace = AgentTempWorkspace(
                 self.workspace_root,
@@ -551,7 +559,7 @@ class LocalToolAgent:
         except AgentTempWorkspaceError as exc:
             raise AgentError(str(exc)) from exc
         self._session_store = self._create_session_store() if self.config.session_enabled else None
-        self._session_state = self._start_session() if self._session_store is not None else None
+        self._session_state = self._start_or_resume_session() if self._session_store is not None else None
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._workspace_tools = WorkspaceTools(
             self.workspace_root,
@@ -559,7 +567,6 @@ class LocalToolAgent:
             extra_protection_message=self._workspace_extra_protection_message,
         )
         self._skill_manager: SkillManager | None = None
-        self._active_skills: list[SkillMatchResult] = []
 
         if not self.config.llm.api_key.strip():
             raise AgentError("缺少 API Key，请在 config.json 的 llm.api_key 中配置，或设置 OPENAI_API_KEY。")
@@ -783,14 +790,41 @@ class LocalToolAgent:
         return state
 
     def close(self) -> None:
-        """关闭 Agent 持有的外部资源，当前主要是 MCP stdio 子进程。"""
+        """关闭 Agent 持有的外部资源，并记录正常会话关闭事件。"""
+
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        close_errors: list[Exception] = []
+        try:
+            self._append_session_closed_event()
+        except Exception as exc:
+            close_errors.append(exc)
 
         manager = getattr(self, "_mcp_manager", None)
         if manager is not None:
-            manager.close()
+            try:
+                manager.close()
+            except Exception as exc:
+                close_errors.append(exc)
         temp_workspace = getattr(self, "_temp_workspace", None)
         if temp_workspace is not None:
-            temp_workspace.close()
+            try:
+                temp_workspace.close()
+            except Exception as exc:
+                close_errors.append(exc)
+        if close_errors:
+            raise close_errors[0]
+
+    def _append_session_closed_event(self) -> None:
+        """正常退出时写 `session_closed`，保留中断事件作为恢复线索。"""
+
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            return
+        if state.last_event_type in {"session_closed", "session_interrupted"}:
+            return
+        self._append_session_event("session_closed", {})
 
     @property
     def approval_mode(self) -> str:
@@ -880,6 +914,14 @@ class LocalToolAgent:
             return store.start_session(self.workspace_root)
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc
+
+    def _start_or_resume_session(self) -> SessionState:
+        """按启动参数恢复指定会话；未指定时创建新会话。"""
+
+        resume_session_id = self.config.resume_session_id.strip()
+        if not resume_session_id:
+            return self._start_session()
+        return self.resume_session(resume_session_id)
 
     def _create_mcp_manager(self) -> MCPClientManager:
         """加载并初始化 MCP Client Manager。
@@ -1009,9 +1051,19 @@ class LocalToolAgent:
                     working_messages.append(self._tool_result_message(tool_call, tool_result))
                     step += 1
                 status("")  # 通知调用方重新启动等待动画
-        except Exception as exc:
+        except KeyboardInterrupt as exc:
             self._append_session_event(
-                "session_interrupted",
+                "turn_cancelled",
+                {
+                    "user_text": text,
+                    "reason": str(exc),
+                },
+            )
+            raise
+        except Exception as exc:
+            event_type = "turn_cancelled" if self._is_turn_cancel_exception(exc) else "session_interrupted"
+            self._append_session_event(
+                event_type,
                 {
                     "user_text": text,
                     "reason": str(exc),
@@ -1060,6 +1112,13 @@ class LocalToolAgent:
     def _is_continue_last_task_request(text: str) -> bool:
         normalized = re.sub(r"[\s，。.!！?？]+", "", text.strip()).lower()
         return normalized in _CONTINUE_LAST_TASK_TEXTS
+
+    @staticmethod
+    def _is_turn_cancel_exception(exc: Exception) -> bool:
+        """识别 UI 主动取消异常，避免把用户停止生成误记为异常中断。"""
+
+        name = exc.__class__.__name__.casefold()
+        return "cancel" in name
 
     def _project_instructions_messages(self) -> list[dict[str, str]]:
         """构造每次请求最前方的项目规范上下文消息。
