@@ -17,6 +17,7 @@ from ai_voice_agent.agent import (
     ToolResult,
 )
 from ai_voice_agent.session import SessionStore
+from ai_voice_agent.slash_commands import build_slash_commands, handle_session_command
 from ai_voice_agent.temp_workspace import AgentTempWorkspaceConfig
 
 
@@ -375,6 +376,114 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(agent._history, restored.messages)
         self.assertIsNone(agent._pending_user_text)
         self.assertEqual(agent._active_skills, [])
+
+    def test_run_stream_compacts_long_history_and_persists_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=2)
+            agent._history = [
+                {"role": "user", "content": "第一轮问题"},
+                {"role": "assistant", "content": "第一轮回答"},
+                {"role": "user", "content": "第二轮问题"},
+                {"role": "assistant", "content": "第二轮回答"},
+            ]
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {}
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            for message in agent._history:
+                event_type = "user_message" if message["role"] == "user" else "assistant_message"
+                store.append_event(state.session_id, event_type, {"content": message["content"]})
+            agent._session_store = store
+            agent._session_state = store.load_session(state.session_id)
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                return AgentModelReply(message={"role": "assistant", "content": "第三轮回答"}, content="第三轮回答")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            LocalToolAgent.run_stream(agent, "第三轮问题", lambda _delta: None)
+
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            restored = store.load_session(state.session_id)
+
+        self.assertIn("compact_summary", [event["type"] for event in events])
+        self.assertTrue(agent._history[0]["content"].startswith("会话压缩摘要："))
+        self.assertEqual(agent._history[-2]["content"], "第三轮问题")
+        self.assertEqual(agent._history[-1]["content"], "第三轮回答")
+        self.assertEqual(restored.messages[0], agent._history[0])
+        self.assertEqual(restored.messages[-2]["content"], "第三轮问题")
+
+    def test_compact_command_writes_summary_and_is_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._history = [
+                {"role": "user", "content": "第一轮问题"},
+                {"role": "assistant", "content": "第一轮回答"},
+                {"role": "user", "content": "第二轮问题"},
+                {"role": "assistant", "content": "第二轮回答"},
+            ]
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            for message in agent._history:
+                event_type = "user_message" if message["role"] == "user" else "assistant_message"
+                store.append_event(state.session_id, event_type, {"content": message["content"]})
+            agent._session_store = store
+            agent._session_state = store.load_session(state.session_id)
+            agent._skill_manager = None
+
+            message = handle_session_command(agent, "/compact")
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        self.assertIsNotNone(message)
+        self.assertIn("已压缩当前会话", message or "")
+        self.assertIn("/compact", build_slash_commands(agent))
+        self.assertEqual(events[-1]["type"], "compact_summary")
+        self.assertTrue(agent._history[0]["content"].startswith("会话压缩摘要："))
+
+    def test_resume_session_keeps_compact_summary_and_complete_recent_turns(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(max_history_turns=2)
+        messages = [
+            {"role": "assistant", "content": "会话压缩摘要：\n早期摘要"},
+            {"role": "user", "content": "第二轮问题"},
+            {"role": "assistant", "content": "第二轮回答"},
+            {"role": "user", "content": "第三轮问题"},
+            {"role": "assistant", "content": "第三轮回答"},
+        ]
+
+        restored = LocalToolAgent._restore_history_window(agent, messages)
+
+        self.assertEqual(
+            restored,
+            [
+                {"role": "assistant", "content": "会话压缩摘要：\n早期摘要"},
+                {"role": "user", "content": "第二轮问题"},
+                {"role": "assistant", "content": "第二轮回答"},
+                {"role": "user", "content": "第三轮问题"},
+                {"role": "assistant", "content": "第三轮回答"},
+            ],
+        )
 
     def test_run_stream_appends_prompt_history_and_prompt_history_texts_are_reusable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

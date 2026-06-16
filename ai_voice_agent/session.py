@@ -11,8 +11,9 @@ from typing import Any
 
 SESSION_EVENT_VERSION = 1
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[a-f0-9]{6}$")
-MODEL_CONTEXT_EVENT_TYPES = {"user_message", "assistant_message", "compact_summary"}
+COMPACT_SUMMARY_PREFIX = "会话压缩摘要：\n"
 MESSAGE_EVENT_TYPES = {"user_message", "assistant_message"}
+MODEL_CONTEXT_EVENT_TYPES = MESSAGE_EVENT_TYPES | {"compact_summary"}
 MAX_PROMPT_HISTORY_DISPLAY_CHARS = 4000
 
 
@@ -468,6 +469,16 @@ class SessionStore:
         events = self._read_events(entry)
         messages: list[dict[str, str]] = []
         for event in events:
+            if event.type == "compact_summary":
+                # 压缩事件通过追加写落在被压缩历史之后，因此恢复时不能简单丢弃
+                # 它之前的所有消息；需要保留压缩发生时仍留在窗口里的最近消息。
+                summary_message = _event_to_model_message(event)
+                remaining_count = _read_payload_non_negative_int(
+                    event.payload.get("remaining_message_count", 0)
+                )
+                recent_messages = messages[-remaining_count:] if remaining_count else []
+                messages = ([summary_message] if summary_message is not None else []) + recent_messages
+                continue
             message = _event_to_model_message(event)
             if message is not None:
                 messages.append(message)
@@ -654,7 +665,7 @@ def _event_to_model_message(event: SessionEvent) -> dict[str, str] | None:
     if event.type == "compact_summary":
         content = event.payload.get("content", "")
         if isinstance(content, str) and content.strip():
-            return {"role": "assistant", "content": f"会话压缩摘要：\n{content}"}
+            return {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{content}"}
     return None
 
 
@@ -720,6 +731,12 @@ def _utc_now() -> datetime:
 def _read_non_negative_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise SessionStoreError(f"会话索引 {name} 必须是非负整数。")
+    return value
+
+
+def _read_payload_non_negative_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
     return value
 
 

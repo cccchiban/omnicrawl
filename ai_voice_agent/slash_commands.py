@@ -234,6 +234,12 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
         parts = text.split(None, 1)
         query = parts[1].strip() if len(parts) > 1 else ""
         return format_prompt_history(agent, query=query)
+    if normalized == "/compact":
+        try:
+            summary = agent.compact_conversation()
+        except AgentError as exc:
+            return f"会话压缩失败：{exc}"
+        return f"已压缩当前会话，后续恢复将从摘要边界继续。\n{summary}"
     if normalized != "/resume" and not normalized.startswith("/resume "):
         return None
 
@@ -420,6 +426,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/sessions",
         "/resume",
         "/history",
+        "/compact",
         "/approval",
         "/approval:manual",
         "/approval:auto",

@@ -61,6 +61,40 @@ class SessionStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(SessionStoreError, "session_id 格式无效"):
                 store.load_session("../bad")
 
+    def test_compact_summary_restores_summary_and_recent_window(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+
+            store.append_event(state.session_id, "user_message", {"content": "第一轮问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "第一轮回答"})
+            store.append_event(state.session_id, "user_message", {"content": "第二轮问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "第二轮回答"})
+            store.append_event(
+                state.session_id,
+                "compact_summary",
+                {
+                    "content": "早期两轮已经压缩。",
+                    "compacted_message_count": 2,
+                    "remaining_message_count": 2,
+                    "manual": False,
+                },
+            )
+            store.append_event(state.session_id, "user_message", {"content": "第三轮问题"})
+            restored = store.load_session(state.session_id)
+
+        self.assertEqual(
+            restored.messages,
+            [
+                {"role": "assistant", "content": "会话压缩摘要：\n早期两轮已经压缩。"},
+                {"role": "user", "content": "第二轮问题"},
+                {"role": "assistant", "content": "第二轮回答"},
+                {"role": "user", "content": "第三轮问题"},
+            ],
+        )
+
     def test_prompt_history_appends_searches_and_deduplicates_by_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"

@@ -33,6 +33,7 @@ from .memory import (
 )
 from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
 from .session import (
+    COMPACT_SUMMARY_PREFIX,
     PromptHistoryEntry,
     SessionIndexEntry,
     SessionState,
@@ -89,6 +90,8 @@ _CONTINUE_LAST_TASK_TEXTS = {
     "retry",
     "continue",
 }
+_COMPACT_SNIPPET_CHARS = 360
+_COMPACT_MAX_BULLETS = 4
 _DELETE_DESCRIPTION_START_PATTERN = re.compile(
     r"^(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
     re.IGNORECASE,
@@ -650,6 +653,20 @@ class LocalToolAgent:
         entries = self.search_prompt_history(limit=limit)
         return [entry.display for entry in reversed(entries)]
 
+    def compact_conversation(self) -> str:
+        """手动压缩当前会话历史，并把摘要写入会话转录。
+
+        摘要采用本地确定性规则生成，避免为了压缩再发起一次模型请求。这样即使模型
+        服务暂不可用，用户仍能通过 `/compact` 明确建立恢复边界。
+        """
+
+        if len(self._history) < 4:
+            raise AgentError("当前会话内容太少，暂不需要压缩。")
+        summary = self._compact_history(force=True)
+        if not summary:
+            raise AgentError("当前会话内容太少，暂不需要压缩。")
+        return summary
+
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
 
@@ -664,7 +681,7 @@ class LocalToolAgent:
                 f"{state.workspace_root}"
             )
         self._session_state = state
-        self._history = state.messages[-self.config.max_history_turns * 2 :]
+        self._history = self._restore_history_window(state.messages)
         self._pending_user_text = None
         self._active_skills = []
         return state
@@ -850,8 +867,8 @@ class LocalToolAgent:
                     if final_reply and not reply.content_streamed:
                         on_delta(final_reply)
                     combined_reasoning = "\n".join(all_reasoning_parts)
-                    self._append_history(text, final_reply, combined_reasoning)
                     self._append_session_event("assistant_message", {"content": final_reply})
+                    self._append_history(text, final_reply, combined_reasoning)
                     self._pending_user_text = None
                     return final_reply
 
@@ -2245,9 +2262,140 @@ class LocalToolAgent:
                 self._assistant_message(assistant_text, reasoning),
             ]
         )
+        self._compact_history(force=False)
+
+    def _restore_history_window(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """恢复最近上下文；如果首条是摘要边界，则固定保留摘要。"""
+
         max_messages = self.config.max_history_turns * 2
-        if len(self._history) > max_messages:
-            self._history = self._history[-max_messages:]
+        if not messages:
+            return []
+        if str(messages[0].get("content") or "").strip().startswith(COMPACT_SUMMARY_PREFIX):
+            if len(messages) <= max_messages:
+                return list(messages)
+            recent_messages = messages[1:]
+            recent_window = recent_messages[-max_messages:]
+            if recent_window and recent_window[0].get("role") != "user":
+                recent_window = recent_window[1:]
+            return [messages[0], *recent_window]
+        return messages[-max_messages:]
+
+    def _compact_history(self, *, force: bool = False) -> str:
+        """把早期历史压缩成单条摘要消息，避免长会话被硬裁剪。
+
+        当前实现不调用模型，而是把被压缩的早期 user/assistant 轮次按顺序提炼成短摘要。
+        这样摘要可预测、测试稳定，也不会在会话很长时额外消耗模型上下文或失败重试次数。
+        """
+
+        max_messages = self.config.max_history_turns * 2
+        has_leading_summary = bool(
+            self._history
+            and str(self._history[0].get("content") or "").strip().startswith(COMPACT_SUMMARY_PREFIX)
+        )
+        max_compactable = max(0, len(self._history) - 2)
+        if len(self._history) <= max_messages:
+            if not force:
+                return ""
+            compact_count = max_compactable
+            if compact_count < 2:
+                return ""
+        else:
+            compact_count = len(self._history) - max_messages
+
+        compact_count = min(compact_count, max_compactable)
+        if has_leading_summary:
+            if compact_count % 2 == 0:
+                compact_count -= 1
+            if compact_count < 3:
+                return ""
+        else:
+            if compact_count % 2 == 1:
+                compact_count -= 1
+            if compact_count < 2:
+                return ""
+        if compact_count > max_compactable:
+            return ""
+
+        compacted_messages = self._history[:compact_count]
+        recent_messages = self._history[compact_count:]
+        previous_summary = self._extract_existing_compact_summary(compacted_messages)
+        summary = self._build_compact_summary(
+            compacted_messages,
+            previous_summary=previous_summary,
+        )
+        if not summary:
+            return ""
+
+        self._append_session_event(
+            "compact_summary",
+            {
+                "content": summary,
+                "compacted_message_count": compact_count,
+                "remaining_message_count": len(recent_messages),
+                "manual": force,
+            },
+        )
+        summary_message = {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{summary}"}
+        self._history = [summary_message, *recent_messages]
+        return summary
+
+    def _build_compact_summary(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        previous_summary: str = "",
+    ) -> str:
+        """按时间顺序生成可恢复摘要，保留目标、进展和最近状态。"""
+
+        user_items: list[str] = []
+        assistant_items: list[str] = []
+        for message in messages:
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            if content.startswith(COMPACT_SUMMARY_PREFIX):
+                continue
+            snippet = self._compact_snippet(content)
+            if message.get("role") == "user":
+                user_items.append(snippet)
+            elif message.get("role") == "assistant":
+                assistant_items.append(snippet)
+
+        lines = ["## 会话压缩摘要"]
+        if previous_summary:
+            lines.append(f"- 既有摘要：{self._compact_snippet(previous_summary)}")
+        if user_items:
+            lines.append(f"- 原始目标：{user_items[0]}")
+        if len(user_items) > 1:
+            lines.append("- 已压缩的用户后续要求：" + self._format_compact_items(user_items[1:]))
+        if assistant_items:
+            lines.append("- 已完成/已回复要点：" + self._format_compact_items(assistant_items))
+        if user_items or assistant_items:
+            latest = assistant_items[-1] if assistant_items else user_items[-1]
+            lines.append(f"- 压缩前状态：最近一条可见进展为「{latest}」。")
+        lines.append("- 下一步：继续以用户最新输入为最高优先级，并结合本摘要后的最近对话。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _extract_existing_compact_summary(messages: list[dict[str, Any]]) -> str:
+        for message in messages:
+            content = str(message.get("content") or "").strip()
+            if content.startswith(COMPACT_SUMMARY_PREFIX):
+                return content[len(COMPACT_SUMMARY_PREFIX) :].strip()
+        return ""
+
+    @staticmethod
+    def _format_compact_items(items: list[str]) -> str:
+        selected = items[:_COMPACT_MAX_BULLETS]
+        suffix = f"；另有 {len(items) - len(selected)} 条已省略" if len(items) > len(selected) else ""
+        return "；".join(selected) + suffix
+
+    @staticmethod
+    def _compact_snippet(content: str) -> str:
+        text = " ".join(content.split())
+        if len(text) <= _COMPACT_SNIPPET_CHARS:
+            return text
+        return text[: _COMPACT_SNIPPET_CHARS - 3] + "..."
 
     @staticmethod
     def _confirm_in_terminal(tool_name: str, arguments: dict[str, Any]) -> bool:
