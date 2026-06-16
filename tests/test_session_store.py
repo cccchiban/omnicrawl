@@ -61,6 +61,45 @@ class SessionStoreTest(unittest.TestCase):
             with self.assertRaisesRegex(SessionStoreError, "session_id 格式无效"):
                 store.load_session("../bad")
 
+    def test_prompt_history_appends_searches_and_deduplicates_by_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            other_workspace = Path(temp_dir) / "other"
+            workspace.mkdir()
+            other_workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            other_state = store.start_session(other_workspace)
+
+            store.append_prompt_history(
+                display="帮我实现会话历史",
+                workspace_root=workspace,
+                session_id=state.session_id,
+            )
+            store.append_prompt_history(
+                display="帮我实现会话历史",
+                workspace_root=workspace,
+                session_id=state.session_id,
+            )
+            store.append_prompt_history(
+                display="检查 Qt 会话列表",
+                workspace_root=workspace,
+                session_id=state.session_id,
+            )
+            store.append_prompt_history(
+                display="其他项目提示",
+                workspace_root=other_workspace,
+                session_id=other_state.session_id,
+            )
+
+            history_path = workspace / ".agent_sessions" / "history.jsonl"
+            all_lines = [line for line in history_path.read_text(encoding="utf-8").splitlines() if line]
+            results = store.search_prompt_history(workspace_root=workspace, query="会话")
+
+        self.assertEqual(len(all_lines), 4)
+        self.assertEqual([entry.display for entry in results], ["检查 Qt 会话列表", "帮我实现会话历史"])
+        self.assertTrue(all(entry.project == str(workspace.resolve()) for entry in results))
+
 
 if __name__ == "__main__":
     unittest.main()

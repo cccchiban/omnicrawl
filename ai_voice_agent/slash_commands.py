@@ -201,6 +201,28 @@ def format_sessions_list(agent: LocalToolAgent) -> str:
     return "\n".join(lines)
 
 
+def format_prompt_history(agent: LocalToolAgent, query: str = "") -> str:
+    """格式化当前项目用户提示历史；只展示，不注入模型上下文。"""
+
+    try:
+        entries = agent.search_prompt_history(query=query, limit=20)
+    except AgentError as exc:
+        return f"提示历史读取失败：{exc}"
+    if not entries:
+        return "当前工作区还没有匹配的提示历史。"
+
+    title = "提示历史" if not query.strip() else f"提示历史（关键词：{query.strip()}）"
+    lines = [f"{title}："]
+    for index, entry in enumerate(entries, start=1):
+        created_at = entry.created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        display = _truncate_for_display(" ".join(entry.display.split()), 120)
+        session_marker = "*" if entry.session_id == agent.current_session_id else " "
+        lines.append(f"{index:>2}. {session_marker} {created_at}  {display}")
+    lines.append("")
+    lines.append("筛选历史：/history <关键词>")
+    return "\n".join(lines)
+
+
 def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
     """处理会话查看与恢复命令；返回 None 表示不是会话命令。"""
 
@@ -208,6 +230,10 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
     normalized = text.lower()
     if normalized == "/sessions":
         return format_sessions_list(agent)
+    if normalized == "/history" or normalized.startswith("/history "):
+        parts = text.split(None, 1)
+        query = parts[1].strip() if len(parts) > 1 else ""
+        return format_prompt_history(agent, query=query)
     if normalized != "/resume" and not normalized.startswith("/resume "):
         return None
 
@@ -393,6 +419,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/mcp",
         "/sessions",
         "/resume",
+        "/history",
         "/approval",
         "/approval:manual",
         "/approval:auto",

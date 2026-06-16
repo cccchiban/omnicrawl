@@ -376,6 +376,40 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIsNone(agent._pending_user_text)
         self.assertEqual(agent._active_skills, [])
 
+    def test_run_stream_appends_prompt_history_and_prompt_history_texts_are_reusable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {}
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            agent._session_store = store
+            agent._session_state = state
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                return AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            LocalToolAgent.run_stream(agent, "查看会话历史", lambda _delta: None)
+
+            persisted = store.search_prompt_history(workspace_root=workspace)
+            texts = LocalToolAgent.prompt_history_texts(agent, limit=10)
+
+        self.assertEqual([entry.display for entry in persisted], ["查看会话历史"])
+        self.assertEqual(texts, ["查看会话历史"])
+
     def test_retryable_request_errors_retry_and_report_status(self) -> None:
         class FakeChatCompletions:
             def __init__(self) -> None:

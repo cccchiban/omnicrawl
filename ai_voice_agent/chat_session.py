@@ -29,6 +29,7 @@ def _get_user_text(
     speech_to_text: SpeechToText | None,
     ui: TerminalUI,
     slash_commands: list[str] | None = None,
+    history: list[str] | None = None,
 ) -> str:
     """读取一轮用户输入。
 
@@ -43,7 +44,12 @@ def _get_user_text(
             except ImportError:
                 pass
             else:
-                return read_line_autocomplete(ui.prompt(), slash_commands, ui).strip()
+                return read_line_autocomplete(
+                    ui.prompt(),
+                    slash_commands,
+                    ui,
+                    history=history,
+                ).strip()
         return input(ui.prompt()).strip()
 
     used_autocomplete = False
@@ -54,7 +60,12 @@ def _get_user_text(
             pass
         else:
             used_autocomplete = True
-            text = read_line_autocomplete(ui.prompt(), slash_commands, ui)
+            text = read_line_autocomplete(
+                ui.prompt(),
+                slash_commands,
+                ui,
+                history=history,
+            )
             if text:
                 return text
             if speech_to_text is None:
@@ -91,13 +102,22 @@ def run_inline_chat(
     )
     pending_user_text: str | None = None
     input_interrupt_count = 0
+    try:
+        input_history = agent.prompt_history_texts(limit=100)
+    except AgentError:
+        input_history = []
     while True:
         try:
             if pending_user_text is not None:
                 user_text = pending_user_text
                 pending_user_text = None
             else:
-                user_text = _get_user_text(speech_to_text, ui, build_slash_commands(agent))
+                user_text = _get_user_text(
+                    speech_to_text,
+                    ui,
+                    build_slash_commands(agent),
+                    history=input_history,
+                )
         except KeyboardInterrupt:
             input_interrupt_count += 1
             if input_interrupt_count >= 2:

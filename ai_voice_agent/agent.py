@@ -32,7 +32,13 @@ from .memory import (
     search_result_to_dict,
 )
 from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
-from .session import SessionIndexEntry, SessionState, SessionStore, SessionStoreError
+from .session import (
+    PromptHistoryEntry,
+    SessionIndexEntry,
+    SessionState,
+    SessionStore,
+    SessionStoreError,
+)
 from .skill import SkillManager, SkillMatchResult
 from .temp_workspace import (
     AgentTempWorkspace,
@@ -617,6 +623,33 @@ class LocalToolAgent:
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc
 
+    def search_prompt_history(
+        self,
+        *,
+        query: str = "",
+        limit: int = 20,
+        current_session_only: bool = False,
+    ) -> list[PromptHistoryEntry]:
+        """查询当前工作区的用户提示历史，供输入复用和 `/history` 展示。"""
+
+        store = self._require_session_store()
+        session_id = self.current_session_id if current_session_only else None
+        try:
+            return store.search_prompt_history(
+                workspace_root=self.workspace_root,
+                session_id=session_id,
+                query=query,
+                limit=limit,
+            )
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def prompt_history_texts(self, limit: int = 100) -> list[str]:
+        """返回按时间正序排列的提示文本，作为 TUI 上箭头历史种子。"""
+
+        entries = self.search_prompt_history(limit=limit)
+        return [entry.display for entry in reversed(entries)]
+
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
 
@@ -790,6 +823,7 @@ class LocalToolAgent:
         pending_text = getattr(self, "_pending_user_text", None)
         text = self._resolve_continue_request(text)
         self._pending_user_text = pending_text or text
+        self._append_prompt_history(text)
         self._append_session_event("user_message", {"content": text})
         working_messages = [
             *self._project_instructions_messages(),
@@ -2156,6 +2190,26 @@ class LocalToolAgent:
                 messages=state.messages,
                 last_event_type=event.type,
                 event_count=state.event_count + 1,
+            )
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def _append_prompt_history(self, text: str) -> None:
+        """记录用户提交的真实提示，用于跨会话输入复用。
+
+        这里和 `user_message` 转录分开写：转录负责恢复模型上下文，提示历史只用于
+        UI 的上箭头/搜索复用。持久化失败直接中断本轮，避免用户以为历史已经可恢复。
+        """
+
+        store = getattr(self, "_session_store", None)
+        state = getattr(self, "_session_state", None)
+        if store is None or state is None:
+            return
+        try:
+            store.append_prompt_history(
+                display=text,
+                workspace_root=self.workspace_root,
+                session_id=state.session_id,
             )
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc
