@@ -35,7 +35,11 @@ class SessionStoreTest(unittest.TestCase):
             state = store.start_session(workspace)
 
             store.append_event(state.session_id, "user_message", {"content": "第一轮问题"})
-            store.append_event(state.session_id, "tool_result", {"tool": "read_file", "output": "README"})
+            store.append_event(
+                state.session_id,
+                "tool_result",
+                {"tool": "read_file", "ok": True, "output": "README"},
+            )
             store.append_event(state.session_id, "assistant_message", {"content": "第一轮回答"})
             restored = store.load_session(state.session_id)
 
@@ -43,6 +47,7 @@ class SessionStoreTest(unittest.TestCase):
                 restored.messages,
                 [
                     {"role": "user", "content": "第一轮问题"},
+                    {"role": "assistant", "content": "工具执行结果：read_file 成功\nREADME"},
                     {"role": "assistant", "content": "第一轮回答"},
                 ],
             )
@@ -181,6 +186,76 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "session_exported")
         self.assertEqual(events[-1]["payload"]["format"], "markdown")
         self.assertTrue(events[-1]["payload"]["path"].startswith("exports/"))
+
+    def test_large_tool_result_writes_artifact_and_restores_summary_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            large_output = "A" * 9000 + "api_key=secret-value" + "Z" * 9000
+
+            store.append_event(
+                state.session_id,
+                "tool_result",
+                {
+                    "tool": "run_command",
+                    "ok": True,
+                    "output": large_output,
+                    "model_output": "模型可见截断输出",
+                },
+            )
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            payload = events[-1]["payload"]
+            artifact_path = workspace / ".agent_sessions" / payload["artifact_path"]
+            artifact_exists = artifact_path.is_file()
+            artifact_text = artifact_path.read_text(encoding="utf-8")
+            restored = store.load_session(state.session_id)
+
+        self.assertEqual(payload["storage"], "artifact")
+        self.assertEqual(payload["output"], payload["output"].strip())
+        self.assertIn("字符数", payload["output"])
+        self.assertIn("output_preview", payload)
+        self.assertIn("model_output", payload)
+        self.assertTrue(artifact_exists)
+        self.assertNotIn("secret-value", artifact_text)
+        self.assertIn("api_key=***", artifact_text)
+        self.assertEqual(
+            restored.messages[-1]["content"],
+            "工具执行结果：run_command 成功\n模型可见截断输出\n"
+            f"完整输出 artifact：{payload['artifact_path']}",
+        )
+
+    def test_sensitive_tool_arguments_are_redacted_in_session_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+
+            store.append_event(
+                state.session_id,
+                "tool_call_requested",
+                {
+                    "tool": "demo",
+                    "arguments": {
+                        "api_key": "secret",
+                        "nested": {"token": "abc"},
+                        "text": "Authorization: Bearer abcdefghijklmnop",
+                    },
+                },
+            )
+            event = json.loads(state.path.read_text(encoding="utf-8").splitlines()[-1])
+            restored = store.load_session(state.session_id)
+
+        self.assertEqual(event["payload"]["arguments"]["api_key"], "***")
+        self.assertEqual(event["payload"]["arguments"]["nested"]["token"], "***")
+        self.assertIn("Bearer ***", event["payload"]["arguments"]["text"])
+        self.assertIn('"api_key": "***"', restored.messages[-1]["content"])
 
 
 if __name__ == "__main__":

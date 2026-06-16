@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -12,9 +13,35 @@ from typing import Any
 SESSION_EVENT_VERSION = 1
 SESSION_ID_PATTERN = re.compile(r"^\d{8}-\d{6}-[a-f0-9]{6}$")
 COMPACT_SUMMARY_PREFIX = "会话压缩摘要：\n"
+TOOL_CALL_CONTEXT_PREFIX = "工具调用请求："
+TOOL_RESULT_CONTEXT_PREFIX = "工具执行结果："
 MESSAGE_EVENT_TYPES = {"user_message", "assistant_message"}
-MODEL_CONTEXT_EVENT_TYPES = MESSAGE_EVENT_TYPES | {"compact_summary"}
+MODEL_CONTEXT_EVENT_TYPES = MESSAGE_EVENT_TYPES | {
+    "compact_summary",
+    "tool_call_requested",
+    "tool_call_denied",
+    "tool_result",
+}
 MAX_PROMPT_HISTORY_DISPLAY_CHARS = 4000
+TOOL_RESULT_INLINE_OUTPUT_CHARS = 8 * 1024
+TOOL_RESULT_LARGE_OUTPUT_CHARS = 128 * 1024
+TOOL_RESULT_PREVIEW_CHARS = 1200
+_SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "cookie",
+    "key",
+    "password",
+    "secret",
+    "token",
+)
+_SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)((?:api[_-]?key|apikey|cookie|password|secret|token)"
+    r"\s*[:=]\s*[\"']?)([^\"'\s,;]+)"
+)
+_BEARER_SECRET_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_PROVIDER_SECRET_PATTERN = re.compile(r"\b(?:sk|ak|ah)-[A-Za-z0-9_-]{24,}\b")
 
 
 class SessionStoreError(RuntimeError):
@@ -377,12 +404,14 @@ class SessionStore:
         self.index_path = self.root / "index.json"
         self.history_path = self.root / "history.jsonl"
         self.sessions_dir = self.root / "sessions"
+        self.artifacts_dir = self.root / "artifacts"
         self.summaries_dir = self.root / "summaries"
         self.exports_dir = self.root / "exports"
         self.prompt_history = PromptHistoryStore(self.history_path)
 
     def ensure(self) -> None:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.summaries_dir.mkdir(parents=True, exist_ok=True)
         self.exports_dir.mkdir(parents=True, exist_ok=True)
         if not self.index_path.exists():
@@ -442,10 +471,15 @@ class SessionStore:
         self.ensure()
         normalized_id = _normalize_session_id(session_id)
         entry = self._entry_by_id(normalized_id)
-        event = SessionEvent.create(
+        safe_payload = self._prepare_event_payload(
             session_id=normalized_id,
             event_type=event_type,
             payload=payload,
+        )
+        event = SessionEvent.create(
+            session_id=normalized_id,
+            event_type=event_type,
+            payload=safe_payload,
             parent_id=parent_id,
             now=now,
         )
@@ -633,6 +667,84 @@ class SessionStore:
                 return entry
         raise SessionStoreError(f"未找到会话：{session_id}")
 
+    def _prepare_event_payload(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """写入 JSONL 前统一处理事件 payload。
+
+        会话转录是长期可恢复状态，不能简单把工具参数和输出原样塞进去：
+        常见密钥字段需要脱敏，大工具输出需要落到 artifact 文件并在 JSONL
+        中保留摘要、哈希和相对路径。这样恢复时仍有足够上下文，同时避免
+        单行 JSONL 被超大结果拖慢。
+        """
+
+        safe_payload = _redact_sensitive_values(dict(payload or {}))
+        if event_type == "tool_result":
+            return self._prepare_tool_result_payload(session_id, safe_payload)
+        return safe_payload
+
+    def _prepare_tool_result_payload(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        output = payload.get("output")
+        if not isinstance(output, str):
+            return payload
+
+        output_hash = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        payload["output_sha256"] = output_hash
+        payload["output_size_chars"] = len(output)
+        if len(output) <= TOOL_RESULT_INLINE_OUTPUT_CHARS:
+            payload["output"] = _redact_sensitive_text(output)
+            payload["storage"] = "inline"
+            return payload
+
+        payload["output_preview"] = _redact_sensitive_text(_preview_text(output, TOOL_RESULT_PREVIEW_CHARS))
+        payload["output"] = _tool_output_summary(output)
+        payload["storage"] = "artifact"
+        payload["artifact_truncated"] = len(output) > TOOL_RESULT_LARGE_OUTPUT_CHARS
+        payload["artifact_path"] = self._write_tool_result_artifact(
+            session_id=session_id,
+            output=output,
+            output_hash=output_hash,
+            truncated=bool(payload["artifact_truncated"]),
+        )
+        return payload
+
+    def _write_tool_result_artifact(
+        self,
+        *,
+        session_id: str,
+        output: str,
+        output_hash: str,
+        truncated: bool,
+    ) -> str:
+        """保存大工具输出 artifact，并返回 `.agent_sessions/` 内相对路径。"""
+
+        session_artifacts_dir = (self.artifacts_dir / session_id).resolve()
+        if not _is_relative_to(session_artifacts_dir, self.root):
+            raise SessionStoreError(f"artifact 目录越界：{session_id}")
+        session_artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"tool_result_{output_hash[:16]}.txt"
+        path = (session_artifacts_dir / filename).resolve()
+        if not _is_relative_to(path, self.root):
+            raise SessionStoreError(f"artifact 路径越界：{filename}")
+
+        artifact_text = output[:TOOL_RESULT_LARGE_OUTPUT_CHARS] if truncated else output
+        artifact_text = _redact_sensitive_text(artifact_text)
+        if truncated:
+            artifact_text += (
+                "\n... artifact 已按 128KB 上限截断，"
+                f"原始输出字符数：{len(output)}，sha256：{output_hash}。"
+            )
+        try:
+            path.write_text(artifact_text, encoding="utf-8")
+        except OSError as exc:
+            raise SessionStoreError(f"写入工具输出 artifact 失败：{path}，{exc}") from exc
+        return path.relative_to(self.root).as_posix()
+
     def _update_entry_after_event(self, entry: SessionIndexEntry, event: SessionEvent) -> None:
         entries = self._load_entries()
         updated_entries: list[SessionIndexEntry] = []
@@ -740,7 +852,56 @@ def _event_to_model_message(event: SessionEvent) -> dict[str, str] | None:
         content = event.payload.get("content", "")
         if isinstance(content, str) and content.strip():
             return {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{content}"}
+    if event.type == "tool_call_requested":
+        content = _tool_call_context(event.payload)
+        return {"role": "assistant", "content": content} if content else None
+    if event.type == "tool_call_denied":
+        content = _tool_denied_context(event.payload)
+        return {"role": "assistant", "content": content} if content else None
+    if event.type == "tool_result":
+        content = _tool_result_context(event.payload)
+        return {"role": "assistant", "content": content} if content else None
     return None
+
+
+def _tool_call_context(payload: dict[str, Any]) -> str:
+    tool = payload.get("tool", "")
+    if not isinstance(tool, str) or not tool.strip():
+        return ""
+    arguments = payload.get("arguments", {})
+    safe_arguments = arguments if isinstance(arguments, dict) else {}
+    arguments_text = json.dumps(safe_arguments, ensure_ascii=False, sort_keys=True)
+    return f"{TOOL_CALL_CONTEXT_PREFIX}{tool.strip()} 参数：{arguments_text}"
+
+
+def _tool_denied_context(payload: dict[str, Any]) -> str:
+    tool = payload.get("tool", "")
+    reason = payload.get("reason", "")
+    if not isinstance(tool, str) or not tool.strip():
+        return ""
+    reason_text = reason.strip() if isinstance(reason, str) and reason.strip() else "未批准。"
+    return f"{TOOL_RESULT_CONTEXT_PREFIX}{tool.strip()} 失败，原因：{reason_text}"
+
+
+def _tool_result_context(payload: dict[str, Any]) -> str:
+    tool = payload.get("tool", "")
+    if not isinstance(tool, str) or not tool.strip():
+        return ""
+    ok = bool(payload.get("ok", False))
+    status = "成功" if ok else "失败"
+    output = payload.get("model_output")
+    if not isinstance(output, str) or not output.strip():
+        output = payload.get("output_preview")
+    if not isinstance(output, str) or not output.strip():
+        output = payload.get("output", "")
+    if not isinstance(output, str):
+        output = ""
+
+    artifact_path = payload.get("artifact_path", "")
+    artifact_hint = ""
+    if isinstance(artifact_path, str) and artifact_path.strip():
+        artifact_hint = f"\n完整输出 artifact：{artifact_path.strip()}"
+    return f"{TOOL_RESULT_CONTEXT_PREFIX}{tool.strip()} {status}\n{output.strip()}{artifact_hint}".strip()
 
 
 def _normalize_session_id(raw_session_id: Any) -> str:
@@ -826,6 +987,49 @@ def _clean_prompt_display(value: str) -> str:
     if len(prompt) > MAX_PROMPT_HISTORY_DISPLAY_CHARS:
         return prompt[:MAX_PROMPT_HISTORY_DISPLAY_CHARS] + "\n... 提示历史已截断。"
     return prompt
+
+
+def _redact_sensitive_values(value: Any) -> Any:
+    """递归脱敏会话转录中的常见密钥字段和值。"""
+
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            lowered = key.lower()
+            if any(part in lowered for part in _SENSITIVE_KEY_PARTS):
+                redacted[key] = "***"
+            else:
+                redacted[key] = _redact_sensitive_values(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive_values(item) for item in value[:100]]
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    return value
+
+
+def _redact_sensitive_text(text: str) -> str:
+    redacted = _SENSITIVE_ASSIGNMENT_PATTERN.sub(r"\1***", text)
+    redacted = _BEARER_SECRET_PATTERN.sub("Bearer ***", redacted)
+    redacted = _PROVIDER_SECRET_PATTERN.sub("***", redacted)
+    return redacted
+
+
+def _preview_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    head_chars = max_chars // 2
+    tail_chars = max_chars - head_chars
+    return text[:head_chars] + "\n... 中间内容已省略 ...\n" + text[-tail_chars:]
+
+
+def _tool_output_summary(output: str) -> str:
+    return (
+        "工具输出较大，已写入 artifact；"
+        f"字符数：{len(output)}，sha256：{hashlib.sha256(output.encode('utf-8')).hexdigest()}。"
+    )
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:

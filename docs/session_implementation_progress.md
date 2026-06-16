@@ -6,9 +6,9 @@
 
 | 项目 | 状态 | 说明 |
 |------|------|------|
-| 当前阶段 | 进行中 | 第一阶段：`SessionStore` + JSONL 追加写 + `session_id`；第二阶段基础 `/sessions`、`/resume`、第三阶段提示历史基础能力、第四阶段确定性会话压缩、第五阶段 Qt 会话列表与正式导出基础闭环已同步落地。 |
+| 当前阶段 | 进行中 | 第一阶段：`SessionStore` + JSONL 追加写 + `session_id`；第二阶段基础 `/sessions`、`/resume`、第三阶段提示历史基础能力、第四阶段确定性会话压缩、第五阶段 Qt 会话列表与正式导出基础闭环、第六阶段大工具输出 artifact 与基础脱敏已同步落地。 |
 | 开始时间 | 2026-06-16 | 按会话设计文档从最小可用闭环开始实现。 |
-| 当前目标 | 进行中 | 会话能自动创建、记录转录、列出最近会话、记录提示历史，通过 `/resume` 恢复 `_history`，在长会话中通过 `compact_summary` 保留早期上下文摘要，并在 Qt GUI 中完成会话列表、恢复、重命名、压缩和正式导出。 |
+| 当前目标 | 进行中 | 会话能自动创建、记录转录、列出最近会话、记录提示历史，通过 `/resume` 恢复 `_history`，在长会话中通过 `compact_summary` 保留早期上下文摘要，在 Qt GUI 中完成会话列表、恢复、重命名、压缩和正式导出，并对大工具输出做 artifact 分级存储与基础敏感信息脱敏。 |
 
 ## 阶段清单
 
@@ -19,7 +19,7 @@
 | 第三期 | 提示历史 `history.jsonl` | 已完成 | 用户输入历史可按当前项目复用，不自动进入模型上下文。 |
 | 第四期 | `compact_summary` 长会话压缩 | 已完成 | 超过历史上限时生成摘要并保留任务主线。 |
 | 第五期 | Qt 会话列表与正式导出 | 已完成 | GUI 可恢复、重命名、压缩、导出当前会话。 |
-| 第六期 | 大工具输出 artifact、脱敏、归档 | 未开始 | 大输出不拖慢恢复，敏感内容可控。 |
+| 第六期 | 大工具输出 artifact、脱敏、归档 | 进行中 | 大输出 artifact 与基础脱敏已完成；归档策略暂未启用，避免影响现有恢复路径。 |
 
 ## 本轮实现记录
 
@@ -38,13 +38,17 @@
 | 2026-06-16 | 补齐会话重命名与正式导出 | `SessionStore` 新增 `session_renamed`、`session_exported` 事件，正式导出写入 `.agent_sessions/exports/`，TUI 新增 `/rename <title>`。 |
 | 2026-06-16 | 接入 Qt 会话侧边栏 | Qt GUI 侧边栏支持刷新最近会话、新对话、恢复、重命名、压缩和正式导出；恢复时按 JSONL 事件流重新渲染 user/assistant/tool/compact_summary。 |
 | 2026-06-16 | 更新 Qt 与会话测试 | 覆盖重命名、正式导出、Agent 事件读取、Qt 桥接信号、前端会话回调和事件投影。 |
+| 2026-06-16 | 接入大工具输出 artifact | `tool_result` 超过 8KB 时 JSONL 保存摘要、预览、哈希和 artifact 相对路径，完整输出写入 `.agent_sessions/artifacts/<session_id>/`；超过 128KB 的 artifact 按上限截断并记录原始大小与哈希。 |
+| 2026-06-16 | 接入基础脱敏 | 会话事件写入前递归脱敏常见 `api_key`、`token`、`password`、`secret`、`authorization`、`cookie` 等字段，并对文本中的常见密钥赋值、Bearer Token 和 `sk/ak/ah-` 形态密钥做基础替换。 |
+| 2026-06-16 | 恢复工具事件摘要 | `/resume` 恢复时把 `tool_call_requested`、`tool_call_denied` 和 `tool_result` 转为 assistant 摘要消息进入 `_history`，避免直接回放不完整 `role=tool` 链。 |
 
 ## 已知限制
 
 | 限制 | 影响 | 后续处理 |
 |------|------|----------|
-| 第一版只恢复 user/assistant/compact_summary | 工具调用链会被记录，但暂不完整回放进 `_history`。 | 后续补 tool call 消息还原和大输出 artifact。 |
+| 工具调用链以摘要形式恢复 | 工具调用链会被记录，恢复时以 assistant 摘要进入 `_history`，不直接还原为 Chat Completions 原生 `tool_calls` / `role=tool` 链。 | 后续如需要精确继续半轮工具调用，可增加原生消息链恢复。 |
 | Qt 恢复只回放已支持事件类型 | Qt 消息区可回放 user、assistant、tool call、tool result、compact_summary；审批事件暂不单独渲染。 | 后续如需审计视图，可把 tool approval/denial 渲染为系统事件卡片。 |
 | 压缩摘要为本地确定性摘要 | 不调用模型生成高质量语义摘要，摘要细节弱于专门模型总结。 | 后续可引入可选 `SessionCompactor` 模型摘要，但需避免额外失败影响主链路。 |
-| 第一版不做敏感信息脱敏 | 会话文件可能包含用户输入和工具输出。 | 先通过 `.gitignore` 忽略 `.agent_sessions/`，后续增加脱敏策略。 |
+| 基础脱敏不是安全边界 | 已覆盖常见密钥字段和部分文本模式，但无法保证识别所有秘密、业务口令或私有数据。 | `.agent_sessions/` 仍默认由 `.gitignore` 忽略；后续可增加可配置规则、导出前扫描和用户确认。 |
 | TUI 历史种子仅取当前工作区提示 | 不同工作区之间不会共享上箭头历史。 | 符合当前项目隔离要求；后续如需跨项目检索再扩展。 |
+| 会话归档暂未启用 | 旧会话不会自动移动到归档目录。 | 归档涉及恢复路径、索引迁移和用户可见性，后续单独设计。 |

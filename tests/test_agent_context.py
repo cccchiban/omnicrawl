@@ -353,6 +353,80 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(restored.messages[-2]["content"], "记录会话")
         self.assertEqual(restored.messages[-1]["content"], "完成")
 
+    def test_run_stream_persists_full_tool_output_as_session_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6, max_tool_output_chars=32)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            long_output = "0123456789" * 1000
+            agent._tools = {
+                "big_tool": ToolDefinition(
+                    name="big_tool",
+                    description="大输出工具",
+                    argument_schema="{}",
+                    requires_confirmation=False,
+                    run=lambda _arguments: ToolResult(ok=True, output=long_output),
+                )
+            }
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            agent._session_store = store
+            agent._session_state = state
+
+            calls = 0
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return AgentModelReply(
+                        message={
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "big_tool", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                        content="",
+                        tool_calls=[ToolCall(name="big_tool", id="call_1", function_name="big_tool")],
+                    )
+                return AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            LocalToolAgent.run_stream(agent, "调用大工具", lambda _delta: None)
+
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            tool_payload = next(event["payload"] for event in events if event["type"] == "tool_result")
+            artifact_path = workspace / ".agent_sessions" / tool_payload["artifact_path"]
+            artifact_exists = artifact_path.is_file()
+            artifact_text = artifact_path.read_text(encoding="utf-8")
+
+        self.assertEqual(tool_payload["storage"], "artifact")
+        self.assertIn("output_preview", tool_payload)
+        self.assertIn("model_output", tool_payload)
+        self.assertTrue(tool_payload["model_output"].endswith("... 工具输出已截断。"))
+        self.assertTrue(artifact_exists)
+        self.assertEqual(artifact_text, long_output)
+
     def test_resume_session_restores_recent_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)

@@ -329,7 +329,13 @@ class QtUITest(unittest.TestCase):
             SessionEvent.create(
                 session_id=session_id,
                 event_type="tool_result",
-                payload={"tool": "read_file", "ok": True, "output": "README"},
+                payload={
+                    "tool": "read_file",
+                    "ok": True,
+                    "output": "README 摘要",
+                    "model_output": "README",
+                    "artifact_path": "artifacts/session/tool_result.txt",
+                },
             ),
             SessionEvent.create(session_id=session_id, event_type="assistant_message", payload={"content": "完成"}),
         ]
@@ -340,6 +346,8 @@ class QtUITest(unittest.TestCase):
         self.assertEqual(projected[1]["type"], "tool_start")
         self.assertEqual(projected[1]["step"], 1)
         self.assertEqual(projected[2]["type"], "tool_result")
+        self.assertIn("完整输出 artifact", projected[2]["output"])
+        self.assertIn("README", projected[2]["output"])
         self.assertEqual(projected[3]["type"], "assistant")
 
     def test_should_not_duplicate_user_message_when_frontend_already_echoed_input(self) -> None:

@@ -368,6 +368,7 @@ class ToolResult:
 
     ok: bool
     output: str
+    full_output: str = ""
 
 
 @dataclass(frozen=True)
@@ -961,7 +962,8 @@ class LocalToolAgent:
                             "tool": tool_call.name,
                             "tool_call_id": tool_call.id,
                             "ok": tool_result.ok,
-                            "output": tool_result.output,
+                            "output": tool_result.full_output or tool_result.output,
+                            "model_output": tool_result.output,
                         },
                     )
                     working_messages.append(self._tool_result_message(tool_call, tool_result))
@@ -1600,6 +1602,7 @@ class LocalToolAgent:
         return ToolResult(
             ok=result.ok,
             output=self._truncate_tool_output(result.output),
+            full_output=result.output,
         )
 
     def _approve_tool_call(

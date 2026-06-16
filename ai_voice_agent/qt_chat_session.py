@@ -112,7 +112,15 @@ def _session_events_to_ui(events: list[SessionEvent]) -> list[dict[str, object]]
                 tool_step += 1
         elif event.type == "tool_result":
             tool = payload.get("tool", "")
-            output = payload.get("output", "")
+            output = payload.get("model_output")
+            if not isinstance(output, str) or not output.strip():
+                output = payload.get("output_preview")
+            if not isinstance(output, str) or not output.strip():
+                output = payload.get("output", "")
+            artifact_path = payload.get("artifact_path", "")
+            if isinstance(artifact_path, str) and artifact_path.strip():
+                artifact_hint = f"\n完整输出 artifact：{artifact_path.strip()}"
+                output = f"{output}{artifact_hint}" if isinstance(output, str) else artifact_hint.strip()
             ok = payload.get("ok", False)
             if isinstance(tool, str) and isinstance(output, str):
                 messages.append(
