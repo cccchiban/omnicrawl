@@ -15,7 +15,7 @@ from ai_voice_agent.approval import (
     normalize_approval_mode,
     save_approval_mode,
 )
-from ai_voice_agent.slash_commands import handle_approval_command
+from ai_voice_agent.slash_commands import handle_approval_command, handle_reasoning_command
 
 
 class ApprovalConfigTest(unittest.TestCase):
@@ -79,6 +79,25 @@ class ApprovalCommandTest(unittest.TestCase):
         self.assertEqual(agent.approval_mode, APPROVAL_MODE_AUTO)
         save_mode.assert_called_once_with(APPROVAL_MODE_AUTO)
         self.assertIn("完全自动批准", message or "")
+
+    def test_handle_reasoning_command_updates_agent_and_config(self) -> None:
+        class FakeAgent:
+            reasoning_effort = "none"
+
+            def set_reasoning_effort(self, effort: str) -> str:
+                self.reasoning_effort = effort
+                return effort
+
+        agent = FakeAgent()
+        with patch(
+            "ai_voice_agent.slash_commands.save_reasoning_effort",
+            return_value=Path("config.json"),
+        ) as save_effort:
+            message = handle_reasoning_command(agent, "/reasoning high")
+
+        self.assertEqual(agent.reasoning_effort, "high")
+        save_effort.assert_called_once_with("high")
+        self.assertIn("推理强度已切换为 high", message)
 
     def test_parse_tool_review_response_accepts_embedded_json(self) -> None:
         approved, reason = LocalToolAgent._parse_tool_review_response(

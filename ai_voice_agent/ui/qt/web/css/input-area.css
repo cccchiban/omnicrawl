@@ -3,11 +3,60 @@
    ═══════════════════════════════════════════════════════════════ */
 
 #input-area {
-  padding: var(--space-md) var(--space-xl) var(--space-lg);
+  padding: var(--space-sm) var(--space-xl) var(--space-md);
   background: linear-gradient(to top, var(--bg-main) 60%, transparent);
   flex-shrink: 0;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+/* ── Workspace 信息条 ──────────────────────────── */
+.workspace-info {
+  width: 100%;
+  max-width: var(--input-max-width);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--bg-tool-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  color: var(--text-tertiary);
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.workspace-info.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.workspace-info svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  flex-shrink: 0;
+}
+
+.workspace-info .workspace-path {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+}
+
+.workspace-info .workspace-status {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 13px;
 }
 
 .input-container {
@@ -20,12 +69,18 @@
   border: 1px solid var(--border-input);
   border-radius: var(--radius-lg);
   padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
-  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.2s ease;
 }
 
 .input-container:focus-within {
   border-color: var(--border-input-focus);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+  animation: input-breathe 2s ease-in-out infinite;
+}
+
+@keyframes input-breathe {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.10); }
+  50% { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18); }
 }
 
 .input-wrapper {
@@ -41,12 +96,13 @@
   outline: none;
   resize: none;
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 18px;
   line-height: 1.5;
-  padding: 10px 0;
+  padding: 8px 0;
   min-height: var(--input-min-height);
   max-height: var(--input-max-height);
   overflow-y: auto;
+  transition: transform 0.15s ease;
 }
 
 #chat-input::placeholder { color: var(--text-placeholder); }
@@ -56,56 +112,295 @@
   cursor: not-allowed;
 }
 
-/* 发送按钮（圆形） */
+/* 输入时微缩放反馈 */
+.input-container.has-content {
+  transform: scale(1.002);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   发送按钮 — "引力核心" 四态设计
+   设计原则：克制、专业、即时反馈，避免过度吸引注意力
+   ═══════════════════════════════════════════════════════════════ */
+
 #send-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-full);
   flex-shrink: 0;
 }
 
+/* ── 共享基础 ──────────────────────────────────── */
 .persona-btn {
-  background: var(--text-tertiary);
-  color: var(--bg-app);
+  position: relative;
+  width: 44px;
+  height: 44px;
   border: none;
   border-radius: var(--radius-full);
-  width: 36px;
-  height: 36px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--transition-base);
   flex-shrink: 0;
+  outline: none;
+  overflow: hidden;
+  /* 弹性缓动：状态切换有呼吸感 */
+  transition:
+    background 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    color 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 0.2s ease;
 }
 
-.persona-btn:hover:not(:disabled) {
-  background: var(--text-primary);
+/* 点击涟漪效果容器 */
+.persona-btn .ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  transform: scale(0);
+  animation: ripple-effect 0.5s ease-out forwards;
+  pointer-events: none;
 }
 
-/* 有输入内容时的激活态 */
-.persona-btn.ready:not(:disabled) {
-  background: var(--text-primary);
-  color: var(--bg-app);
+@keyframes ripple-effect {
+  to {
+    transform: scale(4);
+    opacity: 0;
+  }
 }
 
+/* ── ① 禁用态：输入框无内容 ──────────────────────
+   保持结构可见，安静存在但不喧宾夺主 */
 .persona-btn:disabled {
-  background: var(--border-light);
+  background: var(--bg-tool-card);
   color: var(--text-tertiary);
   cursor: not-allowed;
-  transform: none;
   opacity: 0.6;
+  transform: scale(1);
+  box-shadow: none;
 }
 
+/* ── ② 激活态：有输入内容（.ready）───────────────
+   实心主色，清晰传达"可发送"信号 */
+.persona-btn.ready:not(:disabled) {
+  background: var(--accent-blue);
+  color: #ffffff;
+  opacity: 1;
+  transform: scale(1);
+  box-shadow: none;
+}
+
+/* ── ③ 激活态 hover：微上浮 + 轻阴影 ─────────── */
+.persona-btn.ready:not(:disabled):hover {
+  background: #4f8ef7;
+  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
+  transform: translateY(-1px);
+}
+
+/* ── ④ 激活态 active（按下瞬间）─────────────────
+   快速反馈：下沉 + 内阴影，模拟物理按压 */
+.persona-btn.ready:not(:disabled):active {
+  background: #2563eb;
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
+  transition: all 0.08s ease;
+}
+
+/* ── ⑤ 加载态（发送中）──────────────────────────
+   脉冲动画，表示正在处理 */
+.persona-btn.loading:not(:disabled) {
+  background: var(--accent-blue);
+  color: #ffffff;
+  cursor: wait;
+  opacity: 0.85;
+  pointer-events: none;
+  animation: send-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes send-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
+  }
+}
+
+/* ── 图标 ──────────────────────────────────────── */
 .btn-icon {
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 激活态图标微旋转，增加动感但不夸张 */
+.persona-btn.ready:not(:disabled) .btn-icon {
+  transform: translateX(0);
+}
+
+.persona-btn.ready:not(:disabled):hover .btn-icon {
+  transform: translateX(2px);
+}
+
+/* 加载态图标旋转 */
+.persona-btn.loading:not(:disabled) .btn-icon {
+  animation: icon-spin 1s linear infinite;
+}
+
+@keyframes icon-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .btn-icon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+}
+
+/* ── Focus 可见性（无障碍）─────────────────────── */
+.persona-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* ── 加载态 spinner 替代图标 ─────────────────── */
+.persona-btn.loading:not(:disabled) .btn-icon svg {
+  display: none;
+}
+
+.persona-btn.loading:not(:disabled) .btn-icon::after {
+  content: '';
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: icon-spin 0.8s linear infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   推理强度下拉菜单
+   ═══════════════════════════════════════════════════════════════ */
+
+.reasoning-dropdown-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.reasoning-toggle {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.reasoning-toggle:hover {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-secondary);
+}
+
+.reasoning-toggle svg {
   width: 18px;
   height: 18px;
-  fill: currentColor;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.reasoning-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  min-width: 180px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xs);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transform: translateY(4px) scale(0.96);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 100;
+}
+
+.reasoning-dropdown.open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.reasoning-dropdown-header {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.reasoning-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  width: 100%;
+  padding: 8px var(--space-sm);
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  text-align: left;
+}
+
+.reasoning-option:hover {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-primary);
+}
+
+.reasoning-option.active {
+  color: var(--text-primary);
+}
+
+.reasoning-option .check-mark {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.reasoning-option.active .check-mark {
+  opacity: 1;
+}
+
+.reasoning-option .check-mark svg {
+  width: 14px;
+  height: 14px;
+  stroke: var(--accent-blue);
+  stroke-width: 2.5;
+  fill: none;
+}
+
+.reasoning-option .option-label {
+  flex: 1;
+}
+
+.reasoning-option .option-desc {
+  font-size: 13px;
+  color: var(--text-tertiary);
 }

@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .runtime_config import RuntimeConfigError, get_section, load_config_data
+from .runtime_config import RuntimeConfigError, get_section, load_config_data, save_config_data
 
 
 DEFAULT_THINKING_TYPE = "disabled"
@@ -194,6 +195,23 @@ def load_llm_config() -> LLMConfig:
             DEFAULT_REASONING_EFFORT,
         ),
     )
+
+
+def save_reasoning_effort(effort: str, config_path: str | Path | None = None) -> Path:
+    """把推理强度写回 `config.json`，并同步 thinking_type。"""
+
+    normalized = normalize_reasoning_effort(effort)
+    try:
+        data = load_config_data(config_path)
+        llm_section = get_section(data, "llm")
+        llm_section["reasoning_effort"] = normalized
+        llm_section["thinking_type"] = (
+            "disabled" if normalized in {"none", "disabled"} else "enabled"
+        )
+        data["llm"] = llm_section
+        return save_config_data(data, config_path)
+    except RuntimeConfigError as exc:
+        raise LLMError(str(exc)) from exc
 
 
 class OpenAIResponseLLM:

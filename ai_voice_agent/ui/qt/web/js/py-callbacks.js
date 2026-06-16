@@ -40,6 +40,8 @@ window.pyCallbacks = {
   clearInput:         Input.clear,
   setInputEnabled:    Input.setEnabled,
   setInputPlaceholder: Input.setPlaceholder,
+  setWorkspaceInfo:   Input.setWorkspaceInfo,
+  setReasoningEffort: Input.setReasoningEffort,
 
   // ── 对话框 + 通知 ─────────────────────────────
   showConfirmDialog:  Dialog.show,

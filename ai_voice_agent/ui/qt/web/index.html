@@ -37,19 +37,22 @@
       </div>
       <span class="sidebar-title">AI Voice Agent</span>
     </div>
+    <button class="sidebar-toggle" id="sidebar-toggle" title="折叠/展开侧边栏" aria-label="折叠侧边栏" aria-expanded="true">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
     <nav class="sidebar-nav">
       <div class="nav-section">
         <div class="nav-section-title">对话</div>
         <a href="#" class="nav-item active" id="nav-new-chat">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 4v16m8-8H4"/></svg>
-          新对话
+          <span class="nav-label">新对话</span>
         </a>
       </div>
       <div class="nav-section">
         <div class="nav-section-title">项目</div>
         <a href="#" class="nav-item" id="nav-export">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-          导出对话
+          <span class="nav-label">导出对话</span>
         </a>
       </div>
     </nav>
@@ -63,6 +66,9 @@
       <div class="title-left">
         <div class="model-selector-wrapper" id="model-selector-wrapper">
           <button class="model-selector" id="model-selector" title="选择模型">
+            <span id="model-selector-icon" class="model-icon other icon-fallback" title="Model">
+              <span class="model-icon-fallback">M</span>
+            </span>
             <span id="model-label">选择模型</span>
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 9l6 6 6-6"/></svg>
           </button>
@@ -105,14 +111,49 @@
 
     <!-- 输入区 -->
     <div id="input-area">
+      <!-- Workspace 信息条 -->
+      <div class="workspace-info" id="workspace-info">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span class="workspace-path" id="workspace-path">未检测到工作区</span>
+        <span class="workspace-status" id="workspace-status">未激活</span>
+      </div>
       <div class="input-container">
         <div class="input-wrapper">
           <textarea id="chat-input" rows="1"
             placeholder="输入消息…  Enter 发送 · Shift+Enter 换行"></textarea>
         </div>
+        <!-- 推理强度下拉菜单 -->
+        <div class="reasoning-dropdown-wrapper" id="reasoning-dropdown-wrapper">
+          <button class="reasoning-toggle" id="reasoning-toggle" title="推理强度" aria-label="推理强度" aria-haspopup="true" aria-expanded="false">
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </button>
+          <div class="reasoning-dropdown hidden" id="reasoning-dropdown">
+            <div class="reasoning-dropdown-header">推理强度</div>
+            <button class="reasoning-option active" data-value="none">
+              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
+              <span class="option-label">关闭</span>
+              <span class="option-desc">常规响应</span>
+            </button>
+            <button class="reasoning-option" data-value="low">
+              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
+              <span class="option-label">轻度</span>
+              <span class="option-desc">快速响应</span>
+            </button>
+            <button class="reasoning-option" data-value="medium">
+              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
+              <span class="option-label">标准</span>
+              <span class="option-desc">平衡质量与速度</span>
+            </button>
+            <button class="reasoning-option" data-value="high">
+              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
+              <span class="option-label">深度</span>
+              <span class="option-desc">详细推理</span>
+            </button>
+          </div>
+        </div>
         <button id="send-btn" class="persona-btn" disabled>
           <span class="btn-icon">
-            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
           </span>
         </button>
       </div>

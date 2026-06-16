@@ -6,6 +6,89 @@
  */
 'use strict';
 
+const LOBE_ICON_BASE_URL = 'https://registry.npmmirror.com/@lobehub/icons-static-svg/latest/files/icons/';
+
+function normalizeModelProvider(value) {
+  const text = String(value || '').toLowerCase();
+  if (text.indexOf('claude') === 0 || text.indexOf('anthropic/claude') === 0) return 'claude';
+  if (text.indexOf('gpt') === 0 || text.indexOf('chatgpt') === 0 || text.indexOf('openai') === 0 || /^o[134]/.test(text)) return 'gpt';
+  if (text.indexOf('deepseek') === 0) return 'deepseek';
+  if (text.indexOf('qwen') === 0 || text.indexOf('qwq') === 0) return 'qwen';
+  if (text.indexOf('glm') === 0 || text.indexOf('chatglm') === 0) return 'glm';
+  return 'other';
+}
+
+function modelProviderIconSlug(provider) {
+  const icons = {
+    claude: 'claude',
+    gpt: 'openai',
+    deepseek: 'deepseek',
+    qwen: 'qwen',
+    glm: 'chatglm',
+  };
+  return icons[provider] || '';
+}
+
+function modelProviderFallback(provider) {
+  const icons = {
+    claude: 'C',
+    gpt: 'G',
+    deepseek: 'D',
+    qwen: 'Q',
+    glm: 'Z',
+    other: 'M',
+  };
+  return icons[provider] || 'M';
+}
+
+function modelProviderLabel(provider) {
+  const labels = {
+    claude: 'Claude',
+    gpt: 'OpenAI',
+    deepseek: 'DeepSeek',
+    qwen: 'Qwen',
+    glm: 'ChatGLM',
+    other: 'Model',
+  };
+  return labels[provider] || 'Model';
+}
+
+function modelIconMarkup(provider, className) {
+  const slug = modelProviderIconSlug(provider);
+  const fallback = modelProviderFallback(provider);
+  const labelText = modelProviderLabel(provider);
+  const extraClass = className || 'model-icon';
+
+  if (!slug) {
+    return `<span class="${extraClass} ${provider} icon-fallback" title="${labelText}">
+      <span class="model-icon-fallback">${fallback}</span>
+    </span>`;
+  }
+
+  return `<span class="${extraClass} ${provider}" title="${labelText}">
+    <img
+      alt=""
+      aria-hidden="true"
+      src="${LOBE_ICON_BASE_URL}${slug}.svg"
+      onerror="this.parentElement.classList.add('icon-fallback')"
+    />
+    <span class="model-icon-fallback">${fallback}</span>
+  </span>`;
+}
+
+function setCurrentModelIdentity(model) {
+  if (!model || typeof AppState === 'undefined') return;
+  const provider = normalizeModelProvider(model.provider || model.id);
+  AppState.setCurrentModelIdentity({
+    id: model.id,
+    name: model.name || model.id,
+    provider: provider,
+    iconSlug: modelProviderIconSlug(provider),
+    fallback: modelProviderFallback(provider),
+    label: modelProviderLabel(provider),
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
 
   // 1. 初始化输入模块（绑定 Enter/Shift+Enter 等事件）
@@ -14,7 +97,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // 2. 初始化对话框模块（绑定确认/拒绝按钮事件）
   Dialog.init();
 
-  // 3. 停止生成按钮
+  // 3. 侧边栏折叠
+  initSidebarToggle();
+
+  // 4. 停止生成按钮
   const stopBtn = document.getElementById('stop-btn');
   if (stopBtn) {
     stopBtn.addEventListener('click', () => {
@@ -44,6 +130,43 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('[app] AI Voice Agent 前端已就绪');
 });
 
+function initSidebarToggle() {
+  const sidebar = document.getElementById('sidebar');
+  const toggle = document.getElementById('sidebar-toggle');
+  if (!sidebar || !toggle) return;
+
+  const collapsed = readSidebarCollapsed();
+  setSidebarCollapsed(collapsed);
+
+  toggle.addEventListener('click', () => {
+    const isCollapsed = !sidebar.classList.contains('collapsed');
+    setSidebarCollapsed(isCollapsed);
+    writeSidebarCollapsed(isCollapsed);
+  });
+
+  function setSidebarCollapsed(collapsed) {
+    sidebar.classList.toggle('collapsed', collapsed);
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.setAttribute('aria-label', collapsed ? '展开侧边栏' : '折叠侧边栏');
+  }
+
+  function readSidebarCollapsed() {
+    try {
+      return localStorage.getItem('sidebar-collapsed') === 'true';
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function writeSidebarCollapsed(collapsed) {
+    try {
+      localStorage.setItem('sidebar-collapsed', String(collapsed));
+    } catch (err) {
+      // 本地存储不可用时只影响偏好持久化，不影响本次折叠交互。
+    }
+  }
+}
+
 /**
  * 初始化模型选择器下拉菜单
  */
@@ -72,10 +195,10 @@ function initModelSelector() {
       const item = document.createElement('button');
       item.className = 'model-option' + (model.id === currentModel ? ' selected' : '');
       item.dataset.modelId = model.id;
-      const provider = normalizeProvider(model.provider || model.id);
+      const provider = normalizeModelProvider(model.provider || model.id);
       const name = model.name || model.id;
       item.innerHTML = `
-        <span class="model-icon ${provider}">${providerIcon(provider)}</span>
+        ${modelIconMarkup(provider, 'model-icon')}
         <span class="model-name"></span>
         <svg class="model-check" viewBox="0 0 24 24" width="16" height="16">
           <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
@@ -99,32 +222,12 @@ function initModelSelector() {
     list.appendChild(item);
   }
 
-  function normalizeProvider(value) {
-    const text = String(value || '').toLowerCase();
-    if (text.indexOf('claude') === 0 || text.indexOf('anthropic/claude') === 0) return 'claude';
-    if (text.indexOf('gpt') === 0 || text.indexOf('chatgpt') === 0 || /^o[134]/.test(text)) return 'gpt';
-    if (text.indexOf('deepseek') === 0) return 'deepseek';
-    if (text.indexOf('qwen') === 0 || text.indexOf('qwq') === 0) return 'qwen';
-    if (text.indexOf('glm') === 0 || text.indexOf('chatglm') === 0) return 'glm';
-    return 'other';
-  }
-
-  function providerIcon(provider) {
-    const icons = {
-      claude: 'C',
-      gpt: 'G',
-      deepseek: 'D',
-      qwen: 'Q',
-      glm: 'Z',
-      other: 'M',
-    };
-    return icons[provider] || 'M';
-  }
-
   // 选择模型
   function selectModel(model) {
     currentModel = model.id;
     if (label) label.textContent = model.name;
+    setCurrentModelIdentity(model);
+    updateSelectorIcon(AppState.currentModelProvider);
 
     // 更新选中状态
     list.querySelectorAll('.model-option').forEach(opt => {
@@ -223,7 +326,11 @@ function initModelSelector() {
       renderModels(models);
       if (currentModel) {
         const selected = models.find(model => model.id === currentModel);
-        if (selected && label) label.textContent = selected.name || selected.id;
+        if (selected) {
+          if (label) label.textContent = selected.name || selected.id;
+          setCurrentModelIdentity(selected);
+          updateSelectorIcon(AppState.currentModelProvider);
+        }
       }
     } else {
       renderMessage('暂无模型');
@@ -233,9 +340,23 @@ function initModelSelector() {
   function setCurrentModel(modelId, modelName) {
     currentModel = modelId;
     if (label && modelName) label.textContent = modelName;
+    setCurrentModelIdentity({ id: modelId, name: modelName || modelId });
+    updateSelectorIcon(AppState.currentModelProvider);
     list.querySelectorAll('.model-option').forEach(opt => {
       opt.classList.toggle('selected', opt.dataset.modelId === modelId);
     });
+  }
+
+  function updateSelectorIcon(provider) {
+    const selectorIcon = document.getElementById('model-selector-icon');
+    if (!selectorIcon) return;
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = modelIconMarkup(provider || 'other', 'model-icon').trim();
+    const icon = wrapper.firstElementChild;
+    if (icon) {
+      selectorIcon.replaceWith(icon);
+      icon.id = 'model-selector-icon';
+    }
   }
 
   function showError(message) {
@@ -268,7 +389,11 @@ function exportChat() {
       if (bubble) md += '**你**：\n\n' + bubble.textContent.trim() + '\n\n';
     } else if (row.classList.contains('ai')) {
       const bubble = row.querySelector('.bubble');
-      if (bubble) md += '**AI 助手**：\n\n' + bubble.textContent.trim() + '\n\n';
+      if (bubble) {
+        const role = row.querySelector('.msg-role');
+        const name = role ? role.textContent.trim() : AppState.currentModelName;
+        md += '**' + name + '**：\n\n' + bubble.textContent.trim() + '\n\n';
+      }
     } else if (row.classList.contains('tool-row')) {
       const name = row.querySelector('.tool-name');
       const status = row.querySelector('.tool-status');

@@ -13,6 +13,8 @@ from .slash_commands import (
     format_tool_confirmation,
     handle_approval_command,
     handle_model_command,
+    handle_reasoning_command,
+    handle_session_command,
 )
 from .model_catalog import (
     ModelCatalogError,
@@ -108,6 +110,11 @@ def run_qt_chat(
                 ui.show_model_list_error(str(exc))
             return True
 
+        reasoning_message = handle_reasoning_command(agent, user_text)
+        if reasoning_message is not None:
+            ui.notice(reasoning_message)
+            return True
+
         before_model = agent.current_model
         model_message = handle_model_command(agent, user_text)
         if model_message is None:
@@ -183,6 +190,12 @@ def run_qt_chat(
 
         if user_text.strip() == "/mcp":
             ui.write(format_mcp_status(agent))
+            ui.flush_markdown(None)
+            continue
+
+        session_message = handle_session_command(agent, user_text)
+        if session_message is not None:
+            ui.write(session_message)
             ui.flush_markdown(None)
             continue
 

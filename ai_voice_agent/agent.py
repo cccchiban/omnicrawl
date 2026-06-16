@@ -16,7 +16,14 @@ from .approval import (
     load_approval_mode,
     normalize_approval_mode,
 )
-from .llm import LLMConfig, OpenAIResponseLLM, VALID_REASONING_EFFORTS, load_llm_config
+from .llm import (
+    LLMConfig,
+    LLMError,
+    OpenAIResponseLLM,
+    VALID_REASONING_EFFORTS,
+    load_llm_config,
+    normalize_reasoning_effort,
+)
 from .memory import (
     MemoryStore,
     MemoryStoreError,
@@ -25,6 +32,7 @@ from .memory import (
     search_result_to_dict,
 )
 from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
+from .session import SessionIndexEntry, SessionState, SessionStore, SessionStoreError
 from .skill import SkillManager, SkillMatchResult
 from .temp_workspace import (
     AgentTempWorkspace,
@@ -425,6 +433,8 @@ class AgentConfig:
     skill_paths: list[str] = field(default_factory=list)
     memory_enabled: bool = True
     memory_directory: str = "memory"
+    session_enabled: bool = True
+    session_directory: str = ".agent_sessions"
     mcp_config: MCPConfig | None = None
     approval_mode: str = field(default_factory=load_approval_mode)
     workspace_detection_summary: str = ""
@@ -458,6 +468,8 @@ class AgentConfig:
         )
         if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
             raise AgentError("memory_directory 必须是非空字符串。")
+        if not isinstance(self.session_directory, str) or not self.session_directory.strip():
+            raise AgentError("session_directory 必须是非空字符串。")
         if not isinstance(self.temp_workspace, AgentTempWorkspaceConfig):
             raise AgentError("temp_workspace 必须是 AgentTempWorkspaceConfig。")
         if not isinstance(self.workspace_detection_summary, str):
@@ -527,6 +539,8 @@ class LocalToolAgent:
             self._temp_workspace.clean_if_due()
         except AgentTempWorkspaceError as exc:
             raise AgentError(str(exc)) from exc
+        self._session_store = self._create_session_store() if self.config.session_enabled else None
+        self._session_state = self._start_session() if self._session_store is not None else None
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._workspace_tools = WorkspaceTools(
             self.workspace_root,
@@ -579,11 +593,48 @@ class LocalToolAgent:
             raise AgentError(str(exc)) from exc
 
     def reset_conversation(self) -> None:
-        """开启新对话：清空对话历史，保留工具、记忆和 Skill 配置。"""
+        """开启新对话：清空对话历史并创建新会话，保留工具、记忆和 Skill 配置。"""
 
         self._history.clear()
         self._pending_user_text = None
         self._active_skills = []
+        if self._session_store is not None:
+            self._session_state = self._start_session()
+
+    @property
+    def current_session_id(self) -> str:
+        """当前会话 ID；会话系统关闭时返回空字符串。"""
+
+        state = getattr(self, "_session_state", None)
+        return state.session_id if state is not None else ""
+
+    def list_sessions(self, limit: int = 10) -> list[SessionIndexEntry]:
+        """列出当前工作区最近会话，供 `/sessions` 展示。"""
+
+        store = self._require_session_store()
+        try:
+            return store.list_sessions(workspace_root=self.workspace_root, limit=limit)
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def resume_session(self, session_id: str) -> SessionState:
+        """恢复指定会话，并用转录消息重建 `_history`。"""
+
+        store = self._require_session_store()
+        try:
+            state = store.load_session(session_id)
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+        if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
+            raise AgentError(
+                "不能恢复其他工作区的会话："
+                f"{state.workspace_root}"
+            )
+        self._session_state = state
+        self._history = state.messages[-self.config.max_history_turns * 2 :]
+        self._pending_user_text = None
+        self._active_skills = []
+        return state
 
     def close(self) -> None:
         """关闭 Agent 持有的外部资源，当前主要是 MCP stdio 子进程。"""
@@ -620,6 +671,25 @@ class LocalToolAgent:
             raise AgentError("模型 ID 不能为空。")
         self.config.llm.model = model_id
 
+    @property
+    def reasoning_effort(self) -> str:
+        """当前推理强度，供 TUI / Qt 控件展示和切换。"""
+
+        return self.config.llm.reasoning_effort
+
+    def set_reasoning_effort(self, effort: str) -> str:
+        """运行时切换推理强度；持久化由斜杠命令或 UI 调用方负责。"""
+
+        try:
+            normalized = normalize_reasoning_effort(effort)
+        except LLMError as exc:
+            raise AgentError(str(exc)) from exc
+        self.config.llm.reasoning_effort = normalized
+        self.config.llm.thinking_type = (
+            "disabled" if normalized in {"none", "disabled"} else "enabled"
+        )
+        return normalized
+
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""
 
@@ -640,6 +710,30 @@ class LocalToolAgent:
         if not self._is_relative_to(resolved, self.workspace_root):
             raise AgentError(f"记忆目录必须位于工作区内：{raw_directory}")
         return MemoryStore(resolved)
+
+    def _create_session_store(self) -> SessionStore:
+        """创建会话存储，并限制在工作区内。"""
+
+        raw_directory = self.config.session_directory.strip()
+        candidate = Path(raw_directory)
+        if not candidate.is_absolute():
+            candidate = self.workspace_root / candidate
+        resolved = candidate.resolve()
+        if not self._is_relative_to(resolved, self.workspace_root):
+            raise AgentError(f"会话目录必须位于工作区内：{raw_directory}")
+        store = SessionStore(resolved)
+        try:
+            store.ensure()
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+        return store
+
+    def _start_session(self) -> SessionState:
+        store = self._require_session_store()
+        try:
+            return store.start_session(self.workspace_root)
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
 
     def _create_mcp_manager(self) -> MCPClientManager:
         """加载并初始化 MCP Client Manager。
@@ -696,56 +790,86 @@ class LocalToolAgent:
         pending_text = getattr(self, "_pending_user_text", None)
         text = self._resolve_continue_request(text)
         self._pending_user_text = pending_text or text
+        self._append_session_event("user_message", {"content": text})
         working_messages = [
             *self._project_instructions_messages(),
             *self._history,
             {"role": "user", "content": text},
         ]
 
-        all_reasoning_parts: list[str] = []
-        step = 1
-        while True:
-            reply = self._request_agent_reply(
-                working_messages,
-                on_delta,
-                report_token_usage,
-                _report_protocol_wait,
-                report_retry_status,
+        try:
+            all_reasoning_parts: list[str] = []
+            step = 1
+            while True:
+                reply = self._request_agent_reply(
+                    working_messages,
+                    on_delta,
+                    report_token_usage,
+                    _report_protocol_wait,
+                    report_retry_status,
+                )
+                if reply.reasoning:
+                    all_reasoning_parts.append(reply.reasoning)
+
+                if not reply.tool_calls:
+                    final_reply = reply.content.strip()
+                    if final_reply and not reply.content_streamed:
+                        on_delta(final_reply)
+                    combined_reasoning = "\n".join(all_reasoning_parts)
+                    self._append_history(text, final_reply, combined_reasoning)
+                    self._append_session_event("assistant_message", {"content": final_reply})
+                    self._pending_user_text = None
+                    return final_reply
+
+                working_messages.append(reply.message)
+                for raw_tool_call in reply.tool_calls:
+                    tool_call = self._normalize_tool_call(raw_tool_call)
+                    self._append_session_event(
+                        "tool_call_requested",
+                        {
+                            "tool": tool_call.name,
+                            "arguments": tool_call.arguments,
+                            "tool_call_id": tool_call.id,
+                            "function_name": tool_call.function_name,
+                        },
+                    )
+                    tool = self._tools.get(tool_call.name)
+                    if tool is None:
+                        tool_result = ToolResult(
+                            ok=False,
+                            output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
+                        )
+                    else:
+                        tool_result = self._run_tool(
+                            tool,
+                            tool_call.arguments,
+                            on_start=lambda step=step, tool_call=tool_call: report_tool_start(
+                                step,
+                                tool_call,
+                            ),
+                        )
+                    report_tool_result(tool_call, tool_result)
+                    self._append_session_event(
+                        "tool_result",
+                        {
+                            "tool": tool_call.name,
+                            "tool_call_id": tool_call.id,
+                            "ok": tool_result.ok,
+                            "output": tool_result.output,
+                        },
+                    )
+                    working_messages.append(self._tool_result_message(tool_call, tool_result))
+                    step += 1
+                status("")  # 通知调用方重新启动等待动画
+        except Exception as exc:
+            self._append_session_event(
+                "session_interrupted",
+                {
+                    "user_text": text,
+                    "reason": str(exc),
+                },
             )
-            if reply.reasoning:
-                all_reasoning_parts.append(reply.reasoning)
-
-            if not reply.tool_calls:
-                final_reply = reply.content.strip()
-                if final_reply and not reply.content_streamed:
-                    on_delta(final_reply)
-                combined_reasoning = "\n".join(all_reasoning_parts)
-                self._append_history(text, final_reply, combined_reasoning)
-                self._pending_user_text = None
-                return final_reply
-
-            working_messages.append(reply.message)
-            for raw_tool_call in reply.tool_calls:
-                tool_call = self._normalize_tool_call(raw_tool_call)
-                tool = self._tools.get(tool_call.name)
-                if tool is None:
-                    tool_result = ToolResult(
-                        ok=False,
-                        output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
-                    )
-                else:
-                    tool_result = self._run_tool(
-                        tool,
-                        tool_call.arguments,
-                        on_start=lambda step=step, tool_call=tool_call: report_tool_start(
-                            step,
-                            tool_call,
-                        ),
-                    )
-                report_tool_result(tool_call, tool_result)
-                working_messages.append(self._tool_result_message(tool_call, tool_result))
-                step += 1
-            status("")  # 通知调用方重新启动等待动画
+            raise
 
     def _apply_skill_command(self, text: str, status: Callable[[str], None]) -> str:
         """处理 /skill:name，并在每轮开始时清空上一轮手动 Skill 注入。"""
@@ -1342,7 +1466,23 @@ class LocalToolAgent:
                 reason = denial_reason or f"未批准执行：{tool.name}。"
                 if tool.name in self._mcp_manager.registry.tools:
                     self._mcp_manager.record_denied_tool_call(tool.name, arguments, reason)
+                self._append_session_event(
+                    "tool_call_denied",
+                    {
+                        "tool": tool.name,
+                        "arguments": arguments,
+                        "reason": reason,
+                    },
+                )
                 return ToolResult(ok=False, output=reason)
+            self._append_session_event(
+                "tool_call_approved",
+                {
+                    "tool": tool.name,
+                    "arguments": arguments,
+                    "mode": self.config.approval_mode,
+                },
+            )
 
         try:
             if on_start is not None:
@@ -1908,6 +2048,11 @@ class LocalToolAgent:
             raise AgentError("记忆系统未启用。")
         return self._memory_store
 
+    def _require_session_store(self) -> SessionStore:
+        if self._session_store is None:
+            raise AgentError("会话系统未启用。")
+        return self._session_store
+
     @staticmethod
     def _read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:
         value = arguments.get(key)
@@ -1959,10 +2104,12 @@ class LocalToolAgent:
         return toolbox
 
     def _workspace_extra_protection_message(self, path: Path) -> str | None:
-        """为 Agent 内置工具补充记忆目录保护，MCP Server 不共享这条业务限制。"""
+        """为 Agent 内置工具补充内部目录保护，MCP Server 不共享这条业务限制。"""
 
         if self._is_memory_path(path):
             return f"请使用 memory_* 工具访问记忆目录：{self._relative_path(path)}"
+        if self._is_session_path(path):
+            return f"请使用会话命令访问会话目录：{self._relative_path(path)}"
         return None
 
     def _relative_path(self, path: Path) -> str:
@@ -1978,6 +2125,40 @@ class LocalToolAgent:
         except OSError:
             resolved = path
         return resolved == self._memory_store.root or self._is_relative_to(resolved, self._memory_store.root)
+
+    def _is_session_path(self, path: Path) -> bool:
+        """普通文件工具不直接访问会话目录，避免模型误写转录文件。"""
+
+        if getattr(self, "_session_store", None) is None:
+            return False
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        return resolved == self._session_store.root or self._is_relative_to(resolved, self._session_store.root)
+
+    def _append_session_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """追加会话事件；持久化失败时中断当前任务，避免误以为会话可恢复。"""
+
+        store = getattr(self, "_session_store", None)
+        state = getattr(self, "_session_state", None)
+        if store is None or state is None:
+            return
+        try:
+            event = store.append_event(state.session_id, event_type, payload)
+            self._session_state = SessionState(
+                session_id=state.session_id,
+                title=state.title,
+                workspace_root=state.workspace_root,
+                path=state.path,
+                created_at=state.created_at,
+                updated_at=event.created_at,
+                messages=state.messages,
+                last_event_type=event.type,
+                event_count=state.event_count + 1,
+            )
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
 
     def _truncate_tool_output(self, output: str) -> str:
         if len(output) <= self.config.max_tool_output_chars:

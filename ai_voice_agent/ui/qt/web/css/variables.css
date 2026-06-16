@@ -47,8 +47,8 @@
   --code-comment:     #546e7a;
 
   /* ── 字体 ────────────────────────────────────── */
-  --font-sans:        'Inter', 'SF Pro Display', 'system-ui', '-apple-system',
-                      'Segoe UI', 'Microsoft YaHei UI', 'PingFang SC', sans-serif;
+  --font-sans:        system-ui, 'Segoe UI', 'Microsoft YaHei UI',
+                      'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
   --font-mono:        'JetBrains Mono', 'Cascadia Code', 'Consolas',
                       'Courier New', monospace;
 
@@ -73,9 +73,9 @@
 
   /* ── 布局 ────────────────────────────────────── */
   --sidebar-width:    260px;
-  --chat-max-width:   800px;
-  --input-max-width:  800px;
-  --avatar-size:      28px;
+  --chat-max-width:   860px;
+  --input-max-width:  860px;
+  --avatar-size:      32px;
   --input-min-height: 52px;
-  --input-max-height: 200px;
+  --input-max-height: 220px;
 }

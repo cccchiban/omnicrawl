@@ -6,7 +6,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 48px;
+  height: 60px;
   padding: 0 var(--space-xl);
   border-bottom: 1px solid var(--border-light);
   flex-shrink: 0;
@@ -34,7 +34,7 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background var(--transition-fast);
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 500;
   color: var(--text-secondary);
   background: transparent;
@@ -53,8 +53,8 @@
 }
 
 .model-selector svg {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   fill: currentColor;
   transition: transform var(--transition-fast);
 }
@@ -95,7 +95,7 @@
 /* 下拉菜单头部 */
 .model-dropdown-header {
   padding: 10px 14px;
-  font-size: 11px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-tertiary);
   text-transform: uppercase;
@@ -118,7 +118,7 @@
   padding: 10px 14px;
   cursor: pointer;
   transition: background var(--transition-fast);
-  font-size: 13px;
+  font-size: 18px;
   color: var(--text-secondary);
   border: none;
   background: transparent;
@@ -148,44 +148,61 @@
 }
 
 .model-option .model-icon {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px var(--border-light);
+  color: #111827;
+  overflow: hidden;
+}
+
+.model-option .model-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.model-option .model-icon-fallback {
+  display: none;
+}
+
+.model-option .model-icon.icon-fallback img {
+  display: none;
+}
+
+.model-option .model-icon.icon-fallback .model-icon-fallback {
+  display: block;
 }
 
 .model-option .model-icon.claude {
-  background: rgba(212, 160, 23, 0.15);
   color: #d4a017;
 }
 
 .model-option .model-icon.gpt {
-  background: rgba(16, 163, 127, 0.15);
   color: #10a37f;
 }
 
 .model-option .model-icon.deepseek {
-  background: rgba(42, 92, 170, 0.14);
   color: #2a5caa;
 }
 
 .model-option .model-icon.qwen {
-  background: rgba(99, 102, 241, 0.14);
   color: #4f46e5;
 }
 
 .model-option .model-icon.glm {
-  background: rgba(14, 165, 233, 0.14);
   color: #0284c7;
 }
 
 .model-option .model-icon.other {
-  background: rgba(107, 114, 128, 0.14);
   color: #4b5563;
 }
 
@@ -207,7 +224,7 @@
 
 /* 模型标签 */
 .model-badge {
-  font-size: 12px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--accent-blue);
   background: rgba(59, 130, 246, 0.1);
@@ -230,8 +247,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-sm);
   background: transparent;
   border: none;
@@ -246,7 +263,7 @@
 }
 
 .export-btn svg {
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   fill: currentColor;
 }

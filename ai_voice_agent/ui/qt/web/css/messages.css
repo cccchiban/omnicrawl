@@ -28,9 +28,9 @@
 }
 
 .avatar.ai {
-  background: linear-gradient(135deg, #1e3a5f, #2d5a87);
-  /* 移除强调色 glow，改用中性边框 */
+  background: #ffffff;
   box-shadow: 0 0 0 1px var(--border-medium);
+  overflow: hidden;
 }
 
 .avatar.user {
@@ -38,9 +38,43 @@
 }
 
 .avatar svg {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   fill: white;
+}
+
+.model-avatar-icon {
+  width: 100%;
+  height: 100%;
+  padding: 5px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #111827;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.model-avatar-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.model-avatar-icon .model-icon-fallback {
+  display: none;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.model-avatar-icon.icon-fallback img {
+  display: none;
+}
+
+.model-avatar-icon.icon-fallback .model-icon-fallback {
+  display: block;
 }
 
 /* ── 消息体 ───────────────────────────────────── */
@@ -57,13 +91,13 @@
 }
 
 .msg-role {
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .msg-time {
-  font-size: 11px;
+  font-size: 16px;
   color: var(--text-tertiary);
   font-weight: 400;
 }
@@ -73,7 +107,7 @@
   color: var(--text-primary);
   /* 工具界面行高从 1.7 降至 1.6，减少长时间阅读疲劳 */
   line-height: 1.7;
-  font-size: 14px;
+  font-size: 18px;
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
@@ -93,7 +127,7 @@
   max-width: 100%;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.6;
 }
 
@@ -109,7 +143,7 @@
 .bubble pre code {
   background: none;
   padding: 0;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--text-primary);
 }
 
@@ -118,7 +152,7 @@
   display: block;
   border-collapse: collapse;
   margin: var(--space-md) 0;
-  font-size: 14px;
+  font-size: 16px;
   max-width: 100%;
   overflow-x: auto;
   width: 100%;
@@ -137,7 +171,7 @@
   background: var(--bg-sidebar);
   color: var(--text-secondary);
   font-weight: 600;
-  font-size: 12px;
+  font-size: 15px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -179,10 +213,10 @@
   font-weight: 700;
 }
 
-.bubble h1 { font-size: 20px; }
-.bubble h2 { font-size: 18px; }
-.bubble h3 { font-size: 16px; }
-.bubble h4 { font-size: 14px; color: var(--text-secondary); }
+.bubble h1 { font-size: 26px; }
+.bubble h2 { font-size: 23px; }
+.bubble h3 { font-size: 21px; }
+.bubble h4 { font-size: 18px; color: var(--text-secondary); }
 
 .bubble hr {
   border: none;
@@ -224,8 +258,8 @@
 }
 
 .tool-avatar svg {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   fill: var(--text-tertiary);
 }
 
@@ -249,7 +283,7 @@
 .step-badge {
   background: rgba(59, 130, 246, 0.12);
   color: var(--accent-blue);
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 700;
   padding: 2px 8px;
   border-radius: var(--radius-full);
@@ -259,14 +293,14 @@
 
 .tool-name {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 600;
   flex: 1;
   font-family: var(--font-mono);
 }
 
 .tool-status {
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 700;
 }
 
@@ -274,8 +308,8 @@
 .tool-status.err { color: var(--accent-red); }
 
 .tool-spinner {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border: 2px solid var(--border-light);
   border-top-color: var(--accent-blue);
   border-radius: 50%;
@@ -287,7 +321,7 @@
   border: none;
   color: var(--text-tertiary);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 14px;
   padding: 4px 8px;
   border-radius: var(--radius-sm);
   transition: all var(--transition-fast);
@@ -302,7 +336,7 @@
 .tool-args, .tool-result {
   padding: var(--space-sm) var(--space-md);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 15px;
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -334,9 +368,10 @@
 
 /* ── 启动面板 ─────────────────────────────────── */
 .startup-card {
+  width: min(640px, 100%);
   max-width: 640px;
-  margin: var(--space-3xl) auto;
-  padding: var(--space-2xl);
+  margin: var(--space-2xl) auto;
+  padding: var(--space-xl) var(--space-2xl);
   background: var(--bg-card);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
@@ -348,13 +383,13 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-sm);
-  margin-bottom: var(--space-xl);
+  margin-bottom: var(--space-lg);
 }
 
-.startup-icon { font-size: 24px; }
+.startup-icon { font-size: 26px; }
 
 .startup-title {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -362,16 +397,16 @@
 .startup-sep {
   height: 1px;
   background: var(--border-light);
-  margin: var(--space-lg) 0;
+  margin: var(--space-md) 0;
 }
 
 .startup-line {
   display: grid;
-  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.6fr);
-  gap: var(--space-lg);
+  grid-template-columns: minmax(110px, 0.75fr) minmax(0, 1.8fr);
+  gap: var(--space-md);
   align-items: start;
-  padding: 8px 0;
-  font-size: 13px;
+  padding: 6px 0;
+  font-size: 16px;
   text-align: left;
 }
 

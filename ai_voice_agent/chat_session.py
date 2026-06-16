@@ -9,6 +9,8 @@ from .slash_commands import (
     format_tool_confirmation,
     handle_model_command,
     handle_approval_command,
+    handle_reasoning_command,
+    handle_session_command,
     print_memory_clean_result,
     print_mcp_status,
     print_skills_list,
@@ -129,6 +131,11 @@ def run_inline_chat(
             print_mcp_status(agent)
             continue
 
+        session_message = handle_session_command(agent, user_text)
+        if session_message is not None:
+            print(session_message)
+            continue
+
         before_model = agent.current_model
         model_message = handle_model_command(agent, user_text)
         if model_message is not None:
@@ -140,6 +147,11 @@ def run_inline_chat(
         approval_message = handle_approval_command(agent, user_text)
         if approval_message is not None:
             ui.notice(approval_message)
+            continue
+
+        reasoning_message = handle_reasoning_command(agent, user_text)
+        if reasoning_message is not None:
+            ui.notice(reasoning_message)
             continue
 
         ui.inline_turn_base(user_text)

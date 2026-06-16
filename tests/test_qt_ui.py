@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 from datetime import datetime
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -42,6 +43,22 @@ class FakeCloseBridge:
 
     def request_close(self) -> None:
         self.close_requested = True
+
+
+class FakeModelWindow:
+    def __init__(self) -> None:
+        self.model_labels: list[str] = []
+        self.current_models: list[tuple[str, str | None]] = []
+        self.token_updates: list[str] = []
+
+    def set_model_label(self, text: str) -> None:
+        self.model_labels.append(text)
+
+    def set_current_model(self, model_id: str, model_name: str | None = None) -> None:
+        self.current_models.append((model_id, model_name))
+
+    def update_token_display(self, text: str) -> None:
+        self.token_updates.append(text)
 
 
 class QtUITest(unittest.TestCase):
@@ -144,7 +161,53 @@ class QtUITest(unittest.TestCase):
         self.assertIn("setCurrentModel", callback_source)
         self.assertIn("showModelListError", callback_source)
         self.assertIn("onModelSelect", bridge_source)
+        self.assertIn("setReasoningEffort", bridge_source)
         self.assertIn(".model-option-message", title_css)
+
+    def test_should_use_lobe_icons_for_model_provider_icons(self) -> None:
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        title_css = (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8")
+
+        self.assertIn("@lobehub/icons-static-svg", app_source)
+        self.assertIn("modelProviderIconSlug", app_source)
+        self.assertIn("openai", app_source)
+        self.assertIn("deepseek", app_source)
+        self.assertIn("icon-fallback", app_source)
+        self.assertIn(".model-icon img", title_css)
+        self.assertIn(".model-icon-fallback", title_css)
+
+    def test_should_render_ai_messages_with_current_model_identity(self) -> None:
+        state_source = (QT_WEB_DIR / "js" / "state.js").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
+        title_css = (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8")
+        messages_css = (QT_WEB_DIR / "css" / "messages.css").read_text(encoding="utf-8")
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("currentModelName", state_source)
+        self.assertIn("currentModelProvider", state_source)
+        self.assertIn("setCurrentModelIdentity", state_source)
+        self.assertIn("AppState.setCurrentModelIdentity", app_source)
+        self.assertIn("modelAvatarHtml()", messages_source)
+        self.assertIn("AppState.currentModelName", messages_source)
+        self.assertIn("model-selector-icon", index_source)
+        self.assertIn("document.getElementById('model-selector-icon')", app_source)
+        self.assertIn("updateSelectorIcon", app_source)
+        self.assertNotIn('<span class="msg-role">AI 助手</span>', messages_source)
+        self.assertNotIn("**AI 助手**", app_source)
+        self.assertIn("background: #ffffff", title_css)
+        self.assertIn("background: #ffffff", messages_css)
+
+    def test_should_sync_message_model_identity_when_qt_model_label_changes(self) -> None:
+        ui = QtUI()
+        window = FakeModelWindow()
+        ui._window = window
+
+        ui.set_model_label("deepseek-v4-flash")
+
+        self.assertEqual(window.model_labels, ["deepseek-v4-flash"])
+        self.assertEqual(window.current_models, [("deepseek-v4-flash", "deepseek-v4-flash")])
+        self.assertIn("- deepseek-v4-flash", window.token_updates[-1])
 
     def test_should_request_window_close_through_bridge_signal(self) -> None:
         ui = QtUI()
@@ -236,6 +299,92 @@ class QtUITest(unittest.TestCase):
         self.assertRegex(messages_css, r"\.startup-card[^{]*{[^}]*max-width:\s*640px")
         self.assertRegex(messages_css, r"\.startup-line[^{]*{[^}]*grid-template-columns:\s*minmax")
         self.assertIn(".model-badge:empty", (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8"))
+
+    def test_should_keep_qt_layout_compact_enough_for_standard_window(self) -> None:
+        variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")
+        reset_css = (QT_WEB_DIR / "css" / "reset.css").read_text(encoding="utf-8")
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+
+        def root_px(name: str) -> int:
+            match = re.search(rf"{re.escape(name)}:\s*(\d+)px", variables_css)
+            self.assertIsNotNone(match, f"{name} should be defined in variables.css")
+            return int(match.group(1))
+
+        font_size = re.search(r"html,\s*body\s*{[\s\S]*?font-size:\s*(\d+)px", reset_css)
+        self.assertIsNotNone(font_size, "global font-size should stay explicit")
+        self.assertLessEqual(int(font_size.group(1)), 18)
+
+        self.assertLessEqual(root_px("--sidebar-width"), 280)
+        self.assertLessEqual(root_px("--chat-max-width"), 880)
+        self.assertLessEqual(root_px("--input-max-width"), 880)
+        self.assertLessEqual(root_px("--input-min-height"), 56)
+
+        minimum_size = re.search(r"setMinimumSize\((\d+),\s*(\d+)\)", window_source)
+        self.assertIsNotNone(minimum_size, "Qt window should declare a minimum size")
+        self.assertLessEqual(int(minimum_size.group(1)), 950)
+        self.assertLessEqual(int(minimum_size.group(2)), 700)
+
+    def test_should_surface_workspace_info_when_startup_lines_are_rendered(self) -> None:
+        messages_js = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+
+        self.assertIn("Input.setWorkspaceInfo", messages_js)
+        self.assertIn("setWorkspaceInfo", callback_source)
+
+    def test_should_connect_reasoning_effort_control_to_backend(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
+        messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
+        bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
+        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+            encoding="utf-8"
+        )
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="reasoning-toggle"', index_source)
+        self.assertIn('data-value="none"', index_source)
+        self.assertIn('data-value="high"', index_source)
+        self.assertIn("window.bridge.setReasoningEffort(currentReasoning)", input_source)
+        self.assertIn("setReasoningEffort: setReasoningEffort", input_source)
+        self.assertIn("Input.setReasoningEffort", messages_source)
+        self.assertIn("setReasoningEffort", bridge_source)
+        self.assertIn("reasoning_effort_changed", backend_bridge)
+        self.assertIn("_on_reasoning_effort_changed", window_source)
+        self.assertIn("_connect_frontend_signals_once", window_source)
+        self.assertIn("/reasoning", window_source)
+
+    def test_should_use_windows_system_font_stack(self) -> None:
+        variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")
+
+        self.assertIn("system-ui", variables_css)
+        self.assertIn("'Segoe UI'", variables_css)
+        self.assertIn("'Microsoft YaHei UI'", variables_css)
+        self.assertNotIn("'楷体", variables_css)
+
+    def test_should_keep_primary_qt_text_readable(self) -> None:
+        reset_css = (QT_WEB_DIR / "css" / "reset.css").read_text(encoding="utf-8")
+        messages_css = (QT_WEB_DIR / "css" / "messages.css").read_text(encoding="utf-8")
+        input_css = (QT_WEB_DIR / "css" / "input-area.css").read_text(encoding="utf-8")
+        layout_css = (QT_WEB_DIR / "css" / "layout.css").read_text(encoding="utf-8")
+
+        self.assertRegex(reset_css, r"html,\s*body\s*{[\s\S]*?font-size:\s*18px")
+        self.assertRegex(messages_css, r"\.bubble\s*{[\s\S]*?font-size:\s*18px")
+        self.assertRegex(input_css, r"#chat-input\s*{[\s\S]*?font-size:\s*18px")
+        self.assertRegex(layout_css, r"\.nav-item\s*{[\s\S]*?font-size:\s*16px")
+
+    def test_sidebar_toggle_should_have_accessible_state_and_storage_fallback(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('aria-expanded="true"', index_source)
+        self.assertIn("setSidebarCollapsed", app_source)
+        self.assertIn("readSidebarCollapsed", app_source)
+        self.assertIn("writeSidebarCollapsed", app_source)
+        self.assertIn("try", app_source)
 
 
 if __name__ == "__main__":

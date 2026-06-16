@@ -36,6 +36,7 @@
     setCurrentModel: null,
     showModelListError: null,
     showModelSelect: null,
+    setReasoningEffort: null,
   };
 
   /**
@@ -61,6 +62,7 @@
         onConfirmResult: function() {},
         onModelSelect: function() {},
         onModelChange: function() {},
+        setReasoningEffort: function() {},
       };
     }
   }

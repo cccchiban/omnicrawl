@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from .approval import (
@@ -11,6 +12,7 @@ from .approval import (
     save_approval_mode,
 )
 from .agent import AgentError, LocalToolAgent
+from .llm import LLMError, save_reasoning_effort
 from .model_catalog import (
     ModelCatalogError,
     detect_model_options,
@@ -175,6 +177,56 @@ def print_mcp_status(agent: LocalToolAgent) -> None:
     print(format_mcp_status(agent))
 
 
+def format_sessions_list(agent: LocalToolAgent) -> str:
+    """格式化当前工作区最近会话列表。"""
+
+    try:
+        sessions = agent.list_sessions(limit=10)
+    except AgentError as exc:
+        return f"会话列表读取失败：{exc}"
+    if not sessions:
+        return "当前工作区还没有可恢复会话。"
+
+    current_id = agent.current_session_id
+    lines = ["最近会话："]
+    for entry in sessions:
+        marker = "*" if entry.session_id == current_id else " "
+        title = entry.title or "未命名会话"
+        updated_at = entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        lines.append(
+            f"{marker} {entry.session_id}  {updated_at}  {entry.message_count} 条消息  {title}"
+        )
+    lines.append("")
+    lines.append("恢复会话：/resume <session_id>")
+    return "\n".join(lines)
+
+
+def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理会话查看与恢复命令；返回 None 表示不是会话命令。"""
+
+    text = command.strip()
+    normalized = text.lower()
+    if normalized == "/sessions":
+        return format_sessions_list(agent)
+    if normalized != "/resume" and not normalized.startswith("/resume "):
+        return None
+
+    parts = text.split(None, 1)
+    if len(parts) == 1 or not parts[1].strip():
+        return "用法：/resume <session_id>。可先用 /sessions 查看最近会话。"
+
+    session_id = parts[1].strip()
+    try:
+        state = agent.resume_session(session_id)
+    except AgentError as exc:
+        return f"会话恢复失败：{exc}"
+    return (
+        f"已恢复会话：{state.session_id}\n"
+        f"标题：{state.title or '未命名会话'}\n"
+        f"已恢复 {len(state.messages)} 条上下文消息。"
+    )
+
+
 def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
     """处理审批模式斜杠命令；返回 None 表示不是审批命令。"""
 
@@ -235,6 +287,38 @@ def handle_model_command(agent: LocalToolAgent, command: str) -> str | None:
     return f"当前模型已切换为 {model_id}{suffix}"
 
 
+def handle_reasoning_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理推理强度查看与切换命令；返回 None 表示不是推理强度命令。"""
+
+    text = command.strip()
+    normalized = text.lower()
+    if normalized != "/reasoning" and not normalized.startswith("/reasoning "):
+        return None
+
+    parts = text.split(None, 1)
+    if len(parts) == 1:
+        current = agent.reasoning_effort or "默认"
+        return (
+            f"当前推理强度：{current}。\n"
+            "可选：/reasoning none|low|medium|high|xhigh|max"
+        )
+
+    effort = parts[1].strip()
+    if not effort:
+        return "用法：/reasoning none|low|medium|high|xhigh|max"
+
+    try:
+        normalized_effort = agent.set_reasoning_effort(effort)
+    except AgentError as exc:
+        return f"推理强度切换失败：{exc}"
+    try:
+        path = save_reasoning_effort(normalized_effort)
+    except LLMError as exc:
+        return f"推理强度已临时切换为 {normalized_effort}，但写入 config.json 失败：{exc}"
+    env_message = _reasoning_env_override_message()
+    return f"推理强度已切换为 {normalized_effort}，并已同步到 {path}{env_message}"
+
+
 def _format_detected_models(agent: LocalToolAgent) -> str:
     current_model = agent.current_model
     try:
@@ -290,6 +374,12 @@ def _model_env_override_message() -> str:
     return " 注意：当前存在 OPENAI_MODEL 环境变量，重启后会优先使用环境变量。"
 
 
+def _reasoning_env_override_message() -> str:
+    if not os.getenv("REASONING_EFFORT", "").strip():
+        return ""
+    return " 注意：当前存在 REASONING_EFFORT 环境变量，重启后会优先使用环境变量。"
+
+
 def build_slash_commands(agent: LocalToolAgent) -> list[str]:
     """构建所有可用的斜杠命令列表（含内置命令和动态 Skill 命令）。"""
 
@@ -297,9 +387,12 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/new",
         "/model",
         "/models",
+        "/reasoning",
         "/skills",
         "/memory:clean",
         "/mcp",
+        "/sessions",
+        "/resume",
         "/approval",
         "/approval:manual",
         "/approval:auto",

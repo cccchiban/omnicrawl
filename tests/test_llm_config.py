@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from ai_voice_agent.llm import LLMConfig, LLMError, OpenAIResponseLLM, normalize_reasoning_effort
+from ai_voice_agent.llm import (
+    LLMConfig,
+    LLMError,
+    OpenAIResponseLLM,
+    normalize_reasoning_effort,
+    save_reasoning_effort,
+)
 
 
 class LLMConfigTest(unittest.TestCase):
@@ -46,6 +55,22 @@ class LLMConfigTest(unittest.TestCase):
         body = OpenAIResponseLLM._build_extra_body(llm)
 
         self.assertEqual(body, {"thinking": {"type": "disabled"}})
+
+    def test_save_reasoning_effort_preserves_config_and_syncs_thinking_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text(
+                json.dumps({"llm": {"model": "demo"}, "voice": {"text_to_speech_enabled": True}}),
+                encoding="utf-8",
+            )
+
+            save_reasoning_effort("high", config_path)
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(data["llm"]["model"], "demo")
+        self.assertEqual(data["llm"]["reasoning_effort"], "high")
+        self.assertEqual(data["llm"]["thinking_type"], "enabled")
+        self.assertTrue(data["voice"]["text_to_speech_enabled"])
 
     def test_extract_token_usage_supports_stream_event_shapes(self) -> None:
         self.assertEqual(

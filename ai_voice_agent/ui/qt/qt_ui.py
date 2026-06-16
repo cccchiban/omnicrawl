@@ -196,6 +196,7 @@ class QtUI(BaseUI):
         super().set_model_label(text)
         if self._window is not None:
             self._window.set_model_label(self.model_label or text)
+            self._window.set_current_model(self.model_label or text, self.model_label or text)
             self._window.update_token_display(self.prompt_status_line())
 
     # ── Qt 特有方法 ──────────────────────────────────────────

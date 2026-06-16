@@ -31,9 +31,14 @@ var Messages = (function() {
     return hours + ':' + minutes;
   }
 
-  /** AI 头像 SVG */
-  function aiAvatarSvg() {
-    return '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>';
+  /** 当前模型头像 HTML，模型图标失败时保留字母兜底。 */
+  function modelAvatarHtml() {
+    if (typeof modelIconMarkup === 'function') {
+      return modelIconMarkup(AppState.currentModelProvider, 'model-avatar-icon');
+    }
+    return '<span class="model-avatar-icon other icon-fallback">' +
+      '<span class="model-icon-fallback">' + escHtml(AppState.currentModelIconFallback || 'M') + '</span>' +
+      '</span>';
   }
 
   /** 用户头像 SVG */
@@ -76,10 +81,10 @@ var Messages = (function() {
 
       var row = createEl('div', { className: 'msg-row ai' });
       row.innerHTML =
-        '<div class="avatar ai">' + aiAvatarSvg() + '</div>' +
+        '<div class="avatar ai">' + modelAvatarHtml() + '</div>' +
         '<div class="msg-body">' +
           '<div class="msg-header">' +
-            '<span class="msg-role">AI 助手</span>' +
+            '<span class="msg-role">' + escHtml(AppState.currentModelName) + '</span>' +
             '<span class="msg-time">' + timeNow() + '</span>' +
           '</div>' +
           '<div class="bubble"><span class="typing-cursor"></span></div>' +
@@ -129,10 +134,10 @@ var Messages = (function() {
     var row = createEl('div', { className: 'msg-row confirm' });
     row.dataset.confirmId = confirmId;
     row.innerHTML =
-      '<div class="avatar ai">' + aiAvatarSvg() + '</div>' +
+      '<div class="avatar ai">' + modelAvatarHtml() + '</div>' +
       '<div class="msg-body">' +
         '<div class="msg-header">' +
-          '<span class="msg-role">AI 助手</span>' +
+          '<span class="msg-role">' + escHtml(AppState.currentModelName) + '</span>' +
           '<span class="msg-time">' + timeNow() + '</span>' +
         '</div>' +
         '<div class="confirm-inline-card" id="confirm-card-' + confirmId + '">' +
@@ -183,6 +188,9 @@ var Messages = (function() {
 
   function showStartup(title, lines) {
     var linesHtml = '';
+    var workspacePath = '';
+    var workspaceStatus = '';
+    var reasoningEffort = '';
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       var colonIdx = line.indexOf(':');
@@ -193,6 +201,16 @@ var Messages = (function() {
         if (val === '已启用' || val === '开启' || val === 'auto' || val === 'Qt GUI') cls = ' on';
         else if (val === '已禁用' || val === '关闭' || val === 'manual') cls = ' off';
         else if (val === 'review') cls = ' warn';
+        if (key.toLowerCase() === 'workspace' || key === '工作区') {
+          workspacePath = val;
+          workspaceStatus = '已激活';
+        }
+        if (key.toLowerCase() === 'thinking') {
+          var match = val.match(/推理强度：\s*([^，,\s]+)/);
+          if (match) reasoningEffort = match[1];
+          else if (val.indexOf('已禁用') !== -1) reasoningEffort = 'none';
+          else if (val.indexOf('已启用') !== -1) reasoningEffort = 'low';
+        }
         linesHtml +=
           '<div class="startup-line">' +
             '<span class="startup-key">' + escHtml(key) + '</span>' +
@@ -218,6 +236,14 @@ var Messages = (function() {
     messagesEl().appendChild(card);
     scrollToEnd();
 
+    if (workspacePath && window.Input && Input.setWorkspaceInfo) {
+      Input.setWorkspaceInfo(workspacePath, workspaceStatus);
+    }
+
+    if (reasoningEffort && window.Input && Input.setReasoningEffort) {
+      Input.setReasoningEffort(reasoningEffort);
+    }
+
     // 提取模型名
     for (var j = 0; j < lines.length; j++) {
       var l = lines[j];
@@ -225,6 +251,9 @@ var Messages = (function() {
         var model = l.split(':').slice(1).join(':').trim();
         if (model) {
           Status.setModelLabel(model);
+          if (typeof setCurrentModelIdentity === 'function') {
+            setCurrentModelIdentity({ id: model, name: model });
+          }
         }
       }
     }

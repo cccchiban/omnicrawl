@@ -27,6 +27,8 @@ class BackendBridge(QObject):
     model_list_refresh_requested = pyqtSignal()
     # 模型切换信号：用户在前端选择了新模型
     model_changed = pyqtSignal(str)
+    # 推理强度切换信号：用户在前端选择了新的 reasoning_effort
+    reasoning_effort_changed = pyqtSignal(str)
     # 导出请求信号：把前端传来的 Markdown 交给后端保存
     export_requested = pyqtSignal(str)
     # 窗口关闭信号：允许后台线程通过 Qt 信号请求主线程关闭窗口
@@ -149,6 +151,11 @@ class BackendBridge(QObject):
     def onModelChange(self, model_id: str) -> None:
         """用户在前端选择新模型。"""
         self.model_changed.emit(model_id)
+
+    @pyqtSlot(str)
+    def setReasoningEffort(self, effort: str) -> None:
+        """用户在前端选择推理强度。"""
+        self.reasoning_effort_changed.emit(effort)
 
     # ── 取消事件管理 ──────────────────────────────────────────
 

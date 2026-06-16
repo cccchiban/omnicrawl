@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from ai_voice_agent.agent import (
     ToolDefinition,
     ToolResult,
 )
+from ai_voice_agent.session import SessionStore
 from ai_voice_agent.temp_workspace import AgentTempWorkspaceConfig
 
 
@@ -81,6 +83,8 @@ class AgentContextInjectionTest(unittest.TestCase):
                 {"role": "user", "content": "上一轮问题"},
                 {"role": "assistant", "content": "上一轮回答"},
             ]
+            agent._session_store = None
+            agent._session_state = None
             agent._skill_manager = None
             agent._active_skills = []
             agent._tools = {}
@@ -132,6 +136,8 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent.workspace_root = Path(temp_dir)
             agent.config = SimpleNamespace(max_history_turns=6)
             agent._history = []
+            agent._session_store = None
+            agent._session_state = None
             agent._skill_manager = None
             agent._active_skills = []
             agent._tools = {}
@@ -160,6 +166,8 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent.workspace_root = Path(temp_dir)
             agent.config = SimpleNamespace(max_history_turns=6)
             agent._history = []
+            agent._session_store = None
+            agent._session_state = None
             agent._skill_manager = None
             agent._active_skills = []
             agent._tools = {}
@@ -196,6 +204,8 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent.workspace_root = Path(temp_dir)
             agent.config = SimpleNamespace(max_history_turns=6)
             agent._history = []
+            agent._session_store = None
+            agent._session_state = None
             agent._skill_manager = None
             agent._active_skills = []
             agent._tools = {}
@@ -223,6 +233,8 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent.workspace_root = Path(temp_dir)
             agent.config = SimpleNamespace(max_history_turns=6, max_tool_output_chars=6000)
             agent._history = []
+            agent._session_store = None
+            agent._session_state = None
             agent._skill_manager = None
             agent._active_skills = []
             executed_arguments: list[dict[str, object]] = []
@@ -297,6 +309,72 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(captured_messages[1][-1]["role"], "tool")
         self.assertEqual(captured_messages[1][-1]["tool_call_id"], "call_1")
         self.assertIn("状态：成功", str(captured_messages[1][-1]["content"]))
+
+    def test_run_stream_writes_session_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {}
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            agent._session_store = store
+            agent._session_state = state
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                return AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            LocalToolAgent.run_stream(agent, "记录会话", lambda _delta: None)
+
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            restored = store.load_session(state.session_id)
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["session_started", "user_message", "assistant_message"],
+        )
+        self.assertEqual(restored.messages[-2]["content"], "记录会话")
+        self.assertEqual(restored.messages[-1]["content"], "完成")
+
+    def test_resume_session_restores_recent_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            store.append_event(state.session_id, "user_message", {"content": "旧问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "旧回答"})
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._session_store = store
+            agent._session_state = None
+            agent._history = []
+            agent._pending_user_text = "未完成"
+            agent._active_skills = ["placeholder"]
+
+            restored = LocalToolAgent.resume_session(agent, state.session_id)
+
+        self.assertEqual(restored.session_id, state.session_id)
+        self.assertEqual(agent._history, restored.messages)
+        self.assertIsNone(agent._pending_user_text)
+        self.assertEqual(agent._active_skills, [])
 
     def test_retryable_request_errors_retry_and_report_status(self) -> None:
         class FakeChatCompletions:

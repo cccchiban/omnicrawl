@@ -33,7 +33,7 @@
   display: block;
   text-align: center;
   color: var(--text-tertiary);
-  font-size: 14px;
+  font-size: 18px;
   padding: var(--space-3xl) var(--space-lg);
   margin-top: var(--space-3xl);
 }

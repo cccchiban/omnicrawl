@@ -38,6 +38,7 @@ class ChatWindow(QWidget):
         self._cancel_event = threading.Event()
         self._export_queue: queue.Queue[str] = queue.Queue()
         self._closed = threading.Event()
+        self._frontend_signals_connected = False
 
         # 关联桥和队列
         self._bridge.set_input_queue(self._input_queue)
@@ -87,11 +88,19 @@ class ChatWindow(QWidget):
         """Web 前端加载完成后释放积压的 Python → JS 调用。"""
         if ok:
             self._bridge.mark_frontend_ready()
-            # 连接模型切换信号到处理槽
-            self._bridge.model_changed.connect(self._on_model_changed)
-            self._bridge.model_list_refresh_requested.connect(self._on_model_list_refresh_requested)
+            self._connect_frontend_signals_once()
         else:
             print("[WebEngine:ERROR] Qt HTML 前端加载失败")
+
+    def _connect_frontend_signals_once(self) -> None:
+        """只连接一次前端控制信号，避免页面 reload 后重复入队命令。"""
+
+        if self._frontend_signals_connected:
+            return
+        self._bridge.model_changed.connect(self._on_model_changed)
+        self._bridge.reasoning_effort_changed.connect(self._on_reasoning_effort_changed)
+        self._bridge.model_list_refresh_requested.connect(self._on_model_list_refresh_requested)
+        self._frontend_signals_connected = True
 
     def _on_model_changed(self, model_id: str) -> None:
         """用户在前端下拉菜单选择了新模型。"""
@@ -104,6 +113,11 @@ class ChatWindow(QWidget):
         """用户打开模型下拉时，请后端按当前 base_url 刷新真实模型列表。"""
         if self._input_queue is not None:
             self._input_queue.put("__REFRESH_MODELS__")
+
+    def _on_reasoning_effort_changed(self, effort: str) -> None:
+        """用户在前端切换推理强度。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"/reasoning {effort}")
 
     # ── 输入 / 确认接口 ─────────────────────────────────────
 
