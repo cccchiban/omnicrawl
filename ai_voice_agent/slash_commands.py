@@ -201,6 +201,28 @@ def format_sessions_list(agent: LocalToolAgent) -> str:
     return "\n".join(lines)
 
 
+def format_archived_sessions_list(agent: LocalToolAgent) -> str:
+    """格式化当前工作区已归档会话列表。"""
+
+    try:
+        sessions = agent.list_archived_sessions(limit=10)
+    except AgentError as exc:
+        return f"归档会话列表读取失败：{exc}"
+    if not sessions:
+        return "当前工作区还没有已归档会话。"
+
+    lines = ["归档会话："]
+    for entry in sessions:
+        title = entry.title or "未命名会话"
+        archived_at = entry.archived_at.astimezone().strftime("%Y-%m-%d %H:%M:%S") if entry.archived_at else "-"
+        lines.append(
+            f"  {entry.session_id}  {archived_at}  {entry.message_count} 条消息  {title}"
+        )
+    lines.append("")
+    lines.append("恢复归档会话：/resume <session_id>（恢复后会重新进入最近会话列表）")
+    return "\n".join(lines)
+
+
 def format_prompt_history(agent: LocalToolAgent, query: str = "") -> str:
     """格式化当前项目用户提示历史；只展示，不注入模型上下文。"""
 
@@ -230,6 +252,17 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
     normalized = text.lower()
     if normalized == "/sessions":
         return format_sessions_list(agent)
+    if normalized == "/archives":
+        return format_archived_sessions_list(agent)
+    if normalized == "/archive":
+        try:
+            archived_state = agent.archive_current_session()
+        except AgentError as exc:
+            return f"会话归档失败：{exc}"
+        return (
+            f"已归档会话：{archived_state.session_id}\n"
+            "已自动开启新会话。查看归档：/archives；恢复归档：/resume <session_id>。"
+        )
     if normalized == "/history" or normalized.startswith("/history "):
         parts = text.split(None, 1)
         query = parts[1].strip() if len(parts) > 1 else ""
@@ -437,6 +470,8 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/history",
         "/compact",
         "/rename",
+        "/archive",
+        "/archives",
         "/approval",
         "/approval:manual",
         "/approval:auto",

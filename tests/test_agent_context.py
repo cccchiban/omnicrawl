@@ -481,6 +481,72 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(export_path.parent.name, "exports")
         self.assertEqual(exported_text, "# AI Voice Agent 对话记录\n")
 
+    def test_archive_command_hides_current_session_and_resume_unarchives(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            store.append_event(state.session_id, "user_message", {"content": "旧问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "旧回答"})
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._session_store = store
+            agent._session_state = store.load_session(state.session_id)
+            agent._history = [{"role": "user", "content": "旧问题"}]
+            agent._pending_user_text = "处理中"
+            agent._active_skills = ["placeholder"]
+            agent._skill_manager = None
+
+            archive_message = handle_session_command(agent, "/archive")
+            new_session_id = agent.current_session_id
+            active_sessions = LocalToolAgent.list_sessions(agent)
+            archives_message = handle_session_command(agent, "/archives")
+            restored = LocalToolAgent.resume_session(agent, state.session_id)
+            active_after_resume = LocalToolAgent.list_sessions(agent)
+
+        self.assertIn("已归档会话", archive_message or "")
+        self.assertIn(new_session_id, {entry.session_id for entry in active_sessions})
+        self.assertNotIn(state.session_id, {entry.session_id for entry in active_sessions})
+        self.assertIn(state.session_id, archives_message or "")
+        self.assertEqual(restored.session_id, state.session_id)
+        self.assertIsNone(restored.archived_at)
+        self.assertEqual(agent._history[-1]["content"], "旧回答")
+        self.assertEqual(agent._pending_user_text, None)
+        self.assertEqual(agent._active_skills, [])
+        self.assertIn(state.session_id, {entry.session_id for entry in active_after_resume})
+        self.assertIn("/archive", build_slash_commands(agent))
+        self.assertIn("/archives", build_slash_commands(agent))
+
+    def test_resume_archived_session_rejects_other_workspace_before_unarchive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            other_workspace = Path(temp_dir) / "other"
+            workspace.mkdir()
+            other_workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(other_workspace)
+            store.append_event(state.session_id, "user_message", {"content": "其他项目问题"})
+            store.archive_session(state.session_id)
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._session_store = store
+            agent._session_state = None
+            agent._history = []
+            agent._pending_user_text = None
+            agent._active_skills = []
+
+            with self.assertRaisesRegex(AgentError, "不能恢复其他工作区的会话"):
+                LocalToolAgent.resume_session(agent, state.session_id)
+
+            still_archived = store.load_session(state.session_id)
+
+        self.assertIsNotNone(still_archived.archived_at)
+        self.assertEqual(still_archived.path.parent.name, "archive")
+
     def test_run_stream_compacts_long_history_and_persists_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)

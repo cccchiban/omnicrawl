@@ -628,6 +628,19 @@ class LocalToolAgent:
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc
 
+    def list_archived_sessions(self, limit: int = 10) -> list[SessionIndexEntry]:
+        """列出当前工作区已归档会话，供 `/archives` 展示。"""
+
+        store = self._require_session_store()
+        try:
+            return store.list_sessions(
+                workspace_root=self.workspace_root,
+                limit=limit,
+                archived_only=True,
+            )
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
     def load_session_events(self, session_id: str) -> list[SessionEvent]:
         """读取指定会话的原始事件流，供 Qt 恢复时重新渲染消息列表。
 
@@ -665,8 +678,30 @@ class LocalToolAgent:
             messages=self._history,
             last_event_type=renamed_state.last_event_type,
             event_count=renamed_state.event_count,
+            archived_at=renamed_state.archived_at,
         )
         return self._session_state
+
+    def archive_current_session(self) -> SessionState:
+        """归档当前会话，并立即开启一个新的空会话。
+
+        当前会话一旦归档，就不应继续接收新的用户输入；因此这里保留已归档
+        state 作为返回值，同时把 Agent 切到新会话，避免下一轮消息写到归档文件。
+        """
+
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise AgentError("会话系统未启用。")
+        store = self._require_session_store()
+        try:
+            archived_state = store.archive_session(state.session_id)
+            self._history.clear()
+            self._pending_user_text = None
+            self._active_skills = []
+            self._session_state = self._start_session()
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+        return archived_state
 
     def export_current_session_markdown(self, markdown_text: str) -> Path:
         """导出当前会话 Markdown 到 `.agent_sessions/exports/`。"""
@@ -736,6 +771,11 @@ class LocalToolAgent:
                 "不能恢复其他工作区的会话："
                 f"{state.workspace_root}"
             )
+        if state.archived_at is not None:
+            try:
+                state = store.unarchive_session(session_id)
+            except SessionStoreError as exc:
+                raise AgentError(str(exc)) from exc
         self._session_state = state
         self._history = self._restore_history_window(state.messages)
         self._pending_user_text = None
@@ -2265,6 +2305,7 @@ class LocalToolAgent:
                 messages=state.messages,
                 last_event_type=event.type,
                 event_count=state.event_count + 1,
+                archived_at=state.archived_at,
             )
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc

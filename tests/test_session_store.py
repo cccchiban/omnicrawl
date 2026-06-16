@@ -187,6 +187,43 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual(events[-1]["payload"]["format"], "markdown")
         self.assertTrue(events[-1]["payload"]["path"].startswith("exports/"))
 
+    def test_archive_session_hides_from_default_list_and_resume_unarchives(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            store.append_event(state.session_id, "user_message", {"content": "归档前问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "归档前回答"})
+
+            archived = store.archive_session(
+                state.session_id,
+                now=datetime(2026, 6, 16, 10, 0, tzinfo=timezone.utc),
+            )
+            default_sessions = store.list_sessions(workspace_root=workspace)
+            archived_sessions = store.list_sessions(workspace_root=workspace, archived_only=True)
+            archived_events = [
+                json.loads(line)
+                for line in archived.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            unarchived = store.unarchive_session(
+                state.session_id,
+                now=datetime(2026, 6, 16, 10, 5, tzinfo=timezone.utc),
+            )
+            default_after_resume = store.list_sessions(workspace_root=workspace)
+
+        self.assertEqual(archived.path.parent.name, "archive")
+        self.assertIsNotNone(archived.archived_at)
+        self.assertFalse((workspace / ".agent_sessions" / "sessions" / f"{state.session_id}.jsonl").exists())
+        self.assertEqual(default_sessions, [])
+        self.assertEqual([entry.session_id for entry in archived_sessions], [state.session_id])
+        self.assertEqual(archived_events[-1]["type"], "session_archived")
+        self.assertEqual(unarchived.path.parent.name, "sessions")
+        self.assertIsNone(unarchived.archived_at)
+        self.assertEqual([entry.session_id for entry in default_after_resume], [state.session_id])
+        self.assertEqual(unarchived.messages[-1]["content"], "归档前回答")
+
     def test_large_tool_result_writes_artifact_and_restores_summary_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"

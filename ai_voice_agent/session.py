@@ -143,6 +143,7 @@ class SessionIndexEntry:
     event_count: int
     message_count: int
     last_event_type: str
+    archived_at: datetime | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SessionIndexEntry":
@@ -166,6 +167,8 @@ class SessionIndexEntry:
         last_event_type = data.get("last_event_type", "")
         if not isinstance(last_event_type, str):
             raise SessionStoreError("会话索引 last_event_type 必须是字符串。")
+        raw_archived_at = data.get("archived_at")
+        archived_at = _parse_datetime(raw_archived_at) if raw_archived_at is not None else None
 
         return cls(
             session_id=_normalize_session_id(raw_session_id),
@@ -177,6 +180,7 @@ class SessionIndexEntry:
             event_count=event_count,
             message_count=message_count,
             last_event_type=last_event_type.strip(),
+            archived_at=archived_at,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -190,6 +194,7 @@ class SessionIndexEntry:
             "event_count": self.event_count,
             "message_count": self.message_count,
             "last_event_type": self.last_event_type,
+            "archived_at": _format_datetime(self.archived_at) if self.archived_at is not None else None,
         }
 
 
@@ -206,6 +211,7 @@ class SessionState:
     messages: list[dict[str, str]]
     last_event_type: str
     event_count: int
+    archived_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -407,6 +413,7 @@ class SessionStore:
         self.artifacts_dir = self.root / "artifacts"
         self.summaries_dir = self.root / "summaries"
         self.exports_dir = self.root / "exports"
+        self.archive_dir = self.root / "archive"
         self.prompt_history = PromptHistoryStore(self.history_path)
 
     def ensure(self) -> None:
@@ -414,6 +421,7 @@ class SessionStore:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.summaries_dir.mkdir(parents=True, exist_ok=True)
         self.exports_dir.mkdir(parents=True, exist_ok=True)
+        self.archive_dir.mkdir(parents=True, exist_ok=True)
         if not self.index_path.exists():
             self._save_entries([])
         self.prompt_history.ensure()
@@ -442,6 +450,7 @@ class SessionStore:
             event_count=0,
             message_count=0,
             last_event_type="",
+            archived_at=None,
         )
         entries = self._load_entries()
         entries.append(entry)
@@ -558,6 +567,81 @@ class SessionStore:
         )
         return path
 
+    def archive_session(
+        self,
+        session_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> SessionState:
+        """把会话转录移入归档目录，并从默认会话列表中隐藏。
+
+        归档只移动 JSONL 转录，不移动 artifact、summary 或 export。事件
+        payload 保留旧路径和归档路径，后续如需重建索引也能看出用户做过
+        归档操作；artifact 路径不变，避免已记录工具结果引用失效。
+        """
+
+        self.ensure()
+        normalized_id = _normalize_session_id(session_id)
+        entry = self._entry_by_id(normalized_id)
+        if entry.archived_at is not None:
+            raise SessionStoreError(f"会话已在归档中：{normalized_id}")
+
+        timestamp = _utc_now() if now is None else _ensure_timezone(now)
+        archive_path = f"archive/{normalized_id}.jsonl"
+        self.append_event(
+            normalized_id,
+            "session_archived",
+            {
+                "previous_path": entry.path,
+                "archive_path": archive_path,
+            },
+            now=timestamp,
+        )
+        updated_entry = self._entry_by_id(normalized_id)
+        self._move_session_file(updated_entry, archive_path)
+        self._replace_entry(
+            updated_entry,
+            path=archive_path,
+            archived_at=timestamp,
+            updated_at=timestamp,
+        )
+        return self.load_session(normalized_id)
+
+    def unarchive_session(
+        self,
+        session_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> SessionState:
+        """把归档会话恢复为活跃会话，供 `/resume` 继续写入。"""
+
+        self.ensure()
+        normalized_id = _normalize_session_id(session_id)
+        entry = self._entry_by_id(normalized_id)
+        if entry.archived_at is None:
+            return self.load_session(normalized_id)
+
+        timestamp = _utc_now() if now is None else _ensure_timezone(now)
+        active_path = f"sessions/{normalized_id}.jsonl"
+        self.append_event(
+            normalized_id,
+            "session_unarchived",
+            {
+                "previous_path": entry.path,
+                "active_path": active_path,
+            },
+            now=timestamp,
+        )
+        updated_entry = self._entry_by_id(normalized_id)
+        self._move_session_file(updated_entry, active_path)
+        self._replace_entry(
+            updated_entry,
+            path=active_path,
+            archived_at=None,
+            updated_at=timestamp,
+        )
+        return self.load_session(normalized_id)
+
     def load_session(self, session_id: str) -> SessionState:
         """读取 JSONL 并重建可恢复的模型历史。"""
 
@@ -590,6 +674,7 @@ class SessionStore:
             messages=messages,
             last_event_type=last_event_type,
             event_count=len(events),
+            archived_at=entry.archived_at,
         )
 
     def read_session_events(self, session_id: str) -> list[SessionEvent]:
@@ -604,6 +689,8 @@ class SessionStore:
         *,
         workspace_root: Path | None = None,
         limit: int = 10,
+        include_archived: bool = False,
+        archived_only: bool = False,
     ) -> list[SessionIndexEntry]:
         """按更新时间倒序列出会话，默认可限定在当前工作区。"""
 
@@ -612,6 +699,10 @@ class SessionStore:
         if workspace_root is not None:
             workspace = str(workspace_root.resolve())
             entries = [entry for entry in entries if entry.workspace_root == workspace]
+        if archived_only:
+            entries = [entry for entry in entries if entry.archived_at is not None]
+        elif not include_archived:
+            entries = [entry for entry in entries if entry.archived_at is None]
         entries.sort(key=lambda entry: entry.updated_at, reverse=True)
         return entries[: max(1, min(100, int(limit)))]
 
@@ -774,11 +865,64 @@ class SessionStore:
                     event_count=item.event_count + 1,
                     message_count=item.message_count + (1 if event.type in MESSAGE_EVENT_TYPES else 0),
                     last_event_type=event.type,
+                    archived_at=item.archived_at,
                 )
             )
         if not found:
             raise SessionStoreError(f"未找到会话：{entry.session_id}")
         self._save_entries(updated_entries)
+
+    def _replace_entry(
+        self,
+        entry: SessionIndexEntry,
+        *,
+        path: str,
+        archived_at: datetime | None,
+        updated_at: datetime,
+    ) -> None:
+        """替换索引中的路径和归档状态，保留标题、计数等业务元数据。"""
+
+        normalized_path = _normalize_relative_file_path(path)
+        entries = self._load_entries()
+        updated_entries: list[SessionIndexEntry] = []
+        found = False
+        for item in entries:
+            if item.session_id != entry.session_id:
+                updated_entries.append(item)
+                continue
+            found = True
+            updated_entries.append(
+                SessionIndexEntry(
+                    session_id=item.session_id,
+                    title=item.title,
+                    workspace_root=item.workspace_root,
+                    path=normalized_path,
+                    created_at=item.created_at,
+                    updated_at=updated_at,
+                    event_count=item.event_count,
+                    message_count=item.message_count,
+                    last_event_type=item.last_event_type,
+                    archived_at=archived_at,
+                )
+            )
+        if not found:
+            raise SessionStoreError(f"未找到会话：{entry.session_id}")
+        self._save_entries(updated_entries)
+
+    def _move_session_file(self, entry: SessionIndexEntry, destination: str) -> None:
+        source_path = self._session_path(entry)
+        destination_path = (self.root / _normalize_relative_file_path(destination)).resolve()
+        if not _is_relative_to(destination_path, self.root):
+            raise SessionStoreError(f"会话归档路径越界：{destination}")
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        if destination_path.exists():
+            raise SessionStoreError(f"会话归档目标已存在：{destination}")
+        if not source_path.exists():
+            raise SessionStoreError(f"会话转录不存在：{source_path}")
+        try:
+            source_path.replace(destination_path)
+        except OSError as exc:
+            raise SessionStoreError(f"移动会话转录失败：{source_path} -> {destination_path}，{exc}") from exc
 
     def _read_events(self, entry: SessionIndexEntry) -> list[SessionEvent]:
         path = self._session_path(entry)

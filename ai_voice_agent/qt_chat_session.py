@@ -276,6 +276,18 @@ def run_qt_chat(
                 ui.flush_markdown(None)
             return True
 
+        if normalized == "/archive" or normalized == "/archives":
+            message = handle_session_command(agent, text)
+            if message is not None:
+                if normalized == "/archive":
+                    ui.render_session_messages([])
+                    refresh_session_list()
+                    ui.notice(message)
+                else:
+                    ui.write(message)
+                    ui.flush_markdown(None)
+            return True
+
         return False
 
     def handle_model_control_text(user_text: str) -> bool:
