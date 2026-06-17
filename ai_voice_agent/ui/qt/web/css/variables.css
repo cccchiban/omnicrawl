@@ -72,10 +72,10 @@
   --transition-base:  0.2s ease;
 
   /* ── 布局 ────────────────────────────────────── */
-  --sidebar-width:    260px;
+  --sidebar-width:    300px;
   --chat-max-width:   860px;
   --input-max-width:  860px;
-  --avatar-size:      32px;
-  --input-min-height: 52px;
-  --input-max-height: 220px;
+  --avatar-size:      36px;
+  --input-min-height: 56px;
+  --input-max-height: 240px;
 }

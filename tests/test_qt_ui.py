@@ -412,14 +412,14 @@ class QtUITest(unittest.TestCase):
         self.assertIsNotNone(font_size, "global font-size should stay explicit")
         self.assertLessEqual(int(font_size.group(1)), 18)
 
-        self.assertLessEqual(root_px("--sidebar-width"), 280)
+        self.assertLessEqual(root_px("--sidebar-width"), 300)
         self.assertLessEqual(root_px("--chat-max-width"), 880)
         self.assertLessEqual(root_px("--input-max-width"), 880)
         self.assertLessEqual(root_px("--input-min-height"), 56)
 
         minimum_size = re.search(r"setMinimumSize\((\d+),\s*(\d+)\)", window_source)
         self.assertIsNotNone(minimum_size, "Qt window should declare a minimum size")
-        self.assertLessEqual(int(minimum_size.group(1)), 950)
+        self.assertLessEqual(int(minimum_size.group(1)), 1100)
         self.assertLessEqual(int(minimum_size.group(2)), 700)
 
     def test_should_surface_workspace_info_when_startup_lines_are_rendered(self) -> None:
@@ -428,6 +428,17 @@ class QtUITest(unittest.TestCase):
 
         self.assertIn("Input.setWorkspaceInfo", messages_js)
         self.assertIn("setWorkspaceInfo", callback_source)
+
+    def test_project_sidebar_should_expose_import_and_use_own_confirm_modal(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        project_source = (QT_WEB_DIR / "js" / "project-sidebar.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="project-confirm-modal"', index_source)
+        self.assertIn("openModal('import')", project_source)
+        self.assertIn("project-confirm-modal", project_source)
+        self.assertIn("project-confirm-confirm", project_source)
+        self.assertNotIn("delete-session-confirm", project_source)
+        self.assertNotIn("archiveProject(", project_source)
 
     def test_should_connect_reasoning_effort_control_to_backend(self) -> None:
         index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")

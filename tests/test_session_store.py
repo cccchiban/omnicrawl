@@ -140,6 +140,27 @@ class SessionStoreTest(unittest.TestCase):
         self.assertEqual([entry.display for entry in results], ["检查 Qt 会话列表", "帮我实现会话历史"])
         self.assertTrue(all(entry.project == str(workspace.resolve()) for entry in results))
 
+    def test_list_sessions_filters_by_project_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            other_workspace = Path(temp_dir) / "other"
+            workspace.mkdir()
+            other_workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            other_state = store.start_session(other_workspace)
+
+            workspace_sessions = store.list_sessions(project_path=workspace)
+            other_sessions = store.list_sessions(project_path=str(other_workspace))
+            project_paths = store.list_project_paths()
+
+        self.assertEqual([entry.session_id for entry in workspace_sessions], [state.session_id])
+        self.assertEqual([entry.session_id for entry in other_sessions], [other_state.session_id])
+        self.assertEqual(
+            set(project_paths),
+            {str(workspace.resolve()), str(other_workspace.resolve())},
+        )
+
     def test_rename_session_updates_index_and_writes_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"

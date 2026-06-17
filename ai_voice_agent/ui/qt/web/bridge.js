@@ -72,6 +72,7 @@
         onResumeSession: function() {},
         onRenameSession: function() {},
         onCompactSession: function() {},
+        onDeleteSession: function() {},
       };
     }
   }

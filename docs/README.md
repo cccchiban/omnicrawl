@@ -12,5 +12,6 @@
 - `memory_system_design.md`：Agent 记忆系统的流程、存储结构和清理机制设计。
 - `session_design.md`：Agent 会话系统的生命周期、持久化、恢复和长会话压缩设计。
 - `session_implementation_progress.md`：Agent 会话系统按阶段落地的进度跟踪。
+- `agent_refactor_plan.md`：`agent.py` 拆分、精简和分阶段验证路线。
 - `MCP_USAGE.md`：MCP 配置、调用、排障和渐进式披露使用规范。
 - `MCP_DESIGN_TECHNICAL.md`：MCP 子系统设计、技术方案、安全策略和实施路线。

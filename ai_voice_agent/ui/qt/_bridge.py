@@ -37,6 +37,17 @@ class BackendBridge(QObject):
     session_resume_requested = pyqtSignal(str)
     session_rename_requested = pyqtSignal(str)
     session_compact_requested = pyqtSignal()
+    session_delete_requested = pyqtSignal(str)
+    # 项目控制信号：创建、导入、打开、切换、上下文菜单操作
+    project_create_requested = pyqtSignal(str, str)
+    project_import_requested = pyqtSignal(str, str)
+    project_open_requested = pyqtSignal(str)
+    project_switch_requested = pyqtSignal(str)
+    project_pin_requested = pyqtSignal(str)
+    project_rename_requested = pyqtSignal(str, str)
+    project_remove_requested = pyqtSignal(str)
+    project_explorer_requested = pyqtSignal(str)
+    projects_refresh_requested = pyqtSignal()
     # 窗口关闭信号：允许后台线程通过 Qt 信号请求主线程关闭窗口
     close_requested = pyqtSignal()
 
@@ -172,6 +183,11 @@ class BackendBridge(QObject):
         """用户手动压缩当前会话。"""
         self.session_compact_requested.emit()
 
+    @pyqtSlot(str)
+    def onDeleteSession(self, session_id: str) -> None:
+        """用户删除指定会话。"""
+        self.session_delete_requested.emit(session_id)
+
     @pyqtSlot()
     def onModelSelect(self) -> None:
         """用户点击模型选择按钮，通知后端刷新当前 base_url 下的模型列表。"""
@@ -203,6 +219,51 @@ class BackendBridge(QObject):
     def request_close(self) -> None:
         """从任意线程请求主线程关闭 Qt 窗口。"""
         self.close_requested.emit()
+
+    @pyqtSlot(str, str)
+    def onCreateProject(self, name: str, path: str) -> None:
+        """用户创建新项目。"""
+        self.project_create_requested.emit(name, path)
+
+    @pyqtSlot(str, str)
+    def onImportProject(self, name: str, path: str) -> None:
+        """用户导入现有项目。"""
+        self.project_import_requested.emit(name, path)
+
+    @pyqtSlot(str)
+    def onOpenProject(self, project_path: str) -> None:
+        """用户在资源管理器中打开项目。"""
+        self.project_open_requested.emit(project_path)
+
+    @pyqtSlot(str)
+    def onSwitchProject(self, project_path: str) -> None:
+        """用户切换到指定项目。"""
+        self.project_switch_requested.emit(project_path)
+
+    @pyqtSlot(str)
+    def onPinProject(self, project_path: str) -> None:
+        """用户置顶项目。"""
+        self.project_pin_requested.emit(project_path)
+
+    @pyqtSlot(str, str)
+    def onRenameProject(self, project_path: str, new_name: str) -> None:
+        """用户重命名项目。"""
+        self.project_rename_requested.emit(project_path, new_name)
+
+    @pyqtSlot(str)
+    def onRemoveProject(self, project_path: str) -> None:
+        """用户从列表中移除项目。"""
+        self.project_remove_requested.emit(project_path)
+
+    @pyqtSlot(str)
+    def onOpenInExplorer(self, project_path: str) -> None:
+        """用户在资源管理器中打开项目目录。"""
+        self.project_explorer_requested.emit(project_path)
+
+    @pyqtSlot()
+    def onRequestProjects(self) -> None:
+        """用户请求刷新项目列表。"""
+        self.projects_refresh_requested.emit()
 
     # ── 确认对话框管理 ────────────────────────────────────────
 

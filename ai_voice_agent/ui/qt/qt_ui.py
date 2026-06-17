@@ -255,3 +255,11 @@ class QtUI(BaseUI):
     def show_session_list_error(self, message: str) -> None:
         if self._window is not None:
             self._window.show_session_list_error(message)
+
+    def update_project_list(self, projects: list[dict[str, Any]]) -> None:
+        if self._window is not None:
+            self._window.update_project_list(projects)
+
+    def set_current_project(self, project_path: str) -> None:
+        if self._window is not None:
+            self._window.set_current_project(project_path)

@@ -607,6 +607,35 @@ class SessionStore:
         )
         return self.load_session(normalized_id)
 
+    def delete_session(
+        self,
+        session_id: str,
+    ) -> None:
+        """彻底删除会话：移除 JSONL 转录、关联 artifact 和索引条目。
+
+        不可逆操作，调用方应自行确认。当前活跃会话不允许删除。
+        """
+
+        self.ensure()
+        normalized_id = _normalize_session_id(session_id)
+        entry = self._entry_by_id(normalized_id)
+
+        # 删除 JSONL 转录文件
+        session_file = self._session_path(entry)
+        if session_file.exists():
+            session_file.unlink()
+
+        # 删除关联的 artifact 目录
+        artifact_dir = self.artifacts_dir / normalized_id
+        if artifact_dir.is_dir():
+            import shutil
+            shutil.rmtree(artifact_dir, ignore_errors=True)
+
+        # 从索引中移除条目
+        entries = self._load_entries()
+        remaining = [e for e in entries if e.session_id != normalized_id]
+        self._save_entries(remaining)
+
     def unarchive_session(
         self,
         session_id: str,
@@ -688,16 +717,18 @@ class SessionStore:
         self,
         *,
         workspace_root: Path | None = None,
+        project_path: Path | str | None = None,
         limit: int = 10,
         include_archived: bool = False,
         archived_only: bool = False,
     ) -> list[SessionIndexEntry]:
-        """按更新时间倒序列出会话，默认可限定在当前工作区。"""
+        """按更新时间倒序列出会话，默认可限定在当前工作区或项目路径。"""
 
         self.ensure()
         entries = self._load_entries()
-        if workspace_root is not None:
-            workspace = str(workspace_root.resolve())
+        filter_path = project_path if project_path is not None else workspace_root
+        if filter_path is not None:
+            workspace = str(Path(filter_path).expanduser().resolve())
             entries = [entry for entry in entries if entry.workspace_root == workspace]
         if archived_only:
             entries = [entry for entry in entries if entry.archived_at is not None]
@@ -705,6 +736,20 @@ class SessionStore:
             entries = [entry for entry in entries if entry.archived_at is None]
         entries.sort(key=lambda entry: entry.updated_at, reverse=True)
         return entries[: max(1, min(100, int(limit)))]
+
+    def list_project_paths(self, *, include_archived: bool = True) -> list[str]:
+        """列出会话索引中出现过的项目路径，供项目列表扫描使用。"""
+
+        self.ensure()
+        entries = self._load_entries()
+        if not include_archived:
+            entries = [entry for entry in entries if entry.archived_at is None]
+        seen: dict[str, str] = {}
+        for entry in entries:
+            key = entry.workspace_root.casefold()
+            if key not in seen:
+                seen[key] = entry.workspace_root
+        return sorted(seen.values(), key=lambda value: value.casefold())
 
     def append_prompt_history(
         self,

@@ -41,38 +41,160 @@
       <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
     <nav class="sidebar-nav">
+      <!-- 顶部导航 -->
       <div class="nav-section">
+        <a href="#" class="nav-item new-chat-btn" id="nav-new-chat">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span class="nav-label">开启新对话</span>
+        </a>
+        <a href="#" class="nav-item" id="nav-search">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          <span class="nav-label">搜索</span>
+        </a>
+        <a href="#" class="nav-item" id="nav-plugins">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          <span class="nav-label">插件</span>
+        </a>
+        <a href="#" class="nav-item" id="nav-automation">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-1-8h2v5h-2zm0-4h2v2h-2z"/></svg>
+          <span class="nav-label">自动化</span>
+        </a>
+      </div>
+
+      <!-- 项目区 -->
+      <div class="nav-section" id="project-section">
+        <div class="nav-section-title project-section-header">
+          <span>项目</span>
+          <div class="project-actions">
+            <button class="project-action-btn" id="project-more-btn" title="更多操作" aria-label="更多操作">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="6" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="18" r="1.5"/></svg>
+            </button>
+            <button class="project-action-btn" id="project-create-btn" title="创建项目" aria-label="创建项目">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 4v16m8-8H4"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="project-list" id="project-list">
+          <!-- 项目列表动态渲染 -->
+        </div>
+      </div>
+
+      <!-- 对话区 -->
+      <div class="nav-section" id="chat-section">
         <div class="nav-section-title session-section-title">
           <span>对话</span>
           <button class="session-refresh-btn" id="session-refresh-btn" title="刷新会话列表" aria-label="刷新会话列表">
             <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M21 12a9 9 0 0 1-15.36 6.36M3 12A9 9 0 0 1 18.36 5.64M18 3v5h-5M6 21v-5h5"/></svg>
           </button>
         </div>
-        <a href="#" class="nav-item active" id="nav-new-chat">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 4v16m8-8H4"/></svg>
-          <span class="nav-label">新对话</span>
-        </a>
         <div class="session-list" id="session-list">
-          <div class="session-empty">正在加载会话...</div>
+          <div class="session-empty">暂无聊天</div>
         </div>
-        <a href="#" class="nav-item" id="nav-rename">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
-          <span class="nav-label">重命名</span>
-        </a>
-        <a href="#" class="nav-item" id="nav-compact">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 7h16M7 12h10M10 17h4"/></svg>
-          <span class="nav-label">压缩会话</span>
-        </a>
-      </div>
-      <div class="nav-section">
-        <div class="nav-section-title">项目</div>
-        <a href="#" class="nav-item" id="nav-export">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-          <span class="nav-label">导出对话</span>
-        </a>
       </div>
     </nav>
+
+    <!-- 底部设置 -->
+    <div class="sidebar-footer">
+      <a href="#" class="nav-item" id="nav-rename">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+        <span class="nav-label">重命名</span>
+      </a>
+      <a href="#" class="nav-item" id="nav-compact">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M4 14h6v6M20 10h-6V4M14 10l6-6M10 14l-6 6"/></svg>
+        <span class="nav-label">压缩</span>
+      </a>
+      <a href="#" class="nav-item" id="nav-export">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <span class="nav-label">导出</span>
+      </a>
+      <a href="#" class="nav-item" id="nav-settings">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15 1.65 1.65 0 0 0 3.51 13.9l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 3.4 9.8a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 7.6 5.4a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 .99z"/></svg>
+        <span class="nav-label">设置</span>
+      </a>
+    </div>
   </aside>
+
+  <!-- 删除会话确认弹窗 -->
+  <div class="confirm-modal hidden" id="delete-session-modal">
+    <div class="confirm-modal-backdrop"></div>
+    <div class="confirm-modal-content">
+      <div class="confirm-modal-header">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        <h3>删除会话</h3>
+      </div>
+      <div class="confirm-modal-body">
+        <p id="delete-session-text">确定删除此会话吗？此操作不可撤销。</p>
+      </div>
+      <div class="confirm-modal-footer">
+        <button class="confirm-btn confirm-btn-secondary" id="delete-session-cancel">取消</button>
+        <button class="confirm-btn confirm-btn-danger" id="delete-session-confirm">删除</button>
+      </div>
+    </div>
+  </div>
+  <div class="project-context-menu hidden" id="project-context-menu">
+    <button class="context-item" data-action="pin">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2l-4 8h8l-4-8zM6 12h12M12 14v7"/></svg>
+      <span>置顶项目</span>
+    </button>
+    <button class="context-item" data-action="open-explorer">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <span>在资源管理器中打开</span>
+    </button>
+    <button class="context-item" data-action="rename">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+      <span>重命名项目</span>
+    </button>
+    <div class="context-divider"></div>
+    <button class="context-item context-item-danger" data-action="remove">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      <span>移除</span>
+    </button>
+  </div>
+
+  <!-- 创建/导入项目弹窗 -->
+  <div class="project-modal hidden" id="project-modal">
+    <div class="project-modal-backdrop"></div>
+    <div class="project-modal-content">
+      <div class="project-modal-header">
+        <h3 id="project-modal-title">创建项目</h3>
+        <button class="project-modal-close" id="project-modal-close" aria-label="关闭">&times;</button>
+      </div>
+      <div class="project-modal-body">
+        <div class="project-form-group">
+          <label for="project-name-input">项目名称</label>
+          <input type="text" id="project-name-input" placeholder="输入项目名称..." />
+        </div>
+        <div class="project-form-group">
+          <label for="project-path-input">项目路径</label>
+          <div class="project-path-input-group">
+            <input type="text" id="project-path-input" placeholder="选择项目文件夹..." readonly />
+            <button class="project-browse-btn" id="project-browse-btn">浏览</button>
+          </div>
+        </div>
+      </div>
+      <div class="project-modal-footer">
+        <button class="project-btn project-btn-secondary" id="project-modal-cancel">取消</button>
+        <button class="project-btn project-btn-primary" id="project-modal-confirm">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="confirm-modal hidden" id="project-confirm-modal">
+    <div class="confirm-modal-backdrop"></div>
+    <div class="confirm-modal-content">
+      <div class="confirm-modal-header">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+        <h3>确认操作</h3>
+      </div>
+      <div class="confirm-modal-body">
+        <p id="project-confirm-text">确定执行此操作吗？</p>
+      </div>
+      <div class="confirm-modal-footer">
+        <button class="confirm-btn confirm-btn-secondary" id="project-confirm-cancel">取消</button>
+        <button class="confirm-btn confirm-btn-danger" id="project-confirm-confirm">确定</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ── 主内容区 ───────────────────────────────── -->
   <main id="main">
@@ -193,6 +315,7 @@
 <script src="js/status.js"></script>
 <script src="js/input.js"></script>
 <script src="js/dialog.js"></script>
+<script src="js/project-sidebar.js"></script>
 <script src="js/py-callbacks.js"></script>
 <script src="js/app.js"></script>
 </body>

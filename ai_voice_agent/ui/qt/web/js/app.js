@@ -132,6 +132,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.SessionSidebar) {
       SessionSidebar.requestRefresh();
     }
+    if (window.ProjectSidebar) {
+      ProjectSidebar.requestProjectList();
+    }
   });
 
   // 6. 模型选择器 — 下拉菜单交互
@@ -189,6 +192,46 @@ function initSessionSidebar() {
 
   if (!listEl) return;
 
+  // 删除确认弹窗状态
+  let deleteTargetId = '';
+  let deleteTargetTitle = '';
+  const deleteModal = document.getElementById('delete-session-modal');
+  const deleteText = document.getElementById('delete-session-text');
+  const deleteConfirmBtn = document.getElementById('delete-session-confirm');
+  const deleteCancelBtn = document.getElementById('delete-session-cancel');
+  const deleteBackdrop = deleteModal ? deleteModal.querySelector('.confirm-modal-backdrop') : null;
+
+  function openDeleteModal(sessionId, title) {
+    deleteTargetId = sessionId;
+    deleteTargetTitle = title;
+    if (deleteText) {
+      deleteText.textContent = `确定删除会话「${title}」吗？此操作不可撤销。`;
+    }
+    if (deleteModal) deleteModal.classList.remove('hidden');
+  }
+
+  function closeDeleteModal() {
+    deleteTargetId = '';
+    deleteTargetTitle = '';
+    if (deleteModal) deleteModal.classList.add('hidden');
+  }
+
+  function confirmDelete() {
+    if (deleteTargetId && window.bridge && window.bridge.onDeleteSession) {
+      window.bridge.onDeleteSession(deleteTargetId);
+    }
+    closeDeleteModal();
+  }
+
+  if (deleteConfirmBtn) deleteConfirmBtn.addEventListener('click', confirmDelete);
+  if (deleteCancelBtn) deleteCancelBtn.addEventListener('click', closeDeleteModal);
+  if (deleteBackdrop) deleteBackdrop.addEventListener('click', closeDeleteModal);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && deleteModal && !deleteModal.classList.contains('hidden')) {
+      closeDeleteModal();
+    }
+  });
+
   function requestRefresh() {
     if (window.bridge && window.bridge.onRequestSessions) {
       window.bridge.onRequestSessions();
@@ -217,13 +260,25 @@ function initSessionSidebar() {
       item.innerHTML = `
         <span class="session-title"></span>
         <span class="session-meta"></span>
+        <span class="session-delete" title="删除会话">&times;</span>
       `;
       const titleEl = item.querySelector('.session-title');
       const metaEl = item.querySelector('.session-meta');
+      const deleteEl = item.querySelector('.session-delete');
       if (titleEl) titleEl.textContent = session.title || '未命名会话';
       if (metaEl) {
         metaEl.textContent = `${session.updatedAt || ''} · ${session.messageCount || 0} 条`;
       }
+      // 点击删除按钮
+      if (deleteEl) {
+        deleteEl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const sid = item.dataset.sessionId;
+          const stitle = titleEl ? titleEl.textContent : sid;
+          openDeleteModal(sid, stitle);
+        });
+      }
+      // 点击会话条目 → 恢复
       item.addEventListener('click', () => {
         if (window.bridge && window.bridge.onResumeSession && item.dataset.sessionId) {
           window.bridge.onResumeSession(item.dataset.sessionId);

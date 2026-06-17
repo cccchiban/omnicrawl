@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 from .agent import AgentError, LocalToolAgent
+from .project import ProjectEntry
 from .session import COMPACT_SUMMARY_PREFIX, SessionEvent, SessionIndexEntry
 from .slash_commands import (
     format_memory_clean_result,
@@ -68,6 +70,42 @@ def _session_entry_to_ui(entry: SessionIndexEntry, current_session_id: str) -> d
         "updatedAt": entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M"),
         "messageCount": entry.message_count,
         "current": entry.session_id == current_session_id,
+    }
+
+
+def _project_session_entry_to_ui(entry: SessionIndexEntry, current_session_id: str) -> dict[str, object]:
+    """把会话索引转换为项目侧栏中的嵌套会话条目。"""
+
+    return {
+        "id": entry.session_id,
+        "title": entry.title or "未命名会话",
+        "timeAgo": entry.updated_at.astimezone().strftime("%Y-%m-%d %H:%M"),
+        "messageCount": entry.message_count,
+        "current": entry.session_id == current_session_id,
+    }
+
+
+def _project_entry_to_ui(
+    agent: LocalToolAgent,
+    entry: ProjectEntry,
+    current_session_id: str,
+) -> dict[str, object]:
+    """把项目记录转换为 Qt Web 前端项目侧栏使用的 JSON。
+
+    项目记录来自 `.agent_sessions/projects.json`，嵌套会话实时按项目
+    路径从 SessionStore 过滤，避免项目列表和会话索引保存两份归属关系。
+    """
+
+    sessions = agent.list_sessions(limit=20, project_path=entry.path)
+    return {
+        "name": entry.name,
+        "path": entry.path,
+        "pinned": entry.pinned,
+        "current": Path(entry.path).resolve() == agent.workspace_root.resolve(),
+        "sessions": [
+            _project_session_entry_to_ui(session, current_session_id)
+            for session in sessions
+        ],
     }
 
 
@@ -190,6 +228,19 @@ def run_qt_chat(
         if current_entry is not None:
             ui.set_current_session(current_entry.session_id, current_entry.title or "未命名会话")
 
+    def refresh_project_list() -> None:
+        """刷新 Qt 项目列表，并把会话按项目路径分组。"""
+
+        try:
+            projects = agent.list_projects()
+            current_id = agent.current_session_id
+            ui.update_project_list(
+                [_project_entry_to_ui(agent, project, current_id) for project in projects]
+            )
+            ui.set_current_project(str(agent.workspace_root.resolve()))
+        except AgentError as exc:
+            ui.notice(f"项目列表刷新失败：{exc}")
+
     def render_session(session_id: str) -> None:
         """从 JSONL 事件流重建 Qt 消息区。"""
 
@@ -203,7 +254,17 @@ def run_qt_chat(
         render_session(state.session_id)
         ui.set_current_session(state.session_id, state.title or "未命名会话")
         refresh_session_list()
+        refresh_project_list()
         ui.notice(f"已恢复会话：{state.title or state.session_id}")
+
+    def parse_project_command_payload(text: str) -> tuple[str, str]:
+        """解析窗口层传来的 `left|right` 控制参数。"""
+
+        payload = text.split(None, 1)[1] if " " in text else ""
+        left, separator, right = payload.partition("|")
+        if not separator:
+            return payload.strip(), ""
+        return left.strip(), right.strip()
 
     def handle_session_control_text(user_text: str) -> bool:
         """处理 Qt 会话控制指令，避免它们进入模型请求。"""
@@ -212,6 +273,76 @@ def run_qt_chat(
         normalized = text.lower()
         if text == "__REFRESH_SESSIONS__":
             refresh_session_list()
+            return True
+
+        if text == "__REFRESH_PROJECTS__":
+            refresh_project_list()
+            return True
+
+        if text.startswith("__CREATE_PROJECT__ "):
+            name, path = parse_project_command_payload(text)
+            try:
+                project = agent.create_project(name, path)
+            except AgentError as exc:
+                ui.notice(f"项目创建失败：{exc}")
+                return True
+            refresh_project_list()
+            ui.notice(f"已创建项目：{project.name}")
+            return True
+
+        if text.startswith("__IMPORT_PROJECT__ "):
+            name, path = parse_project_command_payload(text)
+            try:
+                project = agent.import_project(name, path)
+            except AgentError as exc:
+                ui.notice(f"项目导入失败：{exc}")
+                return True
+            refresh_project_list()
+            ui.notice(f"已导入项目：{project.name}")
+            return True
+
+        if text.startswith("__PIN_PROJECT__ "):
+            project_path = text.split(None, 1)[1].strip()
+            try:
+                project = agent.toggle_project_pin(project_path)
+            except AgentError as exc:
+                ui.notice(f"项目置顶状态更新失败：{exc}")
+                return True
+            refresh_project_list()
+            action = "已置顶" if project.pinned else "已取消置顶"
+            ui.notice(f"{action}项目：{project.name}")
+            return True
+
+        if text.startswith("__RENAME_PROJECT__ "):
+            project_path, name = parse_project_command_payload(text)
+            try:
+                project = agent.rename_project(project_path, name)
+            except AgentError as exc:
+                ui.notice(f"项目重命名失败：{exc}")
+                return True
+            refresh_project_list()
+            ui.notice(f"项目已重命名为：{project.name}")
+            return True
+
+        if text.startswith("__REMOVE_PROJECT__ "):
+            project_path = text.split(None, 1)[1].strip()
+            try:
+                agent.remove_project(project_path)
+            except AgentError as exc:
+                ui.notice(f"项目移除失败：{exc}")
+                return True
+            refresh_project_list()
+            ui.notice("已从列表移除项目。")
+            return True
+
+        if text.startswith("__SWITCH_PROJECT__ ") or text.startswith("__OPEN_PROJECT__ "):
+            project_path = text.split(None, 1)[1].strip()
+            ui.notice(f"项目已在列表中：{project_path}。当前版本不会在运行中切换工作区。")
+            return True
+
+        if text.startswith("__OPEN_IN_EXPLORER__ "):
+            project_path = text.split(None, 1)[1].strip()
+            ui.notice(f"项目路径：{project_path}")
             return True
 
         if text.startswith("__RESUME_SESSION__ "):
@@ -231,13 +362,27 @@ def run_qt_chat(
                 return True
             ui.set_current_session(state.session_id, state.title or "未命名会话")
             refresh_session_list()
+            refresh_project_list()
             ui.notice(f"当前会话已重命名为：{state.title}")
+            return True
+
+        if text.startswith("__DELETE_SESSION__ "):
+            session_id = text.split(None, 1)[1].strip()
+            try:
+                agent.delete_session(session_id)
+            except AgentError as exc:
+                ui.notice(f"会话删除失败：{exc}")
+                return True
+            refresh_session_list()
+            refresh_project_list()
+            ui.notice(f"已删除会话：{session_id}")
             return True
 
         if normalized == NEW_CHAT_COMMAND:
             agent.reset_conversation()
             ui.render_session_messages([])
             refresh_session_list()
+            refresh_project_list()
             ui.notice("已开启新对话。")
             return True
 
@@ -257,6 +402,7 @@ def run_qt_chat(
             if message is None:
                 return False
             refresh_session_list()
+            refresh_project_list()
             ui.notice(message)
             return True
 
@@ -265,6 +411,7 @@ def run_qt_chat(
             if message is None:
                 return False
             refresh_session_list()
+            refresh_project_list()
             ui.notice(message)
             return True
 
@@ -282,6 +429,7 @@ def run_qt_chat(
                 if normalized == "/archive":
                     ui.render_session_messages([])
                     refresh_session_list()
+                    refresh_project_list()
                     ui.notice(message)
                 else:
                     ui.write(message)
@@ -331,10 +479,12 @@ def run_qt_chat(
             ui.notice(f"导出失败：{exc}")
             return
         refresh_session_list()
+        refresh_project_list()
         ui.notice(f"当前会话已导出：{path}")
 
     ui.export_requested.connect(handle_export_request)
     refresh_session_list()
+    refresh_project_list()
 
     while True:
         if stop_requested():
@@ -470,6 +620,7 @@ def run_qt_chat(
             speech_player.flush()
             ui.newline()
             refresh_session_list()
+            refresh_project_list()
 
             # 朗读完成后的处理
             if text_to_speech is not None:

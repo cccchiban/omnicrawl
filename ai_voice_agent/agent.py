@@ -2,14 +2,41 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import re
-import sys
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .agent_approval import (
+    TOOL_REVIEW_SYSTEM_PROMPT,
+    arguments_have_delete_intent,
+    command_has_delete_intent,
+    description_has_delete_intent,
+    is_delete_behavior_tool_call,
+    parse_tool_review_response,
+    text_has_delete_intent,
+    tool_accepts_shell_command,
+)
+from .agent_tools import build_agent_tools, build_mcp_tools, workspace_tool_result
+from .agent_environment import (
+    detect_agent_window_hint,
+    detect_command_shell_hint,
+    detect_terminal_hint,
+    runtime_environment_context,
+    windows_process_name_chain,
+    windows_shell_label,
+    windows_terminal_label,
+)
+from .agent_history import (
+    build_compact_summary,
+    compact_history,
+    compact_snippet,
+    extract_existing_compact_summary,
+    format_compact_items,
+    restore_history_window,
+)
+from .agent_types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
 from .approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_REVIEW,
@@ -32,6 +59,7 @@ from .memory import (
     search_result_to_dict,
 )
 from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
+from .project import ProjectEntry, ProjectStore, ProjectStoreError
 from .session import (
     COMPACT_SUMMARY_PREFIX,
     PromptHistoryEntry,
@@ -53,32 +81,6 @@ from .workspace_tools import WorkspaceToolError, WorkspaceTools
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
 AGENTS_INSTRUCTIONS_FILE = "AGENTS.md"
-TOOL_REVIEW_SYSTEM_PROMPT = (
-    "你是本地 AI Agent 的工具调用安全审查器。"
-    "review 模式下，Host 只会把疑似删除行为的工具调用交给你审查；非删除行为由 Host 自动放行。"
-    "你只判断这一次工具调用是否可以自动批准，不执行工具，也不补写方案。"
-    "请用严格 JSON 回复：{\"approve\": true/false, \"reason\": \"一句中文理由\"}。"
-    "删除目标清晰、位于工作区内、影响范围明确时可以批准。"
-    "当请求明显越界访问、读取密钥、破坏系统、递归或批量删除大量文件、修改真实生产数据、"
-    "执行无法判断影响的危险删除命令，或参数不足以判断时，必须拒绝。"
-    "如果工具调用经判断不是删除行为，可以批准并说明无需删除审批。"
-)
-
-_DELETE_COMMAND_PATTERN = re.compile(
-    r"(?<![\w.-])(?:rm|rmdir|del|erase|rd|remove-item|ri|unlink|clean)"
-    r"(?:\.exe|\.cmd|\.bat|\.ps1)?(?=\s|$|[;&|])",
-    re.IGNORECASE,
-)
-_GIT_CLEAN_PATTERN = re.compile(r"(?<![\w.-])git(?:\.exe)?\s+clean(?=\s|$|[;&|])", re.IGNORECASE)
-_FIND_DELETE_PATTERN = re.compile(r"(?<![\w.-])find(?:\.exe)?\b.*(?:\s-delete\b|\s-exec\s+rm\b)", re.IGNORECASE)
-_DELETE_INTENT_PATTERN = re.compile(
-    r"(^|[._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink|删除|移除|清空)($|[._:/\\-])",
-    re.IGNORECASE,
-)
-_DELETE_TEXT_INTENT_PATTERN = re.compile(
-    r"(^|[\s._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
-    re.IGNORECASE,
-)
 _CONTINUE_LAST_TASK_TEXTS = {
     "继续",
     "继续上次",
@@ -91,200 +93,38 @@ _CONTINUE_LAST_TASK_TEXTS = {
     "retry",
     "continue",
 }
-_COMPACT_SNIPPET_CHARS = 360
-_COMPACT_MAX_BULLETS = 4
-_DELETE_DESCRIPTION_START_PATTERN = re.compile(
-    r"^(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
-    re.IGNORECASE,
-)
-_DELETE_LOCALIZED_TERMS = ("删除", "移除", "清空")
-_DELETE_INTENT_KEYS = {
-    "action",
-    "command",
-    "cmd",
-    "method",
-    "mode",
-    "op",
-    "operation",
-    "script",
-    "verb",
-}
-_MCP_DELETE_INTENT_KEYS = _DELETE_INTENT_KEYS
-
-
 def _runtime_environment_context(workspace_root: Path, workspace_detection_summary: str = "") -> str:
-    """生成注入给模型的运行环境摘要。
-
-    这里只暴露低敏、稳定且会影响工具选择的信息；不枚举完整环境变量，
-    避免把 API Key、Token、代理配置等敏感值塞进模型上下文。
-    """
-
-    window_hint = _detect_agent_window_hint()
-    command_shell_hint = _detect_command_shell_hint()
-    terminal_hint = _detect_terminal_hint()
-    lines = [
-        "运行环境：",
-        f"- 操作系统：{platform.system() or os.name} {platform.release()} ({platform.machine()})",
-        f"- Python：{platform.python_version()}",
-        f"- Python 可执行文件：{sys.executable}",
-        f"- 工作区根目录：{workspace_root}",
-        f"- 当前进程目录：{Path.cwd().resolve()}",
-        f"- 路径分隔符：{os.sep}",
-    ]
-    if workspace_detection_summary.strip():
-        lines.append(f"- 工作区检测：{workspace_detection_summary.strip()}")
-    if window_hint:
-        lines.append(f"- Agent 运行窗口：{window_hint}")
-    if command_shell_hint:
-        lines.append(f"- run_command 默认 Shell：{command_shell_hint}")
-    if terminal_hint:
-        lines.append(f"- 终端环境变量：{terminal_hint}")
-    return "\n".join(lines)
+    return runtime_environment_context(
+        workspace_root,
+        workspace_detection_summary,
+        window_hint=_detect_agent_window_hint(),
+        command_shell_hint=_detect_command_shell_hint(),
+        terminal_hint=_detect_terminal_hint(),
+    )
 
 
 def _detect_command_shell_hint() -> str:
-    """检测 run_command 使用 shell=True 时最应遵循的命令语法。"""
-
-    if os.name == "nt":
-        comspec = os.getenv("COMSPEC", "").strip()
-        shell = comspec or "cmd.exe"
-        return f"{shell}（默认按 CMD 语法解析；PowerShell 语法需显式调用 powershell.exe -Command）"
-    return os.getenv("SHELL", "").strip()
+    return detect_command_shell_hint()
 
 
 def _detect_agent_window_hint() -> str:
-    """检测 Agent 所在的交互窗口或父进程链，帮助模型选择兼容命令。"""
-
-    if os.name != "nt":
-        shell = os.getenv("SHELL", "").strip()
-        terminal = _detect_terminal_hint()
-        if shell and terminal:
-            return f"Shell={Path(shell).name}；终端={terminal}"
-        return f"Shell={Path(shell).name}" if shell else terminal
-
-    process_chain = _windows_process_name_chain()
-    lowered_chain = [name.lower() for name in process_chain]
-    shell_label = _windows_shell_label(lowered_chain)
-    terminal_label = _windows_terminal_label(lowered_chain)
-
-    if not shell_label and os.getenv("AI_VOICE_CHAT_IN_POWERSHELL") == "1":
-        shell_label = "Windows PowerShell（由启动器创建）"
-
-    parts: list[str] = []
-    if terminal_label:
-        parts.append(f"终端={terminal_label}")
-    if shell_label:
-        parts.append(f"Shell={shell_label}")
-    if process_chain:
-        parts.append(f"进程链={' <- '.join(process_chain[:8])}")
-    return "；".join(parts) or "Windows 控制台（未识别具体 Shell）"
+    return detect_agent_window_hint()
 
 
 def _windows_shell_label(lowered_process_chain: list[str]) -> str:
-    shell_labels = {
-        "pwsh.exe": "PowerShell 7+",
-        "powershell.exe": "Windows PowerShell",
-        "cmd.exe": "CMD",
-    }
-    for name in lowered_process_chain:
-        label = shell_labels.get(name)
-        if label:
-            return label
-    return ""
+    return windows_shell_label(lowered_process_chain)
 
 
 def _windows_terminal_label(lowered_process_chain: list[str]) -> str:
-    labels: list[str] = []
-    if os.getenv("WT_SESSION", "").strip() or "windowsterminal.exe" in lowered_process_chain:
-        labels.append("Windows Terminal")
-    term_program = os.getenv("TERM_PROGRAM", "").strip()
-    if term_program:
-        labels.append(term_program)
-    if "code.exe" in lowered_process_chain:
-        labels.append("VS Code Terminal")
-    if "conhost.exe" in lowered_process_chain:
-        labels.append("Console Host")
-    return " / ".join(dict.fromkeys(labels))
+    return windows_terminal_label(lowered_process_chain)
 
 
 def _windows_process_name_chain(limit: int = 12) -> list[str]:
-    """返回当前进程到祖先进程的 exe 名称链；失败时返回空列表。
-
-    使用 Win32 Toolhelp API 避免依赖 psutil，也避免通过 shell 再启动子进程。
-    """
-
-    if os.name != "nt":
-        return []
-
-    try:
-        import ctypes
-        from ctypes import wintypes
-    except ImportError:
-        return []
-
-    class PROCESSENTRY32W(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", wintypes.DWORD),
-            ("cntUsage", wintypes.DWORD),
-            ("th32ProcessID", wintypes.DWORD),
-            ("th32DefaultHeapID", ctypes.c_size_t),
-            ("th32ModuleID", wintypes.DWORD),
-            ("cntThreads", wintypes.DWORD),
-            ("th32ParentProcessID", wintypes.DWORD),
-            ("pcPriClassBase", wintypes.LONG),
-            ("dwFlags", wintypes.DWORD),
-            ("szExeFile", wintypes.WCHAR * 260),
-        ]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
-    if snapshot == wintypes.HANDLE(-1).value:
-        return []
-
-    process_table: dict[int, tuple[int, str]] = {}
-    try:
-        entry = PROCESSENTRY32W()
-        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
-            return []
-        while True:
-            process_table[int(entry.th32ProcessID)] = (
-                int(entry.th32ParentProcessID),
-                str(entry.szExeFile),
-            )
-            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
-                break
-    finally:
-        kernel32.CloseHandle(snapshot)
-
-    chain: list[str] = []
-    seen: set[int] = set()
-    pid = os.getpid()
-    for _index in range(max(1, limit)):
-        if pid in seen:
-            break
-        seen.add(pid)
-        item = process_table.get(pid)
-        if item is None:
-            break
-        parent_pid, name = item
-        if name:
-            chain.append(name)
-        if parent_pid <= 0:
-            break
-        pid = parent_pid
-    return chain
+    return windows_process_name_chain(limit)
 
 
 def _detect_terminal_hint() -> str:
-    """返回终端类型线索，只使用常见非敏感变量名。"""
-
-    hints: list[str] = []
-    for name in ("WT_SESSION", "TERM_PROGRAM", "TERM"):
-        value = os.getenv(name, "").strip()
-        if value:
-            hints.append(name if name == "WT_SESSION" else f"{name}={value}")
-    return ", ".join(hints)
+    return detect_terminal_hint()
 
 
 def _is_openai_gpt_model(model: str) -> bool:
@@ -352,47 +192,6 @@ class _RetryableAgentRequestError(RuntimeError):
     """模型请求遇到临时连接或服务端错误，可按请求重试策略重新发起。"""
 
 
-@dataclass(frozen=True)
-class ToolCall:
-    """模型请求执行的一次工具调用。"""
-
-    name: str
-    arguments: dict[str, Any] = field(default_factory=dict)
-    id: str = ""
-    function_name: str = ""
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    """工具调用返回给模型的结构化结果。"""
-
-    ok: bool
-    output: str
-    full_output: str = ""
-
-
-@dataclass(frozen=True)
-class AgentModelReply:
-    """Chat Completions 一次回复的结构化结果。"""
-
-    message: dict[str, Any]
-    content: str
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    reasoning: str = ""
-    content_streamed: bool = False
-
-
-@dataclass(frozen=True)
-class ToolDefinition:
-    """Agent 可用工具的说明与执行函数。"""
-
-    name: str
-    description: str
-    argument_schema: str
-    requires_confirmation: bool
-    run: Callable[[dict[str, Any]], ToolResult]
-
-
 def _read_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
     """读取整数环境变量，并把配置错误转成 Agent 可捕获的中文错误。"""
 
@@ -418,6 +217,14 @@ def _validate_int_range(name: str, value: int, *, min_value: int, max_value: int
     if value < min_value or value > max_value:
         raise AgentError(f"{name} 必须是 {min_value} 到 {max_value} 的整数，当前值：{value}。")
     return value
+
+
+def _project_directory_name(name: str) -> str:
+    """把项目展示名转换为适合创建目录的保守名称。"""
+
+    cleaned = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "-", name.strip())
+    cleaned = re.sub(r"\s+", "-", cleaned).strip(" .-")
+    return cleaned or "new-project"
 
 
 @dataclass
@@ -560,6 +367,9 @@ class LocalToolAgent:
             raise AgentError(str(exc)) from exc
         self._session_store = self._create_session_store() if self.config.session_enabled else None
         self._session_state = self._start_or_resume_session() if self._session_store is not None else None
+        self._project_store = self._create_project_store() if self._session_store is not None else None
+        if self._project_store is not None:
+            self.scan_projects()
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._workspace_tools = WorkspaceTools(
             self.workspace_root,
@@ -626,13 +436,98 @@ class LocalToolAgent:
         state = getattr(self, "_session_state", None)
         return state.session_id if state is not None else ""
 
-    def list_sessions(self, limit: int = 10) -> list[SessionIndexEntry]:
-        """列出当前工作区最近会话，供 `/sessions` 展示。"""
+    def list_sessions(
+        self,
+        limit: int = 10,
+        *,
+        project_path: str | Path | None = None,
+    ) -> list[SessionIndexEntry]:
+        """列出指定项目或当前工作区最近会话，供 `/sessions` 和项目侧栏展示。"""
 
         store = self._require_session_store()
         try:
+            if project_path is not None:
+                return store.list_sessions(project_path=project_path, limit=limit)
             return store.list_sessions(workspace_root=self.workspace_root, limit=limit)
         except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def scan_projects(self) -> list[ProjectEntry]:
+        """从会话索引扫描项目路径并写入 `.agent_sessions/projects.json`。"""
+
+        session_store = self._require_session_store()
+        project_store = self._require_project_store()
+        try:
+            return project_store.scan_projects(
+                session_store.list_project_paths(include_archived=True),
+                current_workspace=self.workspace_root,
+            )
+        except (ProjectStoreError, SessionStoreError) as exc:
+            raise AgentError(str(exc)) from exc
+
+    def list_projects(self) -> list[ProjectEntry]:
+        """列出已保存项目；每次读取前先扫描会话索引补齐缺失项目。"""
+
+        self.scan_projects()
+        project_store = self._require_project_store()
+        try:
+            return project_store.list_projects()
+        except ProjectStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def create_project(self, name: str, path: str = "") -> ProjectEntry:
+        """创建项目目录并持久化到项目列表。"""
+
+        project_store = self._require_project_store()
+        project_path = Path(path.strip()) if path.strip() else self.workspace_root / _project_directory_name(name)
+        try:
+            return project_store.create_project(name=name, path=project_path)
+        except ProjectStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def import_project(self, name: str, path: str) -> ProjectEntry:
+        """导入已有项目目录并持久化到项目列表。"""
+
+        project_store = self._require_project_store()
+        try:
+            return project_store.import_project(name=name, path=path)
+        except ProjectStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def rename_project(self, project_path: str, name: str) -> ProjectEntry:
+        """修改项目展示名，不改动磁盘目录。"""
+
+        project_store = self._require_project_store()
+        try:
+            return project_store.rename_project(path=project_path, name=name)
+        except ProjectStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def pin_project(self, project_path: str, *, pinned: bool = True) -> ProjectEntry:
+        """设置项目置顶状态。"""
+
+        project_store = self._require_project_store()
+        try:
+            return project_store.pin_project(project_path, pinned=pinned)
+        except ProjectStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def toggle_project_pin(self, project_path: str) -> ProjectEntry:
+        """切换项目置顶状态。"""
+
+        project_store = self._require_project_store()
+        try:
+            return project_store.toggle_project_pin(project_path)
+        except ProjectStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def remove_project(self, project_path: str) -> None:
+        """从项目列表移除项目记录，不删除目录和会话。"""
+
+        project_store = self._require_project_store()
+        try:
+            project_store.remove_project(project_path)
+        except ProjectStoreError as exc:
             raise AgentError(str(exc)) from exc
 
     def list_archived_sessions(self, limit: int = 10) -> list[SessionIndexEntry]:
@@ -709,6 +604,20 @@ class LocalToolAgent:
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc
         return archived_state
+
+    def delete_session(self, session_id: str) -> None:
+        """删除指定会话。当前活跃会话不允许删除。"""
+
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            raise AgentError("会话系统未启用。")
+        if session_id == state.session_id:
+            raise AgentError("不能删除当前活跃会话，请先切换到其他会话。")
+        store = self._require_session_store()
+        try:
+            store.delete_session(session_id)
+        except SessionStoreError as exc:
+            raise AgentError(str(exc)) from exc
 
     def export_current_session_markdown(self, markdown_text: str) -> Path:
         """导出当前会话 Markdown 到 `.agent_sessions/exports/`。"""
@@ -907,6 +816,17 @@ class LocalToolAgent:
         except SessionStoreError as exc:
             raise AgentError(str(exc)) from exc
         return store
+
+    def _create_project_store(self) -> ProjectStore:
+        """创建项目列表存储，复用会话目录作为持久化根。"""
+
+        store = self._require_session_store()
+        project_store = ProjectStore(store.root)
+        try:
+            project_store.ensure()
+        except ProjectStoreError as exc:
+            raise AgentError(str(exc)) from exc
+        return project_store
 
     def _start_session(self) -> SessionState:
         store = self._require_session_store()
@@ -1726,86 +1646,33 @@ class LocalToolAgent:
         tool: ToolDefinition,
         arguments: dict[str, Any],
     ) -> bool:
-        """判断工具调用是否带有显式删除意图，供 review 模式决定是否进入审查。
-
-        review 模式的目标是减少普通读写、搜索和测试命令的审批噪音，只把真正需要
-        守住的删除类动作交给审查模型。这里优先识别工具名和命令字符串，
-        同时检查 MCP 常见的 action/operation/method 等意图字段；避免扫描 content
-        这类正文参数，以免用户写入的普通文本里出现 delete 一词就被误判。
-        """
-
-        if cls._text_has_delete_intent(tool.name):
-            return True
-
-        command = arguments.get("command")
-        if isinstance(command, str) and cls._command_has_delete_intent(command):
-            return True
-
-        if not cls._tool_accepts_shell_command(tool) and cls._description_has_delete_intent(
-            tool.description
-        ):
-            return True
-
-        return cls._arguments_have_delete_intent(arguments, intent_keys=_MCP_DELETE_INTENT_KEYS)
+        return is_delete_behavior_tool_call(tool, arguments)
 
     @staticmethod
     def _tool_accepts_shell_command(tool: ToolDefinition) -> bool:
-        return "command" in tool.argument_schema.lower() or "cmd" in tool.argument_schema.lower()
+        return tool_accepts_shell_command(tool)
 
-    @classmethod
+    @staticmethod
     def _arguments_have_delete_intent(
-        cls,
         value: Any,
         *,
-        intent_keys: set[str] = _DELETE_INTENT_KEYS,
+        intent_keys: set[str] | None = None,
     ) -> bool:
-        if isinstance(value, dict):
-            for raw_key, item in value.items():
-                if not isinstance(raw_key, str):
-                    continue
-
-                key = raw_key.strip().lower()
-                if cls._text_has_delete_intent(key):
-                    return True
-                if key in intent_keys and isinstance(item, str):
-                    if cls._command_has_delete_intent(item) or cls._text_has_delete_intent(item):
-                        return True
-                elif isinstance(item, dict):
-                    if cls._arguments_have_delete_intent(item, intent_keys=intent_keys):
-                        return True
-                elif isinstance(item, list):
-                    if any(
-                        cls._arguments_have_delete_intent(child, intent_keys=intent_keys)
-                        for child in item
-                    ):
-                        return True
-        elif isinstance(value, list):
-            return any(cls._arguments_have_delete_intent(item, intent_keys=intent_keys) for item in value)
-        return False
+        if intent_keys is None:
+            return arguments_have_delete_intent(value)
+        return arguments_have_delete_intent(value, intent_keys=intent_keys)
 
     @staticmethod
     def _command_has_delete_intent(command: str) -> bool:
-        return bool(
-            _DELETE_COMMAND_PATTERN.search(command)
-            or _GIT_CLEAN_PATTERN.search(command)
-            or _FIND_DELETE_PATTERN.search(command)
-            or _DELETE_INTENT_PATTERN.search(command)
-        )
+        return command_has_delete_intent(command)
 
     @staticmethod
     def _text_has_delete_intent(text: str) -> bool:
-        if any(term in text for term in _DELETE_LOCALIZED_TERMS):
-            return True
-        normalized_text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
-        return bool(_DELETE_TEXT_INTENT_PATTERN.search(normalized_text))
+        return text_has_delete_intent(text)
 
     @staticmethod
     def _description_has_delete_intent(text: str) -> bool:
-        stripped = text.lstrip(" \t\r\n-_*:;,.")
-        if any(stripped.startswith(term) for term in _DELETE_LOCALIZED_TERMS):
-            return True
-        normalized_text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", stripped)
-        return bool(_DELETE_DESCRIPTION_START_PATTERN.search(normalized_text))
+        return description_has_delete_intent(text)
 
     def _review_tool_call(
         self,
@@ -1844,171 +1711,34 @@ class LocalToolAgent:
 
     @staticmethod
     def _parse_tool_review_response(review_text: str) -> tuple[bool, str]:
-        """解析审查模型 JSON；不可解析时按拒绝处理。"""
-
-        text = review_text.strip()
-        if not text:
-            return False, "审查模型返回为空。"
-
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        payload = match.group(0) if match else text
-        try:
-            data = json.loads(payload)
-        except json.JSONDecodeError:
-            return False, f"审查模型返回不是 JSON：{text}"
-
-        if not isinstance(data, dict):
-            return False, "审查模型返回不是 JSON 对象。"
-
-        reason_value = data.get("reason", "")
-        reason = reason_value.strip() if isinstance(reason_value, str) else ""
-        return data.get("approve") is True, reason
+        return parse_tool_review_response(review_text)
 
     def _build_tools(self) -> dict[str, ToolDefinition]:
-        """注册内置工具；所有工具执行前统一走确认门。"""
-
-        tools = self._build_mcp_tools()
-        tools.extend(
-            [
-                ToolDefinition(
-                    name="list_files",
-                    description="列出工作区内的文件和目录，可选择递归。",
-                    argument_schema='{"path": ".", "recursive": false}',
-                    requires_confirmation=True,
-                    run=self._tool_list_files,
-                ),
-                ToolDefinition(
-                    name="read_file",
-                    description="读取 UTF-8 文本文件，可指定起始行和最多行数。",
-                    argument_schema='{"path": "main.py", "start_line": 1, "max_lines": 200}',
-                    requires_confirmation=True,
-                    run=self._tool_read_file,
-                ),
-                ToolDefinition(
-                    name="search_text",
-                    description="在工作区文本文件中搜索正则或普通文本。",
-                    argument_schema='{"pattern": "class Agent", "path": ".", "case_sensitive": false, "max_results": 50}',
-                    requires_confirmation=True,
-                    run=self._tool_search_text,
-                ),
-                ToolDefinition(
-                    name="replace_text",
-                    description="在单个文件中替换指定文本，适合小范围代码修改。",
-                    argument_schema='{"path": "main.py", "old_text": "...", "new_text": "...", "count": 1}',
-                    requires_confirmation=True,
-                    run=self._tool_replace_text,
-                ),
-                ToolDefinition(
-                    name="write_file",
-                    description=(
-                        "写入或追加 UTF-8 文本文件；一次性脚本、中间文件和临时交付物"
-                        "应优先写入 Agent 临时目录。"
-                    ),
-                    argument_schema=(
-                        '{"path": ".agent_tmp/files/notes.md", "content": "...", '
-                        '"mode": "overwrite"}'
-                    ),
-                    requires_confirmation=True,
-                    run=self._tool_write_file,
-                ),
-                ToolDefinition(
-                    name="run_command",
-                    description=(
-                        "以工作区为当前目录执行任意本地命令、脚本或 shell 片段。"
-                    ),
-                    argument_schema='{"command": "python -m py_compile main.py", "timeout_seconds": 120}',
-                    requires_confirmation=True,
-                    run=self._tool_run_command,
-                ),
-            ]
+        return build_agent_tools(
+            mcp_manager=self._mcp_manager,
+            memory_enabled=self._memory_store is not None,
+            list_files=self._tool_list_files,
+            read_file=self._tool_read_file,
+            search_text=self._tool_search_text,
+            replace_text=self._tool_replace_text,
+            write_file=self._tool_write_file,
+            run_command=self._tool_run_command,
+            memory_search=self._tool_memory_search,
+            memory_read=self._tool_memory_read,
+            memory_expand_related=self._tool_memory_expand_related,
+            memory_write=self._tool_memory_write,
+            mcp_call=self._tool_mcp_call,
+            mcp_read_resource=self._tool_mcp_read_resource,
+            mcp_get_prompt=self._tool_mcp_get_prompt,
         )
-        if self._memory_store is not None:
-            tools.extend(
-                [
-                    ToolDefinition(
-                        name="memory_search",
-                        description="按当前任务检索候选长期记忆摘要，不返回完整正文。",
-                        argument_schema=(
-                            '{"query":"用户偏好或项目主题","reason":"为什么当前需要查记忆",'
-                            '"candidate_directories":["project-context/general"],"max_results":5}'
-                        ),
-                        requires_confirmation=False,
-                        run=self._tool_memory_search,
-                    ),
-                    ToolDefinition(
-                        name="memory_read",
-                        description="按记忆 id 读取完整长期记忆内容，并对实际读取的记忆加深回忆。",
-                        argument_schema='{"memory_ids":["20260603-164500"]}',
-                        requires_confirmation=False,
-                        run=self._tool_memory_read,
-                    ),
-                    ToolDefinition(
-                        name="memory_expand_related",
-                        description="沿已读记忆的关联目录扩展候选摘要，默认只展开一层关系。",
-                        argument_schema='{"memory_ids":["20260603-164500"],"max_depth":1,"max_results":5}',
-                        requires_confirmation=False,
-                        run=self._tool_memory_expand_related,
-                    ),
-                    ToolDefinition(
-                        name="memory_write",
-                        description="写入或合并具有长期价值的记忆，内容应短而准确。",
-                        argument_schema=(
-                            '{"memories":[{"content":"用户偏好中文交付摘要。",'
-                            '"related_directories":["user-preferences/communication-style"],'
-                            '"storage_directory":"user-preferences/communication-style",'
-                            '"source_event":"本轮对话"}]}'
-                        ),
-                        requires_confirmation=False,
-                        run=self._tool_memory_write,
-                    ),
-                ]
-            )
-        return {tool.name: tool for tool in tools}
 
     def _build_mcp_tools(self) -> list[ToolDefinition]:
-        """把 MCP Tool 元数据适配为 Chat Completions function tool。
-
-        Host 内部继续使用 `server.tool` 这类可读名称；对外发送给 DeepSeek 时
-        会统一映射成合法 function name，执行时再映射回真实工具名。
-        """
-
-        definitions: list[ToolDefinition] = []
-        for meta in self._mcp_manager.registry.tools.values():
-            definitions.append(
-                ToolDefinition(
-                    name=meta.logical_name,
-                    description=f"{meta.description}（MCP Server：{meta.server_name}）",
-                    argument_schema=meta.argument_schema,
-                    requires_confirmation=meta.requires_confirmation,
-                    run=lambda arguments, tool_meta=meta: self._tool_mcp_call(tool_meta, arguments),
-                )
-            )
-        for meta in self._mcp_manager.registry.resources.values():
-            definitions.append(
-                ToolDefinition(
-                    name=f"mcp_read_resource__{meta.logical_uri}",
-                    description=f"读取 MCP Resource：{meta.logical_uri}（MCP Server：{meta.server_name}）",
-                    argument_schema='{}',
-                    requires_confirmation=False,
-                    run=lambda _arguments, logical_uri=meta.logical_uri: self._tool_mcp_read_resource(
-                        logical_uri
-                    ),
-                )
-            )
-        for meta in self._mcp_manager.registry.prompts.values():
-            definitions.append(
-                ToolDefinition(
-                    name=f"mcp_get_prompt__{meta.logical_name}",
-                    description=f"获取 MCP Prompt：{meta.logical_name}（MCP Server：{meta.server_name}）",
-                    argument_schema='{"arguments": {}}',
-                    requires_confirmation=False,
-                    run=lambda arguments, logical_name=meta.logical_name: self._tool_mcp_get_prompt(
-                        logical_name,
-                        arguments,
-                    ),
-                )
-            )
-        return definitions
+        return build_mcp_tools(
+            mcp_manager=self._mcp_manager,
+            mcp_call=self._tool_mcp_call,
+            mcp_read_resource=self._tool_mcp_read_resource,
+            mcp_get_prompt=self._tool_mcp_get_prompt,
+        )
 
     def _system_prompt(self) -> str:
         """构造工具协议提示词；每轮强制一个工具或一个最终回答，降低解析复杂度。"""
@@ -2070,34 +1800,19 @@ class LocalToolAgent:
         return template
 
     def _tool_list_files(self, arguments: dict[str, Any]) -> ToolResult:
-        try:
-            return ToolResult(ok=True, output=self._workspace_toolbox().list_files(arguments))
-        except WorkspaceToolError as exc:
-            return ToolResult(ok=False, output=str(exc))
+        return workspace_tool_result(self._workspace_toolbox().list_files, arguments)
 
     def _tool_read_file(self, arguments: dict[str, Any]) -> ToolResult:
-        try:
-            return ToolResult(ok=True, output=self._workspace_toolbox().read_file(arguments))
-        except WorkspaceToolError as exc:
-            return ToolResult(ok=False, output=str(exc))
+        return workspace_tool_result(self._workspace_toolbox().read_file, arguments)
 
     def _tool_search_text(self, arguments: dict[str, Any]) -> ToolResult:
-        try:
-            return ToolResult(ok=True, output=self._workspace_toolbox().search_text(arguments))
-        except WorkspaceToolError as exc:
-            return ToolResult(ok=False, output=str(exc))
+        return workspace_tool_result(self._workspace_toolbox().search_text, arguments)
 
     def _tool_replace_text(self, arguments: dict[str, Any]) -> ToolResult:
-        try:
-            return ToolResult(ok=True, output=self._workspace_toolbox().replace_text(arguments))
-        except WorkspaceToolError as exc:
-            return ToolResult(ok=False, output=str(exc))
+        return workspace_tool_result(self._workspace_toolbox().replace_text, arguments)
 
     def _tool_write_file(self, arguments: dict[str, Any]) -> ToolResult:
-        try:
-            return ToolResult(ok=True, output=self._workspace_toolbox().write_file(arguments))
-        except WorkspaceToolError as exc:
-            return ToolResult(ok=False, output=str(exc))
+        return workspace_tool_result(self._workspace_toolbox().write_file, arguments)
 
     def _tool_run_command(self, arguments: dict[str, Any]) -> ToolResult:
         try:
@@ -2261,6 +1976,12 @@ class LocalToolAgent:
             raise AgentError("会话系统未启用。")
         return self._session_store
 
+    def _require_project_store(self) -> ProjectStore:
+        store = getattr(self, "_project_store", None)
+        if store is None:
+            raise AgentError("项目列表需要启用会话系统。")
+        return store
+
     @staticmethod
     def _read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:
         value = arguments.get(key)
@@ -2423,20 +2144,7 @@ class LocalToolAgent:
         self._compact_history(force=False)
 
     def _restore_history_window(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
-        """恢复最近上下文；如果首条是摘要边界，则固定保留摘要。"""
-
-        max_messages = self.config.max_history_turns * 2
-        if not messages:
-            return []
-        if str(messages[0].get("content") or "").strip().startswith(COMPACT_SUMMARY_PREFIX):
-            if len(messages) <= max_messages:
-                return list(messages)
-            recent_messages = messages[1:]
-            recent_window = recent_messages[-max_messages:]
-            if recent_window and recent_window[0].get("role") != "user":
-                recent_window = recent_window[1:]
-            return [messages[0], *recent_window]
-        return messages[-max_messages:]
+        return restore_history_window(messages, max_history_turns=self.config.max_history_turns)
 
     def _compact_history(self, *, force: bool = False) -> str:
         """把早期历史压缩成单条摘要消息，避免长会话被硬裁剪。
@@ -2445,57 +2153,26 @@ class LocalToolAgent:
         这样摘要可预测、测试稳定，也不会在会话很长时额外消耗模型上下文或失败重试次数。
         """
 
-        max_messages = self.config.max_history_turns * 2
-        has_leading_summary = bool(
-            self._history
-            and str(self._history[0].get("content") or "").strip().startswith(COMPACT_SUMMARY_PREFIX)
+        result = compact_history(
+            self._history,
+            max_history_turns=self.config.max_history_turns,
+            force=force,
         )
-        max_compactable = max(0, len(self._history) - 2)
-        if len(self._history) <= max_messages:
-            if not force:
-                return ""
-            compact_count = max_compactable
-            if compact_count < 2:
-                return ""
-        else:
-            compact_count = len(self._history) - max_messages
-
-        compact_count = min(compact_count, max_compactable)
-        if has_leading_summary:
-            if compact_count % 2 == 0:
-                compact_count -= 1
-            if compact_count < 3:
-                return ""
-        else:
-            if compact_count % 2 == 1:
-                compact_count -= 1
-            if compact_count < 2:
-                return ""
-        if compact_count > max_compactable:
-            return ""
-
-        compacted_messages = self._history[:compact_count]
-        recent_messages = self._history[compact_count:]
-        previous_summary = self._extract_existing_compact_summary(compacted_messages)
-        summary = self._build_compact_summary(
-            compacted_messages,
-            previous_summary=previous_summary,
-        )
-        if not summary:
+        if result is None:
             return ""
 
         self._append_session_event(
             "compact_summary",
             {
-                "content": summary,
-                "compacted_message_count": compact_count,
-                "remaining_message_count": len(recent_messages),
+                "content": result.summary,
+                "compacted_message_count": result.compacted_message_count,
+                "remaining_message_count": len(result.recent_messages),
                 "manual": force,
             },
         )
-        summary_message = {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{summary}"}
-        self._history = [summary_message, *recent_messages]
-        return summary
+        summary_message = {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{result.summary}"}
+        self._history = [summary_message, *result.recent_messages]
+        return result.summary
 
     def _build_compact_summary(
         self,
@@ -2503,57 +2180,19 @@ class LocalToolAgent:
         *,
         previous_summary: str = "",
     ) -> str:
-        """按时间顺序生成可恢复摘要，保留目标、进展和最近状态。"""
-
-        user_items: list[str] = []
-        assistant_items: list[str] = []
-        for message in messages:
-            content = str(message.get("content") or "").strip()
-            if not content:
-                continue
-            if content.startswith(COMPACT_SUMMARY_PREFIX):
-                continue
-            snippet = self._compact_snippet(content)
-            if message.get("role") == "user":
-                user_items.append(snippet)
-            elif message.get("role") == "assistant":
-                assistant_items.append(snippet)
-
-        lines = ["## 会话压缩摘要"]
-        if previous_summary:
-            lines.append(f"- 既有摘要：{self._compact_snippet(previous_summary)}")
-        if user_items:
-            lines.append(f"- 原始目标：{user_items[0]}")
-        if len(user_items) > 1:
-            lines.append("- 已压缩的用户后续要求：" + self._format_compact_items(user_items[1:]))
-        if assistant_items:
-            lines.append("- 已完成/已回复要点：" + self._format_compact_items(assistant_items))
-        if user_items or assistant_items:
-            latest = assistant_items[-1] if assistant_items else user_items[-1]
-            lines.append(f"- 压缩前状态：最近一条可见进展为「{latest}」。")
-        lines.append("- 下一步：继续以用户最新输入为最高优先级，并结合本摘要后的最近对话。")
-        return "\n".join(lines)
+        return build_compact_summary(messages, previous_summary=previous_summary)
 
     @staticmethod
     def _extract_existing_compact_summary(messages: list[dict[str, Any]]) -> str:
-        for message in messages:
-            content = str(message.get("content") or "").strip()
-            if content.startswith(COMPACT_SUMMARY_PREFIX):
-                return content[len(COMPACT_SUMMARY_PREFIX) :].strip()
-        return ""
+        return extract_existing_compact_summary(messages)
 
     @staticmethod
     def _format_compact_items(items: list[str]) -> str:
-        selected = items[:_COMPACT_MAX_BULLETS]
-        suffix = f"；另有 {len(items) - len(selected)} 条已省略" if len(items) > len(selected) else ""
-        return "；".join(selected) + suffix
+        return format_compact_items(items)
 
     @staticmethod
     def _compact_snippet(content: str) -> str:
-        text = " ".join(content.split())
-        if len(text) <= _COMPACT_SNIPPET_CHARS:
-            return text
-        return text[: _COMPACT_SNIPPET_CHARS - 3] + "..."
+        return compact_snippet(content)
 
     @staticmethod
     def _confirm_in_terminal(tool_name: str, arguments: dict[str, Any]) -> bool:

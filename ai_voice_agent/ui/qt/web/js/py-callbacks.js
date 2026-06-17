@@ -46,7 +46,13 @@ window.pyCallbacks = {
     if (window.SessionSidebar) window.SessionSidebar.showError(message);
   },
 
-  // ── 输入 ──────────────────────────────────────
+  // ── 项目 ──────────────────────────────────────
+  updateProjectList: function(projects) {
+    if (window.ProjectSidebar) window.ProjectSidebar.updateProjectList(projects);
+  },
+  setCurrentProject: function(projectPath) {
+    if (window.ProjectSidebar) window.ProjectSidebar.setCurrentProject(projectPath);
+  },
   clearInput:         Input.clear,
   setInputEnabled:    Input.setEnabled,
   setInputPlaceholder: Input.setPlaceholder,

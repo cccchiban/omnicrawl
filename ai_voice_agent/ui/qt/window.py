@@ -46,8 +46,8 @@ class ChatWindow(QWidget):
         self._bridge.set_export_queue(self._export_queue)
 
         self.setWindowTitle("AI Voice Agent")
-        self.setMinimumSize(900, 650)
-        self.resize(1200, 800)
+        self.setMinimumSize(1100, 700)
+        self.resize(1600, 1080)
 
         self._init_ui()
         self._setup_channel()
@@ -105,6 +105,16 @@ class ChatWindow(QWidget):
         self._bridge.session_resume_requested.connect(self._on_session_resume_requested)
         self._bridge.session_rename_requested.connect(self._on_session_rename_requested)
         self._bridge.session_compact_requested.connect(self._on_session_compact_requested)
+        self._bridge.session_delete_requested.connect(self._on_session_delete_requested)
+        self._bridge.project_create_requested.connect(self._on_project_create_requested)
+        self._bridge.project_import_requested.connect(self._on_project_import_requested)
+        self._bridge.project_open_requested.connect(self._on_project_open_requested)
+        self._bridge.project_switch_requested.connect(self._on_project_switch_requested)
+        self._bridge.project_pin_requested.connect(self._on_project_pin_requested)
+        self._bridge.project_rename_requested.connect(self._on_project_rename_requested)
+        self._bridge.project_remove_requested.connect(self._on_project_remove_requested)
+        self._bridge.project_explorer_requested.connect(self._on_project_explorer_requested)
+        self._bridge.projects_refresh_requested.connect(self._on_projects_refresh_requested)
         self._frontend_signals_connected = True
 
     def _on_model_changed(self, model_id: str) -> None:
@@ -148,6 +158,58 @@ class ChatWindow(QWidget):
         """用户点击手动压缩。"""
         if self._input_queue is not None:
             self._input_queue.put("/compact")
+
+    def _on_session_delete_requested(self, session_id: str) -> None:
+        """用户点击删除会话。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__DELETE_SESSION__ {session_id}")
+
+    # ── 项目信号处理 ────────────────────────────────────────
+
+    def _on_project_create_requested(self, name: str, path: str) -> None:
+        """用户创建新项目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__CREATE_PROJECT__ {name}|{path}")
+
+    def _on_project_import_requested(self, name: str, path: str) -> None:
+        """用户导入现有项目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__IMPORT_PROJECT__ {name}|{path}")
+
+    def _on_project_open_requested(self, project_path: str) -> None:
+        """用户请求在资源管理器中打开项目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__OPEN_PROJECT__ {project_path}")
+
+    def _on_project_switch_requested(self, project_path: str) -> None:
+        """用户切换到指定项目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__SWITCH_PROJECT__ {project_path}")
+
+    def _on_project_pin_requested(self, project_path: str) -> None:
+        """用户置顶项目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__PIN_PROJECT__ {project_path}")
+
+    def _on_project_rename_requested(self, project_path: str, new_name: str) -> None:
+        """用户重命名项目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__RENAME_PROJECT__ {project_path}|{new_name}")
+
+    def _on_project_remove_requested(self, project_path: str) -> None:
+        """用户从列表中移除项目。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__REMOVE_PROJECT__ {project_path}")
+
+    def _on_project_explorer_requested(self, project_path: str) -> None:
+        """用户在资源管理器中打开项目目录。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"__OPEN_IN_EXPLORER__ {project_path}")
+
+    def _on_projects_refresh_requested(self) -> None:
+        """用户请求刷新项目列表。"""
+        if self._input_queue is not None:
+            self._input_queue.put("__REFRESH_PROJECTS__")
 
     # ── 输入 / 确认接口 ─────────────────────────────────────
 
@@ -269,6 +331,12 @@ class ChatWindow(QWidget):
 
     def show_session_list_error(self, message: str) -> None:
         self._bridge.call_js("showSessionListError", message)
+
+    def update_project_list(self, projects: list[dict[str, object]]) -> None:
+        self._bridge.call_js("updateProjectList", projects)
+
+    def set_current_project(self, project_path: str) -> None:
+        self._bridge.call_js("setCurrentProject", project_path)
 
     # ── 窗口关闭 ─────────────────────────────────────────────
 

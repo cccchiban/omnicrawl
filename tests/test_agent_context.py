@@ -16,6 +16,7 @@ from ai_voice_agent.agent import (
     ToolDefinition,
     ToolResult,
 )
+from ai_voice_agent.project import ProjectStore
 from ai_voice_agent.session import SessionStore
 from ai_voice_agent.slash_commands import build_slash_commands, handle_session_command
 from ai_voice_agent.temp_workspace import AgentTempWorkspaceConfig
@@ -572,6 +573,37 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         self.assertIsNotNone(still_archived.archived_at)
         self.assertEqual(still_archived.path.parent.name, "archive")
+
+    def test_agent_project_methods_persist_projects_and_filter_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            other_workspace = Path(temp_dir) / "other"
+            workspace.mkdir()
+            other_workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            other_state = store.start_session(other_workspace)
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent._session_store = store
+            agent._project_store = ProjectStore(workspace / ".agent_sessions")
+
+            projects = LocalToolAgent.list_projects(agent)
+            imported = LocalToolAgent.import_project(agent, "外部项目", str(other_workspace))
+            other_sessions = LocalToolAgent.list_sessions(
+                agent,
+                limit=10,
+                project_path=imported.path,
+            )
+            current_sessions = LocalToolAgent.list_sessions(agent, limit=10)
+            projects_file_exists = (workspace / ".agent_sessions" / "projects.json").is_file()
+
+        self.assertTrue(projects_file_exists)
+        self.assertIn(str(workspace.resolve()), {project.path for project in projects})
+        self.assertEqual(imported.name, "外部项目")
+        self.assertEqual([entry.session_id for entry in other_sessions], [other_state.session_id])
+        self.assertEqual([entry.session_id for entry in current_sessions], [state.session_id])
 
     def test_run_stream_compacts_long_history_and_persists_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
