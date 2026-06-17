@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -36,6 +35,24 @@ from .agent_history import (
     format_compact_items,
     restore_history_window,
 )
+from .agent_llm_protocol import (
+    AgentLLMProtocol,
+    AgentProtocolError,
+    accumulate_tool_call_deltas,
+    assistant_tool_call_message,
+    build_extra_body,
+    build_prompt_cache_key,
+    build_tool_calls_from_deltas,
+    chat_completion_tools,
+    extract_stream_delta,
+    function_name_for_tool,
+    infer_tool_property_schema,
+    parse_tool_arguments,
+    read_attr_or_key,
+    tool_name_from_function_name,
+    tool_parameters_schema,
+)
+from .agent_session_facade import AgentSessionFacade
 from .agent_types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
 from .approval import (
     APPROVAL_MODE_AUTO,
@@ -47,7 +64,6 @@ from .llm import (
     LLMConfig,
     LLMError,
     OpenAIResponseLLM,
-    VALID_REASONING_EFFORTS,
     load_llm_config,
     normalize_reasoning_effort,
 )
@@ -59,7 +75,7 @@ from .memory import (
     search_result_to_dict,
 )
 from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
-from .project import ProjectEntry, ProjectStore, ProjectStoreError
+from .project import ProjectEntry, ProjectStore
 from .session import (
     COMPACT_SUMMARY_PREFIX,
     PromptHistoryEntry,
@@ -67,7 +83,6 @@ from .session import (
     SessionEvent,
     SessionState,
     SessionStore,
-    SessionStoreError,
 )
 from .skill import SkillManager, SkillMatchResult
 from .temp_workspace import (
@@ -127,69 +142,8 @@ def _detect_terminal_hint() -> str:
     return detect_terminal_hint()
 
 
-def _is_openai_gpt_model(model: str) -> bool:
-    """只为 OpenAI GPT 系列模型启用官方 prompt_cache_key 参数。"""
-
-    return model.startswith("gpt-") or model.startswith("chatgpt-") or bool(re.match(r"^o\d", model))
-
-
-def _is_unsupported_prompt_cache_error(exc: Exception) -> bool:
-    """兼容网关不认识 prompt_cache_key 时，自动移除该参数重试一次。"""
-
-    message = str(exc).lower()
-    return (
-        "prompt_cache_key" in message
-        and any(
-            marker in message
-            for marker in (
-                "unknown",
-                "unsupported",
-                "unexpected",
-                "unrecognized",
-                "extra",
-                "invalid",
-                "not permitted",
-            )
-        )
-    )
-
-
-def _is_retryable_model_request_error(exc: Exception) -> bool:
-    """识别请求建立阶段可直接重试的临时模型服务错误。"""
-
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int) and status_code in {408, 409, 500, 502, 503, 504}:
-        return True
-
-    message = str(exc).lower()
-    return any(
-        marker in message
-        for marker in (
-            "peer closed connection",
-            "incomplete chunked read",
-            "remote protocol error",
-            "server disconnected",
-            "connection reset",
-            "connection aborted",
-            "broken pipe",
-            "timeout",
-            "timed out",
-            "readtimeout",
-            "connecttimeout",
-        )
-    )
-
-
 class AgentError(RuntimeError):
     """Agent 循环、工具调用或安全校验失败时抛出。"""
-
-
-class _EmptyAgentReply(RuntimeError):
-    """网关请求成功但没有返回可用文本，交由上层按策略重试。"""
-
-
-class _RetryableAgentRequestError(RuntimeError):
-    """模型请求遇到临时连接或服务端错误，可按请求重试策略重新发起。"""
 
 
 def _read_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -217,14 +171,6 @@ def _validate_int_range(name: str, value: int, *, min_value: int, max_value: int
     if value < min_value or value > max_value:
         raise AgentError(f"{name} 必须是 {min_value} 到 {max_value} 的整数，当前值：{value}。")
     return value
-
-
-def _project_directory_name(name: str) -> str:
-    """把项目展示名转换为适合创建目录的保守名称。"""
-
-    cleaned = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", "-", name.strip())
-    cleaned = re.sub(r"\s+", "-", cleaned).strip(" .-")
-    return cleaned or "new-project"
 
 
 @dataclass
@@ -401,6 +347,13 @@ class LocalToolAgent:
             )
         self._temp_workspace.start_scheduler()
 
+    def _session_facade(self) -> AgentSessionFacade:
+        facade = getattr(self, "_agent_session_facade", None)
+        if facade is None:
+            facade = AgentSessionFacade(self, AgentError)
+            self._agent_session_facade = facade
+        return facade
+
     @property
     def skill_manager(self) -> SkillManager | None:
         """公开 SkillManager 供 main.py 查询 /skills 列表。"""
@@ -433,8 +386,7 @@ class LocalToolAgent:
     def current_session_id(self) -> str:
         """当前会话 ID；会话系统关闭时返回空字符串。"""
 
-        state = getattr(self, "_session_state", None)
-        return state.session_id if state is not None else ""
+        return self._session_facade().current_session_id()
 
     def list_sessions(
         self,
@@ -444,104 +396,52 @@ class LocalToolAgent:
     ) -> list[SessionIndexEntry]:
         """列出指定项目或当前工作区最近会话，供 `/sessions` 和项目侧栏展示。"""
 
-        store = self._require_session_store()
-        try:
-            if project_path is not None:
-                return store.list_sessions(project_path=project_path, limit=limit)
-            return store.list_sessions(workspace_root=self.workspace_root, limit=limit)
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().list_sessions(limit=limit, project_path=project_path)
 
     def scan_projects(self) -> list[ProjectEntry]:
         """从会话索引扫描项目路径并写入 `.agent_sessions/projects.json`。"""
 
-        session_store = self._require_session_store()
-        project_store = self._require_project_store()
-        try:
-            return project_store.scan_projects(
-                session_store.list_project_paths(include_archived=True),
-                current_workspace=self.workspace_root,
-            )
-        except (ProjectStoreError, SessionStoreError) as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().scan_projects()
 
     def list_projects(self) -> list[ProjectEntry]:
         """列出已保存项目；每次读取前先扫描会话索引补齐缺失项目。"""
 
-        self.scan_projects()
-        project_store = self._require_project_store()
-        try:
-            return project_store.list_projects()
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().list_projects()
 
     def create_project(self, name: str, path: str = "") -> ProjectEntry:
         """创建项目目录并持久化到项目列表。"""
 
-        project_store = self._require_project_store()
-        project_path = Path(path.strip()) if path.strip() else self.workspace_root / _project_directory_name(name)
-        try:
-            return project_store.create_project(name=name, path=project_path)
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().create_project(name, path)
 
     def import_project(self, name: str, path: str) -> ProjectEntry:
         """导入已有项目目录并持久化到项目列表。"""
 
-        project_store = self._require_project_store()
-        try:
-            return project_store.import_project(name=name, path=path)
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().import_project(name, path)
 
     def rename_project(self, project_path: str, name: str) -> ProjectEntry:
         """修改项目展示名，不改动磁盘目录。"""
 
-        project_store = self._require_project_store()
-        try:
-            return project_store.rename_project(path=project_path, name=name)
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().rename_project(project_path, name)
 
     def pin_project(self, project_path: str, *, pinned: bool = True) -> ProjectEntry:
         """设置项目置顶状态。"""
 
-        project_store = self._require_project_store()
-        try:
-            return project_store.pin_project(project_path, pinned=pinned)
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().pin_project(project_path, pinned=pinned)
 
     def toggle_project_pin(self, project_path: str) -> ProjectEntry:
         """切换项目置顶状态。"""
 
-        project_store = self._require_project_store()
-        try:
-            return project_store.toggle_project_pin(project_path)
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().toggle_project_pin(project_path)
 
     def remove_project(self, project_path: str) -> None:
         """从项目列表移除项目记录，不删除目录和会话。"""
 
-        project_store = self._require_project_store()
-        try:
-            project_store.remove_project(project_path)
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        self._session_facade().remove_project(project_path)
 
     def list_archived_sessions(self, limit: int = 10) -> list[SessionIndexEntry]:
         """列出当前工作区已归档会话，供 `/archives` 展示。"""
 
-        store = self._require_session_store()
-        try:
-            return store.list_sessions(
-                workspace_root=self.workspace_root,
-                limit=limit,
-                archived_only=True,
-            )
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().list_archived_sessions(limit)
 
     def load_session_events(self, session_id: str) -> list[SessionEvent]:
         """读取指定会话的原始事件流，供 Qt 恢复时重新渲染消息列表。
@@ -550,39 +450,12 @@ class LocalToolAgent:
         明确方法暴露只读事件，而不是让 UI 层直接访问 `.agent_sessions/` 文件。
         """
 
-        store = self._require_session_store()
-        try:
-            state = store.load_session(session_id)
-            if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
-                raise AgentError(f"不能读取其他工作区的会话：{state.workspace_root}")
-            return store.read_session_events(session_id)
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().load_session_events(session_id)
 
     def rename_current_session(self, title: str) -> SessionState:
         """重命名当前会话，并同步更新内存中的 `SessionState`。"""
 
-        state = getattr(self, "_session_state", None)
-        if state is None:
-            raise AgentError("会话系统未启用。")
-        store = self._require_session_store()
-        try:
-            renamed_state = store.rename_session(state.session_id, title)
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
-        self._session_state = SessionState(
-            session_id=renamed_state.session_id,
-            title=renamed_state.title,
-            workspace_root=renamed_state.workspace_root,
-            path=renamed_state.path,
-            created_at=renamed_state.created_at,
-            updated_at=renamed_state.updated_at,
-            messages=self._history,
-            last_event_type=renamed_state.last_event_type,
-            event_count=renamed_state.event_count,
-            archived_at=renamed_state.archived_at,
-        )
-        return self._session_state
+        return self._session_facade().rename_current_session(title)
 
     def archive_current_session(self) -> SessionState:
         """归档当前会话，并立即开启一个新的空会话。
@@ -591,47 +464,17 @@ class LocalToolAgent:
         state 作为返回值，同时把 Agent 切到新会话，避免下一轮消息写到归档文件。
         """
 
-        state = getattr(self, "_session_state", None)
-        if state is None:
-            raise AgentError("会话系统未启用。")
-        store = self._require_session_store()
-        try:
-            archived_state = store.archive_session(state.session_id)
-            self._history.clear()
-            self._pending_user_text = None
-            self._active_skills = []
-            self._session_state = self._start_session()
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
-        return archived_state
+        return self._session_facade().archive_current_session()
 
     def delete_session(self, session_id: str) -> None:
         """删除指定会话。当前活跃会话不允许删除。"""
 
-        state = getattr(self, "_session_state", None)
-        if state is None:
-            raise AgentError("会话系统未启用。")
-        if session_id == state.session_id:
-            raise AgentError("不能删除当前活跃会话，请先切换到其他会话。")
-        store = self._require_session_store()
-        try:
-            store.delete_session(session_id)
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        self._session_facade().delete_session(session_id)
 
     def export_current_session_markdown(self, markdown_text: str) -> Path:
         """导出当前会话 Markdown 到 `.agent_sessions/exports/`。"""
 
-        state = getattr(self, "_session_state", None)
-        if state is None:
-            raise AgentError("会话系统未启用。")
-        store = self._require_session_store()
-        try:
-            path = store.export_session_markdown(state.session_id, markdown_text)
-            self._session_state = store.load_session(state.session_id)
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
-        return path
+        return self._session_facade().export_current_session_markdown(markdown_text)
 
     def search_prompt_history(
         self,
@@ -642,23 +485,16 @@ class LocalToolAgent:
     ) -> list[PromptHistoryEntry]:
         """查询当前工作区的用户提示历史，供输入复用和 `/history` 展示。"""
 
-        store = self._require_session_store()
-        session_id = self.current_session_id if current_session_only else None
-        try:
-            return store.search_prompt_history(
-                workspace_root=self.workspace_root,
-                session_id=session_id,
-                query=query,
-                limit=limit,
-            )
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().search_prompt_history(
+            query=query,
+            limit=limit,
+            current_session_only=current_session_only,
+        )
 
     def prompt_history_texts(self, limit: int = 100) -> list[str]:
         """返回按时间正序排列的提示文本，作为 TUI 上箭头历史种子。"""
 
-        entries = self.search_prompt_history(limit=limit)
-        return [entry.display for entry in reversed(entries)]
+        return self._session_facade().prompt_history_texts(limit)
 
     def compact_conversation(self) -> str:
         """手动压缩当前会话历史，并把摘要写入会话转录。
@@ -677,26 +513,7 @@ class LocalToolAgent:
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
 
-        store = self._require_session_store()
-        try:
-            state = store.load_session(session_id)
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
-        if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
-            raise AgentError(
-                "不能恢复其他工作区的会话："
-                f"{state.workspace_root}"
-            )
-        if state.archived_at is not None:
-            try:
-                state = store.unarchive_session(session_id)
-            except SessionStoreError as exc:
-                raise AgentError(str(exc)) from exc
-        self._session_state = state
-        self._history = self._restore_history_window(state.messages)
-        self._pending_user_text = None
-        self._active_skills = []
-        return state
+        return self._session_facade().resume_session(session_id)
 
     def close(self) -> None:
         """关闭 Agent 持有的外部资源，并记录正常会话关闭事件。"""
@@ -803,45 +620,20 @@ class LocalToolAgent:
     def _create_session_store(self) -> SessionStore:
         """创建会话存储，并限制在工作区内。"""
 
-        raw_directory = self.config.session_directory.strip()
-        candidate = Path(raw_directory)
-        if not candidate.is_absolute():
-            candidate = self.workspace_root / candidate
-        resolved = candidate.resolve()
-        if not self._is_relative_to(resolved, self.workspace_root):
-            raise AgentError(f"会话目录必须位于工作区内：{raw_directory}")
-        store = SessionStore(resolved)
-        try:
-            store.ensure()
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
-        return store
+        return self._session_facade().create_session_store()
 
     def _create_project_store(self) -> ProjectStore:
         """创建项目列表存储，复用会话目录作为持久化根。"""
 
-        store = self._require_session_store()
-        project_store = ProjectStore(store.root)
-        try:
-            project_store.ensure()
-        except ProjectStoreError as exc:
-            raise AgentError(str(exc)) from exc
-        return project_store
+        return self._session_facade().create_project_store()
 
     def _start_session(self) -> SessionState:
-        store = self._require_session_store()
-        try:
-            return store.start_session(self.workspace_root)
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        return self._session_facade().start_session()
 
     def _start_or_resume_session(self) -> SessionState:
         """按启动参数恢复指定会话；未指定时创建新会话。"""
 
-        resume_session_id = self.config.resume_session_id.strip()
-        if not resume_session_id:
-            return self._start_session()
-        return self.resume_session(resume_session_id)
+        return self._session_facade().start_or_resume_session()
 
     def _create_mcp_manager(self) -> MCPClientManager:
         """加载并初始化 MCP Client Manager。
@@ -1086,34 +878,16 @@ class LocalToolAgent:
     ) -> AgentModelReply:
         """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
 
-        last_retryable_error: Exception | None = None
-        for attempt in range(1, self.config.request_retry_count + 1):
-            try:
-                return self._request_agent_reply_once(
-                    messages,
-                    on_delta,
-                    on_token_usage,
-                    on_protocol_wait,
-                )
-            except _EmptyAgentReply as exc:
-                last_retryable_error = exc
-                if attempt < self.config.request_retry_count:
-                    continue
-                raise AgentError(
-                    f"Agent 连续 {self.config.request_retry_count} 次返回空响应，已停止本轮请求。"
-                ) from exc
-            except _RetryableAgentRequestError as exc:
-                last_retryable_error = exc
-                if attempt < self.config.request_retry_count:
-                    on_retry_status(
-                        f"模型请求中断，正在重试 {attempt + 1}/{self.config.request_retry_count}：{exc}"
-                    )
-                    continue
-                raise AgentError(f"Agent 模型请求中断：{exc}") from exc
-
-        raise AgentError(
-            f"Agent 连续 {self.config.request_retry_count} 次返回空响应，已停止本轮请求。"
-        ) from last_retryable_error
+        try:
+            return self._llm_protocol().request_reply(
+                messages,
+                on_delta,
+                on_token_usage,
+                on_protocol_wait,
+                on_retry_status,
+            )
+        except AgentProtocolError as exc:
+            raise AgentError(str(exc)) from exc
 
     def _request_agent_reply_once(
         self,
@@ -1122,99 +896,30 @@ class LocalToolAgent:
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
     ) -> AgentModelReply:
-        """执行一次 DeepSeek Chat Completions 流式工具调用请求。
-
-        使用 stream=True 实现增量文本推送，提升 TUI 实时反馈体验；
-        同时累积 tool_calls 增量块，流结束后统一解析为结构化 ToolCall 列表。
-        """
-
-        system_prompt = self._system_prompt()
-        request_kwargs: dict[str, Any] = {
-            "model": self.config.llm.model,
-            "messages": [{"role": "system", "content": system_prompt}, *messages],
-            "tools": self._chat_completion_tools(),
-            "tool_choice": "auto",
-            "stream": True,
-            "extra_body": self._build_extra_body(),
-            "timeout": self.config.request_timeout_seconds,
-        }
-        prompt_cache_key = self._build_prompt_cache_key(system_prompt, messages)
-        if prompt_cache_key:
-            request_kwargs["prompt_cache_key"] = prompt_cache_key
-
         try:
-            stream = self._client.chat.completions.create(**request_kwargs)
-        except Exception as exc:
-            if "prompt_cache_key" in request_kwargs and _is_unsupported_prompt_cache_error(exc):
-                request_kwargs.pop("prompt_cache_key", None)
-                try:
-                    stream = self._client.chat.completions.create(**request_kwargs)
-                except Exception as retry_exc:
-                    raise AgentError(
-                        f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(retry_exc)}"
-                    ) from retry_exc
-            elif _is_retryable_model_request_error(exc):
-                raise _RetryableAgentRequestError(OpenAIResponseLLM.format_request_error(exc)) from exc
-            else:
-                raise AgentError(
-                    f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
-                ) from exc
+            return self._llm_protocol().request_reply_once(
+                messages,
+                on_delta,
+                on_token_usage,
+                on_protocol_wait,
+            )
+        except AgentProtocolError as exc:
+            raise AgentError(str(exc)) from exc
 
-        content_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tool_call_delta_buffers: dict[int, dict[str, Any]] = {}
-        latest_usage: tuple[int, int, int] | None = None
-        has_streamed_visible = False
-        protocol_wait_sent = False
+    def _llm_protocol(self) -> AgentLLMProtocol:
+        """按当前运行态创建轻量协议对象，便于测试替换回调方法。"""
 
-        try:
-            for event in stream:
-                usage = OpenAIResponseLLM.extract_token_usage(event)
-                if usage is not None:
-                    latest_usage = usage
-
-                delta = self._extract_stream_delta(event)
-                if delta is None:
-                    continue
-
-                delta_content = LocalToolAgent._read_attr_or_key(delta, "content")
-                if isinstance(delta_content, str) and delta_content:
-                    content_parts.append(delta_content)
-                    on_delta(delta_content)
-                    has_streamed_visible = True
-
-                delta_reasoning = LocalToolAgent._read_attr_or_key(delta, "reasoning_content")
-                if isinstance(delta_reasoning, str):
-                    reasoning_parts.append(delta_reasoning)
-
-                tc_deltas = LocalToolAgent._read_attr_or_key(delta, "tool_calls")
-                if isinstance(tc_deltas, list) and tc_deltas:
-                    if has_streamed_visible and not protocol_wait_sent:
-                        on_protocol_wait()
-                        protocol_wait_sent = True
-                    self._accumulate_tool_call_deltas(tc_deltas, tool_call_delta_buffers)
-        except Exception as exc:
-            raise _RetryableAgentRequestError(OpenAIResponseLLM.format_request_error(exc)) from exc
-
-        if latest_usage is not None:
-            on_token_usage(*latest_usage)
-
-        content = "".join(content_parts)
-        reasoning = "".join(reasoning_parts).strip()
-
-        tool_calls = self._build_tool_calls_from_deltas(tool_call_delta_buffers)
-
-        if not content.strip() and not tool_calls:
-            raise _EmptyAgentReply("Agent 返回内容为空，且未返回工具调用。")
-
-        message = self._assistant_tool_call_message({}, content, tool_calls, reasoning)
-
-        return AgentModelReply(
-            message=message,
-            content=content,
-            tool_calls=tool_calls,
-            reasoning=reasoning,
-            content_streamed=has_streamed_visible,
+        return AgentLLMProtocol(
+            client=self._client,
+            model=self.config.llm.model,
+            request_timeout_seconds=self.config.request_timeout_seconds,
+            request_retry_count=getattr(self.config, "request_retry_count", 1),
+            workspace_root=getattr(self, "workspace_root", Path.cwd()),
+            system_prompt_provider=self._system_prompt,
+            tools_provider=self._chat_completion_tools,
+            extra_body_provider=self._build_extra_body,
+            tool_name_from_function_name=self._tool_name_from_function_name,
+            function_name_for_tool=self._function_name_for_tool,
         )
 
     def _build_prompt_cache_key(
@@ -1222,78 +927,27 @@ class LocalToolAgent:
         system_prompt: str,
         messages: list[dict[str, Any]],
     ) -> str:
-        """为 GPT/OpenAI 请求提供稳定缓存路由 key。
-
-        Prompt caching 依赖稳定的长前缀。这里用系统提示词和项目级说明生成短 hash，
-        让同一项目、同一工具/Skill/AGENTS 配置尽量落到同一缓存路由；历史和当前
-        用户输入不参与 hash，避免每轮对话都换 key。
-        """
-
-        model = self.config.llm.model.strip().lower()
-        if not _is_openai_gpt_model(model):
-            return ""
-
-        stable_parts = [self.config.llm.model.strip(), str(self.workspace_root), system_prompt]
-        if messages and messages[0].get("content", "").startswith("<project_instructions"):
-            stable_parts.append(messages[0]["content"])
-        digest = hashlib.sha256("\n\n".join(stable_parts).encode("utf-8")).hexdigest()[:32]
-        return f"local-agent-{digest}"
+        return build_prompt_cache_key(
+            system_prompt,
+            messages,
+            model=self.config.llm.model,
+            workspace_root=self.workspace_root,
+        )
 
     def _build_extra_body(self) -> dict[str, Any]:
-        """构造网关扩展参数；根据 reasoning_effort 决定是否启用思考模式。"""
-
-        thinking_type = "enabled" if self.config.llm.thinking_enabled else "disabled"
-        body: dict[str, Any] = {"thinking": {"type": thinking_type}}
-        if self.config.llm.thinking_enabled and self.config.llm.reasoning_effort:
-            if self.config.llm.reasoning_effort in VALID_REASONING_EFFORTS:
-                body["reasoning_effort"] = self.config.llm.reasoning_effort
-        return body
+        return build_extra_body(self.config.llm)
 
     @staticmethod
     def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
-        if isinstance(raw_arguments, dict):
-            return raw_arguments
-        if isinstance(raw_arguments, str) and raw_arguments.strip():
-            try:
-                parsed = json.loads(raw_arguments)
-            except json.JSONDecodeError:
-                return {}
-            return parsed if isinstance(parsed, dict) else {}
-        return {}
+        return parse_tool_arguments(raw_arguments)
 
     @staticmethod
     def _read_attr_or_key(value: Any, key: str) -> Any:
-        if value is None:
-            return None
-        attr = getattr(value, key, None)
-        if attr is not None:
-            return attr
-        if isinstance(value, dict):
-            return value.get(key)
-        if hasattr(value, "model_dump"):
-            data = value.model_dump()
-            return data.get(key) if isinstance(data, dict) else None
-        return None
+        return read_attr_or_key(value, key)
 
     @staticmethod
     def _extract_stream_delta(event: Any) -> Any | None:
-        """从流式事件中提取 choices[0].delta，兼容 SDK 模型与字典。"""
-
-        choices = getattr(event, "choices", None)
-        if isinstance(choices, list) and choices:
-            delta = getattr(choices[0], "delta", None)
-            if delta is not None:
-                return delta
-            first = choices[0]
-            if isinstance(first, dict):
-                return first.get("delta")
-        elif isinstance(event, dict):
-            choices_data = event.get("choices")
-            if isinstance(choices_data, list) and choices_data:
-                first = choices_data[0]
-                if isinstance(first, dict):
-                    return first.get("delta")
-        return None
+        return extract_stream_delta(event)
 
     @classmethod
     def _accumulate_tool_call_deltas(
@@ -1301,62 +955,16 @@ class LocalToolAgent:
         tc_deltas: list[Any],
         buffers: dict[int, dict[str, Any]],
     ) -> None:
-        """把流式 tool_calls 增量块按 index 累积到缓冲区。
-
-        OpenAI/DeepSeek 流式 tool_calls 分多次推送：第一次带 id + function.name，
-        后续只带 function.arguments 片段。这里按 index 聚合完整的 id/name/arguments。
-        """
-
-        for tc in tc_deltas:
-            idx = cls._read_attr_or_key(tc, "index")
-            if not isinstance(idx, int):
-                idx = 0
-            if idx not in buffers:
-                buffers[idx] = {
-                    "id": "",
-                    "function": {"name": "", "arguments": ""},
-                }
-            buf = buffers[idx]
-            tc_id = cls._read_attr_or_key(tc, "id")
-            if tc_id:
-                buf["id"] = str(tc_id)
-            func = cls._read_attr_or_key(tc, "function")
-            if isinstance(func, dict):
-                fn_name = func.get("name")
-                if fn_name:
-                    buf["function"]["name"] += str(fn_name)
-                fn_args = func.get("arguments")
-                if fn_args:
-                    buf["function"]["arguments"] += str(fn_args)
-            elif func is not None:
-                fn_name = getattr(func, "name", None)
-                if fn_name:
-                    buf["function"]["name"] += str(fn_name)
-                fn_args = getattr(func, "arguments", None)
-                if fn_args:
-                    buf["function"]["arguments"] += str(fn_args)
+        accumulate_tool_call_deltas(tc_deltas, buffers)
 
     def _build_tool_calls_from_deltas(
         self,
         buffers: dict[int, dict[str, Any]],
     ) -> list[ToolCall]:
-        """把累积的流式 tool_call 增量块解析为结构化 ToolCall 列表。"""
-
-        calls: list[ToolCall] = []
-        for idx in sorted(buffers.keys()):
-            buf = buffers[idx]
-            fn_name = buf["function"]["name"].strip()
-            if not fn_name:
-                continue
-            calls.append(
-                ToolCall(
-                    name=self._tool_name_from_function_name(fn_name),
-                    arguments=self._parse_tool_arguments(buf["function"]["arguments"]),
-                    id=buf["id"],
-                    function_name=fn_name,
-                )
-            )
-        return calls
+        return build_tool_calls_from_deltas(
+            buffers,
+            tool_name_from_function_name=self._tool_name_from_function_name,
+        )
 
     def _assistant_tool_call_message(
         self,
@@ -1365,23 +973,13 @@ class LocalToolAgent:
         tool_calls: list[ToolCall],
         reasoning: str,
     ) -> dict[str, Any]:
-        message: dict[str, Any] = {"role": "assistant", "content": content or None}
-        if reasoning:
-            message["reasoning_content"] = reasoning
-        if tool_calls:
-            message["tool_calls"] = [
-                {
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.function_name
-                        or self._function_name_for_tool(tool_call.name),
-                        "arguments": json.dumps(tool_call.arguments, ensure_ascii=False),
-                    },
-                }
-                for tool_call in tool_calls
-            ]
-        return message
+        return assistant_tool_call_message(
+            raw_message,
+            content,
+            tool_calls,
+            reasoning,
+            function_name_for_tool=self._function_name_for_tool,
+        )
 
     def _normalize_tool_call(self, tool_call: ToolCall) -> ToolCall:
         """在执行前归一化模型常见的工具名和参数名误写。"""
@@ -1517,66 +1115,27 @@ class LocalToolAgent:
         return re.sub(r"[\s_-]+", "", value).lower()
 
     def _chat_completion_tools(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": self._function_name_for_tool(tool.name),
-                    "description": tool.description,
-                    "parameters": self._tool_parameters_schema(tool),
-                },
-            }
-            for tool in self._tools.values()
-        ]
+        return chat_completion_tools(
+            self._tools.values(),
+            function_name_for_tool=self._function_name_for_tool,
+        )
 
     def _function_name_for_tool(self, tool_name: str) -> str:
-        readable = re.sub(r"[^A-Za-z0-9_]+", "_", tool_name).strip("_").lower()
-        readable = readable or "tool"
-        digest = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()[:10]
-        return f"tool_{readable[:40]}_{digest}"
+        return function_name_for_tool(tool_name)
 
     def _tool_name_from_function_name(self, function_name: str) -> str:
-        for tool_name in getattr(self, "_tools", {}):
-            if self._function_name_for_tool(tool_name) == function_name:
-                return tool_name
-        return function_name
+        return tool_name_from_function_name(
+            function_name,
+            getattr(self, "_tools", {}),
+            function_name_for_tool_callback=self._function_name_for_tool,
+        )
 
     def _tool_parameters_schema(self, tool: ToolDefinition) -> dict[str, Any]:
-        try:
-            raw_schema = json.loads(tool.argument_schema)
-        except json.JSONDecodeError:
-            raw_schema = {}
-        if not isinstance(raw_schema, dict):
-            raw_schema = {}
-        if raw_schema.get("type") == "object" and isinstance(raw_schema.get("properties"), dict):
-            schema = dict(raw_schema)
-        else:
-            properties = {
-                key: self._infer_tool_property_schema(value)
-                for key, value in raw_schema.items()
-                if isinstance(key, str)
-            }
-            schema = {
-                "type": "object",
-                "properties": properties,
-            }
-        schema.setdefault("type", "object")
-        schema.setdefault("properties", {})
-        return schema
+        return tool_parameters_schema(tool)
 
     @staticmethod
     def _infer_tool_property_schema(example: Any) -> dict[str, Any]:
-        if isinstance(example, bool):
-            return {"type": "boolean"}
-        if isinstance(example, int) and not isinstance(example, bool):
-            return {"type": "integer"}
-        if isinstance(example, (float, int)) and not isinstance(example, bool):
-            return {"type": "number"}
-        if isinstance(example, list):
-            return {"type": "array", "items": {"type": "string"}}
-        if isinstance(example, dict):
-            return {"type": "object"}
-        return {"type": "string"}
+        return infer_tool_property_schema(example)
 
     def _run_tool(
         self,
@@ -1972,15 +1531,10 @@ class LocalToolAgent:
         return self._memory_store
 
     def _require_session_store(self) -> SessionStore:
-        if self._session_store is None:
-            raise AgentError("会话系统未启用。")
-        return self._session_store
+        return self._session_facade().require_session_store()
 
     def _require_project_store(self) -> ProjectStore:
-        store = getattr(self, "_project_store", None)
-        if store is None:
-            raise AgentError("项目列表需要启用会话系统。")
-        return store
+        return self._session_facade().require_project_store()
 
     @staticmethod
     def _read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:
@@ -2069,26 +1623,7 @@ class LocalToolAgent:
     def _append_session_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """追加会话事件；持久化失败时中断当前任务，避免误以为会话可恢复。"""
 
-        store = getattr(self, "_session_store", None)
-        state = getattr(self, "_session_state", None)
-        if store is None or state is None:
-            return
-        try:
-            event = store.append_event(state.session_id, event_type, payload)
-            self._session_state = SessionState(
-                session_id=state.session_id,
-                title=state.title,
-                workspace_root=state.workspace_root,
-                path=state.path,
-                created_at=state.created_at,
-                updated_at=event.created_at,
-                messages=state.messages,
-                last_event_type=event.type,
-                event_count=state.event_count + 1,
-                archived_at=state.archived_at,
-            )
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        self._session_facade().append_session_event(event_type, payload)
 
     def _append_prompt_history(self, text: str) -> None:
         """记录用户提交的真实提示，用于跨会话输入复用。
@@ -2097,18 +1632,7 @@ class LocalToolAgent:
         UI 的上箭头/搜索复用。持久化失败直接中断本轮，避免用户以为历史已经可恢复。
         """
 
-        store = getattr(self, "_session_store", None)
-        state = getattr(self, "_session_state", None)
-        if store is None or state is None:
-            return
-        try:
-            store.append_prompt_history(
-                display=text,
-                workspace_root=self.workspace_root,
-                session_id=state.session_id,
-            )
-        except SessionStoreError as exc:
-            raise AgentError(str(exc)) from exc
+        self._session_facade().append_prompt_history(text)
 
     def _truncate_tool_output(self, output: str) -> str:
         if len(output) <= self.config.max_tool_output_chars:

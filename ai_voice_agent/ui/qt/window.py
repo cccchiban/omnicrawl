@@ -12,7 +12,7 @@ import os
 import queue
 import threading
 
-from PyQt5.QtCore import QUrl
+from PyQt5.QtCore import QUrl, Qt
 from PyQt5.QtWidgets import QVBoxLayout, QWidget
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 from PyQt5.QtWebChannel import QWebChannel
@@ -62,6 +62,7 @@ class ChatWindow(QWidget):
         self._web_view = QWebEngineView(self)
         self._web_page = _CustomWebPage(self._web_view)
         self._web_view.setPage(self._web_page)
+        self._web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self._web_view.loadFinished.connect(self._on_load_finished)
         self._bridge.close_requested.connect(self.close)
 
@@ -99,6 +100,7 @@ class ChatWindow(QWidget):
             return
         self._bridge.model_changed.connect(self._on_model_changed)
         self._bridge.reasoning_effort_changed.connect(self._on_reasoning_effort_changed)
+        self._bridge.approval_mode_changed.connect(self._on_approval_mode_changed)
         self._bridge.model_list_refresh_requested.connect(self._on_model_list_refresh_requested)
         self._bridge.sessions_refresh_requested.connect(self._on_sessions_refresh_requested)
         self._bridge.new_session_requested.connect(self._on_new_session_requested)
@@ -133,6 +135,11 @@ class ChatWindow(QWidget):
         """用户在前端切换推理强度。"""
         if self._input_queue is not None:
             self._input_queue.put(f"/reasoning {effort}")
+
+    def _on_approval_mode_changed(self, mode: str) -> None:
+        """用户在前端切换工具审批模式。"""
+        if self._input_queue is not None:
+            self._input_queue.put(f"/approval:{mode}")
 
     def _on_sessions_refresh_requested(self) -> None:
         """用户请求刷新会话列表。"""

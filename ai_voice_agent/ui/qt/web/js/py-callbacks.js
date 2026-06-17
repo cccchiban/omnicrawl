@@ -58,6 +58,7 @@ window.pyCallbacks = {
   setInputPlaceholder: Input.setPlaceholder,
   setWorkspaceInfo:   Input.setWorkspaceInfo,
   setReasoningEffort: Input.setReasoningEffort,
+  setApprovalMode:    Input.setApprovalMode,
 
   // ── 对话框 + 通知 ─────────────────────────────
   showConfirmDialog:  Dialog.show,

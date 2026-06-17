@@ -302,6 +302,29 @@ class QtUITest(unittest.TestCase):
         self.assertIn("sessions_refresh_requested", backend_bridge)
         self.assertIn("_on_session_resume_requested", window_source)
 
+    def test_should_delete_session_with_undo_bar_instead_of_confirm_modal(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        dialog_css = (QT_WEB_DIR / "css" / "dialog.css").read_text(encoding="utf-8")
+
+        self.assertNotIn('id="delete-session-modal"', index_source)
+        self.assertNotIn("delete-session-confirm", index_source)
+        self.assertIn('id="delete-undo-bar"', index_source)
+        self.assertIn('id="delete-undo-action"', index_source)
+
+        self.assertIn("const DELETE_UNDO_DELAY_MS = 5000", app_source)
+        self.assertIn("let pendingDelete = null", app_source)
+        self.assertIn("function scheduleDelete(sessionId, title)", app_source)
+        self.assertIn("function undoPendingDelete()", app_source)
+        self.assertIn("function commitPendingDelete()", app_source)
+        self.assertIn("window.bridge.onDeleteSession(target.sessionId)", app_source)
+        self.assertIn("if (pendingDelete) {\n      commitPendingDelete();\n    }", app_source)
+        self.assertNotIn("openDeleteModal", app_source)
+        self.assertNotIn("delete-session-modal", app_source)
+
+        self.assertIn(".delete-undo-bar", dialog_css)
+        self.assertIn("bottom: 32px", dialog_css)
+
     def test_qt_ui_should_forward_session_updates_to_window(self) -> None:
         ui = QtUI()
         window = FakeSessionWindow()
@@ -452,10 +475,11 @@ class QtUITest(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('id="reasoning-toggle"', index_source)
-        self.assertIn('data-value="none"', index_source)
-        self.assertIn('data-value="high"', index_source)
-        self.assertIn("window.bridge.setReasoningEffort(currentReasoning)", input_source)
+        # reasoning-toggle 是 JS 动态创建的，检查 model-btn 按钮和 data-value 属性
+        self.assertIn('id="model-btn"', index_source)
+        self.assertIn('data-value="none"', input_source)
+        self.assertIn('data-value="high"', input_source)
+        self.assertIn("window.bridge.setReasoningEffort(value)", input_source)
         self.assertIn("setReasoningEffort: setReasoningEffort", input_source)
         self.assertIn("Input.setReasoningEffort", messages_source)
         self.assertIn("setReasoningEffort", bridge_source)
@@ -463,6 +487,71 @@ class QtUITest(unittest.TestCase):
         self.assertIn("_on_reasoning_effort_changed", window_source)
         self.assertIn("_connect_frontend_signals_once", window_source)
         self.assertIn("/reasoning", window_source)
+
+    def test_should_connect_approval_mode_control_to_backend(self) -> None:
+        input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
+        messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
+        bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+            encoding="utf-8"
+        )
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("window.bridge.setApprovalMode(value)", input_source)
+        self.assertIn("setApprovalMode: setApprovalMode", input_source)
+        self.assertIn("Input.setApprovalMode", messages_source)
+        self.assertIn("setApprovalMode", callback_source)
+        self.assertIn("setApprovalMode", bridge_source)
+        self.assertIn("approval_mode_changed", backend_bridge)
+        self.assertIn("_on_approval_mode_changed", window_source)
+        self.assertIn("/approval:", window_source)
+
+    def test_project_toolbar_dropdown_should_reuse_project_modal(self) -> None:
+        input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
+        project_source = (QT_WEB_DIR / "js" / "project-sidebar.js").read_text(encoding="utf-8")
+
+        self.assertIn("openProjectModal('create')", input_source)
+        self.assertIn("openProjectModal('import')", input_source)
+        self.assertIn("window.ProjectSidebar.openModal(mode)", input_source)
+        self.assertNotIn("onCreateProject('新项目', '')", input_source)
+        self.assertNotIn("onImportProject('新项目', '')", input_source)
+        self.assertIn("openModal: openModal", project_source)
+
+    def test_should_update_reasoning_label_when_backend_sets_initial_effort(self) -> None:
+        input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
+
+        set_effort_start = input_source.index("function setReasoningEffort(effort)")
+        set_effort_end = input_source.index("function setWorkspaceInfo", set_effort_start)
+        set_effort_body = input_source[set_effort_start:set_effort_end]
+
+        self.assertIn("syncToolbarLabels();", set_effort_body)
+        self.assertRegex(
+            set_effort_body,
+            r"currentReasoning\s*=\s*effort\s*\|\|\s*'none';[\s\S]*syncToolbarLabels\(\);",
+        )
+
+    def test_should_keep_approval_dropdown_readable_without_wrapping(self) -> None:
+        input_css = (QT_WEB_DIR / "css" / "input-area.css").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            input_css,
+            r"#approval-dropdown\s*{[\s\S]*?min-width:\s*280px",
+        )
+        self.assertRegex(
+            input_css,
+            r"#approval-dropdown\s+\.reasoning-option\s*{[\s\S]*?grid-template-columns:\s*16px\s+64px\s+1fr",
+        )
+        self.assertRegex(
+            input_css,
+            r"#approval-dropdown\s+\.option-label\s*{[\s\S]*?white-space:\s*nowrap",
+        )
+        self.assertRegex(
+            input_css,
+            r"#approval-dropdown\s+\.option-desc\s*{[\s\S]*?white-space:\s*nowrap",
+        )
 
     def test_should_use_windows_system_font_stack(self) -> None:
         variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")

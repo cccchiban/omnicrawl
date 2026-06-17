@@ -1,5 +1,5 @@
 /**
- * input.js — 输入框处理（发送按钮状态联动 + 推理强度下拉 + Workspace 信息）
+ * input.js — 输入框处理（发送按钮 + reasoning_effort + approval + 项目下拉）
  */
 'use strict';
 
@@ -8,6 +8,7 @@ var Input = (function() {
   var bridgeReady = false;
   var desiredEnabled = true;
   var currentReasoning = 'none';
+  var currentApproval = 'auto'; // manual / auto / review
 
   function inputEl() {
     return document.getElementById('chat-input');
@@ -40,7 +41,10 @@ var Input = (function() {
     // 初始状态
     updateSendButtonState(inp);
     initReasoningDropdown();
+    initApprovalDropdown();
+    initProjectDropdown();
     initRippleEffect();
+    syncToolbarLabels();
   }
 
   function autosize(inp) {
@@ -62,6 +66,11 @@ var Input = (function() {
     if (!(window.bridge && window.bridge.onUserSend)) {
       Notice.show('界面通信尚未就绪，请稍后重试');
       return;
+    }
+    // 退出空状态
+    var main = document.getElementById('main');
+    if (main && main.classList.contains('empty-state')) {
+      main.classList.remove('empty-state');
     }
     inp.value = '';
     resetHeight(inp);
@@ -96,7 +105,7 @@ var Input = (function() {
     updateSendButtonState(inp);
   }
 
-  /** 根据输入内容更新发送按钮视觉状态（CSS class 驱动，避免 inline style 与 CSS 冲突） */
+  /** 根据输入内容更新发送按钮视觉状态 */
   function updateSendButtonState(inp) {
     var btn = sendBtnEl();
     if (!btn || !inp) return;
@@ -105,11 +114,10 @@ var Input = (function() {
     btn.classList.toggle('ready', enabled && hasText);
   }
 
-  /** 输入框容器状态：有内容时微缩放 */
   function updateInputContainerState(inp) {
-    var container = document.querySelector('.input-container');
-    if (!container || !inp) return;
-    container.classList.toggle('has-content', inp.value.trim().length > 0);
+    var card = document.querySelector('.input-card');
+    if (!card || !inp) return;
+    card.classList.toggle('has-content', inp.value.trim().length > 0);
   }
 
   /** 初始化点击涟漪效果 */
@@ -132,55 +140,346 @@ var Input = (function() {
     });
   }
 
-  /** 初始化推理强度下拉菜单 */
-  function initReasoningDropdown() {
-    var toggle = document.getElementById('reasoning-toggle');
-    var dropdown = document.getElementById('reasoning-dropdown');
-    var wrapper = document.getElementById('reasoning-dropdown-wrapper');
-    if (!toggle || !dropdown) return;
+  // ═══════════════════════════════════════════════════════════════
+  // 推理强度下拉菜单（model-btn）
+  // ═══════════════════════════════════════════════════════════════
 
-    toggle.addEventListener('click', function(e) {
+  function initReasoningDropdown() {
+    var btn = document.getElementById('model-btn');
+    if (!btn) return;
+
+    // 创建下拉菜单
+    var dropdown = document.createElement('div');
+    dropdown.className = 'reasoning-dropdown hidden';
+    dropdown.id = 'reasoning-dropdown';
+    dropdown.innerHTML =
+      '<div class="reasoning-dropdown-header">推理强度</div>' +
+      '<button class="reasoning-option active" data-value="none">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">关闭</span>' +
+      '  <span class="option-desc">常规响应</span>' +
+      '</button>' +
+      '<button class="reasoning-option" data-value="low">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">轻度</span>' +
+      '  <span class="option-desc">快速响应</span>' +
+      '</button>' +
+      '<button class="reasoning-option" data-value="medium">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">标准</span>' +
+      '  <span class="option-desc">平衡质量与速度</span>' +
+      '</button>' +
+      '<button class="reasoning-option" data-value="high">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">深度</span>' +
+      '  <span class="option-desc">详细推理</span>' +
+      '</button>' +
+      '<button class="reasoning-option" data-value="xhigh">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">极高</span>' +
+      '  <span class="option-desc">最大深度推理</span>' +
+      '</button>' +
+      '<button class="reasoning-option" data-value="max">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">MAX</span>' +
+      '  <span class="option-desc">极致推理</span>' +
+      '</button>';
+
+    var wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    btn.parentNode.insertBefore(wrapper, btn);
+    wrapper.appendChild(btn);
+    wrapper.appendChild(dropdown);
+
+    // 显示标签映射
+    var labelMap = {
+      'none': '关闭',
+      'low': '轻度',
+      'medium': '标准',
+      'high': '深度',
+      'xhigh': '极高',
+      'max': 'MAX'
+    };
+
+    btn.addEventListener('click', function(e) {
       e.stopPropagation();
       var open = !dropdown.classList.contains('open');
-      setReasoningDropdownOpen(dropdown, toggle, open);
+      setDropdownOpen(dropdown, open);
     });
 
     // 点击选项
     var options = dropdown.querySelectorAll('.reasoning-option');
     options.forEach(function(opt) {
       opt.addEventListener('click', function() {
-        var nextReasoning = opt.dataset.value || 'none';
+        var value = opt.dataset.value || 'none';
+        currentReasoning = value;
+        // 更新按钮文字
+        var label = labelMap[value] || value;
+        btn.querySelector('span').textContent = label;
+        // 更新选中状态
+        options.forEach(function(o) { o.classList.remove('active'); });
+        opt.classList.add('active');
+        setDropdownOpen(dropdown, false);
+        // 通知后端
         if (window.bridge && window.bridge.setReasoningEffort) {
-          setReasoningEffort(nextReasoning);
-          setReasoningDropdownOpen(dropdown, toggle, false);
-          window.bridge.setReasoningEffort(currentReasoning);
-        } else if (window.Notice && Notice.show) {
-          Notice.show('界面通信尚未就绪，请稍后重试');
+          window.bridge.setReasoningEffort(value);
         }
       });
     });
 
     // 点击外部关闭
     document.addEventListener('click', function(e) {
-      if (wrapper && !wrapper.contains(e.target)) {
-        setReasoningDropdownOpen(dropdown, toggle, false);
+      if (!wrapper.contains(e.target)) {
+        setDropdownOpen(dropdown, false);
       }
     });
   }
 
-  function setReasoningDropdownOpen(dropdown, toggle, open) {
+  // ═══════════════════════════════════════════════════════════════
+  // 审批模式下拉菜单（approval-btn）
+  // ═══════════════════════════════════════════════════════════════
+
+  function initApprovalDropdown() {
+    var btn = document.getElementById('approval-btn');
+    if (!btn) return;
+
+    var dropdown = document.createElement('div');
+    dropdown.className = 'reasoning-dropdown hidden';
+    dropdown.id = 'approval-dropdown';
+    dropdown.innerHTML =
+      '<div class="reasoning-dropdown-header">审批模式</div>' +
+      '<button class="reasoning-option active" data-value="auto">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">自动审批</span>' +
+      '  <span class="option-desc">信任模式下自动执行</span>' +
+      '</button>' +
+      '<button class="reasoning-option" data-value="manual">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">手动审批</span>' +
+      '  <span class="option-desc">每次执行前询问</span>' +
+      '</button>' +
+      '<button class="reasoning-option" data-value="review">' +
+      '  <span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+      '  <span class="option-label">仅审查</span>' +
+      '  <span class="option-desc">执行后展示结果</span>' +
+      '</button>';
+
+    var wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    btn.parentNode.insertBefore(wrapper, btn);
+    wrapper.appendChild(btn);
+    wrapper.appendChild(dropdown);
+
+    var labelMap = {
+      'manual': '手动审批',
+      'auto': '自动审批',
+      'review': '仅审查'
+    };
+
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var open = !dropdown.classList.contains('open');
+      setDropdownOpen(dropdown, open);
+    });
+
+    var options = dropdown.querySelectorAll('.reasoning-option');
+    options.forEach(function(opt) {
+      opt.addEventListener('click', function() {
+        var value = opt.dataset.value || 'auto';
+        currentApproval = value;
+        var label = labelMap[value] || value;
+        btn.querySelector('span').textContent = label;
+        options.forEach(function(o) { o.classList.remove('active'); });
+        opt.classList.add('active');
+        setDropdownOpen(dropdown, false);
+        if (window.bridge && window.bridge.setApprovalMode) {
+          window.bridge.setApprovalMode(value);
+        }
+      });
+    });
+
+    document.addEventListener('click', function(e) {
+      if (!wrapper.contains(e.target)) {
+        setDropdownOpen(dropdown, false);
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 项目目录下拉菜单（embed-btn）
+  // ═══════════════════════════════════════════════════════════════
+
+  function initProjectDropdown() {
+    var btn = document.getElementById('embed-btn');
+    if (!btn) return;
+
+    var dropdown = document.createElement('div');
+    dropdown.className = 'reasoning-dropdown hidden';
+    dropdown.id = 'project-dropdown';
+    dropdown.innerHTML =
+      '<div class="reasoning-dropdown-header">项目</div>' +
+      '<div id="project-dropdown-list">' +
+      '  <div class="reasoning-option" data-action="create">' +
+      '    <span class="option-label">创建项目</span>' +
+      '  </div>' +
+      '  <div class="reasoning-option" data-action="import">' +
+      '    <span class="option-label">导入项目</span>' +
+      '  </div>' +
+      '  <div class="reasoning-option" data-action="switch">' +
+      '    <span class="option-label">切换项目</span>' +
+      '  </div>' +
+      '</div>';
+
+    var wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    btn.parentNode.insertBefore(wrapper, btn);
+    wrapper.appendChild(btn);
+    wrapper.appendChild(dropdown);
+
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var open = !dropdown.classList.contains('open');
+      setDropdownOpen(dropdown, open);
+      // 请求刷新项目列表
+      if (open && window.bridge && window.bridge.onRequestProjects) {
+        window.bridge.onRequestProjects();
+      }
+    });
+
+    // 动态更新项目列表的方法
+    window.updateProjectDropdown = function(projects) {
+      var list = document.getElementById('project-dropdown-list');
+      if (!list) return;
+      var html = '';
+      if (projects && projects.length > 0) {
+        projects.forEach(function(p) {
+          html += '<div class="reasoning-option" data-action="switch" data-path="' + escAttr(p.path || '') + '">' +
+            '<span class="check-mark"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>' +
+            '<span class="option-label">' + escHtml(p.name || p.path || '未命名') + '</span>' +
+            '</div>';
+        });
+      }
+      html += '<div class="reasoning-option" data-action="create"><span class="option-label">创建项目</span></div>';
+      html += '<div class="reasoning-option" data-action="import"><span class="option-label">导入项目</span></div>';
+      list.innerHTML = html;
+      attachProjectListeners(list);
+    };
+
+    function attachProjectListeners(container) {
+      var options = container.querySelectorAll('.reasoning-option');
+      options.forEach(function(opt) {
+        opt.addEventListener('click', function() {
+          var action = opt.dataset.action;
+          if (action === 'create') {
+            openProjectModal('create');
+          } else if (action === 'import') {
+            openProjectModal('import');
+          } else if (action === 'switch') {
+            var path = opt.dataset.path;
+            if (path && window.bridge && window.bridge.onSwitchProject) {
+              window.bridge.onSwitchProject(path);
+            }
+          }
+          setDropdownOpen(dropdown, false);
+        });
+      });
+    }
+
+    attachProjectListeners(dropdown);
+
+    document.addEventListener('click', function(e) {
+      if (!wrapper.contains(e.target)) {
+        setDropdownOpen(dropdown, false);
+      }
+    });
+  }
+
+  function openProjectModal(mode) {
+    if (window.ProjectSidebar && window.ProjectSidebar.openModal) {
+      window.ProjectSidebar.openModal(mode);
+    } else if (window.Notice && Notice.show) {
+      Notice.show('项目面板尚未就绪，请稍后重试');
+    }
+  }
+
+  function escHtml(value) {
+    return String(value).replace(/[&<>"']/g, function(ch) {
+      return {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch];
+    });
+  }
+
+  function escAttr(value) {
+    return escHtml(value);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 通用下拉菜单工具函数
+  // ═══════════════════════════════════════════════════════════════
+
+  function setDropdownOpen(dropdown, open) {
     dropdown.classList.toggle('open', open);
     dropdown.classList.toggle('hidden', !open);
-    if (toggle) toggle.setAttribute('aria-expanded', String(open));
   }
+
+  /** 同步工具栏按钮显示标签与当前状态一致 */
+  function syncToolbarLabels() {
+    // 同步推理强度按钮
+    var modelBtn = document.getElementById('model-btn');
+    if (modelBtn) {
+      var reasoningLabelMap = {
+        'none': '关闭',
+        'low': '轻度',
+        'medium': '标准',
+        'high': '深度',
+        'xhigh': '极高',
+        'max': 'MAX'
+      };
+      modelBtn.querySelector('span').textContent = reasoningLabelMap[currentReasoning] || currentReasoning;
+    }
+    // 同步审批模式按钮
+    var approvalBtn = document.getElementById('approval-btn');
+    if (approvalBtn) {
+      var approvalLabelMap = {
+        'manual': '手动审批',
+        'auto': '自动审批',
+        'review': '仅审查'
+      };
+      approvalBtn.querySelector('span').textContent = approvalLabelMap[currentApproval] || currentApproval;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 公共 API
+  // ═══════════════════════════════════════════════════════════════
 
   function setReasoningEffort(effort) {
     currentReasoning = effort || 'none';
+    syncToolbarLabels();
     var dropdown = document.getElementById('reasoning-dropdown');
     if (!dropdown) return;
     var options = dropdown.querySelectorAll('.reasoning-option');
     options.forEach(function(opt) {
       opt.classList.toggle('active', (opt.dataset.value || 'none') === currentReasoning);
+    });
+  }
+
+  function setApprovalMode(mode) {
+    currentApproval = mode || 'auto';
+    syncToolbarLabels();
+    var dropdown = document.getElementById('approval-dropdown');
+    if (!dropdown) return;
+    var options = dropdown.querySelectorAll('.reasoning-option');
+    options.forEach(function(opt) {
+      opt.classList.toggle('active', (opt.dataset.value || 'auto') === currentApproval);
     });
   }
 
@@ -218,6 +517,7 @@ var Input = (function() {
     setPlaceholder: setPlaceholder,
     setWorkspaceInfo: setWorkspaceInfo,
     setReasoningEffort: setReasoningEffort,
+    setApprovalMode: setApprovalMode,
   };
 
 })();

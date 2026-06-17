@@ -67,6 +67,7 @@
         onModelSelect: function() {},
         onModelChange: function() {},
         setReasoningEffort: function() {},
+        setApprovalMode: function() {},
         onNewSession: function() {},
         onRequestSessions: function() {},
         onResumeSession: function() {},

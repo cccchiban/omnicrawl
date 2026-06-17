@@ -46,11 +46,20 @@ var Messages = (function() {
     return '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>';
   }
 
+  /** 退出空状态（首次发送消息时调用） */
+  function exitEmptyState() {
+    var main = document.getElementById('main');
+    if (main && main.classList.contains('empty-state')) {
+      main.classList.remove('empty-state');
+    }
+  }
+
   // ── 用户消息 ──────────────────────────────────────
 
   function appendUserMsg(text, timeText) {
     if (!text) return;
     finishCurrentAI();
+    exitEmptyState();
 
     var container = messagesEl();
     if (!container) {
@@ -134,12 +143,23 @@ var Messages = (function() {
     AppState.fallbackToolStep = 1;
     var container = messagesEl();
     if (container) container.innerHTML = '';
+    // 恢复空状态
+    var main = document.getElementById('main');
+    if (main && !main.classList.contains('empty-state')) {
+      main.classList.add('empty-state');
+    }
   }
 
   function renderSessionMessages(items) {
     clear();
     if (!Array.isArray(items) || items.length === 0) {
+      // 空会话：保持 empty-state
       return;
+    }
+    // 有消息时退出 empty-state（clear() 会添加，这里移除）
+    var main = document.getElementById('main');
+    if (main && main.classList.contains('empty-state')) {
+      main.classList.remove('empty-state');
     }
     for (var i = 0; i < items.length; i++) {
       var item = items[i] || {};
@@ -234,6 +254,7 @@ var Messages = (function() {
     var workspacePath = '';
     var workspaceStatus = '';
     var reasoningEffort = '';
+    var approvalMode = '';
     for (var i = 0; i < lines.length; i++) {
       var line = lines[i];
       var colonIdx = line.indexOf(':');
@@ -253,6 +274,11 @@ var Messages = (function() {
           if (match) reasoningEffort = match[1];
           else if (val.indexOf('已禁用') !== -1) reasoningEffort = 'none';
           else if (val.indexOf('已启用') !== -1) reasoningEffort = 'low';
+        }
+        if (key.toLowerCase() === 'approval') {
+          if (val.indexOf('人工') !== -1 || val.indexOf('手动') !== -1 || val === 'manual') approvalMode = 'manual';
+          else if (val.indexOf('自动') !== -1 || val === 'auto') approvalMode = 'auto';
+          else if (val.indexOf('审查') !== -1 || val === 'review') approvalMode = 'review';
         }
         linesHtml +=
           '<div class="startup-line">' +
@@ -285,6 +311,10 @@ var Messages = (function() {
 
     if (reasoningEffort && window.Input && Input.setReasoningEffort) {
       Input.setReasoningEffort(reasoningEffort);
+    }
+
+    if (approvalMode && window.Input && Input.setApprovalMode) {
+      Input.setApprovalMode(approvalMode);
     }
 
     // 提取模型名

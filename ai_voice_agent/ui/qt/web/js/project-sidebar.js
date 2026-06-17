@@ -448,6 +448,7 @@
     updateProjectList: updateProjectList,
     setCurrentProject: setCurrentProject,
     requestProjectList: requestProjectList,
+    openModal: openModal,
   };
 
   // DOM 就绪后自动初始化

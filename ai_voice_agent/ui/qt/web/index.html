@@ -114,23 +114,6 @@
     </div>
   </aside>
 
-  <!-- 删除会话确认弹窗 -->
-  <div class="confirm-modal hidden" id="delete-session-modal">
-    <div class="confirm-modal-backdrop"></div>
-    <div class="confirm-modal-content">
-      <div class="confirm-modal-header">
-        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-        <h3>删除会话</h3>
-      </div>
-      <div class="confirm-modal-body">
-        <p id="delete-session-text">确定删除此会话吗？此操作不可撤销。</p>
-      </div>
-      <div class="confirm-modal-footer">
-        <button class="confirm-btn confirm-btn-secondary" id="delete-session-cancel">取消</button>
-        <button class="confirm-btn confirm-btn-danger" id="delete-session-confirm">删除</button>
-      </div>
-    </div>
-  </div>
   <div class="project-context-menu hidden" id="project-context-menu">
     <button class="context-item" data-action="pin">
       <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2l-4 8h8l-4-8zM6 12h12M12 14v7"/></svg>
@@ -197,7 +180,7 @@
   </div>
 
   <!-- ── 主内容区 ───────────────────────────────── -->
-  <main id="main">
+  <main id="main" class="empty-state">
 
     <!-- 顶部操作栏 -->
     <header id="title-bar">
@@ -255,45 +238,46 @@
         <span class="workspace-path" id="workspace-path">未检测到工作区</span>
         <span class="workspace-status" id="workspace-status">未激活</span>
       </div>
-      <div class="input-container">
+
+      <!-- 主输入卡片 -->
+      <div class="input-card">
         <div class="input-wrapper">
           <textarea id="chat-input" rows="1"
-            placeholder="输入消息…  Enter 发送 · Shift+Enter 换行"></textarea>
+            placeholder="随心输入"></textarea>
         </div>
-        <!-- 推理强度下拉菜单 -->
-        <div class="reasoning-dropdown-wrapper" id="reasoning-dropdown-wrapper">
-          <button class="reasoning-toggle" id="reasoning-toggle" title="推理强度" aria-label="推理强度" aria-haspopup="true" aria-expanded="false">
-            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-          </button>
-          <div class="reasoning-dropdown hidden" id="reasoning-dropdown">
-            <div class="reasoning-dropdown-header">推理强度</div>
-            <button class="reasoning-option active" data-value="none">
-              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
-              <span class="option-label">关闭</span>
-              <span class="option-desc">常规响应</span>
+
+        <!-- 底部工具栏 -->
+        <div class="input-toolbar">
+          <div class="toolbar-left">
+            <!-- 嵌入式按钮 -->
+            <button class="attachment-btn" id="embed-btn">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span>嵌入式</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 9l6 6 6-6"/></svg>
             </button>
-            <button class="reasoning-option" data-value="low">
-              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
-              <span class="option-label">轻度</span>
-              <span class="option-desc">快速响应</span>
+            <!-- 加号按钮 -->
+            <button class="add-btn" id="add-btn" title="添加附件">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
-            <button class="reasoning-option" data-value="medium">
-              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
-              <span class="option-label">标准</span>
-              <span class="option-desc">平衡质量与速度</span>
+            <!-- 替我审批下拉 -->
+            <button class="toolbar-btn" id="approval-btn">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              <span>审批模式</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 9l6 6 6-6"/></svg>
             </button>
-            <button class="reasoning-option" data-value="high">
-              <span class="check-mark"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20 6L9 17l-5-5"/></svg></span>
-              <span class="option-label">深度</span>
-              <span class="option-desc">详细推理</span>
+          </div>
+          <div class="toolbar-right">
+            <!-- 模型/强度选择 -->
+            <button class="toolbar-btn" id="model-btn">
+              <span>推理强度</span>
+              <svg class="dropdown-arrow" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 9l6 6 6-6"/></svg>
+            </button>
+            <!-- 发送按钮 -->
+            <button id="send-btn" disabled>
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
             </button>
           </div>
         </div>
-        <button id="send-btn" class="persona-btn" disabled>
-          <span class="btn-icon">
-            <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
-          </span>
-        </button>
       </div>
     </div>
 
@@ -302,6 +286,10 @@
   <!-- ── 通知条 ─────────────────────────────────── -->
   <div id="notice-bar" class="notice hidden">
     <span id="notice-text"></span>
+  </div>
+  <div id="delete-undo-bar" class="delete-undo-bar hidden" role="status" aria-live="polite">
+    <span id="delete-undo-text"></span>
+    <button type="button" id="delete-undo-action">撤回</button>
   </div>
 
 </div>

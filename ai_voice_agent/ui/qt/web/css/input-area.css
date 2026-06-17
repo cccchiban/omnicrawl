@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   input-area.css — 底部悬浮输入框（Codex 风格）
+   input-area.css — 底部悬浮输入框（仿图中风格）
    ═══════════════════════════════════════════════════════════════ */
 
 #input-area {
@@ -59,30 +59,28 @@
   font-size: 13px;
 }
 
-.input-container {
+/* ═══════════════════════════════════════════════════════════════
+   主输入框卡片 — 仿图中深色圆角卡片风格
+   ═══════════════════════════════════════════════════════════════ */
+
+.input-card {
   width: 100%;
   max-width: var(--input-max-width);
   display: flex;
-  align-items: flex-end;
-  gap: var(--space-sm);
+  flex-direction: column;
   background: var(--bg-input);
-  border: 1px solid var(--border-input);
+  border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
-  padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
-  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.2s ease;
+  padding: var(--space-md);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
-.input-container:focus-within {
+.input-card:focus-within {
   border-color: var(--border-input-focus);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
-  animation: input-breathe 2s ease-in-out infinite;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.08);
 }
 
-@keyframes input-breathe {
-  0%, 100% { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.10); }
-  50% { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18); }
-}
-
+/* ── 输入区域 ──────────────────────────────────── */
 .input-wrapper {
   flex: 1;
   min-width: 0;
@@ -98,11 +96,10 @@
   font-family: var(--font-sans);
   font-size: 18px;
   line-height: 1.5;
-  padding: 8px 0;
+  padding: 4px 0;
   min-height: var(--input-min-height);
   max-height: var(--input-max-height);
   overflow-y: auto;
-  transition: transform 0.15s ease;
 }
 
 #chat-input::placeholder { color: var(--text-placeholder); }
@@ -112,171 +109,201 @@
   cursor: not-allowed;
 }
 
-/* 输入时微缩放反馈 */
-.input-container.has-content {
-  transform: scale(1.002);
-}
-
 /* ═══════════════════════════════════════════════════════════════
-   发送按钮 — "引力核心" 四态设计
-   设计原则：克制、专业、即时反馈，避免过度吸引注意力
+   底部工具栏
    ═══════════════════════════════════════════════════════════════ */
 
-#send-btn {
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border-light);
+}
+
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.toolbar-left {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.toolbar-right {
   flex-shrink: 0;
 }
 
-/* ── 共享基础 ──────────────────────────────────── */
-.persona-btn {
-  position: relative;
-  width: 44px;
-  height: 44px;
+.toolbar-left > div {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* ── 工具栏按钮 ────────────────────────────────── */
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
   border: none;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
   cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.toolbar-btn:hover {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-primary);
+}
+
+.toolbar-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+/* 下拉箭头 */
+.toolbar-btn .dropdown-arrow {
+  width: 12px;
+  height: 12px;
+  margin-left: -2px;
+}
+
+/* ── 加号按钮 ─────────────────────────────────── */
+.add-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
-  outline: none;
-  overflow: hidden;
-  /* 弹性缓动：状态切换有呼吸感 */
-  transition:
-    background 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-    color 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-    box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
-    opacity 0.2s ease;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
-/* 点击涟漪效果容器 */
-.persona-btn .ripple {
-  position: absolute;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.35);
-  transform: scale(0);
-  animation: ripple-effect 0.5s ease-out forwards;
-  pointer-events: none;
+.add-btn:hover {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-primary);
 }
 
-@keyframes ripple-effect {
-  to {
-    transform: scale(4);
-    opacity: 0;
-  }
+.add-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-/* ── ① 禁用态：输入框无内容 ──────────────────────
-   保持结构可见，安静存在但不喧宾夺主 */
-.persona-btn:disabled {
+/* ── 发送按钮 ─────────────────────────────────── */
+#send-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: var(--radius-full);
   background: var(--bg-tool-card);
   color: var(--text-tertiary);
   cursor: not-allowed;
-  opacity: 0.6;
-  transform: scale(1);
-  box-shadow: none;
-}
-
-/* ── ② 激活态：有输入内容（.ready）───────────────
-   实心主色，清晰传达"可发送"信号 */
-.persona-btn.ready:not(:disabled) {
-  background: var(--accent-blue);
-  color: #ffffff;
-  opacity: 1;
-  transform: scale(1);
-  box-shadow: none;
-}
-
-/* ── ③ 激活态 hover：微上浮 + 轻阴影 ─────────── */
-.persona-btn.ready:not(:disabled):hover {
-  background: #4f8ef7;
-  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35);
-  transform: translateY(-1px);
-}
-
-/* ── ④ 激活态 active（按下瞬间）─────────────────
-   快速反馈：下沉 + 内阴影，模拟物理按压 */
-.persona-btn.ready:not(:disabled):active {
-  background: #2563eb;
-  transform: translateY(1px);
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
-  transition: all 0.08s ease;
-}
-
-/* ── ⑤ 加载态（发送中）──────────────────────────
-   脉冲动画，表示正在处理 */
-.persona-btn.loading:not(:disabled) {
-  background: var(--accent-blue);
-  color: #ffffff;
-  cursor: wait;
-  opacity: 0.85;
-  pointer-events: none;
-  animation: send-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes send-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.3);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(59, 130, 246, 0);
-  }
-}
-
-/* ── 图标 ──────────────────────────────────────── */
-.btn-icon {
-  line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  transition: background 0.25s ease, color 0.25s ease, transform 0.2s ease;
 }
 
-/* 激活态图标微旋转，增加动感但不夸张 */
-.persona-btn.ready:not(:disabled) .btn-icon {
-  transform: translateX(0);
+#send-btn.ready:not(:disabled) {
+  background: var(--accent-blue);
+  color: #ffffff;
+  cursor: pointer;
 }
 
-.persona-btn.ready:not(:disabled):hover .btn-icon {
-  transform: translateX(2px);
+#send-btn.ready:not(:disabled):hover {
+  background: #4f8ef7;
+  transform: translateY(-1px);
 }
 
-/* 加载态图标旋转 */
-.persona-btn.loading:not(:disabled) .btn-icon {
-  animation: icon-spin 1s linear infinite;
+#send-btn.ready:not(:disabled):active {
+  background: #2563eb;
+  transform: translateY(1px);
 }
 
-@keyframes icon-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.btn-icon svg {
-  width: 20px;
-  height: 20px;
+#send-btn svg {
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-/* ── Focus 可见性（无障碍）─────────────────────── */
-.persona-btn:focus-visible {
-  outline: 2px solid var(--accent-blue);
-  outline-offset: 2px;
+/* ═══════════════════════════════════════════════════════════════
+   附件/模式选择行（已合并到工具栏，保留样式兼容）
+   ═══════════════════════════════════════════════════════════════ */
+
+.input-attachments {
+  width: 100%;
+  max-width: var(--input-max-width);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
 }
 
-/* ── 加载态 spinner 替代图标 ─────────────────── */
-.persona-btn.loading:not(:disabled) .btn-icon svg {
-  display: none;
+.attachment-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 17px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
-.persona-btn.loading:not(:disabled) .btn-icon::after {
-  content: '';
-  width: 20px;
-  height: 20px;
-  border: 2.5px solid rgba(255, 255, 255, 0.25);
-  border-top-color: #ffffff;
-  border-radius: 50%;
-  animation: icon-spin 0.8s linear infinite;
+.attachment-btn:hover {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-secondary);
+}
+
+.attachment-btn svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+.attachment-btn .dropdown-arrow {
+  width: 16px;
+  height: 16px;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -289,27 +316,27 @@
 }
 
 .reasoning-toggle {
-  width: 34px;
-  height: 34px;
-  border: none;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease;
 }
 
 .reasoning-toggle:hover {
   background: var(--bg-sidebar-hover);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .reasoning-toggle svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -403,4 +430,28 @@
 .reasoning-option .option-desc {
   font-size: 13px;
   color: var(--text-tertiary);
+}
+
+#approval-dropdown {
+  min-width: 280px;
+}
+
+#approval-dropdown .reasoning-option {
+  display: grid;
+  grid-template-columns: 16px 64px 1fr;
+  column-gap: var(--space-sm);
+  align-items: center;
+  min-height: 42px;
+  padding: 10px var(--space-sm);
+}
+
+#approval-dropdown .option-label {
+  white-space: nowrap;
+}
+
+#approval-dropdown .option-desc {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

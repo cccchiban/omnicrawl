@@ -182,55 +182,66 @@ function initSidebarToggle() {
 }
 
 function initSessionSidebar() {
+  const DELETE_UNDO_DELAY_MS = 5000;
   const listEl = document.getElementById('session-list');
   const newBtn = document.getElementById('nav-new-chat');
   const refreshBtn = document.getElementById('session-refresh-btn');
   const renameBtn = document.getElementById('nav-rename');
   const compactBtn = document.getElementById('nav-compact');
+  const deleteUndoBar = document.getElementById('delete-undo-bar');
+  const deleteUndoText = document.getElementById('delete-undo-text');
+  const deleteUndoAction = document.getElementById('delete-undo-action');
   let currentSessionId = '';
   let currentSessionTitle = '新会话';
+  let pendingDelete = null;
 
   if (!listEl) return;
 
-  // 删除确认弹窗状态
-  let deleteTargetId = '';
-  let deleteTargetTitle = '';
-  const deleteModal = document.getElementById('delete-session-modal');
-  const deleteText = document.getElementById('delete-session-text');
-  const deleteConfirmBtn = document.getElementById('delete-session-confirm');
-  const deleteCancelBtn = document.getElementById('delete-session-cancel');
-  const deleteBackdrop = deleteModal ? deleteModal.querySelector('.confirm-modal-backdrop') : null;
-
-  function openDeleteModal(sessionId, title) {
-    deleteTargetId = sessionId;
-    deleteTargetTitle = title;
-    if (deleteText) {
-      deleteText.textContent = `确定删除会话「${title}」吗？此操作不可撤销。`;
-    }
-    if (deleteModal) deleteModal.classList.remove('hidden');
+  function hideDeleteUndoBar() {
+    if (deleteUndoBar) deleteUndoBar.classList.add('hidden');
   }
 
-  function closeDeleteModal() {
-    deleteTargetId = '';
-    deleteTargetTitle = '';
-    if (deleteModal) deleteModal.classList.add('hidden');
+  function commitPendingDelete() {
+    const target = pendingDelete;
+    if (!target) return;
+    clearTimeout(target.timer);
+    pendingDelete = null;
+    hideDeleteUndoBar();
+    if (window.bridge && window.bridge.onDeleteSession) {
+      window.bridge.onDeleteSession(target.sessionId);
+    }
   }
 
-  function confirmDelete() {
-    if (deleteTargetId && window.bridge && window.bridge.onDeleteSession) {
-      window.bridge.onDeleteSession(deleteTargetId);
-    }
-    closeDeleteModal();
+  function undoPendingDelete() {
+    if (!pendingDelete) return;
+    clearTimeout(pendingDelete.timer);
+    pendingDelete = null;
+    hideDeleteUndoBar();
   }
 
-  if (deleteConfirmBtn) deleteConfirmBtn.addEventListener('click', confirmDelete);
-  if (deleteCancelBtn) deleteCancelBtn.addEventListener('click', closeDeleteModal);
-  if (deleteBackdrop) deleteBackdrop.addEventListener('click', closeDeleteModal);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && deleteModal && !deleteModal.classList.contains('hidden')) {
-      closeDeleteModal();
+  function scheduleDelete(sessionId, title) {
+    if (!sessionId) return;
+    if (pendingDelete) {
+      commitPendingDelete();
     }
-  });
+    const target = {
+      sessionId: sessionId,
+      title: title || sessionId,
+      timer: null,
+    };
+    target.timer = setTimeout(() => {
+      if (pendingDelete === target) {
+        commitPendingDelete();
+      }
+    }, DELETE_UNDO_DELAY_MS);
+    pendingDelete = target;
+    if (deleteUndoText) {
+      deleteUndoText.textContent = `会话「${target.title}」将在 5 秒后删除`;
+    }
+    if (deleteUndoBar) deleteUndoBar.classList.remove('hidden');
+  }
+
+  if (deleteUndoAction) deleteUndoAction.addEventListener('click', undoPendingDelete);
 
   function requestRefresh() {
     if (window.bridge && window.bridge.onRequestSessions) {
@@ -275,7 +286,7 @@ function initSessionSidebar() {
           e.stopPropagation();
           const sid = item.dataset.sessionId;
           const stitle = titleEl ? titleEl.textContent : sid;
-          openDeleteModal(sid, stitle);
+          scheduleDelete(sid, stitle);
         });
       }
       // 点击会话条目 → 恢复

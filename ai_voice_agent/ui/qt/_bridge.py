@@ -29,6 +29,8 @@ class BackendBridge(QObject):
     model_changed = pyqtSignal(str)
     # 推理强度切换信号：用户在前端选择了新的 reasoning_effort
     reasoning_effort_changed = pyqtSignal(str)
+    # 审批模式切换信号：用户在前端选择了新的 approval.mode
+    approval_mode_changed = pyqtSignal(str)
     # 导出请求信号：把前端传来的 Markdown 交给后端保存
     export_requested = pyqtSignal(str)
     # 会话控制信号：侧边栏会话列表、新建、恢复、重命名和压缩。
@@ -203,6 +205,11 @@ class BackendBridge(QObject):
     def setReasoningEffort(self, effort: str) -> None:
         """用户在前端选择推理强度。"""
         self.reasoning_effort_changed.emit(effort)
+
+    @pyqtSlot(str)
+    def setApprovalMode(self, mode: str) -> None:
+        """用户在前端选择工具审批模式。"""
+        self.approval_mode_changed.emit(mode)
 
     # ── 取消事件管理 ──────────────────────────────────────────
 

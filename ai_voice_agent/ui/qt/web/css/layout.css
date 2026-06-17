@@ -883,6 +883,52 @@ html, body {
   position: relative;
 }
 
+/* 空状态：未开始对话时，输入框垂直居中 */
+#main.empty-state {
+  justify-content: center;
+  align-items: center;
+}
+
+#main.empty-state #title-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+#main.empty-state #chat-area {
+  display: none;
+}
+
+#main.empty-state #status-bar {
+  display: none;
+}
+
+#main.empty-state #input-area {
+  background: transparent;
+  padding-bottom: var(--space-3xl);
+  width: 100%;
+  max-width: 900px;
+}
+
+#main.empty-state .input-card {
+  min-height: 160px;
+  padding: var(--space-xl);
+}
+
+#main.empty-state #chat-input {
+  min-height: 80px;
+  font-size: 20px;
+}
+
+#main.empty-state .workspace-info {
+  display: none !important;
+}
+
+#main.empty-state .input-attachments {
+  justify-content: flex-start;
+}
+
 /* ── 删除确认弹窗 ──────────────────────────────── */
 .confirm-modal {
   position: fixed;

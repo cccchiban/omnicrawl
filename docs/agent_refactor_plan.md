@@ -171,3 +171,35 @@
 5. 运行 `python -m compileall ai_voice_agent`。
 
 如果第一步通过，再继续审批规则和工具注册拆分。这样每一步都能独立提交，也方便出现问题时精确回退。
+
+## 8. 执行记录
+
+### 2026-06-17：阶段 6 部分完成
+
+| 项目 | 结果 |
+|------|------|
+| 目标 | 先拆出 LLM 协议层的请求、重试、流式 delta 解析、tool call 聚合、工具 schema 转换和 prompt cache key 逻辑。 |
+| 新文件 | `ai_voice_agent/agent_llm_protocol.py` |
+| 保留兼容 | `LocalToolAgent` 保留原私有方法入口，内部委托新协议模块，避免影响现有测试和调用方。 |
+| 精简结果 | `ai_voice_agent/agent.py` 从约 1900 行降到约 1657 行。 |
+| 验证 | `python -m compileall ai_voice_agent` 通过；`python -m pytest tests/test_agent_context.py tests/test_llm_config.py tests/test_mcp.py -q` 通过，结果为 60 passed。 |
+| 已知情况 | 全量 `python -m pytest -q` 当前有 3 个 Qt UI 测试失败，失败点落在既有未提交的 UI 文件改动，不属于本阶段 Agent 拆分范围。 |
+
+### 2026-06-17：阶段 7 部分完成
+
+| 项目 | 结果 |
+|------|------|
+| 目标 | 先把会话、项目、提示历史相关的薄包装逻辑迁移到门面模块，保留 `LocalToolAgent` 对外 API 和兼容入口。 |
+| 新文件 | `ai_voice_agent/agent_session_facade.py` |
+| 保留兼容 | `LocalToolAgent` 仍保留 `list_sessions`、`resume_session`、`list_projects`、`_append_session_event` 等原方法，内部委托门面；`object.__new__` 构造的测试对象通过懒加载门面兼容。 |
+| 精简结果 | 当前 `ai_voice_agent/agent.py` 约 1736 行；新增门面约 395 行，后续可继续收紧状态边界。 |
+| 验证 | `python -m compileall ai_voice_agent` 通过；`python -m pytest tests/test_agent_context.py tests/test_session_store.py tests/test_project_store.py -q` 通过，结果为 42 passed；`python -m pytest tests/test_mcp.py tests/test_llm_config.py -q` 通过，结果为 32 passed。 |
+| 已知情况 | 按阶段 7 建议运行含 Qt 的组合测试时，`tests/test_qt_ui.py` 仍有 3 个既有 UI 静态断言失败，失败点在未纳入本次拆分的 UI 文件内容。 |
+
+### 2026-06-18：提交前审查
+
+| 项目 | 结果 |
+|------|------|
+| 目标 | 合并审查 Agent 拆分与 Qt 前端未提交改动，补齐提交前发现的前后端联动缺口。 |
+| 修复 | Qt 审批模式下拉补齐 `setApprovalMode` 桥接和 `/approval:<mode>` 入队；项目工具栏下拉改为复用项目侧栏弹窗，避免误触创建默认项目。 |
+| 验证 | `python -m pytest` 通过，结果为 189 passed；`python -m pytest tests/test_qt_ui.py` 通过，结果为 35 passed；`python -m py_compile ...` 通过；`node --check` 校验 `app.js`、`input.js`、`messages.js` 通过；`git diff --check` 通过。 |

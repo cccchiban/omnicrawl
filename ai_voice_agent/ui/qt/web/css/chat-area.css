@@ -27,8 +27,8 @@
   padding: 0 var(--space-lg);
 }
 
-/* 空状态：当消息区无任何内容时显示引导文案 */
-#messages:empty::after {
+/* 空状态提示 — 仅在非 empty-state 时显示 */
+#main:not(.empty-state) #messages:empty::after {
   content: "开始与 AI 对话吧";
   display: block;
   text-align: center;
@@ -36,4 +36,8 @@
   font-size: 18px;
   padding: var(--space-3xl) var(--space-lg);
   margin-top: var(--space-3xl);
+}
+
+#main.empty-state #messages:empty::after {
+  display: none;
 }
