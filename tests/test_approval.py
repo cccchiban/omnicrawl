@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ai_voice_agent.agent import LocalToolAgent, ToolDefinition, ToolCall
+from ai_voice_agent.agent_tools import normalize_tool_call
 from ai_voice_agent.approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_MANUAL,
@@ -114,8 +115,7 @@ class ApprovalCommandTest(unittest.TestCase):
         self.assertIn("不是 JSON", reason)
 
     def test_normalize_tool_call_accepts_common_tool_and_argument_aliases(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-        agent._tools = {
+        tools = {
             "read_file": ToolDefinition(
                 name="read_file",
                 description="读取文件。",
@@ -132,16 +132,16 @@ class ApprovalCommandTest(unittest.TestCase):
             ),
         }
 
-        read_call = LocalToolAgent._normalize_tool_call(
-            agent,
+        read_call = normalize_tool_call(
             ToolCall(
                 name="readfile",
                 arguments={"path": "README.md", "startline": 2, "maxlines": 30},
             ),
+            tools,
         )
-        tab_call = LocalToolAgent._normalize_tool_call(
-            agent,
+        tab_call = normalize_tool_call(
             ToolCall(name="bb-browser.browser.tablist", arguments={}),
+            tools,
         )
 
         self.assertEqual(read_call.name, "read_file")

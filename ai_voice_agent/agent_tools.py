@@ -1,11 +1,48 @@
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
 from typing import Any, Callable
 
-from .agent_types import ToolDefinition, ToolResult
+from .agent_types import ToolCall, ToolDefinition, ToolResult
 from .mcp import MCPClientManager, MCPToolMeta
 from .workspace_tools import WorkspaceToolError
 
+
+TOOL_NAME_ALIASES = {
+    "listfiles": "list_files",
+    "readfile": "read_file",
+    "searchtext": "search_text",
+    "replacetext": "replace_text",
+    "writefile": "write_file",
+    "runcommand": "run_command",
+    "bb-browser.browser.tablist": "bb-browser.browser.tab_list",
+    "bb-browser.browser.tabnew": "bb-browser.browser.tab_new",
+    "bb-browser.browser.sitelist": "bb-browser.browser.site_list",
+    "bb-browser.browser.siteinfo": "bb-browser.browser.site_info",
+    "bb-browser.browser.siterun": "bb-browser.browser.site_run",
+    "bb-browser.browser.type": "bb-browser.browser.type_text",
+}
+ARGUMENT_NAME_ALIASES = {
+    "cmd": "command",
+    "caseSensitive": "case_sensitive",
+    "casesensitive": "case_sensitive",
+    "maxLines": "max_lines",
+    "maxlines": "max_lines",
+    "maxResults": "max_results",
+    "maxresults": "max_results",
+    "newText": "new_text",
+    "newtext": "new_text",
+    "oldText": "old_text",
+    "oldtext": "old_text",
+    "startLine": "start_line",
+    "startline": "start_line",
+    "tabId": "tab",
+    "tabid": "tab",
+    "timeoutSeconds": "timeout_seconds",
+    "timeoutseconds": "timeout_seconds",
+}
 
 ToolRunner = Callable[[dict[str, Any]], ToolResult]
 MCPToolRunner = Callable[[MCPToolMeta, dict[str, Any]], ToolResult]
@@ -195,3 +232,264 @@ def workspace_tool_result(
         return ToolResult(ok=True, output=operation(arguments))
     except WorkspaceToolError as exc:
         return ToolResult(ok=False, output=str(exc))
+
+
+def workspace_command_tool_result(
+    operation: Callable[[dict[str, Any]], Any],
+    arguments: dict[str, Any],
+) -> ToolResult:
+    """适配 WorkspaceTools.run_command，保留命令结果自带的 ok/output 语义。"""
+
+    try:
+        result = operation(arguments)
+    except WorkspaceToolError as exc:
+        return ToolResult(ok=False, output=str(exc))
+    return ToolResult(ok=result.ok, output=result.output)
+
+
+def normalize_tool_call(
+    tool_call: ToolCall,
+    tools: dict[str, ToolDefinition],
+    *,
+    tool_name_aliases: dict[str, str] | None = None,
+    argument_name_aliases: dict[str, str] | None = None,
+) -> ToolCall:
+    """在执行前归一化模型常见的工具名和参数名误写。"""
+
+    aliases = tool_name_aliases or TOOL_NAME_ALIASES
+    argument_aliases = argument_name_aliases or ARGUMENT_NAME_ALIASES
+    raw_name = re.sub(r"\s+", "", tool_call.name.strip())
+    if raw_name not in tools:
+        resource_fallback = mcp_resource_tool_fallback(raw_name, tools)
+        if resource_fallback is not None:
+            fallback_name, fallback_path = resource_fallback
+            arguments = dict(tool_call.arguments)
+            arguments.setdefault("path", fallback_path)
+            return ToolCall(
+                name=fallback_name,
+                arguments=normalize_tool_arguments(
+                    fallback_name,
+                    arguments,
+                    tools,
+                    argument_name_aliases=argument_aliases,
+                ),
+                id=tool_call.id,
+                function_name=tool_call.function_name,
+            )
+
+    name = normalize_tool_name(raw_name, tools, tool_name_aliases=aliases)
+    return ToolCall(
+        name=name,
+        arguments=normalize_tool_arguments(
+            name,
+            tool_call.arguments,
+            tools,
+            argument_name_aliases=argument_aliases,
+        ),
+        id=tool_call.id,
+        function_name=tool_call.function_name,
+    )
+
+
+def normalize_tool_name(
+    raw_name: str,
+    tools: dict[str, ToolDefinition],
+    *,
+    tool_name_aliases: dict[str, str] | None = None,
+) -> str:
+    """把 readfile/tablist 这类常见误写映射为当前 Host 真实工具名。"""
+
+    name = re.sub(r"\s+", "", raw_name.strip())
+    if name in tools:
+        return name
+
+    aliases = tool_name_aliases or TOOL_NAME_ALIASES
+    alias = aliases.get(name) or aliases.get(normalize_identifier(name))
+    if alias:
+        return alias
+
+    if tools:
+        normalized_name = normalize_identifier(name)
+        matches = [
+            tool_name
+            for tool_name in tools
+            if normalize_identifier(tool_name) == normalized_name
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return name
+
+
+def mcp_resource_tool_fallback(
+    requested_name: str,
+    tools: dict[str, ToolDefinition],
+) -> tuple[str, str] | None:
+    """兼容模型把项目文档 Resource 工具名写成未注册具体 URI 的情况。"""
+
+    prefix = "mcp_read_resource__"
+    if not requested_name.startswith(prefix):
+        return None
+
+    logical_uri = requested_name[len(prefix) :]
+    server_name, separator, resource_uri = logical_uri.partition(":")
+    if not separator or not server_name or not resource_uri.startswith("project://"):
+        return None
+
+    relative_path = resource_uri[len("project://") :].strip().lstrip("/\\")
+    if not relative_path or "\\" in relative_path:
+        return None
+    path = Path(relative_path)
+    if path.is_absolute() or ".." in path.parts or path.suffix.lower() != ".md":
+        return None
+
+    fallback_name = f"{server_name}.workspace.read_file"
+    if fallback_name not in tools:
+        return None
+    return fallback_name, relative_path
+
+
+def normalize_tool_arguments(
+    tool_name: str,
+    arguments: dict[str, Any],
+    tools: dict[str, ToolDefinition],
+    *,
+    argument_name_aliases: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """按工具 schema 归一化参数名，兼容 startline/maxlines/tabId 等写法。"""
+
+    aliases = argument_name_aliases or ARGUMENT_NAME_ALIASES
+    canonical_keys = tool_argument_keys(tool_name, tools)
+    normalized_to_key = {
+        normalize_identifier(key): key
+        for key in canonical_keys
+    }
+    normalized: dict[str, Any] = {}
+    for key, value in arguments.items():
+        canonical_key = key
+        alias_key = aliases.get(key) or aliases.get(normalize_identifier(key))
+        if alias_key in canonical_keys:
+            canonical_key = alias_key
+        else:
+            canonical_key = normalized_to_key.get(normalize_identifier(key), key)
+        normalized[canonical_key] = value
+    return normalized
+
+
+def tool_argument_keys(tool_name: str, tools: dict[str, ToolDefinition]) -> set[str]:
+    tool = tools.get(tool_name)
+    if tool is None:
+        return set()
+
+    try:
+        schema = json.loads(tool.argument_schema)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(schema, dict):
+        return set()
+
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        return {key for key in properties if isinstance(key, str)}
+    return {key for key in schema if isinstance(key, str)}
+
+
+def normalize_identifier(value: str) -> str:
+    return re.sub(r"[\s_-]+", "", value).lower()
+
+
+def mcp_tool_result(
+    mcp_manager: MCPClientManager,
+    meta: MCPToolMeta,
+    arguments: dict[str, Any],
+) -> ToolResult:
+    """执行 MCP Tool，并保持 Agent 原有的文本化输出格式。"""
+
+    result = mcp_manager.call_tool(meta.logical_name, arguments)
+    output_parts = [
+        f"MCP Tool：{result.server_name}.{result.tool_name}",
+        f"审计 ID：{result.audit_id}",
+        f"耗时：{result.duration_ms} ms",
+    ]
+    if result.error_code:
+        output_parts.append(f"错误码：{result.error_code}")
+    if result.retryable:
+        output_parts.append("可重试：是")
+    output_parts.append(f"输出：\n{result.output}")
+    return ToolResult(ok=result.ok, output="\n".join(output_parts))
+
+
+def mcp_resource_result(mcp_manager: MCPClientManager, logical_uri: str) -> ToolResult:
+    """读取 MCP Resource，并保持 Agent 原有的文本化输出格式。"""
+
+    result = mcp_manager.read_resource(logical_uri)
+    output_parts = [
+        f"MCP Resource：{result.server_name}:{result.uri}",
+        f"耗时：{result.duration_ms} ms",
+    ]
+    if result.error_code:
+        output_parts.append(f"错误码：{result.error_code}")
+    if result.retryable:
+        output_parts.append("可重试：是")
+    output_parts.append(f"输出：\n{result.output}")
+    return ToolResult(ok=result.ok, output="\n".join(output_parts))
+
+
+def mcp_prompt_result(
+    mcp_manager: MCPClientManager,
+    logical_name: str,
+    arguments: dict[str, Any],
+) -> ToolResult:
+    """获取 MCP Prompt，并保持 Agent 原有的参数校验和输出格式。"""
+
+    raw_arguments = arguments.get("arguments", {})
+    if not isinstance(raw_arguments, dict):
+        return ToolResult(ok=False, output="arguments 必须是 JSON 对象。")
+
+    result = mcp_manager.get_prompt(logical_name, raw_arguments)
+    output_parts = [
+        f"MCP Prompt：{result.server_name}.{result.prompt_name}",
+        f"耗时：{result.duration_ms} ms",
+    ]
+    if result.error_code:
+        output_parts.append(f"错误码：{result.error_code}")
+    if result.retryable:
+        output_parts.append("可重试：是")
+    output_parts.append(f"输出：\n{result.output}")
+    return ToolResult(ok=result.ok, output="\n".join(output_parts))
+
+
+def read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:
+    value = arguments.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def read_optional_string_list(arguments: dict[str, Any], key: str) -> list[str] | None:
+    value = arguments.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    return read_required_string_list(arguments, key)
+
+
+def read_limited_int(
+    arguments: dict[str, Any],
+    key: str,
+    *,
+    default: int,
+    maximum: int,
+) -> int:
+    value = arguments.get(key, default)
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(maximum, parsed))
+
+
+def json_tool_result(data: Any) -> ToolResult:
+    return ToolResult(ok=True, output=json.dumps(data, ensure_ascii=False, indent=2))

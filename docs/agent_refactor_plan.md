@@ -203,3 +203,25 @@
 | 目标 | 合并审查 Agent 拆分与 Qt 前端未提交改动，补齐提交前发现的前后端联动缺口。 |
 | 修复 | Qt 审批模式下拉补齐 `setApprovalMode` 桥接和 `/approval:<mode>` 入队；项目工具栏下拉改为复用项目侧栏弹窗，避免误触创建默认项目。 |
 | 验证 | `python -m pytest` 通过，结果为 189 passed；`python -m pytest tests/test_qt_ui.py` 通过，结果为 35 passed；`python -m py_compile ...` 通过；`node --check` 校验 `app.js`、`input.js`、`messages.js` 通过；`git diff --check` 通过。 |
+
+### 2026-06-18：阶段 8 工具边界收尾
+
+| 项目 | 结果 |
+|------|------|
+| 目标 | 继续收紧 `LocalToolAgent` 中已经迁移到工具边界的兼容逻辑，减少主类内的工具格式化、归一化和记忆工具参数处理细节。 |
+| 新文件 | `ai_voice_agent/agent_memory_tools.py` |
+| 调整 | 将 MCP Tool/Resource/Prompt 结果格式化、工具名与参数别名归一化、工具参数读取辅助下沉到 `ai_voice_agent/agent_tools.py`；将 `memory_search/read/expand_related/write` 的参数校验、异常转换和 JSON 输出下沉到 `agent_memory_tools.py`；`LocalToolAgent` 保留原私有方法入口并委托，兼容现有测试和外部调用。 |
+| 精简结果 | `ai_voice_agent/agent.py` 从本轮继续前约 1583 行降到约 1473 行；其中工具边界与记忆工具逻辑已迁出，当前 `agent_tools.py` 约 495 行，新增 `agent_memory_tools.py` 约 122 行。 |
+| 验证 | `python -m compileall ai_voice_agent` 通过；`python -m pytest tests/test_agent_memory_tools.py tests/test_agent_context.py tests/test_mcp.py tests/test_approval.py -q` 通过，结果为 70 passed；新增 `tests/test_agent_memory_tools.py` 覆盖迁出的记忆工具校验和参数传递。 |
+| 已知情况 | 本轮只移动工具边界和记忆工具适配逻辑，不改变工具返回文案、审批流程、会话写入或 `run_stream` 主循环。 |
+
+### 2026-06-18：阶段 8 兼容入口收尾
+
+| 项目 | 结果 |
+|------|------|
+| 目标 | 删除 `LocalToolAgent` 内已无必要保留的纯委托私有入口，让对应测试直接覆盖已迁出的模块函数。 |
+| 调整 | `run_stream` 直接使用 `agent_tools.normalize_tool_call`；LLM 协议函数名映射直接使用 `agent_llm_protocol` 模块函数；系统提示词直接使用 `agent_environment.runtime_environment_context`；移除历史压缩、工具归一化、LLM 协议、环境检测相关的主类纯委托壳。 |
+| 测试 | 将历史窗口恢复、tool call 消息构造、工具名/参数归一化、MCP Resource fallback、运行环境注入等断言迁移到 `agent_history`、`agent_llm_protocol`、`agent_tools`、`agent_environment` 模块级函数。 |
+| 精简结果 | 当前 `ai_voice_agent/agent.py` 约 1062 行，`agent_tools.py` 约 435 行，`agent_memory_tools.py` 约 94 行；`LocalToolAgent` 更集中在配置、运行循环、审批和会话编排。 |
+| 验证 | `python -m compileall ai_voice_agent` 通过；`python -m pytest tests/test_agent_context.py tests/test_mcp.py tests/test_approval.py tests/test_agent_memory_tools.py -q` 通过，结果为 70 passed；`python -m pytest -q` 通过，结果为 194 passed；`git diff --check` 通过。 |
+| 已知情况 | 本轮删除的是私有兼容壳，不改变公开 API、工具输出文案、会话事件结构或 `run_stream` 主流程。 |

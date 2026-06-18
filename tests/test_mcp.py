@@ -8,6 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ai_voice_agent.agent import LocalToolAgent, ToolCall, ToolDefinition
+from ai_voice_agent.agent_environment import runtime_environment_context
+from ai_voice_agent.agent_tools import normalize_tool_call
 from ai_voice_agent.mcp.client import MCPClientManager, _resolve_stdio_command
 from ai_voice_agent.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
 from ai_voice_agent.mcp.bb_browser_server import BBBrowserMCPServer
@@ -295,8 +297,7 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertFalse(tools["trusted.echo"].requires_confirmation)
 
     def test_mcp_resource_tool_name_falls_back_to_workspace_read_file(self) -> None:
-        agent = object.__new__(LocalToolAgent)
-        agent._tools = {
+        tools = {
             "local_project.workspace.read_file": ToolDefinition(
                 name="local_project.workspace.read_file",
                 description="读取文件。",
@@ -309,12 +310,12 @@ class MCPAgentCommandTest(unittest.TestCase):
             )
         }
 
-        call = LocalToolAgent._normalize_tool_call(
-            agent,
+        call = normalize_tool_call(
             ToolCall(
                 name="mcp_read_resource__local_project:project://docs/SKILL_INSTALLATION.md",
                 arguments={},
             ),
+            tools,
         )
 
         self.assertEqual(call.name, "local_project.workspace.read_file")
@@ -356,14 +357,13 @@ class MCPAgentCommandTest(unittest.TestCase):
         agent._mcp_manager = manager
         agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
 
-        with (
-            patch("ai_voice_agent.agent._detect_agent_window_hint", return_value="Shell=CMD"),
-            patch(
-                "ai_voice_agent.agent._detect_command_shell_hint",
-                return_value="cmd.exe（默认按 CMD 语法解析）",
-            ),
-            patch("ai_voice_agent.agent._detect_terminal_hint", return_value="WT_SESSION"),
-        ):
+        runtime_context = runtime_environment_context(
+            agent.workspace_root,
+            window_hint="Shell=CMD",
+            command_shell_hint="cmd.exe（默认按 CMD 语法解析）",
+            terminal_hint="WT_SESSION",
+        )
+        with patch("ai_voice_agent.agent.runtime_environment_context", return_value=runtime_context):
             prompt = LocalToolAgent._system_prompt(agent)
 
         self.assertTrue(prompt.startswith("运行环境："))

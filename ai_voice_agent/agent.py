@@ -17,40 +17,31 @@ from .agent_approval import (
     text_has_delete_intent,
     tool_accepts_shell_command,
 )
-from .agent_tools import build_agent_tools, build_mcp_tools, workspace_tool_result
-from .agent_environment import (
-    detect_agent_window_hint,
-    detect_command_shell_hint,
-    detect_terminal_hint,
-    runtime_environment_context,
-    windows_process_name_chain,
-    windows_shell_label,
-    windows_terminal_label,
+from .agent_tools import (
+    build_agent_tools,
+    build_mcp_tools,
+    mcp_prompt_result,
+    mcp_resource_result,
+    mcp_tool_result,
+    normalize_tool_call,
+    workspace_command_tool_result,
+    workspace_tool_result,
 )
-from .agent_history import (
-    build_compact_summary,
-    compact_history,
-    compact_snippet,
-    extract_existing_compact_summary,
-    format_compact_items,
-    restore_history_window,
-)
+from .agent_environment import runtime_environment_context
+from .agent_history import compact_history
 from .agent_llm_protocol import (
     AgentLLMProtocol,
     AgentProtocolError,
-    accumulate_tool_call_deltas,
-    assistant_tool_call_message,
     build_extra_body,
-    build_prompt_cache_key,
-    build_tool_calls_from_deltas,
     chat_completion_tools,
-    extract_stream_delta,
     function_name_for_tool,
-    infer_tool_property_schema,
-    parse_tool_arguments,
-    read_attr_or_key,
     tool_name_from_function_name,
-    tool_parameters_schema,
+)
+from .agent_memory_tools import (
+    memory_expand_related_result,
+    memory_read_result,
+    memory_search_result,
+    memory_write_result,
 )
 from .agent_session_facade import AgentSessionFacade
 from .agent_types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
@@ -70,9 +61,6 @@ from .llm import (
 from .memory import (
     MemoryStore,
     MemoryStoreError,
-    MemoryWriteRequest,
-    record_to_dict,
-    search_result_to_dict,
 )
 from .mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
 from .project import ProjectEntry, ProjectStore
@@ -91,7 +79,7 @@ from .temp_workspace import (
     AgentTempWorkspaceError,
     load_agent_temp_workspace_config,
 )
-from .workspace_tools import WorkspaceToolError, WorkspaceTools
+from .workspace_tools import WorkspaceTools
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
@@ -108,38 +96,6 @@ _CONTINUE_LAST_TASK_TEXTS = {
     "retry",
     "continue",
 }
-def _runtime_environment_context(workspace_root: Path, workspace_detection_summary: str = "") -> str:
-    return runtime_environment_context(
-        workspace_root,
-        workspace_detection_summary,
-        window_hint=_detect_agent_window_hint(),
-        command_shell_hint=_detect_command_shell_hint(),
-        terminal_hint=_detect_terminal_hint(),
-    )
-
-
-def _detect_command_shell_hint() -> str:
-    return detect_command_shell_hint()
-
-
-def _detect_agent_window_hint() -> str:
-    return detect_agent_window_hint()
-
-
-def _windows_shell_label(lowered_process_chain: list[str]) -> str:
-    return windows_shell_label(lowered_process_chain)
-
-
-def _windows_terminal_label(lowered_process_chain: list[str]) -> str:
-    return windows_terminal_label(lowered_process_chain)
-
-
-def _windows_process_name_chain(limit: int = 12) -> list[str]:
-    return windows_process_name_chain(limit)
-
-
-def _detect_terminal_hint() -> str:
-    return detect_terminal_hint()
 
 
 class AgentError(RuntimeError):
@@ -255,40 +211,6 @@ class LocalToolAgent:
     tools 参数声明工具，模型通过 tool_calls 返回结构化调用，Host 执行后
     以 role=tool 消息回传结果。
     """
-
-    _TOOL_NAME_ALIASES = {
-        "listfiles": "list_files",
-        "readfile": "read_file",
-        "searchtext": "search_text",
-        "replacetext": "replace_text",
-        "writefile": "write_file",
-        "runcommand": "run_command",
-        "bb-browser.browser.tablist": "bb-browser.browser.tab_list",
-        "bb-browser.browser.tabnew": "bb-browser.browser.tab_new",
-        "bb-browser.browser.sitelist": "bb-browser.browser.site_list",
-        "bb-browser.browser.siteinfo": "bb-browser.browser.site_info",
-        "bb-browser.browser.siterun": "bb-browser.browser.site_run",
-        "bb-browser.browser.type": "bb-browser.browser.type_text",
-    }
-    _ARGUMENT_NAME_ALIASES = {
-        "cmd": "command",
-        "caseSensitive": "case_sensitive",
-        "casesensitive": "case_sensitive",
-        "maxLines": "max_lines",
-        "maxlines": "max_lines",
-        "maxResults": "max_results",
-        "maxresults": "max_results",
-        "newText": "new_text",
-        "newtext": "new_text",
-        "oldText": "old_text",
-        "oldtext": "old_text",
-        "startLine": "start_line",
-        "startline": "start_line",
-        "tabId": "tab",
-        "tabid": "tab",
-        "timeoutSeconds": "timeout_seconds",
-        "timeoutseconds": "timeout_seconds",
-    }
 
     def __init__(
         self,
@@ -724,7 +646,7 @@ class LocalToolAgent:
 
                 working_messages.append(reply.message)
                 for raw_tool_call in reply.tool_calls:
-                    tool_call = self._normalize_tool_call(raw_tool_call)
+                    tool_call = normalize_tool_call(raw_tool_call, self._tools)
                     self._append_session_event(
                         "tool_call_requested",
                         {
@@ -918,224 +840,21 @@ class LocalToolAgent:
             system_prompt_provider=self._system_prompt,
             tools_provider=self._chat_completion_tools,
             extra_body_provider=self._build_extra_body,
-            tool_name_from_function_name=self._tool_name_from_function_name,
-            function_name_for_tool=self._function_name_for_tool,
-        )
-
-    def _build_prompt_cache_key(
-        self,
-        system_prompt: str,
-        messages: list[dict[str, Any]],
-    ) -> str:
-        return build_prompt_cache_key(
-            system_prompt,
-            messages,
-            model=self.config.llm.model,
-            workspace_root=self.workspace_root,
+            tool_name_from_function_name=lambda function_name: tool_name_from_function_name(
+                function_name,
+                getattr(self, "_tools", {}),
+            ),
+            function_name_for_tool=function_name_for_tool,
         )
 
     def _build_extra_body(self) -> dict[str, Any]:
         return build_extra_body(self.config.llm)
 
-    @staticmethod
-    def _parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
-        return parse_tool_arguments(raw_arguments)
-
-    @staticmethod
-    def _read_attr_or_key(value: Any, key: str) -> Any:
-        return read_attr_or_key(value, key)
-
-    @staticmethod
-    def _extract_stream_delta(event: Any) -> Any | None:
-        return extract_stream_delta(event)
-
-    @classmethod
-    def _accumulate_tool_call_deltas(
-        cls,
-        tc_deltas: list[Any],
-        buffers: dict[int, dict[str, Any]],
-    ) -> None:
-        accumulate_tool_call_deltas(tc_deltas, buffers)
-
-    def _build_tool_calls_from_deltas(
-        self,
-        buffers: dict[int, dict[str, Any]],
-    ) -> list[ToolCall]:
-        return build_tool_calls_from_deltas(
-            buffers,
-            tool_name_from_function_name=self._tool_name_from_function_name,
-        )
-
-    def _assistant_tool_call_message(
-        self,
-        raw_message: Any,
-        content: str,
-        tool_calls: list[ToolCall],
-        reasoning: str,
-    ) -> dict[str, Any]:
-        return assistant_tool_call_message(
-            raw_message,
-            content,
-            tool_calls,
-            reasoning,
-            function_name_for_tool=self._function_name_for_tool,
-        )
-
-    def _normalize_tool_call(self, tool_call: ToolCall) -> ToolCall:
-        """在执行前归一化模型常见的工具名和参数名误写。"""
-
-        tools = getattr(self, "_tools", {})
-        raw_name = re.sub(r"\s+", "", tool_call.name.strip())
-        if isinstance(tools, dict) and raw_name not in tools:
-            resource_fallback = self._mcp_resource_tool_fallback(raw_name, tools)
-            if resource_fallback is not None:
-                fallback_name, fallback_path = resource_fallback
-                arguments = dict(tool_call.arguments)
-                arguments.setdefault("path", fallback_path)
-                return ToolCall(
-                    name=fallback_name,
-                    arguments=self._normalize_tool_arguments(fallback_name, arguments),
-                    id=tool_call.id,
-                    function_name=tool_call.function_name,
-                )
-
-        name = self._normalize_tool_name(tool_call.name)
-        return ToolCall(
-            name=name,
-            arguments=self._normalize_tool_arguments(name, tool_call.arguments),
-            id=tool_call.id,
-            function_name=tool_call.function_name,
-        )
-
-    def _normalize_tool_name(self, raw_name: str) -> str:
-        """把 readfile/tablist 这类常见误写映射为当前 Host 真实工具名。"""
-
-        name = re.sub(r"\s+", "", raw_name.strip())
-        tools = getattr(self, "_tools", {})
-        if isinstance(tools, dict) and name in tools:
-            return name
-
-        alias = self._TOOL_NAME_ALIASES.get(name) or self._TOOL_NAME_ALIASES.get(
-            self._normalize_identifier(name)
-        )
-        if alias:
-            return alias
-
-        if isinstance(tools, dict) and tools:
-            normalized_name = self._normalize_identifier(name)
-            matches = [
-                tool_name
-                for tool_name in tools
-                if self._normalize_identifier(tool_name) == normalized_name
-            ]
-            if len(matches) == 1:
-                return matches[0]
-        return name
-
-    def _mcp_resource_tool_fallback(
-        self,
-        requested_name: str,
-        tools: dict[str, ToolDefinition],
-    ) -> tuple[str, str] | None:
-        """兼容模型把项目文档 Resource 工具名写成未注册具体 URI 的情况。
-
-        Local MCP Server 会把实际发现到的 Resource 生成
-        `mcp_read_resource__{server}:{uri}` 工具。模型有时会根据文档里的命名规则
-        拼出一个当前未注册的项目文档 URI；如果它仍指向工作区内的 Markdown 文档，
-        就退回到对应 Server 的 `workspace.read_file`，避免本可读取的文档因工具名
-        精确匹配失败而中断。
-        """
-
-        prefix = "mcp_read_resource__"
-        if not requested_name.startswith(prefix):
-            return None
-
-        logical_uri = requested_name[len(prefix) :]
-        server_name, separator, resource_uri = logical_uri.partition(":")
-        if not separator or not server_name or not resource_uri.startswith("project://"):
-            return None
-
-        relative_path = resource_uri[len("project://") :].strip().lstrip("/\\")
-        if not relative_path or "\\" in relative_path:
-            return None
-        path = Path(relative_path)
-        if path.is_absolute() or ".." in path.parts or path.suffix.lower() != ".md":
-            return None
-
-        fallback_name = f"{server_name}.workspace.read_file"
-        if fallback_name not in tools:
-            return None
-        return fallback_name, relative_path
-
-    def _normalize_tool_arguments(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        """按工具 schema 归一化参数名，兼容 startline/maxlines/tabId 等写法。"""
-
-        canonical_keys = self._tool_argument_keys(tool_name)
-        normalized_to_key = {
-            self._normalize_identifier(key): key
-            for key in canonical_keys
-        }
-        normalized: dict[str, Any] = {}
-        for key, value in arguments.items():
-            canonical_key = key
-            alias_key = self._ARGUMENT_NAME_ALIASES.get(key) or self._ARGUMENT_NAME_ALIASES.get(
-                self._normalize_identifier(key)
-            )
-            if alias_key in canonical_keys:
-                canonical_key = alias_key
-            else:
-                canonical_key = normalized_to_key.get(self._normalize_identifier(key), key)
-            normalized[canonical_key] = value
-        return normalized
-
-    def _tool_argument_keys(self, tool_name: str) -> set[str]:
-        tools = getattr(self, "_tools", {})
-        tool = tools.get(tool_name) if isinstance(tools, dict) else None
-        if tool is None:
-            return set()
-
-        try:
-            schema = json.loads(tool.argument_schema)
-        except json.JSONDecodeError:
-            return set()
-        if not isinstance(schema, dict):
-            return set()
-
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            return {key for key in properties if isinstance(key, str)}
-        return {key for key in schema if isinstance(key, str)}
-
-    @staticmethod
-    def _normalize_identifier(value: str) -> str:
-        return re.sub(r"[\s_-]+", "", value).lower()
-
     def _chat_completion_tools(self) -> list[dict[str, Any]]:
         return chat_completion_tools(
             self._tools.values(),
-            function_name_for_tool=self._function_name_for_tool,
+            function_name_for_tool=function_name_for_tool,
         )
-
-    def _function_name_for_tool(self, tool_name: str) -> str:
-        return function_name_for_tool(tool_name)
-
-    def _tool_name_from_function_name(self, function_name: str) -> str:
-        return tool_name_from_function_name(
-            function_name,
-            getattr(self, "_tools", {}),
-            function_name_for_tool_callback=self._function_name_for_tool,
-        )
-
-    def _tool_parameters_schema(self, tool: ToolDefinition) -> dict[str, Any]:
-        return tool_parameters_schema(tool)
-
-    @staticmethod
-    def _infer_tool_property_schema(example: Any) -> dict[str, Any]:
-        return infer_tool_property_schema(example)
 
     def _run_tool(
         self,
@@ -1316,7 +1035,7 @@ class LocalToolAgent:
             "",
         )
         system_prompt = (
-            f"{_runtime_environment_context(self.workspace_root, workspace_detection_summary)}\n\n"
+            f"{runtime_environment_context(self.workspace_root, workspace_detection_summary)}\n\n"
             f"{system_prompt}"
         )
         # 手动调用 /skill:name 时注入 Skill 全文
@@ -1374,156 +1093,28 @@ class LocalToolAgent:
         return workspace_tool_result(self._workspace_toolbox().write_file, arguments)
 
     def _tool_run_command(self, arguments: dict[str, Any]) -> ToolResult:
-        try:
-            result = self._workspace_toolbox().run_command(arguments)
-        except WorkspaceToolError as exc:
-            return ToolResult(ok=False, output=str(exc))
-        return ToolResult(ok=result.ok, output=result.output)
+        return workspace_command_tool_result(self._workspace_toolbox().run_command, arguments)
 
     def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
-        store = self._require_memory_store()
-        query = str(arguments.get("query") or "").strip()
-        reason = str(arguments.get("reason") or "").strip()
-        if not query:
-            return ToolResult(ok=False, output="query 不能为空。")
-        if not reason:
-            return ToolResult(ok=False, output="reason 不能为空。")
-
-        try:
-            results = store.search(
-                query=query,
-                candidate_directories=self._read_optional_string_list(
-                    arguments,
-                    "candidate_directories",
-                ),
-                max_results=self._read_limited_int(arguments, "max_results", default=5, maximum=20),
-            )
-        except MemoryStoreError as exc:
-            return ToolResult(ok=False, output=str(exc))
-
-        return self._json_tool_result([search_result_to_dict(result) for result in results])
+        return memory_search_result(self._require_memory_store(), arguments)
 
     def _tool_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
-        store = self._require_memory_store()
-        memory_ids = self._read_required_string_list(arguments, "memory_ids")
-        if not memory_ids:
-            return ToolResult(ok=False, output="memory_ids 不能为空。")
-
-        try:
-            records = store.read(memory_ids)
-        except MemoryStoreError as exc:
-            return ToolResult(ok=False, output=str(exc))
-
-        return self._json_tool_result([record_to_dict(record) for record in records])
+        return memory_read_result(self._require_memory_store(), arguments)
 
     def _tool_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
-        store = self._require_memory_store()
-        memory_ids = self._read_required_string_list(arguments, "memory_ids")
-        if not memory_ids:
-            return ToolResult(ok=False, output="memory_ids 不能为空。")
-
-        try:
-            results = store.expand_related(
-                memory_ids,
-                max_depth=self._read_limited_int(arguments, "max_depth", default=1, maximum=3),
-                max_results=self._read_limited_int(arguments, "max_results", default=5, maximum=20),
-            )
-        except MemoryStoreError as exc:
-            return ToolResult(ok=False, output=str(exc))
-
-        return self._json_tool_result([search_result_to_dict(result) for result in results])
+        return memory_expand_related_result(self._require_memory_store(), arguments)
 
     def _tool_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
-        store = self._require_memory_store()
-        raw_memories = arguments.get("memories")
-        if not isinstance(raw_memories, list) or not raw_memories:
-            return ToolResult(ok=False, output="memories 必须是非空列表。")
-
-        requests: list[MemoryWriteRequest] = []
-        for index, raw_memory in enumerate(raw_memories, start=1):
-            if not isinstance(raw_memory, dict):
-                return ToolResult(ok=False, output=f"第 {index} 条记忆必须是 JSON 对象。")
-
-            content = str(raw_memory.get("content") or "").strip()
-            if not content:
-                return ToolResult(ok=False, output=f"第 {index} 条记忆 content 不能为空。")
-
-            related = raw_memory.get("related_directories", [])
-            if not isinstance(related, list) or not all(isinstance(item, str) for item in related):
-                return ToolResult(ok=False, output=f"第 {index} 条记忆 related_directories 必须是字符串列表。")
-
-            storage_directory = raw_memory.get("storage_directory")
-            if storage_directory is not None and not isinstance(storage_directory, str):
-                return ToolResult(ok=False, output=f"第 {index} 条记忆 storage_directory 必须是字符串或 null。")
-
-            source_event = raw_memory.get("source_event")
-            if source_event is not None and not isinstance(source_event, str):
-                return ToolResult(ok=False, output=f"第 {index} 条记忆 source_event 必须是字符串或 null。")
-
-            requests.append(
-                MemoryWriteRequest(
-                    content=content,
-                    related_directories=list(related),
-                    storage_directory=storage_directory,
-                    source_event=source_event,
-                )
-            )
-
-        try:
-            records = store.write(requests)
-        except MemoryStoreError as exc:
-            return ToolResult(ok=False, output=str(exc))
-
-        return self._json_tool_result([record_to_dict(record) for record in records])
+        return memory_write_result(self._require_memory_store(), arguments)
 
     def _tool_mcp_call(self, meta: MCPToolMeta, arguments: dict[str, Any]) -> ToolResult:
-        """执行 MCP Tool，并把 MCP 结构化结果压平为现有 ToolResult。"""
-
-        result = self._mcp_manager.call_tool(meta.logical_name, arguments)
-        output_parts = [
-            f"MCP Tool：{result.server_name}.{result.tool_name}",
-            f"审计 ID：{result.audit_id}",
-            f"耗时：{result.duration_ms} ms",
-        ]
-        if result.error_code:
-            output_parts.append(f"错误码：{result.error_code}")
-        if result.retryable:
-            output_parts.append("可重试：是")
-        output_parts.append(f"输出：\n{result.output}")
-        return ToolResult(ok=result.ok, output="\n".join(output_parts))
+        return mcp_tool_result(self._mcp_manager, meta, arguments)
 
     def _tool_mcp_read_resource(self, logical_uri: str) -> ToolResult:
-        """读取 MCP Resource，供模型按需拉取只读上下文。"""
-
-        result = self._mcp_manager.read_resource(logical_uri)
-        output_parts = [
-            f"MCP Resource：{result.server_name}:{result.uri}",
-            f"耗时：{result.duration_ms} ms",
-        ]
-        if result.error_code:
-            output_parts.append(f"错误码：{result.error_code}")
-        if result.retryable:
-            output_parts.append("可重试：是")
-        output_parts.append(f"输出：\n{result.output}")
-        return ToolResult(ok=result.ok, output="\n".join(output_parts))
+        return mcp_resource_result(self._mcp_manager, logical_uri)
 
     def _tool_mcp_get_prompt(self, logical_name: str, arguments: dict[str, Any]) -> ToolResult:
-        """获取 MCP Prompt 模板，供模型使用稳定任务提示。"""
-
-        raw_arguments = arguments.get("arguments", {})
-        if not isinstance(raw_arguments, dict):
-            return ToolResult(ok=False, output="arguments 必须是 JSON 对象。")
-        result = self._mcp_manager.get_prompt(logical_name, raw_arguments)
-        output_parts = [
-            f"MCP Prompt：{result.server_name}.{result.prompt_name}",
-            f"耗时：{result.duration_ms} ms",
-        ]
-        if result.error_code:
-            output_parts.append(f"错误码：{result.error_code}")
-        if result.retryable:
-            output_parts.append("可重试：是")
-        output_parts.append(f"输出：\n{result.output}")
-        return ToolResult(ok=result.ok, output="\n".join(output_parts))
+        return mcp_prompt_result(self._mcp_manager, logical_name, arguments)
 
     def _require_memory_store(self) -> MemoryStore:
         if self._memory_store is None:
@@ -1535,43 +1126,6 @@ class LocalToolAgent:
 
     def _require_project_store(self) -> ProjectStore:
         return self._session_facade().require_project_store()
-
-    @staticmethod
-    def _read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:
-        value = arguments.get(key)
-        if not isinstance(value, list):
-            return []
-        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
-
-    @classmethod
-    def _read_optional_string_list(cls, arguments: dict[str, Any], key: str) -> list[str] | None:
-        value = arguments.get(key)
-        if value is None:
-            return None
-        if not isinstance(value, list):
-            return None
-        return cls._read_required_string_list(arguments, key)
-
-    @staticmethod
-    def _read_limited_int(
-        arguments: dict[str, Any],
-        key: str,
-        *,
-        default: int,
-        maximum: int,
-    ) -> int:
-        value = arguments.get(key, default)
-        if isinstance(value, bool):
-            return default
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return default
-        return max(1, min(maximum, parsed))
-
-    @staticmethod
-    def _json_tool_result(data: Any) -> ToolResult:
-        return ToolResult(ok=True, output=json.dumps(data, ensure_ascii=False, indent=2))
 
     def _workspace_toolbox(self) -> WorkspaceTools:
         toolbox = getattr(self, "_workspace_tools", None)
@@ -1667,9 +1221,6 @@ class LocalToolAgent:
         )
         self._compact_history(force=False)
 
-    def _restore_history_window(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
-        return restore_history_window(messages, max_history_turns=self.config.max_history_turns)
-
     def _compact_history(self, *, force: bool = False) -> str:
         """把早期历史压缩成单条摘要消息，避免长会话被硬裁剪。
 
@@ -1697,26 +1248,6 @@ class LocalToolAgent:
         summary_message = {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{result.summary}"}
         self._history = [summary_message, *result.recent_messages]
         return result.summary
-
-    def _build_compact_summary(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        previous_summary: str = "",
-    ) -> str:
-        return build_compact_summary(messages, previous_summary=previous_summary)
-
-    @staticmethod
-    def _extract_existing_compact_summary(messages: list[dict[str, Any]]) -> str:
-        return extract_existing_compact_summary(messages)
-
-    @staticmethod
-    def _format_compact_items(items: list[str]) -> str:
-        return format_compact_items(items)
-
-    @staticmethod
-    def _compact_snippet(content: str) -> str:
-        return compact_snippet(content)
 
     @staticmethod
     def _confirm_in_terminal(tool_name: str, arguments: dict[str, Any]) -> bool:

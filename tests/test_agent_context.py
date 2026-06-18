@@ -16,6 +16,8 @@ from ai_voice_agent.agent import (
     ToolDefinition,
     ToolResult,
 )
+from ai_voice_agent.agent_history import restore_history_window
+from ai_voice_agent.agent_llm_protocol import assistant_tool_call_message, function_name_for_tool
 from ai_voice_agent.project import ProjectStore
 from ai_voice_agent.session import SessionStore
 from ai_voice_agent.slash_commands import build_slash_commands, handle_session_command
@@ -257,7 +259,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                     run=run_tool,
                 )
             }
-            function_name = LocalToolAgent._function_name_for_tool(agent, "run_command")
+            function_name = function_name_for_tool("run_command")
             replies = iter(
                 [
                     AgentModelReply(
@@ -741,7 +743,7 @@ class AgentContextInjectionTest(unittest.TestCase):
             {"role": "assistant", "content": "第三轮回答"},
         ]
 
-        restored = LocalToolAgent._restore_history_window(agent, messages)
+        restored = restore_history_window(messages, max_history_turns=agent.config.max_history_turns)
 
         self.assertEqual(
             restored,
@@ -923,7 +925,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 run=lambda _arguments: ToolResult(ok=True, output="ok"),
             )
         }
-        function_name = LocalToolAgent._function_name_for_tool(agent, "read_file")
+        function_name = function_name_for_tool("read_file")
         tool_call = ToolCall(
             name="read_file",
             arguments={"path": "README.md"},
@@ -931,12 +933,12 @@ class AgentContextInjectionTest(unittest.TestCase):
             function_name=function_name,
         )
 
-        message = LocalToolAgent._assistant_tool_call_message(
-            agent,
+        message = assistant_tool_call_message(
             {},
             "",
             [tool_call],
             "内部推理不应回传。",
+            function_name_for_tool=function_name_for_tool,
         )
 
         self.assertEqual(message["role"], "assistant")
