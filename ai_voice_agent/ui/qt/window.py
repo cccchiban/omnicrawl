@@ -12,7 +12,7 @@ import os
 import queue
 import threading
 
-from PyQt5.QtCore import QUrl, Qt
+from PyQt5.QtCore import QEvent, QPoint, QUrl, Qt
 from PyQt5.QtWidgets import QVBoxLayout, QWidget
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 from PyQt5.QtWebChannel import QWebChannel
@@ -46,8 +46,9 @@ class ChatWindow(QWidget):
         self._bridge.set_export_queue(self._export_queue)
 
         self.setWindowTitle("AI Voice Agent")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.FramelessWindowHint)
         self.setMinimumSize(1100, 700)
-        self.resize(1600, 1080)
+        self.resize(1920, 1018)
 
         self._init_ui()
         self._setup_channel()
@@ -65,6 +66,9 @@ class ChatWindow(QWidget):
         self._web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self._web_view.loadFinished.connect(self._on_load_finished)
         self._bridge.close_requested.connect(self.close)
+        self._bridge.window_minimize_requested.connect(self.showMinimized)
+        self._bridge.window_maximize_requested.connect(self._toggle_maximized)
+        self._bridge.window_drag_requested.connect(self._start_window_drag)
 
         # 传递 page 引用给 bridge
         self._bridge.set_web_page(self._web_page)
@@ -90,8 +94,91 @@ class ChatWindow(QWidget):
         if ok:
             self._bridge.mark_frontend_ready()
             self._connect_frontend_signals_once()
+            self._notify_window_state()
         else:
             print("[WebEngine:ERROR] Qt HTML 前端加载失败")
+
+    def _toggle_maximized(self) -> None:
+        """切换最大化状态，并同步按钮文案/图标给 HTML 标题栏。"""
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        self._notify_window_state()
+
+    def _start_window_drag(self) -> None:
+        """让 HTML 顶栏拖拽表现接近原生窗口标题栏。
+
+        Qt 5.15 的 QWindow.startSystemMove() 会把移动交给系统窗口管理器，
+        比手动按鼠标坐标移动更稳定，也能保留 Windows 的吸附/贴边体验。
+        """
+        handle = self.windowHandle()
+        if handle is not None and hasattr(handle, "startSystemMove"):
+            handle.startSystemMove()
+
+    def _notify_window_state(self) -> None:
+        """告知前端当前是否最大化，用于更新还原/最大化按钮状态。"""
+        self._bridge.call_js("setWindowMaximized", self.isMaximized())
+
+    def changeEvent(self, event) -> None:
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._notify_window_state()
+        super().changeEvent(event)
+
+    def nativeEvent(self, eventType, message):
+        """为无边框窗口补回四周缩放热区，避免去标题栏后丢失基础窗口能力。"""
+        if os.name != "nt":
+            return super().nativeEvent(eventType, message)
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            msg = wintypes.MSG.from_address(int(message))
+        except (ImportError, TypeError, ValueError):
+            return super().nativeEvent(eventType, message)
+
+        WM_NCHITTEST = 0x0084
+        if msg.message != WM_NCHITTEST or self.isMaximized():
+            return super().nativeEvent(eventType, message)
+
+        border = 8
+        x = ctypes.c_short(msg.lParam & 0xFFFF).value
+        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+        pos = self.mapFromGlobal(QPoint(x, y))
+        width = self.width()
+        height = self.height()
+        on_left = 0 <= pos.x() < border
+        on_right = width - border <= pos.x() < width
+        on_top = 0 <= pos.y() < border
+        on_bottom = height - border <= pos.y() < height
+
+        HTLEFT = 10
+        HTRIGHT = 11
+        HTTOP = 12
+        HTTOPLEFT = 13
+        HTTOPRIGHT = 14
+        HTBOTTOM = 15
+        HTBOTTOMLEFT = 16
+        HTBOTTOMRIGHT = 17
+
+        if on_top and on_left:
+            return True, HTTOPLEFT
+        if on_top and on_right:
+            return True, HTTOPRIGHT
+        if on_bottom and on_left:
+            return True, HTBOTTOMLEFT
+        if on_bottom and on_right:
+            return True, HTBOTTOMRIGHT
+        if on_left:
+            return True, HTLEFT
+        if on_right:
+            return True, HTRIGHT
+        if on_top:
+            return True, HTTOP
+        if on_bottom:
+            return True, HTBOTTOM
+        return super().nativeEvent(eventType, message)
 
     def _connect_frontend_signals_once(self) -> None:
         """只连接一次前端控制信号，避免页面 reload 后重复入队命令。"""
@@ -288,6 +375,9 @@ class ChatWindow(QWidget):
     def set_input_placeholder(self, text: str) -> None:
         self._bridge.call_js("setInputPlaceholder", text)
 
+    def update_slash_commands(self, commands: list[dict[str, str]]) -> None:
+        self._bridge.call_js("updateSlashCommands", commands)
+
     def set_speaking(self, active: bool) -> None:
         self._bridge.call_js("setSpeaking", active)
 
@@ -344,6 +434,9 @@ class ChatWindow(QWidget):
 
     def set_current_project(self, project_path: str) -> None:
         self._bridge.call_js("setCurrentProject", project_path)
+
+    def show_html(self, title: str, html: str) -> None:
+        self._bridge.call_js("showHtmlPreview", title, html)
 
     # ── 窗口关闭 ─────────────────────────────────────────────
 

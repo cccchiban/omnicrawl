@@ -2,6 +2,144 @@
    title-bar.css — 顶部操作栏（模型选择 + 操作按钮）
    ═══════════════════════════════════════════════════════════════ */
 
+#app-chrome {
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #1f1f1f;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.app-chrome-left,
+.window-controls {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.app-chrome-left {
+  min-width: 0;
+  gap: 2px;
+  padding-left: 8px;
+}
+
+.app-chrome-drag-space {
+  flex: 1;
+  align-self: stretch;
+  min-width: 24px;
+}
+
+.chrome-icon-btn,
+.chrome-nav-btn,
+.window-control,
+.app-menu-item {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.chrome-icon-btn,
+.chrome-nav-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chrome-icon-btn {
+  color: var(--text-primary);
+}
+
+.chrome-icon-btn svg,
+.chrome-nav-btn svg,
+.window-control svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chrome-icon-btn:hover,
+.chrome-nav-btn:not(:disabled):hover,
+.app-menu-item:hover {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-primary);
+}
+
+.chrome-nav-btn:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.app-menu {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 8px;
+  height: 100%;
+}
+
+.app-menu-item {
+  height: 30px;
+  padding: 0 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 30px;
+  cursor: default;
+}
+
+.window-controls {
+  margin-left: auto;
+}
+
+.window-control {
+  width: 46px;
+  height: 40px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.window-control:hover {
+  background: var(--bg-sidebar-hover);
+  color: var(--text-primary);
+}
+
+.window-control.close:hover {
+  background: var(--accent-red);
+  color: #ffffff;
+}
+
+.window-control .restore-icon,
+.window-control.is-maximized .maximize-icon {
+  display: none;
+}
+
+.window-control.is-maximized .restore-icon {
+  display: block;
+}
+
 #title-bar {
   display: flex;
   align-items: center;
@@ -235,35 +373,3 @@
 }
 
 .model-badge:empty { display: none; }
-
-.title-right {
-  display: flex;
-  align-items: center;
-  gap: var(--space-sm);
-}
-
-/* 导出按钮 */
-.export-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  border: none;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.export-btn:hover {
-  background: var(--bg-sidebar-hover);
-  color: var(--text-primary);
-}
-
-.export-btn svg {
-  width: 20px;
-  height: 20px;
-  fill: currentColor;
-}

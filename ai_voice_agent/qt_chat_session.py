@@ -9,6 +9,7 @@ from .agent import AgentError, LocalToolAgent
 from .project import ProjectEntry
 from .session import COMPACT_SUMMARY_PREFIX, SessionEvent, SessionIndexEntry
 from .slash_commands import (
+    build_slash_command_options,
     format_memory_clean_result,
     format_mcp_status,
     format_skills_list,
@@ -159,6 +160,7 @@ def _session_events_to_ui(events: list[SessionEvent]) -> list[dict[str, object]]
             if isinstance(artifact_path, str) and artifact_path.strip():
                 artifact_hint = f"\n完整输出 artifact：{artifact_path.strip()}"
                 output = f"{output}{artifact_hint}" if isinstance(output, str) else artifact_hint.strip()
+            ui_artifact = payload.get("ui_artifact", {})
             ok = payload.get("ok", False)
             if isinstance(tool, str) and isinstance(output, str):
                 messages.append(
@@ -167,6 +169,7 @@ def _session_events_to_ui(events: list[SessionEvent]) -> list[dict[str, object]]
                         "tool": tool,
                         "ok": bool(ok),
                         "output": output,
+                        "uiArtifact": ui_artifact if isinstance(ui_artifact, dict) else {},
                     }
                 )
     return messages
@@ -483,6 +486,7 @@ def run_qt_chat(
         ui.notice(f"当前会话已导出：{path}")
 
     ui.export_requested.connect(handle_export_request)
+    ui.update_slash_commands(build_slash_command_options(agent))
     refresh_session_list()
     refresh_project_list()
 
@@ -496,6 +500,7 @@ def run_qt_chat(
                 pending_user_text = None
             else:
                 # 启用输入框，等待用户输入
+                ui.update_slash_commands(build_slash_command_options(agent))
                 ui.set_input_enabled(True)
                 ui.set_input_placeholder("输入消息，Enter 发送 · 退出词结束对话")
                 user_text = None
@@ -596,6 +601,11 @@ def run_qt_chat(
         def handle_tool_result(_tool_call, result) -> None:
             raise_if_stopped()
             speech_player.flush_display()
+            if result.ui_artifact.get("type") == "html":
+                ui.show_html(
+                    str(result.ui_artifact.get("title") or "HTML 预览"),
+                    str(result.ui_artifact.get("html") or ""),
+                )
             ui.print_tool_result_record(
                 result.ok,
                 result.output,

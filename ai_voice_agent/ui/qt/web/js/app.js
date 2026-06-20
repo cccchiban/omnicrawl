@@ -100,7 +100,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // 3. 侧边栏折叠
   initSidebarToggle();
 
-  // 4. 停止生成按钮
+  // 4. 无边框窗口顶部栏
+  initWindowChrome();
+
+  // 5. 右侧 HTML 显示区
+  if (window.HtmlPreview) {
+    HtmlPreview.init();
+  }
+
+  // 6. 停止生成按钮
   const stopBtn = document.getElementById('stop-btn');
   if (stopBtn) {
     stopBtn.addEventListener('click', () => {
@@ -110,13 +118,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 4. 导出对话按钮
-  const exportBtn = document.getElementById('export-btn');
-  if (exportBtn) {
-    exportBtn.addEventListener('click', () => {
-      exportChat();
-    });
-  }
   const navExport = document.getElementById('nav-export');
   if (navExport) {
     navExport.addEventListener('click', (event) => {
@@ -125,7 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // 5. QWebChannel 连接成功前禁用输入，避免消息发送到尚未就绪的 bridge。
+  // 7. QWebChannel 连接成功前禁用输入，避免消息发送到尚未就绪的 bridge。
   Input.setBridgeReady(false);
   window.addEventListener('bridge-ready', () => {
     Input.setBridgeReady(true);
@@ -137,12 +138,76 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // 6. 模型选择器 — 下拉菜单交互
+  // 8. 模型选择器 — 下拉菜单交互
   initModelSelector();
   initSessionSidebar();
+  if (window.SessionSearch) {
+    SessionSearch.init();
+  }
 
   console.log('[app] AI Voice Agent 前端已就绪');
 });
+
+function initWindowChrome() {
+  const chrome = document.getElementById('app-chrome');
+  const minimizeBtn = document.getElementById('window-minimize-btn');
+  const maximizeBtn = document.getElementById('window-maximize-btn');
+  const closeBtn = document.getElementById('window-close-btn');
+  if (!chrome) return;
+
+  chrome.addEventListener('mousedown', (event) => {
+    if (
+      event.button !== 0 ||
+      event.target.closest('[data-no-window-drag]') ||
+      event.target.closest('button, a, input, textarea, select')
+    ) {
+      return;
+    }
+    if (window.bridge && window.bridge.onWindowDrag) {
+      window.bridge.onWindowDrag();
+    }
+  });
+
+  chrome.addEventListener('dblclick', (event) => {
+    if (event.target.closest('[data-no-window-drag]')) return;
+    if (window.bridge && window.bridge.onWindowMaximize) {
+      window.bridge.onWindowMaximize();
+    }
+  });
+
+  if (minimizeBtn) {
+    minimizeBtn.addEventListener('click', () => {
+      if (window.bridge && window.bridge.onWindowMinimize) {
+        window.bridge.onWindowMinimize();
+      }
+    });
+  }
+
+  if (maximizeBtn) {
+    maximizeBtn.addEventListener('click', () => {
+      if (window.bridge && window.bridge.onWindowMaximize) {
+        window.bridge.onWindowMaximize();
+      }
+    });
+  }
+
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      if (window.bridge && window.bridge.onWindowClose) {
+        window.bridge.onWindowClose();
+      }
+    });
+  }
+
+  window.WindowChrome = {
+    setMaximized: function(maximized) {
+      if (!maximizeBtn) return;
+      maximizeBtn.classList.toggle('is-maximized', Boolean(maximized));
+      maximizeBtn.setAttribute('title', maximized ? '还原' : '最大化');
+      maximizeBtn.setAttribute('aria-label', maximized ? '还原' : '最大化');
+    },
+  };
+}
 
 function initSidebarToggle() {
   const sidebar = document.getElementById('sidebar');

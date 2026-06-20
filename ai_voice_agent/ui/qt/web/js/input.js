@@ -9,6 +9,10 @@ var Input = (function() {
   var desiredEnabled = true;
   var currentReasoning = 'none';
   var currentApproval = 'auto'; // manual / auto / review
+  var slashCommands = defaultSlashCommands();
+  var slashMatches = [];
+  var slashSelectedIndex = 0;
+  var slashMenuOpen = false;
 
   function inputEl() {
     return document.getElementById('chat-input');
@@ -26,6 +30,9 @@ var Input = (function() {
     btn.addEventListener('click', send);
 
     inp.addEventListener('keydown', function(e) {
+      if (handleSlashCommandKeydown(e, inp)) {
+        return;
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         send();
@@ -36,6 +43,11 @@ var Input = (function() {
       autosize(inp);
       updateSendButtonState(inp);
       updateInputContainerState(inp);
+      updateSlashCommandMenu(inp);
+    });
+
+    inp.addEventListener('blur', function() {
+      window.setTimeout(function() { closeSlashCommandMenu(); }, 120);
     });
 
     // 初始状态
@@ -76,13 +88,20 @@ var Input = (function() {
     resetHeight(inp);
     updateSendButtonState(inp);
     updateInputContainerState(inp);
+    closeSlashCommandMenu();
     Messages.appendUserMsg(text);
     window.bridge.onUserSend(text);
   }
 
   function clear() {
     var el = inputEl();
-    if (el) { el.value = ''; resetHeight(el); updateSendButtonState(el); updateInputContainerState(el); }
+    if (el) {
+      el.value = '';
+      resetHeight(el);
+      updateSendButtonState(el);
+      updateInputContainerState(el);
+      closeSlashCommandMenu();
+    }
   }
 
   function setEnabled(enabled) {
@@ -103,6 +122,7 @@ var Input = (function() {
     if (btn) btn.disabled = !enabled;
     if (enabled && inp) inp.focus();
     updateSendButtonState(inp);
+    if (!enabled) closeSlashCommandMenu();
   }
 
   /** 根据输入内容更新发送按钮视觉状态 */
@@ -118,6 +138,216 @@ var Input = (function() {
     var card = document.querySelector('.input-card');
     if (!card || !inp) return;
     card.classList.toggle('has-content', inp.value.trim().length > 0);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // 斜杠命令菜单（输入 / 后出现，方向键选择，Tab/Enter 补全）
+  // ═══════════════════════════════════════════════════════════════
+
+  function slashMenuEl() {
+    return document.getElementById('slash-command-menu');
+  }
+
+  function updateSlashCommands(commands) {
+    slashCommands = normalizeSlashCommands(commands);
+    var inp = inputEl();
+    if (inp) updateSlashCommandMenu(inp);
+  }
+
+  function normalizeSlashCommands(commands) {
+    if (!Array.isArray(commands)) return defaultSlashCommands();
+    return commands
+      .map(function(option) {
+        var command = String(option.command || '').trim();
+        if (!command || command[0] !== '/') return null;
+        var title = String(option.title || command);
+        var category = String(option.category || '命令');
+        var description = String(option.description || '');
+        return {
+          command: command,
+          insert: String(option.insert || command),
+          title: title,
+          category: category,
+          description: description,
+          search: String(option.search || [command, title, description, category].join(' ')).toLowerCase()
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function defaultSlashCommands() {
+    return [
+      { command: '/new', insert: '/new', title: '/new', category: '命令', description: '开启一个空白会话。', search: '/new 开启 空白 会话' },
+      { command: '/model', insert: '/model ', title: '/model', category: '命令', description: '查看或切换模型。', search: '/model /models 模型' },
+      { command: '/reasoning', insert: '/reasoning ', title: '/reasoning', category: '命令', description: '查看或切换推理强度。', search: '/reasoning 推理 强度' },
+      { command: '/skills', insert: '/skills', title: '/skills', category: '命令', description: '查看已加载的 Skill。', search: '/skills skill 技能' },
+      { command: '/mcp', insert: '/mcp', title: '/mcp', category: '命令', description: '查看 MCP 状态。', search: '/mcp 状态' }
+    ];
+  }
+
+  function activeSlashToken(inp) {
+    var value = inp.value;
+    var cursor = inp.selectionStart || 0;
+    if (inp.selectionEnd !== cursor) return null;
+    var beforeCursor = value.slice(0, cursor);
+    if (beforeCursor.indexOf('\n') !== -1) return null;
+    if (value.slice(cursor).trim().length > 0) return null;
+    var firstSpace = beforeCursor.search(/\s/);
+    if (!beforeCursor.startsWith('/') || firstSpace !== -1) return null;
+    return beforeCursor;
+  }
+
+  function updateSlashCommandMenu(inp) {
+    var token = activeSlashToken(inp);
+    if (!token) {
+      closeSlashCommandMenu();
+      return;
+    }
+    slashMatches = findSlashMatches(token);
+    slashSelectedIndex = 0;
+    renderSlashCommandMenu(token);
+  }
+
+  function findSlashMatches(token) {
+    var query = token.toLowerCase();
+    var skillAlias = query.length > 1 ? '/skill:' + query.slice(1) : query;
+    return slashCommands.filter(function(option) {
+      if (option.command.toLowerCase().indexOf(query) === 0) return true;
+      if (option.command.toLowerCase().indexOf(skillAlias) === 0) return true;
+      return option.search.indexOf(query) !== -1 || option.search.indexOf(skillAlias) !== -1;
+    }).slice(0, 8);
+  }
+
+  function renderSlashCommandMenu(token) {
+    var menu = slashMenuEl();
+    var inp = inputEl();
+    if (!menu || !inp) return;
+    menu.innerHTML = '';
+    menu.classList.remove('hidden');
+    slashMenuOpen = true;
+    inp.setAttribute('aria-expanded', 'true');
+
+    if (slashMatches.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'slash-command-empty';
+      empty.textContent = '没有匹配的斜杠命令';
+      menu.appendChild(empty);
+      return;
+    }
+
+    slashMatches.forEach(function(option, index) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'slash-command-option' + (index === slashSelectedIndex ? ' active' : '');
+      item.id = 'slash-command-option-' + index;
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', String(index === slashSelectedIndex));
+      item.innerHTML =
+        '<span class="slash-command-icon" aria-hidden="true">' + slashCommandIconMarkup(option.category) + '</span>' +
+        '<span class="slash-command-title"></span>' +
+        '<span class="slash-command-desc"></span>' +
+        '<span class="slash-command-category"></span>';
+      item.querySelector('.slash-command-title').textContent = option.title;
+      item.querySelector('.slash-command-desc').textContent = option.description;
+      item.querySelector('.slash-command-category').textContent = option.category;
+      item.addEventListener('mousedown', function(event) {
+        event.preventDefault();
+        slashSelectedIndex = index;
+        applySlashCompletion();
+      });
+      menu.appendChild(item);
+    });
+    inp.setAttribute('aria-activedescendant', 'slash-command-option-' + slashSelectedIndex);
+  }
+
+  function slashCommandIconMarkup(category) {
+    if (category === 'Skill') {
+      return '<svg viewBox="0 0 24 24"><path d="M12 3l7 4v10l-7 4-7-4V7z"/><path d="M12 3v18M5 7l7 4 7-4"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24"><path d="M8 9l-3 3 3 3M16 9l3 3-3 3M13 5l-2 14"/></svg>';
+  }
+
+  function closeSlashCommandMenu() {
+    var menu = slashMenuEl();
+    var inp = inputEl();
+    slashMenuOpen = false;
+    slashMatches = [];
+    slashSelectedIndex = 0;
+    if (menu) {
+      menu.classList.add('hidden');
+      menu.innerHTML = '';
+    }
+    if (inp) {
+      inp.removeAttribute('aria-expanded');
+      inp.removeAttribute('aria-activedescendant');
+    }
+  }
+
+  function moveSlashSelection(delta) {
+    if (!slashMatches.length) return;
+    slashSelectedIndex = (slashSelectedIndex + delta + slashMatches.length) % slashMatches.length;
+    renderSlashCommandMenu(activeSlashToken(inputEl()) || '/');
+    var active = document.getElementById('slash-command-option-' + slashSelectedIndex);
+    if (active && active.scrollIntoView) {
+      active.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function applySlashCompletion() {
+    var inp = inputEl();
+    if (!inp || !slashMatches.length) return;
+    var option = slashMatches[slashSelectedIndex];
+    var nextText = option.insert || option.command;
+    inp.value = nextText;
+    inp.setSelectionRange(nextText.length, nextText.length);
+    autosize(inp);
+    updateSendButtonState(inp);
+    updateInputContainerState(inp);
+    closeSlashCommandMenu();
+    inp.focus();
+  }
+
+  function handleSlashCommandKeydown(event, inp) {
+    var token = activeSlashToken(inp);
+    if (!token && slashMenuOpen) {
+      closeSlashCommandMenu();
+      return false;
+    }
+    if (!token) return false;
+
+    if (!slashMenuOpen) {
+      slashMatches = findSlashMatches(token);
+      renderSlashCommandMenu(token);
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveSlashSelection(1);
+      return true;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSlashSelection(-1);
+      return true;
+    }
+    if (event.key === 'Tab') {
+      if (slashMatches.length) {
+        event.preventDefault();
+        applySlashCompletion();
+        return true;
+      }
+    }
+    if (event.key === 'Enter' && slashMatches.length && token !== slashMatches[slashSelectedIndex].command) {
+      event.preventDefault();
+      applySlashCompletion();
+      return true;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeSlashCommandMenu();
+      return true;
+    }
+    return false;
   }
 
   /** 初始化点击涟漪效果 */
@@ -515,6 +745,7 @@ var Input = (function() {
     setEnabled: setEnabled,
     setBridgeReady: setBridgeReady,
     setPlaceholder: setPlaceholder,
+    updateSlashCommands: updateSlashCommands,
     setWorkspaceInfo: setWorkspaceInfo,
     setReasoningEffort: setReasoningEffort,
     setApprovalMode: setApprovalMode,

@@ -109,9 +109,22 @@ var Tools = (function() {
     Messages.scrollToEnd();
   }
 
+  function showToolArtifact(artifact) {
+    if (!artifact || artifact.type !== 'html' || !window.HtmlPreview) return;
+    if (artifact.html) {
+      HtmlPreview.show(artifact.title || 'HTML 预览', artifact.html);
+    } else if (artifact.artifact_path) {
+      HtmlPreview.showPlaceholder(
+        artifact.title || 'HTML 预览',
+        'HTML 内容已保存到 ' + artifact.artifact_path + '，请重新生成或打开 artifact 查看。'
+      );
+    }
+  }
+
   return {
     showToolStart: showToolStart,
     showToolResult: showToolResult,
+    showToolArtifact: showToolArtifact,
   };
 
 })();

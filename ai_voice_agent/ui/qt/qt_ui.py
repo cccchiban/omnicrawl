@@ -199,6 +199,12 @@ class QtUI(BaseUI):
             self._window.set_current_model(self.model_label or text, self.model_label or text)
             self._window.update_token_display(self.prompt_status_line())
 
+    def show_html(self, title: str, html: str) -> None:
+        """把 HTML 内容推送到 Qt 右侧显示区。"""
+
+        if self._window is not None:
+            self._window.show_html(title, html)
+
     # ── Qt 特有方法 ──────────────────────────────────────────
 
     def set_speaking(self, active: bool) -> None:
@@ -216,6 +222,11 @@ class QtUI(BaseUI):
     def set_input_placeholder(self, text: str) -> None:
         """更新输入框占位文字。"""
         self._window.set_input_placeholder(text)
+
+    def update_slash_commands(self, commands: list[dict[str, str]]) -> None:
+        """更新 Qt 输入框的斜杠命令候选列表。"""
+        if self._window is not None:
+            self._window.update_slash_commands(commands)
 
     def get_cancel_event(self) -> Any:
         """返回取消事件（由窗口管理），供 chat_session 检测用户停止请求。"""

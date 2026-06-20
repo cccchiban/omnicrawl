@@ -64,6 +64,7 @@ def build_agent_tools(
     memory_read: ToolRunner,
     memory_expand_related: ToolRunner,
     memory_write: ToolRunner,
+    display_html: ToolRunner,
     mcp_call: MCPToolRunner,
     mcp_read_resource: MCPResourceRunner,
     mcp_get_prompt: MCPPromptRunner,
@@ -125,6 +126,20 @@ def build_agent_tools(
                 argument_schema='{"command": "python -m py_compile main.py", "timeout_seconds": 120}',
                 requires_confirmation=True,
                 run=run_command,
+            ),
+            ToolDefinition(
+                name="display_html",
+                description=(
+                    "在 Qt GUI 右侧 HTML 显示区渲染网页或数据看板。"
+                    "适合爬虫结果、表格、图表、网页预览等需要直观看的内容；"
+                    "可直接传 html，或传工作区内 .html/.htm 文件路径。"
+                ),
+                argument_schema=(
+                    '{"title": "数据预览", "html": "<!doctype html>...", '
+                    '"path": ".agent_tmp/files/result.html"}'
+                ),
+                requires_confirmation=False,
+                run=display_html,
             ),
         ]
     )

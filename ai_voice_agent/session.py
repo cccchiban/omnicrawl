@@ -818,7 +818,10 @@ class SessionStore:
         单行 JSONL 被超大结果拖慢。
         """
 
-        safe_payload = _redact_sensitive_values(dict(payload or {}))
+        raw_payload = dict(payload or {})
+        if event_type == "tool_result":
+            raw_payload = self._prepare_tool_ui_artifact_payload(session_id, raw_payload)
+        safe_payload = _redact_sensitive_values(raw_payload)
         if event_type == "tool_result":
             return self._prepare_tool_result_payload(session_id, safe_payload)
         return safe_payload
@@ -847,6 +850,62 @@ class SessionStore:
             truncated=bool(payload["artifact_truncated"]),
         )
         return payload
+
+    def _prepare_tool_ui_artifact_payload(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        artifact = payload.get("ui_artifact")
+        if not isinstance(artifact, dict) or artifact.get("type") != "html":
+            return payload
+
+        html = artifact.get("html")
+        title = _clean_title(str(artifact.get("title") or "HTML 预览"))
+        if not isinstance(html, str) or not html.strip():
+            payload["ui_artifact"] = {
+                "type": "html",
+                "title": title,
+                "path": str(artifact.get("path") or ""),
+            }
+            return payload
+
+        html_hash = hashlib.sha256(html.encode("utf-8")).hexdigest()
+        artifact_path = self._write_tool_html_artifact(
+            session_id=session_id,
+            html=html,
+            output_hash=html_hash,
+        )
+        payload["ui_artifact"] = {
+            "type": "html",
+            "title": title,
+            "path": str(artifact.get("path") or ""),
+            "artifact_path": artifact_path,
+            "html_size_chars": len(html),
+            "html_sha256": html_hash,
+        }
+        return payload
+
+    def _write_tool_html_artifact(
+        self,
+        *,
+        session_id: str,
+        html: str,
+        output_hash: str,
+    ) -> str:
+        """保存 HTML UI artifact，并返回 `.agent_sessions/` 内相对路径。"""
+
+        session_artifacts_dir = (self.artifacts_dir / session_id).resolve()
+        if not _is_relative_to(session_artifacts_dir, self.root):
+            raise SessionStoreError(f"artifact 目录越界：{session_id}")
+        session_artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"html_preview_{output_hash[:16]}.html"
+        path = (session_artifacts_dir / filename).resolve()
+        if not _is_relative_to(path, self.root):
+            raise SessionStoreError(f"HTML artifact 路径越界：{filename}")
+
+        try:
+            path.write_text(html, encoding="utf-8")
+        except OSError as exc:
+            raise SessionStoreError(f"写入 HTML artifact 失败：{path}，{exc}") from exc
+        return path.relative_to(self.root).as_posix()
 
     def _write_tool_result_artifact(
         self,

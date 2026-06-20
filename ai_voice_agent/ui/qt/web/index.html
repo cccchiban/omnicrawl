@@ -14,8 +14,10 @@
 <link rel="stylesheet" href="css/chat-area.css">
 <link rel="stylesheet" href="css/messages.css">
 <link rel="stylesheet" href="css/input-area.css">
+<link rel="stylesheet" href="css/html-preview.css">
 <link rel="stylesheet" href="css/status-bar.css">
 <link rel="stylesheet" href="css/dialog.css">
+<link rel="stylesheet" href="css/search-dialog.css">
 
 <!-- ── 外部依赖 ──────────────────────────────────────── -->
 <script src="js/polyfills.js"></script>
@@ -26,6 +28,42 @@
 </head>
 <body>
 <div id="app">
+  <header id="app-chrome" data-window-drag>
+    <div class="app-chrome-left">
+      <button class="chrome-icon-btn" type="button" title="AI Voice Agent" aria-label="AI Voice Agent" data-no-window-drag>
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <rect x="4" y="5" width="16" height="14" rx="3"/>
+          <path d="M8 9h3M8 13h8"/>
+        </svg>
+      </button>
+      <button class="chrome-nav-btn" type="button" title="后退" aria-label="后退" disabled data-no-window-drag>
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <button class="chrome-nav-btn" type="button" title="前进" aria-label="前进" disabled data-no-window-drag>
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M9 18l6-6-6-6"/></svg>
+      </button>
+      <nav class="app-menu" aria-label="应用菜单" data-no-window-drag>
+        <button class="app-menu-item" type="button">文件</button>
+        <button class="app-menu-item" type="button">编辑</button>
+        <button class="app-menu-item" type="button">视图</button>
+        <button class="app-menu-item" type="button">帮助</button>
+      </nav>
+    </div>
+    <div class="app-chrome-drag-space" aria-hidden="true"></div>
+    <div class="window-controls" data-no-window-drag>
+      <button class="window-control" id="window-minimize-btn" type="button" title="最小化" aria-label="最小化">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M6 18h12"/></svg>
+      </button>
+      <button class="window-control" id="window-maximize-btn" type="button" title="最大化" aria-label="最大化">
+        <svg class="maximize-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+        <svg class="restore-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M9 7h8v8M7 9h8v8H7z"/></svg>
+      </button>
+      <button class="window-control close" id="window-close-btn" type="button" title="关闭" aria-label="关闭">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M7 7l10 10M17 7L7 17"/></svg>
+      </button>
+    </div>
+  </header>
+  <div id="app-shell">
 
   <!-- ── 侧边栏 ─────────────────────────────────── -->
   <aside id="sidebar">
@@ -50,10 +88,6 @@
         <a href="#" class="nav-item" id="nav-search">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
           <span class="nav-label">搜索</span>
-        </a>
-        <a href="#" class="nav-item" id="nav-plugins">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-          <span class="nav-label">插件</span>
         </a>
         <a href="#" class="nav-item" id="nav-automation">
           <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-1-8h2v5h-2zm0-4h2v2h-2z"/></svg>
@@ -179,6 +213,25 @@
     </div>
   </div>
 
+  <div class="session-search-modal hidden" id="session-search-modal" role="dialog" aria-modal="true" aria-labelledby="session-search-title">
+    <div class="session-search-backdrop" id="session-search-backdrop"></div>
+    <section class="session-search-panel">
+      <div class="session-search-title" id="session-search-title">搜索对话</div>
+      <label class="session-search-input-wrap" for="session-search-input">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="11" cy="11" r="8"/>
+          <path d="M21 21l-4.35-4.35"/>
+        </svg>
+        <input id="session-search-input" type="search" autocomplete="off" placeholder="搜索标题、项目或时间" />
+      </label>
+      <div class="session-search-meta">
+        <span id="session-search-section-label">近期对话</span>
+        <span id="session-search-count"></span>
+      </div>
+      <div class="session-search-results" id="session-search-results" role="listbox"></div>
+    </section>
+  </div>
+
   <!-- ── 主内容区 ───────────────────────────────── -->
   <main id="main" class="empty-state">
 
@@ -198,11 +251,6 @@
             <div class="model-dropdown-list" id="model-dropdown-list"></div>
           </div>
         </div>
-      </div>
-      <div class="title-right">
-        <button class="export-btn" id="export-btn" title="导出对话记录">
-          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-        </button>
       </div>
     </header>
 
@@ -241,9 +289,12 @@
 
       <!-- 主输入卡片 -->
       <div class="input-card">
+        <div class="slash-command-menu hidden" id="slash-command-menu" role="listbox" aria-label="斜杠命令候选"></div>
         <div class="input-wrapper">
           <textarea id="chat-input" rows="1"
-            placeholder="随心输入"></textarea>
+            placeholder="随心输入"
+            aria-autocomplete="list"
+            aria-controls="slash-command-menu"></textarea>
         </div>
 
         <!-- 底部工具栏 -->
@@ -283,6 +334,36 @@
 
   </main>
 
+  <aside id="html-preview-panel" class="html-preview-panel empty" aria-label="HTML 显示区">
+    <header class="html-preview-header">
+      <div class="html-preview-title-wrap">
+        <span class="html-preview-kicker">HTML 显示区</span>
+        <h2 id="html-preview-title">等待内容</h2>
+      </div>
+      <div class="html-preview-actions">
+        <button id="html-preview-popout-btn" class="html-preview-action" type="button" title="新窗口打开" aria-label="新窗口打开">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path d="M14 3h7v7M21 3l-9 9"/>
+            <path d="M19 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"/>
+          </svg>
+        </button>
+        <button id="html-preview-toggle-btn" class="html-preview-action" type="button" title="折叠显示区" aria-label="折叠显示区" aria-expanded="true">
+          <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M15 18l-6-6 6-6"/></svg>
+        </button>
+      </div>
+    </header>
+    <div id="html-preview-empty" class="html-preview-empty">
+      <div class="html-preview-empty-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 5h16v14H4z"/>
+          <path d="M8 9l-3 3 3 3M16 9l3 3-3 3M14 8l-4 8"/>
+        </svg>
+      </div>
+      <p>Agent 生成网页、表格或数据看板时会显示在这里。</p>
+    </div>
+    <iframe id="html-preview-frame" class="html-preview-frame hidden" title="HTML 显示区内容" sandbox="allow-scripts allow-forms allow-popups allow-modals"></iframe>
+  </aside>
+
   <!-- ── 通知条 ─────────────────────────────────── -->
   <div id="notice-bar" class="notice hidden">
     <span id="notice-text"></span>
@@ -290,6 +371,7 @@
   <div id="delete-undo-bar" class="delete-undo-bar hidden" role="status" aria-live="polite">
     <span id="delete-undo-text"></span>
     <button type="button" id="delete-undo-action">撤回</button>
+  </div>
   </div>
 
 </div>
@@ -302,8 +384,10 @@
 <script src="js/tools.js"></script>
 <script src="js/status.js"></script>
 <script src="js/input.js"></script>
+<script src="js/html-preview.js"></script>
 <script src="js/dialog.js"></script>
 <script src="js/project-sidebar.js"></script>
+<script src="js/search-dialog.js"></script>
 <script src="js/py-callbacks.js"></script>
 <script src="js/app.js"></script>
 </body>

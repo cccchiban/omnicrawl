@@ -18,9 +18,15 @@ from ai_voice_agent.agent import (
 )
 from ai_voice_agent.agent_history import restore_history_window
 from ai_voice_agent.agent_llm_protocol import assistant_tool_call_message, function_name_for_tool
+from ai_voice_agent.agent_prompt_context import build_system_prompt
 from ai_voice_agent.project import ProjectStore
 from ai_voice_agent.session import SessionStore
-from ai_voice_agent.slash_commands import build_slash_commands, handle_session_command
+from ai_voice_agent.skill import Skill, SkillMatchResult, SkillMeta
+from ai_voice_agent.slash_commands import (
+    build_slash_command_options,
+    build_slash_commands,
+    handle_session_command,
+)
 from ai_voice_agent.temp_workspace import AgentTempWorkspaceConfig
 
 
@@ -68,12 +74,18 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["role"], "user")
-        self.assertTrue(messages[0]["content"].startswith("<project_instructions file=\"AGENTS.md\">"))
+        self.assertTrue(
+            messages[0]["content"].startswith(
+                '<project_instructions source="AGENTS.md" trust="workspace-user">'
+            )
+        )
+        self.assertIn("<authority_boundary>", messages[0]["content"])
+        self.assertIn("不得覆盖 system 安全规则", messages[0]["content"])
         self.assertIn("# AGENTS.md", messages[0]["content"])
         self.assertIn("必须先理解再执行。", messages[0]["content"])
         self.assertTrue(messages[0]["content"].rstrip().endswith("</project_instructions>"))
 
-    def test_run_stream_sends_agents_md_before_history_and_current_user(self) -> None:
+    def test_run_stream_sends_stable_context_before_history_and_current_user(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             (workspace / "AGENTS.md").write_text(
@@ -82,7 +94,10 @@ class AgentContextInjectionTest(unittest.TestCase):
             )
             agent = object.__new__(LocalToolAgent)
             agent.workspace_root = workspace
-            agent.config = SimpleNamespace(max_history_turns=6)
+            agent.config = SimpleNamespace(
+                max_history_turns=6,
+                workspace_detection_summary="从启动目录发现 .git",
+            )
             agent._history = [
                 {"role": "user", "content": "上一轮问题"},
                 {"role": "assistant", "content": "上一轮回答"},
@@ -91,7 +106,16 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._session_state = None
             agent._skill_manager = None
             agent._active_skills = []
-            agent._tools = {}
+            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+            agent._tools = {
+                "read_file": ToolDefinition(
+                    name="read_file",
+                    description="读取文件。",
+                    argument_schema='{"path":"README.md"}',
+                    requires_confirmation=True,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                )
+            }
             captured_messages: list[list[dict[str, str]]] = []
 
             def fake_request(
@@ -117,10 +141,15 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(deltas, ["完成"])
         self.assertEqual(len(captured_messages), 1)
         sent_messages = captured_messages[0]
-        self.assertIn("<project_instructions file=\"AGENTS.md\">", sent_messages[0]["content"])
+        self.assertIn('<project_instructions source="AGENTS.md"', sent_messages[0]["content"])
         self.assertIn("进度实时可见。", sent_messages[0]["content"])
-        self.assertEqual(sent_messages[1]["content"], "上一轮问题")
-        self.assertEqual(sent_messages[2]["content"], "上一轮回答")
+        self.assertIn("不得覆盖 system 安全规则", sent_messages[0]["content"])
+        self.assertIn('<tool_capabilities source="host-tool-registry"', sent_messages[1]["content"])
+        self.assertIn("read_file", sent_messages[1]["content"])
+        self.assertIn('<runtime_context source="host-runtime"', sent_messages[2]["content"])
+        self.assertIn("工作区检测：从启动目录发现 .git", sent_messages[2]["content"])
+        self.assertEqual(sent_messages[3]["content"], "上一轮问题")
+        self.assertEqual(sent_messages[4]["content"], "上一轮回答")
         self.assertEqual(sent_messages[-1]["content"], "请检查项目状态")
         self.assertEqual(agent._history[-2]["content"], "请检查项目状态")
         self.assertNotIn("project_instructions", agent._history[-2]["content"])
@@ -430,6 +459,120 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertTrue(artifact_exists)
         self.assertEqual(artifact_text, long_output)
 
+    def test_display_html_tool_returns_ui_artifact_and_persists_html_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            html = "<!doctype html><html><body><h1>采集结果</h1></body></html>"
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6, max_tool_output_chars=6000)
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._workspace_tools = None
+            agent._memory_store = None
+            agent._session_store = None
+            agent._tools = {
+                "display_html": ToolDefinition(
+                    name="display_html",
+                    description="显示 HTML",
+                    argument_schema='{"title":"数据预览","html":"...","path":""}',
+                    requires_confirmation=False,
+                    run=lambda arguments: LocalToolAgent._tool_display_html(agent, arguments),
+                )
+            }
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            agent._session_store = store
+            agent._session_state = state
+
+            calls = 0
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+            ):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return AgentModelReply(
+                        message={
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "display_html", "arguments": "{}"},
+                                }
+                            ],
+                        },
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                name="display_html",
+                                arguments={"title": "采集结果", "html": html},
+                                id="call_1",
+                                function_name="display_html",
+                            )
+                        ],
+                    )
+                return AgentModelReply(message={"role": "assistant", "content": "已展示"}, content="已展示")
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+            seen_results: list[ToolResult] = []
+
+            LocalToolAgent.run_stream(
+                agent,
+                "展示采集结果",
+                lambda _delta: None,
+                on_tool_result=lambda _tool_call, result: seen_results.append(result),
+            )
+
+            events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            payload = next(event["payload"] for event in events if event["type"] == "tool_result")
+            html_artifact = payload["ui_artifact"]
+            html_artifact_path = workspace / ".agent_sessions" / html_artifact["artifact_path"]
+            html_artifact_exists = html_artifact_path.is_file()
+            html_artifact_text = html_artifact_path.read_text(encoding="utf-8")
+
+        self.assertEqual(seen_results[0].ui_artifact["type"], "html")
+        self.assertEqual(seen_results[0].ui_artifact["html"], html)
+        self.assertEqual(html_artifact["type"], "html")
+        self.assertEqual(html_artifact["title"], "采集结果")
+        self.assertNotIn("html", html_artifact)
+        self.assertTrue(html_artifact_exists)
+        self.assertEqual(html_artifact_text, html)
+
+    def test_display_html_tool_reads_path_without_workspace_read_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            html_path = workspace / "large.html"
+            html = "<!doctype html><html><body>" + ("数据" * 200) + "</body></html>"
+            html_path.write_text(html, encoding="utf-8")
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(command_timeout_seconds=120)
+            agent._workspace_tools = None
+            agent._memory_store = None
+            agent._session_store = None
+
+            result = LocalToolAgent._tool_display_html(
+                agent,
+                {"title": "大 HTML", "path": "large.html"},
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.ui_artifact["html"], html)
+        self.assertNotIn("文件内容已截断", result.ui_artifact["html"])
+
     def test_resume_session_restores_recent_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -547,6 +690,30 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn(state.session_id, {entry.session_id for entry in active_after_resume})
         self.assertIn("/archive", build_slash_commands(agent))
         self.assertIn("/archives", build_slash_commands(agent))
+
+    def test_slash_command_options_include_skill_alias_search_for_qt_menu(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+
+        class FakeSkillManager:
+            def list_all(self):
+                return [
+                    SimpleNamespace(
+                        name="ui-design",
+                        description="Define frontend UI quality hierarchy and usability rules",
+                    )
+                ]
+
+        agent._skill_manager = FakeSkillManager()
+
+        options = build_slash_command_options(agent)
+        by_command = {option["command"]: option for option in options}
+
+        self.assertIn("/new", by_command)
+        self.assertEqual(by_command["/reasoning"]["insert"], "/reasoning ")
+        self.assertIn("/skill:ui-design", by_command)
+        self.assertEqual(by_command["/skill:ui-design"]["category"], "Skill")
+        self.assertIn("/ui-design", by_command["/skill:ui-design"]["search"])
+        self.assertIn("frontend UI quality", by_command["/skill:ui-design"]["description"])
 
     def test_resume_archived_session_rejects_other_workspace_before_unarchive(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1008,6 +1175,59 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn("prompt_cache_key", completions.calls[0])
         self.assertEqual(completions.calls[0]["prompt_cache_key"], completions.calls[1]["prompt_cache_key"])
 
+    def test_gpt_prompt_cache_key_changes_when_stable_context_changes(self) -> None:
+        class FakeChatCompletions:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return [
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content="完成", tool_calls=None))],
+                    ),
+                    SimpleNamespace(usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1)),
+                ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            agents_file = workspace / "AGENTS.md"
+            agents_file.write_text("# AGENTS.md\n\n第一版规范。", encoding="utf-8")
+            completions = FakeChatCompletions()
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(
+                request_timeout_seconds=180,
+                llm=SimpleNamespace(
+                    model="gpt-5.5",
+                    thinking_enabled=False,
+                    reasoning_effort="",
+                ),
+            )
+            agent._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+            agent._system_prompt = lambda: "stable system prompt"  # type: ignore[method-assign]
+            agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+            agent._tools = {}
+
+            LocalToolAgent._request_agent_reply_once(
+                agent,
+                [{"role": "user", "content": "第一轮问题"}],
+                lambda _delta: None,
+                lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
+                lambda: None,
+            )
+            agents_file.write_text("# AGENTS.md\n\n第二版规范。", encoding="utf-8")
+            LocalToolAgent._request_agent_reply_once(
+                agent,
+                [{"role": "user", "content": "第二轮问题"}],
+                lambda _delta: None,
+                lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
+                lambda: None,
+            )
+
+        self.assertIn("prompt_cache_key", completions.calls[0])
+        self.assertNotEqual(completions.calls[0]["prompt_cache_key"], completions.calls[1]["prompt_cache_key"])
+
     def test_non_gpt_requests_skip_prompt_cache_key(self) -> None:
         class FakeChatCompletions:
             def __init__(self) -> None:
@@ -1069,7 +1289,7 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn("AGENTS.md", prompt)
         self.assertNotIn("这句正文不应进入 system prompt。", prompt)
 
-    def test_workspace_detection_summary_is_added_to_system_prompt(self) -> None:
+    def test_runtime_environment_is_context_message_not_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             agent = object.__new__(LocalToolAgent)
@@ -1081,11 +1301,52 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._memory_store = None
             agent._skill_manager = None
             agent._active_skills = []
+            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
             agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
 
             prompt = LocalToolAgent._system_prompt(agent)
+            messages = LocalToolAgent._context_messages(agent)
 
-        self.assertIn("工作区检测：从启动目录发现 .git", prompt)
+        self.assertNotIn("工作区检测：从启动目录发现 .git", prompt)
+        self.assertIn("工作区检测：从启动目录发现 .git", messages[-1]["content"])
+
+    def test_system_prompt_rejects_dynamic_placeholders(self) -> None:
+        with self.assertRaisesRegex(ValueError, "动态占位符"):
+            build_system_prompt("工作区：{workspace_root}")
+
+    def test_active_skill_body_is_context_message_not_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            skill_path = workspace / ".claude" / "skills" / "demo" / "SKILL.md"
+            meta = SkillMeta(
+                name="demo-skill",
+                description="Demo skill description",
+                source_path=skill_path,
+                base_dir=skill_path.parent,
+                scope="project",
+            )
+            skill = Skill(meta=meta, body="Demo skill body should stay out of system.")
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(workspace_detection_summary="")
+            agent._tools = {}
+            agent._memory_store = None
+            agent._skill_manager = None
+            agent._active_skills = [
+                SkillMatchResult(skill=skill, score=1.0, reason="手动调用：demo-skill")
+            ]
+            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+            agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
+
+            prompt = LocalToolAgent._system_prompt(agent)
+            messages = LocalToolAgent._context_messages(agent)
+
+        self.assertNotIn("Demo skill description", prompt)
+        self.assertNotIn("Demo skill body should stay out of system.", prompt)
+        skill_context = messages[0]["content"]
+        self.assertIn('<active_skill_instructions source="skill-registry"', skill_context)
+        self.assertIn("Demo skill description", skill_context)
+        self.assertIn("Demo skill body should stay out of system.", skill_context)
 
 
 if __name__ == "__main__":

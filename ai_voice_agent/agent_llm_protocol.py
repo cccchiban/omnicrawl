@@ -37,6 +37,7 @@ class AgentLLMProtocol:
     request_retry_count: int
     workspace_root: Path
     system_prompt_provider: Callable[[], str]
+    prompt_cache_identity_provider: Callable[[], dict[str, str]]
     tools_provider: Callable[[], list[dict[str, Any]]]
     extra_body_provider: Callable[[], dict[str, Any]]
     tool_name_from_function_name: Callable[[str], str]
@@ -101,10 +102,8 @@ class AgentLLMProtocol:
             "timeout": self.request_timeout_seconds,
         }
         prompt_cache_key = build_prompt_cache_key(
-            system_prompt,
-            messages,
+            self.prompt_cache_identity_provider(),
             model=self.model,
-            workspace_root=self.workspace_root,
         )
         if prompt_cache_key:
             request_kwargs["prompt_cache_key"] = prompt_cache_key
@@ -245,23 +244,28 @@ def is_retryable_model_request_error(exc: Exception) -> bool:
     )
 
 
-def build_prompt_cache_key(
-    system_prompt: str,
-    messages: list[dict[str, Any]],
-    *,
-    model: str,
-    workspace_root: Path,
-) -> str:
-    """为 GPT/OpenAI 请求提供稳定缓存路由 key。"""
+def build_prompt_cache_key(identity: dict[str, str], *, model: str) -> str:
+    """为 GPT/OpenAI 请求提供稳定缓存路由 key。
+
+    key 只来自稳定上下文身份：prompt 版本、模型、工作区、项目规范 hash、
+    Skill 索引/手动 Skill hash 和工具 schema hash。它不读取当前 user、历史
+    消息或工具结果，避免请求态内容打散缓存路由。
+    """
 
     normalized_model = model.strip().lower()
     if not is_openai_gpt_model(normalized_model):
         return ""
 
-    stable_parts = [model.strip(), str(workspace_root), system_prompt]
-    if messages and messages[0].get("content", "").startswith("<project_instructions"):
-        stable_parts.append(messages[0]["content"])
-    digest = hashlib.sha256("\n\n".join(stable_parts).encode("utf-8")).hexdigest()[:32]
+    stable_identity = dict(identity)
+    stable_identity["model"] = model.strip()
+    digest = hashlib.sha256(
+        json.dumps(
+            stable_identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:32]
     return f"local-agent-{digest}"
 
 

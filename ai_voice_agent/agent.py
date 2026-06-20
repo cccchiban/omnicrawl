@@ -27,7 +27,6 @@ from .agent_tools import (
     workspace_command_tool_result,
     workspace_tool_result,
 )
-from .agent_environment import runtime_environment_context
 from .agent_history import compact_history
 from .agent_llm_protocol import (
     AgentLLMProtocol,
@@ -42,6 +41,12 @@ from .agent_memory_tools import (
     memory_read_result,
     memory_search_result,
     memory_write_result,
+)
+from .agent_prompt_context import (
+    build_context_messages,
+    build_project_instructions_messages,
+    build_prompt_cache_identity,
+    build_system_prompt,
 )
 from .agent_session_facade import AgentSessionFacade
 from .agent_types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
@@ -79,7 +84,7 @@ from .temp_workspace import (
     AgentTempWorkspaceError,
     load_agent_temp_workspace_config,
 )
-from .workspace_tools import WorkspaceTools
+from .workspace_tools import WorkspaceToolError, WorkspaceTools
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
@@ -615,7 +620,7 @@ class LocalToolAgent:
         self._append_prompt_history(text)
         self._append_session_event("user_message", {"content": text})
         working_messages = [
-            *self._project_instructions_messages(),
+            *self._context_messages(),
             *self._history,
             {"role": "user", "content": text},
         ]
@@ -680,6 +685,7 @@ class LocalToolAgent:
                             "ok": tool_result.ok,
                             "output": tool_result.full_output or tool_result.output,
                             "model_output": tool_result.output,
+                            "ui_artifact": tool_result.ui_artifact,
                         },
                     )
                     working_messages.append(self._tool_result_message(tool_call, tool_result))
@@ -755,32 +761,39 @@ class LocalToolAgent:
         return "cancel" in name
 
     def _project_instructions_messages(self) -> list[dict[str, str]]:
-        """构造每次请求最前方的项目规范上下文消息。
+        """构造项目规范上下文消息，保留给测试和兼容调用使用。
 
-        这个消息不写入 `_history`，但会在每次发起模型请求时放在 messages 列表开头。
-        对无服务端会话状态的 Chat Completions 调用来说，模型只能看到本次请求携带的
-        messages；因此项目规范必须随每次请求发送一次，但不能累积进本地历史，否则
-        多轮对话会出现多份重复 AGENTS.md。
+        这个消息不写入 `_history`。项目规范来自工作区文件，必须带来源和权限
+        边界，避免被模型当作可覆盖 system 的高优先级规则。
         """
 
-        instructions = self._load_agents_instructions()
-        if not instructions:
-            return []
-        return [
-            {
-                "role": "user",
-                "content": (
-                    "<project_instructions file=\"AGENTS.md\">\n"
-                    f"{instructions}\n"
-                    "</project_instructions>"
-                ),
-            }
-        ]
+        return build_project_instructions_messages(self._load_agents_instructions())
+
+    def _context_messages(self) -> list[dict[str, str]]:
+        """构造 system 之外的稳定/动态上下文消息。"""
+
+        workspace_detection_summary = getattr(
+            getattr(self, "config", None),
+            "workspace_detection_summary",
+            "",
+        )
+        return build_context_messages(
+            workspace_root=self.workspace_root,
+            project_instructions=self._load_agents_instructions(),
+            skill_manager=getattr(self, "_skill_manager", None),
+            active_skills=getattr(self, "_active_skills", []),
+            tools=getattr(self, "_tools", {}).values(),
+            agent_temp_dir=self._agent_temp_dir_display(),
+            workspace_detection_summary=workspace_detection_summary,
+        )
 
     def _load_agents_instructions(self) -> str:
         """读取工作区根目录的 AGENTS.md；缺失时保持原 user prompt。"""
 
-        path = self.workspace_root / AGENTS_INSTRUCTIONS_FILE
+        workspace_root = getattr(self, "workspace_root", None)
+        if workspace_root is None:
+            return ""
+        path = workspace_root / AGENTS_INSTRUCTIONS_FILE
         if not path.is_file():
             return ""
         try:
@@ -838,6 +851,7 @@ class LocalToolAgent:
             request_retry_count=getattr(self.config, "request_retry_count", 1),
             workspace_root=getattr(self, "workspace_root", Path.cwd()),
             system_prompt_provider=self._system_prompt,
+            prompt_cache_identity_provider=self._prompt_cache_identity,
             tools_provider=self._chat_completion_tools,
             extra_body_provider=self._build_extra_body,
             tool_name_from_function_name=lambda function_name: tool_name_from_function_name(
@@ -855,6 +869,18 @@ class LocalToolAgent:
             self._tools.values(),
             function_name_for_tool=function_name_for_tool,
         )
+
+    def _prompt_cache_identity(self) -> dict[str, str]:
+        """返回只包含稳定上下文 hash 的 prompt cache 身份。"""
+
+        return build_prompt_cache_identity(
+            system_prompt=self._system_prompt(),
+            workspace_root=getattr(self, "workspace_root", Path.cwd()),
+            project_instructions=self._load_agents_instructions(),
+            skill_manager=getattr(self, "_skill_manager", None),
+            active_skills=getattr(self, "_active_skills", []),
+            chat_tools=self._chat_completion_tools(),
+        ).as_payload(model=self.config.llm.model)
 
     def _run_tool(
         self,
@@ -899,7 +925,8 @@ class LocalToolAgent:
         return ToolResult(
             ok=result.ok,
             output=self._truncate_tool_output(result.output),
-            full_output=result.output,
+            full_output=result.full_output or result.output,
+            ui_artifact=result.ui_artifact,
         )
 
     def _approve_tool_call(
@@ -1005,6 +1032,7 @@ class LocalToolAgent:
             memory_read=self._tool_memory_read,
             memory_expand_related=self._tool_memory_expand_related,
             memory_write=self._tool_memory_write,
+            display_html=self._tool_display_html,
             mcp_call=self._tool_mcp_call,
             mcp_read_resource=self._tool_mcp_read_resource,
             mcp_get_prompt=self._tool_mcp_get_prompt,
@@ -1019,46 +1047,19 @@ class LocalToolAgent:
         )
 
     def _system_prompt(self) -> str:
-        """构造工具协议提示词；每轮强制一个工具或一个最终回答，降低解析复杂度。"""
+        """返回静态 system prompt；动态上下文由 `_context_messages` 提供。"""
 
-        tool_lines = "\n".join(
-            (
-                f"- {tool.name}: {tool.description}\n"
-                f"  参数结构：{tool.argument_schema}\n"
-            )
-            for tool in self._tools.values()
-        )
-        system_prompt = self._render_system_prompt_template(tool_lines)
-        workspace_detection_summary = getattr(
-            getattr(self, "config", None),
-            "workspace_detection_summary",
-            "",
-        )
-        system_prompt = (
-            f"{runtime_environment_context(self.workspace_root, workspace_detection_summary)}\n\n"
-            f"{system_prompt}"
-        )
-        # 手动调用 /skill:name 时注入 Skill 全文
-        if self._skill_manager is not None and self._active_skills:
-            system_prompt = self._skill_manager.inject(self._active_skills, system_prompt)
-        # 渐进式披露：列出所有可用 Skill 的元数据，AI 自行用 read_file 加载
-        elif self._skill_manager is not None:
-            metas = self._skill_manager.list_all()
-            skill_section = self._skill_manager.format_skills_for_prompt(metas)
-            if skill_section:
-                system_prompt += f"\n{skill_section}"
-        return system_prompt
+        return build_system_prompt(self._system_prompt_template)
 
     def _render_system_prompt_template(self, tool_lines: str) -> str:
-        """替换系统提示词模板占位符，同时允许模板中保留 JSON 示例花括号。"""
+        """兼容旧测试入口；新链路不再向 system prompt 注入动态工具清单。"""
 
+        _ = tool_lines
+        return self._system_prompt()
+
+    def _agent_temp_dir_display(self) -> str:
         temp_workspace = getattr(self, "_temp_workspace", None)
-        agent_temp_dir = temp_workspace.display_path if temp_workspace is not None else ".agent_tmp"
-        return (
-            self._system_prompt_template.replace("{workspace_root}", str(self.workspace_root))
-            .replace("{agent_temp_dir}", agent_temp_dir)
-            .replace("{tool_lines}", tool_lines)
-        )
+        return temp_workspace.display_path if temp_workspace is not None else ".agent_tmp"
 
     def _load_system_prompt_template(self) -> str:
         """读取独立系统提示词模板，避免把长规范硬编码在 Python 代码里。"""
@@ -1071,11 +1072,10 @@ class LocalToolAgent:
         except OSError as exc:
             raise AgentError(f"读取 {SYSTEM_PROMPT_FILE} 失败：{exc}") from exc
 
-        required_placeholders = ("{workspace_root}", "{agent_temp_dir}", "{tool_lines}")
-        missing = [placeholder for placeholder in required_placeholders if placeholder not in template]
-        if missing:
-            raise AgentError(f"{SYSTEM_PROMPT_FILE} 缺少占位符：{', '.join(missing)}")
-        return template
+        try:
+            return build_system_prompt(template)
+        except ValueError as exc:
+            raise AgentError(str(exc)) from exc
 
     def _tool_list_files(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().list_files, arguments)
@@ -1094,6 +1094,48 @@ class LocalToolAgent:
 
     def _tool_run_command(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_command_tool_result(self._workspace_toolbox().run_command, arguments)
+
+    def _tool_display_html(self, arguments: dict[str, Any]) -> ToolResult:
+        """准备 Qt 右侧 HTML 显示区内容。
+
+        工具本身不写文件、不执行脚本，只把模型提供的 HTML 或工作区内 HTML
+        文件包装成 UI artifact。这样 TUI 仍能得到文本结果，Qt GUI 则可同步渲染。
+        """
+
+        title = str(arguments.get("title") or "HTML 预览").strip() or "HTML 预览"
+        html = str(arguments.get("html") or "")
+        path = str(arguments.get("path") or "").strip()
+
+        if path:
+            try:
+                file_path = self._workspace_toolbox().safe_path(path)
+                if file_path.suffix.lower() not in {".html", ".htm"}:
+                    return ToolResult(ok=False, output="path 仅支持 .html 或 .htm 文件。")
+                # HTML 预览是面向 GUI 的完整渲染内容，不能复用普通 read_file
+                # 的截断策略，否则稍大的数据看板会被截成无效 HTML。
+                html = file_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return ToolResult(ok=False, output="文件不是 UTF-8 HTML 文本。")
+            except OSError as exc:
+                return ToolResult(ok=False, output=f"读取 HTML 文件失败：{exc}")
+            except WorkspaceToolError as exc:
+                return ToolResult(ok=False, output=str(exc))
+
+        if not html.strip():
+            return ToolResult(ok=False, output="html 或 path 必须提供一个。")
+
+        artifact = {
+            "type": "html",
+            "title": title[:80],
+            "html": html,
+            "path": path,
+        }
+        source = f"文件：{path}" if path else f"内联 HTML，字符数：{len(html)}"
+        return ToolResult(
+            ok=True,
+            output=f"已发送到右侧 HTML 显示区（{source}）。",
+            ui_artifact=artifact,
+        )
 
     def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
         return memory_search_result(self._require_memory_store(), arguments)

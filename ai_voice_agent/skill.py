@@ -537,7 +537,7 @@ class SkillManager:
 
     @staticmethod
     def format_skills_for_prompt(skills: list[SkillMeta]) -> str:
-        """将所有 Skill 的元数据以 XML 格式输出，注入 system prompt。
+        """将所有 Skill 的元数据以 XML 格式输出，供上下文消息使用。
 
         Pi 风格渐进式披露：只列出 name + description + location，
         AI 自己用 read_file 工具加载需要的 SKILL.md 全文。
@@ -569,42 +569,13 @@ class SkillManager:
     # ── 注入（手动调用 /skill:name 时使用）─────────────
 
     def inject(self, matches: list[SkillMatchResult], system_prompt: str) -> str:
-        """将匹配到的 Skill 指令注入 system prompt 头部。
+        """兼容旧调用：不再把 Skill 指令注入 system prompt。
 
-        注入格式遵循 Agent Skills 集成标准（参考 Pi formatSkillsForPrompt）：
-        先列出可用技能概览，再拼接完整正文。
+        Skill 元数据和正文现在由 `agent_prompt_context` 构造为独立上下文消息，
+        避免污染稳定 system prompt。保留此方法是为了外部旧补丁点不报错。
         """
-        if not matches:
-            return system_prompt
-
-        skills = [m.skill for m in matches]
-        parts: list[str] = []
-
-        # 可用技能概览（XML 格式）
-        parts.append("以下 Skill 为当前任务提供了专用指令，请严格遵循：")
-        parts.append("<available_skills>")
-        for skill in skills:
-            parts.append("  <skill>")
-            parts.append(f"    <name>{self._escape_xml(skill.meta.name)}</name>")
-            parts.append(f"    <description>{self._escape_xml(skill.meta.description)}</description>")
-            parts.append(f"    <location>{self._escape_xml(str(skill.meta.source_path))}</location>")
-            parts.append("  </skill>")
-        parts.append("</available_skills>")
-        parts.append("")
-
-        # 完整指令正文
-        for skill in skills:
-            parts.append(
-                f'<skill name="{self._escape_xml(skill.meta.name)}">\n'
-                f"{skill.body}\n"
-                f"</skill>"
-            )
-
-        parts.append("")
-        parts.append("---")
-        parts.append("")
-        parts.append(system_prompt)
-        return "\n".join(parts)
+        _ = matches
+        return system_prompt
 
     @staticmethod
     def _escape_xml(text: str) -> str:

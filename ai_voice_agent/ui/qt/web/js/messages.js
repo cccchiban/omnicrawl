@@ -179,6 +179,9 @@ var Messages = (function() {
           String(item.output || ''),
           String(item.tool || 'tool')
         );
+        if (Tools.showToolArtifact) {
+          Tools.showToolArtifact(item.uiArtifact || item.ui_artifact || {});
+        }
       }
     }
     finishCurrentAI();

@@ -50,6 +50,10 @@ class BackendBridge(QObject):
     project_remove_requested = pyqtSignal(str)
     project_explorer_requested = pyqtSignal(str)
     projects_refresh_requested = pyqtSignal()
+    # 窗口控制信号：HTML 自定义标题栏接管原生标题栏的按钮与拖拽。
+    window_minimize_requested = pyqtSignal()
+    window_maximize_requested = pyqtSignal()
+    window_drag_requested = pyqtSignal()
     # 窗口关闭信号：允许后台线程通过 Qt 信号请求主线程关闭窗口
     close_requested = pyqtSignal()
 
@@ -226,6 +230,26 @@ class BackendBridge(QObject):
     def request_close(self) -> None:
         """从任意线程请求主线程关闭 Qt 窗口。"""
         self.close_requested.emit()
+
+    @pyqtSlot()
+    def onWindowMinimize(self) -> None:
+        """用户点击自定义标题栏的最小化按钮。"""
+        self.window_minimize_requested.emit()
+
+    @pyqtSlot()
+    def onWindowMaximize(self) -> None:
+        """用户点击自定义标题栏的最大化/还原按钮。"""
+        self.window_maximize_requested.emit()
+
+    @pyqtSlot()
+    def onWindowClose(self) -> None:
+        """用户点击自定义标题栏的关闭按钮。"""
+        self.close_requested.emit()
+
+    @pyqtSlot()
+    def onWindowDrag(self) -> None:
+        """用户从自定义标题栏拖动窗口。"""
+        self.window_drag_requested.emit()
 
     @pyqtSlot(str, str)
     def onCreateProject(self, name: str, path: str) -> None:

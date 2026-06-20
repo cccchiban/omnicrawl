@@ -485,3 +485,74 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         for meta in sm.list_all():
             commands.append(f"/skill:{meta.name}")
     return commands
+
+
+def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
+    """构建 Qt 输入框斜杠菜单使用的命令元数据。
+
+    TUI 只需要命令字符串做 Tab 补全；Qt 菜单需要额外的说明、显示标题和
+    搜索文本。这里复用同一套命令来源，避免 GUI 与终端可用命令不一致。
+    """
+
+    builtin_descriptions = {
+        "/new": "开启一个空白会话。",
+        "/model": "查看模型列表，或输入模型 ID 切换当前模型。",
+        "/models": "查看当前接口可用的模型列表。",
+        "/reasoning": "查看或切换推理强度。",
+        "/skills": "查看当前已加载的 Skill。",
+        "/memory:clean": "清理过期长期记忆。",
+        "/mcp": "查看 MCP 开关、服务和工具状态。",
+        "/sessions": "查看当前工作区最近会话。",
+        "/resume": "恢复指定会话 ID。",
+        "/history": "查看或筛选提示历史。",
+        "/compact": "压缩当前会话上下文。",
+        "/rename": "重命名当前会话。",
+        "/archive": "归档当前会话并开启新会话。",
+        "/archives": "查看已归档会话。",
+        "/approval": "查看当前工具审批模式。",
+        "/approval:manual": "工具执行前逐次询问。",
+        "/approval:auto": "自动批准工具执行。",
+        "/approval:review": "仅对疑似删除行为进行审查。",
+        "/auto-approve:off": "兼容命令：关闭自动审批。",
+        "/auto-approve:on": "兼容命令：开启自动审批。",
+        "/auto-review:on": "兼容命令：开启审查模式。",
+    }
+    argument_commands = {
+        "/model",
+        "/reasoning",
+        "/resume",
+        "/history",
+        "/rename",
+    }
+
+    options: list[dict[str, str]] = []
+    for command in build_slash_commands(agent):
+        if command.startswith("/skill:"):
+            continue
+        options.append(
+            {
+                "command": command,
+                "insert": f"{command} " if command in argument_commands else command,
+                "title": command,
+                "description": builtin_descriptions.get(command, "执行斜杠命令。"),
+                "category": "命令",
+                "search": command,
+            }
+        )
+
+    sm = agent.skill_manager
+    if sm is not None:
+        for meta in sm.list_all():
+            command = f"/skill:{meta.name}"
+            plain_name = meta.name.replace("-", " ")
+            options.append(
+                {
+                    "command": command,
+                    "insert": f"{command} ",
+                    "title": meta.name,
+                    "description": meta.description,
+                    "category": "Skill",
+                    "search": f"{command} /{meta.name} {plain_name} {meta.description}",
+                }
+            )
+    return options

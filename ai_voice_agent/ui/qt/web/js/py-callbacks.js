@@ -15,6 +15,9 @@ window.pyCallbacks = {
   // ── 工具 ──────────────────────────────────────
   showToolStart:      Tools.showToolStart,
   showToolResult:     Tools.showToolResult,
+  showHtmlPreview:    function(title, html) {
+    if (window.HtmlPreview) window.HtmlPreview.show(title, html);
+  },
 
   // ── 启动面板 ───────────────────────────────────
   showStartup:        Messages.showStartup,
@@ -35,12 +38,17 @@ window.pyCallbacks = {
   showModelListError: function(message) {
     if (window.ModelSelector) window.ModelSelector.showError(message);
   },
+  setWindowMaximized: function(maximized) {
+    if (window.WindowChrome) window.WindowChrome.setMaximized(maximized);
+  },
   updateSessionList: function(sessions) {
     if (window.SessionSidebar) window.SessionSidebar.updateSessionList(sessions);
+    if (window.SessionSearch) window.SessionSearch.updateSessionList(sessions);
   },
   renderSessionMessages: Messages.renderSessionMessages,
   setCurrentSession: function(sessionId, title) {
     if (window.SessionSidebar) window.SessionSidebar.setCurrentSession(sessionId, title);
+    if (window.SessionSearch) window.SessionSearch.setCurrentSession(sessionId, title);
   },
   showSessionListError: function(message) {
     if (window.SessionSidebar) window.SessionSidebar.showError(message);
@@ -49,6 +57,7 @@ window.pyCallbacks = {
   // ── 项目 ──────────────────────────────────────
   updateProjectList: function(projects) {
     if (window.ProjectSidebar) window.ProjectSidebar.updateProjectList(projects);
+    if (window.SessionSearch) window.SessionSearch.updateProjectList(projects);
   },
   setCurrentProject: function(projectPath) {
     if (window.ProjectSidebar) window.ProjectSidebar.setCurrentProject(projectPath);
@@ -56,6 +65,7 @@ window.pyCallbacks = {
   clearInput:         Input.clear,
   setInputEnabled:    Input.setEnabled,
   setInputPlaceholder: Input.setPlaceholder,
+  updateSlashCommands: Input.updateSlashCommands,
   setWorkspaceInfo:   Input.setWorkspaceInfo,
   setReasoningEffort: Input.setReasoningEffort,
   setApprovalMode:    Input.setApprovalMode,

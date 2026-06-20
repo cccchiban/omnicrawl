@@ -21,6 +21,7 @@ class ToolResult:
     ok: bool
     output: str
     full_output: str = ""
+    ui_artifact: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

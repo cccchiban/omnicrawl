@@ -5,10 +5,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from ai_voice_agent.agent import LocalToolAgent, ToolCall, ToolDefinition
-from ai_voice_agent.agent_environment import runtime_environment_context
 from ai_voice_agent.agent_tools import normalize_tool_call
 from ai_voice_agent.mcp.client import MCPClientManager, _resolve_stdio_command
 from ai_voice_agent.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
@@ -350,29 +350,31 @@ class MCPAgentCommandTest(unittest.TestCase):
         manager = MCPClientManager(MCPConfig(enabled=False))
         agent = object.__new__(LocalToolAgent)
         agent.workspace_root = Path.cwd()
+        agent.config = SimpleNamespace(workspace_detection_summary="")
         agent._tools = {}
         agent._memory_store = None
         agent._skill_manager = None
         agent._active_skills = []
+        agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
         agent._mcp_manager = manager
         agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
 
-        runtime_context = runtime_environment_context(
-            agent.workspace_root,
-            window_hint="Shell=CMD",
-            command_shell_hint="cmd.exe（默认按 CMD 语法解析）",
-            terminal_hint="WT_SESSION",
+        runtime_context = "\n".join(
+            [
+                "运行环境：",
+                "- 操作系统：Windows 11 (AMD64)",
+                "- Python：3.12.0",
+                f"- 工作区根目录：{agent.workspace_root}",
+                "- Agent 运行窗口：Shell=CMD",
+                "- run_command 默认 Shell：cmd.exe（默认按 CMD 语法解析）",
+                "- 终端环境变量：WT_SESSION",
+            ]
         )
-        with patch("ai_voice_agent.agent.runtime_environment_context", return_value=runtime_context):
+        with patch("ai_voice_agent.agent_prompt_context.runtime_environment_context", return_value=runtime_context):
             prompt = LocalToolAgent._system_prompt(agent)
+            context_messages = LocalToolAgent._context_messages(agent)
 
-        self.assertTrue(prompt.startswith("运行环境："))
-        self.assertIn("操作系统", prompt)
-        self.assertIn("Python", prompt)
-        self.assertIn("工作区根目录", prompt)
-        self.assertIn("Agent 运行窗口：Shell=CMD", prompt)
-        self.assertIn("run_command 默认 Shell：cmd.exe", prompt)
-        self.assertIn("终端环境变量：WT_SESSION", prompt)
+        self.assertNotIn("运行环境：", prompt)
         self.assertIn("docs/MCP_USAGE.md", prompt)
         self.assertIn("docs/MCP_DESIGN_TECHNICAL.md", prompt)
         self.assertIn("优先调用 MCP 能力", prompt)
@@ -381,8 +383,16 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertIn("Skill 多协作原则", prompt)
         self.assertIn("主 Skill 和辅助 Skill", prompt)
         self.assertIn("天气、新闻、价格", prompt)
-        self.assertIn("run_command", prompt)
+        self.assertNotIn("run_command 默认 Shell：cmd.exe", prompt)
         self.assertNotIn("risk_level=trusted", prompt)
+        runtime_message = context_messages[-1]["content"]
+        self.assertIn("运行环境：", runtime_message)
+        self.assertIn("操作系统", runtime_message)
+        self.assertIn("Python", runtime_message)
+        self.assertIn("工作区根目录", runtime_message)
+        self.assertIn("Agent 运行窗口：Shell=CMD", runtime_message)
+        self.assertIn("run_command 默认 Shell：cmd.exe", runtime_message)
+        self.assertIn("终端环境变量：WT_SESSION", runtime_message)
 
 
 class LocalMCPServerTest(unittest.TestCase):

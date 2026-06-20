@@ -52,6 +52,7 @@ class FakeModelWindow:
         self.model_labels: list[str] = []
         self.current_models: list[tuple[str, str | None]] = []
         self.token_updates: list[str] = []
+        self.html_previews: list[tuple[str, str]] = []
 
     def set_model_label(self, text: str) -> None:
         self.model_labels.append(text)
@@ -61,6 +62,9 @@ class FakeModelWindow:
 
     def update_token_display(self, text: str) -> None:
         self.token_updates.append(text)
+
+    def show_html(self, title: str, html: str) -> None:
+        self.html_previews.append((title, html))
 
 
 class FakeSessionWindow:
@@ -130,6 +134,43 @@ class QtUITest(unittest.TestCase):
         send_index = source.index("window.bridge.onUserSend(text)")
         self.assertLess(append_index, send_index)
         self.assertIn("Notice.show", source)
+
+    def test_should_show_slash_command_menu_and_support_tab_completion(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
+        input_css = (QT_WEB_DIR / "css" / "input-area.css").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+        ui_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "qt_ui.py").read_text(
+            encoding="utf-8"
+        )
+        qt_session_source = (PROJECT_ROOT / "ai_voice_agent" / "qt_chat_session.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="slash-command-menu"', index_source)
+        self.assertIn('aria-autocomplete="list"', index_source)
+        self.assertIn("updateSlashCommands", callback_source)
+        self.assertIn("updateSlashCommands", window_source)
+        self.assertIn("def update_slash_commands", ui_source)
+        self.assertIn("build_slash_command_options(agent)", qt_session_source)
+
+        self.assertIn("function updateSlashCommands(commands)", input_source)
+        self.assertIn("updateSlashCommands: updateSlashCommands", input_source)
+        self.assertIn("function activeSlashToken(inp)", input_source)
+        self.assertIn("function findSlashMatches(token)", input_source)
+        self.assertIn("function handleSlashCommandKeydown(event, inp)", input_source)
+        self.assertIn("event.key === 'Tab'", input_source)
+        self.assertIn("event.key === 'ArrowDown'", input_source)
+        self.assertIn("event.key === 'ArrowUp'", input_source)
+        self.assertIn("'aria-activedescendant'", input_source)
+        self.assertIn("'/skill:' + query.slice(1)", input_source)
+
+        self.assertIn(".slash-command-menu", input_css)
+        self.assertIn(".slash-command-option", input_css)
+        self.assertIn(".slash-command-option.active", input_css)
 
     def test_should_define_message_time_formatter_when_rendering_messages(self) -> None:
         source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
@@ -243,6 +284,47 @@ class QtUITest(unittest.TestCase):
         self.assertTrue(bridge.close_requested)
         self.assertFalse(window.closed)
 
+    def test_should_use_frameless_window_with_html_chrome_controls(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        title_css = (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8")
+        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+            encoding="utf-8"
+        )
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("Qt.WindowType.FramelessWindowHint", window_source)
+        self.assertIn("window_minimize_requested.connect(self.showMinimized)", window_source)
+        self.assertIn("window_maximize_requested.connect(self._toggle_maximized)", window_source)
+        self.assertIn("window_drag_requested.connect(self._start_window_drag)", window_source)
+        self.assertIn("startSystemMove", window_source)
+        self.assertIn("WM_NCHITTEST", window_source)
+
+        self.assertIn('id="app-chrome"', index_source)
+        self.assertIn('id="window-minimize-btn"', index_source)
+        self.assertIn('id="window-maximize-btn"', index_source)
+        self.assertIn('id="window-close-btn"', index_source)
+        self.assertIn("initWindowChrome()", app_source)
+        self.assertIn("window.bridge.onWindowDrag()", app_source)
+        self.assertIn("window.bridge.onWindowMinimize()", app_source)
+        self.assertIn("window.bridge.onWindowMaximize()", app_source)
+        self.assertIn("window.bridge.onWindowClose()", app_source)
+        self.assertIn("window.WindowChrome", app_source)
+
+        self.assertIn("onWindowMinimize", bridge_source)
+        self.assertIn("onWindowMaximize", bridge_source)
+        self.assertIn("onWindowClose", bridge_source)
+        self.assertIn("onWindowDrag", bridge_source)
+        self.assertIn("window_minimize_requested", backend_bridge)
+        self.assertIn("@pyqtSlot()\n    def onWindowMinimize", backend_bridge)
+        self.assertIn("setWindowMaximized", callback_source)
+        self.assertIn("#app-chrome", title_css)
+        self.assertIn(".window-control.close:hover", title_css)
+
     def test_should_emit_export_request_when_frontend_sends_markdown(self) -> None:
         bridge = BackendBridge()
         received: list[str] = []
@@ -301,6 +383,36 @@ class QtUITest(unittest.TestCase):
         self.assertIn("onNewSession", bridge_source)
         self.assertIn("sessions_refresh_requested", backend_bridge)
         self.assertIn("_on_session_resume_requested", window_source)
+
+    def test_should_integrate_session_search_from_sidebar_button(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        search_source = (QT_WEB_DIR / "js" / "search-dialog.js").read_text(encoding="utf-8")
+        search_css = (QT_WEB_DIR / "css" / "search-dialog.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="nav-search"', index_source)
+        self.assertIn('id="session-search-modal"', index_source)
+        self.assertIn('id="session-search-input"', index_source)
+        self.assertIn('src="js/search-dialog.js"', index_source)
+        self.assertLess(
+            index_source.index('src="js/search-dialog.js"'),
+            index_source.index('src="js/py-callbacks.js"'),
+        )
+
+        self.assertIn("SessionSearch.init()", app_source)
+        self.assertIn("window.SessionSearch.updateSessionList(sessions)", callback_source)
+        self.assertIn("window.SessionSearch.updateProjectList(projects)", callback_source)
+        self.assertIn("window.SessionSearch.setCurrentSession(sessionId, title)", callback_source)
+        self.assertIn("window.bridge.onResumeSession(sessionId)", search_source)
+        self.assertIn("function updateProjectList(projects)", search_source)
+        self.assertIn("function render()", search_source)
+        self.assertIn("modalEl.addEventListener('mousedown'", search_source)
+        self.assertIn("if (event.target === modalEl)", search_source)
+        self.assertIn("document.addEventListener('mousedown', handleDocumentMouseDown, true)", search_source)
+        self.assertIn("!panel.contains(event.target)", search_source)
+        self.assertIn(".session-search-panel", search_css)
+        self.assertIn(".session-search-result", search_css)
 
     def test_should_delete_session_with_undo_bar_instead_of_confirm_modal(self) -> None:
         index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
@@ -581,6 +693,50 @@ class QtUITest(unittest.TestCase):
         self.assertIn("readSidebarCollapsed", app_source)
         self.assertIn("writeSidebarCollapsed", app_source)
         self.assertIn("try", app_source)
+
+    def test_should_add_right_side_html_preview_panel(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        preview_source = (QT_WEB_DIR / "js" / "html-preview.js").read_text(encoding="utf-8")
+        preview_css = (QT_WEB_DIR / "css" / "html-preview.css").read_text(encoding="utf-8")
+        variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+        ui_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "qt_ui.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="html-preview-panel"', index_source)
+        self.assertIn('id="html-preview-frame"', index_source)
+        self.assertIn('sandbox="allow-scripts allow-forms allow-popups allow-modals"', index_source)
+        self.assertIn('src="js/html-preview.js"', index_source)
+        self.assertLess(
+            index_source.index('src="js/html-preview.js"'),
+            index_source.index('src="js/py-callbacks.js"'),
+        )
+        self.assertIn("HtmlPreview.init()", app_source)
+        self.assertIn("showHtmlPreview", callback_source)
+        self.assertIn("frame.srcdoc = currentHtml", preview_source)
+        self.assertIn("noopener,noreferrer", preview_source)
+        self.assertIn("win.opener = null", preview_source)
+        self.assertIn("html-preview-collapsed", preview_source)
+        self.assertIn(".html-preview-panel", preview_css)
+        self.assertIn("--html-preview-width", variables_css)
+        self.assertIn("self.resize(1920, 1018)", window_source)
+        self.assertIn("def show_html", window_source)
+        self.assertIn("showHtmlPreview", window_source)
+        self.assertIn("def show_html", ui_source)
+
+    def test_qt_ui_should_forward_html_preview_to_window(self) -> None:
+        ui = QtUI()
+        window = FakeModelWindow()
+        ui._window = window
+
+        ui.show_html("采集结果", "<html><body>ok</body></html>")
+
+        self.assertEqual(window.html_previews, [("采集结果", "<html><body>ok</body></html>")])
 
 
 if __name__ == "__main__":

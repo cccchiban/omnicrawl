@@ -21,12 +21,14 @@
     showStartup: null,
     showToolStart: null,
     showToolResult: null,
+    showHtmlPreview: null,
     updateTokenDisplay: null,
     showConfirmDialog: null,
     hideConfirmDialog: null,
     clearInput: null,
     setInputEnabled: null,
     setInputPlaceholder: null,
+    updateSlashCommands: null,
     setSpeaking: null,
     setListening: null,
     setWaiting: null,
@@ -37,10 +39,13 @@
     showModelListError: null,
     showModelSelect: null,
     setReasoningEffort: null,
+    setApprovalMode: null,
     updateSessionList: null,
     renderSessionMessages: null,
     setCurrentSession: null,
     showSessionListError: null,
+    updateProjectList: null,
+    setCurrentProject: null,
   };
 
   /**
@@ -74,6 +79,10 @@
         onRenameSession: function() {},
         onCompactSession: function() {},
         onDeleteSession: function() {},
+        onWindowMinimize: function() {},
+        onWindowMaximize: function() {},
+        onWindowClose: function() {},
+        onWindowDrag: function() {},
       };
     }
   }

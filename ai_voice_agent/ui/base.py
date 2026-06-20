@@ -48,6 +48,11 @@ class BaseUI(abc.ABC):
         with self._lock:
             self.model_label = text.strip()
 
+    def show_html(self, title: str, html: str) -> None:
+        """在支持的图形界面中显示 HTML；终端界面默认忽略。"""
+
+        return None
+
     # ── 样式快捷方法（默认无样式透传文本）──────────────────────
 
     def muted(self, text: str) -> str:
