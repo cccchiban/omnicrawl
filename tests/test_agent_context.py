@@ -19,6 +19,7 @@ from ai_voice_agent.agent import (
 from ai_voice_agent.agent_history import restore_history_window
 from ai_voice_agent.agent_llm_protocol import assistant_tool_call_message, function_name_for_tool
 from ai_voice_agent.agent_prompt_context import build_system_prompt
+from ai_voice_agent.mcp.config import MCPConfig
 from ai_voice_agent.project import ProjectStore
 from ai_voice_agent.session import SessionStore
 from ai_voice_agent.skill import Skill, SkillMatchResult, SkillMeta
@@ -59,6 +60,29 @@ class AgentContextInjectionTest(unittest.TestCase):
                     LocalToolAgent(config)
 
         self.assertEqual(calls, ["init", "ensure", "clean_if_due"])
+
+    def test_agent_initialization_does_not_preheat_bb_browser(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AgentConfig(
+                llm=SimpleNamespace(
+                    api_key="test-key",
+                    base_url="https://example.test/v1",
+                    model="test-model",
+                ),
+                workspace_root=Path(temp_dir),
+                memory_enabled=False,
+                session_enabled=False,
+                skills_enabled=False,
+                mcp_config=MCPConfig(enabled=False),
+                temp_workspace=AgentTempWorkspaceConfig(cleanup_enabled=False),
+            )
+
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                with patch("ai_voice_agent.agent.BBBrowserCLI.ensure_started") as ensure_started:
+                    agent = LocalToolAgent(config)
+                    agent.close()
+
+        ensure_started.assert_not_called()
 
     def test_agents_md_is_first_context_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

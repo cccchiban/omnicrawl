@@ -4,6 +4,7 @@
 'use strict';
 
 var Messages = (function() {
+  var activeConfirmKeydown = null;
 
   function messagesEl() {
     return document.getElementById('messages');
@@ -141,6 +142,8 @@ var Messages = (function() {
     AppState.resetAI();
     AppState.resetTool();
     AppState.fallbackToolStep = 1;
+    AppState.confirmId = null;
+    clearActiveConfirmKeydown();
     var container = messagesEl();
     if (container) container.innerHTML = '';
     // 恢复空状态
@@ -213,8 +216,8 @@ var Messages = (function() {
           '</div>' +
           '<div class="confirm-inline-body">' + escHtml(prompt) + '</div>' +
           '<div class="confirm-inline-actions">' +
-            '<button class="btn-deny" data-action="deny">拒绝</button>' +
-            '<button class="btn-allow" data-action="allow">允许</button>' +
+            '<button class="btn-deny" type="button" data-action="deny">拒绝</button>' +
+            '<button class="btn-allow" type="button" data-action="allow">允许</button>' +
           '</div>' +
         '</div>' +
       '</div>';
@@ -227,19 +230,66 @@ var Messages = (function() {
     var allowBtn = card.querySelector('[data-action="allow"]');
     var denyBtn = card.querySelector('[data-action="deny"]');
 
-    allowBtn.addEventListener('click', function() {
-      if (window.bridge && window.bridge.onConfirmResult) {
-        window.bridge.onConfirmResult(confirmId, true);
+    AppState.confirmId = confirmId;
+    clearActiveConfirmKeydown();
+
+    function handleConfirmKeydown(event) {
+      if (event.defaultPrevented || card.dataset.resolved === 'true') return;
+      if (!document.body.contains(card)) {
+        clearActiveConfirmKeydown(handleConfirmKeydown);
+        return;
       }
-      disableConfirmButtons(card);
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        submitConfirm(card, confirmId, true, handleConfirmKeydown);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        submitConfirm(card, confirmId, false, handleConfirmKeydown);
+      }
+    }
+
+    activeConfirmKeydown = handleConfirmKeydown;
+    document.addEventListener('keydown', handleConfirmKeydown, true);
+
+    allowBtn.addEventListener('click', function() {
+      submitConfirm(card, confirmId, true, handleConfirmKeydown);
     });
 
     denyBtn.addEventListener('click', function() {
-      if (window.bridge && window.bridge.onConfirmResult) {
-        window.bridge.onConfirmResult(confirmId, false);
-      }
-      disableConfirmButtons(card);
+      submitConfirm(card, confirmId, false, handleConfirmKeydown);
     });
+
+    // 确认卡片出现后把默认动作放在“允许”上；用户按 Enter 即可确认，
+    // 同时保留 Esc 快速拒绝，减少在命令审批流里的鼠标移动。
+    if (allowBtn && allowBtn.focus) {
+      try {
+        allowBtn.focus({ preventScroll: true });
+      } catch (_error) {
+        allowBtn.focus();
+      }
+    }
+  }
+
+  function submitConfirm(card, confirmId, approved, keydownHandler) {
+    if (!card || card.dataset.resolved === 'true') return;
+    card.dataset.resolved = 'true';
+    clearActiveConfirmKeydown(keydownHandler);
+    if (AppState.confirmId === confirmId) {
+      AppState.confirmId = null;
+    }
+    if (window.bridge && window.bridge.onConfirmResult) {
+      window.bridge.onConfirmResult(confirmId, approved);
+    }
+    disableConfirmButtons(card);
+  }
+
+  function clearActiveConfirmKeydown(handler) {
+    if (!activeConfirmKeydown) return;
+    if (handler && activeConfirmKeydown !== handler) return;
+    document.removeEventListener('keydown', activeConfirmKeydown, true);
+    activeConfirmKeydown = null;
   }
 
   function disableConfirmButtons(card) {

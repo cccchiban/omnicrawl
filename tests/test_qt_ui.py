@@ -178,6 +178,15 @@ class QtUITest(unittest.TestCase):
         self.assertIn("timeNow()", source)
         self.assertIn("function timeNow()", source)
 
+    def test_confirm_card_should_allow_enter_to_approve_by_default(self) -> None:
+        source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
+
+        self.assertIn("AppState.confirmId = confirmId", source)
+        self.assertIn("document.addEventListener('keydown', handleConfirmKeydown, true)", source)
+        self.assertIn("event.key === 'Enter' && !event.shiftKey", source)
+        self.assertIn("submitConfirm(card, confirmId, true, handleConfirmKeydown)", source)
+        self.assertIn("allowBtn.focus({ preventScroll: true })", source)
+
     def test_should_load_es2022_polyfills_before_marked_for_qt_webengine(self) -> None:
         index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
         polyfills_path = QT_WEB_DIR / "js" / "polyfills.js"

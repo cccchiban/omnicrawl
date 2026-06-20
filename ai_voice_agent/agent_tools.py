@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from .agent_types import ToolCall, ToolDefinition, ToolResult
 from .mcp import MCPClientManager, MCPToolMeta
-from .workspace_tools import WorkspaceToolError
+from .workspace_tools import DEFAULT_COMMAND_TIMEOUT_SECONDS, WorkspaceToolError
 
 
 TOOL_NAME_ALIASES = {
@@ -17,12 +17,11 @@ TOOL_NAME_ALIASES = {
     "replacetext": "replace_text",
     "writefile": "write_file",
     "runcommand": "run_command",
-    "bb-browser.browser.tablist": "bb-browser.browser.tab_list",
-    "bb-browser.browser.tabnew": "bb-browser.browser.tab_new",
-    "bb-browser.browser.sitelist": "bb-browser.browser.site_list",
-    "bb-browser.browser.siteinfo": "bb-browser.browser.site_info",
-    "bb-browser.browser.siterun": "bb-browser.browser.site_run",
-    "bb-browser.browser.type": "bb-browser.browser.type_text",
+    "bbbrowser": "bb_browser_cli",
+    "bbbrowsercli": "bb_browser_cli",
+    "bb-browser": "bb_browser_cli",
+    "bb-browser-cli": "bb_browser_cli",
+    "bb_browser": "bb_browser_cli",
 }
 ARGUMENT_NAME_ALIASES = {
     "cmd": "command",
@@ -60,6 +59,7 @@ def build_agent_tools(
     replace_text: ToolRunner,
     write_file: ToolRunner,
     run_command: ToolRunner,
+    bb_browser_cli: ToolRunner,
     memory_search: ToolRunner,
     memory_read: ToolRunner,
     memory_expand_related: ToolRunner,
@@ -123,9 +123,26 @@ def build_agent_tools(
             ToolDefinition(
                 name="run_command",
                 description="以工作区为当前目录执行任意本地命令、脚本或 shell 片段。",
-                argument_schema='{"command": "python -m py_compile main.py", "timeout_seconds": 120}',
+                argument_schema=(
+                    '{"command": "python -m py_compile main.py", '
+                    f'"timeout_seconds": {DEFAULT_COMMAND_TIMEOUT_SECONDS}}}'
+                ),
                 requires_confirmation=True,
                 run=run_command,
+            ),
+            ToolDefinition(
+                name="bb_browser_cli",
+                description=(
+                    "调用 bb-browser CLI 控制真实浏览器。bb-browser CLI 会自动启动 "
+                    "daemon 和受管浏览器；适合网页打开、tab 管理、snapshot、click、"
+                    "fill、eval、fetch、network、site adapter 等浏览器任务。"
+                ),
+                argument_schema=(
+                    '{"args": ["status", "--json"], "timeout_seconds": '
+                    f"{DEFAULT_COMMAND_TIMEOUT_SECONDS}}}"
+                ),
+                requires_confirmation=True,
+                run=bb_browser_cli,
             ),
             ToolDefinition(
                 name="display_html",

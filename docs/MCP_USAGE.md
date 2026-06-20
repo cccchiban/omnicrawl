@@ -19,6 +19,7 @@
 默认边界：
 
 - MCP 默认关闭，设置 `mcp.enabled=true` 才会连接启用的 Server。
+- bb-browser 不作为 MCP Server 接入；浏览器自动化统一走 Agent 内置 `bb_browser_cli` 工具，直接调用 CLI。
 - 当前可用传输是本地 `stdio`；`streamable_http` 会识别但暂不连接。
 - 外部网络能力默认不暴露，除非配置策略明确允许。
 - 高风险 MCP Tool 必须继续走 Host 侧审批或审查，不能只信任 Server 声明。
@@ -119,6 +120,7 @@
         "command": "python",
         "args": ["-m", "ai_voice_agent.mcp.server"],
         "env": {},
+        "timeout_seconds": 360,
         "risk_level": "trusted"
       }
     },
@@ -136,7 +138,7 @@
 
 - Server 名称只能使用小写字母、数字、下划线和连字符。
 - `stdio` 必须提供 `command`。
-- `timeout_seconds` 范围是 1 到 300 秒。
+- `timeout_seconds` 范围是 1 到 360 秒。
 - `risk_level=trusted` 只表示来源可信，不代表跳过审批。
 - 不要把真实密钥写进 `config.example.json` 或源码；真实密钥只能存在本地 `config.json` 或环境变量。
 - 引入外部 MCP Server 前，必须先明确能力范围、数据边界、成本和是否联网。

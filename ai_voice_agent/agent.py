@@ -27,6 +27,7 @@ from .agent_tools import (
     workspace_command_tool_result,
     workspace_tool_result,
 )
+from .bb_browser_cli import BBBrowserCLI
 from .agent_history import compact_history
 from .agent_llm_protocol import (
     AgentLLMProtocol,
@@ -84,7 +85,12 @@ from .temp_workspace import (
     AgentTempWorkspaceError,
     load_agent_temp_workspace_config,
 )
-from .workspace_tools import WorkspaceToolError, WorkspaceTools
+from .workspace_tools import (
+    DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    MAX_COMMAND_TIMEOUT_SECONDS,
+    WorkspaceToolError,
+    WorkspaceTools,
+)
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
@@ -169,7 +175,10 @@ class AgentConfig:
     )
     command_timeout_seconds: int = field(
         default_factory=lambda: _read_int_env(
-            "AGENT_COMMAND_TIMEOUT_SECONDS", 120, min_value=1, max_value=300
+            "AGENT_COMMAND_TIMEOUT_SECONDS",
+            DEFAULT_COMMAND_TIMEOUT_SECONDS,
+            min_value=1,
+            max_value=MAX_COMMAND_TIMEOUT_SECONDS,
         )
     )
 
@@ -190,7 +199,7 @@ class AgentConfig:
             "AGENT_COMMAND_TIMEOUT_SECONDS",
             self.command_timeout_seconds,
             min_value=1,
-            max_value=300,
+            max_value=MAX_COMMAND_TIMEOUT_SECONDS,
         )
         if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
             raise AgentError("memory_directory 必须是非空字符串。")
@@ -249,6 +258,7 @@ class LocalToolAgent:
             command_timeout_seconds=self.config.command_timeout_seconds,
             extra_protection_message=self._workspace_extra_protection_message,
         )
+        self._bb_browser_cli = BBBrowserCLI(self.workspace_root)
         self._skill_manager: SkillManager | None = None
 
         if not self.config.llm.api_key.strip():
@@ -1028,6 +1038,7 @@ class LocalToolAgent:
             replace_text=self._tool_replace_text,
             write_file=self._tool_write_file,
             run_command=self._tool_run_command,
+            bb_browser_cli=self._tool_bb_browser_cli,
             memory_search=self._tool_memory_search,
             memory_read=self._tool_memory_read,
             memory_expand_related=self._tool_memory_expand_related,
@@ -1094,6 +1105,9 @@ class LocalToolAgent:
 
     def _tool_run_command(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_command_tool_result(self._workspace_toolbox().run_command, arguments)
+
+    def _tool_bb_browser_cli(self, arguments: dict[str, Any]) -> ToolResult:
+        return self._bb_browser_cli_toolbox().run(arguments)
 
     def _tool_display_html(self, arguments: dict[str, Any]) -> ToolResult:
         """准备 Qt 右侧 HTML 显示区内容。
@@ -1173,13 +1187,24 @@ class LocalToolAgent:
         toolbox = getattr(self, "_workspace_tools", None)
         if toolbox is not None:
             return toolbox
-        command_timeout = getattr(getattr(self, "config", None), "command_timeout_seconds", 120)
+        command_timeout = getattr(
+            getattr(self, "config", None),
+            "command_timeout_seconds",
+            DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        )
         toolbox = WorkspaceTools(
             self.workspace_root,
             command_timeout_seconds=command_timeout,
             extra_protection_message=self._workspace_extra_protection_message,
         )
         self._workspace_tools = toolbox
+        return toolbox
+
+    def _bb_browser_cli_toolbox(self) -> BBBrowserCLI:
+        toolbox = getattr(self, "_bb_browser_cli", None)
+        if toolbox is None:
+            toolbox = BBBrowserCLI(self.workspace_root)
+            self._bb_browser_cli = toolbox
         return toolbox
 
     def _workspace_extra_protection_message(self, path: Path) -> str | None:

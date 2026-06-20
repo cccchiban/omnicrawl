@@ -12,7 +12,6 @@ from ai_voice_agent.agent import LocalToolAgent, ToolCall, ToolDefinition
 from ai_voice_agent.agent_tools import normalize_tool_call
 from ai_voice_agent.mcp.client import MCPClientManager, _resolve_stdio_command
 from ai_voice_agent.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
-from ai_voice_agent.mcp.bb_browser_server import BBBrowserMCPServer
 from ai_voice_agent.mcp.registry import MCPPromptMeta, MCPResourceMeta, MCPToolMeta, namespace_capability_name
 from ai_voice_agent.mcp.server import LocalMCPServer
 from ai_voice_agent.mcp.security import mcp_tool_requires_confirmation
@@ -494,65 +493,6 @@ class LocalMCPServerTest(unittest.TestCase):
         result = response["result"]
         self.assertTrue(result["isError"])
         self.assertIn("退出码：7", result["content"][0]["text"])
-
-
-class BBBrowserMCPServerTest(unittest.TestCase):
-    def test_bb_browser_server_lists_tools(self) -> None:
-        server = BBBrowserMCPServer(Path.cwd())
-
-        response = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-
-        tools = response["result"]["tools"]
-        names = {tool["name"] for tool in tools}
-        self.assertIn("browser.status", names)
-        self.assertIn("browser.open", names)
-        self.assertIn("browser.site_run", names)
-
-    def test_bb_browser_server_runs_cli_arguments(self) -> None:
-        server = BBBrowserMCPServer(Path.cwd())
-
-        with patch.object(server, "_run_bb_browser", return_value='{"ok":true}') as run_bb_browser:
-            response = server.handle_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "browser.open",
-                        "arguments": {"url": "https://example.com", "tab": "current"},
-                    },
-                }
-            )
-
-        self.assertFalse(response["result"]["isError"])
-        run_bb_browser.assert_called_once_with(
-            ["open", "https://example.com", "--json", "--tab", "current"]
-        )
-
-    def test_bb_browser_stdio_server_discovers_capabilities(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            config = MCPConfig(
-                enabled=True,
-                servers={
-                    "bb-browser": MCPServerConfig(
-                        name="bb-browser",
-                        enabled=True,
-                        transport="stdio",
-                        command="python",
-                        args=["-m", "ai_voice_agent.mcp.bb_browser_server"],
-                        timeout_seconds=5,
-                        risk_level="trusted",
-                    )
-                },
-            )
-            manager = MCPClientManager(config, workspace_root=workspace, approval_mode_getter=lambda: "manual")
-
-            manager.discover()
-            manager.close()
-
-        self.assertIn("bb-browser.browser.status", manager.registry.tools)
-        self.assertIn("bb-browser.browser.open", manager.registry.tools)
 
 
 if __name__ == "__main__":

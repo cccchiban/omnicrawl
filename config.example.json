@@ -36,6 +36,7 @@
           "ai_voice_agent.mcp.server"
         ],
         "env": {},
+        "timeout_seconds": 360,
         "risk_level": "trusted"
       }
     },

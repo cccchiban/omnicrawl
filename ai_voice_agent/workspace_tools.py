@@ -11,7 +11,8 @@ from typing import Any, Callable
 MAX_FILE_READ_CHARS = 200_000
 MAX_SEARCH_RESULTS = 200
 MAX_LIST_ENTRIES = 500
-DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 360
+MAX_COMMAND_TIMEOUT_SECONDS = 360
 
 PROTECTED_NAMES = {
     ".git",
@@ -52,7 +53,10 @@ class WorkspaceTools:
         extra_protection_message: Callable[[Path], str | None] | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
-        self.command_timeout_seconds = max(1, min(command_timeout_seconds, 300))
+        self.command_timeout_seconds = max(
+            1,
+            min(command_timeout_seconds, MAX_COMMAND_TIMEOUT_SECONDS),
+        )
         self.max_file_read_chars = max_file_read_chars
         self._extra_protection_message = extra_protection_message
 
@@ -174,7 +178,7 @@ class WorkspaceTools:
             "timeout_seconds",
             default=self.command_timeout_seconds,
             minimum=1,
-            maximum=300,
+            maximum=MAX_COMMAND_TIMEOUT_SECONDS,
         )
         try:
             completed = subprocess.run(

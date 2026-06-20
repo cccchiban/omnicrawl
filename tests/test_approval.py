@@ -123,10 +123,10 @@ class ApprovalCommandTest(unittest.TestCase):
                 requires_confirmation=True,
                 run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
             ),
-            "bb-browser.browser.tab_list": ToolDefinition(
-                name="bb-browser.browser.tab_list",
-                description="列出标签页。",
-                argument_schema='{}',
+            "bb_browser_cli": ToolDefinition(
+                name="bb_browser_cli",
+                description="调用 bb-browser CLI。",
+                argument_schema='{"args":["status","--json"]}',
                 requires_confirmation=False,
                 run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
             ),
@@ -140,14 +140,14 @@ class ApprovalCommandTest(unittest.TestCase):
             tools,
         )
         tab_call = normalize_tool_call(
-            ToolCall(name="bb-browser.browser.tablist", arguments={}),
+            ToolCall(name="bb-browser", arguments={"args": ["status", "--json"]}),
             tools,
         )
 
         self.assertEqual(read_call.name, "read_file")
         self.assertEqual(read_call.arguments["start_line"], 2)
         self.assertEqual(read_call.arguments["max_lines"], 30)
-        self.assertEqual(tab_call.name, "bb-browser.browser.tab_list")
+        self.assertEqual(tab_call.name, "bb_browser_cli")
 
     def test_review_mode_skips_non_delete_tool_calls(self) -> None:
         tool = ToolDefinition(

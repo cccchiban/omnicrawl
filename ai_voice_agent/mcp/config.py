@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from ..runtime_config import RuntimeConfigError, get_section, load_config_data
+from ..workspace_tools import MAX_COMMAND_TIMEOUT_SECONDS
 
 
 MCP_TRANSPORT_STDIO = "stdio"
@@ -95,14 +96,14 @@ def load_mcp_config(config_path: str | Path | None = None) -> MCPConfig:
         "default_timeout_seconds",
         default=30,
         min_value=1,
-        max_value=300,
+        max_value=MAX_COMMAND_TIMEOUT_SECONDS,
         config_key="mcp.default_timeout_seconds",
     )
     default_timeout = _read_int_env(
         "MCP_DEFAULT_TIMEOUT_SECONDS",
         default_timeout,
         min_value=1,
-        max_value=300,
+        max_value=MAX_COMMAND_TIMEOUT_SECONDS,
     )
 
     max_tool_output_chars = _read_int_field(
@@ -243,7 +244,7 @@ def _load_server_config(
         "timeout_seconds",
         default=default_timeout_seconds,
         min_value=1,
-        max_value=300,
+        max_value=MAX_COMMAND_TIMEOUT_SECONDS,
         config_key=f"mcp.servers.{normalized_name}.timeout_seconds",
     )
     risk_level = _read_text_field(
