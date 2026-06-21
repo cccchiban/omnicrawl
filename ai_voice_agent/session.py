@@ -22,6 +22,7 @@ MODEL_CONTEXT_EVENT_TYPES = MESSAGE_EVENT_TYPES | {
     "tool_call_denied",
     "tool_result",
 }
+EMPTY_SESSION_EVENT_TYPES = {"session_started", "session_closed"}
 MAX_PROMPT_HISTORY_DISPLAY_CHARS = 4000
 TOOL_RESULT_INLINE_OUTPUT_CHARS = 8 * 1024
 TOOL_RESULT_LARGE_OUTPUT_CHARS = 128 * 1024
@@ -636,6 +637,43 @@ class SessionStore:
         remaining = [e for e in entries if e.session_id != normalized_id]
         self._save_entries(remaining)
 
+    def discard_empty_session(self, session_id: str) -> bool:
+        """删除还没有真实聊天内容的空会话。
+
+        GUI 启动会先准备一个当前会话，方便后续首条消息直接写入同一个
+        `session_id`。如果用户只是打开又关闭窗口，这个占位会话只包含
+        `session_started` 等生命周期事件，不应出现在历史列表里。这里由
+        存储层统一读取事件流再判断，确保包含用户消息、助手回复、工具结果、
+        重命名、导出或归档等任何业务事件的会话都不会被误删。
+        """
+
+        self.ensure()
+        normalized_id = _normalize_session_id(session_id)
+        entry = self._entry_by_id(normalized_id)
+        if entry.archived_at is not None or entry.message_count > 0:
+            return False
+
+        events = self._read_events(entry)
+        if any(event.type not in EMPTY_SESSION_EVENT_TYPES for event in events):
+            return False
+
+        session_file = self._session_path(entry)
+        if session_file.exists():
+            try:
+                session_file.unlink()
+            except OSError as exc:
+                raise SessionStoreError(f"删除空会话转录失败：{session_file}，{exc}") from exc
+
+        artifact_dir = self.artifacts_dir / normalized_id
+        if artifact_dir.is_dir():
+            import shutil
+
+            shutil.rmtree(artifact_dir, ignore_errors=True)
+
+        entries = self._load_entries()
+        self._save_entries([item for item in entries if item.session_id != normalized_id])
+        return True
+
     def unarchive_session(
         self,
         session_id: str,
@@ -712,6 +750,29 @@ class SessionStore:
         normalized_id = _normalize_session_id(session_id)
         entry = self._entry_by_id(normalized_id)
         return self._read_events(entry)
+
+    def read_artifact_text(self, session_id: str, artifact_path: str) -> str:
+        """读取 `.agent_sessions/artifacts/` 下的文本 artifact。
+
+        Qt 历史回放需要把已持久化的 HTML UI artifact 重新送回右侧显示区。
+        这里统一做相对路径、会话归属和目录边界校验，调用方只拿到文本内容，
+        不直接拼接本地路径，避免 UI 层绕过 SessionStore 的会话文件约束。
+        """
+
+        normalized_id = _normalize_session_id(session_id)
+        normalized = _normalize_relative_artifact_path(artifact_path)
+        relative_path = Path(normalized)
+        if len(relative_path.parts) < 2 or relative_path.parts[1] != normalized_id:
+            raise SessionStoreError(f"artifact 路径必须位于当前会话目录：{artifact_path}")
+        path = (self.root / normalized).resolve()
+        if not _is_relative_to(path, self.root.resolve()):
+            raise SessionStoreError(f"artifact 路径越界：{artifact_path}")
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise SessionStoreError(f"artifact 不存在：{artifact_path}") from exc
+        except OSError as exc:
+            raise SessionStoreError(f"读取 artifact 失败：{artifact_path}，{exc}") from exc
 
     def list_sessions(
         self,
@@ -1179,6 +1240,18 @@ def _normalize_relative_file_path(raw_path: Any) -> str:
         raise SessionStoreError(f"会话路径必须是安全相对路径：{raw_path}")
     if path.suffix.lower() != ".jsonl":
         raise SessionStoreError(f"会话转录文件必须是 JSONL：{raw_path}")
+    return normalized
+
+
+def _normalize_relative_artifact_path(raw_path: Any) -> str:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise SessionStoreError("artifact 路径必须是非空字符串。")
+    normalized = raw_path.strip().replace("\\", "/")
+    path = Path(normalized)
+    if path.is_absolute() or ".." in path.parts:
+        raise SessionStoreError(f"artifact 路径必须是安全相对路径：{raw_path}")
+    if not path.parts or path.parts[0].lower() != "artifacts":
+        raise SessionStoreError(f"artifact 路径必须位于 artifacts 目录：{raw_path}")
     return normalized
 
 

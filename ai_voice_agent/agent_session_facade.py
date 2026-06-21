@@ -224,6 +224,15 @@ class AgentSessionFacade:
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
 
+    def read_session_artifact_text(self, session_id: str, artifact_path: str) -> str:
+        """读取当前会话存储根目录下的文本 artifact。"""
+
+        store = self.require_session_store()
+        try:
+            return store.read_artifact_text(session_id, artifact_path)
+        except SessionStoreError as exc:
+            raise self._error_type(str(exc)) from exc
+
     def rename_current_session(self, title: str) -> SessionState:
         """重命名当前会话，并同步更新内存中的 `SessionState`。"""
 
@@ -358,6 +367,21 @@ class AgentSessionFacade:
             )
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
+
+    def discard_current_empty_session(self) -> bool:
+        """清理启动后未产生真实内容的占位会话。"""
+
+        store = getattr(self._owner, "_session_store", None)
+        state = getattr(self._owner, "_session_state", None)
+        if store is None or state is None:
+            return False
+        try:
+            discarded = store.discard_empty_session(state.session_id)
+        except SessionStoreError as exc:
+            raise self._error_type(str(exc)) from exc
+        if discarded:
+            self._owner._session_state = None
+        return discarded
 
     def append_prompt_history(self, text: str) -> None:
         """记录用户提交的真实提示，用于跨会话输入复用。"""

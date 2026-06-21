@@ -84,6 +84,33 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         ensure_started.assert_not_called()
 
+    def test_agent_close_discards_empty_startup_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = AgentConfig(
+                llm=SimpleNamespace(
+                    api_key="test-key",
+                    base_url="https://example.test/v1",
+                    model="test-model",
+                ),
+                workspace_root=workspace,
+                memory_enabled=False,
+                skills_enabled=False,
+                mcp_config=MCPConfig(enabled=False),
+                temp_workspace=AgentTempWorkspaceConfig(cleanup_enabled=False),
+            )
+
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                session_id = agent.current_session_id
+                agent.close()
+
+            store = SessionStore(workspace / ".agent_sessions")
+            sessions = store.list_sessions(workspace_root=workspace)
+
+        self.assertTrue(session_id)
+        self.assertEqual(sessions, [])
+
     def test_agents_md_is_first_context_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)

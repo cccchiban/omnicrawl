@@ -39,6 +39,9 @@ class AgentLifecycleTest(unittest.TestCase):
             workspace = Path(temp_dir)
             store = SessionStore(workspace / ".agent_sessions")
             state = store.start_session(workspace)
+            store.append_event(state.session_id, "user_message", {"content": "关闭前问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "关闭前回答"})
+            state = store.load_session(state.session_id)
 
             class FakeMCPManager:
                 def close(self) -> None:
@@ -64,7 +67,10 @@ class AgentLifecycleTest(unittest.TestCase):
                 if line.strip()
             ]
 
-        self.assertEqual([event["type"] for event in events], ["session_started", "session_closed"])
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["session_started", "user_message", "assistant_message", "session_closed"],
+        )
 
     def test_agent_close_keeps_interrupted_session_as_last_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

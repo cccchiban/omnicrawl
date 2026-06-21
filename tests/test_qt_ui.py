@@ -494,6 +494,70 @@ class QtUITest(unittest.TestCase):
         self.assertIn("README", projected[2]["output"])
         self.assertEqual(projected[3]["type"], "assistant")
 
+    def test_should_restore_html_preview_content_when_replaying_artifact_session(self) -> None:
+        session_id = "20260620-172052-999ed2"
+        html = "<!doctype html><html><body><h1>历史 HTML</h1></body></html>"
+        artifact_path = "artifacts/20260620-172052-999ed2/html_preview_ab1025bf7b4f46a8.html"
+        read_calls: list[tuple[str, str]] = []
+        events = [
+            SessionEvent.create(
+                session_id=session_id,
+                event_type="tool_result",
+                payload={
+                    "tool": "display_html",
+                    "ok": True,
+                    "output": "已发送到右侧 HTML 显示区。",
+                    "ui_artifact": {
+                        "type": "html",
+                        "title": "历史预览",
+                        "artifact_path": artifact_path,
+                        "html_size_chars": len(html),
+                    },
+                },
+            )
+        ]
+
+        def read_html_artifact(read_session_id: str, read_artifact_path: str) -> str:
+            read_calls.append((read_session_id, read_artifact_path))
+            return html if read_session_id == session_id and read_artifact_path == artifact_path else ""
+
+        projected = _session_events_to_ui(
+            events,
+            read_html_artifact=read_html_artifact,
+        )
+
+        self.assertEqual(read_calls, [(session_id, artifact_path)])
+        self.assertEqual(projected[0]["uiArtifact"]["html"], html)
+        self.assertEqual(projected[0]["uiArtifact"]["artifact_path"], artifact_path)
+
+    def test_should_keep_artifact_placeholder_when_html_artifact_is_missing(self) -> None:
+        session_id = "20260620-172052-999ed2"
+        artifact_path = "artifacts/20260620-172052-999ed2/html_preview_missing.html"
+        events = [
+            SessionEvent.create(
+                session_id=session_id,
+                event_type="tool_result",
+                payload={
+                    "tool": "display_html",
+                    "ok": True,
+                    "output": "已发送到右侧 HTML 显示区。",
+                    "ui_artifact": {
+                        "type": "html",
+                        "title": "历史预览",
+                        "artifact_path": artifact_path,
+                    },
+                },
+            )
+        ]
+
+        projected = _session_events_to_ui(
+            events,
+            read_html_artifact=lambda _session_id, _path: (_ for _ in ()).throw(RuntimeError("missing")),
+        )
+
+        self.assertNotIn("html", projected[0]["uiArtifact"])
+        self.assertEqual(projected[0]["uiArtifact"]["artifact_path"], artifact_path)
+
     def test_should_not_duplicate_user_message_when_frontend_already_echoed_input(self) -> None:
         ui = QtUI()
         window = FakeChatWindow()

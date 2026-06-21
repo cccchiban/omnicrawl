@@ -389,6 +389,11 @@ class LocalToolAgent:
 
         return self._session_facade().load_session_events(session_id)
 
+    def read_session_artifact_text(self, session_id: str, artifact_path: str) -> str:
+        """读取会话 artifact 文本，供 Qt 历史回放恢复右侧 HTML 预览。"""
+
+        return self._session_facade().read_session_artifact_text(session_id, artifact_path)
+
     def rename_current_session(self, title: str) -> SessionState:
         """重命名当前会话，并同步更新内存中的 `SessionState`。"""
 
@@ -480,14 +485,17 @@ class LocalToolAgent:
             raise close_errors[0]
 
     def _append_session_closed_event(self) -> None:
-        """正常退出时写 `session_closed`，保留中断事件作为恢复线索。"""
+        """正常退出时收尾当前会话，并丢弃没有真实内容的启动占位。"""
 
         state = getattr(self, "_session_state", None)
         if state is None:
             return
         if state.last_event_type in {"session_closed", "session_interrupted"}:
+            if state.last_event_type == "session_closed":
+                self._session_facade().discard_current_empty_session()
             return
         self._append_session_event("session_closed", {})
+        self._session_facade().discard_current_empty_session()
 
     @property
     def approval_mode(self) -> str:

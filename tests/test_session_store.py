@@ -288,6 +288,24 @@ class SessionStoreTest(unittest.TestCase):
             f"完整输出 artifact：{payload['artifact_path']}",
         )
 
+    def test_read_artifact_text_rejects_artifact_from_another_session(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            current_state = store.start_session(workspace)
+            other_state = store.start_session(workspace)
+            other_artifact_dir = workspace / ".agent_sessions" / "artifacts" / other_state.session_id
+            other_artifact_dir.mkdir(parents=True)
+            other_artifact_path = other_artifact_dir / "html_preview_other.html"
+            other_artifact_path.write_text("<h1>其他会话</h1>", encoding="utf-8")
+
+            with self.assertRaisesRegex(SessionStoreError, "artifact 路径必须位于当前会话目录"):
+                store.read_artifact_text(
+                    current_state.session_id,
+                    f"artifacts/{other_state.session_id}/html_preview_other.html",
+                )
+
     def test_sensitive_tool_arguments_are_redacted_in_session_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"

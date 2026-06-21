@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Callable
 
 from .agent import AgentError, LocalToolAgent
 from .project import ProjectEntry
@@ -110,7 +111,10 @@ def _project_entry_to_ui(
     }
 
 
-def _session_events_to_ui(events: list[SessionEvent]) -> list[dict[str, object]]:
+def _session_events_to_ui(
+    events: list[SessionEvent],
+    read_html_artifact: Callable[[str, str], str] | None = None,
+) -> list[dict[str, object]]:
     """把 JSONL 事件流转换为 Qt 可回放的消息列表。"""
 
     messages: list[dict[str, object]] = []
@@ -161,6 +165,12 @@ def _session_events_to_ui(events: list[SessionEvent]) -> list[dict[str, object]]
                 artifact_hint = f"\n完整输出 artifact：{artifact_path.strip()}"
                 output = f"{output}{artifact_hint}" if isinstance(output, str) else artifact_hint.strip()
             ui_artifact = payload.get("ui_artifact", {})
+            if isinstance(ui_artifact, dict):
+                ui_artifact = _hydrate_html_ui_artifact(
+                    event.session_id,
+                    ui_artifact,
+                    read_html_artifact,
+                )
             ok = payload.get("ok", False)
             if isinstance(tool, str) and isinstance(output, str):
                 messages.append(
@@ -173,6 +183,34 @@ def _session_events_to_ui(events: list[SessionEvent]) -> list[dict[str, object]]
                     }
                 )
     return messages
+
+
+def _hydrate_html_ui_artifact(
+    session_id: str,
+    ui_artifact: dict[str, object],
+    read_html_artifact: Callable[[str, str], str] | None,
+) -> dict[str, object]:
+    """为历史回放补回 HTML artifact 原文。
+
+    新生成时前端会直接拿到 `html`，但写入 JSONL 时为了避免单行过大只保留
+    `artifact_path`。恢复历史会话时需要重新读取该文件，否则右侧显示区只能
+    显示路径提示，用户还要手动打开 artifact。
+    """
+
+    if ui_artifact.get("type") != "html" or isinstance(ui_artifact.get("html"), str):
+        return ui_artifact
+    artifact_path = ui_artifact.get("artifact_path")
+    if not isinstance(artifact_path, str) or not artifact_path.strip() or read_html_artifact is None:
+        return ui_artifact
+    try:
+        html = read_html_artifact(session_id, artifact_path.strip())
+    except Exception:
+        return ui_artifact
+    if not html.strip():
+        return ui_artifact
+    hydrated = dict(ui_artifact)
+    hydrated["html"] = html
+    return hydrated
 
 
 def run_qt_chat(
@@ -248,7 +286,12 @@ def run_qt_chat(
         """从 JSONL 事件流重建 Qt 消息区。"""
 
         events = agent.load_session_events(session_id)
-        ui.render_session_messages(_session_events_to_ui(events))
+        ui.render_session_messages(
+            _session_events_to_ui(
+                events,
+                read_html_artifact=agent.read_session_artifact_text,
+            )
+        )
 
     def resume_session_for_qt(session_id: str) -> None:
         """恢复会话并同步 Qt 消息列表、标题和侧边栏高亮。"""
