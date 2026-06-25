@@ -80,8 +80,56 @@ function sanitizeRenderedHtml(html) {
     });
   });
 
+  decorateCodeBlocks(template.content);
+
   return template.innerHTML;
 }
+
+/**
+ * 为每个 <pre><code> 代码块包裹一层结构，加上语言标签与复制按钮。
+ * marked 输出的语言记录在 code 元素的 class="language-xxx" 上。
+ */
+function decorateCodeBlocks(root) {
+  root.querySelectorAll('pre > code').forEach(function(code) {
+    var pre = code.parentNode;
+    var parentCls = pre && pre.parentNode && pre.parentNode.classList;
+    if (!pre || !pre.parentNode || (parentCls && parentCls.contains('code-block'))) {
+      return;
+    }
+
+    var lang = '';
+    var match = (code.className || '').match(/language-([\w+#-]+)/i);
+    if (match) lang = match[1];
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'code-block';
+
+    var head = document.createElement('div');
+    head.className = 'code-block-head';
+
+    var langEl = document.createElement('span');
+    langEl.className = 'code-block-lang';
+    langEl.textContent = lang || 'code';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'code-copy-btn';
+    btn.setAttribute('data-copy', '1');
+    btn.setAttribute('aria-label', '复制代码');
+    btn.innerHTML = COPY_ICON + '<span class="code-copy-label">复制</span>';
+
+    head.appendChild(langEl);
+    head.appendChild(btn);
+
+    pre.parentNode.insertBefore(wrapper, pre);
+    wrapper.appendChild(head);
+    wrapper.appendChild(pre);
+  });
+}
+
+var COPY_ICON = '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+  '<rect x="9" y="9" width="11" height="11" rx="2"/>' +
+  '<path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
 
 /** HTML 实体转义 */
 function escHtml(s) {

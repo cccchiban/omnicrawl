@@ -24,7 +24,8 @@ window.pyCallbacks = {
 
   // ── 状态栏 ────────────────────────────────────
   setStatus:          Status.setStatus,
-  setWaiting:         Status.setGenerating,
+  setWaiting:         Status.setWaiting,
+  setGenerating:      Status.setGenerating,
   setSpeaking:        Status.setSpeaking,
   setListening:       Status.setListening,
   updateTokenDisplay: Status.updateToken,
@@ -58,9 +59,13 @@ window.pyCallbacks = {
   updateProjectList: function(projects) {
     if (window.ProjectSidebar) window.ProjectSidebar.updateProjectList(projects);
     if (window.SessionSearch) window.SessionSearch.updateProjectList(projects);
+    if (window.updateProjectDropdown) window.updateProjectDropdown(projects);
   },
   setCurrentProject: function(projectPath) {
     if (window.ProjectSidebar) window.ProjectSidebar.setCurrentProject(projectPath);
+  },
+  setProjectModalPath: function(projectPath) {
+    if (window.ProjectSidebar) window.ProjectSidebar.setProjectModalPath(projectPath);
   },
   clearInput:         Input.clear,
   setInputEnabled:    Input.setEnabled,

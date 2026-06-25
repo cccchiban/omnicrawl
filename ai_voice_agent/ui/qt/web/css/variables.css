@@ -1,33 +1,32 @@
 /* ═══════════════════════════════════════════════════════════════
-   variables.css — Codex 风格色彩系统
-   深灰底色 + 侧边栏导航 + 底部悬浮输入
+   variables.css — Codex 风格色彩系统（Figma 融合版）
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
   /* ── 背景层级 ────────────────────────────────── */
-  --bg-app:           #0d0d0d;
-  --bg-sidebar:       #1a1a1a;
-  --bg-sidebar-hover: #252525;
-  --bg-main:          #0d0d0d;
-  --bg-input:         #1f1f1f;
-  --bg-input-hover:   #2a2a2a;
-  --bg-card:          #1a1a1a;
-  --bg-card-hover:    #222222;
-  --bg-tool-card:     #141414;
-  --bg-confirm-card:  #1a1a1a;
+  --bg-app:           #1a1a1e;
+  --bg-sidebar:       #141418;
+  --bg-sidebar-hover: rgba(255, 255, 255, 0.05);
+  --bg-main:          #1a1a1e;
+  --bg-input:         #2a2a30;
+  --bg-input-hover:   rgba(255, 255, 255, 0.08);
+  --bg-card:          #242428;
+  --bg-card-hover:    rgba(255, 255, 255, 0.04);
+  --bg-tool-card:     #1e1e22;
+  --bg-confirm-card:  #242428;
 
   /* ── 边框 ────────────────────────────────────── */
-  --border-light:     #2a2a2a;
-  --border-medium:    #333333;
-  --border-strong:    #404040;
-  --border-input:     #333333;
-  --border-input-focus: #4a4a4a;
+  --border-light:     rgba(255, 255, 255, 0.06);
+  --border-medium:    rgba(255, 255, 255, 0.08);
+  --border-strong:    rgba(255, 255, 255, 0.12);
+  --border-input:     rgba(255, 255, 255, 0.08);
+  --border-input-focus: rgba(255, 255, 255, 0.15);
 
   /* ── 文字色 ──────────────────────────────────── */
-  --text-primary:     #e8e8e8;
-  --text-secondary:   #a0a0a0;
-  --text-tertiary:    #666666;
-  --text-placeholder: #555555;
+  --text-primary:     #e8e8ed;
+  --text-secondary:   #8a8a9a;
+  --text-tertiary:    #5a5a6a;
+  --text-placeholder: rgba(232, 232, 237, 0.34);
   --text-link:        #60a5fa;
 
   /* ── 强调色 ──────────────────────────────────── */
@@ -47,7 +46,7 @@
   --code-comment:     #546e7a;
 
   /* ── 字体 ────────────────────────────────────── */
-  --font-sans:        system-ui, 'Segoe UI', 'Microsoft YaHei UI',
+  --font-sans:        'Inter', system-ui, 'Segoe UI', 'Microsoft YaHei UI',
                       'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
   --font-mono:        'JetBrains Mono', 'Cascadia Code', 'Consolas',
                       'Courier New', monospace;
@@ -63,8 +62,8 @@
 
   /* ── 圆角 ────────────────────────────────────── */
   --radius-sm:        6px;
-  --radius-md:        10px;
-  --radius-lg:        16px;
+  --radius-md:        8px;
+  --radius-lg:        12px;
   --radius-full:      9999px;
 
   /* ── 动效 ────────────────────────────────────── */
@@ -72,7 +71,7 @@
   --transition-base:  0.2s ease;
 
   /* ── 布局 ────────────────────────────────────── */
-  --sidebar-width:    300px;
+  --sidebar-width:    280px;
   --chat-max-width:   860px;
   --input-max-width:  860px;
   --html-preview-width: 620px;

@@ -13,7 +13,7 @@ import queue
 import threading
 
 from PyQt5.QtCore import QEvent, QPoint, QUrl, Qt
-from PyQt5.QtWidgets import QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFileDialog, QVBoxLayout, QWidget
 from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
 from PyQt5.QtWebChannel import QWebChannel
 
@@ -203,6 +203,7 @@ class ChatWindow(QWidget):
         self._bridge.project_rename_requested.connect(self._on_project_rename_requested)
         self._bridge.project_remove_requested.connect(self._on_project_remove_requested)
         self._bridge.project_explorer_requested.connect(self._on_project_explorer_requested)
+        self._bridge.project_path_selected.connect(self._on_project_path_selected)
         self._bridge.projects_refresh_requested.connect(self._on_projects_refresh_requested)
         self._frontend_signals_connected = True
 
@@ -300,6 +301,12 @@ class ChatWindow(QWidget):
         if self._input_queue is not None:
             self._input_queue.put(f"__OPEN_IN_EXPLORER__ {project_path}")
 
+    def _on_project_path_selected(self, _unused: str = "") -> None:
+        """打开原生目录选择器，并把结果回填到项目弹窗路径输入框。"""
+        selected = QFileDialog.getExistingDirectory(self, "选择项目文件夹", os.getcwd())
+        if selected:
+            self._bridge.call_js("setProjectModalPath", selected)
+
     def _on_projects_refresh_requested(self) -> None:
         """用户请求刷新项目列表。"""
         if self._input_queue is not None:
@@ -386,6 +393,9 @@ class ChatWindow(QWidget):
 
     def set_waiting(self, active: bool) -> None:
         self._bridge.call_js("setWaiting", active)
+
+    def set_generating(self, active: bool) -> None:
+        self._bridge.call_js("setGenerating", active)
 
     def scroll_to_bottom(self) -> None:
         self._bridge.call_js("scrollToEnd")

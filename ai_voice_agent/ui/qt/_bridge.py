@@ -49,6 +49,7 @@ class BackendBridge(QObject):
     project_rename_requested = pyqtSignal(str, str)
     project_remove_requested = pyqtSignal(str)
     project_explorer_requested = pyqtSignal(str)
+    project_path_selected = pyqtSignal(str)
     projects_refresh_requested = pyqtSignal()
     # 窗口控制信号：HTML 自定义标题栏接管原生标题栏的按钮与拖拽。
     window_minimize_requested = pyqtSignal()
@@ -290,6 +291,11 @@ class BackendBridge(QObject):
     def onOpenInExplorer(self, project_path: str) -> None:
         """用户在资源管理器中打开项目目录。"""
         self.project_explorer_requested.emit(project_path)
+
+    @pyqtSlot()
+    def onBrowseProjectPath(self) -> None:
+        """用户在项目弹窗中请求选择项目目录。"""
+        self.project_path_selected.emit("")
 
     @pyqtSlot()
     def onRequestProjects(self) -> None:

@@ -91,6 +91,40 @@ function setCurrentModelIdentity(model) {
 
 document.addEventListener('DOMContentLoaded', () => {
 
+  // 0. 代码块复制按钮（事件委托）
+  const messagesEl = document.getElementById('messages');
+  if (messagesEl) {
+    messagesEl.addEventListener('click', (event) => {
+      const btn = event.target.closest('.code-copy-btn');
+      if (!btn) return;
+      const block = btn.closest('.code-block');
+      const code = block && block.querySelector('code');
+      if (!code) return;
+      const text = code.textContent || '';
+      const label = btn.querySelector('.code-copy-label');
+      function onCopied() {
+        if (label) label.textContent = '已复制';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          if (label) label.textContent = '复制';
+          btn.classList.remove('copied');
+        }, 2000);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(onCopied).catch(() => {});
+      } else {
+        // Qt WebEngine 旧版兼容
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); onCopied(); } catch (_) {}
+        document.body.removeChild(ta);
+      }
+    });
+  }
+
   // 1. 初始化输入模块（绑定 Enter/Shift+Enter 等事件）
   Input.init();
 
@@ -107,16 +141,12 @@ document.addEventListener('DOMContentLoaded', () => {
   if (window.HtmlPreview) {
     HtmlPreview.init();
   }
+  initNavigationHistory();
+  initAppMenuActions();
+  initAutomationPanel();
+  initSettingsPanel();
 
-  // 6. 停止生成按钮
-  const stopBtn = document.getElementById('stop-btn');
-  if (stopBtn) {
-    stopBtn.addEventListener('click', () => {
-      if (window.bridge && window.bridge.onCancel) {
-        window.bridge.onCancel();
-      }
-    });
-  }
+  // 6. 停止生成按钮已移至对话流内联显示（status-msg-row）
 
   const navExport = document.getElementById('nav-export');
   if (navExport) {
@@ -128,7 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 7. QWebChannel 连接成功前禁用输入，避免消息发送到尚未就绪的 bridge。
   Input.setBridgeReady(false);
-  window.addEventListener('bridge-ready', () => {
+  function handleBridgeReady() {
     Input.setBridgeReady(true);
     if (window.SessionSidebar) {
       SessionSidebar.requestRefresh();
@@ -136,7 +166,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.ProjectSidebar) {
       ProjectSidebar.requestProjectList();
     }
+  }
+  window.addEventListener('bridge-ready', () => {
+    handleBridgeReady();
   });
+  if (window.bridge) {
+    handleBridgeReady();
+  }
 
   // 8. 模型选择器 — 下拉菜单交互
   initModelSelector();
@@ -207,6 +243,536 @@ function initWindowChrome() {
       maximizeBtn.setAttribute('aria-label', maximized ? '还原' : '最大化');
     },
   };
+}
+
+function initNavigationHistory() {
+  const backBtn = document.getElementById('chrome-back-btn');
+  const forwardBtn = document.getElementById('chrome-forward-btn');
+  const history = ['chat'];
+  let index = 0;
+  let applying = false;
+
+  window.AppNavigation = {
+    push: function(state) {
+      if (applying || !state || history[index] === state) return;
+      history.splice(index + 1);
+      history.push(state);
+      index = history.length - 1;
+    },
+    apply: applyState,
+  };
+
+  if (backBtn) {
+    backBtn.addEventListener('click', () => {
+      if (index <= 0) {
+        Notice.show('已在当前对话');
+        return;
+      }
+      index -= 1;
+      applyState(history[index]);
+    });
+  }
+
+  if (forwardBtn) {
+    forwardBtn.addEventListener('click', () => {
+      if (index >= history.length - 1) {
+        Notice.show('没有可前进的视图');
+        return;
+      }
+      index += 1;
+      applyState(history[index]);
+    });
+  }
+
+  function applyState(state) {
+    applying = true;
+    closeAutomationPanel();
+    closeSettingsPanel();
+    if (window.SessionSearch) SessionSearch.close();
+    if (state === 'search' && window.SessionSearch) {
+      SessionSearch.open();
+    } else if (state === 'automation') {
+      openAutomationPanel(true);
+    } else if (state === 'settings') {
+      openSettingsPanel(true);
+    } else if (state === 'preview' && window.HtmlPreview) {
+      HtmlPreview.toggle();
+    } else {
+      focusChatInput();
+    }
+    applying = false;
+  }
+}
+
+function initAppMenuActions() {
+  const aboutBtn = document.getElementById('chrome-about-btn');
+  const menuButtons = document.querySelectorAll('.app-menu-item[data-menu-action]');
+  let popover = null;
+
+  if (aboutBtn) {
+    aboutBtn.addEventListener('click', () => {
+      showAboutNotice();
+      pushNavigationState('chat');
+    });
+  }
+
+  menuButtons.forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const action = button.dataset.menuAction || '';
+      showAppMenuPopover(button, action);
+    });
+  });
+
+  document.addEventListener('click', () => hidePopover());
+
+  function showAppMenuPopover(anchor, action) {
+    hidePopover();
+    const items = menuItemsFor(action);
+    popover = document.createElement('div');
+    popover.className = 'app-menu-popover';
+    items.forEach((item) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'context-item';
+      btn.innerHTML = '<span></span>';
+      btn.querySelector('span').textContent = item.label;
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        hidePopover();
+        item.run();
+      });
+      popover.appendChild(btn);
+    });
+    const rect = anchor.getBoundingClientRect();
+    popover.style.left = Math.min(rect.left, window.innerWidth - 230) + 'px';
+    popover.style.top = (rect.bottom + 4) + 'px';
+    document.body.appendChild(popover);
+  }
+
+  function hidePopover() {
+    if (popover) {
+      popover.remove();
+      popover = null;
+    }
+  }
+
+  function menuItemsFor(action) {
+    if (action === 'file') {
+      return [
+        { label: '新建对话', run: requestNewSession },
+        { label: '导出当前对话', run: exportChat },
+      ];
+    }
+    if (action === 'edit') {
+      return [
+        { label: '聚焦输入框', run: focusChatInput },
+        { label: '复制当前对话', run: copyCurrentChatMarkdown },
+      ];
+    }
+    if (action === 'view') {
+      return [
+        { label: '折叠/展开侧边栏', run: toggleSidebarFromMenu },
+        { label: '折叠/展开 HTML 显示区', run: toggleHtmlPreview },
+      ];
+    }
+    return [
+      { label: '关于 AI Voice Agent', run: showAboutNotice },
+      { label: '打开设置', run: openSettingsPanel },
+    ];
+  }
+}
+
+function initSettingsPanel() {
+  const navSettings = document.getElementById('nav-settings');
+  const closeBtn = document.getElementById('settings-modal-close');
+  const backdrop = document.getElementById('settings-modal-backdrop');
+  const focusBtn = document.getElementById('settings-focus-input-btn');
+  const sidebarBtn = document.getElementById('settings-toggle-sidebar-btn');
+  const previewBtn = document.getElementById('settings-toggle-preview-btn');
+  const refreshBtn = document.getElementById('settings-refresh-btn');
+
+  if (navSettings) {
+    navSettings.addEventListener('click', (event) => {
+      event.preventDefault();
+      openSettingsPanel();
+    });
+  }
+  if (closeBtn) closeBtn.addEventListener('click', closeSettingsPanel);
+  if (backdrop) backdrop.addEventListener('click', closeSettingsPanel);
+  if (focusBtn) focusBtn.addEventListener('click', () => {
+    closeSettingsPanel();
+    focusChatInput();
+  });
+  if (sidebarBtn) sidebarBtn.addEventListener('click', toggleSidebarFromMenu);
+  if (previewBtn) previewBtn.addEventListener('click', toggleHtmlPreview);
+  if (refreshBtn) refreshBtn.addEventListener('click', () => {
+    requestSidebarRefresh();
+    Notice.show('已刷新项目和会话列表');
+  });
+}
+
+function openSettingsPanel(fromHistory) {
+  const modal = document.getElementById('settings-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  if (!fromHistory) pushNavigationState('settings');
+}
+
+function closeSettingsPanel() {
+  const modal = document.getElementById('settings-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function initAutomationPanel() {
+  const navAutomation = document.getElementById('nav-automation');
+  const closeBtn = document.getElementById('automation-modal-close');
+  const backdrop = document.getElementById('automation-modal-backdrop');
+  const newBtn = document.getElementById('automation-new-btn');
+  const saveBtn = document.getElementById('automation-save-btn');
+  const runBtn = document.getElementById('automation-run-btn');
+  const toggleBtn = document.getElementById('automation-toggle-btn');
+  const deleteBtn = document.getElementById('automation-delete-btn');
+  const listEl = document.getElementById('automation-task-list');
+  const titleInput = document.getElementById('automation-title-input');
+  const promptInput = document.getElementById('automation-prompt-input');
+  const intervalInput = document.getElementById('automation-interval-input');
+  const enabledInput = document.getElementById('automation-enabled-input');
+  const STORAGE_KEY = 'automation-tasks';
+  let tasks = loadAutomationTasks();
+  let selectedTaskId = tasks[0] ? tasks[0].id : '';
+  let timers = [];
+
+  window.AutomationPanel = {
+    open: openAutomationPanel,
+    close: closeAutomationPanel,
+    runSelected: function() {
+      const task = findSelectedTask();
+      if (task) runAutomationTask(task);
+    },
+  };
+
+  if (navAutomation) {
+    navAutomation.addEventListener('click', (event) => {
+      event.preventDefault();
+      openAutomationPanel();
+    });
+  }
+  if (closeBtn) closeBtn.addEventListener('click', closeAutomationPanel);
+  if (backdrop) backdrop.addEventListener('click', closeAutomationPanel);
+  if (newBtn) newBtn.addEventListener('click', createDraftTask);
+  if (saveBtn) saveBtn.addEventListener('click', saveSelectedTask);
+  if (runBtn) runBtn.addEventListener('click', () => {
+    const task = saveSelectedTask({ quiet: true });
+    if (task) runAutomationTask(task);
+  });
+  if (toggleBtn) toggleBtn.addEventListener('click', toggleSelectedTask);
+  if (deleteBtn) deleteBtn.addEventListener('click', deleteSelectedTask);
+
+  renderAutomationTasks();
+  scheduleAutomationTimers();
+
+  function loadAutomationTasks() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.map(normalizeAutomationTask).filter(Boolean) : [];
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function normalizeAutomationTask(task) {
+    if (!task || typeof task !== 'object') return null;
+    const prompt = String(task.prompt || '').trim();
+    const title = String(task.title || '').trim() || '未命名自动化';
+    const intervalMinutes = Math.max(1, Number(task.intervalMinutes || 60));
+    return {
+      id: String(task.id || createTaskId()),
+      title: title,
+      prompt: prompt,
+      intervalMinutes: Number.isFinite(intervalMinutes) ? intervalMinutes : 60,
+      enabled: Boolean(task.enabled),
+      nextRunAt: Number(task.nextRunAt || 0),
+      lastRunAt: Number(task.lastRunAt || 0),
+    };
+  }
+
+  function saveAutomationTasks() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(tasks));
+    } catch (_err) {
+      Notice.show('自动化保存失败：本地存储不可用');
+    }
+  }
+
+  function createTaskId() {
+    return 'automation-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  }
+
+  function renderAutomationTasks() {
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    if (!tasks.length) {
+      const empty = document.createElement('div');
+      empty.className = 'automation-empty';
+      empty.textContent = '暂无自动化任务';
+      listEl.appendChild(empty);
+      setAutomationForm(null);
+      return;
+    }
+
+    if (!selectedTaskId || !tasks.some(task => task.id === selectedTaskId)) {
+      selectedTaskId = tasks[0].id;
+    }
+    tasks.forEach((task) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'automation-task-item' + (task.id === selectedTaskId ? ' active' : '');
+      item.dataset.taskId = task.id;
+      item.innerHTML = '<span class="automation-task-title"></span><span class="automation-task-meta"></span>';
+      item.querySelector('.automation-task-title').textContent = task.title;
+      item.querySelector('.automation-task-meta').textContent = task.enabled
+        ? '每 ' + task.intervalMinutes + ' 分钟'
+        : '已暂停';
+      item.addEventListener('click', () => {
+        selectedTaskId = task.id;
+        renderAutomationTasks();
+      });
+      listEl.appendChild(item);
+    });
+    setAutomationForm(findSelectedTask());
+  }
+
+  function setAutomationForm(task) {
+    const hasTask = Boolean(task);
+    if (titleInput) titleInput.value = task ? task.title : '';
+    if (promptInput) promptInput.value = task ? task.prompt : '';
+    if (intervalInput) intervalInput.value = task ? String(task.intervalMinutes) : '60';
+    if (enabledInput) enabledInput.value = task && task.enabled ? 'true' : 'false';
+    [saveBtn, runBtn, toggleBtn, deleteBtn].forEach((button) => {
+      if (button) button.disabled = !hasTask;
+    });
+    if (toggleBtn && task) toggleBtn.textContent = task.enabled ? '暂停' : '启用';
+  }
+
+  function findSelectedTask() {
+    return tasks.find(task => task.id === selectedTaskId) || null;
+  }
+
+  function createDraftTask() {
+    const task = {
+      id: createTaskId(),
+      title: '新的自动化',
+      prompt: '',
+      intervalMinutes: 60,
+      enabled: false,
+      nextRunAt: 0,
+      lastRunAt: 0,
+    };
+    tasks.unshift(task);
+    selectedTaskId = task.id;
+    saveAutomationTasks();
+    renderAutomationTasks();
+    if (titleInput) titleInput.focus();
+  }
+
+  function saveSelectedTask(options) {
+    const task = findSelectedTask();
+    if (!task) return null;
+    const title = titleInput ? titleInput.value.trim() : '';
+    const prompt = promptInput ? promptInput.value.trim() : '';
+    const intervalMinutes = intervalInput ? Number(intervalInput.value) : 60;
+    const enabled = enabledInput ? enabledInput.value === 'true' : false;
+    if (!title) {
+      Notice.show('请输入自动化名称');
+      if (titleInput) titleInput.focus();
+      return null;
+    }
+    if (!prompt) {
+      Notice.show('请输入要运行的聊天内容');
+      if (promptInput) promptInput.focus();
+      return null;
+    }
+    if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1) {
+      Notice.show('间隔分钟必须大于 0');
+      if (intervalInput) intervalInput.focus();
+      return null;
+    }
+
+    task.title = title;
+    task.prompt = prompt;
+    task.intervalMinutes = Math.floor(intervalMinutes);
+    task.enabled = enabled;
+    if (task.enabled && task.nextRunAt <= Date.now()) {
+      task.nextRunAt = Date.now() + task.intervalMinutes * 60 * 1000;
+    }
+    saveAutomationTasks();
+    renderAutomationTasks();
+    scheduleAutomationTimers();
+    if (!options || !options.quiet) Notice.show('自动化任务已保存');
+    return task;
+  }
+
+  function toggleSelectedTask() {
+    const task = saveSelectedTask({ quiet: true });
+    if (!task) return;
+    task.enabled = !task.enabled;
+    task.nextRunAt = task.enabled ? Date.now() + task.intervalMinutes * 60 * 1000 : 0;
+    if (enabledInput) enabledInput.value = task.enabled ? 'true' : 'false';
+    saveAutomationTasks();
+    renderAutomationTasks();
+    scheduleAutomationTimers();
+    Notice.show(task.enabled ? '自动化已启用' : '自动化已暂停');
+  }
+
+  function deleteSelectedTask() {
+    const task = findSelectedTask();
+    if (!task) return;
+    if (!window.confirm('确定删除此自动化任务吗？')) return;
+    tasks = tasks.filter(item => item.id !== task.id);
+    selectedTaskId = tasks[0] ? tasks[0].id : '';
+    saveAutomationTasks();
+    renderAutomationTasks();
+    scheduleAutomationTimers();
+    Notice.show('自动化任务已删除');
+  }
+
+  function runAutomationTask(task) {
+    if (!task || !task.prompt) return;
+    if (!(window.Input && Input.isReadyForProgrammaticSend && Input.isReadyForProgrammaticSend())) {
+      Notice.show('Agent 忙碌中，自动化任务稍后再试');
+      return;
+    }
+    if (!(window.bridge && window.bridge.onUserSend)) {
+      Notice.show('界面通信尚未就绪，请稍后重试');
+      return;
+    }
+    const main = document.getElementById('main');
+    if (main && main.classList.contains('empty-state')) {
+      main.classList.remove('empty-state');
+    }
+    Messages.appendUserMsg(task.prompt);
+    window.bridge.onUserSend(task.prompt);
+    task.lastRunAt = Date.now();
+    task.nextRunAt = task.enabled ? Date.now() + task.intervalMinutes * 60 * 1000 : 0;
+    saveAutomationTasks();
+    renderAutomationTasks();
+    scheduleAutomationTimers();
+    closeAutomationPanel();
+    Notice.show('已运行自动化：' + task.title);
+  }
+
+  function scheduleAutomationTimers() {
+    timers.forEach(timer => clearTimeout(timer));
+    timers = [];
+    const now = Date.now();
+    tasks.forEach((task) => {
+      if (!task.enabled || !task.prompt) return;
+      if (!task.nextRunAt || task.nextRunAt < now) {
+        task.nextRunAt = now + task.intervalMinutes * 60 * 1000;
+      }
+      const delay = Math.max(1000, task.nextRunAt - now);
+      timers.push(setTimeout(() => runAutomationTask(task), delay));
+    });
+    saveAutomationTasks();
+  }
+}
+
+function openAutomationPanel(fromHistory) {
+  const modal = document.getElementById('automation-modal');
+  if (!modal) return;
+  closeSettingsPanel();
+  modal.classList.remove('hidden');
+  if (!fromHistory) pushNavigationState('automation');
+}
+
+function closeAutomationPanel() {
+  const modal = document.getElementById('automation-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function pushNavigationState(state) {
+  if (window.AppNavigation) {
+    window.AppNavigation.push(state);
+  }
+}
+
+function requestNewSession() {
+  if (window.bridge && window.bridge.onNewSession) {
+    window.bridge.onNewSession();
+  }
+}
+
+function requestSidebarRefresh() {
+  if (window.SessionSidebar) SessionSidebar.requestRefresh();
+  if (window.ProjectSidebar) ProjectSidebar.requestProjectList();
+}
+
+function focusChatInput() {
+  if (window.Input && Input.focus) {
+    Input.focus();
+  }
+}
+
+function toggleSidebarFromMenu() {
+  const toggle = document.getElementById('sidebar-toggle');
+  if (toggle) toggle.click();
+}
+
+function toggleHtmlPreview() {
+  if (window.HtmlPreview && HtmlPreview.toggle) {
+    HtmlPreview.toggle();
+    pushNavigationState('preview');
+  }
+}
+
+function showAboutNotice() {
+  Notice.show('AI Voice Agent 已就绪');
+}
+
+function buildChatMarkdown() {
+  const rows = document.querySelectorAll('.msg-row, .tool-row');
+  let md = '# AI Voice Agent 对话记录\n\n';
+  const now = new Date();
+  md += '> 导出时间：' + now.toLocaleString() + '\n\n---\n\n';
+
+  rows.forEach(row => {
+    if (row.classList.contains('user')) {
+      const bubble = row.querySelector('.bubble');
+      if (bubble) md += '**你**：\n\n' + bubble.textContent.trim() + '\n\n';
+    } else if (row.classList.contains('ai')) {
+      const bubble = row.querySelector('.bubble');
+      if (bubble) {
+        const role = row.querySelector('.msg-role');
+        const name = role ? role.textContent.trim() : AppState.currentModelName;
+        md += '**' + name + '**：\n\n' + bubble.textContent.trim() + '\n\n';
+      }
+    } else if (row.classList.contains('tool-row')) {
+      const name = row.querySelector('.tool-name');
+      const status = row.querySelector('.tool-status');
+      const result = row.querySelector('.tool-result');
+      if (name) {
+        const statusText = status ? (status.classList.contains('ok') ? '✓' : '✗') : '';
+        md += '**🔧 ' + statusText + ' ' + name.textContent.trim() + '**\n\n';
+        if (result) md += '```\n' + result.textContent.trim() + '\n```\n\n';
+      }
+    }
+  });
+  return md;
+}
+
+function copyCurrentChatMarkdown() {
+  const md = buildChatMarkdown();
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    Notice.show('当前环境不支持剪贴板复制');
+    return;
+  }
+  navigator.clipboard.writeText(md).then(() => {
+    Notice.show('对话内容已复制到剪贴板');
+  }).catch(() => {
+    Notice.show('复制失败，请检查剪贴板权限');
+  });
 }
 
 function initSidebarToggle() {
@@ -287,7 +853,13 @@ function initSessionSidebar() {
   function scheduleDelete(sessionId, title) {
     if (!sessionId) return;
     if (pendingDelete) {
-      commitPendingDelete();
+      // 同一个会话再次点击 → 撤销删除（toggle）
+      if (pendingDelete.sessionId === sessionId) {
+        undoPendingDelete();
+        return;
+      }
+      // 不同会话 → 先撤销上一个待删除，再开始新的
+      undoPendingDelete();
     }
     const target = {
       sessionId: sessionId,
@@ -345,15 +917,39 @@ function initSessionSidebar() {
       if (metaEl) {
         metaEl.textContent = `${session.updatedAt || ''} · ${session.messageCount || 0} 条`;
       }
-      // 点击删除按钮
+            // 点击删除按钮
       if (deleteEl) {
         deleteEl.addEventListener('click', (e) => {
           e.stopPropagation();
+          // 延迟 300ms 判断是否为双击
+          if (deleteEl._dblFired) { deleteEl._dblFired = false; return; }
+          deleteEl._clickTimer = setTimeout(() => {
+            deleteEl._clickTimer = null;
+            const sid = item.dataset.sessionId;
+            const stitle = titleEl ? titleEl.textContent : sid;
+            scheduleDelete(sid, stitle);
+          }, 300);
+        });
+
+        // 双击删除按钮 → 立即删除，跳过 5 秒倒计时
+        deleteEl.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          deleteEl._dblFired = true;
+          if (deleteEl._clickTimer) { clearTimeout(deleteEl._clickTimer); deleteEl._clickTimer = null; }
           const sid = item.dataset.sessionId;
-          const stitle = titleEl ? titleEl.textContent : sid;
-          scheduleDelete(sid, stitle);
+          if (pendingDelete && pendingDelete.sessionId === sid) {
+            // 已有待删除 → 立即确认
+            commitPendingDelete();
+          } else {
+            // 无待删除或无该会话待删除 → 取消其他待删除，直接调用 backend 删除
+            if (pendingDelete) { undoPendingDelete(); }
+            if (window.bridge && window.bridge.onDeleteSession) {
+              window.bridge.onDeleteSession(sid);
+            }
+          }
         });
       }
+
       // 点击会话条目 → 恢复
       item.addEventListener('click', () => {
         if (window.bridge && window.bridge.onResumeSession && item.dataset.sessionId) {
@@ -633,33 +1229,7 @@ function initModelSelector() {
  * 导出当前对话为 Markdown 格式，通过 bridge 发送给 Python 保存。
  */
 function exportChat() {
-  const rows = document.querySelectorAll('.msg-row, .tool-row');
-  let md = '# AI Voice Agent 对话记录\n\n';
-  const now = new Date();
-  md += '> 导出时间：' + now.toLocaleString() + '\n\n---\n\n';
-
-  rows.forEach(row => {
-    if (row.classList.contains('user')) {
-      const bubble = row.querySelector('.bubble');
-      if (bubble) md += '**你**：\n\n' + bubble.textContent.trim() + '\n\n';
-    } else if (row.classList.contains('ai')) {
-      const bubble = row.querySelector('.bubble');
-      if (bubble) {
-        const role = row.querySelector('.msg-role');
-        const name = role ? role.textContent.trim() : AppState.currentModelName;
-        md += '**' + name + '**：\n\n' + bubble.textContent.trim() + '\n\n';
-      }
-    } else if (row.classList.contains('tool-row')) {
-      const name = row.querySelector('.tool-name');
-      const status = row.querySelector('.tool-status');
-      const result = row.querySelector('.tool-result');
-      if (name) {
-        const statusText = status ? (status.classList.contains('ok') ? '✓' : '✗') : '';
-        md += '**🔧 ' + statusText + ' ' + name.textContent.trim() + '**\n\n';
-        if (result) md += '```\n' + result.textContent.trim() + '\n```\n\n';
-      }
-    }
-  });
+  const md = buildChatMarkdown();
 
   // 通过 bridge 发送给 Python 保存
   if (window.bridge && window.bridge.onExportChat) {

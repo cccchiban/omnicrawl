@@ -38,7 +38,10 @@ var HtmlPreview = (function() {
 
     if (popoutBtn) {
       popoutBtn.addEventListener('click', function() {
-        if (!currentHtml) return;
+        if (!currentHtml) {
+          if (window.Notice) Notice.show('暂无可打开的 HTML 内容');
+          return;
+        }
         var win = window.open('', '_blank', 'noopener,noreferrer');
         if (!win) {
           if (window.Notice) Notice.show('新窗口被拦截');
@@ -63,6 +66,18 @@ var HtmlPreview = (function() {
     frame.srcdoc = currentHtml;
     setCollapsed(false);
     writeCollapsed(false);
+  }
+
+  function toggle() {
+    if (!panel) init();
+    if (!panel) return;
+    var nextCollapsed = !panel.classList.contains('collapsed');
+    setCollapsed(nextCollapsed);
+    writeCollapsed(nextCollapsed);
+  }
+
+  function hasContent() {
+    return Boolean(currentHtml);
   }
 
   function showPlaceholder(title, message) {
@@ -107,5 +122,7 @@ var HtmlPreview = (function() {
     init: init,
     show: show,
     showPlaceholder: showPlaceholder,
+    toggle: toggle,
+    hasContent: hasContent,
   };
 })();

@@ -77,12 +77,44 @@ class AgentContextInjectionTest(unittest.TestCase):
                 temp_workspace=AgentTempWorkspaceConfig(cleanup_enabled=False),
             )
 
-            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+            with patch("openai.OpenAI", return_value=SimpleNamespace()) as openai_client:
                 with patch("ai_voice_agent.agent.BBBrowserCLI.ensure_started") as ensure_started:
                     agent = LocalToolAgent(config)
+                    self.assertIsNone(agent._client)
                     agent.close()
 
+        openai_client.assert_not_called()
         ensure_started.assert_not_called()
+
+    def test_agent_initialization_defers_mcp_discovery_until_status_or_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = AgentConfig(
+                llm=SimpleNamespace(
+                    api_key="test-key",
+                    base_url="https://example.test/v1",
+                    model="test-model",
+                ),
+                workspace_root=Path(temp_dir),
+                memory_enabled=False,
+                session_enabled=False,
+                skills_enabled=False,
+                mcp_config=MCPConfig(enabled=True),
+                temp_workspace=AgentTempWorkspaceConfig(cleanup_enabled=False),
+            )
+            discover_calls = 0
+
+            def fake_discover(manager) -> None:
+                nonlocal discover_calls
+                discover_calls += 1
+                manager._discovered = True
+
+            with patch("ai_voice_agent.mcp.client.MCPClientManager.discover", fake_discover):
+                agent = LocalToolAgent(config)
+                self.assertEqual(discover_calls, 0)
+
+                agent.format_mcp_status()
+                self.assertEqual(discover_calls, 1)
+                agent.close()
 
     def test_agent_close_discards_empty_startup_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

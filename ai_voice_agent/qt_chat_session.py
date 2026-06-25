@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 from pathlib import Path
 from typing import Callable
@@ -57,6 +59,24 @@ class _QtStatusLine:
 
     def new_line_for_input(self, prefix: str = "▸") -> None:
         pass
+
+
+def open_project_in_file_manager(project_path: str) -> None:
+    """用当前系统的文件管理器打开项目目录。"""
+
+    path = Path(project_path).expanduser().resolve(strict=False)
+    if not path.exists():
+        raise AgentError(f"路径不存在：{project_path}")
+    if not path.is_dir():
+        raise AgentError(f"路径不是目录：{project_path}")
+    if os.name == "nt":
+        os.startfile(str(path))  # type: ignore[attr-defined]
+        return
+    command = ["open", str(path)] if os.sys.platform == "darwin" else ["xdg-open", str(path)]
+    try:
+        subprocess.Popen(command)
+    except OSError as exc:
+        raise AgentError(str(exc)) from exc
 
 
 def _session_entry_to_ui(entry: SessionIndexEntry, current_session_id: str) -> dict[str, object]:
@@ -388,7 +408,12 @@ def run_qt_chat(
 
         if text.startswith("__OPEN_IN_EXPLORER__ "):
             project_path = text.split(None, 1)[1].strip()
-            ui.notice(f"项目路径：{project_path}")
+            try:
+                open_project_in_file_manager(project_path)
+            except AgentError as exc:
+                ui.notice(f"打开项目目录失败：{exc}")
+                return True
+            ui.notice(f"已打开项目目录：{project_path}")
             return True
 
         if text.startswith("__RESUME_SESSION__ "):
@@ -533,6 +558,9 @@ def run_qt_chat(
     refresh_session_list()
     refresh_project_list()
 
+    # 清除 main.py 设置的“正在初始化”状态，表示 Agent 已就绪
+    ui.status("")
+
     while True:
         if stop_requested():
             break
@@ -606,6 +634,7 @@ def run_qt_chat(
 
         ui.inline_turn_base(user_text)
         ui.status("正在思考")
+        ui.set_generating(True)
 
         speech_player = StreamingSpeechPlayer(
             text_to_speech,
@@ -734,6 +763,7 @@ def run_qt_chat(
             continue
         finally:
             # 清除等待状态
+            ui.set_generating(False)
             ui.status("")
             if not stop_requested():
                 ui.set_input_enabled(True)

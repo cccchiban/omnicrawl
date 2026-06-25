@@ -54,6 +54,21 @@
   50% { opacity: 0; }
 }
 
+/* ── 状态文字波浪光效 ───────────────── */
+@keyframes wave-shine {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+
+/* ── DNA 双螺旋水平滚动 ─────────────────────── */
+@keyframes helixScroll {
+  from { transform: translateX(0) }
+  to   { transform: translateX(-69.12px) }
+}
+
+
+
 /* ── 尊重用户减少动画偏好 ──────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,

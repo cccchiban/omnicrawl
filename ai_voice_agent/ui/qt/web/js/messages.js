@@ -79,6 +79,7 @@ var Messages = (function() {
         '<div class="bubble">' + escHtml(text) + '</div>' +
       '</div>';
     container.appendChild(row);
+    moveStatusMessageToEnd();
     scrollToEnd();
   }
 
@@ -102,6 +103,7 @@ var Messages = (function() {
       container.appendChild(row);
       AppState.currentAIBubble = row.querySelector('.bubble');
       AppState.currentRawText = '';
+      moveStatusMessageToEnd();
     }
     AppState.currentRawText += text;
 
@@ -113,6 +115,7 @@ var Messages = (function() {
     newCursor.className = 'typing-cursor';
     AppState.currentAIBubble.appendChild(newCursor);
 
+    moveStatusMessageToEnd();
     scrollToEnd();
   }
 
@@ -223,6 +226,7 @@ var Messages = (function() {
       '</div>';
 
     container.appendChild(row);
+    moveStatusMessageToEnd();
     scrollToEnd();
 
     // 绑定按钮事件
@@ -302,8 +306,79 @@ var Messages = (function() {
 
   // ── 启动面板 ──────────────────────────────────────
 
+  // ── 内联状态消息（带波浪光效）─────────────────────────
+
+  /** 创建或更新对话流底部的内联状态行。重复调用时复用同一 DOM 行，仅更新文字。 */
+  function showStatusMessage(text) {
+    var container = messagesEl();
+    if (!container) return;
+    if (!text) {
+      removeStatusMessage();
+      return;
+    }
+
+    var row = container.querySelector('.status-msg-row');
+    if (!row) {
+      row = createEl('div', { className: 'status-msg-row' });
+      row.innerHTML =
+        '<div class="status-msg-inner">' +
+          '<button id="status-stop-btn" class="status-stop-btn hidden" title="停止生成" aria-label="停止 AI 回复">' +
+            '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>' +
+          '</button>' +
+          '<span class="status-msg-text"></span>' +
+          '<span class="status-msg-dots">' +
+            '<span></span><span></span><span></span>' +
+          '</span>' +
+        '</div>';
+      container.appendChild(row);
+
+      // 绑定停止按钮事件
+      var stopBtn = row.querySelector('#status-stop-btn');
+      if (stopBtn) {
+        stopBtn.addEventListener('click', function() {
+          if (window.bridge && window.bridge.onCancel) {
+            window.bridge.onCancel();
+          }
+        });
+      }
+    }
+
+    var textEl = row.querySelector('.status-msg-text');
+    if (textEl) textEl.textContent = text;
+    row.classList.remove('hidden');
+    keepStatusMessageAtEnd();
+    scrollToEnd();
+  }
+
+  function removeStatusMessage() {
+    var row = messagesEl() ? messagesEl().querySelector('.status-msg-row') : null;
+    if (row) row.classList.add('hidden');
+  }
+
+  /** 显示/隐藏状态行中的停止按钮。只在状态行可见时操作。 */
+  function setStatusStopVisible(visible) {
+    var row = messagesEl() ? messagesEl().querySelector('.status-msg-row') : null;
+    if (!row || row.classList.contains('hidden')) return;
+    var btn = row.querySelector('#status-stop-btn');
+    if (btn) btn.classList.toggle('hidden', !visible);
+    var dots = row.querySelector('.status-msg-dots');
+    if (dots) dots.classList.toggle('hidden', !visible);
+  }
+
+  function keepStatusMessageAtEnd() {
+    var container = messagesEl();
+    var row = container ? container.querySelector('.status-msg-row') : null;
+    if (!container || !row || row.parentNode !== container) return;
+    container.appendChild(row);
+  }
+
+  function moveStatusMessageToEnd() {
+    keepStatusMessageAtEnd();
+  }
+
+
   function showStartup(title, lines) {
-    var linesHtml = '';
+    // 不再显示启动面板卡片，仅提取并下发状态信息
     var workspacePath = '';
     var workspaceStatus = '';
     var reasoningEffort = '';
@@ -312,51 +387,25 @@ var Messages = (function() {
       var line = lines[i];
       var colonIdx = line.indexOf(':');
       if (colonIdx > 0) {
-        var key = line.substring(0, colonIdx).trim();
+        var key = line.substring(0, colonIdx).trim().toLowerCase();
         var val = line.substring(colonIdx + 1).trim();
-        var cls = '';
-        if (val === '已启用' || val === '开启' || val === 'auto' || val === 'Qt GUI') cls = ' on';
-        else if (val === '已禁用' || val === '关闭' || val === 'manual') cls = ' off';
-        else if (val === 'review') cls = ' warn';
-        if (key.toLowerCase() === 'workspace' || key === '工作区') {
+        if (key === 'workspace' || key === '工作区') {
           workspacePath = val;
           workspaceStatus = '已激活';
         }
-        if (key.toLowerCase() === 'thinking') {
+        if (key === 'thinking') {
           var match = val.match(/推理强度：\s*([^，,\s]+)/);
           if (match) reasoningEffort = match[1];
           else if (val.indexOf('已禁用') !== -1) reasoningEffort = 'none';
           else if (val.indexOf('已启用') !== -1) reasoningEffort = 'low';
         }
-        if (key.toLowerCase() === 'approval') {
+        if (key === 'approval') {
           if (val.indexOf('人工') !== -1 || val.indexOf('手动') !== -1 || val === 'manual') approvalMode = 'manual';
           else if (val.indexOf('自动') !== -1 || val === 'auto') approvalMode = 'auto';
           else if (val.indexOf('审查') !== -1 || val === 'review') approvalMode = 'review';
         }
-        linesHtml +=
-          '<div class="startup-line">' +
-            '<span class="startup-key">' + escHtml(key) + '</span>' +
-            '<span class="startup-val' + cls + '">' + escHtml(val) + '</span>' +
-          '</div>';
-      } else {
-        linesHtml +=
-          '<div class="startup-line">' +
-            '<span class="startup-val">' + escHtml(line) + '</span>' +
-          '</div>';
       }
     }
-
-    var card = createEl('div', { className: 'startup-card' });
-    card.innerHTML =
-      '<div class="startup-header">' +
-        '<span class="startup-icon">&#x2726;</span>' +
-        '<span class="startup-title">' + escHtml(title) + '</span>' +
-      '</div>' +
-      '<div class="startup-sep"></div>' +
-      linesHtml;
-
-    messagesEl().appendChild(card);
-    scrollToEnd();
 
     if (workspacePath && window.Input && Input.setWorkspaceInfo) {
       Input.setWorkspaceInfo(workspacePath, workspaceStatus);
@@ -388,6 +437,7 @@ var Messages = (function() {
   // ── 滚动 ──────────────────────────────────────────
 
   function scrollToEnd() {
+    keepStatusMessageAtEnd();
     var area = chatAreaEl();
     if (area) {
       area.scrollTop = area.scrollHeight;
@@ -406,6 +456,10 @@ var Messages = (function() {
     renderSessionMessages: renderSessionMessages,
     showConfirmCard: showConfirmCard,
     showStartup: showStartup,
+    showStatusMessage: showStatusMessage,
+    removeStatusMessage: removeStatusMessage,
+    setStatusStopVisible: setStatusStopVisible,
+    moveStatusMessageToEnd: moveStatusMessageToEnd,
     scrollToEnd: scrollToEnd,
   };
 

@@ -1,17 +1,20 @@
 /* ═══════════════════════════════════════════════════════════════
-   status-bar.css — 内联状态指示器
+   status-bar.css — 贴近输入区的浮动状态胶囊
    ═══════════════════════════════════════════════════════════════ */
 
 #status-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 40px;
-  padding: 0 var(--space-xl);
-  border-top: 1px solid var(--border-light);
-  font-size: 16px;
+  gap: var(--space-md);
+  width: min(var(--input-max-width), calc(100% - var(--space-xl) * 2));
+  min-height: 36px;
+  margin: 0 auto var(--space-xs);
+  padding: 0 2px;
+  border-top: none;
+  font-size: 14px;
   flex-shrink: 0;
-  background: var(--bg-main);
+  background: transparent;
 }
 
 .status-left, .status-right {
@@ -21,16 +24,36 @@
   min-width: 0;
 }
 
-.status-left { flex: 1; }
-.status-right { flex-shrink: 0; }
+.status-left {
+  flex: 1 1 auto;
+  max-width: min(560px, 72%);
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  transition: background var(--transition-fast),
+              border-color var(--transition-fast),
+              box-shadow var(--transition-fast);
+}
+
+/* 有等待文字、打字点或停止按钮时才显出“状态框”，避免空状态占画面。 */
+/* .status-active — no border, no background; status text now inline in messages */
+.status-left.status-active {
+  /* intentionally empty: status display moved to inline conversation */
+}
+
+.status-right {
+  flex: 0 1 40%;
+  justify-content: flex-end;
+}
 
 #status-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-tertiary);
-  font-size: 16px;
+  color: #9ca3af;
+  font-size: 14px;
+  line-height: 1.2;
 }
 
 /* 打字指示器 */
@@ -44,7 +67,7 @@
 .typing-dots span {
   width: 4px;
   height: 4px;
-  background: var(--accent-blue);
+  background: #60a5fa;
   border-radius: 50%;
   animation: dot-bounce 1.4s ease-in-out infinite;
 }
@@ -52,15 +75,31 @@
 .typing-dots span:nth-child(2) { animation-delay: 0.16s; }
 .typing-dots span:nth-child(3) { animation-delay: 0.32s; }
 
+
+/* ── DNA 双螺旋思考动画 ─────────────────────── */
+.dna-helix-wrapper {
+  display: inline-flex; align-items: center; gap: 0;
+  margin-right: 4px; flex-shrink: 0;
+}
+.dna-helix-svg-container {
+  width: 80px; height: 44px; overflow: hidden; position: relative; flex-shrink: 0;
+}
+.dna-helix-svg-inner {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  animation: helixScroll 2s linear infinite;
+}
+/* No .think-label needed — status text comes from #status-text */
+
 .voice-icon { font-size: 16px; }
 
 .token-info {
-  max-width: 360px;
+  max-width: min(360px, 38vw);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-tertiary);
-  font-size: 16px;
+  font-size: 13px;
   font-family: var(--font-mono);
 }
 
@@ -68,26 +107,55 @@
 .stop-btn {
   display: flex;
   align-items: center;
-  gap: 4px;
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.15);
+  gap: 5px;
+  min-height: 24px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.26);
   color: var(--accent-red);
-  border-radius: var(--radius-full);
-  padding: 4px 14px;
-  font-size: 16px;
+  border-radius: 8px;
+  padding: 3px 9px;
+  font-size: 14px;
+  line-height: 1;
   cursor: pointer;
   font-family: var(--font-sans);
   font-weight: 600;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast),
+              border-color var(--transition-fast),
+              color var(--transition-fast),
+              transform var(--transition-fast);
 }
 
 .stop-btn:hover {
-  background: rgba(239, 68, 68, 0.15);
-  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.38);
+  color: #ff6b6b;
+}
+
+.stop-btn:active {
+  transform: translateY(1px);
 }
 
 .stop-btn svg {
-  width: 14px;
-  height: 14px;
+  width: 11px;
+  height: 11px;
   fill: currentColor;
+}
+
+@media (max-width: 760px) {
+  #status-bar {
+    width: calc(100% - var(--space-md) * 2);
+    gap: var(--space-sm);
+  }
+
+  .status-left {
+    max-width: 100%;
+  }
+
+  .status-right {
+    flex-basis: 32%;
+  }
+
+  .token-info {
+    max-width: 100%;
+  }
 }

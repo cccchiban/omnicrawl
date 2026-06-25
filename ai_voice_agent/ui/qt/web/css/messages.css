@@ -10,10 +10,6 @@
   animation: msg-in 0.3s ease-out forwards;
 }
 
-/* 用背景交替替代 border 分隔，减少视觉噪音 */
-.msg-row:nth-child(even) {
-  background: rgba(255, 255, 255, 0.025);
-}
 
 /* ── 头像 ─────────────────────────────────────── */
 .avatar {
@@ -85,19 +81,21 @@
 
 .msg-header {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-sm);
   margin-bottom: 6px;
 }
 
+/* 角色名作为标签层级，小于正文以建立层次 */
 .msg-role {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
+  letter-spacing: 0.2px;
 }
 
 .msg-time {
-  font-size: 16px;
+  font-size: 13px;
   color: var(--text-tertiary);
   font-weight: 400;
 }
@@ -105,9 +103,8 @@
 /* ── 气泡 ────────────────────────────────────── */
 .bubble {
   color: var(--text-primary);
-  /* 工具界面行高从 1.7 降至 1.6，减少长时间阅读疲劳 */
-  line-height: 1.7;
-  font-size: 18px;
+  line-height: 1.65;
+  font-size: 16px;
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
@@ -117,7 +114,76 @@
 .bubble p:first-child { margin-top: 0; }
 .bubble p:last-child { margin-bottom: 0; }
 
-/* 代码块 — 字体从 13px 增大到 14px，提升可读性 */
+/* ── 代码块 ─────────────────────────────────────
+   包裹结构：.code-block > .code-block-head (语言标签 + 复制) + pre */
+.code-block {
+  position: relative;
+  margin: var(--space-md) 0;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-tool-card);
+  overflow: hidden;
+}
+
+.code-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 6px var(--space-md);
+  border-bottom: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.code-block-lang {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.code-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.code-copy-btn svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.code-copy-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-sidebar-hover);
+}
+
+.code-copy-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.code-copy-btn.copied {
+  color: var(--accent-green);
+}
+
 .bubble pre {
   background: var(--bg-tool-card);
   border: 1px solid var(--border-light);
@@ -127,8 +193,17 @@
   max-width: 100%;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.6;
+}
+
+/* code-block 内的 pre 去掉独立边框/外距，由包裹层接管。
+   写在 .bubble pre 之后并提升特异性，确保覆盖通用样式。 */
+.bubble .code-block pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 .bubble code {
@@ -152,7 +227,7 @@
   display: block;
   border-collapse: collapse;
   margin: var(--space-md) 0;
-  font-size: 16px;
+  font-size: 14px;
   max-width: 100%;
   overflow-x: auto;
   width: 100%;
@@ -171,7 +246,7 @@
   background: var(--bg-sidebar);
   color: var(--text-secondary);
   font-weight: 600;
-  font-size: 15px;
+  font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -213,10 +288,11 @@
   font-weight: 700;
 }
 
-.bubble h1 { font-size: 26px; }
-.bubble h2 { font-size: 23px; }
-.bubble h3 { font-size: 21px; }
-.bubble h4 { font-size: 18px; color: var(--text-secondary); }
+/* 标题梯度基于 16px 正文：1.5×/1.3×/1.15×/1× */
+.bubble h1 { font-size: 22px; }
+.bubble h2 { font-size: 20px; }
+.bubble h3 { font-size: 18px; }
+.bubble h4 { font-size: 16px; color: var(--text-secondary); }
 
 .bubble hr {
   border: none;
@@ -236,6 +312,99 @@
   border-radius: var(--radius-md);
 }
 
+
+/* ── 内联状态行 ───────────────────── */
+.status-msg-row {
+  display: flex;
+  justify-content: center;
+  margin-top: auto;
+  padding: 8px 0;
+  animation: msg-in 0.3s ease-out forwards;
+}
+
+.status-msg-row.hidden {
+  display: none;
+}
+
+.status-msg-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  background: transparent;
+}
+
+.status-msg-text {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  background: linear-gradient(
+    90deg,
+    var(--text-tertiary) 0%,
+    var(--accent-blue) 35%,
+    var(--text-tertiary) 65%,
+    var(--accent-blue) 85%,
+    var(--text-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: wave-shine 2.4s ease-in-out infinite;
+}
+
+.status-msg-dots {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.status-msg-dots span {
+  width: 4px;
+  height: 4px;
+  background: var(--accent-blue);
+  border-radius: 50%;
+  animation: dot-bounce 1.4s ease-in-out infinite;
+}
+
+.status-msg-dots span:nth-child(2) { animation-delay: 0.16s; }
+.status-msg-dots span:nth-child(3) { animation-delay: 0.32s; }
+
+.status-msg-dots.hidden { display: none; }
+
+/* 停止按钮（内联版） */
+.status-stop-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.26);
+  color: var(--accent-red);
+  border-radius: 5px;
+  padding: 0;
+  cursor: pointer;
+  transition: background var(--transition-fast),
+              border-color var(--transition-fast),
+              color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.status-stop-btn:hover {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.38);
+  color: #ff6b6b;
+}
+
+.status-stop-btn svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+}
+
+.status-stop-btn.hidden { display: none; }
 /* ── 工具调用卡片 ─────────────────────────────── */
 .tool-row {
   display: flex;
@@ -336,7 +505,7 @@
 .tool-args, .tool-result {
   padding: var(--space-sm) var(--space-md);
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -352,18 +521,19 @@
 
 .tool-result { color: var(--text-secondary); }
 
+/* 成功/失败用对应语义色描边，传达状态而非中性灰 */
 .tool-result.ok {
   color: var(--accent-green);
-  border-left: 3px solid var(--border-strong);
+  border-left: 3px solid var(--accent-green);
   padding-left: calc(var(--space-md) - 3px);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--accent-green-glow);
 }
 
 .tool-result.err {
   color: var(--accent-red);
-  border-left: 3px solid var(--border-strong);
+  border-left: 3px solid var(--accent-red);
   padding-left: calc(var(--space-md) - 3px);
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(239, 68, 68, 0.08);
 }
 
 /* ── 启动面板 ─────────────────────────────────── */

@@ -4,10 +4,12 @@
 
 #chat-area {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
   scroll-behavior: smooth;
-  padding: var(--space-xl) 0;
+  padding: var(--space-xl) 0 var(--space-sm) 0;
 }
 
 /* 自定义滚动条 */
@@ -20,6 +22,8 @@
 #chat-area::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
 #messages {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   max-width: var(--chat-max-width);

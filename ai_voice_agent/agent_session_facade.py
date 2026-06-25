@@ -323,6 +323,9 @@ class AgentSessionFacade:
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
 
+        # 切换前清理当前空会话（启动占位等），避免残留到历史列表
+        self.discard_current_empty_session()
+
         store = self.require_session_store()
         try:
             state = store.load_session(session_id)

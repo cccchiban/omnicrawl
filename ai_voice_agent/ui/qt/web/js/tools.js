@@ -71,6 +71,9 @@ var Tools = (function() {
     messagesEl().appendChild(row);
     AppState.currentToolCard = row;
     AppState.fallbackToolStep = Math.max(AppState.fallbackToolStep, step + 1);
+    if (window.Messages && Messages.moveStatusMessageToEnd) {
+      Messages.moveStatusMessageToEnd();
+    }
     Messages.scrollToEnd();
   }
 
@@ -106,6 +109,9 @@ var Tools = (function() {
     }
 
     AppState.currentToolCard = null;
+    if (window.Messages && Messages.moveStatusMessageToEnd) {
+      Messages.moveStatusMessageToEnd();
+    }
     Messages.scrollToEnd();
   }
 

@@ -250,8 +250,6 @@ class LocalToolAgent:
         self._session_store = self._create_session_store() if self.config.session_enabled else None
         self._session_state = self._start_or_resume_session() if self._session_store is not None else None
         self._project_store = self._create_project_store() if self._session_store is not None else None
-        if self._project_store is not None:
-            self.scan_projects()
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._workspace_tools = WorkspaceTools(
             self.workspace_root,
@@ -264,15 +262,7 @@ class LocalToolAgent:
         if not self.config.llm.api_key.strip():
             raise AgentError("缺少 API Key，请在 config.json 的 llm.api_key 中配置，或设置 OPENAI_API_KEY。")
 
-        try:
-            from openai import OpenAI
-        except ImportError as exc:
-            raise AgentError("缺少 openai 依赖，请先执行：pip install -r requirements.txt") from exc
-
-        self._client = OpenAI(
-            api_key=self.config.llm.api_key,
-            base_url=self.config.llm.base_url,
-        )
+        self._client: Any | None = None
         self._mcp_manager = self._create_mcp_manager()
         self._tools = self._build_tools()
         self._system_prompt_template = self._load_system_prompt_template()
@@ -299,7 +289,28 @@ class LocalToolAgent:
     def format_mcp_status(self) -> str:
         """返回 MCP 子系统状态，供 `/mcp` 斜杠命令展示。"""
 
+        self._ensure_mcp_tools_ready()
         return self._mcp_manager.format_status()
+
+    def _ensure_mcp_tools_ready(
+        self,
+        status: Callable[[str], None] | None = None,
+    ) -> None:
+        """按需发现 MCP 能力，并在发现后重建工具表。
+
+        启动期只保留内置工具，等首次真正需要模型上下文或用户查看 `/mcp`
+        时再拉起 stdio MCP Server。这样不会减少 MCP 功能，只是把昂贵的
+        进程启动和能力枚举从 GUI 首屏路径移到首次使用路径。
+        """
+
+        manager = getattr(self, "_mcp_manager", None)
+        if manager is None or not manager.enabled or manager.discovered:
+            return
+
+        if status is not None:
+            status("正在加载 MCP 能力")
+        manager.discover()
+        self._tools = self._build_tools()
 
     def clean_memory(self) -> list[str]:
         """手动清理过期记忆，供 /memory:clean 命令调用。"""
@@ -317,6 +328,7 @@ class LocalToolAgent:
         self._pending_user_text = None
         self._active_skills = []
         if self._session_store is not None:
+            self._session_facade().discard_current_empty_session()
             self._session_state = self._start_session()
 
     @property
@@ -583,9 +595,9 @@ class LocalToolAgent:
     def _create_mcp_manager(self) -> MCPClientManager:
         """加载并初始化 MCP Client Manager。
 
-        MCP 是增量能力：配置关闭时不影响内置工具；启用后单个 Server 失败也只进入
-        诊断信息，保留基础对话和内置工具可用性。配置本身不合法则阻止启动，避免用户
-        误以为 MCP 已经按预期暴露能力。
+        MCP 是增量能力：配置关闭时不影响内置工具。这里仅校验配置并创建
+        Manager，能力发现延后到首次对话或用户查看 `/mcp` 时执行，避免
+        stdio Server 启动阻塞 Qt 首屏显示。
         """
 
         try:
@@ -595,8 +607,6 @@ class LocalToolAgent:
                 workspace_root=self.workspace_root,
                 approval_mode_getter=lambda: self.config.approval_mode,
             )
-            if mcp_config.enabled:
-                manager.discover()
             return manager
         except MCPConfigError as exc:
             raise AgentError(str(exc)) from exc
@@ -631,6 +641,7 @@ class LocalToolAgent:
         _report_protocol_wait = on_protocol_wait or (lambda: None)
         report_retry_status = on_retry_status or status
 
+        self._ensure_mcp_tools_ready(status)
         text = self._apply_skill_command(text, status)
         pending_text = getattr(self, "_pending_user_text", None)
         text = self._resolve_continue_request(text)
@@ -863,7 +874,7 @@ class LocalToolAgent:
         """按当前运行态创建轻量协议对象，便于测试替换回调方法。"""
 
         return AgentLLMProtocol(
-            client=self._client,
+            client=self._llm_client(),
             model=self.config.llm.model,
             request_timeout_seconds=self.config.request_timeout_seconds,
             request_retry_count=getattr(self.config, "request_retry_count", 1),
@@ -878,6 +889,30 @@ class LocalToolAgent:
             ),
             function_name_for_tool=function_name_for_tool,
         )
+
+    def _llm_client(self) -> Any:
+        """首次请求模型时再创建 OpenAI SDK 客户端。
+
+        OpenAI SDK 导入链较重，放在 Agent 构造期会明显拖慢 Qt 首屏。
+        客户端只在模型请求或自动审查时需要，因此惰性创建不会减少能力，
+        还能让启动阶段先把 UI 呈现给用户。
+        """
+
+        client = getattr(self, "_client", None)
+        if client is not None:
+            return client
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise AgentError("缺少 openai 依赖，请先执行：pip install -r requirements.txt") from exc
+
+        client = OpenAI(
+            api_key=self.config.llm.api_key,
+            base_url=self.config.llm.base_url,
+        )
+        self._client = client
+        return client
 
     def _build_extra_body(self) -> dict[str, Any]:
         return build_extra_body(self.config.llm)
@@ -1011,7 +1046,7 @@ class LocalToolAgent:
             "workspace_root": str(self.workspace_root),
         }
         try:
-            response = self._client.responses.create(
+            response = self._llm_client().responses.create(
                 model=self.config.llm.model,
                 instructions=TOOL_REVIEW_SYSTEM_PROMPT,
                 input=[

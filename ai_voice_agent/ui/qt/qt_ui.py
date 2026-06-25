@@ -138,8 +138,12 @@ class QtUI(BaseUI):
 
     def status(self, message: str, *, leading_blank: bool = True, italic: bool = False) -> None:
         self._window.set_status(message, italic)
-        # 有状态消息时显示等待动画，状态为空时隐藏
-        self._window.set_waiting(bool(message))
+
+    def set_waiting(self, active: bool) -> None:
+        self._window.set_waiting(active)
+
+    def set_generating(self, active: bool) -> None:
+        self._window.set_generating(active)
 
     def notice(self, message: str) -> None:
         self._window.show_notice(message)

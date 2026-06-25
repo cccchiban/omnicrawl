@@ -106,6 +106,12 @@ class MCPClientManager:
     def enabled(self) -> bool:
         return self.config.enabled
 
+    @property
+    def discovered(self) -> bool:
+        """返回是否已经执行过能力发现，用于 Host 惰性加载 MCP 能力。"""
+
+        return self._discovered
+
     def discover(self) -> None:
         """连接启用的 Server 并发现 Tool、Resource、Prompt。
 

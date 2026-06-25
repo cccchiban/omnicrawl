@@ -134,12 +134,89 @@ def main(argv: list[str] | None = None) -> None:
     if should_initialize_speech_to_text:
         speech_to_text = create_speech_to_text(voice_config)
         speech_to_text_ready = speech_to_text is not None
-    if voice_config.text_to_speech_enabled:
+    if voice_config.text_to_speech_enabled and not is_qt_frontend:
         text_to_speech = create_text_to_speech(voice_config)
         text_to_speech_ready = text_to_speech is not None
 
     if transient_output_marked and speech_to_text_ready and text_to_speech_ready:
         ui.clear_transient_output()
+
+    if is_qt_frontend:
+        # Qt 首屏不依赖 Agent、MCP 或语音引擎初始化；这些工作放到后台线程，
+        # 让 QWebEngine 尽快进入事件循环并渲染可见窗口。后台初始化完成后
+        # 再启动完整对话循环，功能路径保持和原来一致。
+        ui.status("正在初始化")
+        ui.set_input_enabled(False)
+        ui.set_input_placeholder("正在初始化 Agent...")
+
+        agent: LocalToolAgent | None = None
+        qt_stop_event = threading.Event()
+        qt_cancel_event = ui.get_cancel_event()
+
+        def _qt_chat_thread() -> None:
+            nonlocal agent, text_to_speech
+            try:
+                if voice_config.text_to_speech_enabled:
+                    text_to_speech = create_text_to_speech(voice_config)
+                agent = LocalToolAgent(
+                    AgentConfig(
+                        llm=config,
+                        workspace_root=project_context.workspace_root,
+                        workspace_detection_summary=project_context.detection_summary,
+                        approval_mode=approval_mode,
+                        temp_workspace=temp_workspace_config,
+                        resume_session_id=args.resume,
+                    )
+                )
+                if agent.skill_manager is not None and agent.skill_manager.count > 0:
+                    ui.notice(
+                        f"已加载 {agent.skill_manager.count} 个 Skill，输入 /skills 查看列表。"
+                    )
+
+                # 在后台初始化阶段提前完成 MCP 能力发现，避免首次对话时出现
+                # "正在加载 MCP 能力" 的加载框打断用户体验。_ensure_mcp_tools_ready
+                # 内部会检查 manager.discovered 标记，重复调用时为无操作。
+                if agent._mcp_manager is not None and agent._mcp_manager.enabled:
+                    ui.status("正在加载 MCP 能力")
+                    agent._ensure_mcp_tools_ready()
+                    ui.status("正在初始化")
+
+                from ai_voice_agent.qt_chat_session import run_qt_chat
+
+                run_qt_chat(
+                    agent,
+                    text_to_speech,
+                    ui,
+                    stop_event=qt_stop_event,
+                    cancel_event=qt_cancel_event,
+                )
+            except AgentError as exc:
+                ui.status("")
+                ui.set_input_enabled(False)
+                ui.set_input_placeholder("Agent 初始化失败")
+                ui.notice(f"Agent 初始化失败：{exc}")
+            finally:
+                # 对话结束或初始化失败后关闭窗口，让 exec_and_wait 返回。
+                ui.stop()
+
+        chat_thread = threading.Thread(target=_qt_chat_thread, daemon=True)
+        chat_thread.start()
+        try:
+            ui.exec_and_wait()
+        except KeyboardInterrupt:
+            print("\n对话结束。")
+        finally:
+            qt_stop_event.set()
+            ui.stop()
+            if text_to_speech is not None:
+                text_to_speech.interrupt(wait_timeout_seconds=0)
+            if chat_thread.is_alive():
+                chat_thread.join(timeout=2.0)
+            if agent is not None:
+                agent.close()
+            if text_to_speech is not None:
+                text_to_speech.stop()
+        return
 
     agent: LocalToolAgent | None = None
     try:

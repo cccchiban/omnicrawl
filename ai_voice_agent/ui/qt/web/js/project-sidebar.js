@@ -388,6 +388,12 @@
     if (modalEl) modalEl.classList.add('hidden');
   }
 
+  function setProjectModalPath(path) {
+    if (modalPathInput) {
+      modalPathInput.value = String(path || '');
+    }
+  }
+
   function browseProjectPath() {
     if (window.bridge && window.bridge.onBrowseProjectPath) {
       window.bridge.onBrowseProjectPath();
@@ -449,6 +455,7 @@
     setCurrentProject: setCurrentProject,
     requestProjectList: requestProjectList,
     openModal: openModal,
+    setProjectModalPath: setProjectModalPath,
   };
 
   // DOM 就绪后自动初始化

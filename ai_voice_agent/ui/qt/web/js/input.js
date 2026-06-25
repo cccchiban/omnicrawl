@@ -55,6 +55,7 @@ var Input = (function() {
     initReasoningDropdown();
     initApprovalDropdown();
     initProjectDropdown();
+    initAttachmentButton();
     initRippleEffect();
     syncToolbarLabels();
   }
@@ -104,6 +105,33 @@ var Input = (function() {
     }
   }
 
+  function focus() {
+    var el = inputEl();
+    if (el && !el.disabled) {
+      el.focus();
+    }
+  }
+
+  function insertText(text) {
+    var el = inputEl();
+    if (!el) return;
+    var value = String(text || '');
+    var start = el.selectionStart || 0;
+    var end = el.selectionEnd || start;
+    var before = el.value.slice(0, start);
+    var after = el.value.slice(end);
+    var prefix = before && !/\s$/.test(before) && value && !/^\s/.test(value) ? ' ' : '';
+    var suffix = after && value && !/\s$/.test(value) && !/^\s/.test(after) ? ' ' : '';
+    el.value = before + prefix + value + suffix + after;
+    var cursor = (before + prefix + value + suffix).length;
+    el.setSelectionRange(cursor, cursor);
+    autosize(el);
+    updateSendButtonState(el);
+    updateInputContainerState(el);
+    updateSlashCommandMenu(el);
+    focus();
+  }
+
   function setEnabled(enabled) {
     desiredEnabled = enabled;
     applyEnabledState();
@@ -123,6 +151,18 @@ var Input = (function() {
     if (enabled && inp) inp.focus();
     updateSendButtonState(inp);
     if (!enabled) closeSlashCommandMenu();
+  }
+
+  function isReadyForProgrammaticSend() {
+    var inp = inputEl();
+    return Boolean(
+      desiredEnabled &&
+      bridgeReady &&
+      inp &&
+      !inp.disabled &&
+      window.bridge &&
+      window.bridge.onUserSend
+    );
   }
 
   /** 根据输入内容更新发送按钮视觉状态 */
@@ -635,6 +675,77 @@ var Input = (function() {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // 添加按钮菜单（add-btn）
+  // ═══════════════════════════════════════════════════════════════
+
+  function initAttachmentButton() {
+    var btn = document.getElementById('add-btn');
+    if (!btn) return;
+
+    var dropdown = document.createElement('div');
+    dropdown.className = 'reasoning-dropdown hidden';
+    dropdown.id = 'attachment-dropdown';
+    dropdown.innerHTML =
+      '<div class="reasoning-dropdown-header">添加</div>' +
+      '<button class="reasoning-option" type="button" data-action="file">' +
+      '  <span class="option-label">文件路径</span>' +
+      '  <span class="option-desc">插入一个本地文件路径</span>' +
+      '</button>' +
+      '<button class="reasoning-option" type="button" data-action="folder">' +
+      '  <span class="option-label">文件夹路径</span>' +
+      '  <span class="option-desc">插入一个目录路径</span>' +
+      '</button>' +
+      '<button class="reasoning-option" type="button" data-action="slash">' +
+      '  <span class="option-label">斜杠命令</span>' +
+      '  <span class="option-desc">打开命令候选</span>' +
+      '</button>';
+
+    var wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+    btn.parentNode.insertBefore(wrapper, btn);
+    wrapper.appendChild(btn);
+    wrapper.appendChild(dropdown);
+
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openAttachmentMenu();
+    });
+
+    dropdown.querySelectorAll('.reasoning-option').forEach(function(option) {
+      option.addEventListener('click', function() {
+        var action = option.dataset.action || '';
+        if (action === 'file') {
+          promptAndInsertPath('请输入文件路径：', '文件：');
+        } else if (action === 'folder') {
+          promptAndInsertPath('请输入文件夹路径：', '目录：');
+        } else if (action === 'slash') {
+          insertText('/');
+        }
+        setDropdownOpen(dropdown, false);
+      });
+    });
+
+    document.addEventListener('click', function(e) {
+      if (!wrapper.contains(e.target)) {
+        setDropdownOpen(dropdown, false);
+      }
+    });
+  }
+
+  function openAttachmentMenu() {
+    var dropdown = document.getElementById('attachment-dropdown');
+    if (!dropdown) return;
+    setDropdownOpen(dropdown, !dropdown.classList.contains('open'));
+  }
+
+  function promptAndInsertPath(promptText, label) {
+    var path = window.prompt(promptText);
+    if (!path) return;
+    insertText(label + path.trim());
+  }
+
   function escHtml(value) {
     return String(value).replace(/[&<>"']/g, function(ch) {
       return {
@@ -744,6 +855,10 @@ var Input = (function() {
     clear: clear,
     setEnabled: setEnabled,
     setBridgeReady: setBridgeReady,
+    isReadyForProgrammaticSend: isReadyForProgrammaticSend,
+    focus: focus,
+    insertText: insertText,
+    openAttachmentMenu: openAttachmentMenu,
     setPlaceholder: setPlaceholder,
     updateSlashCommands: updateSlashCommands,
     setWorkspaceInfo: setWorkspaceInfo,

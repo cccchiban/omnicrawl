@@ -79,11 +79,22 @@
         onRenameSession: function() {},
         onCompactSession: function() {},
         onDeleteSession: function() {},
+        onExportChat: function() {},
         onWindowMinimize: function() {},
         onWindowMaximize: function() {},
         onWindowClose: function() {},
         onWindowDrag: function() {},
+        onCreateProject: function() {},
+        onImportProject: function() {},
+        onSwitchProject: function() {},
+        onPinProject: function() {},
+        onRenameProject: function() {},
+        onRemoveProject: function() {},
+        onOpenInExplorer: function() {},
+        onRequestProjects: function() {},
+        onBrowseProjectPath: function() {},
       };
+      window.dispatchEvent(new Event('bridge-ready'));
     }
   }
 

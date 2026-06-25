@@ -439,7 +439,9 @@ class QtUITest(unittest.TestCase):
         self.assertIn("function undoPendingDelete()", app_source)
         self.assertIn("function commitPendingDelete()", app_source)
         self.assertIn("window.bridge.onDeleteSession(target.sessionId)", app_source)
-        self.assertIn("if (pendingDelete) {\n      commitPendingDelete();\n    }", app_source)
+        self.assertIn("if (pendingDelete) {", app_source)
+        self.assertIn("pendingDelete.sessionId === sessionId", app_source)
+        self.assertIn("undoPendingDelete();", app_source)
         self.assertNotIn("openDeleteModal", app_source)
         self.assertNotIn("delete-session-modal", app_source)
 
@@ -599,7 +601,7 @@ class QtUITest(unittest.TestCase):
         self.assertIn("background: var(--bg-card)", messages_css)
         self.assertIn(".msg-row", messages_css)
         self.assertRegex(messages_css, r"\.bubble[^{]*{[^}]*color:\s*var\(--text-primary\)")
-        self.assertRegex(messages_css, r"\.bubble[^{]*{[^}]*line-height:\s*1\.7")
+        self.assertRegex(messages_css, r"\.bubble[^{]*{[^}]*line-height:\s*1\.65")
         self.assertRegex(messages_css, r"\.startup-card[^{]*{[^}]*max-width:\s*640px")
         self.assertRegex(messages_css, r"\.startup-line[^{]*{[^}]*grid-template-columns:\s*minmax")
         self.assertIn(".model-badge:empty", (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8"))
@@ -810,6 +812,115 @@ class QtUITest(unittest.TestCase):
         ui.show_html("采集结果", "<html><body>ok</body></html>")
 
         self.assertEqual(window.html_previews, [("采集结果", "<html><body>ok</body></html>")])
+
+    def test_should_bind_every_static_qt_button_to_ui_action(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
+        bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+            encoding="utf-8"
+        )
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="chrome-about-btn"', index_source)
+        self.assertIn('id="chrome-back-btn"', index_source)
+        self.assertIn('id="chrome-forward-btn"', index_source)
+        self.assertIn('data-menu-action="file"', index_source)
+        self.assertIn('data-menu-action="edit"', index_source)
+        self.assertIn('data-menu-action="view"', index_source)
+        self.assertIn('data-menu-action="help"', index_source)
+        self.assertNotIn('aria-label="后退" disabled', index_source)
+        self.assertNotIn('aria-label="前进" disabled', index_source)
+
+        self.assertIn("initAppMenuActions()", app_source)
+        self.assertIn("initAutomationPanel()", app_source)
+        self.assertIn("initSettingsPanel()", app_source)
+        self.assertIn("initNavigationHistory()", app_source)
+        self.assertIn("focusChatInput", app_source)
+        self.assertIn("copyCurrentChatMarkdown", app_source)
+        self.assertIn("toggleHtmlPreview", app_source)
+        self.assertIn("openSettingsPanel", app_source)
+        self.assertIn("openAutomationPanel", app_source)
+        self.assertIn("runAutomationTask", app_source)
+        self.assertIn("scheduleAutomationTimers", app_source)
+        self.assertIn("window.bridge.onUserSend(task.prompt)", app_source)
+        self.assertIn("focus: focus", input_source)
+        self.assertIn("insertText: insertText", input_source)
+        self.assertIn("openAttachmentMenu: openAttachmentMenu", input_source)
+        self.assertIn("onBrowseProjectPath", bridge_source)
+        self.assertIn("onBrowseProjectPath", backend_bridge)
+        self.assertIn("project_path_selected", backend_bridge)
+        self.assertIn("_on_project_path_selected", window_source)
+        self.assertIn("setProjectModalPath", callback_source)
+
+    def test_should_define_automation_modal_for_scheduled_and_manual_chat_runs(self) -> None:
+        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        layout_css = (QT_WEB_DIR / "css" / "layout.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="automation-modal"', index_source)
+        self.assertIn('id="automation-task-list"', index_source)
+        self.assertIn('id="automation-title-input"', index_source)
+        self.assertIn('id="automation-prompt-input"', index_source)
+        self.assertIn('id="automation-interval-input"', index_source)
+        self.assertIn('id="automation-save-btn"', index_source)
+        self.assertIn('id="automation-run-btn"', index_source)
+        self.assertIn('id="automation-toggle-btn"', index_source)
+        self.assertIn("定时提醒、定时收集新闻等按计划运行的聊天", index_source)
+        self.assertIn("automation-tasks", app_source)
+        self.assertIn("saveAutomationTasks", app_source)
+        self.assertIn("runAutomationTask", app_source)
+        self.assertIn("scheduleAutomationTimers", app_source)
+        self.assertIn("automation-modal", layout_css)
+        self.assertIn(".automation-task-item", layout_css)
+
+    def test_should_block_automation_runs_when_input_is_busy(self) -> None:
+        app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
+        input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
+
+        self.assertIn("isReadyForProgrammaticSend", input_source)
+        self.assertIn("isReadyForProgrammaticSend: isReadyForProgrammaticSend", input_source)
+        self.assertIn("Input.isReadyForProgrammaticSend()", app_source)
+
+        ready_check_index = app_source.index("Input.isReadyForProgrammaticSend()")
+        append_index = app_source.index("Messages.appendUserMsg(task.prompt)")
+        send_index = app_source.index("window.bridge.onUserSend(task.prompt)")
+        self.assertLess(ready_check_index, append_index)
+        self.assertLess(ready_check_index, send_index)
+
+    def test_should_only_show_stop_button_during_generation(self) -> None:
+        callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
+        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+            encoding="utf-8"
+        )
+        ui_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "qt_ui.py").read_text(
+            encoding="utf-8"
+        )
+        qt_session_source = (PROJECT_ROOT / "ai_voice_agent" / "qt_chat_session.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("setWaiting:         Status.setWaiting", callback_source)
+        self.assertIn("setGenerating:      Status.setGenerating", callback_source)
+        self.assertIn('self._bridge.call_js("setGenerating", active)', window_source)
+        self.assertIn("def set_generating(self, active: bool)", ui_source)
+        self.assertIn("ui.set_generating(True)", qt_session_source)
+        self.assertIn("ui.set_generating(False)", qt_session_source)
+
+    def test_status_message_should_stay_at_end_of_message_stream(self) -> None:
+        messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
+
+        self.assertIn("function keepStatusMessageAtEnd()", messages_source)
+        self.assertIn("container.appendChild(row)", messages_source)
+
+        scroll_start = messages_source.index("function scrollToEnd()")
+        scroll_end = messages_source.index("// ── 公开 API", scroll_start)
+        scroll_body = messages_source[scroll_start:scroll_end]
+        self.assertIn("keepStatusMessageAtEnd();", scroll_body)
 
 
 if __name__ == "__main__":
