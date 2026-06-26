@@ -102,6 +102,18 @@ def run_inline_chat(
             print_memory_clean_result(agent)
             continue
 
+        if user_text.strip() == "/workspace" or user_text.strip().startswith("/workspace "):
+            parts = user_text.strip().split(None, 1)
+            if len(parts) == 1 or not parts[1].strip():
+                print(f"当前工作区：{agent.workspace_root}")
+                print("用法：/workspace <新工作区路径>")
+                continue
+            try:
+                new_root = agent.switch_workspace(parts[1].strip())
+                print(f"已切换到工作区：{new_root}")
+            except AgentError as exc:
+                print(f"工作区切换失败：{exc}")
+            continue
         if user_text.strip() == "/mcp":
             print_mcp_status(agent)
             continue

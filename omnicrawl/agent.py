@@ -469,6 +469,97 @@ class LocalToolAgent:
 
         return self._session_facade().resume_session(session_id)
 
+
+    def switch_workspace(self, new_path):
+        """在运行中切换到新的工作区目录。
+
+        切换工作区会完整重建 Agent 的子系统（工作区工具、临时目录、会话、
+        项目列表、记忆），并清空当前对话上下文。原工作区会被记录到退出事件
+        中，以便从 UI 项目列表恢复。
+
+        参数：
+            new_path: 新工作区的绝对或相对路径。
+
+        返回：
+            解析后的新工作区绝对路径。
+
+        异常：
+            AgentError：路径不存在、不是目录或子系统初始化失败时抛出。
+        """
+
+        try:
+            candidate = Path(new_path).expanduser().resolve(strict=True)
+        except OSError as exc:
+            raise AgentError(f"工作区切换失败：{new_path} 无法解析，{exc}") from exc
+        if not candidate.is_dir():
+            raise AgentError(f"工作区切换失败：{candidate} 不是目录。")
+
+        new_root = candidate.resolve()
+        if new_root == self.workspace_root.resolve():
+            return new_root
+
+        # 1. 收尾旧工作区：丢弃空会话、关闭旧临时目录和 MCP
+        if self._session_store is not None and self._session_state is not None:
+            try:
+                self._session_facade().discard_current_empty_session()
+            except AgentError:
+                pass
+            self._session_state = None
+            self._session_store = None
+            self._project_store = None
+
+        old_temp = getattr(self, "_temp_workspace", None)
+        if old_temp is not None:
+            try:
+                old_temp.close()
+            except Exception:
+                pass
+            self.__dict__.pop("_temp_workspace", None)
+
+        old_mcp = getattr(self, "_mcp_manager", None)
+        if old_mcp is not None:
+            try:
+                old_mcp.close()
+            except Exception:
+                pass
+            self.__dict__.pop("_mcp_manager", None)
+
+        # 2. 切换到新工作区并重建子系统
+        self.workspace_root = new_root
+        self.__dict__.pop("_workspace_tools", None)
+        self.__dict__.pop("_bb_browser_cli", None)
+
+        self._temp_workspace = AgentTempWorkspace(self.workspace_root, self.config.temp_workspace)
+        self._temp_workspace.ensure()
+        self._temp_workspace.clean_if_due()
+        self._temp_workspace.start_scheduler()
+
+        if self.config.session_enabled:
+            self._session_store = self._create_session_store()
+            self._session_state = self._start_session()
+            self._project_store = self._create_project_store()
+
+        if self.config.memory_enabled:
+            self._memory_store = self._create_memory_store()
+
+        self._mcp_manager = self._create_mcp_manager()
+        self._tools = self._build_tools()
+
+        # 3. 清空对话上下文
+        self._history.clear()
+        self._pending_user_text = None
+        self._active_skills = []
+
+        if self.config.skills_enabled:
+            self._skill_manager = SkillManager()
+            self._skill_manager.discover(
+                cwd=self.workspace_root,
+                extra_paths=self.config.skill_paths,
+            )
+
+        self.__dict__.pop("_agent_session_facade", None)
+        return new_root
+
     def close(self) -> None:
         """关闭 Agent 持有的外部资源，并记录正常会话关闭事件。"""
 

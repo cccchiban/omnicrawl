@@ -384,9 +384,25 @@ def run_qt_chat(
             ui.notice("已从列表移除项目。")
             return True
 
-        if text.startswith("__SWITCH_PROJECT__ ") or text.startswith("__OPEN_PROJECT__ "):
+        if text.startswith("__SWITCH_PROJECT__ "):
             project_path = text.split(None, 1)[1].strip()
-            ui.notice(f"项目已在列表中：{project_path}。当前版本不会在运行中切换工作区。")
+            try:
+                new_root = agent.switch_workspace(project_path)
+            except AgentError as exc:
+                ui.notice(f"工作区切换失败：{exc}")
+                return True
+            ui.notice(f"已切换到工作区：{new_root}")
+            ui.render_session_messages([])
+            ui.status("")
+            ui.set_input_enabled(True)
+            ui.set_input_placeholder("输入消息，Enter 发送 · 退出词结束对话")
+            refresh_session_list()
+            refresh_project_list()
+            ui.update_slash_commands(build_slash_command_options(agent))
+            return True
+        if text.startswith("__OPEN_PROJECT__ "):
+            project_path = text.split(None, 1)[1].strip()
+            ui.notice(f"项目已在列表中：{project_path}。如需切换工作区请使用项目侧栏。")
             return True
 
         if text.startswith("__OPEN_IN_EXPLORER__ "):

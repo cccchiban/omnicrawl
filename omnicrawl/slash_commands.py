@@ -459,6 +459,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
 
     commands = [
         "/new",
+        "/workspace",
         "/model",
         "/models",
         "/reasoning",
@@ -495,6 +496,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
     """
 
     builtin_descriptions = {
+        "/workspace": "切换当前 Agent 的工作区目录。",
         "/new": "开启一个空白会话。",
         "/model": "查看模型列表，或输入模型 ID 切换当前模型。",
         "/models": "查看当前接口可用的模型列表。",
@@ -523,7 +525,8 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/resume",
         "/history",
         "/rename",
-    }
+        "/workspace",
+}
 
     options: list[dict[str, str]] = []
     for command in build_slash_commands(agent):
