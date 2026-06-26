@@ -203,6 +203,11 @@ class QtUI(BaseUI):
             self._window.set_current_model(self.model_label or text, self.model_label or text)
             self._window.update_token_display(self.prompt_status_line())
 
+    def set_workspace_info(self, path: str, status: str) -> None:
+        """同步当前工作区信息到前端输入栏，供菜单和状态栏共用。"""
+        if self._window is not None:
+            self._window._bridge.call_js("setWorkspaceInfo", path, status)
+
     def show_html(self, title: str, html: str) -> None:
         """把 HTML 内容推送到 Qt 右侧显示区。"""
 

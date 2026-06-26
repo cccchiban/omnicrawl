@@ -86,6 +86,8 @@
         onWindowDrag: function() {},
         onCreateProject: function() {},
         onImportProject: function() {},
+        onOpenNewWindow: function() {},
+        onOpenWorkspaceFolder: function() {},
         onSwitchProject: function() {},
         onPinProject: function() {},
         onRenameProject: function() {},

@@ -37,16 +37,15 @@ var Status = (function() {
     refreshFrame();
   }
 
-  function setGenerating(active) {
-    setWaiting(active);
-    // 同步控制对话流中的内联停止按钮和打字点
-    if (window.Messages && window.Messages.setStatusStopVisible) {
-      window.Messages.setStatusStopVisible(active);
-    }
-    var stopBtn = document.getElementById('stop-btn');
-    if (stopBtn) stopBtn.classList.toggle('hidden', !active);
-    refreshFrame();
-  }
+ function setGenerating(active) {
+   setWaiting(active);
+   // 停止按钮已移除，发送键在回复中变为停止键
+   // 输入框在 Agent 回复期间保持可用
+   if (window.Input && Input.setGenerating) {
+     Input.setGenerating(active);
+   }
+   refreshFrame();
+ }
 
   function setSpeaking(active) {
     var el = document.getElementById('speaking-icon');
@@ -67,16 +66,6 @@ var Status = (function() {
     var el = document.getElementById('model-label');
     if (el) el.textContent = text;
   }
-
-  return {
-    setStatus: set,
-    setWaiting: setWaiting,
-    setGenerating: setGenerating,
-    setSpeaking: setSpeaking,
-    setListening: setListening,
-    updateToken: updateToken,
-    setModelLabel: setModelLabel,
-  };
 
 
   // ── DNA 双螺旋 SVG 生成 ──
@@ -149,5 +138,15 @@ var Status = (function() {
   } else {
     ensureHelixReady();
   }
+
+  return {
+    setStatus: set,
+    setWaiting: setWaiting,
+    setGenerating: setGenerating,
+    setSpeaking: setSpeaking,
+    setListening: setListening,
+    updateToken: updateToken,
+    setModelLabel: setModelLabel,
+  };
 
 })();

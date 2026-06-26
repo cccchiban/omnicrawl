@@ -1,1 +1,73 @@
 ﻿/* ═══════════════════════════════════════════════════════════════   input-area.css — 底部悬浮输入框（仿图中风格）   ═══════════════════════════════════════════════════════════════ */#input-area {  padding: var(--space-sm) var(--space-xl) var(--space-md);  background: linear-gradient(to top, var(--bg-main) 60%, transparent);  flex-shrink: 0;  display: flex;  flex-direction: column;  align-items: center;  gap: var(--space-sm);}/* ── Workspace 信息条 ──────────────────────────── */.workspace-info {  width: 100%;  max-width: var(--input-max-width);  display: flex;  align-items: center;  gap: var(--space-sm);  padding: var(--space-xs) var(--space-md);  background: var(--bg-tool-card);  border: 1px solid var(--border-light);  border-radius: var(--radius-md);  font-size: 14px;  color: var(--text-tertiary);  opacity: 0;  transform: translateY(4px);  transition: opacity 0.3s ease, transform 0.3s ease;}.workspace-info.visible {  opacity: 1;  transform: translateY(0);}.workspace-info svg {  width: 14px;  height: 14px;  fill: currentColor;  flex-shrink: 0;}.workspace-info .workspace-path {  flex: 1;  min-width: 0;  white-space: nowrap;  overflow: hidden;  text-overflow: ellipsis;  font-family: var(--font-mono);}.workspace-info .workspace-status {  flex-shrink: 0;  padding: 2px 8px;  border-radius: var(--radius-sm);  background: var(--bg-card);  font-size: 13px;}/* ═══════════════════════════════════════════════════════════════   主输入框卡片 — 仿图中深色圆角卡片风格   ═══════════════════════════════════════════════════════════════ */.input-card {  width: 100%;  max-width: var(--input-max-width);  display: flex;  flex-direction: column;  background: var(--bg-input);  border: 1px solid var(--border-light);  border-radius: var(--radius-lg);  padding: var(--space-md);  position: relative;  transition: border-color 0.3s ease, box-shadow 0.3s ease;}.input-card:focus-within {  border-color: rgba(255, 255, 255, 0.15);  box-shadow: none;}/* ── 输入区域 ──────────────────────────────────── */.input-wrapper {  flex: 1;  min-width: 0;}#chat-input {  width: 100%;  background: transparent;  color: var(--text-primary);  border: none;  outline: none;  resize: none;  font-family: var(--font-sans);  font-size: 18px;  line-height: 1.5;  padding: 4px 0;  min-height: var(--input-min-height);  max-height: var(--input-max-height);  overflow-y: auto;}#chat-input::placeholder { color: var(--text-placeholder); }#chat-input:disabled {  color: var(--text-tertiary);  cursor: not-allowed;}/* ═══════════════════════════════════════════════════════════════   斜杠命令候选菜单   ═══════════════════════════════════════════════════════════════ */.slash-command-menu {  position: absolute;  left: 0;  right: 0;  bottom: calc(100% + 10px);  max-height: 260px;  overflow-y: auto;  padding: 6px;  background: #2a2a2a;  border: 1px solid var(--border-strong);  border-radius: var(--radius-lg);  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);  z-index: 140;}.slash-command-menu::-webkit-scrollbar { width: 4px; }.slash-command-menu::-webkit-scrollbar-track { background: transparent; }.slash-command-menu::-webkit-scrollbar-thumb {  background: var(--border-strong);  border-radius: var(--radius-full);}.slash-command-option {  width: 100%;  min-height: 42px;  display: grid;  grid-template-columns: 28px minmax(96px, max-content) minmax(0, 1fr) auto;  align-items: center;  gap: 10px;  padding: 8px 10px;  border: none;  border-radius: var(--radius-md);  background: transparent;  color: var(--text-secondary);  font-family: var(--font-sans);  text-align: left;  cursor: pointer;}.slash-command-option:hover,.slash-command-option.active {  background: var(--bg-sidebar-hover);  color: var(--text-primary);}.slash-command-icon {  width: 24px;  height: 24px;  border-radius: var(--radius-sm);  display: flex;  align-items: center;  justify-content: center;  color: var(--text-secondary);}.slash-command-icon svg {  width: 17px;  height: 17px;  fill: none;  stroke: currentColor;  stroke-width: 1.9;  stroke-linecap: round;  stroke-linejoin: round;}.slash-command-title {  min-width: 0;  color: var(--text-primary);  font-size: 16px;  font-weight: 600;  white-space: nowrap;}.slash-command-desc {  min-width: 0;  color: var(--text-secondary);  font-size: 14px;  line-height: 1.35;  white-space: nowrap;  overflow: hidden;  text-overflow: ellipsis;}.slash-command-category {  color: var(--text-tertiary);  font-size: 13px;  white-space: nowrap;}.slash-command-empty {  padding: 10px 12px;  color: var(--text-tertiary);  font-size: 14px;}/* ═══════════════════════════════════════════════════════════════   底部工具栏   ═══════════════════════════════════════════════════════════════ */.input-toolbar {  display: flex;  align-items: center;  justify-content: space-between;  margin-top: var(--space-sm);  padding-top: var(--space-sm);  border-top: 1px solid var(--border-light);}.toolbar-left,.toolbar-right {  display: flex;  align-items: center;  gap: var(--space-sm);}.toolbar-left {  flex: 1;  min-width: 0;  justify-content: flex-start;}.toolbar-right {  flex-shrink: 0;}.toolbar-left > div {  display: flex;  align-items: center;  flex-shrink: 0;}/* ── 工具栏按钮 ────────────────────────────────── */.toolbar-btn {  display: flex;  align-items: center;  gap: 4px;  padding: 6px 10px;  border: none;  border-radius: var(--radius-md);  background: transparent;  color: var(--text-secondary);  font-size: 14px;  cursor: pointer;  transition: background 0.2s ease, color 0.2s ease;}.toolbar-btn:hover {  background: var(--bg-sidebar-hover);  color: var(--text-primary);}.toolbar-btn svg {  width: 16px;  height: 16px;  fill: none;  stroke: currentColor;  stroke-width: 2;  stroke-linecap: round;  stroke-linejoin: round;  flex-shrink: 0;}/* 下拉箭头 */.toolbar-btn .dropdown-arrow {  width: 12px;  height: 12px;  margin-left: -2px;}/* ── 加号按钮 ─────────────────────────────────── */.add-btn {  width: 28px;  height: 28px;  padding: 0;  display: flex;  align-items: center;  justify-content: center;  border: none;  border-radius: var(--radius-md);  background: transparent;  color: var(--text-secondary);  cursor: pointer;  transition: background 0.2s ease, color 0.2s ease;}.add-btn:hover {  background: var(--bg-sidebar-hover);  color: var(--text-primary);}.add-btn svg {  width: 18px;  height: 18px;  fill: none;  stroke: currentColor;  stroke-width: 2;  stroke-linecap: round;  stroke-linejoin: round;}/* ── 发送按钮 ─────────────────────────────────── */#send-btn {  width: 32px;  height: 32px;  border: none;  border-radius: 8px;  background: #3a3a42;  color: #5a5a6a;  cursor: not-allowed;  display: flex;  align-items: center;  justify-content: center;  flex-shrink: 0;  transition: background 0.25s ease, color 0.25s ease, transform 0.2s ease;}#send-btn.ready:not(:disabled) {  background: #e8e8ed;  color: #1a1a1e;  cursor: pointer;}#send-btn.ready:not(:disabled):hover {  background: #d4d4d8;  transform: translateY(-1px);}#send-btn.ready:not(:disabled):active {  background: #c4c4c8;  transform: translateY(1px);}#send-btn svg {  width: 18px;  height: 18px;  fill: none;  stroke: currentColor;  stroke-width: 2.5;  stroke-linecap: round;  stroke-linejoin: round;}/* ═══════════════════════════════════════════════════════════════   附件/模式选择行（已合并到工具栏，保留样式兼容）   ═══════════════════════════════════════════════════════════════ */.input-attachments {  width: 100%;  max-width: var(--input-max-width);  display: flex;  align-items: center;  gap: var(--space-sm);  padding: var(--space-xs) var(--space-md);}.attachment-btn {  display: flex;  align-items: center;  gap: 8px;  min-height: 38px;  padding: 8px 14px;  border: none;  border-radius: var(--radius-md);  background: transparent;  color: var(--text-secondary);  font-size: 17px;  font-weight: 500;  cursor: pointer;  transition: background 0.2s ease, color 0.2s ease;}.attachment-btn:hover {  background: var(--bg-sidebar-hover);  color: var(--text-secondary);}.attachment-btn svg {  width: 21px;  height: 21px;  fill: none;  stroke: currentColor;  stroke-width: 2;  stroke-linecap: round;  stroke-linejoin: round;  flex-shrink: 0;}.attachment-btn .dropdown-arrow {  width: 16px;  height: 16px;}/* ═══════════════════════════════════════════════════════════════   推理强度下拉菜单   ═══════════════════════════════════════════════════════════════ */.reasoning-dropdown-wrapper {  position: relative;  flex-shrink: 0;}.reasoning-toggle {  display: flex;  align-items: center;  gap: 4px;  padding: 6px 10px;  border: none;  border-radius: var(--radius-md);  background: transparent;  color: var(--text-secondary);  font-size: 14px;  cursor: pointer;  transition: background 0.2s ease, color 0.2s ease;}.reasoning-toggle:hover {  background: var(--bg-sidebar-hover);  color: var(--text-primary);}.reasoning-toggle svg {  width: 16px;  height: 16px;  fill: none;  stroke: currentColor;  stroke-width: 2;  stroke-linecap: round;  stroke-linejoin: round;}.reasoning-dropdown {  position: absolute;  bottom: calc(100% + 8px);  right: 0;  min-width: 180px;  background: var(--bg-card);  border: 1px solid var(--border-light);  border-radius: var(--radius-lg);  padding: var(--space-xs);  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);  opacity: 0;  transform: translateY(4px) scale(0.96);  pointer-events: none;  transition: opacity 0.2s ease, transform 0.2s ease;  z-index: 100;}.reasoning-dropdown.open {  opacity: 1;  transform: translateY(0) scale(1);  pointer-events: auto;}.reasoning-dropdown-header {  padding: var(--space-xs) var(--space-sm);  font-size: 13px;  font-weight: 600;  color: var(--text-tertiary);  text-transform: uppercase;  letter-spacing: 0.5px;}.reasoning-option {  display: flex;  align-items: center;  gap: var(--space-sm);  width: 100%;  padding: 8px var(--space-sm);  border: none;  border-radius: var(--radius-md);  background: transparent;  color: var(--text-secondary);  font-size: 15px;  cursor: pointer;  transition: background 0.15s ease, color 0.15s ease;  text-align: left;}.reasoning-option:hover {  background: var(--bg-sidebar-hover);  color: var(--text-primary);}.reasoning-option.active {  color: var(--text-primary);}.reasoning-option .check-mark {  width: 16px;  height: 16px;  display: flex;  align-items: center;  justify-content: center;  opacity: 0;  transition: opacity 0.15s ease;}.reasoning-option.active .check-mark {  opacity: 1;}.reasoning-option .check-mark svg {  width: 14px;  height: 14px;  stroke: var(--accent-blue);  stroke-width: 2.5;  fill: none;}.reasoning-option .option-label {  flex: 1;}.reasoning-option .option-desc {  font-size: 13px;  color: var(--text-tertiary);}#approval-dropdown {  min-width: 280px;}#approval-dropdown .reasoning-option {  display: grid;  grid-template-columns: 16px 64px 1fr;  column-gap: var(--space-sm);  align-items: center;  min-height: 42px;  padding: 10px var(--space-sm);}#approval-dropdown .option-label {  white-space: nowrap;}#approval-dropdown .option-desc {  min-width: 0;  white-space: nowrap;  overflow: hidden;  text-overflow: ellipsis;}
+/* ── 发送按钮 — 停止状态：回复中切换成更明确的圆形停止按钮 ── */
+#send-btn.stop {
+  width: 42px;
+  height: 42px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: #4f7df3;
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(79, 125, 243, 0.24);
+}
+
+#send-btn.stop:hover {
+  background: #5c89ff;
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(79, 125, 243, 0.3);
+}
+
+#send-btn.stop:active {
+  background: #416de0;
+  transform: translateY(0);
+  box-shadow: 0 5px 12px rgba(79, 125, 243, 0.2);
+}
+
+#send-btn.stop svg {
+  display: none;
+}
+
+#send-btn.stop::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: currentColor;
+}
+
+/* ── 发送/停止按钮白灰主题覆盖 ───────────────────── */
+#send-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  background: #3f3f46;
+  color: #a1a1aa;
+  box-shadow: none;
+  transition: background 0.25s ease, color 0.25s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+#send-btn.ready:not(:disabled),
+#send-btn.stop {
+  width: 40px;
+  height: 40px;
+  background: #f4f4f5;
+  color: #27272a;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+
+#send-btn.ready:not(:disabled):hover,
+#send-btn.stop:hover {
+  background: #ffffff;
+  color: #18181b;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+}
+
+#send-btn.ready:not(:disabled):active,
+#send-btn.stop:active {
+  background: #e4e4e7;
+  transform: translateY(0);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+}
+

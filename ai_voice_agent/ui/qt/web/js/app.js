@@ -332,6 +332,12 @@ function initAppMenuActions() {
     popover = document.createElement('div');
     popover.className = 'app-menu-popover';
     items.forEach((item) => {
+      if (item.label === '---') {
+        const sep = document.createElement('div');
+        sep.className = 'context-divider';
+        popover.appendChild(sep);
+        return;
+      }
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'context-item';
@@ -358,27 +364,149 @@ function initAppMenuActions() {
   }
 
   function menuItemsFor(action) {
+    function pendingItem(label) {
+      return {
+        label: label,
+        run: function() {
+          Notice.show('功能待接入：' + label);
+        },
+      };
+    }
+
     if (action === 'file') {
       return [
-        { label: '新建对话', run: requestNewSession },
-        { label: '导出当前对话', run: exportChat },
+        {
+          label: '新窗口',
+          run: function() {
+            if (window.bridge && window.bridge.onOpenNewWindow) {
+              window.bridge.onOpenNewWindow();
+            } else {
+              Notice.show('新窗口功能尚未就绪');
+            }
+          },
+        },
+        {
+          label: '新聊天',
+          run: function() {
+            requestNewSession();
+            if (window.Input && Input.clear) {
+              Input.clear();
+            }
+            focusChatInput();
+            Notice.show('已开启新对话');
+          },
+        },
+        {
+          label: '快速聊天',
+          run: function() {
+            requestNewSession();
+            window.setTimeout(function() {
+              focusChatInput();
+            }, 0);
+            Notice.show('已创建新对话并聚焦输入框');
+          },
+        },
+        {
+          label: '打开文件夹...',
+          run: function() {
+            var workspacePath = window.Input && Input.getWorkspacePath ? Input.getWorkspacePath() : '';
+            if (window.bridge && window.bridge.onOpenWorkspaceFolder) {
+              window.bridge.onOpenWorkspaceFolder(workspacePath);
+            } else {
+              Notice.show('当前环境不支持打开文件夹');
+            }
+          },
+        },
+        { label: '---' },
+        {
+          label: '关闭',
+          run: function() {
+            if (window.bridge && window.bridge.onWindowClose) {
+              window.bridge.onWindowClose();
+            }
+          },
+        },
+        {
+          label: '设置...',
+          run: function() {
+            openSettingsPanel();
+          },
+        },
+        {
+          label: '登出',
+          run: function() {
+            if (window.bridge && window.bridge.onWindowClose) {
+              Notice.show('当前版本未接入账号登出，已关闭窗口');
+              window.bridge.onWindowClose();
+            }
+          },
+        },
+        { label: '---' },
+        {
+          label: '退出',
+          run: function() {
+            if (window.bridge && window.bridge.onWindowClose) {
+              window.bridge.onWindowClose();
+            }
+          },
+        },
       ];
     }
     if (action === 'edit') {
       return [
-        { label: '聚焦输入框', run: focusChatInput },
-        { label: '复制当前对话', run: copyCurrentChatMarkdown },
+        pendingItem('撤销'),
+        pendingItem('重做'),
+        { label: '---' },
+        pendingItem('剪切'),
+        pendingItem('复制'),
+        pendingItem('粘贴'),
+        pendingItem('删除'),
+        { label: '---' },
+        pendingItem('全选'),
       ];
     }
     if (action === 'view') {
       return [
-        { label: '折叠/展开侧边栏', run: toggleSidebarFromMenu },
-        { label: '折叠/展开 HTML 显示区', run: toggleHtmlPreview },
+        pendingItem('切换侧边栏'),
+        pendingItem('切换底部面板'),
+        pendingItem('打开终端'),
+        pendingItem('切换文件树'),
+        pendingItem('打开浏览器标签页'),
+        pendingItem('重新加载浏览器页面'),
+        pendingItem('切换侧面板'),
+        { label: '---' },
+        pendingItem('查找'),
+        pendingItem('上一个聊天'),
+        pendingItem('下一个聊天'),
+        { label: '---' },
+        pendingItem('后退'),
+        pendingItem('前进'),
+        { label: '---' },
+        pendingItem('放大'),
+        pendingItem('缩小'),
+        pendingItem('实际大小'),
+        pendingItem('切换全屏'),
+      ];
+    }
+    if (action === 'help') {
+      return [
+        pendingItem('文档'),
+        pendingItem('新功能'),
+        pendingItem('自动化'),
+        pendingItem('本地环境'),
+        pendingItem('工作树'),
+        pendingItem('技能'),
+        pendingItem('模型上下文协议'),
+        pendingItem('故障排除'),
+        { label: '---' },
+        pendingItem('发送反馈'),
+        pendingItem('开始性能追踪'),
+        { label: '---' },
+        pendingItem('键盘快捷键'),
       ];
     }
     return [
-      { label: '关于 AI Voice Agent', run: showAboutNotice },
-      { label: '打开设置', run: openSettingsPanel },
+      pendingItem('暂无菜单项'),
     ];
   }
 }
@@ -1049,7 +1177,6 @@ function initModelSelector() {
       const provider = normalizeModelProvider(model.provider || model.id);
       const name = model.name || model.id;
       item.innerHTML = `
-        ${modelIconMarkup(provider, 'model-icon')}
         <span class="model-name"></span>
         <svg class="model-check" viewBox="0 0 24 24" width="16" height="16">
           <path fill="currentColor" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>

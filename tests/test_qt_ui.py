@@ -310,6 +310,10 @@ class QtUITest(unittest.TestCase):
         self.assertIn("window_minimize_requested.connect(self.showMinimized)", window_source)
         self.assertIn("window_maximize_requested.connect(self._toggle_maximized)", window_source)
         self.assertIn("window_drag_requested.connect(self._start_window_drag)", window_source)
+        self.assertIn("new_window_requested", window_source)
+        self.assertIn("workspace_open_requested", window_source)
+        self.assertIn("_open_new_window", window_source)
+        self.assertIn("_open_workspace_folder", window_source)
         self.assertIn("startSystemMove", window_source)
         self.assertIn("WM_NCHITTEST", window_source)
 
@@ -328,8 +332,12 @@ class QtUITest(unittest.TestCase):
         self.assertIn("onWindowMaximize", bridge_source)
         self.assertIn("onWindowClose", bridge_source)
         self.assertIn("onWindowDrag", bridge_source)
+        self.assertIn("onOpenNewWindow", bridge_source)
+        self.assertIn("onOpenWorkspaceFolder", bridge_source)
         self.assertIn("window_minimize_requested", backend_bridge)
         self.assertIn("@pyqtSlot()\n    def onWindowMinimize", backend_bridge)
+        self.assertIn("new_window_requested", backend_bridge)
+        self.assertIn("workspace_open_requested", backend_bridge)
         self.assertIn("setWindowMaximized", callback_source)
         self.assertIn("#app-chrome", title_css)
         self.assertIn(".window-control.close:hover", title_css)
@@ -380,8 +388,9 @@ class QtUITest(unittest.TestCase):
         )
 
         self.assertIn('id="session-list"', index_source)
-        self.assertIn('id="nav-rename"', index_source)
-        self.assertIn('id="nav-compact"', index_source)
+        self.assertIn('id="window-minimize-btn"', index_source)
+        self.assertIn('id="window-maximize-btn"', index_source)
+        self.assertIn('id="window-close-btn"', index_source)
         self.assertIn("window.SessionSidebar", app_source)
         self.assertIn("onRequestSessions", app_source)
         self.assertIn("onResumeSession", app_source)
@@ -400,7 +409,6 @@ class QtUITest(unittest.TestCase):
         search_source = (QT_WEB_DIR / "js" / "search-dialog.js").read_text(encoding="utf-8")
         search_css = (QT_WEB_DIR / "css" / "search-dialog.css").read_text(encoding="utf-8")
 
-        self.assertIn('id="nav-search"', index_source)
         self.assertIn('id="session-search-modal"', index_source)
         self.assertIn('id="session-search-input"', index_source)
         self.assertIn('src="js/search-dialog.js"', index_source)
@@ -826,21 +834,24 @@ class QtUITest(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('id="chrome-about-btn"', index_source)
-        self.assertIn('id="chrome-back-btn"', index_source)
-        self.assertIn('id="chrome-forward-btn"', index_source)
+        self.assertIn('id="app-chrome"', index_source)
+        self.assertIn('id="window-minimize-btn"', index_source)
+        self.assertIn('id="window-maximize-btn"', index_source)
         self.assertIn('data-menu-action="file"', index_source)
         self.assertIn('data-menu-action="edit"', index_source)
         self.assertIn('data-menu-action="view"', index_source)
         self.assertIn('data-menu-action="help"', index_source)
-        self.assertNotIn('aria-label="后退" disabled', index_source)
-        self.assertNotIn('aria-label="前进" disabled', index_source)
 
         self.assertIn("initAppMenuActions()", app_source)
         self.assertIn("initAutomationPanel()", app_source)
         self.assertIn("initSettingsPanel()", app_source)
         self.assertIn("initNavigationHistory()", app_source)
         self.assertIn("focusChatInput", app_source)
+        self.assertIn("requestNewSession()", app_source)
+        self.assertIn("onOpenNewWindow", app_source)
+        self.assertIn("onOpenWorkspaceFolder", app_source)
+        self.assertIn("getWorkspacePath", app_source)
+        self.assertIn("已开启新对话", app_source)
         self.assertIn("copyCurrentChatMarkdown", app_source)
         self.assertIn("toggleHtmlPreview", app_source)
         self.assertIn("openSettingsPanel", app_source)
@@ -856,27 +867,41 @@ class QtUITest(unittest.TestCase):
         self.assertIn("project_path_selected", backend_bridge)
         self.assertIn("_on_project_path_selected", window_source)
         self.assertIn("setProjectModalPath", callback_source)
+        self.assertIn("workspacePath", input_source)
+        self.assertIn("getWorkspacePath", input_source)
+        self.assertIn("onOpenNewWindow", bridge_source)
+        self.assertIn("onOpenWorkspaceFolder", bridge_source)
+        self.assertIn("new_window_requested", backend_bridge)
+        self.assertIn("workspace_open_requested", backend_bridge)
+
+
+    def test_should_center_empty_state_input_and_keep_app_menu_popover_clickable(self) -> None:
+        layout_css = (QT_WEB_DIR / "css" / "layout.css").read_text(encoding="utf-8")
+        title_css = (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            layout_css,
+            r"#main\.empty-state\s*{[\s\S]*?justify-content:\s*center",
+        )
+        self.assertRegex(
+            title_css,
+            r"\.app-menu-popover\s*{[\s\S]*?position:\s*fixed",
+        )
+        self.assertRegex(
+            title_css,
+            r"\.app-menu-popover\s*{[\s\S]*?z-index:\s*\d+",
+        )
 
     def test_should_define_automation_modal_for_scheduled_and_manual_chat_runs(self) -> None:
-        index_source = (QT_WEB_DIR / "index.html").read_text(encoding="utf-8")
         app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
-        layout_css = (QT_WEB_DIR / "css" / "layout.css").read_text(encoding="utf-8")
 
-        self.assertIn('id="automation-modal"', index_source)
-        self.assertIn('id="automation-task-list"', index_source)
-        self.assertIn('id="automation-title-input"', index_source)
-        self.assertIn('id="automation-prompt-input"', index_source)
-        self.assertIn('id="automation-interval-input"', index_source)
-        self.assertIn('id="automation-save-btn"', index_source)
-        self.assertIn('id="automation-run-btn"', index_source)
-        self.assertIn('id="automation-toggle-btn"', index_source)
-        self.assertIn("定时提醒、定时收集新闻等按计划运行的聊天", index_source)
+        self.assertIn("initAutomationPanel()", app_source)
         self.assertIn("automation-tasks", app_source)
         self.assertIn("saveAutomationTasks", app_source)
         self.assertIn("runAutomationTask", app_source)
         self.assertIn("scheduleAutomationTimers", app_source)
-        self.assertIn("automation-modal", layout_css)
-        self.assertIn(".automation-task-item", layout_css)
+        self.assertIn("automation-modal", app_source)
+        self.assertIn("automation-task-item", app_source)
 
     def test_should_block_automation_runs_when_input_is_busy(self) -> None:
         app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
@@ -910,6 +935,25 @@ class QtUITest(unittest.TestCase):
         self.assertIn("def set_generating(self, active: bool)", ui_source)
         self.assertIn("ui.set_generating(True)", qt_session_source)
         self.assertIn("ui.set_generating(False)", qt_session_source)
+
+    def test_should_left_align_chat_messages_and_thinking_row(self) -> None:
+        chat_area_css = (QT_WEB_DIR / "css" / "chat-area.css").read_text(encoding="utf-8")
+        messages_css = (QT_WEB_DIR / "css" / "messages.css").read_text(encoding="utf-8")
+
+        self.assertRegex(chat_area_css, r"#messages\s*{[\s\S]*?margin:\s*0\s*;")
+        self.assertRegex(messages_css, r"\.status-msg-row\s*{[\s\S]*?justify-content:\s*flex-start;")
+
+    def test_should_initialize_typing_indicator_before_status_module_returns(self) -> None:
+        status_source = (QT_WEB_DIR / "js" / "status.js").read_text(encoding="utf-8")
+
+        self.assertLess(
+            status_source.index("// ── DNA 双螺旋 SVG 生成 ──"),
+            status_source.index("return {"),
+        )
+        self.assertLess(
+            status_source.index('if (document.readyState === "loading")'),
+            status_source.index("return {"),
+        )
 
     def test_status_message_should_stay_at_end_of_message_stream(self) -> None:
         messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")

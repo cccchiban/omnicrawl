@@ -103,7 +103,7 @@
   font-family: var(--font-mono);
 }
 
-/* 停止生成按钮 */
+/* 停止生成按钮 — 已移除，改用发送键 */
 .stop-btn {
   display: flex;
   align-items: center;
@@ -124,6 +124,9 @@
               color var(--transition-fast),
               transform var(--transition-fast);
 }
+
+/* 停止按钮已永久隐藏 — 发送键在回复中变为停止键 */
+.stop-btn { display: none !important; }
 
 .stop-btn:hover {
   background: rgba(239, 68, 68, 0.18);

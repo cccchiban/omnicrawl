@@ -5,10 +5,12 @@
 
 var Input = (function() {
 
-  var bridgeReady = false;
-  var desiredEnabled = true;
-  var currentReasoning = 'none';
+ var bridgeReady = false;
+ var desiredEnabled = true;
+ var generating = false;  // Agent 回复中时发送键变为停止键
+ var currentReasoning = 'none';
   var currentApproval = 'auto'; // manual / auto / review
+  var workspacePath = '';
   var slashCommands = defaultSlashCommands();
   var slashMatches = [];
   var slashSelectedIndex = 0;
@@ -71,11 +73,19 @@ var Input = (function() {
     inp.style.height = 'var(--input-min-height)';
   }
 
-  function send() {
-    var inp = inputEl();
-    if (!inp) return;
-    var text = inp.value.trim();
-    if (!text) return;
+ function send() {
+   var inp = inputEl();
+   if (!inp) return;
+   // 如果处于停止状态（Agent 回复中），则取消生成
+   var btn = sendBtnEl();
+   if (btn && btn.classList.contains('stop')) {
+     if (window.bridge && window.bridge.onCancel) {
+       window.bridge.onCancel();
+     }
+     return;
+   }
+   var text = inp.value.trim();
+   if (!text) return;
     if (!(window.bridge && window.bridge.onUserSend)) {
       Notice.show('界面通信尚未就绪，请稍后重试');
       return;
@@ -145,6 +155,19 @@ var Input = (function() {
   function applyEnabledState() {
     var inp = inputEl();
     var btn = sendBtnEl();
+
+    // Agent 回复期间不禁用输入，但发送键变为停止键
+    if (generating) {
+      if (inp) inp.disabled = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.classList.add('stop');
+        btn.classList.remove('ready');
+      }
+      if (inp) inp.focus();
+      return;
+    }
+
     var enabled = desiredEnabled && bridgeReady;
     if (inp) inp.disabled = !enabled;
     if (btn) btn.disabled = !enabled;
@@ -169,6 +192,12 @@ var Input = (function() {
   function updateSendButtonState(inp) {
     var btn = sendBtnEl();
     if (!btn || !inp) return;
+    if (generating) {
+      btn.classList.add('stop');
+      btn.classList.remove('ready');
+      return;
+    }
+    btn.classList.remove('stop');
     var hasText = inp.value.trim().length > 0;
     var enabled = desiredEnabled && bridgeReady;
     btn.classList.toggle('ready', enabled && hasText);
@@ -832,6 +861,8 @@ var Input = (function() {
     if (!infoEl) return;
 
     if (path) {
+      var normalizedPath = String(path).replace(/[（(].*$/, '').trim();
+      workspacePath = normalizedPath || String(path);
       if (pathEl) pathEl.textContent = path;
       if (statusEl) {
         statusEl.textContent = status || '已激活';
@@ -840,8 +871,13 @@ var Input = (function() {
       }
       infoEl.classList.add('visible');
     } else {
+      workspacePath = '';
       infoEl.classList.remove('visible');
     }
+  }
+
+  function getWorkspacePath() {
+    return workspacePath;
   }
 
   function setPlaceholder(text) {
@@ -855,6 +891,10 @@ var Input = (function() {
     clear: clear,
     setEnabled: setEnabled,
     setBridgeReady: setBridgeReady,
+    setGenerating: function(active) {
+      generating = active;
+      applyEnabledState();
+    },
     isReadyForProgrammaticSend: isReadyForProgrammaticSend,
     focus: focus,
     insertText: insertText,
@@ -862,6 +902,7 @@ var Input = (function() {
     setPlaceholder: setPlaceholder,
     updateSlashCommands: updateSlashCommands,
     setWorkspaceInfo: setWorkspaceInfo,
+    getWorkspacePath: getWorkspacePath,
     setReasoningEffort: setReasoningEffort,
     setApprovalMode: setApprovalMode,
   };

@@ -55,6 +55,8 @@ class BackendBridge(QObject):
     window_minimize_requested = pyqtSignal()
     window_maximize_requested = pyqtSignal()
     window_drag_requested = pyqtSignal()
+    new_window_requested = pyqtSignal()
+    workspace_open_requested = pyqtSignal(str)
     # 窗口关闭信号：允许后台线程通过 Qt 信号请求主线程关闭窗口
     close_requested = pyqtSignal()
 
@@ -251,6 +253,16 @@ class BackendBridge(QObject):
     def onWindowDrag(self) -> None:
         """用户从自定义标题栏拖动窗口。"""
         self.window_drag_requested.emit()
+
+    @pyqtSlot()
+    def onOpenNewWindow(self) -> None:
+        """用户点击文件菜单中的“新窗口”。"""
+        self.new_window_requested.emit()
+
+    @pyqtSlot(str)
+    def onOpenWorkspaceFolder(self, workspace_path: str) -> None:
+        """用户点击文件菜单中的“打开文件夹...”。"""
+        self.workspace_open_requested.emit(workspace_path)
 
     @pyqtSlot(str, str)
     def onCreateProject(self, name: str, path: str) -> None:

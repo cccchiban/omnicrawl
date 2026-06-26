@@ -322,25 +322,12 @@ var Messages = (function() {
       row = createEl('div', { className: 'status-msg-row' });
       row.innerHTML =
         '<div class="status-msg-inner">' +
-          '<button id="status-stop-btn" class="status-stop-btn hidden" title="停止生成" aria-label="停止 AI 回复">' +
-            '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>' +
-          '</button>' +
           '<span class="status-msg-text"></span>' +
           '<span class="status-msg-dots">' +
             '<span></span><span></span><span></span>' +
           '</span>' +
         '</div>';
       container.appendChild(row);
-
-      // 绑定停止按钮事件
-      var stopBtn = row.querySelector('#status-stop-btn');
-      if (stopBtn) {
-        stopBtn.addEventListener('click', function() {
-          if (window.bridge && window.bridge.onCancel) {
-            window.bridge.onCancel();
-          }
-        });
-      }
     }
 
     var textEl = row.querySelector('.status-msg-text');

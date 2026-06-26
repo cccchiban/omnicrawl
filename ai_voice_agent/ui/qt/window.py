@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
 import threading
+import sys
+from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QPoint, QUrl, Qt
 from PyQt5.QtWidgets import QFileDialog, QVBoxLayout, QWidget
@@ -69,11 +72,14 @@ class ChatWindow(QWidget):
         self._bridge.window_minimize_requested.connect(self.showMinimized)
         self._bridge.window_maximize_requested.connect(self._toggle_maximized)
         self._bridge.window_drag_requested.connect(self._start_window_drag)
+        self._bridge.new_window_requested.connect(self._open_new_window)
+        self._bridge.workspace_open_requested.connect(self._open_workspace_folder)
 
         # 传递 page 引用给 bridge
         self._bridge.set_web_page(self._web_page)
 
         root.addWidget(self._web_view, stretch=1)
+
 
     def _setup_channel(self) -> None:
         """设置 QWebChannel 双向通信。"""
@@ -119,6 +125,43 @@ class ChatWindow(QWidget):
     def _notify_window_state(self) -> None:
         """告知前端当前是否最大化，用于更新还原/最大化按钮状态。"""
         self._bridge.call_js("setWindowMaximized", self.isMaximized())
+
+    def _open_new_window(self) -> None:
+        """用独立进程打开一个新的 Qt 窗口。"""
+        script_path = Path(__file__).resolve().parents[3] / "main.py"
+        launch_cwd = Path.cwd().resolve()
+        env = os.environ.copy()
+        env["AI_VOICE_CHAT_IN_QT_WINDOW"] = "1"
+        try:
+            popen_kwargs = {"cwd": str(launch_cwd), "env": env}
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen([sys.executable, str(script_path)], **popen_kwargs)
+            self._bridge.call_js("showNotice", "已打开新窗口")
+        except OSError as exc:
+            self._bridge.call_js("showNotice", f"新窗口打开失败：{exc}")
+
+    def _open_workspace_folder(self, workspace_path: str) -> None:
+        """用系统文件管理器打开当前工作区目录。"""
+        path_text = str(workspace_path or "").strip()
+        if not path_text:
+            self._bridge.call_js("showNotice", "当前没有可打开的工作区目录")
+            return
+
+        path = Path(path_text).expanduser().resolve(strict=False)
+        if not path.exists() or not path.is_dir():
+            self._bridge.call_js("showNotice", f"工作区目录无效：{path}")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+            self._bridge.call_js("showNotice", f"已打开工作区：{path}")
+        except OSError as exc:
+            self._bridge.call_js("showNotice", f"打开工作区失败：{exc}")
 
     def changeEvent(self, event) -> None:
         if event.type() == QEvent.Type.WindowStateChange:
