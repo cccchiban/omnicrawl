@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_voice_agent.project_context import (
+from omnicrawl.project_context import (
     LAUNCH_CWD_ENV,
     WORKSPACE_ROOT_ENV,
     ProjectContextError,
@@ -37,7 +37,7 @@ class ProjectContextTest(unittest.TestCase):
             nested.mkdir(parents=True)
             (fake_home / "AGENTS.md").write_text("# broad home marker\n", encoding="utf-8")
 
-            with patch("ai_voice_agent.project_context.Path.home", return_value=fake_home):
+            with patch("omnicrawl.project_context.Path.home", return_value=fake_home):
                 detected = find_project_root(nested)
 
         self.assertIsNone(detected)

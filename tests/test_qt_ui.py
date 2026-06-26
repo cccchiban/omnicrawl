@@ -8,15 +8,15 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from ai_voice_agent.ui.qt.export import save_chat_export
-from ai_voice_agent.ui.qt._bridge import BackendBridge
-from ai_voice_agent.ui.qt.qt_ui import QtUI
-from ai_voice_agent.qt_chat_session import _session_events_to_ui
-from ai_voice_agent.session import SessionEvent
+from omnicrawl.ui.qt.export import save_chat_export
+from omnicrawl.ui.qt._bridge import BackendBridge
+from omnicrawl.ui.qt.qt_ui import QtUI
+from omnicrawl.qt_chat_session import _session_events_to_ui
+from omnicrawl.session import SessionEvent
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-QT_WEB_DIR = PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "web"
+QT_WEB_DIR = PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "web"
 
 
 class FakeWebPage:
@@ -104,7 +104,7 @@ class QtUITest(unittest.TestCase):
         bridge = BackendBridge()
         page = FakeWebPage()
 
-        bridge._do_call_js("showStartup", ["AI Agent", ["frontend: Qt GUI"]])
+        bridge._do_call_js("showStartup", ["OmniCrawl", ["frontend: Qt GUI"]])
         bridge.set_web_page(page)
 
         self.assertEqual(page.scripts, [])
@@ -113,7 +113,7 @@ class QtUITest(unittest.TestCase):
 
         self.assertEqual(len(page.scripts), 1)
         self.assertIn("window.pyCallbacks.showStartup", page.scripts[0])
-        self.assertIn("AI Agent", page.scripts[0])
+        self.assertIn("OmniCrawl", page.scripts[0])
 
     def test_should_pass_list_arguments_as_arrays_when_calling_js(self) -> None:
         bridge = BackendBridge()
@@ -121,10 +121,10 @@ class QtUITest(unittest.TestCase):
         bridge.set_web_page(page)
         bridge.mark_frontend_ready()
 
-        bridge.call_js("showStartup", "AI Agent", ["frontend: Qt GUI"])
+        bridge.call_js("showStartup", "OmniCrawl", ["frontend: Qt GUI"])
 
         self.assertEqual(len(page.scripts), 1)
-        self.assertIn('["AI Agent", ["frontend: Qt GUI"]]', page.scripts[0])
+        self.assertIn('["OmniCrawl", ["frontend: Qt GUI"]]', page.scripts[0])
         self.assertNotIn('"\\"frontend: Qt GUI\\""', page.scripts[0])
 
     def test_should_append_user_message_immediately_when_enter_sends_input(self) -> None:
@@ -140,13 +140,13 @@ class QtUITest(unittest.TestCase):
         input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
         input_css = (QT_WEB_DIR / "css" / "input-area.css").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
-        ui_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "qt_ui.py").read_text(
+        ui_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "qt_ui.py").read_text(
             encoding="utf-8"
         )
-        qt_session_source = (PROJECT_ROOT / "ai_voice_agent" / "qt_chat_session.py").read_text(
+        qt_session_source = (PROJECT_ROOT / "omnicrawl" / "qt_chat_session.py").read_text(
             encoding="utf-8"
         )
 
@@ -299,10 +299,10 @@ class QtUITest(unittest.TestCase):
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
         title_css = (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
             encoding="utf-8"
         )
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
 
@@ -380,10 +380,10 @@ class QtUITest(unittest.TestCase):
         app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
             encoding="utf-8"
         )
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
 
@@ -617,7 +617,7 @@ class QtUITest(unittest.TestCase):
     def test_should_keep_qt_layout_compact_enough_for_standard_window(self) -> None:
         variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")
         reset_css = (QT_WEB_DIR / "css" / "reset.css").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
 
@@ -663,10 +663,10 @@ class QtUITest(unittest.TestCase):
         input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
         messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
             encoding="utf-8"
         )
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
 
@@ -688,10 +688,10 @@ class QtUITest(unittest.TestCase):
         messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
             encoding="utf-8"
         )
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
 
@@ -784,10 +784,10 @@ class QtUITest(unittest.TestCase):
         preview_source = (QT_WEB_DIR / "js" / "html-preview.js").read_text(encoding="utf-8")
         preview_css = (QT_WEB_DIR / "css" / "html-preview.css").read_text(encoding="utf-8")
         variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
-        ui_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "qt_ui.py").read_text(
+        ui_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "qt_ui.py").read_text(
             encoding="utf-8"
         )
 
@@ -827,10 +827,10 @@ class QtUITest(unittest.TestCase):
         input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "_bridge.py").read_text(
+        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
             encoding="utf-8"
         )
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
 
@@ -919,13 +919,13 @@ class QtUITest(unittest.TestCase):
 
     def test_should_only_show_stop_button_during_generation(self) -> None:
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "window.py").read_text(
+        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
             encoding="utf-8"
         )
-        ui_source = (PROJECT_ROOT / "ai_voice_agent" / "ui" / "qt" / "qt_ui.py").read_text(
+        ui_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "qt_ui.py").read_text(
             encoding="utf-8"
         )
-        qt_session_source = (PROJECT_ROOT / "ai_voice_agent" / "qt_chat_session.py").read_text(
+        qt_session_source = (PROJECT_ROOT / "omnicrawl" / "qt_chat_session.py").read_text(
             encoding="utf-8"
         )
 

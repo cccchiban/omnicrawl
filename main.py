@@ -4,30 +4,30 @@ import argparse
 import threading
 from pathlib import Path
 
-from ai_voice_agent.agent import AgentConfig, AgentError, LocalToolAgent
-from ai_voice_agent.approval import approval_mode_label, load_approval_mode
-from ai_voice_agent.chat_session import run_inline_chat
-from ai_voice_agent.llm import LLMError, load_llm_config
-from ai_voice_agent.project_context import (
+from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
+from omnicrawl.approval import approval_mode_label, load_approval_mode
+from omnicrawl.chat_session import run_inline_chat
+from omnicrawl.llm import LLMError, load_llm_config
+from omnicrawl.project_context import (
     ProjectContextError,
     detect_project_context,
     project_context_status_label,
 )
-from ai_voice_agent.runtime_config import RuntimeConfigError
-from ai_voice_agent.temp_workspace import (
+from omnicrawl.runtime_config import RuntimeConfigError
+from omnicrawl.temp_workspace import (
     AgentTempWorkspaceError,
     agent_temp_status_label,
     load_agent_temp_workspace_config,
 )
-from ai_voice_agent.frontend_config import load_frontend_config
-from ai_voice_agent.ui import UIStartupError, create_ui
-from ai_voice_agent.windows_launcher import configure_console_encoding, launch_in_powershell_window
+from omnicrawl.frontend_config import load_frontend_config
+from omnicrawl.ui import UIStartupError, create_ui
+from omnicrawl.windows_launcher import configure_console_encoding, launch_in_powershell_window
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """解析启动参数；当前只暴露会话恢复入口。"""
 
-    parser = argparse.ArgumentParser(description="AI Agent")
+    parser = argparse.ArgumentParser(description="OmniCrawl")
     parser.add_argument(
         "--resume",
         metavar="SESSION_ID",
@@ -38,7 +38,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """命令行 AI Agent 入口。"""
+    """命令行 OmniCrawl 入口。"""
 
     configure_console_encoding()
     args = _parse_args(argv)
@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> None:
     reasoning_info = f"，推理强度：{config.reasoning_effort}" if config.reasoning_effort else ""
     frontend_label = "Qt GUI" if frontend_config.type == "qt" else "TUI"
     ui.print_startup_panel(
-        "AI Agent",
+        "OmniCrawl",
         [
             f"frontend: {frontend_label}",
             f"thinking: {enabled_label}{reasoning_info}",
@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> None:
                     agent._ensure_mcp_tools_ready()
                     ui.status("正在初始化")
 
-                from ai_voice_agent.qt_chat_session import run_qt_chat
+                from omnicrawl.qt_chat_session import run_qt_chat
 
                 run_qt_chat(
                     agent,
@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if is_qt_frontend:
             # Qt GUI：对话循环在后台线程，主线程留给 Qt 事件循环
-            from ai_voice_agent.qt_chat_session import run_qt_chat
+            from omnicrawl.qt_chat_session import run_qt_chat
 
             qt_stop_event = threading.Event()
             qt_cancel_event = ui.get_cancel_event()
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     # Qt 模式：直接启动，不弹 PowerShell 窗口
     # TUI 模式：从 IDE 启动时弹出独立 PowerShell 窗口
     try:
-        from ai_voice_agent.frontend_config import load_frontend_config
+        from omnicrawl.frontend_config import load_frontend_config
         _frontend = load_frontend_config()
     except Exception:
         _frontend = None

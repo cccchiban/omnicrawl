@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_voice_agent.agent import LocalToolAgent, ToolDefinition, ToolCall
-from ai_voice_agent.agent_tools import normalize_tool_call
-from ai_voice_agent.approval import (
+from omnicrawl.agent import LocalToolAgent, ToolDefinition, ToolCall
+from omnicrawl.agent_tools import normalize_tool_call
+from omnicrawl.approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_MANUAL,
     APPROVAL_MODE_REVIEW,
@@ -16,7 +16,7 @@ from ai_voice_agent.approval import (
     normalize_approval_mode,
     save_approval_mode,
 )
-from ai_voice_agent.slash_commands import handle_approval_command, handle_reasoning_command
+from omnicrawl.slash_commands import handle_approval_command, handle_reasoning_command
 
 
 class ApprovalConfigTest(unittest.TestCase):
@@ -72,7 +72,7 @@ class ApprovalCommandTest(unittest.TestCase):
 
         agent = FakeAgent()
         with patch(
-            "ai_voice_agent.slash_commands.save_approval_mode",
+            "omnicrawl.slash_commands.save_approval_mode",
             return_value=Path("config.json"),
         ) as save_mode:
             message = handle_approval_command(agent, "/approval:auto")
@@ -91,7 +91,7 @@ class ApprovalCommandTest(unittest.TestCase):
 
         agent = FakeAgent()
         with patch(
-            "ai_voice_agent.slash_commands.save_reasoning_effort",
+            "omnicrawl.slash_commands.save_reasoning_effort",
             return_value=Path("config.json"),
         ) as save_effort:
             message = handle_reasoning_command(agent, "/reasoning high")

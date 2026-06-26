@@ -1,6 +1,6 @@
-# AI Agent
+# OmniCrawl
 
-本目录实现本地 AI Agent，支持 Qt 桌面 GUI 和终端 TUI：
+本目录实现本地 OmniCrawl，支持 Qt 桌面 GUI 和终端 TUI：
 
 1. Qt GUI 和 TUI 均使用键盘输入。
 2. 使用 OpenAI Python SDK 调用 `https://xxx.xx/v1` 的 Responses API 兼容接口。
@@ -91,7 +91,7 @@ python main.py
 
 终端 UI 的设计和限制见 `docs/TERMINAL_UI.md`。
 Skill 安装、编写和渐进式披露规范见 `docs/SKILL_INSTALLATION.md`。
-运行时系统提示词模板见 `ai_voice_agent/system_prompt.md`；模板只保留工具协议和按场景读取文档的路由说明，具体规范按需读取对应文档。
+运行时系统提示词模板见 `omnicrawl/system_prompt.md`；模板只保留工具协议和按场景读取文档的路由说明，具体规范按需读取对应文档。
 
 如果需要从固定位置启动 Agent 但操作另一个项目，可以显式指定工作区：
 
@@ -105,7 +105,7 @@ python main.py
 ```text
 .
 ├── main.py                  # 程序启动入口，保持 python main.py 运行方式
-├── ai_voice_agent/          # Agent、LLM 和终端 UI 业务模块
+├── omnicrawl/          # Agent、LLM 和终端 UI 业务模块
 │   └── system_prompt.md     # 运行时系统提示词模板
 ├── docs/                    # 设计说明和实现文档
 ├── config.example.json      # 本地配置模板
@@ -148,7 +148,7 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
         "enabled": true,
         "transport": "stdio",
         "command": "python",
-        "args": ["-m", "ai_voice_agent.mcp.server"],
+        "args": ["-m", "omnicrawl.mcp.server"],
         "env": {},
         "timeout_seconds": 360,
         "risk_level": "trusted"
@@ -176,7 +176,7 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 
 模型列表会按当前 `llm.base_url` 自动请求 OpenAI 兼容的 `/models` 接口检测。TUI 中输入 `/model` 可查看可用模型，输入 `/model <模型ID>` 可实时切换并写回 `config.json`；Qt GUI 左上角模型选择器打开时会刷新列表，选择后会同步切换当前会话模型和配置文件。若设置了 `OPENAI_MODEL` 环境变量，重启后仍会优先使用环境变量。
 
-MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。内置 `local_project` Server 可通过 `python -m ai_voice_agent.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
+MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
 
 如果没有 `config.json`，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
 

@@ -78,7 +78,7 @@ Agent 工具调用属于次级状态，显示在消息区。工具运行期间�
 
 ## 文件边界
 
-- `ai_voice_agent/terminal_ui.py`：终端样式、ANSI 能力检测、启动面板、状态行、等待动画。
+- `omnicrawl/terminal_ui.py`：终端样式、ANSI 能力检测、启动面板、状态行、等待动画。
 - `main.py`：业务主流程、Agent 调用。
 - `docs/TERMINAL_UI.md`：本文档，记录交互约定和后续演进方向。
 

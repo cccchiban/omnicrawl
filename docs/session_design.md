@@ -2,7 +2,7 @@
 
 ## 1. 设计目标
 
-本文档参考 Claude Code Deep Dive 的“多轮对话与会话管理”思路，结合本项目 `ai_voice_agent` 的现有实现，定义一套适合本地 AI Agent 的会话设计方案。
+本文档参考 Claude Code Deep Dive 的“多轮对话与会话管理”思路，结合本项目 `omnicrawl` 的现有实现，定义一套适合本地 OmniCrawl 的会话设计方案。
 
 目标不是简单保存聊天记录，而是让 Agent 在多轮任务中具备可恢复、可追踪、可压缩、可导出的上下文管理能力：
 
@@ -372,7 +372,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 - 目标：为 Qt GUI 修复输入区布局问题。
 - 已完成：拆分 CSS，调整消息区滚动。
 - 当前状态：测试中发现按钮在窄屏下文字溢出。
-- 关键文件：`ai_voice_agent/ui/qt/web/css/input-area.css`。
+- 关键文件：`omnicrawl/ui/qt/web/css/input-area.css`。
 - 约束：不引入新前端依赖，保持现有 QWebChannel 通信方式。
 - 下一步：补充窄屏样式并运行 Qt UI 冒烟验证。
 ```

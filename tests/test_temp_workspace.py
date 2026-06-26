@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ai_voice_agent.temp_workspace import (
+from omnicrawl.temp_workspace import (
     AgentTempWorkspace,
     AgentTempWorkspaceConfig,
     AgentTempWorkspaceError,

@@ -21,3 +21,6 @@ node_modules/
 memory/
 logs/
 bb-browser/
+
+CLAUDE.md
+AGENTS.md

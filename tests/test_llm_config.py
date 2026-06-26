@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_voice_agent.llm import (
+from omnicrawl.llm import (
     LLMConfig,
     LLMError,
     OpenAIResponseLLM,

@@ -1,6 +1,6 @@
 # MCP 使用规范
 
-本文档面向 AI Agent 和项目维护者，说明在本项目中如何渐进式理解、配置、调用和排障 MCP。
+本文档面向 OmniCrawl 和项目维护者，说明在本项目中如何渐进式理解、配置、调用和排障 MCP。
 
 核心原则：先读最低成本信息，再按任务需要深入。不要在普通任务中一次性读取所有 MCP 源码或设计文档。
 
@@ -11,8 +11,8 @@
 本项目的 MCP 支持由 Host 侧 Agent、MCP Client Manager 和可选 Local MCP Server 组成：
 
 - Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复。
-- Client：`ai_voice_agent/mcp/client.py`，负责连接 Server、发现 Tool/Resource/Prompt、调用和降级。
-- Local Server：`ai_voice_agent/mcp/server.py`，通过 `stdio` 暴露当前项目的安全工具和上下文。
+- Client：`omnicrawl/mcp/client.py`，负责连接 Server、发现 Tool/Resource/Prompt、调用和降级。
+- Local Server：`omnicrawl/mcp/server.py`，通过 `stdio` 暴露当前项目的安全工具和上下文。
 - 配置入口：`config.json` 的 `mcp` 段，示例见 `config.example.json`。
 - 状态入口：运行时输入 `/mcp` 查看 Server、Tool、Resource、Prompt 和诊断。
 
@@ -50,7 +50,7 @@
 
 如遇到配置校验失败，再读：
 
-1. `ai_voice_agent/mcp/config.py`
+1. `omnicrawl/mcp/config.py`
 2. `docs/MCP_DESIGN_TECHNICAL.md` 第 6、7、8 节。
 
 ### 2.3 调用 MCP Tool / Resource / Prompt
@@ -62,7 +62,7 @@
 
 如需要理解某个能力来自哪里，再读：
 
-1. `ai_voice_agent/mcp/server.py` 中对应 Tool/Resource/Prompt。
+1. `omnicrawl/mcp/server.py` 中对应 Tool/Resource/Prompt。
 2. 外部 MCP Server 的官方说明或本地配置。
 
 ### 2.4 修改 MCP Client 或安全策略
@@ -71,16 +71,16 @@
 
 1. 本文档第 5、6 节。
 2. `docs/MCP_DESIGN_TECHNICAL.md` 第 8、9、11、14 节。
-3. `ai_voice_agent/mcp/client.py`
-4. `ai_voice_agent/mcp/security.py`
-5. `ai_voice_agent/mcp/audit.py`
+3. `omnicrawl/mcp/client.py`
+4. `omnicrawl/mcp/security.py`
+5. `omnicrawl/mcp/audit.py`
 
 ### 2.5 修改 Local MCP Server
 
 先读：
 
 1. 本文档第 4、5 节。
-2. `ai_voice_agent/mcp/server.py`
+2. `omnicrawl/mcp/server.py`
 3. `tests/test_mcp.py` 的 Local MCP Server 测试。
 
 如涉及对外协议兼容，再读：
@@ -97,8 +97,8 @@
 
 如还不能定位，再读：
 
-1. `ai_voice_agent/mcp/client.py`
-2. `ai_voice_agent/mcp/server.py`
+1. `omnicrawl/mcp/client.py`
+2. `omnicrawl/mcp/server.py`
 3. `docs/MCP_DESIGN_TECHNICAL.md` 第 9、11 节。
 
 ---
@@ -118,7 +118,7 @@
         "enabled": true,
         "transport": "stdio",
         "command": "python",
-        "args": ["-m", "ai_voice_agent.mcp.server"],
+        "args": ["-m", "omnicrawl.mcp.server"],
         "env": {},
         "timeout_seconds": 360,
         "risk_level": "trusted"
@@ -260,7 +260,7 @@ logs/mcp-audit.jsonl
 
 ```powershell
 python -m unittest discover -s tests
-python -m compileall ai_voice_agent
+python -m compileall omnicrawl
 ```
 
 涉及 Local MCP Server 时，重点验证：

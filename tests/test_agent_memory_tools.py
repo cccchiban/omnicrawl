@@ -5,13 +5,13 @@ import unittest
 from datetime import datetime, timezone
 from typing import Any
 
-from ai_voice_agent.agent_memory_tools import (
+from omnicrawl.agent_memory_tools import (
     memory_expand_related_result,
     memory_read_result,
     memory_search_result,
     memory_write_result,
 )
-from ai_voice_agent.memory import MemoryRecord, MemorySearchResult, MemoryWriteRequest
+from omnicrawl.memory import MemoryRecord, MemorySearchResult, MemoryWriteRequest
 
 
 class FakeMemoryStore:

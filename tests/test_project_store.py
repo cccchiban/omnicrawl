@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_voice_agent.project import ProjectStore, ProjectStoreError
-from ai_voice_agent.session import SessionStore
+from omnicrawl.project import ProjectStore, ProjectStoreError
+from omnicrawl.session import SessionStore
 
 
 class ProjectStoreTest(unittest.TestCase):

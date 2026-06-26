@@ -130,7 +130,7 @@ disable-model-invocation: false   # 可选，true 时仅 /skill:name 手动调�
 
 ## 4. 核心模块设计
 
-### 4.1 数据模型（`ai_voice_agent/skill.py`）
+### 4.1 数据模型（`omnicrawl/skill.py`）
 
 ```python
 from __future__ import annotations
@@ -543,9 +543,9 @@ LLM 请求
 
 | 文件 | 作用 | 行数估算 |
 |------|------|----------|
-| `ai_voice_agent/skill.py` | SkillMeta / Skill / SkillMatchResult / SkillDiagnostic + SkillManager + 校验函数 | ~350 行 |
+| `omnicrawl/skill.py` | SkillMeta / Skill / SkillMatchResult / SkillDiagnostic + SkillManager + 校验函数 | ~350 行 |
 | `skills/` 目录 | 内置 Skill（如 `code-review/`） | 按需 |
-| `ai_voice_agent/agent.py`（修改） | AgentConfig 增加字段 + `__init__` + `run_stream` + `_system_prompt` 集成 | +40 行 |
+| `omnicrawl/agent.py`（修改） | AgentConfig 增加字段 + `__init__` + `run_stream` + `_system_prompt` 集成 | +40 行 |
 | `main.py`（修改） | `/skills` / `/skill:name` 命令 + CLI 参数解析 | +35 行 |
 | `docs/skill_system_impl.md` | 本文档 | — |
 
@@ -555,15 +555,15 @@ LLM 请求
 
 | 步骤 | 内容 | 涉及文件 | 预计行数 |
 |------|------|----------|----------|
-| 1 | 创建 `ai_voice_agent/skill.py`：数据类（SkillMeta, Skill, SkillMatchResult, SkillDiagnostic）+ 校验函数 | ai_voice_agent/skill.py | ~80 行 |
-| 2 | 实现 `SkillManager._parse_frontmatter()` — YAML 头部解析 | ai_voice_agent/skill.py | ~30 行 |
-| 3 | 实现 `SkillManager._scan_directory()` — 目录遍历 + 忽略规则 | ai_voice_agent/skill.py | ~50 行 |
-| 4 | 实现 `SkillManager.discover()` — 多作用域遍历 + _add_skill 去重冲突 | ai_voice_agent/skill.py | ~60 行 |
-| 5 | 实现 `SkillManager._score_match()` + `match()` — 关键词匹配算法 | ai_voice_agent/skill.py | ~50 行 |
-| 6 | 实现 `SkillManager.inject()` — XML 格式注入 | ai_voice_agent/skill.py | ~30 行 |
-| 7 | 实现 `SkillManager.list_all()` / `get()` / `match_by_name()` — 查询接口 | ai_voice_agent/skill.py | ~30 行 |
-| 8 | 修改 `AgentConfig` — 增加 skills 配置字段 | ai_voice_agent/agent.py | +10 行 |
-| 9 | 修改 `LocalToolAgent.__init__` / `_system_prompt()` / `run_stream()` | ai_voice_agent/agent.py | +30 行 |
+| 1 | 创建 `omnicrawl/skill.py`：数据类（SkillMeta, Skill, SkillMatchResult, SkillDiagnostic）+ 校验函数 | omnicrawl/skill.py | ~80 行 |
+| 2 | 实现 `SkillManager._parse_frontmatter()` — YAML 头部解析 | omnicrawl/skill.py | ~30 行 |
+| 3 | 实现 `SkillManager._scan_directory()` — 目录遍历 + 忽略规则 | omnicrawl/skill.py | ~50 行 |
+| 4 | 实现 `SkillManager.discover()` — 多作用域遍历 + _add_skill 去重冲突 | omnicrawl/skill.py | ~60 行 |
+| 5 | 实现 `SkillManager._score_match()` + `match()` — 关键词匹配算法 | omnicrawl/skill.py | ~50 行 |
+| 6 | 实现 `SkillManager.inject()` — XML 格式注入 | omnicrawl/skill.py | ~30 行 |
+| 7 | 实现 `SkillManager.list_all()` / `get()` / `match_by_name()` — 查询接口 | omnicrawl/skill.py | ~30 行 |
+| 8 | 修改 `AgentConfig` — 增加 skills 配置字段 | omnicrawl/agent.py | +10 行 |
+| 9 | 修改 `LocalToolAgent.__init__` / `_system_prompt()` / `run_stream()` | omnicrawl/agent.py | +30 行 |
 | 10 | 修改 `main.py` — `/skills` / `/skill:name` 命令 + CLI 参数 | main.py | +35 行 |
 | 11 | 创建示例 Skill（`skills/python-code-review/SKILL.md`）验证端到端流程 | skills/ | ~30 行 |
 | 12 | 手工测试：启动 → `/skills` 查看 → 输入任务 → 验证 Skill 注入与执行 | — | — |

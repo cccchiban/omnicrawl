@@ -7,10 +7,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from main import _parse_args
-from ai_voice_agent.frontend_config import load_frontend_config
-from ai_voice_agent.runtime_config import RuntimeConfigError
-from ai_voice_agent.runtime_config import load_config_data, save_config_data
-from ai_voice_agent.windows_launcher import launch_in_powershell_window
+from omnicrawl.frontend_config import load_frontend_config
+from omnicrawl.runtime_config import RuntimeConfigError
+from omnicrawl.runtime_config import load_config_data, save_config_data
+from omnicrawl.windows_launcher import launch_in_powershell_window
 
 
 class RuntimeConfigTest(unittest.TestCase):
@@ -35,14 +35,14 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(json.loads(raw.decode("utf-8"))["approval"]["mode"], "auto")
 
     def test_load_frontend_config_defaults_to_tui(self) -> None:
-        with patch("ai_voice_agent.frontend_config.load_config_data", return_value={}):
+        with patch("omnicrawl.frontend_config.load_config_data", return_value={}):
             config = load_frontend_config()
 
         self.assertEqual(config.type, "tui")
 
     def test_load_frontend_config_accepts_qt(self) -> None:
         with patch(
-            "ai_voice_agent.frontend_config.load_config_data",
+            "omnicrawl.frontend_config.load_config_data",
             return_value={"frontend": {"type": "qt"}},
         ):
             config = load_frontend_config()
@@ -51,7 +51,7 @@ class RuntimeConfigTest(unittest.TestCase):
 
     def test_load_frontend_config_rejects_unknown_type(self) -> None:
         with patch(
-            "ai_voice_agent.frontend_config.load_config_data",
+            "omnicrawl.frontend_config.load_config_data",
             return_value={"frontend": {"type": "browser"}},
         ):
             with self.assertRaisesRegex(RuntimeConfigError, "frontend.type"):
@@ -69,10 +69,10 @@ class RuntimeConfigTest(unittest.TestCase):
             popen_calls.append({"command": command, **kwargs})
             return object()
 
-        with patch("ai_voice_agent.windows_launcher.os.name", "nt"):
-            with patch("ai_voice_agent.windows_launcher._running_in_powershell_child", return_value=False):
-                with patch("ai_voice_agent.windows_launcher.subprocess.Popen", side_effect=fake_popen):
-                    with patch("ai_voice_agent.windows_launcher.subprocess.CREATE_NEW_CONSOLE", 16, create=True):
+        with patch("omnicrawl.windows_launcher.os.name", "nt"):
+            with patch("omnicrawl.windows_launcher._running_in_powershell_child", return_value=False):
+                with patch("omnicrawl.windows_launcher.subprocess.Popen", side_effect=fake_popen):
+                    with patch("omnicrawl.windows_launcher.subprocess.CREATE_NEW_CONSOLE", 16, create=True):
                         launched = launch_in_powershell_window(
                             Path("main.py"),
                             ["--resume", "20260616-201530-a1b2c3"],

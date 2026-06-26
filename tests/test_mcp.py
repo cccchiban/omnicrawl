@@ -8,14 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_voice_agent.agent import LocalToolAgent, ToolCall, ToolDefinition
-from ai_voice_agent.agent_tools import normalize_tool_call
-from ai_voice_agent.mcp.client import MCPClientManager, _resolve_stdio_command
-from ai_voice_agent.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
-from ai_voice_agent.mcp.registry import MCPPromptMeta, MCPResourceMeta, MCPToolMeta, namespace_capability_name
-from ai_voice_agent.mcp.server import LocalMCPServer
-from ai_voice_agent.mcp.security import mcp_tool_requires_confirmation
-from ai_voice_agent.slash_commands import build_slash_commands, format_mcp_status
+from omnicrawl.agent import LocalToolAgent, ToolCall, ToolDefinition
+from omnicrawl.agent_tools import normalize_tool_call
+from omnicrawl.mcp.client import MCPClientManager, _resolve_stdio_command
+from omnicrawl.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
+from omnicrawl.mcp.registry import MCPPromptMeta, MCPResourceMeta, MCPToolMeta, namespace_capability_name
+from omnicrawl.mcp.server import LocalMCPServer
+from omnicrawl.mcp.security import mcp_tool_requires_confirmation
+from omnicrawl.slash_commands import build_slash_commands, format_mcp_status
 
 
 class MCPConfigTest(unittest.TestCase):
@@ -165,7 +165,7 @@ class MCPManagerTest(unittest.TestCase):
 
     def test_resolve_stdio_command_uses_path_lookup(self) -> None:
         with patch(
-            "ai_voice_agent.mcp.client.shutil.which",
+            "omnicrawl.mcp.client.shutil.which",
             return_value=r"C:\Program Files\nodejs\npx.CMD",
         ) as which:
             resolved = _resolve_stdio_command("npx")
@@ -185,7 +185,7 @@ class MCPManagerTest(unittest.TestCase):
                         enabled=True,
                         transport="stdio",
                         command="python",
-                        args=["-m", "ai_voice_agent.mcp.server"],
+                        args=["-m", "omnicrawl.mcp.server"],
                         timeout_seconds=5,
                         risk_level="trusted",
                     )
@@ -369,7 +369,7 @@ class MCPAgentCommandTest(unittest.TestCase):
                 "- 终端环境变量：WT_SESSION",
             ]
         )
-        with patch("ai_voice_agent.agent_prompt_context.runtime_environment_context", return_value=runtime_context):
+        with patch("omnicrawl.agent_prompt_context.runtime_environment_context", return_value=runtime_context):
             prompt = LocalToolAgent._system_prompt(agent)
             context_messages = LocalToolAgent._context_messages(agent)
 

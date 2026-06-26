@@ -8,7 +8,7 @@ from .agent_types import ToolDefinition
 
 
 TOOL_REVIEW_SYSTEM_PROMPT = (
-    "你是本地 AI Agent 的工具调用安全审查器。"
+    "你是本地 OmniCrawl 的工具调用安全审查器。"
     "review 模式下，Host 只会把疑似删除行为的工具调用交给你审查；非删除行为由 Host 自动放行。"
     "你只判断这一次工具调用是否可以自动批准，不执行工具，也不补写方案。"
     "请用严格 JSON 回复：{\"approve\": true/false, \"reason\": \"一句中文理由\"}。"

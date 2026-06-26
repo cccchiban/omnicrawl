@@ -7,15 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_voice_agent.llm import LLMConfig
-from ai_voice_agent.model_catalog import (
+from omnicrawl.llm import LLMConfig
+from omnicrawl.model_catalog import (
     detect_model_options,
     detect_model_provider,
     ensure_current_model_option,
     ModelOption,
     save_llm_model,
 )
-from ai_voice_agent.slash_commands import handle_model_command
+from omnicrawl.slash_commands import handle_model_command
 
 
 class _FakeResponse:
@@ -66,7 +66,7 @@ class ModelCatalogTest(unittest.TestCase):
             model="gpt-5.2",
         )
 
-        with patch("ai_voice_agent.model_catalog.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("omnicrawl.model_catalog.urllib.request.urlopen", side_effect=fake_urlopen):
             options = detect_model_options(config, timeout_seconds=3)
 
         self.assertEqual(captured["url"], "https://example.test/v1/models")
@@ -110,10 +110,10 @@ class ModelCatalogTest(unittest.TestCase):
         agent = _FakeAgent()
 
         with patch(
-            "ai_voice_agent.slash_commands.detect_model_options",
+            "omnicrawl.slash_commands.detect_model_options",
             return_value=[ModelOption(id="new-model", name="new-model", provider="other")],
         ), patch(
-            "ai_voice_agent.slash_commands.save_llm_model",
+            "omnicrawl.slash_commands.save_llm_model",
             return_value=Path("config.json"),
         ):
             message = handle_model_command(agent, "/model new-model")
@@ -125,7 +125,7 @@ class ModelCatalogTest(unittest.TestCase):
         agent = _FakeAgent()
 
         with patch(
-            "ai_voice_agent.slash_commands.detect_model_options",
+            "omnicrawl.slash_commands.detect_model_options",
             return_value=ensure_current_model_option([], "allowed-model"),
         ):
             message = handle_model_command(agent, "/model blocked-model")

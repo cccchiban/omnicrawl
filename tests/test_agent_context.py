@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from ai_voice_agent.agent import (
+from omnicrawl.agent import (
     AgentModelReply,
     AgentConfig,
     AgentError,
@@ -16,19 +16,19 @@ from ai_voice_agent.agent import (
     ToolDefinition,
     ToolResult,
 )
-from ai_voice_agent.agent_history import restore_history_window
-from ai_voice_agent.agent_llm_protocol import assistant_tool_call_message, function_name_for_tool
-from ai_voice_agent.agent_prompt_context import build_system_prompt
-from ai_voice_agent.mcp.config import MCPConfig
-from ai_voice_agent.project import ProjectStore
-from ai_voice_agent.session import SessionStore
-from ai_voice_agent.skill import Skill, SkillMatchResult, SkillMeta
-from ai_voice_agent.slash_commands import (
+from omnicrawl.agent_history import restore_history_window
+from omnicrawl.agent_llm_protocol import assistant_tool_call_message, function_name_for_tool
+from omnicrawl.agent_prompt_context import build_system_prompt
+from omnicrawl.mcp.config import MCPConfig
+from omnicrawl.project import ProjectStore
+from omnicrawl.session import SessionStore
+from omnicrawl.skill import Skill, SkillMatchResult, SkillMeta
+from omnicrawl.slash_commands import (
     build_slash_command_options,
     build_slash_commands,
     handle_session_command,
 )
-from ai_voice_agent.temp_workspace import AgentTempWorkspaceConfig
+from omnicrawl.temp_workspace import AgentTempWorkspaceConfig
 
 
 class AgentContextInjectionTest(unittest.TestCase):
@@ -55,7 +55,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 temp_workspace=AgentTempWorkspaceConfig(),
             )
 
-            with patch("ai_voice_agent.agent.AgentTempWorkspace", FakeTempWorkspace):
+            with patch("omnicrawl.agent.AgentTempWorkspace", FakeTempWorkspace):
                 with self.assertRaisesRegex(AgentError, "缺少 API Key"):
                     LocalToolAgent(config)
 
@@ -78,7 +78,7 @@ class AgentContextInjectionTest(unittest.TestCase):
             )
 
             with patch("openai.OpenAI", return_value=SimpleNamespace()) as openai_client:
-                with patch("ai_voice_agent.agent.BBBrowserCLI.ensure_started") as ensure_started:
+                with patch("omnicrawl.agent.BBBrowserCLI.ensure_started") as ensure_started:
                     agent = LocalToolAgent(config)
                     self.assertIsNone(agent._client)
                     agent.close()
@@ -108,7 +108,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 discover_calls += 1
                 manager._discovered = True
 
-            with patch("ai_voice_agent.mcp.client.MCPClientManager.discover", fake_discover):
+            with patch("omnicrawl.mcp.client.MCPClientManager.discover", fake_discover):
                 agent = LocalToolAgent(config)
                 self.assertEqual(discover_calls, 0)
 

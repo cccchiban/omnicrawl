@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_voice_agent.agent import LocalToolAgent
-from ai_voice_agent.session import SessionStore
+from omnicrawl.agent import LocalToolAgent
+from omnicrawl.session import SessionStore
 
 
 class AgentLifecycleTest(unittest.TestCase):

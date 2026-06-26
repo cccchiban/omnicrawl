@@ -17,7 +17,7 @@ class RuntimeConfigError(RuntimeError):
 def default_config_path() -> Path:
     """返回项目默认配置文件路径。"""
 
-    # 源码已收拢到 ai_voice_agent 包内，但 config.json 仍保留在项目根目录，
+    # 源码已收拢到 omnicrawl 包内，但 config.json 仍保留在项目根目录，
     # 这样可以继续沿用 README 中的复制 config.example.json -> config.json 流程。
     return Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_FILENAME
 

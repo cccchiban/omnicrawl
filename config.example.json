@@ -29,7 +29,7 @@
         "command": "python",
         "args": [
           "-m",
-          "ai_voice_agent.mcp.server"
+          "omnicrawl.mcp.server"
         ],
         "env": {},
         "timeout_seconds": 360,
