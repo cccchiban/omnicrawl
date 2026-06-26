@@ -28,8 +28,6 @@ from .model_catalog import (
     ensure_current_model_option,
     model_options_to_ui,
 )
-from .speech_playback import StreamingSpeechPlayer
-from .text_to_speech import TextToSpeech
 from .ui.qt import QtUI
 
 
@@ -43,22 +41,6 @@ class _QtChatStopped(RuntimeError):
 
 class _QtChatCancelled(RuntimeError):
     """用户点击停止按钮后用于中断当前生成的内部信号。"""
-
-
-class _QtStatusLine:
-    """Qt UI 的 StatusLine 适配器，满足 StreamingSpeechPlayer 接口。"""
-
-    def __init__(self, ui: QtUI) -> None:
-        self._ui = ui
-
-    def show(self, text: str) -> None:
-        self._ui.status(text)
-
-    def clear(self) -> None:
-        self._ui.status("")
-
-    def new_line_for_input(self, prefix: str = "▸") -> None:
-        pass
 
 
 def open_project_in_file_manager(project_path: str) -> None:
@@ -235,12 +217,13 @@ def _hydrate_html_ui_artifact(
 
 def run_qt_chat(
     agent: LocalToolAgent,
-    text_to_speech: TextToSpeech | None,
     ui: QtUI,
     stop_event: threading.Event | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
     """运行 Qt GUI 对话循环，完整复刻 TUI 功能。"""
+
+    from .terminal_ui import MarkdownStreamState
 
     stop_event = stop_event or threading.Event()
     cancel_event = cancel_event or threading.Event()
@@ -558,7 +541,7 @@ def run_qt_chat(
     refresh_session_list()
     refresh_project_list()
 
-    # 清除 main.py 设置的“正在初始化”状态，表示 Agent 已就绪
+    # 清除 main.py 设置的"正在初始化"状态，表示 Agent 已就绪
     ui.status("")
 
     while True:
@@ -636,34 +619,34 @@ def run_qt_chat(
         ui.status("正在思考")
         ui.set_generating(True)
 
-        speech_player = StreamingSpeechPlayer(
-            text_to_speech,
-            ui,
-            status_line=_QtStatusLine(ui),
-            input_bar=None,  # Qt 不需要终端 InputBar
-        )
+        _markdown_state = MarkdownStreamState()
 
         def handle_delta(delta: str) -> None:
             raise_if_cancelled()
-            speech_player.handle_delta(delta)
+            ui.write_markdown_delta(delta, _markdown_state)
+
+        def _flush_display() -> None:
+            ui.flush_markdown(_markdown_state)
 
         def handle_agent_status(message: str) -> None:
             raise_if_stopped()
             if message:
-                speech_player.flush_display()
+                _flush_display()
                 ui.status(message)
             else:
-                speech_player.start_new_display_segment()
+                _flush_display()
+                nonlocal _markdown_state
+                _markdown_state = MarkdownStreamState()
                 ui.status("正在思考")
 
         def handle_retry_status(message: str) -> None:
             raise_if_stopped()
-            speech_player.flush_display()
+            _flush_display()
             ui.status(message, italic=True)
 
         def handle_tool_start(step: int, tool_call) -> None:
             raise_if_stopped()
-            speech_player.flush_display()
+            _flush_display()
             ui.print_tool_call_start(
                 step,
                 tool_call.name,
@@ -672,7 +655,7 @@ def run_qt_chat(
 
         def handle_tool_result(_tool_call, result) -> None:
             raise_if_stopped()
-            speech_player.flush_display()
+            _flush_display()
             if result.ui_artifact.get("type") == "html":
                 ui.show_html(
                     str(result.ui_artifact.get("title") or "HTML 预览"),
@@ -685,7 +668,7 @@ def run_qt_chat(
             )
 
         def handle_protocol_wait() -> None:
-            speech_player.flush_display()
+            _flush_display()
             ui.status("正在继续")
 
         try:
@@ -699,65 +682,21 @@ def run_qt_chat(
                 on_protocol_wait=handle_protocol_wait,
                 on_retry_status=handle_retry_status,
             )
-            speech_player.flush()
+            _flush_display()
             ui.newline()
             refresh_session_list()
             refresh_project_list()
 
-            # 朗读完成后的处理
-            if text_to_speech is not None:
-                ui.set_speaking(True)
-                ui.set_input_placeholder("按 Enter 打断朗读，或等待结束...")
-
-                # 简化版等待：在 Qt 中用后台线程等待语音完成
-                speech_done = threading.Event()
-
-                def _wait_speech() -> None:
-                    text_to_speech.wait_until_done()
-                    speech_done.set()
-
-                waiter = threading.Thread(target=_wait_speech, daemon=True)
-                waiter.start()
-
-                # 在等待语音的同时，允许用户提前输入下一条消息
-                ui.set_input_enabled(True)
-                while not speech_done.wait(timeout=0.1):
-                    # 非阻塞检查是否有预输入
-                    pre_input = ui.wait_for_input(timeout=0.05)
-                    if pre_input is not None and pre_input != "__WINDOW_CLOSED__":
-                        if handle_model_control_text(pre_input):
-                            continue
-                        # 用户在朗读期间输入了内容，打断朗读
-                        text_to_speech.interrupt(wait_timeout_seconds=0)
-                        speech_done.wait(timeout=5.0)
-                        ui.notice("已打断朗读。")
-                        pending_user_text = pre_input
-                        break
-                    elif pre_input == "__WINDOW_CLOSED__":
-                        stop_event.set()
-                        text_to_speech.interrupt(wait_timeout_seconds=0)
-                        return
-
-                ui.set_speaking(False)
-
         except _QtChatStopped:
-            if text_to_speech is not None:
-                text_to_speech.interrupt(wait_timeout_seconds=0)
             break
         except _QtChatCancelled:
-            if text_to_speech is not None:
-                text_to_speech.interrupt(wait_timeout_seconds=0)
             cancel_event.clear()
             ui.notice("已取消当前生成。")
             continue
         except KeyboardInterrupt:
-            if text_to_speech is not None:
-                text_to_speech.interrupt(wait_timeout_seconds=0)
-            ui.set_speaking(False)
             ui.notice("已取消当前操作。")
             continue
         except AgentError as exc:
-            ui.set_speaking(False)
             message = str(exc).strip() or "Agent 请求失败，请检查配置或稍后重试。"
             ui.notice(message if message.startswith("Agent ") else f"Agent 请求失败：{message}")
             continue

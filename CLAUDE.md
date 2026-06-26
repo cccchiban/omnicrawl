@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-本地 AI 语音 Agent 桌面应用，支持 Qt Fluent GUI 和终端 TUI 两种前端。通过 OpenAI Python SDK 调用兼容 `/v1` 接口的 LLM API，内置文件/搜索/命令工作区工具、MCP 客户端/服务端、Skill 系统、会话持久化和长期记忆。
+本地 AI Agent 桌面应用，支持 Qt Fluent GUI 和终端 TUI 两种前端。通过 OpenAI Python SDK 调用兼容 `/v1` 接口的 LLM API，内置文件/搜索/命令工作区工具、MCP 客户端/服务端、Skill 系统、会话持久化和长期记忆。
 
 ## 常用命令
 
@@ -32,7 +32,7 @@ pytest tests/test_llm_config.py::test_load_config_from_env
 
 ### 启动流程
 
-`main.py` → 加载各模块配置（LLM / Voice / Approval / TempWorkspace / ProjectContext / Frontend）→ `create_ui()` 工厂创建前端 → 初始化语音 → 创建 `LocalToolAgent` → 进入对话循环（Qt: 后台线程 + 主线程 Qt 事件循环；TUI: 同步内联循环）
+`main.py` → 加载各模块配置（LLM / Approval / TempWorkspace / ProjectContext / Frontend）→ `create_ui()` 工厂创建前端 → 创建 `LocalToolAgent` → 进入对话循环（Qt: 后台线程 + 主线程 Qt 事件循环；TUI: 同步内联循环）
 
 ### 核心模块依赖关系
 
@@ -55,10 +55,6 @@ main.py
   ├── ui/base.py              ← BaseUI 抽象基类
   │   ├── tui/                ← TerminalUI（ANSI 终端 UI，模块化拆分）
   │   └── ui/qt/              ← QtUI（PyQt5 + QWebEngineView + HTML/CSS/JS 前端）
-  ├── audio_setup.py          ← 语音配置加载 + 麦克风选择
-  ├── speech_to_text.py       ← PyAudio 录音 + Google Web Speech API
-  ├── text_to_speech.py       ← TTS (Windows: System.Speech, fallback: pyttsx3)
-  ├── speech_playback.py      ← 流式语音播放器（FIFO 队列，句子级播报）
   └── runtime_config.py       ← config.json 加载/保存工具函数
 ```
 
@@ -68,7 +64,6 @@ main.py
 - **UI 抽象**：`BaseUI` 定义接口，`create_ui()` 工厂按 `frontend.type` 选择实现；`terminal_ui.py` 是向后兼容的 shim，实际代码在 `tui/` 包
 - **工具共享**：`WorkspaceTools` 同时被内置 Agent 工具和本地 MCP Server 复用
 - **受保护路径**：`.git`、`config.json`、`.env`、venv 目录在 `WorkspaceTools` 中强制禁止访问
-- **语音管道**：STT → Agent → TTS → StreamingSpeechPlayer（句子级 FIFO 队列，支持打断）
 
 ## 编码约定
 
@@ -88,9 +83,7 @@ main.py
 | `OPENAI_THINKING_TYPE` | 思考模式 |
 | `AI_WORKSPACE_ROOT` | 显式指定工作区路径 |
 | `AI_CONFIG_FILE` | 自定义配置文件路径 |
-| `TTS_BACKEND` | 强制 TTS 后端（system_speech / pyttsx3） |
-| `MIC_DEVICE_INDEX` / `MIC_DEVICE_KEYWORD` | 麦克风选择 |
-| `MCP_ENABLED` / `MCP_DEFAULT_TIMEOUT_SECONDS` | MCP 覆盖 |
+| | | `MCP_ENABLED` / `MCP_DEFAULT_TIMEOUT_SECONDS` | MCP 覆盖 |
 | `AGENT_REQUEST_RETRY_COUNT` / `AGENT_REQUEST_TIMEOUT_SECONDS` | Agent 循环调优 |
 
 ## 测试

@@ -15,10 +15,7 @@ from .slash_commands import (
     print_mcp_status,
     print_skills_list,
 )
-from .speech_playback import StreamingSpeechPlayer
-from .speech_to_text import SpeechToText, SpeechToTextError
 from .terminal_ui import USER_PREFIX, InputBar, StatusLine, TerminalUI, WaitingIndicator
-from .text_to_speech import TextToSpeech
 
 
 EXIT_WORDS = {"退出", "结束", "再见"}
@@ -26,70 +23,29 @@ NEW_CHAT_COMMAND = "/new"
 
 
 def _get_user_text(
-    speech_to_text: SpeechToText | None,
     ui: TerminalUI,
     slash_commands: list[str] | None = None,
     history: list[str] | None = None,
 ) -> str:
-    """读取一轮用户输入。
+    """读取一轮用户输入，支持斜杠命令 Tab 补全（Windows 下）。"""
 
-    直接回车表示开始录音；输入文字则跳过录音，便于在麦克风不可用时继续调试。
-    支持斜杠命令 Tab 补全（Windows 下）。
-    """
-
-    if speech_to_text is None:
-        if os.name == "nt" and slash_commands:
-            try:
-                import msvcrt
-            except ImportError:
-                pass
-            else:
-                return read_line_autocomplete(
-                    ui.prompt(),
-                    slash_commands,
-                    ui,
-                    history=history,
-                ).strip()
-        return input(ui.prompt()).strip()
-
-    used_autocomplete = False
     if os.name == "nt" and slash_commands:
         try:
             import msvcrt
         except ImportError:
             pass
         else:
-            used_autocomplete = True
-            text = read_line_autocomplete(
+            return read_line_autocomplete(
                 ui.prompt(),
                 slash_commands,
                 ui,
                 history=history,
-            )
-            if text:
-                return text
-            if speech_to_text is None:
-                return input(f"{USER_PREFIX} ").strip()
-
-    if not used_autocomplete:
-        command = input(ui.prompt()).strip()
-        if command:
-            return command
-
-        if speech_to_text is None:
-            return input(f"{USER_PREFIX} ").strip()
-
-    try:
-        return speech_to_text.listen_once(ui.replace_current_input_with_status).strip()
-    except SpeechToTextError as exc:
-        ui.replace_current_input_with_status(f"语音识别失败：{exc}")
-        return input(f"{USER_PREFIX} ").strip()
+            ).strip()
+    return input(ui.prompt()).strip()
 
 
 def run_inline_chat(
     agent: LocalToolAgent,
-    speech_to_text: SpeechToText | None,
-    text_to_speech: TextToSpeech | None,
     ui: TerminalUI,
 ) -> None:
     """运行默认的普通终端内联 UI。"""
@@ -113,7 +69,6 @@ def run_inline_chat(
                 pending_user_text = None
             else:
                 user_text = _get_user_text(
-                    speech_to_text,
                     ui,
                     build_slash_commands(agent),
                     history=input_history,
@@ -179,6 +134,11 @@ def run_inline_chat(
         input_bar = InputBar(ui)
         waiting_indicator = WaitingIndicator(status_line, input_bar=input_bar)
 
+        # 流式输出状态：管理 markdown 增量渲染和首次输出标记
+        _has_display_output = False
+        from .terminal_ui import MarkdownStreamState
+        _markdown_state = MarkdownStreamState()
+
         def _collect_pre_input() -> None:
             """停止 spinner 并收集预输入到 pending_user_text。"""
             nonlocal pending_user_text
@@ -186,58 +146,69 @@ def run_inline_chat(
             if pre and pending_user_text is None:
                 pending_user_text = pre
 
-        speech_player = StreamingSpeechPlayer(
-            text_to_speech,
-            ui,
-            status_line,
-            before_first_output=_collect_pre_input,
-            input_bar=input_bar,
-        )
         tool_display_state = None
+
+        def handle_delta(delta: str) -> None:
+            """流式增量文本渲染回调，直接写入终端 Markdown。"""
+            nonlocal _has_display_output
+            if not _has_display_output:
+                _collect_pre_input()
+                status_line.clear()
+                input_bar.push_up()
+                ui.newline()
+                ui.print_ai_prefix()
+                _has_display_output = True
+            input_bar.push_up()
+            ui.write_markdown_delta(delta, _markdown_state)
+            input_bar.pop_down()
+
+        def _flush_display() -> None:
+            """提交当前 Markdown 预览到终端，不触发额外操作。"""
+            input_bar.push_up()
+            ui.flush_markdown(_markdown_state)
+            input_bar.pop_down()
 
         def handle_agent_status(message: str) -> None:
             if message:
-                had_display_output = speech_player.has_display_output
-                speech_player.flush_display()
+                _flush_display()
                 _collect_pre_input()
                 input_bar.push_up()
-                ui.status(message, leading_blank=had_display_output)
+                ui.status(message, leading_blank=_has_display_output)
                 input_bar.pop_down()
             else:
-                speech_player.start_new_display_segment()
+                if _has_display_output:
+                    _flush_display()
+                    _markdown_state = MarkdownStreamState()
+                    _has_display_output = False
                 waiting_indicator.start()
 
         def handle_retry_status(message: str) -> None:
-            """流式连接可恢复中断时，用弱提示说明自动重试，不进入语音播报。"""
-
-            had_display_output = speech_player.has_display_output
-            speech_player.flush_display()
+            """流式连接可恢复中断时，用弱提示说明自动重试。"""
+            _flush_display()
             _collect_pre_input()
             input_bar.push_up()
-            ui.status(message, leading_blank=had_display_output, italic=True)
+            ui.status(message, leading_blank=_has_display_output, italic=True)
             input_bar.pop_down()
 
         def handle_tool_start(step: int, tool_call) -> None:
             """工具开始执行时立即展示调用详情和运行态标记。"""
-
             nonlocal tool_display_state
-            had_display_output = speech_player.has_display_output
-            speech_player.flush_display()
+            had_output = _has_display_output
+            _flush_display()
             _collect_pre_input()
             input_bar.push_up()
             tool_display_state = ui.print_tool_call_start(
                 step,
                 tool_call.name,
                 tool_call.arguments,
-                leading_blank=had_display_output,
+                leading_blank=had_output,
             )
             input_bar.pop_down()
 
         def handle_tool_result(_tool_call, result) -> None:
             """工具执行完成时先收起等待动画，再输出执行摘要。"""
-
             nonlocal tool_display_state
-            speech_player.flush_display()
+            _flush_display()
             _collect_pre_input()
             input_bar.push_up()
             ui.print_tool_result_record(
@@ -251,15 +222,14 @@ def run_inline_chat(
 
         def handle_protocol_wait() -> None:
             """模型已显示进度、正在继续输出隐藏工具协议时恢复等待动画。"""
-
-            speech_player.flush_display()
+            _flush_display()
             waiting_indicator.start()
 
         try:
             waiting_indicator.start()
             agent.run_stream(
                 user_text,
-                speech_player.handle_delta,
+                handle_delta,
                 on_status=handle_agent_status,
                 on_tool_start=handle_tool_start,
                 on_tool_result=handle_tool_result,
@@ -269,20 +239,13 @@ def run_inline_chat(
             )
             _collect_pre_input()
             input_bar.push_up()
-            speech_player.flush()
+            _flush_display()
             ui.newline()
             input_bar.pop_down()
             input_bar.clear()
-            interrupted, buffered_text = speech_player.wait_until_done_or_interrupt()
-            if interrupted:
-                ui.notice("已打断朗读。")
-            if buffered_text and pending_user_text is None:
-                pending_user_text = buffered_text
         except KeyboardInterrupt:
             _collect_pre_input()
             input_bar.push_up()
-            if text_to_speech is not None:
-                text_to_speech.interrupt(wait_timeout_seconds=0)
             ui.newline()
             input_bar.pop_down()
             input_bar.clear()

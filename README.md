@@ -1,11 +1,11 @@
-# AI 语音 Agent
+# AI Agent
 
 本目录实现本地 AI Agent，支持 Qt 桌面 GUI 和终端 TUI：
 
-1. Qt GUI 使用键盘输入；TUI 可使用麦克风录音并识别为文字。
+1. Qt GUI 和 TUI 均使用键盘输入。
 2. 使用 OpenAI Python SDK 调用 `https://xxx.xx/v1` 的 Responses API 兼容接口。
 3. AI 会按 Agent 循环处理任务：理解目标、读取项目文件、搜索文本、写文件或执行命令；默认会在工具执行前拦截确认，也可开启自动审批模式。
-4. AI 回复会在界面中显示，并由 `ai_voice_agent/text_to_speech.py` 按句子分段排队播报。
+4. AI 回复会在界面中显示。
 
 ## Agent 临时目录
 
@@ -74,18 +74,14 @@ pip install -r requirements.txt
 python main.py
 ```
 
-`config.json` 中 `frontend.type` 为 `qt` 时会直接打开桌面窗口；为 `tui` 时，从 IDE、测试窗口或普通命令行运行 `python main.py` 后，程序会自动弹出一个独立 PowerShell 窗口，真实语音 Agent 在新窗口中进行。
+`config.json` 中 `frontend.type` 为 `qt` 时会直接打开桌面窗口；为 `tui` 时，从 IDE、测试窗口或普通命令行运行 `python main.py` 后，程序会自动弹出一个独立 PowerShell 窗口，真实 Agent 在新窗口中进行。
 
 运行后：
 
 - Qt GUI 会显示启动面板、聊天气泡、工具调用记录和确认弹窗；关闭窗口会结束会话。
 - TUI 会在普通终端历史里显示一个灰色封口、淡蓝色文字的配置面板，然后进入内联对话；`>` 表示用户输入，`^` 表示 AI 回复。
-- TUI 启动时如果检测到多个录音输入设备，会要求输入列表中的麦克风序号；不知道选哪个时优先尝试 `Realtek`、`麦克风阵列` 或你实际插入的耳机麦克风。
-- Windows 上默认使用 `System.Speech` 语音后端，避免 `pyttsx3` 初始化报“没有注册类”。
-- 语音播报使用 FIFO 队列，按句子顺序播报；Windows `System.Speech` 后端会复用长驻语音进程，减少句间卡顿；一轮播报完成后才进入下一轮输入。
 - AI 回复朗读过程中可输入下一句并发送，程序会打断朗读并把这句作为下一轮问题；TUI 中也可以直接按 Enter 打断朗读。
-- TUI 直接按 Enter：开始录音识别。
-- 直接输入文字：用键盘内容交给 Agent 处理。
+- TUI 直接按 Enter 发送消息。\n- 直接输入文字：用键盘内容交给 Agent 处理。
 - 输入 `/new`：清空模型对话历史，开启新对话。
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
@@ -109,7 +105,7 @@ python main.py
 ```text
 .
 ├── main.py                  # 程序启动入口，保持 python main.py 运行方式
-├── ai_voice_agent/          # Agent、LLM、语音和终端 UI 业务模块
+├── ai_voice_agent/          # Agent、LLM 和终端 UI 业务模块
 │   └── system_prompt.md     # 运行时系统提示词模板
 ├── docs/                    # 设计说明和实现文档
 ├── config.example.json      # 本地配置模板
@@ -133,10 +129,6 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
     "model": "deepseek-v4-flash",
     "thinking_type": "disabled",
     "reasoning_effort": ""
-  },
-  "voice": {
-    "speech_to_text_enabled": true,
-    "text_to_speech_enabled": true
   },
   "approval": {
     "mode": "manual"
@@ -173,13 +165,6 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 ```
 
 `config.json` 已加入 `.gitignore`，不要把真实密钥写进 `config.example.json` 或源码。
-
-语音功能可在 `config.json` 的 `voice` 段分别开关：
-
-- `speech_to_text_enabled`：是否启用语音转文字。设为 `false` 后，直接按 Enter 不再录音，本次会话改用键盘输入。
-- `text_to_speech_enabled`：是否启用文字转语音。设为 `false` 后，AI 回复只显示在当前界面，不再朗读。
-
-`speech_to_text_enabled` 目前只作用于 TUI。Qt GUI 还没有麦克风录音入口，即使该值为 `true`，启动时也会跳过控制台式麦克风选择，避免 GUI 模式被隐藏的 `input()` 阻塞。
 
 工具审批可在 `config.json` 的 `approval.mode` 配置：
 

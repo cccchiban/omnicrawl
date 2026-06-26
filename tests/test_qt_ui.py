@@ -104,7 +104,7 @@ class QtUITest(unittest.TestCase):
         bridge = BackendBridge()
         page = FakeWebPage()
 
-        bridge._do_call_js("showStartup", ["AI 语音 Agent", ["frontend: Qt GUI"]])
+        bridge._do_call_js("showStartup", ["AI Agent", ["frontend: Qt GUI"]])
         bridge.set_web_page(page)
 
         self.assertEqual(page.scripts, [])
@@ -113,7 +113,7 @@ class QtUITest(unittest.TestCase):
 
         self.assertEqual(len(page.scripts), 1)
         self.assertIn("window.pyCallbacks.showStartup", page.scripts[0])
-        self.assertIn("AI 语音 Agent", page.scripts[0])
+        self.assertIn("AI Agent", page.scripts[0])
 
     def test_should_pass_list_arguments_as_arrays_when_calling_js(self) -> None:
         bridge = BackendBridge()
@@ -121,10 +121,10 @@ class QtUITest(unittest.TestCase):
         bridge.set_web_page(page)
         bridge.mark_frontend_ready()
 
-        bridge.call_js("showStartup", "AI 语音 Agent", ["frontend: Qt GUI"])
+        bridge.call_js("showStartup", "AI Agent", ["frontend: Qt GUI"])
 
         self.assertEqual(len(page.scripts), 1)
-        self.assertIn('["AI 语音 Agent", ["frontend: Qt GUI"]]', page.scripts[0])
+        self.assertIn('["AI Agent", ["frontend: Qt GUI"]]', page.scripts[0])
         self.assertNotIn('"\\"frontend: Qt GUI\\""', page.scripts[0])
 
     def test_should_append_user_message_immediately_when_enter_sends_input(self) -> None:

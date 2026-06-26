@@ -60,7 +60,7 @@ class LLMConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(
-                json.dumps({"llm": {"model": "demo"}, "voice": {"text_to_speech_enabled": True}}),
+                json.dumps({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
                 encoding="utf-8",
             )
 
@@ -70,7 +70,7 @@ class LLMConfigTest(unittest.TestCase):
         self.assertEqual(data["llm"]["model"], "demo")
         self.assertEqual(data["llm"]["reasoning_effort"], "high")
         self.assertEqual(data["llm"]["thinking_type"], "enabled")
-        self.assertTrue(data["voice"]["text_to_speech_enabled"])
+        self.assertTrue(data["agent_temp"]["enabled"])
 
     def test_extract_token_usage_supports_stream_event_shapes(self) -> None:
         self.assertEqual(

@@ -46,7 +46,7 @@ class ApprovalConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
             config_path.write_text(
-                json.dumps({"llm": {"model": "demo"}, "voice": {"speech_to_text_enabled": True}}),
+                json.dumps({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
                 encoding="utf-8",
             )
 
@@ -55,7 +55,7 @@ class ApprovalConfigTest(unittest.TestCase):
 
             self.assertEqual(data["approval"]["mode"], APPROVAL_MODE_REVIEW)
             self.assertEqual(data["llm"]["model"], "demo")
-            self.assertTrue(data["voice"]["speech_to_text_enabled"])
+            self.assertTrue(data["agent_temp"]["enabled"])
 
     def test_normalize_approval_mode_rejects_unknown_value(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "approval.mode"):
