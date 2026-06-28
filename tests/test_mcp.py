@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from omnicrawl.agent import LocalToolAgent, ToolCall, ToolDefinition
-from omnicrawl.agent_tools import normalize_tool_call
+from omnicrawl.agent.tools import normalize_tool_call
 from omnicrawl.mcp.client import MCPClientManager, _resolve_stdio_command
 from omnicrawl.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
 from omnicrawl.mcp.registry import MCPPromptMeta, MCPResourceMeta, MCPToolMeta, namespace_capability_name
@@ -369,7 +369,7 @@ class MCPAgentCommandTest(unittest.TestCase):
                 "- 终端环境变量：WT_SESSION",
             ]
         )
-        with patch("omnicrawl.agent_prompt_context.runtime_environment_context", return_value=runtime_context):
+        with patch("omnicrawl.agent.prompt_context.runtime_environment_context", return_value=runtime_context):
             prompt = LocalToolAgent._system_prompt(agent)
             context_messages = LocalToolAgent._context_messages(agent)
 

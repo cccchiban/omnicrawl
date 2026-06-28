@@ -6,7 +6,6 @@ from pathlib import Path
 
 from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
 from omnicrawl.approval import approval_mode_label, load_approval_mode
-from omnicrawl.chat_session import run_inline_chat
 from omnicrawl.llm import LLMError, load_llm_config
 from omnicrawl.project_context import (
     ProjectContextError,
@@ -19,9 +18,10 @@ from omnicrawl.temp_workspace import (
     agent_temp_status_label,
     load_agent_temp_workspace_config,
 )
-from omnicrawl.frontend_config import load_frontend_config
 from omnicrawl.ui import UIStartupError, create_ui
-from omnicrawl.windows_launcher import configure_console_encoding, launch_in_powershell_window
+from omnicrawl.ui.chat_session import run_inline_chat
+from omnicrawl.ui.config import load_frontend_config
+from omnicrawl.ui.windows_launcher import configure_console_encoding, launch_in_powershell_window
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -126,7 +126,7 @@ def main(argv: list[str] | None = None) -> None:
                     agent._ensure_mcp_tools_ready()
                     ui.status("正在初始化")
 
-                from omnicrawl.qt_chat_session import run_qt_chat
+                from omnicrawl.ui.qt_chat_session import run_qt_chat
 
                 run_qt_chat(
                     agent,
@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if is_qt_frontend:
             # Qt GUI：对话循环在后台线程，主线程留给 Qt 事件循环
-            from omnicrawl.qt_chat_session import run_qt_chat
+            from omnicrawl.ui.qt_chat_session import run_qt_chat
 
             qt_stop_event = threading.Event()
             qt_cancel_event = ui.get_cancel_event()
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     # Qt 模式：直接启动，不弹 PowerShell 窗口
     # TUI 模式：从 IDE 启动时弹出独立 PowerShell 窗口
     try:
-        from omnicrawl.frontend_config import load_frontend_config
+        from omnicrawl.ui.config import load_frontend_config
         _frontend = load_frontend_config()
     except Exception:
         _frontend = None

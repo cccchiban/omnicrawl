@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from omnicrawl.bb_browser_cli import (
+from omnicrawl.agent.browser_cli import (
     DEFAULT_BB_BROWSER_TIMEOUT_SECONDS,
     BBBrowserCLI,
     _resolve_bb_browser_command,
@@ -19,9 +19,9 @@ class BBBrowserCLITest(unittest.TestCase):
             cli = BBBrowserCLI(workspace)
 
             with patch(
-                "omnicrawl.bb_browser_cli._resolve_bb_browser_command",
+                "omnicrawl.agent.browser_cli._resolve_bb_browser_command",
                 return_value=["bb-browser"],
-            ), patch("omnicrawl.bb_browser_cli.subprocess.run") as run:
+            ), patch("omnicrawl.agent.browser_cli.subprocess.run") as run:
                 run.return_value.returncode = 0
                 run.return_value.stdout = '{"running":true}'
                 run.return_value.stderr = ""

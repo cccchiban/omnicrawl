@@ -4,16 +4,16 @@ import json
 import os
 from typing import Any
 
-from .approval import (
+from ..config.approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_MANUAL,
     APPROVAL_MODE_REVIEW,
     approval_mode_label,
     save_approval_mode,
 )
-from .agent import AgentError, LocalToolAgent
-from .llm import LLMError, save_reasoning_effort
-from .model_catalog import (
+from ..agent import AgentError, LocalToolAgent
+from ..config.llm import LLMError, save_reasoning_effort
+from ..config.model_catalog import (
     ModelCatalogError,
     detect_model_options,
     ensure_current_model_option,
@@ -21,7 +21,7 @@ from .model_catalog import (
     model_env_override_active,
     save_llm_model,
 )
-from .runtime_config import RuntimeConfigError
+from ..config.runtime import RuntimeConfigError
 
 
 # ── 工具确认展示 ──────────────────────────────────────────────

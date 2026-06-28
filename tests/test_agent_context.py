@@ -16,9 +16,9 @@ from omnicrawl.agent import (
     ToolDefinition,
     ToolResult,
 )
-from omnicrawl.agent_history import restore_history_window
-from omnicrawl.agent_llm_protocol import assistant_tool_call_message, function_name_for_tool
-from omnicrawl.agent_prompt_context import build_system_prompt
+from omnicrawl.agent.history import restore_history_window
+from omnicrawl.agent.llm_protocol import assistant_tool_call_message, function_name_for_tool
+from omnicrawl.agent.prompt_context import build_system_prompt
 from omnicrawl.mcp.config import MCPConfig
 from omnicrawl.project import ProjectStore
 from omnicrawl.session import SessionStore
@@ -55,7 +55,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 temp_workspace=AgentTempWorkspaceConfig(),
             )
 
-            with patch("omnicrawl.agent.AgentTempWorkspace", FakeTempWorkspace):
+            with patch("omnicrawl.agent.core.AgentTempWorkspace", FakeTempWorkspace):
                 with self.assertRaisesRegex(AgentError, "缺少 API Key"):
                     LocalToolAgent(config)
 
@@ -78,7 +78,7 @@ class AgentContextInjectionTest(unittest.TestCase):
             )
 
             with patch("openai.OpenAI", return_value=SimpleNamespace()) as openai_client:
-                with patch("omnicrawl.agent.BBBrowserCLI.ensure_started") as ensure_started:
+                with patch("omnicrawl.agent.core.BBBrowserCLI.ensure_started") as ensure_started:
                     agent = LocalToolAgent(config)
                     self.assertIsNone(agent._client)
                     agent.close()

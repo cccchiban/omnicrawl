@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .llm import LLMConfig
-from .runtime_config import RuntimeConfigError, get_section, load_config_data, save_config_data
+from .runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
 
 
 MODEL_LIST_TIMEOUT_SECONDS = 10

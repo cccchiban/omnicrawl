@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from .runtime_config import RuntimeConfigError, get_section, load_config_data
+from ..config.runtime import RuntimeConfigError, get_section, load_config_data
 
 
 DEFAULT_AGENT_TEMP_DIRECTORY = ".agent_tmp"

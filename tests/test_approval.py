@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from omnicrawl.agent import LocalToolAgent, ToolDefinition, ToolCall
-from omnicrawl.agent_tools import normalize_tool_call
+from omnicrawl.agent.tools import normalize_tool_call
 from omnicrawl.approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_MANUAL,

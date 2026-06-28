@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from ..workspace_tools import (
+from ..workspace.tools import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
     MAX_FILE_READ_CHARS,
     WorkspaceToolError,

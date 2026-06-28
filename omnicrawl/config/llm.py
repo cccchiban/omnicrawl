@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .runtime_config import RuntimeConfigError, get_section, load_config_data, save_config_data
+from .runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
 
 
 DEFAULT_THINKING_TYPE = "disabled"

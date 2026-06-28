@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .runtime_config import RuntimeConfigError, get_section, load_config_data, save_config_data
+from .runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
 
 
 APPROVAL_MODE_MANUAL = "manual"

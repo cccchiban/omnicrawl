@@ -7,12 +7,12 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from omnicrawl.inline_input import (
+from omnicrawl.ui.inline_input import (
     _InlineInputHistoryBrowser,
     _append_inline_input_history,
     read_line_autocomplete,
 )
-from omnicrawl.terminal_ui import TerminalCapabilities, TerminalUI
+from omnicrawl.ui.terminal import TerminalCapabilities, TerminalUI
 
 
 class _FakeMsvcrt:
@@ -60,7 +60,7 @@ class InlineInputEditTest(unittest.TestCase):
 
         with patch.dict("sys.modules", {"msvcrt": fake_module}):
             with patch(
-                "omnicrawl.inline_input.shutil.get_terminal_size",
+                "omnicrawl.ui.inline_input.shutil.get_terminal_size",
                 return_value=os.terminal_size((80, 24)),
             ):
                 output = io.StringIO()
@@ -77,7 +77,7 @@ class InlineInputEditTest(unittest.TestCase):
 
         with patch.dict("sys.modules", {"msvcrt": fake_module}):
             with patch(
-                "omnicrawl.inline_input.shutil.get_terminal_size",
+                "omnicrawl.ui.inline_input.shutil.get_terminal_size",
                 return_value=os.terminal_size((80, 24)),
             ):
                 output = io.StringIO()

@@ -11,11 +11,13 @@ from unittest.mock import patch
 from omnicrawl.ui.qt.export import save_chat_export
 from omnicrawl.ui.qt._bridge import BackendBridge
 from omnicrawl.ui.qt.qt_ui import QtUI
-from omnicrawl.qt_chat_session import _session_events_to_ui
+from omnicrawl.ui.qt_chat_session import _session_events_to_ui
 from omnicrawl.session import SessionEvent
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+QT_SOURCE = PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "__init__.py"
+UI_SOURCE = PROJECT_ROOT / "omnicrawl" / "ui" / "__init__.py"
 QT_WEB_DIR = PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "web"
 
 
@@ -140,15 +142,9 @@ class QtUITest(unittest.TestCase):
         input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
         input_css = (QT_WEB_DIR / "css" / "input-area.css").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
-        ui_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "qt_ui.py").read_text(
-            encoding="utf-8"
-        )
-        qt_session_source = (PROJECT_ROOT / "omnicrawl" / "qt_chat_session.py").read_text(
-            encoding="utf-8"
-        )
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
+        ui_source = QT_SOURCE.read_text(encoding="utf-8")
+        qt_session_source = UI_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn('id="slash-command-menu"', index_source)
         self.assertIn('aria-autocomplete="list"', index_source)
@@ -299,12 +295,8 @@ class QtUITest(unittest.TestCase):
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
         title_css = (QT_WEB_DIR / "css" / "title-bar.css").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
-            encoding="utf-8"
-        )
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
+        backend_bridge = QT_SOURCE.read_text(encoding="utf-8")
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn("Qt.WindowType.FramelessWindowHint", window_source)
         self.assertIn("window_minimize_requested.connect(self.showMinimized)", window_source)
@@ -380,12 +372,8 @@ class QtUITest(unittest.TestCase):
         app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
-            encoding="utf-8"
-        )
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
+        backend_bridge = QT_SOURCE.read_text(encoding="utf-8")
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn('id="session-list"', index_source)
         self.assertIn('id="window-minimize-btn"', index_source)
@@ -617,9 +605,7 @@ class QtUITest(unittest.TestCase):
     def test_should_keep_qt_layout_compact_enough_for_standard_window(self) -> None:
         variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")
         reset_css = (QT_WEB_DIR / "css" / "reset.css").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
 
         def root_px(name: str) -> int:
             match = re.search(rf"{re.escape(name)}:\s*(\d+)px", variables_css)
@@ -663,12 +649,8 @@ class QtUITest(unittest.TestCase):
         input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
         messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
-            encoding="utf-8"
-        )
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
+        backend_bridge = QT_SOURCE.read_text(encoding="utf-8")
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
 
         # reasoning-toggle 是 JS 动态创建的，检查 model-btn 按钮和 data-value 属性
         self.assertIn('id="model-btn"', index_source)
@@ -688,12 +670,8 @@ class QtUITest(unittest.TestCase):
         messages_source = (QT_WEB_DIR / "js" / "messages.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
-            encoding="utf-8"
-        )
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
+        backend_bridge = QT_SOURCE.read_text(encoding="utf-8")
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn("window.bridge.setApprovalMode(value)", input_source)
         self.assertIn("setApprovalMode: setApprovalMode", input_source)
@@ -784,12 +762,8 @@ class QtUITest(unittest.TestCase):
         preview_source = (QT_WEB_DIR / "js" / "html-preview.js").read_text(encoding="utf-8")
         preview_css = (QT_WEB_DIR / "css" / "html-preview.css").read_text(encoding="utf-8")
         variables_css = (QT_WEB_DIR / "css" / "variables.css").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
-        ui_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "qt_ui.py").read_text(
-            encoding="utf-8"
-        )
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
+        ui_source = QT_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn('id="html-preview-panel"', index_source)
         self.assertIn('id="html-preview-frame"', index_source)
@@ -827,12 +801,8 @@ class QtUITest(unittest.TestCase):
         input_source = (QT_WEB_DIR / "js" / "input.js").read_text(encoding="utf-8")
         bridge_source = (QT_WEB_DIR / "bridge.js").read_text(encoding="utf-8")
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        backend_bridge = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "_bridge.py").read_text(
-            encoding="utf-8"
-        )
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
+        backend_bridge = QT_SOURCE.read_text(encoding="utf-8")
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn('id="app-chrome"', index_source)
         self.assertIn('id="window-minimize-btn"', index_source)
@@ -919,15 +889,9 @@ class QtUITest(unittest.TestCase):
 
     def test_should_only_show_stop_button_during_generation(self) -> None:
         callback_source = (QT_WEB_DIR / "js" / "py-callbacks.js").read_text(encoding="utf-8")
-        window_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "window.py").read_text(
-            encoding="utf-8"
-        )
-        ui_source = (PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "qt_ui.py").read_text(
-            encoding="utf-8"
-        )
-        qt_session_source = (PROJECT_ROOT / "omnicrawl" / "qt_chat_session.py").read_text(
-            encoding="utf-8"
-        )
+        window_source = QT_SOURCE.read_text(encoding="utf-8")
+        ui_source = QT_SOURCE.read_text(encoding="utf-8")
+        qt_session_source = UI_SOURCE.read_text(encoding="utf-8")
 
         self.assertIn("setWaiting:         Status.setWaiting", callback_source)
         self.assertIn("setGenerating:      Status.setGenerating", callback_source)

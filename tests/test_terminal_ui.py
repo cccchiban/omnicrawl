@@ -8,7 +8,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
-from omnicrawl.terminal_ui import (
+from omnicrawl.ui.terminal import (
     InputBar,
     MarkdownStreamState,
     StatusLine,
@@ -55,7 +55,7 @@ class TerminalUITest(unittest.TestCase):
         )
 
         with patch(
-            "omnicrawl.tui._core.shutil.get_terminal_size",
+            "omnicrawl.ui.tui._core.shutil.get_terminal_size",
             return_value=os.terminal_size((72, 30)),
         ):
             expected_rows = _split_display_rows(text, 72 - ui.prompt_width() - 1)
@@ -102,7 +102,7 @@ class TerminalUITest(unittest.TestCase):
         text = "这是一个很长的中文回答，用来验证终端手动换行后，所有续行都和正文起点对齐。"
 
         with patch(
-            "omnicrawl.tui._markdown_renderer.shutil.get_terminal_size",
+            "omnicrawl.ui.tui._markdown_renderer.shutil.get_terminal_size",
             return_value=os.terminal_size((34, 24)),
         ):
             with redirect_stdout(output):
@@ -205,7 +205,7 @@ class TerminalUITest(unittest.TestCase):
         output = io.StringIO()
 
         with patch(
-            "omnicrawl.tui._markdown_renderer.shutil.get_terminal_size",
+            "omnicrawl.ui.tui._markdown_renderer.shutil.get_terminal_size",
             return_value=os.terminal_size((24, 24)),
         ):
             with redirect_stdout(output):
@@ -289,7 +289,7 @@ class TerminalUITest(unittest.TestCase):
         fake_msvcrt = _FakeMsvcrt(["下", "一", "句"])
         output = io.StringIO()
 
-        with patch("omnicrawl.tui._spinner.os.name", "nt"):
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
             with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
                 with redirect_stdout(output):
                     waiting._poll_pre_input()
@@ -308,7 +308,7 @@ class TerminalUITest(unittest.TestCase):
         fake_msvcrt = _FakeMsvcrt(["n", "e", "x", "t", "\r"])
         output = io.StringIO()
 
-        with patch("omnicrawl.tui._spinner.os.name", "nt"):
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
             with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
                 with redirect_stdout(output):
                     waiting._poll_pre_input()
@@ -338,7 +338,7 @@ class TerminalUITest(unittest.TestCase):
         waiting = WaitingIndicator(status_line)
         output = io.StringIO()
 
-        with patch("omnicrawl.tui._spinner.os.name", "nt"):
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
             with redirect_stdout(output):
                 waiting._render_status("处理中")
                 submitted = waiting.stop()
@@ -353,7 +353,7 @@ class TerminalUITest(unittest.TestCase):
         waiting = WaitingIndicator(status_line)
         output = io.StringIO()
 
-        with patch("omnicrawl.tui._spinner.os.name", "nt"):
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
             with redirect_stdout(output):
                 waiting._render_status("处理中")
                 submitted = waiting.stop()
@@ -366,7 +366,7 @@ class TerminalUITest(unittest.TestCase):
         input_bar = InputBar(ui)
         output = io.StringIO()
 
-        with patch("omnicrawl.tui._spinner.os.name", "nt"):
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
             with redirect_stdout(output):
                 input_bar.show()
                 input_bar.push_up()
@@ -384,7 +384,7 @@ class TerminalUITest(unittest.TestCase):
         input_bar = InputBar(ui)
         output = io.StringIO()
 
-        with patch("omnicrawl.tui._spinner.os.name", "nt"):
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
             with redirect_stdout(output):
                 input_bar.show()
                 submitted = input_bar.clear()
