@@ -6,36 +6,33 @@
  * 该方法不存在，会导致 Markdown 渲染时报 `t.at is not a function`。
  */
 'use strict';
-
-(function() {
-  function at(index) {
-    var value = Object(this);
-    var length = value.length >>> 0;
-    if (length === 0) return undefined;
-
-    var integerIndex = Number(index) || 0;
-    if (integerIndex < 0) {
-      integerIndex += length;
+(function () {
+    function at(index) {
+        var value = Object(this);
+        var length = value.length >>> 0;
+        if (length === 0)
+            return undefined;
+        var integerIndex = Number(index) || 0;
+        if (integerIndex < 0) {
+            integerIndex += length;
+        }
+        if (integerIndex < 0 || integerIndex >= length) {
+            return undefined;
+        }
+        return value[integerIndex];
     }
-    if (integerIndex < 0 || integerIndex >= length) {
-      return undefined;
+    if (!Array.prototype.at) {
+        Object.defineProperty(Array.prototype, 'at', {
+            value: at,
+            configurable: true,
+            writable: true,
+        });
     }
-    return value[integerIndex];
-  }
-
-  if (!Array.prototype.at) {
-    Object.defineProperty(Array.prototype, 'at', {
-      value: at,
-      configurable: true,
-      writable: true,
-    });
-  }
-
-  if (!String.prototype.at) {
-    Object.defineProperty(String.prototype, 'at', {
-      value: at,
-      configurable: true,
-      writable: true,
-    });
-  }
+    if (!String.prototype.at) {
+        Object.defineProperty(String.prototype, 'at', {
+            value: at,
+            configurable: true,
+            writable: true,
+        });
+    }
 })();

@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "build:qtui": "node scripts/build-qtui-ts.mjs",
+    "typecheck:qtui": "tsc -p tsconfig.qtui.json --noEmit"
+  },
   "dependencies": {
     "bb-browser": "^0.14.2"
   }

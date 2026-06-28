@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2018",
+    "module": "none",
+    "lib": ["DOM", "ES2022"],
+    "rootDir": "omnicrawl/ui/qt/web_ts",
+    "outDir": "omnicrawl/ui/qt/web",
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "noCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "newLine": "crlf",
+    "sourceMap": false,
+    "declaration": false,
+    "removeComments": false
+  },
+  "include": [
+    "omnicrawl/ui/qt/web_ts/**/*.ts"
+  ]
+}

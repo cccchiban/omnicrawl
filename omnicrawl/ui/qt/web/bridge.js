@@ -8,102 +8,101 @@
  *   PyQt5 通过 QWebEnginePage 的 webChannel 会自动注入
  *   qt.webChannelTransport 对象，我们在 DOMContentLoaded 后连接。
  */
-(function() {
-  'use strict';
-
-  /** 初始化 pyCallbacks 存根 */
-  window.pyCallbacks = {
-    appendUserMsg: null,
-    appendAIText: null,
-    finishAIMsg: null,
-    setStatus: null,
-    showNotice: null,
-    showStartup: null,
-    showToolStart: null,
-    showToolResult: null,
-    showHtmlPreview: null,
-    updateTokenDisplay: null,
-    showConfirmDialog: null,
-    hideConfirmDialog: null,
-    clearInput: null,
-    setInputEnabled: null,
-    setInputPlaceholder: null,
-    updateSlashCommands: null,
-    setSpeaking: null,
-    setListening: null,
-    setWaiting: null,
-    scrollToEnd: null,
-    setModelLabel: null,
-    updateModelList: null,
-    setCurrentModel: null,
-    showModelListError: null,
-    showModelSelect: null,
-    setReasoningEffort: null,
-    setApprovalMode: null,
-    updateSessionList: null,
-    renderSessionMessages: null,
-    setCurrentSession: null,
-    showSessionListError: null,
-    updateProjectList: null,
-    setCurrentProject: null,
-  };
-
-  /**
-   * 尝试连接 QWebChannel。
- * QWebEngineView 设置了 webChannel 后，页面中会有 qt.webChannelTransport。
- * 可能在页面加载早期还不存在，需要等待。
-   */
-  function tryConnect(retries) {
-    if (typeof qt !== 'undefined' && qt.webChannelTransport) {
-      new QWebChannel(qt.webChannelTransport, function(channel) {
-        window.bridge = channel.objects.bridge;
-        window.dispatchEvent(new Event('bridge-ready'));
-        console.log('[bridge] QWebChannel connected');
-      });
-      return;
+(function () {
+    'use strict';
+    /** 初始化 pyCallbacks 存根 */
+    window.pyCallbacks = {
+        appendUserMsg: null,
+        appendAIText: null,
+        finishAIMsg: null,
+        setStatus: null,
+        showNotice: null,
+        showStartup: null,
+        showToolStart: null,
+        showToolResult: null,
+        showHtmlPreview: null,
+        updateTokenDisplay: null,
+        showConfirmDialog: null,
+        hideConfirmDialog: null,
+        clearInput: null,
+        setInputEnabled: null,
+        setInputPlaceholder: null,
+        updateSlashCommands: null,
+        setSpeaking: null,
+        setListening: null,
+        setWaiting: null,
+        scrollToEnd: null,
+        setModelLabel: null,
+        updateModelList: null,
+        setCurrentModel: null,
+        showModelListError: null,
+        showModelSelect: null,
+        setReasoningEffort: null,
+        setApprovalMode: null,
+        updateSessionList: null,
+        renderSessionMessages: null,
+        setCurrentSession: null,
+        showSessionListError: null,
+        updateProjectList: null,
+        setCurrentProject: null,
+    };
+    /**
+     * 尝试连接 QWebChannel。
+   * QWebEngineView 设置了 webChannel 后，页面中会有 qt.webChannelTransport。
+   * 可能在页面加载早期还不存在，需要等待。
+     */
+    function tryConnect(retries) {
+        if (typeof qt !== 'undefined' && qt.webChannelTransport) {
+            new QWebChannel(qt.webChannelTransport, function (channel) {
+                window.bridge = channel.objects.bridge;
+                window.dispatchEvent(new Event('bridge-ready'));
+                console.log('[bridge] QWebChannel connected');
+            });
+            return;
+        }
+        if (retries > 0) {
+            setTimeout(function () { tryConnect(retries - 1); }, 100);
+        }
+        else {
+            console.warn('[bridge] QWebChannel not available after retries — using mock');
+            window.bridge = {
+                onUserSend: function () { },
+                onConfirmResult: function () { },
+                onModelSelect: function () { },
+                onModelChange: function () { },
+                setReasoningEffort: function () { },
+                setApprovalMode: function () { },
+                onNewSession: function () { },
+                onRequestSessions: function () { },
+                onResumeSession: function () { },
+                onRenameSession: function () { },
+                onCompactSession: function () { },
+                onDeleteSession: function () { },
+                onExportChat: function () { },
+                onWindowMinimize: function () { },
+                onWindowMaximize: function () { },
+                onWindowClose: function () { },
+                onWindowDrag: function () { },
+                onCreateProject: function () { },
+                onImportProject: function () { },
+                onOpenNewWindow: function () { },
+                onOpenWorkspaceFolder: function () { },
+                onSwitchProject: function () { },
+                onPinProject: function () { },
+                onRenameProject: function () { },
+                onRemoveProject: function () { },
+                onOpenInExplorer: function () { },
+                onRequestProjects: function () { },
+                onBrowseProjectPath: function () { },
+            };
+            window.dispatchEvent(new Event('bridge-ready'));
+        }
     }
-    if (retries > 0) {
-      setTimeout(function() { tryConnect(retries - 1); }, 100);
-    } else {
-      console.warn('[bridge] QWebChannel not available after retries — using mock');
-      window.bridge = {
-        onUserSend: function() {},
-        onConfirmResult: function() {},
-        onModelSelect: function() {},
-        onModelChange: function() {},
-        setReasoningEffort: function() {},
-        setApprovalMode: function() {},
-        onNewSession: function() {},
-        onRequestSessions: function() {},
-        onResumeSession: function() {},
-        onRenameSession: function() {},
-        onCompactSession: function() {},
-        onDeleteSession: function() {},
-        onExportChat: function() {},
-        onWindowMinimize: function() {},
-        onWindowMaximize: function() {},
-        onWindowClose: function() {},
-        onWindowDrag: function() {},
-        onCreateProject: function() {},
-        onImportProject: function() {},
-        onOpenNewWindow: function() {},
-        onOpenWorkspaceFolder: function() {},
-        onSwitchProject: function() {},
-        onPinProject: function() {},
-        onRenameProject: function() {},
-        onRemoveProject: function() {},
-        onOpenInExplorer: function() {},
-        onRequestProjects: function() {},
-        onBrowseProjectPath: function() {},
-      };
-      window.dispatchEvent(new Event('bridge-ready'));
+    // 页面加载后尝试连接
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () { tryConnect(50); });
     }
-  }
-
-  // 页面加载后尝试连接
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function() { tryConnect(50); });
-  } else {
-    tryConnect(50);
-  }
+    else {
+        tryConnect(50);
+    }
 })();

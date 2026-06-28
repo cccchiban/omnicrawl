@@ -19,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 QT_SOURCE = PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "__init__.py"
 UI_SOURCE = PROJECT_ROOT / "omnicrawl" / "ui" / "__init__.py"
 QT_WEB_DIR = PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "web"
+QT_WEB_TS_DIR = PROJECT_ROOT / "omnicrawl" / "ui" / "qt" / "web_ts"
 
 
 class FakeWebPage:
@@ -196,6 +197,30 @@ class QtUITest(unittest.TestCase):
         polyfills_source = polyfills_path.read_text(encoding="utf-8")
         self.assertIn("Array.prototype.at", polyfills_source)
         self.assertIn("String.prototype.at", polyfills_source)
+
+    def test_qt_web_frontend_should_be_backed_by_typescript_sources(self) -> None:
+        package_source = (PROJECT_ROOT / "package.json").read_text(encoding="utf-8")
+        tsconfig_source = (PROJECT_ROOT / "tsconfig.qtui.json").read_text(encoding="utf-8")
+        build_source = (PROJECT_ROOT / "scripts" / "build-qtui-ts.mjs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"build:qtui"', package_source)
+        self.assertIn('"typecheck:qtui"', package_source)
+        self.assertIn("omnicrawl/ui/qt/web_ts/**/*.ts", tsconfig_source)
+        self.assertIn("outDir", tsconfig_source)
+        self.assertIn("process.execPath", build_source)
+        self.assertNotIn("syncTypeScriptSources", build_source)
+        self.assertIn("tsconfig.qtui.json", build_source)
+
+        expected_sources = [QT_WEB_TS_DIR / "bridge.ts"]
+        expected_sources.extend(
+            QT_WEB_TS_DIR / "js" / f"{path.stem}.ts"
+            for path in sorted((QT_WEB_DIR / "js").glob("*.js"))
+        )
+
+        missing = [str(path.relative_to(PROJECT_ROOT)) for path in expected_sources if not path.exists()]
+        self.assertEqual(missing, [])
 
     def test_should_keep_input_disabled_until_qwebchannel_is_connected(self) -> None:
         app_source = (QT_WEB_DIR / "js" / "app.js").read_text(encoding="utf-8")
@@ -893,8 +918,8 @@ class QtUITest(unittest.TestCase):
         ui_source = QT_SOURCE.read_text(encoding="utf-8")
         qt_session_source = UI_SOURCE.read_text(encoding="utf-8")
 
-        self.assertIn("setWaiting:         Status.setWaiting", callback_source)
-        self.assertIn("setGenerating:      Status.setGenerating", callback_source)
+        self.assertRegex(callback_source, r"setWaiting:\s*Status\.setWaiting")
+        self.assertRegex(callback_source, r"setGenerating:\s*Status\.setGenerating")
         self.assertIn('self._bridge.call_js("setGenerating", active)', window_source)
         self.assertIn("def set_generating(self, active: bool)", ui_source)
         self.assertIn("ui.set_generating(True)", qt_session_source)
