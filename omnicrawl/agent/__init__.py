@@ -564,7 +564,7 @@ def build_agent_tools(
             ToolDefinition(
                 name="display_html",
                 description=(
-                    "在 Qt GUI 右侧 HTML 显示区渲染网页或数据看板。"
+                    "向支持 HTML 的客户端提供网页或数据看板 artifact。"
                     "适合爬虫结果、表格、图表、网页预览等需要直观看的内容；"
                     "可直接传 html，或传工作区内 .html/.htm 文件路径。"
                 ),
@@ -1296,6 +1296,7 @@ class AgentLLMProtocol:
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
         on_retry_status: Callable[[str], None],
+        cancel_check: Callable[[], None] | None = None,
     ) -> AgentModelReply:
         """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
 
@@ -1307,6 +1308,7 @@ class AgentLLMProtocol:
                     on_delta,
                     on_token_usage,
                     on_protocol_wait,
+                    cancel_check,
                 )
             except EmptyAgentReply as exc:
                 last_retryable_error = exc
@@ -1334,6 +1336,7 @@ class AgentLLMProtocol:
         on_delta: Callable[[str], None],
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
+        cancel_check: Callable[[], None] | None = None,
     ) -> AgentModelReply:
         """执行一次 Chat Completions 流式工具调用请求。"""
 
@@ -1378,9 +1381,16 @@ class AgentLLMProtocol:
         latest_usage: tuple[int, int, int] | None = None
         has_streamed_visible = False
         protocol_wait_sent = False
+        cancellation_error: Exception | None = None
 
         try:
             for event in stream:
+                if cancel_check is not None:
+                    try:
+                        cancel_check()
+                    except Exception as exc:
+                        cancellation_error = exc
+                        raise
                 usage = OpenAIResponseLLM.extract_token_usage(event)
                 if usage is not None:
                     latest_usage = usage
@@ -1406,6 +1416,8 @@ class AgentLLMProtocol:
                         protocol_wait_sent = True
                     accumulate_tool_call_deltas(tc_deltas, tool_call_delta_buffers)
         except Exception as exc:
+            if cancellation_error is not None:
+                raise cancellation_error
             raise RetryableAgentRequestError(OpenAIResponseLLM.format_request_error(exc)) from exc
 
         if latest_usage is not None:
@@ -2929,16 +2941,16 @@ class LocalToolAgent:
         return self._session_facade().list_archived_sessions(limit)
 
     def load_session_events(self, session_id: str) -> list[SessionEvent]:
-        """读取指定会话的原始事件流，供 Qt 恢复时重新渲染消息列表。
+        """读取指定会话的原始事件流，供客户端恢复完整消息列表。
 
-        `_history` 只保留模型上下文窗口；Qt 需要完整 UI 转录，因此这里通过
+        `_history` 只保留模型上下文窗口；客户端需要完整转录，因此这里通过
         明确方法暴露只读事件，而不是让 UI 层直接访问 `.agent_sessions/` 文件。
         """
 
         return self._session_facade().load_session_events(session_id)
 
     def read_session_artifact_text(self, session_id: str, artifact_path: str) -> str:
-        """读取会话 artifact 文本，供 Qt 历史回放恢复右侧 HTML 预览。"""
+        """读取会话 artifact 文本，供 API 客户端恢复 HTML 预览。"""
 
         return self._session_facade().read_session_artifact_text(session_id, artifact_path)
 
@@ -3163,7 +3175,7 @@ class LocalToolAgent:
 
     @property
     def reasoning_effort(self) -> str:
-        """当前推理强度，供 TUI / Qt 控件展示和切换。"""
+        """当前推理强度，供 TUI 与 API 客户端展示和切换。"""
 
         return self.config.llm.reasoning_effort
 
@@ -3224,7 +3236,7 @@ class LocalToolAgent:
 
         MCP 是增量能力：配置关闭时不影响内置工具。这里仅校验配置并创建
         Manager，能力发现延后到首次对话或用户查看 `/mcp` 时执行，避免
-        stdio Server 启动阻塞 Qt 首屏显示。
+        stdio Server 启动阻塞交互入口。
         """
 
         try:
@@ -3248,6 +3260,7 @@ class LocalToolAgent:
         on_token_usage: Callable[[int, int, int], None] | None = None,
         on_protocol_wait: Callable[[], None] | None = None,
         on_retry_status: Callable[[str], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
 
@@ -3268,6 +3281,13 @@ class LocalToolAgent:
         _report_protocol_wait = on_protocol_wait or (lambda: None)
         report_retry_status = on_retry_status or status
 
+        def check_cancelled() -> None:
+            if cancel_check is not None:
+                cancel_check()
+
+        previous_cancel_check = getattr(self, "_cancel_check", None)
+        self._cancel_check = cancel_check
+        check_cancelled()
         self._ensure_mcp_tools_ready(status)
         text = self._apply_skill_command(text, status)
         pending_text = getattr(self, "_pending_user_text", None)
@@ -3285,6 +3305,7 @@ class LocalToolAgent:
             all_reasoning_parts: list[str] = []
             step = 1
             while True:
+                check_cancelled()
                 reply = self._request_agent_reply(
                     working_messages,
                     on_delta,
@@ -3307,6 +3328,7 @@ class LocalToolAgent:
 
                 working_messages.append(reply.message)
                 for raw_tool_call in reply.tool_calls:
+                    check_cancelled()
                     tool_call = normalize_tool_call(raw_tool_call, self._tools)
                     self._append_session_event(
                         "tool_call_requested",
@@ -3332,6 +3354,7 @@ class LocalToolAgent:
                                 tool_call,
                             ),
                         )
+                    check_cancelled()
                     report_tool_result(tool_call, tool_result)
                     self._append_session_event(
                         "tool_result",
@@ -3366,6 +3389,8 @@ class LocalToolAgent:
                 },
             )
             raise
+        finally:
+            self._cancel_check = previous_cancel_check
 
     def _apply_skill_command(self, text: str, status: Callable[[str], None]) -> str:
         """处理 /skill:name，并在每轮开始时清空上一轮手动 Skill 注入。"""
@@ -3476,6 +3501,7 @@ class LocalToolAgent:
                 on_token_usage,
                 on_protocol_wait,
                 on_retry_status,
+                getattr(self, "_cancel_check", None),
             )
         except AgentProtocolError as exc:
             raise AgentError(str(exc)) from exc
@@ -3486,6 +3512,7 @@ class LocalToolAgent:
         on_delta: Callable[[str], None],
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
+        cancel_check: Callable[[], None] | None = None,
     ) -> AgentModelReply:
         try:
             return self._llm_protocol().request_reply_once(
@@ -3493,6 +3520,7 @@ class LocalToolAgent:
                 on_delta,
                 on_token_usage,
                 on_protocol_wait,
+                cancel_check,
             )
         except AgentProtocolError as exc:
             raise AgentError(str(exc)) from exc
@@ -3520,7 +3548,7 @@ class LocalToolAgent:
     def _llm_client(self) -> Any:
         """首次请求模型时再创建 OpenAI SDK 客户端。
 
-        OpenAI SDK 导入链较重，放在 Agent 构造期会明显拖慢 Qt 首屏。
+        OpenAI SDK 导入链较重，放在 Agent 构造期会明显拖慢服务或 TUI 启动。
         客户端只在模型请求或自动审查时需要，因此惰性创建不会减少能力，
         还能让启动阶段先把 UI 呈现给用户。
         """
@@ -3780,10 +3808,10 @@ class LocalToolAgent:
         return self._bb_browser_cli_toolbox().run(arguments)
 
     def _tool_display_html(self, arguments: dict[str, Any]) -> ToolResult:
-        """准备 Qt 右侧 HTML 显示区内容。
+        """准备供支持 HTML 的客户端读取的 UI artifact。
 
         工具本身不写文件、不执行脚本，只把模型提供的 HTML 或工作区内 HTML
-        文件包装成 UI artifact。这样 TUI 仍能得到文本结果，Qt GUI 则可同步渲染。
+        文件包装成 UI artifact。TUI 得到文本结果，API 客户端可按 artifact 事件渲染。
         """
 
         title = str(arguments.get("title") or "HTML 预览").strip() or "HTML 预览"

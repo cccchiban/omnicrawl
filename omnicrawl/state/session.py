@@ -754,7 +754,7 @@ class SessionStore:
     def read_artifact_text(self, session_id: str, artifact_path: str) -> str:
         """读取 `.agent_sessions/artifacts/` 下的文本 artifact。
 
-        Qt 历史回放需要把已持久化的 HTML UI artifact 重新送回右侧显示区。
+        API 客户端历史回放需要读取已持久化的 HTML UI artifact。
         这里统一做相对路径、会话归属和目录边界校验，调用方只拿到文本内容，
         不直接拼接本地路径，避免 UI 层绕过 SessionStore 的会话文件约束。
         """

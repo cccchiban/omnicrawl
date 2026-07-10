@@ -52,7 +52,9 @@ class TerminalCapabilities:
 def detect_capabilities() -> TerminalCapabilities:
     """根据环境判断是否启用 ANSI 样式和行重绘。"""
 
-    if os.getenv("NO_COLOR"):
+    # 重定向到文件、IDE 捕获器或管道时绝不能输出光标控制序列；环境变量
+    # 只能说明终端类型，不能证明当前 stdout 仍是交互式 TTY。
+    if not sys.stdout.isatty() or os.getenv("NO_COLOR"):
         return TerminalCapabilities(ansi=False)
 
     if os.name == "nt":
@@ -149,7 +151,6 @@ ANSI_BOLD = "\033[1m"
 ANSI_DIM = "\033[2m"
 ANSI_ITALIC = "\033[3m"
 ANSI_UNDERLINE = "\033[4m"
-ANSI_BLINK = "\033[5m"
 
 # 控制序列
 ANSI_CLEAR_LINE = "\033[2K"
@@ -302,8 +303,63 @@ def _char_display_width(char: str) -> int:
     return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
 
 
+def _is_regional_indicator(char: str) -> bool:
+    return "\U0001F1E6" <= char <= "\U0001F1FF"
+
+
+def _is_emoji_modifier(char: str) -> bool:
+    return "\U0001F3FB" <= char <= "\U0001F3FF"
+
+
+def _iter_display_units(text: str):
+    """按终端可见单元遍历文本，避免在常见 emoji 字素簇中间截断。
+
+    标准库没有完整的 UAX #29 字素分割器。这里覆盖 Windows Terminal 中最常见、
+    且最容易造成光标错位的 ZWJ、变体选择符、键帽、旗帜与肤色修饰组合；其余
+    复杂文本仍会走保守的追加渲染路径，不依赖原地列移动。
+    """
+
+    index = 0
+    length = len(text)
+    while index < length:
+        start = index
+        char = text[index]
+        index += 1
+
+        if _is_regional_indicator(char) and index < length and _is_regional_indicator(text[index]):
+            index += 1
+
+        while index < length and (unicodedata.combining(text[index]) or text[index] in {"\ufe0e", "\ufe0f"} or _is_emoji_modifier(text[index])):
+            index += 1
+
+        if index < length and text[index] == "\u20e3":
+            index += 1
+
+        while index < length and text[index] == "\u200d":
+            index += 1
+            if index >= length:
+                break
+            index += 1
+            while index < length and (unicodedata.combining(text[index]) or text[index] in {"\ufe0e", "\ufe0f"} or _is_emoji_modifier(text[index])):
+                index += 1
+            if index < length and text[index] == "\u20e3":
+                index += 1
+
+        yield text[start:index]
+
+
+def _display_unit_width(unit: str) -> int:
+    """返回一个不可拆分终端单元的保守列宽。"""
+
+    if not unit:
+        return 0
+    if "\u200d" in unit or any(_is_regional_indicator(char) for char in unit) or any(_is_emoji_modifier(char) for char in unit):
+        return 2
+    return sum(_char_display_width(char) for char in unit)
+
+
 def _display_width(text: str) -> int:
-    return sum(_char_display_width(char) for char in text)
+    return sum(_display_unit_width(unit) for unit in _iter_display_units(text))
 
 
 def _take_display_width(text: str, max_width: int) -> str:
@@ -311,14 +367,14 @@ def _take_display_width(text: str, max_width: int) -> str:
         return ""
 
     width = 0
-    chars: list[str] = []
-    for char in text:
-        char_width = _char_display_width(char)
-        if width + char_width > max_width:
+    units: list[str] = []
+    for unit in _iter_display_units(text):
+        unit_width = _display_unit_width(unit)
+        if width + unit_width > max_width:
             break
-        chars.append(char)
-        width += char_width
-    return "".join(chars)
+        units.append(unit)
+        width += unit_width
+    return "".join(units)
 
 
 def _ellipsize_display_text(text: str, max_width: int) -> str:
@@ -341,13 +397,36 @@ def _contains_complex_display_width(text: str) -> bool:
     "获获取取"这类重复字。遇到复杂宽度字符时改用追加输出，避免依赖列宽回退。
     """
 
-    return any(_char_display_width(char) != 1 for char in text)
+    return any(
+        _display_unit_width(unit) != 1 or len(unit) != 1
+        for unit in _iter_display_units(text)
+    )
 
 
 def _normalize_terminal_text(text: str) -> str:
     """统一终端文本换行，避免 CRLF 在行数计算里被当成额外字符。"""
 
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _delete_last_display_unit(text: str) -> str:
+    """删除末尾完整显示单元，供等待时的预输入退格复用。"""
+
+    units = list(_iter_display_units(text))
+    return "".join(units[:-1])
+
+
+def _combine_surrogate_pair(pending_high: str, low: str) -> str | None:
+    """将 Windows ``msvcrt.getwch`` 分次返回的 UTF-16 代理对合并为 Unicode 字符。"""
+
+    if len(pending_high) != 1 or len(low) != 1:
+        return None
+    high_code = ord(pending_high)
+    low_code = ord(low)
+    if not (0xD800 <= high_code <= 0xDBFF and 0xDC00 <= low_code <= 0xDFFF):
+        return None
+    code_point = 0x10000 + ((high_code - 0xD800) << 10) + low_code - 0xDC00
+    return chr(code_point)
 
 
 def _split_display_rows(text: str, max_width: int) -> list[str]:
@@ -363,7 +442,8 @@ def _split_display_rows(text: str, max_width: int) -> list[str]:
         while remaining:
             chunk = _take_display_width(remaining, max_width)
             if not chunk:
-                chunk = remaining[0]
+                # 宽度大于当前剩余列的完整字素簇独占一行，绝不把它拆开。
+                chunk = next(_iter_display_units(remaining))
             rows.append(chunk)
             remaining = remaining[len(chunk):]
     return rows or [""]
@@ -1137,14 +1217,14 @@ class _MarkdownRendererMixin:
             return
 
         width_limit = self._ai_content_width()
-        chunk_chars: list[str] = []
+        chunk_units: list[str] = []
         chunk_width = 0
 
         def flush_chunk() -> None:
-            nonlocal chunk_chars, chunk_width
-            if not chunk_chars:
+            nonlocal chunk_units, chunk_width
+            if not chunk_units:
                 return
-            chunk = "".join(chunk_chars)
+            chunk = "".join(chunk_units)
             if self.capabilities.ansi:
                 prefix = style or ""
                 if color_role is not None:
@@ -1156,35 +1236,37 @@ class _MarkdownRendererMixin:
             else:
                 print(chunk, end="")
             state.content_column += chunk_width
-            chunk_chars = []
+            chunk_units = []
             chunk_width = 0
 
-        for char in text:
-            if char == "\n":
+        # 所有输出路径均以显示单元而非 Unicode 码点换行，保证 ZWJ、旗帜和
+        # 肤色组合不会被续行前缀切开。
+        for unit in _iter_display_units(text):
+            if unit == "\n":
                 flush_chunk()
                 self._write_ai_continuation_prefix(state)
                 continue
 
-            char_width = _char_display_width(char)
-            if char_width > 0 and state.content_column + chunk_width > 0:
-                if state.content_column + chunk_width + char_width > width_limit:
+            unit_width = _display_unit_width(unit)
+            if unit_width > 0 and state.content_column + chunk_width > 0:
+                if state.content_column + chunk_width + unit_width > width_limit:
                     flush_chunk()
                     self._write_ai_continuation_prefix(state)
 
-            chunk_chars.append(char)
-            chunk_width += char_width
+            chunk_units.append(unit)
+            chunk_width += unit_width
         flush_chunk()
 
     @staticmethod
     def _ai_content_width() -> int:
-        terminal_width = shutil.get_terminal_size((100, 30)).columns
+        terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
         indent_width = _display_width(_dialog_continuation_prefix(AI_PREFIX))
-        return max(20, terminal_width - indent_width - 1)
+        return max(1, terminal_width - indent_width - 1)
 
     @staticmethod
     def _markdown_preview_max_width() -> int:
-        terminal_width = shutil.get_terminal_size((100, 30)).columns
-        return max(20, terminal_width - 4)
+        terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
+        return max(1, terminal_width - 4)
 
     def _start_passthrough_line(self, state: MarkdownStreamState) -> None:
         self._clear_markdown_preview(state)
@@ -1283,13 +1365,10 @@ import re
 import shutil
 import sys
 import threading
-from dataclasses import dataclass
 from typing import Any
 
 from ._colors import (
-    ANSI_BLINK,
     ANSI_CLEAR_LINE,
-    ANSI_RESET,
     color_text,
 )
 from ._capabilities import TerminalCapabilities
@@ -1304,15 +1383,6 @@ AI_PREFIX = "◆"
 
 TOOL_DETAIL_MAX_ROWS = 3
 TOOL_OUTPUT_MAX_ROWS = 6
-
-
-@dataclass
-class ToolDisplayState:
-    """记录一次工具执行块，供执行完成后把运行态标记更新为完成态。"""
-
-    step: int
-    tool_name: str
-    line_count: int
 
 
 def _compact_json(value: Any) -> str:
@@ -1333,45 +1403,36 @@ def print_tool_call_start(
     caps: TerminalCapabilities,
     lock: threading.Lock,
     leading_blank: bool = True,
-) -> ToolDisplayState:
+) -> None:
     """打印工具开始执行的结构化记录。"""
 
     indent = _dialog_continuation_prefix(AI_PREFIX)
-    marker = f"{ANSI_BLINK}◌{ANSI_RESET}" if caps.ansi else "◌"
-    line_width = shutil.get_terminal_size((100, 30)).columns
-    # header 格式：◌ ╭─ 步骤 N · tool_name ─ ─ ─
-    marker_prefix_width = _display_width("◌ ╭─ 步骤 ")
-    tool_width = max(
-        1,
-        line_width
-        - _display_width(indent)
-        - marker_prefix_width
-        - _display_width(str(max(1, step)))
-        - _display_width(" · ")
-        - 1,
-    )
+    # 闪烁在 Windows Terminal/VS Code 中表现不一且容易分散注意力；使用静态标记。
+    marker = color_text("◌", "warning", caps)
+    line_width = max(1, shutil.get_terminal_size((100, 30)).columns)
+    # 窄终端优先保证信息不溢出，不强行保留装饰性框线。
+    header_prefix = f"◌ 步骤 {max(1, step)} · "
+    decoration = " ─ ─ ─" if line_width >= 36 else ""
+    tool_width = max(1, line_width - _display_width(indent) - _display_width(header_prefix) - _display_width(decoration))
     visible_tool_name = _ellipsize_display_text(tool_name, tool_width)
 
-    # 框线头部（含闪烁运行标记）
+    # 工具记录是次级信息：使用单一语义色的紧凑标题，避免小窗口内多层框线挤压正文。
     header = (
         f"{indent}{marker} "
-        f"{color_text('╭─', 'muted', caps)} "
         f"{color_text('步骤', 'muted', caps)} "
         f"{color_text(str(max(1, step)), 'primary', caps)}"
         f"{color_text(' · ', 'muted', caps)}"
         f"{color_text(visible_tool_name, 'accent', caps)}"
-        f"{color_text(' ─' * 3, 'muted', caps)}"
+        f"{color_text(decoration, 'muted', caps)}"
     )
     detail_rows = _tool_call_detail_rows(tool_name, arguments, caps)
     prefix = "\n" if leading_blank or step > 1 else ""
-    line_count = 1 + len(detail_rows)
 
     with lock:
         print(f"{prefix}{header}")
         for row in detail_rows:
             print(f"{indent}{row}")
         sys.stdout.flush()
-    return ToolDisplayState(step=max(1, step), tool_name=tool_name, line_count=line_count)
 
 
 def print_tool_result_record(
@@ -1379,79 +1440,39 @@ def print_tool_result_record(
     output: str | None = None,
     *,
     tool_name: str = "",
-    display_state: ToolDisplayState | None = None,
     caps: TerminalCapabilities = TerminalCapabilities(ansi=False),
     lock: threading.Lock = threading.Lock(),  # noqa: B008 — 模块级默认值，仅作回退
 ) -> None:
     """打印工具执行结果摘要。"""
 
-    result_label = color_text("成功", "success", caps) if ok else color_text("失败", "error", caps)
     indent = _dialog_continuation_prefix(AI_PREFIX)
-    suffix = _tool_result_suffix(tool_name, output or "", caps)
+    terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
+    result_marker_text = "✓" if ok else "✗"
+    result_label_text = "成功" if ok else "失败"
+    result_prefix = f"│ {result_marker_text} {result_label_text}"
+    suffix = _tool_result_suffix(
+        tool_name,
+        output or "",
+        caps,
+        available_width=max(0, terminal_width - _display_width(indent) - _display_width(result_prefix)),
+    )
     output_rows = _tool_result_output_rows(tool_name, output or "", caps)
 
     with lock:
-        if display_state is not None:
-            _refresh_tool_call_header(display_state, ok, caps)
-        result_marker = color_text("✓" if ok else "✗", "success" if ok else "error", caps)
-        bracket_result = f"[{result_label}]" if caps.ansi else ("成功" if ok else "失败")
+        result_marker = color_text(result_marker_text, "success" if ok else "error", caps)
         if output_rows:
             # 有输出行：结果行用 │ 继续，输出行最后一行用 ╰─ 关闭
             print(
-                f"{indent}{color_text('│ ', 'muted', caps)}{result_marker} {bracket_result}{suffix}",
+                f"{indent}{color_text('│ ', 'muted', caps)}{result_marker} {color_text(result_label_text, 'success' if ok else 'error', caps)}{suffix}",
             )
             for row in output_rows:
                 print(f"{indent}{row}")
         else:
             # 无输出行：结果行本身就是最后一行，用 ╰─ 关闭
             print(
-                f"{indent}{color_text('╰─ ', 'muted', caps)}{result_marker} {bracket_result}{suffix}",
+                f"{indent}{color_text('╰─ ', 'muted', caps)}{result_marker} {color_text(result_label_text, 'success' if ok else 'error', caps)}{suffix}",
             )
         sys.stdout.flush()
-
-
-def _refresh_tool_call_header(
-    display_state: ToolDisplayState,
-    ok: bool,
-    caps: TerminalCapabilities,
-) -> None:
-    """把正在运行的闪烁标记改成完成态。"""
-
-    if not caps.ansi or display_state.line_count <= 0:
-        return
-
-    indent = _dialog_continuation_prefix(AI_PREFIX)
-    # 完成态 marker：✓ 或 ✗
-    marker = color_text("✓" if ok else "✗", "success" if ok else "error", caps)
-    line_width = shutil.get_terminal_size((100, 30)).columns
-    # 重新计算宽度——完成态 marker 是 ✓（宽1），与运行态 ◌（宽1）一致
-    marker_prefix_width = _display_width("✓ ╭─ 步骤 ")
-    tool_width = max(
-        1,
-        line_width
-        - _display_width(indent)
-        - marker_prefix_width
-        - _display_width(str(display_state.step))
-        - _display_width(" · ")
-        - 1,
-    )
-    visible_tool_name = _ellipsize_display_text(display_state.tool_name, tool_width)
-    label = (
-        f"{indent}{marker} "
-        f"{color_text('╭─', 'muted', caps)} "
-        f"{color_text('步骤', 'muted', caps)} "
-        f"{color_text(str(display_state.step), 'primary', caps)}"
-        f"{color_text(' · ', 'muted', caps)}"
-        f"{color_text(visible_tool_name, 'accent', caps)}"
-        f"{color_text(' ─' * 3, 'muted', caps)}"
-    )
-    print(
-        f"\033[{display_state.line_count}A"
-        f"\r{ANSI_CLEAR_LINE}{label}"
-        f"\033[{display_state.line_count}B"
-        f"\r",
-        end="",
-    )
 
 
 def _tool_call_detail_rows(
@@ -1493,16 +1514,22 @@ def _tool_call_detail_rows(
     ]
 
 
-def _tool_result_suffix(tool_name: str, output: str, caps: TerminalCapabilities) -> str:
+def _tool_result_suffix(
+    tool_name: str,
+    output: str,
+    caps: TerminalCapabilities,
+    *,
+    available_width: int,
+) -> str:
     if tool_name != "run_command":
         return ""
     match = re.search(r"^退出码：(-?\d+)", output)
     if match is None:
         return ""
-    return (
-        f"{color_text(' · 退出码 ', 'muted', caps)}"
-        f"{color_text(match.group(1), 'text', caps)}"
-    )
+    suffix = f" · 退出码 {match.group(1)}"
+    if _display_width(suffix) > available_width:
+        suffix = f" · {match.group(1)}"
+    return color_text(suffix, "muted", caps)
 
 
 def _tool_result_output_rows(tool_name: str, output: str, caps: TerminalCapabilities) -> list[str]:
@@ -1556,9 +1583,10 @@ def _render_branch_rows(rows: list[str], caps: TerminalCapabilities) -> list[str
 
 
 def _tool_detail_width() -> int:
-    terminal_width = shutil.get_terminal_size((100, 30)).columns
+    terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
     indent_width = _display_width(_dialog_continuation_prefix(AI_PREFIX))
-    return max(20, terminal_width - indent_width - 4)
+    # 调用方还会输出一个额外空格；此处统一扣除，保证物理行不越界。
+    return max(1, terminal_width - indent_width - _display_width("│  "))
 
 
 # --- former module: _status.py ---
@@ -1622,31 +1650,96 @@ class StatusLine:
             self._visible = False
 
 
-def prompt_status_line(
+def _prompt_status_parts(
+    model_label: str | None,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens: int,
+) -> list[tuple[str, ColorRole]]:
+    """返回未着色的 token 状态片段，供单行和窄屏换行渲染共用。"""
+
+    parts: list[tuple[str, ColorRole]] = []
+    if model_label:
+        parts.append((f"- {model_label}", "muted"))
+    parts.extend(
+        [
+            (f"in:{input_tokens}", "primary"),
+            (f"cache:{cached_input_tokens}", "success"),
+            (f"out:{output_tokens}", "secondary"),
+        ]
+    )
+    return parts
+
+
+def _render_styled_status_rows(
+    text: str,
+    *,
+    role: ColorRole,
+    caps: TerminalCapabilities,
+    max_width: int,
+) -> list[str]:
+    """在文本折行后为每个物理行独立应用状态色。"""
+
+    return [
+        color_text(row, role, caps)
+        for row in _split_display_rows(text, max(1, max_width))
+    ]
+
+
+def _render_prompt_status_rows(
     model_label: str | None,
     input_tokens: int,
     output_tokens: int,
     cached_input_tokens: int,
     *,
     caps: TerminalCapabilities,
-) -> str:
-    """返回输入框下方的模型和 token 状态行（语义化标签独立着色）。"""
+    max_width: int,
+) -> list[str]:
+    """按可见宽度分行后再着色，绝不在 ANSI SGR 序列中间换行。"""
 
-    if not caps.ansi:
-        token_text = f"in:{input_tokens} cache:{cached_input_tokens} out:{output_tokens}"
-        label = model_label or ""
-        return f"- {label} {token_text}".strip()
+    max_width = max(1, max_width)
+    parts = _prompt_status_parts(
+        model_label,
+        input_tokens,
+        output_tokens,
+        cached_input_tokens,
+    )
+    rows: list[list[tuple[str, ColorRole]]] = [[]]
+    row_width = 0
+    for text, role in parts:
+        separator = " " if rows[-1] else ""
+        part_width = _display_width(separator + text)
+        if row_width and row_width + part_width > max_width:
+            rows.append([])
+            row_width = 0
+            separator = ""
+        if separator:
+            rows[-1].append((separator, "text"))
+            row_width += 1
+        for unit in _iter_display_units(text):
+            unit_width = _display_unit_width(unit)
+            if row_width and row_width + unit_width > max_width:
+                rows.append([])
+                row_width = 0
+            rows[-1].append((unit, role))
+            row_width += unit_width
 
-    parts: list[str] = []
-    if model_label:
-        parts.append(color_text(f"- {model_label}", "muted", caps))
-
-    # 语义化指标标签
-    parts.append(color_text("in:", "primary", caps) + color_text(str(input_tokens), "text", caps))
-    parts.append(color_text("cache:", "success", caps) + color_text(str(cached_input_tokens), "text", caps))
-    parts.append(color_text("out:", "secondary", caps) + color_text(str(output_tokens), "text", caps))
-
-    return " ".join(parts)
+    rendered_rows: list[str] = []
+    for row in rows:
+        if not row:
+            continue
+        # 同一语义色的连续显示单元合并后再套 SGR，既保证换行边界安全，
+        # 又避免窄屏 token 行产生大量单字符 ANSI 序列。
+        fragments: list[tuple[str, ColorRole]] = []
+        for text, role in row:
+            if fragments and fragments[-1][1] == role:
+                fragments[-1] = (fragments[-1][0] + text, role)
+            else:
+                fragments.append((text, role))
+        rendered_rows.append(
+            "".join(color_text(text, role, caps) for text, role in fragments)
+        )
+    return rendered_rows or [""]
 
 
 from typing import Any
@@ -1678,31 +1771,28 @@ def print_startup_panel(
     左侧色条 + 分组展示 + 状态徽章 + 底部帮助行。
     """
 
-    terminal_width = shutil.get_terminal_size((100, 30)).columns
-    max_width = max(40, terminal_width - 4)
-    content_width = min(max_width, max(_display_width(title) + 4, 52))
-
+    terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
+    margin_width = _display_width("  ")
+    content_width = max(1, terminal_width - margin_width - 1)
     groups = _parse_panel_groups(lines)
 
     with lock:
-        # 标题行：左侧色条 + 标题
-        title_text = _take_display_width(title, content_width)
-        print(f"  {color_text('█', 'primary', caps)} {color_text(title_text, 'heading', caps)}")
-        print(f"  {color_text('─' * (content_width - 2), 'muted', caps)}")
+        # 现代工具界面：一条主色标记、紧凑分组、弱化辅助信息，不依赖固定卡片宽度。
+        for row in _split_display_rows(title, max(1, content_width - _display_width("█ "))):
+            print(f"  {color_text('█', 'primary', caps)} {color_text(row, 'heading', caps)}")
+        print(f"  {color_text('─' * max(1, content_width - 1), 'muted', caps)}")
 
         for group_name, group_lines in groups:
             if group_name:
-                print(f"  {color_text(group_name, 'secondary', caps)}")
+                for row in _split_display_rows(group_name, content_width):
+                    print(f"  {color_text(row, 'secondary', caps)}")
             for line in group_lines:
-                rendered = _render_panel_line(line, caps, content_width)
-                print(f"  {rendered}")
+                for row in _render_panel_rows(line, caps, content_width):
+                    print(f"  {row}")
 
-        # 底部帮助行
         help_text = "输入问题开始对话 · /help 查看命令"
-        print(f"  {color_text('─' * 2, 'muted', caps)} "
-              f"{color_text(help_text, 'muted', caps)} "
-              f"{color_text('─' * max(0, content_width - _display_width(help_text) - 6), 'muted', caps)}")
-
+        for row in _split_display_rows(help_text, content_width):
+            print(f"  {color_text(row, 'muted', caps)}")
         sys.stdout.flush()
 
 
@@ -1750,23 +1840,24 @@ def _key_to_group(key: str) -> str:
     return mapping.get(key, "")
 
 
-def _render_panel_line(line: str, caps: TerminalCapabilities, content_width: int) -> str:
-    """渲染单行配置项：key: value 格式。"""
+def _render_panel_rows(line: str, caps: TerminalCapabilities, content_width: int) -> list[str]:
+    """渲染不会超过终端实际宽度的配置行。"""
 
     colon_idx = line.find(":")
     if colon_idx < 0:
-        return color_text(line, "text", caps)
+        return [color_text(row, "text", caps) for row in _split_display_rows(line, content_width)]
 
     key = line[:colon_idx].strip()
     value = line[colon_idx + 1:].strip()
-
-    value_rendered = _render_status_value(value, caps)
-
-    return (
-        f"{color_text('▸', 'primary', caps)} "
-        f"{color_text(key, 'text', caps)}  "
-        f"{value_rendered}"
-    )
+    prefix = f"▸ {key}  "
+    first_width = max(1, content_width - _display_width(prefix))
+    value_rows = _split_display_rows(value, first_width)
+    rows = [
+        f"{color_text('▸', 'primary', caps)} {color_text(key, 'text', caps)}  "
+        f"{_render_status_value(value_rows[0], caps)}"
+    ]
+    rows.extend(color_text(row, "text", caps) for row in value_rows[1:])
+    return rows
 
 
 def _render_status_value(value: str, caps: TerminalCapabilities) -> str:
@@ -1815,15 +1906,11 @@ import shutil
 import threading
 
 from ._colors import (
-    ANSI_BOLD,
-    ANSI_CLEAR_TO_LINE_END,
-    ANSI_RESET,
-    ANSI_UNDERLINE,
     ColorRole,
     color_text,
 )
 from ._capabilities import TerminalCapabilities
-from ._display import _dialog_continuation_prefix, _display_width, _ellipsize_display_text
+from ._display import _dialog_continuation_prefix, _display_width
 
 AI_PREFIX = "◆"
 
@@ -1835,246 +1922,115 @@ def prompt_yes_no(
     caps: TerminalCapabilities,
     lock: threading.Lock,
 ) -> bool:
-    """以默认 YES 的方式确认一次高风险操作。
+    """以可追加的确认记录请求高风险操作。
 
-    圆角框包裹 + 高亮选中项。支持上下/左右方向键切换，Enter 确认。
+    不再回跳折叠或原地重绘选项：确认框可能跨越终端滚动边界或在等待时发生
+    resize。追加明确的选择和结果比依赖相对行数更稳定，也保留了完整审计历史。
     """
-
-    selected_yes = True
 
     with lock:
         _render_confirmation_card(prompt, caps)
-
-    def _print_options() -> None:
-        with lock:
-            indent = _dialog_continuation_prefix(AI_PREFIX)
-            line_width = shutil.get_terminal_size((100, 30)).columns
-            content_width = max(20, line_width - _display_width(indent) - 4)
-
-            # 分隔线
-            sep = color_text("│", "muted", caps) + " " + color_text("─" * (content_width - 2), "muted", caps)
-            print(f"{indent}{sep}")
-
-            # 选项行
-            if selected_yes:
-                yes_style = lambda t: _highlight_selected(t, caps)
-                no_style = lambda t: color_text(t, "muted", caps)
-                pointer_yes = "❯ "
-                pointer_no = "  "
-            else:
-                yes_style = lambda t: color_text(t, "muted", caps)
-                no_style = lambda t: _highlight_selected(t, caps)
-                pointer_yes = "  "
-                pointer_no = "❯ "
-
-            option_line = (
-                f"{indent}{color_text('│', 'muted', caps)} "
-                f"{pointer_yes}{yes_style('Yes')}    "
-                f"{pointer_no}{no_style('No')}"
-                f"{ANSI_CLEAR_TO_LINE_END}"
-            )
-            print(option_line)
-
-            # 底部框线
-            bottom = color_text("╰─", "muted", caps) + color_text("─" * (content_width - 2), "muted", caps)
-            print(f"{indent}{bottom}")
-            print()
-            print(
-                f"{indent}{color_text('↑↓ 选择 · Enter 确认 · N 取消', 'muted', caps)}",
-                flush=True,
-            )
-
-    _print_options()
-
-    # 计算收折行数：卡片行数 + 选项区行数(分隔+选项+底框+空行+提示)
-    _card_lines = _count_card_lines(prompt)
-    _option_lines = 5
 
     try:
         import msvcrt
     except ImportError:
         answer = input("确认？[Enter=YES / n=NO] ").strip().lower()
-        return answer not in {"n", "no", "否", "false", "2"}
+        confirmed = answer not in {"n", "no", "否", "false", "2"}
+    else:
+        confirmed = _read_confirmation_choice(msvcrt)
+
+    with lock:
+        choice = "允许" if confirmed else "拒绝"
+        role: ColorRole = "success" if confirmed else "error"
+        print(f"  {color_text(f'选择：{choice}', role, caps)}")
+        if confirmed_label:
+            print(f"  {color_text(confirmed_label, role, caps)}", flush=True)
+    return confirmed
+
+
+def _read_confirmation_choice(msvcrt) -> bool:
+    """读取确认按键；使用显式按键而非动态菜单，避免光标重绘竞争。"""
 
     while True:
         char = msvcrt.getwch()
-        if char in {"\r", "\n"}:
-            _collapse_and_label(
-                confirmed_label, _card_lines + _option_lines,
-                confirmed=selected_yes, caps=caps, lock=lock,
-            )
-            return selected_yes
-        if char in {"1", "y", "Y"}:
-            _collapse_and_label(
-                confirmed_label, _card_lines + _option_lines,
-                confirmed=True, caps=caps, lock=lock,
-            )
+        if char in {"\r", "\n", "1", "y", "Y"}:
             return True
         if char in {"n", "N", "2"}:
-            _collapse_and_label(
-                confirmed_label, _card_lines + _option_lines,
-                confirmed=False, caps=caps, lock=lock,
-            )
             return False
         if char == "\x03":
-            _collapse_and_label(
-                "", _card_lines + _option_lines,
-                confirmed=False, caps=caps, lock=lock,
-            )
             raise KeyboardInterrupt
+        # 追加式确认卡不再重绘选择状态；方向键只会被消费，绝不会让一次
+        # 误触直接执行工具，仍需 Enter/Y/1 或 N/2 做出明确决定。
         if char in {"\x00", "\xe0"}:
-            key = msvcrt.getwch()
-            next_selected_yes = _selection_from_key(key, selected_yes)
-            if next_selected_yes != selected_yes:
-                selected_yes = next_selected_yes
-                _redraw_options(_print_options)
-            continue
+            msvcrt.getwch()
 
 
 # ── 卡片渲染 ──────────────────────────────────────────────────
 
 
+def _confirmation_content_width() -> int:
+    terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
+    indent_width = _display_width(_dialog_continuation_prefix(AI_PREFIX))
+    return max(1, terminal_width - indent_width - _display_width("│ "))
+
+
+def _render_confirmation_text_rows(text: str, content_width: int) -> list[str]:
+    rows: list[str] = []
+    for raw_line in _normalize_terminal_text(text).split("\n"):
+        rows.extend(_split_display_rows(raw_line, content_width))
+    return rows or [""]
+
+
 def _render_confirmation_card(prompt: str, caps: TerminalCapabilities) -> None:
-    """将确认提示渲染为带圆角框线的结构化卡片。
+    """在实际可用宽度内绘制稳定、可回读的确认卡片。"""
 
-    输入格式（由 format_tool_confirmation 生成）：
-        Agent 想要执行 MCP 工具 local_project.workspace.run_command。
-        参数：{"command": "python -c ..."}
-        是否允许执行？
-
-    渲染为：
-        ╭─ ⚡ 确认执行 ─ ─ ─
-        │ Agent 想要执行 MCP 工具 local_project.workspace.run_command。
-        │ 参数：{"command": "python -c ..."}
-        │
-        │ 是否允许执行？
-    """
     indent = _dialog_continuation_prefix(AI_PREFIX)
-    line_width = shutil.get_terminal_size((100, 30)).columns
-    content_width = max(20, line_width - _display_width(indent) - 4)
-
-    # 顶部框线：╭─ ⚡ 确认执行 ─ ─ ─
-    warning_icon = color_text("⚡", "warning", caps) if caps.ansi else "!"
-    header_label = color_text("确认执行", "warning", caps) if caps.ansi else "确认执行"
-    header_prefix_width = _display_width("╭─ ⚡ 确认执行 ")
-    dash_count = max(3, content_width - header_prefix_width - 1)
-    header = (
-        f"{indent}"
-        f"{color_text('╭─', 'muted', caps)} "
-        f"{warning_icon} "
-        f"{header_label} "
-        f"{color_text('─' * dash_count, 'muted', caps)}"
+    content_width = _confirmation_content_width()
+    header_text = "⚠ 确认执行"
+    # 总宽度包含 indent、╭─ 和一个分隔空格；小窗口省略装饰横线。
+    terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
+    header_available = max(0, terminal_width - _display_width(indent) - _display_width("╭─ ") - _display_width(header_text))
+    header_suffix = "─" * header_available
+    print(
+        f"\n{indent}{color_text('╭─', 'muted', caps)} "
+        f"{color_text(header_text, 'warning', caps)}"
+        f"{color_text(header_suffix, 'muted', caps)}"
     )
-    print(f"\n{header}")
 
-    # 内容行
-    lines = prompt.split("\n")
-    for line in lines:
-        if line.strip() == "":
-            # 空行只输出框线
+    for raw_line in _normalize_terminal_text(prompt).split("\n"):
+        if not raw_line:
             print(f"{indent}{color_text('│', 'muted', caps)}")
-        elif line.startswith("命令：") or line.startswith("参数："):
-            # 关键参数行用 accent 色高亮标签
-            _render_detail_line(indent, line, caps, content_width)
-        elif "是否允许执行" in line:
-            # 核心问题用 primary + bold 突出
-            question = color_text(line, "primary", caps)
-            if caps.ansi:
-                question = f"{ANSI_BOLD}{question}{ANSI_RESET}"
-            print(f"{indent}{color_text('│', 'muted', caps)} {question}")
-        else:
-            # 普通描述行
-            print(f"{indent}{color_text('│', 'muted', caps)} {color_text(line, 'text', caps)}")
+            continue
+
+        if raw_line.startswith(("命令：", "参数：", "文件：", "替换 ", "写入 ")):
+            label, value = _split_confirmation_detail(raw_line)
+            first_width = max(1, content_width - _display_width(label))
+            value_rows = _split_display_rows(value, first_width)
+            for index, row in enumerate(value_rows):
+                if index == 0:
+                    rendered = color_text(label, "accent", caps) + color_text(row, "text", caps)
+                else:
+                    rendered = color_text(row, "text", caps)
+                print(f"{indent}{color_text('│', 'muted', caps)} {rendered}")
+            continue
+
+        role: ColorRole = "primary" if "是否允许执行" in raw_line else "text"
+        for row in _render_confirmation_text_rows(raw_line, content_width):
+            print(f"{indent}{color_text('│', 'muted', caps)} {color_text(row, role, caps)}")
+
+    print(f"{indent}{color_text('╰─', 'muted', caps)}")
+    hint = "Enter/Y 允许 · N 拒绝"
+    hint_width = max(1, max(1, shutil.get_terminal_size((100, 30)).columns) - _display_width(indent))
+    for row in _split_display_rows(hint, hint_width):
+        print(f"{indent}{color_text(row, 'muted', caps)}")
 
 
-def _render_detail_line(
-    indent: str, line: str, caps: TerminalCapabilities, content_width: int,
-) -> None:
-    """渲染参数/命令详情行，标签着色 + 内容截断。"""
-    # 分离标签和内容
-    for sep in ("命令：", "参数：", "文件：", "替换 ", "写入 "):
-        if line.startswith(sep):
-            label_part = line[: len(sep)]
-            content_part = line[len(sep) :]
-            break
-    else:
-        label_part = ""
-        content_part = line
+def _split_confirmation_detail(line: str) -> tuple[str, str]:
+    for separator in ("命令：", "参数：", "文件：", "替换 ", "写入 "):
+        if line.startswith(separator):
+            return line[: len(separator)], line[len(separator) :]
+    return "", line
 
-    # 计算内容可用宽度
-    label_width = _display_width(label_part)
-    available = content_width - 3 - label_width  # 3 = "│ " + 1 margin
-    truncated = _ellipsize_display_text(content_part, max(1, available))
-
-    if label_part:
-        rendered_label = color_text(label_part, "accent", caps)
-    else:
-        rendered_label = ""
-    rendered_content = color_text(truncated, "text", caps)
-
-    print(f"{indent}{color_text('│', 'muted', caps)} {rendered_label}{rendered_content}")
-
-
-def _count_card_lines(prompt: str) -> int:
-    """计算卡片渲染后的总行数（含顶部框线 + 前导空行）。"""
-    # 前导空行 1 + 顶部框线 1 + 内容行数
-    return 2 + prompt.count("\n") + 1
-
-
-# ── 交互辅助 ──────────────────────────────────────────────────
-
-
-def _highlight_selected(text: str, caps: TerminalCapabilities) -> str:
-    """高亮选中项：PRIMARY + BOLD + UNDERLINE。"""
-    if not caps.ansi:
-        return text
-    seq = get_color_sequence_static("primary", caps)
-    return f"{seq}{ANSI_BOLD}{ANSI_UNDERLINE}{text}{ANSI_RESET}"
-
-
-def get_color_sequence_static(role: str, caps: TerminalCapabilities) -> str:
-    """获取颜色序列（供 _highlight_selected 使用）。"""
-    from ._colors import get_color_sequence, ColorRole
-    return get_color_sequence(role, caps)
-
-
-def _selection_from_key(key: str, selected_yes: bool) -> bool:
-    if key in {"H", "K"}:
-        return True
-    if key in {"P", "M"}:
-        return False
-    return selected_yes
-
-
-def _redraw_options(print_fn) -> None:
-    """回到选项区起始位置，用当前选中状态重绘。"""
-    # 选项区共 5 行：分隔线 + 选项 + 底框 + 空行 + 提示
-    print("\033[5A", end="")
-    print_fn()
-
-
-def _collapse_and_label(
-    label: str,
-    total_lines: int,
-    confirmed: bool = True,
-    *,
-    caps: TerminalCapabilities,
-    lock: threading.Lock,
-) -> None:
-    """选中后把完整确认块收折为单行缩略。"""
-    if not caps.ansi:
-        return
-
-    symbol = "✓" if confirmed else "✗"
-    role: ColorRole = "success" if confirmed else "error"
-    with lock:
-        print(f"\033[{total_lines}A\033[J", end="")
-        if label:
-            print(f"{color_text(f'  {symbol} {label}', role, caps)}", flush=True)
-        else:
-            # 收折为简洁的单行结果
-            action = color_text("已允许" if confirmed else "已拒绝", role, caps)
-            print(f"  {symbol} {action}", flush=True)
 
 
 # --- former module: _spinner.py ---
@@ -2088,7 +2044,7 @@ from typing import Any
 
 from ._capabilities import TerminalCapabilities
 from ._colors import ANSI_CLEAR_LINE, ANSI_PREVIOUS_LINE, color_text
-from ._status import StatusLine, prompt_status_line
+from ._status import StatusLine
 
 # Spinner 动画帧
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -2110,6 +2066,9 @@ class InputBar:
         self._caps = caps or ui.capabilities
         self._pre_input: str = ""
         self._submitted_pre_input: str = ""
+        # getwch() 在 Windows 上对非 BMP 字符返回两个 UTF-16 代理项；需要跨
+        # 非阻塞轮询暂存高代理，等低代理到达后再插入完整显示单元。
+        self._pending_high_surrogate: str = ""
         self._visible = False
         # 预输入行数：1 行输入 + (0 或 1) 行 token 状态
         self._info_lines = 1  # 至少输入行
@@ -2132,35 +2091,42 @@ class InputBar:
     def _pre_input_enabled(self) -> bool:
         return self._caps.ansi and os.name == "nt"
 
-    def _build_token_line(self) -> str:
-        if not self._ui.model_label:
-            return ""
-        return prompt_status_line(
-            self._ui.model_label, self._ui._input_tokens,
-            self._ui._output_tokens, self._ui._cached_input_tokens,
-            caps=self._caps,
-        )
-
     def show(self, spinner_text: str = "") -> None:
-        """渲染输入栏。spinner_text 非空时同时显示 spinner 行。"""
-        if not self._caps.ansi:
-            return
-        if not self._pre_input_enabled():
+        """渲染输入栏，并按实际终端列数记录其物理行数。"""
+        if not self._caps.ansi or not self._pre_input_enabled():
             return
 
         ui = self._ui
         prompt_prefix = color_text("▸", "primary", self._caps)
-        pre_input_text = self._pre_input
-        token_line = self._build_token_line()
-
-        has_spinner = bool(spinner_text)
+        terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
+        input_width = max(1, terminal_width - ui.prompt_width() - 1)
+        input_rows = _split_display_rows(self._pre_input, input_width)
+        input_lines = [
+            f"{prompt_prefix} {row}" if index == 0 else f"{' ' * ui.prompt_width()}{row}"
+            for index, row in enumerate(input_rows)
+        ]
         lines: list[str] = []
-        if has_spinner:
+        if spinner_text:
             indent = " " * ui.prompt_width()
-            lines.append(f"{ANSI_CLEAR_LINE}{ui.bright(f'{indent}{spinner_text}')}")
-        lines.append(f"{prompt_prefix} {pre_input_text}")
-        if token_line:
-            lines.append(token_line)
+            spinner_rows = _render_styled_status_rows(
+                f"{indent}{strip_ansi(spinner_text)}",
+                role="muted",
+                caps=self._caps,
+                max_width=terminal_width,
+            )
+            lines.extend(f"{ANSI_CLEAR_LINE}{row}" for row in spinner_rows)
+        lines.extend(input_lines)
+        if ui.model_label:
+            lines.extend(
+                _render_prompt_status_rows(
+                    ui.model_label,
+                    ui._input_tokens,
+                    ui._output_tokens,
+                    ui._cached_input_tokens,
+                    caps=self._caps,
+                    max_width=terminal_width,
+                )
+            )
 
         with ui._lock:
             if self._visible:
@@ -2214,6 +2180,17 @@ class InputBar:
 
         while msvcrt.kbhit():
             char = msvcrt.getwch()
+            if self._pending_high_surrogate:
+                combined = _combine_surrogate_pair(self._pending_high_surrogate, char)
+                if combined is not None:
+                    self._pre_input += combined
+                    self._pending_high_surrogate = ""
+                    continue
+                self._pre_input += "�"
+                self._pending_high_surrogate = ""
+            if 0xD800 <= ord(char) <= 0xDBFF:
+                self._pending_high_surrogate = char
+                continue
             if char in {"\r", "\n"}:
                 submitted = self._pre_input.strip()
                 if submitted:
@@ -2227,7 +2204,7 @@ class InputBar:
                 continue
             if char in {"\b", "\x7f"}:
                 if self._pre_input:
-                    self._pre_input = self._pre_input[:-1]
+                    self._pre_input = _delete_last_display_unit(self._pre_input)
                 continue
             if char.isprintable() or char == " ":
                 self._pre_input += char
@@ -2253,6 +2230,7 @@ class WaitingIndicator:
         # 无 InputBar 时的后备存储
         self._pre_input: str = ""
         self._submitted_pre_input: str = ""
+        self._pending_high_surrogate: str = ""
 
     @property
     def input_bar(self) -> InputBar | None:
@@ -2270,9 +2248,11 @@ class WaitingIndicator:
             self._input_bar.clear()
             self._input_bar._pre_input = ""
             self._input_bar._submitted_pre_input = ""
+            self._input_bar._pending_high_surrogate = ""
         else:
             self._pre_input = ""
             self._submitted_pre_input = ""
+            self._pending_high_surrogate = ""
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -2317,33 +2297,45 @@ class WaitingIndicator:
         return self._caps.ansi and os.name == "nt"
 
     def _render_status(self, text: str) -> None:
-        """渲染等待状态；预输入模式下维护 spinner 行、输入行和 token 状态行。"""
+        """渲染等待状态；预输入模式按物理行数维护动态区域。"""
 
         if not self._pre_input_enabled():
             self._status_line.show(text)
             return
 
         ui = self._status_line._ui
+        terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
         indent = " " * ui.prompt_width()
-        rendered_status = ui.bright(f"{indent}{text}")
+        # spinner 文本在逻辑层保持纯文本；先换行再为每个物理行独立套样式，
+        # 避免 SGR 状态跨行泄漏到输入栏或 token 行。
+        status_rows = _render_styled_status_rows(
+            f"{indent}{strip_ansi(text)}",
+            role="muted",
+            caps=self._caps,
+            max_width=terminal_width,
+        )
         prompt_prefix = color_text("▸", "primary", self._caps)
         pre_input_text = self._input_bar._pre_input if self._input_bar else self._pre_input
-
-        # 构建 token 状态行
-        token_line = ""
+        input_rows = _split_display_rows(
+            pre_input_text,
+            max(1, terminal_width - ui.prompt_width() - 1),
+        )
+        lines = [f"{ANSI_CLEAR_LINE}{row}" for row in status_rows]
+        lines.extend(
+            f"{prompt_prefix} {row}" if index == 0 else f"{' ' * ui.prompt_width()}{row}"
+            for index, row in enumerate(input_rows)
+        )
         if ui.model_label:
-            token_line = prompt_status_line(
-                ui.model_label, ui._input_tokens,
-                ui._output_tokens, ui._cached_input_tokens,
-                caps=self._caps,
+            lines.extend(
+                _render_prompt_status_rows(
+                    ui.model_label,
+                    ui._input_tokens,
+                    ui._output_tokens,
+                    ui._cached_input_tokens,
+                    caps=self._caps,
+                    max_width=terminal_width,
+                )
             )
-
-        lines: list[str] = [
-            f"{ANSI_CLEAR_LINE}{rendered_status}",
-            f"{prompt_prefix} {pre_input_text}",
-        ]
-        if token_line:
-            lines.append(token_line)
 
         with ui._lock:
             if self._has_info_lines:
@@ -2371,6 +2363,23 @@ class WaitingIndicator:
 
         while msvcrt.kbhit():
             char = msvcrt.getwch()
+            if self._pending_high_surrogate:
+                combined = _combine_surrogate_pair(self._pending_high_surrogate, char)
+                if combined is not None:
+                    if self._input_bar is not None:
+                        self._input_bar._pre_input += combined
+                    else:
+                        self._pre_input += combined
+                    self._pending_high_surrogate = ""
+                    continue
+                if self._input_bar is not None:
+                    self._input_bar._pre_input += "�"
+                else:
+                    self._pre_input += "�"
+                self._pending_high_surrogate = ""
+            if 0xD800 <= ord(char) <= 0xDBFF:
+                self._pending_high_surrogate = char
+                continue
             if char in {"\r", "\n"}:
                 # Enter 提交预输入
                 draft = self._input_bar._pre_input if self._input_bar else self._pre_input
@@ -2392,9 +2401,11 @@ class WaitingIndicator:
             if char in {"\b", "\x7f"}:
                 if self._input_bar is not None:
                     if self._input_bar._pre_input:
-                        self._input_bar._pre_input = self._input_bar._pre_input[:-1]
+                        self._input_bar._pre_input = _delete_last_display_unit(
+                            self._input_bar._pre_input
+                        )
                 elif self._pre_input:
-                    self._pre_input = self._pre_input[:-1]
+                    self._pre_input = _delete_last_display_unit(self._pre_input)
                 continue
             if char.isprintable() or char == " ":
                 if self._input_bar is not None:
@@ -2418,11 +2429,9 @@ class WaitingIndicator:
             # 时间计数
             seconds = int(elapsed)
 
-            rendered_frame = color_text(frame, "primary", self._caps) if self._caps.ansi else frame
-            rendered_label = color_text(label, "muted", self._caps)
-            rendered_time = color_text(f"{seconds}s", "secondary", self._caps) if self._caps.ansi else f"{seconds}s"
-
-            self._render_status(f"{rendered_frame} {rendered_label} · {rendered_time}")
+            # _render_status 会在换行后统一为弱化状态色，不能把已含 SGR 的
+            # 片段交给普通显示宽度拆行器，否则颜色状态可能跨越物理行。
+            self._render_status(f"{frame} {label} · {seconds}s")
             self._frame_index += 1
             self._stop.wait(0.08)
 
@@ -2460,7 +2469,6 @@ from ._display import (
 )
 from ..base import BaseUI
 from ._markdown_renderer import _MarkdownRendererMixin
-from ._tools import ToolDisplayState
 
 # 常量
 INLINE_INPUT_WINDOW_ROWS = 8
@@ -2565,9 +2573,9 @@ class TerminalUI(_MarkdownRendererMixin, BaseUI):
         arguments: dict[str, Any],
         *,
         leading_blank: bool = True,
-    ) -> ToolDisplayState:
+    ) -> None:
         from ._tools import print_tool_call_start as _impl
-        return _impl(
+        _impl(
             self, step, tool_name, arguments,
             caps=self.capabilities, lock=self._lock,
             leading_blank=leading_blank,
@@ -2579,12 +2587,11 @@ class TerminalUI(_MarkdownRendererMixin, BaseUI):
         output: str | None = None,
         *,
         tool_name: str = "",
-        display_state: ToolDisplayState | None = None,
     ) -> None:
         from ._tools import print_tool_result_record as _impl
         _impl(
             ok, output,
-            tool_name=tool_name, display_state=display_state,
+            tool_name=tool_name,
             caps=self.capabilities, lock=self._lock,
         )
 
@@ -2616,34 +2623,6 @@ class TerminalUI(_MarkdownRendererMixin, BaseUI):
 
     def prompt_width(self) -> int:
         return _display_width("▸ ")
-
-    # ── 提示状态行 ─────────────────────────────────────────────
-
-    def print_prompt_status(self, cursor_column: int = 0) -> None:
-        if not self.model_label or not self.capabilities.ansi:
-            return
-        line = self.prompt_status_line()
-        cursor_target = max(1, self.prompt_width() + cursor_column + 1)
-        with self._lock:
-            print(
-                f"\n{ANSI_CLEAR_LINE}{line}"
-                f"{ANSI_PREVIOUS_LINE}\033[{cursor_target}G",
-                end="", flush=True,
-            )
-
-    def clear_prompt_status(self) -> None:
-        if not self.model_label or not self.capabilities.ansi:
-            return
-        with self._lock:
-            print(f"\n{ANSI_CLEAR_LINE}{ANSI_PREVIOUS_LINE}", end="", flush=True)
-
-    def prompt_status_line(self) -> str:
-        from ._status import prompt_status_line as _impl
-        return _impl(
-            self.model_label, self._input_tokens,
-            self._output_tokens, self._cached_input_tokens,
-            caps=self.capabilities,
-        )
 
     # ── 输入状态覆盖 ───────────────────────────────────────────
 
@@ -2678,32 +2657,14 @@ class TerminalUI(_MarkdownRendererMixin, BaseUI):
     # ── 用户输入行 ────────────────────────────────────────────
 
     def inline_turn_base(self, user_text: str) -> str:
-        if not self.capabilities.ansi:
-            return ""
-        text = _normalize_terminal_text(user_text)
-        prompt_width = self.prompt_width()
-        terminal_width, terminal_height = shutil.get_terminal_size((100, 30))
-        content_width = max(1, max(40, terminal_width) - prompt_width - 1)
-        all_rows = _split_display_rows(text, content_width)
-        visible_rows = min(
-            len(all_rows),
-            max(3, min(INLINE_INPUT_WINDOW_ROWS, max(14, terminal_height) - 8)),
-        )
-        continuation_prefix = " " * prompt_width
-        lines = [
-            f"{color_text(USER_PREFIX, 'primary', self.capabilities)} {row}" if index == 0
-            else f"{continuation_prefix}{row}"
-            for index, row in enumerate(all_rows)
-        ]
-        with self._lock:
-            print(f"\033[{visible_rows}A", end="")
-            for index in range(visible_rows):
-                print(f"\r{ANSI_CLEAR_LINE}", end="")
-                if index < visible_rows - 1:
-                    print("\033[1B", end="")
-            if visible_rows > 1:
-                print(f"\033[{visible_rows - 1}A", end="")
-            print("\n".join(lines), flush=True)
+        """将已提交输入视为终端历史，不再回跳改写。
+
+        行内输入编辑器和标准 ``input`` 已经把用户文本写入终端。此前为了更换
+        前缀而根据估算行数回跳重绘，会在窗口缩放、自动滚动或复杂字符下覆盖历史。
+        保持原始输入可回读，优先保证对话流稳定。
+        """
+
+        del user_text
         return ""
 
     def print_ai_prefix(self) -> None:
@@ -2760,7 +2721,6 @@ __all__ = [
     'ANSI_DIM',
     'ANSI_ITALIC',
     'ANSI_UNDERLINE',
-    'ANSI_BLINK',
     'ANSI_CLEAR_LINE',
     'ANSI_CLEAR_TO_LINE_END',
     'ANSI_PREVIOUS_LINE',
@@ -2783,9 +2743,12 @@ __all__ = [
     'get_color_sequence',
     'strip_ansi',
     '_char_display_width',
+    '_iter_display_units',
     '_contains_complex_display_width',
     '_dialog_continuation_prefix',
     '_display_width',
+    '_delete_last_display_unit',
+    '_combine_surrogate_pair',
     '_ellipsize_display_text',
     '_normalize_terminal_text',
     '_preview_display_rows',
@@ -2793,7 +2756,6 @@ __all__ = [
     '_take_display_width',
     'MarkdownSpan',
     'MarkdownStreamState',
-    'ToolDisplayState',
     'TerminalUI',
     'StatusLine',
     'InputBar',

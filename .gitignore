@@ -17,6 +17,7 @@ config.json
 !.agent_tmp/.gitignore
 !.agent_tmp/README.md
 .agent_sessions/
+.pi-subagents/
 node_modules/
 memory/
 logs/

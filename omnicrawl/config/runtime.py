@@ -19,7 +19,7 @@ def default_config_path() -> Path:
 
     # 源码已收拢到 omnicrawl 包内，但 config.json 仍保留在项目根目录，
     # 这样可以继续沿用 README 中的复制 config.example.json -> config.json 流程。
-    return Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_FILENAME
+    return Path(__file__).resolve().parent.parent.parent / DEFAULT_CONFIG_FILENAME
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:

@@ -7,13 +7,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 from main import _parse_args
-from omnicrawl.ui.config import load_frontend_config
-from omnicrawl.runtime_config import RuntimeConfigError
-from omnicrawl.runtime_config import load_config_data, save_config_data
+from omnicrawl.runtime_config import default_config_path, load_config_data, save_config_data
 from omnicrawl.ui.windows_launcher import launch_in_powershell_window
 
 
 class RuntimeConfigTest(unittest.TestCase):
+    def test_default_config_path_points_to_project_root_config(self) -> None:
+        expected_path = Path(__file__).resolve().parent.parent / "config.json"
+
+        self.assertEqual(default_config_path(), expected_path)
+
     def test_load_config_data_accepts_utf8_bom(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
@@ -33,29 +36,6 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
         self.assertEqual(json.loads(raw.decode("utf-8"))["approval"]["mode"], "auto")
-
-    def test_load_frontend_config_defaults_to_tui(self) -> None:
-        with patch("omnicrawl.ui.config.load_config_data", return_value={}):
-            config = load_frontend_config()
-
-        self.assertEqual(config.type, "tui")
-
-    def test_load_frontend_config_accepts_qt(self) -> None:
-        with patch(
-            "omnicrawl.ui.config.load_config_data",
-            return_value={"frontend": {"type": "qt"}},
-        ):
-            config = load_frontend_config()
-
-        self.assertEqual(config.type, "qt")
-
-    def test_load_frontend_config_rejects_unknown_type(self) -> None:
-        with patch(
-            "omnicrawl.ui.config.load_config_data",
-            return_value={"frontend": {"type": "browser"}},
-        ):
-            with self.assertRaisesRegex(RuntimeConfigError, "frontend.type"):
-                load_frontend_config()
 
     def test_parse_args_accepts_resume_session_id(self) -> None:
         args = _parse_args(["--resume", "20260616-201530-a1b2c3"])

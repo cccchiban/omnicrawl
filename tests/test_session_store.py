@@ -122,7 +122,7 @@ class SessionStoreTest(unittest.TestCase):
                 session_id=state.session_id,
             )
             store.append_prompt_history(
-                display="检查 Qt 会话列表",
+                display="检查 API 会话列表",
                 workspace_root=workspace,
                 session_id=state.session_id,
             )
@@ -137,7 +137,7 @@ class SessionStoreTest(unittest.TestCase):
             results = store.search_prompt_history(workspace_root=workspace, query="会话")
 
         self.assertEqual(len(all_lines), 4)
-        self.assertEqual([entry.display for entry in results], ["检查 Qt 会话列表", "帮我实现会话历史"])
+        self.assertEqual([entry.display for entry in results], ["检查 API 会话列表", "帮我实现会话历史"])
         self.assertTrue(all(entry.project == str(workspace.resolve()) for entry in results))
 
     def test_list_sessions_filters_by_project_path(self) -> None:
@@ -168,7 +168,7 @@ class SessionStoreTest(unittest.TestCase):
             store = SessionStore(workspace / ".agent_sessions")
             state = store.start_session(workspace)
 
-            renamed = store.rename_session(state.session_id, "  Qt 会话列表  ")
+            renamed = store.rename_session(state.session_id, "  API 会话列表  ")
             events = [
                 json.loads(line)
                 for line in state.path.read_text(encoding="utf-8").splitlines()
@@ -176,10 +176,10 @@ class SessionStoreTest(unittest.TestCase):
             ]
             sessions = store.list_sessions(workspace_root=workspace)
 
-        self.assertEqual(renamed.title, "Qt 会话列表")
-        self.assertEqual(sessions[0].title, "Qt 会话列表")
+        self.assertEqual(renamed.title, "API 会话列表")
+        self.assertEqual(sessions[0].title, "API 会话列表")
         self.assertEqual(events[-1]["type"], "session_renamed")
-        self.assertEqual(events[-1]["payload"]["title"], "Qt 会话列表")
+        self.assertEqual(events[-1]["payload"]["title"], "API 会话列表")
 
     def test_export_session_markdown_writes_exports_file_and_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

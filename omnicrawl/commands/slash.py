@@ -489,10 +489,10 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
 
 
 def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
-    """构建 Qt 输入框斜杠菜单使用的命令元数据。
+    """构建可供交互客户端使用的斜杠命令元数据。
 
-    TUI 只需要命令字符串做 Tab 补全；Qt 菜单需要额外的说明、显示标题和
-    搜索文本。这里复用同一套命令来源，避免 GUI 与终端可用命令不一致。
+    TUI 使用命令字符串做 Tab 补全；API 客户端可使用说明、显示标题和搜索文本。
+    这里复用同一套命令来源，避免不同交互入口的命令不一致。
     """
 
     builtin_descriptions = {

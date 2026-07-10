@@ -46,29 +46,53 @@ class TerminalUITest(unittest.TestCase):
         self.assertTrue(_contains_complex_display_width("获取最新 Release"))
         self.assertTrue(_contains_complex_display_width("1️⃣ 安装 CLI"))
 
-    def test_inline_turn_base_repaints_wrapped_input_once(self) -> None:
+    def test_detect_capabilities_disables_ansi_for_redirected_stdout(self) -> None:
+        from omnicrawl.ui.terminal import detect_capabilities
+
+        with patch("omnicrawl.ui.tui.sys.stdout.isatty", return_value=False):
+            with patch.dict("os.environ", {"WT_SESSION": "present"}, clear=False):
+                self.assertFalse(detect_capabilities().ansi)
+
+    def test_extended_graphemes_are_kept_as_single_display_units(self) -> None:
+        family = "👨‍👩‍👧‍👦"
+        china_flag = "🇨🇳"
+        thumbs_up = "👍🏽"
+
+        self.assertEqual(_display_width(family), 2)
+        self.assertEqual(_display_width(china_flag), 2)
+        self.assertEqual(_display_width(thumbs_up), 2)
+        self.assertEqual(_split_display_rows(f"a{family}b", 4), [f"a{family}b"])
+        self.assertEqual(_split_display_rows(f"a{china_flag}b", 4), [f"a{china_flag}b"])
+        self.assertEqual(_split_display_rows(f"a{thumbs_up}b", 4), [f"a{thumbs_up}b"])
+
+    def test_inline_turn_base_preserves_submitted_input_without_cursor_repaint(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         text = (
             "请阅读 https://github.com/sleepinginsummer/agent-browser-cli/blob/main/"
             "AI_INSTALL.md，按说明安装 CLI、下载 Chrome 扩展到D:\\下载，并添加 "
             "`skills/agent-browser-cli/SKILL.md`。"
         )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            self.assertEqual(ui.inline_turn_base(text), "")
+
+        # 输入编辑器和标准 input 都已经把已提交文本留在终端历史；再次上移重绘
+        # 会在滚动、尺寸变化或窄窗口中覆盖历史，因此固化阶段必须没有光标控制序列。
+        self.assertEqual(output.getvalue(), "")
+
+    def test_inline_turn_base_is_safe_in_a_narrow_terminal(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        output = io.StringIO()
 
         with patch(
             "omnicrawl.ui.tui._core.shutil.get_terminal_size",
-            return_value=os.terminal_size((72, 30)),
+            return_value=os.terminal_size((20, 24)),
         ):
-            expected_rows = _split_display_rows(text, 72 - ui.prompt_width() - 1)
-            output = io.StringIO()
             with redirect_stdout(output):
-                ui.inline_turn_base(text)
+                ui.inline_turn_base("x" * 38)
 
-        rendered = output.getvalue()
-        self.assertIn(f"\033[{len(expected_rows)}A", rendered)
-        # 用户前缀 ▸ (U+25B8) 在输出中
-        self.assertIn("▸", rendered)
-        self.assertIn("agent-browser-cli", rendered)
-        self.assertIn("SKILL.md", rendered)
+        self.assertEqual(output.getvalue(), "")
 
     def test_complex_streaming_text_uses_passthrough(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -117,6 +141,31 @@ class TerminalUITest(unittest.TestCase):
         # AI 前缀 ◆ 后面跟内容
         self.assertTrue(lines[0].startswith("◆ "), f"Expected '◆ ' prefix, got: {repr(lines[0][:5])}")
         self.assertTrue(all(line.startswith("  ") for line in lines[1:]))
+
+    def test_streaming_markdown_does_not_split_extended_graphemes(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        state = MarkdownStreamState()
+        output = io.StringIO()
+        family = "👨‍👩‍👧‍👦"
+        china_flag = "🇨🇳"
+        thumbs_up = "👍🏽"
+
+        with patch(
+            "omnicrawl.ui.tui._markdown_renderer.shutil.get_terminal_size",
+            return_value=os.terminal_size((7, 24)),
+        ):
+            with redirect_stdout(output):
+                ui.print_ai_prefix()
+                ui.write_markdown_delta(f"aa{family}{china_flag}{thumbs_up}", state)
+                ui.flush_markdown(state)
+
+        rendered = output.getvalue()
+        self.assertIn(family, rendered)
+        self.assertIn(china_flag, rendered)
+        self.assertIn(thumbs_up, rendered)
+        self.assertNotIn("👨‍\n", rendered)
+        self.assertNotIn("🇨\n", rendered)
+        self.assertNotIn("👍\n", rendered)
 
     def test_markdown_blank_lines_do_not_create_extra_empty_rows(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -219,9 +268,9 @@ class TerminalUITest(unittest.TestCase):
         rendered = ANSI_PATTERN.sub("", output.getvalue())
         self.assertIn("see abcdefghijklmnopq\n  rstuvwxyz0123456789", rendered)
 
-    def test_prompt_yes_no_redraws_and_collapses_current_option_block(self) -> None:
+    def test_prompt_yes_no_records_selection_and_result_without_cursor_repaint(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
-        keys = ["\xe0", "P", "\r"]
+        keys = ["n"]
         fake_msvcrt = types.SimpleNamespace(getwch=lambda: keys.pop(0))
         output = io.StringIO()
 
@@ -231,11 +280,59 @@ class TerminalUITest(unittest.TestCase):
 
         rendered = output.getvalue()
         plain_rendered = ANSI_PATTERN.sub("", rendered)
-        # 选项区 5 行：分隔线 + 选项 + 底框 + 空行 + 提示
-        self.assertIn("\033[5A", rendered)
-        # 卡片行(前导空行+顶部框线+1内容行=3) + 选项区5行 = 8
-        self.assertIn("\033[8A\033[J", rendered)
-        self.assertIn("❯ No", plain_rendered)
+        self.assertNotIn("\033[2A", rendered)
+        self.assertNotIn("\033[J", rendered)
+        self.assertIn("选择：拒绝", plain_rendered)
+        self.assertIn("已取消", plain_rendered)
+
+    def test_prompt_yes_no_does_not_allow_arrow_key_to_execute_without_enter(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        keys = ["\xe0", "P", "\r"]
+        fake_msvcrt = types.SimpleNamespace(getwch=lambda: keys.pop(0))
+
+        with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
+            with redirect_stdout(io.StringIO()):
+                self.assertTrue(ui.prompt_yes_no("确认执行？"))
+
+    def test_prompt_yes_no_wraps_card_content_in_a_narrow_terminal(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        prompt = "x" * 50
+        keys = ["\r"]
+        fake_msvcrt = types.SimpleNamespace(getwch=lambda: keys.pop(0))
+        output = io.StringIO()
+
+        with patch(
+            "omnicrawl.ui.tui._prompt.shutil.get_terminal_size",
+            return_value=os.terminal_size((20, 24)),
+        ):
+            with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
+                with redirect_stdout(output):
+                    self.assertTrue(ui.prompt_yes_no(prompt))
+
+        plain_rows = ANSI_PATTERN.sub("", output.getvalue()).splitlines()
+        self.assertTrue(all(_display_width(row) <= 20 for row in plain_rows), plain_rows)
+        self.assertNotIn("\033[2A", output.getvalue())
+        self.assertNotIn("\033[J", output.getvalue())
+
+    def test_startup_panel_uses_compact_hierarchy_without_narrow_overflow(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        output = io.StringIO()
+        lines = [
+            "frontend: TUI",
+            "thinking: 已启用，推理强度：xhigh",
+            "workspace: " + "D:/" + "x" * 44,
+        ]
+
+        with patch(
+            "omnicrawl.ui.tui._panels.shutil.get_terminal_size",
+            return_value=os.terminal_size((20, 24)),
+        ):
+            with redirect_stdout(output):
+                ui.print_startup_panel("OmniCrawl", lines)
+
+        rendered_rows = output.getvalue().splitlines()
+        self.assertTrue(all(_display_width(row) <= 20 for row in rendered_rows), rendered_rows)
+        self.assertIn("█ OmniCrawl", output.getvalue())
 
     def test_status_can_avoid_leading_blank_line(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -361,6 +458,100 @@ class TerminalUITest(unittest.TestCase):
         self.assertEqual(submitted, "")
         self.assertEqual(output.getvalue().count("\033[1A"), 2)
 
+    def test_waiting_indicator_splits_styled_spinner_before_applying_ansi(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
+        ui.update_token_usage(12345, 67890, 1112)
+        status_line = StatusLine(ui)
+        waiting = WaitingIndicator(status_line)
+        output = io.StringIO()
+        # 预着色输入也要先剥离样式后再换行；每个物理行只能保留 renderer
+        # 自己应用的一组 muted SGR，不能残留调用方的 primary SGR。
+        styled_status = "\033[96m" + "正在思考" * 6 + "\033[0m"
+
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
+            with patch(
+                "omnicrawl.ui.tui._spinner.shutil.get_terminal_size",
+                return_value=os.terminal_size((20, 24)),
+            ):
+                with redirect_stdout(output):
+                    waiting._render_status(styled_status)
+
+        status_lines = [
+            line for line in output.getvalue().splitlines()
+            if "正在" in ANSI_PATTERN.sub("", line)
+        ]
+        self.assertGreaterEqual(len(status_lines), 2, status_lines)
+        self.assertTrue(
+            all(
+                "\033[90m" in line
+                and "\033[96m" not in line
+                and line.endswith("\033[0m")
+                for line in status_lines
+            ),
+            status_lines,
+        )
+
+    def test_input_bar_splits_styled_spinner_before_applying_ansi(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
+        output = io.StringIO()
+
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
+            with patch(
+                "omnicrawl.ui.tui._spinner.shutil.get_terminal_size",
+                return_value=os.terminal_size((20, 24)),
+            ):
+                with redirect_stdout(output):
+                    InputBar(ui).show("\033[96m" + "正在思考" * 6 + "\033[0m")
+
+        spinner_rows = [
+            line for line in output.getvalue().splitlines()
+            if "正在" in ANSI_PATTERN.sub("", line)
+        ]
+        self.assertGreaterEqual(len(spinner_rows), 2, spinner_rows)
+        self.assertTrue(
+            all(
+                "\033[90m" in line
+                and "\033[96m" not in line
+                and line.endswith("\033[0m")
+                for line in spinner_rows
+            ),
+            spinner_rows,
+        )
+
+    def test_input_bar_and_waiting_indicator_do_not_split_ansi_token_sequences(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
+        ui.update_token_usage(12345, 67890, 1112)
+        status_line = StatusLine(ui)
+        input_bar = InputBar(ui)
+        input_bar._pre_input = "x" * 38
+        waiting = WaitingIndicator(status_line, input_bar=input_bar)
+        output = io.StringIO()
+
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
+            with patch(
+                "omnicrawl.ui.tui._spinner.shutil.get_terminal_size",
+                return_value=os.terminal_size((20, 24)),
+            ):
+                with redirect_stdout(output):
+                    input_bar.show()
+                    input_bar.clear()
+                    waiting._render_status("状态" * 12)
+                    submitted = waiting.stop()
+
+        self.assertEqual(submitted, "")
+        rendered = output.getvalue()
+        # 每个 ANSI SGR 序列必须在同一物理行完成，不能出现 `\\x1b[96\\nmin:` 之类片段。
+        for line in rendered.splitlines():
+            self.assertNotRegex(line, r"\x1b\[[0-9;]*$")
+        content_rows = [
+            ANSI_PATTERN.sub("", line)
+            for line in rendered.splitlines()
+            if not line.startswith("\033[")
+        ]
+        self.assertTrue(all(_display_width(row) <= 20 for row in content_rows), content_rows)
+        # stop() 会清空内部计数；清理序列数量必须覆盖状态、预输入和 token 的实际物理行。
+        self.assertGreater(rendered.count("\r\033[2K"), 3)
+
     def test_input_bar_push_up_clears_existing_bar_before_output(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
         input_bar = InputBar(ui)
@@ -392,6 +583,53 @@ class TerminalUITest(unittest.TestCase):
         self.assertEqual(submitted, "")
         self.assertEqual(output.getvalue().count("\r\033[2K"), 2)
 
+    def test_input_bar_pre_input_backspace_preserves_extended_graphemes(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        input_bar = InputBar(ui)
+        # Windows msvcrt 会把非 BMP emoji 拆成 UTF-16 代理对；模拟真实输入后
+        # 再退格，必须删除完整肤色 emoji 而不是残留代理项或修饰符。
+        fake_msvcrt = _FakeMsvcrt(["\ud83d", "\udc4d", "\ud83c", "\udffd", "\b"])
+
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
+            with patch.dict("sys.modules", {"msvcrt": fake_msvcrt}):
+                input_bar.poll_pre_input()
+
+        self.assertEqual(input_bar.pre_input, "")
+
+    def test_input_bar_combines_surrogate_pair_across_poll_cycles(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        input_bar = InputBar(ui)
+        high_surrogate = _FakeMsvcrt(["\ud83d"])
+        low_surrogate = _FakeMsvcrt(["\udc4d"])
+
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
+            with patch.dict("sys.modules", {"msvcrt": high_surrogate}):
+                input_bar.poll_pre_input()
+            self.assertEqual(input_bar.pre_input, "")
+            with patch.dict("sys.modules", {"msvcrt": low_surrogate}):
+                input_bar.poll_pre_input()
+
+        self.assertEqual(input_bar.pre_input, "👍")
+
+    def test_input_bar_clear_tracks_wrapped_pre_input_rows(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        input_bar = InputBar(ui)
+        input_bar._pre_input = "x" * 38
+        output = io.StringIO()
+        expected_rows = len(_split_display_rows("x" * 38, 20 - ui.prompt_width() - 1))
+
+        with patch("omnicrawl.ui.tui._spinner.os.name", "nt"):
+            with patch(
+                "omnicrawl.ui.tui._spinner.shutil.get_terminal_size",
+                return_value=os.terminal_size((20, 24)),
+            ):
+                with redirect_stdout(output):
+                    input_bar.show()
+                    submitted = input_bar.clear()
+
+        self.assertEqual(submitted, "")
+        self.assertEqual(output.getvalue().count("\r\033[2K"), expected_rows)
+
     def test_tool_call_start_shows_command_detail_and_running_marker(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
         output = io.StringIO()
@@ -409,6 +647,28 @@ class TerminalUITest(unittest.TestCase):
         self.assertIn("步骤 2", rendered)
         self.assertIn("run_command", rendered)
         self.assertIn("echo hello", rendered)
+
+    def test_tool_call_card_does_not_overflow_narrow_terminal(self) -> None:
+        ui = TerminalUI(TerminalCapabilities(ansi=False))
+        output = io.StringIO()
+
+        with patch(
+            "omnicrawl.ui.tui._tools.shutil.get_terminal_size",
+            return_value=os.terminal_size((20, 24)),
+        ):
+            with redirect_stdout(output):
+                ui.print_tool_call_start(
+                    1,
+                    "run_command_with_a_very_long_name",
+                    {"command": "echo " + "x" * 48},
+                    leading_blank=False,
+                )
+
+        plain_rows = ANSI_PATTERN.sub("", output.getvalue()).splitlines()
+        self.assertTrue(
+            all(_display_width(line) <= 20 for line in plain_rows),
+            plain_rows,
+        )
 
     def test_tool_result_record_shows_exit_code_and_stdout_preview(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -455,7 +715,7 @@ class TerminalUITest(unittest.TestCase):
         self.assertIn("步骤 2", rendered)
         self.assertIn("run_command", rendered)
 
-    def test_tool_call_start_uses_ansi_color_and_blink(self) -> None:
+    def test_tool_call_start_uses_static_ansi_status_marker(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         output = io.StringIO()
 
@@ -468,18 +728,17 @@ class TerminalUITest(unittest.TestCase):
             )
 
         rendered = output.getvalue()
-        # 新格式使用 ◌ 闪烁标记 + 颜色路由
         self.assertIn("◌", rendered)
         self.assertIn("run_command", rendered)
         self.assertIn("echo hi", rendered)
-        self.assertIn("\033[5m", rendered)  # BLINK
+        self.assertNotIn("\033[5m", rendered)  # 不使用终端兼容性不稳定的 BLINK
 
-    def test_tool_result_refreshes_running_marker_when_ansi_enabled(self) -> None:
+    def test_tool_result_appends_completion_without_rewriting_history(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         output = io.StringIO()
 
         with redirect_stdout(output):
-            state = ui.print_tool_call_start(
+            ui.print_tool_call_start(
                 1,
                 "run_command",
                 {"command": "echo hi"},
@@ -489,25 +748,12 @@ class TerminalUITest(unittest.TestCase):
                 True,
                 "退出码：0\n\nstdout:\nhi",
                 tool_name="run_command",
-                display_state=state,
             )
 
         rendered = output.getvalue()
-        self.assertIn("\033[2A", rendered)
+        self.assertNotIn("\033[2A", rendered)
         self.assertIn("✓", rendered)
 
-    def test_prompt_status_line_contains_model_and_tokens(self) -> None:
-        ui = TerminalUI(TerminalCapabilities(ansi=True), model_label="gpt-5.5")
-        ui.update_token_usage(123, 45, 67)
-
-        line = ui.prompt_status_line()
-        plain_line = ANSI_PATTERN.sub("", line)
-
-        self.assertIn("gpt-5.5", line)
-        # 新格式：in:123 cache:67 out:45
-        self.assertIn("in:123", plain_line)
-        self.assertIn("cache:67", plain_line)
-        self.assertIn("out:45", plain_line)
 
 
 if __name__ == "__main__":

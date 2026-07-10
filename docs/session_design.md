@@ -57,7 +57,7 @@
 | 新对话 | `/new` 调用 `agent.reset_conversation()` | 清空 `_history`，保留工具、记忆、Skill 和配置。 |
 | 轮次内工具链 | `run_stream()` 的 `working_messages` | 当前轮工具调用和工具结果会进入本轮消息链，直到模型给出最终回复。 |
 | 项目规范注入 | `_project_instructions_messages()` | 每次请求前重新注入项目规范，但不写入 `_history`，避免历史重复膨胀。 |
-| Qt 对话导出 | `save_chat_export()` | 前端把当前可见对话导出到 `.agent_tmp/files/chat_export_*.md`。 |
+| API 会话导出 | `export_current_session_markdown()` | 客户端把当前会话导出到 `.agent_sessions/exports/`。 |
 | 长期记忆 | `memory_search/read/write` | 面向长期知识，不等同于会话转录。 |
 
 ### 3.2 主要缺口
@@ -78,7 +78,8 @@
 
 ```text
 UI 层
-  - TUI / Qt 展示、输入、朗读、确认卡片
+  - TUI 展示与输入
+  - HTTP/SSE API 的流式事件和工具确认
 
 会话控制层
   - SessionManager
@@ -189,7 +190,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 触发场景：
 
 - 用户输入退出词。
-- Qt 窗口关闭。
+- API 服务关闭或客户端取消运行。
 - 进程收到退出信号。
 - 本轮生成被用户取消。
 
@@ -275,7 +276,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 |------|------|------|
 | 启动参数 | `python main.py --resume 20260616-201530-a1b2c3` | 精确恢复指定会话。 |
 | 斜杠命令 | `/resume`、`/sessions` | 在运行中查看并切换会话。 |
-| Qt UI | 侧边栏会话列表 | 面向 GUI 用户的可视化恢复。 |
+| HTTP API | `/api/v1/sessions` | 供后续 Web 或桌面客户端恢复会话。 |
 
 第一期可以先实现 `/sessions` 查看最近会话和 `/resume <session_id>` 恢复。
 
@@ -320,7 +321,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 
 ```json
 {
-  "display": "帮我修复 Qt 输入框卡顿问题",
+  "display": "帮我修复 API 流式事件顺序问题",
   "timestamp": 1781602530000,
   "project": "D:/PythonProject/Python程序设计/AI课堂任务",
   "session_id": "20260616-201530-a1b2c3",
@@ -334,7 +335,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 |------|------|
 | 上箭头复用 | 当前会话优先，再按当前项目倒序返回。 |
 | 搜索历史 | 当前项目优先，跨会话去重显示。 |
-| Qt 输入建议 | 根据最近提示和关键词过滤。 |
+| API 输入建议 | 客户端根据最近提示和关键词过滤。 |
 | 新会话 | 仍可使用同项目历史，但不要自动注入模型上下文。 |
 
 ## 9. 长会话压缩
@@ -369,12 +370,12 @@ YYYYMMDD-HHMMSS-随机短 ID
 ```markdown
 ## 会话压缩摘要
 
-- 目标：为 Qt GUI 修复输入区布局问题。
-- 已完成：拆分 CSS，调整消息区滚动。
-- 当前状态：测试中发现按钮在窄屏下文字溢出。
-- 关键文件：`omnicrawl/ui/qt/web/css/input-area.css`。
-- 约束：不引入新前端依赖，保持现有 QWebChannel 通信方式。
-- 下一步：补充窄屏样式并运行 Qt UI 冒烟验证。
+- 目标：修复 API 流式事件重连问题。
+- 已完成：增加递增事件 ID 和内存事件缓冲。
+- 当前状态：验证客户端从 Last-Event-ID 继续读取。
+- 关键文件：`omnicrawl/api/__init__.py`。
+- 约束：不返回模型隐藏推理内容。
+- 下一步：补充 SSE 重放测试并执行 API 冒烟验证。
 ```
 
 ### 9.3 压缩后的消息链
@@ -415,19 +416,19 @@ compact_summary
 | `/compact` | 手动压缩当前会话。 |
 | `/export` | 导出当前会话到 Markdown。 |
 
-### 11.2 Qt GUI
+### 11.2 HTTP/SSE API
 
-建议侧边栏“对话”区域从静态按钮升级为会话列表：
+后续前端通过以下接口实现会话区域：
 
 | 控件 | 行为 |
 |------|------|
-| 新对话 | 创建新 session，并清空当前 UI 消息区。 |
-| 最近会话列表 | 点击恢复会话，重新渲染消息流。 |
-| 重命名 | 修改 `index.json` 中的会话标题。 |
-| 导出 | 导出当前会话 Markdown 到 `.agent_sessions/exports/`。 |
-| 压缩 | 手动触发摘要，并在消息流中显示压缩边界。 |
+| 新对话 | `POST /api/v1/sessions` 创建新 session。 |
+| 最近会话列表 | `GET /api/v1/sessions` 后调用恢复接口。 |
+| 重命名 | `PATCH /api/v1/sessions/current`。 |
+| 导出 | `POST /api/v1/sessions/current/export`。 |
+| 压缩 | `POST /api/v1/sessions/current/compact`。 |
 
-UI 渲染应来自会话事件，而不是各自维护一份不可恢复的消息状态。这样 TUI 和 Qt 可以共享同一套会话恢复能力。
+客户端渲染应来自会话事件，而不是维护一份不可恢复的消息状态。这样 TUI 和 API 客户端共享同一套会话恢复能力。
 
 ## 12. 数据安全与边界
 
@@ -448,9 +449,9 @@ UI 渲染应来自会话事件，而不是各自维护一份不可恢复的消�
 |------|------|----------|
 | 第一期 | `SessionStore` + JSONL 追加写 + `session_id` | 每轮对话生成可读 JSONL，退出后文件完整。 |
 | 第二期 | `/sessions`、`/resume`、`index.json` | 可以列出和恢复最近会话，恢复后继续追问能引用历史。 |
-| 第三期 | 提示历史 `history.jsonl` | TUI/Qt 能按当前项目复用历史输入。 |
+| 第三期 | 提示历史 `history.jsonl` | TUI/API 客户端能按当前项目复用历史输入。 |
 | 第四期 | 会话压缩 `compact_summary` | 超过历史上限时不再硬丢上下文，而是生成摘要。 |
-| 第五期 | Qt 会话列表与正式导出 | GUI 可恢复、重命名、导出会话。 |
+| 第五期 | HTTP/SSE 接口与正式导出 | 客户端可恢复、重命名、导出会话。 |
 | 第六期 | 工具结果 artifact、脱敏、归档 | 大输出不会拖慢恢复，敏感内容可控。 |
 
 第一期最小可用版本只需要：
@@ -513,7 +514,7 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 
 ### 14.3 导出与恢复分离
 
-当前 Qt 导出保存到 `.agent_tmp/files/`，定位是“一次性用户文件”。会话系统落地后建议保留两个出口：
+会话系统保留临时产物与正式导出两个出口：
 
 | 出口 | 路径 | 用途 |
 |------|------|------|

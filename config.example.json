@@ -1,7 +1,4 @@
 {
-  "frontend": {
-    "type": "qt"
-  },
   "llm": {
     "api_key": "",
     "base_url": "https://xxx.xx/v1",
@@ -11,6 +8,15 @@
   },
   "approval": {
     "mode": "manual"
+  },
+  "api": {
+    "bearer_token": "请替换为随机长令牌",
+    "host": "127.0.0.1",
+    "port": 8765,
+    "allowed_origins": [
+      "http://localhost:5173"
+    ],
+    "confirmation_timeout_seconds": 300
   },
   "agent_temp": {
     "enabled": true,

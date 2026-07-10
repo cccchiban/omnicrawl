@@ -23,7 +23,7 @@ class ModelCatalogError(RuntimeError):
 
 @dataclass(frozen=True)
 class ModelOption:
-    """可供 TUI / Qt UI 展示和切换的模型项。"""
+    """可供 TUI 或 API 客户端展示和切换的模型项。"""
 
     id: str
     name: str

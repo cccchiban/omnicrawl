@@ -1,11 +1,11 @@
 # OmniCrawl
 
-本目录实现本地 OmniCrawl，支持 Qt 桌面 GUI 和终端 TUI：
+本目录实现本地 OmniCrawl，提供终端 TUI 和本机 HTTP/SSE API：
 
-1. Qt GUI 和 TUI 均使用键盘输入。
+1. TUI 使用键盘交互，HTTP API 供后续 Web 或桌面前端接入。
 2. 使用 OpenAI Python SDK 调用 `https://xxx.xx/v1` 的 Responses API 兼容接口。
 3. AI 会按 Agent 循环处理任务：理解目标、读取项目文件、搜索文本、写文件或执行命令；默认会在工具执行前拦截确认，也可开启自动审批模式。
-4. AI 回复会在界面中显示。
+4. AI 回复会在 TUI 中显示，或通过 SSE 事件流推送给 API 客户端。
 
 ## Agent 临时目录
 
@@ -41,7 +41,7 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 安全边界：
 
 - 文件工具只能访问当前项目目录内的路径；`config.json`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
-- `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；确认界面默认选中 `YES`，左右箭头可切换 `YES`/`NO`；按 Enter 提交当前选项，按 `Y` 直接执行，按 `N` 直接取消并把失败结果返回给 AI 继续处理。
+- `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；按 `Enter`、`Y` 或 `1` 允许，按 `N` 或 `2` 拒绝；方向键只会被消费，不会触发工具执行。
 - `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时只把疑似删除行为交给同一模型的非思考模式审查，其他工具调用自动执行。自动模式不显示确认页，只显示步骤和执行记录。
 - 命令工具不是系统级沙箱；程序会用 `shell=True` 执行用户确认后的命令字符串。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
 - bb-browser 是内置 CLI 能力，不通过 MCP 暴露；需要安装或更新时使用项目里的 npm 依赖，或设置 `BB_BROWSER_COMMAND` 指向本机可执行文件。
@@ -61,27 +61,33 @@ python main.py
 pip install -r requirements.txt
 ```
 
-如果 `PyAudio` 安装失败，建议先升级 pip：
-
-```powershell
-python -m pip install --upgrade pip setuptools wheel
-pip install -r requirements.txt
-```
-
 ## 运行
+
+### 终端 TUI
 
 ```powershell
 python main.py
 ```
 
-`config.json` 中 `frontend.type` 为 `qt` 时会直接打开桌面窗口；为 `tui` 时，从 IDE、测试窗口或普通命令行运行 `python main.py` 后，程序会自动弹出一个独立 PowerShell 窗口，真实 Agent 在新窗口中进行。
+从 IDE、测试窗口或普通命令行运行时，Windows 会自动弹出独立 PowerShell 窗口。
+
+### 本地 HTTP/SSE API
+
+```powershell
+$env:OMNICRAWL_API_TOKEN = "请替换为随机长令牌"
+python -m omnicrawl.api
+```
+
+默认监听 `127.0.0.1:8765`。Swagger UI 位于 `http://127.0.0.1:8765/docs`，
+机器可读契约位于 `/openapi.json`。除健康检查和文档外，所有接口必须携带
+`Authorization: Bearer <token>`。完整接入说明见 `docs/API.md`。
 
 运行后：
 
-- Qt GUI 会显示启动面板、聊天气泡、工具调用记录和确认弹窗；关闭窗口会结束会话。
-- TUI 会在普通终端历史里显示一个灰色封口、淡蓝色文字的配置面板，然后进入内联对话；`>` 表示用户输入，`^` 表示 AI 回复。
+- TUI 会在普通终端历史里显示配置面板，然后进入内联对话；`▸` 表示用户输入，`◆` 表示 AI 回复。
 - AI 回复朗读过程中可输入下一句并发送，程序会打断朗读并把这句作为下一轮问题；TUI 中也可以直接按 Enter 打断朗读。
-- TUI 直接按 Enter 发送消息。\n- 直接输入文字：用键盘内容交给 Agent 处理。
+- TUI 直接按 Enter 发送消息。
+- 直接输入文字：用键盘内容交给 Agent 处理。
 - 输入 `/new`：清空模型对话历史，开启新对话。
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
@@ -105,8 +111,9 @@ python main.py
 ```text
 .
 ├── main.py                  # 程序启动入口，保持 python main.py 运行方式
-├── omnicrawl/          # Agent、LLM 和终端 UI 业务模块
-│   └── system_prompt.md     # 运行时系统提示词模板
+├── omnicrawl/               # Agent、API、LLM 和终端 UI 业务模块
+│   ├── api/                 # FastAPI + SSE 接口
+│   └── agent/system_prompt.md # 运行时系统提示词模板
 ├── docs/                    # 设计说明和实现文档
 ├── config.example.json      # 本地配置模板
 └── requirements.txt         # Python 依赖
@@ -120,9 +127,6 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 
 ```json
 {
-  "frontend": {
-    "type": "qt"
-  },
   "llm": {
     "api_key": "你的 API Key",
     "base_url": "https://xxx.xx/v1",
@@ -132,6 +136,13 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
   },
   "approval": {
     "mode": "manual"
+  },
+  "api": {
+    "bearer_token": "请替换为随机长令牌",
+    "host": "127.0.0.1",
+    "port": 8765,
+    "allowed_origins": ["http://localhost:5173"],
+    "confirmation_timeout_seconds": 300
   },
   "agent_temp": {
     "enabled": true,
@@ -174,7 +185,7 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 
 思考深度可在 `config.json` 的 `llm.reasoning_effort` 配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
 
-模型列表会按当前 `llm.base_url` 自动请求 OpenAI 兼容的 `/models` 接口检测。TUI 中输入 `/model` 可查看可用模型，输入 `/model <模型ID>` 可实时切换并写回 `config.json`；Qt GUI 左上角模型选择器打开时会刷新列表，选择后会同步切换当前会话模型和配置文件。若设置了 `OPENAI_MODEL` 环境变量，重启后仍会优先使用环境变量。
+模型列表会按当前 `llm.base_url` 自动请求 OpenAI 兼容的 `/models` 接口检测。TUI 中输入 `/model` 可查看可用模型，输入 `/model <模型ID>` 可实时切换并写回 `config.json`；API 使用 `/api/v1/models` 和 `/api/v1/models/current`。若设置了 `OPENAI_MODEL` 环境变量，重启后仍会优先使用环境变量。
 
 MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
 
