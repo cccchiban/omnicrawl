@@ -17,8 +17,7 @@ from omnicrawl.temp_workspace import (
     agent_temp_status_label,
     load_agent_temp_workspace_config,
 )
-from omnicrawl.ui import UIStartupError, create_ui
-from omnicrawl.ui.chat_session import run_inline_chat
+from omnicrawl.ui import UIStartupError
 from omnicrawl.ui.windows_launcher import configure_console_encoding, launch_in_powershell_window
 
 
@@ -35,6 +34,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _load_fullscreen_ui():
+    """按需加载 Textual 前端，让缺少依赖时仍可给出可执行的启动提示。"""
+
+    try:
+        from omnicrawl.ui.fullscreen import FullscreenStartup, run_fullscreen_tui
+    except ModuleNotFoundError as exc:
+        dependency = exc.name or "textual"
+        raise UIStartupError(
+            f"缺少可选终端界面依赖：{dependency}。请执行 pip install -r requirements.txt。"
+        ) from exc
+    return FullscreenStartup, run_fullscreen_tui
+
+
 def main(argv: list[str] | None = None) -> None:
     """启动 OmniCrawl 终端交互界面。"""
 
@@ -46,7 +58,7 @@ def main(argv: list[str] | None = None) -> None:
         approval_mode = load_approval_mode()
         temp_workspace_config = load_agent_temp_workspace_config()
         project_context = detect_project_context(app_root=app_root)
-        ui = create_ui(model_label=config.model)
+        fullscreen_startup, run_fullscreen_tui = _load_fullscreen_ui()
     except LLMError as exc:
         print(f"配置加载失败：{exc}")
         return
@@ -63,19 +75,6 @@ def main(argv: list[str] | None = None) -> None:
         print(f"界面启动失败：{exc}")
         return
 
-    enabled_label = "已启用" if config.thinking_enabled else "已禁用"
-    reasoning_info = f"，推理强度：{config.reasoning_effort}" if config.reasoning_effort else ""
-    ui.print_startup_panel(
-        "OmniCrawl",
-        [
-            "frontend: TUI",
-            f"thinking: {enabled_label}{reasoning_info}",
-            f"approval: {approval_mode_label(approval_mode)}",
-            f"workspace: {project_context_status_label(project_context)}",
-            f"temp: {agent_temp_status_label(temp_workspace_config)}",
-        ],
-    )
-
     agent: LocalToolAgent | None = None
     try:
         agent = LocalToolAgent(
@@ -88,9 +87,16 @@ def main(argv: list[str] | None = None) -> None:
                 resume_session_id=args.resume,
             )
         )
-        if agent.skill_manager is not None and agent.skill_manager.count > 0:
-            print(ui.muted(f"已加载 {agent.skill_manager.count} 个 Skill，输入 /skills 查看列表。"))
-        run_inline_chat(agent, ui)
+        run_fullscreen_tui(
+            agent,
+            fullscreen_startup(
+                thinking_enabled=config.thinking_enabled,
+                reasoning_effort=config.reasoning_effort,
+                approval_label=approval_mode_label(approval_mode),
+                workspace_label=project_context_status_label(project_context),
+                temp_label=agent_temp_status_label(temp_workspace_config),
+            ),
+        )
     except AgentError as exc:
         print(f"Agent 初始化失败：{exc}")
     except KeyboardInterrupt:

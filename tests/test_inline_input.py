@@ -81,6 +81,24 @@ class InlineInputHistoryTest(unittest.TestCase):
 
 
 class InlineInputEditTest(unittest.TestCase):
+    def test_read_line_autocomplete_renders_initial_draft(self) -> None:
+        fake = _FakeMsvcrt(["\r"])
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        output = io.StringIO()
+
+        with patch.dict("sys.modules", {"msvcrt": fake}):
+            with patch(
+                "omnicrawl.ui.inline_input.shutil.get_terminal_size",
+                return_value=os.terminal_size((80, 24)),
+            ):
+                with redirect_stdout(output):
+                    result = read_line_autocomplete(
+                        ui.prompt(), [], ui, history=[], initial_text="保留草稿"
+                    )
+
+        self.assertEqual(result, "保留草稿")
+        self.assertIn("保留草稿", output.getvalue())
+
     def test_read_line_autocomplete_combines_surrogate_pairs_before_deleting(self) -> None:
         fake = _FakeMsvcrt(["\ud83d", "\udc4d", "\ud83c", "\udffd", "\b", "\r"])
         ui = TerminalUI(TerminalCapabilities(ansi=True))

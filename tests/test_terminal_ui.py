@@ -8,6 +8,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
+from omnicrawl.ui.chat_session import run_inline_chat
 from omnicrawl.ui.terminal import (
     InputBar,
     MarkdownStreamState,
@@ -38,6 +39,202 @@ class _FakeMsvcrt:
 
 
 class TerminalUITest(unittest.TestCase):
+    def test_run_inline_chat_renders_initial_agent_status_without_unbound_local_error(self) -> None:
+        """首次收到 MCP 初始化状态时，状态回调必须能读取外层流式输出标记。"""
+
+        class FakeAgent:
+            current_model = "test-model"
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            skill_manager = None
+
+            def prompt_history_texts(self, *, limit: int) -> list[str]:
+                return []
+
+            def run_stream(self, _user_text, _on_delta, *, on_status, **_callbacks) -> None:
+                on_status("正在加载 MCP 能力")
+                on_status("")
+                on_status("MCP 能力已就绪")
+
+        class FakeUI:
+            def __init__(self) -> None:
+                self.status_calls: list[tuple[str, bool]] = []
+
+            def inline_turn_base(self, _user_text: str) -> None:
+                pass
+
+            def status(self, message: str, *, leading_blank: bool) -> None:
+                self.status_calls.append((message, leading_blank))
+
+            def newline(self) -> None:
+                pass
+
+            def flush_markdown(self, _state) -> None:
+                pass
+
+            def update_token_usage(self, *_usage: int) -> None:
+                pass
+
+        class FakeStatusLine:
+            def __init__(self, _ui) -> None:
+                pass
+
+            def clear(self) -> None:
+                pass
+
+        class FakeInputBar:
+            def __init__(self, _ui) -> None:
+                pass
+
+            def push_up(self) -> None:
+                pass
+
+            def pop_down(self) -> None:
+                pass
+
+            def clear(self) -> str:
+                return ""
+
+        class FakeWaitingIndicator:
+            def __init__(self, _status_line, *, input_bar) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> str:
+                return ""
+
+        ui = FakeUI()
+        with patch("omnicrawl.ui.chat_session._get_user_text", side_effect=["测试消息", "退出"]):
+            with patch("omnicrawl.ui.chat_session.StatusLine", FakeStatusLine):
+                with patch("omnicrawl.ui.chat_session.InputBar", FakeInputBar):
+                    with patch("omnicrawl.ui.chat_session.WaitingIndicator", FakeWaitingIndicator):
+                        run_inline_chat(FakeAgent(), ui)
+
+        self.assertEqual(
+            ui.status_calls,
+            [("正在加载 MCP 能力", False), ("MCP 能力已就绪", False)],
+        )
+
+    def test_run_inline_chat_keeps_stream_tool_output_in_order_and_replays_queued_input(self) -> None:
+        """流状态、工具记录和下一条预输入必须按历史顺序写入。"""
+
+        class FakeAgent:
+            current_model = "test-model"
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.requests: list[str] = []
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def prompt_history_texts(self, *, limit: int) -> list[str]:
+                return []
+
+            def run_stream(self, text, on_delta, **callbacks) -> None:
+                self.requests.append(text)
+                if text == "第一问":
+                    callbacks["on_status"]("正在加载 MCP")
+                    on_delta("第一段")
+                    tool_call = types.SimpleNamespace(name="read_file", arguments={})
+                    callbacks["on_tool_start"](1, tool_call)
+                    callbacks["on_tool_result"](
+                        tool_call,
+                        types.SimpleNamespace(ok=True, output="文件内容"),
+                    )
+                    callbacks["on_status"]("")
+                    on_delta("第二段")
+
+        class FakeUI:
+            def __init__(self) -> None:
+                self.events: list[str] = []
+
+            def prompt(self) -> str:
+                return "▸ "
+
+            def inline_turn_base(self, _user_text: str) -> None:
+                pass
+
+            def newline(self) -> None:
+                self.events.append("newline")
+
+            def print_ai_prefix(self) -> None:
+                self.events.append("ai")
+
+            def write_markdown_delta(self, text: str, _state) -> None:
+                self.events.append(f"delta:{text}")
+
+            def flush_markdown(self, _state) -> None:
+                self.events.append("flush")
+
+            def status(self, text: str, **_kwargs) -> None:
+                self.events.append(f"status:{text}")
+
+            def print_tool_call_start(self, step, name, _arguments, **_kwargs) -> None:
+                self.events.append(f"tool:{step}:{name}")
+
+            def print_tool_result_record(self, _ok, output, **_kwargs) -> None:
+                self.events.append(f"result:{output}")
+
+            def update_token_usage(self, *_usage: int) -> None:
+                pass
+
+            def notice(self, text: str) -> None:
+                self.events.append(f"notice:{text}")
+
+            def set_model_label(self, _text: str) -> None:
+                pass
+
+        class FakeStatusLine:
+            def __init__(self, _ui) -> None:
+                pass
+
+        class FakeInputBar:
+            def __init__(self, _ui) -> None:
+                self.cleared = False
+
+            def push_up(self) -> None:
+                pass
+
+            def clear(self) -> str:
+                self.cleared = True
+                return ""
+
+        class FakeWaitingIndicator:
+            instances: list["FakeWaitingIndicator"] = []
+
+            def __init__(self, _status_line, *, input_bar) -> None:
+                self.input_bar = input_bar
+                self.started = False
+                self.index = len(self.instances)
+                self.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+
+            def stop(self) -> str:
+                if self.index == 0:
+                    return "第二问"
+                return ""
+
+        agent = FakeAgent()
+        ui = FakeUI()
+        with patch("omnicrawl.ui.chat_session._get_user_text", side_effect=["第一问", "退出"]):
+            with patch("omnicrawl.ui.chat_session.StatusLine", FakeStatusLine):
+                with patch("omnicrawl.ui.chat_session.InputBar", FakeInputBar):
+                    with patch("omnicrawl.ui.chat_session.WaitingIndicator", FakeWaitingIndicator):
+                        with redirect_stdout(io.StringIO()):
+                            run_inline_chat(agent, ui)
+
+        self.assertEqual(agent.requests, ["第一问", "第二问"])
+        self.assertLess(ui.events.index("delta:第一段"), ui.events.index("tool:1:read_file"))
+        self.assertLess(ui.events.index("tool:1:read_file"), ui.events.index("result:文件内容"))
+        self.assertLess(ui.events.index("result:文件内容"), ui.events.index("delta:第二段"))
+
     def test_complex_display_width_detection(self) -> None:
         self.assertEqual(_display_width("abc"), 3)
         self.assertEqual(_display_width("获"), 2)
@@ -49,7 +246,7 @@ class TerminalUITest(unittest.TestCase):
     def test_detect_capabilities_disables_ansi_for_redirected_stdout(self) -> None:
         from omnicrawl.ui.terminal import detect_capabilities
 
-        with patch("omnicrawl.ui.tui.sys.stdout.isatty", return_value=False):
+        with patch("omnicrawl.ui.tui._capabilities.sys.stdout.isatty", return_value=False):
             with patch.dict("os.environ", {"WT_SESSION": "present"}, clear=False):
                 self.assertFalse(detect_capabilities().ansi)
 
@@ -94,7 +291,7 @@ class TerminalUITest(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), "")
 
-    def test_complex_streaming_text_uses_passthrough(self) -> None:
+    def test_complex_streaming_text_waits_for_line_completion(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         state = MarkdownStreamState()
         output = io.StringIO()
@@ -102,11 +299,142 @@ class TerminalUITest(unittest.TestCase):
         with redirect_stdout(output):
             ui.write_markdown_delta("获取最新 Release 下载 URL", state)
 
-        self.assertTrue(state.passthrough_line)
+        self.assertFalse(state.passthrough_line)
         self.assertFalse(state.preview_visible)
-        self.assertEqual(output.getvalue(), "获取最新 Release 下载 URL")
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(state.pending_line, "获取最新 Release 下载 URL")
 
-    def test_passthrough_keeps_remainder_after_newline(self) -> None:
+    def test_streaming_deltas_append_without_ansi_cursor_rewind(self) -> None:
+        """流式正文只能追加，不能回退覆盖上一个分片。"""
+
+        ui = TerminalUI(TerminalCapabilities(ansi=True))
+        state = MarkdownStreamState()
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            ui.write_markdown_delta("first ", state)
+            ui.write_markdown_delta("second", state)
+            ui.flush_markdown(state)
+
+        rendered = ANSI_PATTERN.sub("", output.getvalue())
+        self.assertEqual(rendered, "first second")
+        self.assertNotRegex(output.getvalue(), r"\033\[\d+[CD]")
+
+    def test_stream_turn_controller_commits_output_before_tool_and_queues_input(self) -> None:
+        """回合控制器必须统一收尾动态区，再追加历史输出和工具记录。"""
+
+        from omnicrawl.ui.stream_turn import StreamTurnController
+
+        class FakeUI:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, object]] = []
+
+            def newline(self) -> None:
+                self.events.append(("newline", ""))
+
+            def print_ai_prefix(self) -> None:
+                self.events.append(("ai_prefix", ""))
+
+            def write_markdown_delta(self, text: str, _state) -> None:
+                self.events.append(("delta", text))
+
+            def flush_markdown(self, _state) -> None:
+                self.events.append(("flush", ""))
+
+            def status(self, text: str, **_kwargs) -> None:
+                self.events.append(("status", text))
+
+            def print_tool_call_start(self, step: int, name: str, _arguments, **_kwargs) -> None:
+                self.events.append(("tool", f"{step}:{name}"))
+
+            def print_tool_result_record(self, _ok: bool, output: str, **_kwargs) -> None:
+                self.events.append(("result", output))
+
+        class FakeInputBar:
+            pre_input = ""
+            submitted_pre_input = ""
+
+            def __init__(self) -> None:
+                self.events: list[str] = []
+
+            def push_up(self) -> None:
+                self.events.append("push")
+
+            def pop_down(self) -> None:
+                self.events.append("pop")
+
+            def clear(self) -> str:
+                self.events.append("clear")
+                return ""
+
+        class FakeWaiting:
+            def __init__(self) -> None:
+                self.events: list[str] = []
+
+            def start(self, **_kwargs) -> None:
+                self.events.append("start")
+
+            def stop(self) -> str:
+                self.events.append("stop")
+                return "排队消息"
+
+        ui = FakeUI()
+        input_bar = FakeInputBar()
+        waiting = FakeWaiting()
+        controller = StreamTurnController(
+            ui,
+            input_bar=input_bar,
+            waiting_indicator=waiting,
+        )
+        tool_call = types.SimpleNamespace(name="read_file", arguments={})
+        result = types.SimpleNamespace(ok=True, output="读取成功")
+
+        controller.start()
+        controller.handle_delta("第一段")
+        controller.handle_tool_start(1, tool_call)
+        controller.handle_tool_result(tool_call, result)
+        queued = controller.finish()
+
+        self.assertEqual(queued, "排队消息")
+        self.assertEqual(waiting.events, ["start", "stop"])
+        self.assertLess(ui.events.index(("delta", "第一段")), ui.events.index(("tool", "1:read_file")))
+        self.assertIn(("flush", ""), ui.events)
+
+    def test_stream_turn_controller_preserves_unsubmitted_draft(self) -> None:
+        """未按 Enter 的预输入应交回下一次正常输入编辑器。"""
+
+        from omnicrawl.ui.stream_turn import StreamTurnController
+
+        class FakeUI:
+            def flush_markdown(self, _state) -> None:
+                pass
+
+        class FakeInputBar:
+            pre_input = "保留草稿"
+
+            def push_up(self) -> None:
+                pass
+
+            def clear(self) -> str:
+                return ""
+
+        class FakeWaiting:
+            def start(self, **_kwargs) -> None:
+                pass
+
+            def stop(self) -> str:
+                return ""
+
+        controller = StreamTurnController(
+            FakeUI(),
+            input_bar=FakeInputBar(),
+            waiting_indicator=FakeWaiting(),
+        )
+
+        self.assertIsNone(controller.finish())
+        self.assertEqual(controller.draft_input, "保留草稿")
+
+    def test_streaming_text_commits_completed_line_and_buffers_remainder(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         state = MarkdownStreamState()
         output = io.StringIO()
@@ -115,9 +443,9 @@ class TerminalUITest(unittest.TestCase):
             ui.write_markdown_delta("获取最新", state)
             ui.write_markdown_delta(" Release\n下载完成", state)
 
-        self.assertIn("获取最新 Release\n  下载完成", output.getvalue())
-        self.assertTrue(state.passthrough_line)
-        self.assertEqual(state.pending_line, "")
+        self.assertEqual(output.getvalue(), "获取最新 Release")
+        self.assertFalse(state.passthrough_line)
+        self.assertEqual(state.pending_line, "下载完成")
 
     def test_passthrough_wraps_long_ai_lines_with_continuation_indent(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -248,7 +576,7 @@ class TerminalUITest(unittest.TestCase):
         self.assertNotIn("**", rendered)
         self.assertIn("1 个浏览器窗口", rendered)
 
-    def test_long_styled_markdown_preview_uses_total_span_width(self) -> None:
+    def test_long_styled_markdown_waits_for_flush_without_preview_repaint(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
         state = MarkdownStreamState()
         output = io.StringIO()
@@ -263,10 +591,11 @@ class TerminalUITest(unittest.TestCase):
                     state,
                 )
 
-        self.assertTrue(state.passthrough_line)
+        self.assertFalse(state.passthrough_line)
         self.assertFalse(state.preview_visible)
+        self.assertEqual(state.pending_line, "see `abcdefghijklmnopqrstuvwxyz0123456789`")
         rendered = ANSI_PATTERN.sub("", output.getvalue())
-        self.assertIn("see abcdefghijklmnopq\n  rstuvwxyz0123456789", rendered)
+        self.assertEqual(rendered, "")
 
     def test_prompt_yes_no_records_selection_and_result_without_cursor_repaint(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))

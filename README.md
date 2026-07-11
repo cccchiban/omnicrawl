@@ -57,6 +57,8 @@ python main.py
 
 ## 安装依赖
 
+运行终端工作台需要 Python `>=3.9,<4.0`。
+
 ```powershell
 pip install -r requirements.txt
 ```
@@ -84,20 +86,18 @@ python -m omnicrawl.api
 
 运行后：
 
-- TUI 会在普通终端历史里显示配置面板，然后进入内联对话；`▸` 表示用户输入，`◆` 表示 AI 回复。
-- AI 回复朗读过程中可输入下一句并发送，程序会打断朗读并把这句作为下一轮问题；TUI 中也可以直接按 Enter 打断朗读。
-- TUI 直接按 Enter 发送消息。
-- 直接输入文字：用键盘内容交给 Agent 处理。
+- TUI 会启动为全屏 Textual 工作台，左侧显示工作区与运行时摘要，主区保留对话、工具记录和状态，输入框固定在底部。
+- 在输入框按 Enter 发送消息；任务生成期间输入框不会提交新的消息。
+- 需要人工审批的工具会显示居中确认模态框；选择“允许执行”或“拒绝”后继续，按 `Ctrl+C` 会取消当前任务并拒绝等待中的确认。
 - 输入 `/new`：清空模型对话历史，开启新对话。
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
 - 输入 `/approval`：查看当前工具审批模式；输入 `/approval:manual`、`/approval:auto`、`/approval:review` 可切换审批模式并同步写入 `config.json`。
-- TUI 执行中按 `Ctrl+C`：取消当前操作并回到输入栏。
-- TUI 输入栏按 `Ctrl+C`：第一次取消输入，连续第二次退出程序；也可以输入 `退出`、`结束` 或关闭窗口。
+- 任务执行中按 `Ctrl+C`：请求取消当前操作；空闲时按 `Ctrl+C` 退出工作台。`Ctrl+L` 只清空当前视图，不清空会话数据；也可以输入 `退出`、`结束` 或关闭窗口。
 
 终端 UI 的设计和限制见 `docs/TERMINAL_UI.md`。
 Skill 安装、编写和渐进式披露规范见 `docs/SKILL_INSTALLATION.md`。
-运行时系统提示词模板见 `omnicrawl/system_prompt.md`；模板只保留工具协议和按场景读取文档的路由说明，具体规范按需读取对应文档。
+运行时系统提示词模板见 `omnicrawl/agent/system_prompt.md`；模板只保留工具协议和按场景读取文档的路由说明，具体规范按需读取对应文档。
 
 如果需要从固定位置启动 Agent 但操作另一个项目，可以显式指定工作区：
 

@@ -4,10 +4,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
-from main import _parse_args
+from main import _parse_args, main
 from omnicrawl.runtime_config import default_config_path, load_config_data, save_config_data
+from omnicrawl.ui import UIStartupError
 from omnicrawl.ui.windows_launcher import launch_in_powershell_window
 
 
@@ -41,6 +43,59 @@ class RuntimeConfigTest(unittest.TestCase):
         args = _parse_args(["--resume", "20260616-201530-a1b2c3"])
 
         self.assertEqual(args.resume, "20260616-201530-a1b2c3")
+
+    def test_main_reports_readable_error_when_fullscreen_ui_dependency_is_missing(self) -> None:
+        with patch("main.configure_console_encoding"):
+            with patch(
+                "main._load_fullscreen_ui",
+                side_effect=UIStartupError("缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。"),
+            ):
+                with patch("builtins.print") as print_mock:
+                    main([])
+
+        print_mock.assert_called_once_with("界面启动失败：缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。")
+
+    def test_main_starts_fullscreen_ui_and_closes_agent(self) -> None:
+        config = SimpleNamespace(
+            thinking_enabled=True,
+            reasoning_effort="max",
+        )
+        project_context = SimpleNamespace(
+            workspace_root=Path("D:/workspace"),
+            detection_summary="workspace",
+            source="fallback_start",
+            marker="",
+        )
+        agent = Mock()
+
+        with patch("main.configure_console_encoding"):
+            with patch("main.load_llm_config", return_value=config):
+                with patch("main.load_approval_mode", return_value="manual"):
+                    with patch("main.load_agent_temp_workspace_config", return_value="temp-config"):
+                        with patch("main.detect_project_context", return_value=project_context):
+                            with patch("main.agent_temp_status_label", return_value=".agent_tmp"):
+                                with patch("main.AgentConfig") as agent_config_class:
+                                    with patch("main.LocalToolAgent", return_value=agent) as agent_class:
+                                        with patch("main._load_fullscreen_ui") as load_fullscreen_ui:
+                                            fullscreen_startup = Mock()
+                                            run_fullscreen_tui = Mock()
+                                            load_fullscreen_ui.return_value = (fullscreen_startup, run_fullscreen_tui)
+                                            main(["--resume", "session-demo"])
+
+        agent_config_class.assert_called_once_with(
+            llm=config,
+            workspace_root=Path("D:/workspace"),
+            workspace_detection_summary="workspace",
+            approval_mode="manual",
+            temp_workspace="temp-config",
+            resume_session_id="session-demo",
+        )
+        agent_class.assert_called_once_with(agent_config_class.return_value)
+        agent_config = agent_class.call_args.args[0]
+        self.assertEqual(agent_config, agent_config_class.return_value)
+        fullscreen_startup.assert_called_once()
+        run_fullscreen_tui.assert_called_once_with(agent, fullscreen_startup.return_value)
+        agent.close.assert_called_once()
 
     def test_windows_launcher_forwards_resume_argument(self) -> None:
         popen_calls: list[dict[str, object]] = []
