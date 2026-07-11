@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -365,7 +364,6 @@ class MCPAgentCommandTest(unittest.TestCase):
                 "- Python：3.12.0",
                 f"- 工作区根目录：{agent.workspace_root}",
                 "- Agent 运行窗口：Shell=CMD",
-                "- run_command 默认 Shell：cmd.exe（默认按 CMD 语法解析）",
                 "- 终端环境变量：WT_SESSION",
             ]
         )
@@ -382,7 +380,6 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertIn("Skill 多协作原则", prompt)
         self.assertIn("主 Skill 和辅助 Skill", prompt)
         self.assertIn("天气、新闻、价格", prompt)
-        self.assertNotIn("run_command 默认 Shell：cmd.exe", prompt)
         self.assertNotIn("risk_level=trusted", prompt)
         runtime_message = context_messages[-1]["content"]
         self.assertIn("运行环境：", runtime_message)
@@ -390,11 +387,20 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertIn("Python", runtime_message)
         self.assertIn("工作区根目录", runtime_message)
         self.assertIn("Agent 运行窗口：Shell=CMD", runtime_message)
-        self.assertIn("run_command 默认 Shell：cmd.exe", runtime_message)
         self.assertIn("终端环境变量：WT_SESSION", runtime_message)
 
 
 class LocalMCPServerTest(unittest.TestCase):
+    def test_local_read_file_schema_supports_extended_selectors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = LocalMCPServer(Path(temp_dir))
+            schema = server._tools["workspace.read_file"].input_schema
+
+        properties = schema["properties"]
+        self.assertIn("function_name", properties)
+        self.assertIn("text", properties)
+        self.assertIn("context_lines", properties)
+
     def test_local_server_blocks_protected_paths_and_supports_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
@@ -472,20 +478,40 @@ class LocalMCPServerTest(unittest.TestCase):
         self.assertIn("resource text", resource["result"]["contents"][0]["text"])
         self.assertIn("高风险改动", prompt["result"]["messages"][0]["content"]["text"])
 
-    def test_local_server_command_nonzero_exit_is_error(self) -> None:
+    def test_local_server_exposes_explicit_shell_tools_and_rejects_legacy_tool(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             server = LocalMCPServer(Path(temp_dir))
+            tool_names = set(server._tools)
 
-            response = server.handle_message(
+            legacy_response = server.handle_message(
                 {
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "tools/call",
                     "params": {
                         "name": "workspace.run_command",
-                        "arguments": {
-                            "command": f'"{sys.executable}" -c "import sys; sys.exit(7)"'
-                        },
+                        "arguments": {"command": "Write-Output legacy"},
+                    },
+                }
+            )
+
+        self.assertIn("workspace.powershell", tool_names)
+        self.assertIn("workspace.bash", tool_names)
+        self.assertNotIn("workspace.run_command", tool_names)
+        self.assertIn("error", legacy_response)
+        self.assertIn("未知工具", legacy_response["error"]["message"])
+
+    def test_local_server_powershell_nonzero_exit_is_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = LocalMCPServer(Path(temp_dir))
+            response = server.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "workspace.powershell",
+                        "arguments": {"command": "exit 7"},
                     },
                 }
             )
@@ -493,6 +519,28 @@ class LocalMCPServerTest(unittest.TestCase):
         result = response["result"]
         self.assertTrue(result["isError"])
         self.assertIn("退出码：7", result["content"][0]["text"])
+
+    def test_local_server_explicit_shell_schema_rejects_shell_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = LocalMCPServer(Path(temp_dir))
+            response = server.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "workspace.powershell",
+                        "arguments": {
+                            "command": "Write-Output blocked",
+                            "shell": "bash",
+                        },
+                    },
+                }
+            )
+
+        result = response["result"]
+        self.assertTrue(result["isError"])
+        self.assertIn("不支持参数：shell", result["content"][0]["text"])
 
 
 if __name__ == "__main__":

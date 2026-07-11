@@ -163,7 +163,16 @@ MCP Tool 注入 Agent 后使用 `server.tool` 名称，例如：
 - `local_project.workspace.search_text`
 - `local_project.workspace.replace_text`
 - `local_project.workspace.write_file`
-- `local_project.workspace.run_command`
+- `local_project.workspace.powershell`
+- `local_project.workspace.bash`
+
+`local_project.workspace.read_file` 除既有的 `path`、`start_line`、`max_lines` 外，还支持：
+
+- `function_name`：定位函数或方法。Python 文件通过 AST 精确定位；其他常见代码文件按声明与大括号范围回退。
+- `text`：定位首次精确文字片段。
+- `context_lines`：文字片段定位时前后保留的上下文行数，默认 20。
+
+`function_name` 与 `text` 不能同时提供。Local MCP 的前台命令工具以名称固定解释器：`workspace.powershell` 使用 PowerShell，`workspace.bash` 使用 Git Bash；两者仅接受 `command` 和可选 `timeout_seconds`，不接受 `shell` 参数。Monitor 是 Host Agent 的内置工具，不经 MCP 转发。
 
 调用规则：
 

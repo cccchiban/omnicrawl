@@ -32,7 +32,9 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "search_text": "在文件中搜索文本",
     "replace_text": "替换文件中的文本",
     "write_file": "写入文件",
-    "run_command": "执行命令",
+    "bash": "执行 Bash 命令",
+    "powershell": "执行 PowerShell 命令",
+    "monitor": "管理后台命令",
     "memory_search": "搜索长期记忆",
     "memory_read": "读取记忆内容",
     "memory_expand_related": "展开相关记忆",
@@ -54,11 +56,21 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
     只读类工具（读取、搜索、列出）不展示参数，保持界面简洁。
     """
 
-    if tool_name == "run_command":
+    if tool_name in {"bash", "powershell"}:
         cmd = arguments.get("command", "")
         if isinstance(cmd, str) and cmd.strip():
             return f"命令：{_truncate_for_display(cmd, 150)}"
         return ""
+
+    if tool_name == "monitor":
+        action = arguments.get("action", "start")
+        monitor_id = arguments.get("monitor_id", "")
+        command = arguments.get("command", "")
+        if action == "start" and isinstance(command, str) and command.strip():
+            return f"后台命令：{_truncate_for_display(command, 150)}"
+        if isinstance(monitor_id, str) and monitor_id.strip():
+            return f"操作：{action}，任务：{monitor_id}"
+        return f"操作：{action}"
 
     if tool_name == "write_file":
         path = arguments.get("path", "")

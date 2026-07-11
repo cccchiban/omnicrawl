@@ -151,8 +151,8 @@ class ApprovalCommandTest(unittest.TestCase):
 
     def test_review_mode_skips_non_delete_tool_calls(self) -> None:
         tool = ToolDefinition(
-            name="run_command",
-            description="以工作区为当前目录执行任意本地 command、脚本或 shell 片段。",
+            name="powershell",
+            description="使用 PowerShell 在工作区执行命令。",
             argument_schema='{"command": "python -m unittest discover"}',
             requires_confirmation=True,
             run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
@@ -173,8 +173,8 @@ class ApprovalCommandTest(unittest.TestCase):
 
     def test_review_mode_detects_delete_commands(self) -> None:
         tool = ToolDefinition(
-            name="run_command",
-            description="以工作区为当前目录执行任意本地命令、脚本或 shell 片段。",
+            name="powershell",
+            description="使用 PowerShell 在工作区执行命令。",
             argument_schema="{}",
             requires_confirmation=True,
             run=lambda _arguments: None,  # type: ignore[arg-type,return-value]

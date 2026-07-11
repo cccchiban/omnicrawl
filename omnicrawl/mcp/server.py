@@ -112,6 +112,9 @@ class LocalMCPServer:
                         "path": {"type": "string"},
                         "start_line": {"type": "integer", "default": 1},
                         "max_lines": {"type": "integer", "default": 200},
+                        "function_name": {"type": "string"},
+                        "text": {"type": "string"},
+                        "context_lines": {"type": "integer", "default": 20},
                     },
                     "required": ["path"],
                 },
@@ -161,9 +164,9 @@ class LocalMCPServer:
                 },
                 handler=self._tool_write_file,
             ),
-            "workspace.run_command": _ToolSpec(
-                name="workspace.run_command",
-                description="在工作区执行本地命令，设置超时并截断输出。",
+            "workspace.bash": _ToolSpec(
+                name="workspace.bash",
+                description="使用 Git Bash 在工作区执行 Bash 命令，设置超时并截断输出。",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -171,8 +174,23 @@ class LocalMCPServer:
                         "timeout_seconds": {"type": "integer", "default": DEFAULT_COMMAND_TIMEOUT_SECONDS},
                     },
                     "required": ["command"],
+                    "additionalProperties": False,
                 },
-                handler=self._tool_run_command,
+                handler=self._tool_bash,
+            ),
+            "workspace.powershell": _ToolSpec(
+                name="workspace.powershell",
+                description="使用 PowerShell 在工作区执行命令，设置超时并截断输出。",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "timeout_seconds": {"type": "integer", "default": DEFAULT_COMMAND_TIMEOUT_SECONDS},
+                    },
+                    "required": ["command"],
+                    "additionalProperties": False,
+                },
+                handler=self._tool_powershell,
             ),
         }
 
@@ -346,9 +364,15 @@ class LocalMCPServer:
         except WorkspaceToolError as exc:
             raise LocalMCPServerError(str(exc)) from exc
 
-    def _tool_run_command(self, arguments: dict[str, Any]) -> str:
+    def _tool_bash(self, arguments: dict[str, Any]) -> str:
+        return self._tool_shell_command(arguments, shell="bash")
+
+    def _tool_powershell(self, arguments: dict[str, Any]) -> str:
+        return self._tool_shell_command(arguments, shell="powershell")
+
+    def _tool_shell_command(self, arguments: dict[str, Any], *, shell: str) -> str:
         try:
-            result = self._workspace_tools.run_command(arguments)
+            result = self._workspace_tools.run_shell_command(arguments, shell=shell)
         except WorkspaceToolError as exc:
             raise LocalMCPServerError(str(exc)) from exc
         if not result.ok:

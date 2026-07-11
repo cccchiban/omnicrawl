@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sys as _sys
+from concurrent.futures import ThreadPoolExecutor
 
 _THIS_MODULE = _sys.modules[__name__]
 _AGENT_MODULE_ALIASES = (
@@ -87,7 +88,6 @@ def runtime_environment_context(
     workspace_detection_summary: str = "",
     *,
     window_hint: str = "",
-    command_shell_hint: str = "",
     terminal_hint: str = "",
 ) -> str:
     """生成注入给模型的运行环境摘要。
@@ -98,7 +98,6 @@ def runtime_environment_context(
     """
 
     detected_window_hint = window_hint or detect_agent_window_hint()
-    detected_command_shell_hint = command_shell_hint or detect_command_shell_hint()
     detected_terminal_hint = terminal_hint or detect_terminal_hint()
     lines = [
         "运行环境：",
@@ -113,21 +112,9 @@ def runtime_environment_context(
         lines.append(f"- 工作区检测：{workspace_detection_summary.strip()}")
     if detected_window_hint:
         lines.append(f"- Agent 运行窗口：{detected_window_hint}")
-    if detected_command_shell_hint:
-        lines.append(f"- run_command 默认 Shell：{detected_command_shell_hint}")
     if detected_terminal_hint:
         lines.append(f"- 终端环境变量：{detected_terminal_hint}")
     return "\n".join(lines)
-
-
-def detect_command_shell_hint() -> str:
-    """检测 run_command 使用 shell=True 时最应遵循的命令语法。"""
-
-    if os.name == "nt":
-        comspec = os.getenv("COMSPEC", "").strip()
-        shell = comspec or "cmd.exe"
-        return f"{shell}（默认按 CMD 语法解析；PowerShell 语法需显式调用 powershell.exe -Command）"
-    return os.getenv("SHELL", "").strip()
 
 
 def detect_agent_window_hint() -> str:
@@ -428,12 +415,14 @@ from ..workspace_tools import DEFAULT_COMMAND_TIMEOUT_SECONDS, WorkspaceToolErro
 
 
 TOOL_NAME_ALIASES = {
+    "bashcommand": "bash",
     "listfiles": "list_files",
+    "monitorcommand": "monitor",
+    "powershellcommand": "powershell",
     "readfile": "read_file",
     "searchtext": "search_text",
     "replacetext": "replace_text",
     "writefile": "write_file",
-    "runcommand": "run_command",
     "bbbrowser": "bb_browser_cli",
     "bbbrowsercli": "bb_browser_cli",
     "bb-browser": "bb_browser_cli",
@@ -454,6 +443,17 @@ ARGUMENT_NAME_ALIASES = {
     "oldtext": "old_text",
     "startLine": "start_line",
     "startline": "start_line",
+    "function": "function_name",
+    "functionName": "function_name",
+    "functionname": "function_name",
+    "textSnippet": "text",
+    "textsnippet": "text",
+    "contextLines": "context_lines",
+    "contextlines": "context_lines",
+    "monitorId": "monitor_id",
+    "monitorid": "monitor_id",
+    "maxEvents": "max_events",
+    "maxevents": "max_events",
     "tabId": "tab",
     "tabid": "tab",
     "timeoutSeconds": "timeout_seconds",
@@ -475,7 +475,9 @@ def build_agent_tools(
     search_text: ToolRunner,
     replace_text: ToolRunner,
     write_file: ToolRunner,
-    run_command: ToolRunner,
+    bash: ToolRunner,
+    powershell: ToolRunner,
+    monitor: ToolRunner,
     bb_browser_cli: ToolRunner,
     memory_search: ToolRunner,
     memory_read: ToolRunner,
@@ -505,8 +507,14 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="read_file",
-                description="读取 UTF-8 文本文件，可指定起始行和最多行数。",
-                argument_schema='{"path": "main.py", "start_line": 1, "max_lines": 200}',
+                description=(
+                    "读取 UTF-8 文本文件。可按 start_line/max_lines 读取行范围，"
+                    "按 function_name 定位函数或方法，或按 text 定位首次文字片段及上下文。"
+                ),
+                argument_schema=(
+                    '{"path":"main.py","start_line":1,"max_lines":200,'
+                    '"function_name":"Class.method","text":"目标片段","context_lines":20}'
+                ),
                 requires_confirmation=True,
                 run=read_file,
             ),
@@ -538,14 +546,44 @@ def build_agent_tools(
                 run=write_file,
             ),
             ToolDefinition(
-                name="run_command",
-                description="以工作区为当前目录执行任意本地命令、脚本或 shell 片段。",
+                name="bash",
+                description=(
+                    "使用 Git Bash 在工作区执行 Bash 命令。"
+                    "适合 POSIX Shell 语法、管道和 Bash 脚本；不应使用 PowerShell 语法。"
+                ),
                 argument_schema=(
-                    '{"command": "python -m py_compile main.py", '
-                    f'"timeout_seconds": {DEFAULT_COMMAND_TIMEOUT_SECONDS}}}'
+                    '{"command":"git status --short | sed -n \'1,20p\'",'
+                    f'"timeout_seconds":{DEFAULT_COMMAND_TIMEOUT_SECONDS}}}'
                 ),
                 requires_confirmation=True,
-                run=run_command,
+                run=bash,
+            ),
+            ToolDefinition(
+                name="powershell",
+                description=(
+                    "使用 PowerShell 在 Windows 工作区执行命令，优先使用 PowerShell 7。"
+                    "适合 PowerShell cmdlet、对象管道和 Windows 系统查询。"
+                ),
+                argument_schema=(
+                    '{"command":"Get-ChildItem -File | Select-Object -First 20",'
+                    f'"timeout_seconds":{DEFAULT_COMMAND_TIMEOUT_SECONDS}}}'
+                ),
+                requires_confirmation=True,
+                run=powershell,
+            ),
+            ToolDefinition(
+                name="monitor",
+                description=(
+                    "在后台启动受 Agent 管理的命令，或按任务 ID 轮询增量日志、查看任务列表、"
+                    "停止任务。启动后立即返回 monitor_id；Agent 关闭或切换工作区时会自动终止任务。"
+                ),
+                argument_schema=(
+                    '{"action":"start","command":"python -m http.server",'
+                    '"shell":"powershell","monitor_id":"monitor-...","cursor":0,'
+                    '"max_events":100}'
+                ),
+                requires_confirmation=True,
+                run=monitor,
             ),
             ToolDefinition(
                 name="bb_browser_cli",
@@ -673,7 +711,7 @@ def workspace_tool_result(
 ) -> ToolResult:
     """把 WorkspaceTools 文本型工具结果适配成 Agent ToolResult。
 
-    run_command 会额外携带 ok 字段，仍留在 Agent 内单独处理；这里仅覆盖
+    命令工具会额外携带 ok 字段，仍留在 Agent 内单独处理；这里仅覆盖
     list/read/search/replace/write 这组成功即 ok=True 的文本工具，避免改变返回语义。
     """
 
@@ -687,7 +725,7 @@ def workspace_command_tool_result(
     operation: Callable[[dict[str, Any]], Any],
     arguments: dict[str, Any],
 ) -> ToolResult:
-    """适配 WorkspaceTools.run_command，保留命令结果自带的 ok/output 语义。"""
+    """适配显式 Shell 命令结果，保留其自带的 ok/output 语义。"""
 
     try:
         result = operation(arguments)
@@ -1297,6 +1335,7 @@ class AgentLLMProtocol:
         on_protocol_wait: Callable[[], None],
         on_retry_status: Callable[[str], None],
         cancel_check: Callable[[], None] | None = None,
+        on_reasoning_delta: Callable[[str], None] | None = None,
     ) -> AgentModelReply:
         """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
 
@@ -1309,6 +1348,7 @@ class AgentLLMProtocol:
                     on_token_usage,
                     on_protocol_wait,
                     cancel_check,
+                    on_reasoning_delta,
                 )
             except EmptyAgentReply as exc:
                 last_retryable_error = exc
@@ -1337,6 +1377,7 @@ class AgentLLMProtocol:
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
         cancel_check: Callable[[], None] | None = None,
+        on_reasoning_delta: Callable[[str], None] | None = None,
     ) -> AgentModelReply:
         """执行一次 Chat Completions 流式工具调用请求。"""
 
@@ -1406,8 +1447,10 @@ class AgentLLMProtocol:
                     has_streamed_visible = True
 
                 delta_reasoning = read_attr_or_key(delta, "reasoning_content")
-                if isinstance(delta_reasoning, str):
+                if isinstance(delta_reasoning, str) and delta_reasoning:
                     reasoning_parts.append(delta_reasoning)
+                    if on_reasoning_delta is not None:
+                        on_reasoning_delta(delta_reasoning)
 
                 tc_deltas = read_attr_or_key(delta, "tool_calls")
                 if isinstance(tc_deltas, list) and tc_deltas:
@@ -2639,6 +2682,7 @@ from ..workspace_tools import (
     WorkspaceToolError,
     WorkspaceTools,
 )
+from ..workspace.monitor import BackgroundMonitorManager, MonitorPollResult, MonitorTaskSnapshot
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
@@ -2834,10 +2878,15 @@ class LocalToolAgent:
         """公开 SkillManager 供 main.py 查询 /skills 列表。"""
         return self._skill_manager
 
+    def preload_mcp_tools(self) -> None:
+        """发现并注册 MCP 能力，供交互界面在后台启动阶段主动预热。"""
+
+        self._ensure_mcp_tools_ready()
+
     def format_mcp_status(self) -> str:
         """返回 MCP 子系统状态，供 `/mcp` 斜杠命令展示。"""
 
-        self._ensure_mcp_tools_ready()
+        self.preload_mcp_tools()
         return self._mcp_manager.format_status()
 
     def _ensure_mcp_tools_ready(
@@ -2867,6 +2916,45 @@ class LocalToolAgent:
         try:
             return store.clean_expired_memories()
         except MemoryStoreError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def list_monitor_tasks(self) -> list[MonitorTaskSnapshot]:
+        """列出当前 Agent 受管的后台任务，供 TUI 与本地 API 只读展示。"""
+
+        return self._monitor_toolbox().list_snapshots()
+
+    def get_monitor_task(self, monitor_id: str) -> MonitorTaskSnapshot:
+        """读取一个后台任务状态，不改变其执行或日志游标。"""
+
+        try:
+            return self._monitor_toolbox().get_snapshot(monitor_id)
+        except WorkspaceToolError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def poll_monitor_events(
+        self,
+        monitor_id: str,
+        *,
+        cursor: int = 0,
+        max_events: int = 100,
+    ) -> MonitorPollResult:
+        """按游标读取后台日志，供 UI/API 观察而不触发模型新回合。"""
+
+        try:
+            return self._monitor_toolbox().poll_events(
+                monitor_id,
+                cursor=cursor,
+                max_events=max_events,
+            )
+        except WorkspaceToolError as exc:
+            raise AgentError(str(exc)) from exc
+
+    def wait_for_monitor_events(self, monitor_id: str, cursor: int, timeout: float) -> None:
+        """等待后台日志或任务终态，供 API SSE 长连接降低轮询开销。"""
+
+        try:
+            self._monitor_toolbox().wait_for_events(monitor_id, cursor, timeout)
+        except WorkspaceToolError as exc:
             raise AgentError(str(exc)) from exc
 
     def reset_conversation(self) -> None:
@@ -3064,6 +3152,14 @@ class LocalToolAgent:
                 pass
             self.__dict__.pop("_temp_workspace", None)
 
+        old_monitor_manager = getattr(self, "_monitor_manager", None)
+        if old_monitor_manager is not None:
+            try:
+                old_monitor_manager.close()
+            except Exception:
+                pass
+            self.__dict__.pop("_monitor_manager", None)
+
         old_mcp = getattr(self, "_mcp_manager", None)
         if old_mcp is not None:
             try:
@@ -3124,6 +3220,12 @@ class LocalToolAgent:
         if manager is not None:
             try:
                 manager.close()
+            except Exception as exc:
+                close_errors.append(exc)
+        monitor_manager = getattr(self, "_monitor_manager", None)
+        if monitor_manager is not None:
+            try:
+                monitor_manager.close()
             except Exception as exc:
                 close_errors.append(exc)
         temp_workspace = getattr(self, "_temp_workspace", None)
@@ -3261,6 +3363,7 @@ class LocalToolAgent:
         on_protocol_wait: Callable[[], None] | None = None,
         on_retry_status: Callable[[str], None] | None = None,
         cancel_check: Callable[[], None] | None = None,
+        on_reasoning_delta: Callable[[str], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
 
@@ -3286,7 +3389,9 @@ class LocalToolAgent:
                 cancel_check()
 
         previous_cancel_check = getattr(self, "_cancel_check", None)
+        previous_reasoning_callback = getattr(self, "_reasoning_delta_callback", None)
         self._cancel_check = cancel_check
+        self._reasoning_delta_callback = on_reasoning_delta
         check_cancelled()
         self._ensure_mcp_tools_ready(status)
         text = self._apply_skill_command(text, status)
@@ -3327,6 +3432,7 @@ class LocalToolAgent:
                     return final_reply
 
                 working_messages.append(reply.message)
+                normalized_calls: list[tuple[int, ToolCall, ToolDefinition | None, ToolResult | None]] = []
                 for raw_tool_call in reply.tool_calls:
                     check_cancelled()
                     tool_call = normalize_tool_call(raw_tool_call, self._tools)
@@ -3340,21 +3446,60 @@ class LocalToolAgent:
                         },
                     )
                     tool = self._tools.get(tool_call.name)
+                    denied_result: ToolResult | None = None
+                    if tool is not None:
+                        denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
+                    normalized_calls.append((step, tool_call, tool, denied_result))
+                    step += 1
+
+                results: list[ToolResult | None] = [None] * len(normalized_calls)
+
+                def execute_call(index: int) -> ToolResult:
+                    call_step, tool_call, tool, denied_result = normalized_calls[index]
+                    if denied_result is not None:
+                        return denied_result
                     if tool is None:
-                        tool_result = ToolResult(
+                        return ToolResult(
                             ok=False,
                             output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
                         )
+                    return self._execute_approved_tool(tool, tool_call.arguments)
+
+                parallel_indexes: list[int] = []
+
+                def flush_parallel() -> None:
+                    if not parallel_indexes:
+                        return
+                    for index in parallel_indexes:
+                        call_step, tool_call, _tool, _denied = normalized_calls[index]
+                        report_tool_start(call_step, tool_call)
+                    with ThreadPoolExecutor(max_workers=len(parallel_indexes)) as executor:
+                        futures = {
+                            index: executor.submit(execute_call, index)
+                            for index in parallel_indexes
+                        }
+                        for index in parallel_indexes:
+                            results[index] = futures[index].result()
+                    parallel_indexes.clear()
+
+                for index, (_call_step, tool_call, tool, denied_result) in enumerate(normalized_calls):
+                    if denied_result is not None or tool is None:
+                        results[index] = execute_call(index)
+                    elif self._tool_call_requires_serial_execution(tool, tool_call.arguments):
+                        flush_parallel()
+                        call_step, current_call, _tool, _denied = normalized_calls[index]
+                        report_tool_start(call_step, current_call)
+                        results[index] = execute_call(index)
                     else:
-                        tool_result = self._run_tool(
-                            tool,
-                            tool_call.arguments,
-                            on_start=lambda step=step, tool_call=tool_call: report_tool_start(
-                                step,
-                                tool_call,
-                            ),
-                        )
-                    check_cancelled()
+                        parallel_indexes.append(index)
+                flush_parallel()
+
+                check_cancelled()
+                for (_call_step, tool_call, _tool, _denied), tool_result in zip(
+                    normalized_calls,
+                    results,
+                ):
+                    assert tool_result is not None
                     report_tool_result(tool_call, tool_result)
                     self._append_session_event(
                         "tool_result",
@@ -3368,8 +3513,7 @@ class LocalToolAgent:
                         },
                     )
                     working_messages.append(self._tool_result_message(tool_call, tool_result))
-                    step += 1
-                status("")  # 通知调用方重新启动等待动画
+                status("")  # 整批完成后统一通知调用方重新启动等待动画
         except KeyboardInterrupt as exc:
             self._append_session_event(
                 "turn_cancelled",
@@ -3391,6 +3535,7 @@ class LocalToolAgent:
             raise
         finally:
             self._cancel_check = previous_cancel_check
+            self._reasoning_delta_callback = previous_reasoning_callback
 
     def _apply_skill_command(self, text: str, status: Callable[[str], None]) -> str:
         """处理 /skill:name，并在每轮开始时清空上一轮手动 Skill 注入。"""
@@ -3502,6 +3647,7 @@ class LocalToolAgent:
                 on_protocol_wait,
                 on_retry_status,
                 getattr(self, "_cancel_check", None),
+                getattr(self, "_reasoning_delta_callback", None),
             )
         except AgentProtocolError as exc:
             raise AgentError(str(exc)) from exc
@@ -3513,6 +3659,7 @@ class LocalToolAgent:
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
         cancel_check: Callable[[], None] | None = None,
+        on_reasoning_delta: Callable[[str], None] | None = None,
     ) -> AgentModelReply:
         try:
             return self._llm_protocol().request_reply_once(
@@ -3521,6 +3668,9 @@ class LocalToolAgent:
                 on_token_usage,
                 on_protocol_wait,
                 cancel_check,
+                on_reasoning_delta
+                if on_reasoning_delta is not None
+                else getattr(self, "_reasoning_delta_callback", None),
             )
         except AgentProtocolError as exc:
             raise AgentError(str(exc)) from exc
@@ -3597,31 +3747,51 @@ class LocalToolAgent:
         *,
         on_start: Callable[[], None] | None = None,
     ) -> ToolResult:
-        """执行工具；需要审批的工具按当前模式决定是否放行。"""
+        """兼容单工具调用：先审批，再执行已批准工具。"""
 
-        if tool.requires_confirmation:
-            approved, denial_reason = self._approve_tool_call(tool, arguments)
-            if not approved:
-                reason = denial_reason or f"未批准执行：{tool.name}。"
-                if tool.name in self._mcp_manager.registry.tools:
-                    self._mcp_manager.record_denied_tool_call(tool.name, arguments, reason)
-                self._append_session_event(
-                    "tool_call_denied",
-                    {
-                        "tool": tool.name,
-                        "arguments": arguments,
-                        "reason": reason,
-                    },
-                )
-                return ToolResult(ok=False, output=reason)
+        denied_result = self._approve_tool_for_batch(tool, arguments)
+        if denied_result is not None:
+            return denied_result
+        return self._execute_approved_tool(tool, arguments, on_start=on_start)
+
+    def _approve_tool_for_batch(
+        self,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+    ) -> ToolResult | None:
+        """在启动批量执行前按调用顺序审批；返回值非空表示拒绝结果。"""
+
+        if not tool.requires_confirmation:
+            return None
+        approved, denial_reason = self._approve_tool_call(tool, arguments)
+        if not approved:
+            reason = denial_reason or f"未批准执行：{tool.name}。"
+            mcp_manager = getattr(self, "_mcp_manager", None)
+            if mcp_manager is not None and tool.name in mcp_manager.registry.tools:
+                mcp_manager.record_denied_tool_call(tool.name, arguments, reason)
             self._append_session_event(
-                "tool_call_approved",
-                {
-                    "tool": tool.name,
-                    "arguments": arguments,
-                    "mode": self.config.approval_mode,
-                },
+                "tool_call_denied",
+                {"tool": tool.name, "arguments": arguments, "reason": reason},
             )
+            return ToolResult(ok=False, output=reason)
+        self._append_session_event(
+            "tool_call_approved",
+            {
+                "tool": tool.name,
+                "arguments": arguments,
+                "mode": self.config.approval_mode,
+            },
+        )
+        return None
+
+    def _execute_approved_tool(
+        self,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+        *,
+        on_start: Callable[[], None] | None = None,
+    ) -> ToolResult:
+        """执行已完成审批的工具，供同批任务安全并发调用。"""
 
         try:
             if on_start is not None:
@@ -3635,6 +3805,19 @@ class LocalToolAgent:
             output=self._truncate_tool_output(result.output),
             full_output=result.full_output or result.output,
             ui_artifact=result.ui_artifact,
+        )
+
+    @classmethod
+    def _tool_call_requires_serial_execution(
+        cls,
+        tool: ToolDefinition,
+        arguments: dict[str, Any],
+    ) -> bool:
+        """文件写入和具备显式删除行为的调用是批次屏障，其余调用允许并行。"""
+
+        return tool.name in {"replace_text", "write_file"} or cls._is_delete_behavior_tool_call(
+            tool,
+            arguments,
         )
 
     def _approve_tool_call(
@@ -3735,7 +3918,9 @@ class LocalToolAgent:
             search_text=self._tool_search_text,
             replace_text=self._tool_replace_text,
             write_file=self._tool_write_file,
-            run_command=self._tool_run_command,
+            bash=self._tool_bash,
+            powershell=self._tool_powershell,
+            monitor=self._tool_monitor,
             bb_browser_cli=self._tool_bb_browser_cli,
             memory_search=self._tool_memory_search,
             memory_read=self._tool_memory_read,
@@ -3801,8 +3986,30 @@ class LocalToolAgent:
     def _tool_write_file(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().write_file, arguments)
 
-    def _tool_run_command(self, arguments: dict[str, Any]) -> ToolResult:
-        return workspace_command_tool_result(self._workspace_toolbox().run_command, arguments)
+    def _tool_bash(self, arguments: dict[str, Any]) -> ToolResult:
+        """用显式 Bash 解释器执行命令，不能被模型参数覆盖解释器。"""
+
+        return workspace_command_tool_result(
+            lambda command_arguments: self._workspace_toolbox().run_shell_command(
+                command_arguments,
+                shell="bash",
+            ),
+            arguments,
+        )
+
+    def _tool_powershell(self, arguments: dict[str, Any]) -> ToolResult:
+        """用显式 PowerShell 解释器执行命令，不能被模型参数覆盖解释器。"""
+
+        return workspace_command_tool_result(
+            lambda command_arguments: self._workspace_toolbox().run_shell_command(
+                command_arguments,
+                shell="powershell",
+            ),
+            arguments,
+        )
+
+    def _tool_monitor(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_command_tool_result(self._monitor_toolbox().run, arguments)
 
     def _tool_bb_browser_cli(self, arguments: dict[str, Any]) -> ToolResult:
         return self._bb_browser_cli_toolbox().run(arguments)
@@ -3897,6 +4104,13 @@ class LocalToolAgent:
         )
         self._workspace_tools = toolbox
         return toolbox
+
+    def _monitor_toolbox(self) -> BackgroundMonitorManager:
+        manager = getattr(self, "_monitor_manager", None)
+        if manager is None:
+            manager = BackgroundMonitorManager(self._workspace_toolbox())
+            self._monitor_manager = manager
+        return manager
 
     def _bb_browser_cli_toolbox(self) -> BBBrowserCLI:
         toolbox = getattr(self, "_bb_browser_cli", None)

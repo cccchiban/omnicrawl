@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Input, Static
+from textual.widgets import Button, Input, Static
 
 from ...agent import AgentError, LocalToolAgent
 from ...config.approval import approval_mode_label
@@ -25,12 +26,13 @@ from ...commands.slash import (
     handle_model_command,
     handle_reasoning_command,
     handle_session_command,
+    build_slash_command_options,
 )
 
 
 @dataclass(frozen=True)
 class FullscreenStartup:
-    """启动阶段提供给左侧状态栏的只读摘要。"""
+    """启动阶段提供给顶部上下文条的只读摘要。"""
 
     thinking_enabled: bool
     reasoning_effort: str
@@ -45,14 +47,23 @@ class ConfirmationScreen(ModalScreen[bool]):
     BINDINGS = [("ctrl+c", "cancel_confirmation", "取消")]
 
     CSS = """
-    ConfirmationScreen { align: center middle; background: rgba(8, 12, 20, 0.86); }
-    #confirmation-dialog { width: 78; max-height: 24; padding: 1 2; border: solid #ffbd6b; background: #151b2d; }
-    #confirmation-title { color: #ffbd6b; text-style: bold; margin-bottom: 1; }
-    #confirmation-body { color: #d7e0ff; height: auto; max-height: 14; overflow-y: auto; }
+    ConfirmationScreen { align: center middle; background: rgba(5, 8, 10, 0.92); }
+    #confirmation-dialog {
+        width: 78;
+        max-width: 92%;
+        max-height: 22;
+        padding: 1 2;
+        border: solid #39a7ff;
+        background: #0b1014;
+    }
+    #confirmation-title { color: #00e5c3; text-style: bold; margin-bottom: 1; }
+    #confirmation-body { color: #d9e4e8; height: auto; max-height: 13; overflow-y: auto; }
     #confirmation-actions { height: 3; align: right middle; margin-top: 1; }
-    #confirmation-actions Button { margin-left: 1; }
-    #approve { background: #36c3a1; color: #06120f; }
-    #reject { background: #313b55; color: #e7ecff; }
+    #confirmation-actions Button { margin-left: 1; min-width: 12; }
+    #approve { background: #00bfa5; color: #04100e; }
+    #approve:focus { border: tall #68f7df; }
+    #reject { background: #151c21; color: #aab8bd; }
+    #reject:focus { border: tall #59676d; }
     """
 
     def __init__(self, prompt: str) -> None:
@@ -77,39 +88,127 @@ class ConfirmationScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ReasoningDisclosure(Static):
+    """默认折叠的单次模型思考记录；点击标题行切换正文可见性。"""
+
+    can_focus = True
+
+    def __init__(self) -> None:
+        super().__init__(classes="message reasoning-message collapsed")
+        self.reasoning_text = ""
+        self.expanded = False
+        self._refresh_display()
+
+    def append_delta(self, delta: str) -> None:
+        self.reasoning_text += delta
+        self._refresh_display()
+
+    def on_click(self) -> None:
+        self.expanded = not self.expanded
+        self.set_class(not self.expanded, "collapsed")
+        self._refresh_display()
+
+    def _refresh_display(self) -> None:
+        marker = "▾" if self.expanded else "▸"
+        if self.expanded:
+            self.update(RichMarkdown(f"{marker} **思考过程**\n\n{self.reasoning_text}"))
+        else:
+            self.update(Text(f"{marker} 思考过程（点击展开）"))
+
+
+class ToolDisclosure(Static):
+    """默认折叠的工具调用记录；标题保留状态与耗时，详情点击后显示。"""
+
+    can_focus = True
+
+    def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
+        super().__init__(classes="message tool-message collapsed")
+        self.tool_name = tool_name
+        self.arguments = arguments
+        self.started_at = started_at
+        self.status = "调用中"
+        self.duration_seconds = 0.0
+        self.result_text = ""
+        self.expanded = False
+        self._refresh_display()
+
+    def finish(self, *, ok: bool, output: str, finished_at: float) -> None:
+        """记录最终结果；更新折叠标题，但不改变用户的展开选择。"""
+
+        self.status = "成功" if ok else "失败"
+        self.duration_seconds = max(0.0, finished_at - self.started_at)
+        self.result_text = output
+        self._refresh_display()
+
+    def on_click(self) -> None:
+        self.expanded = not self.expanded
+        self.set_class(not self.expanded, "collapsed")
+        self._refresh_display()
+
+    def _refresh_display(self) -> None:
+        marker = "▾" if self.expanded else "▸"
+        title = (
+            f"{marker} ⌁ {self.tool_name} · {self.status} · "
+            f"{self.duration_seconds:.2f}s"
+        )
+        if not self.expanded:
+            self.update(Text(title))
+            return
+
+        details = [title]
+        if self.arguments:
+            details.append(f"参数：{self.arguments}")
+        if self.result_text:
+            details.append(f"结果：\n{self.result_text}")
+        self.update(Text("\n".join(details)))
+
+
 class OmniCrawlApp(App[None]):
     """可控全屏渲染的 OmniCrawl 工作台。"""
 
     TITLE = "OmniCrawl"
     SUB_TITLE = "Developer Workspace"
     CSS = """
-    Screen { background: #0b0f18; color: #d7e0ff; }
-    #shell { height: 1fr; }
-    #sidebar { width: 34; min-width: 28; background: #101727; border-right: solid #263554; padding: 1 1; }
-    #brand { color: #f1f5ff; text-style: bold; padding: 0 1 1 1; }
-    #brand-mark { color: #73a7ff; }
-    .section-title { color: #7f9fd9; text-style: bold; padding: 1 1 0 1; }
-    .sidebar-value { color: #dce6ff; padding: 0 1; }
-    .sidebar-muted { color: #7080a3; padding: 0 1; }
-    #main { width: 1fr; background: #0b0f18; }
-    #topbar { height: 4; margin-top: 1; background: #101727; border-bottom: solid #263554; padding: 0 2; }
-    #active-title { color: #f1f5ff; text-style: bold; width: 1fr; content-align: left middle; }
-    #runtime-status { color: #7cceba; width: 22; content-align: right middle; }
-    #runtime-status.working { color: #ffbd6b; }
-    #runtime-status.warning { color: #ff8aa1; }
-    #runtime-status.ready { color: #7cceba; }
-    #conversation { height: 1fr; padding: 1 2; scrollbar-color: #5e7db5; scrollbar-color-hover: #80a6ee; }
-    .message { margin-bottom: 1; padding: 0 1; }
-    .user-message { border-left: thick #72a7ff; background: #121b2d; color: #e7edff; }
-    .assistant-message { border-left: thick #42c8a7; background: #101a20; color: #dceee9; }
-    .status-message { border-left: thick #7483a7; color: #9ba8c7; background: #101521; }
-    .tool-message { border-left: thick #d2a861; background: #1c1820; color: #f4e6c4; }
-    .error-message { border-left: thick #ff6d8d; background: #24151d; color: #ffdce4; }
-    #composer-wrap { height: 7; min-height: 7; background: #101727; border-top: solid #263554; padding: 1 2; }
-    #composer { border: tall #425f97; background: #0d1422; color: #edf3ff; }
-    #composer:focus { border: tall #73a7ff; }
-    #hint { color: #7686a8; margin-top: 1; }
-    Footer { background: #101727; color: #8fa7d6; }
+    Screen { background: #080b0e; color: #d9e4e8; }
+    #shell { height: 1fr; background: #080b0e; }
+    #topbar { height: 3; padding: 0 1; background: #0a0e12; border-bottom: solid #16232a; }
+    #brand { width: 20; text-style: bold; content-align: left middle; }
+    #context-summary { width: 1fr; color: #66757b; content-align: left middle; text-overflow: ellipsis; }
+    #runtime-status { width: 20; color: #00e5c3; content-align: right middle; text-style: bold; }
+    #runtime-status.working { color: #39a7ff; }
+    #runtime-status.warning { color: #ff5470; }
+    #runtime-status.ready { color: #00e5c3; }
+    #conversation {
+        height: 1fr;
+        padding: 1 1;
+        scrollbar-color: #1e3943;
+        scrollbar-color-hover: #00a9a0;
+        scrollbar-background: #080b0e;
+    }
+    .message { margin: 0; padding: 0 1; background: transparent; border: none; }
+    .user-message { color: #a9c7d3; }
+    .assistant-message { color: #d9e4e8; }
+    .status-message { color: #59676d; }
+    .tool-message { color: #f4b860; padding-left: 2; }
+    .tool-message:hover { color: #ffd28a; background: #11100d; }
+    .tool-message:focus { color: #ffe0a6; }
+    .error-message { color: #ff6b82; }
+    .reasoning-message { color: #72858c; padding-left: 2; }
+    .reasoning-message:hover { color: #39a7ff; background: #0b1115; }
+    .reasoning-message:focus { color: #00e5c3; }
+    .reasoning-message.collapsed { height: 1; }
+    #composer-wrap { height: 3; min-height: 3; background: #0a0e12; border-top: solid #16333b; padding: 0 1; }
+    #command-menu {
+        display: none;
+        height: auto;
+        max-height: 8;
+        padding: 0 1;
+        background: #0b1115;
+        color: #8fa4ad;
+        border-left: thick #167da3;
+    }
+    #composer { height: 3; border: none; padding: 0 1; background: #0a0e12; color: #d9e4e8; }
+    #composer:focus { border-left: thick #00e5c3; background: #0b1115; }
     """
 
     BINDINGS = [
@@ -119,6 +218,8 @@ class OmniCrawlApp(App[None]):
     ]
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
+    MONITOR_POLL_INTERVAL_SECONDS = 0.5
+    STATUS_BLINK_INTERVAL_SECONDS = 0.45
     MAX_TOOL_OUTPUT_CHARS = 3_500
 
     def __init__(self, agent: LocalToolAgent, startup: FullscreenStartup) -> None:
@@ -131,52 +232,130 @@ class OmniCrawlApp(App[None]):
         self._stream_message: Static | None = None
         self._stream_markdown = ""
         self._stream_render_pending = False
-        self._tool_message: Static | None = None
+        self._tool_messages: dict[str, ToolDisclosure] = {}
+        self._reasoning_message: ReasoningDisclosure | None = None
+        self._monitor_cursors: dict[str, int] = {}
+        self._runtime_status_text = "完成"
+        self._runtime_status_state = "complete"
+        self._status_dot_visible = True
+        self._command_matches: list[dict[str, str]] = []
+        self._command_selection = 0
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="shell"):
-            with Vertical(id="sidebar"):
-                yield Static("◆ OmniCrawl", id="brand")
-                yield Static("WORKSPACE", classes="section-title")
-                yield Static(self.startup.workspace_label, classes="sidebar-value", id="workspace-summary")
-                yield Static("AGENT", classes="section-title")
-                thinking = "已启用" if self.startup.thinking_enabled else "已禁用"
-                yield Static(f"思考  {thinking}", classes="sidebar-value", id="thinking-summary")
-                yield Static(
-                    f"深度  {self.startup.reasoning_effort or '默认'}",
-                    classes="sidebar-value",
-                    id="reasoning-summary",
-                )
-                yield Static(
-                    f"审批  {self.startup.approval_label}",
-                    classes="sidebar-value",
-                    id="approval-summary",
-                )
-                yield Static("RUNTIME", classes="section-title")
-                yield Static(f"会话  {self.agent.current_session_id}", classes="sidebar-muted", id="session-summary")
-                skill_count = self.agent.skill_manager.count if self.agent.skill_manager else 0
-                yield Static(f"Skill  {skill_count} 已加载", classes="sidebar-muted", id="skill-summary")
-            with Vertical(id="main"):
-                with Horizontal(id="topbar"):
-                    yield Static("当前对话", id="active-title")
-                    yield Static("就绪", id="runtime-status")
-                yield VerticalScroll(id="conversation")
-                with Vertical(id="composer-wrap"):
-                    yield Input(placeholder="输入消息，Enter 发送；/ 可使用命令", id="composer")
-                    yield Static("Enter 发送  ·  Ctrl+C 取消当前任务  ·  Ctrl+L 清空视图", id="hint")
-        yield Footer()
+        with Vertical(id="shell"):
+            with Horizontal(id="topbar"):
+                yield Static(self._gradient_text("◆ OMNICRAWL"), id="brand")
+                yield Static(self._context_summary_text(), id="context-summary")
+                yield Static("● 完成", id="runtime-status")
+            yield VerticalScroll(id="conversation")
+            with Vertical(id="composer-wrap"):
+                yield Static("", id="command-menu")
+                yield Input(placeholder="› 输入消息或 / 命令", id="composer")
 
     def on_mount(self) -> None:
         self.agent.set_confirm_handler(self._confirm_tool)
         self.query_one("#composer", Input).focus()
-        self._append_message("status", "全屏工作台已就绪。")
+        self.set_interval(self.STATUS_BLINK_INTERVAL_SECONDS, self._tick_status_indicator)
+        if callable(getattr(self.agent, "list_monitor_tasks", None)):
+            self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
+
+        if callable(getattr(self.agent, "preload_mcp_tools", None)):
+            self.is_generating = True
+            self._set_runtime_status("等待", "waiting")
+            self._preload_mcp_tools()
+        else:
+            self._set_runtime_status("完成", "complete")
+
+    @work(thread=True, exclusive=True, group="mcp-preload", exit_on_error=False)
+    def _preload_mcp_tools(self) -> None:
+        """主界面显示后在后台发现 MCP，避免阻塞 Textual 首屏绘制。"""
+
+        try:
+            self.agent.preload_mcp_tools()
+        except AgentError as exc:
+            self.call_from_thread(self._append_message, "error", f"MCP 能力加载失败：{exc}")
+        except Exception as exc:
+            self.call_from_thread(self._append_message, "error", f"MCP 能力加载异常：{exc}")
+        finally:
+            self.call_from_thread(self._finish_turn)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "composer":
+            self._refresh_command_menu(event.value)
+
+    def on_key(self, event: events.Key) -> None:
+        """菜单打开时接管选择键；Enter/Tab 只补全，绝不触发提交。"""
+
+        composer = self.query_one("#composer", Input)
+        if not composer.has_focus or not self._command_matches:
+            return
+        if event.key in {"up", "down"}:
+            offset = -1 if event.key == "up" else 1
+            self._command_selection = (self._command_selection + offset) % len(self._command_matches)
+            self._render_command_menu()
+            event.prevent_default()
+            event.stop()
+        elif event.key in {"enter", "tab"}:
+            selected = self._command_matches[self._command_selection]
+            composer.value = selected["insert"]
+            composer.cursor_position = len(composer.value)
+            self._hide_command_menu()
+            event.prevent_default()
+            event.stop()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._command_matches:
+            return
         text = event.value.strip()
         if not text or self.is_generating:
             return
         event.input.value = ""
         self._submit(text)
+
+    def _refresh_command_menu(self, value: str) -> None:
+        """根据当前斜杠前缀实时筛选统一命令源，最多展示八项。"""
+
+        query = value.strip().lower()
+        if not query.startswith("/") or any(char.isspace() for char in value):
+            self._hide_command_menu()
+            return
+        matches = [
+            option
+            for option in build_slash_command_options(self.agent)
+            if query in option["search"].lower()
+        ]
+        # Python 排序稳定：仅把前缀命中提到前面，同级保留统一命令源的产品顺序。
+        matches.sort(key=lambda option: not option["command"].lower().startswith(query))
+        self._command_matches = matches[:8]
+        self._command_selection = 0
+        if not self._command_matches:
+            self._hide_command_menu()
+            return
+        self._render_command_menu()
+
+    def _render_command_menu(self) -> None:
+        menu = self.query_one("#command-menu", Static)
+        lines = Text()
+        for index, option in enumerate(self._command_matches):
+            marker = "›" if index == self._command_selection else " "
+            style = "bold #00e5c3" if index == self._command_selection else "#8fa4ad"
+            lines.append(f"{marker} {option['command']}", style=style)
+            description = option.get("description", "").strip()
+            if description:
+                lines.append(f"  · {description}", style="#526872")
+            if index < len(self._command_matches) - 1:
+                lines.append("\n")
+        menu.update(lines)
+        menu.display = True
+        self.query_one("#composer-wrap").styles.height = 3 + len(self._command_matches)
+
+    def _hide_command_menu(self) -> None:
+        self._command_matches = []
+        self._command_selection = 0
+        menu = self.query_one("#command-menu", Static)
+        menu.display = False
+        menu.update("")
+        self.query_one("#composer-wrap").styles.height = 3
 
     def action_focus_composer(self) -> None:
         self.query_one("#composer", Input).focus()
@@ -189,7 +368,8 @@ class OmniCrawlApp(App[None]):
         self._stream_message = None
         self._stream_markdown = ""
         self._stream_render_pending = False
-        self._tool_message = None
+        self._tool_messages.clear()
+        self._reasoning_message = None
         self._append_message("status", "已清空当前视图，不影响会话历史。")
 
     def action_cancel_or_quit(self) -> None:
@@ -202,7 +382,7 @@ class OmniCrawlApp(App[None]):
         """标记当前回合已取消，使工作线程在下一个可中断点退出。"""
 
         self._cancel_requested.set()
-        self._set_runtime_status("正在取消", "warning")
+        self._set_runtime_status("等待", "waiting")
 
     def _submit(self, text: str) -> None:
         if self._handle_command(text):
@@ -228,6 +408,10 @@ class OmniCrawlApp(App[None]):
                 on_protocol_wait=lambda: self.call_from_thread(self._handle_status, "正在准备工具调用"),
                 on_retry_status=lambda status: self.call_from_thread(self._handle_status, status),
                 cancel_check=self._raise_if_cancelled,
+                on_reasoning_delta=lambda delta: self.call_from_thread(
+                    self._append_reasoning_delta,
+                    delta,
+                ),
             )
         except KeyboardInterrupt:
             self.call_from_thread(self._append_message, "status", "当前任务已取消。")
@@ -243,7 +427,7 @@ class OmniCrawlApp(App[None]):
         self,
         command: Callable[[], str | None],
         *,
-        refresh_sidebar: bool,
+        refresh_context: bool,
     ) -> None:
         """在工作线程执行可能连接网络或启动 MCP Server 的斜杠命令。"""
 
@@ -256,8 +440,8 @@ class OmniCrawlApp(App[None]):
         else:
             if message:
                 self.call_from_thread(self._append_message, "status", message)
-            if refresh_sidebar:
-                self.call_from_thread(self._refresh_sidebar)
+            if refresh_context:
+                self.call_from_thread(self._refresh_context_summary)
         finally:
             self.call_from_thread(self._finish_turn)
 
@@ -266,15 +450,15 @@ class OmniCrawlApp(App[None]):
         status: str,
         command: Callable[[], str | None],
         *,
-        refresh_sidebar: bool = False,
+        refresh_context: bool = False,
     ) -> None:
         """锁定输入并安排慢命令，避免在 Textual 主事件循环执行 I/O。"""
 
         self.is_generating = True
         self._cancel_requested.clear()
         self._append_message("status", status)
-        self._set_runtime_status(status, "working")
-        self._run_slow_command(command, refresh_sidebar=refresh_sidebar)
+        self._set_runtime_status("等待", "waiting")
+        self._run_slow_command(command, refresh_context=refresh_context)
 
     def _raise_if_cancelled(self) -> None:
         if self._cancel_requested.is_set():
@@ -287,7 +471,7 @@ class OmniCrawlApp(App[None]):
         if text == "/new":
             self.agent.reset_conversation()
             self._append_message("status", "已开启新对话。")
-            self._refresh_sidebar()
+            self._refresh_context_summary()
             return True
         if text == "/skills":
             self._append_message("status", format_skills_list(self.agent))
@@ -306,38 +490,39 @@ class OmniCrawlApp(App[None]):
                 try:
                     self.agent.switch_workspace(parts[1].strip())
                     self._append_message("status", f"已切换工作区：{self.agent.workspace_root}")
-                    self._refresh_sidebar()
+                    self._refresh_context_summary()
                 except AgentError as exc:
                     self._append_message("error", f"工作区切换失败：{exc}")
             return True
         session_message = handle_session_command(self.agent, text)
         if session_message is not None:
             self._append_message("status", session_message)
-            self._refresh_sidebar()
+            self._refresh_context_summary()
             return True
         normalized = text.strip().lower()
         if normalized in {"/model", "/models"} or normalized.startswith("/model "):
             self._start_slow_command(
                 "正在读取模型列表",
                 lambda: handle_model_command(self.agent, text),
-                refresh_sidebar=True,
+                refresh_context=True,
             )
             return True
         approval_message = handle_approval_command(self.agent, text)
         if approval_message is not None:
             self._append_message("status", approval_message)
-            self._refresh_sidebar()
+            self._refresh_context_summary()
             return True
         reasoning_message = handle_reasoning_command(self.agent, text)
         if reasoning_message is not None:
             self._append_message("status", reasoning_message)
-            self._refresh_sidebar()
+            self._refresh_context_summary()
             return True
         return False
 
     def _confirm_tool(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """在主线程展示确认框，并允许工作线程在用户取消时立即退出等待。"""
 
+        self.call_from_thread(self._set_runtime_status, "等待", "waiting")
         prompt = format_tool_confirmation(tool_name, arguments)
         event = threading.Event()
         result = {"approved": False}
@@ -366,43 +551,117 @@ class OmniCrawlApp(App[None]):
 
     def _handle_status(self, message: str) -> None:
         if message:
-            self._set_runtime_status(message, "working")
+            self._set_runtime_status("等待", "waiting")
 
     def _handle_tool_start(self, step: int, tool_call: Any) -> None:
+        del step  # Agent 仍按步骤回调，但极简 HUD 不展示内部步骤编号。
         self._render_stream_markdown()
-        details = ""
-        if getattr(tool_call, "arguments", None):
-            details = f"\n参数：{tool_call.arguments}"
-        self._append_message("tool", f"步骤 {step} · {tool_call.name}{details}", track_tool=True)
-        self._set_runtime_status(f"正在执行 {tool_call.name}", "working")
+        # 工具调用是模型 pass 的明确边界。必须封口此前的回复组件，否则工具
+        # 返回后的最终回答会继续写入旧组件，在视觉上倒插到工具记录之前。
+        self._stream_message = None
+        self._stream_markdown = ""
+        self._reasoning_message = None
+        conversation = self.query_one("#conversation", VerticalScroll)
+        tool_message = ToolDisclosure(
+            str(tool_call.name),
+            getattr(tool_call, "arguments", None),
+            time.perf_counter(),
+        )
+        self._tool_messages[self._tool_call_key(tool_call)] = tool_message
+        conversation.mount(tool_message)
+        self.conversation_text += f"{tool_call.name}\n"
+        conversation.scroll_end(animate=False)
+        self._set_runtime_status("正在调用", "working")
 
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
-        marker = "成功" if result.ok else "失败"
         output = str(result.output or "无输出")
         if len(output) > self.MAX_TOOL_OUTPUT_CHARS:
             output = (
                 f"{output[:self.MAX_TOOL_OUTPUT_CHARS]}\n"
                 f"... 界面展示已截断（原始输出 {len(result.output)} 字符）。"
             )
-        result_text = f"结果  {marker}\n{output}"
-        if self._tool_message is not None:
-            self._tool_message.update(Text(f"{self._tool_message.content}\n{result_text}"))
-            self.conversation_text += f"{result_text}\n"
-            self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
-        else:
-            self._append_message("tool", f"{tool_call.name}\n{result_text}", track_tool=True)
-        self._tool_message = None
+        key = self._tool_call_key(tool_call)
+        tool_message = self._tool_messages.pop(key, None)
+        if tool_message is None:
+            # 兼容缺失 start 事件的协议实现，同时仍保持默认折叠交互。
+            tool_message = ToolDisclosure(
+                str(tool_call.name),
+                getattr(tool_call, "arguments", None),
+                time.perf_counter(),
+            )
+            self.query_one("#conversation", VerticalScroll).mount(tool_message)
+        tool_message.finish(
+            ok=bool(result.ok),
+            output=output,
+            finished_at=time.perf_counter(),
+        )
+        self.conversation_text += f"结果  {tool_message.status}\n{output}\n"
+        self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+        self._set_runtime_status("正在思考", "working")
+
+    @staticmethod
+    def _tool_call_key(tool_call: Any) -> str:
+        """优先以协议 ID 关联并发工具记录；缺失 ID 时退化为对象身份。"""
+
+        tool_call_id = str(getattr(tool_call, "id", "") or "")
+        return tool_call_id or f"object:{id(tool_call)}"
 
     def _handle_token_usage(self, incoming: int, outgoing: int, cached: int) -> None:
-        self._set_runtime_status(f"in {incoming} · cache {cached} · out {outgoing}", "ready")
+        del incoming, outgoing, cached
+
+    def _refresh_monitor_events(self) -> None:
+        """把受管后台任务的新日志追加到全屏工作台，不影响模型回合。"""
+
+        list_tasks = getattr(self.agent, "list_monitor_tasks", None)
+        poll_events = getattr(self.agent, "poll_monitor_events", None)
+        if not callable(list_tasks) or not callable(poll_events):
+            return
+        try:
+            tasks = list_tasks()
+        except AgentError:
+            return
+
+        for task in tasks:
+            monitor_id = str(getattr(task, "monitor_id", ""))
+            if not monitor_id:
+                continue
+            cursor = self._monitor_cursors.get(monitor_id, 0)
+            try:
+                result = poll_events(monitor_id, cursor=cursor, max_events=50)
+            except AgentError:
+                continue
+            self._monitor_cursors[monitor_id] = result.next_cursor
+            if not result.events:
+                continue
+            lines = [
+                f"Monitor · {monitor_id} · {result.snapshot.status}",
+                *[
+                    f"[{event.stream}] {event.text or '(空行)'}"
+                    for event in result.events
+                ],
+            ]
+            self._append_message("tool", "\n".join(lines))
+
+    def _append_reasoning_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        conversation = self.query_one("#conversation", VerticalScroll)
+        if self._reasoning_message is None:
+            self._reasoning_message = ReasoningDisclosure()
+            conversation.mount(self._reasoning_message)
+        self._reasoning_message.append_delta(delta)
+        self._set_runtime_status("正在思考", "working")
+        conversation.scroll_end(animate=False)
 
     def _append_delta(self, delta: str) -> None:
         if not delta:
             return
+        self._reasoning_message = None
+        self._set_runtime_status("正在回复", "working")
         conversation = self.query_one("#conversation", VerticalScroll)
         if self._stream_message is None:
             self._stream_message = Static("", classes="message assistant-message")
-            self._stream_markdown = ""
+            self._stream_markdown = "◇ "
             conversation.mount(self._stream_message)
         self._stream_markdown += delta
         self.conversation_text += f"{delta}\n"
@@ -431,7 +690,15 @@ class OmniCrawlApp(App[None]):
             self._stream_markdown += text
             self._stream_message.update(RichMarkdown(self._stream_markdown))
         else:
-            renderable = RichMarkdown(text) if kind == "assistant" else Text(text)
+            prefixes = {
+                "user": "▸ ",
+                "assistant": "◇ ",
+                "status": "· ",
+                "tool": "⌁ ",
+                "error": "△ ",
+            }
+            prefixed_text = f"{prefixes.get(kind, '· ')}{text}"
+            renderable = RichMarkdown(prefixed_text) if kind == "assistant" else Text(prefixed_text)
             widget = Static(renderable, classes=f"message {kind}-message")
             if merge_with_previous:
                 self._stream_message = widget
@@ -440,39 +707,90 @@ class OmniCrawlApp(App[None]):
                 self._stream_message = None
                 self._stream_markdown = ""
             conversation.mount(widget)
-            self._tool_message = widget if track_tool else None
+            if track_tool:
+                self._tool_messages[f"legacy:{id(widget)}"] = widget
         self.conversation_text += f"{text}\n"
         conversation.scroll_end(animate=False)
 
     def _finish_turn(self) -> None:
         self._render_stream_markdown()
         self.is_generating = False
-        self._set_runtime_status("就绪", "ready")
+        self._reasoning_message = None
+        self._set_runtime_status("完成", "complete")
         self.query_one("#composer", Input).focus()
 
     def _set_runtime_status(self, text: str, state: str) -> None:
+        self._runtime_status_text = text
+        self._runtime_status_state = state
+        self._status_dot_visible = True
         status = self.query_one("#runtime-status", Static)
-        status.update(text)
-        status.set_class(state == "working", "working")
+        status.set_class(state in {"working", "waiting"}, "working")
         status.set_class(state == "warning", "warning")
-        status.set_class(state == "ready", "ready")
+        status.set_class(state in {"complete", "ready"}, "ready")
+        self._render_status_indicator()
 
-    def _refresh_sidebar(self) -> None:
+    def _tick_status_indicator(self) -> None:
+        """任务运行期间只闪烁状态点，正文和布局保持稳定。"""
+
+        # 模态审批成为当前 Screen 后，主工作台组件不在活动查询树中。此时暂停
+        # 闪烁，既避免计时器访问隐藏状态栏，也不干扰 Ctrl+C 的审批取消绑定。
+        if len(self.screen_stack) > 1:
+            return
+        if self._runtime_status_state not in {"working", "waiting"}:
+            if not self._status_dot_visible:
+                self._status_dot_visible = True
+                self._render_status_indicator()
+            return
+        self._status_dot_visible = not self._status_dot_visible
+        self._render_status_indicator()
+
+    def _render_status_indicator(self) -> None:
+        status_widgets = self.query("#runtime-status")
+        if not status_widgets:
+            return
+        dot = "●" if self._status_dot_visible else " "
+        status_widgets.first(Static).update(f"{dot} {self._runtime_status_text}")
+
+    @staticmethod
+    def _gradient_text(text: str) -> Text:
+        """用逐字符真彩色插值模拟青绿、电蓝到紫色的锐利 HUD 渐变。"""
+
+        stops = ((0, 229, 195), (57, 167, 255), (163, 107, 255))
+        rendered = Text()
+        denominator = max(1, len(text) - 1)
+        for index, char in enumerate(text):
+            position = index / denominator
+            segment = min(1, int(position * 2))
+            local = position * 2 - segment
+            start = stops[segment]
+            end = stops[segment + 1]
+            red, green, blue = (
+                round(start[channel] + (end[channel] - start[channel]) * local)
+                for channel in range(3)
+            )
+            rendered.append(char, style=f"rgb({red},{green},{blue})")
+        return rendered
+
+    def _context_summary_text(self) -> str:
+        """把关键运行信息压缩为 HUD 顶部的一行遥测摘要。"""
+
         reasoning_effort = str(getattr(self.agent, "reasoning_effort", "") or "")
-        thinking_enabled = reasoning_effort not in {"none", "disabled"}
         if not reasoning_effort:
-            thinking_enabled = self.startup.thinking_enabled
-        self.query_one("#workspace-summary", Static).update(str(self.agent.workspace_root))
-        self.query_one("#thinking-summary", Static).update(
-            f"思考  {'已启用' if thinking_enabled else '已禁用'}"
+            reasoning_effort = self.startup.reasoning_effort or "DEFAULT"
+        model = str(getattr(self.agent, "current_model", "") or "NO MODEL")
+        workspace = str(getattr(self.agent, "workspace_root", "") or self.startup.workspace_label)
+        approval_mode = getattr(self.agent, "approval_mode", None)
+        approval = (
+            approval_mode_label(str(approval_mode))
+            if approval_mode is not None
+            else self.startup.approval_label
         )
-        self.query_one("#reasoning-summary", Static).update(f"深度  {reasoning_effort or '默认'}")
-        self.query_one("#approval-summary", Static).update(
-            f"审批  {approval_mode_label(str(self.agent.approval_mode))}"
-        )
-        self.query_one("#session-summary", Static).update(f"会话  {self.agent.current_session_id}")
-        skill_count = self.agent.skill_manager.count if self.agent.skill_manager else 0
-        self.query_one("#skill-summary", Static).update(f"Skill  {skill_count} 已加载")
+        return f"{workspace}  /  {model}  /  {reasoning_effort.upper()}  /  {approval}"
+
+    def _refresh_context_summary(self) -> None:
+        """刷新取消侧栏后的顶部运行上下文。"""
+
+        self.query_one("#context-summary", Static).update(self._context_summary_text())
 
 
 def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> None:

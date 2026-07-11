@@ -88,6 +88,9 @@ Authorization: Bearer <token>
 | GET | `/api/v1/runs/{run_id}/events` | SSE 事件流 |
 | POST | `/api/v1/runs/{run_id}/cancel` | 请求取消任务 |
 | POST | `/api/v1/runs/{run_id}/confirmations/{id}` | 提交 `{ "approved": true }` |
+| GET | `/api/v1/monitors` | 列出当前 Agent 受管的后台任务 |
+| GET | `/api/v1/monitors/{monitor_id}` | 查询一个后台任务状态 |
+| GET | `/api/v1/monitors/{monitor_id}/events` | 后台任务日志 SSE；支持 `cursor`、`Last-Event-ID`、`follow` 和 `max_events` |
 
 服务全局同时只允许一个生成任务。生成期间，会话、项目、模型、推理强度、审批模式和记忆清理等修改接口返回 409。
 
@@ -147,6 +150,8 @@ data: {"delta":"你好"}
 - `run.completed`
 - `run.cancelled`
 - `run.failed`
+
+后台任务日志使用独立 SSE 路径：标准输出和标准错误事件为 `monitor.output`，启动、停止、完成和失败事件为 `monitor.status`。这些接口只读；启动和停止后台任务仍必须经 Agent 的 `monitor` 内置工具，继续遵循工具审批模式。
 
 断线重连时发送 `Last-Event-ID`，服务会重放该 ID 之后的内存事件。运行记录仅保存在当前服务进程；服务重启后请通过会话事件接口恢复已持久化消息。
 

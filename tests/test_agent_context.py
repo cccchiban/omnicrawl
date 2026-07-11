@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -360,9 +362,9 @@ class AgentContextInjectionTest(unittest.TestCase):
                 return ToolResult(ok=True, output="ok")
 
             agent._tools = {
-                "run_command": ToolDefinition(
-                    name="run_command",
-                    description="Run a command",
+                "powershell": ToolDefinition(
+                    name="powershell",
+                    description="Run a PowerShell command",
                     argument_schema=(
                         '{"type":"object","properties":'
                         '{"command":{"type":"string"},"timeout_seconds":{"type":"number"}}}'
@@ -371,7 +373,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                     run=run_tool,
                 )
             }
-            function_name = function_name_for_tool("run_command")
+            function_name = function_name_for_tool("powershell")
             replies = iter(
                 [
                     AgentModelReply(
@@ -392,7 +394,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                         content="",
                         tool_calls=[
                             ToolCall(
-                                name="runcommand",
+                                name="powershellcommand",
                                 arguments={"command": "echo hi", "timeoutseconds": 30},
                                 id="call_1",
                                 function_name=function_name,
@@ -425,6 +427,125 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(captured_messages[1][-1]["role"], "tool")
         self.assertEqual(captured_messages[1][-1]["tool_call_id"], "call_1")
         self.assertIn("状态：成功", str(captured_messages[1][-1]["content"]))
+
+    def test_run_stream_executes_same_reply_tools_concurrently_and_returns_results_in_call_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = Path(temp_dir)
+            agent.config = SimpleNamespace(max_history_turns=6, max_tool_output_chars=6000)
+            agent._history = []
+            agent._session_store = None
+            agent._session_state = None
+            agent._skill_manager = None
+            agent._active_skills = []
+            both_started = threading.Event()
+            release = threading.Event()
+            started: list[str] = []
+            lock = threading.Lock()
+
+            def concurrent_tool(name: str, *, ok: bool = True):
+                def run(_arguments):
+                    with lock:
+                        started.append(name)
+                        if len(started) == 2:
+                            both_started.set()
+                    if not both_started.wait(timeout=1):
+                        return ToolResult(ok=False, output="未并发启动")
+                    release.wait(timeout=1)
+                    return ToolResult(ok=ok, output=f"{name}-result")
+                return run
+
+            agent._tools = {
+                "read_file": ToolDefinition("read_file", "read", "{}", False, concurrent_tool("read")),
+                "search_text": ToolDefinition("search_text", "search", "{}", False, concurrent_tool("search", ok=False)),
+            }
+            calls = [
+                ToolCall("read_file", {}, "call_1", function_name_for_tool("read_file")),
+                ToolCall("search_text", {}, "call_2", function_name_for_tool("search_text")),
+            ]
+            replies = iter([
+                AgentModelReply(
+                    message=assistant_tool_call_message({}, "", calls, "", function_name_for_tool=function_name_for_tool),
+                    content="",
+                    tool_calls=calls,
+                ),
+                AgentModelReply({"role": "assistant", "content": "完成"}, "完成"),
+            ])
+            captured_messages = []
+            agent._request_agent_reply = lambda messages, *_args: (captured_messages.append(list(messages)), next(replies))[1]  # type: ignore[method-assign]
+
+            result_holder: list[str] = []
+            thread = threading.Thread(
+                target=lambda: result_holder.append(LocalToolAgent.run_stream(agent, "并发检查", lambda _delta: None))
+            )
+            thread.start()
+            self.assertTrue(both_started.wait(timeout=1), "同批只读工具没有并发启动")
+            release.set()
+            thread.join(timeout=2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result_holder, ["完成"])
+        tool_messages = [message for message in captured_messages[1] if message.get("role") == "tool"]
+        self.assertEqual([message["tool_call_id"] for message in tool_messages], ["call_1", "call_2"])
+        self.assertIn("状态：成功", tool_messages[0]["content"])
+        self.assertIn("状态：失败", tool_messages[1]["content"])
+
+    def test_run_stream_treats_replace_text_as_serial_barrier(self) -> None:
+        tool = ToolDefinition("replace_text", "replace", "{}", False, lambda _args: None)
+
+        self.assertTrue(
+            LocalToolAgent._tool_call_requires_serial_execution(tool, {"path": "sample.txt"})
+        )
+
+    def test_run_stream_treats_write_and_delete_calls_as_serial_barriers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = Path(temp_dir)
+            agent.config = SimpleNamespace(max_history_turns=6, max_tool_output_chars=6000)
+            agent._history = []
+            agent._session_store = None
+            agent._session_state = None
+            agent._skill_manager = None
+            agent._active_skills = []
+            active = 0
+            overlap = False
+            execution: list[str] = []
+            lock = threading.Lock()
+
+            def run_named(name: str):
+                def run(_arguments):
+                    nonlocal active, overlap
+                    with lock:
+                        if active:
+                            overlap = True
+                        active += 1
+                        execution.append(name)
+                    time.sleep(0.02)
+                    with lock:
+                        active -= 1
+                    return ToolResult(ok=True, output=name)
+                return run
+
+            agent._tools = {
+                "read_file": ToolDefinition("read_file", "read", "{}", False, run_named("read")),
+                "write_file": ToolDefinition("write_file", "write", "{}", False, run_named("write")),
+                "bash": ToolDefinition("bash", "bash", "{}", False, run_named("delete")),
+            }
+            calls = [
+                ToolCall("read_file", {}, "call_1"),
+                ToolCall("write_file", {"path": "a"}, "call_2"),
+                ToolCall("bash", {"command": "rm a"}, "call_3"),
+            ]
+            replies = iter([
+                AgentModelReply({"role": "assistant", "content": None}, "", calls),
+                AgentModelReply({"role": "assistant", "content": "完成"}, "完成"),
+            ])
+            agent._request_agent_reply = lambda *_args: next(replies)  # type: ignore[method-assign]
+
+            LocalToolAgent.run_stream(agent, "执行", lambda _delta: None)
+
+        self.assertFalse(overlap)
+        self.assertEqual(execution, ["read", "write", "delete"])
 
     def test_run_stream_writes_session_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1163,6 +1284,60 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(function["description"], "读取文件。")
         self.assertEqual(function["parameters"]["type"], "object")
         self.assertEqual(function["parameters"]["required"], ["path"])
+
+    def test_reasoning_deltas_are_forwarded_to_optional_callback(self) -> None:
+        class FakeChatCompletions:
+            def create(self, **_kwargs):
+                return [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    content=None,
+                                    reasoning_content="先检查配置。",
+                                    tool_calls=None,
+                                )
+                            )
+                        ]
+                    ),
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    content="完成",
+                                    reasoning_content=None,
+                                    tool_calls=None,
+                                )
+                            )
+                        ]
+                    ),
+                ]
+
+        agent = object.__new__(LocalToolAgent)
+        agent.workspace_root = Path("D:/workspace/project")
+        agent.config = SimpleNamespace(
+            request_timeout_seconds=180,
+            llm=SimpleNamespace(model="test-model", thinking_enabled=True, reasoning_effort="max"),
+        )
+        agent._client = SimpleNamespace(
+            chat=SimpleNamespace(completions=FakeChatCompletions())
+        )
+        agent._system_prompt = lambda: "system prompt"  # type: ignore[method-assign]
+        agent._build_extra_body = lambda: {}  # type: ignore[method-assign]
+        agent._tools = {}
+        agent._reasoning_delta_callback = None
+        reasoning_deltas: list[str] = []
+
+        LocalToolAgent._request_agent_reply_once(
+            agent,
+            [{"role": "user", "content": "检查配置"}],
+            lambda _delta: None,
+            lambda _input_tokens, _output_tokens, _cached_input_tokens: None,
+            lambda: None,
+            on_reasoning_delta=reasoning_deltas.append,
+        )
+
+        self.assertEqual(reasoning_deltas, ["先检查配置。"])
 
     def test_assistant_tool_call_message_preserves_official_function_name_only(self) -> None:
         agent = object.__new__(LocalToolAgent)

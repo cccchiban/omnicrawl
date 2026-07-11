@@ -124,7 +124,7 @@ def _tool_call_detail_rows(
     caps: TerminalCapabilities,
 ) -> list[str]:
     width = _tool_detail_width()
-    if tool_name == "run_command":
+    if tool_name in {"bash", "powershell"}:
         command = str(arguments.get("command") or "")
         rows = _preview_display_rows(
             command,
@@ -164,7 +164,7 @@ def _tool_result_suffix(
     *,
     available_width: int,
 ) -> str:
-    if tool_name != "run_command":
+    if tool_name not in {"bash", "powershell"}:
         return ""
     match = re.search(r"^退出码：(-?\d+)", output)
     if match is None:
@@ -177,7 +177,7 @@ def _tool_result_suffix(
 
 def _tool_result_output_rows(tool_name: str, output: str, caps: TerminalCapabilities) -> list[str]:
     width = _tool_detail_width()
-    if tool_name == "run_command":
+    if tool_name in {"bash", "powershell"}:
         rows = _preview_display_rows(
             _extract_command_visible_output(output),
             width,

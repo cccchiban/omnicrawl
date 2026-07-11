@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from omnicrawl.agent import ToolCall, ToolResult
+from omnicrawl.agent import AgentError, ToolCall, ToolResult
 from omnicrawl.api import APIConfig, AgentAPIService, create_app
 from omnicrawl.state.project import ProjectEntry
 from omnicrawl.state.session import PromptHistoryEntry, SessionEvent, SessionIndexEntry, SessionState
@@ -54,6 +54,8 @@ class FakeAgent:
         self.release = threading.Event()
         self.closed = False
         self._confirm = lambda _tool_name, _arguments: True
+        self.monitor_tasks: list[object] = []
+        self.monitor_events: dict[str, list[object]] = {}
 
     def set_confirm_handler(self, confirm) -> None:
         self._confirm = confirm
@@ -167,6 +169,33 @@ class FakeAgent:
 
     def clean_memory(self):
         return ["memory/expired.md"]
+
+    def list_monitor_tasks(self):
+        return list(self.monitor_tasks)
+
+    def get_monitor_task(self, monitor_id: str):
+        for task in self.monitor_tasks:
+            if getattr(task, "monitor_id", "") == monitor_id:
+                return task
+        raise AgentError("后台任务不存在")
+
+    def poll_monitor_events(self, monitor_id: str, *, cursor: int = 0, max_events: int = 100):
+        snapshot = self.get_monitor_task(monitor_id)
+        events = tuple(
+            event
+            for event in self.monitor_events.get(monitor_id, [])
+            if getattr(event, "sequence", 0) > cursor
+        )[:max_events]
+        next_cursor = getattr(events[-1], "sequence", cursor) if events else cursor
+        return SimpleNamespace(
+            snapshot=snapshot,
+            events=events,
+            next_cursor=next_cursor,
+            first_available_cursor=0,
+        )
+
+    def wait_for_monitor_events(self, _monitor_id: str, _cursor: int, _timeout: float) -> None:
+        return None
 
     def _session_entry(self) -> SessionIndexEntry:
         state = self._session_state(self.current_session_id)
@@ -504,6 +533,46 @@ class APITest(unittest.TestCase):
         self.assertEqual(projects.json()["data"][0]["name"], "测试项目")
         self.assertEqual(runtime.json()["data"]["model"], "demo-model")
         self.assertIn(traversal.status_code, {400, 404})
+
+    def test_monitor_endpoints_return_status_and_sse_logs(self) -> None:
+        agent = FakeAgent()
+        monitor_id = "monitor-demo"
+        agent.monitor_tasks = [
+            SimpleNamespace(
+                monitor_id=monitor_id,
+                command="python -m http.server",
+                shell="powershell",
+                status="running",
+                exit_code=None,
+                started_at=1.0,
+                next_cursor=2,
+                dropped_events=0,
+            )
+        ]
+        agent.monitor_events[monitor_id] = [
+            SimpleNamespace(sequence=1, created_at=1.0, stream="stdout", text="server ready"),
+            SimpleNamespace(sequence=2, created_at=2.0, stream="system", text="still running"),
+        ]
+
+        with make_client(agent) as client:
+            listed = client.get("/api/v1/monitors", headers=AUTH_HEADERS)
+            detail = client.get(f"/api/v1/monitors/{monitor_id}", headers=AUTH_HEADERS)
+            stream = client.get(
+                f"/api/v1/monitors/{monitor_id}/events",
+                headers=AUTH_HEADERS,
+                params={"follow": "false"},
+            )
+            missing = client.get("/api/v1/monitors/missing", headers=AUTH_HEADERS)
+
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["data"][0]["monitor_id"], monitor_id)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["data"]["status"], "running")
+        self.assertIn("event: monitor.output", stream.text)
+        self.assertIn("event: monitor.status", stream.text)
+        self.assertIn("server ready", stream.text)
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json()["error"]["code"], "MONITOR_NOT_FOUND")
 
     def test_missing_artifact_does_not_expose_internal_exception_text(self) -> None:
         agent = FakeAgent()

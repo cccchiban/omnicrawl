@@ -668,9 +668,9 @@ class TerminalUITest(unittest.TestCase):
         output = io.StringIO()
 
         with redirect_stdout(output):
-            ui.status("步骤 1 - 请求 run_command", leading_blank=False)
+            ui.status("步骤 1 - 请求 powershell", leading_blank=False)
 
-        self.assertEqual(output.getvalue(), "  [步骤 1 - 请求 run_command]\n")
+        self.assertEqual(output.getvalue(), "  [步骤 1 - 请求 powershell]\n")
 
     def test_status_can_render_gray_italic(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -966,16 +966,16 @@ class TerminalUITest(unittest.TestCase):
         with redirect_stdout(output):
             ui.print_tool_call_start(
                 2,
-                "run_command",
-                {"command": "echo hello"},
+                "powershell",
+                {"command": "Write-Output hello"},
                 leading_blank=False,
             )
 
         rendered = output.getvalue()
         # 新格式：╭─ 步骤 N · tool_name
         self.assertIn("步骤 2", rendered)
-        self.assertIn("run_command", rendered)
-        self.assertIn("echo hello", rendered)
+        self.assertIn("powershell", rendered)
+        self.assertIn("Write-Output hello", rendered)
 
     def test_tool_call_card_does_not_overflow_narrow_terminal(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=False))
@@ -988,7 +988,7 @@ class TerminalUITest(unittest.TestCase):
             with redirect_stdout(output):
                 ui.print_tool_call_start(
                     1,
-                    "run_command_with_a_very_long_name",
+                    "powershell_with_a_very_long_name",
                     {"command": "echo " + "x" * 48},
                     leading_blank=False,
                 )
@@ -1007,7 +1007,7 @@ class TerminalUITest(unittest.TestCase):
             ui.print_tool_result_record(
                 True,
                 "退出码：0\n\nstdout:\nhello\n\nstderr:\n",
-                tool_name="run_command",
+                tool_name="powershell",
             )
 
         rendered = output.getvalue()
@@ -1022,19 +1022,19 @@ class TerminalUITest(unittest.TestCase):
         with redirect_stdout(output):
             ui.print_tool_call_start(
                 1,
-                "run_command",
-                {"command": "echo first"},
+                "powershell",
+                {"command": "Write-Output first"},
                 leading_blank=False,
             )
             ui.print_tool_result_record(
                 True,
                 "退出码：0\n\nstdout:\nfirst\n\nstderr:\n",
-                tool_name="run_command",
+                tool_name="powershell",
             )
             ui.print_tool_call_start(
                 2,
-                "run_command",
-                {"command": "echo second"},
+                "powershell",
+                {"command": "Write-Output second"},
                 leading_blank=False,
             )
 
@@ -1042,7 +1042,7 @@ class TerminalUITest(unittest.TestCase):
         # 连续工具之间有空行分隔
         self.assertIn("first", rendered)
         self.assertIn("步骤 2", rendered)
-        self.assertIn("run_command", rendered)
+        self.assertIn("powershell", rendered)
 
     def test_tool_call_start_uses_static_ansi_status_marker(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -1051,15 +1051,15 @@ class TerminalUITest(unittest.TestCase):
         with redirect_stdout(output):
             ui.print_tool_call_start(
                 1,
-                "run_command",
-                {"command": "echo hi"},
+                "powershell",
+                {"command": "Write-Output hi"},
                 leading_blank=False,
             )
 
         rendered = output.getvalue()
         self.assertIn("◌", rendered)
-        self.assertIn("run_command", rendered)
-        self.assertIn("echo hi", rendered)
+        self.assertIn("powershell", rendered)
+        self.assertIn("Write-Output hi", rendered)
         self.assertNotIn("\033[5m", rendered)  # 不使用终端兼容性不稳定的 BLINK
 
     def test_tool_result_appends_completion_without_rewriting_history(self) -> None:
@@ -1069,14 +1069,14 @@ class TerminalUITest(unittest.TestCase):
         with redirect_stdout(output):
             ui.print_tool_call_start(
                 1,
-                "run_command",
-                {"command": "echo hi"},
+                "powershell",
+                {"command": "Write-Output hi"},
                 leading_blank=False,
             )
             ui.print_tool_result_record(
                 True,
                 "退出码：0\n\nstdout:\nhi",
-                tool_name="run_command",
+                tool_name="powershell",
             )
 
         rendered = output.getvalue()

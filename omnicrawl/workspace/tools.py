@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,18 @@ class WorkspaceToolError(RuntimeError):
 class WorkspaceCommandResult:
     ok: bool
     output: str
+
+
+@dataclass(frozen=True)
+class WorkspaceCommandInvocation:
+    """已解析的命令执行方式。
+
+    命令必须通过明确的 Bash 或 PowerShell 可执行文件启动，避免把一种 Shell 的
+    语法误交给当前终端默认 Shell，也不再回退到 Windows CMD。
+    """
+
+    args: list[str]
+    label: str
 
 
 class WorkspaceTools:
@@ -82,19 +96,70 @@ class WorkspaceTools:
 
     def read_file(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or ""))
-        start_line = _read_limited_int(arguments, "start_line", default=1, minimum=1, maximum=100_000)
+        function_name = _read_optional_text(arguments, "function_name")
+        text_snippet = _read_optional_text(arguments, "text")
+        if function_name and text_snippet:
+            raise WorkspaceToolError("function_name 和 text 不能同时指定。")
         max_lines = _read_limited_int(arguments, "max_lines", default=200, minimum=1, maximum=500)
         if not path.is_file():
             raise WorkspaceToolError(f"不是文件：{self.relative_path(path)}")
 
         text = self.read_text(path)
         lines = text.splitlines()
-        start_index = start_line - 1
-        selected = lines[start_index : start_index + max_lines]
-        numbered = [f"{line_no}: {line}" for line_no, line in enumerate(selected, start=start_line)]
-        if start_index + max_lines < len(lines):
-            numbered.append("... 已截断，可提高 start_line 继续读取。")
-        return "\n".join(numbered)
+        if function_name:
+            function_range = _find_function_range(path, text, function_name)
+            if function_range is None:
+                raise WorkspaceToolError(
+                    f"未找到函数或方法：{function_name}（文件：{self.relative_path(path)}）。"
+                )
+            start_line, end_line, resolved_name = function_range
+            return self._format_read_lines(
+                lines,
+                start_line=start_line,
+                end_line=end_line,
+                max_lines=max_lines,
+                header=f"定位：函数 {resolved_name}（第 {start_line}-{end_line} 行）",
+                truncation_hint="函数内容超过 max_lines，可提高 max_lines 继续读取。",
+            )
+
+        if text_snippet:
+            occurrence_offset = text.find(text_snippet)
+            if occurrence_offset < 0:
+                raise WorkspaceToolError(
+                    f"未找到指定文字片段（文件：{self.relative_path(path)}）。"
+                )
+            context_lines = _read_limited_int(
+                arguments,
+                "context_lines",
+                default=20,
+                minimum=0,
+                maximum=200,
+            )
+            anchor_start_line = text.count("\n", 0, occurrence_offset) + 1
+            anchor_last_offset = occurrence_offset + len(text_snippet) - 1
+            anchor_end_line = text.count("\n", 0, anchor_last_offset) + 1
+            start_line = max(1, anchor_start_line - context_lines)
+            end_line = min(len(lines), anchor_end_line + context_lines)
+            return self._format_read_lines(
+                lines,
+                start_line=start_line,
+                end_line=end_line,
+                max_lines=max_lines,
+                header=(
+                    f"定位：文字片段首次匹配（第 {anchor_start_line}-{anchor_end_line} 行，"
+                    f"上下文 {context_lines} 行）"
+                ),
+                truncation_hint="文字片段上下文超过 max_lines，可提高 max_lines 继续读取。",
+            )
+
+        start_line = _read_limited_int(arguments, "start_line", default=1, minimum=1, maximum=100_000)
+        return self._format_read_lines(
+            lines,
+            start_line=start_line,
+            end_line=len(lines),
+            max_lines=max_lines,
+            truncation_hint="已截断，可提高 start_line 继续读取。",
+        )
 
     def search_text(self, arguments: dict[str, Any]) -> str:
         pattern = str(arguments.get("pattern") or "")
@@ -168,7 +233,18 @@ class WorkspaceTools:
             action = "写入"
         return f"已{action} {self.relative_path(path)}，字符数：{len(content)}。"
 
-    def run_command(self, arguments: dict[str, Any]) -> WorkspaceCommandResult:
+    def run_shell_command(
+        self,
+        arguments: dict[str, Any],
+        *,
+        shell: str,
+    ) -> WorkspaceCommandResult:
+        """在指定的显式 Shell 中运行命令，不提供默认解释器回退。"""
+
+        unsupported_keys = set(arguments) - {"command", "timeout_seconds"}
+        if unsupported_keys:
+            names = "、".join(sorted(unsupported_keys))
+            raise WorkspaceToolError(f"显式命令工具不支持参数：{names}。")
         command = str(arguments.get("command") or "").strip()
         if not command:
             raise WorkspaceToolError("command 不能为空。")
@@ -180,31 +256,82 @@ class WorkspaceTools:
             minimum=1,
             maximum=MAX_COMMAND_TIMEOUT_SECONDS,
         )
+        invocation = self.command_invocation(command, shell=shell)
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(self.workspace_root),
+            "shell": False,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(self.workspace_root),
-                shell=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            raise WorkspaceToolError(f"命令执行超过 {timeout} 秒，已终止。")
+            process = subprocess.Popen(invocation.args, **popen_kwargs)
         except OSError as exc:
             raise WorkspaceToolError(f"命令执行失败：{exc}") from exc
 
-        output_parts = [f"退出码：{completed.returncode}"]
-        if completed.stdout.strip():
-            output_parts.append(f"stdout:\n{completed.stdout.strip()}")
-        if completed.stderr.strip():
-            output_parts.append(f"stderr:\n{completed.stderr.strip()}")
+        # 复用 Monitor 已验证的进程树回收逻辑；局部导入避免模块初始化时循环依赖。
+        from .monitor import (
+            BackgroundMonitorManager,
+            _assign_process_to_kill_on_close_job,
+            _close_windows_handle,
+        )
+
+        job_handle = _assign_process_to_kill_on_close_job(process)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            BackgroundMonitorManager._terminate_process_tree(process, job_handle=job_handle)
+            job_handle = None
+            raise WorkspaceToolError(f"命令执行超过 {timeout} 秒，已终止。")
+        finally:
+            _close_windows_handle(job_handle)
+
+        output_parts = [f"退出码：{process.returncode}", f"Shell：{invocation.label}"]
+        if stdout.strip():
+            output_parts.append(f"stdout:\n{stdout.strip()}")
+        if stderr.strip():
+            output_parts.append(f"stderr:\n{stderr.strip()}")
         return WorkspaceCommandResult(
-            ok=completed.returncode == 0,
+            ok=process.returncode == 0,
             output="\n\n".join(output_parts),
         )
+
+    def command_invocation(self, command: str, *, shell: str) -> WorkspaceCommandInvocation:
+        """把工具要求的 Shell 转换为可执行的 subprocess 调用。
+
+        Windows 的 `bash.exe` 可能只是没有 Linux 发行版时会失败的 WSL 启动器，
+        所以 Bash 优先使用 Git Bash；如果只发现 WSL 启动器，则明确报错而不是
+        让用户面对难以理解的子进程输出。PowerShell 优先使用 PowerShell 7，
+        没有时回退 Windows PowerShell。
+        """
+
+        normalized_shell = shell.strip().lower() if isinstance(shell, str) else ""
+        if normalized_shell == "bash":
+            executable = _find_bash_executable()
+            if executable is None:
+                raise WorkspaceToolError(
+                    "未找到可用的 Git Bash。请安装 Git for Windows，或设置 PATH 后重试。"
+                )
+            return WorkspaceCommandInvocation(
+                args=[str(executable), "-lc", command],
+                label="Bash",
+            )
+        if normalized_shell == "powershell":
+            executable = _find_powershell_executable()
+            if executable is None:
+                raise WorkspaceToolError("未找到 PowerShell 可执行文件。")
+            return WorkspaceCommandInvocation(
+                args=[str(executable), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+                label="PowerShell",
+            )
+        raise WorkspaceToolError("shell 仅支持 bash 或 powershell。")
 
     def read_project_text(self, raw_path: str) -> str:
         path = self.safe_path(raw_path)
@@ -273,6 +400,30 @@ class WorkspaceTools:
         except ValueError:
             return str(path)
 
+    @staticmethod
+    def _format_read_lines(
+        lines: list[str],
+        *,
+        start_line: int,
+        end_line: int,
+        max_lines: int,
+        header: str = "",
+        truncation_hint: str,
+    ) -> str:
+        total_lines = len(lines)
+        selected_start = min(max(1, start_line), total_lines + 1)
+        selected_end = min(max(selected_start - 1, end_line), total_lines)
+        selected = lines[selected_start - 1 : min(selected_end, selected_start - 1 + max_lines)]
+        numbered = [
+            f"{line_no}: {line}"
+            for line_no, line in enumerate(selected, start=selected_start)
+        ]
+        if selected_start <= selected_end and selected_start - 1 + max_lines < selected_end:
+            numbered.append(f"... {truncation_hint}")
+        if not numbered:
+            numbered.append("文件为空，或指定范围没有内容。")
+        return "\n".join(([header] if header else []) + numbered)
+
 
 def _read_limited_int(
     arguments: dict[str, Any],
@@ -290,6 +441,176 @@ def _read_limited_int(
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+def _read_optional_text(arguments: dict[str, Any], key: str) -> str:
+    value = arguments.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _find_function_range(
+    path: Path,
+    text: str,
+    target_name: str,
+) -> tuple[int, int, str] | None:
+    """定位函数范围：Python 优先 AST，其余语言使用声明和大括号范围回退。"""
+
+    if path.suffix.lower() == ".py":
+        ast_range = _find_python_function_range(text, target_name)
+        if ast_range is not None:
+            return ast_range
+    return _find_braced_function_range(text.splitlines(), target_name)
+
+
+def _find_python_function_range(text: str, target_name: str) -> tuple[int, int, str] | None:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+
+    matches: list[tuple[int, int, str]] = []
+
+    class FunctionVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.scopes: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.scopes.append(node.name)
+            self.generic_visit(node)
+            self.scopes.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._record(node)
+            self.scopes.append(node.name)
+            self.generic_visit(node)
+            self.scopes.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._record(node)
+            self.scopes.append(node.name)
+            self.generic_visit(node)
+            self.scopes.pop()
+
+        def _record(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            qualified_name = ".".join([*self.scopes, node.name])
+            if target_name not in {node.name, qualified_name}:
+                return
+            start_line = min(
+                [node.lineno, *[decorator.lineno for decorator in node.decorator_list]],
+            )
+            end_line = getattr(node, "end_lineno", node.lineno)
+            matches.append((start_line, end_line, qualified_name))
+
+    FunctionVisitor().visit(tree)
+    if not matches:
+        return None
+    exact_matches = [match for match in matches if match[2] == target_name]
+    candidates = exact_matches or matches
+    if len(candidates) == 1:
+        return candidates[0]
+    names = ", ".join(match[2] for match in candidates)
+    raise WorkspaceToolError(f"函数名 {target_name} 存在多个匹配，请使用限定名：{names}。")
+
+
+def _find_braced_function_range(lines: list[str], target_name: str) -> tuple[int, int, str] | None:
+    leaf_name = target_name.rsplit(".", 1)[-1]
+    escaped_name = re.escape(leaf_name)
+    declaration_patterns = (
+        re.compile(
+            rf"^\s*(?:(?:export|default|public|private|protected|static|async|final|virtual|"
+            rf"override|inline|extern|unsafe|pub)\s+)*(?:function|func|fn|def)\s+{escaped_name}\s*\(",
+        ),
+        re.compile(
+            rf"^\s*(?:(?:export|default|public|private|protected|static|async|final|virtual|"
+            rf"override|inline|extern|unsafe|pub)\s+)*(?:[A-Za-z_][\w<>,.?\[\]*&\s:]*)\s+{escaped_name}\s*\(",
+        ),
+        re.compile(
+            rf"^\s*(?:const|let|var)\s+{escaped_name}\s*=\s*(?:async\s*)?(?:\([^)]*\)|[^=]*)=>",
+        ),
+        re.compile(rf"^\s*{escaped_name}\s*\([^;]*\)\s*(?:=>|\{{)"),
+    )
+    matches: list[tuple[int, int, str]] = []
+    for index, line in enumerate(lines):
+        if not any(pattern.search(line) for pattern in declaration_patterns):
+            continue
+        end_index = _find_braced_block_end(lines, index)
+        if end_index is not None:
+            matches.append((index + 1, end_index + 1, target_name if "." in target_name else leaf_name))
+
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    raise WorkspaceToolError(f"函数名 {target_name} 存在多个文本匹配，请改用更具体的文件或函数名。")
+
+
+def _find_braced_block_end(lines: list[str], start_index: int) -> int | None:
+    depth = 0
+    started = False
+    quote = ""
+    escaped = False
+    for index in range(start_index, min(len(lines), start_index + 500)):
+        line = lines[index]
+        position = 0
+        while position < len(line):
+            character = line[position]
+            next_character = line[position + 1] if position + 1 < len(line) else ""
+            if quote:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == quote:
+                    quote = ""
+                position += 1
+                continue
+            if character in {"'", '"', "`"}:
+                quote = character
+                position += 1
+                continue
+            if character == "/" and next_character == "/":
+                break
+            if character == "{" :
+                depth += 1
+                started = True
+            elif character == "}" and started:
+                depth -= 1
+                if depth == 0:
+                    return index
+            position += 1
+    return None
+
+
+def _find_bash_executable() -> Path | None:
+    candidates: list[Path] = []
+    git_executable = shutil.which("git")
+    if git_executable:
+        git_root = Path(git_executable).resolve().parent.parent
+        candidates.extend([git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"])
+    if os.name == "nt":
+        for environment_key in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            root = os.getenv(environment_key)
+            if root:
+                candidates.extend(
+                    [Path(root) / "Git" / "bin" / "bash.exe", Path(root) / "Git" / "usr" / "bin" / "bash.exe"]
+                )
+    else:
+        bash = shutil.which("bash")
+        if bash:
+            candidates.append(Path(bash))
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _find_powershell_executable() -> Path | None:
+    for name in ("pwsh", "powershell"):
+        executable = shutil.which(name)
+        if executable:
+            return Path(executable)
+    return None
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:

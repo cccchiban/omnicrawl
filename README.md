@@ -32,10 +32,13 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 
 - `list_files`：列出工作区文件，默认执行前会要求确认。
 - `read_file`：读取工作区内 UTF-8 文本文件，默认执行前会要求确认。
+- `read_file` 支持 `start_line`/`max_lines` 行范围、`function_name` 函数或方法定位，以及 `text`/`context_lines` 文字片段上下文定位；Python 优先使用 AST，其他常见代码使用声明与大括号范围回退。
 - `search_text`：在工作区内搜索文本或正则，默认执行前会要求确认。
 - `replace_text`：替换单个文件中的文本，默认执行前会要求确认。
 - `write_file`：写入或追加文件，默认执行前会要求确认。
-- `run_command`：以工作区为当前目录执行任意命令、脚本或 shell 片段，默认执行前会要求确认。
+- `bash`：使用 Git Bash 执行 Bash 命令，适合 POSIX Shell 语法与 Bash 脚本，默认执行前会要求确认。
+- `powershell`：使用 PowerShell 执行 Windows 命令，优先使用 PowerShell 7，默认执行前会要求确认。
+- `monitor`：受 Agent 管理地在后台执行命令，默认使用 PowerShell，也可显式指定 Bash；`start` 返回任务 ID，`poll` 按游标读取增量日志，`stop` 停止任务，`list` 查看任务。Agent 关闭或切换工作区时会自动终止其子进程树，默认执行前会要求确认。
 - `bb_browser_cli`：调用 bb-browser CLI 操作真实浏览器；Agent 启动时不会预热或打开浏览器，首次实际调用该工具时由 CLI 按需启动 daemon 和受管浏览器，默认执行前会要求确认。
 
 安全边界：
@@ -43,7 +46,7 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 - 文件工具只能访问当前项目目录内的路径；`config.json`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
 - `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；按 `Enter`、`Y` 或 `1` 允许，按 `N` 或 `2` 拒绝；方向键只会被消费，不会触发工具执行。
 - `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时只把疑似删除行为交给同一模型的非思考模式审查，其他工具调用自动执行。自动模式不显示确认页，只显示步骤和执行记录。
-- 命令工具不是系统级沙箱；程序会用 `shell=True` 执行用户确认后的命令字符串。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
+- 命令工具不是系统级沙箱；所有命令均通过明确的 PowerShell 或 Git Bash 解释器以 `shell=False` 启动。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
 - bb-browser 是内置 CLI 能力，不通过 MCP 暴露；需要安装或更新时使用项目里的 npm 依赖，或设置 `BB_BROWSER_COMMAND` 指向本机可执行文件。
 - MCP 默认关闭；开启后会在启动时发现已启用的 MCP Server，并把 Tool 以 `server.tool` 名称追加到 Agent 工具列表，同时按需读取 Resource 和 Prompt。单个 Server 失败只会显示降级诊断，不影响内置工具。
 - Agent 不再限制单轮连续工具步骤；AI 返回空响应时会最多重试 5 次，每次请求超时 180 秒。可通过环境变量调整：

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
 from omnicrawl.temp_workspace import AgentTempWorkspaceConfig
@@ -155,6 +155,51 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     self.assertIn("content", result.output)
                 finally:
                     agent.close()
+
+    def test_agent_registers_shell_monitor_and_extended_read_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = self._make_config(workspace)
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                try:
+                    self.assertTrue({"read_file", "bash", "powershell", "monitor"}.issubset(agent._tools))
+                    self.assertNotIn("run_command", agent._tools)
+                    schema = agent._tools["read_file"].argument_schema
+                    self.assertIn("function_name", schema)
+                    self.assertIn("context_lines", schema)
+                finally:
+                    agent.close()
+
+    def test_switch_workspace_closes_monitor_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orig_workspace = Path(temp_dir) / "project_a"
+            target_workspace = Path(temp_dir) / "project_b"
+            orig_workspace.mkdir()
+            target_workspace.mkdir()
+            config = self._make_config(orig_workspace)
+            monitor_manager = SimpleNamespace(close=Mock())
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._monitor_manager = monitor_manager
+                try:
+                    agent.switch_workspace(target_workspace)
+                    monitor_manager.close.assert_called_once_with()
+                    self.assertFalse(hasattr(agent, "_monitor_manager"))
+                finally:
+                    agent.close()
+
+    def test_close_closes_monitor_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = self._make_config(workspace)
+            monitor_manager = SimpleNamespace(close=Mock())
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._monitor_manager = monitor_manager
+                agent.close()
+
+        monitor_manager.close.assert_called_once_with()
 
     def test_switch_workspace_with_sessions_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
