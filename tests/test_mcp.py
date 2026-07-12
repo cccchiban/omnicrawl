@@ -123,17 +123,41 @@ class MCPSecurityTest(unittest.TestCase):
 
         self.assertTrue(mcp_tool_requires_confirmation(meta, config.policy))
 
+    def test_trusted_unknown_tool_requires_confirmation(self) -> None:
+        config = MCPConfig(enabled=True)
+        meta = MCPToolMeta(
+            logical_name="trusted.send_email",
+            server_name="trusted",
+            tool_name="send_email",
+            description="send email",
+            risk_level="trusted",
+        )
+
+        self.assertTrue(mcp_tool_requires_confirmation(meta, config.policy))
+
     def test_trusted_read_tool_can_skip_confirmation(self) -> None:
         config = MCPConfig(enabled=True)
         meta = MCPToolMeta(
-            logical_name="trusted.read_file",
+            logical_name="trusted.workspace.read_file",
             server_name="trusted",
-            tool_name="read_file",
+            tool_name="workspace.read_file",
             description="read",
             risk_level="trusted",
         )
 
         self.assertFalse(mcp_tool_requires_confirmation(meta, config.policy))
+
+    def test_trusted_tool_with_read_substring_and_side_effect_requires_confirmation(self) -> None:
+        config = MCPConfig(enabled=True)
+        meta = MCPToolMeta(
+            logical_name="trusted.read_file_and_send_email",
+            server_name="trusted",
+            tool_name="read_file_and_send_email",
+            description="read then send",
+            risk_level="trusted",
+        )
+
+        self.assertTrue(mcp_tool_requires_confirmation(meta, config.policy))
 
 
 class MCPManagerTest(unittest.TestCase):
@@ -210,6 +234,56 @@ class MCPManagerTest(unittest.TestCase):
         self.assertIn("hello mcp", resource_result.output)
         self.assertTrue(prompt_result.ok)
         self.assertIn("代码审查", prompt_result.output)
+
+    def test_audit_output_preview_redacts_sensitive_text(self) -> None:
+        from omnicrawl.mcp.audit import MCPAuditLogger
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            logger = MCPAuditLogger(workspace, enabled=True)
+            logger.record_tool_call(
+                session_id="session",
+                audit_id="audit",
+                server_name="demo",
+                tool_name="echo",
+                arguments={},
+                approval_mode="manual",
+                approval_result="approved",
+                duration_ms=1,
+                ok=True,
+                error_code=None,
+                output="api_key=output-secret; Authorization: Bearer abcdefghijklmnop",
+            )
+            event = json.loads((workspace / "logs" / "mcp-audit.jsonl").read_text(encoding="utf-8"))
+
+        self.assertNotIn("output-secret", event["output_preview"])
+        self.assertNotIn("abcdefghijklmnop", event["output_preview"])
+        self.assertIn("api_key=***", event["output_preview"])
+        self.assertIn("Bearer ***", event["output_preview"])
+
+    def test_audit_redacts_x_api_key_header(self) -> None:
+        from omnicrawl.mcp.audit import MCPAuditLogger
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            logger = MCPAuditLogger(workspace, enabled=True)
+            logger.record_tool_call(
+                session_id="session",
+                audit_id="audit",
+                server_name="demo",
+                tool_name="echo",
+                arguments={"headers": {"X-API-Key": "header-secret"}},
+                approval_mode="manual",
+                approval_result="approved",
+                duration_ms=1,
+                ok=True,
+                error_code=None,
+                output="ok",
+            )
+            event = json.loads((workspace / "logs" / "mcp-audit.jsonl").read_text(encoding="utf-8"))
+
+        self.assertNotIn("header-secret", event["arguments_redacted"]["headers"]["X-API-Key"])
+        self.assertEqual(event["arguments_redacted"]["headers"]["X-API-Key"], "***")
 
     def test_schema_validation_and_audit_redaction(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

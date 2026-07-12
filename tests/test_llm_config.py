@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from omnicrawl.llm import (
     LLMConfig,
@@ -24,6 +25,33 @@ class LLMConfigTest(unittest.TestCase):
     def test_reasoning_effort_rejects_unknown_value(self) -> None:
         with self.assertRaisesRegex(LLMError, "reasoning_effort"):
             normalize_reasoning_effort("turbo")
+
+    def test_load_llm_config_reads_context_window_tokens(self) -> None:
+        from omnicrawl.config.llm import load_llm_config
+
+        with patch(
+            "omnicrawl.config.llm.load_config_data",
+            return_value={
+                "llm": {
+                    "api_key": "test-key",
+                    "base_url": "https://example.test/v1",
+                    "model": "demo-model",
+                    "context_window_tokens": 200_000,
+                }
+            },
+        ):
+            config = load_llm_config()
+
+        self.assertEqual(config.context_window_tokens, 200_000)
+
+    def test_context_window_tokens_must_be_positive_integer(self) -> None:
+        with self.assertRaisesRegex(LLMError, "context_window_tokens"):
+            LLMConfig(
+                api_key="test-key",
+                base_url="https://example.test/v1",
+                model="demo-model",
+                context_window_tokens=0,
+            )
 
     def test_extra_body_sends_xhigh_reasoning_effort(self) -> None:
         config = LLMConfig(

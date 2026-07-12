@@ -1,0 +1,156 @@
+"""Agent 子系统内部模块。
+
+本文件由原合并入口按既有模块边界恢复，职责说明见模块内公开对象。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from .types import ToolDefinition
+
+
+TOOL_REVIEW_SYSTEM_PROMPT = (
+    "你是本地 OmniCrawl 的工具调用安全审查器。"
+    "review 模式下，Host 只会把疑似删除行为的工具调用交给你审查；非删除行为由 Host 自动放行。"
+    "你只判断这一次工具调用是否可以自动批准，不执行工具，也不补写方案。"
+    "请用严格 JSON 回复：{\"approve\": true/false, \"reason\": \"一句中文理由\"}。"
+    "删除目标清晰、位于工作区内、影响范围明确时可以批准。"
+    "当请求明显越界访问、读取密钥、破坏系统、递归或批量删除大量文件、修改真实生产数据、"
+    "执行无法判断影响的危险删除命令，或参数不足以判断时，必须拒绝。"
+    "如果工具调用经判断不是删除行为，可以批准并说明无需删除审批。"
+)
+
+_DELETE_COMMAND_PATTERN = re.compile(
+    r"(?<![\w.-])(?:rm|rmdir|del|erase|rd|remove-item|ri|unlink|clean)"
+    r"(?:\.exe|\.cmd|\.bat|\.ps1)?(?=\s|$|[;&|])",
+    re.IGNORECASE,
+)
+_GIT_CLEAN_PATTERN = re.compile(r"(?<![\w.-])git(?:\.exe)?\s+clean(?=\s|$|[;&|])", re.IGNORECASE)
+_FIND_DELETE_PATTERN = re.compile(r"(?<![\w.-])find(?:\.exe)?\b.*(?:\s-delete\b|\s-exec\s+rm\b)", re.IGNORECASE)
+_DELETE_INTENT_PATTERN = re.compile(
+    r"(^|[._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink|删除|移除|清空)($|[._:/\\-])",
+    re.IGNORECASE,
+)
+_DELETE_TEXT_INTENT_PATTERN = re.compile(
+    r"(^|[\s._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
+    re.IGNORECASE,
+)
+_DELETE_DESCRIPTION_START_PATTERN = re.compile(
+    r"^(?:delete|del|erase|remove|rm|rmdir|unlink)($|[\s._:/\\-])",
+    re.IGNORECASE,
+)
+_DELETE_LOCALIZED_TERMS = ("删除", "移除", "清空")
+_DELETE_INTENT_KEYS = {
+    "action",
+    "command",
+    "cmd",
+    "method",
+    "mode",
+    "op",
+    "operation",
+    "script",
+    "verb",
+}
+_MCP_DELETE_INTENT_KEYS = _DELETE_INTENT_KEYS
+
+
+def is_delete_behavior_tool_call(tool: ToolDefinition, arguments: dict[str, Any]) -> bool:
+    """判断工具调用是否带有显式删除意图，供 review 模式决定是否进入审查。
+
+    review 模式的目标是减少普通读写、搜索和测试命令的审批噪音，只把真正需要
+    守住的删除类动作交给审查模型。这里优先识别工具名和命令字符串，
+    同时检查 MCP 常见的 action/operation/method 等意图字段；避免扫描 content
+    这类正文参数，以免用户写入的普通文本里出现 delete 一词就被误判。
+    """
+
+    if text_has_delete_intent(tool.name):
+        return True
+
+    command = arguments.get("command")
+    if isinstance(command, str) and command_has_delete_intent(command):
+        return True
+
+    if not tool_accepts_shell_command(tool) and description_has_delete_intent(tool.description):
+        return True
+
+    return arguments_have_delete_intent(arguments, intent_keys=_MCP_DELETE_INTENT_KEYS)
+
+
+def tool_accepts_shell_command(tool: ToolDefinition) -> bool:
+    return "command" in tool.argument_schema.lower() or "cmd" in tool.argument_schema.lower()
+
+
+def arguments_have_delete_intent(
+    value: Any,
+    *,
+    intent_keys: set[str] = _DELETE_INTENT_KEYS,
+) -> bool:
+    if isinstance(value, dict):
+        for raw_key, item in value.items():
+            if not isinstance(raw_key, str):
+                continue
+
+            key = raw_key.strip().lower()
+            if text_has_delete_intent(key):
+                return True
+            if key in intent_keys and isinstance(item, str):
+                if command_has_delete_intent(item) or text_has_delete_intent(item):
+                    return True
+            elif isinstance(item, dict):
+                if arguments_have_delete_intent(item, intent_keys=intent_keys):
+                    return True
+            elif isinstance(item, list):
+                if any(arguments_have_delete_intent(child, intent_keys=intent_keys) for child in item):
+                    return True
+    elif isinstance(value, list):
+        return any(arguments_have_delete_intent(item, intent_keys=intent_keys) for item in value)
+    return False
+
+
+def command_has_delete_intent(command: str) -> bool:
+    return bool(
+        _DELETE_COMMAND_PATTERN.search(command)
+        or _GIT_CLEAN_PATTERN.search(command)
+        or _FIND_DELETE_PATTERN.search(command)
+        or _DELETE_INTENT_PATTERN.search(command)
+    )
+
+
+def text_has_delete_intent(text: str) -> bool:
+    if any(term in text for term in _DELETE_LOCALIZED_TERMS):
+        return True
+    normalized_text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
+    return bool(_DELETE_TEXT_INTENT_PATTERN.search(normalized_text))
+
+
+def description_has_delete_intent(text: str) -> bool:
+    stripped = text.lstrip(" \t\r\n-_*:;,.")
+    if any(stripped.startswith(term) for term in _DELETE_LOCALIZED_TERMS):
+        return True
+    normalized_text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", stripped)
+    return bool(_DELETE_DESCRIPTION_START_PATTERN.search(normalized_text))
+
+
+def parse_tool_review_response(review_text: str) -> tuple[bool, str]:
+    """解析审查模型 JSON；不可解析时按拒绝处理。"""
+
+    text = review_text.strip()
+    if not text:
+        return False, "审查模型返回为空。"
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    payload = match.group(0) if match else text
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return False, f"审查模型返回不是 JSON：{text}"
+
+    if not isinstance(data, dict):
+        return False, "审查模型返回不是 JSON 对象。"
+
+    reason_value = data.get("reason", "")
+    reason = reason_value.strip() if isinstance(reason_value, str) else ""
+    return data.get("approve") is True, reason

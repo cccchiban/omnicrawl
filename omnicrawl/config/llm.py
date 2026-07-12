@@ -63,6 +63,7 @@ class LLMConfig:
     reasoning_effort: str = field(
         default_factory=lambda: os.getenv("REASONING_EFFORT", DEFAULT_REASONING_EFFORT)
     )
+    context_window_tokens: int = 128_000
     system_prompt: str = (
         "你是一个通过语音和用户对话的中文 AI 助手。"
         "回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。"
@@ -75,6 +76,12 @@ class LLMConfig:
         self.model = self.model.strip()
         self.thinking_type = (self.thinking_type.strip() or DEFAULT_THINKING_TYPE).lower()
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
+        if isinstance(self.context_window_tokens, bool) or not isinstance(
+            self.context_window_tokens, int
+        ):
+            raise LLMError("配置项 llm.context_window_tokens 必须是正整数。")
+        if self.context_window_tokens <= 0:
+            raise LLMError("配置项 llm.context_window_tokens 必须大于 0。")
         _require_non_empty("api_key", self.api_key, "OPENAI_API_KEY")
         _require_non_empty("base_url", self.base_url, "OPENAI_BASE_URL")
         _require_non_empty("model", self.model, "OPENAI_MODEL")
@@ -165,6 +172,15 @@ def _read_optional_config_text(
     return value.strip() or default
 
 
+def _read_context_window_tokens(section: dict[str, Any]) -> int:
+    """读取模型上下文窗口，用于 TUI 计算上下文占用率。"""
+
+    value = section.get("context_window_tokens", 128_000)
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise LLMError("配置项 llm.context_window_tokens 必须是正整数。")
+    return value
+
+
 def load_llm_config() -> LLMConfig:
     """从本地 JSON 配置文件和环境变量创建 LLM 配置。
 
@@ -194,6 +210,7 @@ def load_llm_config() -> LLMConfig:
             "REASONING_EFFORT",
             DEFAULT_REASONING_EFFORT,
         ),
+        context_window_tokens=_read_context_window_tokens(llm_section),
     )
 
 

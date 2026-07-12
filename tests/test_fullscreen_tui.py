@@ -37,12 +37,78 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app.query("#header")), 0)
             self.assertEqual(len(app.query("#hint")), 0)
             self.assertEqual(app.query_one("#topbar").region.y, 0)
-            context = str(app.query_one("#context-summary", Static).content)
-            self.assertIn("D:/workspace", context)
-            self.assertIn("demo-model", context)
-            self.assertNotIn(".agent_tmp", context)
+            self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
+            context = app.query_one("#context-summary", Static).content
+            self.assertIn("PRJ workspace", context.plain)
+            self.assertNotIn("D:/workspace", context.plain)
+            self.assertIn("MDL demo-model", context.plain)
+            self.assertIn("THK MAX", context.plain)
+            self.assertIn("APR MAN", context.plain)
+            self.assertNotIn(".agent_tmp", context.plain)
+            self.assertIn("#39a7ff", str(context.spans))
+            telemetry = str(app.query_one("#token-telemetry", Static).content)
+            self.assertIn("IN 0", telemetry)
+            self.assertIn("CTX 0/128K", telemetry)
             self.assertEqual(app.query_one("#composer-wrap").region.height, 3)
             self.assertGreater(app.query_one("#composer", Input).region.height, 0)
+
+    async def test_token_telemetry_updates_counts_and_context_progress(self) -> None:
+        """Token 回调应刷新缩写统计，并按配置上限生成彩色上下文进度条。"""
+
+        from rich.text import Text
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            context_window_tokens = 100_000
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            app._handle_token_usage(62_500, 2_400, 50_000)
+            await pilot.pause()
+            telemetry = app.query_one("#token-telemetry", Static).content
+            self.assertIsInstance(telemetry, Text)
+            self.assertIn("IN 62.5K", telemetry.plain)
+            self.assertIn("OUT 2.4K", telemetry.plain)
+            self.assertIn("CA 50K", telemetry.plain)
+            self.assertIn("CTX 62.5K/100K", telemetry.plain)
+            self.assertIn("62%", telemetry.plain)
+            self.assertIn("#f4b860", str(telemetry.spans))
+
+    async def test_context_summary_uses_windows_workspace_folder_name(self) -> None:
+        """顶部项目名解析不应依赖测试进程当前运行的平台。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = r"D:\projects\omnicrawl"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "fallback", ".agent_tmp"),
+        )
+
+        context = app._context_summary_text()
+        self.assertTrue(context.plain.startswith("PRJ omnicrawl  ·  MDL "))
+        self.assertNotIn(r"D:\projects", context.plain)
 
     async def test_slash_menu_filters_commands_and_completion_does_not_submit(self) -> None:
         """斜杠菜单应包含动态 Skill，最多八项，Enter/Tab 只补全不执行。"""
@@ -144,8 +210,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(decision, [False])
             self.assertEqual(len(app.screen_stack), 1)
 
-    async def test_runtime_indicator_blinks_only_while_working(self) -> None:
-        """等待 AI 时状态点应闪烁，恢复就绪后必须稳定显示。"""
+    async def test_runtime_indicator_only_shows_while_active(self) -> None:
+        """活动状态应闪烁显示，默认和完成状态必须隐藏且不占空间。"""
 
         from textual.widgets import Static
 
@@ -165,17 +231,23 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
+            status = app.query_one("#runtime-status", Static)
+            self.assertFalse(status.display)
+            self.assertEqual(str(status.content), "")
+
             app._set_runtime_status("正在思考", "working")
             app._tick_status_indicator()
             await pilot.pause()
-            self.assertEqual(str(app.query_one("#runtime-status", Static).content), "  正在思考")
+            self.assertTrue(status.display)
+            self.assertEqual(str(status.content), "  正在思考")
 
             app._tick_status_indicator()
-            self.assertEqual(str(app.query_one("#runtime-status", Static).content), "● 正在思考")
+            self.assertEqual(str(status.content), "● 正在思考")
 
             app._set_runtime_status("完成", "complete")
             app._tick_status_indicator()
-            self.assertEqual(str(app.query_one("#runtime-status", Static).content), "● 完成")
+            self.assertFalse(status.display)
+            self.assertEqual(str(status.content), "")
 
     async def test_mount_preloads_mcp_before_accepting_input(self) -> None:
         """首屏显示后应后台发现 MCP，并在完成前锁定输入。"""
@@ -212,7 +284,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             preload_release.set()
             await pilot.pause(0.2)
             self.assertFalse(app.is_generating)
-            self.assertEqual(str(app.query_one("#runtime-status", Static).content), "● 完成")
+            status = app.query_one("#runtime-status", Static)
+            self.assertFalse(status.display)
+            self.assertEqual(str(status.content), "")
 
     async def test_reasoning_sections_are_separate_collapsed_and_clickable(self) -> None:
         """每次模型推理应独立成段、默认折叠，并且只能通过点击切换正文。"""
@@ -348,7 +422,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("参数：{'path': 'README.md'}", expanded)
             self.assertIn("读取完成", expanded)
             self.assertEqual(app.agent.seen_statuses, ["正在思考", "正在回复", "等待", "正在调用"])
-            self.assertEqual(str(app.query_one("#runtime-status").content), "● 完成")
+            status = app.query_one("#runtime-status", Static)
+            self.assertFalse(status.display)
+            self.assertEqual(str(status.content), "")
 
     async def test_stream_records_preserve_model_tool_model_visual_order(self) -> None:
         """工具边界后的推理和最终回复不得写回工具之前的旧回复组件。"""
@@ -463,10 +539,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             app._refresh_context_summary()
             await pilot.pause()
 
-            context = str(app.query_one("#context-summary", Static).content)
-            self.assertIn("demo-model", context)
-            self.assertIn("LOW", context)
-            self.assertIn("完全自动批准", context)
+            context = app.query_one("#context-summary", Static).content
+            self.assertIn("MDL demo-model", context.plain)
+            self.assertIn("THK LOW", context.plain)
+            self.assertIn("APR AUTO", context.plain)
+            self.assertNotIn("完全自动批准", context.plain)
 
     async def test_parallel_tool_results_update_their_matching_disclosures(self) -> None:
         """并发工具即使逆序完成，也必须更新各自的调用记录。"""
@@ -681,6 +758,72 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 self.assertLessEqual(render.call_count, 1)
                 await pilot.pause(0.2)
                 self.assertEqual(render.call_count, 1)
+
+    async def test_workspace_switch_runs_outside_event_loop_and_resets_monitor_cursors(self) -> None:
+        """工作区切换涉及磁盘和进程重建，不能阻塞 Textual 主事件循环。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+            workspace_root = "D:/workspace"
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def switch_workspace(self, workspace: str) -> None:
+                time.sleep(0.25)
+                self.workspace_root = workspace
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        app._monitor_cursors["old-task"] = 42
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            started = time.monotonic()
+            self.assertTrue(app._handle_command("/workspace D:/next"))
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 0.1)
+            self.assertEqual(app._monitor_cursors, {})
+            self.assertTrue(app.is_generating)
+            await pilot.pause(0.35)
+
+        self.assertIn("已切换工作区：D:/next", app.conversation_text)
+        self.assertFalse(app.is_generating)
+
+    async def test_workspace_switch_failure_is_rendered_by_slow_command_worker(self) -> None:
+        """工作区切换失败应解除输入锁，并在对话区显示可读错误。"""
+
+        from omnicrawl.agent import AgentError
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+            workspace_root = "D:/workspace"
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def switch_workspace(self, _workspace: str) -> None:
+                raise AgentError("目录不存在")
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            self.assertTrue(app._handle_command("/workspace D:/missing"))
+            await pilot.pause(0.1)
+
+        self.assertIn("命令执行失败：目录不存在", app.conversation_text)
+        self.assertFalse(app.is_generating)
 
     async def test_model_command_runs_outside_event_loop(self) -> None:
         """模型列表检测较慢时，事件循环仍必须能够继续处理界面事件。"""

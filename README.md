@@ -135,7 +135,8 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
     "base_url": "https://xxx.xx/v1",
     "model": "deepseek-v4-flash",
     "thinking_type": "disabled",
-    "reasoning_effort": ""
+    "reasoning_effort": "",
+    "context_window_tokens": 128000
   },
   "approval": {
     "mode": "manual"
@@ -188,9 +189,13 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 
 思考深度可在 `config.json` 的 `llm.reasoning_effort` 配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
 
+`llm.context_window_tokens` 配置当前模型的上下文窗口上限，必须是正整数。全屏 TUI 顶部 Token 遥测行使用该值计算 `CTX` 占用率；切换到不同上下文规格的模型时应同步调整此配置。
+
+会话转录、PromptHistory、HTML 工具预览和 MCP 审计日志会清理常见 API Key、Token、Cookie、密码及 Bearer 凭据后再写入新记录。该保护只覆盖后续新写入内容；已存在的本地会话文件不会被程序自动重写，如需清理历史数据请先自行备份并人工审查。
+
 模型列表会按当前 `llm.base_url` 自动请求 OpenAI 兼容的 `/models` 接口检测。TUI 中输入 `/model` 可查看可用模型，输入 `/model <模型ID>` 可实时切换并写回 `config.json`；API 使用 `/api/v1/models` 和 `/api/v1/models/current`。若设置了 `OPENAI_MODEL` 环境变量，重启后仍会优先使用环境变量。
 
-MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
+MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。除内置 `local_project` 的显式只读能力外，MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
 
 如果没有 `config.json`，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
 

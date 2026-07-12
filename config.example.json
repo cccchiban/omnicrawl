@@ -4,7 +4,8 @@
     "base_url": "https://xxx.xx/v1",
     "model": "deepseek-v4-flash",
     "thinking_type": "disabled",
-    "reasoning_effort": ""
+    "reasoning_effort": "",
+    "context_window_tokens": 128000
   },
   "approval": {
     "mode": "manual"

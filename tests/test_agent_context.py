@@ -752,6 +752,7 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(html_artifact["type"], "html")
         self.assertEqual(html_artifact["title"], "采集结果")
         self.assertNotIn("html", html_artifact)
+        self.assertTrue(html_artifact["redacted"])
         self.assertTrue(html_artifact_exists)
         self.assertEqual(html_artifact_text, html)
 
