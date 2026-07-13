@@ -11,6 +11,8 @@ from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from .tool_diff import tool_disclosure_body, tool_disclosure_title
+
 
 class ConfirmationScreen(ModalScreen[bool]):
     """受限工具的全屏模态确认框。"""
@@ -115,14 +117,26 @@ class ToolDisclosure(Static):
         self._refresh_display()
 
     def _refresh_display(self) -> None:
-        marker = "▾" if self.expanded else "▸"
-        title = f"{marker} ⌁ {self.tool_name} · {self.status} · {self.duration_seconds:.2f}s"
+        # 文件变更工具（write_file / replace_text）走 git 旁注行号 diff 样式；
+        # 其他工具保持原有「参数 + 结果」摘要，避免扩大展示协议。
+        title = tool_disclosure_title(
+            tool_name=self.tool_name,
+            arguments=self.arguments,
+            status=self.status,
+            duration_seconds=self.duration_seconds,
+            expanded=self.expanded,
+        )
         if not self.expanded:
-            self.update(Text(title))
+            self.update(title)
             return
-        details = [title]
-        if self.arguments:
-            details.append(f"参数：{self.arguments}")
-        if self.result_text:
-            details.append(f"结果：\n{self.result_text}")
-        self.update(Text("\n".join(details)))
+        body = tool_disclosure_body(
+            tool_name=self.tool_name,
+            arguments=self.arguments,
+            result_text=self.result_text,
+        )
+        rendered = Text()
+        rendered.append_text(title)
+        if body.plain:
+            rendered.append("\n")
+            rendered.append_text(body)
+        self.update(rendered)

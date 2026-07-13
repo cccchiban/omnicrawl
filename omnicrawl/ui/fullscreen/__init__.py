@@ -21,18 +21,24 @@ from .hud import (
     gradient_text,
     token_telemetry_text,
 )
-from .widgets import ConfirmationScreen, ReasoningDisclosure, ToolDisclosure
+# 保留这些模块级名称作为既有测试和扩展的 patch 点；实际分派位于 commands.py。
 from ...commands.slash import (
+    build_slash_command_options,
     format_memory_clean_result,
     format_mcp_status,
+    format_plugins_status,
     format_skills_list,
     format_tool_confirmation,
     handle_approval_command,
     handle_model_command,
     handle_reasoning_command,
     handle_session_command,
-    build_slash_command_options,
 )
+from .commands import CommandDispatcher
+from .model_picker import ModelPickerResult, ModelPickerScreen
+from .monitor import MonitorStateAdapter, format_monitor_display_batch
+from .turns import AgentTurnCallbacks, AgentTurnController
+from .widgets import ConfirmationScreen, ReasoningDisclosure, ToolDisclosure
 
 
 @dataclass(frozen=True)
@@ -46,12 +52,6 @@ class FullscreenStartup:
     temp_label: str
 
 
-
-
-
-
-
-
 class OmniCrawlApp(App[None]):
     """可控全屏渲染的 OmniCrawl 工作台。"""
 
@@ -60,16 +60,36 @@ class OmniCrawlApp(App[None]):
     CSS = """
     Screen { background: #080b0e; color: #d9e4e8; }
     #shell { height: 1fr; background: #080b0e; }
-    #topbar { height: 1; padding: 0 1; background: #0a0e12; }
-    #brand { width: 20; text-style: bold; content-align: left middle; }
-    #context-summary { width: 1fr; color: #66757b; content-align: left middle; text-overflow: ellipsis; }
-    #runtime-status { display: none; width: 20; color: #00e5c3; content-align: right middle; text-style: bold; }
+    /* 顶部第一行：左品牌 / 中上下文 / 右运行态 三栏对齐。
+       运行态仅任务活动时显示（方案 3A），空闲不占位。 */
+    #topbar { height: 1; padding: 0 1; background: #0a0e12; align: left middle; }
+    #brand { width: 18; min-width: 18; max-width: 18; text-style: bold; content-align: left middle; }
+    #context-summary {
+        width: 1fr;
+        min-width: 0;
+        color: #66757b;
+        content-align: left middle;
+        text-overflow: ellipsis;
+    }
+    #runtime-status {
+        display: none;
+        width: 16;
+        min-width: 16;
+        max-width: 16;
+        color: #00e5c3;
+        content-align: right middle;
+        text-style: bold;
+        text-overflow: ellipsis;
+    }
+    /* 第二行 Token 与 topbar 同左边距左对齐。
+       height 必须至少为 2：Textual 的 border-bottom 会占用 1 行布局高度，
+       若 height=1 则内容区高度被压成 0，导致 IN/OUT/CA/CTX 有 content 但不渲染。 */
     #token-telemetry {
         height: 2;
         padding: 0 1;
         background: #0a0e12;
         color: #72858c;
-        content-align: center middle;
+        content-align: left middle;
         text-overflow: ellipsis;
         border-bottom: solid #16232a;
     }
@@ -127,13 +147,42 @@ class OmniCrawlApp(App[None]):
         self.is_generating = False
         self.conversation_text = ""
         self._cancel_requested = threading.Event()
+        # Agent 回合协议和取消令牌由非 Textual 控制器持有；本应用仅适配其
+        # 回调回到主线程并保留 UI/审批状态。
+        self._turn_controller = AgentTurnController(agent, self._cancel_requested)
+        # 用 lambda 延迟解析模块级委托函数：重构后的 Dispatcher 不依赖
+        # Textual，但既有测试和扩展仍可在 App 创建后 patch 本模块的命令入口。
+        self._command_dispatcher = CommandDispatcher(
+            agent,
+            format_skills=lambda command_agent: format_skills_list(command_agent),
+            format_mcp=lambda command_agent: format_mcp_status(command_agent),
+            format_plugins=lambda command_agent: format_plugins_status(command_agent),
+            format_memory_clean=lambda command_agent: format_memory_clean_result(command_agent),
+            handle_session=lambda command_agent, command: handle_session_command(
+                command_agent,
+                command,
+            ),
+            handle_model=lambda command_agent, command: handle_model_command(
+                command_agent,
+                command,
+            ),
+            handle_approval=lambda command_agent, command: handle_approval_command(
+                command_agent,
+                command,
+            ),
+            handle_reasoning=lambda command_agent, command: handle_reasoning_command(
+                command_agent,
+                command,
+            ),
+        )
         self._stream_message: Static | None = None
         self._stream_markdown = ""
         self._stream_render_pending = False
         self._tool_messages: dict[str, ToolDisclosure] = {}
         self._reasoning_message: ReasoningDisclosure | None = None
-        self._monitor_cursors: dict[str, int] = {}
-        self._monitor_polling_suspended = False
+        # UI 私有的 Monitor cursor、暂停状态和失败隔离均由无 Textual 的适配器
+        # 持有；本应用只安排定时刷新并渲染它返回的结构化事件批次。
+        self._monitor_state = MonitorStateAdapter(agent)
         self._input_tokens = 0
         self._output_tokens = 0
         self._cached_input_tokens = 0
@@ -159,7 +208,7 @@ class OmniCrawlApp(App[None]):
         self.agent.set_confirm_handler(self._confirm_tool)
         self.query_one("#composer", Input).focus()
         self.set_interval(self.STATUS_BLINK_INTERVAL_SECONDS, self._tick_status_indicator)
-        if callable(getattr(self.agent, "list_monitor_tasks", None)):
+        if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
 
         if callable(getattr(self.agent, "preload_mcp_tools", None)):
@@ -174,7 +223,7 @@ class OmniCrawlApp(App[None]):
         """主界面显示后在后台发现 MCP，避免阻塞 Textual 首屏绘制。"""
 
         try:
-            self.agent.preload_mcp_tools()
+            self._turn_controller.preload_mcp_tools()
         except AgentError as exc:
             self.call_from_thread(self._append_message, "error", f"MCP 能力加载失败：{exc}")
         except Exception as exc:
@@ -298,24 +347,37 @@ class OmniCrawlApp(App[None]):
 
     @work(thread=True, exclusive=True, group="agent-turn", exit_on_error=False)
     def _run_agent_turn(self, text: str) -> None:
+        callbacks = AgentTurnCallbacks(
+            on_delta=lambda delta: self.call_from_thread(self._append_delta, delta),
+            on_status=lambda status: self.call_from_thread(self._handle_status, status),
+            on_tool_start=lambda step, call: self.call_from_thread(
+                self._handle_tool_start,
+                step,
+                call,
+            ),
+            on_tool_result=lambda call, result: self.call_from_thread(
+                self._handle_tool_result,
+                call,
+                result,
+            ),
+            on_token_usage=lambda incoming, outgoing, cached: self.call_from_thread(
+                self._handle_token_usage,
+                incoming,
+                outgoing,
+                cached,
+            ),
+            on_protocol_wait=lambda: self.call_from_thread(
+                self._handle_status,
+                "正在准备工具调用",
+            ),
+            on_retry_status=lambda status: self.call_from_thread(self._handle_status, status),
+            on_reasoning_delta=lambda delta: self.call_from_thread(
+                self._append_reasoning_delta,
+                delta,
+            ),
+        )
         try:
-            self.agent.run_stream(
-                text,
-                lambda delta: self.call_from_thread(self._append_delta, delta),
-                on_status=lambda status: self.call_from_thread(self._handle_status, status),
-                on_tool_start=lambda step, call: self.call_from_thread(self._handle_tool_start, step, call),
-                on_tool_result=lambda call, result: self.call_from_thread(self._handle_tool_result, call, result),
-                on_token_usage=lambda incoming, outgoing, cached: self.call_from_thread(
-                    self._handle_token_usage, incoming, outgoing, cached
-                ),
-                on_protocol_wait=lambda: self.call_from_thread(self._handle_status, "正在准备工具调用"),
-                on_retry_status=lambda status: self.call_from_thread(self._handle_status, status),
-                cancel_check=self._raise_if_cancelled,
-                on_reasoning_delta=lambda delta: self.call_from_thread(
-                    self._append_reasoning_delta,
-                    delta,
-                ),
-            )
+            self._turn_controller.run(text, callbacks)
         except KeyboardInterrupt:
             self.call_from_thread(self._append_message, "status", "当前任务已取消。")
         except AgentError as exc:
@@ -377,75 +439,45 @@ class OmniCrawlApp(App[None]):
         )
 
     def _raise_if_cancelled(self) -> None:
-        if self._cancel_requested.is_set():
-            raise KeyboardInterrupt("用户取消当前任务")
+        """兼容已有调用点；实际 Agent 回合取消由控制器传入协议。"""
+
+        self._turn_controller.raise_if_cancelled()
 
     def _handle_command(self, text: str) -> bool:
-        if text in {"退出", "结束", "再见"}:
+        """执行分派结果；Textual 生命周期始终保留在应用层。"""
+
+        outcome = self._command_dispatcher.dispatch(text)
+        if not outcome.handled:
+            return False
+        if outcome.exit_requested:
             self.exit()
             return True
-        if text == "/new":
-            self.agent.reset_conversation()
-            self._append_message("status", "已开启新对话。")
-            self._refresh_context_summary()
+        if outcome.open_model_picker:
+            self._open_model_picker(refresh=outcome.model_picker_refresh)
             return True
-        if text == "/skills":
-            self._append_message("status", format_skills_list(self.agent))
-            return True
-        if text == "/mcp":
-            self._start_slow_command("正在读取 MCP 状态", lambda: format_mcp_status(self.agent))
-            return True
-        if text == "/memory:clean":
-            self._append_message("status", format_memory_clean_result(self.agent))
-            return True
-        if text == "/workspace" or text.startswith("/workspace "):
-            parts = text.split(None, 1)
-            if len(parts) == 1 or not parts[1].strip():
-                self._append_message("status", f"当前工作区：{self.agent.workspace_root}\n用法：/workspace <新工作区路径>")
-            else:
-                workspace = parts[1].strip()
-
-                def switch_workspace() -> str:
-                    self.agent.switch_workspace(workspace)
-                    return f"已切换工作区：{self.agent.workspace_root}"
-
-                # 工作区切换会重建 Session、MCP、Monitor 和临时目录，必须放在
-                # Textual worker 中，避免文件和进程操作阻塞主事件循环。
-                self._monitor_polling_suspended = True
+        if outcome.execution == "slow":
+            # 工作区切换会重建 Session、MCP、Monitor 和临时目录，必须放在
+            # Textual worker 中，避免文件和进程操作阻塞主事件循环。
+            if outcome.workspace_switch_requested:
                 # 切换请求一经接受，旧工作区的任务 ID 已不再具有语义；不应等
                 # 后台 I/O 成功才清除游标，否则新工作区可能跳过首批 Monitor 事件。
-                self._complete_workspace_switch()
-                self._start_slow_command(
-                    "正在切换工作区",
-                    switch_workspace,
-                    refresh_context=True,
-                    on_finish=self._resume_monitor_polling,
-                )
-            return True
-        session_message = handle_session_command(self.agent, text)
-        if session_message is not None:
-            self._append_message("status", session_message)
-            self._refresh_context_summary()
-            return True
-        normalized = text.strip().lower()
-        if normalized in {"/model", "/models"} or normalized.startswith("/model "):
+                self._monitor_state.suspend_for_workspace_switch()
             self._start_slow_command(
-                "正在读取模型列表",
-                lambda: handle_model_command(self.agent, text),
-                refresh_context=True,
+                outcome.message or "正在执行命令",
+                outcome.command,
+                refresh_context=outcome.refresh_context,
+                on_finish=(
+                    self._monitor_state.resume_polling
+                    if outcome.workspace_switch_requested
+                    else None
+                ),
             )
             return True
-        approval_message = handle_approval_command(self.agent, text)
-        if approval_message is not None:
-            self._append_message("status", approval_message)
+        if outcome.message:
+            self._append_message("status", outcome.message)
+        if outcome.refresh_context:
             self._refresh_context_summary()
-            return True
-        reasoning_message = handle_reasoning_command(self.agent, text)
-        if reasoning_message is not None:
-            self._append_message("status", reasoning_message)
-            self._refresh_context_summary()
-            return True
-        return False
+        return True
 
     def _confirm_tool(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """在主线程展示确认框，并允许工作线程在用户取消时立即退出等待。"""
@@ -542,50 +574,11 @@ class OmniCrawlApp(App[None]):
         self._cached_input_tokens = max(0, int(cached))
         self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
 
-    def _complete_workspace_switch(self) -> None:
-        """切换成功后丢弃旧工作区的 Monitor 游标。"""
-
-        self._monitor_cursors.clear()
-
-    def _resume_monitor_polling(self) -> None:
-        """工作区切换结束后恢复主线程定时轮询。"""
-
-        self._monitor_polling_suspended = False
-
     def _refresh_monitor_events(self) -> None:
-        """把受管后台任务的新日志追加到全屏工作台，不影响模型回合。"""
+        """渲染适配器返回的后台任务增量日志，不影响模型回合。"""
 
-        if self._monitor_polling_suspended:
-            return
-        list_tasks = getattr(self.agent, "list_monitor_tasks", None)
-        poll_events = getattr(self.agent, "poll_monitor_events", None)
-        if not callable(list_tasks) or not callable(poll_events):
-            return
-        try:
-            tasks = list_tasks()
-        except AgentError:
-            return
-
-        for task in tasks:
-            monitor_id = str(getattr(task, "monitor_id", ""))
-            if not monitor_id:
-                continue
-            cursor = self._monitor_cursors.get(monitor_id, 0)
-            try:
-                result = poll_events(monitor_id, cursor=cursor, max_events=50)
-            except AgentError:
-                continue
-            self._monitor_cursors[monitor_id] = result.next_cursor
-            if not result.events:
-                continue
-            lines = [
-                f"Monitor · {monitor_id} · {result.snapshot.status}",
-                *[
-                    f"[{event.stream}] {event.text or '(空行)'}"
-                    for event in result.events
-                ],
-            ]
-            self._append_message("tool", "\n".join(lines))
+        for batch in self._monitor_state.refresh():
+            self._append_message("tool", format_monitor_display_batch(batch))
 
     def _append_reasoning_delta(self, delta: str) -> None:
         if not delta:
@@ -747,6 +740,30 @@ class OmniCrawlApp(App[None]):
 
         self.query_one("#context-summary", Static).update(self._context_summary_text())
 
+    def _open_model_picker(self, *, refresh: bool = False) -> None:
+        """打开双列模型选择界面；切换成功后刷新 HUD 并清零最近 Token 显示。"""
+
+        def receive(result: ModelPickerResult | None) -> None:
+            if result is None:
+                self._append_message("status", "已取消模型切换。")
+                return
+            # 切换后旧模型 token 与新模型上下文上限不应混显。
+            self._input_tokens = 0
+            self._output_tokens = 0
+            self._cached_input_tokens = 0
+            self._refresh_context_summary()
+            self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
+            message = result.message or f"当前模型已切换为 {result.model}"
+            self._append_message("status", message)
+
+        self.push_screen(
+            ModelPickerScreen(
+                self.agent,
+                refresh_on_open=refresh,
+            ),
+            receive,
+        )
+
 
 def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> None:
     """运行默认全屏 TUI。"""
@@ -754,4 +771,15 @@ def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> Non
     OmniCrawlApp(agent, startup).run()
 
 
-__all__ = ["FullscreenStartup", "OmniCrawlApp", "run_fullscreen_tui"]
+__all__ = [
+    "AgentTurnCallbacks",
+    "AgentTurnController",
+    "ConfirmationScreen",
+    "FullscreenStartup",
+    "ModelPickerResult",
+    "ModelPickerScreen",
+    "OmniCrawlApp",
+    "ReasoningDisclosure",
+    "ToolDisclosure",
+    "run_fullscreen_tui",
+]

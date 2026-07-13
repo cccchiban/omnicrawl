@@ -8,19 +8,19 @@
 pip install -r requirements.txt
 ```
 
-推荐在 `config.json` 中配置：
+推荐在 `config.yaml`（或兼容的 `config.json`）中配置 API 段：
 
-```json
-{
-  "api": {
-    "bearer_token": "替换为随机长令牌",
-    "host": "127.0.0.1",
-    "port": 8765,
-    "allowed_origins": ["http://localhost:5173"],
-    "confirmation_timeout_seconds": 300
-  }
-}
+```yaml
+api:
+  bearer_token: "替换为随机长令牌"
+  host: "127.0.0.1"
+  port: 8765
+  allowed_origins:
+    - "http://localhost:5173"
+  confirmation_timeout_seconds: 300
 ```
+
+也可用 JSON 等价写法。完整多模型配置见 `config.example.yaml` 与 `models.example.yaml`。
 
 令牌也可通过环境变量提供，且优先于配置文件：
 
@@ -99,6 +99,8 @@ Authorization: Bearer <token>
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET/POST | `/api/v1/sessions` | 列表或新建会话；列表支持 `limit`、`archived` |
+| GET | `/api/v1/sessions/diagnostics` | 提示历史损坏诊断总览（不改写磁盘） |
+| GET | `/api/v1/sessions/{id}/diagnostics` | 指定会话转录与提示历史诊断 |
 | GET | `/api/v1/sessions/{id}/events` | 读取持久化事件 |
 | POST | `/api/v1/sessions/{id}/resume` | 恢复会话 |
 | PATCH | `/api/v1/sessions/current` | 重命名当前会话 |
@@ -116,14 +118,37 @@ Authorization: Bearer <token>
 | POST | `/api/v1/projects/import` | 导入已有项目 |
 | POST | `/api/v1/projects/pin` | 设置置顶状态 |
 | POST | `/api/v1/projects/switch` | 切换 Agent 工作区 |
-| GET | `/api/v1/models` | 从上游 `/models` 获取模型列表 |
-| PUT | `/api/v1/models/current` | 切换并保存模型 |
+| GET | `/api/v1/models` | 兼容旧扁平模型列表（`id/name/provider`） |
+| GET | `/api/v1/models/catalog` | 双列目录：`custom` + `detected` + `diagnostics` |
+| POST | `/api/v1/models/refresh` | 强制刷新自动发现缓存 |
+| PUT | `/api/v1/models/current` | 原子切换并保存当前模型；持久化失败时运行时保持旧模型 |
 | PUT | `/api/v1/reasoning` | 切换并保存推理强度 |
 | PUT | `/api/v1/approval` | 切换并保存审批模式 |
 | GET | `/api/v1/history` | 查询 Prompt 历史 |
 | GET | `/api/v1/skills` | Skill 列表 |
 | GET | `/api/v1/mcp` | MCP 状态 |
 | POST | `/api/v1/memory/clean` | 清理过期记忆 |
+
+`PUT /api/v1/models/current` 请求体兼容：
+
+```json
+{"model": "gpt-5.2"}
+```
+
+以及规范选择：
+
+```json
+{"source": "custom", "key": "default-chat"}
+```
+
+```json
+{
+  "source": "detected",
+  "profile": "openai-main",
+  "model_id": "gpt-5.2",
+  "protocol": "openai_chat_completions"
+}
+```
 
 具体请求 Schema 以 `/openapi.json` 为准。
 
@@ -153,7 +178,9 @@ data: {"delta":"你好"}
 
 后台任务日志使用独立 SSE 路径：标准输出和标准错误事件为 `monitor.output`，启动、停止、完成和失败事件为 `monitor.status`。这些接口只读；启动和停止后台任务仍必须经 Agent 的 `monitor` 内置工具，继续遵循工具审批模式。
 
-断线重连时发送 `Last-Event-ID`，服务会重放该 ID 之后的内存事件。运行记录仅保存在当前服务进程；服务重启后请通过会话事件接口恢复已持久化消息。
+断线重连时发送 `Last-Event-ID`，服务会重放该 ID 之后仍在内存窗口中的事件；游标早于最早保留事件时返回 `EVENT_CURSOR_EXPIRED`。默认最多保留最近 100 个运行记录，每个运行最多保留 2000 个事件；活动任务不会因保留上限被回收。运行记录仅保存在当前服务进程，服务重启后请通过会话事件接口恢复已持久化消息。
+
+服务关闭时会先取消活动任务、唤醒待确认请求并等待生成线程退出；若等待超时，不会提前关闭仍被线程使用的 Agent，而是在最后一个生成线程退出后延迟关闭资源。关闭后创建新任务会返回 `SERVICE_CLOSED`。
 
 模型隐藏推理内容和 HTML artifact 正文不会写入 SSE；`tool.completed` 与 `artifact.available` 仅返回可公开的 artifact 元数据。客户端应使用 artifact 读取接口获取 HTML 正文。
 
@@ -193,3 +220,18 @@ while (true) {
 ```
 
 收到 `confirmation.required` 后，使用其中的 `confirmation_id` 提交批准或拒绝。若超时未提交，默认拒绝该工具调用。
+
+## 6. 源码边界
+
+API 实现已按资源拆分，公共导入保持 `from omnicrawl.api import create_app, AgentAPIService, APIConfig`：
+
+```text
+omnicrawl/api/
+├── __init__.py          # 公共导出门面
+├── __main__.py          # python -m omnicrawl.api
+├── app.py               # 应用工厂、CORS、配置装载
+├── models.py            # 请求/响应模型
+├── service.py           # AgentAPIService 运行编排
+├── deps.py              # 鉴权与依赖注入
+└── routes/              # system/runs/monitors/sessions/projects/configuration/support
+```

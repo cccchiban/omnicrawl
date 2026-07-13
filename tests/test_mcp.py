@@ -447,7 +447,7 @@ class MCPAgentCommandTest(unittest.TestCase):
 
         self.assertNotIn("运行环境：", prompt)
         self.assertIn("docs/MCP_USAGE.md", prompt)
-        self.assertIn("docs/MCP_DESIGN_TECHNICAL.md", prompt)
+        self.assertIn("omnicrawl/mcp/", prompt)
         self.assertIn("优先调用 MCP 能力", prompt)
         self.assertIn("AGENTS.md", prompt)
         self.assertIn("docs/SKILL_INSTALLATION.md", prompt)

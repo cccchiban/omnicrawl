@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from main import _parse_args, main
+from omnicrawl.entry import _parse_args, run_application
 from omnicrawl.runtime_config import default_config_path, load_config_data, save_config_data
 from omnicrawl.ui import UIStartupError
 from omnicrawl.ui.windows_launcher import launch_in_powershell_window
@@ -45,13 +45,15 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertEqual(args.resume, "20260616-201530-a1b2c3")
 
     def test_main_reports_readable_error_when_fullscreen_ui_dependency_is_missing(self) -> None:
-        with patch("main.configure_console_encoding"):
+        with patch("omnicrawl.entry.configure_console_encoding"):
             with patch(
-                "main._load_fullscreen_ui",
+                "omnicrawl.entry._load_fullscreen_ui",
                 side_effect=UIStartupError("缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。"),
             ):
                 with patch("builtins.print") as print_mock:
-                    main([])
+                    code = run_application([])
+
+        self.assertEqual(code, 1)
 
         print_mock.assert_called_once_with("界面启动失败：缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。")
 
@@ -68,19 +70,21 @@ class RuntimeConfigTest(unittest.TestCase):
         )
         agent = Mock()
 
-        with patch("main.configure_console_encoding"):
-            with patch("main.load_llm_config", return_value=config):
-                with patch("main.load_approval_mode", return_value="manual"):
-                    with patch("main.load_agent_temp_workspace_config", return_value="temp-config"):
-                        with patch("main.detect_project_context", return_value=project_context):
-                            with patch("main.agent_temp_status_label", return_value=".agent_tmp"):
-                                with patch("main.AgentConfig") as agent_config_class:
-                                    with patch("main.LocalToolAgent", return_value=agent) as agent_class:
-                                        with patch("main._load_fullscreen_ui") as load_fullscreen_ui:
+        with patch("omnicrawl.entry.configure_console_encoding"):
+            with patch("omnicrawl.entry.load_llm_config", return_value=config):
+                with patch("omnicrawl.entry.load_approval_mode", return_value="manual"):
+                    with patch("omnicrawl.entry.load_agent_temp_workspace_config", return_value="temp-config"):
+                        with patch("omnicrawl.entry.detect_project_context", return_value=project_context):
+                            with patch("omnicrawl.entry.agent_temp_status_label", return_value=".agent_tmp"):
+                                with patch("omnicrawl.entry.AgentConfig") as agent_config_class:
+                                    with patch("omnicrawl.entry.LocalToolAgent", return_value=agent) as agent_class:
+                                        with patch("omnicrawl.entry._load_fullscreen_ui") as load_fullscreen_ui:
                                             fullscreen_startup = Mock()
                                             run_fullscreen_tui = Mock()
                                             load_fullscreen_ui.return_value = (fullscreen_startup, run_fullscreen_tui)
-                                            main(["--resume", "session-demo"])
+                                            code = run_application(["--resume", "session-demo"])
+
+        self.assertEqual(code, 0)
 
         agent_config_class.assert_called_once_with(
             llm=config,
@@ -90,7 +94,7 @@ class RuntimeConfigTest(unittest.TestCase):
             temp_workspace="temp-config",
             resume_session_id="session-demo",
         )
-        agent_class.assert_called_once_with(agent_config_class.return_value)
+        agent_class.assert_called_once()
         agent_config = agent_class.call_args.args[0]
         self.assertEqual(agent_config, agent_config_class.return_value)
         fullscreen_startup.assert_called_once()

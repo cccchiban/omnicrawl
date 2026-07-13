@@ -9,12 +9,23 @@ from pathlib import Path
 from typing import Any
 
 from .session_artifacts import redact_sensitive_text, redact_sensitive_values
+from .session_locking import append_text_line
 from .session_models import (
     SessionStoreError,
     datetime_to_millis,
     ensure_timezone,
     normalize_session_id,
     utc_now,
+)
+from .session_records import (
+    DIAG_INVALID_JSON,
+    DIAG_NOT_OBJECT,
+    DIAG_PROMPT_INVALID,
+    DIAG_TRAILING_INCOMPLETE,
+    SEVERITY_ERROR,
+    SEVERITY_WARNING,
+    SessionRecordDiagnostic,
+    log_record_diagnostics,
 )
 
 
@@ -93,9 +104,11 @@ class PromptHistoryEntry:
 class PromptHistoryStore:
     """用户提示历史 JSONL 存储。"""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, fsync: bool = True) -> None:
         self.path = path.resolve()
         self.root = self.path.parent
+        # 由 SessionStore 统一持锁；这里只负责耐久追加语义。
+        self.fsync = bool(fsync)
 
     def ensure(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -124,11 +137,10 @@ class PromptHistoryStore:
             pasted_contents=pasted_contents,
             now=now,
         )
+        line = json.dumps(entry.to_dict(), ensure_ascii=False, separators=(",", ":"))
         try:
-            with self.path.open("a", encoding="utf-8", newline="\n") as file:
-                file.write(json.dumps(entry.to_dict(), ensure_ascii=False, separators=(",", ":")))
-                file.write("\n")
-        except OSError as exc:
+            append_text_line(self.path, line, fsync=self.fsync)
+        except SessionStoreError as exc:
             raise SessionStoreError(f"写入提示历史失败：{self.path}，{exc}") from exc
         return entry
 
@@ -142,7 +154,7 @@ class PromptHistoryStore:
     ) -> list[PromptHistoryEntry]:
         """查询提示历史，返回按时间倒序排列的去重结果。"""
 
-        entries = self._read_entries()
+        entries, _diagnostics = self.read_entries_with_diagnostics()
         if project is not None:
             project_root = str(project.resolve())
             entries = [entry for entry in entries if entry.project == project_root]
@@ -171,27 +183,114 @@ class PromptHistoryStore:
                 break
         return results
 
-    def _read_entries(self) -> list[PromptHistoryEntry]:
+    def read_entries_with_diagnostics(
+        self,
+    ) -> tuple[list[PromptHistoryEntry], list[SessionRecordDiagnostic]]:
+        """读取提示历史并返回结构化诊断。
+
+        坏行不阻断其余有效记录；尾部半行降级为 warning，中间损坏为 error。
+        """
+
         if not self.path.exists():
-            return []
+            return [], []
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            raw_text = self.path.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
             raise SessionStoreError(f"提示历史不是 UTF-8 文本：{self.path}") from exc
         except OSError as exc:
             raise SessionStoreError(f"读取提示历史失败：{self.path}，{exc}") from exc
 
+        lines = raw_text.splitlines()
+        file_ends_with_newline = raw_text.endswith("\n") or raw_text == ""
+        nonempty_indexes = [index for index, line in enumerate(lines) if line.strip()]
+        last_nonempty = nonempty_indexes[-1] if nonempty_indexes else None
+        display_path = self.path.name
+
         entries: list[PromptHistoryEntry] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                if not isinstance(data, dict):
-                    continue
-                entries.append(PromptHistoryEntry.from_dict(data))
-            except (json.JSONDecodeError, SessionStoreError):
-                continue
+        diagnostics: list[SessionRecordDiagnostic] = []
+        for index, line in enumerate(lines):
+            entry, line_diagnostics = self._decode_line(
+                line,
+                path=display_path,
+                line_no=index + 1,
+                is_last_nonempty_line=index == last_nonempty,
+                file_ends_with_newline=file_ends_with_newline,
+            )
+            diagnostics.extend(line_diagnostics)
+            if entry is not None:
+                entries.append(entry)
+
+        log_record_diagnostics(diagnostics)
+        return entries, diagnostics
+
+    def _decode_line(
+        self,
+        line: str,
+        *,
+        path: str,
+        line_no: int,
+        is_last_nonempty_line: bool,
+        file_ends_with_newline: bool,
+    ) -> tuple[PromptHistoryEntry | None, list[SessionRecordDiagnostic]]:
+        stripped = line.strip()
+        if not stripped:
+            return None, []
+
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as exc:
+            trailing = is_last_nonempty_line and not file_ends_with_newline
+            code = DIAG_TRAILING_INCOMPLETE if trailing else DIAG_INVALID_JSON
+            severity = SEVERITY_WARNING if trailing else SEVERITY_ERROR
+            snippet = redact_sensitive_text(stripped[:120])
+            return None, [
+                SessionRecordDiagnostic(
+                    code=code,
+                    severity=severity,
+                    message=(
+                        "提示历史末尾存在未完成的 JSON 行，可能由写入中断导致。"
+                        if trailing
+                        else f"提示历史 JSON 损坏：第 {line_no} 行。"
+                    ),
+                    path=path,
+                    line_no=line_no,
+                    recoverable=True,
+                    details={
+                        "json_error": str(exc),
+                        "snippet": snippet,
+                        "trailing": trailing,
+                    },
+                )
+            ]
+
+        if not isinstance(data, dict):
+            return None, [
+                SessionRecordDiagnostic(
+                    code=DIAG_NOT_OBJECT,
+                    severity=SEVERITY_ERROR,
+                    message="提示历史 JSON 顶层必须是对象。",
+                    path=path,
+                    line_no=line_no,
+                    recoverable=True,
+                )
+            ]
+
+        try:
+            return PromptHistoryEntry.from_dict(data), []
+        except SessionStoreError as exc:
+            return None, [
+                SessionRecordDiagnostic(
+                    code=DIAG_PROMPT_INVALID,
+                    severity=SEVERITY_ERROR,
+                    message=str(exc),
+                    path=path,
+                    line_no=line_no,
+                    recoverable=True,
+                )
+            ]
+
+    def _read_entries(self) -> list[PromptHistoryEntry]:
+        entries, _diagnostics = self.read_entries_with_diagnostics()
         return entries
 
 

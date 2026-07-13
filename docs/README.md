@@ -2,7 +2,7 @@
 
 本目录集中存放项目设计说明和实现记录。
 
-运行时系统提示词模板位于项目包内的 `omnicrawl/system_prompt.md`。模板只保留工具协议和“遇到什么任务先读哪个文档”的路由说明；具体规范应按需读取下列文档，避免每轮注入大量固定规则。
+运行时系统提示词模板位于项目包内的 `omnicrawl/agent/system_prompt.md`。模板只保留工具协议和“遇到什么任务先读哪个文档”的路由说明；具体规范应按需读取下列文档，避免每轮注入大量固定规则。
 
 ## 文档清单
 
@@ -10,10 +10,12 @@
 - `API.md`：本地 HTTP/SSE API 的配置、鉴权、接口、事件流和前端接入示例。
 - `skill_system_impl.md`：Agent Skill 子系统的设计与实现记录。
 - `SKILL_INSTALLATION.md`：AI Skill 安装、编写、验证和渐进式披露使用规范。
+- `HOOK_PLUGIN_DESIGN.md`：Hook 生命周期、NPM 插件契约、CLI 安装管理、权限隔离、覆盖/删除语义与回滚方案。
 - `memory_system_design.md`：Agent 记忆系统的流程、存储结构和清理机制设计。
-- `session_design.md`：Agent 会话系统的生命周期、持久化、恢复和长会话压缩设计。
-- `session_implementation_progress.md`：Agent 会话系统按阶段落地的进度跟踪。
-- `session_store_technical_debt.md`：SessionStore 并发一致性、敏感信息、版本迁移和崩溃恢复等待处理技术债。
-- `agent_refactor_plan.md`：Agent、MCP、Session、API、全屏 UI 等大文件与高耦合模块的分阶段治理计划。
+- `session_design.md`：Agent 会话系统的生命周期、持久化、恢复和长会话压缩设计；包含初始方案与当前实施状态说明。
+- `session_store_technical_debt.md`：SessionStore 并发一致性、敏感信息、版本迁移和崩溃恢复治理记录；主要项目已完成，保留历史问题与残余限制。
+- `agent_refactor_plan.md`：Agent、MCP、Session、API、全屏 UI 等大文件与高耦合模块的分阶段治理计划；阶段 7 架构复查已收尾。
 - `MCP_USAGE.md`：MCP 配置、调用、排障和渐进式披露使用规范。
-- `MCP_DESIGN_TECHNICAL.md`：MCP 子系统设计、技术方案、安全策略和实施路线。
+- `MULTI_MODEL_API_DESIGN.md`：多模型原生 SDK 接入、统一内部协议、`/model` 热切换、双列模型目录及 YAML 配置迁移方案。**主链路已落地**（OpenAI Chat Runtime、config.yaml/models.yaml、ModelPicker、API catalog）；Claude/Gemini 真机联调与部分契约测试仍可补强，详见文档 §0。
+
+说明：`session_implementation_progress.md` 与 `MCP_DESIGN_TECHNICAL.md` 当前不在仓库中；会话落地进度与 MCP 设计细节分别以 `session_design.md`、`MCP_USAGE.md` 及源码/测试为准。

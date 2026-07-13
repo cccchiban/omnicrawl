@@ -1,6 +1,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+build/
+dist/
 
 .venv/
 venv/
@@ -9,6 +12,9 @@ env/
 .env
 .env.*
 config.json
+config.yaml
+models.yaml
+*.migrated.bak
 
 .codex-ref/
 .claude/
@@ -22,6 +28,7 @@ node_modules/
 memory/
 logs/
 bb-browser/
+nul
 
 CLAUDE.md
 AGENTS.md

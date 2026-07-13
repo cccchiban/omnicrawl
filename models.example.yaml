@@ -1,0 +1,59 @@
+# 用户自定义模型目录（复制为 models.yaml）
+# 注意：本文件禁止写入 api_key / token 等凭据。
+version: 1
+
+models:
+  default-chat:
+    display_name: "Default Chat Model"
+    profile: openai-main
+    model_id: gpt-5.2
+    protocol: openai_chat_completions
+    enabled: true
+    aliases:
+      - default
+      - chat
+    description: "默认 OpenAI Chat Completions 模型"
+    tags:
+      - default
+      - tools
+    context_window_tokens: 128000
+    # 以下两项会自动进入每次请求的 GenerationOptions。
+    max_output_tokens: 8192
+    temperature: 0.7
+    capabilities:
+      streaming: true
+      tools: true
+      parallel_tool_calls: true
+      reasoning: false
+      vision: false
+      model_discovery: true
+      prompt_cache: true
+    sort_order: 0
+
+  # claude-sonnet:
+  #   display_name: "Claude Sonnet"
+  #   profile: anthropic-main
+  #   model_id: claude-sonnet-4-20250514
+  #   protocol: anthropic_messages
+  #   enabled: true
+  #   aliases:
+  #     - claude
+  #   context_window_tokens: 200000
+  #   capabilities:
+  #     streaming: true
+  #     tools: true
+  #     reasoning: true
+
+  # gemini-flash:
+  #   display_name: "Gemini Flash"
+  #   profile: gemini-main
+  #   model_id: gemini-2.5-flash
+  #   protocol: gemini_generate_content
+  #   enabled: true
+  #   aliases:
+  #     - gemini
+  #   context_window_tokens: 1000000
+  #   capabilities:
+  #     streaming: true
+  #     tools: true
+  #     vision: true

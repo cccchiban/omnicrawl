@@ -1,9 +1,10 @@
 # OmniCrawl 大文件与高耦合模块治理计划
 
-> 文档状态：进行中
+> 文档状态：阶段 7 已完成（本计划结构治理目标达成）
 > 建立日期：2026-07-12
-> 最近检查：2026-07-12
-> 当前阶段：P1 SessionStore 第一阶段与安全/单进程一致性最小闭环完成；全屏 UI 治理已开始
+> 最近检查：2026-07-13
+> 当前阶段：P0–P2 与阶段 7 已完成；Session 行为专项 DEBT-001–007/009 已完成或形成明确结论（009：暂不拆分）
+> 最新验证：`python -m unittest discover -s tests -q` 共 407 项通过；`python -m compileall -q omnicrawl main.py tests`、`git diff --check` 与 Wheel 内容检查通过。
 
 ## 1. 文档目的
 
@@ -26,13 +27,13 @@
 |---|---|---:|---|---|
 | P0 | `omnicrawl/agent/__init__.py` | 原 4263 行，现 18 行 | 已恢复 11 个真实模块，入口仅保留公共导出 | 已完成 |
 | P0 | `omnicrawl/mcp/__init__.py` | 原 1834 行，现 44 行 | 已恢复 5 个真实模块，入口仅保留公共导出 | 已完成 |
-| P1 | `SessionStore`（`omnicrawl/state/session.py`） | 原模块 1361 行，现门面 757 行 | 已抽离模型、PromptHistory、事件投影和 artifact 策略；生命周期协调仍保留 | 第一阶段完成 |
-| P1 | `OmniCrawlApp`（`omnicrawl/ui/fullscreen/__init__.py`） | 约 723 行 | UI God Class，界面与业务编排耦合 | 未开始 |
-| P1 | `omnicrawl/api/__init__.py` | 1037 行 | API 模型、路由、鉴权、SSE 和 Agent 运行服务混杂 | 未开始 |
-| P2 | `omnicrawl/state/memory.py` | 903 行 | Memory 子系统内部职责偏宽 | 未开始 |
-| P2 | `omnicrawl/config/llm.py` | 715 行 | LLM 配置与网络客户端混杂 | 未开始 |
-| P2 | `omnicrawl/ui/inline_input.py` | 924 行 | 体量较大但相对内聚，先观察，不机械拆分 | 观察项 |
-| P2 | `omnicrawl/workspace/monitor.py` | 635 行 | 后台任务管理与 Windows 平台实现混杂 | 未开始 |
+| P1 | `SessionStore`（`omnicrawl/state/session.py`） | 原模块 1361 行，现门面 786 行 | 已抽离模型、PromptHistory、事件投影和 artifact 策略；生命周期协调仍保留 | 第一阶段完成 |
+| P1 | `OmniCrawlApp`（`omnicrawl/ui/fullscreen/__init__.py`） | 原约 723 行，当前 733 行 | UI God Class，界面与业务编排耦合 | 回合生命周期、命令分派与 Monitor 状态适配第一阶段完成 |
+| P1 | `omnicrawl/api/__init__.py` | 原 1037 行，现入口 19 行 | API 模型、路由、鉴权、SSE 和 Agent 运行服务混杂 | 第一阶段完成 |
+| P2 | `omnicrawl/state/memory.py` | 原 903 行，现 766 行 + ranking 224 行 | Memory 子系统内部职责偏宽 | 第一阶段完成 |
+| P2 | `omnicrawl/config/llm.py` | 原 715 行，现 250 行 + client 511 行 | LLM 配置与网络客户端混杂 | 第一阶段完成 |
+| P2 | `omnicrawl/ui/inline_input.py` | 924 行 | 体量较大但相对内聚，先观察，不机械拆分 | 观察项（保留现状） |
+| P2 | `omnicrawl/workspace/monitor.py` | 原 635 行，现 542 行 + process_control 122 行 | 后台任务管理与 Windows 平台实现混杂 | 第一阶段完成 |
 
 ## 3. 判定原则
 
@@ -259,9 +260,10 @@ omnicrawl/state/
 - [x] 保持历史会话文件可继续读取；
 - [x] 验证归档、恢复、搜索、artifact 和敏感信息处理的现有行为；
 - [x] 单独治理单进程并发写（含归档/恢复文件迁移）、唯一索引临时文件、HTML artifact 与 PromptHistory 的新写入脱敏；
-- [ ] 设计跨进程锁、索引崩溃恢复、`fsync` 耐久性策略；
-- [ ] 设计事件版本迁移和损坏记录诊断；
-- [ ] 在前述一致性问题解决后，再评估是否拆出 index/transcript repository。
+- [x] 索引崩溃恢复：`check_consistency` / `rebuild_index`（见 `session_consistency.py` 与 `session_store_technical_debt.md` SESSION-DEBT-004）；
+- [x] 事件版本迁移与损坏记录诊断（见 `session_records.py`，SESSION-DEBT-005/006）；
+- [x] 跨进程锁与 `fsync` 耐久性策略（见 `session_locking.py`，SESSION-DEBT-001）；
+- [x] 评估 index/transcript repository 拆分（SESSION-DEBT-009：**暂不拆分**，见技术债 §11）。
 
 ### 6.4 第一阶段验证结果
 
@@ -305,12 +307,137 @@ UI 结构和业务编排共享一个大对象，使界面改动容易影响线�
 
 ### 7.3 实施清单
 
-- [ ] 列出 `OmniCrawlApp` 持有的状态及其所有者；
-- [ ] 区分 Widget 状态、Agent 运行状态和 Monitor 状态；
-- [ ] 为提交消息、取消、审批和工作区切换建立关键路径测试；
-- [ ] 抽离 Agent 回合生命周期；
-- [ ] 抽离命令分派或复用 `omnicrawl/commands/slash.py`；
-- [ ] 验证全屏 TUI 启动和主要交互路径。
+- [x] 列出 `OmniCrawlApp` 持有的状态及其所有者；
+- [x] 区分 Widget 状态、Agent 运行状态和 Monitor 状态；
+- [x] 为提交消息、取消、审批和工作区切换建立关键路径测试；
+- [x] 抽离 Agent 回合生命周期第一阶段；
+- [x] 抽离命令分派，并复用 `omnicrawl/commands/slash.py`；
+- [x] 抽离 Monitor 状态适配器；
+- [x] 验证全屏 TUI 启动和主要交互路径。
+
+### 7.4 2026-07-12：Agent 回合生命周期第一阶段
+
+已完成：
+
+- 新增 `omnicrawl/ui/fullscreen/turns.py`，提供不依赖 Textual 的
+  `AgentTurnController`、`AgentTurnCallbacks` 和最小 `StreamAgent` 协议；
+- 控制器拥有 Agent 调用转发和协作式取消检查，保留 `KeyboardInterrupt`、
+  `AgentError` 与未知异常由 `OmniCrawlApp` 按原有 UI 文案分类展示；
+- `OmniCrawlApp` 继续拥有 Textual worker、`call_from_thread`、`is_generating`、
+  审批模态框、消息渲染和输入焦点；本阶段没有迁移命令或 Monitor 状态；
+- 新增控制器协议转发、取消检查、MCP 预热异常透传测试，并补充全屏 UI 的
+  取消/异常恢复与 MCP 预热失败回归；
+- 将 `turns` 加入真实支持模块边界检查，并锁定包级显式导出。
+
+验证结果：
+
+```text
+python -m unittest tests.test_fullscreen_turns tests.test_fullscreen_module_boundaries tests.test_fullscreen_tui
+Ran 31 tests in 18.085s
+OK
+
+python -m unittest discover -s tests
+Ran 291 tests in 25.488s
+OK
+
+python main.py --help
+启动帮助正常输出；Windows PowerShell 独立窗口启动降级为当前窗口，不影响参数解析检查。
+```
+
+保留兼容性：`omnicrawl.ui.fullscreen` 仍导出原有 Widget、`FullscreenStartup`、
+`OmniCrawlApp` 和 `run_fullscreen_tui`；既有对
+`omnicrawl.ui.fullscreen.time.perf_counter` 与 `handle_model_command` 的 patch 点未移动。
+
+后续事项：Monitor 游标/轮询仍归 `OmniCrawlApp`，应在独立阶段以其完整状态
+所有权为边界继续治理，不与回合协议或命令分派混合。
+
+### 7.5 2026-07-12：命令分派第一阶段
+
+已完成：
+
+- 新增 `omnicrawl/ui/fullscreen/commands.py`，提供不依赖 Textual 的
+  `CommandDispatcher`、`CommandOutcome` 与最小 `CommandAgent` 协议；
+- 将退出、新会话、Skill、MCP、记忆清理、工作区、Session、模型、审批和推理
+  命令的识别、Agent 调用和慢/快执行类别移出 `OmniCrawlApp`；
+- `OmniCrawlApp` 保留 `exit()`、状态/消息渲染、Textual 慢命令 worker、输入锁，
+  以及工作区切换前立即暂停 Monitor 轮询和清理游标的既有时序；
+- `/mcp`、`/model` 和实际 `/workspace <路径>` 仅由分派器生成惰性 callable，仍在
+  既有 worker 中执行，避免网络、进程或文件 I/O 阻塞 Textual 主事件循环；
+- 通过延迟委托保留 `omnicrawl.ui.fullscreen.handle_model_command` 等模块级
+  monkeypatch 入口；新增分派单测、真实模块/无 Textual 边界检查和运行期 patch
+  回归测试。
+
+验证结果：
+
+```text
+python -m unittest tests.test_fullscreen_commands tests.test_fullscreen_turns tests.test_fullscreen_module_boundaries tests.test_fullscreen_tui
+Ran 39 tests in 18.059s
+OK
+
+python -m unittest discover -s tests
+Ran 299 tests in 26.262s
+OK
+
+python -m compileall -q omnicrawl main.py tests
+git diff --check
+均通过。
+```
+
+保留兼容性：`omnicrawl.ui.fullscreen` 的既有 Widget、启动入口和命令处理函数
+模块级名称保持不变；`/model` 的既有 patch 路径仍在 App 创建后生效。普通自然
+语言仍返回未处理状态并进入 Agent 回合。
+
+### 7.6 2026-07-12：Monitor 状态适配第一阶段
+
+已完成：
+
+- 新增 `omnicrawl/ui/fullscreen/monitor.py`，提供不依赖 Textual 的
+  `MonitorStateAdapter`、`MonitorDisplayBatch`、最小 `MonitorAgent` 协议及
+  既有 Monitor 工具消息格式化函数；
+- 将仅属于全屏 UI 的 cursor、暂停状态、任务列表失败降级、单任务失败隔离和
+  成功轮询后的 cursor 推进移出 `OmniCrawlApp`；Agent 与底层
+  `BackgroundMonitorManager` 仍是进程、日志缓冲和事件序号的唯一所有者；
+- `OmniCrawlApp` 保留 Textual interval 调度与对话区渲染。工作区切换请求被
+  接受时仍立即调用 `suspend_for_workspace_switch()` 清 cursor/暂停轮询，而慢命令
+  worker 的收尾路径仍无条件恢复轮询，成功和失败语义均未改变；
+- 新增无 UI 的 Monitor 状态机回归：独立 cursor、空事件成功推进、任务列表失败、
+  单任务失败重试与同轮隔离、工作区切换暂停/从零恢复、旧 Agent 协议降级，以及
+  显示文案；同步把 `monitor` 加入真实模块和无 Textual 依赖边界检查。
+
+验证结果：
+
+```text
+python -m unittest tests.test_fullscreen_monitor tests.test_fullscreen_commands tests.test_fullscreen_turns tests.test_fullscreen_module_boundaries tests.test_fullscreen_tui
+Ran 46 tests in 18.377s
+OK
+
+python -m unittest discover -s tests
+Ran 306 tests in 26.042s
+OK
+
+python -m compileall -q omnicrawl main.py tests
+git diff --check
+python main.py --help
+均通过（帮助命令退出码 0）。
+```
+
+保留边界：适配器不启动定时器、不调用 Textual、不接管 Agent Monitor 生命周期，
+也不吞掉未知异常；它仅按既有规则降级 `AgentError`。普通 API 或模型工具消费者
+仍拥有与全屏 UI 相互独立的 cursor。
+
+后续事项：全屏 TUI 的三个已识别长期非视觉状态边界均已完成第一阶段。后续应先
+进行一次阶段 4 架构复查，再按路线图推进 API 应用工厂与 Router 的拆分；不要将
+`workspace.monitor` 的 Windows Job Object 平台实现混入本 UI 阶段。
+
+### 7.7 2026-07-12：阶段 4 架构复查
+
+复查结论：
+
+- `turns.py`、`commands.py`、`monitor.py` 均为真实模块，且无 Textual 依赖；
+- 包级兼容导出与 `handle_model_command` 等 monkeypatch 入口仍在；
+- `OmniCrawlApp` 仍约 733 行，但长期状态所有权已按边界移交，剩余主要是 Textual
+  生命周期、渲染和 worker 调度，不再与下一阶段 API 拆分混做；
+- 全量测试 306 项通过时的阶段 4 结果仍有效，可进入阶段 5。
 
 ## 8. P1：`omnicrawl/api/__init__.py`
 
@@ -323,34 +450,69 @@ UI 结构和业务编排共享一个大对象，使界面改动容易影响线�
 - `create_app()`：约 421 行；
 - `AgentAPIService`：约 305 行。
 
-### 8.2 建议边界
+### 8.2 已落实边界
 
-可按稳定业务资源拆分 Router：
+第一阶段按稳定业务资源拆分，保持公共导入与 `python -m omnicrawl.api` 启动：
 
 ```text
 omnicrawl/api/
-├── __init__.py
-├── app.py
-├── models.py
-├── service.py
+├── __init__.py          # 公共导出门面
+├── __main__.py          # 启动入口
+├── app.py               # 应用工厂、CORS、异常处理、配置装载
+├── models.py            # 请求/响应模型、Run 状态与 SSE 事件
+├── service.py           # AgentAPIService 运行编排
+├── deps.py              # 鉴权、service 依赖与响应序列化
 └── routes/
+    ├── __init__.py      # 组装受鉴权保护的 /api/v1 路由
+    ├── system.py
     ├── runs.py
-    ├── models.py
-    ├── workspace.py
-    ├── approval.py
-    └── monitor.py
+    ├── monitors.py
+    ├── sessions.py
+    ├── projects.py
+    ├── configuration.py
+    └── support.py
 ```
 
-路由不应直接重新实现业务逻辑；共享运行状态仍由一个明确的 Service 管理。
+路由只做 HTTP 适配；共享运行状态仍由 `AgentAPIService` 管理。
 
 ### 8.3 实施清单
 
-- [ ] 锁定当前 OpenAPI 路径和响应模型；
-- [ ] 为鉴权、运行、确认和 SSE 断线补充回归测试；
-- [ ] 将请求/响应模型移出应用工厂；
-- [ ] 将路由按资源分组；
-- [ ] 保持 `python -m omnicrawl.api` 启动方式；
-- [ ] 对比重构前后的 OpenAPI 契约。
+- [x] 锁定当前 OpenAPI 路径和响应模型；
+- [x] 为鉴权、运行、确认和 SSE 断线补充回归测试；
+- [x] 将请求/响应模型移出应用工厂；
+- [x] 将路由按资源分组；
+- [x] 保持 `python -m omnicrawl.api` 启动方式；
+- [x] 对比重构前后的 OpenAPI 契约。
+
+### 8.4 2026-07-12：API 应用工厂与 Router 第一阶段
+
+已完成：
+
+- 将原 1037 行 `api/__init__.py` 缩减为 19 行公共导出；
+- 抽出 `models.py`、`service.py`、`app.py`、`deps.py` 与 7 个资源路由模块；
+- 新增 `tests/test_api_module_boundaries.py`，锁定真实模块、公共导出和 35 个
+  OpenAPI 操作集合，并用真实请求验证 run SSE 的 `text/event-stream`；
+- 保留 `from omnicrawl.api import APIConfig, AgentAPIService, create_app` 等兼容导入。
+
+验证结果：
+
+```text
+python -m unittest tests.test_api_module_boundaries tests.test_api
+Ran 20 tests in 0.816s
+OK
+
+python -m unittest discover -s tests
+Ran 310 tests in 22.269s
+OK
+
+python -m compileall -q omnicrawl/api main.py tests
+git diff --check
+python main.py --help
+均通过。
+```
+
+保留兼容性：`__all__` 与既有包级符号不变；`python -m omnicrawl.api` 仍通过
+`__main__.py` 调用 `create_app`/`load_api_config`；OpenAPI 操作集合保持 35 项。
 
 ## 9. P2 观察与后续治理项
 
@@ -358,17 +520,38 @@ omnicrawl/api/
 
 混合了 Memory 模型、启发式分类、路径安全、Markdown/JSON 索引、搜索排序、生命周期清理和文件存储。建议在 P0/P1 稳定后，优先分离存储与分类策略。
 
-- [ ] 记录 Memory 读写格式；
-- [ ] 分离纯分类/排序逻辑与文件 I/O；
-- [ ] 验证历史 Memory 数据兼容。
+- [x] 记录 Memory 读写格式；
+- [x] 分离纯分类/排序逻辑与文件 I/O；
+- [x] 验证历史 Memory 数据兼容。
+
+已落实：
+
+```text
+omnicrawl/state/
+├── memory.py           # 模型、路径安全、Markdown/index 存储与生命周期
+└── memory_ranking.py   # 分类、摘要、相似度与搜索/关联排序纯逻辑
+```
+
+Markdown 仍为 frontmatter + 正文；`index.json` 字段不变。`MemoryStore` 继续拥有磁盘
+读写与过期清理；`omnicrawl.memory` 兼容别名保持可用。
 
 ### 9.2 `omnicrawl/config/llm.py`
 
 配置模型、配置持久化和 OpenAI Responses 网络客户端存在不同变化原因。建议保留配置在 `config/llm.py`，将网络协议实现迁移到独立 LLM 客户端模块。
 
-- [ ] 明确配置 API 与客户端 API；
-- [ ] 将 Responses 请求和流解析移出配置模块；
-- [ ] 验证配置环境变量优先级和模型切换。
+- [x] 明确配置 API 与客户端 API；
+- [x] 将 Responses 请求和流解析移出配置模块；
+- [x] 验证配置环境变量优先级和模型切换。
+
+已落实：
+
+```text
+omnicrawl/config/
+├── llm.py          # LLMConfig、load/save、reasoning 规范化
+└── llm_client.py   # OpenAIResponseLLM 与 usage/错误归一化
+```
+
+`from omnicrawl.config.llm import OpenAIResponseLLM` 与 `omnicrawl.llm` 兼容别名继续可用。
 
 ### 9.3 `omnicrawl/ui/inline_input.py`
 
@@ -380,13 +563,26 @@ omnicrawl/api/
 - 输入编辑器测试频繁因无关逻辑受影响；
 - 新终端前端需要复用显示宽度或按键解析能力。
 
+当前结论：保留现状，理由是交互内聚、缺少稳定复用边界。
+
 ### 9.4 `omnicrawl/workspace/monitor.py`
 
 后台任务领域逻辑与 Windows Job Object 的 `ctypes` 平台实现混合。建议在 Monitor 功能稳定后抽离平台进程树控制。
 
-- [ ] 明确跨平台进程生命周期接口；
-- [ ] 抽离 Windows Job Object 实现；
-- [ ] 验证停止任务时不会残留子进程。
+- [x] 明确跨平台进程生命周期接口；
+- [x] 抽离 Windows Job Object 实现；
+- [x] 验证停止任务时不会残留子进程。
+
+已落实：
+
+```text
+omnicrawl/workspace/
+├── monitor.py           # 后台任务生命周期、缓冲与轮询
+└── process_control.py   # Windows Job Object / 句柄关闭
+```
+
+`omnicrawl.workspace.monitor._assign_process_to_kill_on_close_job` 等既有
+monkeypatch 入口通过再导出保持。
 
 ## 10. 分阶段路线图
 
@@ -398,10 +594,10 @@ omnicrawl/api/
 | 1 | 恢复 `omnicrawl.agent` 真实模块边界 | 阶段 0 完成 | 已完成 |
 | 2 | 恢复 `omnicrawl.mcp` 真实模块边界 | 阶段 1 稳定 | 已完成 |
 | 3 | 瘦身 `SessionStore` | 阶段 1 稳定 | 第一阶段完成 |
-| 4 | 瘦身 `OmniCrawlApp` | Agent 边界稳定 | 未开始 |
-| 5 | 拆分 API 应用工厂与 Router | Agent 边界稳定 | 未开始 |
-| 6 | 治理 Memory、LLM 配置和 Monitor | P0/P1 完成 | 未开始 |
-| 7 | 全量架构复查与文档收尾 | 前述阶段完成 | 未开始 |
+| 4 | 瘦身 `OmniCrawlApp` | Agent 边界稳定 | 回合生命周期、命令分派与 Monitor 状态适配第一阶段完成；架构复查通过 |
+| 5 | 拆分 API 应用工厂与 Router | Agent 边界稳定 | 第一阶段完成 |
+| 6 | 治理 Memory、LLM 配置和 Monitor | P0/P1 完成 | 第一阶段完成；inline_input 保留现状 |
+| 7 | 全量架构复查与文档收尾 | 前述阶段完成 | 已完成 |
 
 不建议把阶段 1 和阶段 2 合并成一次超大提交。虽然两者结构相似，但 Agent 直接依赖 MCP，同时修改会显著增加回归定位难度。
 
@@ -409,15 +605,15 @@ omnicrawl/api/
 
 每个阶段至少执行与改动范围匹配的验证：
 
-- [ ] 静态导入检查；
-- [ ] 目标模块单元测试；
-- [ ] `python -m unittest discover -s tests`；
-- [ ] 必要时执行前端类型检查或构建；
-- [ ] `python main.py` 启动冒烟检查；
-- [ ] 涉及 API 时验证 `python -m omnicrawl.api` 和 OpenAPI；
-- [ ] 涉及 MCP 时验证关闭、正常连接、连接失败三条路径；
-- [ ] 检查 Git diff，确认没有夹带业务行为变更；
-- [ ] 更新本文状态、验证结果和遗留风险。
+- [x] 静态导入检查；
+- [x] 目标模块单元测试；
+- [x] `python -m unittest discover -s tests`；
+- [x] 必要时执行前端类型检查或构建（本阶段无前端改动，跳过）；
+- [x] `python main.py` 启动冒烟检查；
+- [x] 涉及 API 时验证 `python -m omnicrawl.api` 和 OpenAPI；
+- [x] 涉及 MCP 时验证关闭、正常连接、连接失败三条路径（由既有 MCP 单测覆盖）；
+- [x] 检查 Git diff，确认没有夹带业务行为变更；
+- [x] 更新本文状态、验证结果和遗留风险。
 
 若仓库后续改用 `pytest` 作为统一入口，应以项目实际测试配置为准，并在本文记录命令变化。
 
@@ -522,15 +718,150 @@ OK
 
 上述事项涉及行为和数据策略变化，不与本次无行为结构拆分混做。
 
+### 2026-07-12：P1 API 第一阶段完成
+
+已完成：
+
+- 完成阶段 4 全屏 UI 架构复查，确认 turns/commands/monitor 边界稳定；
+- 将 `omnicrawl/api/__init__.py` 从 1037 行缩减为 19 行公共导出门面；
+- 恢复 `app`、`models`、`service`、`deps` 与 7 个资源路由真实模块；
+- 新增 API 模块边界与 OpenAPI 操作集合回归测试；
+- 验证既有 API 行为测试、全量 310 项测试、编译检查和启动帮助路径。
+
+剩余事项：
+
+- P2 的 Memory、LLM 配置客户端和 Monitor 平台实现尚未治理；
+- Session 单进程一致性之外的跨进程锁、事件版本迁移仍属后续专项；
+- `OmniCrawlApp` 主体仍约 733 行，后续仅在出现新的非视觉状态所有者时继续拆分。
+
+### 2026-07-12：P2 Memory / LLM / Monitor 第一阶段完成
+
+已完成：
+
+- 将 LLM 网络客户端迁至 `config/llm_client.py`，配置模块仅保留读写与规范化；
+- 将 Windows Job Object 抽至 `workspace/process_control.py`，Monitor 保留任务编排；
+- 将 Memory 分类/摘要/排序抽至 `state/memory_ranking.py`，`MemoryStore` 保留 I/O；
+- 记录 `inline_input.py` 保留现状的理由；
+- 新增边界测试，并完成全量 321 项回归。
+
+验证结果：
+
+```text
+python -m unittest discover -s tests
+Ran 321 tests in 22.045s
+OK
+
+python -m compileall -q omnicrawl main.py tests
+git diff --check
+python main.py --help
+均通过。
+```
+
+剩余事项：
+
+- 阶段 7 全量架构复查与项目结构文档对齐；
+- Session 跨进程锁、事件版本迁移等行为专项仍未做；
+- `LocalToolAgent` 与 `OmniCrawlApp` 主体仍可在出现新状态所有者时继续瘦身。
+
+### 2026-07-12：阶段 7 全量架构复查与文档收尾
+
+已完成：
+
+- 复查当前工作树体量与关键边界，确认 P0 入口仅为公共导出，Agent/MCP 子模块均为真实文件；
+- 确认 `agent`/`mcp` 包内不再使用 `sys.modules` 伪模块别名；`omnicrawl/__init__.py` 仅保留旧路径兼容（`session`/`memory`/`llm`/`skill` 等指向真实实现文件）；
+- 验证公共导入：`omnicrawl.agent`/`mcp`/`api`/`state.*`/`config.*`/`ui.fullscreen.*` 与兼容别名均可导入；
+- 边界测试 26 项通过；全量测试 321 项通过；`compileall`、`python main.py --help`、API `create_app`+OpenAPI 35 操作通过；
+- 当前 `.agent_sessions` 列表 10 个会话均可 `load_session`；
+- 对齐文档：`README.md` 项目结构、`docs/README.md`、`docs/TERMINAL_UI.md`、`docs/API.md`、`docs/session_design.md`、`omnicrawl/agent/system_prompt.md` 与实际源码路径一致。
+
+当前关键体量快照（2026-07-12）：
+
+| 文件 | 行数 | 备注 |
+|---|---:|---|
+| `agent/__init__.py` | 18 | 公共导出 |
+| `mcp/__init__.py` | 44 | 公共导出 |
+| `api/__init__.py` | 19 | 公共导出 |
+| `agent/core.py` | 1667 | LocalToolAgent，可按新状态所有者继续瘦身 |
+| `ui/inline_input.py` | 924 | 观察项，保留现状 |
+| `mcp/client.py` | 907 | MCP 客户端，边界已独立 |
+| `state/session.py` | 786 | 生命周期门面 |
+| `state/memory.py` | 766 | 存储 I/O |
+| `ui/fullscreen/__init__.py` | 733 | Textual 入口，非视觉状态已迁出 |
+| `workspace/monitor.py` | 542 | 任务编排 |
+| `config/llm_client.py` | 511 | 网络客户端 |
+| `config/llm.py` | 250 | 配置读写 |
+| `state/memory_ranking.py` | 224 | 纯逻辑 |
+| `workspace/process_control.py` | 122 | Windows 平台实现 |
+
+验证结果：
+
+```text
+python -m unittest tests.test_*_module_boundaries ...
+Ran 26 tests in 0.115s
+OK
+
+python -m unittest discover -s tests
+Ran 321 tests in 28.632s
+OK
+
+python -m compileall -q omnicrawl main.py tests
+export OMNICRAWL_API_TOKEN=...; create_app() OpenAPI 35 ops
+python main.py --help
+SessionStore.list_sessions/load_session: 10/10 OK
+```
+
+后续不在本计划强制范围内的事项：
+
+- Session 跨进程锁、`fsync`、事件版本迁移与损坏记录诊断（见 `session_store_technical_debt.md`；DEBT-004 索引重建已完成）；
+- `LocalToolAgent` / `OmniCrawlApp` 仅在出现新的稳定状态所有者时再拆；
+- `inline_input.py` 保持观察，无强制拆分。
+
+### 2026-07-12：SESSION-DEBT-004 跟进
+
+已完成：
+
+- 新增 `omnicrawl/state/session_consistency.py`；
+- `SessionStore.check_consistency()` / `rebuild_index(apply=...)`；
+- 一致性与重建回归测试；实盘 42 会话扫描 `ok=True`；
+- 全量测试 328 项通过。
+
+### 2026-07-12：SESSION-DEBT-005/006 跟进
+
+已完成：
+
+- 新增 `omnicrawl/state/session_records.py`（解码/迁移/诊断）；
+- `read_session_events_with_diagnostics`、PromptHistory 诊断；
+- API：`GET /api/v1/sessions/diagnostics` 与 `/{session_id}/diagnostics`；
+- index `schema_version=1`；全量测试 335 项通过。
+
+### 2026-07-12：SESSION-DEBT-001 跨进程锁/fsync 跟进
+
+已完成：
+
+- 新增 `omnicrawl/state/session_locking.py`；
+- 写路径：线程锁 + 跨进程文件锁 + JSONL/`index.json` fsync；
+- 多进程追加回归；全量测试 340 项通过。
+
+### 2026-07-12：SESSION-DEBT-009 repository 拆分评估
+
+结论：
+
+- **暂不拆分**公开 `SessionIndexRepository` / `SessionTranscriptRepository`；
+- 真实事务单位是“JSONL + index（+ 可选文件移动）”，必须由 `SessionStore` 单点协调；
+- 一致性/解码/锁/artifact 已是真实子模块，继续机械拆分只会增加跳转；
+- 仅当出现新状态所有者、第二持久化后端或离线运维修复节奏分离时，再考虑内部私有仓库。
+
 ## 15. 完成定义
 
 只有同时满足以下条件，本治理计划才可标记为完成：
 
 - [x] 两个 P0 God File 已恢复真实模块边界；
-- [ ] 三个 P1 对象的状态和职责边界明显收窄；
-- [ ] P2 项均已完成治理或记录保留现状的理由；
-- [ ] 公共导入、磁盘数据和运行方式保持兼容；
-- [ ] TUI、API、MCP、Session 和 Memory 关键路径通过验证；
-- [ ] 项目结构文档与实际源码一致；
-- [ ] 不再依赖 `sys.modules` 为不存在的源码文件模拟模块边界；
-- [ ] 后续新增功能有明确归属，不再默认堆入入口文件或入口类。
+- [x] 三个 P1 对象的状态和职责边界明显收窄；
+- [x] P2 项均已完成治理或记录保留现状的理由；
+- [x] 公共导入、磁盘数据和运行方式保持兼容；
+- [x] TUI、API、MCP、Session 和 Memory 关键路径通过验证；
+- [x] 项目结构文档与实际源码一致；
+- [x] 不再依赖 `sys.modules` 为不存在的源码文件模拟模块边界；
+- [x] 后续新增功能有明确归属，不再默认堆入入口文件或入口类。
+
+说明：`omnicrawl/__init__.py` 中的 `sys.modules` 仅用于把历史导入名映射到已存在的真实模块文件，不构成“为不存在的源码文件模拟边界”。

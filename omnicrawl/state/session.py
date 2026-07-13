@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import secrets
-import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
-# 锁以规范化后的会话根目录为粒度共享，覆盖同一进程中不同
-# SessionStore 实例的 JSONL 追加和 index 读改写。跨进程协议仍不在本次范围。
+# 进程内锁以规范化后的会话根目录为粒度共享；跨进程互斥由 session_locking
+# 中的文件锁完成，两者按 thread lock → file lock 的固定顺序组合使用。
 _STORE_LOCKS: dict[Path, threading.RLock] = {}
 _STORE_LOCKS_GUARD = threading.Lock()
 
@@ -47,10 +46,30 @@ from .session_models import (
     read_payload_non_negative_int as _read_payload_non_negative_int,
     utc_now as _utc_now,
 )
+from .session_consistency import (
+    SessionConsistencyIssue,
+    SessionConsistencyReport,
+    build_consistency_report as _build_consistency_report,
+    write_index_backup as _write_index_backup,
+)
 from .session_projection import (
     TOOL_CALL_CONTEXT_PREFIX,
     TOOL_RESULT_CONTEXT_PREFIX,
     event_to_model_message as _event_to_model_message,
+)
+from .session_records import (
+    SESSION_INDEX_SCHEMA_VERSION,
+    SessionEventReadResult,
+    SessionRecordDiagnostic,
+    build_index_document as _build_index_document,
+    parse_index_document as _parse_index_document,
+    read_session_events_with_diagnostics as _read_session_events_with_diagnostics,
+)
+from .session_locking import (
+    DurableWritePolicy,
+    append_text_line as _append_text_line,
+    atomic_write_text as _atomic_write_text,
+    exclusive_session_write as _exclusive_session_write,
 )
 
 
@@ -62,7 +81,12 @@ class SessionStore:
     通知和中断状态保留在索引与事件流中，不污染模型上下文。
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        durable: DurableWritePolicy | None = None,
+    ) -> None:
         self.root = root.resolve()
         self.index_path = self.root / "index.json"
         self.history_path = self.root / "history.jsonl"
@@ -71,8 +95,12 @@ class SessionStore:
         self.summaries_dir = self.root / "summaries"
         self.exports_dir = self.root / "exports"
         self.archive_dir = self.root / "archive"
+        self.durable = durable or DurableWritePolicy()
         self._write_lock = _lock_for_root(self.root)
-        self.prompt_history = PromptHistoryStore(self.history_path)
+        self.prompt_history = PromptHistoryStore(
+            self.history_path,
+            fsync=self.durable.fsync,
+        )
         self.artifacts = SessionArtifactStore(self.root, self.artifacts_dir)
 
     def ensure(self) -> None:
@@ -94,7 +122,7 @@ class SessionStore:
     ) -> SessionState:
         """创建新会话，并立即写入 `session_started` 事件。"""
 
-        with self._write_lock:
+        with self._exclusive_write():
             self.ensure()
             timestamp = _utc_now() if now is None else _ensure_timezone(now)
             session_id = self._make_session_id(timestamp)
@@ -136,7 +164,7 @@ class SessionStore:
     ) -> SessionEvent:
         """向指定会话追加一个事件并更新索引。"""
 
-        with self._write_lock:
+        with self._exclusive_write():
             self.ensure()
             normalized_id = _normalize_session_id(session_id)
             entry = self._entry_by_id(normalized_id)
@@ -154,11 +182,10 @@ class SessionStore:
             )
 
             path = self._session_path(entry)
+            line = json.dumps(event.to_dict(), ensure_ascii=False, separators=(",", ":"))
             try:
-                with path.open("a", encoding="utf-8", newline="\n") as file:
-                    file.write(json.dumps(event.to_dict(), ensure_ascii=False, separators=(",", ":")))
-                    file.write("\n")
-            except OSError as exc:
+                _append_text_line(path, line, fsync=self.durable.fsync)
+            except SessionStoreError as exc:
                 raise SessionStoreError(f"写入会话转录失败：{path}，{exc}") from exc
 
             self._update_entry_after_event(entry, event)
@@ -240,7 +267,7 @@ class SessionStore:
         归档操作；artifact 路径不变，避免已记录工具结果引用失效。
         """
 
-        with self._write_lock:
+        with self._exclusive_write():
             self.ensure()
             normalized_id = _normalize_session_id(session_id)
             entry = self._entry_by_id(normalized_id)
@@ -277,7 +304,7 @@ class SessionStore:
         不可逆操作，调用方应自行确认。当前活跃会话不允许删除。
         """
 
-        with self._write_lock:
+        with self._exclusive_write():
             self.ensure()
             normalized_id = _normalize_session_id(session_id)
             entry = self._entry_by_id(normalized_id)
@@ -308,7 +335,7 @@ class SessionStore:
         重命名、导出或归档等任何业务事件的会话都不会被误删。
         """
 
-        with self._write_lock:
+        with self._exclusive_write():
             self.ensure()
             normalized_id = _normalize_session_id(session_id)
             entry = self._entry_by_id(normalized_id)
@@ -344,7 +371,7 @@ class SessionStore:
     ) -> SessionState:
         """把归档会话恢复为活跃会话，供 `/resume` 继续写入。"""
 
-        with self._write_lock:
+        with self._exclusive_write():
             self.ensure()
             normalized_id = _normalize_session_id(session_id)
             entry = self._entry_by_id(normalized_id)
@@ -377,7 +404,8 @@ class SessionStore:
 
         normalized_id = _normalize_session_id(session_id)
         entry = self._entry_by_id(normalized_id)
-        events = self._read_events(entry)
+        read_result = self._read_events_result(entry)
+        events = list(read_result.events)
         messages: list[dict[str, str]] = []
         for event in events:
             if event.type == "compact_summary":
@@ -410,9 +438,27 @@ class SessionStore:
     def read_session_events(self, session_id: str) -> list[SessionEvent]:
         """读取指定会话的完整事件流，供 UI 回放和正式导出使用。"""
 
+        return list(self.read_session_events_with_diagnostics(session_id).events)
+
+    def read_session_events_with_diagnostics(
+        self,
+        session_id: str,
+    ) -> SessionEventReadResult:
+        """读取事件流并返回结构化诊断（版本不支持、JSON 损坏、字段错误等）。
+
+        不改写磁盘转录；legacy 版本仅在内存中迁移。
+        """
+
         normalized_id = _normalize_session_id(session_id)
         entry = self._entry_by_id(normalized_id)
-        return self._read_events(entry)
+        return self._read_events_result(entry)
+
+    def read_prompt_history_diagnostics(self) -> list[SessionRecordDiagnostic]:
+        """返回提示历史 JSONL 的读取诊断，不改变查询结果语义。"""
+
+        self.ensure()
+        _entries, diagnostics = self.prompt_history.read_entries_with_diagnostics()
+        return list(diagnostics)
 
     def read_artifact_text(self, session_id: str, artifact_path: str) -> str:
         """读取 `.agent_sessions/artifacts/` 下的文本 artifact。
@@ -475,6 +521,53 @@ class SessionStore:
                 seen[key] = entry.workspace_root
         return sorted(seen.values(), key=lambda value: value.casefold())
 
+    def check_consistency(self) -> SessionConsistencyReport:
+        """扫描 JSONL 转录、index.json 与 artifact 目录，生成一致性诊断。
+
+        只读检查：不修改索引、不改写转录、不删除任何文件。
+        用于崩溃后排查 event_count 漂移、孤立转录和路径不一致。
+        """
+
+        with self._exclusive_write():
+            self.ensure()
+            return self._build_consistency_report_locked()
+
+    def rebuild_index(
+        self,
+        *,
+        apply: bool = False,
+        now: datetime | None = None,
+    ) -> SessionConsistencyReport:
+        """根据磁盘转录重建 index.json 核心字段。
+
+        默认 `apply=False` 只返回诊断和建议索引，不写盘。
+        当 `apply=True` 时：
+        1. 先备份现有 `index.json`（若存在）；
+        2. 用可从转录确定的条目覆盖索引；
+        3. 不会删除 JSONL、artifact 或无法判断归属的数据。
+
+        缺失转录的索引条目会从新索引中移除；孤立 artifact 目录
+        只会出现在报告中，不会被自动清理。
+        """
+
+        with self._exclusive_write():
+            self.ensure()
+            report = self._build_consistency_report_locked()
+            if not apply:
+                return report
+
+            backup_path = _write_index_backup(self.index_path, now=now)
+            self._save_entries(list(report.proposed_entries))
+            return SessionConsistencyReport(
+                issues=report.issues,
+                scanned_index_entries=report.scanned_index_entries,
+                scanned_transcripts=report.scanned_transcripts,
+                scanned_artifact_dirs=report.scanned_artifact_dirs,
+                proposed_entries=report.proposed_entries,
+                applied=True,
+                backup_path=None if backup_path is None else backup_path.as_posix(),
+            )
+
     def append_prompt_history(
         self,
         *,
@@ -486,7 +579,7 @@ class SessionStore:
     ) -> PromptHistoryEntry | None:
         """记录用户提示历史；该历史不进入模型上下文。"""
 
-        with self._write_lock:
+        with self._exclusive_write():
             self.ensure()
             return self.prompt_history.append(
                 display=display,
@@ -527,6 +620,33 @@ class SessionStore:
             if entry.session_id == session_id:
                 return entry
         raise SessionStoreError(f"未找到会话：{session_id}")
+
+    def _build_consistency_report_locked(self) -> SessionConsistencyReport:
+        """在已持有写锁时构建一致性报告。"""
+
+        return _build_consistency_report(
+            root=self.root,
+            index_entries=self._load_entries(),
+            read_events=self._read_events_for_consistency,
+        )
+
+    def _read_events_for_consistency(
+        self,
+        path: Path,
+        session_id: str,
+    ) -> list[SessionEvent]:
+        """一致性扫描专用读取：校验路径边界后解析 JSONL。"""
+
+        resolved = path.resolve()
+        if not _is_relative_to(resolved, self.root):
+            raise SessionStoreError(f"会话路径越界：{path}")
+        relative = resolved.relative_to(self.root).as_posix()
+        result = _read_session_events_with_diagnostics(
+            resolved,
+            session_id=session_id,
+            relative_path=relative,
+        )
+        return list(result.events)
 
 
     def _prepare_event_payload(
@@ -685,29 +805,15 @@ class SessionStore:
             raise SessionStoreError(f"移动会话转录失败：{source_path} -> {destination_path}，{exc}") from exc
 
     def _read_events(self, entry: SessionIndexEntry) -> list[SessionEvent]:
+        return list(self._read_events_result(entry).events)
+
+    def _read_events_result(self, entry: SessionIndexEntry) -> SessionEventReadResult:
         path = self._session_path(entry)
-        if not path.exists():
-            return []
-        events: list[SessionEvent] = []
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except UnicodeDecodeError as exc:
-            raise SessionStoreError(f"会话转录不是 UTF-8 文本：{path}") from exc
-        except OSError as exc:
-            raise SessionStoreError(f"读取会话转录失败：{path}，{exc}") from exc
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-                if not isinstance(data, dict):
-                    continue
-                event = SessionEvent.from_dict(data)
-            except (json.JSONDecodeError, SessionStoreError):
-                continue
-            if event.session_id == entry.session_id:
-                events.append(event)
-        return events
+        return _read_session_events_with_diagnostics(
+            path,
+            session_id=entry.session_id,
+            relative_path=entry.path,
+        )
 
     def _session_path(self, entry: SessionIndexEntry) -> Path:
         path = (self.root / entry.path).resolve()
@@ -726,29 +832,33 @@ class SessionStore:
             raise SessionStoreError(f"会话索引不是 UTF-8 文本：{self.index_path}") from exc
         except OSError as exc:
             raise SessionStoreError(f"读取会话索引失败：{self.index_path}，{exc}") from exc
-        sessions = data.get("sessions", []) if isinstance(data, dict) else []
-        if not isinstance(sessions, list):
-            raise SessionStoreError("会话索引顶层字段 sessions 必须是列表。")
-        return [SessionIndexEntry.from_dict(item) for item in sessions if isinstance(item, dict)]
+        sessions, _schema_version = _parse_index_document(data)
+        return [SessionIndexEntry.from_dict(item) for item in sessions]
 
     def _save_entries(self, entries: list[SessionIndexEntry]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        data = {"sessions": [entry.to_dict() for entry in entries]}
+        data = _build_index_document(entries)
+        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="\n",
-                dir=self.root,
+            _atomic_write_text(
+                self.index_path,
+                text,
+                fsync=self.durable.fsync,
                 prefix=f"{self.index_path.stem}.",
                 suffix=".tmp",
-                delete=False,
-            ) as file:
-                temp_path = Path(file.name)
-                file.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-            temp_path.replace(self.index_path)
-        except OSError as exc:
+            )
+        except SessionStoreError as exc:
             raise SessionStoreError(f"写入会话索引失败：{self.index_path}，{exc}") from exc
+
+    def _exclusive_write(self):
+        """同一会话根的进程内 + 跨进程写互斥。"""
+
+        return _exclusive_session_write(
+            self.root,
+            self._write_lock,
+            timeout_seconds=self.durable.lock_timeout_seconds,
+            poll_seconds=self.durable.lock_poll_seconds,
+        )
 
 
 def _lock_for_root(root: Path) -> threading.RLock:
@@ -772,9 +882,15 @@ __all__ = [
     "PromptHistoryEntry",
     "PromptHistoryStore",
     "SESSION_EVENT_VERSION",
+    "SESSION_INDEX_SCHEMA_VERSION",
     "SESSION_ID_PATTERN",
+    "DurableWritePolicy",
+    "SessionConsistencyIssue",
+    "SessionConsistencyReport",
     "SessionEvent",
+    "SessionEventReadResult",
     "SessionIndexEntry",
+    "SessionRecordDiagnostic",
     "SessionState",
     "SessionStore",
     "SessionStoreError",

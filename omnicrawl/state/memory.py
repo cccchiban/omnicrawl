@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import difflib
 import json
 import re
 from dataclasses import dataclass
@@ -8,41 +7,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-DEFAULT_STORAGE_DIRECTORIES = (
-    "user-preferences/general",
-    "project-context/general",
-    "task-history/general",
-    "code-knowledge/general",
-    "error-lessons/general",
-    "external-context/general",
-)
-
-_CLASSIFICATION_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "user-preferences/communication-style",
-        ("偏好", "喜欢", "不喜欢", "习惯", "沟通", "回答风格", "输出", "称呼"),
-    ),
-    (
-        "project-context/general",
-        ("项目", "仓库", "架构", "约束", "配置", "入口", "workspace", "repository"),
-    ),
-    (
-        "code-knowledge/general",
-        ("代码", "函数", "类", "模块", "接口", "实现", "源码", "class", "function"),
-    ),
-    (
-        "error-lessons/general",
-        ("错误", "失败", "异常", "修复", "调试", "踩坑", "bug", "error", "exception"),
-    ),
-    (
-        "external-context/general",
-        ("api", "外部服务", "环境变量", "域名", "权限", "token", "模型", "网关"),
-    ),
-    (
-        "task-history/general",
-        ("任务", "完成", "决策", "待办", "跟进", "历史", "计划"),
-    ),
+from .memory_ranking import (
+    DEFAULT_STORAGE_DIRECTORIES,
+    directories_overlap as _directories_overlap,
+    make_summary as _make_summary,
+    merge_memory_content as _merge_memory_content,
+    normalize_for_compare as _normalize_for_compare,
+    score_related_entry as _score_related_entry_impl,
+    score_search_entry as _score_search_entry_impl,
+    text_similarity as _text_similarity,
+    classify_storage_directory as _classify_storage_directory,
 )
 
 
@@ -517,30 +491,7 @@ class MemoryStore:
         query: str,
         candidate_directories: list[str],
     ) -> float:
-        score = 0.0
-        haystack = " ".join(
-            [
-                entry.summary,
-                entry.storage_directory,
-                " ".join(entry.related_directories),
-            ]
-        ).lower()
-
-        query_tokens = _extract_search_tokens(query)
-        if query_tokens:
-            token_hits = sum(1 for token in query_tokens if token in haystack)
-            score += token_hits / len(query_tokens) * 10
-            if query.lower() and query.lower() in haystack:
-                score += 5
-
-        for directory in candidate_directories:
-            score += _directory_match_score(entry, directory) * 3
-
-        # 轻微倾向被反复使用或较新的记忆，但不让它盖过文本相关度。
-        score += min(entry.touch_count, 10) * 0.05
-        age_days = max((_now() - entry.timestamp).total_seconds() / 86400, 0)
-        score += max(0.0, 1.0 - min(age_days, 30) / 30) * 0.1
-        return score
+        return _score_search_entry_impl(entry, query, candidate_directories, now=_now())
 
     def _score_related_entry(
         self,
@@ -548,10 +499,7 @@ class MemoryStore:
         directories: set[str],
         depth: int,
     ) -> float:
-        best = max((_directory_match_score(entry, directory) for directory in directories), default=0.0)
-        if best <= 0:
-            return 0.0
-        return best / (depth + 1)
+        return _score_related_entry_impl(entry, directories, depth)
 
     def _initial_related_frontier(
         self,
@@ -714,87 +662,6 @@ def _read_markdown_body(path: Path) -> str:
     return normalized[end_index + 4 :].strip()
 
 
-def _classify_storage_directory(content: str) -> str:
-    text = content.lower()
-    for directory, keywords in _CLASSIFICATION_RULES:
-        if any(keyword in text for keyword in keywords):
-            return directory
-    return "task-history/general"
-
-
-def _make_summary(content: str, max_chars: int = 120) -> str:
-    text = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
-    text = re.sub(r"^\s{0,3}[-*+>#]+\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\s+", " ", text).strip()
-    if not text:
-        return ""
-
-    match = re.search(r"[。！？!?；;]", text)
-    if match is not None and match.end() <= max_chars:
-        text = text[: match.end()]
-    if len(text) <= max_chars:
-        return text
-    return text[: max_chars - 1].rstrip() + "…"
-
-
-def _merge_memory_content(old_content: str, new_content: str) -> str:
-    old = old_content.strip()
-    new = new_content.strip()
-    if not old:
-        return new
-    if _normalize_for_compare(new) in _normalize_for_compare(old):
-        return old
-    return f"{old}\n\n补充：{new}"
-
-
-def _directory_match_score(entry: MemoryIndexEntry, directory: str) -> float:
-    directory = _normalize_directory(directory)
-    if entry.storage_directory == directory:
-        return 3.0
-    if entry.storage_directory.startswith(f"{directory}/") or directory.startswith(f"{entry.storage_directory}/"):
-        return 2.0
-    if directory in entry.related_directories:
-        return 1.5
-    if any(item.startswith(f"{directory}/") or directory.startswith(f"{item}/") for item in entry.related_directories):
-        return 1.0
-    return 0.0
-
-
-def _directories_overlap(left: list[str], right: list[str]) -> bool:
-    left_set = set(left)
-    right_set = set(right)
-    if left_set & right_set:
-        return True
-    return any(
-        item.startswith(f"{other}/") or other.startswith(f"{item}/")
-        for item in left_set
-        for other in right_set
-    )
-
-
-def _text_similarity(left: str, right: str) -> float:
-    left_norm = _normalize_for_compare(left)
-    right_norm = _normalize_for_compare(right)
-    if not left_norm or not right_norm:
-        return 0.0
-    return difflib.SequenceMatcher(a=left_norm, b=right_norm).ratio()
-
-
-def _extract_search_tokens(text: str) -> set[str]:
-    lowered = text.lower()
-    tokens = set(re.findall(r"[a-z0-9_+-]{2,}", lowered))
-
-    for chunk in re.findall(r"[\u4e00-\u9fff]{2,}", lowered):
-        if len(chunk) <= 8:
-            tokens.add(chunk)
-        for index in range(len(chunk) - 1):
-            tokens.add(chunk[index : index + 2])
-        for index in range(len(chunk) - 2):
-            tokens.add(chunk[index : index + 3])
-
-    return tokens
-
-
 def _normalize_directory(raw_directory: str) -> str:
     directory = raw_directory.strip().replace("\\", "/")
     directory = re.sub(r"\s+", "-", directory)
@@ -859,10 +726,6 @@ def _dedupe_strings(values: list[str]) -> list[str]:
 
 def _normalize_content(content: str) -> str:
     return content.replace("\r\n", "\n").replace("\r", "\n").strip()
-
-
-def _normalize_for_compare(text: str) -> str:
-    return re.sub(r"[\W_]+", "", text.lower(), flags=re.UNICODE)
 
 
 def _format_datetime(value: datetime) -> str:

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_fullscreen_layout_uses_single_line_hud_and_compact_composer(self) -> None:
-        """界面应使用单行 HUD、无侧栏和三行高的紧凑输入舱。"""
+        """界面应使用两行稳态 HUD、无侧栏和三行高的紧凑输入舱。"""
 
         from textual.widgets import Input, Static
 
@@ -38,6 +38,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app.query("#hint")), 0)
             self.assertEqual(app.query_one("#topbar").region.y, 0)
             self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
+            # 方案 1A：三栏固定对齐；空闲时运行态隐藏（方案 3A）。
+            self.assertEqual(app.query_one("#brand").region.width, 18)
+            self.assertEqual(app.query_one("#runtime-status", Static).display, False)
             context = app.query_one("#context-summary", Static).content
             self.assertIn("PRJ workspace", context.plain)
             self.assertNotIn("D:/workspace", context.plain)
@@ -46,11 +49,27 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("APR MAN", context.plain)
             self.assertNotIn(".agent_tmp", context.plain)
             self.assertIn("#39a7ff", str(context.spans))
-            telemetry = str(app.query_one("#token-telemetry", Static).content)
+            token_widget = app.query_one("#token-telemetry", Static)
+            telemetry = str(token_widget.content)
             self.assertIn("IN 0", telemetry)
             self.assertIn("CTX 0/128K", telemetry)
+            # border-bottom 会占 1 行；内容区高度必须 > 0，否则终端上看不到 Token 行。
+            self.assertEqual(token_widget.region.height, 2)
+            self.assertGreater(token_widget.size.height, 0)
+            rendered_token = "".join(segment.text for segment in token_widget.render_line(0))
+            self.assertIn("IN", rendered_token)
+            self.assertIn("CTX", rendered_token)
             self.assertEqual(app.query_one("#composer-wrap").region.height, 3)
             self.assertGreater(app.query_one("#composer", Input).region.height, 0)
+
+    def test_compact_hud_value_truncates_long_fields(self) -> None:
+        from omnicrawl.ui.fullscreen.hud import compact_hud_value
+
+        self.assertEqual(compact_hud_value("short", 24), "short")
+        self.assertEqual(compact_hud_value("", 8), "-")
+        truncated = compact_hud_value("deepseek-very-long-model-name-flash", 16)
+        self.assertLessEqual(len(truncated), 16)
+        self.assertIn("…", truncated)
 
     async def test_token_telemetry_updates_counts_and_context_progress(self) -> None:
         """Token 回调应刷新缩写统计，并按配置上限生成彩色上下文进度条。"""
@@ -287,6 +306,111 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             status = app.query_one("#runtime-status", Static)
             self.assertFalse(status.display)
             self.assertEqual(str(status.content), "")
+
+    async def test_agent_turn_errors_and_cancellation_release_input_for_next_submission(self) -> None:
+        """取消、预期异常和未知异常结束后，输入锁都必须解除且允许下一轮提交。"""
+
+        from textual.widgets import Input
+
+        from omnicrawl.agent import AgentError
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def run_stream(self, text: str, on_delta, **callbacks) -> str:
+                self.calls.append(text)
+                if text == "取消":
+                    # 留出一个可预测的协议检查点，让测试能够在回合运行期间
+                    # 设置取消令牌，而非在提交前被 `_submit()` 清除。
+                    time.sleep(0.25)
+                    callbacks["cancel_check"]()
+                if text == "预期失败":
+                    raise AgentError("配置无效")
+                if text == "未知失败":
+                    raise RuntimeError("连接中断")
+                on_delta(f"恢复：{text}")
+                return text
+
+        agent = FakeAgent()
+        app = OmniCrawlApp(
+            agent,
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            composer = app.query_one("#composer", Input)
+            for text, expected in (
+                ("取消", "当前任务已取消。"),
+                ("预期失败", "Agent 请求失败：配置无效"),
+                ("未知失败", "界面任务异常：连接中断"),
+            ):
+                composer.value = text
+                await pilot.press("enter")
+                # Textual 的 worker 可能尚未开始执行；先观察本轮输入已被
+                # Agent 接收，避免把上一轮 `is_generating=False` 误认为本轮完成。
+                for _ in range(40):
+                    if text in agent.calls:
+                        break
+                    await pilot.pause(0.05)
+                self.assertIn(text, agent.calls)
+                if text == "取消":
+                    # 输入提交会清除上一回合的取消令牌；等待本回合启动后再模拟
+                    # 用户按下 Ctrl+C，才能验证 Agent 的协议检查点是否中断。
+                    app.cancel_pending_turn()
+                for _ in range(40):
+                    if not app.is_generating:
+                        break
+                    await pilot.pause(0.05)
+                self.assertFalse(app.is_generating)
+                self.assertIn(expected, app.conversation_text)
+
+            composer.value = "恢复"
+            await pilot.press("enter")
+            for _ in range(40):
+                if not app.is_generating and "恢复" in agent.calls:
+                    break
+                await pilot.pause(0.05)
+
+        self.assertEqual(agent.calls, ["取消", "预期失败", "未知失败", "恢复"])
+        self.assertIn("恢复：恢复", app.conversation_text)
+        self.assertFalse(app.is_generating)
+
+    async def test_mcp_preload_failure_releases_input_and_renders_error(self) -> None:
+        """MCP 预热失败不能永久锁住输入，且必须沿用既有错误呈现。"""
+
+        from omnicrawl.agent import AgentError
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def preload_mcp_tools(self) -> None:
+                raise AgentError("Server 启动失败")
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.2)
+
+        self.assertIn("MCP 能力加载失败：Server 启动失败", app.conversation_text)
+        self.assertFalse(app.is_generating)
 
     async def test_reasoning_sections_are_separate_collapsed_and_clickable(self) -> None:
         """每次模型推理应独立成段、默认折叠，并且只能通过点击切换正文。"""
@@ -764,36 +888,60 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
+        expected_max_events = 50
+
         class FakeAgent:
             current_model = "demo-model"
             current_session_id = "session-demo"
             skill_manager = None
             workspace_root = "D:/workspace"
 
+            def __init__(self) -> None:
+                self.monitor_poll_cursors: list[int] = []
+
             def set_confirm_handler(self, _handler) -> None:
                 pass
+
+            def list_monitor_tasks(self):
+                return [SimpleNamespace(monitor_id="old-task")]
+
+            def poll_monitor_events(self, _monitor_id: str, *, cursor: int, max_events: int):
+                if max_events != expected_max_events:
+                    raise AssertionError("Monitor 单次读取上限改变")
+                self.monitor_poll_cursors.append(cursor)
+                return SimpleNamespace(
+                    snapshot=SimpleNamespace(status="running"),
+                    events=(),
+                    next_cursor=42,
+                )
 
             def switch_workspace(self, workspace: str) -> None:
                 time.sleep(0.25)
                 self.workspace_root = workspace
 
+        agent = FakeAgent()
         app = OmniCrawlApp(
-            FakeAgent(),
+            agent,
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
-        app._monitor_cursors["old-task"] = 42
 
         async with app.run_test(size=(120, 40)) as pilot:
+            app._refresh_monitor_events()
+            self.assertEqual(dict(app._monitor_state.cursors), {"old-task": 42})
             started = time.monotonic()
             self.assertTrue(app._handle_command("/workspace D:/next"))
             elapsed = time.monotonic() - started
             self.assertLess(elapsed, 0.1)
-            self.assertEqual(app._monitor_cursors, {})
+            self.assertEqual(dict(app._monitor_state.cursors), {})
+            self.assertTrue(app._monitor_state.polling_suspended)
             self.assertTrue(app.is_generating)
             await pilot.pause(0.35)
 
+        self.assertGreaterEqual(len(agent.monitor_poll_cursors), 1)
+        self.assertTrue(all(cursor == 0 for cursor in agent.monitor_poll_cursors))
         self.assertIn("已切换工作区：D:/next", app.conversation_text)
         self.assertFalse(app.is_generating)
+        self.assertFalse(app._monitor_state.polling_suspended)
 
     async def test_workspace_switch_failure_is_rendered_by_slow_command_worker(self) -> None:
         """工作区切换失败应解除输入锁，并在对话区显示可读错误。"""
@@ -825,6 +973,35 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("命令执行失败：目录不存在", app.conversation_text)
         self.assertFalse(app.is_generating)
 
+    async def test_fullscreen_uses_runtime_module_patch_for_command_dispatch(self) -> None:
+        """命令分派抽离后，App 创建后的模块级 patch 仍必须被实际调用。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            with patch(
+                "omnicrawl.ui.fullscreen.handle_approval_command",
+                return_value="已通过 patch 切换审批",
+            ) as patched_handler:
+                self.assertTrue(app._handle_command("/approval:auto"))
+                await pilot.pause()
+
+            patched_handler.assert_called_once_with(app.agent, "/approval:auto")
+            self.assertIn("已通过 patch 切换审批", app.conversation_text)
+
     async def test_model_command_runs_outside_event_loop(self) -> None:
         """模型列表检测较慢时，事件循环仍必须能够继续处理界面事件。"""
 
@@ -852,7 +1029,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 40)) as pilot:
             with patch("omnicrawl.ui.fullscreen.handle_model_command", side_effect=delayed_model_command):
                 started = time.monotonic()
-                self.assertTrue(app._handle_command("/model"))
+                self.assertTrue(app._handle_command("/model demo-model"))
                 elapsed = time.monotonic() - started
                 self.assertLess(elapsed, 0.1)
                 await pilot.pause(0.35)

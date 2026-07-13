@@ -13,8 +13,12 @@ from ..config.approval import (
 )
 from ..agent import AgentError, LocalToolAgent
 from ..config.llm import LLMError, save_reasoning_effort
+from ..config.llm import ActiveModelRef, save_active_model_ref
 from ..config.model_catalog import (
+    CatalogModel,
     ModelCatalogError,
+    build_catalog,
+    clear_discovery_cache,
     detect_model_options,
     ensure_current_model_option,
     format_model_options,
@@ -189,6 +193,21 @@ def print_mcp_status(agent: LocalToolAgent) -> None:
     print(format_mcp_status(agent))
 
 
+def format_plugins_status(agent: LocalToolAgent) -> str:
+    """格式化插件子系统只读状态。"""
+
+    formatter = getattr(agent, "format_plugins_status", None)
+    if callable(formatter):
+        return formatter()
+    return "插件状态接口不可用。"
+
+
+def print_plugins_status(agent: LocalToolAgent) -> None:
+    """行内 UI 打印插件状态。"""
+
+    print(format_plugins_status(agent))
+
+
 def format_sessions_list(agent: LocalToolAgent) -> str:
     """格式化当前工作区最近会话列表。"""
 
@@ -340,7 +359,13 @@ def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
 
 
 def handle_model_command(agent: LocalToolAgent, command: str) -> str | None:
-    """处理模型查看与切换命令；返回 None 表示不是模型命令。"""
+    """处理模型查看与切换命令；返回 None 表示不是模型命令。
+
+    语义：
+    - `/model` / `/models`：列出双列目录（非交互环境）
+    - `/model --refresh`：刷新发现缓存后列出
+    - `/model <key|alias|model_id|profile/model_id>`：直接切换
+    """
 
     text = command.strip()
     normalized = text.lower()
@@ -352,25 +377,20 @@ def handle_model_command(agent: LocalToolAgent, command: str) -> str | None:
 
     parts = text.split(None, 1)
     if len(parts) == 1:
-        return _format_detected_models(agent)
+        return _format_catalog_models(agent, refresh=False)
 
-    model_id = parts[1].strip()
-    if not model_id:
-        return "用法：/model 查看模型列表，或 /model <模型ID> 切换当前模型。"
+    argument = parts[1].strip()
+    if not argument:
+        return (
+            "用法：/model 查看模型列表；"
+            "/model --refresh 刷新后查看；"
+            "/model <key|alias|model_id|profile/model_id> 切换。"
+        )
 
-    validation_message = _validate_model_id_against_base_url(agent, model_id)
-    if validation_message is not None:
-        return validation_message
+    if argument.lower() in {"--refresh", "-r", "refresh"}:
+        return _format_catalog_models(agent, refresh=True)
 
-    try:
-        agent.set_model(model_id)
-    except AgentError as exc:
-        return f"模型切换失败：{exc}"
-
-    save_message = _save_model_change(model_id)
-    env_message = _model_env_override_message()
-    suffix = "".join(part for part in (save_message, env_message) if part)
-    return f"当前模型已切换为 {model_id}{suffix}"
+    return _switch_model_selection(agent, argument)
 
 
 def handle_reasoning_command(agent: LocalToolAgent, command: str) -> str | None:
@@ -405,7 +425,77 @@ def handle_reasoning_command(agent: LocalToolAgent, command: str) -> str | None:
     return f"推理强度已切换为 {normalized_effort}，并已同步到 {path}{env_message}"
 
 
-def _format_detected_models(agent: LocalToolAgent) -> str:
+def _format_catalog_models(agent: LocalToolAgent, *, refresh: bool) -> str:
+    """文本模式展示双列目录；发现失败时回退到旧 /models 列表。"""
+
+    current_model = agent.current_model
+    if refresh:
+        clear_discovery_cache()
+    try:
+        catalog = build_catalog(config=agent.config.llm, refresh=refresh)
+    except ModelCatalogError as exc:
+        return _format_detected_models_fallback(agent, prefix=f"双列目录失败：{exc}\n")
+
+    custom_items: list[CatalogModel] = list(catalog.get("custom") or [])
+    detected_items: list[CatalogModel] = list(catalog.get("detected") or [])
+    diagnostics = list(catalog.get("diagnostics") or [])
+
+    if not custom_items and not detected_items:
+        fallback = _format_detected_models_fallback(agent)
+        if diagnostics:
+            diag = "\n".join(
+                f"! {item.get('profile')}: {item.get('message') or item.get('status')}"
+                for item in diagnostics[:5]
+            )
+            return f"{fallback}\n\n诊断：\n{diag}"
+        return fallback
+
+    lines = [f"当前模型：{current_model}"]
+    if custom_items:
+        lines.append(f"自定义模型（{len(custom_items)}）：")
+        for index, item in enumerate(custom_items[:20], start=1):
+            marker = " *" if _catalog_item_matches_current(item, current_model) else ""
+            lines.append(
+                f"{index:>2}. {item.key} · {item.display_name or item.model_id}"
+                f" [{item.protocol}]{marker}"
+            )
+        if len(custom_items) > 20:
+            lines.append(f"... 还有 {len(custom_items) - 20} 个自定义模型未显示。")
+    else:
+        lines.append("自定义模型：空（可在 models.yaml 中添加）")
+
+    if detected_items:
+        lines.append(f"自动检测（{len(detected_items)}）：")
+        for index, item in enumerate(detected_items[:20], start=1):
+            marker = " *" if _catalog_item_matches_current(item, current_model) else ""
+            badge = f" custom:{item.matched_custom_key}" if item.matched_custom_key else ""
+            lines.append(
+                f"{index:>2}. {item.profile_id}/{item.model_id} [{item.protocol}]{badge}{marker}"
+            )
+        if len(detected_items) > 20:
+            lines.append(f"... 还有 {len(detected_items) - 20} 个检测模型未显示。")
+    else:
+        lines.append("自动检测：空或失败（自定义模型仍可切换）")
+
+    if diagnostics:
+        lines.append("诊断：")
+        for item in diagnostics[:5]:
+            lines.append(
+                f"- {item.get('profile')}: {item.get('message') or item.get('status')}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "切换：/model <key|alias|model_id|profile/model_id>",
+            "刷新：/model --refresh",
+            "全屏 TUI 中 /model 会打开双列选择界面。",
+        ]
+    )
+    return "\n".join(lines).rstrip()
+
+
+def _format_detected_models_fallback(agent: LocalToolAgent, prefix: str = "") -> str:
     current_model = agent.current_model
     try:
         options = ensure_current_model_option(
@@ -413,19 +503,145 @@ def _format_detected_models(agent: LocalToolAgent) -> str:
             current_model,
         )
     except ModelCatalogError as exc:
-        return f"当前模型：{current_model}\n模型列表检测失败：{exc}"
+        return f"{prefix}当前模型：{current_model}\n模型列表检测失败：{exc}"
 
     if not options:
-        return f"当前模型：{current_model}\n模型列表为空。"
+        return f"{prefix}当前模型：{current_model}\n模型列表为空。"
 
     lines = [
-        f"当前模型：{current_model}",
+        f"{prefix}当前模型：{current_model}".rstrip(),
         f"从 {agent.config.llm.base_url.rstrip('/')}/models 检测到 {len(options)} 个模型：",
         format_model_options(options, current_model=current_model),
         "",
         "切换模型：/model <模型ID>",
     ]
     return "\n".join(lines).rstrip()
+
+
+def _switch_model_selection(agent: LocalToolAgent, selection: str) -> str:
+    """解析并切换 custom key / alias / detected ref / 旧 model id。"""
+
+    selection = selection.strip()
+    resolved = _resolve_model_selection(agent, selection)
+    if resolved.get("error"):
+        return str(resolved["error"])
+
+    model_token = str(resolved["token"])
+    save_message = ""
+
+    def persist() -> None:
+        nonlocal save_message
+        save_message = _persist_resolved_selection(resolved, raise_on_error=True)
+
+    try:
+        try:
+            agent.set_model(model_token, persist=persist)
+        except TypeError as exc:
+            # 兼容嵌入方/旧测试的单参数 set_model。
+            # 必须先 persist 成功再切换内存，避免磁盘失败后 runtime 已变更。
+            if "persist" not in str(exc):
+                raise
+            persist()
+            agent.set_model(model_token)
+    except (AgentError, ModelCatalogError, LLMError) as exc:
+        return f"模型切换失败：{exc}"
+
+    env_message = _model_env_override_message()
+    suffix = "".join(part for part in (save_message, env_message) if part)
+    display = str(resolved.get("display") or model_token)
+    return f"当前模型已切换为 {display}{suffix}"
+
+
+def _resolve_model_selection(agent: LocalToolAgent, selection: str) -> dict[str, Any]:
+    """优先匹配双列目录，再回退到旧 base_url 校验。"""
+
+    try:
+        catalog = build_catalog(config=agent.config.llm, refresh=False)
+    except ModelCatalogError:
+        catalog = {"custom": [], "detected": []}
+
+    custom_items: list[CatalogModel] = list(catalog.get("custom") or [])
+    detected_items: list[CatalogModel] = list(catalog.get("detected") or [])
+
+    lowered = selection.lower()
+    for item in custom_items:
+        aliases = {item.key.lower(), *(alias.lower() for alias in item.aliases)}
+        if lowered in aliases or selection == item.model_id:
+            return {
+                "token": item.key,
+                "display": item.key,
+                "source": "custom",
+                "item": item,
+            }
+
+    if "/" in selection:
+        profile_id, model_id = selection.split("/", 1)
+        profile_id = profile_id.strip()
+        model_id = model_id.strip()
+        for item in detected_items:
+            if item.profile_id == profile_id and item.model_id == model_id:
+                return {
+                    "token": f"{profile_id}/{model_id}",
+                    "display": f"{profile_id}/{model_id}",
+                    "source": "detected",
+                    "item": item,
+                }
+        # 目录未命中时仍允许 profile/model_id 手动切换。
+        return {
+            "token": f"{profile_id}/{model_id}",
+            "display": f"{profile_id}/{model_id}",
+            "source": "detected",
+            "profile": profile_id,
+            "model_id": model_id,
+        }
+
+    for item in detected_items:
+        if item.model_id == selection:
+            return {
+                "token": f"{item.profile_id}/{item.model_id}" if item.profile_id else item.model_id,
+                "display": item.model_id,
+                "source": "detected",
+                "item": item,
+            }
+
+    validation_message = _validate_model_id_against_base_url(agent, selection)
+    if validation_message is not None:
+        return {"error": validation_message}
+    return {"token": selection, "display": selection, "source": "legacy"}
+
+
+def _persist_resolved_selection(
+    resolved: dict[str, Any],
+    *,
+    raise_on_error: bool = False,
+) -> str:
+    item = resolved.get("item")
+    source = str(resolved.get("source") or "legacy")
+    try:
+        if source == "custom" and isinstance(item, CatalogModel):
+            path = save_active_model_ref(
+                ActiveModelRef(source="custom", key=item.key, model_id=item.model_id)
+            )
+            return f"，并已同步到 {path}。"
+        if source == "detected":
+            if isinstance(item, CatalogModel):
+                path = save_active_model_ref(
+                    ActiveModelRef(
+                        source="detected",
+                        profile=item.profile_id,
+                        model_id=item.model_id,
+                        protocol=item.protocol,
+                    )
+                )
+                return f"，并已同步到 {path}。"
+            path = save_llm_model(str(resolved["token"]))
+            return f"，并已同步到 {path}。"
+        path = save_llm_model(str(resolved["token"]))
+        return f"，并已同步到 {path}。"
+    except (ModelCatalogError, LLMError) as exc:
+        if raise_on_error:
+            raise
+        return f"，但写入配置失败：{exc}。"
 
 
 def _validate_model_id_against_base_url(agent: LocalToolAgent, model_id: str) -> str | None:
@@ -446,18 +662,23 @@ def _validate_model_id_against_base_url(agent: LocalToolAgent, model_id: str) ->
     )
 
 
-def _save_model_change(model_id: str) -> str:
-    try:
-        path = save_llm_model(model_id)
-    except ModelCatalogError as exc:
-        return f"，但写入 config.json 失败：{exc}。"
-    return f"，并已同步到 {path}。"
+def _catalog_item_matches_current(item: CatalogModel, current_model: str) -> bool:
+    current = (current_model or "").strip()
+    if not current:
+        return False
+    if item.key and current == item.key:
+        return True
+    if current == item.model_id:
+        return True
+    if item.profile_id and current == f"{item.profile_id}/{item.model_id}":
+        return True
+    return current in item.aliases
 
 
 def _model_env_override_message() -> str:
     if not model_env_override_active():
         return ""
-    return " 注意：当前存在 OPENAI_MODEL 环境变量，重启后会优先使用环境变量。"
+    return " 注意：当前存在 OMNICRAWL_MODEL/OPENAI_MODEL 环境变量，重启后会优先使用环境变量。"
 
 
 def _reasoning_env_override_message() -> str:
@@ -478,6 +699,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/skills",
         "/memory:clean",
         "/mcp",
+        "/plugins",
         "/sessions",
         "/resume",
         "/history",
@@ -510,12 +732,13 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
     builtin_descriptions = {
         "/workspace": "切换当前 Agent 的工作区目录。",
         "/new": "开启一个空白会话。",
-        "/model": "查看模型列表，或输入模型 ID 切换当前模型。",
-        "/models": "查看当前接口可用的模型列表。",
+        "/model": "打开/查看模型目录，或输入 key、alias、profile/model_id 切换。",
+        "/models": "/model 的兼容别名。",
         "/reasoning": "查看或切换推理强度。",
         "/skills": "查看当前已加载的 Skill。",
         "/memory:clean": "清理过期长期记忆。",
         "/mcp": "查看 MCP 开关、服务和工具状态。",
+        "/plugins": "查看 Hook 插件加载与 Worker 状态（只读）。",
         "/sessions": "查看当前工作区最近会话。",
         "/resume": "恢复指定会话 ID。",
         "/history": "查看或筛选提示历史。",

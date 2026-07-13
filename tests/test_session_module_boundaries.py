@@ -15,6 +15,9 @@ class SessionModuleBoundaryTests(unittest.TestCase):
         "prompt_history",
         "session_projection",
         "session_artifacts",
+        "session_consistency",
+        "session_records",
+        "session_locking",
     )
 
     def test_session_subdomains_are_real_modules(self) -> None:
@@ -34,11 +37,17 @@ class SessionModuleBoundaryTests(unittest.TestCase):
             "COMPACT_SUMMARY_PREFIX",
             "PromptHistoryEntry",
             "PromptHistoryStore",
+            "SessionConsistencyIssue",
+            "SessionConsistencyReport",
             "SessionEvent",
+            "SessionEventReadResult",
             "SessionIndexEntry",
+            "SessionRecordDiagnostic",
             "SessionState",
             "SessionStore",
             "SessionStoreError",
+            "SESSION_INDEX_SCHEMA_VERSION",
+            "DurableWritePolicy",
         )
 
         for export_name in expected_exports:

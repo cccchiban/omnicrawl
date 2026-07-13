@@ -4,7 +4,7 @@ OmniCrawl 使用基于 Textual 的**全屏终端工作台**。框架统一管理
 
 ## 设计目标
 
-- **Obsidian HUD 极简科幻感**：采用近黑背景、青绿到电蓝再到紫色的字符渐变、锐角符号和单行遥测；布局压缩为单行状态、无卡片消息流和单行输入舱。
+- **Obsidian HUD 极简科幻感**：采用近黑背景、青绿到电蓝再到紫色的字符渐变、锐角符号和紧凑遥测；布局为两行 HUD、无卡片消息流和三行总高的单行输入舱。
 - **信息层级明确**：用户输入、AI 思考、AI 输出、工具执行、等待状态和人工确认具有稳定且不同的视觉语义。
 - **稳定优先**：所有视图变化通过 Textual 主事件循环完成；后台 Agent 线程只发送事件，不直接写终端。
 - **窄屏可读**：启动面板、工具参数、确认内容、预输入和等待状态按真实终端列宽换行，不使用虚构的最小宽度。
@@ -17,7 +17,7 @@ OmniCrawl 使用基于 Textual 的**全屏终端工作台**。框架统一管理
 ▸ 用户问题
 ▸ 思考过程（点击展开）
 ◇ AI 回复内容与 Markdown
-⌁ 步骤 1 · read_file  /  结果 成功
+⌁ read_file · 成功 · 120ms
 › 输入消息或 / 命令
 ```
 
@@ -27,9 +27,9 @@ OmniCrawl 使用基于 Textual 的**全屏终端工作台**。框架统一管理
 | AI 思考 | 默认折叠的“思考过程”，点击标题展开/折叠 | 每次模型推理独立成段，不设置展开快捷键；模型不返回 `reasoning_content` 时不显示空段。 |
 | AI 输出 | `◇` 前缀 Markdown，无背景 | 流式分片更新同一条受控记录，不移动终端光标。 |
 | 运行状态 | 正在思考、正在回复、正在调用、等待 | 仅任务活动期间显示并闪烁 `●` 状态点；默认及完成后隐藏，不占用顶部空间。 |
-| 工具执行 | 默认折叠的 `⌁ 工具名 · 状态 · 耗时` 琥珀色记录 | 同一模型响应可同时展示多条工具记录；执行中与完成后均保持折叠，点击后查看各自参数和结果，不展示内部步骤编号。 |
+| 工具执行 | 默认折叠的工具记录；文件变更走 git 旁注 diff | 普通工具：`⌁ 工具名 · 状态 · 耗时`。`write_file`/`replace_text`：`M path \| +N -M` 标题，展开后旁注行号 `+`/`-` 预览；覆盖写无旧内容时显示 `rewrite +N lines`，不编造假 diff。执行中与完成后均默认折叠。 |
 | 成功/失败 | 折叠标题文本标记 + 语义色 | 不只依赖颜色表达状态。 |
-| 顶部 HUD | `PRJ`、`MDL`、`THK`、`APR` 键值遥测行 + 居中的 Token 遥测行 | 隐藏完整项目路径，审批值压缩为 `MAN`、`AUTO`、`REV`；Token 行用 `IN`、`OUT`、`CA` 和 `CTX` 展示最近一次请求统计，并按 `llm.context_window_tokens` 绘制上下文占用进度条。 |
+| 顶部 HUD | 两行稳态：`PRJ`/`MDL`/`THK`/`APR` + Token 遥测 | 第一行三栏对齐（品牌 18 / 上下文 1fr / 运行态 16，空闲隐藏运行态）；第二行 Token 与上栏同左边距左对齐，布局高度为 2（1 行内容 + 1 行底边框），避免 Textual `border-bottom` 把内容高度压成 0。隐藏完整项目路径；审批压缩为 `MAN`/`AUTO`/`REV`；长字段截断；`IN`/`OUT`/`CA`/`CTX` 按 `llm.context_window_tokens` 绘进度条。 |
 | 输入区 | 空闲时三行总高的单行输入舱；输入 `/` 时向上展开命令菜单 | 菜单合并内置命令和动态 `/skill:*`，实时过滤且最多显示 8 条；上下键选择，Enter 或 Tab 只填入输入框，不立即执行。 |
 | 人工确认 | 电蓝锐角边框模态框 | 风险操作保持明确但不使用厚重卡片。 |
 
@@ -50,8 +50,14 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 ## 文件边界
 
 - `omnicrawl/ui/fullscreen/`：Textual 应用、全屏布局、流式事件桥接和人工确认模态框。
+  - `__init__.py`：`OmniCrawlApp` 入口、Widget 生命周期与渲染。
+  - `turns.py`：Agent 回合生命周期控制器（无 Textual 依赖）。
+  - `commands.py`：斜杠命令分派（无 Textual 依赖）。
+  - `monitor.py`：Monitor 游标/轮询状态适配（无 Textual 依赖）。
+  - `widgets.py` / `hud.py` / `tool_diff.py`：界面组件、顶部遥测与文件变更 diff 渲染。
 - `main.py`：默认创建 Agent 后直接启动全屏工作台。
 - `omnicrawl/ui/tui/`、`stream_turn.py`、`chat_session.py`：保留为兼容输出与既有测试支持，不再作为默认交互入口。
+- `tests/test_fullscreen_tui.py`、`tests/test_fullscreen_turns.py`、`tests/test_fullscreen_commands.py`、`tests/test_fullscreen_monitor.py`：全屏工作台与状态边界回归。
 - `tests/test_terminal_ui.py`：终端样式、窄屏、Unicode、确认、工具、spinner 和回归测试。
 - `tests/test_inline_input.py`：输入编辑、删除键和历史记录测试。
 - `docs/TERMINAL_UI.md`：本文档。
@@ -74,4 +80,4 @@ python -m compileall -q omnicrawl main.py
 git diff --check
 ```
 
-手工冒烟时覆盖普通输入、长/CJK/emoji 输入、流式 Markdown、工具成功/失败、人工确认、错误和 `Ctrl+C` 路径；再检查窗口缩放后的侧栏、消息滚动和固定输入框。
+手工冒烟时覆盖普通输入、长/CJK/emoji 输入、流式 Markdown、工具成功/失败、人工确认、错误和 `Ctrl+C` 路径；再检查窗口缩放后的 HUD、消息滚动和固定输入框。

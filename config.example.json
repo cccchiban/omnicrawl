@@ -25,6 +25,16 @@
     "cleanup_enabled": true,
     "cleanup_interval_hours": 24
   },
+  "plugins": {
+    "enabled": false,
+    "default_timeout_ms": 1000,
+    "max_timeout_ms": 5000,
+    "failure_threshold": 3,
+    "max_message_bytes": 1048576,
+    "custom_event_max_depth": 4,
+    "allow_network_install": false,
+    "audit_log_enabled": true
+  },
   "mcp": {
     "enabled": false,
     "default_timeout_seconds": 30,

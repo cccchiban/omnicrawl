@@ -14,6 +14,7 @@ from ..project import ProjectEntry, ProjectStore, ProjectStoreError
 from ..session import (
     PromptHistoryEntry,
     SessionEvent,
+    SessionEventReadResult,
     SessionIndexEntry,
     SessionState,
     SessionStore,
@@ -220,12 +221,47 @@ class AgentSessionFacade:
     def load_session_events(self, session_id: str) -> list[SessionEvent]:
         """读取指定会话的原始事件流，供 UI 恢复完整转录。"""
 
+        return list(self.load_session_events_with_diagnostics(session_id).events)
+
+    def load_session_events_with_diagnostics(
+        self,
+        session_id: str,
+    ) -> SessionEventReadResult:
+        """读取事件流并返回损坏/版本诊断，供 API 与管理入口展示。"""
+
         store = self.require_session_store()
         try:
             state = store.load_session(session_id)
             if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
                 raise self._error_type(f"不能读取其他工作区的会话：{state.workspace_root}")
-            return store.read_session_events(session_id)
+            return store.read_session_events_with_diagnostics(session_id)
+        except SessionStoreError as exc:
+            raise self._error_type(str(exc)) from exc
+
+    def load_session_diagnostics(
+        self,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """汇总会话转录与提示历史诊断，供最小可见入口使用。"""
+
+        store = self.require_session_store()
+        try:
+            prompt_diagnostics = store.read_prompt_history_diagnostics()
+            if session_id is None or not str(session_id).strip():
+                return {
+                    "session_id": None,
+                    "event_diagnostics": [],
+                    "prompt_history_diagnostics": [item.to_dict() for item in prompt_diagnostics],
+                }
+
+            result = self.load_session_events_with_diagnostics(session_id)
+            return {
+                "session_id": session_id.strip(),
+                "event_count": len(result.events),
+                "event_diagnostics": [item.to_dict() for item in result.diagnostics],
+                "prompt_history_diagnostics": [item.to_dict() for item in prompt_diagnostics],
+                "has_errors": result.has_errors,
+            }
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
 

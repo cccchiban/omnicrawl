@@ -30,10 +30,10 @@ class RetryableAgentRequestError(AgentProtocolError):
 
 @dataclass(frozen=True)
 class AgentLLMProtocol:
-    """封装 Chat Completions 流式协议和 tool call 聚合逻辑。
+    """封装模型请求协议与 tool call 聚合逻辑。
 
-    LocalToolAgent 仍负责系统提示词、工具定义和配置生命周期；本类只处理
-    一次或多次模型请求中的协议细节，避免主运行循环直接操作 SDK 流事件。
+    优先通过 ModelRuntimeManager 走统一 Runtime；若未提供 runtime_manager，
+    则回退到直接 OpenAI Chat Completions client（兼容旧测试/调用）。
     """
 
     client: Any
@@ -47,6 +47,8 @@ class AgentLLMProtocol:
     extra_body_provider: Callable[[], dict[str, Any]]
     tool_name_from_function_name: Callable[[str], str]
     function_name_for_tool: Callable[[str], str]
+    runtime_manager: Any = None
+    reasoning_effort_provider: Callable[[], str] | None = None
 
     def request_reply(
         self,
@@ -57,39 +59,53 @@ class AgentLLMProtocol:
         on_retry_status: Callable[[str], None],
         cancel_check: Callable[[], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
+        runtime_snapshot: Any = None,
     ) -> AgentModelReply:
-        """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
+        """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。
 
-        last_retryable_error: Exception | None = None
-        for attempt in range(1, self.request_retry_count + 1):
-            try:
-                return self.request_reply_once(
-                    messages,
-                    on_delta,
-                    on_token_usage,
-                    on_protocol_wait,
-                    cancel_check,
-                    on_reasoning_delta,
-                )
-            except EmptyAgentReply as exc:
-                last_retryable_error = exc
-                if attempt < self.request_retry_count:
-                    continue
-                raise AgentProtocolError(
-                    f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
-                ) from exc
-            except RetryableAgentRequestError as exc:
-                last_retryable_error = exc
-                if attempt < self.request_retry_count:
-                    on_retry_status(
-                        f"模型请求中断，正在重试 {attempt + 1}/{self.request_retry_count}：{exc}"
+        同一次请求的所有重试必须绑定同一个 Runtime 快照；Agent 工具循环可传入
+        更外层获取的快照，使工具执行前后的多次模型请求也保持同一 Provider/协议。
+        """
+
+        owned_snapshot = None
+        if self.runtime_manager is not None and runtime_snapshot is None:
+            owned_snapshot = self.runtime_manager.acquire_turn()
+            runtime_snapshot = owned_snapshot
+        try:
+            last_retryable_error: Exception | None = None
+            for attempt in range(1, self.request_retry_count + 1):
+                try:
+                    return self.request_reply_once(
+                        messages,
+                        on_delta,
+                        on_token_usage,
+                        on_protocol_wait,
+                        cancel_check,
+                        on_reasoning_delta,
+                        runtime_snapshot,
                     )
-                    continue
-                raise AgentProtocolError(f"Agent 模型请求中断：{exc}") from exc
+                except EmptyAgentReply as exc:
+                    last_retryable_error = exc
+                    if attempt < self.request_retry_count:
+                        continue
+                    raise AgentProtocolError(
+                        f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
+                    ) from exc
+                except RetryableAgentRequestError as exc:
+                    last_retryable_error = exc
+                    if attempt < self.request_retry_count:
+                        on_retry_status(
+                            f"模型请求中断，正在重试 {attempt + 1}/{self.request_retry_count}：{exc}"
+                        )
+                        continue
+                    raise AgentProtocolError(f"Agent 模型请求中断：{exc}") from exc
 
-        raise AgentProtocolError(
-            f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
-        ) from last_retryable_error
+            raise AgentProtocolError(
+                f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
+            ) from last_retryable_error
+        finally:
+            if owned_snapshot is not None:
+                self.runtime_manager.release_turn(owned_snapshot)
 
     def request_reply_once(
         self,
@@ -99,19 +115,220 @@ class AgentLLMProtocol:
         on_protocol_wait: Callable[[], None],
         cancel_check: Callable[[], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
+        runtime_snapshot: Any = None,
     ) -> AgentModelReply:
-        """执行一次 Chat Completions 流式工具调用请求。"""
+        """执行一次模型请求；Runtime 优先，否则回退 Chat Completions。"""
+
+        if self.runtime_manager is not None:
+            return self._request_via_runtime(
+                messages,
+                on_delta,
+                on_token_usage,
+                on_protocol_wait,
+                cancel_check,
+                on_reasoning_delta,
+                runtime_snapshot,
+            )
+        return self._request_via_openai_client(
+            messages,
+            on_delta,
+            on_token_usage,
+            on_protocol_wait,
+            cancel_check,
+            on_reasoning_delta,
+        )
+
+    def _request_via_runtime(
+        self,
+        messages: list[dict[str, Any]],
+        on_delta: Callable[[str], None],
+        on_token_usage: Callable[[int, int, int], None],
+        on_protocol_wait: Callable[[], None],
+        cancel_check: Callable[[], None] | None,
+        on_reasoning_delta: Callable[[str], None] | None,
+        runtime_snapshot: Any = None,
+    ) -> AgentModelReply:
+        from ..llm.errors import ModelError, ModelErrorCode
+        from ..llm.protocol import (
+            GenerationOptions,
+            ModelTurnRequest,
+            ReasoningDelta,
+            TextDelta,
+            ToolCallCompleted,
+            ToolCallStarted,
+            ToolSpec,
+            UsageUpdated,
+            conversation_from_openai_messages,
+        )
+
+        owned_snapshot = None
+        snapshot = runtime_snapshot
+        if snapshot is None:
+            owned_snapshot = self.runtime_manager.acquire_turn()
+            snapshot = owned_snapshot
+        try:
+            system_prompt = self.system_prompt_provider()
+            tools_payload = self.tools_provider() or []
+            tool_specs = tuple(_tool_specs_from_openai_tools(tools_payload))
+            extra_body = dict(self.extra_body_provider() or {})
+            effort = ""
+            if self.reasoning_effort_provider is not None:
+                effort = str(self.reasoning_effort_provider() or "").strip()
+            if not effort:
+                effort = str(extra_body.get("reasoning_effort") or "").strip()
+
+            # 模型默认生成参数：描述符 / provider_options / extra_body 合并。
+            # 优先级：extra_body 显式 > 描述符字段 > provider_options 默认。
+            generation_options = _build_generation_options(
+                descriptor=snapshot.descriptor,
+                extra_body=extra_body,
+                reasoning_effort=effort,
+                request_timeout_seconds=float(self.request_timeout_seconds),
+                request_retry_count=int(self.request_retry_count),
+            )
+
+            request = ModelTurnRequest(
+                identity=snapshot.runtime.identity,
+                system_prompt=system_prompt,
+                messages=conversation_from_openai_messages(messages),
+                tools=tool_specs,
+                generation_options=generation_options,
+                prompt_cache_identity=self.prompt_cache_identity_provider(),
+            )
+
+            content_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            completed_calls: list[ToolCall] = []
+            has_streamed_visible = False
+            protocol_wait_sent = False
+            latest_usage: tuple[int, int, int] | None = None
+            cancellation_error: Exception | None = None
+
+            try:
+                for event in snapshot.runtime.stream_turn(request, cancel_check=cancel_check):
+                    if isinstance(event, TextDelta) and event.text:
+                        content_parts.append(event.text)
+                        on_delta(event.text)
+                        has_streamed_visible = True
+                    elif isinstance(event, ReasoningDelta) and event.text:
+                        reasoning_parts.append(event.text)
+                        if on_reasoning_delta is not None:
+                            on_reasoning_delta(event.text)
+                    elif isinstance(event, ToolCallStarted):
+                        if has_streamed_visible and not protocol_wait_sent:
+                            on_protocol_wait()
+                            protocol_wait_sent = True
+                    elif isinstance(event, ToolCallCompleted):
+                        if has_streamed_visible and not protocol_wait_sent:
+                            on_protocol_wait()
+                            protocol_wait_sent = True
+                        function_name = event.name
+                        completed_calls.append(
+                            ToolCall(
+                                name=self.tool_name_from_function_name(function_name),
+                                arguments=dict(event.arguments or {}),
+                                id=event.call_id,
+                                function_name=function_name,
+                            )
+                        )
+                    elif isinstance(event, UsageUpdated):
+                        latest_usage = (
+                            event.input_tokens,
+                            event.output_tokens,
+                            event.cached_input_tokens,
+                        )
+            except ModelError as exc:
+                if exc.code == ModelErrorCode.EMPTY_RESPONSE:
+                    raise EmptyAgentReply(str(exc)) from exc
+                if exc.retryable or exc.code in {
+                    ModelErrorCode.STREAM_INTERRUPTED,
+                    ModelErrorCode.CONNECTION_FAILED,
+                    ModelErrorCode.REQUEST_TIMEOUT,
+                    ModelErrorCode.SERVICE_UNAVAILABLE,
+                    ModelErrorCode.RATE_LIMITED,
+                }:
+                    if has_streamed_visible or completed_calls:
+                        raise AgentProtocolError(
+                            f"模型流在已输出内容后中断，已停止自动重试：{exc}"
+                        ) from exc
+                    raise RetryableAgentRequestError(str(exc)) from exc
+                raise AgentProtocolError(str(exc)) from exc
+            except Exception as exc:
+                if cancel_check is not None:
+                    try:
+                        cancel_check()
+                    except Exception as cancel_exc:
+                        cancellation_error = cancel_exc
+                if cancellation_error is not None:
+                    raise cancellation_error
+                if is_retryable_model_request_error(exc):
+                    formatted = OpenAIResponseLLM.format_request_error(exc)
+                    if has_streamed_visible or completed_calls:
+                        raise AgentProtocolError(
+                            f"模型流在已输出内容后中断，已停止自动重试：{formatted}"
+                        ) from exc
+                    raise RetryableAgentRequestError(formatted) from exc
+                raise AgentProtocolError(
+                    f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
+                ) from exc
+
+            if latest_usage is not None:
+                on_token_usage(*latest_usage)
+
+            content = "".join(content_parts)
+            reasoning = "".join(reasoning_parts).strip()
+            if not content.strip() and not completed_calls:
+                raise EmptyAgentReply("Agent 返回内容为空，且未返回工具调用。")
+
+            message = assistant_tool_call_message(
+                {},
+                content,
+                completed_calls,
+                reasoning,
+                function_name_for_tool=self.function_name_for_tool,
+            )
+            return AgentModelReply(
+                message=message,
+                content=content,
+                tool_calls=completed_calls,
+                reasoning=reasoning,
+                content_streamed=has_streamed_visible,
+            )
+        finally:
+            if owned_snapshot is not None:
+                self.runtime_manager.release_turn(owned_snapshot)
+
+    def _request_via_openai_client(
+        self,
+        messages: list[dict[str, Any]],
+        on_delta: Callable[[str], None],
+        on_token_usage: Callable[[int, int, int], None],
+        on_protocol_wait: Callable[[], None],
+        cancel_check: Callable[[], None] | None,
+        on_reasoning_delta: Callable[[str], None] | None,
+    ) -> AgentModelReply:
+        """旧路径：直接调用 OpenAI Chat Completions 流式接口。"""
 
         system_prompt = self.system_prompt_provider()
+        extra_body = dict(self.extra_body_provider() or {})
+        # 遗留 Chat 路径：把模型默认 max_output/temperature 提升为顶层请求参数。
+        max_output = _coerce_positive_int(extra_body.pop("max_output_tokens", None))
+        if max_output is None:
+            max_output = _coerce_positive_int(extra_body.pop("max_tokens", None))
+        temperature = _coerce_optional_float(extra_body.pop("temperature", None))
         request_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system_prompt}, *messages],
             "tools": self.tools_provider(),
             "tool_choice": "auto",
             "stream": True,
-            "extra_body": self.extra_body_provider(),
+            "extra_body": extra_body,
             "timeout": self.request_timeout_seconds,
         }
+        if max_output is not None:
+            request_kwargs["max_tokens"] = max_output
+        if temperature is not None:
+            request_kwargs["temperature"] = temperature
         prompt_cache_key = build_prompt_cache_key(
             self.prompt_cache_identity_provider(),
             model=self.model,
@@ -182,7 +399,12 @@ class AgentLLMProtocol:
         except Exception as exc:
             if cancellation_error is not None:
                 raise cancellation_error
-            raise RetryableAgentRequestError(OpenAIResponseLLM.format_request_error(exc)) from exc
+            formatted = OpenAIResponseLLM.format_request_error(exc)
+            if has_streamed_visible or tool_call_delta_buffers:
+                raise AgentProtocolError(
+                    f"模型流在已输出内容后中断，已停止自动重试：{formatted}"
+                ) from exc
+            raise RetryableAgentRequestError(formatted) from exc
 
         if latest_usage is not None:
             on_token_usage(*latest_usage)
@@ -299,7 +521,111 @@ def build_extra_body(llm_config: Any) -> dict[str, Any]:
     if llm_config.thinking_enabled and llm_config.reasoning_effort:
         if llm_config.reasoning_effort in VALID_REASONING_EFFORTS:
             body["reasoning_effort"] = llm_config.reasoning_effort
+    # 模型级默认生成参数也进入 extra_body，供遗留 Chat 路径与 Runtime 合并逻辑使用。
+    max_output = int(getattr(llm_config, "max_output_tokens", 0) or 0)
+    if max_output > 0:
+        body["max_output_tokens"] = max_output
+    temperature = getattr(llm_config, "temperature", None)
+    if temperature is not None:
+        body["temperature"] = temperature
+    provider_options = getattr(llm_config, "provider_options", None)
+    if isinstance(provider_options, dict):
+        for key, value in provider_options.items():
+            # thinking / reasoning_effort 仍由上面的 Host 逻辑控制。
+            if key in {"thinking", "reasoning_effort", "max_output_tokens", "temperature", "max_tokens"}:
+                continue
+            body.setdefault(key, value)
     return body
+
+
+def _build_generation_options(
+    *,
+    descriptor: Any,
+    extra_body: dict[str, Any],
+    reasoning_effort: str,
+    request_timeout_seconds: float,
+    request_retry_count: int,
+):
+    """合并模型默认生成参数到 GenerationOptions。
+
+    优先级（高 → 低）：
+    1. extra_body 中的显式 max_output_tokens / temperature
+    2. ModelDescriptor 顶层字段
+    3. descriptor.provider_options
+    4. 厂商默认（None / 不传）
+    """
+
+    from ..llm.protocol import GenerationOptions
+
+    provider_options = dict(getattr(descriptor, "provider_options", {}) or {})
+    merged_options = dict(provider_options)
+    # extra_body 覆盖同名字段，但 max/temperature 会提升为 GenerationOptions 顶级字段。
+    merged_options.update(extra_body)
+
+    max_output = _coerce_positive_int(
+        merged_options.pop("max_output_tokens", None)
+        if "max_output_tokens" in merged_options
+        else None
+    )
+    if max_output is None:
+        max_output = _coerce_positive_int(merged_options.pop("max_tokens", None))
+    if max_output is None:
+        max_output = _coerce_positive_int(getattr(descriptor, "max_output_tokens", 0))
+    if max_output is None:
+        capabilities = getattr(descriptor, "capabilities", None)
+        max_output = _coerce_positive_int(getattr(capabilities, "max_output_tokens", 0))
+
+    temperature = _coerce_optional_float(
+        merged_options.pop("temperature", None)
+        if "temperature" in merged_options
+        else None
+    )
+    if temperature is None:
+        temperature = _coerce_optional_float(getattr(descriptor, "temperature", None))
+
+    # Host 权威字段不进入 provider_options。
+    for host_key in (
+        "model",
+        "messages",
+        "input",
+        "tools",
+        "tool_choice",
+        "stream",
+        "timeout",
+        "api_key",
+        "base_url",
+        "instructions",
+        "system",
+        "max_output_tokens",
+        "max_tokens",
+        "temperature",
+    ):
+        merged_options.pop(host_key, None)
+
+    return GenerationOptions(
+        max_output_tokens=max_output,
+        temperature=temperature,
+        reasoning_effort=reasoning_effort,
+        request_timeout_seconds=request_timeout_seconds,
+        request_retry_count=request_retry_count,
+        provider_options=merged_options,
+    )
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _coerce_optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def parse_tool_arguments(raw_arguments: Any) -> dict[str, Any]:
@@ -507,3 +833,28 @@ def infer_tool_property_schema(example: Any) -> dict[str, Any]:
     if isinstance(example, dict):
         return {"type": "object"}
     return {"type": "string"}
+
+
+def _tool_specs_from_openai_tools(tools_payload: list[dict[str, Any]]) -> list[Any]:
+    """把 Chat Completions tools 定义转成统一 ToolSpec。"""
+
+    from ..llm.protocol import ToolSpec
+
+    specs: list[ToolSpec] = []
+    for item in tools_payload:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function") if isinstance(item.get("function"), dict) else item
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        description = str(function.get("description") or "")
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = {"type": "object", "properties": {}}
+        specs.append(
+            ToolSpec(name=name, description=description, parameters=dict(parameters))
+        )
+    return specs

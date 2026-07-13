@@ -63,9 +63,12 @@ from ..approval import (
     load_approval_mode,
     normalize_approval_mode,
 )
+from ..config.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
+from ..extensions.plugin_models import HOOK_POLICIES
 from ..llm import (
     LLMConfig,
     LLMError,
+    ModelRuntimeManager,
     OpenAIResponseLLM,
     load_llm_config,
     normalize_reasoning_effort,
@@ -81,6 +84,7 @@ from ..session import (
     PromptHistoryEntry,
     SessionIndexEntry,
     SessionEvent,
+    SessionEventReadResult,
     SessionState,
     SessionStore,
 )
@@ -237,6 +241,8 @@ class LocalToolAgent:
         self,
         config: AgentConfig | None = None,
         confirm: Callable[[str, dict[str, Any]], bool] | None = None,
+        plugin_manager: Any | None = None,
+        on_workspace_switched: Callable[[Path], Any] | None = None,
     ) -> None:
         self.config = config or AgentConfig()
         self.workspace_root = self.config.workspace_root.resolve()
@@ -245,6 +251,10 @@ class LocalToolAgent:
         self._pending_user_text: str | None = None
         self._active_skills: list[SkillMatchResult] = []
         self._closed = False
+        # PluginManager 由进程级 PluginRuntime 在 Agent 创建前注入；缺省保持无插件兼容。
+        self._plugin_manager = plugin_manager
+        # 工作区切换成功后回调 PluginRuntime.switch_workspace，用于关闭旧 Worker 并重建。
+        self._on_workspace_switched = on_workspace_switched
         try:
             self._temp_workspace = AgentTempWorkspace(
                 self.workspace_root,
@@ -255,7 +265,9 @@ class LocalToolAgent:
         except AgentTempWorkspaceError as exc:
             raise AgentError(str(exc)) from exc
         self._session_store = self._create_session_store() if self.config.session_enabled else None
+        # 会话创建/恢复发生在 PluginManager 就绪之后，才能发布 session.* Hook。
         self._session_state = self._start_or_resume_session() if self._session_store is not None else None
+        self._emit_session_lifecycle_hooks()
         self._project_store = self._create_project_store() if self._session_store is not None else None
         self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
         self._workspace_tools = WorkspaceTools(
@@ -303,6 +315,48 @@ class LocalToolAgent:
 
         self.preload_mcp_tools()
         return self._mcp_manager.format_status()
+
+    def format_plugins_status(self) -> str:
+        """返回插件子系统只读状态，供 `/plugins` 斜杠命令展示。
+
+        安装/更新/卸载不在活跃 Agent 内执行；此处只读 runtime 与配置。
+        """
+
+        manager = getattr(self, "_plugin_manager", None)
+        if manager is None:
+            return (
+                "插件子系统：未注入 PluginManager（无插件模式）。\n"
+                "管理命令：python main.py plugin doctor / list / install ..."
+            )
+        enabled = bool(getattr(manager, "enabled", False))
+        lines = [
+            f"插件系统：{'已启用' if enabled else '已关闭（plugins.enabled=false）'}",
+        ]
+        list_status = getattr(manager, "list_status", None)
+        rows = list_status() if callable(list_status) else []
+        if not rows:
+            lines.append("当前工作区没有已加载的插件 Worker。")
+            lines.append("管理命令：python main.py plugin list")
+            return "\n".join(lines)
+        lines.append(f"已加载 Worker：{len(rows)}")
+        for row in rows:
+            name = row.get("name", "?")
+            version = row.get("version", "?")
+            scope = row.get("scope", "?")
+            active = "active" if row.get("active") else "inactive"
+            circuit = " circuit-open" if row.get("circuitOpen") else ""
+            dev = " [dev]" if row.get("devMode") else ""
+            handlers = row.get("handlers") or []
+            lines.append(
+                f"  - {name}@{version} ({scope}) {active}{circuit}{dev}"
+            )
+            if handlers:
+                lines.append(f"    handlers: {', '.join(map(str, handlers))}")
+            last_error = str(row.get("lastError") or "").strip()
+            if last_error:
+                lines.append(f"    lastError: {last_error[:160]}")
+        lines.append("管理命令：python main.py plugin list|enable|disable|install ...")
+        return "\n".join(lines)
 
     def _ensure_mcp_tools_ready(
         self,
@@ -452,6 +506,22 @@ class LocalToolAgent:
 
         return self._session_facade().load_session_events(session_id)
 
+    def load_session_events_with_diagnostics(
+        self,
+        session_id: str,
+    ) -> SessionEventReadResult:
+        """读取事件流并返回版本/损坏诊断。"""
+
+        return self._session_facade().load_session_events_with_diagnostics(session_id)
+
+    def load_session_diagnostics(
+        self,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """汇总会话与提示历史诊断，供 API 最小可见入口使用。"""
+
+        return self._session_facade().load_session_diagnostics(session_id)
+
     def read_session_artifact_text(self, session_id: str, artifact_path: str) -> str:
         """读取会话 artifact 文本，供 API 客户端恢复 HTML 预览。"""
 
@@ -549,8 +619,192 @@ class LocalToolAgent:
         if new_root == self.workspace_root.resolve():
             return new_root
 
-        # 1. 收尾旧工作区：丢弃空会话、关闭旧临时目录和 MCP
-        if self._session_store is not None and self._session_state is not None:
+        old_root = self.workspace_root.resolve()
+        switch_payload = self._dispatch_plugin_hook(
+            "workspace.switch.before",
+            {"from": str(old_root), "to": str(new_root)},
+        )
+        if switch_payload is None:
+            raise AgentError("workspace.switch.before 被插件拒绝。")
+
+        # 1. 先准备新工作区子系统，失败时保持旧工作区完整可用。
+        #    插件 manager 的进程级切换放在提交阶段，避免 prepare 失败时已关闭旧 Worker。
+        prepared = self._prepare_workspace_switch(new_root)
+
+        # 2. 收尾旧工作区资源（此时新子系统已就绪）。
+        self._teardown_workspace_resources(discard_empty_session=True)
+
+        # 3. 原子替换到新工作区状态。
+        self.workspace_root = new_root
+        self.__dict__.pop("_workspace_tools", None)
+        self.__dict__.pop("_bb_browser_cli", None)
+        self.__dict__.pop("_agent_session_facade", None)
+
+        self._temp_workspace = prepared["temp_workspace"]
+        self._session_store = prepared["session_store"]
+        self._session_state = prepared["session_state"]
+        self._project_store = prepared["project_store"]
+        self._memory_store = prepared["memory_store"]
+        self._mcp_manager = prepared["mcp_manager"]
+        self._tools = prepared["tools"]
+        if "skill_manager" in prepared:
+            self._skill_manager = prepared["skill_manager"]
+
+        # 4. 清空对话上下文
+        self._history.clear()
+        self._pending_user_text = None
+        self._active_skills = []
+
+        # 5. 最后重建插件子系统：此前 Agent 状态已与新工作区一致。
+        callback = getattr(self, "_on_workspace_switched", None)
+        if callable(callback):
+            try:
+                new_manager = callback(new_root)
+                if new_manager is not None:
+                    self._plugin_manager = new_manager
+            except Exception as exc:
+                self._dispatch_plugin_hook(
+                    "workspace.switch.error",
+                    {"workspace": str(new_root), "error": str(exc)},
+                )
+                raise AgentError(f"工作区插件子系统重建失败：{exc}") from exc
+
+        self._dispatch_plugin_hook(
+            "workspace.switch.after",
+            {"workspace": str(new_root)},
+        )
+        return new_root
+
+    def _prepare_workspace_switch(self, new_root: Path) -> dict[str, Any]:
+        """为工作区切换准备新子系统；失败时清理候选资源且不修改当前 Agent。"""
+
+        prepared: dict[str, Any] = {
+            "temp_workspace": None,
+            "session_store": None,
+            "session_state": None,
+            "project_store": None,
+            "memory_store": None,
+            "mcp_manager": None,
+            "tools": {},
+        }
+        previous_root = self.workspace_root
+        previous_session_store = getattr(self, "_session_store", None)
+        previous_session_state = getattr(self, "_session_state", None)
+        previous_project_store = getattr(self, "_project_store", None)
+        previous_memory_store = getattr(self, "_memory_store", None)
+        previous_mcp_manager = getattr(self, "_mcp_manager", None)
+        previous_tools = getattr(self, "_tools", None)
+        previous_skill_manager = getattr(self, "_skill_manager", None)
+
+        try:
+            # 临时把 workspace_root 指到新路径，复用现有工厂方法；失败后完整回写。
+            self.workspace_root = new_root
+            self.__dict__.pop("_workspace_tools", None)
+            self.__dict__.pop("_bb_browser_cli", None)
+            self.__dict__.pop("_agent_session_facade", None)
+
+            temp_workspace = AgentTempWorkspace(new_root, self.config.temp_workspace)
+            temp_workspace.ensure()
+            temp_workspace.clean_if_due()
+            temp_workspace.start_scheduler()
+            prepared["temp_workspace"] = temp_workspace
+
+            # 会话/项目工厂依赖 facade，而 facade 依赖当前 session_store 槽位。
+            self._session_store = None
+            self._session_state = None
+            self._project_store = None
+            if self.config.session_enabled:
+                session_store = self._create_session_store()
+                self._session_store = session_store
+                session_state = self._start_session()
+                project_store = self._create_project_store()
+                prepared["session_store"] = session_store
+                prepared["session_state"] = session_state
+                prepared["project_store"] = project_store
+                self._session_state = session_state
+                self._project_store = project_store
+
+            if self.config.memory_enabled:
+                memory_store = self._create_memory_store()
+                prepared["memory_store"] = memory_store
+                self._memory_store = memory_store
+
+            mcp_manager = self._create_mcp_manager()
+            prepared["mcp_manager"] = mcp_manager
+            self._mcp_manager = mcp_manager
+            tools = self._build_tools()
+            prepared["tools"] = tools
+            self._tools = tools
+
+            if self.config.skills_enabled:
+                skill_manager = SkillManager()
+                skill_manager.discover(
+                    cwd=new_root,
+                    extra_paths=self.config.skill_paths,
+                )
+                prepared["skill_manager"] = skill_manager
+
+            # 准备完成：把运行态先还原到旧工作区，真正切换由调用方统一赋值。
+            self.workspace_root = previous_root
+            self._session_store = previous_session_store
+            self._session_state = previous_session_state
+            self._project_store = previous_project_store
+            self._memory_store = previous_memory_store
+            self._mcp_manager = previous_mcp_manager
+            if previous_tools is not None:
+                self._tools = previous_tools
+            if previous_skill_manager is not None:
+                self._skill_manager = previous_skill_manager
+            self.__dict__.pop("_workspace_tools", None)
+            self.__dict__.pop("_bb_browser_cli", None)
+            self.__dict__.pop("_agent_session_facade", None)
+            return prepared
+        except Exception as exc:
+            # 清理已创建的候选资源，并完整恢复旧 Agent 状态。
+            self._discard_prepared_workspace(prepared)
+            self.workspace_root = previous_root
+            self._session_store = previous_session_store
+            self._session_state = previous_session_state
+            self._project_store = previous_project_store
+            self._memory_store = previous_memory_store
+            self._mcp_manager = previous_mcp_manager
+            if previous_tools is not None:
+                self._tools = previous_tools
+            if previous_skill_manager is not None:
+                self._skill_manager = previous_skill_manager
+            self.__dict__.pop("_workspace_tools", None)
+            self.__dict__.pop("_bb_browser_cli", None)
+            self.__dict__.pop("_agent_session_facade", None)
+            self._dispatch_plugin_hook(
+                "workspace.switch.error",
+                {"workspace": str(new_root), "error": str(exc)},
+            )
+            if isinstance(exc, AgentError):
+                raise
+            raise AgentError(f"工作区切换准备失败：{exc}") from exc
+
+    def _discard_prepared_workspace(self, prepared: dict[str, Any]) -> None:
+        """关闭工作区切换过程中创建但未提交的候选资源。"""
+
+        for key in ("mcp_manager", "temp_workspace"):
+            resource = prepared.get(key)
+            if resource is None:
+                continue
+            closer = getattr(resource, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:
+                    pass
+
+    def _teardown_workspace_resources(self, *, discard_empty_session: bool) -> None:
+        """关闭当前工作区绑定的临时目录、会话、MCP 与 Monitor 资源。"""
+
+        if (
+            discard_empty_session
+            and self._session_store is not None
+            and self._session_state is not None
+        ):
             try:
                 self._session_facade().discard_current_empty_session()
             except AgentError:
@@ -583,42 +837,6 @@ class LocalToolAgent:
                 pass
             self.__dict__.pop("_mcp_manager", None)
 
-        # 2. 切换到新工作区并重建子系统
-        self.workspace_root = new_root
-        self.__dict__.pop("_workspace_tools", None)
-        self.__dict__.pop("_bb_browser_cli", None)
-
-        self._temp_workspace = AgentTempWorkspace(self.workspace_root, self.config.temp_workspace)
-        self._temp_workspace.ensure()
-        self._temp_workspace.clean_if_due()
-        self._temp_workspace.start_scheduler()
-
-        if self.config.session_enabled:
-            self._session_store = self._create_session_store()
-            self._session_state = self._start_session()
-            self._project_store = self._create_project_store()
-
-        if self.config.memory_enabled:
-            self._memory_store = self._create_memory_store()
-
-        self._mcp_manager = self._create_mcp_manager()
-        self._tools = self._build_tools()
-
-        # 3. 清空对话上下文
-        self._history.clear()
-        self._pending_user_text = None
-        self._active_skills = []
-
-        if self.config.skills_enabled:
-            self._skill_manager = SkillManager()
-            self._skill_manager.discover(
-                cwd=self.workspace_root,
-                extra_paths=self.config.skill_paths,
-            )
-
-        self.__dict__.pop("_agent_session_facade", None)
-        return new_root
-
     def close(self) -> None:
         """关闭 Agent 持有的外部资源，并记录正常会话关闭事件。"""
 
@@ -627,7 +845,9 @@ class LocalToolAgent:
         self._closed = True
         close_errors: list[Exception] = []
         try:
+            self._dispatch_plugin_hook("session.close.before", {})
             self._append_session_closed_event()
+            self._dispatch_plugin_hook("session.close.after", {})
         except Exception as exc:
             close_errors.append(exc)
 
@@ -649,6 +869,13 @@ class LocalToolAgent:
                 temp_workspace.close()
             except Exception as exc:
                 close_errors.append(exc)
+        runtime_manager = getattr(self, "_runtime_manager", None)
+        if runtime_manager is not None:
+            try:
+                runtime_manager.close()
+            except Exception as exc:
+                close_errors.append(exc)
+            self._runtime_manager = None
         if close_errors:
             raise close_errors[0]
 
@@ -678,17 +905,58 @@ class LocalToolAgent:
 
     @property
     def current_model(self) -> str:
-        """当前会话实际用于下一次请求的模型名称。"""
+        """当前会话用于展示/切换的模型标识。
 
+        自定义模型优先返回 models.yaml key；否则返回真实 model_id。
+        实际请求使用 config.llm.model。
+        """
+
+        catalog_key = getattr(self.config.llm, "catalog_key", "") or ""
+        if catalog_key:
+            return catalog_key
         return self.config.llm.model
 
-    def set_model(self, model: str) -> None:
-        """运行时切换模型；持久化由斜杠命令或 UI 调用方负责。"""
+    def set_model(
+        self,
+        model: str,
+        *,
+        persist: Callable[[], None] | None = None,
+    ) -> None:
+        """原子切换运行时模型；可选持久化必须在 Runtime 交换前成功。
 
-        model_id = model.strip()
-        if not model_id:
+        支持：
+        - 裸 model_id（兼容旧行为）
+        - models.yaml key / alias
+        - profile/model_id
+        """
+
+        selection = model.strip()
+        if not selection:
             raise AgentError("模型 ID 不能为空。")
-        self.config.llm.model = model_id
+
+        previous_llm = self.config.llm
+        try:
+            # 解析失败直接报错，禁止静默把无效 key/配置损坏降级成裸 model_id。
+            next_llm = apply_model_selection(previous_llm, selection)
+        except LLMError as exc:
+            raise AgentError(str(exc)) from exc
+
+        runtime_token = next_llm.catalog_key or next_llm.model
+
+        # 先构建候选 Runtime 并持久化，全部成功后才更新 Agent 内存配置。
+        manager = getattr(self, "_runtime_manager", None)
+        if manager is None:
+            manager = ModelRuntimeManager()
+            self._runtime_manager = manager
+        try:
+            profile, descriptor = llm_config_to_profile_and_descriptor(next_llm)
+            manager.switch(profile, descriptor, persist=persist)
+        except Exception as exc:
+            raise AgentError(f"模型运行时切换失败：{exc}") from exc
+
+        self.config.llm = next_llm
+        self._runtime_model_id = runtime_token
+        self.__dict__.pop("_client", None)
 
     @property
     def context_window_tokens(self) -> int:
@@ -818,16 +1086,42 @@ class LocalToolAgent:
         text = self._apply_skill_command(text, status)
         pending_text = getattr(self, "_pending_user_text", None)
         text = self._resolve_continue_request(text)
-        self._pending_user_text = pending_text or text
-        self._append_prompt_history(text)
-        self._append_session_event("user_message", {"content": text})
-        working_messages = [
-            *self._context_messages(),
-            *self._history,
-            {"role": "user", "content": text},
-        ]
 
+        # turn.start：在 PromptHistory / Session user_message 落盘前完成，保证权威文本一致。
+        turn_id = f"turn-{id(text)}-{len(self._history)}"
+        self._plugin_begin_turn()
+        turn_payload = self._dispatch_plugin_hook(
+            "turn.start",
+            {"userText": text, "tags": []},
+            turn_id=turn_id,
+        )
+        if turn_payload is None:
+            self._plugin_end_turn()
+            raise AgentError("turn.start 被插件拒绝。")
+        text = str(turn_payload.get("userText", text) or text).strip()
+        if not text:
+            self._plugin_end_turn()
+            raise AgentError("用户输入为空，无法发送给 Agent。")
+
+        turn_terminal_sent = False
+        runtime_manager: ModelRuntimeManager | None = None
+        runtime_snapshot = None
         try:
+            self._pending_user_text = pending_text or text
+            self._append_prompt_history(text)
+            self._append_session_event("user_message", {"content": text})
+            working_messages = [
+                *self._context_messages(turn_id=turn_id),
+                *self._history,
+                {"role": "user", "content": text},
+            ]
+
+            # 完整构造的 Agent 才持有 llm 配置；部分内部单测使用最小对象并
+            # 替换了模型请求方法，此时跳过 Runtime 快照，不改变其测试边界。
+            if getattr(self.config, "llm", None) is not None:
+                runtime_manager = self._ensure_runtime_manager()
+                runtime_snapshot = runtime_manager.acquire_turn()
+                self._active_runtime_snapshot = runtime_snapshot
             all_reasoning_parts: list[str] = []
             step = 1
             while True:
@@ -850,6 +1144,12 @@ class LocalToolAgent:
                     self._append_session_event("assistant_message", {"content": final_reply})
                     self._append_history(text, final_reply, combined_reasoning)
                     self._pending_user_text = None
+                    self._dispatch_plugin_hook(
+                        "turn.end",
+                        {"userText": text, "assistantText": final_reply},
+                        turn_id=turn_id,
+                    )
+                    turn_terminal_sent = True
                     return final_reply
 
                 working_messages.append(reply.message)
@@ -943,6 +1243,13 @@ class LocalToolAgent:
                     "reason": str(exc),
                 },
             )
+            if not turn_terminal_sent:
+                self._dispatch_plugin_hook(
+                    "turn.cancelled",
+                    {"userText": text, "reason": str(exc)},
+                    turn_id=turn_id,
+                )
+                turn_terminal_sent = True
             raise
         except Exception as exc:
             event_type = "turn_cancelled" if self._is_turn_cancel_exception(exc) else "session_interrupted"
@@ -953,8 +1260,20 @@ class LocalToolAgent:
                     "reason": str(exc),
                 },
             )
+            if not turn_terminal_sent:
+                hook_name = "turn.cancelled" if event_type == "turn_cancelled" else "turn.error"
+                self._dispatch_plugin_hook(
+                    hook_name,
+                    {"userText": text, "reason": str(exc)},
+                    turn_id=turn_id,
+                )
+                turn_terminal_sent = True
             raise
         finally:
+            if runtime_manager is not None and runtime_snapshot is not None:
+                runtime_manager.release_turn(runtime_snapshot)
+            self.__dict__.pop("_active_runtime_snapshot", None)
+            self._plugin_end_turn()
             self._cancel_check = previous_cancel_check
             self._reasoning_delta_callback = previous_reasoning_callback
 
@@ -1016,7 +1335,7 @@ class LocalToolAgent:
 
         return build_project_instructions_messages(self._load_agents_instructions())
 
-    def _context_messages(self) -> list[dict[str, str]]:
+    def _context_messages(self, *, turn_id: str | None = None) -> list[dict[str, str]]:
         """构造 system 之外的稳定/动态上下文消息。"""
 
         workspace_detection_summary = getattr(
@@ -1024,7 +1343,13 @@ class LocalToolAgent:
             "workspace_detection_summary",
             "",
         )
-        return build_context_messages(
+        # context.build.before 只允许附加上下文，不改写用户原始消息。
+        context_payload = self._dispatch_plugin_hook(
+            "context.build.before",
+            {"additionalContext": []},
+            turn_id=turn_id,
+        ) or {"additionalContext": []}
+        messages = build_context_messages(
             workspace_root=self.workspace_root,
             project_instructions=self._load_agents_instructions(),
             skill_manager=getattr(self, "_skill_manager", None),
@@ -1033,6 +1358,33 @@ class LocalToolAgent:
             agent_temp_dir=self._agent_temp_dir_display(),
             workspace_detection_summary=workspace_detection_summary,
         )
+        extra = context_payload.get("additionalContext") or []
+        if isinstance(extra, list):
+            for item in extra:
+                if isinstance(item, str) and item.strip():
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                '<plugin_context source="hook:context.build.before">\n'
+                                f"{item.strip()}\n"
+                                "</plugin_context>"
+                            ),
+                        }
+                    )
+                elif isinstance(item, dict) and item.get("content"):
+                    messages.append(
+                        {
+                            "role": str(item.get("role") or "user"),
+                            "content": str(item.get("content")),
+                        }
+                    )
+        self._dispatch_plugin_hook(
+            "context.build.after",
+            {"messageCount": len(messages)},
+            turn_id=turn_id,
+        )
+        return messages
 
     def _load_agents_instructions(self) -> str:
         """读取工作区根目录的 AGENTS.md；缺失时保持原 user prompt。"""
@@ -1060,8 +1412,21 @@ class LocalToolAgent:
     ) -> AgentModelReply:
         """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
 
+        # model.request.before：可改 messages content / 采样参数；不暴露凭据。
+        request_payload = self._dispatch_plugin_hook(
+            "model.request.before",
+            {
+                "messages": messages,
+                "model": self.config.llm.model,
+            },
+        )
+        if request_payload is None:
+            raise AgentError("model.request.before 被插件拒绝。")
+        if isinstance(request_payload.get("messages"), list):
+            messages = request_payload["messages"]  # type: ignore[assignment]
+
         try:
-            return self._llm_protocol().request_reply(
+            reply = self._llm_protocol().request_reply(
                 messages,
                 on_delta,
                 on_token_usage,
@@ -1069,9 +1434,25 @@ class LocalToolAgent:
                 on_retry_status,
                 getattr(self, "_cancel_check", None),
                 getattr(self, "_reasoning_delta_callback", None),
+                getattr(self, "_active_runtime_snapshot", None),
             )
         except AgentProtocolError as exc:
+            self._dispatch_plugin_hook(
+                "model.request.error",
+                {"error": str(exc), "model": self.config.llm.model},
+            )
             raise AgentError(str(exc)) from exc
+
+        # V1 model.response.after 仅 observe，避免流式 UI 与历史分叉。
+        self._dispatch_plugin_hook(
+            "model.response.after",
+            {
+                "model": self.config.llm.model,
+                "content": reply.content,
+                "toolCallCount": len(reply.tool_calls),
+            },
+        )
+        return reply
 
     def _request_agent_reply_once(
         self,
@@ -1092,6 +1473,7 @@ class LocalToolAgent:
                 on_reasoning_delta
                 if on_reasoning_delta is not None
                 else getattr(self, "_reasoning_delta_callback", None),
+                getattr(self, "_active_runtime_snapshot", None),
             )
         except AgentProtocolError as exc:
             raise AgentError(str(exc)) from exc
@@ -1114,7 +1496,45 @@ class LocalToolAgent:
                 getattr(self, "_tools", {}),
             ),
             function_name_for_tool=function_name_for_tool,
+            runtime_manager=self._runtime_manager_for_protocol(),
+            reasoning_effort_provider=lambda: getattr(
+                self.config.llm,
+                "reasoning_effort",
+                "medium",
+            ),
         )
+
+    def _runtime_manager_for_protocol(self) -> ModelRuntimeManager | None:
+        """完整 LLMConfig 使用统一 Runtime；遗留最小夹具保留直连 client。"""
+
+        llm = getattr(self.config, "llm", None)
+        if llm is None or not hasattr(llm, "profile_id"):
+            return None
+        return self._ensure_runtime_manager()
+
+    def _ensure_runtime_manager(self) -> ModelRuntimeManager:
+        """惰性初始化统一模型 Runtime，并与当前 llm 配置对齐。"""
+
+        manager = getattr(self, "_runtime_manager", None)
+        if manager is None:
+            manager = ModelRuntimeManager()
+            self._runtime_manager = manager
+            self._runtime_model_id = ""
+
+        current_model = self.config.llm.model
+        if (
+            manager.active_snapshot is None
+            or getattr(self, "_runtime_model_id", "") != current_model
+        ):
+            profile, descriptor = llm_config_to_profile_and_descriptor(self.config.llm)
+            if manager.active_snapshot is None:
+                manager.bootstrap(profile, descriptor)
+            else:
+                manager.switch(profile, descriptor)
+            self._runtime_model_id = current_model
+            # base_url/api_key 可能随 profile 变化，丢弃旧 client。
+            self.__dict__.pop("_client", None)
+        return manager
 
     def _llm_client(self) -> Any:
         """首次请求模型时再创建 OpenAI SDK 客户端。
@@ -1122,6 +1542,7 @@ class LocalToolAgent:
         OpenAI SDK 导入链较重，放在 Agent 构造期会明显拖慢服务或 TUI 启动。
         客户端只在模型请求或自动审查时需要，因此惰性创建不会减少能力，
         还能让启动阶段先把 UI 呈现给用户。
+        统一 Runtime 路径下 client 主要供自动审查等遗留调用复用。
         """
 
         client = getattr(self, "_client", None)
@@ -1182,7 +1603,49 @@ class LocalToolAgent:
     ) -> ToolResult | None:
         """在启动批量执行前按调用顺序审批；返回值非空表示拒绝结果。"""
 
+        # tool.call.before：可改参数或拒绝；修改后仍走后续 schema/审批。
+        call_payload = self._dispatch_plugin_hook(
+            "tool.call.before",
+            {"tool": tool.name, "arguments": dict(arguments)},
+        )
+        if call_payload is None:
+            reason = f"插件拒绝工具调用：{tool.name}。"
+            self._append_session_event(
+                "tool_call_denied",
+                {"tool": tool.name, "arguments": arguments, "reason": reason},
+            )
+            return ToolResult(ok=False, output=reason)
+        if isinstance(call_payload.get("arguments"), dict):
+            arguments.clear()
+            arguments.update(call_payload["arguments"])
+
+        # tool.approval.before：只能拒绝，不能代表用户批准。
+        approval_guard = self._dispatch_plugin_hook(
+            "tool.approval.before",
+            {
+                "tool": tool.name,
+                "arguments": dict(arguments),
+                "requiresConfirmation": tool.requires_confirmation,
+                "mode": getattr(self.config, "approval_mode", "manual"),
+            },
+        )
+        if approval_guard is None:
+            reason = f"插件在审批前拒绝：{tool.name}。"
+            self._append_session_event(
+                "tool_call_denied",
+                {"tool": tool.name, "arguments": arguments, "reason": reason},
+            )
+            return ToolResult(ok=False, output=reason)
+
         if not tool.requires_confirmation:
+            self._dispatch_plugin_hook(
+                "tool.approval.after",
+                {
+                    "tool": tool.name,
+                    "approved": True,
+                    "mode": getattr(self.config, "approval_mode", "manual"),
+                },
+            )
             return None
         approved, denial_reason = self._approve_tool_call(tool, arguments)
         if not approved:
@@ -1194,7 +1657,20 @@ class LocalToolAgent:
                 "tool_call_denied",
                 {"tool": tool.name, "arguments": arguments, "reason": reason},
             )
+            self._dispatch_plugin_hook(
+                "tool.approval.after",
+                {
+                    "tool": tool.name,
+                    "approved": False,
+                    "reason": reason,
+                    "mode": self.config.approval_mode,
+                },
+            )
             return ToolResult(ok=False, output=reason)
+        self._dispatch_plugin_hook(
+            "tool.approval.after",
+            {"tool": tool.name, "approved": True, "mode": self.config.approval_mode},
+        )
         self._append_session_event(
             "tool_call_approved",
             {
@@ -1214,17 +1690,41 @@ class LocalToolAgent:
     ) -> ToolResult:
         """执行已完成审批的工具，供同批任务安全并发调用。"""
 
+        before = self._dispatch_plugin_hook(
+            "tool.execute.before",
+            {"tool": tool.name, "arguments": dict(arguments)},
+        )
+        if before is None:
+            return ToolResult(ok=False, output=f"插件在执行前拒绝：{tool.name}。")
+
         try:
             if on_start is not None:
                 on_start()
             result = tool.run(arguments)
         except Exception as exc:
+            self._dispatch_plugin_hook(
+                "tool.execute.error",
+                {"tool": tool.name, "error": str(exc)},
+            )
             return ToolResult(ok=False, output=str(exc))
+
+        display_text = result.full_output or result.output
+        after_payload = self._dispatch_plugin_hook(
+            "tool.execute.after",
+            {
+                "tool": tool.name,
+                "ok": result.ok,
+                "displayText": display_text,
+                "annotations": {},
+            },
+        ) or {}
+        if isinstance(after_payload.get("displayText"), str):
+            display_text = after_payload["displayText"]
 
         return ToolResult(
             ok=result.ok,
             output=self._truncate_tool_output(result.output),
-            full_output=result.full_output or result.output,
+            full_output=display_text,
             ui_artifact=result.ui_artifact,
         )
 
@@ -1578,6 +2078,125 @@ class LocalToolAgent:
         """追加会话事件；持久化失败时中断当前任务，避免误以为会话可恢复。"""
 
         self._session_facade().append_session_event(event_type, payload)
+
+    def _plugin_manager_or_none(self) -> Any | None:
+        return getattr(self, "_plugin_manager", None)
+
+    def _plugin_begin_turn(self) -> None:
+        manager = self._plugin_manager_or_none()
+        if manager is None:
+            return
+        begin = getattr(manager, "begin_turn", None)
+        if callable(begin):
+            try:
+                begin()
+            except Exception:
+                pass
+
+    def _plugin_end_turn(self) -> None:
+        manager = self._plugin_manager_or_none()
+        if manager is None:
+            return
+        end = getattr(manager, "end_turn", None)
+        if callable(end):
+            try:
+                end()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _hook_requires_fail_closed(hook_name: str) -> bool:
+        """判断该 Hook 在基础设施异常时是否应 fail-closed。
+
+        与 HOOK_POLICIES 对齐：任一 on_* 策略为 reject-operation 时，
+        Host 边界异常也必须拒绝操作，不能静默放行。
+        """
+
+        policy = HOOK_POLICIES.get(hook_name)
+        if policy is None:
+            return False
+        return any(
+            getattr(policy, field_name) == "reject-operation"
+            for field_name in (
+                "on_deny",
+                "on_timeout",
+                "on_protocol_error",
+                "on_handler_error",
+            )
+        )
+
+    def _dispatch_plugin_hook(
+        self,
+        hook_name: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        turn_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """分发 Hook；返回最终 payload。若被 deny 则返回 None。
+
+        无 PluginManager 或插件系统关闭时原样返回 payload，保持兼容路径。
+        通知/观察类 Hook 失败 fail-open；守卫类 Hook 基础设施异常 fail-closed。
+        """
+
+        data = dict(payload or {})
+        manager = self._plugin_manager_or_none()
+        if manager is None:
+            return data
+        dispatch = getattr(manager, "dispatch", None)
+        if not callable(dispatch):
+            return data
+        try:
+            resolved_session_id = session_id
+            if resolved_session_id is None:
+                try:
+                    resolved_session_id = self.current_session_id or None
+                except Exception:
+                    resolved_session_id = None
+            outcome = dispatch(
+                hook_name,
+                data,
+                session_id=resolved_session_id,
+                turn_id=turn_id,
+            )
+        except Exception:
+            # 守卫类 Hook 与 HOOK_POLICIES 保持一致：基础设施异常不可静默放行。
+            if self._hook_requires_fail_closed(hook_name):
+                return None
+            return data
+        denied = bool(getattr(outcome, "denied", False))
+        if denied:
+            return None
+        result_payload = getattr(outcome, "payload", data)
+        return dict(result_payload) if isinstance(result_payload, dict) else data
+
+    def _emit_session_lifecycle_hooks(self) -> None:
+        """在会话创建/恢复完成后发布 session.* 通知/守卫结果后的 after Hook。"""
+
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            return
+        session_id = getattr(state, "session_id", "") or self.current_session_id
+        # 恢复路径：若启动参数指定了 resume_session_id，则发 resume.after；否则 start.after。
+        if getattr(self.config, "resume_session_id", ""):
+            denied = self._dispatch_plugin_hook(
+                "session.resume.before",
+                {"sessionId": session_id},
+                session_id=session_id,
+            )
+            if denied is None:
+                raise AgentError("session.resume.before 被插件拒绝。")
+            self._dispatch_plugin_hook(
+                "session.resume.after",
+                {"sessionId": session_id},
+                session_id=session_id,
+            )
+        else:
+            self._dispatch_plugin_hook(
+                "session.start.after",
+                {"sessionId": session_id},
+                session_id=session_id,
+            )
 
     def _append_prompt_history(self, text: str) -> None:
         """记录用户提交的真实提示，用于跨会话输入复用。

@@ -97,6 +97,15 @@ class FakeAgent:
             )
         ]
 
+    def load_session_diagnostics(self, session_id: str | None = None):
+        return {
+            "session_id": session_id,
+            "event_count": 1 if session_id else 0,
+            "event_diagnostics": [] if session_id else [],
+            "prompt_history_diagnostics": [],
+            "has_errors": False,
+        }
+
     def resume_session(self, session_id: str):
         self.current_session_id = session_id
         return self._session_state(session_id)

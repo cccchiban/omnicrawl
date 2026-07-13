@@ -3,9 +3,10 @@
 本目录实现本地 OmniCrawl，提供终端 TUI 和本机 HTTP/SSE API：
 
 1. TUI 使用键盘交互，HTTP API 供后续 Web 或桌面前端接入。
-2. 使用 OpenAI Python SDK 调用 `https://xxx.xx/v1` 的 Responses API 兼容接口。
+2. 通过统一模型运行时调用多家协议：OpenAI Chat Completions / Responses、Anthropic Messages、Google Gemini Generate Content（各用原生 SDK）。
 3. AI 会按 Agent 循环处理任务：理解目标、读取项目文件、搜索文本、写文件或执行命令；默认会在工具执行前拦截确认，也可开启自动审批模式。
 4. AI 回复会在 TUI 中显示，或通过 SSE 事件流推送给 API 客户端。
+5. 支持多 Profile、`models.yaml` 自定义模型目录，以及 TUI `/model` 双列热切换（不重启、不清空会话）。
 
 ## Agent 临时目录
 
@@ -43,7 +44,7 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 
 安全边界：
 
-- 文件工具只能访问当前项目目录内的路径；`config.json`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
+- 文件工具只能访问当前项目目录内的路径；`config.yaml`/`config.json`、`models.yaml`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
 - `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；按 `Enter`、`Y` 或 `1` 允许，按 `N` 或 `2` 拒绝；方向键只会被消费，不会触发工具执行。
 - `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时只把疑似删除行为交给同一模型的非思考模式审查，其他工具调用自动执行。自动模式不显示确认页，只显示步骤和执行记录。
 - 命令工具不是系统级沙箱；所有命令均通过明确的 PowerShell 或 Git Bash 解释器以 `shell=False` 启动。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
@@ -58,12 +59,44 @@ $env:AGENT_COMMAND_TIMEOUT_SECONDS = "360"
 python main.py
 ```
 
+## Hook 插件（NPM）
+
+OmniCrawl 支持在 Host 生命周期节点分发 Hook，并通过独立 Node Worker 加载 NPM 插件。默认关闭，不影响现有 TUI / Skill / MCP / Session。
+
+```powershell
+# 诊断环境（以下三条等价）
+python main.py plugin doctor
+python -m omnicrawl plugin doctor
+omnicrawl plugin doctor   # 需先 pip install -e .
+
+# 启用全局插件系统（写入 config.yaml/config.json 的 plugins.enabled）
+python main.py plugin system enable
+
+# 注册本地开发插件（dev 模式，不进可回滚 store）
+python main.py plugin install .\path\to\plugin --dev --project
+
+# 从 NPM 安装（需 Node 20+；强制 --ignore-scripts）
+python main.py plugin install @scope/name@1.2.3 --project --enable --yes
+
+python main.py plugin list
+python main.py plugin disable @scope/name --project
+python main.py plugin rollback @scope/name --project
+```
+
+TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。
+
+设计说明见 `docs/HOOK_PLUGIN_DESIGN.md`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。
+
 ## 安装依赖
 
 运行终端工作台需要 Python `>=3.9,<4.0`。
 
 ```powershell
 pip install -r requirements.txt
+
+# 可选：安装 console script（omnicrawl）
+# 若本机 pip/setuptools 较旧，加 --no-build-isolation 更稳
+pip install -e . --no-build-isolation
 ```
 
 ## 运行
@@ -89,13 +122,14 @@ python -m omnicrawl.api
 
 运行后：
 
-- TUI 会启动为全屏 Textual 工作台，左侧显示工作区与运行时摘要，主区保留对话、工具记录和状态，输入框固定在底部。
+- TUI 会启动为全屏 Textual 工作台，顶部 HUD 显示工作区、模型、推理、审批和 Token 摘要，主区保留对话与工具记录，输入框固定在底部。
 - 在输入框按 Enter 发送消息；任务生成期间输入框不会提交新的消息。
 - 需要人工审批的工具会显示居中确认模态框；选择“允许执行”或“拒绝”后继续，按 `Ctrl+C` 会取消当前任务并拒绝等待中的确认。
 - 输入 `/new`：清空模型对话历史，开启新对话。
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
-- 输入 `/approval`：查看当前工具审批模式；输入 `/approval:manual`、`/approval:auto`、`/approval:review` 可切换审批模式并同步写入 `config.json`。
+- 输入 `/model`：打开双列模型选择界面（自定义 `models.yaml` + API 自动发现）；`/model --refresh` 刷新发现缓存；`/model <key|alias|model_id|profile/model_id>` 直接切换。
+- 输入 `/approval`：查看当前工具审批模式；输入 `/approval:manual`、`/approval:auto`、`/approval:review` 可切换审批模式并同步写入配置文件。
 - 任务执行中按 `Ctrl+C`：请求取消当前操作；空闲时按 `Ctrl+C` 退出工作台。`Ctrl+L` 只清空当前视图，不清空会话数据；也可以输入 `退出`、`结束` 或关闭窗口。
 
 终端 UI 的设计和限制见 `docs/TERMINAL_UI.md`。
@@ -113,18 +147,93 @@ python main.py
 
 ```text
 .
-├── main.py                  # 程序启动入口，保持 python main.py 运行方式
-├── omnicrawl/               # Agent、API、LLM 和终端 UI 业务模块
-│   ├── api/                 # FastAPI + SSE 接口
-│   └── agent/system_prompt.md # 运行时系统提示词模板
-├── docs/                    # 设计说明和实现文档
-├── config.example.json      # 本地配置模板
-└── requirements.txt         # Python 依赖
+├── main.py                     # 程序启动入口，保持 python main.py 运行方式
+├── omnicrawl/                  # 业务模块包
+│   ├── __init__.py              # 旧路径兼容导出（session/memory/llm 等）
+│   ├── agent/                   # Agent 主循环与工具/协议/历史
+│   │   ├── __init__.py           # 稳定公共 API 导出
+│   │   ├── core.py               # LocalToolAgent 主循环
+│   │   ├── tools.py / history.py / llm_protocol.py
+│   │   └── system_prompt.md       # 运行时系统提示词模板
+│   ├── mcp/                     # MCP 配置、安全、审计、客户端与内置 Server
+│   ├── api/                     # FastAPI + SSE 接口
+│   │   ├── app.py / service.py / models.py / deps.py
+│   │   └── routes/                # 按资源分组的 HTTP 路由
+│   ├── state/                   # Session、Memory、Project 存储
+│   │   ├── session*.py            # 会话门面与子域
+│   │   └── memory*.py             # 记忆存储与排序纯逻辑
+│   ├── config/                  # LLM、审批、运行时与模型目录
+│   │   ├── llm.py / llm_multi.py # LLMConfig、多 Profile 与 active_model
+│   │   ├── llm_client.py         # OpenAI Responses 网络客户端（遗留/审查）
+│   │   ├── model_catalog.py      # 自定义 + 自动发现双列目录
+│   │   ├── model_store.py        # models.yaml
+│   │   ├── migration.py          # config.json → config.yaml 迁移
+│   │   └── runtime.py            # YAML 优先配置仓库
+│   ├── llm/                     # 统一模型协议、Runtime Manager、Provider Adapter
+│   │   └── providers/            # openai_chat / openai_responses / anthropic / gemini
+│   ├── workspace/               # 工作区工具、Monitor、临时目录
+│   │   ├── monitor.py            # 后台任务生命周期
+│   │   └── process_control.py    # Windows Job Object 平台实现
+│   ├── ui/                      # 全屏 TUI、输入与兼容输出
+│   │   └── fullscreen/           # Textual 工作台（含 model_picker）
+│   ├── commands/                # 斜杠命令
+│   └── extensions/              # Skill 等扩展
+├── docs/                       # 设计说明和实现文档
+├── tests/                      # 单元与模块边界回归
+├── config.example.yaml         # 推荐：多模型运行配置模板
+├── models.example.yaml         # 自定义模型目录模板
+├── config.example.json         # 兼容旧 JSON 模板
+└── requirements.txt            # Python 依赖
 ```
+
+旧导入路径仍可用（例如 `omnicrawl.session`、`omnicrawl.memory`、`omnicrawl.llm`、`omnicrawl.skill`），实现位于上述真实子模块。多模型设计与落地状态见 `docs/MULTI_MODEL_API_DESIGN.md`；大文件治理进度见 `docs/agent_refactor_plan.md`。
 
 ## 可选配置
 
-LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变量提供。推荐写入项目目录下的 `config.json`。
+### 推荐：YAML 多模型配置
+
+LLM 凭据、Profile 与当前模型推荐通过 `config.yaml` + `models.yaml` 提供。
+
+```powershell
+copy config.example.yaml config.yaml
+copy models.example.yaml models.yaml
+```
+
+`config.yaml` 关键字段：
+
+```yaml
+version: 2
+llm:
+  active_model:
+    source: custom
+    key: default-chat
+  profiles:
+    openai-main:
+      provider: openai
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      default_protocol: openai_chat_completions
+      discovery:
+        enabled: true
+```
+
+`models.yaml` 只放模型元信息，**不要写 api_key**：
+
+```yaml
+version: 1
+models:
+  default-chat:
+    display_name: "Default Chat Model"
+    profile: openai-main
+    model_id: gpt-5.2
+    protocol: openai_chat_completions
+    aliases: [default, chat]
+    context_window_tokens: 128000
+```
+
+仅有旧 `config.json` 时，程序会优先尝试迁移为 `config.yaml` + `models.yaml`，并留下 `config.json.migrated.bak` 备份。该备份包含原始配置和可能的明文凭据，已默认被 `.gitignore` 排除；确认迁移无误后应删除，并在疑似泄露时轮换对应密钥。也可继续使用 JSON 扁平配置。
+
+### 兼容：JSON 扁平配置
 
 先复制 `config.example.json` 为 `config.json`，再填写自己的密钥：
 
@@ -179,29 +288,42 @@ LLM 的 API Key、接口地址和模型必须通过 `config.json` 或环境变�
 }
 ```
 
-`config.json` 已加入 `.gitignore`，不要把真实密钥写进 `config.example.json` 或源码。
+`config.yaml`、`models.yaml`、`config.json` 已加入 `.gitignore`，不要把真实密钥写进示例文件或源码。
 
-工具审批可在 `config.json` 的 `approval.mode` 配置：
+工具审批可在配置文件的 `approval.mode` 配置：
 
 - `manual`：默认人工确认。
 - `auto`：完全自动批准所有受限工具调用。
 - `review`：仅对疑似删除行为使用同一模型的非思考模式审查，审查通过后自动执行；非删除工具调用自动放行，不再进入模型审查。
 
-思考深度可在 `config.json` 的 `llm.reasoning_effort` 配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
+思考深度可在 `llm.reasoning_effort`（或 `llm.defaults.reasoning_effort`）配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
 
-`llm.context_window_tokens` 配置当前模型的上下文窗口上限，必须是正整数。全屏 TUI 顶部 Token 遥测行使用该值计算 `CTX` 占用率；切换到不同上下文规格的模型时应同步调整此配置。
+`context_window_tokens` 可写在自定义模型或 Profile 默认值中。全屏 TUI 顶部 Token 遥测行使用该值计算 `CTX` 占用率；`/model` 切换后 HUD 会刷新，最近 Token 显示会清零。
 
 会话转录、PromptHistory、HTML 工具预览和 MCP 审计日志会清理常见 API Key、Token、Cookie、密码及 Bearer 凭据后再写入新记录。该保护只覆盖后续新写入内容；已存在的本地会话文件不会被程序自动重写，如需清理历史数据请先自行备份并人工审查。
 
-模型列表会按当前 `llm.base_url` 自动请求 OpenAI 兼容的 `/models` 接口检测。TUI 中输入 `/model` 可查看可用模型，输入 `/model <模型ID>` 可实时切换并写回 `config.json`；API 使用 `/api/v1/models` 和 `/api/v1/models/current`。若设置了 `OPENAI_MODEL` 环境变量，重启后仍会优先使用环境变量。
+### 模型目录与热切换
 
-MCP 可在 `config.json` 的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。除内置 `local_project` 的显式只读能力外，MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
+- 自定义模型：`models.yaml`（key、alias、protocol、能力、上下文窗口、`max_output_tokens`、`temperature`）。
+  其中 `max_output_tokens` / `temperature` 会在每次请求时自动写入对应 Provider 的生成参数（OpenAI=`max_tokens`，Anthropic=`max_tokens`，Gemini=`max_output_tokens`）。
+- 自动发现：各启用 Profile 通过对应原生 SDK / 兼容接口探测；失败只写诊断，不阻断自定义模型。
+- TUI：`/model` 打开双列选择器；`/model --refresh` 刷新；`/model <选择>` 直接切换。
+- API：
+  - `GET /api/v1/models`：兼容旧扁平列表
+  - `GET /api/v1/models/catalog`：双列 + diagnostics
+  - `POST /api/v1/models/refresh`：刷新发现缓存
+  - `PUT /api/v1/models/current`：切换当前模型（支持旧 `model` 字段与 `source/key`、`source/profile/model_id`）
+- 环境变量：`OMNICRAWL_MODEL`、`OMNICRAWL_PROFILE` 优先；仍兼容 `OPENAI_MODEL` / `OPENAI_API_KEY` / `OPENAI_BASE_URL`。
 
-如果没有 `config.json`，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
+设计细节与实施状态见 `docs/MULTI_MODEL_API_DESIGN.md`。
+
+MCP 可在配置文件的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。除内置 `local_project` 的显式只读能力外，MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
+
+如果没有本地配置文件，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
 
 ```powershell
 $env:OPENAI_API_KEY = "你的 API Key"
-$env:OPENAI_MODEL = "deepseek-v4-flash"
+$env:OMNICRAWL_MODEL = "default-chat"   # 或 OPENAI_MODEL=裸模型ID
 $env:OPENAI_THINKING_TYPE = "disabled"
 $env:OPENAI_BASE_URL = "https://xxx.xx/v1"
 python main.py
