@@ -270,9 +270,11 @@ class AnthropicMessagesAdapter:
             model.capabilities,
         )
         if model.context_window_tokens > 0:
-            capabilities = merge_capabilities(
+            from dataclasses import replace as _replace
+
+            capabilities = _replace(
                 capabilities,
-                ModelCapabilities(context_window_tokens=model.context_window_tokens),
+                context_window_tokens=model.context_window_tokens,
             )
         identity = ModelIdentity(
             profile_id=profile.id,

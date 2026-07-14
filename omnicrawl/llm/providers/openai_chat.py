@@ -234,10 +234,13 @@ class OpenAIChatCompletionsAdapter:
             conservative_openai_chat_capabilities(),
             model.capabilities,
         )
+        # 仅补窗口大小时用 replace，避免稀疏 ModelCapabilities 覆盖 tools 等开关。
         if model.context_window_tokens > 0:
-            capabilities = merge_capabilities(
+            from dataclasses import replace as _replace
+
+            capabilities = _replace(
                 capabilities,
-                ModelCapabilities(context_window_tokens=model.context_window_tokens),
+                context_window_tokens=model.context_window_tokens,
             )
         identity = ModelIdentity(
             profile_id=profile.id,

@@ -10,7 +10,11 @@ from unittest.mock import patch
 
 from omnicrawl.agent.llm_protocol import AgentLLMProtocol
 from omnicrawl.config.migration import build_migrated_documents, maybe_migrate_config_json
-from omnicrawl.llm.capabilities import ModelCapabilities
+from omnicrawl.llm.capabilities import (
+    ModelCapabilities,
+    conservative_openai_chat_capabilities,
+    merge_capabilities,
+)
 from omnicrawl.llm.protocol import (
     ModelIdentity,
     ResponseCompleted,
@@ -324,6 +328,31 @@ class ModelRuntimeTests(unittest.TestCase):
             self.assertTrue(yaml_path.exists())
             self.assertTrue(models_path.exists())
             self.assertTrue((root / "config.json.migrated.bak").exists())
+
+
+class MergeCapabilitiesTests(unittest.TestCase):
+    def test_sparse_context_window_does_not_clear_tools(self) -> None:
+        """Adapter 仅补 context_window 时不得把 tools 打成 False。"""
+
+        base = conservative_openai_chat_capabilities()
+        self.assertTrue(base.tools)
+        merged = merge_capabilities(
+            base,
+            ModelCapabilities(tools=True, parallel_tool_calls=True, streaming=True),
+            ModelCapabilities(context_window_tokens=1_000_000),
+        )
+        self.assertTrue(merged.tools)
+        self.assertTrue(merged.parallel_tool_calls)
+        self.assertEqual(merged.context_window_tokens, 1_000_000)
+
+    def test_full_layer_can_disable_tools(self) -> None:
+        """完整能力层仍可显式关闭 tools。"""
+
+        merged = merge_capabilities(
+            conservative_openai_chat_capabilities(),
+            ModelCapabilities(streaming=True, tools=False),
+        )
+        self.assertFalse(merged.tools)
 
 
 if __name__ == "__main__":
