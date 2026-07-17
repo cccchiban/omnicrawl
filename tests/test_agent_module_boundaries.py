@@ -15,6 +15,7 @@ class AgentModuleBoundaryTests(unittest.TestCase):
         "environment",
         "history",
         "tools",
+        "execution",
         "approval_policy",
         "browser_cli",
         "llm_protocol",
@@ -32,6 +33,16 @@ class AgentModuleBoundaryTests(unittest.TestCase):
                 module = importlib.import_module(f"omnicrawl.agent.{module_name}")
                 self.assertIsNot(module, agent_package)
                 self.assertEqual(module.__name__, f"omnicrawl.agent.{module_name}")
+                self.assertEqual(
+                    Path(module.__file__).resolve(),
+                    package_path / f"{module_name}.py",
+                )
+
+    def test_subagent_modules_are_real_internal_files(self) -> None:
+        package_path = Path(agent_package.__file__).resolve().parent / "subagents"
+        for module_name in ("definitions", "coordinator"):
+            with self.subTest(module=module_name):
+                module = importlib.import_module(f"omnicrawl.agent.subagents.{module_name}")
                 self.assertEqual(
                     Path(module.__file__).resolve(),
                     package_path / f"{module_name}.py",

@@ -11,7 +11,12 @@ from fastapi import Request
 from fastapi.testclient import TestClient
 
 from omnicrawl.agent import AgentError, ToolCall, ToolResult
+from omnicrawl.agent.subagents.approval import (
+    SubAgentApprovalOrigin,
+    SubAgentApprovalRequest,
+)
 from omnicrawl.api import APIConfig, AgentAPIService, create_app
+from omnicrawl.api.models import RunState
 from omnicrawl.state.project import ProjectEntry
 from omnicrawl.state.session import PromptHistoryEntry, SessionEvent, SessionIndexEntry, SessionState
 
@@ -36,7 +41,13 @@ class FakeSkillManager:
 
 
 class FakeAgent:
-    def __init__(self, *, block: bool = False, require_confirmation: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        block: bool = False,
+        require_confirmation: bool = False,
+        emit_subagent_events: bool = False,
+    ) -> None:
         self.workspace_root = Path.cwd().resolve()
         self.current_session_id = SESSION_ID
         self.current_model = "demo-model"
@@ -51,17 +62,47 @@ class FakeAgent:
         )
         self.block = block
         self.require_confirmation = require_confirmation
+        self.emit_subagent_events = emit_subagent_events
         self.release = threading.Event()
         self.closed = False
         self._confirm = lambda _tool_name, _arguments: True
+        self._subagent_confirm = None
+        self._subagent_event_handler = None
         self.monitor_tasks: list[object] = []
         self.monitor_events: dict[str, list[object]] = {}
+        # 模拟 LocalToolAgent 的当前 Session 过滤；路由测试不能只依赖
+        # TaskManager 的单元测试，否则容易把跨会话任务暴露为 API 数据。
+        self.subagent_tasks: dict[str, dict] = {}
 
     def set_confirm_handler(self, confirm) -> None:
         self._confirm = confirm
 
+    def set_subagent_confirm_handler(self, confirm) -> None:
+        self._subagent_confirm = confirm
+
+    def set_subagent_event_handler(self, handler) -> None:
+        self._subagent_event_handler = handler
+
+    def emit_subagent_event(self, event_name: str, payload: dict) -> None:
+        if callable(self._subagent_event_handler):
+            self._subagent_event_handler(event_name, payload)
+
     def run_stream(self, text: str, on_delta, **callbacks) -> str:
         callbacks["on_status"]("正在思考")
+        if self.emit_subagent_events:
+            callback = callbacks["on_subagent_event"]
+            common = {
+                "batch_id": "batch-a1b2c3d4e5f6",
+                "task_id": "task-a1b2c3d4e5f6",
+                "agent_type": "explore",
+                "description": "检查会话",
+            }
+            callback("subagent.batch.created", {"batch_id": common["batch_id"], "task_count": 1})
+            callback("subagent.task.started", {**common, "status": "started"})
+            callback(
+                "subagent.task.completed",
+                {**common, "status": "completed", "summary": "安全摘要"},
+            )
         if self.require_confirmation:
             approved = self._confirm("write_file", {"path": "demo.txt", "content": "demo"})
             result = ToolResult(ok=approved, output="approved" if approved else "denied")
@@ -178,6 +219,35 @@ class FakeAgent:
 
     def clean_memory(self):
         return ["memory/expired.md"]
+
+    def list_subagent_tasks(self):
+        return [
+            dict(record["snapshot"])
+            for record in self.subagent_tasks.values()
+            if record["session_id"] == self.current_session_id
+        ]
+
+    def get_subagent_task(self, task_id: str):
+        record = self.subagent_tasks.get(task_id)
+        if record is None or record["session_id"] != self.current_session_id:
+            return None
+        return dict(record["snapshot"])
+
+    def cancel_subagent_task(self, task_id: str):
+        record = self.subagent_tasks.get(task_id)
+        if record is None or record["session_id"] != self.current_session_id:
+            return {"ok": False, "code": "SUBAGENT_NOT_FOUND"}
+        record["snapshot"] = {
+            **record["snapshot"],
+            "status": "cancelling",
+        }
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "batch_id": record["snapshot"].get("batch_id"),
+            "cancelled_count": 0,
+            "status": "cancelling",
+        }
 
     def list_monitor_tasks(self):
         return list(self.monitor_tasks)
@@ -322,6 +392,377 @@ class APITest(unittest.TestCase):
         self.assertNotIn("secret-key-that-must-not-leak", full_stream.text)
         self.assertNotIn("id: 1", replay.text)
         self.assertIn("id: 2", replay.text)
+
+    def test_subagent_control_api_is_session_scoped_and_does_not_create_tasks(self) -> None:
+        agent = FakeAgent()
+        agent.subagent_tasks = {
+            "task-current": {
+                "session_id": SESSION_ID,
+                "snapshot": {
+                    "task_id": "task-current",
+                    "batch_id": "batch-current",
+                    "description": "检查当前会话",
+                    "agent_type": "explore",
+                    "status": "running",
+                    "result": None,
+                    "error": None,
+                    "created_at": 1.0,
+                    "updated_at": 1.0,
+                },
+            },
+            "task-other-session": {
+                "session_id": "session-other",
+                "snapshot": {
+                    "task_id": "task-other-session",
+                    "batch_id": "batch-other",
+                    "description": "不应暴露",
+                    "agent_type": "explore",
+                    "status": "completed",
+                    "result": {"summary": "不应暴露"},
+                    "error": None,
+                    "created_at": 1.0,
+                    "updated_at": 1.0,
+                },
+            },
+        }
+
+        with make_client(agent) as client:
+            listed = client.get("/api/v1/subagents", headers=AUTH_HEADERS)
+            detail = client.get("/api/v1/subagents/task-current", headers=AUTH_HEADERS)
+            hidden = client.get("/api/v1/subagents/task-other-session", headers=AUTH_HEADERS)
+            cancelled = client.post(
+                "/api/v1/subagents/task-current/cancel",
+                headers=AUTH_HEADERS,
+            )
+            hidden_cancel = client.post(
+                "/api/v1/subagents/task-other-session/cancel",
+                headers=AUTH_HEADERS,
+            )
+            create_attempt = client.post("/api/v1/subagents", headers=AUTH_HEADERS)
+
+        self.assertEqual([item["task_id"] for item in listed.json()["data"]], ["task-current"])
+        self.assertEqual(detail.json()["data"]["status"], "running")
+        self.assertEqual(hidden.status_code, 404)
+        self.assertEqual(hidden.json()["error"]["code"], "SUBAGENT_NOT_FOUND")
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["data"]["status"], "cancelling")
+        self.assertEqual(hidden_cancel.status_code, 404)
+        self.assertEqual(create_attempt.status_code, 405)
+
+    def test_subagent_control_api_reports_unavailable_feature_without_internal_error(self) -> None:
+        agent = FakeAgent()
+
+        def unavailable():
+            raise AgentError("SubAgent 功能未启用。")
+
+        agent.list_subagent_tasks = unavailable
+        with make_client(agent) as client:
+            response = client.get("/api/v1/subagents", headers=AUTH_HEADERS)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "SUBAGENT_UNAVAILABLE")
+        self.assertNotIn("功能未启用", response.text)
+
+    def test_subagent_lifecycle_is_exposed_as_nested_sse_events(self) -> None:
+        with make_client(FakeAgent(emit_subagent_events=True)) as client:
+            run_id = client.post(
+                "/api/v1/runs",
+                headers=AUTH_HEADERS,
+                json={"message": "检查会话"},
+            ).json()["data"]["run_id"]
+            wait_for_run(client, run_id, {"completed"})
+            stream = client.get(f"/api/v1/runs/{run_id}/events", headers=AUTH_HEADERS)
+
+        self.assertIn("event: subagent.batch.created", stream.text)
+        self.assertIn("event: subagent.task.started", stream.text)
+        self.assertIn("event: subagent.task.completed", stream.text)
+        self.assertIn(f'"run_id":"{run_id}"', stream.text)
+        self.assertIn(f'"session_id":"{SESSION_ID}"', stream.text)
+        self.assertNotIn("任务完整 prompt", stream.text)
+
+    def test_subagent_confirmation_event_does_not_expose_task_prompts(self) -> None:
+        service = AgentAPIService(FakeAgent())
+        run = RunState(run_id="run-confirm", message="test", session_id=SESSION_ID)
+        service._runs[run.run_id] = run
+        service._active_run_id = run.run_id
+        arguments = {
+            "action": "run",
+            "tasks": [
+                {
+                    "description": "检查配置",
+                    "prompt": "完整子任务 prompt token=should-not-leak",
+                    "subagent_type": "explore",
+                }
+            ],
+            "max_concurrency": 2,
+        }
+        result = []
+        thread = threading.Thread(
+            target=lambda: result.append(service._confirm_tool_call("subagent", arguments))
+        )
+        thread.start()
+        for _ in range(100):
+            if run.confirmations:
+                break
+            time.sleep(0.01)
+        confirmation_id = next(iter(run.confirmations))
+        event_payload = next(
+            event.data for event in run.events if event.event == "confirmation.required"
+        )
+        service.decide_confirmation(run.run_id, confirmation_id, True)
+        thread.join(timeout=1)
+
+        self.assertEqual(result, [True])
+        self.assertEqual(event_payload["arguments"]["task_count"], 1)
+        self.assertNotIn("tasks", event_payload["arguments"])
+        self.assertNotIn("should-not-leak", json.dumps(event_payload, ensure_ascii=False))
+
+    def test_subagent_confirmation_keeps_trusted_task_origin_without_prompt(self) -> None:
+        agent = FakeAgent()
+        service = AgentAPIService(agent)
+        self.assertTrue(callable(agent._subagent_confirm))
+        run = RunState(run_id="run-subagent-confirm", message="test", session_id=SESSION_ID)
+        service._runs[run.run_id] = run
+        service._active_run_id = run.run_id
+        request = SubAgentApprovalRequest(
+            request_id="approval-a1b2c3d4e5f6",
+            origin=SubAgentApprovalOrigin(
+                batch_id="batch-a1b2c3d4e5f6",
+                task_id="task-a1b2c3d4e5f6",
+                agent_label="verify",
+                description="运行验证",
+            ),
+            tool_name="powershell",
+            public_arguments={"command": "git commit -m safe", "api_key": "***"},
+            risk_summary="Git 变更操作",
+        )
+        result: list[bool] = []
+        worker = threading.Thread(
+            target=lambda: result.append(agent._subagent_confirm(request))
+        )
+        worker.start()
+        for _ in range(100):
+            if run.confirmations:
+                break
+            time.sleep(0.01)
+        confirmation_id = next(iter(run.confirmations))
+        confirmation = run.confirmations[confirmation_id]
+        event_payload = next(
+            event.data for event in run.events if event.event == "confirmation.required"
+        )
+        service.decide_confirmation(run.run_id, confirmation_id, True)
+        worker.join(timeout=1)
+
+        self.assertEqual(result, [True])
+        self.assertEqual(confirmation.task_id, "task-a1b2c3d4e5f6")
+        self.assertEqual(confirmation.batch_id, "batch-a1b2c3d4e5f6")
+        self.assertEqual(confirmation.agent_label, "verify")
+        self.assertEqual(event_payload["subagent"]["task_id"], "task-a1b2c3d4e5f6")
+        self.assertNotIn("完整子任务 prompt", json.dumps(event_payload, ensure_ascii=False))
+
+    def test_background_subagent_confirmation_survives_parent_run_with_session_scoping(self) -> None:
+        agent = FakeAgent()
+        with make_client(agent) as client:
+            service = client.app.state.service
+            parent = RunState(
+                run_id="run-background-parent",
+                message="spawn",
+                session_id=SESSION_ID,
+                status="running",
+            )
+            service._runs[parent.run_id] = parent
+            service._active_run_id = parent.run_id
+            agent.emit_subagent_event(
+                "subagent.task.queued",
+                {
+                    "batch_id": "batch-a1b2c3d4e5f6",
+                    "task_id": "task-background-a1b2c3d4e5f6",
+                    "agent_type": "verify",
+                    "description": "提交验证结果",
+                },
+            )
+            parent.status = "completed"
+            service._active_run_id = ""
+
+            request = SubAgentApprovalRequest(
+                request_id="approval-background-a1b2c3d4e5f6",
+                origin=SubAgentApprovalOrigin(
+                    batch_id="batch-a1b2c3d4e5f6",
+                    task_id="task-background-a1b2c3d4e5f6",
+                    agent_label="verify",
+                    description="提交验证结果",
+                ),
+                tool_name="powershell",
+                public_arguments={
+                    "command": "git commit -m safe",
+                    "api_key": "should-not-leak",
+                },
+                risk_summary="Git 变更操作",
+            )
+            result: list[bool] = []
+            worker = threading.Thread(
+                target=lambda: result.append(agent._subagent_confirm(request)),
+            )
+            worker.start()
+
+            confirmation_id = ""
+            for _ in range(100):
+                listed = client.get(
+                    "/api/v1/subagents/confirmations",
+                    headers=AUTH_HEADERS,
+                )
+                confirmations = listed.json()["data"]
+                if confirmations:
+                    confirmation_id = confirmations[0]["confirmation_id"]
+                    break
+                time.sleep(0.01)
+            self.assertEqual(confirmation_id, request.request_id)
+            self.assertEqual(confirmations[0]["task_id"], request.origin.task_id)
+            self.assertNotIn("should-not-leak", json.dumps(confirmations, ensure_ascii=False))
+
+            event_stream = client.get(
+                "/api/v1/subagents/events",
+                headers=AUTH_HEADERS,
+                params={"follow": "false"},
+            )
+            self.assertIn("event: subagent.confirmation.required", event_stream.text)
+            self.assertNotIn("should-not-leak", event_stream.text)
+            self.assertIn("parent_run_id", event_stream.text)
+
+            agent.current_session_id = "other-session"
+            hidden = client.get(
+                "/api/v1/subagents/confirmations",
+                headers=AUTH_HEADERS,
+            )
+            hidden_decision = client.post(
+                f"/api/v1/subagents/confirmations/{confirmation_id}",
+                headers=AUTH_HEADERS,
+                json={"approved": True},
+            )
+            self.assertEqual(hidden.json()["data"], [])
+            self.assertEqual(hidden_decision.status_code, 404)
+
+            agent.current_session_id = SESSION_ID
+            decision = client.post(
+                f"/api/v1/subagents/confirmations/{confirmation_id}",
+                headers=AUTH_HEADERS,
+                json={"approved": True},
+            )
+            worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [True])
+        self.assertEqual(decision.status_code, 200)
+        self.assertEqual(decision.json()["data"]["status"], "approved")
+
+    def test_background_subagent_approval_cancellation_rejects_late_decision(self) -> None:
+        agent = FakeAgent()
+        with make_client(agent) as client:
+            service = client.app.state.service
+            parent = RunState(
+                run_id="run-background-cancel",
+                message="spawn",
+                session_id=SESSION_ID,
+                status="running",
+            )
+            service._runs[parent.run_id] = parent
+            service._active_run_id = parent.run_id
+            task_id = "task-background-cancel"
+            request_id = "approval-background-cancel"
+            agent.emit_subagent_event(
+                "subagent.task.queued",
+                {
+                    "batch_id": "batch-background-cancel",
+                    "task_id": task_id,
+                    "agent_type": "verify",
+                    "description": "提交验证结果",
+                },
+            )
+            parent.status = "completed"
+            service._active_run_id = ""
+            request = SubAgentApprovalRequest(
+                request_id=request_id,
+                origin=SubAgentApprovalOrigin(
+                    batch_id="batch-background-cancel",
+                    task_id=task_id,
+                    agent_label="verify",
+                    description="提交验证结果",
+                ),
+                tool_name="powershell",
+                public_arguments={"command": "git commit -m safe"},
+                risk_summary="Git 变更操作",
+            )
+            result: list[bool] = []
+            worker = threading.Thread(
+                target=lambda: result.append(agent._subagent_confirm(request)),
+            )
+            worker.start()
+            for _ in range(100):
+                if client.get(
+                    "/api/v1/subagents/confirmations",
+                    headers=AUTH_HEADERS,
+                ).json()["data"]:
+                    break
+                time.sleep(0.01)
+
+            agent.emit_subagent_event(
+                "subagent.task.approval_cancelled",
+                {
+                    "batch_id": "batch-background-cancel",
+                    "task_id": task_id,
+                    "agent_label": "verify",
+                    "description": "提交验证结果",
+                    "request_id": request_id,
+                    "tool": "powershell",
+                    "arguments": {"command": "git commit -m safe"},
+                    "risk_summary": "Git 变更操作",
+                    "status": "cancelled",
+                },
+            )
+            worker.join(timeout=1)
+            late_decision = client.post(
+                f"/api/v1/subagents/confirmations/{request_id}",
+                headers=AUTH_HEADERS,
+                json={"approved": True},
+            )
+            event_stream = client.get(
+                "/api/v1/subagents/events",
+                headers=AUTH_HEADERS,
+                params={"follow": "false"},
+            )
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertEqual(late_decision.status_code, 409)
+        self.assertEqual(late_decision.json()["error"]["code"], "CONFIRMATION_RESOLVED")
+        self.assertIn("event: subagent.confirmation.cancelled", event_stream.text)
+
+    def test_subagent_outer_tool_event_does_not_expose_task_prompts(self) -> None:
+        service = AgentAPIService(FakeAgent())
+        run = RunState(run_id="run-test", message="test", session_id=SESSION_ID)
+        tool_call = ToolCall(
+            name="subagent",
+            id="tool-subagent",
+            arguments={
+                "action": "run",
+                "tasks": [
+                    {
+                        "description": "检查配置",
+                        "prompt": "任务完整 prompt api_key=should-not-leak",
+                        "subagent_type": "explore",
+                    }
+                ],
+                "max_concurrency": 2,
+            },
+        )
+
+        service._on_tool_start(run, 1, tool_call, lambda: None)
+        event_payload = run.events[-1].data
+
+        self.assertEqual(event_payload["arguments"]["task_count"], 1)
+        self.assertEqual(event_payload["arguments"]["agent_types"], ["explore"])
+        self.assertNotIn("prompt", json.dumps(event_payload, ensure_ascii=False))
+        self.assertNotIn("should-not-leak", json.dumps(event_payload, ensure_ascii=False))
 
     def test_only_one_run_can_be_active_and_cancel_releases_it(self) -> None:
         agent = FakeAgent(block=True)

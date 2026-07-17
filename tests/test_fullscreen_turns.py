@@ -30,6 +30,9 @@ class AgentTurnControllerTests(unittest.TestCase):
             on_protocol_wait=lambda: events.append(("protocol_wait",)),
             on_retry_status=lambda status: events.append(("retry_status", status)),
             on_reasoning_delta=lambda delta: events.append(("reasoning", delta)),
+            on_subagent_event=lambda name, payload: events.append(
+                ("subagent", name, payload.get("task_id"))
+            ),
         )
 
     def test_run_forwards_full_stream_protocol_without_reordering_events(self) -> None:
@@ -55,6 +58,10 @@ class AgentTurnControllerTests(unittest.TestCase):
                 )
                 callbacks["on_token_usage"](12, 8, 3)
                 callbacks["on_retry_status"]("正在重试")
+                callbacks["on_subagent_event"](
+                    "subagent.task.started",
+                    {"task_id": "task-a1b2c3d4e5f6"},
+                )
                 callbacks["cancel_check"]()
                 return "最终回复"
 
@@ -74,6 +81,7 @@ class AgentTurnControllerTests(unittest.TestCase):
                 "on_retry_status",
                 "cancel_check",
                 "on_reasoning_delta",
+                "on_subagent_event",
             },
         )
         self.assertEqual(
@@ -87,6 +95,7 @@ class AgentTurnControllerTests(unittest.TestCase):
                 ("tool_result", "read_file", "读取完成"),
                 ("token_usage", 12, 8, 3),
                 ("retry_status", "正在重试"),
+                ("subagent", "subagent.task.started", "task-a1b2c3d4e5f6"),
             ],
         )
 

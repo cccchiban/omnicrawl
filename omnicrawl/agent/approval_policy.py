@@ -30,6 +30,54 @@ _DELETE_COMMAND_PATTERN = re.compile(
 )
 _GIT_CLEAN_PATTERN = re.compile(r"(?<![\w.-])git(?:\.exe)?\s+clean(?=\s|$|[;&|])", re.IGNORECASE)
 _FIND_DELETE_PATTERN = re.compile(r"(?<![\w.-])find(?:\.exe)?\b.*(?:\s-delete\b|\s-exec\s+rm\b)", re.IGNORECASE)
+# 匹配常见 shell 分隔符之后的 Git 命令，同时跳过 ``-C`` / ``-c`` / ``--no-pager``
+# 等全局选项。解析的目标是风险下界：无法证明为只读的 Git 子命令必须进入确认。
+_GIT_COMMAND_PATTERN = re.compile(
+    r"(?<![\w.-])git(?:\.exe)?"
+    r"(?:\s+(?:--[a-z0-9][\w-]*(?:=[^\s;&|]+)?|-C\s+[^\s;&|]+|-c\s+[^\s;&|]+))*"
+    r"\s+([a-z][\w-]*)",
+    re.IGNORECASE,
+)
+_GIT_READ_ONLY_SUBCOMMANDS = frozenset(
+    {
+        "blame",
+        "cat-file",
+        "check-attr",
+        "check-ignore",
+        "describe",
+        "diff",
+        "for-each-ref",
+        "fsck",
+        "grep",
+        "help",
+        "log",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "name-rev",
+        "rev-list",
+        "rev-parse",
+        "show",
+        "show-ref",
+        "shortlog",
+        "status",
+        "symbolic-ref",
+        "var",
+        "verify-commit",
+        "verify-tag",
+        "whatchanged",
+    }
+)
+_GIT_INTENT_KEYS = {
+    "action",
+    "command",
+    "cmd",
+    "method",
+    "op",
+    "operation",
+    "script",
+    "verb",
+}
 _DELETE_INTENT_PATTERN = re.compile(
     r"(^|[._:/\\-])(?:delete|del|erase|remove|rm|rmdir|unlink|删除|移除|清空)($|[._:/\\-])",
     re.IGNORECASE,
@@ -77,6 +125,60 @@ def is_delete_behavior_tool_call(tool: ToolDefinition, arguments: dict[str, Any]
         return True
 
     return arguments_have_delete_intent(arguments, intent_keys=_MCP_DELETE_INTENT_KEYS)
+
+
+def is_git_mutation_tool_call(tool: ToolDefinition, arguments: dict[str, Any]) -> bool:
+    """判断一次调用是否会修改 Git 状态或无法证明为只读。
+
+    仅把明确的只读子命令（如 ``status``、``diff``、``log``、``show``）排除。
+    其他 Git 子命令，包括未知子命令和可能改写索引、工作树、引用、配置或远端的
+    操作，均保守地需要确认。检查范围限定在命令/动作字段，避免普通文件正文中
+    出现 ``git commit`` 文本就被误判。
+    """
+
+    if _arguments_have_git_mutation_intent(arguments):
+        return True
+
+    normalized_name = re.sub(r"[^a-z0-9]+", "_", tool.name.casefold()).strip("_")
+    if not normalized_name.startswith("git"):
+        return False
+    if normalized_name == "git":
+        return True
+
+    parts = normalized_name.split("_")
+    if len(parts) < 2:
+        return True
+    return _git_subcommand_requires_confirmation(parts[1])
+
+
+def command_has_git_mutation_intent(command: str) -> bool:
+    """判断 shell 文本中是否含有变更性 Git 子命令。"""
+
+    return any(
+        _git_subcommand_requires_confirmation(match.group(1))
+        for match in _GIT_COMMAND_PATTERN.finditer(command)
+    )
+
+
+def _arguments_have_git_mutation_intent(value: Any) -> bool:
+    if isinstance(value, dict):
+        for raw_key, item in value.items():
+            if not isinstance(raw_key, str):
+                continue
+            key = raw_key.strip().casefold()
+            if key in _GIT_INTENT_KEYS and isinstance(item, str):
+                if command_has_git_mutation_intent(item):
+                    return True
+            elif isinstance(item, (dict, list)) and _arguments_have_git_mutation_intent(item):
+                return True
+        return False
+    if isinstance(value, list):
+        return any(_arguments_have_git_mutation_intent(item) for item in value)
+    return False
+
+
+def _git_subcommand_requires_confirmation(subcommand: str) -> bool:
+    return subcommand.strip().casefold() not in _GIT_READ_ONLY_SUBCOMMANDS
 
 
 def tool_accepts_shell_command(tool: ToolDefinition) -> bool:

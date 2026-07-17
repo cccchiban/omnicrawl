@@ -7,6 +7,7 @@
 3. AI 会按 Agent 循环处理任务：理解目标、读取项目文件、搜索文本、写文件或执行命令；默认会在工具执行前拦截确认，也可开启自动审批模式。
 4. AI 回复会在 TUI 中显示，或通过 SSE 事件流推送给 API 客户端。
 5. 支持多 Profile、`models.yaml` 自定义模型目录，以及 TUI `/model` 双列热切换（不重启、不清空会话）。
+6. 提供默认关闭的定义式 SubAgent：支持 1–4 个 `fresh`/受控 `fork` 任务、后台管理、模型覆盖、跨进程安全快照恢复和 Session/SSE/TUI/API 生命周期观察。默认角色仅只读；`verify` 只能运行固定检查；通用写 Agent 必须显式开启，并优先在独立 Git worktree 中执行，由父 Agent 决定应用或丢弃结果。
 
 ## Agent 临时目录
 
@@ -41,6 +42,7 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 - `powershell`：使用 PowerShell 执行 Windows 命令，优先使用 PowerShell 7，默认执行前会要求确认。
 - `monitor`：受 Agent 管理地在后台执行命令，默认使用 PowerShell，也可显式指定 Bash；`start` 返回任务 ID，`poll` 按游标读取增量日志，`stop` 停止任务，`list` 查看任务。Agent 关闭或切换工作区时会自动终止其子进程树，默认执行前会要求确认。
 - `bb_browser_cli`：调用 bb-browser CLI 操作真实浏览器；Agent 启动时不会预热或打开浏览器，首次实际调用该工具时由 CLI 按需启动 daemon 和受管浏览器，默认执行前会要求确认。
+- `subagent`：仅在 `subagents.enabled=true` 时注册；支持有界批量 `run`、后台 `spawn`、`list/get/cancel`，以及显式开启后的 `fork`、模型覆盖和 Worktree `list/apply/discard` 控制。默认角色仅只读；`verify` 只能调用固定检查标识，通用写 Agent 与 Worktree 均需额外开关。
 
 安全边界：
 
@@ -50,7 +52,8 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 - 命令工具不是系统级沙箱；所有命令均通过明确的 PowerShell 或 Git Bash 解释器以 `shell=False` 启动。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
 - bb-browser 是内置 CLI 能力，不通过 MCP 暴露；需要安装或更新时使用项目里的 npm 依赖，或设置 `BB_BROWSER_COMMAND` 指向本机可执行文件。
 - MCP 默认关闭；开启后会在启动时发现已启用的 MCP Server，并把 Tool 以 `server.tool` 名称追加到 Agent 工具列表，同时按需读取 Resource 和 Prompt。单个 Server 失败只会显示降级诊断，不影响内置工具。
-- Agent 不再限制单轮连续工具步骤；AI 返回空响应时会最多重试 5 次，每次请求超时 180 秒。可通过环境变量调整：
+- SubAgent 默认关闭。read_only 角色只能使用工作区读取/搜索和可用的 Memory 只读工具；`memory_write`、MCP Tool、Skill 控制面、浏览器、父控制面和再次创建 SubAgent 均不会因父 Host 已注册而进入子工具集。模型任务参数也不能提交自定义工具、Skill、MCP Server 或 permission profile。显式设置 `subagents.enable_verify_agent=true` 后，内置 `verify` 额外获得子任务私有的 `verify_command`：只能选择 `unit_tests`、`compileall`、`git_diff_check` 三项固定检查，Host 以静态 argv 和 `shell=False` 启动。通用写 Agent 还需显式开启 standard/worktree 开关，写入和变更性操作继续经过来源明确的审批。任务并发与模型请求并发分别受配置上限约束，父历史、活动 Skill、Runtime 字段和普通 Session 消息不会被 fresh 子循环覆盖；Fork 只消费创建时冻结且已脱敏的父公开上下文。父 Session 归档/恢复会先取消旧会话子任务，待处理 Worktree 会阻止切换工作区，避免旧任务或旧仓库写能力进入新的所有权边界。结果会先脱敏和裁剪，大结果写入父 Session 管控的 JSON artifact；Provider reasoning 不进入公开结果，API/TUI 只接收安全生命周期摘要。
+- Agent 不再限制主循环的连续工具步骤；SubAgent 则按角色定义和全局配置限制模型回合、工具次数与调用边界时间。时间预算会阻止继续启动新步骤，并收紧单次模型请求超时，但无法强制终止不响应取消的第三方 SDK 或系统调用。AI 返回空响应时会最多重试 5 次，每次请求超时 180 秒。可通过环境变量调整：
 
 ```powershell
 $env:AGENT_REQUEST_RETRY_COUNT = "5"
@@ -85,7 +88,7 @@ python main.py plugin rollback @scope/name --project
 
 TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。
 
-设计说明见 `docs/HOOK_PLUGIN_DESIGN.md`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。
+设计说明见 `docs/HOOK_PLUGIN_DESIGN.md`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。插件若要提供最低优先级的 Agent Markdown 定义，必须在 manifest 的 `omnicrawl.agents` 中声明包内路径，并同时声明且获批 `agent:definitions` 权限。
 
 ## 安装依赖
 
@@ -152,7 +155,9 @@ python main.py
 │   ├── __init__.py              # 旧路径兼容导出（session/memory/llm 等）
 │   ├── agent/                   # Agent 主循环与工具/协议/历史
 │   │   ├── __init__.py           # 稳定公共 API 导出
-│   │   ├── core.py               # LocalToolAgent 主循环
+│   │   ├── core.py               # LocalToolAgent 外层生命周期与 Host 接线
+│   │   ├── execution.py           # 可复用 AgentLoopRunner
+│   │   ├── subagents/             # 定义注册表、协调器及内置角色/后台/恢复/Worktree
 │   │   ├── tools.py / history.py / llm_protocol.py
 │   │   └── system_prompt.md       # 运行时系统提示词模板
 │   ├── mcp/                     # MCP 配置、安全、审计、客户端与内置 Server
@@ -295,6 +300,30 @@ models:
 - `manual`：默认人工确认。
 - `auto`：完全自动批准所有受限工具调用。
 - `review`：仅对疑似删除行为使用同一模型的非思考模式审查，审查通过后自动执行；非删除工具调用自动放行，不再进入模型审查。
+
+SubAgent 各项能力通过 `subagents` 段独立启用，所有高风险能力默认关闭：
+
+```yaml
+subagents:
+  enabled: false
+  max_depth: 1
+  max_concurrency: 2
+  max_tasks_per_batch: 4
+  model_request_concurrency: 2
+  default_max_turns: 20
+  default_max_tool_calls: 50
+  default_timeout_seconds: 300
+  allow_background: false
+  allow_fork: false
+  allow_worktree: false
+  allow_standard_agent: false
+  allow_shared_workspace_writes: false
+  enable_verify_agent: false
+  verify_command_timeout_seconds: 120
+  task_retention_minutes: 60
+```
+
+启用后加载顺序为项目 `.omnicrawl/agents/*.md`、兼容项目 `.agents/agents/*.md`、用户 `~/.omnicrawl/agents/*.md`、包内 `explore`/`plan`/`verify`/`general-purpose`、已批准插件定义；同名时高优先级来源获胜。环境变量只能关闭能力或收紧并发、超时等限制，不能扩大配置。当前实现支持 1–4 个同步任务、有界任务并发、独立模型请求限流、输入顺序聚合、失败隔离和同步 `fail_fast`；默认仅只读，显式启用 `verify` 后只能执行固定的全量 unittest、compileall 和 `git diff --check`。显式设置 `allow_fork: true` 后可使用创建时冻结、脱敏的父公开上下文；任务模型按任务 > 角色定义 > 父模型解析并以独立 Runtime 运行。显式设置 `allow_background: true` 后支持 `spawn/list/get/cancel`，终态任务与未消费通知按 TTL 自动回收，通知只注入一次。父 Run 取消、Agent 关闭和工作区切换会级联取消并有界等待；跨进程恢复只导入安全任务快照，非终态任务折叠为 `SUBAGENT_INTERRUPTED`，不自动重跑或恢复 prompt、Runtime、审批和通知。显式开启 `allow_worktree` 与 `allow_standard_agent` 后，`general-purpose` 可在独立 worktree 写入，主工作树脏时拒绝创建/应用，父 Agent 通过控制动作审查并 apply/discard；共享工作区写入还需额外开启 `allow_shared_workspace_writes` 并受单写锁约束。跨父 Run 的后台审批记录仍仅存在于当前进程，不跨进程恢复；后台 `fail_fast` 尚未开放。
 
 思考深度可在 `llm.reasoning_effort`（或 `llm.defaults.reasoning_effort`）配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
 

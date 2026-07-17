@@ -17,6 +17,6 @@
 - `agent_refactor_plan.md`：Agent、MCP、Session、API、全屏 UI 等大文件与高耦合模块的分阶段治理计划；阶段 7 架构复查已收尾。
 - `MCP_USAGE.md`：MCP 配置、调用、排障和渐进式披露使用规范。
 - `MULTI_MODEL_API_DESIGN.md`：多模型原生 SDK 接入、统一内部协议、`/model` 热切换、双列模型目录及 YAML 配置迁移方案。**主链路已落地**（OpenAI Chat Runtime、config.yaml/models.yaml、ModelPicker、API catalog）；Claude/Gemini 真机联调与部分契约测试仍可补强，详见文档 §0。
-- `SUBAGENT_DESIGN.md`：基于第 13 章 SubAgent 理论并结合当前 Agent、审批、Session、Plugin、MCP、API 和 TUI 边界形成的子 Agent 与任务分发设计；当前为设计稿，建议按只读定义式、后台任务、Fork/Worktree 三阶段实施。
+- `SUBAGENT_DESIGN.md`：子 Agent 与任务分发设计及实施状态。Phase 0–3、受控 `verify`/Fork/模型覆盖、后台任务与审批控制面、跨进程安全快照恢复、独立 Plugin dispatch context、Worktree 写隔离及默认关闭的通用写 Agent 均已落地。任务支持有界并发、取消、TTL 清理、一次性通知、Session artifact、安全 SSE/TUI/API 控制面和父侧 apply/discard。Plugin、MCP、Skill、Memory、Session、API、TUI 专项边界及无限递归、权限扩大、隐藏推理泄露、跨工作区残留任务四项最终安全不变量均已完成回归。
 
 说明：`session_implementation_progress.md` 与 `MCP_DESIGN_TECHNICAL.md` 当前不在仓库中；会话落地进度与 MCP 设计细节分别以 `session_design.md`、`MCP_USAGE.md` 及源码/测试为准。

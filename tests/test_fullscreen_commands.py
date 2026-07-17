@@ -158,3 +158,20 @@ class CommandDispatcherTests(unittest.TestCase):
                 ("approval", "/approval:auto"),
             ],
         )
+
+    def test_subagent_task_command_is_immediate_and_uses_injected_handler(self) -> None:
+        """TUI 分派层只展示控制面结果，不会启动新的 Agent 回合。"""
+
+        calls: list[str] = []
+        dispatcher = CommandDispatcher(
+            self.agent,
+            handle_subagent_task=lambda _agent, text: calls.append(text) or "子任务列表",
+        )
+
+        outcome = dispatcher.dispatch("/tasks")
+
+        self.assertTrue(outcome.handled)
+        self.assertEqual(outcome.execution, "immediate")
+        self.assertEqual(outcome.message, "子任务列表")
+        self.assertFalse(outcome.refresh_context)
+        self.assertEqual(calls, ["/tasks"])

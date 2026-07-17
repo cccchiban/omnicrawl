@@ -1,6 +1,6 @@
 # OmniCrawl SubAgent 子 Agent 与任务分发设计
 
-> 文档状态：设计稿，尚未实现
+> 文档状态：实施完成；Phase 0–3、后台与审批控制面、受控 Fork/模型覆盖、跨进程恢复、Plugin dispatch、Worktree 写隔离、边界回归及最终安全不变量审计均已于 2026-07-17 前完成
 >
 > 文档版本：1.0
 >
@@ -9,6 +9,27 @@
 > 适用项目：OmniCrawl Python Host、全屏 TUI、本机 HTTP/SSE API
 >
 > 参考资料：飞书知识库《第13章：SubAgent，子Agent与任务分发》及其理论、实战、Python/Go/Java/TypeScript 源码解析子文档
+
+## 实施状态（2026-07-17）
+
+已完成：
+
+- Phase 0：新增内部 `AgentLoopRunner`，主 Agent 继续独占 Session、Plugin turn、Runtime 快照、历史提交和公开回调；工具批次仍保持整批审批、读操作并行、写/删除屏障和原序回填。
+- Phase 1A：新增默认关闭的 `subagents` 配置、环境变量只收紧语义、项目/兼容项目/用户/内置/已批准插件五级 Markdown 定义来源、包内 `explore`/`plan`、统一 `subagent(action=run)` 工具和单个同步 `fresh`/`read_only` 子执行。
+- Phase 1B：`subagent(action=run)` 扩展为 1–4 个同步任务，Coordinator 按 Host 配置限制任务并发，模型请求使用独立信号量限制 Provider 在途请求；支持输入顺序聚合、单任务失败隔离、批次 `partial` 和可选 `fail_fast`。
+- Phase 1C：Coordinator 新增批次/任务生命周期事件和统一安全结果投影；父 Session 记录 queued/started/completed/failed/cancelled additive 事件且不进入模型恢复上下文；大结果在脱敏后写入任务级 JSON artifact；API SSE 与全屏 TUI 可观察单任务开始、完成、失败和取消，外层 `subagent` 工具事件不再暴露完整任务 prompt。
+- Phase 2：新增进程内 `SubAgentTaskManager`，统一工具支持 `run|spawn|list|get|cancel`；后台任务默认关闭，显式 `allow_background=true` 才能 spawn。任务结果有界、脱敏并复用现有 artifact；owner/session 隔离、终态任务与未消费通知的 TTL 自动清理、批次/任务取消、exactly-once 通知 drain 和创建时冻结的 observer 均已接入。
+- 生命周期取消闭环：Coordinator 持有活动批次、组合取消令牌、暂停/关闭入口和单 deadline 有界等待；父 Run 取消会级联运行中与排队任务；`LocalToolAgent.close()` 超时后保留共享资源并在任务 idle 时自动完成关闭；工作区切换超时会保留旧工作区并拒绝提交；进程级 PluginRuntime 通过 Agent close callback 延迟到所有子任务退出后再关闭。
+- 隔离边界：`fresh` 子执行使用独立 messages、独立预算和独立 Runtime；受控 Fork 仅在创建时复制一份已脱敏的父公开协议消息快照。二者都不修改父 `_history`、`_pending_user_text`、`_active_skills` 或 `_active_runtime_snapshot`；内部只读工具复用 Host 路径保护与 Plugin 工具 Hook，但不写父 Session 普通工具事件。
+
+- Provider Fake Runtime 契约：补齐 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini Generate Content 四种协议身份的 SubAgent 集成契约，覆盖 fresh 上下文与用量、只读工具往返、Runtime 内取消传播；测试只使用统一 Runtime 事件，不依赖真实 SDK 或网络。
+- Phase 2 API/TUI 控制面：新增受鉴权的当前 Session `list/get/cancel` 路由；不提供远程创建入口。`/tasks`、`/task <task_id>`、`/task cancel <task_id>` 在终端和全屏 TUI 复用同一控制逻辑，TUI 可展示 queued/running/终态安全元数据。
+- ApprovalBroker Core：新增 Agent 范围 FIFO 单确认 Broker，以 `ContextVar` 绑定 task/batch/角色来源，多个子任务同时请求时只展示一个确认；任务、批次、父取消、关闭和工作区切换会拒绝待决请求，活跃确认的迟到批准无效。用户策略已收窄为仅“所有删除意图”和“变更性 Git 操作”逐次确认；`git status`/`diff`/`log`/`show` 等只读查询和普通子任务分发不弹窗。公开 waiting/running 事件、终端/全屏来源提示、以及 API `PendingConfirmation` 的 additive 来源字段均已接入，且不传递完整 prompt。
+- Verify profile：新增默认关闭的内置 `verify`，通过 `enable_verify_agent=true` 显式启用。它只获得 read_only 工具和子任务私有的 `verify_command`，后者只能选择固定的 `unit_tests`、`compileall`、`git_diff_check` 检查；Host 以静态 argv、`shell=False` 启动 Python/Git，不接受原始命令、Shell、路径、环境变量或网络参数。
+- 1A-Full 后台审批控制面：API 服务按任务创建时的可信 Run/Session 来源维护受限的进程内审批队列和独立 SSE 流。父 Run 结束后，当前会话可查询并决议等待中的后台审批；任务、批次、服务取消和超时会拒绝请求，迟到批准无效。终端/全屏 TUI 继续复用单确认模态与安全来源提示，不开放远程创建任务或跨会话访问。
+- Phase 3.1B（受控 Fork 与模型覆盖）：`allow_fork=true` 时，`context=fork` 在父 Agent 本回合开始时冻结公开 OpenAI 风格消息、完成凭据脱敏后再交给子循环；Fork 注入父基础提示与既定 boilerplate，仍不获得 `subagent` 工具。每个任务在排队前按“调用参数 `model` > `AgentDefinition.model` > 父模型”解析模型，并以独立 `ModelRuntimeManager` 执行；父 `/model` 只影响后续任务。模型、Profile 凭据和 Fork 原始 prompt 均不写入 Session、SSE、artifact 或公开结果。
+
+已完成跨进程恢复（2026-07-16 补齐）：从父 Session additive 事件重建任务快照并导入 TaskManager，仅恢复 list/get 控制面可见性；非终态任务折叠为 `failed` + `SUBAGENT_INTERRUPTED`，不自动重跑，不恢复审批/Runtime/Fork/原始 prompt，也不注入通知队列。Phase 3.2 独立 Plugin dispatch context 已落地。Worktree 写隔离与 default-off 通用写 Agent 亦已落地。2026-07-17 又补齐 MCP/Skill/Memory 专项边界：模型任务参数不能注入工具、Skill、MCP Server 或 permission profile；read_only/standard 均不能获得 MCP、Skill 控制面或 `memory_write`；fresh 不继承父 Skill 状态，Fork 只消费创建时冻结的公开 Skill 上下文。最终安全审计进一步修复了三个生命周期缺口：待处理 Worktree 会阻止跨工作区切换；Plugin/Fork 上下文冻结发生在创建 Worktree 之前，登记失败会回滚 Git 资源；父 Session 归档/恢复会先取消旧会话子任务并在超时时保留当前会话。隐藏 reasoning 也通过统一 Runtime 契约证明不会进入公开结果或 artifact。
 
 ## 0. 结论
 
@@ -96,7 +117,7 @@ SubAgent 的价值不是简单“多开几个模型请求”，而是建立以�
 | Fork 临时助手 | Phase 3 支持父上下文快照 | 不直接复制父 `LocalToolAgent` 可变字段 |
 | 子 Agent 后台运行 | Phase 2 引入 `SubAgentTaskManager` | 不复用外部进程 `BackgroundMonitorManager` |
 | 多层工具过滤 | 全局禁用 + 运行模式 + 定义限制 + Host 安全策略 | MCP 不直通，仍按风险和审批策略过滤 |
-| `dontAsk` 自动批准 | 不作为通用默认 | 分发授权不能替代子工具授权；只读 profile 可在一次委派确认后免重复只读确认 |
+| `dontAsk` 自动批准 | 不作为通用默认 | 当前 read_only 分发免确认；未来子工具只对删除意图和变更性 Git 操作逐次确认 |
 | task-notification 回传 | 父 Session additive event + 有界上下文通知 | 高频 delta 不写入父 Session |
 | Worktree 隔离 | Phase 3 可选 | 当前工作树有未提交修改时必须阻止自动创建/合并写入工作树 |
 
@@ -108,12 +129,12 @@ SubAgent 的价值不是简单“多开几个模型请求”，而是建立以�
 
 #### 不提供无条件 `dontAsk`
 
-OmniCrawl 当前内置文件工具默认需要确认。后台子 Agent 没有直接用户 UI，因此不能简单把权限模式改成 `dontAsk`。设计采用“**委派范围授权 + 子工具风险控制**”：
+OmniCrawl 当前内置文件工具默认需要确认，但 SubAgent 不会因此获得无条件自动批准。设计采用“**受限分发 + 子工具风险控制**”：
 
-- 启动只读 SubAgent 时，用户可以一次确认该只读任务；
-- 子 Agent 只能看到只读 profile 中的工具，Host 仍执行路径和参数校验；
-- 写文件、命令、删除、外部网络和高风险 MCP 不包含在只读委派授权中；
-- 写能力进入后续阶段，并由串行 `ApprovalBroker` 提供带任务来源的人工审批。
+- 当前 read_only SubAgent 分发及其内部只读调用免人工确认；默认关闭的 verify 仅开放固定 `verify_command` 检查，二者仍执行定义权限收窄、路径、参数、Hook 和脱敏校验；
+- 写文件、外部网络和高风险 MCP 仍不在当前 profile 中，不能因为免确认而被放行；
+- 后续 profile 中，删除意图和变更性 Git 操作必须逐次经过带任务来源的串行 `ApprovalBroker`；
+- 未知 Git 子命令按变更性处理；父 Run 已结束的后台风险请求由 Core 安全拒绝，不能伪造无来源的确认。
 
 ---
 
@@ -367,15 +388,18 @@ permissionMode: delegated-read-only
 
 用途：运行构建、测试、类型检查并给出 PASS/FAIL/PARTIAL。
 
-`verify` 需要命令能力，不能在 Phase 1 默认无交互后台运行。建议通过配置开关启用，并在 Phase 2 配合 ApprovalBroker 或受控命令 allowlist：
+`verify` 已作为默认关闭的受控 profile 落地。只有 `subagents.enable_verify_agent=true` 时才可执行；它不开放 Bash、PowerShell 或任意命令文本，而是通过子任务私有 `verify_command` 选择 Host 固定的检查，并以 `shell=False` 直接启动参数数组。
 
 ```yaml
 name: verify
-description: 运行项目验证命令并报告可复现证据
+description: 运行固定的测试、编译和 Git 差异检查并报告可复现证据
+tools: [list_files, read_file, search_text, verify_command]
 background: true
-disallowedTools: [subagent, write_file, replace_text, memory_write]
+disallowedTools: [subagent, write_file, replace_text, bash, powershell, monitor, memory_write]
 permissionMode: explicit-command-allowlist
 ```
+
+首期固定检查为 `unit_tests`、`compileall`、`git_diff_check`。它们均不包含删除或变更性 Git 操作，因此不需要人工确认；后续若新增高风险检查，仍必须经过 ApprovalBroker，不能借 `verify` 绕过审批。
 
 ### 7.4 `general-purpose`
 
@@ -443,7 +467,7 @@ Phase 1 不允许模型指定任务 ID、工作区路径、工具列表、权限
 ### 8.3 Phase 2 Schema 扩展
 
 ```text
-action: run | spawn | list | get | cancel
+action: run | spawn | list | get | cancel | apply_worktree | discard_worktree | list_worktrees
 ```
 
 - `run`：同步等待一个或多个任务，返回有序结果；
@@ -454,14 +478,28 @@ action: run | spawn | list | get | cancel
 
 ### 8.4 Phase 3 Schema 扩展
 
-单任务增加：
+已落地的单任务字段：
 
 ```json
 {
   "context": "fresh | fork",
-  "isolation": "shared | worktree",
-  "run_in_background": true,
-  "name": "optional-display-name"
+  "model": "models.yaml key / alias / profile/model_id / inherit"
+}
+```
+
+`context=fork` 需显式设置 `subagents.allow_fork=true`；`model` 的优先级高于定义中的 `model`，显式 `inherit` 表示使用父模型。模型值复用现有 Catalog/Profile 解析，不接受调用方传入凭据、Runtime、工具列表或任意 system prompt。
+
+任务级 `isolation` / `run_in_background` / `name` 仍不由工具参数覆盖，继续只读定义 frontmatter。
+Worktree 结果由父 Agent 通过顶层 action 显式处理（已落地）：
+
+```json
+{
+  "action": "apply_worktree | discard_worktree | list_worktrees",
+  "task_id": "optional-task-or-session-id",
+  "branch": "optional-branch-name",
+  "strategy": "checkout | merge",
+  "cleanup": false,
+  "remove_branch": true
 }
 ```
 
@@ -529,7 +567,7 @@ Fork 模式由 `context="fork"` 明确表达，不依赖“省略 `subagent_type
 
 ### 9.2 Fork 式
 
-Fork 用于和父任务高度相关、需要继承已讨论背景的临时助手。Phase 3 才实现。
+Fork 用于和父任务高度相关、需要继承已讨论背景的临时助手。Phase 3.1B 已以默认关闭的只读/受控 verify 形式实现；通用写 Fork 仍未开放。
 
 Fork 上下文应复制：
 
@@ -679,7 +717,7 @@ class AgentLoopRunner:
 | Profile | 允许能力 | 典型角色 |
 |---|---|---|
 | `read_only` | 列目录、读文件、搜索、只读 Memory、可信只读 MCP Resource | explore、plan |
-| `verify` | read_only + 受控 Bash/PowerShell 命令 | verify |
+| `verify` | read_only + 子任务私有 `verify_command` 固定检查（静态 argv、无 Shell） | verify |
 | `standard` | 读写文件、命令、MCP Tool，逐项审批 | Phase 3 general-purpose |
 | `worktree_writer` | standard，但工作区绑定独立 worktree | Phase 3 并行写任务 |
 
@@ -695,28 +733,29 @@ class AgentLoopRunner:
 
 ### 11.5 审批模型
 
-#### Phase 1：委派级只读授权
+#### 当前委派级策略：受限任务免重复确认
 
-`subagent` 工具本身需要确认。确认内容展示：
+当前开放 `read_only` profile，以及默认关闭的 `verify` profile。`subagent` 分发、内部普通只读调用和 `verify_command` 固定检查均不需要重复人工确认；Host 仍执行定义权限收窄、参数、路径、Hook、脱敏和预算校验。`verify_command` 不接受原始命令文本，且首期检查不含删除或变更性 Git 操作。
 
-- 子任务数量；
-- Agent 类型；
-- 是否并行；
-- 工具 profile；
-- 预算上限；
-- 是否涉及网络或命令。
+用户已将未来子工具的人工确认范围收窄为：
 
-只读 profile 获批后，其内部只读工具不重复弹窗，但仍执行参数、路径、Hook 和脱敏校验。
+- 所有删除意图（专用删除工具、`git rm`/`git clean`、以及命令中的 `rm`、`del`、`Remove-Item`、`find -delete` 等）；
+- 变更性 Git 操作（如 `add`、`commit`、`switch`、`merge`、`rebase`、`reset`、`push`）；
+- 无法证明为只读的未知 Git 子命令按变更性处理。
+
+`git status`、`git diff`、`git log`、`git show` 等明确只读 Git 查询免确认。该策略不扩大 read_only 或受控 verify 权限；通用命令与写 profile 仍未启用。
 
 #### Phase 2/3：ApprovalBroker
 
 ```python
 @dataclass(frozen=True)
 class ApprovalRequest:
+    batch_id: str
     task_id: str
-    agent_name: str
+    agent_label: str
+    description: str
     tool_name: str
-    arguments: dict[str, Any]
+    public_arguments: dict[str, Any]
     risk_summary: str
 ```
 
@@ -729,6 +768,13 @@ ApprovalBroker 规则：
 5. TUI/API 显示任务来源；
 6. 批准一个工具不批准后续工具；
 7. Plugin guard 只能拒绝，不能代替用户批准。
+
+同步任务继续复用当前活动父 Run 的确认处理器。对于已结束父 Run 的后台风险操作，1A-Full
+在 API 服务内依据任务创建时冻结的可信 Run/Session 来源创建受限的进程内确认记录；客户端只能在
+当前会话通过 `GET /api/v1/subagents/confirmations` 查询、通过
+`POST /api/v1/subagents/confirmations/{confirmation_id}` 决议，并可订阅
+`GET /api/v1/subagents/events`。任务、批次、服务取消和超时都会拒绝该记录，迟到批准无效；
+来源未知、跨会话或跨进程的请求仍安全拒绝。终端与全屏 TUI 复用既有单确认模态，并显示任务来源。
 
 ---
 
@@ -934,7 +980,9 @@ subagent_task_timed_out
 2. Provider SDK 并发不明确时：为子任务创建独立 Runtime；
 3. 只有验证过 Adapter/SDK client 线程安全后，才允许共享底层 client/连接池。
 
-父 Agent 当前回合和所有子任务结束前，不允许切换当前模型，或将模型切换语义明确为“只影响后续新任务”。建议采用后者：任务创建时冻结模型快照，运行中 `/model` 只影响下一回合/新任务。
+Phase 3.1B 采用第 2 种：所有完整 `LLMConfig` 子任务在创建时复制解析后的 Profile/Descriptor，并在执行期创建、引用和关闭自己的 `ModelRuntimeManager`；遗留最小测试夹具保留旧 Runtime 注入兼容路径。父 `/model` 因而只影响之后新建的任务，不能改变已经排队或运行的子任务。
+
+父 Agent 当前回合和所有子任务结束前，不允许切换当前模型，或将模型切换语义明确为“只影响后续新任务”。当前实现采用后者：任务创建时冻结模型快照，运行中 `/model` 只影响下一回合/新任务。
 
 ### 15.3 Token 预算
 
@@ -997,19 +1045,22 @@ class SubAgentLimits:
 
 ### 17.2 SSE 事件
 
-建议增加：
+当前已公开的安全事件包括：
 
 ```text
 subagent.batch.created
 subagent.task.queued
 subagent.task.started
-subagent.task.progress
+subagent.task.running
 subagent.task.waiting_approval
+subagent.task.approval_cancelled
 subagent.task.completed
-subagent.task.partial
 subagent.task.failed
 subagent.task.cancelled
-subagent.task.timed_out
+subagent.confirmation.required
+subagent.confirmation.resolved
+subagent.confirmation.expired
+subagent.confirmation.cancelled
 ```
 
 事件公共字段：
@@ -1028,7 +1079,7 @@ subagent.task.timed_out
 }
 ```
 
-进度事件只包含：状态、工具名、脱敏参数摘要、工具计数、Token usage 和耗时。不得发送隐藏推理、完整工具输出或 HTML 正文。
+进度事件只包含：状态、工具名、脱敏参数摘要、工具计数、Token usage 和耗时。不得发送隐藏推理、完整工具输出或 HTML 正文。父 Run 内的事件仍通过 `/runs/{run_id}/events` 发送；后台任务可跨越父 Run 时，API 服务会按创建时冻结的 Session 额外写入 `/subagents/events`，并附带安全的 `parent_run_id`，不会把旧任务投递到后续无关 Run。
 
 ### 17.3 确认模型兼容
 
@@ -1042,17 +1093,18 @@ batch_id?: string
 
 旧客户端忽略新字段仍能工作。
 
-### 17.4 可选只读 API
-
-Phase 2 可新增：
+### 17.4 当前 API 控制面
 
 ```text
 GET    /api/v1/subagents
+GET    /api/v1/subagents/events
+GET    /api/v1/subagents/confirmations
+POST   /api/v1/subagents/confirmations/{confirmation_id}
 GET    /api/v1/subagents/{task_id}
 POST   /api/v1/subagents/{task_id}/cancel
 ```
 
-这些接口只操作当前服务/Session 内任务，不提供任意新建远程 SubAgent 的无鉴权入口。
+这些接口只操作当前服务/Session 内任务，不提供任意新建远程 SubAgent 的无鉴权入口。后台审批记录仅存在于本进程：任务、批次、服务取消或超时会拒绝请求，服务重启不恢复；来源未知或当前会话外的确认统一不可见。该限制避免把 Session 切换或过期任务变成可被其他会话接管的风险入口。
 
 ---
 
@@ -1066,7 +1118,7 @@ SubAgent 在对话区作为可折叠任务组展示：
 SubAgent 批次：3 个任务，2 个并发
   ✓ explore · 定位 Session 恢复逻辑 · 12.4s
   … plan · 设计迁移方案 · 运行中
-  × verify · 运行测试 · 等待命令审批
+  … verify · 运行固定测试与编译检查 · 运行中
 ```
 
 点击/展开后显示：
@@ -1120,6 +1172,7 @@ subagents:
   allow_fork: false
   allow_shared_workspace_writes: false
   enable_verify_agent: false
+  verify_command_timeout_seconds: 120
   task_retention_minutes: 60
   result_summary_chars: 6000
 ```
@@ -1130,6 +1183,8 @@ subagents:
 OMNICRAWL_SUBAGENTS_ENABLED
 OMNICRAWL_SUBAGENT_MAX_CONCURRENCY
 OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS
+OMNICRAWL_SUBAGENT_VERIFY_AGENT_ENABLED
+OMNICRAWL_SUBAGENT_VERIFY_TIMEOUT_SECONDS
 ```
 
 初次发布默认 `enabled: false`，完成验证后再考虑默认开启只读 Phase 1。
@@ -1185,7 +1240,7 @@ OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS
 ### 21.3 保留策略
 
 - 运行中和近期终态保存在 TaskManager；
-- 默认 60 分钟后清理内存任务；
+- TaskManager 自己按最早到期时间唤醒，默认 60 分钟后自动清理内存任务与未消费终态通知，不依赖后续查询；
 - 父 Session 事件保留摘要；
 - artifact 按 Session 清理和归档策略处理；
 - 应用关闭前将未终态任务写为 cancelled/interrupted。
@@ -1222,23 +1277,23 @@ OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS
 2. 扩展 `spawn/list/get/cancel`；
 3. 新增 task-notification drain；
 4. 父取消、关闭、工作区切换级联；
-5. 新增 ApprovalBroker；
-6. 开放 verify profile；
-7. 增加 SSE/TUI 进度和可选 API；
-8. 增加任务保留和清理。
+5. [x] 新增 ApprovalBroker Core（FIFO、来源、取消、迟到批准失效与窄审批策略）；
+6. [x] 开放默认关闭的 verify profile（仅固定检查标识、静态 argv、无 Shell）；
+7. [x] 补齐跨父 Run 的后台审批 SSE/TUI/API 控制面（1A-Full）；
+8. [x] 增加任务保留和清理（终态任务/未消费通知按 TTL 自动回收，永久关闭时回收清理线程）。
 
 验收：后台任务不阻塞父对话，不重复通知，取消后不再执行工具。
 
 ### Phase 3：Fork、模型覆盖与 Worktree
 
-1. 建立协议完整的父上下文快照；
-2. 注入 Fork boilerplate；
-3. 支持 `context=fork`；
-4. 支持 model override；
-5. 增加独立 Plugin dispatch context；
-6. 支持 worktree_writer；
-7. 通用写 Agent 逐工具审批；
-8. 父 Agent 决定 diff/分支的应用方式。
+1. [x] 建立协议完整、创建时冻结且脱敏的父公开上下文快照；
+2. [x] 注入 Fork boilerplate 与父基础提示；
+3. [x] 支持默认关闭的 `context=fork`；
+4. [x] 支持 task > 定义 > 父模型的安全 model override，并为任务建立独立 Runtime；
+5. [x] 增加独立 Plugin dispatch context；
+6. [x] 支持 worktree_writer；
+7. [x] 通用写 Agent 逐工具审批；
+8. [x] 父 Agent 决定 diff/分支的应用方式。
 
 验收：父子状态不串扰，Fork 不能再次 Fork，多写者不共享同一工作目录。
 
@@ -1283,6 +1338,7 @@ tests/
 ├── test_subagent_definitions.py
 ├── test_subagent_coordinator.py
 ├── test_subagent_tasks.py
+├── test_subagent_fork.py
 ├── test_subagent_approval.py
 ├── test_subagent_session.py
 ├── test_subagent_api.py
@@ -1458,29 +1514,30 @@ git diff --check
 
 ### Phase 1 完成定义
 
-- [ ] `subagents.enabled=false` 时现有行为完全不变；
-- [ ] 能加载内置、用户和项目 Agent 定义并报告冲突；
-- [ ] `subagent(action=run)` 可执行 1–4 个 fresh 只读任务；
-- [ ] 多任务有界并发、结果按输入顺序返回；
-- [ ] 子 Agent 不能使用 `subagent`、写文件、执行命令或写 Memory；
-- [ ] 父 Agent 历史、Session、Runtime 回调和 Plugin 回合状态不被子任务覆盖；
-- [ ] 父 Session 记录任务生命周期，但恢复上下文不包含高频进度；
-- [ ] 子结果经过脱敏、裁剪和 artifact 分级；
-- [ ] 父取消、关闭和工作区切换会取消所有子任务；
-- [ ] TUI/API 至少能观察任务开始、完成和失败；
-- [ ] 四种 Provider 的 Fake Runtime 契约测试通过；
-- [ ] 全量 unittest、compileall 和 `git diff --check` 通过。
+- [x] `subagents.enabled=false` 时现有行为完全不变；
+- [x] 能加载内置、用户和项目 Agent 定义并报告冲突；
+- [x] `subagent(action=run)` 可执行 1–4 个 fresh 只读任务；
+- [x] 多任务有界并发、模型请求独立限流、结果按输入顺序返回；
+- [x] 子 Agent 不能使用 `subagent`、写文件、执行命令或写 Memory；
+- [x] 父 Agent 历史、Session、Runtime 回调和 Plugin 回合状态不被子任务覆盖；
+- [x] 父 Session 记录任务生命周期，但恢复上下文不包含高频进度；
+- [x] 子结果经过脱敏、裁剪和 artifact 分级；
+- [x] 父取消、关闭和工作区切换会取消所有子任务；
+- [x] TUI/API 至少能观察任务开始、完成和失败；
+- [x] 四种 Provider 的 Fake Runtime 契约测试通过（OpenAI Chat/Responses、Anthropic、Gemini；2026-07-15）；
+- [x] 全量 unittest、compileall 和 `git diff --check` 通过（2026-07-15，554 tests）。
 
 ### 最终目标完成定义
 
-- [ ] 支持定义式和 Fork 两种模式；
-- [ ] 支持同步与后台任务；
-- [ ] 支持 list/get/cancel 和不重复通知；
-- [ ] 人工审批串行并显示任务来源；
-- [ ] 模型覆盖通过 Catalog/Profile 安全解析；
-- [ ] 通用写 Agent 仅在单写者或 worktree 隔离下运行；
-- [ ] Plugin、MCP、Skill、Memory、Session、API 和 TUI 边界均有回归测试；
-- [ ] 不存在无限递归、权限扩大、隐藏推理泄露或跨工作区残留任务。
+- [x] 支持定义式和受控 Fork 两种模式（Fork 默认关闭，仅开放 read_only/verify）；
+- [x] 支持同步与进程内后台任务（后台默认关闭）；
+- [x] 支持 list/get/cancel 和 exactly-once 通知 drain；
+- [x] ApprovalBroker Core 串行审批并携带任务来源；跨父 Run 的当前会话远程审批 SSE/API 控制面已实现；
+- [x] 模型覆盖通过现有 Catalog/Profile 安全解析，并在任务创建时冻结；
+- [x] 通用写 Agent 仅在单写者或 worktree 隔离下运行（default-off；shared 单写锁 + worktree 脏主树门禁 + 父侧 apply/discard）；
+- [x] 跨进程任务恢复：Session 事件 → 安全终态快照 → TaskManager 导入；中断任务标记 `SUBAGENT_INTERRUPTED` 且不重跑（2026-07-16）；
+- [x] Plugin、MCP、Skill、Memory、Session、API 和 TUI 边界均有回归测试（2026-07-17 补齐 MCP/Skill/Memory 专项矩阵；定向边界回归 336 项通过）；
+- [x] 不存在无限递归、权限扩大、隐藏推理泄露或跨工作区残留任务（2026-07-17 完成统一安全审计；修复 Worktree 创建/切换与父 Session 切换生命周期缺口；全量 596 项通过）。
 
 ---
 
@@ -1499,7 +1556,8 @@ git diff --check
 | API 模型 | 父 Run 内嵌任务 | 保持单活动 Run 语义 |
 | 写并发 | 默认禁止共享工作区多写者 | 避免覆盖和不可回滚冲突 |
 | Hook | Phase 1 不新增 `subagent.*` | 先复用现有 tool Hook，减少协议面 |
-| Fork | Phase 3 | 需要完整父上下文快照和 Plugin/Runtime 隔离 |
+| Fork | Phase 3.1B 已落地（默认关闭） | 创建时冻结脱敏公开上下文；独立 Runtime，仍不开放写能力 |
+| Plugin dispatch context | Phase 3.2 已落地 | 子任务冻结只读 handlers，ContextVar 激活，不覆盖父 turn plan |
 
 ---
 
@@ -1535,4 +1593,33 @@ https://lcnld21ix7n5.feishu.cn/wiki/Dkw3wfBS9iMQoEkGxiIcnpcZnDd?from=from_copyli
 - `omnicrawl/ui/fullscreen/turns.py`、`__init__.py`：单回合控制和单确认模态；
 - `docs/skill_system_impl.md`、`docs/HOOK_PLUGIN_DESIGN.md`、`docs/session_design.md`：现有扩展和持久化设计。
 
-本文只定义方案，未实施 SubAgent 代码。正式开发前应先确认 Phase 1 范围和验收合同，再按单写者原则实施。
+本文同时作为设计与实施状态记录。Worktree 写隔离、脏主树门禁、shared 单写锁与父侧 apply/discard 工具入口已 default-off 落地；跨进程任务恢复亦已落地（仅控制面快照，不自动重跑）。通用写 Agent 仅在显式开关打开后可用，不得默认开启。
+
+---
+
+## 实施状态补充（Phase 3）
+
+> 更新说明（2026-07-16）：`isolation=worktree`、`permissionMode=standard`、`general-purpose` 写 Agent、
+> 逐工具审批（写入/命令）、父 Agent apply/discard API **以及** `subagent` 工具控制面
+> （`apply_worktree` / `discard_worktree` / `list_worktrees`）已落地。
+> 另已补齐：
+> - create/apply 前主工作区 `git status --porcelain` 脏树门禁
+> - `standard + isolation=shared` 的进程内单写锁
+> - standard 模式 capability_rules 与写权限对齐
+>
+> 默认仍全部关闭，需显式配置：
+>
+> - `subagents.allow_worktree=true`
+> - `subagents.allow_standard_agent=true`
+> - 若坚持 `standard + isolation=shared`，还需 `allow_shared_workspace_writes=true`
+>
+> 相关模块：
+> - `omnicrawl/agent/subagents/worktree.py`
+> - `omnicrawl/agent/subagents/coordinator.py`（worktree 控制动作 / shared 单写锁）
+> - `omnicrawl/agent/subagents/builtin/general-purpose.md`
+> - `LocalToolAgent.apply_subagent_worktree` / `discard_subagent_worktree` / `list_subagent_worktrees`
+> - `omnicrawl/agent/tools.py`：`subagent` action 枚举扩展
+> - 回归：`tests/test_subagent_worktree.py`
+>
+> 跨进程 SubAgent 任务恢复已完成（`recovery.py` + `TaskManager.import_recovered_snapshots` + 会话 resume 接线）。
+> 2026-07-17 已补齐 Plugin/MCP/Skill/Memory/Session/API/TUI 边界回归和最终安全不变量审计；设计稿列出的最终验收项已全部完成。

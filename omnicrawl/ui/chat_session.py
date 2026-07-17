@@ -12,6 +12,7 @@ from ..commands.slash import (
     handle_approval_command,
     handle_reasoning_command,
     handle_session_command,
+    handle_subagent_task_command,
     print_memory_clean_result,
     print_mcp_status,
     print_skills_list,
@@ -135,6 +136,11 @@ def run_inline_chat(
         session_message = handle_session_command(agent, user_text)
         if session_message is not None:
             print(session_message)
+            continue
+
+        subagent_task_message = handle_subagent_task_command(agent, user_text)
+        if subagent_task_message is not None:
+            print(subagent_task_message)
             continue
 
         before_model = agent.current_model

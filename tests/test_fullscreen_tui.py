@@ -62,6 +62,103 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#composer-wrap").region.height, 3)
             self.assertGreater(app.query_one("#composer", Input).region.height, 0)
 
+    def test_subagent_events_render_only_safe_task_status(self) -> None:
+        from omnicrawl.ui.fullscreen import OmniCrawlApp
+
+        app = object.__new__(OmniCrawlApp)
+        messages = []
+        app._append_message = lambda role, text: messages.append((role, text))
+        payload = {
+            "task_id": "task-a1b2c3d4e5f6",
+            "agent_type": "explore",
+            "description": "检查 Session",
+            "summary": "不应展示的完整结果",
+            "prompt": "不应展示的任务 prompt",
+        }
+
+        app._handle_subagent_event("subagent.task.queued", payload)
+        app._handle_subagent_event("subagent.task.running", payload)
+        app._handle_subagent_event("subagent.task.started", payload)
+        app._handle_subagent_event("subagent.task.waiting_approval", payload)
+        app._handle_subagent_event("subagent.task.completed", payload)
+        app._handle_subagent_event("subagent.task.failed", payload)
+        app._handle_subagent_event("subagent.task.cancelled", payload)
+        app._handle_subagent_event("subagent.task.approval_cancelled", payload)
+
+        rendered = "\n".join(text for _role, text in messages)
+        self.assertIn("子任务排队：explore · 检查 Session", rendered)
+        self.assertIn("子任务运行中：explore · 检查 Session", rendered)
+        self.assertIn("子任务等待审批：explore · 检查 Session", rendered)
+        self.assertIn("子任务完成：explore · 检查 Session", rendered)
+        self.assertIn("子任务失败：explore · 检查 Session", rendered)
+        self.assertIn("子任务取消：explore · 检查 Session", rendered)
+        self.assertNotIn("完整结果", rendered)
+        self.assertNotIn("任务 prompt", rendered)
+
+    def test_subagent_confirmation_hides_complete_prompts(self) -> None:
+        from omnicrawl.commands.slash import format_tool_confirmation
+
+        prompt = format_tool_confirmation(
+            "subagent",
+            {
+                "action": "run",
+                "tasks": [
+                    {
+                        "description": "检查 Session",
+                        "prompt": "完整 prompt token=should-not-leak",
+                        "subagent_type": "explore",
+                    }
+                ],
+            },
+        )
+
+        self.assertIn("任务数：1", prompt)
+        self.assertIn("检查 Session", prompt)
+        self.assertNotIn("完整 prompt", prompt)
+        self.assertNotIn("should-not-leak", prompt)
+
+    def test_subagent_inner_confirmation_shows_safe_task_origin(self) -> None:
+        from omnicrawl.commands.slash import format_tool_confirmation
+
+        prompt = format_tool_confirmation(
+            "powershell",
+            {
+                "command": "git commit -m demo",
+                "_subagent_origin": {
+                    "task_id": "task-a1b2c3d4e5f6",
+                    "agent_label": "verify",
+                    "description": "运行验证",
+                },
+            },
+        )
+
+        self.assertIn("来源：子任务 verify（task-a1b2c3d4e5f6），任务：运行验证", prompt)
+        self.assertIn("命令：git commit -m demo", prompt)
+
+    def test_subagent_tool_disclosure_hides_complete_prompts(self) -> None:
+        from omnicrawl.ui.fullscreen import OmniCrawlApp
+
+        arguments = OmniCrawlApp._public_tool_arguments(
+            SimpleNamespace(
+                name="subagent",
+                arguments={
+                    "action": "run",
+                    "tasks": [
+                        {
+                            "subagent_type": "explore",
+                            "prompt": "完整 prompt token=should-not-leak",
+                        }
+                    ],
+                    "max_concurrency": 2,
+                },
+            )
+        )
+
+        self.assertEqual(arguments["task_count"], 1)
+        self.assertEqual(arguments["max_concurrency"], 2)
+        self.assertNotIn("tasks", arguments)
+        self.assertNotIn("should-not-leak", str(arguments))
+
     def test_compact_hud_value_truncates_long_fields(self) -> None:
         from omnicrawl.ui.fullscreen.hud import compact_hud_value
 

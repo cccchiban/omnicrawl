@@ -33,6 +33,7 @@ from .session_models import (
     MODEL_CONTEXT_EVENT_TYPES,
     SESSION_EVENT_VERSION,
     SESSION_ID_PATTERN,
+    SUBAGENT_EVENT_TYPES,
     SessionEvent,
     SessionIndexEntry,
     SessionState,
@@ -190,6 +191,31 @@ class SessionStore:
 
             self._update_entry_after_event(entry, event)
             return event
+
+    def prepare_subagent_result(
+        self,
+        session_id: str,
+        *,
+        task_id: str,
+        agent_type: str,
+        description: str,
+        result_text: str,
+        summary_chars: int,
+    ) -> dict[str, Any]:
+        """为子任务结果生成统一安全摘要，并按需写入当前会话 artifact。"""
+
+        with self._exclusive_write():
+            self.ensure()
+            normalized_id = _normalize_session_id(session_id)
+            self._entry_by_id(normalized_id)
+            return self.artifacts.prepare_subagent_result(
+                session_id=normalized_id,
+                task_id=task_id,
+                agent_type=agent_type,
+                description=description,
+                result_text=result_text,
+                summary_chars=summary_chars,
+            )
 
     def rename_session(
         self,
@@ -884,6 +910,7 @@ __all__ = [
     "SESSION_EVENT_VERSION",
     "SESSION_INDEX_SCHEMA_VERSION",
     "SESSION_ID_PATTERN",
+    "SUBAGENT_EVENT_TYPES",
     "DurableWritePolicy",
     "SessionConsistencyIssue",
     "SessionConsistencyReport",

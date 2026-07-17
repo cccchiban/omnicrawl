@@ -84,6 +84,69 @@ class PluginManifestTest(unittest.TestCase):
         with self.assertRaises(PluginManifestError):
             parse_plugin_manifest(package)
 
+    def test_parse_declared_agent_definitions(self) -> None:
+        package = {
+            **VALID_PACKAGE,
+            "omnicrawl": {
+                **VALID_PACKAGE["omnicrawl"],
+                "permissions": ["hook:tool.execute.after", "agent:definitions"],
+                "agents": ["agents/explore.md", "agents/plan.md"],
+            },
+        }
+
+        manifest = parse_plugin_manifest(package)
+
+        self.assertEqual(manifest.agents, ("agents/explore.md", "agents/plan.md"))
+
+    def test_agent_definition_only_manifest_can_omit_hooks(self) -> None:
+        package = {
+            **VALID_PACKAGE,
+            "omnicrawl": {
+                **VALID_PACKAGE["omnicrawl"],
+                "permissions": ["agent:definitions"],
+                "hooks": [],
+                "agents": ["agents/reviewer.md"],
+            },
+        }
+
+        manifest = parse_plugin_manifest(package)
+
+        self.assertEqual(manifest.hooks, ())
+        self.assertEqual(manifest.agents, ("agents/reviewer.md",))
+
+    def test_rejects_agent_definition_escape_or_missing_permission(self) -> None:
+        escaped = {
+            **VALID_PACKAGE,
+            "omnicrawl": {
+                **VALID_PACKAGE["omnicrawl"],
+                "permissions": ["hook:tool.execute.after", "agent:definitions"],
+                "agents": ["../outside.md"],
+            },
+        }
+        with self.assertRaisesRegex(PluginManifestError, "agents"):
+            parse_plugin_manifest(escaped)
+
+        drive_path = {
+            **VALID_PACKAGE,
+            "omnicrawl": {
+                **VALID_PACKAGE["omnicrawl"],
+                "permissions": ["hook:tool.execute.after", "agent:definitions"],
+                "agents": ["C:/outside.md"],
+            },
+        }
+        with self.assertRaisesRegex(PluginManifestError, "agents"):
+            parse_plugin_manifest(drive_path)
+
+        missing_permission = {
+            **VALID_PACKAGE,
+            "omnicrawl": {
+                **VALID_PACKAGE["omnicrawl"],
+                "agents": ["agents/reviewer.md"],
+            },
+        }
+        with self.assertRaisesRegex(PluginManifestError, "agent:definitions"):
+            parse_plugin_manifest(missing_permission)
+
     def test_json_patch_allowlist_and_apply(self) -> None:
         patch = validate_json_patch(
             [{"op": "replace", "path": "/payload/displayText", "value": "redacted"}],

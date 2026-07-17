@@ -274,6 +274,31 @@ class AgentSessionFacade:
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
 
+    def prepare_subagent_result(
+        self,
+        *,
+        task_id: str,
+        agent_type: str,
+        description: str,
+        result_text: str,
+        summary_chars: int,
+    ) -> dict[str, Any]:
+        """使用当前父 Session 的 artifact 策略处理子任务完整结果。"""
+
+        state = self._require_session_state()
+        store = self.require_session_store()
+        try:
+            return store.prepare_subagent_result(
+                state.session_id,
+                task_id=task_id,
+                agent_type=agent_type,
+                description=description,
+                result_text=result_text,
+                summary_chars=summary_chars,
+            )
+        except SessionStoreError as exc:
+            raise self._error_type(str(exc)) from exc
+
     def rename_current_session(self, title: str) -> SessionState:
         """重命名当前会话，并同步更新内存中的 `SessionState`。"""
 
@@ -302,6 +327,13 @@ class AgentSessionFacade:
 
         state = self._require_session_state()
         store = self.require_session_store()
+        cancel_subagents = getattr(
+            self._owner,
+            "_cancel_subagents_for_session_transition",
+            None,
+        )
+        if callable(cancel_subagents):
+            cancel_subagents("父 Session 即将归档，当前子任务已取消。")
         try:
             archived_state = store.archive_session(state.session_id)
         except SessionStoreError as exc:
@@ -364,9 +396,6 @@ class AgentSessionFacade:
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
 
-        # 切换前清理当前空会话（启动占位等），避免残留到历史列表
-        self.discard_current_empty_session()
-
         store = self.require_session_store()
         try:
             state = store.load_session(session_id)
@@ -374,6 +403,18 @@ class AgentSessionFacade:
             raise self._error_type(str(exc)) from exc
         if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
             raise self._error_type(f"不能恢复其他工作区的会话：{state.workspace_root}")
+
+        # 先证明目标会话有效，再取消当前会话子任务；无效 ID 或跨工作区恢复
+        # 不应打断仍合法运行的后台任务。取消完成后才清理启动占位会话。
+        cancel_subagents = getattr(
+            self._owner,
+            "_cancel_subagents_for_session_transition",
+            None,
+        )
+        if callable(cancel_subagents):
+            cancel_subagents("父 Session 即将切换，当前子任务已取消。")
+        self.discard_current_empty_session()
+
         if state.archived_at is not None:
             try:
                 state = store.unarchive_session(session_id)
@@ -386,6 +427,14 @@ class AgentSessionFacade:
         )
         self._owner._pending_user_text = None
         self._owner._active_skills = []
+        # 运行时 /session resume 也要恢复跨进程 SubAgent 控制面快照。
+        importer = getattr(self._owner, "import_recovered_subagent_tasks", None)
+        if callable(importer):
+            try:
+                importer()
+            except Exception:
+                # 恢复失败不得阻断会话切换；任务列表可为空，用户仍能继续对话。
+                pass
         return state
 
     def append_session_event(self, event_type: str, payload: dict[str, Any]) -> None:

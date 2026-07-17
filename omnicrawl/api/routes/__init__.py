@@ -6,7 +6,16 @@ from fastapi import APIRouter, Depends
 
 from ..deps import authorize
 from ..models import API_PREFIX
-from . import configuration, monitors, projects, runs, sessions, support, system
+from . import (
+    configuration,
+    monitors,
+    projects,
+    runs,
+    sessions,
+    subagents,
+    support,
+    system,
+)
 
 
 def build_api_router() -> APIRouter:
@@ -16,6 +25,7 @@ def build_api_router() -> APIRouter:
     router.include_router(system.router)
     router.include_router(runs.router)
     router.include_router(monitors.router)
+    router.include_router(subagents.router)
     router.include_router(sessions.router)
     router.include_router(projects.router)
     router.include_router(configuration.router)

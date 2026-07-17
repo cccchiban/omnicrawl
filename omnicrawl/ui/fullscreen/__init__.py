@@ -15,6 +15,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, Static
 
 from ...agent import AgentError, LocalToolAgent
+from ...agent.tools import public_tool_arguments
 from .hud import (
     compact_token_count,
     context_summary_text,
@@ -33,6 +34,7 @@ from ...commands.slash import (
     handle_model_command,
     handle_reasoning_command,
     handle_session_command,
+    handle_subagent_task_command,
 )
 from .commands import CommandDispatcher
 from .model_picker import ModelPickerResult, ModelPickerScreen
@@ -159,6 +161,10 @@ class OmniCrawlApp(App[None]):
             format_plugins=lambda command_agent: format_plugins_status(command_agent),
             format_memory_clean=lambda command_agent: format_memory_clean_result(command_agent),
             handle_session=lambda command_agent, command: handle_session_command(
+                command_agent,
+                command,
+            ),
+            handle_subagent_task=lambda command_agent, command: handle_subagent_task_command(
                 command_agent,
                 command,
             ),
@@ -375,6 +381,11 @@ class OmniCrawlApp(App[None]):
                 self._append_reasoning_delta,
                 delta,
             ),
+            on_subagent_event=lambda event_name, payload: self.call_from_thread(
+                self._handle_subagent_event,
+                event_name,
+                payload,
+            ),
         )
         try:
             self._turn_controller.run(text, callbacks)
@@ -513,6 +524,28 @@ class OmniCrawlApp(App[None]):
         if message:
             self._set_runtime_status("等待", "waiting")
 
+    def _handle_subagent_event(self, event_name: str, payload: dict[str, Any]) -> None:
+        """以最小状态行展示子任务生命周期，不暴露 prompt、工具输出或原始异常。"""
+
+        agent_type = str(payload.get("agent_type") or "subagent")
+        description = str(payload.get("description") or payload.get("task_id") or "任务")
+        label = f"{agent_type} · {description}"
+        if event_name == "subagent.task.queued":
+            self._append_message("status", f"子任务排队：{label}")
+        elif event_name in {"subagent.task.started", "subagent.task.running"}:
+            self._append_message("status", f"子任务运行中：{label}")
+        elif event_name == "subagent.task.waiting_approval":
+            self._append_message("status", f"子任务等待审批：{label}")
+        elif event_name == "subagent.task.completed":
+            self._append_message("status", f"子任务完成：{label}")
+        elif event_name == "subagent.task.failed":
+            self._append_message("error", f"子任务失败：{label}")
+        elif event_name in {
+            "subagent.task.cancelled",
+            "subagent.task.approval_cancelled",
+        }:
+            self._append_message("status", f"子任务取消：{label}")
+
     def _handle_tool_start(self, step: int, tool_call: Any) -> None:
         del step  # Agent 仍按步骤回调，但极简 HUD 不展示内部步骤编号。
         self._render_stream_markdown()
@@ -524,7 +557,7 @@ class OmniCrawlApp(App[None]):
         conversation = self.query_one("#conversation", VerticalScroll)
         tool_message = ToolDisclosure(
             str(tool_call.name),
-            getattr(tool_call, "arguments", None),
+            self._public_tool_arguments(tool_call),
             time.perf_counter(),
         )
         self._tool_messages[self._tool_call_key(tool_call)] = tool_message
@@ -546,7 +579,7 @@ class OmniCrawlApp(App[None]):
             # 兼容缺失 start 事件的协议实现，同时仍保持默认折叠交互。
             tool_message = ToolDisclosure(
                 str(tool_call.name),
-                getattr(tool_call, "arguments", None),
+                self._public_tool_arguments(tool_call),
                 time.perf_counter(),
             )
             self.query_one("#conversation", VerticalScroll).mount(tool_message)
@@ -558,6 +591,15 @@ class OmniCrawlApp(App[None]):
         self.conversation_text += f"结果  {tool_message.status}\n{output}\n"
         self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
         self._set_runtime_status("正在思考", "working")
+
+    @staticmethod
+    def _public_tool_arguments(tool_call: Any) -> Any:
+        """隐藏 SubAgent 完整 prompt，其余工具保持既有参数展示。"""
+
+        arguments = getattr(tool_call, "arguments", None)
+        if not isinstance(arguments, dict):
+            return arguments
+        return public_tool_arguments(str(getattr(tool_call, "name", "")), arguments)
 
     @staticmethod
     def _tool_call_key(tool_call: Any) -> str:

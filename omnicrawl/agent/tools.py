@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from .types import ToolCall, ToolDefinition, ToolResult
 from ..mcp import MCPClientManager, MCPToolMeta
+from ..state.session_artifacts import redact_sensitive_text
 from ..workspace_tools import DEFAULT_COMMAND_TIMEOUT_SECONDS, WorkspaceToolError
 
 
@@ -67,6 +68,83 @@ MCPResourceRunner = Callable[[str], ToolResult]
 MCPPromptRunner = Callable[[str, dict[str, Any]], ToolResult]
 
 
+def public_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """返回可进入 Session、确认 UI 和 SSE 的工具参数投影。
+
+    普通工具保持既有参数语义；`subagent` 的完整任务 prompt 只存在于实际执行
+    调用栈中，公开出口仅保留调度元数据和有界描述。
+    """
+
+    if tool_name != "subagent":
+        return dict(arguments)
+
+    action = str(arguments.get("action") or "run").strip() or "run"
+    # worktree 控制面只公开调度键与策略，不回传 diff 正文。
+    if action in {"apply_worktree", "discard_worktree", "list_worktrees"}:
+        public: dict[str, Any] = {"action": action}
+        for key in ("task_id", "batch_id", "branch", "strategy"):
+            value = arguments.get(key)
+            if value is None:
+                continue
+            text = redact_sensitive_text(str(value).strip())
+            if text:
+                public[key] = text[:200]
+        if "cleanup" in arguments:
+            public["cleanup"] = bool(arguments.get("cleanup"))
+        if "remove_branch" in arguments:
+            public["remove_branch"] = bool(arguments.get("remove_branch"))
+        return public
+
+    tasks = arguments.get("tasks")
+    if not isinstance(tasks, list) and "task_count" in arguments:
+        raw_descriptions = arguments.get("descriptions")
+        raw_agent_types = arguments.get("agent_types")
+        task_count = arguments.get("task_count", 0)
+        descriptions_source = (
+            raw_descriptions if isinstance(raw_descriptions, list) else []
+        )
+        agent_types_source = raw_agent_types if isinstance(raw_agent_types, list) else []
+        valid_task_count = (
+            isinstance(task_count, int)
+            and not isinstance(task_count, bool)
+            and task_count >= 0
+        )
+        return {
+            "action": action if action in {"run", "spawn", "list", "get", "cancel"} else "run",
+            "task_count": task_count if valid_task_count else 0,
+            "descriptions": [
+                redact_sensitive_text(str(item))[:120]
+                for item in descriptions_source[:4]
+            ],
+            "agent_types": [
+                redact_sensitive_text(str(item))[:120]
+                for item in agent_types_source[:4]
+            ],
+            "max_concurrency": arguments.get("max_concurrency"),
+            "fail_fast": bool(arguments.get("fail_fast", False)),
+        }
+    safe_tasks = tasks if isinstance(tasks, list) else []
+    descriptions: list[str] = []
+    agent_types: list[str] = []
+    for item in safe_tasks[:4]:
+        if not isinstance(item, dict):
+            continue
+        description = redact_sensitive_text(str(item.get("description", "")).strip())
+        if description:
+            descriptions.append(description[:120])
+        agent_type = redact_sensitive_text(str(item.get("subagent_type", "")).strip())
+        if agent_type:
+            agent_types.append(agent_type[:120])
+    return {
+        "action": action if action in {"run", "spawn", "list", "get", "cancel"} else "run",
+        "task_count": len(safe_tasks),
+        "descriptions": descriptions,
+        "agent_types": agent_types,
+        "max_concurrency": arguments.get("max_concurrency"),
+        "fail_fast": bool(arguments.get("fail_fast", False)),
+    }
+
+
 def build_agent_tools(
     *,
     mcp_manager: MCPClientManager,
@@ -88,6 +166,7 @@ def build_agent_tools(
     mcp_call: MCPToolRunner,
     mcp_read_resource: MCPResourceRunner,
     mcp_get_prompt: MCPPromptRunner,
+    subagent: ToolRunner | None = None,
 ) -> dict[str, ToolDefinition]:
     """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。"""
 
@@ -216,6 +295,102 @@ def build_agent_tools(
             ),
         ]
     )
+    if subagent is not None:
+        tools.append(
+            ToolDefinition(
+                name="subagent",
+                description=(
+                    "统一管理进程内受限 SubAgent：run 同步执行，spawn 后台执行，"
+                    "list/get 查询，cancel 取消；apply_worktree/discard_worktree/list_worktrees "
+                    "由父 Agent 显式处理 worktree 结果。默认角色只能只读；显式开启 allow_fork 后可继承"
+                    "已脱敏的父公开上下文；模型覆盖仅能通过 Host 安全解析。显式启用的 verify "
+                    "仅能运行 Host 固定检查。standard/worktree 写能力仅在配置开关打开后可用，"
+                    "且写回主工作区必须由父 Agent apply，禁止静默覆盖脏主树。"
+                ),
+                argument_schema=json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": [
+                                    "run",
+                                    "spawn",
+                                    "list",
+                                    "get",
+                                    "cancel",
+                                    "apply_worktree",
+                                    "discard_worktree",
+                                    "list_worktrees",
+                                ],
+                            },
+                            "task_id": {"type": "string"},
+                            "batch_id": {"type": "string"},
+                            "branch": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200,
+                            },
+                            "strategy": {
+                                "type": "string",
+                                "enum": ["checkout", "merge"],
+                            },
+                            "cleanup": {"type": "boolean"},
+                            "remove_branch": {"type": "boolean"},
+                            "tasks": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 4,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "description": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 120,
+                                        },
+                                        "prompt": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 12000,
+                                        },
+                                        "subagent_type": {"type": "string"},
+                                        "context": {
+                                            "type": "string",
+                                            "enum": ["fresh", "fork"],
+                                        },
+                                        "model": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 200,
+                                        },
+                                    },
+                                    "required": [
+                                        "description",
+                                        "prompt",
+                                        "subagent_type",
+                                    ],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "max_concurrency": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 4,
+                            },
+                            "fail_fast": {"type": "boolean"},
+                        },
+                        "required": ["action"],
+                        "additionalProperties": False,
+                    },
+                    ensure_ascii=False,
+                ),
+                # 委派本身只开放受限 profile；用户已将子任务人工确认收窄为
+                # 删除与变更性 Git 操作，普通 read_only 分发不再重复弹窗。
+                requires_confirmation=False,
+                run=subagent,
+            )
+        )
     if memory_enabled:
         tools.extend(
             [

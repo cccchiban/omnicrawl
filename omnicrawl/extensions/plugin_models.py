@@ -11,6 +11,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
@@ -342,6 +343,7 @@ class PluginManifest:
     engines_node: str
     timeout_ms: int | None = None
     custom_events: tuple[CustomEventDeclaration, ...] = ()
+    agents: tuple[str, ...] = ()
     package_type: str = "module"
     source_path: str = ""
 
@@ -795,9 +797,35 @@ def parse_plugin_manifest(package_data: Mapping[str, Any], *, source_path: str =
         raise PluginManifestError("omnicrawl.permissions 必须是非空数组。")
     permissions = tuple(str(item).strip() for item in permissions_raw if str(item).strip())
 
+    agents_raw = omnicrawl.get("agents", [])
+    if agents_raw in (None, ""):
+        agents_raw = []
+    if not isinstance(agents_raw, list) or not all(isinstance(item, str) for item in agents_raw):
+        raise PluginManifestError("omnicrawl.agents 必须是包内 Markdown 相对路径数组。")
+    agents: list[str] = []
+    for raw_path in agents_raw:
+        normalized_path = raw_path.strip().replace("\\", "/")
+        path_parts = normalized_path.split("/")
+        if (
+            not normalized_path
+            or normalized_path.startswith("/")
+            or Path(normalized_path).is_absolute()
+            or ":" in path_parts[0]
+            or ".." in path_parts
+            or Path(normalized_path).suffix.casefold() != ".md"
+        ):
+            raise PluginManifestError(f"omnicrawl.agents 路径非法或不允许逃逸：{raw_path}")
+        if normalized_path in agents:
+            raise PluginManifestError(f"omnicrawl.agents 不允许重复路径：{normalized_path}")
+        agents.append(normalized_path)
+    if agents and "agent:definitions" not in permissions:
+        raise PluginManifestError("声明 omnicrawl.agents 需要 agent:definitions 权限。")
+
     hooks_raw = omnicrawl.get("hooks", [])
-    if not isinstance(hooks_raw, list) or not hooks_raw:
-        raise PluginManifestError("omnicrawl.hooks 必须是非空数组。")
+    if not isinstance(hooks_raw, list):
+        raise PluginManifestError("omnicrawl.hooks 必须是数组。")
+    if not hooks_raw and not agents:
+        raise PluginManifestError("omnicrawl.hooks 必须是非空数组，或声明 omnicrawl.agents。")
     hooks = [parse_handler_registration(item, package_name=name) for item in hooks_raw]
     handler_ids = [item.id for item in hooks]
     if len(handler_ids) != len(set(handler_ids)):
@@ -840,6 +868,7 @@ def parse_plugin_manifest(package_data: Mapping[str, Any], *, source_path: str =
         engines_node=engines_node,
         timeout_ms=timeout_value,
         custom_events=tuple(custom_events),
+        agents=tuple(agents),
         package_type=package_type,
         source_path=source_path,
     )

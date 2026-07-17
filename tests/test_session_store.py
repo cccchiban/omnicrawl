@@ -289,6 +289,120 @@ class SessionStoreTest(unittest.TestCase):
             f"完整输出 artifact：{payload['artifact_path']}",
         )
 
+    def test_subagent_events_do_not_enter_restored_model_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            store.append_event(state.session_id, "user_message", {"content": "父任务"})
+            store.append_event(
+                state.session_id,
+                "subagent_task_completed",
+                {
+                    "task_id": "task-a1b2c3d4e5f6",
+                    "description": "检查代码",
+                    "summary": "子任务内部摘要不应进入恢复上下文",
+                },
+            )
+            store.append_event(state.session_id, "assistant_message", {"content": "父回答"})
+
+            restored = store.load_session(state.session_id)
+
+        self.assertEqual(
+            restored.messages,
+            [
+                {"role": "user", "content": "父任务"},
+                {"role": "assistant", "content": "父回答"},
+            ],
+        )
+
+    def test_large_subagent_result_is_redacted_and_written_as_json_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            raw_result = "A" * 80 + " api_key=very-secret " + "Z" * 80
+
+            prepared = store.prepare_subagent_result(
+                state.session_id,
+                task_id="task-a1b2c3d4e5f6",
+                agent_type="explore",
+                description="检查配置",
+                result_text=raw_result,
+                summary_chars=60,
+            )
+            artifact = prepared["artifacts"][0]
+            artifact_text = store.read_artifact_text(
+                state.session_id,
+                artifact["artifact_path"],
+            )
+            artifact_data = json.loads(artifact_text)
+
+        self.assertNotIn("very-secret", prepared["summary"])
+        self.assertNotIn("very-secret", artifact_text)
+        self.assertIn("api_key=***", artifact_data["result"])
+        self.assertEqual(artifact_data["task_id"], "task-a1b2c3d4e5f6")
+        self.assertEqual(artifact["type"], "subagent_result")
+        self.assertTrue(artifact["artifact_path"].endswith("/subagents/task-a1b2c3d4e5f6.json"))
+
+    def test_subagent_result_redacts_github_aws_and_pem_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            github_token = "ghp_" + "a" * 36
+            github_pat = "github_pat_" + "b" * 30
+            aws_key = "AKIA" + "C" * 16
+            private_body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"
+            raw_result = (
+                f"github={github_token}\npat={github_pat}\naws={aws_key}\n"
+                "-----BEGIN PRIVATE KEY-----\n"
+                f"{private_body}\n"
+                "-----END PRIVATE KEY-----"
+            )
+
+            prepared = store.prepare_subagent_result(
+                state.session_id,
+                task_id="task-fedcba987654",
+                agent_type="explore",
+                description="检查凭据",
+                result_text=raw_result,
+                summary_chars=20,
+            )
+            artifact_text = store.read_artifact_text(
+                state.session_id,
+                prepared["artifacts"][0]["artifact_path"],
+            )
+            public_text = prepared["summary"] + artifact_text
+
+        self.assertNotIn(github_token, public_text)
+        self.assertNotIn(github_pat, public_text)
+        self.assertNotIn(aws_key, public_text)
+        self.assertNotIn(private_body, public_text)
+        self.assertIn("***", public_text)
+
+    def test_small_subagent_result_stays_inline_without_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+
+            prepared = store.prepare_subagent_result(
+                state.session_id,
+                task_id="task-0123456789ab",
+                agent_type="plan",
+                description="生成计划",
+                result_text="token=small-secret 已完成",
+                summary_chars=100,
+            )
+
+        self.assertEqual(prepared["artifacts"], [])
+        self.assertEqual(prepared["summary"], "token=*** 已完成")
+
     def test_html_artifact_redacts_sensitive_content_before_persisting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"

@@ -21,6 +21,7 @@ from omnicrawl.project_context import (
     project_context_status_label,
 )
 from omnicrawl.runtime_config import RuntimeConfigError, load_config_data
+from omnicrawl.config.subagents import load_subagent_config
 from omnicrawl.temp_workspace import (
     AgentTempWorkspaceError,
     agent_temp_status_label,
@@ -91,6 +92,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         config = load_llm_config()
         approval_mode = load_approval_mode()
         temp_workspace_config = load_agent_temp_workspace_config()
+        subagent_config = load_subagent_config()
         project_context = detect_project_context(app_root=app_root)
         fullscreen_startup, run_fullscreen_tui = _load_fullscreen_ui()
 
@@ -127,7 +129,14 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         def _on_workspace_switched(new_root: Path):
             if plugin_runtime is None:
                 return None
-            plugin_runtime.switch_workspace(new_root)
+            try:
+                plugin_runtime.switch_workspace(new_root)
+            except BaseException:
+                # Agent 的工作区主体已经提交；候选插件启动失败时不能继续把
+                # 旧工作区 Manager 注入新工作区。关闭旧 Manager 后降级无插件。
+                plugin_runtime.close_manager_only()
+                plugin_runtime.workspace_root = new_root
+                raise
             return plugin_runtime.manager
 
         agent = LocalToolAgent(
@@ -137,12 +146,14 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 workspace_detection_summary=project_context.detection_summary,
                 approval_mode=approval_mode,
                 temp_workspace=temp_workspace_config,
+                subagents=subagent_config,
                 resume_session_id=args.resume,
             ),
             plugin_manager=None if plugin_runtime is None else plugin_runtime.manager,
             on_workspace_switched=_on_workspace_switched,
         )
         if plugin_runtime is not None:
+            agent.add_close_callback(plugin_runtime.close)
             plugin_runtime.notify_app_started()
         run_fullscreen_tui(
             agent,
@@ -166,7 +177,8 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     finally:
         if agent is not None:
             agent.close()
-        if plugin_runtime is not None:
+        elif plugin_runtime is not None:
+            # Agent 尚未创建成功时没有关闭回调，只能由入口直接回收 Runtime。
             try:
                 plugin_runtime.close()
             except Exception:

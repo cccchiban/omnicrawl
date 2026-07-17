@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 from .approval_policy import (
     TOOL_REVIEW_SYSTEM_PROMPT,
@@ -19,6 +22,7 @@ from .approval_policy import (
     command_has_delete_intent,
     description_has_delete_intent,
     is_delete_behavior_tool_call,
+    is_git_mutation_tool_call,
     parse_tool_review_response,
     text_has_delete_intent,
     tool_accepts_shell_command,
@@ -30,11 +34,13 @@ from .tools import (
     mcp_resource_result,
     mcp_tool_result,
     normalize_tool_call,
+    public_tool_arguments,
     workspace_command_tool_result,
     workspace_tool_result,
 )
 from .browser_cli import BBBrowserCLI
 from .history import compact_history
+from .execution import AgentLoopLimits, AgentLoopObservation, AgentLoopRunner
 from .llm_protocol import (
     AgentLLMProtocol,
     AgentProtocolError,
@@ -56,6 +62,39 @@ from .prompt_context import (
     build_system_prompt,
 )
 from .session_facade import AgentSessionFacade
+from .subagents.approval import (
+    ApprovalBroker,
+    SubAgentApprovalRequest,
+    SubAgentApprovalScope,
+    current_subagent_approval_scope,
+    subagent_approval_risk_summary,
+)
+from .subagents.coordinator import (
+    SubAgentCoordinator,
+    SubAgentExecutionResult,
+    SubAgentPublicResult,
+)
+from .subagents.definitions import AgentDefinition, AgentDefinitionRegistry
+from .subagents.execution import (
+    FORK_BOILERPLATE,
+    SubAgentExecutionContext,
+    SubAgentModelSnapshot,
+)
+from .subagents.recovery import rebuild_task_snapshots_from_session_events
+from .subagents.tasks import SubAgentTaskManager
+from .subagents.worktree import (
+    WorktreeError,
+    WorktreeSession,
+    apply_worktree_to_main,
+    cleanup_worktree_session,
+    collect_worktree_artifacts,
+    create_worktree_session,
+)
+from ..extensions.plugin_manager import (
+    PluginDispatchContext,
+    activate_plugin_dispatch_context,
+)
+from .subagents.verify import VERIFY_COMMAND_TOOL_NAME, build_verify_command_tool
 from .types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
 from ..approval import (
     APPROVAL_MODE_AUTO,
@@ -64,6 +103,7 @@ from ..approval import (
     normalize_approval_mode,
 )
 from ..config.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
+from ..config.subagents import SubAgentConfig, load_subagent_config
 from ..extensions.plugin_models import HOOK_POLICIES
 from ..llm import (
     LLMConfig,
@@ -88,6 +128,7 @@ from ..session import (
     SessionState,
     SessionStore,
 )
+from ..state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 from ..skill import SkillManager, SkillMatchResult
 from ..temp_workspace import (
     AgentTempWorkspace,
@@ -102,6 +143,13 @@ from ..workspace_tools import (
     WorkspaceTools,
 )
 from ..workspace.monitor import BackgroundMonitorManager, MonitorPollResult, MonitorTaskSnapshot
+
+
+LOGGER = logging.getLogger(__name__)
+
+# 生命周期回收只等待合作式取消。超时后宁可拒绝关闭/切换，也不能在子线程
+# 仍持有 Runtime、Session、MCP 或工作区工具引用时拆除共享资源。
+SUBAGENT_LIFECYCLE_WAIT_SECONDS = 5.0
 
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
@@ -179,6 +227,7 @@ class AgentConfig:
     session_directory: str = ".agent_sessions"
     resume_session_id: str = ""
     mcp_config: MCPConfig | None = None
+    subagents: SubAgentConfig = field(default_factory=load_subagent_config)
     approval_mode: str = field(default_factory=load_approval_mode)
     workspace_detection_summary: str = ""
     temp_workspace: AgentTempWorkspaceConfig = field(
@@ -223,6 +272,8 @@ class AgentConfig:
             raise AgentError("指定恢复会话时必须启用会话系统。")
         if not isinstance(self.temp_workspace, AgentTempWorkspaceConfig):
             raise AgentError("temp_workspace 必须是 AgentTempWorkspaceConfig。")
+        if not isinstance(self.subagents, SubAgentConfig):
+            raise AgentError("subagents 必须是 SubAgentConfig。")
         if not isinstance(self.workspace_detection_summary, str):
             raise AgentError("workspace_detection_summary 必须是字符串。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
@@ -251,6 +302,8 @@ class LocalToolAgent:
         self._pending_user_text: str | None = None
         self._active_skills: list[SkillMatchResult] = []
         self._closed = False
+        self._closing = False
+        self._close_callbacks: list[Callable[[], None]] = []
         # PluginManager 由进程级 PluginRuntime 在 Agent 创建前注入；缺省保持无插件兼容。
         self._plugin_manager = plugin_manager
         # 工作区切换成功后回调 PluginRuntime.switch_workspace，用于关闭旧 Worker 并重建。
@@ -283,6 +336,32 @@ class LocalToolAgent:
 
         self._client: Any | None = None
         self._mcp_manager = self._create_mcp_manager()
+        self._subagent_registry: AgentDefinitionRegistry | None = None
+        self._subagent_coordinator: SubAgentCoordinator | None = None
+        self._subagent_worktree_sessions: dict[str, WorktreeSession] = {}
+        self._subagent_worktree_lock = threading.Lock()
+        self._workspace_root_local = threading.local()
+        self._subagent_confirmation_handler: (
+            Callable[[SubAgentApprovalRequest], bool] | None
+        ) = None
+        # Coordinator worker 会并发上报事件；在同一锁内完成 Session 持久化和
+        # 公开回调，确保两个消费者看到相同的安全 payload 与全局事件顺序。
+        self._subagent_event_lock = threading.RLock()
+        self._subagent_model_request_semaphore = (
+            threading.BoundedSemaphore(self.config.subagents.model_request_concurrency)
+            if self.config.subagents.enabled
+            else None
+        )
+        if self.config.subagents.enabled:
+            # Broker 是 Agent 范围内的唯一人工确认槽位。定义刷新会复用它，避免
+            # 运行中的后台任务因 Registry 重载丢失既有审批来源或并发顺序。
+            self._subagent_approval_broker = ApprovalBroker(
+                approve=self._confirm_subagent_tool_call,
+                event_sink=self._handle_subagent_event,
+            )
+            self._refresh_subagent_definitions()
+            # 启动恢复发生在 Coordinator 创建之前；此处再导入一次跨进程终态快照。
+            self.import_recovered_subagent_tasks()
         self._tools = self._build_tools()
         self._system_prompt_template = self._load_system_prompt_template()
         if self.config.skills_enabled:
@@ -425,6 +504,71 @@ class LocalToolAgent:
             self._monitor_toolbox().wait_for_events(monitor_id, cursor, timeout)
         except WorkspaceToolError as exc:
             raise AgentError(str(exc)) from exc
+
+    def list_subagent_tasks(self) -> list[dict[str, Any]]:
+        """列出当前会话可见的后台 SubAgent 任务安全快照。
+
+        所有 owner/session 过滤都由 Coordinator 固定，调用方不能借由 API 或
+        TUI 传入其他会话标识来枚举任务。
+        """
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is None:
+            raise AgentError("SubAgent 功能未启用。")
+        return coordinator.list_tasks()
+
+    def import_recovered_subagent_tasks(self) -> int:
+        """从当前会话 additive 事件导入跨进程 SubAgent 终态快照。
+
+        只恢复控制面 list/get 可见性：中断中的非终态任务会折叠为
+        ``failed`` + ``SUBAGENT_INTERRUPTED``，绝不自动重跑，也不注入通知。
+        """
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        store = getattr(self, "_session_store", None)
+        state = getattr(self, "_session_state", None)
+        if coordinator is None or store is None or state is None:
+            return 0
+        try:
+            events = store.read_session_events(state.session_id)
+        except Exception:
+            # 恢复是增量能力；会话事件读取失败不得阻断 Agent 启动。
+            LOGGER.warning(
+                "Failed to read session events for SubAgent recovery",
+                exc_info=True,
+            )
+            return 0
+        snapshots = rebuild_task_snapshots_from_session_events(
+            events,
+            owner_id=f"agent-{id(self)}",
+            session_id=state.session_id,
+        )
+        if not snapshots:
+            return 0
+        try:
+            return int(coordinator.import_recovered_snapshots(snapshots))
+        except Exception:
+            LOGGER.warning(
+                "Failed to import recovered SubAgent snapshots",
+                exc_info=True,
+            )
+            return 0
+
+    def get_subagent_task(self, task_id: str) -> dict[str, Any] | None:
+        """读取当前会话的单个后台 SubAgent 任务；跨会话任务不可见。"""
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is None:
+            raise AgentError("SubAgent 功能未启用。")
+        return coordinator.get_task(task_id)
+
+    def cancel_subagent_task(self, task_id: str) -> dict[str, Any]:
+        """请求取消当前会话的后台 SubAgent 任务，不等待其最终退出。"""
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is None:
+            raise AgentError("SubAgent 功能未启用。")
+        return coordinator.cancel_task(task_id=task_id)
 
     def reset_conversation(self) -> None:
         """开启新对话：清空对话历史并创建新会话，保留工具、记忆和 Skill 配置。"""
@@ -590,6 +734,32 @@ class LocalToolAgent:
 
         return self._session_facade().resume_session(session_id)
 
+    def _cancel_subagents_for_session_transition(self, reason: str) -> None:
+        """在归档/恢复父 Session 前取消旧会话的全部子任务。"""
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is None:
+            return
+        try:
+            drained = coordinator.cancel_and_wait(
+                reason=reason,
+                timeout_seconds=SUBAGENT_LIFECYCLE_WAIT_SECONDS,
+                permanent=False,
+            )
+        except BaseException:
+            # Session 尚未切换，旧 Coordinator 必须恢复接单能力；否则一次取消
+            # 异常会让当前会话永久停在 paused 状态。
+            coordinator.resume_accepting_when_idle()
+            raise
+        if not drained:
+            coordinator.resume_accepting_when_idle()
+            raise AgentError(
+                "父 Session 切换失败：仍有 SubAgent 子任务未在期限内退出，"
+                "已保留当前会话和共享资源。"
+            )
+        # Session 切换复用同一 Coordinator/TaskManager；与工作区切换不同，
+        # 不会创建新实例，因此成功取消后也必须显式恢复后续任务接收。
+        coordinator.resume_accepting_when_idle()
 
     def switch_workspace(self, new_path):
         """在运行中切换到新的工作区目录。
@@ -627,9 +797,49 @@ class LocalToolAgent:
         if switch_payload is None:
             raise AgentError("workspace.switch.before 被插件拒绝。")
 
-        # 1. 先准备新工作区子系统，失败时保持旧工作区完整可用。
-        #    插件 manager 的进程级切换放在提交阶段，避免 prepare 失败时已关闭旧 Worker。
-        prepared = self._prepare_workspace_switch(new_root)
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is not None:
+            drained = coordinator.cancel_and_wait(
+                reason="工作区即将切换，当前子任务已取消。",
+                timeout_seconds=SUBAGENT_LIFECYCLE_WAIT_SECONDS,
+                permanent=False,
+            )
+            if not drained:
+                # 不合作的 Provider/工具线程仍可能引用旧工作区资源。切换必须
+                # 保持旧状态不动；待旧批次真正退出后 Coordinator 自动恢复接单。
+                coordinator.resume_accepting_when_idle()
+                raise AgentError(
+                    "工作区切换失败：仍有 SubAgent 子任务未在期限内退出，"
+                    "已保留原工作区和共享资源。"
+                )
+
+        # Worktree 是旧项目中的待决写入能力，不能静默带进新工作区：否则新项目
+        # 的父 Agent 仍可 list/apply/discard 旧仓库分支，形成跨工作区控制面越权。
+        # 这里选择阻止切换而不是自动删除，避免丢失尚未审查或应用的用户改动。
+        pending_worktrees = self.list_subagent_worktrees()
+        if pending_worktrees:
+            if coordinator is not None:
+                coordinator.resume_accepting_when_idle()
+            branches = ", ".join(
+                str(item.get("branch") or item.get("task_id") or "unknown")
+                for item in pending_worktrees[:3]
+            )
+            if len(pending_worktrees) > 3:
+                branches += f" ...(+{len(pending_worktrees) - 3})"
+            raise AgentError(
+                "工作区切换失败：仍有未处理的 SubAgent worktree。"
+                "请先 apply_worktree 或 discard_worktree："
+                f"{branches}"
+            )
+
+        # 1. 子任务全部退出后再准备新工作区，避免准备阶段临时替换 Agent
+        #    可变字段时被旧子线程观察到。失败时恢复旧 Coordinator 接单。
+        try:
+            prepared = self._prepare_workspace_switch(new_root)
+        except BaseException:
+            if coordinator is not None:
+                coordinator.resume_accepting_when_idle()
+            raise
 
         # 2. 收尾旧工作区资源（此时新子系统已就绪）。
         self._teardown_workspace_resources(discard_empty_session=True)
@@ -655,7 +865,12 @@ class LocalToolAgent:
         self._pending_user_text = None
         self._active_skills = []
 
-        # 5. 最后重建插件子系统：此前 Agent 状态已与新工作区一致。
+        # 5. 先建立不含插件定义的新工作区 Coordinator。即使后续插件 Worker
+        #    重建失败，也不会遗留已暂停的旧 Coordinator 或跨工作区定义。
+        if self.config.subagents.enabled:
+            self._refresh_subagent_definitions(include_plugins=False)
+
+        # 6. 最后重建插件子系统：此前 Agent 状态已与新工作区一致。
         callback = getattr(self, "_on_workspace_switched", None)
         if callable(callback):
             try:
@@ -663,11 +878,13 @@ class LocalToolAgent:
                 if new_manager is not None:
                     self._plugin_manager = new_manager
             except Exception as exc:
-                self._dispatch_plugin_hook(
-                    "workspace.switch.error",
-                    {"workspace": str(new_root), "error": str(exc)},
-                )
+                # 工作区主体已提交，旧 PluginManager 不能继续服务新路径。入口/API
+                # 回调会关闭失败 Runtime 的 Manager；Agent 本地同步降级为无插件。
+                self._plugin_manager = None
                 raise AgentError(f"工作区插件子系统重建失败：{exc}") from exc
+
+        if self.config.subagents.enabled:
+            self._refresh_subagent_definitions()
 
         self._dispatch_plugin_hook(
             "workspace.switch.after",
@@ -837,12 +1054,34 @@ class LocalToolAgent:
                 pass
             self.__dict__.pop("_mcp_manager", None)
 
-    def close(self) -> None:
-        """关闭 Agent 持有的外部资源，并记录正常会话关闭事件。"""
+    def add_close_callback(self, callback: Callable[[], None]) -> None:
+        """注册资源关闭后的单次回调，供进程级 PluginRuntime 等外部所有者使用。"""
 
         if getattr(self, "_closed", False):
+            callback()
             return
+        self._close_callbacks.append(callback)
+
+    def close(self) -> None:
+        """取消子任务并在安全边界内关闭 Agent 持有的外部资源。"""
+
+        if getattr(self, "_closed", False) or getattr(self, "_closing", False):
+            return
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is not None:
+            drained = coordinator.cancel_and_wait(
+                reason="Agent 正在关闭，当前子任务已取消。",
+                timeout_seconds=SUBAGENT_LIFECYCLE_WAIT_SECONDS,
+                permanent=True,
+            )
+            if not drained:
+                # Python worker 线程不能被安全强杀。先保持资源可用，再由最后一个
+                # 子任务的 Future 收尾回调自动重试关闭，调用方无需轮询或手工重试。
+                self._closing = True
+                coordinator.call_when_idle(self._finish_deferred_close)
+                return
         self._closed = True
+        self._closing = False
         close_errors: list[Exception] = []
         try:
             self._dispatch_plugin_hook("session.close.before", {})
@@ -876,8 +1115,27 @@ class LocalToolAgent:
             except Exception as exc:
                 close_errors.append(exc)
             self._runtime_manager = None
+        callbacks = tuple(getattr(self, "_close_callbacks", ()))
+        self._close_callbacks = []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as exc:
+                close_errors.append(exc)
         if close_errors:
             raise close_errors[0]
+
+    def _finish_deferred_close(self) -> None:
+        """最后一个子任务退出后自动完成此前因超时推迟的资源关闭。"""
+
+        self._closing = False
+        try:
+            self.close()
+        except Exception as exc:  # noqa: BLE001 - 后台清理失败只能记录，不能回抛到 worker
+            LOGGER.warning(
+                "Deferred Agent close failed: %s",
+                type(exc).__name__,
+            )
 
     def _append_session_closed_event(self) -> None:
         """正常退出时收尾当前会话，并丢弃没有真实内容的启动占位。"""
@@ -988,6 +1246,42 @@ class LocalToolAgent:
 
         self._confirm = confirm
 
+    def set_subagent_confirm_handler(
+        self,
+        confirm: Callable[[SubAgentApprovalRequest], bool],
+    ) -> None:
+        """为可信 SubAgent 审批来源注册专用确认处理器。
+
+        该入口与旧的 ``set_confirm_handler`` 并存，避免把 task/batch 来源伪装为
+        普通工具参数。API 可据此安全映射到现有顶层 Run 确认；终端和全屏 TUI
+        未安装专用处理器时仍会回退到当前通用确认 UI。
+        """
+
+        self._subagent_confirmation_handler = confirm
+
+    def set_subagent_event_handler(
+        self,
+        handler: Callable[[str, dict[str, Any]], None] | None,
+    ) -> None:
+        """注册跨父回合存活的 SubAgent 公开事件观察者。
+
+        ``run_stream`` 的回调只覆盖一次父回合。后台任务和审批可能在该回合结束后
+        才继续运行，因此 API 服务使用本入口接收相同的脱敏事件流；它不替代当前
+        TUI/API Run 的临时回调，也不接触模型 prompt 或工具原始输出。
+        """
+
+        self._subagent_event_handler = handler
+
+    def _confirm_subagent_tool_call(self, request: SubAgentApprovalRequest) -> bool:
+        """把 Broker 请求交给专用处理器或当前交互 UI，永不暴露原始 prompt。"""
+
+        handler = getattr(self, "_subagent_confirmation_handler", None)
+        if callable(handler):
+            return bool(handler(request))
+        arguments = dict(request.public_arguments)
+        arguments["_subagent_origin"] = request.origin.as_public_dict()
+        return bool(self._confirm(request.tool_name, arguments))
+
     def _create_memory_store(self) -> MemoryStore:
         """创建记忆存储，并把目录限制在工作区内。
 
@@ -1041,6 +1335,736 @@ class LocalToolAgent:
         except MCPConfigError as exc:
             raise AgentError(str(exc)) from exc
 
+    def _refresh_subagent_definitions(self, *, include_plugins: bool = True) -> None:
+        """按当前工作区重建定义索引；插件来源可在切换提交阶段暂时排除。"""
+
+        registry = self._subagent_registry or AgentDefinitionRegistry()
+        plugin_definitions: Sequence[tuple[str, Path]] = ()
+        plugin_manager = getattr(self, "_plugin_manager", None)
+        path_provider = (
+            getattr(plugin_manager, "agent_definition_paths", None)
+            if include_plugins
+            else None
+        )
+        if callable(path_provider):
+            try:
+                plugin_definitions = tuple(path_provider())
+            except Exception:
+                # 插件定义是增量能力；插件状态异常不能阻止内置和用户定义加载。
+                plugin_definitions = ()
+        registry.discover(
+            self.workspace_root,
+            plugin_definitions=plugin_definitions,
+        )
+        self._subagent_registry = registry
+        current_coordinator = getattr(self, "_subagent_coordinator", None)
+        task_manager = (
+            current_coordinator._task_manager
+            if current_coordinator is not None
+            else SubAgentTaskManager(
+                retention_seconds=max(
+                    60.0,
+                    self.config.subagents.task_retention_minutes * 60,
+                ),
+                max_workers=self.config.subagents.max_concurrency,
+            )
+        )
+        coordinator = SubAgentCoordinator(
+            config=self.config.subagents,
+            registry=registry,
+            tools_provider=lambda: getattr(self, "_tools", {}),
+            execute_task=self._execute_subagent_task,
+            prepare_execution=self._prepare_subagent_execution,
+            event_sink=self._handle_subagent_event,
+            result_processor=self._prepare_subagent_public_result,
+            task_manager=task_manager,
+            owner_id=f"agent-{id(self)}",
+            session_id_provider=lambda: self.current_session_id,
+            observer_provider=lambda: getattr(self, "_subagent_event_callback", None),
+            approval_broker=getattr(self, "_subagent_approval_broker", None),
+            verify_tools_provider=self._subagent_verify_tools,
+            apply_worktree=self.apply_subagent_worktree,
+            discard_worktree=self.discard_subagent_worktree,
+            list_worktrees=self.list_subagent_worktrees,
+        )
+        coordinator.set_cancel_check_provider(
+            lambda: getattr(self, "_cancel_check", None)
+        )
+        self._subagent_coordinator = coordinator
+
+    def _tool_subagent(self, arguments: dict[str, Any]) -> ToolResult:
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is None:
+            return ToolResult(ok=False, output="SubAgent 功能未启用。")
+        return coordinator.run(arguments)
+
+    def _subagent_verify_tools(self) -> Mapping[str, ToolDefinition]:
+        """构造仅供 verify profile 使用的固定检查工具表。
+
+        该工具表不会合并进 ``self._tools``，因此父 Agent 与其他子角色既看不到
+        也无法调用 ``verify_command``。工作区切换后 Coordinator 会重建，并在准备
+        新任务时重新读取当前 WorkspaceTools，避免旧工作区对象被后台任务复用。
+        """
+
+        return {
+            VERIFY_COMMAND_TOOL_NAME: build_verify_command_tool(
+                self._workspace_toolbox(),
+                max_timeout_seconds=self.config.subagents.verify_command_timeout_seconds,
+            )
+        }
+
+    def _prepare_subagent_public_result(
+        self,
+        task_id: str,
+        agent_type: str,
+        description: str,
+        result_text: str,
+    ) -> SubAgentPublicResult:
+        """在结果进入父模型、Session、API 或 TUI 前完成一次统一安全投影。"""
+
+        summary_chars = self.config.subagents.result_summary_chars
+        text = str(result_text or "")
+        worktree_artifact_items: list[dict] = []
+        marker = "[worktree]"
+        if marker in text:
+            head, tail = text.split(marker, 1)
+            text = head.rstrip()
+            body = tail.strip()
+            if body:
+                worktree_artifact_items.append(
+                    {
+                        "type": "worktree",
+                        "content": redact_sensitive_text(body)[:8000],
+                    }
+                )
+        if getattr(self, "_session_store", None) is not None and getattr(
+            self,
+            "_session_state",
+            None,
+        ) is not None:
+            prepared = self._session_facade().prepare_subagent_result(
+                task_id=task_id,
+                agent_type=agent_type,
+                description=description,
+                result_text=text,
+                summary_chars=summary_chars,
+            )
+            artifacts = list(prepared.get("artifacts", ()))
+            artifacts.extend(worktree_artifact_items)
+            return SubAgentPublicResult(
+                summary=str(prepared.get("summary", "")),
+                artifacts=tuple(artifacts),
+            )
+
+        safe_summary = redact_sensitive_text(str(text or "").strip())
+        if len(safe_summary) > summary_chars:
+            safe_summary = safe_summary[:summary_chars] + "\n... 子任务结果已截断。"
+        return SubAgentPublicResult(
+            summary=safe_summary,
+            artifacts=tuple(worktree_artifact_items),
+        )
+
+    def _drain_subagent_notifications(self) -> list[dict[str, Any]]:
+        """消费当前 Session 的后台终态通知，不写入 Session 恢复历史。"""
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is None:
+            return []
+        try:
+            return coordinator.drain_notifications(
+                session_id=self.current_session_id,
+            )
+        except Exception as exc:
+            LOGGER.warning("SubAgent notification drain failed: %s", type(exc).__name__)
+            return []
+
+    def _inject_subagent_notifications(
+        self,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        """把新完成任务追加到本轮临时 user 消息，供下一次模型请求消费。
+
+        AgentLoopRunner 会复用同一个 ``messages`` 列表，因此这里原地修改当前
+        user 消息：通知在后续工具循环请求中仍可见，但不会写入 ``_history`` 或
+        Session 普通消息。避免插入中途 system 消息，以兼容 Anthropic/Gemini
+        对系统提示位置的严格协议要求。
+        """
+
+        notifications = self._drain_subagent_notifications()
+        if not notifications:
+            return
+        notification_text = (
+            "\n\n<subagent-notifications>\n"
+            + json.dumps(
+                notifications[:16],
+                ensure_ascii=False,
+            )[:12000]
+            + "\n</subagent-notifications>"
+        )
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            message["content"] = (
+                str(content or "") + notification_text
+            )
+            return
+        messages.append({"role": "user", "content": notification_text.strip()})
+
+    def _handle_subagent_event(self, event_name: str, payload: dict[str, Any]) -> None:
+        """把 Coordinator 生命周期映射到父 Session 和当前公开流式回调。"""
+
+        safe_payload = redact_sensitive_values(payload)
+        lock = getattr(self, "_subagent_event_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._subagent_event_lock = lock
+        with lock:
+            self._append_session_event(event_name.replace(".", "_"), safe_payload)
+            # API 的持久观察者独立于当前 parent Run，确保后台审批和终态事件不会
+            # 因 run_stream 返回而丢失；它与临时回调分别服务于会话级和回合级 SSE。
+            persistent_handler = getattr(self, "_subagent_event_handler", None)
+            if callable(persistent_handler):
+                try:
+                    persistent_handler(event_name, dict(safe_payload))
+                except Exception as exc:  # noqa: BLE001 - observer 不能破坏任务状态机
+                    LOGGER.warning(
+                        "SubAgent persistent event observer failed: %s",
+                        type(exc).__name__,
+                    )
+            callback = getattr(self, "_subagent_event_callback", None)
+            if callback is not None:
+                try:
+                    callback(event_name, dict(safe_payload))
+                except Exception as exc:  # noqa: BLE001 - observer 不能破坏任务状态机
+                    LOGGER.warning(
+                        "SubAgent public event observer failed: %s",
+                        type(exc).__name__,
+                    )
+
+    @staticmethod
+    def _freeze_fork_context_messages(
+        messages: Sequence[Mapping[str, Any]],
+    ) -> tuple[dict[str, Any], ...]:
+        """深拷贝并脱敏一组公开协议消息，供 Fork 在后续线程独立使用。
+
+        父 Agent Loop 会原地追加 assistant tool-call 与 tool-result 消息；不能把
+        其可变列表交给子线程。这里先走既有脱敏器，再保留协议所需的 role/content
+        及可能的 tool_calls 结构，避免不同 Provider 转换时收到半截消息。
+        """
+
+        redacted = redact_sensitive_values(list(messages))
+        if not isinstance(redacted, list):
+            raise AgentError("Fork 上下文必须是消息数组。")
+        snapshot: list[dict[str, Any]] = []
+        for message in redacted:
+            if isinstance(message, dict):
+                snapshot.append(dict(message))
+        return tuple(snapshot)
+
+    def _prepare_subagent_execution(
+        self,
+        definition: AgentDefinition,
+        context: str,
+        task_model: str,
+    ) -> SubAgentExecutionContext:
+        """在 Coordinator 排队前冻结模型和可选 Fork 上下文。
+
+        该方法只在父 Agent 的 ``subagent`` 工具调用线程中执行。随后同步或后台
+        worker 只消费返回的私有快照，绝不再读取父 ``_history``、当前模型或本轮
+        可变 messages，从而避免父后续工具回合、``/model`` 与 Session 状态串扰。
+        """
+
+        normalized_context = str(context or "").strip()
+        if normalized_context not in {"fresh", "fork"}:
+            raise AgentError("SubAgent context 必须是 fresh 或 fork。")
+        model_snapshot = self._freeze_subagent_model_snapshot(definition, task_model)
+        isolation = str(getattr(definition, "isolation", "shared") or "shared").strip()
+
+        # 先冻结所有可能失败的非文件上下文，再创建 Git Worktree。否则 Plugin
+        # dispatch、Fork 快照或父提示构造失败时，会留下已登记但永远不会执行的
+        # 临时分支和目录，形成跨任务/跨工作区残留写能力。
+        plugin_dispatch = self._freeze_subagent_plugin_dispatch_context()
+        fork_messages: tuple[dict[str, Any], ...] = ()
+        parent_system_prompt = ""
+        if normalized_context == "fork":
+            active_messages = getattr(self, "_active_fork_context_messages", None)
+            if not isinstance(active_messages, tuple):
+                # Fork 只能由当前父 Agent 回合内的工具分发创建；回合外直接调用会
+                # 缺失当前用户目标和已完成的上下文协议，宁可明确拒绝也不猜测补齐。
+                raise AgentError("Fork 只能在活动父 Agent 回合内创建。")
+            fork_messages = self._freeze_fork_context_messages(active_messages)
+            parent_system_prompt = redact_sensitive_text(self._system_prompt())
+
+        worktree_session = None
+        # 测试 / 轻量构造可能没有完整 workspace_root；shared 模式允许空根。
+        raw_root = getattr(self, "workspace_root", None) or getattr(self, "_workspace_root", None) or "."
+        workspace_root = str(Path(raw_root).expanduser().resolve())
+        if isolation == "worktree":
+            # worktree 会话在入队前创建，确保后台 worker 拿到独立目录而不是
+            # 与父工作区共享写入路径。
+            try:
+                worktree_session = create_worktree_session(
+                    workspace_root=Path(workspace_root),
+                    task_id=f"{definition.name}-{uuid.uuid4().hex[:8]}",
+                )
+            except WorktreeError as exc:
+                raise AgentError(f"创建 SubAgent worktree 失败：{exc}") from exc
+            workspace_root = str(worktree_session.worktree_path)
+            # 登记失败也必须回收刚创建的 Git 资源，不能留下无控制面入口的孤儿。
+            try:
+                self._register_subagent_worktree_session(worktree_session)
+            except BaseException:
+                try:
+                    cleanup_worktree_session(worktree_session, remove_branch=True)
+                except Exception as cleanup_exc:  # noqa: BLE001 - 保留原始登记异常
+                    LOGGER.warning(
+                        "SubAgent worktree rollback failed after registration error: %s",
+                        type(cleanup_exc).__name__,
+                    )
+                raise
+
+        return SubAgentExecutionContext(
+            context=normalized_context,
+            model_snapshot=model_snapshot,
+            fork_messages=fork_messages,
+            parent_system_prompt=parent_system_prompt,
+            plugin_dispatch=plugin_dispatch,
+            worktree_session=worktree_session,
+            workspace_root=workspace_root,
+            isolation=isolation,
+        )
+
+    def _freeze_subagent_model_snapshot(
+        self,
+        definition: AgentDefinition,
+        task_model: str,
+    ) -> SubAgentModelSnapshot | None:
+        """按 task > 定义 > 父模型优先级解析并复制独立模型运行视图。"""
+
+        parent_llm = getattr(self.config, "llm", None)
+        requested = str(task_model or "").strip()
+        definition_model = str(definition.model or "inherit").strip()
+        # task 字段存在时优先级最高；显式 ``model=inherit`` 的含义是要求
+        # 使用父模型，而不是回退到角色定义中的模型覆盖。
+        if requested:
+            selection = "inherit" if requested.casefold() == "inherit" else requested
+        elif definition_model and definition_model.casefold() != "inherit":
+            selection = definition_model
+        else:
+            selection = "inherit"
+
+        # 最小夹具和遗留直接 OpenAI 路径没有完整 LLMConfig；保留原有 fresh
+        # 执行兼容性，但不允许它们伪装成可跨 Profile 的模型覆盖。
+        if not isinstance(parent_llm, LLMConfig):
+            if selection != "inherit":
+                raise AgentError("当前运行态不支持 SubAgent 模型覆盖。")
+            return None
+
+        try:
+            selected_llm = (
+                apply_model_selection(parent_llm, selection)
+                if selection != "inherit"
+                else replace(
+                    parent_llm,
+                    provider_options=dict(parent_llm.provider_options),
+                )
+            )
+            # ``apply_model_selection`` 返回新的 LLMConfig；这里仍复制可变映射，
+            # 确保配置对象之后被 UI 更新时不会改变已排队任务的请求参数。
+            frozen_llm = replace(
+                selected_llm,
+                provider_options=dict(selected_llm.provider_options),
+            )
+            profile, descriptor = llm_config_to_profile_and_descriptor(frozen_llm)
+            profile = replace(profile, provider_options=dict(profile.provider_options))
+            descriptor = replace(
+                descriptor,
+                provider_options=dict(descriptor.provider_options),
+            )
+        except LLMError as exc:
+            raise AgentError(f"SubAgent 模型无法解析：{exc}") from exc
+        except Exception as exc:  # noqa: BLE001 - Runtime 前的配置错误统一为 AgentError
+            raise AgentError("SubAgent 模型配置无效。") from exc
+
+        return SubAgentModelSnapshot(
+            selection=(frozen_llm.catalog_key or frozen_llm.model),
+            llm_config=frozen_llm,
+            profile=profile,
+            descriptor=descriptor,
+        )
+
+    @staticmethod
+    def _fork_task_message(description: str, prompt: str) -> dict[str, str]:
+        """构造追加到冻结父上下文后的独立任务指令。"""
+
+        return {
+            "role": "user",
+            "content": (
+                '<subagent_task context="fork">\n'
+                f"描述：{description}\n"
+                f"任务：\n{prompt}\n"
+                "</subagent_task>"
+            ),
+        }
+
+    def _build_subagent_messages(
+        self,
+        execution_context: SubAgentExecutionContext,
+        child_tools: Mapping[str, ToolDefinition],
+        description: str,
+        prompt: str,
+    ) -> list[dict[str, Any]]:
+        """为 fresh/Fork 分别构造完全独立的可变协议消息列表。"""
+
+        if execution_context.context == "fork":
+            return [
+                *self._freeze_fork_context_messages(execution_context.fork_messages),
+                self._fork_task_message(description, prompt),
+            ]
+        return [
+            *build_context_messages(
+                workspace_root=self.workspace_root,
+                project_instructions=self._load_agents_instructions(),
+                skill_manager=None,
+                active_skills=(),
+                tools=child_tools.values(),
+                agent_temp_dir=self._agent_temp_dir_display(),
+                workspace_detection_summary=getattr(
+                    self.config,
+                    "workspace_detection_summary",
+                    "",
+                ),
+            ),
+            {
+                "role": "user",
+                "content": (
+                    "<subagent_task context=\"fresh\">\n"
+                    f"描述：{description}\n"
+                    f"任务：\n{prompt}\n"
+                    "</subagent_task>"
+                ),
+            },
+        ]
+
+    def _create_subagent_runtime_manager(
+        self,
+        snapshot: SubAgentModelSnapshot,
+    ) -> ModelRuntimeManager:
+        """为单个任务建立独立 Runtime，不能借用父 Agent 的可变当前模型。"""
+
+        manager = ModelRuntimeManager()
+        try:
+            manager.bootstrap(snapshot.profile, snapshot.descriptor)
+        except BaseException:
+            # bootstrap 期间 Adapter 可能已创建底层 client；失败时不能把该
+            # 半初始化 Runtime 留给无引用的临时 Manager。
+            manager.close()
+            raise
+        return manager
+
+    def _execute_subagent_task(
+        self,
+        definition: AgentDefinition,
+        child_tools: Mapping[str, ToolDefinition],
+        description: str,
+        prompt: str,
+        cancel_check: Callable[[], None] | None = None,
+        execution_context: SubAgentExecutionContext | None = None,
+    ) -> SubAgentExecutionResult:
+        """用独立 messages、预算和 Runtime 引用执行一个 fresh 或 Fork 子任务。
+
+        本方法不修改父 `_history`、`_pending_user_text`、`_active_skills`、
+        `_active_runtime_snapshot` 或普通 Session 消息。Fork 只消费 Coordinator 在
+        排队前冻结的公开消息，不读取父回合此后的可变状态；带模型快照的任务始终
+        使用独立 RuntimeManager，避免父 `/model` 与子执行相互阻塞或错配。
+        """
+
+        if execution_context is None:
+            execution_context = self._prepare_subagent_execution(
+                definition,
+                "fresh",
+                "",
+            )
+        model_snapshot = execution_context.model_snapshot
+        owns_runtime_manager = model_snapshot is not None
+        runtime_manager: ModelRuntimeManager | None = None
+        runtime_snapshot = None
+
+        def release_runtime() -> None:
+            """释放本任务持有的 Runtime 引用，并在需要时关闭专属 Manager。"""
+
+            nonlocal runtime_snapshot
+            if runtime_manager is not None and runtime_snapshot is not None:
+                runtime_manager.release_turn(runtime_snapshot)
+                runtime_snapshot = None
+            if owns_runtime_manager and runtime_manager is not None:
+                # 专属 Runtime 不可泄漏到下一个任务；父 Runtime 则仍由父 Agent
+                # 生命周期管理，不能由子任务提前关闭。
+                try:
+                    runtime_manager.close()
+                except Exception:  # noqa: BLE001 - 清理失败不遮蔽原始模型/取消异常
+                    LOGGER.warning("SubAgent dedicated Runtime close failed.")
+            self._clear_workspace_root_override()
+
+        try:
+            runtime_manager = (
+                self._create_subagent_runtime_manager(model_snapshot)
+                if model_snapshot is not None
+                else self._runtime_manager_for_protocol()
+            )
+            protocol = self._subagent_llm_protocol(
+                definition,
+                child_tools,
+                execution_context=execution_context,
+                runtime_manager=runtime_manager,
+            )
+            # 最小测试夹具可替换 protocol 工厂并自行提供 RuntimeManager；生产路径
+            # 已显式传入专属/父 Manager。回读只用于保持既有依赖注入契约。
+            if runtime_manager is None:
+                runtime_manager = getattr(protocol, "runtime_manager", None)
+            if runtime_manager is not None:
+                runtime_snapshot = runtime_manager.acquire_turn()
+        except BaseException:
+            release_runtime()
+            raise
+
+        input_tokens = 0
+        output_tokens = 0
+        cached_input_tokens = 0
+
+        def record_usage(input_count: int, output_count: int, cached_count: int) -> None:
+            nonlocal input_tokens, output_tokens, cached_input_tokens
+            input_tokens += max(0, int(input_count))
+            output_tokens += max(0, int(output_count))
+            cached_input_tokens += max(0, int(cached_count))
+
+        if cancel_check is None:
+            cancel_check = getattr(self, "_cancel_check", None)
+        # Coordinator 将 task 来源放入当前 worker 的 ContextVar；不通过
+        # ``self._subagent_coordinator`` 回读，避免定义刷新时旧后台 worker 取到
+        # 新 Coordinator 而丢失正确的 task/batch 身份。
+        try:
+            approval_scope = current_subagent_approval_scope()
+            messages = self._build_subagent_messages(
+                execution_context,
+                child_tools,
+                description,
+                prompt,
+            )
+            # worktree / 隔离任务：在本 worker 线程内切换 WorkspaceTools 根目录。
+            override_root = str(getattr(execution_context, "workspace_root", "") or "").strip()
+            if override_root and getattr(execution_context, "isolation", "shared") == "worktree":
+                self._workspace_root_local.root = override_root
+        except BaseException:
+            release_runtime()
+            self._clear_workspace_root_override()
+            raise
+
+        def request_child_reply(working_messages: list[dict[str, Any]]) -> AgentModelReply:
+            """在独立任务并发之外，再限制 Provider 模型请求的同时在途数量。"""
+
+            semaphore = getattr(self, "_subagent_model_request_semaphore", None)
+            if semaphore is None:
+                return protocol.request_reply(
+                    working_messages,
+                    lambda _text: None,
+                    record_usage,
+                    lambda: None,
+                    lambda _message: None,
+                    cancel_check,
+                    None,
+                    runtime_snapshot,
+                )
+            # 不能无期限阻塞在并发槽位上；等待期间持续检查父回合取消，
+            # 确保尚未发起 Provider 请求的任务也能及时退出。
+            while not semaphore.acquire(timeout=0.1):
+                if cancel_check is not None:
+                    cancel_check()
+            try:
+                return protocol.request_reply(
+                    working_messages,
+                    lambda _text: None,
+                    record_usage,
+                    lambda: None,
+                    lambda _message: None,
+                    cancel_check,
+                    None,
+                    runtime_snapshot,
+                )
+            finally:
+                semaphore.release()
+
+        plugin_dispatch = execution_context.plugin_dispatch
+        if plugin_dispatch is None:
+            # 兼容旧测试/调用方未注入 plugin_dispatch 的路径。
+            plugin_dispatch = PluginDispatchContext(handlers=(), source="none")
+
+        try:
+            with activate_plugin_dispatch_context(plugin_dispatch):
+                loop_result = AgentLoopRunner().run(
+                    messages=messages,
+                    request_reply=request_child_reply,
+                    execute_tool_batch=lambda calls, first_step: self._execute_tool_batch(
+                        calls,
+                        first_step,
+                        report_tool_start=lambda _step, _call: None,
+                        report_tool_result=lambda _call, _result: None,
+                        check_cancelled=cancel_check or (lambda: None),
+                        status=lambda _message: None,
+                        tools=child_tools,
+                        persist_session_events=False,
+                        subagent_approval_scope=approval_scope,
+                    ),
+                    limits=AgentLoopLimits(
+                        max_model_turns=definition.max_turns,
+                        max_tool_calls=definition.max_tool_calls,
+                        timeout_seconds=self.config.subagents.default_timeout_seconds,
+                    ),
+                    cancel_check=cancel_check,
+                )
+                worktree_artifacts = self._collect_subagent_worktree_artifacts(
+                    execution_context
+                )
+                final_text = str(loop_result.final_text or "")
+                if worktree_artifacts:
+                    final_text = (
+                        f"{final_text.rstrip()}\n\n[worktree]\n"
+                        + "\n".join(worktree_artifacts)
+                    ).strip()
+                return SubAgentExecutionResult(
+                    final_text=final_text,
+                    model_turns=loop_result.model_turns,
+                    tool_calls=loop_result.tool_calls,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    artifacts=worktree_artifacts,
+                )
+        finally:
+            release_runtime()
+
+    def _subagent_llm_protocol(
+        self,
+        definition: AgentDefinition,
+        child_tools: Mapping[str, ToolDefinition],
+        *,
+        execution_context: SubAgentExecutionContext | None = None,
+        runtime_manager: ModelRuntimeManager | None = None,
+    ) -> AgentLLMProtocol:
+        """创建只绑定子角色、冻结模型与过滤工具表的轻量协议对象。"""
+
+        model_snapshot = (
+            execution_context.model_snapshot if execution_context is not None else None
+        )
+        model_config = (
+            model_snapshot.llm_config if model_snapshot is not None else self.config.llm
+        )
+        is_fork = execution_context is not None and execution_context.context == "fork"
+        if definition.permission_mode == "explicit-command-allowlist":
+            capability_rules = (
+                "只可读取、搜索，并调用 Host 提供的 verify_command 选择固定检查；"
+                "不得传递或拼接命令文本、Shell、路径、环境变量或网络参数；不得写文件、"
+                "安装依赖、修改 Git、修改 Memory 或创建其他 SubAgent；"
+            )
+        elif definition.permission_mode == "standard":
+            # standard 写能力仍受 Host 风险审批与 isolation 约束；禁止嵌套 SubAgent。
+            isolation = (
+                execution_context.isolation
+                if execution_context is not None
+                else getattr(definition, "isolation", "shared")
+            )
+            if isolation == "worktree":
+                capability_rules = (
+                    "可在独立 worktree 中读取、搜索、写入文件并执行经 Host 审批的命令；"
+                    "不得修改 Memory、不得创建其他 SubAgent、不得 git commit/push/remote；"
+                    "结果由父 Agent 审查后 apply/discard，不得要求静默写回脏主工作区；"
+                )
+            else:
+                capability_rules = (
+                    "可在共享工作区读取、搜索、写入文件并执行经 Host 审批的命令；"
+                    "必须遵守单写者规则，不得修改 Memory、不得创建其他 SubAgent；"
+                    "高风险写/命令操作必须等待 Host 审批；"
+                )
+        else:
+            capability_rules = (
+                "只可读取和搜索；不得写文件、执行命令、修改 Memory 或创建其他 SubAgent；"
+            )
+
+        prompt_parts: list[str] = []
+        if is_fork and execution_context is not None and execution_context.parent_system_prompt:
+            # Fork 必须继承父 Agent 的基础系统规则；受限子角色规则随后追加，
+            # 因而只能进一步收窄权限，不能被父提示中的面向用户表述放宽。
+            prompt_parts.append(execution_context.parent_system_prompt)
+        prompt_parts.extend(
+            (
+                "你是 OmniCrawl 主 Agent 派生的受限工作进程，不直接面向用户。\n"
+                f"不可协商规则：{capability_rules}"
+                "不得向用户提问；严格限制在分配任务范围内；只使用 Host 提供的工具；"
+                "最终返回有界工作报告，不输出隐藏推理。",
+                FORK_BOILERPLATE if is_fork else "",
+                f"<agent_definition name=\"{definition.name}\">\n"
+                f"{definition.system_prompt}\n"
+                "</agent_definition>",
+            )
+        )
+        system_prompt = "\n\n".join(part for part in prompt_parts if part)
+        request_timeout = min(
+            int(getattr(self.config, "request_timeout_seconds", 180)),
+            int(getattr(model_config, "request_timeout_seconds", 180)),
+            max(1, int(self.config.subagents.default_timeout_seconds)),
+        )
+        request_retries = max(
+            1,
+            min(
+                int(getattr(self.config, "request_retry_count", 1)),
+                int(getattr(model_config, "request_retry_count", 1)),
+            ),
+        )
+        selected_runtime_manager = (
+            runtime_manager
+            if runtime_manager is not None
+            else self._runtime_manager_for_protocol()
+        )
+        extra_body_provider = (
+            (lambda: build_extra_body(model_config))
+            if model_snapshot is not None
+            else self._build_extra_body
+        )
+        return AgentLLMProtocol(
+            # 统一 Runtime 路径不会读取旧 OpenAI client；不为独立 Profile 惰性
+            # 创建并缓存父 Profile client，避免跨 Profile 凭据或连接复用。
+            client=None if selected_runtime_manager is not None else self._llm_client(),
+            model=model_config.model,
+            request_timeout_seconds=request_timeout,
+            request_retry_count=request_retries,
+            workspace_root=self.workspace_root,
+            system_prompt_provider=lambda: system_prompt,
+            prompt_cache_identity_provider=lambda: {
+                "workspace": str(self.workspace_root),
+                "subagent": definition.name,
+                "definition": str(definition.source_path or definition.source),
+                "context": "fork" if is_fork else "fresh",
+                "model": model_snapshot.selection if model_snapshot is not None else model_config.model,
+            },
+            tools_provider=lambda: chat_completion_tools(
+                child_tools.values(),
+                function_name_for_tool=function_name_for_tool,
+            ),
+            extra_body_provider=extra_body_provider,
+            tool_name_from_function_name=lambda function_name: tool_name_from_function_name(
+                function_name,
+                child_tools,
+            ),
+            function_name_for_tool=function_name_for_tool,
+            runtime_manager=selected_runtime_manager,
+            reasoning_effort_provider=lambda: getattr(
+                model_config,
+                "reasoning_effort",
+                "medium",
+            ),
+        )
+
     def run_stream(
         self,
         user_text: str,
@@ -1053,11 +2077,12 @@ class LocalToolAgent:
         on_retry_status: Callable[[str], None] | None = None,
         cancel_check: Callable[[], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
+        on_subagent_event: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
 
-        工具调用过程通过 on_status 报告给命令行；最终回答仍走 on_delta，让现有 TTS
-        分句播报逻辑可以继续复用。
+        外层继续拥有用户输入、Skill、Session、Plugin 与 Runtime 生命周期；内部
+        ``AgentLoopRunner`` 只处理模型与整批工具观察之间的协议循环。
         """
 
         text = user_text.strip()
@@ -1079,15 +2104,20 @@ class LocalToolAgent:
 
         previous_cancel_check = getattr(self, "_cancel_check", None)
         previous_reasoning_callback = getattr(self, "_reasoning_delta_callback", None)
+        previous_subagent_callback = getattr(self, "_subagent_event_callback", None)
+        had_previous_fork_snapshot = "_active_fork_context_messages" in self.__dict__
+        previous_fork_snapshot = self.__dict__.get("_active_fork_context_messages")
         self._cancel_check = cancel_check
         self._reasoning_delta_callback = on_reasoning_delta
+        self._subagent_event_callback = on_subagent_event
         check_cancelled()
         self._ensure_mcp_tools_ready(status)
         text = self._apply_skill_command(text, status)
         pending_text = getattr(self, "_pending_user_text", None)
         text = self._resolve_continue_request(text)
 
-        # turn.start：在 PromptHistory / Session user_message 落盘前完成，保证权威文本一致。
+        # turn.start 必须先于 PromptHistory / Session user_message，确保插件改写后的文本
+        # 成为所有持久化与模型上下文使用的唯一权威版本。
         turn_id = f"turn-{id(text)}-{len(self._history)}"
         self._plugin_begin_turn()
         turn_payload = self._dispatch_plugin_hook(
@@ -1115,6 +2145,19 @@ class LocalToolAgent:
                 *self._history,
                 {"role": "user", "content": text},
             ]
+            # Fork 只能继承“本轮起点”这一份公开协议消息。之后 AgentLoopRunner
+            # 会原地追加 assistant tool-call 与 tool-result；不能让后续状态、未
+            # 配对的工具调用或父模型输出进入已创建子任务的上下文。功能关闭时不
+            # 额外复制/脱敏历史，避免未启用 Fork 的普通回合承担额外开销。
+            subagent_config = getattr(self.config, "subagents", None)
+            if (
+                isinstance(subagent_config, SubAgentConfig)
+                and subagent_config.enabled
+                and subagent_config.allow_fork
+            ):
+                self._active_fork_context_messages = self._freeze_fork_context_messages(
+                    working_messages
+                )
 
             # 完整构造的 Agent 才持有 llm 配置；部分内部单测使用最小对象并
             # 替换了模型请求方法，此时跳过 Runtime 快照，不改变其测试边界。
@@ -1122,126 +2165,53 @@ class LocalToolAgent:
                 runtime_manager = self._ensure_runtime_manager()
                 runtime_snapshot = runtime_manager.acquire_turn()
                 self._active_runtime_snapshot = runtime_snapshot
-            all_reasoning_parts: list[str] = []
-            step = 1
-            while True:
-                check_cancelled()
-                reply = self._request_agent_reply(
-                    working_messages,
+
+            def request_main_reply(
+                messages: list[dict[str, Any]],
+            ) -> AgentModelReply:
+                # 初次请求和每次工具观察后的后续请求都先 drain，确保当前回合
+                # 内完成的后台任务无需等到下一条用户消息才被父 Agent 看见。
+                self._inject_subagent_notifications(messages)
+                return self._request_agent_reply(
+                    messages,
                     on_delta,
                     report_token_usage,
                     _report_protocol_wait,
                     report_retry_status,
                 )
-                if reply.reasoning:
-                    all_reasoning_parts.append(reply.reasoning)
 
-                if not reply.tool_calls:
-                    final_reply = reply.content.strip()
-                    if final_reply and not reply.content_streamed:
-                        on_delta(final_reply)
-                    combined_reasoning = "\n".join(all_reasoning_parts)
-                    self._append_session_event("assistant_message", {"content": final_reply})
-                    self._append_history(text, final_reply, combined_reasoning)
-                    self._pending_user_text = None
-                    self._dispatch_plugin_hook(
-                        "turn.end",
-                        {"userText": text, "assistantText": final_reply},
-                        turn_id=turn_id,
-                    )
-                    turn_terminal_sent = True
-                    return final_reply
-
-                working_messages.append(reply.message)
-                normalized_calls: list[tuple[int, ToolCall, ToolDefinition | None, ToolResult | None]] = []
-                for raw_tool_call in reply.tool_calls:
-                    check_cancelled()
-                    tool_call = normalize_tool_call(raw_tool_call, self._tools)
-                    self._append_session_event(
-                        "tool_call_requested",
-                        {
-                            "tool": tool_call.name,
-                            "arguments": tool_call.arguments,
-                            "tool_call_id": tool_call.id,
-                            "function_name": tool_call.function_name,
-                        },
-                    )
-                    tool = self._tools.get(tool_call.name)
-                    denied_result: ToolResult | None = None
-                    if tool is not None:
-                        denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
-                    normalized_calls.append((step, tool_call, tool, denied_result))
-                    step += 1
-
-                results: list[ToolResult | None] = [None] * len(normalized_calls)
-
-                def execute_call(index: int) -> ToolResult:
-                    call_step, tool_call, tool, denied_result = normalized_calls[index]
-                    if denied_result is not None:
-                        return denied_result
-                    if tool is None:
-                        return ToolResult(
-                            ok=False,
-                            output=f"未知工具：{tool_call.name}。可用工具：{', '.join(self._tools)}",
-                        )
-                    return self._execute_approved_tool(tool, tool_call.arguments)
-
-                parallel_indexes: list[int] = []
-
-                def flush_parallel() -> None:
-                    if not parallel_indexes:
-                        return
-                    for index in parallel_indexes:
-                        call_step, tool_call, _tool, _denied = normalized_calls[index]
-                        report_tool_start(call_step, tool_call)
-                    with ThreadPoolExecutor(max_workers=len(parallel_indexes)) as executor:
-                        futures = {
-                            index: executor.submit(execute_call, index)
-                            for index in parallel_indexes
-                        }
-                        for index in parallel_indexes:
-                            results[index] = futures[index].result()
-                    parallel_indexes.clear()
-
-                for index, (_call_step, tool_call, tool, denied_result) in enumerate(normalized_calls):
-                    if denied_result is not None or tool is None:
-                        results[index] = execute_call(index)
-                    elif self._tool_call_requires_serial_execution(tool, tool_call.arguments):
-                        flush_parallel()
-                        call_step, current_call, _tool, _denied = normalized_calls[index]
-                        report_tool_start(call_step, current_call)
-                        results[index] = execute_call(index)
-                    else:
-                        parallel_indexes.append(index)
-                flush_parallel()
-
-                check_cancelled()
-                for (_call_step, tool_call, _tool, _denied), tool_result in zip(
-                    normalized_calls,
-                    results,
-                ):
-                    assert tool_result is not None
-                    report_tool_result(tool_call, tool_result)
-                    self._append_session_event(
-                        "tool_result",
-                        {
-                            "tool": tool_call.name,
-                            "tool_call_id": tool_call.id,
-                            "ok": tool_result.ok,
-                            "output": tool_result.full_output or tool_result.output,
-                            "model_output": tool_result.output,
-                            "ui_artifact": tool_result.ui_artifact,
-                        },
-                    )
-                    working_messages.append(self._tool_result_message(tool_call, tool_result))
-                status("")  # 整批完成后统一通知调用方重新启动等待动画
+            loop_result = AgentLoopRunner().run(
+                messages=working_messages,
+                request_reply=request_main_reply,
+                execute_tool_batch=lambda calls, first_step: self._execute_tool_batch(
+                    calls,
+                    first_step,
+                    report_tool_start=report_tool_start,
+                    report_tool_result=report_tool_result,
+                    check_cancelled=check_cancelled,
+                    status=status,
+                ),
+                # 主 Agent 明确不设置循环预算；后续 SubAgent 可使用同一 Runner
+                # 传入 AgentLoopLimits，而不改变当前产品行为。
+                cancel_check=check_cancelled,
+            )
+            final_reply = loop_result.final_text
+            if final_reply and not loop_result.content_streamed:
+                on_delta(final_reply)
+            self._append_session_event("assistant_message", {"content": final_reply})
+            self._append_history(text, final_reply, loop_result.reasoning)
+            self._pending_user_text = None
+            self._dispatch_plugin_hook(
+                "turn.end",
+                {"userText": text, "assistantText": final_reply},
+                turn_id=turn_id,
+            )
+            turn_terminal_sent = True
+            return final_reply
         except KeyboardInterrupt as exc:
             self._append_session_event(
                 "turn_cancelled",
-                {
-                    "user_text": text,
-                    "reason": str(exc),
-                },
+                {"user_text": text, "reason": str(exc)},
             )
             if not turn_terminal_sent:
                 self._dispatch_plugin_hook(
@@ -1255,10 +2225,7 @@ class LocalToolAgent:
             event_type = "turn_cancelled" if self._is_turn_cancel_exception(exc) else "session_interrupted"
             self._append_session_event(
                 event_type,
-                {
-                    "user_text": text,
-                    "reason": str(exc),
-                },
+                {"user_text": text, "reason": str(exc)},
             )
             if not turn_terminal_sent:
                 hook_name = "turn.cancelled" if event_type == "turn_cancelled" else "turn.error"
@@ -1273,9 +2240,150 @@ class LocalToolAgent:
             if runtime_manager is not None and runtime_snapshot is not None:
                 runtime_manager.release_turn(runtime_snapshot)
             self.__dict__.pop("_active_runtime_snapshot", None)
+            if had_previous_fork_snapshot:
+                self._active_fork_context_messages = previous_fork_snapshot
+            else:
+                self.__dict__.pop("_active_fork_context_messages", None)
             self._plugin_end_turn()
             self._cancel_check = previous_cancel_check
             self._reasoning_delta_callback = previous_reasoning_callback
+            self._subagent_event_callback = previous_subagent_callback
+
+    def _execute_tool_batch(
+        self,
+        raw_tool_calls: Sequence[ToolCall],
+        first_step: int,
+        *,
+        report_tool_start: Callable[[int, ToolCall], None],
+        report_tool_result: Callable[[ToolCall, ToolResult], None],
+        check_cancelled: Callable[[], None],
+        status: Callable[[str], None],
+        tools: Mapping[str, ToolDefinition] | None = None,
+        persist_session_events: bool = True,
+        subagent_approval_scope: SubAgentApprovalScope | None = None,
+    ) -> list[AgentLoopObservation]:
+        """规范化、审批并执行一次模型回复中的完整工具批次。
+
+        所有调用先按模型顺序完成规范化和审批，之后才允许任何工具开始执行。
+        非屏障调用可并行；写入和显式删除调用会先等待前一并行组，再独占执行。
+        最终 observation 始终按模型调用顺序回填，与实际完成先后无关。
+        """
+
+        active_tools = self._tools if tools is None else tools
+        normalized_calls: list[tuple[int, ToolCall, ToolDefinition | None, ToolResult | None]] = []
+        for offset, raw_tool_call in enumerate(raw_tool_calls):
+            check_cancelled()
+            tool_call = normalize_tool_call(raw_tool_call, active_tools)
+            if persist_session_events:
+                self._append_session_event(
+                    "tool_call_requested",
+                    {
+                        "tool": tool_call.name,
+                        "arguments": public_tool_arguments(
+                            tool_call.name,
+                            tool_call.arguments,
+                        ),
+                        "tool_call_id": tool_call.id,
+                        "function_name": tool_call.function_name,
+                    },
+                )
+            tool = active_tools.get(tool_call.name)
+            denied_result = None
+            if tool is not None:
+                if subagent_approval_scope is None:
+                    # 保持父 Agent 的既有调用形态：测试和宿主扩展可替换该私有
+                    # 审批钩子且只接受旧的两参数签名。只有真正的子任务路径才
+                    # 需要传入 Broker 来源和取消检查。
+                    if persist_session_events:
+                        denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
+                    else:
+                        denied_result = self._approve_tool_for_batch(
+                            tool,
+                            tool_call.arguments,
+                            persist_session_events=False,
+                        )
+                else:
+                    denied_result = self._approve_tool_for_batch(
+                        tool,
+                        tool_call.arguments,
+                        persist_session_events=persist_session_events,
+                        subagent_approval_scope=subagent_approval_scope,
+                        check_cancelled=check_cancelled,
+                    )
+            normalized_calls.append((first_step + offset, tool_call, tool, denied_result))
+
+        results: list[ToolResult | None] = [None] * len(normalized_calls)
+
+        def execute_call(index: int) -> ToolResult:
+            _call_step, tool_call, tool, denied_result = normalized_calls[index]
+            if denied_result is not None:
+                return denied_result
+            if tool is None:
+                return ToolResult(
+                    ok=False,
+                    output=f"未知工具：{tool_call.name}。可用工具：{', '.join(active_tools)}",
+                )
+            return self._execute_approved_tool(tool, tool_call.arguments)
+
+        parallel_indexes: list[int] = []
+
+        def flush_parallel() -> None:
+            if not parallel_indexes:
+                return
+            for index in parallel_indexes:
+                call_step, tool_call, _tool, _denied = normalized_calls[index]
+                report_tool_start(call_step, tool_call)
+            with ThreadPoolExecutor(max_workers=len(parallel_indexes)) as executor:
+                futures = {
+                    index: executor.submit(execute_call, index)
+                    for index in parallel_indexes
+                }
+                # 按模型调用顺序等待并回填，而不是按任务完成顺序回填。
+                for index in parallel_indexes:
+                    results[index] = futures[index].result()
+            parallel_indexes.clear()
+
+        for index, (_call_step, tool_call, tool, denied_result) in enumerate(normalized_calls):
+            if denied_result is not None or tool is None:
+                results[index] = execute_call(index)
+            elif self._tool_call_requires_serial_execution(tool, tool_call.arguments):
+                flush_parallel()
+                call_step, current_call, _tool, _denied = normalized_calls[index]
+                report_tool_start(call_step, current_call)
+                results[index] = execute_call(index)
+            else:
+                parallel_indexes.append(index)
+        flush_parallel()
+
+        check_cancelled()
+        observations: list[AgentLoopObservation] = []
+        for (_call_step, tool_call, _tool, _denied), tool_result in zip(
+            normalized_calls,
+            results,
+        ):
+            assert tool_result is not None
+            report_tool_result(tool_call, tool_result)
+            if persist_session_events:
+                self._append_session_event(
+                    "tool_result",
+                    {
+                        "tool": tool_call.name,
+                        "tool_call_id": tool_call.id,
+                        "ok": tool_result.ok,
+                        "output": tool_result.full_output or tool_result.output,
+                        "model_output": tool_result.output,
+                        "ui_artifact": tool_result.ui_artifact,
+                    },
+                )
+            observations.append(
+                AgentLoopObservation(
+                    tool_call=tool_call,
+                    result=tool_result,
+                    message=self._tool_result_message(tool_call, tool_result),
+                )
+            )
+        status("")
+        return observations
 
     def _apply_skill_command(self, text: str, status: Callable[[str], None]) -> str:
         """处理 /skill:name，并在每轮开始时清空上一轮手动 Skill 注入。"""
@@ -1600,8 +2708,17 @@ class LocalToolAgent:
         self,
         tool: ToolDefinition,
         arguments: dict[str, Any],
+        *,
+        persist_session_events: bool = True,
+        subagent_approval_scope: SubAgentApprovalScope | None = None,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> ToolResult | None:
-        """在启动批量执行前按调用顺序审批；返回值非空表示拒绝结果。"""
+        """在启动批量执行前按调用顺序审批；返回值非空表示拒绝结果。
+
+        普通父工具沿用既有 ``requires_confirmation`` 与 approval mode。带有
+        ``subagent_approval_scope`` 的调用则由 Broker 执行用户已确认的窄策略：
+        仅删除意图和变更性 Git 操作需要人工确认，其他子工具不会重复打断用户。
+        """
 
         # tool.call.before：可改参数或拒绝；修改后仍走后续 schema/审批。
         call_payload = self._dispatch_plugin_hook(
@@ -1610,14 +2727,35 @@ class LocalToolAgent:
         )
         if call_payload is None:
             reason = f"插件拒绝工具调用：{tool.name}。"
-            self._append_session_event(
-                "tool_call_denied",
-                {"tool": tool.name, "arguments": arguments, "reason": reason},
-            )
+            if persist_session_events:
+                self._append_session_event(
+                    "tool_call_denied",
+                    {
+                        "tool": tool.name,
+                        "arguments": public_tool_arguments(tool.name, arguments),
+                        "reason": reason,
+                    },
+                )
             return ToolResult(ok=False, output=reason)
         if isinstance(call_payload.get("arguments"), dict):
             arguments.clear()
             arguments.update(call_payload["arguments"])
+
+        approval_mode = getattr(self.config, "approval_mode", "manual")
+        subagent_risk_summary = ""
+        requires_confirmation = tool.requires_confirmation
+        if subagent_approval_scope is not None:
+            # 子任务不得通过 ToolDefinition.requires_confirmation=False 绕过这一
+            # 策略；反之普通写入/验证工具也不因父 Agent 的宽审批范围而重复弹窗。
+            origin = getattr(subagent_approval_scope, "origin", None)
+            permission_mode = str(getattr(origin, "permission_mode", "") or "delegated-read-only")
+            subagent_risk_summary = subagent_approval_risk_summary(
+                tool,
+                arguments,
+                permission_mode=permission_mode,
+            )
+            requires_confirmation = bool(subagent_risk_summary)
+            approval_mode = "subagent-policy"
 
         # tool.approval.before：只能拒绝，不能代表用户批准。
         approval_guard = self._dispatch_plugin_hook(
@@ -1625,60 +2763,83 @@ class LocalToolAgent:
             {
                 "tool": tool.name,
                 "arguments": dict(arguments),
-                "requiresConfirmation": tool.requires_confirmation,
-                "mode": getattr(self.config, "approval_mode", "manual"),
+                "requiresConfirmation": requires_confirmation,
+                "mode": approval_mode,
             },
         )
         if approval_guard is None:
             reason = f"插件在审批前拒绝：{tool.name}。"
-            self._append_session_event(
-                "tool_call_denied",
-                {"tool": tool.name, "arguments": arguments, "reason": reason},
-            )
+            if persist_session_events:
+                self._append_session_event(
+                    "tool_call_denied",
+                    {
+                        "tool": tool.name,
+                        "arguments": public_tool_arguments(tool.name, arguments),
+                        "reason": reason,
+                    },
+                )
             return ToolResult(ok=False, output=reason)
 
-        if not tool.requires_confirmation:
+        if not requires_confirmation:
             self._dispatch_plugin_hook(
                 "tool.approval.after",
                 {
                     "tool": tool.name,
                     "approved": True,
-                    "mode": getattr(self.config, "approval_mode", "manual"),
+                    "mode": approval_mode,
                 },
             )
             return None
-        approved, denial_reason = self._approve_tool_call(tool, arguments)
+
+        if subagent_approval_scope is not None:
+            approved = subagent_approval_scope.broker.request(
+                origin=subagent_approval_scope.origin,
+                tool_name=tool.name,
+                public_arguments=public_tool_arguments(tool.name, arguments),
+                risk_summary=subagent_risk_summary,
+                cancel_check=check_cancelled,
+            )
+            denial_reason = f"用户未批准子任务执行：{tool.name}。"
+        else:
+            approved, denial_reason = self._approve_tool_call(tool, arguments)
+
         if not approved:
             reason = denial_reason or f"未批准执行：{tool.name}。"
             mcp_manager = getattr(self, "_mcp_manager", None)
             if mcp_manager is not None and tool.name in mcp_manager.registry.tools:
                 mcp_manager.record_denied_tool_call(tool.name, arguments, reason)
-            self._append_session_event(
-                "tool_call_denied",
-                {"tool": tool.name, "arguments": arguments, "reason": reason},
-            )
+            if persist_session_events:
+                self._append_session_event(
+                    "tool_call_denied",
+                    {
+                        "tool": tool.name,
+                        "arguments": public_tool_arguments(tool.name, arguments),
+                        "reason": reason,
+                    },
+                )
             self._dispatch_plugin_hook(
                 "tool.approval.after",
                 {
                     "tool": tool.name,
                     "approved": False,
                     "reason": reason,
-                    "mode": self.config.approval_mode,
+                    "mode": approval_mode,
                 },
             )
             return ToolResult(ok=False, output=reason)
         self._dispatch_plugin_hook(
             "tool.approval.after",
-            {"tool": tool.name, "approved": True, "mode": self.config.approval_mode},
+            {"tool": tool.name, "approved": True, "mode": approval_mode},
         )
-        self._append_session_event(
-            "tool_call_approved",
-            {
-                "tool": tool.name,
-                "arguments": arguments,
-                "mode": self.config.approval_mode,
-            },
-        )
+        if persist_session_events:
+            self._append_session_event(
+                "tool_call_approved",
+                {
+                    "tool": tool.name,
+                    "arguments": public_tool_arguments(tool.name, arguments),
+                    "mode": approval_mode,
+                },
+            )
         return None
 
     def _execute_approved_tool(
@@ -1702,6 +2863,9 @@ class LocalToolAgent:
                 on_start()
             result = tool.run(arguments)
         except Exception as exc:
+            if self._is_turn_cancel_exception(exc):
+                # 取消属于父 turn 控制流，不能降级成普通 ToolResult 让模型继续执行。
+                raise
             self._dispatch_plugin_hook(
                 "tool.execute.error",
                 {"tool": tool.name, "error": str(exc)},
@@ -1736,9 +2900,10 @@ class LocalToolAgent:
     ) -> bool:
         """文件写入和具备显式删除行为的调用是批次屏障，其余调用允许并行。"""
 
-        return tool.name in {"replace_text", "write_file"} or cls._is_delete_behavior_tool_call(
-            tool,
-            arguments,
+        return (
+            tool.name in {"replace_text", "write_file", "subagent", VERIFY_COMMAND_TOOL_NAME}
+            or cls._is_delete_behavior_tool_call(tool, arguments)
+            or is_git_mutation_tool_call(tool, arguments)
         )
 
     def _approve_tool_call(
@@ -1755,7 +2920,10 @@ class LocalToolAgent:
             if not self._is_delete_behavior_tool_call(tool, arguments):
                 return True, ""
             return self._review_tool_call(tool, arguments)
-        return self._confirm(tool.name, arguments), f"用户取消执行：{tool.name}。"
+        return self._confirm(
+            tool.name,
+            public_tool_arguments(tool.name, arguments),
+        ), f"用户取消执行：{tool.name}。"
 
     @classmethod
     def _is_delete_behavior_tool_call(
@@ -1851,6 +3019,11 @@ class LocalToolAgent:
             mcp_call=self._tool_mcp_call,
             mcp_read_resource=self._tool_mcp_read_resource,
             mcp_get_prompt=self._tool_mcp_get_prompt,
+            subagent=(
+                self._tool_subagent
+                if getattr(self, "_subagent_coordinator", None) is not None
+                else None
+            ),
         )
 
     def _build_mcp_tools(self) -> list[ToolDefinition]:
@@ -2009,15 +3182,171 @@ class LocalToolAgent:
     def _require_project_store(self) -> ProjectStore:
         return self._session_facade().require_project_store()
 
+
+    def _clear_workspace_root_override(self) -> None:
+        """清理当前线程的 WorkspaceTools 根目录覆盖。"""
+
+        local = getattr(self, "_workspace_root_local", None)
+        if local is not None and hasattr(local, "root"):
+            try:
+                delattr(local, "root")
+            except Exception:  # noqa: BLE001 - 清理失败不应影响主流程
+                local.root = None
+
+    def _register_subagent_worktree_session(self, session: WorktreeSession) -> None:
+        """登记 worktree 会话，供父 Agent 后续 apply / discard。"""
+
+        sessions = getattr(self, "_subagent_worktree_sessions", None)
+        if sessions is None:
+            self._subagent_worktree_sessions = {}
+            sessions = self._subagent_worktree_sessions
+        lock = getattr(self, "_subagent_worktree_lock", None)
+        if lock is None:
+            sessions[session.branch_name] = session
+            sessions[session.task_id] = session
+            return
+        with lock:
+            sessions[session.branch_name] = session
+            sessions[session.task_id] = session
+
+    def _lookup_subagent_worktree_session(self, key: str) -> WorktreeSession | None:
+        """按 task_id 或 branch_name 查找 worktree 会话。"""
+
+        sessions = getattr(self, "_subagent_worktree_sessions", {}) or {}
+        lock = getattr(self, "_subagent_worktree_lock", None)
+        token = str(key or "").strip()
+        if lock is None:
+            return sessions.get(token)
+        with lock:
+            return sessions.get(token)
+
+    def _collect_subagent_worktree_artifacts(
+        self,
+        execution_context: SubAgentExecutionContext | None,
+    ) -> tuple[str, ...]:
+        """收集 worktree 变更摘要，供父 Agent 审查。"""
+
+        if execution_context is None:
+            return ()
+        session = getattr(execution_context, "worktree_session", None)
+        if session is None:
+            return ()
+        try:
+            artifacts = collect_worktree_artifacts(session)
+        except WorktreeError as exc:
+            return (f"worktree 产物收集失败：{exc}",)
+        lines = [
+            f"branch={artifacts.branch_name}",
+            f"worktree={artifacts.worktree_path}",
+            f"base_ref={artifacts.base_ref}",
+            f"has_changes={artifacts.has_changes}",
+        ]
+        if artifacts.changed_files:
+            preview = ", ".join(artifacts.changed_files[:20])
+            if len(artifacts.changed_files) > 20:
+                preview += f" ...(+{len(artifacts.changed_files) - 20})"
+            lines.append(f"changed_files={preview}")
+        if artifacts.diff_stat:
+            lines.append(f"diff_stat={artifacts.diff_stat}")
+        if artifacts.diff_text:
+            preview = artifacts.diff_text[:4000]
+            if len(artifacts.diff_text) > 4000:
+                preview += "\n... diff 已截断 ..."
+            lines.append("diff_preview:")
+            lines.append(preview)
+        return tuple(lines)
+
+    def list_subagent_worktrees(self) -> list[dict[str, Any]]:
+        """列出当前进程内登记的 SubAgent worktree 会话（去重）。"""
+
+        sessions = getattr(self, "_subagent_worktree_sessions", {}) or {}
+        lock = getattr(self, "_subagent_worktree_lock", None)
+        if lock is None:
+            values = list(sessions.values())
+        else:
+            with lock:
+                values = list(sessions.values())
+        seen: set[str] = set()
+        items: list[dict[str, Any]] = []
+        for session in values:
+            branch = getattr(session, "branch_name", "")
+            if not branch or branch in seen:
+                continue
+            seen.add(branch)
+            items.append(
+                {
+                    "task_id": getattr(session, "task_id", ""),
+                    "branch": branch,
+                    "worktree_path": str(getattr(session, "worktree_path", "")),
+                    "base_ref": getattr(session, "base_ref", ""),
+                    "repo_root": str(getattr(session, "repo_root", "")),
+                }
+            )
+        return items
+
+    def apply_subagent_worktree(
+        self,
+        key: str,
+        *,
+        strategy: str = "checkout",
+        cleanup: bool = False,
+    ) -> str:
+        """把指定 SubAgent worktree 分支变更应用到主工作区。"""
+
+        session = self._lookup_subagent_worktree_session(key)
+        if session is None:
+            raise AgentError(f"未找到 SubAgent worktree 会话：{key}")
+        try:
+            message = apply_worktree_to_main(session, strategy=strategy)
+        except WorktreeError as exc:
+            raise AgentError(f"应用 worktree 失败：{exc}") from exc
+        if cleanup:
+            self.discard_subagent_worktree(key)
+        return message
+
+    def discard_subagent_worktree(self, key: str, *, remove_branch: bool = True) -> str:
+        """丢弃 worktree 会话并清理目录/分支。"""
+
+        session = self._lookup_subagent_worktree_session(key)
+        if session is None:
+            raise AgentError(f"未找到 SubAgent worktree 会话：{key}")
+        try:
+            cleanup_worktree_session(session, remove_branch=remove_branch)
+        except WorktreeError as exc:
+            raise AgentError(f"清理 worktree 失败：{exc}") from exc
+        sessions = getattr(self, "_subagent_worktree_sessions", {})
+        lock = getattr(self, "_subagent_worktree_lock", None)
+        if lock is None:
+            sessions.pop(session.branch_name, None)
+            sessions.pop(session.task_id, None)
+        else:
+            with lock:
+                sessions.pop(session.branch_name, None)
+                sessions.pop(session.task_id, None)
+        return f"已清理 worktree 会话：{session.branch_name}"
+
     def _workspace_toolbox(self) -> WorkspaceTools:
-        toolbox = getattr(self, "_workspace_tools", None)
-        if toolbox is not None:
-            return toolbox
+        """返回当前线程可见的工作区工具箱。
+
+        SubAgent worktree 任务通过 ``_workspace_root_local`` 覆盖根目录，避免
+        并发子任务与父工作区互相写穿。覆盖存在时不复用缓存的父 toolbox。
+        """
+
+        override_root = getattr(getattr(self, "_workspace_root_local", None), "root", None)
         command_timeout = getattr(
             getattr(self, "config", None),
             "command_timeout_seconds",
             DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
+        if override_root:
+            return WorkspaceTools(
+                override_root,
+                command_timeout_seconds=command_timeout,
+                extra_protection_message=self._workspace_extra_protection_message,
+            )
+        toolbox = getattr(self, "_workspace_tools", None)
+        if toolbox is not None:
+            return toolbox
         toolbox = WorkspaceTools(
             self.workspace_root,
             command_timeout_seconds=command_timeout,
@@ -2081,6 +3410,26 @@ class LocalToolAgent:
 
     def _plugin_manager_or_none(self) -> Any | None:
         return getattr(self, "_plugin_manager", None)
+
+    def _freeze_subagent_plugin_dispatch_context(self) -> PluginDispatchContext:
+        """在父线程为子任务冻结只读 Plugin dispatch context。
+
+        子任务不得调用 begin_turn/end_turn。无 PluginManager 时返回空 context，
+        并在 worker 内激活，避免子任务回退到父 live plan。
+        """
+
+        manager = self._plugin_manager_or_none()
+        if manager is None:
+            return PluginDispatchContext(handlers=(), source="none")
+        freeze = getattr(manager, "freeze_dispatch_context", None)
+        if not callable(freeze):
+            return PluginDispatchContext(handlers=(), source="none")
+        context = freeze()
+        if isinstance(context, PluginDispatchContext):
+            return context
+        handlers = tuple(getattr(context, "handlers", ()) or ())
+        source = str(getattr(context, "source", "none") or "none")
+        return PluginDispatchContext(handlers=handlers, source=source)
 
     def _plugin_begin_turn(self) -> None:
         manager = self._plugin_manager_or_none()

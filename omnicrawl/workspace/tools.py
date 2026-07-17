@@ -256,7 +256,54 @@ class WorkspaceTools:
             minimum=1,
             maximum=MAX_COMMAND_TIMEOUT_SECONDS,
         )
-        invocation = self.command_invocation(command, shell=shell)
+        return self._run_command_invocation(
+            self.command_invocation(command, shell=shell),
+            timeout_seconds=timeout,
+            display_kind="Shell",
+        )
+
+    def run_argv_command(
+        self,
+        arguments: tuple[str, ...] | list[str],
+        *,
+        timeout_seconds: int,
+        label: str,
+    ) -> WorkspaceCommandResult:
+        """直接启动一组预验证 argv，不经任何 Shell 解析。
+
+        该底座只供 Host 内部的固定命令策略调用，例如 SubAgent 的
+        ``verify_command``。它不属于面向模型的通用命令工具：调用者必须先完成
+        命令白名单和参数边界校验，不能把模型提供的原始文本直接传入这里。
+        """
+
+        if not isinstance(arguments, (tuple, list)) or not arguments:
+            raise WorkspaceToolError("受控命令参数不能为空。")
+        if any(not isinstance(item, str) or not item for item in arguments):
+            raise WorkspaceToolError("受控命令参数必须全部是非空字符串。")
+        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int):
+            raise WorkspaceToolError("受控命令 timeout_seconds 必须是整数。")
+        if timeout_seconds < 1 or timeout_seconds > MAX_COMMAND_TIMEOUT_SECONDS:
+            raise WorkspaceToolError(
+                f"受控命令 timeout_seconds 必须在 1 到 {MAX_COMMAND_TIMEOUT_SECONDS} 之间。"
+            )
+        if not isinstance(label, str) or not label.strip():
+            raise WorkspaceToolError("受控命令标签不能为空。")
+
+        return self._run_command_invocation(
+            WorkspaceCommandInvocation(args=list(arguments), label=label.strip()),
+            timeout_seconds=timeout_seconds,
+            display_kind="命令",
+        )
+
+    def _run_command_invocation(
+        self,
+        invocation: WorkspaceCommandInvocation,
+        *,
+        timeout_seconds: int,
+        display_kind: str,
+    ) -> WorkspaceCommandResult:
+        """执行已经完成解释器/参数校验的进程，并复用既有超时回收逻辑。"""
+
         popen_kwargs: dict[str, Any] = {
             "cwd": str(self.workspace_root),
             "shell": False,
@@ -285,15 +332,18 @@ class WorkspaceTools:
 
         job_handle = _assign_process_to_kill_on_close_job(process)
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
             BackgroundMonitorManager._terminate_process_tree(process, job_handle=job_handle)
             job_handle = None
-            raise WorkspaceToolError(f"命令执行超过 {timeout} 秒，已终止。")
+            raise WorkspaceToolError(f"命令执行超过 {timeout_seconds} 秒，已终止。")
         finally:
             _close_windows_handle(job_handle)
 
-        output_parts = [f"退出码：{process.returncode}", f"Shell：{invocation.label}"]
+        output_parts = [
+            f"退出码：{process.returncode}",
+            f"{display_kind}：{invocation.label}",
+        ]
         if stdout.strip():
             output_parts.append(f"stdout:\n{stdout.strip()}")
         if stderr.strip():

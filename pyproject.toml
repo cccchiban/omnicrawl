@@ -36,5 +36,6 @@ exclude = ["tests*"]
 [tool.setuptools.package-data]
 omnicrawl = [
     "agent/system_prompt.md",
+    "agent/subagents/builtin/*.md",
     "extensions/node_runner.mjs",
 ]

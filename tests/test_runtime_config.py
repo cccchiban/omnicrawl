@@ -74,15 +74,19 @@ class RuntimeConfigTest(unittest.TestCase):
             with patch("omnicrawl.entry.load_llm_config", return_value=config):
                 with patch("omnicrawl.entry.load_approval_mode", return_value="manual"):
                     with patch("omnicrawl.entry.load_agent_temp_workspace_config", return_value="temp-config"):
-                        with patch("omnicrawl.entry.detect_project_context", return_value=project_context):
-                            with patch("omnicrawl.entry.agent_temp_status_label", return_value=".agent_tmp"):
-                                with patch("omnicrawl.entry.AgentConfig") as agent_config_class:
-                                    with patch("omnicrawl.entry.LocalToolAgent", return_value=agent) as agent_class:
-                                        with patch("omnicrawl.entry._load_fullscreen_ui") as load_fullscreen_ui:
-                                            fullscreen_startup = Mock()
-                                            run_fullscreen_tui = Mock()
-                                            load_fullscreen_ui.return_value = (fullscreen_startup, run_fullscreen_tui)
-                                            code = run_application(["--resume", "session-demo"])
+                        with patch("omnicrawl.entry.load_subagent_config", return_value="subagent-config"):
+                            with patch("omnicrawl.entry.detect_project_context", return_value=project_context):
+                                with patch("omnicrawl.entry.agent_temp_status_label", return_value=".agent_tmp"):
+                                    with patch("omnicrawl.entry.AgentConfig") as agent_config_class:
+                                        with patch("omnicrawl.entry.LocalToolAgent", return_value=agent) as agent_class:
+                                            with patch("omnicrawl.entry._load_fullscreen_ui") as load_fullscreen_ui:
+                                                fullscreen_startup = Mock()
+                                                run_fullscreen_tui = Mock()
+                                                load_fullscreen_ui.return_value = (
+                                                    fullscreen_startup,
+                                                    run_fullscreen_tui,
+                                                )
+                                                code = run_application(["--resume", "session-demo"])
 
         self.assertEqual(code, 0)
 
@@ -92,6 +96,7 @@ class RuntimeConfigTest(unittest.TestCase):
             workspace_detection_summary="workspace",
             approval_mode="manual",
             temp_workspace="temp-config",
+            subagents="subagent-config",
             resume_session_id="session-demo",
         )
         agent_class.assert_called_once()

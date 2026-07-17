@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
+from omnicrawl.config.subagents import SubAgentConfig
 from omnicrawl.temp_workspace import AgentTempWorkspaceConfig
 
 
@@ -200,6 +201,150 @@ class WorkspaceSwitchTest(unittest.TestCase):
                 agent.close()
 
         monitor_manager.close.assert_called_once_with()
+
+    def test_close_cancels_subagents_before_shared_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = self._make_config(workspace)
+            order = []
+            coordinator = SimpleNamespace(
+                cancel_and_wait=lambda **_kwargs: order.append("subagents") or True,
+            )
+            mcp_manager = SimpleNamespace(close=lambda: order.append("mcp"))
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._subagent_coordinator = coordinator
+                agent._mcp_manager = mcp_manager
+                agent.close()
+
+        self.assertEqual(order[:2], ["subagents", "mcp"])
+
+    def test_close_timeout_defers_resource_release_until_subagents_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = self._make_config(workspace)
+            state = {"drained": False, "idle_callback": None}
+            coordinator = SimpleNamespace(
+                cancel_and_wait=lambda **_kwargs: state["drained"],
+                call_when_idle=lambda callback: state.__setitem__(
+                    "idle_callback",
+                    callback,
+                ),
+            )
+            mcp_manager = SimpleNamespace(close=Mock())
+            external_runtime_close = Mock()
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._subagent_coordinator = coordinator
+                agent._mcp_manager = mcp_manager
+                agent.add_close_callback(external_runtime_close)
+                agent.close()
+
+                self.assertTrue(agent._closing)
+                self.assertFalse(agent._closed)
+                mcp_manager.close.assert_not_called()
+                external_runtime_close.assert_not_called()
+
+                state["drained"] = True
+                state["idle_callback"]()
+                self.assertTrue(agent._closed)
+
+        mcp_manager.close.assert_called_once_with()
+        external_runtime_close.assert_called_once_with()
+
+    def test_switch_workspace_rejects_unresolved_subagent_worktree(self) -> None:
+        """旧项目的待处理 Worktree 不能进入新工作区控制面。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orig_workspace = Path(temp_dir) / "project_a"
+            target_workspace = Path(temp_dir) / "project_b"
+            orig_workspace.mkdir()
+            target_workspace.mkdir()
+            config = self._make_config(orig_workspace)
+            session = SimpleNamespace(
+                task_id="task-old-workspace",
+                branch_name="subagent/task-old-workspace",
+                worktree_path=orig_workspace / ".agent_worktrees" / "task-old",
+                base_ref="HEAD",
+                repo_root=orig_workspace,
+            )
+
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._subagent_worktree_sessions = {
+                    session.task_id: session,
+                    session.branch_name: session,
+                }
+                try:
+                    with self.assertRaisesRegex(
+                        AgentError,
+                        "未处理的 SubAgent worktree",
+                    ):
+                        agent.switch_workspace(target_workspace)
+
+                    self.assertEqual(agent.workspace_root, orig_workspace.resolve())
+                    self.assertEqual(
+                        [item["branch"] for item in agent.list_subagent_worktrees()],
+                        [session.branch_name],
+                    )
+                finally:
+                    agent.close()
+
+    def test_switch_workspace_timeout_keeps_old_workspace_intact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orig_workspace = Path(temp_dir) / "project_a"
+            target_workspace = Path(temp_dir) / "project_b"
+            orig_workspace.mkdir()
+            target_workspace.mkdir()
+            config = self._make_config(orig_workspace)
+            state = {"drained": False, "resume_calls": 0}
+            coordinator = SimpleNamespace(
+                cancel_and_wait=lambda **_kwargs: state["drained"],
+                resume_accepting_when_idle=lambda: state.__setitem__(
+                    "resume_calls",
+                    state["resume_calls"] + 1,
+                ),
+            )
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._subagent_coordinator = coordinator
+                with patch.object(agent, "_prepare_workspace_switch") as prepare:
+                    with self.assertRaises(AgentError) as ctx:
+                        agent.switch_workspace(target_workspace)
+                self.assertIn("已保留原工作区", str(ctx.exception))
+                self.assertEqual(agent.workspace_root, orig_workspace.resolve())
+                self.assertEqual(state["resume_calls"], 1)
+                prepare.assert_not_called()
+
+                state["drained"] = True
+                agent.close()
+
+    def test_plugin_switch_failure_keeps_new_workspace_coordinator_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orig_workspace = Path(temp_dir) / "project_a"
+            target_workspace = Path(temp_dir) / "project_b"
+            orig_workspace.mkdir()
+            target_workspace.mkdir()
+            config = self._make_config(
+                orig_workspace,
+                subagents=SubAgentConfig(enabled=True),
+            )
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                old_coordinator = agent._subagent_coordinator
+                agent._on_workspace_switched = lambda _root: (_ for _ in ()).throw(
+                    RuntimeError("plugin switch failed")
+                )
+                try:
+                    with self.assertRaises(AgentError):
+                        agent.switch_workspace(target_workspace)
+                    self.assertEqual(agent.workspace_root, target_workspace.resolve())
+                    self.assertIsNot(agent._subagent_coordinator, old_coordinator)
+                    self.assertTrue(agent._subagent_coordinator._accepting)
+                    self.assertIsNone(agent._plugin_manager)
+                finally:
+                    agent._on_workspace_switched = None
+                    agent.close()
 
     def test_switch_workspace_with_sessions_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

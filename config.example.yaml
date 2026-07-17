@@ -64,5 +64,28 @@ agent_temp:
 plugins:
   enabled: false
 
+# SubAgent：默认关闭；普通角色仅只读，verify 还需单独显式启用且仅运行固定检查。
+subagents:
+  enabled: false
+  max_depth: 1
+  max_concurrency: 2
+  max_tasks_per_batch: 4
+  max_total_tasks: 8
+  default_max_turns: 20
+  default_max_tool_calls: 50
+  default_timeout_seconds: 300
+  model_request_concurrency: 2
+  allow_background: false
+  # 仅开放已脱敏父公开上下文的 read_only/verify Fork；默认关闭。
+  allow_fork: false
+  # Phase 3 写能力默认关闭；需要时显式打开，且仍受脏主树检查/单写锁/审批约束。
+  allow_worktree: false
+  allow_standard_agent: false
+  allow_shared_workspace_writes: false
+  enable_verify_agent: false
+  verify_command_timeout_seconds: 120
+  task_retention_minutes: 60
+  result_summary_chars: 6000
+
 mcp:
   enabled: false

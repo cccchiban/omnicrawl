@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -27,12 +28,15 @@ _SENSITIVE_FIELD_NAMES = frozenset(
     }
 )
 
+from .session_locking import atomic_write_text
 from .session_models import SessionStoreError, clean_title, is_relative_to
 
 
 TOOL_RESULT_INLINE_OUTPUT_CHARS = 8 * 1024
 TOOL_RESULT_LARGE_OUTPUT_CHARS = 128 * 1024
 TOOL_RESULT_PREVIEW_CHARS = 1200
+SUBAGENT_RESULT_LARGE_OUTPUT_CHARS = 128 * 1024
+_SUBAGENT_TASK_ID_PATTERN = re.compile(r"^task-[a-f0-9]{12}$")
 _SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
     r"(?i)((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|"
     r"access[_-]?token|refresh[_-]?token|id[_-]?token|cookie|password|secret|token)"
@@ -53,6 +57,17 @@ _SENSITIVE_JSON_PROPERTY_PATTERN = re.compile(
 )
 _BEARER_SECRET_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _PROVIDER_SECRET_PATTERN = re.compile(r"\b(?:sk|ak|ah)-[A-Za-z0-9_-]{24,}\b")
+_GITHUB_SECRET_PATTERN = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
+)
+_AWS_ACCESS_KEY_PATTERN = re.compile(
+    r"\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b"
+)
+_PEM_PRIVATE_KEY_PATTERN = re.compile(
+    r"-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----.*?"
+    r"-----END(?: [A-Z0-9]+)? PRIVATE KEY-----",
+    re.DOTALL,
+)
 
 
 class SessionArtifactStore:
@@ -76,6 +91,75 @@ class SessionArtifactStore:
         if event_type == "tool_result":
             return self._prepare_tool_result_payload(session_id, safe_payload)
         return safe_payload
+
+    def prepare_subagent_result(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        agent_type: str,
+        description: str,
+        result_text: str,
+        summary_chars: int,
+    ) -> dict[str, Any]:
+        """生成可安全回传的摘要，并在结果较大时写入任务级 JSON artifact。
+
+        该方法是 Session、API、TUI 和父模型共享的单一安全投影边界：完整结果先
+        脱敏，再决定内联或 artifact；公开消费者永远不会接触原始结果文本。
+        """
+
+        if not _SUBAGENT_TASK_ID_PATTERN.fullmatch(task_id):
+            raise SessionStoreError(f"SubAgent task_id 格式无效：{task_id}")
+        if isinstance(summary_chars, bool) or not isinstance(summary_chars, int) or summary_chars <= 0:
+            raise SessionStoreError("SubAgent summary_chars 必须是正整数。")
+
+        safe_result = redact_sensitive_text(str(result_text or "").strip())
+        summary = safe_result
+        if len(summary) > summary_chars:
+            summary = summary[:summary_chars] + "\n... 子任务结果已截断，完整结果见 artifact。"
+        if len(safe_result) <= summary_chars:
+            return {"summary": summary, "artifacts": []}
+
+        output_hash = hashlib.sha256(safe_result.encode("utf-8")).hexdigest()
+        truncated = len(safe_result) > SUBAGENT_RESULT_LARGE_OUTPUT_CHARS
+        persisted_result = safe_result[:SUBAGENT_RESULT_LARGE_OUTPUT_CHARS]
+        artifact_document = {
+            "version": 1,
+            "task_id": task_id,
+            "agent_type": redact_sensitive_text(str(agent_type)),
+            "description": redact_sensitive_text(str(description)),
+            "result": persisted_result,
+            "result_size_chars": len(safe_result),
+            "result_sha256": output_hash,
+            "truncated": truncated,
+        }
+        if truncated:
+            artifact_document["truncation_note"] = (
+                "artifact 已按 128KB 上限截断；sha256 描述脱敏后的完整结果。"
+            )
+
+        session_artifacts_dir = self._ensure_session_artifacts_dir(session_id)
+        subagents_dir = (session_artifacts_dir / "subagents").resolve()
+        if not is_relative_to(subagents_dir, self.root):
+            raise SessionStoreError(f"SubAgent artifact 目录越界：{task_id}")
+        path = (subagents_dir / f"{task_id}.json").resolve()
+        if not is_relative_to(path, self.root):
+            raise SessionStoreError(f"SubAgent artifact 路径越界：{task_id}")
+        text = json.dumps(artifact_document, ensure_ascii=False, indent=2) + "\n"
+        atomic_write_text(path, text)
+        artifact_path = path.relative_to(self.root).as_posix()
+        return {
+            "summary": summary,
+            "artifacts": [
+                {
+                    "type": "subagent_result",
+                    "artifact_path": artifact_path,
+                    "size_chars": len(safe_result),
+                    "sha256": output_hash,
+                    "truncated": truncated,
+                }
+            ],
+        }
 
     def read_text(self, session_id: str, artifact_path: str) -> str:
         normalized = normalize_relative_artifact_path(artifact_path)
@@ -231,10 +315,13 @@ def redact_sensitive_values(value: Any) -> Any:
 
 
 def redact_sensitive_text(text: str) -> str:
-    redacted = _SENSITIVE_ASSIGNMENT_PATTERN.sub(r"\1***", text)
+    redacted = _PEM_PRIVATE_KEY_PATTERN.sub("*** PRIVATE KEY REDACTED ***", text)
+    redacted = _SENSITIVE_ASSIGNMENT_PATTERN.sub(r"\1***", redacted)
     redacted = _AUTHORIZATION_ASSIGNMENT_PATTERN.sub(r"\1Bearer ***", redacted)
     redacted = _BEARER_SECRET_PATTERN.sub("Bearer ***", redacted)
-    return _PROVIDER_SECRET_PATTERN.sub("***", redacted)
+    redacted = _PROVIDER_SECRET_PATTERN.sub("***", redacted)
+    redacted = _GITHUB_SECRET_PATTERN.sub("***", redacted)
+    return _AWS_ACCESS_KEY_PATTERN.sub("***", redacted)
 
 
 def redact_sensitive_html(html: str) -> str:

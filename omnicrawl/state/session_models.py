@@ -21,6 +21,15 @@ MODEL_CONTEXT_EVENT_TYPES = MESSAGE_EVENT_TYPES | {
     "tool_result",
 }
 EMPTY_SESSION_EVENT_TYPES = {"session_started", "session_closed"}
+SUBAGENT_EVENT_TYPES = {
+    "subagent_batch_created",
+    "subagent_task_queued",
+    "subagent_task_started",
+    "subagent_task_waiting_approval",
+    "subagent_task_completed",
+    "subagent_task_failed",
+    "subagent_task_cancelled",
+}
 
 
 class SessionStoreError(RuntimeError):

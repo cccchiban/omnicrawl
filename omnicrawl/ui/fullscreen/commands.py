@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from ...commands.slash import (
     format_memory_clean_result,
@@ -19,6 +19,7 @@ from ...commands.slash import (
     handle_model_command,
     handle_reasoning_command,
     handle_session_command,
+    handle_subagent_task_command,
 )
 
 
@@ -35,6 +36,15 @@ class CommandAgent(Protocol):
 
     def switch_workspace(self, workspace: str) -> object:
         """切换 Agent 当前工作区。"""
+
+    def list_subagent_tasks(self) -> list[dict[str, Any]]:
+        """列出当前会话可见的后台 SubAgent 任务。"""
+
+    def get_subagent_task(self, task_id: str) -> dict[str, Any] | None:
+        """读取当前会话中的后台 SubAgent 任务。"""
+
+    def cancel_subagent_task(self, task_id: str) -> dict[str, Any]:
+        """请求取消当前会话中的后台 SubAgent 任务。"""
 
 
 @dataclass(frozen=True)
@@ -88,6 +98,9 @@ class CommandDispatcher:
         format_plugins: Callable[[CommandAgent], str] = format_plugins_status,
         format_memory_clean: Callable[[CommandAgent], str] = format_memory_clean_result,
         handle_session: Callable[[CommandAgent, str], str | None] = handle_session_command,
+        handle_subagent_task: Callable[[CommandAgent, str], str | None] = (
+            handle_subagent_task_command
+        ),
         handle_model: Callable[[CommandAgent, str], str | None] = handle_model_command,
         handle_approval: Callable[[CommandAgent, str], str | None] = handle_approval_command,
         handle_reasoning: Callable[[CommandAgent, str], str | None] = handle_reasoning_command,
@@ -98,6 +111,7 @@ class CommandDispatcher:
         self._format_plugins = format_plugins
         self._format_memory_clean = format_memory_clean
         self._handle_session = handle_session
+        self._handle_subagent_task = handle_subagent_task
         self._handle_model = handle_model
         self._handle_approval = handle_approval
         self._handle_reasoning = handle_reasoning
@@ -149,6 +163,10 @@ class CommandDispatcher:
                 message=session_message,
                 refresh_context=True,
             )
+
+        subagent_task_message = self._handle_subagent_task(self._agent, text)
+        if subagent_task_message is not None:
+            return CommandOutcome(handled=True, message=subagent_task_message)
 
         normalized = stripped.lower()
         if normalized in {"/model", "/models"}:

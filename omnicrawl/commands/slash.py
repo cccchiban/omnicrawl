@@ -12,6 +12,7 @@ from ..config.approval import (
     save_approval_mode,
 )
 from ..agent import AgentError, LocalToolAgent
+from ..agent.tools import public_tool_arguments
 from ..config.llm import LLMError, save_reasoning_effort
 from ..config.llm import ActiveModelRef, save_active_model_ref
 from ..config.model_catalog import (
@@ -43,6 +44,7 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "memory_read": "读取记忆内容",
     "memory_expand_related": "展开相关记忆",
     "memory_write": "写入长期记忆",
+    "subagent": "分发只读子任务",
 }
 
 
@@ -110,6 +112,13 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
             return f"写入 {len(memories)} 条记忆"
         return ""
 
+    if tool_name == "subagent":
+        descriptions = arguments.get("descriptions", [])
+        detail = f"任务数：{arguments.get('task_count', 0)}"
+        if isinstance(descriptions, list) and descriptions:
+            detail += "，任务：" + "；".join(str(item) for item in descriptions)
+        return _truncate_for_display(detail, 240)
+
     if "." in tool_name and arguments:
         return f"参数：{_truncate_for_display(json.dumps(arguments, ensure_ascii=False), 240)}"
 
@@ -122,14 +131,29 @@ def format_tool_confirmation(tool_name: str, arguments: dict[str, Any]) -> str:
     只读工具仅显示描述，写入/执行工具额外展示关键内容供审查。
     """
 
+    arguments = public_tool_arguments(tool_name, arguments)
     description = _TOOL_HUMAN_DESCRIPTIONS.get(tool_name)
     if description is None and "." in tool_name:
         description = f"执行 MCP 工具 {tool_name}"
     if description is None:
         description = "执行操作"
     detail = _format_dangerous_tool_detail(tool_name, arguments)
+    origin = arguments.get("_subagent_origin")
 
     lines = [f"Agent 想要{description}。"]
+    if isinstance(origin, dict):
+        agent_label = _truncate_for_display(str(origin.get("agent_label", "subagent")), 80)
+        task_id = _truncate_for_display(str(origin.get("task_id", "")), 80)
+        task_description = _truncate_for_display(
+            str(origin.get("description", "")),
+            120,
+        )
+        source = f"来源：子任务 {agent_label}"
+        if task_id:
+            source += f"（{task_id}）"
+        if task_description:
+            source += f"，任务：{task_description}"
+        lines.append(source)
     if detail:
         lines.append(detail)
     lines.extend(["", "是否允许执行？"])
@@ -274,6 +298,99 @@ def format_prompt_history(agent: LocalToolAgent, query: str = "") -> str:
     lines.append("")
     lines.append("筛选历史：/history <关键词>")
     return "\n".join(lines)
+
+
+def format_subagent_tasks_list(agent: LocalToolAgent) -> str:
+    """格式化当前会话可见的后台 SubAgent 任务，不展示原始 prompt 或完整结果。"""
+
+    try:
+        tasks = agent.list_subagent_tasks()
+    except AgentError as exc:
+        return f"子任务查询失败：{exc}"
+    if not tasks:
+        return "当前会话没有后台 SubAgent 任务。"
+
+    lines = ["当前会话后台子任务："]
+    for task in tasks:
+        task_id = str(task.get("task_id") or "-")
+        agent_type = str(task.get("agent_type") or "subagent")
+        status = str(task.get("status") or "unknown")
+        description = str(task.get("description") or "未提供描述")
+        lines.append(f"- {task_id} · {agent_type} · {status} · {description}")
+    lines.extend(
+        [
+            "",
+            "查看详情：/task <task_id>",
+            "取消任务：/task cancel <task_id>",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_subagent_task(agent: LocalToolAgent, task_id: str) -> str:
+    """格式化单个安全任务快照，供终端和全屏 TUI 共享使用。"""
+
+    try:
+        task = agent.get_subagent_task(task_id)
+    except AgentError as exc:
+        return f"子任务查询失败：{exc}"
+    if task is None:
+        return "未找到当前会话的 SubAgent 任务。"
+
+    lines = [
+        f"任务：{task.get('task_id') or '-'}",
+        f"状态：{task.get('status') or 'unknown'}",
+        f"角色：{task.get('agent_type') or 'subagent'}",
+        f"描述：{task.get('description') or '未提供描述'}",
+    ]
+    result = task.get("result")
+    if isinstance(result, dict):
+        summary = str(result.get("summary") or "").strip()
+        if summary:
+            lines.extend(["", "摘要：", summary])
+        artifacts = result.get("artifacts")
+        if isinstance(artifacts, (list, tuple)) and artifacts:
+            lines.append(f"关联 artifact：{len(artifacts)} 项")
+    error = task.get("error")
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        if message:
+            lines.extend(["", f"错误：{message}"])
+    return "\n".join(lines)
+
+
+def handle_subagent_task_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理后台 SubAgent 任务的只读查询和单任务取消命令。"""
+
+    text = command.strip()
+    normalized = text.casefold()
+    if normalized == "/tasks":
+        return format_subagent_tasks_list(agent)
+    if normalized != "/task" and not normalized.startswith("/task "):
+        return None
+
+    parts = text.split()
+    if len(parts) == 1:
+        return "用法：/task <task_id>；/task cancel <task_id>。"
+    if len(parts) == 2 and parts[1].casefold() != "cancel":
+        return format_subagent_task(agent, parts[1])
+    if len(parts) != 3 or parts[1].casefold() != "cancel":
+        return "用法：/task <task_id>；/task cancel <task_id>。"
+
+    task_id = parts[2]
+    try:
+        result = agent.cancel_subagent_task(task_id)
+    except AgentError as exc:
+        return f"子任务取消失败：{exc}"
+    if not bool(result.get("ok")):
+        return "未找到当前会话的 SubAgent 任务。"
+
+    task_status = str(result.get("status") or "cancelling")
+    if task_status == "cancelled":
+        return f"已取消后台子任务：{task_id}。"
+    if task_status == "already_terminal":
+        return f"子任务已结束，无需取消：{task_id}。"
+    return f"已请求取消后台子任务：{task_id}。"
 
 
 def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
@@ -701,6 +818,8 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/mcp",
         "/plugins",
         "/sessions",
+        "/tasks",
+        "/task",
         "/resume",
         "/history",
         "/compact",
@@ -740,6 +859,8 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/mcp": "查看 MCP 开关、服务和工具状态。",
         "/plugins": "查看 Hook 插件加载与 Worker 状态（只读）。",
         "/sessions": "查看当前工作区最近会话。",
+        "/tasks": "查看当前会话可见的后台 SubAgent 任务。",
+        "/task": "查看或取消一个后台 SubAgent 任务。",
         "/resume": "恢复指定会话 ID。",
         "/history": "查看或筛选提示历史。",
         "/compact": "压缩当前会话上下文。",
@@ -758,10 +879,11 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/model",
         "/reasoning",
         "/resume",
+        "/task",
         "/history",
         "/rename",
         "/workspace",
-}
+    }
 
     options: list[dict[str, str]] = []
     for command in build_slash_commands(agent):

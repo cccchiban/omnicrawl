@@ -148,6 +148,10 @@ class PendingConfirmation:
     confirmation_id: str
     tool_name: str
     arguments: dict[str, Any]
+    # 子 Agent 来源仅作为 additive 字段存在；旧 API 客户端可忽略它们。
+    task_id: str | None = None
+    agent_label: str | None = None
+    batch_id: str | None = None
     created_at: float = field(default_factory=time.time)
     decision: bool | None = None
     resolved: threading.Event = field(default_factory=threading.Event)

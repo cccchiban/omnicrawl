@@ -17,6 +17,7 @@ from ..agent import AgentConfig, LocalToolAgent
 from ..state.session_artifacts import redact_sensitive_text
 from ..config.llm import load_llm_config
 from ..config.runtime import get_section, load_config_data
+from ..config.subagents import load_subagent_config
 from ..workspace.context import detect_project_context
 from ..workspace.temp import load_agent_temp_workspace_config
 from .deps import data, error_response
@@ -85,22 +86,34 @@ def create_default_agent() -> LocalToolAgent:
     def _on_workspace_switched(new_root: Path):
         if plugin_runtime is None:
             return None
-        plugin_runtime.switch_workspace(new_root)
+        try:
+            plugin_runtime.switch_workspace(new_root)
+        except BaseException:
+            plugin_runtime.close_manager_only()
+            plugin_runtime.workspace_root = new_root
+            raise
         return plugin_runtime.manager
 
-    agent = LocalToolAgent(
-        AgentConfig(
-            llm=load_llm_config(),
-            workspace_root=project_context.workspace_root,
-            workspace_detection_summary=project_context.detection_summary,
-            temp_workspace=load_agent_temp_workspace_config(),
-        ),
-        plugin_manager=None if plugin_runtime is None else plugin_runtime.manager,
-        on_workspace_switched=_on_workspace_switched,
-    )
-    # 供 lifespan 关闭时回收 Node Worker，避免 API 进程退出后残留子进程。
-    agent._api_plugin_runtime = plugin_runtime  # type: ignore[attr-defined]
+    try:
+        agent = LocalToolAgent(
+            AgentConfig(
+                llm=load_llm_config(),
+                workspace_root=project_context.workspace_root,
+                workspace_detection_summary=project_context.detection_summary,
+                temp_workspace=load_agent_temp_workspace_config(),
+                subagents=load_subagent_config(),
+            ),
+            plugin_manager=None if plugin_runtime is None else plugin_runtime.manager,
+            on_workspace_switched=_on_workspace_switched,
+        )
+    except BaseException:
+        if plugin_runtime is not None:
+            plugin_runtime.close()
+        raise
     if plugin_runtime is not None:
+        # PluginRuntime 必须晚于 Agent 及其所有 SubAgent 关闭；Agent 超时进入
+        # deferred close 时，该回调也会随最后一个子任务退出后再执行。
+        agent.add_close_callback(plugin_runtime.close)
         try:
             plugin_runtime.notify_app_started()
         except Exception as exc:  # noqa: BLE001
@@ -131,12 +144,6 @@ def create_app(
             if current is not None:
                 current.close()
                 application.state.service = None
-            plugin_runtime = getattr(agent, "_api_plugin_runtime", None)
-            if plugin_runtime is not None:
-                try:
-                    plugin_runtime.close()
-                except Exception:
-                    pass
 
     app = FastAPI(
         title="OmniCrawl Local API",

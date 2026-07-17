@@ -8,9 +8,11 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .plugin_models import (
     CORE_HOOKS,
@@ -62,6 +64,46 @@ from .plugin_registry import (
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PluginDispatchContext:
+    """子任务专用的只读 Plugin Hook 投递上下文。
+
+    在父线程创建子任务前从 PluginManager/HookDispatcher 的当前计划冻结。
+    子任务只能用 handlers 做 dispatch，不得调用 begin_turn/end_turn。
+    handlers 为空表示“本任务不投递任何插件 handler”，而不是回退到父 live plan。
+    """
+
+    handlers: tuple[ResolvedHandler, ...] = ()
+    source: str = "none"  # parent-turn | parent-plan | none
+
+
+_ACTIVE_PLUGIN_DISPATCH_CONTEXT: ContextVar[PluginDispatchContext | None] = ContextVar(
+    "omnicrawl_plugin_dispatch_context",
+    default=None,
+)
+
+
+@contextmanager
+def activate_plugin_dispatch_context(
+    context: PluginDispatchContext | None,
+) -> Iterator[None]:
+    """在子任务 worker 内绑定只读 dispatch context，避免父子共享 live plan。"""
+
+    token = _ACTIVE_PLUGIN_DISPATCH_CONTEXT.set(context)
+    try:
+        yield
+    finally:
+        _ACTIVE_PLUGIN_DISPATCH_CONTEXT.reset(token)
+
+
+def get_active_plugin_dispatch_context() -> PluginDispatchContext | None:
+    """读取当前线程/协程绑定的子任务 Plugin dispatch context。"""
+
+    return _ACTIVE_PLUGIN_DISPATCH_CONTEXT.get()
+
+
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -147,6 +189,27 @@ class HookDispatcher:
         with self._plan_lock:
             self._turn_plan = None
 
+    def freeze_dispatch_context(self) -> PluginDispatchContext:
+        """冻结当前可投递计划，供子任务独立使用。
+
+        优先使用已 begin_turn 的回合快照；否则使用 live plan。
+        handlers 以 tuple 形式冻结，后续 set_execution_plan 替换整个 plan
+        不会影响已创建的子任务上下文。
+        """
+
+        with self._plan_lock:
+            if self._turn_plan is not None:
+                return PluginDispatchContext(
+                    handlers=tuple(self._turn_plan),
+                    source="parent-turn",
+                )
+            if self._plan:
+                return PluginDispatchContext(
+                    handlers=tuple(self._plan),
+                    source="parent-plan",
+                )
+            return PluginDispatchContext(handlers=(), source="none")
+
     def current_plan(self) -> tuple[ResolvedHandler, ...]:
         with self._plan_lock:
             if self._turn_plan is not None:
@@ -174,6 +237,8 @@ class HookDispatcher:
         """统一分发入口。
 
         handlers_override 用于自定义事件在 visibility 过滤后的精确投递。
+        若未显式传入 handlers_override，且当前线程绑定了 PluginDispatchContext，
+        则使用该冻结 handlers（即使为空也不回退到父 plan）。
         """
 
         if hook_name not in CORE_HOOKS and not hook_name.startswith("plugin."):
@@ -182,6 +247,11 @@ class HookDispatcher:
         hook_policy = policy or HOOK_POLICIES.get(hook_name, HookPolicy())
         working_payload = copy.deepcopy(dict(payload or {}))
         outcome = DispatchOutcome(hook=hook_name, payload=working_payload)
+        if handlers_override is None:
+            # 子任务 worker 绑定的只读 context 优先于父 live/turn plan。
+            active_context = get_active_plugin_dispatch_context()
+            if active_context is not None:
+                handlers_override = active_context.handlers
         if handlers_override is not None:
             handlers = [item for item in handlers_override if item.hook == hook_name]
         else:
@@ -931,6 +1001,33 @@ class PluginManager:
     def end_turn(self) -> None:
         self.dispatcher.end_turn()
 
+    def freeze_dispatch_context(self) -> PluginDispatchContext:
+        """为子任务冻结只读 Plugin dispatch context。"""
+
+        return self.dispatcher.freeze_dispatch_context()
+
+    def agent_definition_paths(self) -> list[tuple[str, Path]]:
+        """返回已激活且已批准插件显式声明的 Agent Markdown 路径。
+
+        Registry 只消费路径，不直接读取 Plugin Worker。路径必须仍位于经过安装完整性
+        校验的插件根目录内；缺失文件交给 AgentDefinitionRegistry 记录诊断，不静默扩权。
+        """
+
+        definitions: list[tuple[str, Path]] = []
+        for name, worker in sorted(self._workers.items()):
+            if not worker.active:
+                continue
+            if "agent:definitions" not in worker.manifest.permissions:
+                continue
+            if "agent:definitions" not in worker.record.approved_permissions:
+                continue
+            root = Path(worker.root).resolve()
+            for relative_path in worker.manifest.agents:
+                candidate = (root / relative_path).resolve()
+                if _is_relative_to(candidate, root):
+                    definitions.append((name, candidate))
+        return definitions
+
     def list_status(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for name, worker in sorted(self._workers.items()):
@@ -1002,19 +1099,37 @@ class PluginRuntime:
     def start(self) -> list[str]:
         if self._started and self.manager is not None:
             return list(self.diagnostics)
-        self.manager = PluginManager(workspace_root=self.workspace_root, config=self.config)
-        self.diagnostics = self.manager.bootstrap()
-        self._started = True
-        if self.config.enabled:
+
+        candidate = PluginManager(workspace_root=self.workspace_root, config=self.config)
+        try:
+            diagnostics = candidate.bootstrap()
+            if self.config.enabled:
+                try:
+                    outcome = candidate.dispatch(
+                        "app.start.before",
+                        {"phase": "bootstrap"},
+                    )
+                    if outcome.denied:
+                        # 显式 deny 阻断启动；插件故障已在 policy 中 skip。
+                        raise PluginDispatchError(
+                            outcome.deny_reason or "app.start.before 被插件拒绝"
+                        )
+                except PluginDispatchError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    diagnostics.append(f"app.start.before 分发异常：{exc}")
+        except BaseException:
             try:
-                outcome = self.manager.dispatch("app.start.before", {"phase": "bootstrap"})
-                if outcome.denied:
-                    # 显式 deny 阻断启动；插件故障已在 policy 中 skip。
-                    raise PluginDispatchError(outcome.deny_reason or "app.start.before 被插件拒绝")
-            except PluginDispatchError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                self.diagnostics.append(f"app.start.before 分发异常：{exc}")
+                candidate.close()
+            except Exception:
+                pass
+            self.manager = None
+            self._started = False
+            raise
+
+        self.manager = candidate
+        self.diagnostics = diagnostics
+        self._started = True
         return list(self.diagnostics)
 
     def notify_app_started(self) -> None:
@@ -1026,28 +1141,40 @@ class PluginRuntime:
             self.diagnostics.append(f"app.start.after 忽略故障：{exc}")
 
     def switch_workspace(self, new_root: Path, *, emit_hooks: bool = False) -> list[str]:
-        """切换工作区并重建 PluginManager。
-
-        默认不重复发 workspace.switch.*：Agent.switch_workspace 已负责 before/after。
-        若从 CLI/测试直接调用，可传 emit_hooks=True。
-        """
+        """事务式重建 PluginManager；候选启动失败时保留旧 Manager。"""
 
         new_root = Path(new_root).resolve()
-        if emit_hooks and self.manager is not None and self.config.enabled:
-            outcome = self.manager.dispatch(
+        old_manager = self.manager
+        old_root = self.workspace_root
+        if emit_hooks and old_manager is not None and self.config.enabled:
+            outcome = old_manager.dispatch(
                 "workspace.switch.before",
-                {"from": str(self.workspace_root), "to": str(new_root)},
+                {"from": str(old_root), "to": str(new_root)},
             )
             if outcome.denied:
                 raise PluginDispatchError(outcome.deny_reason or "workspace.switch.before 拒绝切换")
-        self.close_manager_only()
-        self.workspace_root = new_root
-        self.manager = PluginManager(workspace_root=self.workspace_root, config=self.config)
-        diagnostics = self.manager.bootstrap()
-        self.diagnostics = diagnostics
-        if emit_hooks and self.config.enabled and self.manager is not None:
+
+        candidate = PluginManager(workspace_root=new_root, config=self.config)
+        try:
+            diagnostics = candidate.bootstrap()
+        except BaseException:
             try:
-                self.manager.dispatch(
+                candidate.close()
+            except Exception:
+                pass
+            raise
+
+        if old_manager is not None:
+            try:
+                old_manager.close()
+            except Exception:
+                pass
+        self.workspace_root = new_root
+        self.manager = candidate
+        self.diagnostics = diagnostics
+        if emit_hooks and self.config.enabled:
+            try:
+                candidate.dispatch(
                     "workspace.switch.after",
                     {"workspace": str(self.workspace_root)},
                 )

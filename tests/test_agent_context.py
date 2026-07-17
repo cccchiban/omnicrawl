@@ -29,6 +29,7 @@ from omnicrawl.slash_commands import (
     build_slash_command_options,
     build_slash_commands,
     handle_session_command,
+    handle_subagent_task_command,
 )
 from omnicrawl.temp_workspace import AgentTempWorkspaceConfig
 
@@ -801,6 +802,77 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(agent._history, restored.messages)
         self.assertIsNone(agent._pending_user_text)
         self.assertEqual(agent._active_skills, [])
+
+    def test_resume_session_cancels_old_session_subagents_before_switch(self) -> None:
+        """后台任务不能在父 Session 切换后继续占用旧会话能力。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            store = SessionStore(workspace / ".agent_sessions")
+            current = store.start_session(workspace)
+            target = store.start_session(workspace)
+            store.append_event(current.session_id, "user_message", {"content": "当前任务"})
+            store.append_event(target.session_id, "user_message", {"content": "目标会话"})
+            calls = []
+            coordinator = SimpleNamespace(
+                cancel_and_wait=lambda **kwargs: calls.append(
+                    ("cancel", dict(kwargs))
+                )
+                or True,
+                resume_accepting_when_idle=lambda: calls.append(("resume", {})),
+            )
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._session_store = store
+            agent._session_state = store.load_session(current.session_id)
+            agent._history = [{"role": "user", "content": "当前任务"}]
+            agent._pending_user_text = "处理中"
+            agent._active_skills = []
+            agent._subagent_coordinator = coordinator
+
+            restored = LocalToolAgent.resume_session(agent, target.session_id)
+
+        self.assertEqual(restored.session_id, target.session_id)
+        self.assertEqual([name for name, _payload in calls], ["cancel", "resume"])
+        self.assertIn("父 Session 即将切换", calls[0][1]["reason"])
+        self.assertFalse(calls[0][1]["permanent"])
+
+    def test_archive_session_keeps_current_session_when_subagent_will_not_stop(self) -> None:
+        """取消超时必须阻止归档，避免后台任务失去父 Session 所有权。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            store = SessionStore(workspace / ".agent_sessions")
+            current = store.start_session(workspace)
+            store.append_event(current.session_id, "user_message", {"content": "当前任务"})
+            calls = []
+            coordinator = SimpleNamespace(
+                cancel_and_wait=lambda **kwargs: calls.append(
+                    ("cancel", dict(kwargs))
+                )
+                or False,
+                resume_accepting_when_idle=lambda: calls.append(("resume", {})),
+            )
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._session_store = store
+            agent._session_state = store.load_session(current.session_id)
+            agent._history = [{"role": "user", "content": "当前任务"}]
+            agent._pending_user_text = "处理中"
+            agent._active_skills = []
+            agent._subagent_coordinator = coordinator
+
+            with self.assertRaisesRegex(AgentError, "父 Session 切换失败"):
+                LocalToolAgent.archive_current_session(agent)
+            persisted = store.load_session(current.session_id)
+
+        self.assertEqual(agent.current_session_id, current.session_id)
+        self.assertIsNone(persisted.archived_at)
+        self.assertEqual([name for name, _payload in calls], ["cancel", "resume"])
 
     def test_start_or_resume_session_uses_configured_session_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1606,6 +1678,55 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn('<active_skill_instructions source="skill-registry"', skill_context)
         self.assertIn("Demo skill description", skill_context)
         self.assertIn("Demo skill body should stay out of system.", skill_context)
+
+    def test_subagent_task_slash_commands_expose_only_safe_task_fields(self) -> None:
+        class FakeAgent:
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.cancelled: list[str] = []
+                self.task = {
+                    "task_id": "task-current",
+                    "agent_type": "explore",
+                    "description": "检查当前会话",
+                    "status": "completed",
+                    "result": {
+                        "summary": "安全摘要",
+                        "artifacts": [{"artifact_path": "artifacts/task.json"}],
+                    },
+                    "error": None,
+                    "prompt": "完整任务 prompt，不应显示",
+                }
+
+            def list_subagent_tasks(self):
+                return [dict(self.task)]
+
+            def get_subagent_task(self, task_id: str):
+                return dict(self.task) if task_id == self.task["task_id"] else None
+
+            def cancel_subagent_task(self, task_id: str):
+                if task_id != self.task["task_id"]:
+                    return {"ok": False}
+                self.cancelled.append(task_id)
+                return {"ok": True, "status": "cancelling"}
+
+        agent = FakeAgent()
+        listed = handle_subagent_task_command(agent, "/tasks")
+        detail = handle_subagent_task_command(agent, "/task task-current")
+        cancelled = handle_subagent_task_command(agent, "/task cancel task-current")
+        missing = handle_subagent_task_command(agent, "/task task-missing")
+
+        self.assertIn("task-current", listed or "")
+        self.assertIn("/task cancel", listed or "")
+        self.assertIn("安全摘要", detail or "")
+        self.assertIn("关联 artifact：1 项", detail or "")
+        self.assertNotIn("完整任务 prompt", detail or "")
+        self.assertEqual(cancelled, "已请求取消后台子任务：task-current。")
+        self.assertEqual(agent.cancelled, ["task-current"])
+        self.assertEqual(missing, "未找到当前会话的 SubAgent 任务。")
+        self.assertIn("/tasks", build_slash_commands(agent))
+        options = {item["command"]: item for item in build_slash_command_options(agent)}
+        self.assertEqual(options["/task"]["insert"], "/task ")
 
 
 if __name__ == "__main__":
