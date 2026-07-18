@@ -119,6 +119,95 @@ class TerminalUITest(unittest.TestCase):
             [("正在加载 MCP 能力", False), ("MCP 能力已就绪", False)],
         )
 
+    def test_run_inline_chat_does_not_send_settings_command_to_agent(self) -> None:
+        """仅全屏支持的 /settings 不应在兼容内联界面变成模型输入。"""
+
+        class FakeAgent:
+            current_model = "test-model"
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.requests: list[str] = []
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def prompt_history_texts(self, *, limit: int) -> list[str]:
+                return []
+
+            def run_stream(self, text: str, *_args, **_kwargs) -> None:
+                self.requests.append(text)
+
+        class FakeUI:
+            def __init__(self) -> None:
+                self.notices: list[str] = []
+
+            def inline_turn_base(self, _user_text: str) -> None:
+                pass
+
+            def notice(self, text: str) -> None:
+                self.notices.append(text)
+
+            def status(self, *_args, **_kwargs) -> None:
+                pass
+
+            def newline(self) -> None:
+                pass
+
+            def flush_markdown(self, _state) -> None:
+                pass
+
+            def update_token_usage(self, *_usage: int) -> None:
+                pass
+
+        class FakeStatusLine:
+            def __init__(self, _ui) -> None:
+                pass
+
+            def clear(self) -> None:
+                pass
+
+        class FakeInputBar:
+            def __init__(self, _ui) -> None:
+                pass
+
+            def push_up(self) -> None:
+                pass
+
+            def pop_down(self) -> None:
+                pass
+
+            def clear(self) -> str:
+                return ""
+
+        class FakeWaitingIndicator:
+            def __init__(self, _status_line, *, input_bar) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> str:
+                return ""
+
+        agent = FakeAgent()
+        ui = FakeUI()
+        with patch(
+            "omnicrawl.ui.chat_session._get_user_text",
+            side_effect=["/settings", "退出"],
+        ), patch("omnicrawl.ui.chat_session.StatusLine", FakeStatusLine), patch(
+            "omnicrawl.ui.chat_session.InputBar", FakeInputBar
+        ), patch("omnicrawl.ui.chat_session.WaitingIndicator", FakeWaitingIndicator), redirect_stdout(
+            io.StringIO()
+        ):
+            run_inline_chat(agent, ui)
+
+        self.assertEqual(agent.requests, [])
+        self.assertEqual(
+            ui.notices,
+            ["/settings 仅支持全屏 TUI，请使用默认全屏工作台。"],
+        )
+
     def test_run_inline_chat_keeps_stream_tool_output_in_order_and_replays_queued_input(self) -> None:
         """流状态、工具记录和下一条预输入必须按历史顺序写入。"""
 

@@ -168,6 +168,471 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(truncated), 16)
         self.assertIn("…", truncated)
 
+    async def test_should_render_settings_rows_when_panel_opens(self) -> None:
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = "D:/workspace"
+            current_session_id = "session-demo"
+            skill_manager = None
+            _memory_store = None
+            _mcp_manager = SimpleNamespace(enabled=False)
+            _plugin_manager = SimpleNamespace(enabled=False)
+            config = SimpleNamespace(subagents=SimpleNamespace(enabled=False))
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._handle_command("/settings")
+            await pilot.pause()
+            self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
+            rows = list(app.screen.query(".settings-row"))
+            self.assertEqual(len(rows), 7)
+            self.assertTrue(
+                all(str(row.content).strip() for row in rows),
+                [repr(str(row.content)) for row in rows],
+            )
+            self.assertIn("模型：demo-model", str(rows[0].content))
+            app.screen.query_one("#settings-dialog")
+            await pilot.press("escape")
+            await pilot.pause()
+            self.assertEqual(len(app.screen.query("#settings-dialog")), 0)
+
+    async def test_should_open_model_picker_from_settings_model_row(self) -> None:
+        from textual.app import ComposeResult
+        from textual.screen import ModalScreen
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = "D:/workspace"
+            current_session_id = "session-demo"
+            skill_manager = None
+            _memory_store = None
+            _mcp_manager = SimpleNamespace(enabled=False)
+            _plugin_manager = SimpleNamespace(enabled=False)
+            config = SimpleNamespace(subagents=SimpleNamespace(enabled=False))
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        class DummyModelPicker(ModalScreen):
+            def __init__(self, _agent, *, refresh_on_open: bool = False) -> None:
+                super().__init__()
+                self.refresh_on_open = refresh_on_open
+
+            def compose(self) -> ComposeResult:
+                yield Static("模型选择器", id="dummy-model-picker")
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            with patch(
+                "omnicrawl.ui.fullscreen.ModelPickerScreen",
+                DummyModelPicker,
+            ):
+                app._open_settings()
+                await pilot.pause()
+                app.screen.action_confirm()
+                await pilot.pause()
+
+                self.assertIsInstance(app.screen, DummyModelPicker)
+                app.screen.query_one("#dummy-model-picker")
+
+    async def test_should_focus_model_list_and_leave_search_on_arrow_key(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        class TestPickerScreen(ModelPickerScreen):
+            def _load_catalog(self, *, refresh: bool) -> None:
+                # 使用固定目录隔离网络发现，但保留真实 on_mount 和焦点逻辑。
+                del refresh
+
+        items = [
+            CatalogModel(
+                source="custom",
+                key=f"model-{index}",
+                profile_id="profile",
+                provider="openai",
+                protocol="openai_chat_completions",
+                model_id=f"model-{index}",
+                display_name=f"Model {index}",
+            )
+            for index in range(2)
+        ]
+        agent = SimpleNamespace(current_model="model-0")
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(TestPickerScreen(agent))
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._apply_catalog(
+                {"custom": items, "detected": [], "diagnostics": [], "error": ""}
+            )
+
+            self.assertEqual(getattr(screen.focused, "id", None), "list-custom")
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(screen._index_custom, 1)
+            await pilot.press("up")
+            await pilot.pause()
+            self.assertEqual(screen._index_custom, 0)
+
+            await pilot.press("slash")
+            await pilot.pause()
+            self.assertEqual(
+                getattr(screen.focused, "id", None), "model-picker-search"
+            )
+            await pilot.press("down")
+            await pilot.pause()
+
+            self.assertEqual(screen._index_custom, 1)
+            self.assertEqual(getattr(screen.focused, "id", None), "list-custom")
+            self.assertEqual(agent.current_model, "model-0")
+
+    async def test_should_apply_model_selection_immediately(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        persisted: list[str] = []
+
+        class FakeAgent:
+            current_model = "old-model"
+
+            def set_model(self, model: str, *, persist=None) -> None:
+                if persist is not None:
+                    persist()
+                self.current_model = model
+
+        class TestPickerScreen(ModelPickerScreen):
+            def on_mount(self) -> None:
+                pass
+
+        agent = FakeAgent()
+        item = CatalogModel(
+            source="detected",
+            key="migrated-openai/new-model",
+            profile_id="migrated-openai",
+            provider="openai",
+            protocol="openai_chat_completions",
+            model_id="new-model",
+            display_name="new-model",
+        )
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(
+                    TestPickerScreen(
+                        agent,
+                        persist_selection=lambda selected: persisted.append(
+                            selected.model_id
+                        )
+                        or "已保存",
+                    )
+                )
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._perform_switch(item)
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if agent.current_model == "migrated-openai/new-model":
+                    break
+
+            self.assertEqual(agent.current_model, "migrated-openai/new-model")
+            self.assertEqual(persisted, ["new-model"])
+
+    async def test_should_refresh_hud_when_settings_close(self) -> None:
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = "D:/workspace"
+            current_session_id = "session-demo"
+            skill_manager = None
+            _memory_store = None
+            _mcp_manager = SimpleNamespace(enabled=False)
+            _plugin_manager = SimpleNamespace(enabled=False)
+            config = SimpleNamespace(subagents=SimpleNamespace(enabled=False))
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            with patch.object(app, "_refresh_context_summary") as refresh:
+                app._open_settings()
+                await pilot.pause()
+                app.screen.dismiss(None)
+                await pilot.pause()
+
+                refresh.assert_called_once()
+
+    async def test_should_apply_every_non_model_setting_immediately(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+
+        class FakeAgent:
+            current_model = "demo-model"
+            reasoning_effort = "none"
+            approval_mode = "manual"
+            _memory_store = None
+            _mcp_manager = SimpleNamespace(enabled=False)
+            _plugin_manager = SimpleNamespace(enabled=False)
+            config = SimpleNamespace(subagents=SimpleNamespace(enabled=False))
+
+            def __init__(self) -> None:
+                self.feature_calls: list[tuple[str, bool]] = []
+
+            def set_reasoning_effort(self, value: str) -> str:
+                self.reasoning_effort = value
+                return value
+
+            def set_approval_mode(self, value: str) -> None:
+                self.approval_mode = value
+
+            def set_memory_enabled(self, enabled: bool) -> None:
+                self.feature_calls.append(("memory", enabled))
+                self._memory_store = object() if enabled else None
+
+            def set_mcp_enabled(self, enabled: bool) -> None:
+                self.feature_calls.append(("mcp", enabled))
+                self._mcp_manager = SimpleNamespace(enabled=enabled)
+
+            def set_plugin_enabled(self, enabled: bool) -> None:
+                self.feature_calls.append(("plugins", enabled))
+                self._plugin_manager = SimpleNamespace(enabled=enabled)
+
+            def set_subagents_enabled(self, enabled: bool) -> None:
+                self.feature_calls.append(("subagents", enabled))
+                self.config.subagents.enabled = enabled
+
+        agent = FakeAgent()
+
+        class SettingsApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(SettingsScreen(agent))
+
+        app = SettingsApp()
+        with patch(
+            "omnicrawl.ui.fullscreen.settings.save_reasoning_effort",
+            return_value="config.yaml",
+        ), patch(
+            "omnicrawl.ui.fullscreen.settings.save_approval_mode",
+            return_value="config.yaml",
+        ), patch(
+            "omnicrawl.ui.fullscreen.settings.save_feature_enabled",
+            return_value="config.yaml",
+        ) as save_feature:
+            async with app.run_test(size=(100, 32)) as pilot:
+                await pilot.pause()
+                screen = app.screen
+                for key, value in (
+                    ("reasoning", "high"),
+                    ("approval", "auto"),
+                    ("memory", True),
+                    ("mcp", True),
+                    ("plugins", True),
+                    ("subagents", True),
+                ):
+                    worker = screen._apply_setting(key, value)
+                    await worker.wait()
+
+                self.assertEqual(agent.reasoning_effort, "high")
+                self.assertEqual(agent.approval_mode, "auto")
+                self.assertIsNotNone(agent._memory_store)
+                self.assertTrue(agent._mcp_manager.enabled)
+                self.assertTrue(agent._plugin_manager.enabled)
+                self.assertTrue(agent.config.subagents.enabled)
+
+                for key in ("memory", "mcp", "plugins", "subagents"):
+                    worker = screen._apply_setting(key, False)
+                    await worker.wait()
+
+                self.assertIsNone(agent._memory_store)
+                self.assertFalse(agent._mcp_manager.enabled)
+                self.assertFalse(agent._plugin_manager.enabled)
+                self.assertFalse(agent.config.subagents.enabled)
+                self.assertEqual(
+                    agent.feature_calls,
+                    [
+                        ("memory", True),
+                        ("mcp", True),
+                        ("plugins", True),
+                        ("subagents", True),
+                        ("memory", False),
+                        ("mcp", False),
+                        ("plugins", False),
+                        ("subagents", False),
+                    ],
+                )
+                self.assertEqual(
+                    [call.args for call in save_feature.call_args_list],
+                    agent.feature_calls,
+                )
+                self.assertIn("已保存", screen._status)
+
+    async def test_should_render_selected_model_when_detected_list_exceeds_window(self) -> None:
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        screen = ModelPickerScreen(SimpleNamespace())
+        items = [
+            CatalogModel(
+                source="detected",
+                key=f"migrated-openai/model-{index}",
+                profile_id="migrated-openai",
+                provider="openai",
+                protocol="openai_chat_completions",
+                model_id=f"model-{index}",
+                display_name=f"model-{index}",
+            )
+            for index in range(52)
+        ]
+
+        rendered = screen._render_column_text(items, selected=51, current="")
+
+        self.assertIn("model-51", rendered.plain)
+        self.assertIn("前面", rendered.plain)
+
+    async def test_should_show_current_model_when_picker_opens(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        items = [
+            CatalogModel(
+                source="detected",
+                key=f"migrated-openai/model-{index}",
+                profile_id="migrated-openai",
+                provider="openai",
+                protocol="openai_chat_completions",
+                model_id=f"model-{index}",
+                display_name=f"model-{index}",
+            )
+            for index in range(52)
+        ]
+        agent = SimpleNamespace(current_model="model-51")
+
+        class TestPickerScreen(ModelPickerScreen):
+            def on_mount(self) -> None:
+                pass
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(TestPickerScreen(agent))
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._apply_catalog(
+                {"custom": [], "detected": items, "diagnostics": [], "error": ""}
+            )
+            rendered = str(screen.query_one("#list-detected", Static).content)
+
+            self.assertEqual(screen._index_detected, 51)
+            self.assertIn("model-51", rendered)
+
+    async def test_should_keep_current_model_selected_when_catalog_refreshes_with_filter(self) -> None:
+        """刷新目录时，当前模型应以过滤后列表的下标继续保持选中。"""
+
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        def item(model_id: str) -> CatalogModel:
+            return CatalogModel(
+                source="custom",
+                key=model_id,
+                profile_id="profile",
+                provider="openai",
+                protocol="openai_chat_completions",
+                model_id=model_id,
+                display_name=model_id,
+            )
+
+        # 当前模型在原始目录中的下标为 1；搜索后它成为过滤列表的第 0 项。
+        # 若仍使用原始下标，会错误选中第二个匹配项。
+        items = [item("ignore"), item("current-match"), item("other-match")]
+        agent = SimpleNamespace(current_model="current-match")
+
+        class TestPickerScreen(ModelPickerScreen):
+            def on_mount(self) -> None:
+                pass
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(TestPickerScreen(agent))
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._query = "match"
+            screen._apply_catalog(
+                {"custom": items, "detected": [], "diagnostics": [], "error": ""}
+            )
+
+            selected = screen._selected_item()
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected.model_id, "current-match")
+
     async def test_token_telemetry_updates_counts_and_context_progress(self) -> None:
         """Token 回调应刷新缩写统计，并按配置上限生成彩色上下文进度条。"""
 

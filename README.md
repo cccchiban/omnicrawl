@@ -86,7 +86,7 @@ python main.py plugin disable @scope/name --project
 python main.py plugin rollback @scope/name --project
 ```
 
-TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。
+TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、审批模式、记忆、MCP、插件和子任务总开关；修改立即生效并持久化到当前项目配置。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
 
 设计说明见 `docs/HOOK_PLUGIN_DESIGN.md`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。插件若要提供最低优先级的 Agent Markdown 定义，必须在 manifest 的 `omnicrawl.agents` 中声明包内路径，并同时声明且获批 `agent:definitions` 权限。
 
@@ -131,7 +131,7 @@ python -m omnicrawl.api
 - 输入 `/new`：清空模型对话历史，开启新对话。
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
-- 输入 `/model`：打开双列模型选择界面（自定义 `models.yaml` + API 自动发现）；`/model --refresh` 刷新发现缓存；`/model <key|alias|model_id|profile/model_id>` 直接切换。
+- 输入 `/model`：打开双列模型选择界面（自定义 `models.yaml` + API 自动发现）；列表默认获得焦点，使用 `↑↓` 选择、`←→` 切列、`Enter` 确认，按 `/` 可进入搜索框；`/model --refresh` 刷新发现缓存；`/model <key|alias|model_id|profile/model_id>` 直接切换。
 - 输入 `/approval`：查看当前工具审批模式；输入 `/approval:manual`、`/approval:auto`、`/approval:review` 可切换审批模式并同步写入配置文件。
 - 任务执行中按 `Ctrl+C`：请求取消当前操作；空闲时按 `Ctrl+C` 退出工作台。`Ctrl+L` 只清空当前视图，不清空会话数据；也可以输入 `退出`、`结束` 或关闭窗口。
 

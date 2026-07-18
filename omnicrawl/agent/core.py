@@ -294,6 +294,7 @@ class LocalToolAgent:
         confirm: Callable[[str, dict[str, Any]], bool] | None = None,
         plugin_manager: Any | None = None,
         on_workspace_switched: Callable[[Path], Any] | None = None,
+        on_plugin_settings_changed: Callable[[bool], Any] | None = None,
     ) -> None:
         self.config = config or AgentConfig()
         self.workspace_root = self.config.workspace_root.resolve()
@@ -308,6 +309,8 @@ class LocalToolAgent:
         self._plugin_manager = plugin_manager
         # 工作区切换成功后回调 PluginRuntime.switch_workspace，用于关闭旧 Worker 并重建。
         self._on_workspace_switched = on_workspace_switched
+        # 设置面板切换 plugins.enabled 时复用进程级 PluginRuntime 的事务重建。
+        self._on_plugin_settings_changed = on_plugin_settings_changed
         try:
             self._temp_workspace = AgentTempWorkspace(
                 self.workspace_root,
@@ -1240,6 +1243,132 @@ class LocalToolAgent:
             "disabled" if normalized in {"none", "disabled"} else "enabled"
         )
         return normalized
+
+    def set_memory_enabled(self, enabled: bool) -> None:
+        """切换 Memory 工具，并在新存储准备成功后替换旧运行态。"""
+
+        if not isinstance(enabled, bool):
+            raise AgentError("Memory 开关必须是布尔值。")
+        if enabled:
+            try:
+                next_store = self._create_memory_store()
+            except AgentError:
+                raise
+        else:
+            next_store = None
+        previous_enabled = self.config.memory_enabled
+        previous_store = self._memory_store
+        self.config.memory_enabled = enabled
+        self._memory_store = next_store
+        try:
+            next_tools = self._build_tools()
+        except Exception:
+            self.config.memory_enabled = previous_enabled
+            self._memory_store = previous_store
+            raise
+        self._tools = next_tools
+        # MemoryStore 当前没有外部进程资源；引用替换后旧实例自然失效。
+
+    def set_mcp_enabled(self, enabled: bool) -> None:
+        """事务式切换 MCP；候选 Manager 成功后才关闭旧 Manager。"""
+
+        if not isinstance(enabled, bool):
+            raise AgentError("MCP 开关必须是布尔值。")
+        current_config = self.config.mcp_config or load_mcp_config()
+        next_config = replace(current_config, enabled=enabled)
+        previous_manager = getattr(self, "_mcp_manager", None)
+        previous_config = self.config.mcp_config
+        try:
+            self.config.mcp_config = next_config
+            next_manager = self._create_mcp_manager()
+        except Exception as exc:
+            self.config.mcp_config = previous_config
+            if isinstance(exc, AgentError):
+                raise
+            raise AgentError(f"MCP 设置应用失败：{exc}") from exc
+        self._mcp_manager = next_manager
+        try:
+            self._tools = self._build_tools()
+        except Exception:
+            self._mcp_manager = previous_manager
+            self.config.mcp_config = previous_config
+            try:
+                next_manager.close()
+            except Exception:
+                pass
+            raise
+        if previous_manager is not None:
+            try:
+                previous_manager.close()
+            except Exception:
+                pass
+
+    def set_plugin_enabled(self, enabled: bool) -> None:
+        """通过进程级 PluginRuntime 事务切换插件 Worker。"""
+
+        if not isinstance(enabled, bool):
+            raise AgentError("Plugin 开关必须是布尔值。")
+        callback = getattr(self, "_on_plugin_settings_changed", None)
+        if not callable(callback):
+            raise AgentError("Plugin Runtime 未连接，无法即时切换插件。")
+        try:
+            manager = callback(enabled)
+        except Exception as exc:
+            raise AgentError(f"Plugin 设置应用失败：{exc}") from exc
+        self._plugin_manager = manager
+        if getattr(self.config.subagents, "enabled", False):
+            self._refresh_subagent_definitions()
+
+    def set_subagents_enabled(self, enabled: bool) -> None:
+        """安全切换 SubAgent；关闭前等待现有任务和审批退出。"""
+
+        if not isinstance(enabled, bool):
+            raise AgentError("SubAgent 开关必须是布尔值。")
+        current = self.config.subagents
+        if current.enabled == enabled:
+            return
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if not enabled and coordinator is not None:
+            drained = coordinator.cancel_and_wait(
+                reason="SubAgent 功能即将关闭，当前子任务已取消。",
+                timeout_seconds=SUBAGENT_LIFECYCLE_WAIT_SECONDS,
+                permanent=True,
+            )
+            if not drained:
+                raise AgentError("SubAgent 关闭失败：仍有子任务未退出。")
+        previous_broker = getattr(self, "_subagent_approval_broker", None)
+        previous_semaphore = getattr(self, "_subagent_model_request_semaphore", None)
+        self.config.subagents = replace(current, enabled=enabled)
+        if enabled:
+            next_broker: ApprovalBroker | None = None
+            try:
+                next_semaphore = threading.BoundedSemaphore(
+                    self.config.subagents.model_request_concurrency
+                )
+                next_broker = ApprovalBroker(
+                    approve=self._confirm_subagent_tool_call,
+                    event_sink=self._handle_subagent_event,
+                )
+                self._subagent_model_request_semaphore = next_semaphore
+                self._subagent_approval_broker = next_broker
+                self._refresh_subagent_definitions()
+                self._tools = self._build_tools()
+            except Exception:
+                if next_broker is not None:
+                    next_broker.close()
+                self.config.subagents = current
+                self._subagent_model_request_semaphore = previous_semaphore
+                self._subagent_approval_broker = previous_broker
+                self._subagent_coordinator = None
+                raise
+        else:
+            broker = getattr(self, "_subagent_approval_broker", None)
+            if broker is not None:
+                broker.close()
+            self._subagent_approval_broker = None
+            self._subagent_coordinator = None
+            self._subagent_model_request_semaphore = None
+            self._tools = self._build_tools()
 
     def set_confirm_handler(self, confirm: Callable[[str, dict[str, Any]], bool]) -> None:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""

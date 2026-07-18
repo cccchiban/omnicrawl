@@ -10,6 +10,9 @@
   "approval": {
     "mode": "manual"
   },
+  "memory": {
+    "enabled": true
+  },
   "api": {
     "bearer_token": "请替换为随机长令牌",
     "host": "127.0.0.1",

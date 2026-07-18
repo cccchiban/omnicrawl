@@ -104,6 +104,15 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertEqual(switch.command(), "模型状态")
         self.assertEqual(calls, [("mcp", self.agent), ("model", "/model gpt-test")])
 
+    def test_settings_opens_chinese_settings_panel_only_for_plural_command(self) -> None:
+        settings = CommandDispatcher(self.agent).dispatch("/settings")
+        singular = CommandDispatcher(self.agent).dispatch("/setting")
+
+        self.assertTrue(settings.handled)
+        self.assertTrue(settings.open_settings)
+        self.assertTrue(settings.refresh_context)
+        self.assertFalse(singular.handled)
+
     def test_model_refresh_opens_picker_with_refresh_flag(self) -> None:
         outcome = CommandDispatcher(self.agent).dispatch("/model --refresh")
         self.assertTrue(outcome.handled)

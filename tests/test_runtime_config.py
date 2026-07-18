@@ -95,6 +95,7 @@ class RuntimeConfigTest(unittest.TestCase):
             workspace_root=Path("D:/workspace"),
             workspace_detection_summary="workspace",
             approval_mode="manual",
+            memory_enabled=True,
             temp_workspace="temp-config",
             subagents="subagent-config",
             resume_session_id="session-demo",

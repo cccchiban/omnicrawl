@@ -133,6 +133,12 @@ def run_inline_chat(
             print_mcp_status(agent)
             continue
 
+        # `/settings` 依赖 Textual ModalScreen；兼容内联界面不能打开该面板，
+        # 因此必须在进入 Agent 回合前明确拦截，不能把命令原样发给模型。
+        if user_text.strip() == "/settings":
+            ui.notice("/settings 仅支持全屏 TUI，请使用默认全屏工作台。")
+            continue
+
         session_message = handle_session_command(agent, user_text)
         if session_message is not None:
             print(session_message)

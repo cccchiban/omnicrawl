@@ -39,6 +39,12 @@ class ModelPickerResult:
     message: str = ""
 
 
+class _ModelList(Static):
+    """可聚焦的模型列表，避免初始键盘焦点被搜索框独占。"""
+
+    can_focus = True
+
+
 class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
     """宽终端左右双列，窄终端上下分区。"""
 
@@ -50,6 +56,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         ("up", "move_up", "上"),
         ("down", "move_down", "下"),
         ("enter", "confirm", "切换"),
+        ("slash", "focus_search", "搜索"),
     ]
 
     CSS = """
@@ -158,19 +165,23 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
                 with Horizontal(id="model-picker-columns"):
                     with Vertical(classes="model-column active-column", id="column-custom"):
                         yield Static("自定义模型", classes="model-column-title")
-                        yield Static("", id="list-custom", classes="model-column-list")
+                        yield _ModelList("", id="list-custom", classes="model-column-list")
                     with Vertical(classes="model-column", id="column-detected"):
                         yield Static("自动检测", classes="model-column-title")
-                        yield Static("", id="list-detected", classes="model-column-list")
+                        yield _ModelList("", id="list-detected", classes="model-column-list")
                 yield Static("", id="model-picker-diagnostics")
             yield Static("", id="model-picker-status")
             yield Static(
-                "↑↓ 选择  ←→ 切换列  Enter 切换  R 刷新  Esc 取消",
+                "↑↓ 选择  ←→ 切换列  Enter 切换  / 搜索  R 刷新  Esc 取消",
                 id="model-picker-help",
             )
 
     def on_mount(self) -> None:
-        self.query_one("#model-picker-search", Input).focus()
+        # 模型切换是本界面的主操作，默认焦点必须落在列表上。搜索框仍可
+        # 通过“/”或鼠标进入；搜索后按上下键会自动返回列表导航。
+        # ModalScreen 会在 on_mount 之后执行默认自动聚焦，因此延后一帧才能
+        # 稳定覆盖到模型列表，而不是被第一个可聚焦的搜索框重新抢回。
+        self.call_after_refresh(self._focus_active_list)
         self._load_catalog(refresh=self._refresh_on_open)
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -193,13 +204,16 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
 
     def action_column_left(self) -> None:
         self._active_column = 0
+        self._focus_active_list()
         self._render_lists()
 
     def action_column_right(self) -> None:
         self._active_column = 1
+        self._focus_active_list()
         self._render_lists()
 
     def action_move_up(self) -> None:
+        self._focus_active_list()
         if self._active_column == 0:
             self._index_custom = max(0, self._index_custom - 1)
         else:
@@ -207,6 +221,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self._render_lists()
 
     def action_move_down(self) -> None:
+        self._focus_active_list()
         custom = self._filtered(self._custom)
         detected = self._filtered(self._detected)
         if self._active_column == 0:
@@ -216,6 +231,10 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             if detected:
                 self._index_detected = min(len(detected) - 1, self._index_detected + 1)
         self._render_lists()
+
+    def action_focus_search(self) -> None:
+        if not self._loading and not self._switching:
+            self.query_one("#model-picker-search", Input).focus()
 
     def action_confirm(self) -> None:
         if self._loading or self._switching:
@@ -228,11 +247,29 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self._switch_to(selected)
 
     def on_key(self, event: events.Key) -> None:
-        # 搜索框聚焦时，R/方向键仍交给 bindings；字符输入留给 Input。
-        if event.key in {"enter"} and self.focused and getattr(self.focused, "id", "") == "model-picker-search":
+        focused_id = getattr(self.focused, "id", "") if self.focused else ""
+        if focused_id != "model-picker-search":
+            return
+        if event.key in {"up", "down"}:
+            # 真实终端中 Input 可能先消费方向键，因此在 Screen 事件层明确接管，
+            # 同时把焦点移回列表，保证后续左右切列和 Enter 均稳定工作。
+            event.prevent_default()
+            event.stop()
+            if event.key == "up":
+                self.action_move_up()
+            else:
+                self.action_move_down()
+        elif event.key == "enter":
             # Enter 在搜索框也执行切换。
+            event.prevent_default()
             event.stop()
             self.action_confirm()
+
+    def _focus_active_list(self) -> None:
+        if not self.is_mounted:
+            return
+        list_id = "#list-custom" if self._active_column == 0 else "#list-detected"
+        self.query_one(list_id, _ModelList).focus()
 
     def _load_catalog(self, *, refresh: bool) -> None:
         self._loading = True
@@ -275,11 +312,43 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             self._status = (
                 f"自定义 {len(self._custom)} · 检测 {len(self._detected)}"
             )
-            if not self._custom and self._detected:
+            # 选中下标由渲染和确认逻辑共同解释为“过滤后列表”的下标；
+            # 目录刷新时也必须在同一列表中定位当前模型，不能先取原始目录下标
+            # 再按过滤长度截断，否则会把选中项错移到另一个搜索结果。
+            custom = self._filtered(self._custom)
+            detected = self._filtered(self._detected)
+            current = self._current_model()
+            custom_current = next(
+                (
+                    index
+                    for index, item in enumerate(custom)
+                    if _is_current(item, current)
+                ),
+                None,
+            )
+            detected_current = next(
+                (
+                    index
+                    for index, item in enumerate(detected)
+                    if _is_current(item, current)
+                ),
+                None,
+            )
+            if custom_current is not None:
+                self._index_custom = custom_current
+                self._active_column = 0
+            elif detected_current is not None:
+                self._index_detected = detected_current
                 self._active_column = 1
-        self._index_custom = min(self._index_custom, max(0, len(self._filtered(self._custom)) - 1))
+            elif not custom and detected:
+                self._active_column = 1
+        self._index_custom = min(
+            self._index_custom,
+            max(0, len(self._filtered(self._custom)) - 1),
+        )
         self._index_detected = min(
-            self._index_detected, max(0, len(self._filtered(self._detected)) - 1)
+            self._index_detected,
+            max(0, len(self._filtered(self._detected)) - 1),
         )
         self._render_lists()
         self._render_status()
@@ -384,7 +453,21 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         if not items:
             return Text("（空）", style="#59676d")
         rendered = Text()
-        for index, item in enumerate(items[:40]):
+        # 列表区域高度固定，使用跟随选中项的窗口而不是永远截取前 40 项。
+        # 这样方向键可以访问并看见发现列表中的每个模型。
+        window_size = 4
+        selected = max(0, min(selected, len(items) - 1))
+        window_start = max(
+            0,
+            min(selected - window_size // 2, max(0, len(items) - window_size)),
+        )
+        window_end = min(len(items), window_start + window_size)
+        if window_start > 0:
+            rendered.append(f"... 前面 {window_start} 项\n", style="#59676d")
+        for index, item in enumerate(
+            items[window_start:window_end],
+            start=window_start,
+        ):
             is_selected = index == selected
             is_current = _is_current(item, current)
             marker = "●" if is_current else ("›" if is_selected else " ")
@@ -398,9 +481,9 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             if item.matched_custom_key:
                 line += f"\n  custom: {item.matched_custom_key}"
             rendered.append(line + "\n", style=style)
-        remaining = len(items) - 40
+        remaining = len(items) - window_end
         if remaining > 0:
-            rendered.append(f"... 还有 {remaining} 项\n", style="#59676d")
+            rendered.append(f"... 后面 {remaining} 项\n", style="#59676d")
         return rendered
 
     def _render_status(self) -> None:

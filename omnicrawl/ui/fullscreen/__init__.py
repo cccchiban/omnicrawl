@@ -38,6 +38,7 @@ from ...commands.slash import (
 )
 from .commands import CommandDispatcher
 from .model_picker import ModelPickerResult, ModelPickerScreen
+from .settings import SettingsAction, SettingsScreen
 from .monitor import MonitorStateAdapter, format_monitor_display_batch
 from .turns import AgentTurnCallbacks, AgentTurnController
 from .widgets import ConfirmationScreen, ReasoningDisclosure, ToolDisclosure
@@ -466,6 +467,9 @@ class OmniCrawlApp(App[None]):
         if outcome.open_model_picker:
             self._open_model_picker(refresh=outcome.model_picker_refresh)
             return True
+        if outcome.open_settings:
+            self._open_settings()
+            return True
         if outcome.execution == "slow":
             # 工作区切换会重建 Session、MCP、Monitor 和临时目录，必须放在
             # Textual worker 中，避免文件和进程操作阻塞主事件循环。
@@ -781,6 +785,16 @@ class OmniCrawlApp(App[None]):
         """刷新取消侧栏后的顶部运行上下文。"""
 
         self.query_one("#context-summary", Static).update(self._context_summary_text())
+
+    def _open_settings(self) -> None:
+        """打开中文设置面板；模型项关闭后复用现有模型选择器。"""
+
+        def receive(action: SettingsAction | None) -> None:
+            if action is not None and action.name == "model":
+                self._open_model_picker(refresh=False)
+            self._refresh_context_summary()
+
+        self.push_screen(SettingsScreen(self.agent), receive)
 
     def _open_model_picker(self, *, refresh: bool = False) -> None:
         """打开双列模型选择界面；切换成功后刷新 HUD 并清零最近 Token 显示。"""

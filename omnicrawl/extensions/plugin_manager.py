@@ -10,7 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -1181,6 +1181,33 @@ class PluginRuntime:
             except Exception as exc:  # noqa: BLE001
                 diagnostics.append(f"workspace.switch.after 忽略故障：{exc}")
         return diagnostics
+
+    def set_enabled(self, enabled: bool) -> Any | None:
+        """事务式切换总开关，返回当前 Manager 供 Agent 更新引用。"""
+
+        if not isinstance(enabled, bool):
+            raise PluginError("plugins.enabled 必须是布尔值。")
+        if self.config.enabled == enabled and (not enabled or self.manager is not None):
+            return self.manager
+
+        next_config = replace(self.config, enabled=enabled)
+        previous_config = self.config
+        self.config = next_config
+        try:
+            if enabled:
+                if self.manager is None:
+                    self.start()
+                else:
+                    self.switch_workspace(self.workspace_root)
+                # 应用启动路径会在 start() 后显式发送 app.start.after；运行中
+                # 由设置面板重新启用时也要补齐同一生命周期通知。
+                self.notify_app_started()
+            else:
+                self.close_manager_only()
+        except BaseException:
+            self.config = previous_config
+            raise
+        return self.manager
 
     def close_manager_only(self) -> None:
         if self.manager is not None:

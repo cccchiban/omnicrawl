@@ -65,6 +65,7 @@ class CommandOutcome:
     workspace_switch_requested: bool = False
     open_model_picker: bool = False
     model_picker_refresh: bool = False
+    open_settings: bool = False
 
     def __post_init__(self) -> None:
         """防止调用方拿到互相矛盾的命令描述。"""
@@ -75,8 +76,10 @@ class CommandOutcome:
             raise ValueError("即时命令不应携带后台 command")
         if self.exit_requested and not self.handled:
             raise ValueError("退出请求必须被标记为已处理")
-        if self.open_model_picker and self.command is not None:
-            raise ValueError("打开模型选择界面时不应再附带后台 command")
+        if self.open_model_picker and self.open_settings:
+            raise ValueError("一次命令不能同时打开模型和设置界面")
+        if (self.open_model_picker or self.open_settings) and self.command is not None:
+            raise ValueError("打开交互界面时不应再附带后台 command")
 
 
 class CommandDispatcher:
@@ -136,6 +139,13 @@ class CommandDispatcher:
             )
         if stripped == "/skills":
             return CommandOutcome(handled=True, message=self._format_skills(self._agent))
+        if stripped == "/settings":
+            return CommandOutcome(
+                handled=True,
+                message="打开设置面板",
+                open_settings=True,
+                refresh_context=True,
+            )
         if stripped == "/mcp":
             return CommandOutcome(
                 handled=True,

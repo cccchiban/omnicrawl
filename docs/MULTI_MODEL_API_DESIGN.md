@@ -26,8 +26,8 @@
 
 ### 已实现行为摘要
 
-- `/model` / `/models`：全屏 TUI 打开双列选择器；非 TUI 输出双列文本列表。
-- `/model --refresh`：刷新发现缓存后打开/列出。
+- `/model` / `/models`：全屏 TUI 打开双列选择器；非 TUI 输出双列文本列表。TUI 会定位当前模型，并用跟随选中项的可视窗口展示长列表，方向键可访问发现结果中的全部模型。
+- `/model --refresh`：刷新发现缓存后打开/列出。模型发现只缓存成功结果；连接失败、超时或网关暂时不可用不会进入 300 秒缓存，下一次打开目录会自动重试。
 - `/model <key|alias|model_id|profile/model_id>`：直接切换并写回配置。
 - 配置：`config.yaml` + `models.yaml`；`AI_CONFIG_FILE` / `AI_MODELS_FILE` 可覆盖路径。
 - 环境覆盖：`OMNICRAWL_MODEL`、`OMNICRAWL_PROFILE`；兼容 `OPENAI_MODEL`。

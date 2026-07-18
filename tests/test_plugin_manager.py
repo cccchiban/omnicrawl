@@ -253,6 +253,26 @@ class HookDispatcherTest(unittest.TestCase):
         self.assertFalse(runtime._started)
         candidate.close.assert_called_once_with()
 
+    def test_runtime_enable_notifies_app_started_after_rebuilding_manager(self) -> None:
+        """运行中重新开启插件时，也必须补齐 app.start.after 生命周期钩子。"""
+
+        runtime = PluginRuntime(
+            config=PluginsConfig(enabled=False),
+            workspace_root=Path("D:/workspace"),
+        )
+        # 启动时 plugins.enabled=false 仍会保留一个无插件 Manager，因此重新开启
+        # 会走 switch_workspace 分支而不是 start 分支。
+        runtime.manager = Mock()
+        runtime._started = True
+
+        with patch.object(runtime, "switch_workspace") as switch_workspace, patch.object(
+            runtime, "notify_app_started"
+        ) as notify_app_started:
+            runtime.set_enabled(True)
+
+        switch_workspace.assert_called_once_with(runtime.workspace_root)
+        notify_app_started.assert_called_once_with()
+
     def test_runtime_workspace_switch_keeps_old_manager_when_candidate_bootstrap_fails(self) -> None:
         old_root = Path("D:/old").resolve()
         new_root = Path("D:/new").resolve()

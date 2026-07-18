@@ -448,7 +448,15 @@ def _discover_for_profile(
             message=f"模型列表发现失败：{exc}",
         )
     with _discovery_lock:
-        _discovery_cache[profile.id] = _DiscoveryCacheEntry(result=result, fetched_at=now)
+        if result.status == "ok":
+            _discovery_cache[profile.id] = _DiscoveryCacheEntry(
+                result=result,
+                fetched_at=now,
+            )
+        else:
+            # 网络或网关故障通常是短暂的；缓存失败会让服务恢复后仍持续
+            # 展示旧诊断，直到 TTL 到期或用户手动刷新。
+            _discovery_cache.pop(profile.id, None)
     return result
 
 

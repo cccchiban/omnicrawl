@@ -21,6 +21,7 @@ from omnicrawl.project_context import (
     project_context_status_label,
 )
 from omnicrawl.runtime_config import RuntimeConfigError, load_config_data
+from omnicrawl.config.settings import load_feature_enabled
 from omnicrawl.config.subagents import load_subagent_config
 from omnicrawl.temp_workspace import (
     AgentTempWorkspaceError,
@@ -139,18 +140,25 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 raise
             return plugin_runtime.manager
 
+        def _on_plugin_settings_changed(enabled: bool):
+            if plugin_runtime is None:
+                raise AgentError("Plugin Runtime 未连接。")
+            return plugin_runtime.set_enabled(enabled)
+
         agent = LocalToolAgent(
             AgentConfig(
                 llm=config,
                 workspace_root=project_context.workspace_root,
                 workspace_detection_summary=project_context.detection_summary,
                 approval_mode=approval_mode,
+                memory_enabled=load_feature_enabled("memory", default=True),
                 temp_workspace=temp_workspace_config,
                 subagents=subagent_config,
                 resume_session_id=args.resume,
             ),
             plugin_manager=None if plugin_runtime is None else plugin_runtime.manager,
             on_workspace_switched=_on_workspace_switched,
+            on_plugin_settings_changed=_on_plugin_settings_changed,
         )
         if plugin_runtime is not None:
             agent.add_close_callback(plugin_runtime.close)

@@ -5,16 +5,19 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from omnicrawl.llm import LLMConfig
+from omnicrawl.llm.registry import DiscoveryModel, DiscoveryResult, ProviderProfile
 from omnicrawl.model_catalog import (
     detect_model_options,
     detect_model_provider,
     ensure_current_model_option,
+    clear_discovery_cache,
     ModelOption,
     save_llm_model,
 )
+from omnicrawl.config.model_catalog import _discover_for_profile
 from omnicrawl.slash_commands import handle_model_command
 
 
@@ -74,6 +77,41 @@ class ModelCatalogTest(unittest.TestCase):
         self.assertEqual(captured["authorization"], "Bearer test-key")
         self.assertEqual([option.id for option in options], ["gpt-5.2", "deepseek-v4-flash"])
         self.assertEqual(options[0].provider, "gpt")
+
+    def test_should_retry_discovery_when_previous_attempt_was_unavailable(self) -> None:
+        profile = ProviderProfile(
+            id="migrated-openai",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="test-key",
+        )
+        unavailable = DiscoveryResult(
+            profile_id=profile.id,
+            status="unavailable",
+            message="temporary connection failure",
+        )
+        available = DiscoveryResult(
+            profile_id=profile.id,
+            status="ok",
+            models=(
+                DiscoveryModel(
+                    profile_id=profile.id,
+                    provider="openai",
+                    protocol="openai_chat_completions",
+                    model_id="deepseek-v4-flash",
+                ),
+            ),
+        )
+        adapter = SimpleNamespace(discover_models=Mock(side_effect=[unavailable, available]))
+        clear_discovery_cache()
+
+        with patch("omnicrawl.config.model_catalog.get_adapter", return_value=adapter):
+            first = _discover_for_profile(profile, refresh=False, timeout_seconds=1)
+            second = _discover_for_profile(profile, refresh=False, timeout_seconds=1)
+
+        self.assertEqual(first.status, "unavailable")
+        self.assertEqual(second.status, "ok")
+        self.assertEqual(adapter.discover_models.call_count, 2)
 
     def test_ensure_current_model_option_prepends_missing_current_model(self) -> None:
         options = ensure_current_model_option([], "custom-model")
