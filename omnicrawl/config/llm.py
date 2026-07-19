@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
+from .settings import save_context_window_tokens
 
 DEFAULT_THINKING_TYPE = "disabled"
 DEFAULT_REASONING_EFFORT = ""
@@ -115,7 +116,7 @@ class ActiveModelRef:
 def _require_non_empty(key: str, value: str, env_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise LLMError(
-            f"缺少配置 llm.{key}，请在 config.yaml/config.json 中填写 llm.{key}，"
+            f"缺少配置 llm.{key}，请在 config.yaml 中填写 llm.{key}，"
             f"或设置环境变量 {env_name}。"
         )
 
@@ -260,5 +261,6 @@ __all__ = [
     "load_llm_config",
     "normalize_reasoning_effort",
     "save_active_model_ref",
+    "save_context_window_tokens",
     "save_reasoning_effort",
 ]

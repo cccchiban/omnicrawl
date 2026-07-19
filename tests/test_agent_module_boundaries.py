@@ -17,7 +17,7 @@ class AgentModuleBoundaryTests(unittest.TestCase):
         "tools",
         "execution",
         "approval_policy",
-        "browser_cli",
+        "windows_desktop",
         "llm_protocol",
         "memory_tools",
         "prompt_context",

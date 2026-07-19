@@ -110,7 +110,7 @@ interface HookEvent<TPayload = unknown> {
 
 - `eventId` 在一次分发中唯一；`sequence` 在当前 Agent 实例内单调递增。
 - `workspace.root` 仅在插件获准 `workspace:metadata` 时提供，否则只提供不可逆 ID。
-- 事件发送前由 Host 裁剪字段并脱敏，永不包含 API Key、Bearer Token、完整 `config.json`。
+- 事件发送前由 Host 裁剪字段并脱敏，永不包含 API Key、Bearer Token、完整 `config.yaml`。
 - 自定义事件最大递归深度默认为 4，超过后拒绝，防止事件环。
 - 单条协议消息默认不超过 1 MiB；超限载荷截断或拒绝，并记录诊断。
 
@@ -684,26 +684,23 @@ omnicrawl plugin doctor [name] [--json]
 
 ## 13. 配置设计
 
-建议在 `config.json` 增加：
+建议在 `config.yaml` 增加：
 
-```json
-{
-  "plugins": {
-    "enabled": false,
-    "default_timeout_ms": 1000,
-    "max_timeout_ms": 5000,
-    "failure_threshold": 3,
-    "max_message_bytes": 1048576,
-    "custom_event_max_depth": 4,
-    "allow_network_install": false,
-    "audit_log_enabled": true
-  }
-}
+```yaml
+plugins:
+  enabled: false
+  default_timeout_ms: 1000
+  max_timeout_ms: 5000
+  failure_threshold: 3
+  max_message_bytes: 1048576
+  custom_event_max_depth: 4
+  allow_network_install: false
+  audit_log_enabled: true
 ```
 
 - 首次发布默认 `enabled: false`，由用户显式开启。
 - 环境变量只允许全局禁用、超时收紧或路径覆盖，不允许静默授予权限。
-- CLI 注册表写入与 `config.json` 分离，避免版本锁和普通运行配置互相覆盖。
+- CLI 注册表写入与 `config.yaml` 分离，避免版本锁和普通运行配置互相覆盖。
 - 插件配置中禁止存储明文密钥；未来如需 secrets，应接入独立凭据提供器。
 
 ## 14. 与当前代码的集成点

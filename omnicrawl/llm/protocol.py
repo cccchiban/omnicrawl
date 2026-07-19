@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Any, Callable, Iterable, Mapping, Protocol, Union
 
 
@@ -57,6 +58,23 @@ class TextBlock:
 
 
 @dataclass(frozen=True)
+class ImageBlock:
+    """Provider 无关的内联图片块。
+
+    当前只接收 Host 生成的 Base64 数据，不支持远程 URL，避免模型请求在未审批的
+    情况下触发额外网络读取。图片仅存在于当前工具循环，不写入长期会话历史。
+    """
+
+    media_type: str
+    data_base64: str
+    detail: str = "auto"
+
+    @property
+    def data_url(self) -> str:
+        return f"data:{self.media_type};base64,{self.data_base64}"
+
+
+@dataclass(frozen=True)
 class ToolCallBlock:
     call_id: str
     name: str
@@ -71,7 +89,7 @@ class ToolResultBlock:
     content: str
 
 
-MessageBlock = Union[TextBlock, ToolCallBlock, ToolResultBlock]
+MessageBlock = Union[TextBlock, ImageBlock, ToolCallBlock, ToolResultBlock]
 
 
 @dataclass(frozen=True)
@@ -347,6 +365,8 @@ def conversation_from_openai_messages(
         content = message.get("content")
         if isinstance(content, str) and content:
             blocks.append(TextBlock(text=content))
+        elif isinstance(content, list):
+            blocks.extend(_blocks_from_openai_content_parts(content))
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list):
             for item in tool_calls:
@@ -375,3 +395,44 @@ def conversation_from_openai_messages(
         if blocks or role in {"user", "assistant", "system"}:
             converted.append(ConversationMessage(role=role, blocks=tuple(blocks)))
     return tuple(converted)
+
+
+_DATA_IMAGE_URL_PATTERN = re.compile(
+    r"^data:(image/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$",
+    re.IGNORECASE,
+)
+
+
+def _blocks_from_openai_content_parts(parts: list[Any]) -> list[MessageBlock]:
+    """解析 Host 内部使用的 OpenAI 风格文本/图片内容块。"""
+
+    blocks: list[MessageBlock] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        part_type = str(part.get("type") or "").strip().casefold()
+        if part_type in {"text", "input_text"}:
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                blocks.append(TextBlock(text=text))
+            continue
+        if part_type not in {"image_url", "input_image"}:
+            continue
+        image_url = part.get("image_url")
+        detail = str(part.get("detail") or "auto")
+        if isinstance(image_url, dict):
+            detail = str(image_url.get("detail") or detail)
+            image_url = image_url.get("url")
+        if not isinstance(image_url, str):
+            continue
+        match = _DATA_IMAGE_URL_PATTERN.fullmatch(image_url.strip())
+        if match is None:
+            continue
+        blocks.append(
+            ImageBlock(
+                media_type=match.group(1).lower(),
+                data_base64=match.group(2),
+                detail=detail if detail in {"auto", "low", "high"} else "auto",
+            )
+        )
+    return blocks

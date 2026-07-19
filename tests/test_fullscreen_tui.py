@@ -196,12 +196,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
             rows = list(app.screen.query(".settings-row"))
-            self.assertEqual(len(rows), 7)
+            self.assertEqual(len(rows), 8)
             self.assertTrue(
                 all(str(row.content).strip() for row in rows),
                 [repr(str(row.content)) for row in rows],
             )
             self.assertIn("模型：demo-model", str(rows[0].content))
+            self.assertIn("上下文长度（K）：128K", str(rows[2].content))
             app.screen.query_one("#settings-dialog")
             await pilot.press("escape")
             await pilot.pause()
@@ -516,6 +517,119 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                     agent.feature_calls,
                 )
                 self.assertIn("已保存", screen._status)
+
+    async def test_model_picker_tab_focuses_search_from_active_list(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        class TestPickerScreen(ModelPickerScreen):
+            def on_mount(self) -> None:
+                pass
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(TestPickerScreen(SimpleNamespace()))
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._apply_catalog(
+                {
+                    "custom": [
+                        CatalogModel(
+                            source="custom",
+                            key="demo",
+                            profile_id="profile",
+                            provider="openai",
+                            protocol="openai_chat_completions",
+                            model_id="demo-model",
+                            display_name="Demo",
+                        )
+                    ],
+                    "detected": [],
+                    "diagnostics": [],
+                    "error": "",
+                }
+            )
+            screen._focus_active_list()
+            await pilot.press("tab")
+            self.assertEqual(screen.focused.id, "model-picker-search")
+
+    async def test_custom_models_move_down_and_up(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        class TestPickerScreen(ModelPickerScreen):
+            def on_mount(self) -> None:
+                pass
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(TestPickerScreen(SimpleNamespace()))
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._apply_catalog(
+                {
+                    "custom": [
+                        CatalogModel(
+                            source="custom",
+                            key=f"demo-{index}",
+                            profile_id="profile",
+                            provider="openai",
+                            protocol="openai_chat_completions",
+                            model_id=f"demo-model-{index}",
+                            display_name=f"Demo {index}",
+                        )
+                        for index in range(3)
+                    ],
+                    "detected": [],
+                    "diagnostics": [],
+                    "error": "",
+                }
+            )
+            screen._active_column = 0
+            screen._index_custom = 0
+            screen._focus_active_list()
+            await pilot.press("down")
+            self.assertEqual(screen._index_custom, 1)
+            await pilot.press("up")
+            self.assertEqual(screen._index_custom, 0)
+
+    async def test_model_list_shows_only_model_names(self) -> None:
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        screen = ModelPickerScreen(SimpleNamespace())
+        item = CatalogModel(
+            source="custom",
+            key="demo",
+            profile_id="profile",
+            provider="openai",
+            protocol="openai_chat_completions",
+            model_id="demo-model",
+            display_name="Demo Model",
+        )
+
+        rendered = screen._render_column_text([item], selected=0, current="")
+
+        self.assertIn("Demo Model", rendered.plain)
+        self.assertNotIn("tools", rendered.plain)
+        self.assertNotIn("Chat", rendered.plain)
+        self.assertNotIn("profile", rendered.plain)
 
     async def test_should_render_selected_model_when_detected_list_exceeds_window(self) -> None:
         from omnicrawl.config.model_catalog import CatalogModel

@@ -38,7 +38,7 @@ from .tools import (
     workspace_command_tool_result,
     workspace_tool_result,
 )
-from .browser_cli import BBBrowserCLI
+from .windows_desktop import WindowsDesktopTools
 from .history import compact_history
 from .execution import AgentLoopLimits, AgentLoopObservation, AgentLoopRunner
 from .llm_protocol import (
@@ -331,11 +331,16 @@ class LocalToolAgent:
             command_timeout_seconds=self.config.command_timeout_seconds,
             extra_protection_message=self._workspace_extra_protection_message,
         )
-        self._bb_browser_cli = BBBrowserCLI(self.workspace_root)
+        # 仅 Windows 注册桌面工具；非 Windows 不向模型暴露注定失败的工具定义。
+        self._windows_desktop_tools: WindowsDesktopTools | None = (
+            self._create_windows_desktop_tools()
+            if WindowsDesktopTools.is_supported()
+            else None
+        )
         self._skill_manager: SkillManager | None = None
 
         if not self.config.llm.api_key.strip():
-            raise AgentError("缺少 API Key，请在 config.json 的 llm.api_key 中配置，或设置 OPENAI_API_KEY。")
+            raise AgentError("缺少 API Key，请在 config.yaml 的 llm 配置中填写，或设置 OPENAI_API_KEY。")
 
         self._client: Any | None = None
         self._mcp_manager = self._create_mcp_manager()
@@ -850,7 +855,7 @@ class LocalToolAgent:
         # 3. 原子替换到新工作区状态。
         self.workspace_root = new_root
         self.__dict__.pop("_workspace_tools", None)
-        self.__dict__.pop("_bb_browser_cli", None)
+        self.__dict__.pop("_windows_desktop_tools", None)
         self.__dict__.pop("_agent_session_facade", None)
 
         self._temp_workspace = prepared["temp_workspace"]
@@ -915,12 +920,13 @@ class LocalToolAgent:
         previous_mcp_manager = getattr(self, "_mcp_manager", None)
         previous_tools = getattr(self, "_tools", None)
         previous_skill_manager = getattr(self, "_skill_manager", None)
+        previous_windows_desktop_tools = getattr(self, "_windows_desktop_tools", None)
 
         try:
             # 临时把 workspace_root 指到新路径，复用现有工厂方法；失败后完整回写。
             self.workspace_root = new_root
             self.__dict__.pop("_workspace_tools", None)
-            self.__dict__.pop("_bb_browser_cli", None)
+            self.__dict__.pop("_windows_desktop_tools", None)
             self.__dict__.pop("_agent_session_facade", None)
 
             temp_workspace = AgentTempWorkspace(new_root, self.config.temp_workspace)
@@ -976,7 +982,10 @@ class LocalToolAgent:
             if previous_skill_manager is not None:
                 self._skill_manager = previous_skill_manager
             self.__dict__.pop("_workspace_tools", None)
-            self.__dict__.pop("_bb_browser_cli", None)
+            if previous_windows_desktop_tools is not None:
+                self._windows_desktop_tools = previous_windows_desktop_tools
+            else:
+                self.__dict__.pop("_windows_desktop_tools", None)
             self.__dict__.pop("_agent_session_facade", None)
             return prepared
         except Exception as exc:
@@ -993,7 +1002,10 @@ class LocalToolAgent:
             if previous_skill_manager is not None:
                 self._skill_manager = previous_skill_manager
             self.__dict__.pop("_workspace_tools", None)
-            self.__dict__.pop("_bb_browser_cli", None)
+            if previous_windows_desktop_tools is not None:
+                self._windows_desktop_tools = previous_windows_desktop_tools
+            else:
+                self.__dict__.pop("_windows_desktop_tools", None)
             self.__dict__.pop("_agent_session_facade", None)
             self._dispatch_plugin_hook(
                 "workspace.switch.error",
@@ -1160,7 +1172,7 @@ class LocalToolAgent:
         return self.config.approval_mode
 
     def set_approval_mode(self, mode: str) -> None:
-        """运行时切换审批模式；持久化由调用方负责写入 config.json。"""
+        """运行时切换审批模式；持久化由调用方负责写入 config.yaml。"""
 
         self.config.approval_mode = normalize_approval_mode(mode)
 
@@ -1243,6 +1255,17 @@ class LocalToolAgent:
             "disabled" if normalized in {"none", "disabled"} else "enabled"
         )
         return normalized
+
+    def set_context_window_tokens(self, tokens: int) -> int:
+        """运行时切换上下文窗口；持久化由设置面板负责。"""
+
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            raise AgentError("上下文长度必须是正整数 Token。")
+        manager = getattr(self, "_runtime_manager", None)
+        if manager is not None:
+            manager.set_context_window_tokens(tokens)
+        self.config.llm.context_window_tokens = tokens
+        return tokens
 
     def set_memory_enabled(self, enabled: bool) -> None:
         """切换 Memory 工具，并在新存储准备成功后替换旧运行态。"""
@@ -2509,6 +2532,10 @@ class LocalToolAgent:
                     tool_call=tool_call,
                     result=tool_result,
                     message=self._tool_result_message(tool_call, tool_result),
+                    followup_messages=self._tool_result_followup_messages(
+                        tool_call,
+                        tool_result,
+                    ),
                 )
             )
         status("")
@@ -3019,6 +3046,7 @@ class LocalToolAgent:
             output=self._truncate_tool_output(result.output),
             full_output=display_text,
             ui_artifact=result.ui_artifact,
+            model_images=result.model_images,
         )
 
     @classmethod
@@ -3030,7 +3058,19 @@ class LocalToolAgent:
         """文件写入和具备显式删除行为的调用是批次屏障，其余调用允许并行。"""
 
         return (
-            tool.name in {"replace_text", "write_file", "subagent", VERIFY_COMMAND_TOOL_NAME}
+            tool.name
+            in {
+                "replace_text",
+                "write_file",
+                "subagent",
+                VERIFY_COMMAND_TOOL_NAME,
+                # 同一模型回复中的桌面调用必须保持顺序，例如先激活窗口再输入文本。
+                "windows_window",
+                "windows_control",
+                "windows_input",
+                "windows_clipboard",
+                "windows_screenshot",
+            }
             or cls._is_delete_behavior_tool_call(tool, arguments)
             or is_git_mutation_tool_call(tool, arguments)
         )
@@ -3128,6 +3168,7 @@ class LocalToolAgent:
         return parse_tool_review_response(review_text)
 
     def _build_tools(self) -> dict[str, ToolDefinition]:
+        windows_desktop = self._windows_desktop_toolbox()
         return build_agent_tools(
             mcp_manager=self._mcp_manager,
             memory_enabled=self._memory_store is not None,
@@ -3139,7 +3180,6 @@ class LocalToolAgent:
             bash=self._tool_bash,
             powershell=self._tool_powershell,
             monitor=self._tool_monitor,
-            bb_browser_cli=self._tool_bb_browser_cli,
             memory_search=self._tool_memory_search,
             memory_read=self._tool_memory_read,
             memory_expand_related=self._tool_memory_expand_related,
@@ -3152,6 +3192,15 @@ class LocalToolAgent:
                 self._tool_subagent
                 if getattr(self, "_subagent_coordinator", None) is not None
                 else None
+            ),
+            windows_window=(windows_desktop.run_window if windows_desktop is not None else None),
+            windows_control=(windows_desktop.run_control if windows_desktop is not None else None),
+            windows_input=(windows_desktop.run_input if windows_desktop is not None else None),
+            windows_clipboard=(
+                windows_desktop.run_clipboard if windows_desktop is not None else None
+            ),
+            windows_screenshot=(
+                windows_desktop.run_screenshot if windows_desktop is not None else None
             ),
         )
 
@@ -3233,9 +3282,6 @@ class LocalToolAgent:
 
     def _tool_monitor(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_command_tool_result(self._monitor_toolbox().run, arguments)
-
-    def _tool_bb_browser_cli(self, arguments: dict[str, Any]) -> ToolResult:
-        return self._bb_browser_cli_toolbox().run(arguments)
 
     def _tool_display_html(self, arguments: dict[str, Any]) -> ToolResult:
         """准备供支持 HTML 的客户端读取的 UI artifact。
@@ -3491,11 +3537,31 @@ class LocalToolAgent:
             self._monitor_manager = manager
         return manager
 
-    def _bb_browser_cli_toolbox(self) -> BBBrowserCLI:
-        toolbox = getattr(self, "_bb_browser_cli", None)
-        if toolbox is None:
-            toolbox = BBBrowserCLI(self.workspace_root)
-            self._bb_browser_cli = toolbox
+    def _create_windows_desktop_tools(self) -> WindowsDesktopTools:
+        # 以 AgentConfig 作为启用状态和路径的权威来源，避免测试替身或切换期间的
+        # TempWorkspace 门面缺少 config/root 属性时破坏 Agent 工具表构建。
+        config = getattr(self, "config", None)
+        workspace_root = Path(getattr(self, "workspace_root", Path.cwd())).resolve()
+        temp_config = getattr(config, "temp_workspace", None)
+        screenshot_directory = None
+        if bool(getattr(temp_config, "enabled", False)):
+            directory = str(getattr(temp_config, "directory", ".agent_tmp") or ".agent_tmp")
+            screenshot_directory = workspace_root / directory / "images"
+        return WindowsDesktopTools(
+            screenshot_directory=screenshot_directory,
+            workspace_root=workspace_root,
+        )
+
+    def _windows_desktop_toolbox(self) -> WindowsDesktopTools | None:
+        """返回当前 Host 的 Windows 桌面工具箱；其他平台不注册该能力。"""
+
+        toolbox = getattr(self, "_windows_desktop_tools", None)
+        if toolbox is not None:
+            return toolbox
+        if not WindowsDesktopTools.is_supported():
+            return None
+        toolbox = self._create_windows_desktop_tools()
+        self._windows_desktop_tools = toolbox
         return toolbox
 
     def _workspace_extra_protection_message(self, path: Path) -> str | None:
@@ -3702,6 +3768,42 @@ class LocalToolAgent:
             "tool_call_id": tool_call.id or tool_call.name,
             "content": content,
         }
+
+    def _tool_result_followup_messages(
+        self,
+        tool_call: ToolCall,
+        result: ToolResult,
+    ) -> tuple[dict[str, Any], ...]:
+        """把截图作为临时 user 观察注入视觉模型，且不进入 Session/长期历史。"""
+
+        if not result.ok or not result.model_images or not self._active_model_supports_vision():
+            return ()
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    f"以下图片由刚才的 {tool_call.name} 工具生成。"
+                    "请直接观察图片内容并继续完成用户任务。"
+                ),
+            }
+        ]
+        for image in result.model_images:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{image.media_type};base64,{image.data_base64}",
+                        "detail": image.detail,
+                    },
+                }
+            )
+        return ({"role": "user", "content": content},)
+
+    def _active_model_supports_vision(self) -> bool:
+        snapshot = getattr(self, "_active_runtime_snapshot", None)
+        runtime = getattr(snapshot, "runtime", None)
+        capabilities = getattr(runtime, "capabilities", None)
+        return bool(getattr(capabilities, "vision", False))
 
     @staticmethod
     def _assistant_message(assistant_text: str, reasoning: str = "") -> dict[str, Any]:

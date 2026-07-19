@@ -172,7 +172,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
                 yield Static("", id="model-picker-diagnostics")
             yield Static("", id="model-picker-status")
             yield Static(
-                "↑↓ 选择  ←→ 切换列  Enter 切换  / 搜索  R 刷新  Esc 取消",
+                "↑↓ 选择  ←→ 切换列  Tab 搜索  Enter 切换  / 搜索  R 刷新  Esc 取消",
                 id="model-picker-help",
             )
 
@@ -248,6 +248,14 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
 
     def on_key(self, event: events.Key) -> None:
         focused_id = getattr(self.focused, "id", "") if self.focused else ""
+        if focused_id in {"list-custom", "list-detected"} and event.key == "tab":
+            # 两列模型列表都是可聚焦控件，Textual 默认 Tab 顺序会先从左列
+            # 跳到右列，用户必须按两次才能进入搜索框。模型列表之间已经
+            # 由左右键切换，因此 Tab 在任一列表中直接进入搜索框。
+            event.prevent_default()
+            event.stop()
+            self.action_focus_search()
+            return
         if focused_id != "model-picker-search":
             return
         if event.key in {"up", "down"}:
@@ -473,14 +481,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             marker = "●" if is_current else ("›" if is_selected else " ")
             style = "#00e5c3 bold" if is_selected else ("#d9e4e8" if is_current else "#8fa4ad")
             title = item.display_name or item.model_id
-            meta = f"{item.profile_id or '-'} · {_protocol_label(item.protocol)}"
-            caps = _capability_summary(item)
-            line = f"{marker} {title}\n  {meta}"
-            if caps:
-                line += f"\n  {caps}"
-            if item.matched_custom_key:
-                line += f"\n  custom: {item.matched_custom_key}"
-            rendered.append(line + "\n", style=style)
+            rendered.append(f"{marker} {title}\n", style=style)
         remaining = len(items) - window_end
         if remaining > 0:
             rendered.append(f"... 后面 {remaining} 项\n", style="#59676d")
@@ -523,34 +524,6 @@ def _is_current(item: CatalogModel, current: str) -> bool:
     if item.profile_id and current == f"{item.profile_id}/{item.model_id}":
         return True
     return current in item.aliases
-
-
-def _protocol_label(protocol: str) -> str:
-    mapping = {
-        "openai_chat_completions": "Chat",
-        "openai_responses": "Responses",
-        "anthropic_messages": "Messages",
-        "gemini_generate_content": "GenerateContent",
-    }
-    return mapping.get(protocol, protocol or "-")
-
-
-def _capability_summary(item: CatalogModel) -> str:
-    caps = item.capabilities
-    bits: list[str] = []
-    if item.context_window_tokens:
-        tokens = item.context_window_tokens
-        if tokens >= 1000:
-            bits.append(f"{tokens // 1000}K")
-        else:
-            bits.append(str(tokens))
-    if getattr(caps, "tools", False):
-        bits.append("tools")
-    if getattr(caps, "reasoning", False):
-        bits.append("reasoning")
-    if getattr(caps, "vision", False):
-        bits.append("vision")
-    return " · ".join(bits)
 
 
 def _default_persist_selection(item: CatalogModel) -> str:

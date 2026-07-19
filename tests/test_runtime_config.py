@@ -1,43 +1,87 @@
 from __future__ import annotations
 
-import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import yaml
+
 from omnicrawl.entry import _parse_args, run_application
-from omnicrawl.runtime_config import default_config_path, load_config_data, save_config_data
+from omnicrawl.runtime_config import (
+    RuntimeConfigError,
+    default_config_path,
+    load_config_data,
+    save_config_data,
+)
 from omnicrawl.ui import UIStartupError
 from omnicrawl.ui.windows_launcher import launch_in_powershell_window
 
 
 class RuntimeConfigTest(unittest.TestCase):
-    def test_default_config_path_points_to_project_root_config(self) -> None:
-        expected_path = Path(__file__).resolve().parent.parent / "config.json"
+    def test_default_config_path_points_to_project_root_yaml(self) -> None:
+        expected_path = Path(__file__).resolve().parent.parent / "config.yaml"
 
         self.assertEqual(default_config_path(), expected_path)
 
-    def test_load_config_data_accepts_utf8_bom(self) -> None:
+    def test_load_config_data_accepts_utf8_bom_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
-            payload = json.dumps({"llm": {"model": "demo"}}).encode("utf-8")
+            config_path = Path(temp_dir) / "config.yaml"
+            payload = yaml.safe_dump(
+                {"llm": {"model": "demo"}},
+                allow_unicode=True,
+                sort_keys=False,
+            ).encode("utf-8")
             config_path.write_bytes(b"\xef\xbb\xbf" + payload)
 
             data = load_config_data(config_path)
 
         self.assertEqual(data["llm"]["model"], "demo")
 
-    def test_save_config_data_writes_utf8_without_bom(self) -> None:
+    def test_save_config_data_writes_yaml_utf8_without_bom(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
 
             save_config_data({"approval": {"mode": "auto"}}, config_path)
             raw = config_path.read_bytes()
 
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
-        self.assertEqual(json.loads(raw.decode("utf-8"))["approval"]["mode"], "auto")
+        self.assertEqual(
+            yaml.safe_load(raw.decode("utf-8"))["approval"]["mode"],
+            "auto",
+        )
+
+    def test_explicit_json_config_path_is_rejected_for_load_and_save(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            config_path.write_text('{"approval":{"mode":"auto"}}', encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeConfigError, "JSON 配置已停止支持"):
+                load_config_data(config_path)
+            with self.assertRaisesRegex(RuntimeConfigError, "JSON 配置已停止支持"):
+                save_config_data({"approval": {"mode": "manual"}}, config_path)
+
+    def test_json_config_path_from_environment_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.json"
+            with patch.dict(os.environ, {"AI_CONFIG_FILE": str(config_path)}, clear=False):
+                with self.assertRaisesRegex(RuntimeConfigError, "JSON 配置已停止支持"):
+                    load_config_data()
+
+    def test_default_loader_reports_legacy_json_without_reading_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            yaml_path = Path(temp_dir) / "config.yaml"
+            json_path = Path(temp_dir) / "config.json"
+            json_path.write_text("not valid json and must not be parsed", encoding="utf-8")
+
+            with patch(
+                "omnicrawl.config.runtime.default_config_path",
+                return_value=yaml_path,
+            ):
+                with self.assertRaisesRegex(RuntimeConfigError, "不会读取或自动迁移 JSON"):
+                    load_config_data()
 
     def test_parse_args_accepts_resume_session_id(self) -> None:
         args = _parse_args(["--resume", "20260616-201530-a1b2c3"])
@@ -54,8 +98,9 @@ class RuntimeConfigTest(unittest.TestCase):
                     code = run_application([])
 
         self.assertEqual(code, 1)
-
-        print_mock.assert_called_once_with("界面启动失败：缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。")
+        print_mock.assert_called_once_with(
+            "界面启动失败：缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。"
+        )
 
     def test_main_starts_fullscreen_ui_and_closes_agent(self) -> None:
         config = SimpleNamespace(
@@ -89,7 +134,6 @@ class RuntimeConfigTest(unittest.TestCase):
                                                 code = run_application(["--resume", "session-demo"])
 
         self.assertEqual(code, 0)
-
         agent_config_class.assert_called_once_with(
             llm=config,
             workspace_root=Path("D:/workspace"),

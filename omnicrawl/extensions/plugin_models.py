@@ -277,7 +277,7 @@ HOOK_POLICIES: dict[str, HookPolicy] = {
 
 @dataclass(frozen=True)
 class PluginsConfig:
-    """config.json 中的 plugins 段。"""
+    """config.yaml 中的 plugins 段。"""
 
     enabled: bool = False
     default_timeout_ms: int = 1000
@@ -656,7 +656,7 @@ def default_timeout_for_mode(mode: str) -> int:
 
 
 def parse_plugins_config(data: Mapping[str, Any] | None) -> PluginsConfig:
-    """从 config.json 的 plugins 段构造配置；缺省时默认关闭插件。"""
+    """从 config.yaml 的 plugins 段构造配置；缺省时默认关闭插件。"""
 
     if not data:
         return PluginsConfig()

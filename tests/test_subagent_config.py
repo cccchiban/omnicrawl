@@ -16,7 +16,7 @@ from omnicrawl.config.subagents import (
 class SubAgentConfigTest(unittest.TestCase):
     def test_defaults_are_disabled_and_keep_design_limits(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config = load_subagent_config(Path(temp_dir) / "missing.json")
+            config = load_subagent_config(Path(temp_dir) / "missing.yaml")
 
         self.assertFalse(config.enabled)
         self.assertEqual(config.max_depth, 1)
@@ -30,7 +30,7 @@ class SubAgentConfigTest(unittest.TestCase):
         self.assertFalse(config.enable_verify_agent)
         self.assertEqual(config.verify_command_timeout_seconds, 120)
 
-    def test_yaml_and_json_load_the_same_phase1b_values(self) -> None:
+    def test_yaml_loads_phase1b_values(self) -> None:
         payload = {
             "subagents": {
                 "enabled": True,
@@ -47,9 +47,7 @@ class SubAgentConfigTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            json_path = root / "config.json"
             yaml_path = root / "config.yaml"
-            json_path.write_text(json.dumps(payload), encoding="utf-8")
             yaml_path.write_text(
                 "subagents:\n"
                 "  enabled: true\n"
@@ -65,17 +63,15 @@ class SubAgentConfigTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            json_config = load_subagent_config(json_path)
             yaml_config = load_subagent_config(yaml_path)
 
-        self.assertEqual(json_config, yaml_config)
-        self.assertTrue(json_config.enabled)
-        self.assertEqual(json_config.default_max_turns, 12)
-        self.assertEqual(json_config.default_timeout_seconds, 90.0)
+        self.assertTrue(yaml_config.enabled)
+        self.assertEqual(yaml_config.default_max_turns, 12)
+        self.assertEqual(yaml_config.default_timeout_seconds, 90.0)
 
     def test_environment_can_only_disable_or_tighten(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.json"
+            path = Path(temp_dir) / "config.yaml"
             path.write_text(
                 json.dumps(
                     {
@@ -126,7 +122,7 @@ class SubAgentConfigTest(unittest.TestCase):
 
     def test_background_requires_explicit_config_and_is_not_widened_by_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.json"
+            path = Path(temp_dir) / "config.yaml"
             path.write_text(json.dumps({"subagents": {"allow_background": True}}), encoding="utf-8")
             with patch.dict(os.environ, {"OMNICRAWL_SUBAGENTS_ENABLED": "false"}, clear=False):
                 config = load_subagent_config(path)
@@ -135,7 +131,7 @@ class SubAgentConfigTest(unittest.TestCase):
 
     def test_current_phase_allows_explicit_fork_but_rejects_recursive_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.json"
+            path = Path(temp_dir) / "config.yaml"
             path.write_text(
                 json.dumps({"subagents": {"allow_fork": True}}),
                 encoding="utf-8",
@@ -144,7 +140,7 @@ class SubAgentConfigTest(unittest.TestCase):
 
         # max_depth 仍限制为 1；共享写入/worktree/standard 允许显式开启。
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.json"
+            path = Path(temp_dir) / "config.yaml"
             path.write_text(
                 json.dumps({"subagents": {"max_depth": 2}}),
                 encoding="utf-8",
@@ -153,7 +149,7 @@ class SubAgentConfigTest(unittest.TestCase):
                 load_subagent_config(path)
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.json"
+            path = Path(temp_dir) / "config.yaml"
             path.write_text(
                 json.dumps(
                     {

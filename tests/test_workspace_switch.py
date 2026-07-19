@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -154,6 +155,27 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     result = read_tool.run({"path": "hello.txt"})
                     self.assertTrue(result.ok)
                     self.assertIn("content", result.output)
+                finally:
+                    agent.close()
+
+    @unittest.skipUnless(os.name == "nt", "Windows 桌面工具仅在 Windows 注册")
+    def test_switch_workspace_rebinds_screenshot_directory_to_new_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orig_workspace = Path(temp_dir) / "project_a"
+            target_workspace = Path(temp_dir) / "project_b"
+            orig_workspace.mkdir()
+            target_workspace.mkdir()
+            config = self._make_config(orig_workspace)
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                try:
+                    agent.switch_workspace(target_workspace)
+                    screenshot_tool = agent._tools["windows_screenshot"]
+                    toolbox = screenshot_tool.run.__self__
+                    self.assertEqual(
+                        toolbox._screenshot_directory,
+                        (target_workspace / ".agent_tmp" / "images").resolve(),
+                    )
                 finally:
                     agent.close()
 

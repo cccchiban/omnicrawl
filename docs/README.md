@@ -7,6 +7,7 @@
 ## 文档清单
 
 - `TERMINAL_UI.md`：终端 UI 的交互约定、技术方案和限制说明。
+- `WINDOWS_DESKTOP_TOOLS.md`：Windows 内置窗口、UI Automation、SendInput、文本剪贴板与原生截图/视觉模型注入工具的接口、安全边界和验证说明。
 - `API.md`：本地 HTTP/SSE API 的配置、鉴权、接口、事件流和前端接入示例。
 - `skill_system_impl.md`：Agent Skill 子系统的设计与实现记录。
 - `SKILL_INSTALLATION.md`：AI Skill 安装、编写、验证和渐进式披露使用规范。

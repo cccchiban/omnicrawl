@@ -1,21 +1,18 @@
-"""运行配置仓库：JSON 兼容 + YAML 优先，原子写回。"""
+"""严格使用 YAML 的运行配置仓库，支持 UTF-8 读取与原子写回。"""
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
 
-# 兼容既有 README / 测试：默认路径仍指向 config.json。
-# 加载时若同目录存在 config.yaml，则以 YAML 为权威。
-DEFAULT_CONFIG_FILENAME = "config.json"
-DEFAULT_YAML_CONFIG_FILENAME = "config.yaml"
+DEFAULT_CONFIG_FILENAME = "config.yaml"
 DEFAULT_MODELS_FILENAME = "models.yaml"
 CONFIG_PATH_ENV = "AI_CONFIG_FILE"
 MODELS_PATH_ENV = "AI_MODELS_FILE"
+_YAML_SUFFIXES = {".yaml", ".yml"}
 
 
 class RuntimeConfigError(RuntimeError):
@@ -27,13 +24,15 @@ def project_root() -> Path:
 
 
 def default_config_path() -> Path:
-    """返回项目默认配置文件路径（兼容既有 config.json 约定）。"""
+    """返回项目默认 YAML 配置文件路径。"""
 
     return project_root() / DEFAULT_CONFIG_FILENAME
 
 
 def default_yaml_config_path() -> Path:
-    return project_root() / DEFAULT_YAML_CONFIG_FILENAME
+    """兼容既有调用名；默认配置本身就是 YAML。"""
+
+    return default_config_path()
 
 
 def default_models_path() -> Path:
@@ -41,97 +40,54 @@ def default_models_path() -> Path:
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
-    """解析配置文件路径。
-
-    解析顺序为：显式参数 > `AI_CONFIG_FILE` > 项目根目录 `config.json`。
-    注意：无显式路径时，`load_config_data` 还会额外检查同目录 `config.yaml`。
-    """
+    """按显式参数、环境变量、项目默认路径的顺序解析 YAML 配置。"""
 
     if config_path is not None:
-        return Path(config_path).expanduser()
-
-    raw_env = os.getenv(CONFIG_PATH_ENV, "").strip()
-    if raw_env:
-        return Path(raw_env).expanduser()
-
-    return default_config_path()
+        path = Path(config_path).expanduser()
+    else:
+        raw_env = os.getenv(CONFIG_PATH_ENV, "").strip()
+        path = Path(raw_env).expanduser() if raw_env else default_config_path()
+    _validate_yaml_path(path, source="运行配置")
+    return path
 
 
 def resolve_models_path(models_path: str | Path | None = None) -> Path:
     if models_path is not None:
-        return Path(models_path).expanduser()
-    raw_env = os.getenv(MODELS_PATH_ENV, "").strip()
-    if raw_env:
-        return Path(raw_env).expanduser()
-    return default_models_path()
+        path = Path(models_path).expanduser()
+    else:
+        raw_env = os.getenv(MODELS_PATH_ENV, "").strip()
+        path = Path(raw_env).expanduser() if raw_env else default_models_path()
+    _validate_yaml_path(path, source="模型配置")
+    return path
 
 
 def load_config_data(config_path: str | Path | None = None) -> dict[str, Any]:
-    """读取并解析运行配置。
+    """读取 YAML 运行配置；不存在时返回空对象，不再读取或迁移 JSON。"""
 
-    规则：
-    1. 显式/环境路径存在 → 按扩展名解析 yaml/json。
-    2. 默认路径：config.yaml 存在则以 YAML 为权威。
-    3. 仅有 config.json → 尝试迁移为 YAML；迁移失败则兼容读取 JSON。
-    4. 都不存在 → 返回空字典。
-    """
-
-    # 显式参数或 AI_CONFIG_FILE
-    if config_path is not None or os.getenv(CONFIG_PATH_ENV, "").strip():
-        path = resolve_config_path(config_path)
-        if not path.exists():
-            return {}
+    path = resolve_config_path(config_path)
+    if path.exists():
         return _load_mapping_file(path)
 
-    yaml_path = default_yaml_config_path()
-    json_path = default_config_path()
-
-    if yaml_path.exists():
-        return _load_mapping_file(yaml_path)
-
-    if json_path.exists():
-        try:
-            from .migration import maybe_migrate_config_json
-
-            migrated = maybe_migrate_config_json(
-                json_path=json_path,
-                yaml_path=yaml_path,
-                models_path=default_models_path(),
+    # 只检测默认位置的遗留文件以提供可操作错误，不解析、不迁移，也不把它
+    # 当作配置源。显式路径和 AI_CONFIG_FILE 已在扩展名校验阶段直接拒绝 JSON。
+    if config_path is None and not os.getenv(CONFIG_PATH_ENV, "").strip():
+        legacy_path = path.with_suffix(".json")
+        if legacy_path.exists():
+            raise RuntimeConfigError(
+                "检测到不再支持的 config.json，且 config.yaml 不存在。"
+                "请根据 config.example.yaml 手工创建 config.yaml；程序不会读取或自动迁移 JSON。"
             )
-            if migrated and yaml_path.exists():
-                return _load_mapping_file(yaml_path)
-        except Exception:
-            # 迁移失败不阻塞启动，回退读 JSON。
-            pass
-        return _load_mapping_file(json_path)
-
     return {}
 
 
 def save_config_data(data: Mapping[str, Any], config_path: str | Path | None = None) -> Path:
-    """把运行配置原子写回文件。
-
-    - 显式/环境目标：按扩展名写 JSON 或 YAML。
-    - 默认路径：若已有 config.yaml 则写 YAML，否则写 config.json（兼容旧流程）。
-    """
+    """把运行配置以 YAML 原子写回；JSON 和未知扩展名会被明确拒绝。"""
 
     if not isinstance(data, Mapping):
         raise RuntimeConfigError("配置数据必须是对象。")
 
-    payload = dict(data)
-
-    if config_path is not None or os.getenv(CONFIG_PATH_ENV, "").strip():
-        path = resolve_config_path(config_path)
-    else:
-        yaml_path = default_yaml_config_path()
-        path = yaml_path if yaml_path.exists() else default_config_path()
-
-    suffix = path.suffix.lower()
-    if suffix in {".yaml", ".yml"}:
-        text = _dump_yaml(payload)
-    else:
-        text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    _atomic_write_text(path, text)
+    path = resolve_config_path(config_path)
+    _atomic_write_text(path, _dump_yaml(dict(data)))
     return path
 
 
@@ -146,31 +102,20 @@ def get_section(data: Mapping[str, Any], key: str) -> dict[str, Any]:
     return dict(value)
 
 
+def _validate_yaml_path(path: Path, *, source: str) -> None:
+    if path.suffix.lower() not in _YAML_SUFFIXES:
+        raise RuntimeConfigError(
+            f"{source}仅支持 .yaml 或 .yml 文件：{path}。JSON 配置已停止支持。"
+        )
+
+
 def _load_mapping_file(path: Path) -> dict[str, Any]:
+    _validate_yaml_path(path, source="配置文件")
     try:
         text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise RuntimeConfigError(f"读取配置文件失败：{path}，{exc}") from exc
-
-    suffix = path.suffix.lower()
-    if suffix in {".yaml", ".yml"}:
-        data = _load_yaml(text, path)
-    elif suffix == ".json":
-        try:
-            data = json.loads(text) if text.strip() else {}
-        except json.JSONDecodeError as exc:
-            raise RuntimeConfigError(
-                f"配置文件 JSON 解析失败：{path}，第 {exc.lineno} 行第 {exc.colno} 列：{exc.msg}"
-            ) from exc
-    else:
-        try:
-            data = json.loads(text) if text.strip() else {}
-        except json.JSONDecodeError:
-            data = _load_yaml(text, path)
-
-    if not isinstance(data, dict):
-        raise RuntimeConfigError(f"配置文件顶层必须是对象：{path}")
-    return data
+    return _load_yaml(text, path)
 
 
 def _load_yaml(text: str, path: Path) -> dict[str, Any]:
@@ -244,7 +189,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def load_raw_file(path: Path) -> dict[str, Any]:
-    """供 migration / model_store 复用的底层加载。"""
+    """供 model_store 等 YAML 配置模块复用的底层加载。"""
 
     return _load_mapping_file(path)
 

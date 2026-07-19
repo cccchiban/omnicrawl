@@ -13,13 +13,12 @@
 - Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复。
 - Client：`omnicrawl/mcp/client.py`，负责连接 Server、发现 Tool/Resource/Prompt、调用和降级。
 - Local Server：`omnicrawl/mcp/server.py`，通过 `stdio` 暴露当前项目的安全工具和上下文。
-- 配置入口：`config.json` 的 `mcp` 段，示例见 `config.example.json`。
+- 配置入口：`config.yaml` 的 `mcp` 段，示例见 `config.example.yaml`。
 - 状态入口：运行时输入 `/mcp` 查看 Server、Tool、Resource、Prompt 和诊断。
 
 默认边界：
 
 - MCP 默认关闭，设置 `mcp.enabled=true` 才会连接启用的 Server。
-- bb-browser 不作为 MCP Server 接入；浏览器自动化统一走 Agent 内置 `bb_browser_cli` 工具，直接调用 CLI。
 - 当前可用传输是本地 `stdio`；`streamable_http` 会识别但暂不连接。
 - 外部网络能力默认不暴露，除非配置策略明确允许。
 - 高风险 MCP Tool 必须继续走 Host 侧审批或审查，不能只信任 Server 声明。
@@ -46,7 +45,7 @@
 先读：
 
 1. 本文档第 3 节。
-2. `config.example.json` 的 `mcp` 段。
+2. `config.example.yaml` 的 `mcp` 段。
 
 如遇到配置校验失败，再读：
 
@@ -140,7 +139,7 @@
 - `stdio` 必须提供 `command`。
 - `timeout_seconds` 范围是 1 到 360 秒。
 - `risk_level=trusted` 只表示来源可信，不代表跳过审批。
-- 不要把真实密钥写进 `config.example.json` 或源码；真实密钥只能存在本地 `config.json` 或环境变量。
+- 不要把真实密钥写进 `config.example.yaml` 或源码；真实密钥只能存在本地 `config.yaml` 或环境变量。
 - 引入外部 MCP Server 前，必须先明确能力范围、数据边界、成本和是否联网。
 
 环境变量：
@@ -210,7 +209,7 @@ Prompt 用于稳定任务模板，常见 Prompt：
 
 Host 侧永远是最终安全边界：
 
-- 受保护路径：`.git`、`.env`、`config.json`、虚拟环境、缓存目录。
+- 受保护路径：`.git`、`.env`、`config.yaml`、`models.yaml`、历史 `config.json`、虚拟环境、缓存目录。
 - 普通文件工具只能访问工作区内路径。
 - 外部 MCP Server 默认不暴露能力，除非策略允许。
 - 命令执行必须设置超时，输出会截断。
@@ -252,7 +251,7 @@ logs/mcp-audit.jsonl
 
 | 现象 | 优先检查 |
 |------|----------|
-| `/mcp` 显示 MCP 已关闭 | `config.json` 的 `mcp.enabled` 或 `MCP_ENABLED` |
+| `/mcp` 显示 MCP 已关闭 | `config.yaml` 的 `mcp.enabled` 或 `MCP_ENABLED` |
 | Server 为 degraded | `/mcp` 诊断、Server 命令、超时、工作区环境 |
 | Tool 不出现在列表 | Server 是否启用、能力发现是否成功、外部能力是否被策略拦截 |
 | Tool 返回 `SCHEMA_INVALID` | 参数是否缺必填字段、类型是否匹配、字符串是否超长 |

@@ -1231,7 +1231,7 @@ OMNICRAWL_SUBAGENT_VERIFY_TIMEOUT_SECONDS
 ### 21.2 不记录
 
 - API Key、Token、Cookie、密码；
-- 完整 `config.yaml/config.json/models.yaml`；
+- 完整 `config.yaml`/`models.yaml`；
 - 隐藏推理；
 - 未裁剪的大型工具输出；
 - 未经授权的用户文件全文；

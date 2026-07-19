@@ -30,7 +30,7 @@ class OpenAIResponseLLM:
     def __init__(self, config: LLMConfig | None = None) -> None:
         self.config = config or load_llm_config()
         if not self.config.api_key.strip():
-            raise LLMError("缺少 API Key，请在 config.json 的 llm.api_key 中配置，或设置 OPENAI_API_KEY。")
+            raise LLMError("缺少 API Key，请在 config.yaml 的 llm 配置 中配置，或设置 OPENAI_API_KEY。")
 
         try:
             from openai import OpenAI
@@ -305,7 +305,7 @@ class OpenAIResponseLLM:
             return (
                 "模型不存在或当前账号无权使用该模型。"
                 f"当前网关可用模型示例：{models}。"
-                "可在 config.json 中配置 llm.model，或设置 OPENAI_MODEL 切换。"
+                "可在 config.yaml 中配置模型，或设置 OPENAI_MODEL 切换。"
             )
 
         if _looks_like_html_error(message):

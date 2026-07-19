@@ -4,6 +4,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 from unittest.mock import patch
 
 from omnicrawl.agent import LocalToolAgent, ToolDefinition, ToolCall
@@ -22,13 +24,13 @@ from omnicrawl.slash_commands import handle_approval_command, handle_reasoning_c
 class ApprovalConfigTest(unittest.TestCase):
     def test_load_approval_mode_defaults_to_manual(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
 
             self.assertEqual(load_approval_mode(config_path), APPROVAL_MODE_MANUAL)
 
     def test_load_approval_mode_supports_aliases_and_legacy_flags(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
                 json.dumps({"approval": {"mode": "auto-review"}}),
                 encoding="utf-8",
@@ -44,14 +46,14 @@ class ApprovalConfigTest(unittest.TestCase):
 
     def test_save_approval_mode_preserves_existing_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
                 json.dumps({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
                 encoding="utf-8",
             )
 
             save_approval_mode(APPROVAL_MODE_REVIEW, config_path)
-            data = json.loads(config_path.read_text(encoding="utf-8"))
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
             self.assertEqual(data["approval"]["mode"], APPROVAL_MODE_REVIEW)
             self.assertEqual(data["llm"]["model"], "demo")
@@ -73,7 +75,7 @@ class ApprovalCommandTest(unittest.TestCase):
         agent = FakeAgent()
         with patch(
             "omnicrawl.slash_commands.save_approval_mode",
-            return_value=Path("config.json"),
+            return_value=Path("config.yaml"),
         ) as save_mode:
             message = handle_approval_command(agent, "/approval:auto")
 
@@ -92,7 +94,7 @@ class ApprovalCommandTest(unittest.TestCase):
         agent = FakeAgent()
         with patch(
             "omnicrawl.slash_commands.save_reasoning_effort",
-            return_value=Path("config.json"),
+            return_value=Path("config.yaml"),
         ) as save_effort:
             message = handle_reasoning_command(agent, "/reasoning high")
 
@@ -123,13 +125,6 @@ class ApprovalCommandTest(unittest.TestCase):
                 requires_confirmation=True,
                 run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
             ),
-            "bb_browser_cli": ToolDefinition(
-                name="bb_browser_cli",
-                description="调用 bb-browser CLI。",
-                argument_schema='{"args":["status","--json"]}',
-                requires_confirmation=False,
-                run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
-            ),
         }
 
         read_call = normalize_tool_call(
@@ -139,15 +134,10 @@ class ApprovalCommandTest(unittest.TestCase):
             ),
             tools,
         )
-        tab_call = normalize_tool_call(
-            ToolCall(name="bb-browser", arguments={"args": ["status", "--json"]}),
-            tools,
-        )
 
         self.assertEqual(read_call.name, "read_file")
         self.assertEqual(read_call.arguments["start_line"], 2)
         self.assertEqual(read_call.arguments["max_lines"], 30)
-        self.assertEqual(tab_call.name, "bb_browser_cli")
 
     def test_review_mode_skips_non_delete_tool_calls(self) -> None:
         tool = ToolDefinition(

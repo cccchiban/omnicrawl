@@ -8,7 +8,7 @@
 pip install -r requirements.txt
 ```
 
-推荐在 `config.yaml`（或兼容的 `config.json`）中配置 API 段：
+推荐在 `config.yaml` 中配置 API 段：
 
 ```yaml
 api:

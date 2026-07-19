@@ -61,7 +61,7 @@
 
 ### 4.1 问题证据
 
-文件头明确说明：原先散落在 `agent/*.py` 的实现被集中到此文件，目的是减少代码文件数量。当前文件包含以下 11 个原模块分段：
+文件头明确说明：原先散落在 `agent/*.py` 的实现被集中到此文件，目的是减少代码文件数量。历史快照包含以下原模块分段；其中浏览器 CLI 能力现已移除：
 
 | 原模块 | 当前分段起始行（快照） | 主要职责 |
 |---|---:|---|
@@ -70,7 +70,6 @@
 | `history.py` | 255 | 对话历史恢复、压缩和摘要 |
 | `tools.py` | 405 | 内置工具定义、注册和调用规范化 |
 | `approval_policy.py` | 985 | 工具审批与删除行为判断 |
-| `browser_cli.py` | 1138 | bb-browser CLI 生命周期和命令调用 |
 | `llm_protocol.py` | 1285 | LLM 请求、响应和流式协议适配 |
 | `memory_tools.py` | 1791 | Agent 记忆工具封装 |
 | `prompt_context.py` | 1915 | 系统提示词和项目上下文构建 |
@@ -85,7 +84,6 @@ omnicrawl.agent.environment
 omnicrawl.agent.history
 omnicrawl.agent.tools
 omnicrawl.agent.approval_policy
-omnicrawl.agent.browser_cli
 omnicrawl.agent.llm_protocol
 omnicrawl.agent.memory_tools
 omnicrawl.agent.prompt_context
@@ -125,7 +123,6 @@ omnicrawl/agent/
 ├── history.py
 ├── tools.py
 ├── approval_policy.py
-├── browser_cli.py
 ├── llm_protocol.py
 ├── memory_tools.py
 ├── prompt_context.py

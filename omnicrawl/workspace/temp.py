@@ -273,7 +273,7 @@ class AgentTempWorkspace:
 def load_agent_temp_workspace_config(
     config_path: str | Path | None = None,
 ) -> AgentTempWorkspaceConfig:
-    """从 config.json 的 agent_temp 段读取临时工作区配置。"""
+    """从 config.yaml 的 agent_temp 段读取临时工作区配置。"""
 
     try:
         data = load_config_data(config_path)

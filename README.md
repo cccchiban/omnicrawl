@@ -41,18 +41,18 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 - `bash`：使用 Git Bash 执行 Bash 命令，适合 POSIX Shell 语法与 Bash 脚本，默认执行前会要求确认。
 - `powershell`：使用 PowerShell 执行 Windows 命令，优先使用 PowerShell 7，默认执行前会要求确认。
 - `monitor`：受 Agent 管理地在后台执行命令，默认使用 PowerShell，也可显式指定 Bash；`start` 返回任务 ID，`poll` 按游标读取增量日志，`stop` 停止任务，`list` 查看任务。Agent 关闭或切换工作区时会自动终止其子进程树，默认执行前会要求确认。
-- `bb_browser_cli`：调用 bb-browser CLI 操作真实浏览器；Agent 启动时不会预热或打开浏览器，首次实际调用该工具时由 CLI 按需启动 daemon 和受管浏览器，默认执行前会要求确认。
+- Windows 原生桌面工具（仅 Windows）：`windows_window` 枚举/读取/激活窗口，`windows_control` 使用 UI Automation 查找并操作控件，`windows_input` 通过 SendInput 模拟鼠标键盘，`windows_clipboard` 读写 Unicode 文本剪贴板，`windows_screenshot` 截取虚拟桌面/区域/窗口并在模型支持 vision 时直接提供图片；五项均默认要求确认，并按调用顺序串行执行。详见 `docs/WINDOWS_DESKTOP_TOOLS.md`。
 - `subagent`：仅在 `subagents.enabled=true` 时注册；支持有界批量 `run`、后台 `spawn`、`list/get/cancel`，以及显式开启后的 `fork`、模型覆盖和 Worktree `list/apply/discard` 控制。默认角色仅只读；`verify` 只能调用固定检查标识，通用写 Agent 与 Worktree 均需额外开关。
 
 安全边界：
 
-- 文件工具只能访问当前项目目录内的路径；`config.yaml`/`config.json`、`models.yaml`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
+- 文件工具只能访问当前项目目录内的路径；`config.yaml`、`models.yaml` 和历史 `config.json`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
 - `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；按 `Enter`、`Y` 或 `1` 允许，按 `N` 或 `2` 拒绝；方向键只会被消费，不会触发工具执行。
 - `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时只把疑似删除行为交给同一模型的非思考模式审查，其他工具调用自动执行。自动模式不显示确认页，只显示步骤和执行记录。
 - 命令工具不是系统级沙箱；所有命令均通过明确的 PowerShell 或 Git Bash 解释器以 `shell=False` 启动。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
-- bb-browser 是内置 CLI 能力，不通过 MCP 暴露；需要安装或更新时使用项目里的 npm 依赖，或设置 `BB_BROWSER_COMMAND` 指向本机可执行文件。
+- Windows 桌面工具不能突破 UAC、安全桌面、锁屏、受保护媒体或跨权限（UIPI）边界；不要用它们绕过访问控制。输入文本与剪贴板写入内容不会进入确认页或工具参数会话记录；截图 Base64 只存在于当前模型工具循环，不写入 Session 或长期历史。读取剪贴板和截图结果仍应按敏感数据处理。
 - MCP 默认关闭；开启后会在启动时发现已启用的 MCP Server，并把 Tool 以 `server.tool` 名称追加到 Agent 工具列表，同时按需读取 Resource 和 Prompt。单个 Server 失败只会显示降级诊断，不影响内置工具。
-- SubAgent 默认关闭。read_only 角色只能使用工作区读取/搜索和可用的 Memory 只读工具；`memory_write`、MCP Tool、Skill 控制面、浏览器、父控制面和再次创建 SubAgent 均不会因父 Host 已注册而进入子工具集。模型任务参数也不能提交自定义工具、Skill、MCP Server 或 permission profile。显式设置 `subagents.enable_verify_agent=true` 后，内置 `verify` 额外获得子任务私有的 `verify_command`：只能选择 `unit_tests`、`compileall`、`git_diff_check` 三项固定检查，Host 以静态 argv 和 `shell=False` 启动。通用写 Agent 还需显式开启 standard/worktree 开关，写入和变更性操作继续经过来源明确的审批。任务并发与模型请求并发分别受配置上限约束，父历史、活动 Skill、Runtime 字段和普通 Session 消息不会被 fresh 子循环覆盖；Fork 只消费创建时冻结且已脱敏的父公开上下文。父 Session 归档/恢复会先取消旧会话子任务，待处理 Worktree 会阻止切换工作区，避免旧任务或旧仓库写能力进入新的所有权边界。结果会先脱敏和裁剪，大结果写入父 Session 管控的 JSON artifact；Provider reasoning 不进入公开结果，API/TUI 只接收安全生命周期摘要。
+- SubAgent 默认关闭。read_only 角色只能使用工作区读取/搜索和可用的 Memory 只读工具；`memory_write`、MCP Tool、Skill 控制面、父控制面和再次创建 SubAgent 均不会因父 Host 已注册而进入子工具集。模型任务参数也不能提交自定义工具、Skill、MCP Server 或 permission profile。显式设置 `subagents.enable_verify_agent=true` 后，内置 `verify` 额外获得子任务私有的 `verify_command`：只能选择 `unit_tests`、`compileall`、`git_diff_check` 三项固定检查，Host 以静态 argv 和 `shell=False` 启动。通用写 Agent 还需显式开启 standard/worktree 开关，写入和变更性操作继续经过来源明确的审批。任务并发与模型请求并发分别受配置上限约束，父历史、活动 Skill、Runtime 字段和普通 Session 消息不会被 fresh 子循环覆盖；Fork 只消费创建时冻结且已脱敏的父公开上下文。父 Session 归档/恢复会先取消旧会话子任务，待处理 Worktree 会阻止切换工作区，避免旧任务或旧仓库写能力进入新的所有权边界。结果会先脱敏和裁剪，大结果写入父 Session 管控的 JSON artifact；Provider reasoning 不进入公开结果，API/TUI 只接收安全生命周期摘要。
 - Agent 不再限制主循环的连续工具步骤；SubAgent 则按角色定义和全局配置限制模型回合、工具次数与调用边界时间。时间预算会阻止继续启动新步骤，并收紧单次模型请求超时，但无法强制终止不响应取消的第三方 SDK 或系统调用。AI 返回空响应时会最多重试 5 次，每次请求超时 180 秒。可通过环境变量调整：
 
 ```powershell
@@ -72,7 +72,7 @@ python main.py plugin doctor
 python -m omnicrawl plugin doctor
 omnicrawl plugin doctor   # 需先 pip install -e .
 
-# 启用全局插件系统（写入 config.yaml/config.json 的 plugins.enabled）
+# 启用全局插件系统（写入 config.yaml 的 plugins.enabled）
 python main.py plugin system enable
 
 # 注册本地开发插件（dev 模式，不进可回滚 store）
@@ -86,7 +86,7 @@ python main.py plugin disable @scope/name --project
 python main.py plugin rollback @scope/name --project
 ```
 
-TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、审批模式、记忆、MCP、插件和子任务总开关；修改立即生效并持久化到当前项目配置。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
+TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、上下文长度（32K–2048K）、审批模式、记忆、MCP、插件和子任务总开关；修改立即生效并持久化到当前项目配置。上下文长度按当前活动模型保存：自定义模型写入 `models.yaml`，其他模型写入 `config.yaml` 默认值。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
 
 设计说明见 `docs/HOOK_PLUGIN_DESIGN.md`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。插件若要提供最低优先级的 Agent Markdown 定义，必须在 manifest 的 `omnicrawl.agents` 中声明包内路径，并同时声明且获批 `agent:definitions` 权限。
 
@@ -159,6 +159,7 @@ python main.py
 │   │   ├── execution.py           # 可复用 AgentLoopRunner
 │   │   ├── subagents/             # 定义注册表、协调器及内置角色/后台/恢复/Worktree
 │   │   ├── tools.py / history.py / llm_protocol.py
+│   │   ├── windows_desktop.py     # Windows 窗口、UIA、输入、剪贴板与截图原生工具
 │   │   └── system_prompt.md       # 运行时系统提示词模板
 │   ├── mcp/                     # MCP 配置、安全、审计、客户端与内置 Server
 │   ├── api/                     # FastAPI + SSE 接口
@@ -172,8 +173,7 @@ python main.py
 │   │   ├── llm_client.py         # OpenAI Responses 网络客户端（遗留/审查）
 │   │   ├── model_catalog.py      # 自定义 + 自动发现双列目录
 │   │   ├── model_store.py        # models.yaml
-│   │   ├── migration.py          # config.json → config.yaml 迁移
-│   │   └── runtime.py            # YAML 优先配置仓库
+│   │   └── runtime.py            # 严格 YAML 配置仓库
 │   ├── llm/                     # 统一模型协议、Runtime Manager、Provider Adapter
 │   │   └── providers/            # openai_chat / openai_responses / anthropic / gemini
 │   ├── workspace/               # 工作区工具、Monitor、临时目录
@@ -185,9 +185,8 @@ python main.py
 │   └── extensions/              # Skill 等扩展
 ├── docs/                       # 设计说明和实现文档
 ├── tests/                      # 单元与模块边界回归
-├── config.example.yaml         # 推荐：多模型运行配置模板
+├── config.example.yaml         # 多模型运行配置模板
 ├── models.example.yaml         # 自定义模型目录模板
-├── config.example.json         # 兼容旧 JSON 模板
 └── requirements.txt            # Python 依赖
 ```
 
@@ -236,64 +235,16 @@ models:
     context_window_tokens: 128000
 ```
 
-仅有旧 `config.json` 时，程序会优先尝试迁移为 `config.yaml` + `models.yaml`，并留下 `config.json.migrated.bak` 备份。该备份包含原始配置和可能的明文凭据，已默认被 `.gitignore` 排除；确认迁移无误后应删除，并在疑似泄露时轮换对应密钥。也可继续使用 JSON 扁平配置。
+程序只读取 YAML 运行配置，不再解析、迁移或回退到 JSON。请复制模板后填写本地配置：
 
-### 兼容：JSON 扁平配置
-
-先复制 `config.example.json` 为 `config.json`，再填写自己的密钥：
-
-```json
-{
-  "llm": {
-    "api_key": "你的 API Key",
-    "base_url": "https://xxx.xx/v1",
-    "model": "deepseek-v4-flash",
-    "thinking_type": "disabled",
-    "reasoning_effort": "",
-    "context_window_tokens": 128000
-  },
-  "approval": {
-    "mode": "manual"
-  },
-  "api": {
-    "bearer_token": "请替换为随机长令牌",
-    "host": "127.0.0.1",
-    "port": 8765,
-    "allowed_origins": ["http://localhost:5173"],
-    "confirmation_timeout_seconds": 300
-  },
-  "agent_temp": {
-    "enabled": true,
-    "directory": ".agent_tmp",
-    "cleanup_enabled": true,
-    "cleanup_interval_hours": 24
-  },
-  "mcp": {
-    "enabled": false,
-    "default_timeout_seconds": 30,
-    "max_tool_output_chars": 6000,
-    "servers": {
-      "local_project": {
-        "enabled": true,
-        "transport": "stdio",
-        "command": "python",
-        "args": ["-m", "omnicrawl.mcp.server"],
-        "env": {},
-        "timeout_seconds": 360,
-        "risk_level": "trusted"
-      }
-    },
-    "policy": {
-      "require_confirmation_for_write": true,
-      "require_confirmation_for_command": true,
-      "allow_external_network_tools": false,
-      "audit_log_enabled": true
-    }
-  }
-}
+```powershell
+copy config.example.yaml config.yaml
+copy models.example.yaml models.yaml
 ```
 
-`config.yaml`、`models.yaml`、`config.json` 已加入 `.gitignore`，不要把真实密钥写进示例文件或源码。
+显式配置路径和 `AI_CONFIG_FILE` 也必须指向 `.yaml` 或 `.yml` 文件；传入 JSON 会直接报错。若工作区仍残留旧 `config.json`，程序不会读取它，并会提示根据 YAML 模板手工配置。历史 `config.json` 与 `*.migrated.bak` 仍被 `.gitignore` 保护，防止旧凭据误提交。
+
+`config.yaml`、`models.yaml` 不要把真实密钥写进示例文件或源码。
 
 工具审批可在配置文件的 `approval.mode` 配置：
 
@@ -346,7 +297,7 @@ subagents:
 
 设计细节与实施状态见 `docs/MULTI_MODEL_API_DESIGN.md`。
 
-MCP 可在配置文件的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。除内置 `local_project` 的显式只读能力外，MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。bb-browser 不通过 MCP 接入，统一由内置 `bb_browser_cli` 工具调用 CLI。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
+MCP 可在配置文件的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。除内置 `local_project` 的显式只读能力外，MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 暴露当前项目只读文件、搜索、命令工具、项目文档 Resource 和常用 Prompt。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
 
 如果没有本地配置文件，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
 

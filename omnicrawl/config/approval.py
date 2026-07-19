@@ -57,7 +57,7 @@ def approval_mode_label(mode: str) -> str:
 
 
 def load_approval_mode(config_path: str | Path | None = None) -> str:
-    """从 config.json 读取工具审批模式，默认保持人工确认。"""
+    """从 config.yaml 读取工具审批模式，默认保持人工确认。"""
 
     try:
         data = load_config_data(config_path)
@@ -75,7 +75,7 @@ def load_approval_mode(config_path: str | Path | None = None) -> str:
 
 
 def save_approval_mode(mode: str, config_path: str | Path | None = None) -> Path:
-    """把工具审批模式写回 config.json，保留已有配置项。"""
+    """把工具审批模式写回 config.yaml，保留已有配置项。"""
 
     normalized_mode = normalize_approval_mode(mode)
     data = load_config_data(config_path)

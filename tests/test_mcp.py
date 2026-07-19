@@ -4,6 +4,8 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,7 +22,7 @@ from omnicrawl.slash_commands import build_slash_commands, format_mcp_status
 class MCPConfigTest(unittest.TestCase):
     def test_load_mcp_config_defaults_to_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
 
             config = load_mcp_config(config_path)
 
@@ -30,9 +32,9 @@ class MCPConfigTest(unittest.TestCase):
 
     def test_load_mcp_config_validates_stdio_server(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
-                json.dumps(
+                yaml.safe_dump(
                     {
                         "mcp": {
                             "enabled": True,
@@ -48,7 +50,9 @@ class MCPConfigTest(unittest.TestCase):
                                 }
                             },
                         }
-                    }
+                    },
+                    allow_unicode=True,
+                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -64,9 +68,9 @@ class MCPConfigTest(unittest.TestCase):
 
     def test_load_mcp_config_rejects_invalid_name_and_missing_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
-                json.dumps(
+                yaml.safe_dump(
                     {
                         "mcp": {
                             "enabled": True,
@@ -78,7 +82,9 @@ class MCPConfigTest(unittest.TestCase):
                                 }
                             },
                         }
-                    }
+                    },
+                    allow_unicode=True,
+                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -87,7 +93,7 @@ class MCPConfigTest(unittest.TestCase):
                 load_mcp_config(config_path)
 
             config_path.write_text(
-                json.dumps(
+                yaml.safe_dump(
                     {
                         "mcp": {
                             "enabled": True,
@@ -98,7 +104,9 @@ class MCPConfigTest(unittest.TestCase):
                                 }
                             },
                         }
-                    }
+                    },
+                    allow_unicode=True,
+                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )

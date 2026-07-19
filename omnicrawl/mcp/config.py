@@ -79,9 +79,9 @@ class MCPConfig:
 
 
 def load_mcp_config(config_path: str | Path | None = None) -> MCPConfig:
-    """从 `config.json` 和环境变量读取 MCP 配置。
+    """从 `config.yaml` 和环境变量读取 MCP 配置。
 
-    环境变量只覆盖全局开关和通用阈值，Server 列表仍放在 JSON 中，
+    环境变量只覆盖全局开关和通用阈值，Server 列表仍放在 YAML 中，
     这样可以避免把复杂命令、参数和环境变量拆散到多个临时配置来源。
     """
 
@@ -176,7 +176,7 @@ def _load_server_configs(
     if raw_servers in (None, ""):
         return {}
     if not isinstance(raw_servers, Mapping):
-        raise MCPConfigError("配置项 mcp.servers 必须是 JSON 对象。")
+        raise MCPConfigError("配置项 mcp.servers 必须是对象。")
 
     servers: dict[str, MCPServerConfig] = {}
     for raw_name, raw_config in raw_servers.items():

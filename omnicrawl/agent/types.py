@@ -20,6 +20,20 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class ToolImageAttachment:
+    """仅在当前 Agent 工具循环中发送给视觉模型的图片。
+
+    图片数据不会进入 Session 事件或长期历史；截图文件由工具另行保存到受控的
+    Agent 临时目录，避免 Base64 使会话文件和恢复上下文持续膨胀。
+    """
+
+    media_type: str
+    data_base64: str
+    filename: str = ""
+    detail: str = "auto"
+
+
+@dataclass(frozen=True)
 class ToolResult:
     """工具调用返回给模型的结构化结果。"""
 
@@ -27,6 +41,7 @@ class ToolResult:
     output: str
     full_output: str = ""
     ui_artifact: dict[str, Any] = field(default_factory=dict)
+    model_images: tuple[ToolImageAttachment, ...] = ()
 
 
 @dataclass(frozen=True)

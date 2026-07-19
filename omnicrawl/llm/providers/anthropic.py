@@ -15,6 +15,7 @@ from ..errors import ModelError, ModelErrorCode
 from ..protocol import (
     PROTOCOL_ANTHROPIC_MESSAGES,
     ConversationMessage,
+    ImageBlock,
     ModelIdentity,
     ModelStreamEvent,
     ModelTurnRequest,
@@ -426,8 +427,8 @@ def _to_anthropic_messages(
                     )
             continue
 
-        flush_tool_results()
         if message.role == "assistant":
+            flush_tool_results()
             content: list[dict[str, Any]] = []
             for block in message.blocks:
                 if isinstance(block, TextBlock) and block.text:
@@ -444,9 +445,28 @@ def _to_anthropic_messages(
             result.append({"role": "assistant", "content": content or [{"type": "text", "text": ""}]})
             continue
 
-        # user
-        text = message.text
-        result.append({"role": "user", "content": text})
+        # user：截图以原生 Base64 image source 发送，不把临时路径交给远端读取。
+        content: list[dict[str, Any]] = []
+        for block in message.blocks:
+            if isinstance(block, TextBlock) and block.text:
+                content.append({"type": "text", "text": block.text})
+            elif isinstance(block, ImageBlock):
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": block.media_type,
+                            "data": block.data_base64,
+                        },
+                    }
+                )
+        if pending_tool_results:
+            # 工具结果和紧随其后的截图属于同一个 user turn；合并可避免连续
+            # user 消息，并符合 Anthropic 对 tool_result 紧邻 tool_use 的约束。
+            content = [*pending_tool_results, *content]
+            pending_tool_results = []
+        result.append({"role": "user", "content": content or ""})
 
     flush_tool_results()
     return result

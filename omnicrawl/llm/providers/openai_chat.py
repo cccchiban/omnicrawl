@@ -15,6 +15,7 @@ from ..errors import ModelError, ModelErrorCode
 from ..protocol import (
     PROTOCOL_OPENAI_CHAT_COMPLETIONS,
     ConversationMessage,
+    ImageBlock,
     ModelIdentity,
     ModelStreamEvent,
     ModelTurnRequest,
@@ -364,9 +365,28 @@ def _to_openai_messages(
                 payload["tool_calls"] = tool_calls
             result.append(payload)
             continue
-        # user / system
-        text = message.text
-        result.append({"role": message.role, "content": text})
+        # user / system。视觉图片只由 Host 生成的 user 观察消息携带。
+        content: list[dict[str, Any]] = []
+        for block in message.blocks:
+            if isinstance(block, TextBlock) and block.text:
+                content.append({"type": "text", "text": block.text})
+            elif isinstance(block, ImageBlock):
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": block.data_url,
+                            "detail": block.detail,
+                        },
+                    }
+                )
+        if content and any(item.get("type") == "image_url" for item in content):
+            payload_content: Any = content
+        else:
+            payload_content = "".join(
+                str(item.get("text") or "") for item in content if item.get("type") == "text"
+            )
+        result.append({"role": message.role, "content": payload_content})
     return result
 
 

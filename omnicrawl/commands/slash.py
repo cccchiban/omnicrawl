@@ -40,6 +40,11 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "bash": "执行 Bash 命令",
     "powershell": "执行 PowerShell 命令",
     "monitor": "管理后台命令",
+    "windows_window": "操作 Windows 窗口",
+    "windows_control": "操作 Windows UI 控件",
+    "windows_input": "模拟 Windows 鼠标或键盘输入",
+    "windows_clipboard": "操作 Windows 文本剪贴板",
+    "windows_screenshot": "截取 Windows 桌面画面",
     "memory_search": "搜索长期记忆",
     "memory_read": "读取记忆内容",
     "memory_expand_related": "展开相关记忆",
@@ -105,6 +110,67 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
                     detail += f" → \"{_truncate_for_display(new, 80)}\""
             return detail
         return ""
+
+    if tool_name == "windows_window":
+        action = arguments.get("action", "")
+        handle = arguments.get("window_handle", "")
+        if handle:
+            return f"操作：{action}，窗口：{handle}"
+        return f"操作：{action}"
+
+    if tool_name == "windows_control":
+        action = arguments.get("action", "")
+        handle = arguments.get("window_handle", "")
+        locator_parts = []
+        for key in ("automation_id", "name", "class_name", "control_type", "index"):
+            if key in arguments:
+                locator_parts.append(f"{key}={arguments[key]}")
+        detail = f"操作：{action}"
+        if handle:
+            detail += f"，窗口：{handle}"
+        if locator_parts:
+            detail += "，定位：" + "、".join(locator_parts)
+        if "value_length" in arguments:
+            detail += f"，写入文本：{arguments['value_length']} 字符（内容不展示）"
+        return _truncate_for_display(detail, 240)
+
+    if tool_name == "windows_input":
+        action = arguments.get("action", "")
+        detail = f"操作：{action}"
+        if "x" in arguments and "y" in arguments:
+            detail += f"，坐标：({arguments['x']}, {arguments['y']})"
+        if "button" in arguments:
+            detail += f"，按钮：{arguments['button']}"
+        if "keys" in arguments:
+            detail += "，按键：" + "+".join(map(str, arguments["keys"]))
+        elif "key" in arguments:
+            detail += f"，按键：{arguments['key']}"
+        if "text_length" in arguments:
+            detail += f"，输入文本：{arguments['text_length']} 字符（内容不展示）"
+        return _truncate_for_display(detail, 240)
+
+    if tool_name == "windows_clipboard":
+        action = arguments.get("action", "")
+        detail = f"操作：{action}"
+        if "text_length" in arguments:
+            detail += f"，文本：{arguments['text_length']} 字符（内容不展示）"
+        if "max_chars" in arguments:
+            detail += f"，最多读取：{arguments['max_chars']} 字符"
+        return detail
+
+    if tool_name == "windows_screenshot":
+        target = arguments.get("target", "desktop")
+        detail = f"目标：{target}"
+        if arguments.get("window_handle"):
+            detail += f"，窗口：{arguments['window_handle']}"
+        if all(key in arguments for key in ("x", "y", "width", "height")):
+            detail += (
+                f"，区域：({arguments['x']}, {arguments['y']}) "
+                f"{arguments['width']}×{arguments['height']}"
+            )
+        if "max_dimension" in arguments:
+            detail += f"，模型图片最大边：{arguments['max_dimension']}"
+        return _truncate_for_display(detail, 240)
 
     if tool_name == "memory_write":
         memories = arguments.get("memories", [])
@@ -471,7 +537,7 @@ def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
     try:
         path = save_approval_mode(mode)
     except RuntimeConfigError as exc:
-        return f"审批模式已临时切换为 {approval_mode_label(mode)}，但写入 config.json 失败：{exc}"
+        return f"审批模式已临时切换为 {approval_mode_label(mode)}，但写入 config.yaml 失败：{exc}"
     return f"审批模式已切换为 {approval_mode_label(mode)}，并已同步到 {path}。"
 
 
@@ -537,7 +603,7 @@ def handle_reasoning_command(agent: LocalToolAgent, command: str) -> str | None:
     try:
         path = save_reasoning_effort(normalized_effort)
     except LLMError as exc:
-        return f"推理强度已临时切换为 {normalized_effort}，但写入 config.json 失败：{exc}"
+        return f"推理强度已临时切换为 {normalized_effort}，但写入 config.yaml 失败：{exc}"
     env_message = _reasoning_env_override_message()
     return f"推理强度已切换为 {normalized_effort}，并已同步到 {path}{env_message}"
 

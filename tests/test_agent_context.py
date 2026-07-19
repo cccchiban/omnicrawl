@@ -64,31 +64,6 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         self.assertEqual(calls, ["init", "ensure", "clean_if_due"])
 
-    def test_agent_initialization_does_not_preheat_bb_browser(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            config = AgentConfig(
-                llm=SimpleNamespace(
-                    api_key="test-key",
-                    base_url="https://example.test/v1",
-                    model="test-model",
-                ),
-                workspace_root=Path(temp_dir),
-                memory_enabled=False,
-                session_enabled=False,
-                skills_enabled=False,
-                mcp_config=MCPConfig(enabled=False),
-                temp_workspace=AgentTempWorkspaceConfig(cleanup_enabled=False),
-            )
-
-            with patch("openai.OpenAI", return_value=SimpleNamespace()) as openai_client:
-                with patch("omnicrawl.agent.core.BBBrowserCLI.ensure_started") as ensure_started:
-                    agent = LocalToolAgent(config)
-                    self.assertIsNone(agent._client)
-                    agent.close()
-
-        openai_client.assert_not_called()
-        ensure_started.assert_not_called()
-
     def test_agent_initialization_defers_mcp_discovery_until_status_or_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = AgentConfig(

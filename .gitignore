@@ -27,7 +27,6 @@ models.yaml
 node_modules/
 memory/
 logs/
-bb-browser/
 nul
 
 CLAUDE.md

@@ -25,11 +25,6 @@ TOOL_NAME_ALIASES = {
     "searchtext": "search_text",
     "replacetext": "replace_text",
     "writefile": "write_file",
-    "bbbrowser": "bb_browser_cli",
-    "bbbrowsercli": "bb_browser_cli",
-    "bb-browser": "bb_browser_cli",
-    "bb-browser-cli": "bb_browser_cli",
-    "bb_browser": "bb_browser_cli",
 }
 ARGUMENT_NAME_ALIASES = {
     "cmd": "command",
@@ -60,6 +55,26 @@ ARGUMENT_NAME_ALIASES = {
     "tabid": "tab",
     "timeoutSeconds": "timeout_seconds",
     "timeoutseconds": "timeout_seconds",
+    "windowHandle": "window_handle",
+    "windowhandle": "window_handle",
+    "titleContains": "title_contains",
+    "titlecontains": "title_contains",
+    "className": "class_name",
+    "classname": "class_name",
+    "classNameContains": "class_name_contains",
+    "classnamecontains": "class_name_contains",
+    "visibleOnly": "visible_only",
+    "visibleonly": "visible_only",
+    "includeUntitled": "include_untitled",
+    "includeuntitled": "include_untitled",
+    "automationId": "automation_id",
+    "automationid": "automation_id",
+    "controlType": "control_type",
+    "controltype": "control_type",
+    "wheelDelta": "wheel_delta",
+    "wheeldelta": "wheel_delta",
+    "maxDimension": "max_dimension",
+    "maxdimension": "max_dimension",
 }
 
 ToolRunner = Callable[[dict[str, Any]], ToolResult]
@@ -74,6 +89,15 @@ def public_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str
     普通工具保持既有参数语义；`subagent` 的完整任务 prompt 只存在于实际执行
     调用栈中，公开出口仅保留调度元数据和有界描述。
     """
+
+    if tool_name in {
+        "windows_window",
+        "windows_control",
+        "windows_input",
+        "windows_clipboard",
+        "windows_screenshot",
+    }:
+        return _public_windows_desktop_arguments(tool_name, arguments)
 
     if tool_name != "subagent":
         return dict(arguments)
@@ -145,6 +169,54 @@ def public_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str
     }
 
 
+def _public_windows_desktop_arguments(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    """投影桌面自动化参数，避免输入文本和剪贴板内容进入确认页或 Session。"""
+
+    action = str(arguments.get("action") or "").strip()
+    public: dict[str, Any] = {"action": action}
+    for key in (
+        "window_handle",
+        "title_contains",
+        "class_name_contains",
+        "visible_only",
+        "include_untitled",
+        "max_results",
+        "name",
+        "automation_id",
+        "class_name",
+        "control_type",
+        "index",
+        "x",
+        "y",
+        "button",
+        "clicks",
+        "wheel_delta",
+        "key",
+        "keys",
+        "presses",
+        "max_chars",
+        "target",
+        "width",
+        "height",
+        "max_dimension",
+    ):
+        if key in arguments:
+            public[key] = arguments[key]
+
+    # value/text 经常承载密码、令牌或私有内容；确认页只显示长度，执行层仍取得原值。
+    if tool_name == "windows_control" and isinstance(arguments.get("value"), str):
+        public["value_length"] = len(arguments["value"])
+    if tool_name in {"windows_input", "windows_clipboard"} and isinstance(
+        arguments.get("text"),
+        str,
+    ):
+        public["text_length"] = len(arguments["text"])
+    return public
+
+
 def build_agent_tools(
     *,
     mcp_manager: MCPClientManager,
@@ -157,7 +229,6 @@ def build_agent_tools(
     bash: ToolRunner,
     powershell: ToolRunner,
     monitor: ToolRunner,
-    bb_browser_cli: ToolRunner,
     memory_search: ToolRunner,
     memory_read: ToolRunner,
     memory_expand_related: ToolRunner,
@@ -167,6 +238,11 @@ def build_agent_tools(
     mcp_read_resource: MCPResourceRunner,
     mcp_get_prompt: MCPPromptRunner,
     subagent: ToolRunner | None = None,
+    windows_window: ToolRunner | None = None,
+    windows_control: ToolRunner | None = None,
+    windows_input: ToolRunner | None = None,
+    windows_clipboard: ToolRunner | None = None,
+    windows_screenshot: ToolRunner | None = None,
 ) -> dict[str, ToolDefinition]:
     """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。"""
 
@@ -266,20 +342,6 @@ def build_agent_tools(
                 run=monitor,
             ),
             ToolDefinition(
-                name="bb_browser_cli",
-                description=(
-                    "调用 bb-browser CLI 控制真实浏览器。bb-browser CLI 会自动启动 "
-                    "daemon 和受管浏览器；适合网页打开、tab 管理、snapshot、click、"
-                    "fill、eval、fetch、network、site adapter 等浏览器任务。"
-                ),
-                argument_schema=(
-                    '{"args": ["status", "--json"], "timeout_seconds": '
-                    f"{DEFAULT_COMMAND_TIMEOUT_SECONDS}}}"
-                ),
-                requires_confirmation=True,
-                run=bb_browser_cli,
-            ),
-            ToolDefinition(
                 name="display_html",
                 description=(
                     "向支持 HTML 的客户端提供网页或数据看板 artifact。"
@@ -295,6 +357,92 @@ def build_agent_tools(
             ),
         ]
     )
+    windows_runners = (
+        windows_window,
+        windows_control,
+        windows_input,
+        windows_clipboard,
+        windows_screenshot,
+    )
+    if any(runner is not None for runner in windows_runners):
+        if not all(runner is not None for runner in windows_runners):
+            raise ValueError("Windows 桌面工具必须作为完整工具组注册。")
+        tools.extend(
+            [
+                ToolDefinition(
+                    name="windows_window",
+                    description=(
+                        "仅限 Windows：枚举可见顶层窗口、读取窗口标题/类名/进程/几何位置，"
+                        "或激活指定窗口。先用 list 获取 window_handle；activate 不会绕过 Windows 的前台焦点保护。"
+                    ),
+                    argument_schema=(
+                        '{"action":"list|get|activate","window_handle":"0x...",'
+                        '"title_contains":"可选标题片段","class_name_contains":"可选类名片段",'
+                        '"visible_only":true,"include_untitled":false,"max_results":50}'
+                    ),
+                    requires_confirmation=True,
+                    run=windows_window,
+                ),
+                ToolDefinition(
+                    name="windows_control",
+                    description=(
+                        "仅限 Windows：使用 Windows UI Automation 在指定 window_handle 内列出控件，"
+                        "或按 name、automation_id、class_name、control_type 精确执行 invoke、set_value、"
+                        "select、toggle、focus。非 list 操作必须提供定位条件；多个匹配项需先 list 或传 index。"
+                    ),
+                    argument_schema=(
+                        '{"action":"list|invoke|set_value|select|toggle|focus",'
+                        '"window_handle":"0x...","name":"精确名称","automation_id":"自动化ID",'
+                        '"class_name":"类名","control_type":"button|edit|...","index":0,'
+                        '"value":"仅 set_value","max_results":30}'
+                    ),
+                    requires_confirmation=True,
+                    run=windows_control,
+                ),
+                ToolDefinition(
+                    name="windows_input",
+                    description=(
+                        "仅限 Windows：通过 SendInput 移动/点击鼠标、滚轮、按键、组合键或输入 Unicode 文本。"
+                        "click/move 必须提供虚拟桌面坐标；type_text 不会回显输入内容。"
+                    ),
+                    argument_schema=(
+                        '{"action":"move|click|scroll|key|hotkey|type_text",'
+                        '"x":100,"y":200,"button":"left|right|middle","clicks":1,'
+                        '"wheel_delta":-120,"key":"enter","keys":["ctrl","s"],'
+                        '"presses":1,"text":"Unicode 文本"}'
+                    ),
+                    requires_confirmation=True,
+                    run=windows_input,
+                ),
+                ToolDefinition(
+                    name="windows_clipboard",
+                    description=(
+                        "仅限 Windows：读取、写入或清空 Unicode 文本剪贴板。"
+                        "read_text 可用 max_chars 限制返回长度；写入文本不会进入确认页或会话参数记录。"
+                    ),
+                    argument_schema=(
+                        '{"action":"read_text|write_text|clear","text":"仅 write_text",'
+                        '"max_chars":8000}'
+                    ),
+                    requires_confirmation=True,
+                    run=windows_clipboard,
+                ),
+                ToolDefinition(
+                    name="windows_screenshot",
+                    description=(
+                        "仅限 Windows：使用 Win32 GDI 截取整个虚拟桌面、指定区域或指定窗口。"
+                        "截图保存到 Agent 临时图片目录；若当前模型声明 vision 能力，图片会在下一轮直接提供给模型。"
+                        "window 目标先用 windows_window.list 获取 window_handle；最小化、越出虚拟桌面或受保护内容可能无法截取。"
+                    ),
+                    argument_schema=(
+                        '{"target":"desktop|region|window","window_handle":"0x...",'
+                        '"x":0,"y":0,"width":1280,"height":720,"max_dimension":2048}'
+                    ),
+                    requires_confirmation=True,
+                    run=windows_screenshot,
+                ),
+            ]
+        )
     if subagent is not None:
         tools.append(
             ToolDefinition(

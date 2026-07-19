@@ -25,6 +25,8 @@ PROTECTED_NAMES = {
     ".codex-ref",
     ".env",
     "config.json",
+    "config.yaml",
+    "models.yaml",
 }
 
 

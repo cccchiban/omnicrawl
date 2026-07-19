@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+
+import yaml
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -126,7 +128,7 @@ class ModelCatalogTest(unittest.TestCase):
 
     def test_save_llm_model_preserves_existing_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
                 json.dumps(
                     {
@@ -138,7 +140,7 @@ class ModelCatalogTest(unittest.TestCase):
             )
 
             save_llm_model("new-model", config_path)
-            data = json.loads(config_path.read_text(encoding="utf-8"))
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
         self.assertEqual(data["llm"]["model"], "new-model")
         self.assertEqual(data["llm"]["base_url"], "https://example.test/v1")
@@ -152,7 +154,7 @@ class ModelCatalogTest(unittest.TestCase):
             return_value=[ModelOption(id="new-model", name="new-model", provider="other")],
         ), patch(
             "omnicrawl.slash_commands.save_llm_model",
-            return_value=Path("config.json"),
+            return_value=Path("config.yaml"),
         ):
             message = handle_model_command(agent, "/model new-model")
 

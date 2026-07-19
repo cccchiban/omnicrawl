@@ -60,6 +60,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
     model_id = ""
     catalog_key = ""
     context_window = 128_000
+    model_context_explicit = False
     max_output_tokens = 0
     temperature: float | None = None
     provider_options: dict[str, Any] = {}
@@ -76,6 +77,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
             protocol = record.protocol
             model_id = record.model_id
             context_window = record.context_window_tokens or context_window
+            model_context_explicit = record.context_window_tokens > 0
             max_output_tokens = int(getattr(record, "max_output_tokens", 0) or 0)
             temperature = getattr(record, "temperature", None)
             provider_options = dict(record.provider_options)
@@ -105,6 +107,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
         protocol = record.protocol
         model_id = record.model_id
         context_window = record.context_window_tokens or context_window
+        model_context_explicit = record.context_window_tokens > 0
         max_output_tokens = int(getattr(record, "max_output_tokens", 0) or 0)
         temperature = getattr(record, "temperature", None)
         provider_options = dict(record.provider_options)
@@ -180,12 +183,6 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
         DEFAULT_THINKING_TYPE,
     )
 
-    if (
-        isinstance(defaults.get("context_window_tokens"), int)
-        and defaults["context_window_tokens"] > 0
-    ):
-        if context_window <= 0 or context_window == 128_000:
-            context_window = defaults["context_window_tokens"]
     if profile_data.get("default_context_window_tokens"):
         value = profile_data["default_context_window_tokens"]
         if (
@@ -194,6 +191,17 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
             and (context_window <= 0 or source == "detected")
         ):
             context_window = value
+    if (
+        isinstance(defaults.get("context_window_tokens"), int)
+        and defaults["context_window_tokens"] > 0
+    ):
+        # 设置面板会把 detected 模型的用户选择写入 llm.defaults；它必须覆盖
+        # Profile 提供的发现回退值，否则重启后设置会悄然恢复成 Profile 默认值。
+        if source == "detected" or (
+            not model_context_explicit
+            and (context_window <= 0 or context_window == 128_000)
+        ):
+            context_window = defaults["context_window_tokens"]
 
     timeout = defaults.get("request_timeout_seconds", 180)
     retries = defaults.get("request_retry_count", 5)

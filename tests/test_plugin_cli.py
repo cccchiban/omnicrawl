@@ -28,7 +28,7 @@ class PluginCLITest(unittest.TestCase):
 
     def test_system_enable_writes_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text("{}", encoding="utf-8")
             parser = build_parser()
             args = parser.parse_args(["plugin", "system", "enable"])

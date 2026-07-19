@@ -15,6 +15,7 @@ from ..errors import ModelError, ModelErrorCode
 from ..protocol import (
     PROTOCOL_OPENAI_RESPONSES,
     ConversationMessage,
+    ImageBlock,
     ModelIdentity,
     ModelStreamEvent,
     ModelTurnRequest,
@@ -359,11 +360,22 @@ def _messages_to_responses_input(
                     }
                 )
             continue
-        text = message.text
+        content: list[dict[str, Any]] = []
+        for block in message.blocks:
+            if isinstance(block, TextBlock) and block.text:
+                content.append({"type": "input_text", "text": block.text})
+            elif isinstance(block, ImageBlock):
+                content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": block.data_url,
+                        "detail": block.detail,
+                    }
+                )
         items.append(
             {
                 "role": message.role if message.role in {"user", "system"} else "user",
-                "content": text,
+                "content": content or [{"type": "input_text", "text": ""}],
             }
         )
     return items

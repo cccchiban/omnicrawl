@@ -1,15 +1,13 @@
-"""多模型 Runtime / 迁移 / Agent 协议门面的基础回归。"""
+"""多模型 Runtime / Agent 协议门面的基础回归。"""
 
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from omnicrawl.agent.llm_protocol import AgentLLMProtocol
-from omnicrawl.config.migration import build_migrated_documents, maybe_migrate_config_json
 from omnicrawl.llm.capabilities import (
     ModelCapabilities,
     conservative_openai_chat_capabilities,
@@ -114,6 +112,17 @@ class ModelRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(manager.current_model_id(), "m2")
         self.assertEqual(snap2.generation, 2)
+        manager.close()
+
+    def test_should_update_runtime_context_window_when_setting_changes(self) -> None:
+        profile, descriptor = self._descriptor()
+        manager = ModelRuntimeManager()
+        manager.bootstrap(profile, descriptor, runtime=_FakeRuntime(descriptor.identity))
+
+        manager.set_context_window_tokens(256_000)
+
+        self.assertEqual(manager.current_context_window(), 256_000)
+        self.assertEqual(manager.active_snapshot.context_window_tokens, 256_000)
         manager.close()
 
     def test_switch_persist_failure_keeps_old_snapshot_and_closes_candidate(self) -> None:
@@ -279,56 +288,6 @@ class ModelRuntimeTests(unittest.TestCase):
         self.assertEqual(reply.tool_calls[0].function_name, "tool_demo")
         self.assertEqual(reply.tool_calls[0].arguments, {"path": "a.txt"})
         manager.close()
-
-    def test_migration_builds_yaml_docs(self) -> None:
-        data = {
-            "llm": {
-                "api_key": "secret",
-                "base_url": "https://example.test/v1",
-                "model": "gpt-test",
-                "context_window_tokens": 64000,
-                "reasoning_effort": "high",
-                "thinking_type": "enabled",
-            },
-            "approval": {"mode": "auto"},
-        }
-        config_yaml, models_yaml = build_migrated_documents(data, source_hash="abc")
-        self.assertEqual(config_yaml["version"], 2)
-        self.assertEqual(config_yaml["llm"]["active_model"]["key"], "migrated-default")
-        self.assertEqual(config_yaml["approval"]["mode"], "auto")
-        model = models_yaml["models"]["migrated-default"]
-        self.assertEqual(model["model_id"], "gpt-test")
-        self.assertEqual(model["protocol"], "openai_chat_completions")
-        self.assertEqual(model["context_window_tokens"], 64000)
-
-    def test_maybe_migrate_writes_files(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            json_path = root / "config.json"
-            yaml_path = root / "config.yaml"
-            models_path = root / "models.yaml"
-            json_path.write_text(
-                json.dumps(
-                    {
-                        "llm": {
-                            "api_key": "k",
-                            "base_url": "https://example.test/v1",
-                            "model": "m",
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            ok = maybe_migrate_config_json(
-                json_path=json_path,
-                yaml_path=yaml_path,
-                models_path=models_path,
-            )
-            self.assertTrue(ok)
-            self.assertTrue(yaml_path.exists())
-            self.assertTrue(models_path.exists())
-            self.assertTrue((root / "config.json.migrated.bak").exists())
-
 
 class MergeCapabilitiesTests(unittest.TestCase):
     def test_sparse_context_window_does_not_clear_tools(self) -> None:

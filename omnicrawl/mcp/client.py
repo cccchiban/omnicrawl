@@ -394,7 +394,7 @@ class MCPClientManager:
         """返回适合终端展示的 MCP 状态摘要。"""
 
         if not self.config.enabled:
-            return "MCP 已关闭。可在 config.json 的 mcp.enabled=true 开启。"
+            return "MCP 已关闭。可在 config.yaml 的 mcp.enabled=true 开启。"
 
         if not self._discovered:
             self.discover()

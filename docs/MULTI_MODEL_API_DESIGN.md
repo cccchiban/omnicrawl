@@ -8,21 +8,21 @@
 >
 > SDK 原则：每类接口必须使用对应厂商的 Python 原生 SDK，不通过 OpenAI 兼容层模拟 Claude 或 Gemini。
 >
-> 实现入口：`omnicrawl/llm/`、`omnicrawl/config/{runtime,llm,llm_multi,model_store,model_catalog,migration}.py`、`omnicrawl/ui/fullscreen/model_picker.py`、`config.example.yaml`、`models.example.yaml`
+> 实现入口：`omnicrawl/llm/`、`omnicrawl/config/{runtime,llm,llm_multi,model_store,model_catalog}.py`、`omnicrawl/ui/fullscreen/model_picker.py`、`config.example.yaml`、`models.example.yaml`
 
 ## 0. 实施状态（相对本设计稿）
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
-| 0 锁定当前行为 | ✅ | 保留旧 `/models` 字段、`config.json` 兼容与 OpenAI Chat 回归测试 |
+| 0 锁定当前行为 | ✅ | 保留旧 `/models` 字段与 OpenAI Chat 回归测试 |
 | 1 统一协议 + OpenAI Chat Adapter | ✅ | `omnicrawl/llm/protocol.py` + `providers/openai_chat.py`；Agent 经 `ModelRuntimeManager` |
-| 2 YAML / models.yaml / 迁移 | ✅ | 优先 `config.yaml`；仅有 `config.json` 时可迁移并备份 `*.migrated.bak` |
+| 2 YAML / models.yaml | ✅ | 运行配置统一使用 `config.yaml`，模型目录使用 `models.yaml` |
 | 3 Runtime Manager 热切换 | ✅ | 不可变 snapshot；失败保留旧模型；回合边界切换 |
 | 4 OpenAI Responses Adapter | ✅（代码） | `providers/openai_responses.py` 已接入注册表；Agent 默认仍以 Chat 为主路径 |
 | 5 Claude Adapter | ✅（代码） | `providers/anthropic.py` 原生 Anthropic Messages；需安装 `anthropic` 后联调 |
 | 6 Gemini Adapter | ✅（代码） | `providers/gemini.py` 原生 `google-genai`；需安装后联调 |
 | 7 双列 Model Picker + API catalog | ✅ | TUI `ModelPickerScreen`；`GET /models/catalog`、`POST /models/refresh` |
-| 8 文档与兼容清理 | ⏳ | 本文档与 README/API 已同步；旧 JSON 兼容至少再保留一个发布周期 |
+| 8 文档与兼容清理 | ✅ | 本文档与 README/API 已同步为 YAML-only |
 
 ### 已实现行为摘要
 
@@ -38,7 +38,7 @@
 - Claude / Gemini 真机流式工具调用联调与更完整 mock 契约测试。
 - OpenAI Responses 作为 Agent 主路径的端到端回归。
 - 窄终端上下分区 CSS 细化、Picker 交互单测。
-- 兼容层弃用周期到期后清理旧 JSON 专用路径。
+- 运行配置已不再解析 JSON；历史 JSON 仅作为受保护残留文件处理。
 
 ## 1. 结论
 
@@ -53,7 +53,7 @@
 3. Gemini 使用 Google Gen AI Python SDK（`google-genai`）的 Generate Content 接口，不经过 OpenAI 兼容协议。
 4. `LocalToolAgent` 保留 Agent 循环、工具执行、审批、Session、Memory、MCP 和工作区生命周期；Provider Adapter 只负责模型协议转换。
 5. 新增 `ModelRuntimeManager`，通过不可变运行时快照完成 `/model` 热切换。切换只在回合边界生效，不修改正在运行的请求。
-6. 运行配置由 `config.json` 迁移为 `config.yaml`；新增 `models.yaml` 管理用户自定义模型及模型元信息。
+6. 运行配置统一使用 `config.yaml`；新增 `models.yaml` 管理用户自定义模型及模型元信息。
 7. `/model` 打开 Textual 模型选择界面：左列显示 `models.yaml` 中的自定义模型，右列显示各 Provider API 自动发现的模型；窄终端自动降级为上下分区。
 8. 自动发现结果只作为运行时目录和可用性信息，不自动覆盖 `models.yaml`。
 
@@ -87,13 +87,13 @@ LocalToolAgent._request_agent_reply()
 - 只兼容 OpenAI 风格的 `{ "data": [{ "id": "..." }] }`。
 - `ModelOption` 只有 `id/name/provider`。
 - Provider 主要通过模型名称前缀推测。
-- `/model` 输出纯文本模型列表，`/model <模型ID>` 修改当前模型并写回 `config.json`。
+- `/model` 输出纯文本模型列表，`/model <模型ID>` 修改当前模型并写回 `config.yaml`。
 
 现有 Textual 命令分派已把 `/model` 标记为慢命令，在 worker 中执行网络 I/O，并通过主线程刷新 HUD。该边界应保留。
 
 ### 2.3 当前配置边界
 
-`omnicrawl/config/runtime.py` 当前固定读写 `config.json`，且审批、API、MCP、临时目录、插件等模块都复用该入口。因此 YAML 迁移必须是全局配置仓库迁移，不能只修改 LLM 模块。
+`omnicrawl/config/runtime.py` 统一读写 `config.yaml`，且审批、API、MCP、临时目录、插件等模块都复用该入口。因此配置格式由全局配置仓库统一约束，不能只修改 LLM 模块。
 
 ## 3. 目标与非目标
 
@@ -108,7 +108,7 @@ LocalToolAgent._request_agent_reply()
 - 允许配置多个 Provider Profile，例如官方服务、代理网关和不同账号。
 - 在 TUI 中通过 `/model` 热切换模型，不重启进程，不清空当前会话。
 - 模型列表双列展示：自定义模型与 API 自动发现模型相互独立。
-- 将 `config.json` 迁移为 `config.yaml`。
+- 统一使用 `config.yaml` 作为运行配置。
 - 新增 `models.yaml`，维护模型列表、别名、能力、上下文窗口和展示信息。
 - 保持现有工具审批、Agent 工具并发、Session、MCP、插件 Hook 和 Textual 主线程更新规则。
 - 保持本地 HTTP API 可扩展，并尽量兼容已有模型接口字段。
@@ -210,7 +210,6 @@ omnicrawl/
 │   ├── llm.py                      # LLM/Profile 配置模型
 │   ├── model_store.py              # models.yaml 读取和校验
 │   ├── model_catalog.py            # 自定义/发现/当前模型目录
-│   └── migration.py                # config.json -> config.yaml
 ├── ui/fullscreen/
 │   ├── model_picker.py             # 双列 ModelPickerScreen
 │   └── ...
@@ -1069,13 +1068,13 @@ Adapter 将 SDK 异常映射到统一错误，再由 TUI/API 转换为中文提�
 
 服务必须继续在活动 run 存在时返回 409。兼容旧 `{ "model": "..." }` 时，服务按“自定义 key 精确匹配 → alias 唯一匹配 → 当前 Profile 内 model ID 唯一匹配”解析；存在多个候选时返回 409 并列出候选，不得静默选第一个。
 
-## 17. YAML 迁移方案
+## 17. YAML 配置方案
 
 ### 17.1 目标文件
 
 - 默认运行配置：`config.yaml`。
 - 默认模型目录：`models.yaml`。
-- `AI_CONFIG_FILE` 继续支持显式指定路径；目标实现应根据扩展名解析 `.yaml/.yml`。
+- `AI_CONFIG_FILE` 和显式配置路径只允许 `.yaml/.yml`。
 - 可新增 `AI_MODELS_FILE` 指定模型目录路径。
 
 ### 17.2 启动解析顺序
@@ -1084,73 +1083,23 @@ Adapter 将 SDK 异常映射到统一错误，再由 TUI/API 转换为中文提�
 显式 config_path
 > AI_CONFIG_FILE
 > 项目根目录 config.yaml
-> 兼容迁移项目根目录 config.json
 > 空配置/环境变量
 ```
 
-### 17.3 自动迁移条件
+### 17.3 JSON 拒绝策略
 
-默认路径下：
+1. `config.yaml` 存在时读取 YAML。
+2. YAML 不存在时返回空配置；默认位置若残留 `config.json`，给出手工创建 YAML 的明确提示。
+3. 显式路径或 `AI_CONFIG_FILE` 指向 JSON 或未知扩展名时直接报错，不解析、不迁移。
+4. `config.json` 与 `*.migrated.bak` 仅作为历史敏感文件保留在忽略规则中，防止误提交；Session、API、Tool、MCP 协议中的 JSON/JSONL 不受本策略影响。
 
-1. `config.yaml` 存在：以 YAML 为权威，不读取 JSON。
-2. YAML 不存在且 `config.json` 存在：执行一次迁移。
-3. 两者都不存在：提示复制 `config.example.yaml`。
-4. YAML 与 JSON 同时存在：使用 YAML，并输出一次“旧 JSON 已忽略”警告。
-5. `AI_CONFIG_FILE` 指向外部 JSON 时：兼容读取，但不擅自迁移外部文件；由用户显式指定新路径。
+### 17.4 YAML LLM 配置结构
 
-### 17.4 旧 LLM 配置映射
+运行配置直接使用 `config.yaml` 的多 Profile 结构，模型元信息使用 `models.yaml` 管理。默认 Agent 协议为 `openai_chat_completions`，因为当前 `LocalToolAgent` 使用该协议执行工具调用。
 
-旧配置：
+### 17.5 非 LLM 配置结构
 
-```json
-{
-  "llm": {
-    "api_key": "...",
-    "base_url": "https://example/v1",
-    "model": "old-model",
-    "context_window_tokens": 128000
-  }
-}
-```
-
-迁移为：
-
-```yaml
-llm:
-  active_model:
-    source: custom
-    key: migrated-default
-  profiles:
-    migrated-openai:
-      provider: openai
-      base_url: https://example/v1
-      api_key_env: OPENAI_API_KEY
-      default_protocol: openai_chat_completions
-      discovery:
-        enabled: true
-```
-
-并创建：
-
-```yaml
-# models.yaml
-models:
-  migrated-default:
-    display_name: old-model
-    profile: migrated-openai
-    model_id: old-model
-    protocol: openai_chat_completions
-    context_window_tokens: 128000
-    capabilities:
-      streaming: true
-      tools: true
-```
-
-默认迁移为 `openai_chat_completions`，因为当前 `LocalToolAgent` 实际使用该协议执行工具调用。Responses 兼容客户端不能作为 Agent 当前行为的迁移依据。
-
-### 17.5 非 LLM 配置迁移
-
-以下 section 保持字段语义并完成 YAML 化：
+以下 section 直接位于 `config.yaml` 并保持字段语义：
 
 - `approval`。
 - `api`。
@@ -1158,24 +1107,9 @@ models:
 - `plugins`。
 - `mcp`。
 
-迁移必须对完整配置做回归，不能只验证 LLM 启动。
+### 17.6 原子写入
 
-### 17.6 原子写入与备份
-
-迁移流程：
-
-1. 完整读取并校验 JSON。
-2. 在内存构建 `config.yaml` 与 `models.yaml`。
-3. 写入同目录临时文件。
-4. flush，并在平台允许时执行 fsync。
-5. 先原子替换 `models.yaml`，重新读取并校验模型 key；再原子替换引用该 key 的 `config.yaml`，避免配置先指向尚不存在的模型。
-6. 重新读取两个目标文件并做跨文件语义校验。
-7. 将旧文件保留为 `config.json.migrated.bak`，不直接删除。
-8. 写入迁移来源 hash，保证重复启动不会再次覆盖用户已修改的 YAML。
-
-两个文件无法形成真正的单文件系统事务，因此启动加载器还必须检测 active model 悬空引用：若 `config.yaml` 指向不存在的自定义 key，应拒绝覆盖任何文件，显示恢复建议，并允许用户从 `models.yaml` 中重新选择；不得静默切到任意模型。
-
-运行时 `/model`、`/approval`、`/reasoning` 写回同样必须使用原子替换。
+运行时写回使用同目录临时文件、flush/fsync 和原子 replace；写回后重新读取并校验 YAML，活动模型引用不存在时拒绝静默切换。
 
 ### 17.7 YAML 实现选择
 
@@ -1260,10 +1194,10 @@ openai
 
 - 将 `runtime.py` 改为 YAML 配置仓库。
 - 新增 `models.yaml` loader 和 schema 校验。
-- 新增 `config.json` 迁移器、备份和幂等标记。
+- 删除 JSON 迁移器及运行时回退。
 - 更新所有 approval/API/MCP/plugin 配置读取和写回测试。
 
-退出条件：非 LLM 配置行为保持一致，迁移可回滚。
+退出条件：非 LLM 配置行为保持一致，JSON 配置入口明确拒绝。
 
 ### 阶段 3：Runtime Manager 与热切换
 
@@ -1301,8 +1235,7 @@ openai
 ### 阶段 8：文档与兼容清理
 
 - README、API、TUI 和 example 配置全部更新为 YAML。
-- 标记 `config.json`、`OPENAI_MODEL` 和旧客户端门面的弃用周期。
-- 至少保留一个发布周期后再删除兼容代码。
+- 标记旧 JSON 配置文件为不再支持；文档和示例统一使用 YAML。
 
 ## 22. 测试方案
 
@@ -1351,18 +1284,14 @@ openai
 - 跨 Provider 不发送私有状态。
 - 环境变量覆盖提示正确。
 
-### 22.5 配置迁移测试
+### 22.5 YAML 配置测试
 
-- 只有 `config.json`。
 - 只有 `config.yaml`。
-- 两者同时存在。
-- 非法 JSON、非法 YAML。
-- 迁移中断和临时文件失败。
-- 二次启动幂等。
+- 默认位置残留 `config.json` 时给出明确提示且不读取。
+- 显式 JSON 和 JSON 环境路径直接拒绝。
+- 非法 YAML。
 - approval/API/MCP/plugin 字段无损。
-- API Key 不进入 `models.yaml`。
-- 显式外部 `AI_CONFIG_FILE` 不被擅自迁移。
-- 原子写回后的文件可重新解析。
+- 原子写回后的 YAML 可重新解析。
 
 ### 22.6 TUI 测试
 
@@ -1413,9 +1342,9 @@ git diff --check
 
 ### 23.4 配置
 
-- [x] 优先使用 `config.yaml`；无 YAML 时兼容 `config.json` 并支持迁移。
+- [x] 运行配置严格使用 `config.yaml`；JSON 入口直接拒绝。
 - [x] 新增 `models.yaml` 模型目录。
-- [x] 旧 `config.json` 可安全、幂等迁移并保留备份。
+- [x] 删除 JSON 迁移器和运行时回退。
 - [x] 配置写回采用原子替换。
 - [x] 示例文件不包含真实密钥。
 
@@ -1444,7 +1373,7 @@ git diff --check
 | Agent 历史仍泄漏 OpenAI tool_calls 结构 | 高 | 先落统一消息块，再接 Claude/Gemini |
 | SDK 版本与 Python 3.9 不兼容 | 高 | 实施前核验并锁定版本；如需提升 Python 下限必须单独确认 |
 | 流式工具调用映射错误导致重复执行 | 高 | Adapter 契约测试；完整 ToolCall 后才交给 Host；流中断不执行半成品 |
-| YAML 迁移破坏非 LLM 配置 | 高 | 全 section 迁移测试、备份、重新读取校验、幂等标记 |
+| YAML 写回破坏非 LLM 配置 | 高 | 全 section YAML 读写测试、重新读取校验和原子替换 |
 | 热切换导致内存与磁盘状态不一致 | 高 | 候选构建 → 原子持久化 → 引用交换；失败不改旧状态 |
 | 自动发现无权限或接口不存在 | 中 | 自定义列表独立可用；按 Profile 展示诊断 |
 | 模型能力元信息过时 | 中 | 保守默认；请求错误继续由 Provider 归一化，不盲信静态配置 |
@@ -1458,11 +1387,10 @@ git diff --check
 | `omnicrawl/agent/core.py` | 从 OpenAI Client/Protocol 改为获取运行时快照 |
 | `omnicrawl/agent/llm_protocol.py` | 迁移为兼容门面或统一协议聚合器 |
 | `omnicrawl/agent/types.py` | 增加 Provider 无关消息块和结果类型 |
-| `omnicrawl/config/runtime.py` | JSON 专用读写改为 YAML、安全加载、原子写入 |
+| `omnicrawl/config/runtime.py` | 严格 YAML、安全加载、原子写入 |
 | `omnicrawl/config/llm.py` | 单 LLMConfig 改为 Profile + active model 配置 |
 | `omnicrawl/config/model_catalog.py` | 聚合自定义与原生 SDK 发现结果 |
 | `omnicrawl/config/model_store.py` | 新增 models.yaml schema 与校验 |
-| `omnicrawl/config/migration.py` | 新增 JSON 到 YAML 迁移 |
 | `omnicrawl/llm/` | 新增统一协议、Runtime Manager 和四类 Adapter |
 | `omnicrawl/commands/slash.py` | `/model` 解析 canonical selection，不直接操作 SDK |
 | `omnicrawl/ui/fullscreen/model_picker.py` | 新增双列模型选择 Screen |
@@ -1471,7 +1399,7 @@ git diff --check
 | `config.example.yaml` | 新增 YAML 运行配置示例 |
 | `models.example.yaml` | 新增模型目录示例 |
 | `README.md`、`docs/API.md`、`docs/TERMINAL_UI.md` | 同步配置、协议和交互说明 |
-| `tests/` | 增加 Adapter、迁移、目录、热切换和 Model Picker 测试 |
+| `tests/` | 增加 Adapter、目录、热切换、YAML 配置和 Model Picker 测试 |
 
 ## 27. 最终建议
 

@@ -15,6 +15,7 @@ from ..errors import ModelError, ModelErrorCode
 from ..protocol import (
     PROTOCOL_GEMINI_GENERATE_CONTENT,
     ConversationMessage,
+    ImageBlock,
     ModelIdentity,
     ModelStreamEvent,
     ModelTurnRequest,
@@ -363,6 +364,15 @@ def _to_gemini_contents(
         for block in message.blocks:
             if isinstance(block, TextBlock) and block.text:
                 parts.append({"text": block.text})
+            elif isinstance(block, ImageBlock):
+                parts.append(
+                    {
+                        "inline_data": {
+                            "mime_type": block.media_type,
+                            "data": block.data_base64,
+                        }
+                    }
+                )
             elif isinstance(block, ToolCallBlock):
                 if block.call_id:
                     call_names[block.call_id] = block.name
@@ -377,7 +387,12 @@ def _to_gemini_contents(
         if not parts and message.text:
             parts.append({"text": message.text})
         if parts:
-            contents.append({"role": role, "parts": parts})
+            if role == "user" and contents and contents[-1].get("role") == "user":
+                # function_response 与紧随其后的截图同属一次工具观察；合并为一个
+                # Gemini user content，避免产生无模型回合分隔的连续 user turns。
+                contents[-1]["parts"].extend(parts)
+            else:
+                contents.append({"role": role, "parts": parts})
     return contents
 
 

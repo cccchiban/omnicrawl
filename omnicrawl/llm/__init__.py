@@ -15,6 +15,7 @@ from ..config.llm import (
     VALID_REASONING_EFFORTS,
     load_llm_config,
     normalize_reasoning_effort,
+    save_context_window_tokens,
     save_reasoning_effort,
 )
 from ..config.llm_client import OpenAIResponseLLM
@@ -97,5 +98,6 @@ __all__ = [
     "map_openai_exception",
     "merge_capabilities",
     "normalize_reasoning_effort",
+    "save_context_window_tokens",
     "save_reasoning_effort",
 ]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from .capabilities import ModelCapabilities
@@ -175,6 +175,16 @@ class ModelRuntimeManager:
         if snapshot is None:
             return 0
         return snapshot.context_window_tokens
+
+    def set_context_window_tokens(self, tokens: int) -> int:
+        """更新当前不可变快照的上下文窗口，不重建或关闭模型 Runtime。"""
+
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            raise ValueError("上下文长度必须是正整数 Token。")
+        with self._lock:
+            if self._active is not None:
+                self._active = replace(self._active, context_window_tokens=tokens)
+        return tokens
 
     def close(self) -> None:
         with self._lock:

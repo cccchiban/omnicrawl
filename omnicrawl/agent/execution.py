@@ -48,11 +48,16 @@ class AgentLoopLimits:
 
 @dataclass(frozen=True)
 class AgentLoopObservation:
-    """一个已执行工具调用及其回填给模型的观察消息。"""
+    """一个已执行工具调用及其回填给模型的观察消息。
+
+    ``followup_messages`` 用于工具结果之后的补充观察（例如视觉截图）。Runner 会先
+    回填同一批次的全部 tool 消息，再追加这些 user 消息，保持工具协议要求的顺序。
+    """
 
     tool_call: ToolCall
     result: ToolResult
     message: dict[str, Any]
+    followup_messages: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,10 @@ class AgentLoopRunner:
                     "工具批次观察数量与模型调用数量不一致："
                     f"期望 {len(reply.tool_calls)}，实际 {len(observations)}。"
                 )
+            # 所有 tool result 必须紧跟同一条 assistant tool_calls 消息；若在两条
+            # tool result 之间插入视觉 user 消息，OpenAI/Anthropic 会判定协议顺序无效。
             messages.extend(observation.message for observation in observations)
+            for observation in observations:
+                messages.extend(observation.followup_messages)
             tool_calls = next_tool_count
             check_boundary()

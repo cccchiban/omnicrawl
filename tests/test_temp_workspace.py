@@ -20,7 +20,7 @@ from omnicrawl.temp_workspace import (
 class AgentTempWorkspaceConfigTest(unittest.TestCase):
     def test_load_config_data_uses_defaults_without_section(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text("{}", encoding="utf-8")
 
             config = load_agent_temp_workspace_config(config_path)
@@ -32,7 +32,7 @@ class AgentTempWorkspaceConfigTest(unittest.TestCase):
 
     def test_load_config_data_rejects_invalid_cleanup_interval(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
                 json.dumps({"agent_temp": {"cleanup_interval_hours": 0}}),
                 encoding="utf-8",

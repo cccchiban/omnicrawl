@@ -19,7 +19,11 @@ from ...approval import (
     approval_mode_label,
     save_approval_mode,
 )
-from ...config.settings import SettingsConfigError, save_feature_enabled
+from ...config.settings import (
+    SettingsConfigError,
+    save_context_window_tokens,
+    save_feature_enabled,
+)
 from ...llm import LLMError, save_reasoning_effort
 
 
@@ -40,6 +44,8 @@ _REASONING_LABELS = {
     "max": "最大",
 }
 _APPROVAL_OPTIONS = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW)
+_CONTEXT_WINDOW_OPTIONS_K = (32, 64, 128, 256, 512, 1024, 2048)
+
 _FEATURES = (
     ("memory", "记忆功能", "memory"),
     ("mcp", "MCP 工具", "mcp"),
@@ -112,7 +118,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self._selected = 0
         self._busy = False
         self._status = "选择设置项目后按 Enter 修改；模型会打开模型选择器。"
-        self._row_keys = ("model", "reasoning", "approval") + tuple(
+        self._row_keys = ("model", "reasoning", "context", "approval") + tuple(
             item[0] for item in _FEATURES
         )
 
@@ -175,6 +181,21 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             value = _REASONING_OPTIONS[(index + direction) % len(_REASONING_OPTIONS)]
             self._apply_setting(key, value)
             return
+        if key == "context":
+            current_tokens = int(getattr(self._agent, "context_window_tokens", 128_000))
+            current_k = current_tokens // 1000
+            try:
+                index = _CONTEXT_WINDOW_OPTIONS_K.index(current_k)
+            except ValueError:
+                index = min(
+                    range(len(_CONTEXT_WINDOW_OPTIONS_K)),
+                    key=lambda item: abs(_CONTEXT_WINDOW_OPTIONS_K[item] - current_k),
+                )
+            next_k = _CONTEXT_WINDOW_OPTIONS_K[
+                (index + direction) % len(_CONTEXT_WINDOW_OPTIONS_K)
+            ]
+            self._apply_setting(key, next_k * 1000)
+            return
         if key == "approval":
             current = str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))
             try:
@@ -214,6 +235,28 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
                     self._agent.set_reasoning_effort(previous)
                     raise
                 message = f"推理强度已设为 {_REASONING_LABELS[normalized]}，已保存到 {path}。"
+            elif key == "context":
+                previous = int(getattr(self._agent, "context_window_tokens", 128_000))
+                tokens = int(value)
+                self._agent.set_context_window_tokens(tokens)
+                try:
+                    path = save_context_window_tokens(
+                        tokens,
+                        model_source=str(
+                            getattr(getattr(self._agent, "config", None), "llm", None)
+                            and getattr(self._agent.config.llm, "model_source", "legacy")
+                            or "legacy"
+                        ),
+                        catalog_key=str(
+                            getattr(getattr(self._agent, "config", None), "llm", None)
+                            and getattr(self._agent.config.llm, "catalog_key", "")
+                            or ""
+                        ),
+                    )
+                except Exception:
+                    self._agent.set_context_window_tokens(previous)
+                    raise
+                message = f"上下文长度已设为 {tokens // 1000}K，已保存到 {path}。"
             elif key == "approval":
                 previous = str(
                     getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL)
@@ -285,6 +328,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
                 str(getattr(self._agent, "reasoning_effort", "none") or "none"),
                 "默认",
             ),
+            "context": f"{int(getattr(self._agent, 'context_window_tokens', 128_000)) // 1000}K",
             "approval": approval_mode_label(
                 str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))
             ),
@@ -298,6 +342,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         return {
             "model": "模型",
             "reasoning": "推理强度",
+            "context": "上下文长度（K）",
             "approval": "工具审批",
             **{key: label for key, label, _section in _FEATURES},
         }

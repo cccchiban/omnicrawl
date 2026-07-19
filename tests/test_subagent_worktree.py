@@ -72,7 +72,7 @@ class ConfigFlagsTests(unittest.TestCase):
         self.assertFalse(c.allow_worktree); self.assertFalse(c.allow_standard_agent); self.assertFalse(c.allow_shared_workspace_writes)
     def test_load_config_allows_worktree_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/"config.json"
+            path=Path(tmp)/"config.yaml"
             payload={"subagents":{"enabled":True,"allow_worktree":True,"allow_standard_agent":True,"allow_shared_workspace_writes":True}}
             path.write_text(json.dumps(payload), encoding="utf-8")
             c=load_subagent_config(path)

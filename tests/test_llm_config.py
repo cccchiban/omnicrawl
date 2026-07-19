@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+
+import yaml
 from pathlib import Path
 from unittest.mock import patch
 
+from omnicrawl.config.model_store import CustomModelRecord, ModelStore
 from omnicrawl.llm import (
     LLMConfig,
     LLMError,
@@ -43,6 +46,64 @@ class LLMConfigTest(unittest.TestCase):
             config = load_llm_config()
 
         self.assertEqual(config.context_window_tokens, 200_000)
+
+    def test_should_prefer_saved_default_over_profile_default_for_detected_model(self) -> None:
+        from omnicrawl.config.llm_multi import load_multi_model_llm_config
+
+        with patch(
+            "omnicrawl.config.llm_multi.load_model_store",
+            return_value=ModelStore(version=1, models=()),
+        ):
+            config = load_multi_model_llm_config(
+                {
+                    "defaults": {"context_window_tokens": 256_000},
+                    "profiles": {
+                        "openai": {
+                            "provider": "openai",
+                            "api_key": "test-key",
+                            "default_context_window_tokens": 128_000,
+                        }
+                    },
+                    "active_model": {
+                        "source": "detected",
+                        "profile": "openai",
+                        "model_id": "demo-model",
+                    },
+                }
+            )
+
+        self.assertEqual(config.context_window_tokens, 256_000)
+
+    def test_should_keep_explicit_custom_context_when_defaults_exist(self) -> None:
+        from omnicrawl.config.llm_multi import load_multi_model_llm_config
+
+        custom = CustomModelRecord(
+            key="demo",
+            display_name="Demo",
+            profile="openai",
+            model_id="demo-model",
+            protocol="openai_chat_completions",
+            context_window_tokens=128_000,
+        )
+        with patch(
+            "omnicrawl.config.llm_multi.load_model_store",
+            return_value=ModelStore(version=1, models=(custom,)),
+        ):
+            config = load_multi_model_llm_config(
+                {
+                    "defaults": {"context_window_tokens": 256_000},
+                    "profiles": {
+                        "openai": {
+                            "provider": "openai",
+                            "api_key": "test-key",
+                            "default_context_window_tokens": 64_000,
+                        }
+                    },
+                    "active_model": {"source": "custom", "key": "demo"},
+                }
+            )
+
+        self.assertEqual(config.context_window_tokens, 128_000)
 
     def test_context_window_tokens_must_be_positive_integer(self) -> None:
         with self.assertRaisesRegex(LLMError, "context_window_tokens"):
@@ -86,14 +147,14 @@ class LLMConfigTest(unittest.TestCase):
 
     def test_save_reasoning_effort_preserves_config_and_syncs_thinking_type(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.json"
+            config_path = Path(temp_dir) / "config.yaml"
             config_path.write_text(
                 json.dumps({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
                 encoding="utf-8",
             )
 
             save_reasoning_effort("high", config_path)
-            data = json.loads(config_path.read_text(encoding="utf-8"))
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
         self.assertEqual(data["llm"]["model"], "demo")
         self.assertEqual(data["llm"]["reasoning_effort"], "high")

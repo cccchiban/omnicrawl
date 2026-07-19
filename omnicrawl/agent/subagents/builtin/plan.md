@@ -17,7 +17,6 @@ disallowedTools:
   - monitor
   - memory_write
   - display_html
-  - bb_browser_cli
 model: inherit
 maxTurns: 15
 maxToolCalls: 40

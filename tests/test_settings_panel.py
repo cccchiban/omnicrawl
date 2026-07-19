@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+
+import yaml
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -13,6 +15,7 @@ from omnicrawl.mcp.config import MCPConfig
 from omnicrawl.config.settings import (
     SettingsConfigError,
     load_feature_enabled,
+    save_context_window_tokens,
     save_feature_enabled,
 )
 from omnicrawl.config.subagents import SubAgentConfig
@@ -45,6 +48,53 @@ class SettingsConfigTests(unittest.TestCase):
             self.assertIn("enabled: true", text)
 
 
+class ContextWindowPersistenceTests(unittest.TestCase):
+    def test_custom_model_context_window_is_saved_to_models_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            models_path = Path(temp_dir) / "models.yaml"
+            models_path.write_text(
+                "version: 1\nmodels:\n  demo:\n"
+                "    display_name: Demo\n"
+                "    profile: openai\n"
+                "    model_id: demo-model\n"
+                "    protocol: openai_chat_completions\n"
+                "    context_window_tokens: 128000\n",
+                encoding="utf-8",
+            )
+
+            saved = save_context_window_tokens(
+                256000,
+                model_source="custom",
+                catalog_key="demo",
+                models_path=models_path,
+            )
+            data = yaml.safe_load(models_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved, models_path)
+        self.assertEqual(data["models"]["demo"]["context_window_tokens"], 256000)
+        self.assertEqual(data["models"]["demo"]["capabilities"]["context_window_tokens"], 256000)
+
+    def test_detected_model_context_window_is_saved_to_yaml_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text(
+                "llm:\n  defaults:\n    reasoning_effort: low\n"
+                "  profiles:\n    openai:\n      provider: openai\n",
+                encoding="utf-8",
+            )
+
+            saved = save_context_window_tokens(
+                512000,
+                model_source="detected",
+                config_path=config_path,
+            )
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved, config_path)
+        self.assertEqual(data["llm"]["defaults"]["context_window_tokens"], 512000)
+        self.assertEqual(data["llm"]["defaults"]["reasoning_effort"], "low")
+
+
 class SettingsCommandTests(unittest.TestCase):
     def test_only_settings_opens_settings_panel(self) -> None:
         agent = SimpleNamespace(workspace_root=Path("D:/workspace"))
@@ -64,6 +114,54 @@ class SettingsCommandTests(unittest.TestCase):
         self.assertIn("选择", descriptions)
         self.assertIn("取消", descriptions)
         self.assertIn("上一项", descriptions)
+
+
+class SettingsScreenContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_context_window_cycle_applies_k_value_and_persists(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        class FakeAgent:
+            current_model = "demo"
+            reasoning_effort = "none"
+            approval_mode = "manual"
+            context_window_tokens = 128000
+            config = SimpleNamespace(
+                llm=SimpleNamespace(model_source="detected", catalog_key=""),
+                subagents=SimpleNamespace(enabled=False),
+            )
+            _memory_store = None
+            _mcp_manager = SimpleNamespace(enabled=False)
+            _plugin_manager = SimpleNamespace(enabled=False)
+
+            def set_context_window_tokens(self, tokens: int) -> int:
+                self.context_window_tokens = tokens
+                return tokens
+
+        agent = FakeAgent()
+
+        class SettingsApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(SettingsScreen(agent))
+
+        app = SettingsApp()
+        with patch(
+            "omnicrawl.ui.fullscreen.settings.save_context_window_tokens",
+            return_value=Path("config.yaml"),
+        ) as save_context:
+            async with app.run_test(size=(100, 32)) as pilot:
+                await pilot.pause()
+                screen = app.screen
+                screen._selected = screen._row_keys.index("context")
+                worker = screen._apply_setting("context", 256000)
+                await worker.wait()
+
+        self.assertEqual(agent.context_window_tokens, 256000)
+        save_context.assert_called_once()
+        self.assertIn("256K", screen._status)
 
 
 class SettingsScreenFailureTests(unittest.IsolatedAsyncioTestCase):
