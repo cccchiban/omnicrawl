@@ -102,6 +102,127 @@ class SessionStoreTest(unittest.TestCase):
             ],
         )
 
+    def test_undo_last_turn_persists_and_supports_consecutive_undo(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+
+            store.append_event(state.session_id, "user_message", {"content": "第一轮问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "第一轮回答"})
+            store.append_event(state.session_id, "user_message", {"content": "第二轮问题"})
+            store.append_event(
+                state.session_id,
+                "tool_result",
+                {"tool": "read_file", "ok": True, "output": "第二轮工具结果"},
+            )
+            store.append_event(state.session_id, "assistant_message", {"content": "第二轮回答"})
+
+            first_undo = store.undo_last_turn(state.session_id)
+            visible_after_first = store.read_session_events(state.session_id)
+            second_undo = store.undo_last_turn(state.session_id)
+            persisted_events = [
+                json.loads(line)
+                for line in state.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            sessions = store.list_sessions(workspace_root=workspace)
+            consistency = store.check_consistency()
+
+            self.assertEqual(
+                first_undo.messages,
+                [
+                    {"role": "user", "content": "第一轮问题"},
+                    {"role": "assistant", "content": "第一轮回答"},
+                ],
+            )
+            self.assertNotIn(
+                "第二轮工具结果",
+                "\n".join(str(event.payload) for event in visible_after_first),
+            )
+            self.assertEqual(second_undo.messages, [])
+            self.assertEqual(persisted_events[-1]["type"], "turn_undone")
+            self.assertEqual(
+                [event["type"] for event in persisted_events].count("turn_undone"),
+                2,
+            )
+            self.assertEqual(sessions[0].message_count, 0)
+            self.assertEqual(sessions[0].title, "新会话")
+            self.assertEqual(consistency.issues, ())
+
+            with self.assertRaisesRegex(SessionStoreError, "没有可回退"):
+                store.undo_last_turn(state.session_id)
+            self.assertTrue(store.discard_empty_session(state.session_id))
+            self.assertEqual(store.list_sessions(workspace_root=workspace), [])
+
+    def test_undo_last_turn_removes_incomplete_cancelled_turn_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            store.append_event(state.session_id, "user_message", {"content": "完整问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "完整回答"})
+            store.append_event(state.session_id, "user_message", {"content": "取消的问题"})
+            store.append_event(
+                state.session_id,
+                "tool_call_requested",
+                {"tool": "read_file", "arguments": {"path": "README.md"}},
+            )
+            store.append_event(
+                state.session_id,
+                "turn_cancelled",
+                {"user_text": "取消的问题", "reason": "用户取消"},
+            )
+
+            restored = store.undo_last_turn(state.session_id)
+            visible_events = store.read_session_events(state.session_id)
+
+        self.assertEqual(
+            restored.messages,
+            [
+                {"role": "user", "content": "完整问题"},
+                {"role": "assistant", "content": "完整回答"},
+            ],
+        )
+        self.assertNotIn(
+            "取消的问题",
+            "\n".join(str(event.payload) for event in visible_events),
+        )
+
+    def test_undo_last_turn_removes_compaction_created_after_that_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+
+            store.append_event(state.session_id, "user_message", {"content": "第一轮问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "第一轮回答"})
+            store.append_event(state.session_id, "user_message", {"content": "第二轮问题"})
+            store.append_event(state.session_id, "assistant_message", {"content": "第二轮回答"})
+            store.append_event(
+                state.session_id,
+                "compact_summary",
+                {
+                    "content": "两轮摘要",
+                    "compacted_message_count": 2,
+                    "remaining_message_count": 2,
+                    "manual": False,
+                },
+            )
+
+            restored = store.undo_last_turn(state.session_id)
+
+        self.assertEqual(
+            restored.messages,
+            [
+                {"role": "user", "content": "第一轮问题"},
+                {"role": "assistant", "content": "第一轮回答"},
+            ],
+        )
+
     def test_prompt_history_appends_searches_and_deduplicates_by_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"

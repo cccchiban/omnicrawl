@@ -1,0 +1,72 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "OmniCrawl Light Paper": {
+      "versions": [
+        {
+          "path": "OmniCrawl Light Paper.html",
+          "createdAt": "2026-07-19T09:13:27.134Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "light-paper-desktop.png": {
+      "versions": [
+        {
+          "path": "light-paper-desktop.png",
+          "createdAt": "2026-07-19T09:15:18.733Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "light-paper-narrow.png": {
+      "versions": [
+        {
+          "path": "light-paper-narrow.png",
+          "createdAt": "2026-07-19T09:15:18.828Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "textual-light-paper.svg": {
+      "versions": [
+        {
+          "path": "textual-light-paper.svg",
+          "createdAt": "2026-07-19T09:41:32.026Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "textual-light-paper.png": {
+      "versions": [
+        {
+          "path": "textual-light-paper.png",
+          "createdAt": "2026-07-19T09:41:32.122Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "textual-terminal-background.svg": {
+      "versions": [
+        {
+          "path": "textual-terminal-background.svg",
+          "createdAt": "2026-07-19T10:14:49.119Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "textual-terminal-background.png": {
+      "versions": [
+        {
+          "path": "textual-terminal-background.png",
+          "createdAt": "2026-07-19T10:14:49.239Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-07-19T09:13:27.135Z",
+  "updatedAt": "2026-07-19T10:14:49.241Z"
+}

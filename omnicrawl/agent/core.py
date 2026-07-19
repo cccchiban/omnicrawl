@@ -679,6 +679,11 @@ class LocalToolAgent:
 
         return self._session_facade().read_session_artifact_text(session_id, artifact_path)
 
+    def undo_last_turn(self) -> SessionState:
+        """持久化回退最近一轮对话，并重建当前模型上下文。"""
+
+        return self._session_facade().undo_last_turn()
+
     def rename_current_session(self, title: str) -> SessionState:
         """重命名当前会话，并同步更新内存中的 `SessionState`。"""
 

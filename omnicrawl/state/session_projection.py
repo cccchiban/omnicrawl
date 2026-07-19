@@ -5,11 +5,64 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .session_models import COMPACT_SUMMARY_PREFIX, SessionEvent
+from .session_models import COMPACT_SUMMARY_PREFIX, SessionEvent, clean_title
 
 
 TOOL_CALL_CONTEXT_PREFIX = "工具调用请求："
 TOOL_RESULT_CONTEXT_PREFIX = "工具执行结果："
+TURN_UNDONE_EVENT_TYPE = "turn_undone"
+
+
+def active_session_events(events: list[SessionEvent]) -> list[SessionEvent]:
+    """投影回退后的有效事件，保留 JSONL 的仅追加审计特性。
+
+    `turn_undone` 只记录被回退轮次的事件 ID。读取时统一过滤这些事件，
+    使模型恢复、会话列表和客户端转录共享同一套逻辑视图。
+    """
+
+    hidden_event_ids: set[str] = set()
+    for event in events:
+        if event.type != TURN_UNDONE_EVENT_TYPE:
+            continue
+        event_ids = event.payload.get("event_ids", [])
+        if not isinstance(event_ids, list):
+            continue
+        hidden_event_ids.update(
+            event_id.strip()
+            for event_id in event_ids
+            if isinstance(event_id, str) and event_id.strip()
+        )
+    return [
+        event
+        for event in events
+        if event.type != TURN_UNDONE_EVENT_TYPE and event.event_id not in hidden_event_ids
+    ]
+
+
+def session_title_from_events(
+    events: list[SessionEvent],
+    *,
+    fallback: str = "新会话",
+) -> str:
+    """按现有自动标题与显式重命名规则投影当前会话标题。"""
+
+    title = fallback
+    first_user_title_applied = False
+    for event in events:
+        if event.type == "session_started":
+            started_title = event.payload.get("title", "")
+            if isinstance(started_title, str) and started_title.strip():
+                title = clean_title(started_title) or title
+        if not first_user_title_applied and event.type == "user_message":
+            content = event.payload.get("content", "")
+            if isinstance(content, str) and content.strip():
+                title = clean_title(content)
+                first_user_title_applied = True
+        elif event.type == "session_renamed":
+            renamed_title = event.payload.get("title", "")
+            if isinstance(renamed_title, str) and renamed_title.strip():
+                title = clean_title(renamed_title)
+    return title
 
 
 def event_to_model_message(event: SessionEvent) -> dict[str, str] | None:

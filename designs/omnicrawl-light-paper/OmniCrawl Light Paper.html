@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OmniCrawl · 明亮纸面模式</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #edf1f4;
+      --paper: #fbfcfd;
+      --paper-strong: #ffffff;
+      --paper-muted: #f4f7f9;
+      --ink: #202830;
+      --ink-soft: #52616d;
+      --muted: #74818b;
+      --faint: #9aa5ad;
+      --line: #d7dee4;
+      --line-strong: #bbc6ce;
+      --green: #087f6b;
+      --green-soft: #e5f3ef;
+      --blue: #2563b8;
+      --blue-soft: #e9f1fb;
+      --amber: #976512;
+      --amber-soft: #fbf3e3;
+      --red: #c33f4e;
+      --shadow: 0 18px 55px rgba(35, 48, 58, 0.14);
+      --mono: "Cascadia Code", "JetBrains Mono", "SFMono-Regular", Consolas,
+        "Noto Sans Mono CJK SC", "Microsoft YaHei UI", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    button,
+    input { font: inherit; }
+    button { letter-spacing: 0; }
+
+    .stage {
+      width: 100%;
+      height: 100%;
+      padding: 20px;
+      display: grid;
+      place-items: center;
+    }
+
+    .terminal {
+      width: min(1440px, 100%);
+      height: min(900px, 100%);
+      min-height: 560px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      background: var(--paper);
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      box-shadow: var(--shadow);
+    }
+
+    .topbar {
+      min-height: 42px;
+      padding: 0 20px;
+      display: grid;
+      grid-template-columns: 210px minmax(0, 1fr) 170px;
+      align-items: center;
+      gap: 18px;
+      background: var(--paper-strong);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #18312c;
+      font-weight: 700;
+    }
+
+    .brand-mark {
+      width: 12px;
+      height: 12px;
+      display: inline-block;
+      background: var(--green);
+      transform: rotate(45deg);
+      border-radius: 1px;
+    }
+
+    .context {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--muted);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .runtime {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 8px;
+      color: var(--green);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .runtime-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px var(--green-soft);
+    }
+
+    .telemetry {
+      min-height: 30px;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      overflow: hidden;
+      color: var(--muted);
+      background: var(--paper-muted);
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .metric strong { color: var(--ink-soft); font-weight: 650; }
+    .metric.input strong { color: var(--blue); }
+    .metric.cache strong { color: var(--green); }
+
+    .context-meter {
+      width: 116px;
+      height: 5px;
+      overflow: hidden;
+      background: #dfe5e9;
+      border-radius: 2px;
+    }
+
+    .context-meter > span {
+      width: 38%;
+      height: 100%;
+      display: block;
+      background: var(--green);
+    }
+
+    .conversation {
+      min-height: 0;
+      overflow-y: auto;
+      background: var(--paper);
+      scrollbar-color: #aebac2 transparent;
+      scrollbar-width: thin;
+    }
+
+    .conversation-inner {
+      width: 100%;
+      padding: 22px 0 30px;
+    }
+
+    .turn {
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr);
+      gap: 18px;
+      padding: 18px 34px;
+      border-bottom: 1px solid #e6eaed;
+    }
+
+    .turn.user { background: #f6f9fb; }
+
+    .role {
+      padding-top: 2px;
+      color: var(--faint);
+      font-size: 11px;
+      font-weight: 700;
+      text-align: right;
+      text-transform: uppercase;
+    }
+
+    .user .role { color: var(--blue); }
+    .assistant .role { color: var(--green); }
+
+    .message {
+      min-width: 0;
+      max-width: 96ch;
+      line-height: 1.72;
+    }
+
+    .message p { margin: 0 0 12px; }
+    .message p:last-child { margin-bottom: 0; }
+    .message strong { color: #172028; }
+
+    .code {
+      margin: 14px 0;
+      padding: 13px 16px;
+      overflow-x: auto;
+      color: #33404a;
+      background: #f0f3f5;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      line-height: 1.6;
+      white-space: pre;
+    }
+
+    .activity {
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr);
+      gap: 18px;
+      padding: 8px 34px;
+      background: var(--paper);
+    }
+
+    .activity-label {
+      color: var(--faint);
+      font-size: 11px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .disclosure {
+      width: min(100%, 96ch);
+      padding: 0;
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      color: var(--ink-soft);
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .disclosure:hover .disclosure-title { color: var(--ink); }
+    .disclosure:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; }
+    .disclosure-icon { color: var(--green); font-weight: 700; }
+    .reasoning .disclosure-icon { color: var(--blue); }
+    .disclosure-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .disclosure-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+    .disclosure-body {
+      display: none;
+      grid-column: 2 / 4;
+      margin-top: 9px;
+      padding: 11px 14px;
+      color: var(--ink-soft);
+      background: var(--amber-soft);
+      border-left: 2px solid #d9ad58;
+      line-height: 1.65;
+    }
+
+    .activity.expanded .disclosure-body { display: block; }
+
+    .notice {
+      margin: 14px 34px 0 156px;
+      padding: 10px 14px;
+      color: #246455;
+      background: var(--green-soft);
+      border: 1px solid #c9e5dd;
+      border-radius: 4px;
+      line-height: 1.55;
+    }
+
+    .composer-shell {
+      position: relative;
+      background: var(--paper-strong);
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .command-menu {
+      position: absolute;
+      right: 16px;
+      bottom: calc(100% + 8px);
+      left: 16px;
+      display: none;
+      overflow: hidden;
+      background: var(--paper-strong);
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      box-shadow: 0 12px 28px rgba(35, 48, 58, 0.12);
+    }
+
+    .command-menu.visible { display: block; }
+
+    .command-option {
+      width: 100%;
+      min-height: 36px;
+      padding: 0 14px;
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      align-items: center;
+      gap: 12px;
+      color: var(--ink-soft);
+      background: transparent;
+      border: 0;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .command-option + .command-option { border-top: 1px solid #edf0f2; }
+    .command-option:hover,
+    .command-option.selected { background: var(--blue-soft); color: var(--ink); }
+    .command-name { color: var(--blue); font-weight: 700; }
+
+    .composer-row {
+      min-height: 58px;
+      padding: 10px 16px;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .prompt-mark { color: var(--green); font-size: 18px; font-weight: 800; }
+
+    .composer {
+      width: 100%;
+      min-width: 0;
+      padding: 9px 10px;
+      color: var(--ink);
+      background: transparent;
+      border: 0;
+      border-left: 2px solid transparent;
+      outline: none;
+    }
+
+    .composer:focus {
+      background: #f8fafb;
+      border-left-color: var(--green);
+    }
+
+    .composer::placeholder { color: var(--faint); opacity: 1; }
+
+    .composer-state {
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 820px) {
+      .stage { padding: 0; }
+      .terminal { width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; }
+      .topbar { grid-template-columns: minmax(150px, 1fr) auto; padding: 0 14px; }
+      .context { display: none; }
+      .runtime { font-size: 12px; }
+      .telemetry { padding: 0 14px; gap: 14px; }
+      .metric.optional { display: none; }
+      .turn,
+      .activity { grid-template-columns: 64px minmax(0, 1fr); gap: 12px; padding-right: 18px; padding-left: 14px; }
+      .notice { margin-right: 18px; margin-left: 90px; }
+    }
+
+    @media (max-width: 560px) {
+      .brand-name { font-size: 12px; }
+      .runtime-label { display: none; }
+      .turn,
+      .activity { grid-template-columns: 1fr; gap: 7px; }
+      .role,
+      .activity-label { text-align: left; }
+      .notice { margin-left: 14px; }
+      .command-option { grid-template-columns: 92px minmax(0, 1fr); }
+      .composer-state { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage" data-screen-label="OmniCrawl 明亮纸面模式">
+    <section class="terminal" aria-label="OmniCrawl 工作台">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span class="brand-name">OMNICRAWL</span>
+        </div>
+        <div class="context">PRJ AI课堂任务 · MDL openai/gpt-5 · 推理 中 · 审批 手动</div>
+        <div class="runtime">
+          <span class="runtime-dot" aria-hidden="true"></span>
+          <span class="runtime-label">上下文已同步</span>
+        </div>
+      </header>
+
+      <div class="telemetry" aria-label="Token 遥测">
+        <span class="metric input">IN <strong>18.6K</strong></span>
+        <span class="metric">OUT <strong>2.4K</strong></span>
+        <span class="metric cache optional">CA <strong>7.1K</strong></span>
+        <span class="metric">CTX <strong>38%</strong></span>
+        <span class="context-meter" aria-hidden="true"><span></span></span>
+        <span class="metric optional">SESSION <strong>20260719-1502</strong></span>
+      </div>
+
+      <section class="conversation" id="conversation" aria-live="polite">
+        <div class="conversation-inner" id="conversation-inner">
+          <article class="turn user">
+            <div class="role">YOU</div>
+            <div class="message">
+              <p>把最近一轮对话回退掉，但不要撤销已经执行过的文件修改。</p>
+            </div>
+          </article>
+
+          <div class="activity reasoning" data-disclosure>
+            <div class="activity-label">TRACE</div>
+            <button class="disclosure" type="button" aria-expanded="false">
+              <span class="disclosure-icon">›</span>
+              <span class="disclosure-title">思考过程</span>
+              <span class="disclosure-meta">已折叠</span>
+            </button>
+            <div class="disclosure-body">确认仅回退 Session 转录与模型历史，外部工具副作用保持不变。</div>
+          </div>
+
+          <div class="activity" data-disclosure>
+            <div class="activity-label">TOOL</div>
+            <button class="disclosure" type="button" aria-expanded="false">
+              <span class="disclosure-icon">✓</span>
+              <span class="disclosure-title">read · omnicrawl/state/session.py</span>
+              <span class="disclosure-meta">成功 · 0.13s</span>
+            </button>
+            <div class="disclosure-body">读取会话事件投影与索引更新逻辑，输出 143 行。</div>
+          </div>
+
+          <article class="turn assistant">
+            <div class="role">OMNI</div>
+            <div class="message">
+              <p>已加入 <strong>/undo</strong> 命令。它会从有效转录和模型上下文中移除最近一轮消息，同时保留原始 JSONL 审计记录。</p>
+              <div class="code">/undo
+→ 已回退最近一轮对话
+→ 文件修改与命令执行结果保持不变</div>
+              <p>连续执行可以继续向前回退；取消或异常中断的半轮会优先处理。</p>
+            </div>
+          </article>
+
+          <div class="notice" id="notice">会话已保存 · 647 项测试通过</div>
+        </div>
+      </section>
+
+      <footer class="composer-shell">
+        <div class="command-menu visible" id="command-menu" role="listbox" aria-label="命令建议">
+          <button class="command-option selected" type="button" data-command="/undo" role="option" aria-selected="true">
+            <span class="command-name">/undo</span>
+            <span>回退最近一轮对话</span>
+          </button>
+          <button class="command-option" type="button" data-command="/sessions" role="option" aria-selected="false">
+            <span class="command-name">/sessions</span>
+            <span>查看最近会话</span>
+          </button>
+          <button class="command-option" type="button" data-command="/compact" role="option" aria-selected="false">
+            <span class="command-name">/compact</span>
+            <span>压缩当前模型上下文</span>
+          </button>
+        </div>
+        <div class="composer-row">
+          <span class="prompt-mark" aria-hidden="true">›</span>
+          <input class="composer" id="composer" value="/undo" aria-label="消息输入" autocomplete="off" spellcheck="false">
+          <span class="composer-state">本地会话 · 自动保存</span>
+        </div>
+      </footer>
+    </section>
+  </main>
+
+  <script>
+    const composer = document.getElementById("composer");
+    const menu = document.getElementById("command-menu");
+    const conversation = document.getElementById("conversation");
+    const conversationInner = document.getElementById("conversation-inner");
+    const notice = document.getElementById("notice");
+    const options = Array.from(document.querySelectorAll(".command-option"));
+    let selectedIndex = 0;
+
+    function updateMenu() {
+      const value = composer.value.trim();
+      menu.classList.toggle("visible", value.startsWith("/"));
+    }
+
+    function selectOption(index) {
+      selectedIndex = (index + options.length) % options.length;
+      options.forEach((option, optionIndex) => {
+        const selected = optionIndex === selectedIndex;
+        option.classList.toggle("selected", selected);
+        option.setAttribute("aria-selected", String(selected));
+      });
+    }
+
+    function chooseCommand(command) {
+      composer.value = command;
+      menu.classList.remove("visible");
+      composer.focus();
+    }
+
+    function runCommand() {
+      const value = composer.value.trim();
+      if (!value) return;
+      const row = document.createElement("article");
+      row.className = "turn user";
+      const role = document.createElement("div");
+      role.className = "role";
+      role.textContent = "YOU";
+      const message = document.createElement("div");
+      message.className = "message";
+      const paragraph = document.createElement("p");
+      paragraph.textContent = value;
+      message.appendChild(paragraph);
+      row.append(role, message);
+      conversationInner.insertBefore(row, notice);
+      notice.textContent = value === "/undo"
+        ? "已回退最近一轮 · 外部副作用保持不变"
+        : "命令已提交";
+      composer.value = "";
+      updateMenu();
+      requestAnimationFrame(() => { conversation.scrollTop = conversation.scrollHeight; });
+    }
+
+    composer.addEventListener("input", updateMenu);
+    composer.addEventListener("keydown", (event) => {
+      if (menu.classList.contains("visible") && event.key === "ArrowDown") {
+        event.preventDefault();
+        selectOption(selectedIndex + 1);
+        return;
+      }
+      if (menu.classList.contains("visible") && event.key === "ArrowUp") {
+        event.preventDefault();
+        selectOption(selectedIndex - 1);
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (menu.classList.contains("visible")) {
+          chooseCommand(options[selectedIndex].dataset.command);
+        } else {
+          runCommand();
+        }
+      }
+      if (event.key === "Escape") menu.classList.remove("visible");
+    });
+
+    options.forEach((option, index) => {
+      option.addEventListener("mouseenter", () => selectOption(index));
+      option.addEventListener("click", () => chooseCommand(option.dataset.command));
+    });
+
+    document.querySelectorAll("[data-disclosure]").forEach((activity) => {
+      const button = activity.querySelector(".disclosure");
+      const icon = activity.querySelector(".disclosure-icon");
+      const meta = activity.querySelector(".disclosure-meta");
+      button.addEventListener("click", () => {
+        const expanded = activity.classList.toggle("expanded");
+        button.setAttribute("aria-expanded", String(expanded));
+        if (activity.classList.contains("reasoning")) {
+          icon.textContent = expanded ? "⌄" : "›";
+          meta.textContent = expanded ? "已展开" : "已折叠";
+        }
+      });
+    });
+
+    composer.focus();
+  </script>
+</body>
+</html>

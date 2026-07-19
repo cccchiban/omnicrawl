@@ -20,13 +20,13 @@ from .session_models import (
     SessionEvent,
     SessionIndexEntry,
     SessionStoreError,
-    clean_title,
     format_datetime,
     is_relative_to,
     normalize_relative_file_path,
     normalize_session_id,
     utc_now,
 )
+from .session_projection import active_session_events, session_title_from_events
 
 
 # 诊断码保持稳定，便于测试、日志和未来 API/TUI 展示复用。
@@ -214,31 +214,19 @@ def build_index_entry_from_events(
     if not events:
         raise SessionStoreError(f"无法从空转录重建索引：{normalized_id}")
 
-    title = "新会话"
+    active_events = active_session_events(events)
+    title = session_title_from_events(active_events)
     workspace_root = ""
-    message_count = 0
+    message_count = sum(
+        1 for event in active_events if event.type in MESSAGE_EVENT_TYPES
+    )
     archived_at: datetime | None = None
-    first_user_title_applied = False
 
-    for event in events:
+    for event in active_events:
         if event.type == "session_started":
             workspace = event.payload.get("workspace_root", "")
             if isinstance(workspace, str) and workspace.strip():
                 workspace_root = workspace.strip()
-            started_title = event.payload.get("title", "")
-            if isinstance(started_title, str) and started_title.strip():
-                title = clean_title(started_title) or title
-        if not first_user_title_applied and event.type == "user_message":
-            content = event.payload.get("content", "")
-            if isinstance(content, str) and content.strip():
-                title = clean_title(content)
-                first_user_title_applied = True
-        elif event.type == "session_renamed":
-            renamed_title = event.payload.get("title", "")
-            if isinstance(renamed_title, str) and renamed_title.strip():
-                title = clean_title(renamed_title)
-        if event.type in MESSAGE_EVENT_TYPES:
-            message_count += 1
         if event.type == "session_archived":
             archived_at = event.created_at
         elif event.type == "session_unarchived":

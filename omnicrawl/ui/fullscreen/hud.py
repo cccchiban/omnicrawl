@@ -6,6 +6,17 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 from rich.text import Text
 
+from .theme import (
+    ACCENT_AMBER,
+    ACCENT_BLUE,
+    ACCENT_GREEN,
+    ACCENT_PURPLE,
+    ACCENT_RED,
+    BORDER_SUBTLE,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+)
+
 
 def compact_token_count(value: int) -> str:
     """使用 K/M 缩写压缩 Token 数，同时保留小数量的精确值。"""
@@ -33,44 +44,36 @@ def token_telemetry_text(
     ratio = input_tokens / context_limit
     percent = min(999, round(ratio * 100))
     filled = min(12, max(0, round(min(1.0, ratio) * 12)))
-    bar_color = "#00e5c3" if ratio < 0.6 else "#f4b860" if ratio < 0.85 else "#ff5470"
+    bar_color = (
+        ACCENT_GREEN
+        if ratio < 0.6
+        else ACCENT_AMBER
+        if ratio < 0.85
+        else ACCENT_RED
+    )
 
     rendered = Text()
-    rendered.append("IN ", style="#66757b")
-    rendered.append(compact_token_count(input_tokens), style="#39a7ff bold")
-    rendered.append("  OUT ", style="#66757b")
-    rendered.append(compact_token_count(output_tokens), style="#a36bff bold")
-    rendered.append("  CA ", style="#66757b")
-    rendered.append(compact_token_count(cached_input_tokens), style="#00e5c3 bold")
-    rendered.append("  CTX ", style="#66757b")
+    rendered.append("IN ", style=TEXT_MUTED)
+    rendered.append(compact_token_count(input_tokens), style=f"{ACCENT_BLUE} bold")
+    rendered.append("  OUT ", style=TEXT_MUTED)
+    rendered.append(compact_token_count(output_tokens), style=f"{ACCENT_PURPLE} bold")
+    rendered.append("  CA ", style=TEXT_MUTED)
+    rendered.append(compact_token_count(cached_input_tokens), style=f"{ACCENT_GREEN} bold")
+    rendered.append("  CTX ", style=TEXT_MUTED)
     rendered.append(
         f"{compact_token_count(input_tokens)}/{compact_token_count(context_limit)} ",
-        style="#d9e4e8",
+        style=TEXT_PRIMARY,
     )
     rendered.append("█" * filled, style=bar_color)
-    rendered.append("░" * (12 - filled), style="#23333a")
+    rendered.append("░" * (12 - filled), style=BORDER_SUBTLE)
     rendered.append(f" {percent}%", style=f"{bar_color} bold")
     return rendered
 
 
 def gradient_text(text: str) -> Text:
-    """用逐字符真彩色插值生成青绿、电蓝到紫色的 HUD 渐变。"""
+    """保留既有调用接口，以终端 ANSI 主强调色渲染品牌文字。"""
 
-    stops = ((0, 229, 195), (57, 167, 255), (163, 107, 255))
-    rendered = Text()
-    denominator = max(1, len(text) - 1)
-    for index, char in enumerate(text):
-        position = index / denominator
-        segment = min(1, int(position * 2))
-        local = position * 2 - segment
-        start = stops[segment]
-        end = stops[segment + 1]
-        red, green, blue = (
-            round(start[channel] + (end[channel] - start[channel]) * local)
-            for channel in range(3)
-        )
-        rendered.append(char, style=f"rgb({red},{green},{blue})")
-    return rendered
+    return Text(text, style=f"{ACCENT_GREEN} bold")
 
 
 def compact_hud_value(value: str, max_chars: int) -> str:
@@ -121,21 +124,21 @@ def context_summary_text(
         "模型审查": "REV",
     }.get(raw_approval.lower(), raw_approval.upper())
     approval_color = {
-        "MAN": "#f4b860",
-        "AUTO": "#00e5c3",
-        "REV": "#a36bff",
-    }.get(approval, "#d9e4e8")
+        "MAN": ACCENT_AMBER,
+        "AUTO": ACCENT_GREEN,
+        "REV": ACCENT_PURPLE,
+    }.get(approval, TEXT_PRIMARY)
 
     rendered = Text()
     fields = (
-        ("PRJ", compact_hud_value(workspace_name, 24), "#00e5c3"),
-        ("MDL", compact_hud_value(model, 28), "#39a7ff"),
-        ("THK", compact_hud_value(reasoning_effort.upper(), 8), "#a36bff"),
+        ("PRJ", compact_hud_value(workspace_name, 24), ACCENT_GREEN),
+        ("MDL", compact_hud_value(model, 28), ACCENT_BLUE),
+        ("THK", compact_hud_value(reasoning_effort.upper(), 8), ACCENT_PURPLE),
         ("APR", compact_hud_value(approval, 6), approval_color),
     )
     for index, (label, value, color) in enumerate(fields):
         if index:
-            rendered.append("  ·  ", style="#31434b")
-        rendered.append(f"{label} ", style="#59676d")
+            rendered.append("  ·  ", style=BORDER_SUBTLE)
+        rendered.append(f"{label} ", style=TEXT_MUTED)
         rendered.append(value, style=f"{color} bold")
     return rendered

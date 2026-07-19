@@ -1151,6 +1151,43 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "compact_summary")
         self.assertTrue(agent._history[0]["content"].startswith("会话压缩摘要："))
 
+    def test_undo_command_rebuilds_runtime_history_and_is_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            for role, content in (
+                ("user", "第一轮问题"),
+                ("assistant", "第一轮回答"),
+                ("user", "第二轮问题"),
+                ("assistant", "第二轮回答"),
+            ):
+                store.append_event(
+                    state.session_id,
+                    f"{role}_message",
+                    {"content": content},
+                )
+
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(max_history_turns=6)
+            agent._session_store = store
+            agent._session_state = store.load_session(state.session_id)
+            agent._history = list(agent._session_state.messages)
+            agent._pending_user_text = None
+            agent._active_skills = []
+            agent._skill_manager = None
+
+            message = handle_session_command(agent, "/undo")
+            restored = store.load_session(state.session_id)
+            options = {item["command"]: item for item in build_slash_command_options(agent)}
+
+        self.assertIn("已回退最近一轮", message or "")
+        self.assertEqual(agent._history, restored.messages)
+        self.assertEqual(agent._history[-1]["content"], "第一轮回答")
+        self.assertIn("/undo", build_slash_commands(agent))
+        self.assertEqual(options["/undo"]["insert"], "/undo")
+
     def test_resume_session_keeps_compact_summary_and_complete_recent_turns(self) -> None:
         agent = object.__new__(LocalToolAgent)
         agent.config = SimpleNamespace(max_history_turns=2)

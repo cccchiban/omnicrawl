@@ -25,6 +25,7 @@ from ...config.settings import (
     save_feature_enabled,
 )
 from ...llm import LLMError, save_reasoning_effort
+from .theme import terminal_css
 
 
 @dataclass(frozen=True)
@@ -67,10 +68,10 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         ("space", "confirm", "切换"),
     ]
 
-    CSS = """
+    CSS = terminal_css("""
     SettingsScreen {
         align: center middle;
-        background: rgba(5, 8, 10, 0.92);
+        background: $terminal-overlay;
     }
     #settings-dialog {
         width: 78;
@@ -78,13 +79,13 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         height: 25;
         max-height: 90%;
         padding: 1 2;
-        border: solid #00e5c3;
-        background: #0b1014;
+        border: solid $terminal-green;
+        background: $terminal-surface;
     }
     #settings-title {
         height: 1;
         margin-bottom: 1;
-        color: #00e5c3;
+        color: $terminal-green;
         text-style: bold;
     }
     #settings-list {
@@ -93,24 +94,24 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     .settings-row {
         height: 2;
         padding: 0 1;
-        color: #8fa4ad;
+        color: $terminal-text-secondary;
     }
     .settings-row.selected {
-        color: #d9e4e8;
-        background: #12232a;
+        color: $terminal-text;
+        background: $terminal-blue-soft;
         text-style: bold;
     }
     #settings-status {
         height: 2;
-        color: #39a7ff;
+        color: $terminal-blue;
         margin-top: 1;
     }
     #settings-help {
         height: 1;
-        color: #59676d;
+        color: $terminal-text-muted;
         margin-top: 1;
     }
-    """
+    """)
 
     def __init__(self, agent: Any) -> None:
         super().__init__()

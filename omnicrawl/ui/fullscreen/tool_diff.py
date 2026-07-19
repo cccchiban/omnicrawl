@@ -13,20 +13,31 @@ from typing import Any
 
 from rich.text import Text
 
+from .theme import (
+    ACCENT_AMBER,
+    ACCENT_BLUE,
+    ACCENT_GREEN,
+    ACCENT_RED,
+    TEXT_FAINT,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+)
+
 
 FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
 MAX_PREVIEW_CHARS_PER_LINE = 160
 
-COLOR_ADD = "#00e5c3"
-COLOR_DEL = "#ff5470"
-COLOR_MOD = "#f4b860"
-COLOR_META = "#8fa4ad"
-COLOR_GUTTER = "#4d5c63"
-COLOR_CTX = "#a9c7d3"
-COLOR_HUNK = "#39a7ff"
-COLOR_TITLE = "#f4b860"
+COLOR_ADD = ACCENT_GREEN
+COLOR_DEL = ACCENT_RED
+COLOR_MOD = ACCENT_AMBER
+COLOR_META = TEXT_MUTED
+COLOR_GUTTER = TEXT_FAINT
+COLOR_CTX = TEXT_SECONDARY
+COLOR_HUNK = ACCENT_BLUE
+COLOR_TITLE = ACCENT_AMBER
 
 
 def is_file_change_tool(tool_name: str) -> bool:
@@ -55,7 +66,7 @@ def tool_disclosure_title(
     rendered.append(f"{marker} ", style=COLOR_META)
     rendered.append(change.status_code, style=f"{change.status_color} bold")
     rendered.append("  ", style=COLOR_META)
-    rendered.append(change.path_display, style="#d9e4e8 bold")
+    rendered.append(change.path_display, style=f"{TEXT_PRIMARY} bold")
     rendered.append("  |  ", style=COLOR_GUTTER)
     rendered.append(change.stats_label, style=COLOR_META)
     rendered.append(f" · {status} · {duration_seconds:.2f}s", style=COLOR_META)

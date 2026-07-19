@@ -56,7 +56,10 @@ from .session_consistency import (
 from .session_projection import (
     TOOL_CALL_CONTEXT_PREFIX,
     TOOL_RESULT_CONTEXT_PREFIX,
+    TURN_UNDONE_EVENT_TYPE,
+    active_session_events as _active_session_events,
     event_to_model_message as _event_to_model_message,
+    session_title_from_events as _session_title_from_events,
 )
 from .session_records import (
     SESSION_INDEX_SCHEMA_VERSION,
@@ -191,6 +194,86 @@ class SessionStore:
 
             self._update_entry_after_event(entry, event)
             return event
+
+    def undo_last_turn(self, session_id: str) -> SessionState:
+        """逻辑回退最近一轮对话，并返回回退后的可恢复状态。
+
+        转录保持仅追加：被回退轮次的事件仍作为本地审计记录存在，新的
+        `turn_undone` 事件声明哪些事件不再属于有效转录。工具或命令已经造成的
+        外部副作用不会由会话存储自动撤销。
+        """
+
+        with self._exclusive_write():
+            self.ensure()
+            normalized_id = _normalize_session_id(session_id)
+            entry = self._entry_by_id(normalized_id)
+            active_events = _active_session_events(self._read_events(entry))
+
+            last_user_index = next(
+                (
+                    index
+                    for index in range(len(active_events) - 1, -1, -1)
+                    if active_events[index].type == "user_message"
+                ),
+                -1,
+            )
+            if last_user_index < 0:
+                raise SessionStoreError("当前会话没有可回退的对话轮次。")
+
+            assistant_index = next(
+                (
+                    index
+                    for index in range(last_user_index + 1, len(active_events))
+                    if active_events[index].type == "assistant_message"
+                ),
+                -1,
+            )
+            if assistant_index < 0:
+                # 取消或异常中断只持久化 user_message。优先移除这个未完成轮次，
+                # 避免它阻塞继续回退，也避免恢复时继续进入模型上下文。
+                terminal_index = next(
+                    (
+                        index
+                        for index in range(len(active_events) - 1, last_user_index, -1)
+                        if active_events[index].type
+                        in {"turn_cancelled", "session_interrupted"}
+                    ),
+                    len(active_events) - 1,
+                )
+                turn_events = active_events[last_user_index : terminal_index + 1]
+                undo_kind = "incomplete"
+            else:
+                # 回退整轮业务事件；紧随回复生成的压缩摘要也依赖该轮，必须一并
+                # 失效，否则恢复时摘要仍可能带回已经回退的内容。
+                turn_events = active_events[last_user_index : assistant_index + 1]
+                turn_events.extend(
+                    event
+                    for event in active_events[assistant_index + 1 :]
+                    if event.type == "compact_summary"
+                )
+                undo_kind = "complete"
+
+            message_events = [
+                event for event in turn_events if event.type in MESSAGE_EVENT_TYPES
+            ]
+            expected_message_count = 1 if undo_kind == "incomplete" else 2
+            if len(message_events) != expected_message_count:
+                raise SessionStoreError("当前会话最后一轮结构异常，无法安全回退。")
+
+            self.append_event(
+                normalized_id,
+                TURN_UNDONE_EVENT_TYPE,
+                {
+                    "event_ids": [event.event_id for event in turn_events],
+                    "user_event_id": message_events[0].event_id,
+                    "assistant_event_id": (
+                        message_events[1].event_id if len(message_events) > 1 else None
+                    ),
+                    "message_count": len(message_events),
+                    "kind": undo_kind,
+                },
+            )
+            return self.load_session(normalized_id)
 
     def prepare_subagent_result(
         self,
@@ -368,7 +451,7 @@ class SessionStore:
             if entry.archived_at is not None or entry.message_count > 0:
                 return False
 
-            events = self._read_events(entry)
+            events = _active_session_events(self._read_events(entry))
             if any(event.type not in EMPTY_SESSION_EVENT_TYPES for event in events):
                 return False
 
@@ -431,7 +514,8 @@ class SessionStore:
         normalized_id = _normalize_session_id(session_id)
         entry = self._entry_by_id(normalized_id)
         read_result = self._read_events_result(entry)
-        events = list(read_result.events)
+        raw_events = list(read_result.events)
+        events = _active_session_events(raw_events)
         messages: list[dict[str, str]] = []
         for event in events:
             if event.type == "compact_summary":
@@ -447,7 +531,7 @@ class SessionStore:
             message = _event_to_model_message(event)
             if message is not None:
                 messages.append(message)
-        last_event_type = events[-1].type if events else entry.last_event_type
+        last_event_type = raw_events[-1].type if raw_events else entry.last_event_type
         return SessionState(
             session_id=entry.session_id,
             title=entry.title,
@@ -457,12 +541,12 @@ class SessionStore:
             updated_at=entry.updated_at,
             messages=messages,
             last_event_type=last_event_type,
-            event_count=len(events),
+            event_count=len(raw_events),
             archived_at=entry.archived_at,
         )
 
     def read_session_events(self, session_id: str) -> list[SessionEvent]:
-        """读取指定会话的完整事件流，供 UI 回放和正式导出使用。"""
+        """读取回退投影后的有效事件流，供 UI 回放和正式导出使用。"""
 
         return list(self.read_session_events_with_diagnostics(session_id).events)
 
@@ -477,7 +561,11 @@ class SessionStore:
 
         normalized_id = _normalize_session_id(session_id)
         entry = self._entry_by_id(normalized_id)
-        return self._read_events_result(entry)
+        result = self._read_events_result(entry)
+        return SessionEventReadResult(
+            events=tuple(_active_session_events(list(result.events))),
+            diagnostics=result.diagnostics,
+        )
 
     def read_prompt_history_diagnostics(self) -> list[SessionRecordDiagnostic]:
         """返回提示历史 JSONL 的读取诊断，不改变查询结果语义。"""
@@ -752,7 +840,16 @@ class SessionStore:
                 continue
             found = True
             title = item.title
-            if item.message_count == 0 and event.type == "user_message":
+            message_count = item.message_count + (
+                1 if event.type in MESSAGE_EVENT_TYPES else 0
+            )
+            if event.type == TURN_UNDONE_EVENT_TYPE:
+                active_events = _active_session_events(self._read_events(item))
+                title = _session_title_from_events(active_events)
+                message_count = sum(
+                    1 for active_event in active_events if active_event.type in MESSAGE_EVENT_TYPES
+                )
+            elif item.message_count == 0 and event.type == "user_message":
                 content = event.payload.get("content", "")
                 if isinstance(content, str) and content.strip():
                     title = _clean_title(content)
@@ -769,7 +866,7 @@ class SessionStore:
                     created_at=item.created_at,
                     updated_at=event.created_at,
                     event_count=item.event_count + 1,
-                    message_count=item.message_count + (1 if event.type in MESSAGE_EVENT_TYPES else 0),
+                    message_count=message_count,
                     last_event_type=event.type,
                     archived_at=item.archived_at,
                 )

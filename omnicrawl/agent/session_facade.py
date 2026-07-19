@@ -299,6 +299,24 @@ class AgentSessionFacade:
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
 
+    def undo_last_turn(self) -> SessionState:
+        """持久化回退最近轮次，并据此重建运行时模型历史。"""
+
+        state = self._require_session_state()
+        store = self.require_session_store()
+        try:
+            restored = store.undo_last_turn(state.session_id)
+        except SessionStoreError as exc:
+            raise self._error_type(str(exc)) from exc
+        self._owner._session_state = restored
+        self._owner._history = restore_history_window(
+            restored.messages,
+            max_history_turns=self._owner.config.max_history_turns,
+        )
+        self._owner._pending_user_text = None
+        self._owner._active_skills = []
+        return restored
+
     def rename_current_session(self, title: str) -> SessionState:
         """重命名当前会话，并同步更新内存中的 `SessionState`。"""
 

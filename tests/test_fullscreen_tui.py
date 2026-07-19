@@ -14,6 +14,12 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         from textual.widgets import Input, Static
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.theme import (
+            ACCENT_BLUE,
+            TERMINAL_BACKGROUND,
+            TERMINAL_FOREGROUND,
+            THEME_NAME,
+        )
 
         class FakeAgent:
             current_model = "demo-model"
@@ -38,9 +44,10 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app.query("#hint")), 0)
             self.assertEqual(app.query_one("#topbar").region.y, 0)
             self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
-            # 方案 1A：三栏固定对齐；空闲时运行态隐藏（方案 3A）。
+            # 顶部只保留品牌与稳态上下文；运行态进入对话区且空闲时不存在。
             self.assertEqual(app.query_one("#brand").region.width, 18)
-            self.assertEqual(app.query_one("#runtime-status", Static).display, False)
+            self.assertEqual(len(app.query("#topbar > *")), 2)
+            self.assertEqual(len(app.query(".runtime-status-message")), 0)
             context = app.query_one("#context-summary", Static).content
             self.assertIn("PRJ workspace", context.plain)
             self.assertNotIn("D:/workspace", context.plain)
@@ -48,7 +55,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("THK MAX", context.plain)
             self.assertIn("APR MAN", context.plain)
             self.assertNotIn(".agent_tmp", context.plain)
-            self.assertIn("#39a7ff", str(context.spans))
+            self.assertEqual(app.theme, THEME_NAME)
+            self.assertTrue(app.current_theme.ansi)
+            self.assertEqual(app.current_theme.background, TERMINAL_BACKGROUND)
+            self.assertEqual(app.current_theme.foreground, TERMINAL_FOREGROUND)
+            self.assertIn(ACCENT_BLUE, str(context.spans))
             token_widget = app.query_one("#token-telemetry", Static)
             telemetry = str(token_widget.content)
             self.assertIn("IN 0", telemetry)
@@ -59,8 +70,324 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             rendered_token = "".join(segment.text for segment in token_widget.render_line(0))
             self.assertIn("IN", rendered_token)
             self.assertIn("CTX", rendered_token)
+            self.assertEqual(
+                token_widget.content_region.x,
+                app.query_one("#context-summary").region.x,
+            )
             self.assertEqual(app.query_one("#composer-wrap").region.height, 3)
-            self.assertGreater(app.query_one("#composer", Input).region.height, 0)
+            composer = app.query_one("#composer", Input)
+            self.assertGreater(composer.region.height, 0)
+            self.assertTrue(composer.has_focus)
+            self.assertEqual(composer.styles.background.a, 0)
+
+    def test_terminal_css_is_transparent_and_self_contained(self) -> None:
+        import re
+
+        from omnicrawl.ui.fullscreen import OmniCrawlApp
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+        from omnicrawl.ui.fullscreen.theme import TERMINAL_FOREGROUND, terminal_css
+        from omnicrawl.ui.fullscreen.widgets import ConfirmationScreen
+
+        self.assertEqual(
+            terminal_css("$terminal-text-secondary|$terminal-text"),
+            f"{TERMINAL_FOREGROUND}|{TERMINAL_FOREGROUND}",
+        )
+        for css in (
+            OmniCrawlApp.CSS,
+            ModelPickerScreen.CSS,
+            SettingsScreen.CSS,
+            ConfirmationScreen.CSS,
+        ):
+            self.assertNotIn("$terminal-", css)
+            backgrounds = re.findall(r"(?<!-)background:\s*([^;]+);", css)
+            self.assertGreater(len(backgrounds), 0)
+            self.assertEqual(set(backgrounds), {"transparent"})
+
+    async def test_escape_cancels_active_turn(self) -> None:
+        """Esc 应作为全屏工作台的默认任务取消键。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app.is_generating = True
+            await pilot.press("escape")
+            await pilot.pause()
+
+            self.assertTrue(app._cancel_requested.is_set())
+
+    async def test_ctrl_c_copies_selection_or_clears_unselected_input(self) -> None:
+        """Ctrl+C 有输入选区时复制，无选区时只清空输入框。"""
+
+        from textual.widgets import Input
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        copied: list[str] = []
+        app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            composer = app.query_one("#composer", Input)
+            composer.value = "selected text"
+            await pilot.press("ctrl+shift+a", "ctrl+c")
+            await pilot.pause()
+
+            self.assertEqual(copied, ["selected text"])
+            self.assertEqual(composer.value, "selected text")
+            self.assertFalse(app._cancel_requested.is_set())
+
+            composer.cursor_position = len(composer.value)
+            app.is_generating = True
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+
+            self.assertEqual(composer.value, "")
+            self.assertFalse(app._cancel_requested.is_set())
+
+    async def test_submissions_queue_and_run_in_fifo_order(self) -> None:
+        """生成期间提交的多条消息应按 FIFO 顺序自动发送。"""
+
+        from textual.widgets import Input
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def run_stream(self, text: str, on_delta, **callbacks) -> str:
+                self.calls.append(text)
+                if text == "first":
+                    first_started.set()
+                    release_first.wait(timeout=1)
+                on_delta(f"完成：{text}")
+                return text
+
+        agent = FakeAgent()
+        app = OmniCrawlApp(
+            agent,
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            composer = app.query_one("#composer", Input)
+            composer.value = "first"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(first_started.wait(timeout=1))
+
+            composer.value = "second"
+            await pilot.press("enter")
+            await pilot.pause()
+            composer.value = "/skills"
+            app._hide_command_menu()
+            app.on_input_submitted(Input.Submitted(composer, "/skills"))
+            await pilot.pause()
+
+            self.assertEqual(agent.calls, ["first"])
+            self.assertEqual(list(app._pending_inputs), ["second", "/skills"])
+
+            release_first.set()
+            for _ in range(80):
+                if agent.calls == ["first", "second"] and not app._pending_inputs:
+                    break
+                await pilot.pause(0.05)
+
+            self.assertEqual(agent.calls, ["first", "second"])
+            self.assertFalse(app._pending_inputs)
+            self.assertIn("完成：second", app.conversation_text)
+
+    async def test_queued_modal_command_resumes_after_screen_closes(self) -> None:
+        """排队的弹窗命令应暂停后续消息，并在弹窗关闭后恢复。"""
+
+        from textual.widgets import Input
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def run_stream(self, text: str, on_delta, **callbacks) -> str:
+                self.calls.append(text)
+                if text == "first":
+                    first_started.set()
+                    release_first.wait(timeout=1)
+                on_delta(f"完成：{text}")
+                return text
+
+        agent = FakeAgent()
+        app = OmniCrawlApp(
+            agent,
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            composer = app.query_one("#composer", Input)
+            composer.value = "first"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(first_started.wait(timeout=1))
+
+            app._hide_command_menu()
+            app.on_input_submitted(Input.Submitted(composer, "/settings"))
+            app.on_input_submitted(Input.Submitted(composer, "after settings"))
+            release_first.set()
+
+            for _ in range(60):
+                if isinstance(app.screen, SettingsScreen):
+                    break
+                await pilot.pause(0.05)
+
+            self.assertIsInstance(app.screen, SettingsScreen)
+            self.assertEqual(agent.calls, ["first"])
+            self.assertEqual(list(app._pending_inputs), ["after settings"])
+
+            await pilot.press("escape")
+            for _ in range(60):
+                if agent.calls == ["first", "after settings"] and not app.is_generating:
+                    break
+                await pilot.pause(0.05)
+
+            self.assertEqual(agent.calls, ["first", "after settings"])
+            self.assertFalse(app._pending_inputs)
+
+    async def test_cancelled_turn_drains_pending_messages(self) -> None:
+        """取消当前回合只影响当前消息，已排队消息仍应继续发送。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def run_stream(self, text: str, on_delta, **callbacks) -> str:
+                self.calls.append(text)
+                if text == "first":
+                    first_started.set()
+                    release_first.wait(timeout=1)
+                    callbacks["cancel_check"]()
+                on_delta(f"完成：{text}")
+                return text
+
+        agent = FakeAgent()
+        app = OmniCrawlApp(
+            agent,
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            composer = app.query_one("#composer")
+            composer.value = "first"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(first_started.wait(timeout=1))
+
+            composer.value = "after cancel"
+            await pilot.press("enter")
+            await pilot.press("escape")
+            release_first.set()
+
+            for _ in range(80):
+                if agent.calls == ["first", "after cancel"] and not app.is_generating:
+                    break
+                await pilot.pause(0.05)
+
+            self.assertEqual(agent.calls, ["first", "after cancel"])
+            self.assertFalse(app._pending_inputs)
+            self.assertIn("完成：after cancel", app.conversation_text)
+
+    async def test_confirmation_screen_and_buttons_are_transparent_at_runtime(self) -> None:
+        from textual.app import App
+        from textual.widgets import Button
+
+        from omnicrawl.ui.fullscreen.theme import TERMINAL_THEME, THEME_NAME
+        from omnicrawl.ui.fullscreen.widgets import ConfirmationScreen
+
+        class ConfirmationHarness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_theme(TERMINAL_THEME)
+                self.theme = THEME_NAME
+
+            def on_mount(self) -> None:
+                self.push_screen(ConfirmationScreen("允许执行测试命令？"))
+
+            def cancel_pending_turn(self) -> None:
+                pass
+
+        app = ConfirmationHarness()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            self.assertEqual(screen.styles.background.a, 0)
+            self.assertEqual(screen.query_one("#confirmation-dialog").styles.background.a, 0)
+            approve = screen.query_one("#approve", Button)
+            reject = screen.query_one("#reject", Button)
+            self.assertEqual(approve.styles.background.a, 0)
+            self.assertEqual(reject.styles.background.a, 0)
+
+            approve.focus()
+            await pilot.pause()
+            self.assertEqual(approve.styles.background.a, 0)
+            self.assertTrue(await pilot.hover("#approve", offset=(2, 1)))
+            self.assertEqual(approve.styles.background.a, 0)
 
     def test_subagent_events_render_only_safe_task_status(self) -> None:
         from omnicrawl.ui.fullscreen import OmniCrawlApp
@@ -754,6 +1081,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         from textual.widgets import Static
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.theme import ACCENT_AMBER
 
         class FakeAgent:
             current_model = "demo-model"
@@ -778,7 +1106,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("CA 50K", telemetry.plain)
             self.assertIn("CTX 62.5K/100K", telemetry.plain)
             self.assertIn("62%", telemetry.plain)
-            self.assertIn("#f4b860", str(telemetry.spans))
+            self.assertIn(ACCENT_AMBER, str(telemetry.spans))
 
     async def test_context_summary_uses_windows_workspace_folder_name(self) -> None:
         """顶部项目名解析不应依赖测试进程当前运行的平台。"""
@@ -891,7 +1219,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(app.screen_stack[-1].is_modal)
             app.is_generating = True
-            await pilot.press("ctrl+c")
+            await pilot.press("escape")
             await pilot.pause()
             self.assertTrue(app._cancel_requested.is_set())
 
@@ -926,28 +1254,91 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
-            status = app.query_one("#runtime-status", Static)
-            self.assertFalse(status.display)
-            self.assertEqual(str(status.content), "")
+            self.assertEqual(len(app.query(".runtime-status-message")), 0)
 
             app._set_runtime_status("正在思考", "working")
-            app._tick_status_indicator()
             await pilot.pause()
-            self.assertTrue(status.display)
-            self.assertEqual(str(status.content), "  正在思考")
+            status = app.query_one(".runtime-status-message", Static)
+            self.assertEqual(status.parent.id, "conversation")
+            self.assertIn("正在思考", str(status.content))
 
-            app._tick_status_indicator()
+            app._status_dot_visible = False
+            app._render_status_indicator()
+            self.assertEqual(str(status.content), "  正在思考")
+            app._status_dot_visible = True
+            app._render_status_indicator()
             self.assertEqual(str(status.content), "● 正在思考")
+
+            app._append_delta("开始回复。")
+            await pilot.pause()
+            status = app.query_one(".runtime-status-message", Static)
+            self.assertIs(list(app.query("#conversation > *"))[-1], status)
+            self.assertIn("正在回复", str(status.content))
+
+            app._set_runtime_status("等待", "waiting")
+            await pilot.pause()
+            status = app.query_one(".runtime-status-message", Static)
+            self.assertIs(list(app.query("#conversation > *"))[-1], status)
 
             app._set_runtime_status("完成", "complete")
             app._tick_status_indicator()
-            self.assertFalse(status.display)
-            self.assertEqual(str(status.content), "")
+            await pilot.pause()
+            self.assertEqual(len(app.query(".runtime-status-message")), 0)
 
-    async def test_mount_preloads_mcp_before_accepting_input(self) -> None:
-        """首屏显示后应后台发现 MCP，并在完成前锁定输入。"""
+    async def test_should_keep_runtime_status_after_latest_output_when_turn_is_active(self) -> None:
+        """状态应作为消息流末项跟随思考、正文和工具记录，而非固定在输入框上方。"""
 
         from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        tool_call = SimpleNamespace(name="read_file", arguments={"path": "README.md"})
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._set_runtime_status("正在思考", "working")
+            await pilot.pause()
+            status = app.query_one(".runtime-status-message", Static)
+
+            app._append_reasoning_delta("先分析问题。")
+            await pilot.pause()
+            records = list(app.query("#conversation > *"))
+            self.assertIs(records[-1], status)
+            self.assertTrue(records[-2].has_class("reasoning-message"))
+            self.assertIn("正在思考", str(status.content))
+
+            app._append_delta("你好")
+            app._render_stream_markdown()
+            await pilot.pause()
+            records = list(app.query("#conversation > *"))
+            self.assertIs(records[-1], status)
+            self.assertTrue(records[-2].has_class("assistant-message"))
+            self.assertIn("正在回复", str(status.content))
+
+            app._handle_tool_start(1, tool_call)
+            await pilot.pause()
+            records = list(app.query("#conversation > *"))
+            self.assertIs(records[-1], status)
+            self.assertTrue(records[-2].has_class("tool-message"))
+            self.assertIn("正在调用", str(status.content))
+
+            app._finish_turn()
+            await pilot.pause()
+            self.assertEqual(len(app.query(".runtime-status-message")), 0)
+
+    async def test_should_preload_mcp_silently_when_app_mounts(self) -> None:
+        """首屏后台发现 MCP 时应锁定输入，但不显示瞬时等待状态。"""
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -972,16 +1363,15 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
-            self.assertTrue(preload_started.wait(timeout=1))
-            self.assertTrue(app.is_generating)
-            self.assertIn("等待", str(app.query_one("#runtime-status", Static).content))
-
-            preload_release.set()
+            try:
+                self.assertTrue(preload_started.wait(timeout=1))
+                self.assertTrue(app.is_generating)
+                self.assertEqual(len(app.query(".runtime-status-message")), 0)
+            finally:
+                preload_release.set()
             await pilot.pause(0.2)
             self.assertFalse(app.is_generating)
-            status = app.query_one("#runtime-status", Static)
-            self.assertFalse(status.display)
-            self.assertEqual(str(status.content), "")
+            self.assertEqual(len(app.query(".runtime-status-message")), 0)
 
     async def test_agent_turn_errors_and_cancellation_release_input_for_next_submission(self) -> None:
         """取消、预期异常和未知异常结束后，输入锁都必须解除且允许下一轮提交。"""
@@ -1040,8 +1430,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(text, agent.calls)
                 if text == "取消":
                     # 输入提交会清除上一回合的取消令牌；等待本回合启动后再模拟
-                    # 用户按下 Ctrl+C，才能验证 Agent 的协议检查点是否中断。
-                    app.cancel_pending_turn()
+                    # 用户按下 Esc，才能验证 Agent 的协议检查点是否中断。
+                    await pilot.press("escape")
                 for _ in range(40):
                     if not app.is_generating:
                         break
@@ -1088,8 +1478,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("MCP 能力加载失败：Server 启动失败", app.conversation_text)
         self.assertFalse(app.is_generating)
 
-    async def test_reasoning_sections_are_separate_collapsed_and_clickable(self) -> None:
-        """每次模型推理应独立成段、默认折叠，并且只能通过点击切换正文。"""
+    async def test_reasoning_sections_are_separate_expanded_and_clickable(self) -> None:
+        """每次模型推理应独立成段、默认展开，并且可通过点击折叠正文。"""
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ReasoningDisclosure
 
@@ -1107,23 +1497,43 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
+            app._append_message("user", "检查并整理配置。")
             app._append_reasoning_delta("先检查配置。")
             first = app.query_one(ReasoningDisclosure)
-            self.assertFalse(first.expanded)
-            self.assertNotIn("先检查配置", str(first.content))
+            self.assertTrue(first.expanded)
 
             await pilot.pause()
+            first_text = "".join(
+                segment.text
+                for line_number in range(first.size.height)
+                for segment in first.render_line(line_number)
+            )
+            self.assertIn("先检查配置", first_text)
+
             await pilot.click(".reasoning-message")
             await pilot.pause()
-            self.assertTrue(first.expanded)
+            self.assertFalse(first.expanded)
+            collapsed_text = "".join(segment.text for segment in first.render_line(0))
+            self.assertNotIn("先检查配置", collapsed_text)
             self.assertEqual(first.reasoning_text, "先检查配置。")
 
             app._handle_tool_start(1, SimpleNamespace(name="read_file", arguments={}))
             app._append_reasoning_delta("再整理结果。")
+            app._append_message("assistant", "配置已经整理完成。")
             self.assertEqual(len(app.query(ReasoningDisclosure)), 2)
             second = app.query(ReasoningDisclosure)[1]
-            self.assertFalse(second.expanded)
-            self.assertNotIn("再整理结果", str(second.content))
+            self.assertTrue(second.expanded)
+
+            await pilot.pause()
+            second_text = "".join(
+                segment.text
+                for line_number in range(second.size.height)
+                for segment in second.render_line(line_number)
+            )
+            self.assertIn("再整理结果", second_text)
+            messages = list(app.query(".message"))
+            self.assertGreaterEqual(len(messages), 5)
+            self.assertTrue(all(message.styles.margin.bottom == 1 for message in messages))
 
     async def test_confirmation_screen_returns_explicit_approval(self) -> None:
         """人工审批必须通过全屏模态框返回明确结果。"""
@@ -1222,9 +1632,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("参数：{'path': 'README.md'}", expanded)
             self.assertIn("读取完成", expanded)
             self.assertEqual(app.agent.seen_statuses, ["正在思考", "正在回复", "等待", "正在调用"])
-            status = app.query_one("#runtime-status", Static)
-            self.assertFalse(status.display)
-            self.assertEqual(str(status.content), "")
+            self.assertEqual(len(app.query(".runtime-status-message")), 0)
 
     async def test_stream_records_preserve_model_tool_model_visual_order(self) -> None:
         """工具边界后的推理和最终回复不得写回工具之前的旧回复组件。"""
@@ -1265,10 +1673,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 [
                     "reasoning" if isinstance(record, ReasoningDisclosure)
                     else "tool" if isinstance(record, ToolDisclosure)
+                    else "status" if record.has_class("runtime-status-message")
                     else "assistant"
                     for record in records
                 ],
-                ["reasoning", "assistant", "tool", "reasoning", "assistant"],
+                ["reasoning", "assistant", "tool", "reasoning", "assistant", "status"],
             )
             first_reply = "".join(segment.text for segment in records[1].render_line(0))
             final_reply = "".join(segment.text for segment in records[4].render_line(0))
@@ -1307,10 +1716,15 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             records = list(app.query("#conversation > *"))
             self.assertEqual(
-                ["tool" if isinstance(record, ToolDisclosure) else "message" for record in records],
-                ["message", "tool", "message", "tool", "message", "message"],
+                [
+                    "tool" if isinstance(record, ToolDisclosure)
+                    else "status" if record.has_class("runtime-status-message")
+                    else "message"
+                    for record in records
+                ],
+                ["message", "tool", "message", "tool", "message", "message", "status"],
             )
-            self.assertIn("最终答案", "".join(segment.text for segment in records[-1].render_line(0)))
+            self.assertIn("最终答案", "".join(segment.text for segment in records[-2].render_line(0)))
 
     async def test_context_summary_refreshes_runtime_values_after_commands(self) -> None:
         """运行时切换模型、审批和推理强度后，顶部上下文条应展示当前实际状态。"""

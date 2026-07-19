@@ -481,6 +481,17 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
         parts = text.split(None, 1)
         query = parts[1].strip() if len(parts) > 1 else ""
         return format_prompt_history(agent, query=query)
+    if normalized == "/undo":
+        try:
+            agent.undo_last_turn()
+        except AgentError as exc:
+            return f"会话回退失败：{exc}"
+        return (
+            "已回退最近一轮对话，持久化转录与模型上下文已同步更新。\n"
+            "注意：该轮已经执行的文件修改、命令或其他外部副作用不会自动撤销。"
+        )
+    if normalized.startswith("/undo "):
+        return "用法：/undo。"
     if normalized == "/compact":
         try:
             summary = agent.compact_conversation()
@@ -889,6 +900,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/task",
         "/resume",
         "/history",
+        "/undo",
         "/compact",
         "/rename",
         "/archive",
@@ -931,6 +943,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/task": "查看或取消一个后台 SubAgent 任务。",
         "/resume": "恢复指定会话 ID。",
         "/history": "查看或筛选提示历史。",
+        "/undo": "回退最近一轮对话；不撤销已产生的外部副作用。",
         "/compact": "压缩当前会话上下文。",
         "/rename": "重命名当前会话。",
         "/archive": "归档当前会话并开启新会话。",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -40,6 +41,14 @@ from .commands import CommandDispatcher
 from .model_picker import ModelPickerResult, ModelPickerScreen
 from .settings import SettingsAction, SettingsScreen
 from .monitor import MonitorStateAdapter, format_monitor_display_batch
+from .theme import (
+    ACCENT_BLUE,
+    TERMINAL_THEME,
+    TEXT_MUTED,
+    TEXT_SECONDARY,
+    THEME_NAME,
+    terminal_css,
+)
 from .turns import AgentTurnCallbacks, AgentTurnController
 from .widgets import ConfirmationScreen, ReasoningDisclosure, ToolDisclosure
 
@@ -60,82 +69,72 @@ class OmniCrawlApp(App[None]):
 
     TITLE = "OmniCrawl"
     SUB_TITLE = "Developer Workspace"
-    CSS = """
-    Screen { background: #080b0e; color: #d9e4e8; }
-    #shell { height: 1fr; background: #080b0e; }
-    /* 顶部第一行：左品牌 / 中上下文 / 右运行态 三栏对齐。
-       运行态仅任务活动时显示（方案 3A），空闲不占位。 */
-    #topbar { height: 1; padding: 0 1; background: #0a0e12; align: left middle; }
-    #brand { width: 18; min-width: 18; max-width: 18; text-style: bold; content-align: left middle; }
+    CSS = terminal_css("""
+    Screen { background: $terminal-canvas; color: $terminal-text; }
+    #shell { height: 1fr; background: $terminal-background; }
+    /* 顶部第一行只保留品牌与稳态上下文；瞬时运行态放入对话流。 */
+    #topbar { height: 1; padding: 0 1; background: $terminal-surface; align: left middle; }
+    #brand { width: 18; min-width: 18; max-width: 18; color: $terminal-green; text-style: bold; content-align: left middle; }
     #context-summary {
         width: 1fr;
         min-width: 0;
-        color: #66757b;
+        color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
     }
-    #runtime-status {
-        display: none;
-        width: 16;
-        min-width: 16;
-        max-width: 16;
-        color: #00e5c3;
-        content-align: right middle;
-        text-style: bold;
-        text-overflow: ellipsis;
-    }
-    /* 第二行 Token 与 topbar 同左边距左对齐。
+    /* 第二行 Token 跳过外边距与 18 列品牌栏，和第一行上下文摘要对齐。
        height 必须至少为 2：Textual 的 border-bottom 会占用 1 行布局高度，
        若 height=1 则内容区高度被压成 0，导致 IN/OUT/CA/CTX 有 content 但不渲染。 */
     #token-telemetry {
         height: 2;
-        padding: 0 1;
-        background: #0a0e12;
-        color: #72858c;
+        padding: 0 1 0 19;
+        background: $terminal-panel;
+        color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
-        border-bottom: solid #16232a;
+        border-bottom: solid $terminal-border;
     }
-    #runtime-status.working { color: #39a7ff; }
-    #runtime-status.warning { color: #ff5470; }
-    #runtime-status.ready { color: #00e5c3; }
+    .runtime-status-message { color: $terminal-text-muted; text-style: bold; }
+    .runtime-status-message.working { color: $terminal-blue; }
+    .runtime-status-message.warning { color: $terminal-red; }
     #conversation {
         height: 1fr;
         padding: 1 1;
-        scrollbar-color: #1e3943;
-        scrollbar-color-hover: #00a9a0;
-        scrollbar-background: #080b0e;
+        background: $terminal-background;
+        scrollbar-color: $terminal-scrollbar;
+        scrollbar-color-hover: $terminal-green;
+        scrollbar-background: $terminal-background;
     }
-    .message { margin: 0; padding: 0 1; background: transparent; border: none; }
-    .user-message { color: #a9c7d3; }
-    .assistant-message { color: #d9e4e8; }
-    .status-message { color: #59676d; }
-    .tool-message { color: #f4b860; padding-left: 2; }
-    .tool-message:hover { color: #ffd28a; background: #11100d; }
-    .tool-message:focus { color: #ffe0a6; }
-    .error-message { color: #ff6b82; }
-    .reasoning-message { color: #72858c; padding-left: 2; }
-    .reasoning-message:hover { color: #39a7ff; background: #0b1115; }
-    .reasoning-message:focus { color: #00e5c3; }
+    .message { margin: 0 0 1 0; padding: 0 1; background: transparent; border: none; }
+    .user-message { color: $terminal-text; background: $terminal-panel; }
+    .assistant-message { color: $terminal-text; }
+    .status-message { color: $terminal-text-muted; }
+    .tool-message { color: $terminal-amber; padding-left: 2; }
+    .tool-message:hover { color: $terminal-amber; background: $terminal-amber-soft; }
+    .tool-message:focus { color: $terminal-text; background: $terminal-amber-soft; }
+    .error-message { color: $terminal-red; }
+    .reasoning-message { color: $terminal-text-muted; padding-left: 2; }
+    .reasoning-message:hover { color: $terminal-blue; background: $terminal-hover; }
+    .reasoning-message:focus { color: $terminal-green; background: $terminal-hover; }
     .reasoning-message.collapsed { height: 1; }
-    #composer-wrap { height: 3; min-height: 3; background: #0a0e12; border-top: solid #16333b; padding: 0 1; }
+    #composer-wrap { height: 3; min-height: 3; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
     #command-menu {
         display: none;
         height: auto;
         max-height: 8;
         padding: 0 1;
-        background: #0b1115;
-        color: #8fa4ad;
-        border-left: thick #167da3;
+        background: $terminal-surface;
+        color: $terminal-text-secondary;
+        border-left: thick $terminal-blue;
     }
-    #composer { height: 3; border: none; padding: 0 1; background: #0a0e12; color: #d9e4e8; }
-    #composer:focus { border-left: thick #00e5c3; background: #0b1115; }
-    """
+    #composer { height: 3; border: none; padding: 0 1; background: $terminal-surface; color: $terminal-text; }
+    #composer:focus { border-left: thick $terminal-green; background: $terminal-panel; }
+    """)
 
     BINDINGS = [
-        ("ctrl+c", "cancel_or_quit", "取消 / 退出"),
+        ("escape", "cancel_or_focus", "取消 / 输入框"),
+        ("ctrl+c", "copy_or_clear_composer", "复制 / 清空输入"),
         ("ctrl+l", "clear_conversation", "清空视图"),
-        ("escape", "focus_composer", "输入框"),
     ]
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
@@ -145,10 +144,13 @@ class OmniCrawlApp(App[None]):
 
     def __init__(self, agent: LocalToolAgent, startup: FullscreenStartup) -> None:
         super().__init__()
+        self.register_theme(TERMINAL_THEME)
+        self.theme = THEME_NAME
         self.agent = agent
         self.startup = startup
         self.is_generating = False
         self.conversation_text = ""
+        self._pending_inputs: deque[str] = deque()
         self._cancel_requested = threading.Event()
         # Agent 回合协议和取消令牌由非 Textual 控制器持有；本应用仅适配其
         # 回调回到主线程并保留 UI/审批状态。
@@ -195,6 +197,7 @@ class OmniCrawlApp(App[None]):
         self._cached_input_tokens = 0
         self._runtime_status_text = "完成"
         self._runtime_status_state = "complete"
+        self._runtime_status_message: Static | None = None
         self._status_dot_visible = True
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
@@ -204,7 +207,6 @@ class OmniCrawlApp(App[None]):
             with Horizontal(id="topbar"):
                 yield Static(self._gradient_text("◆ OMNICRAWL"), id="brand")
                 yield Static(self._context_summary_text(), id="context-summary")
-                yield Static("", id="runtime-status")
             yield Static(self._token_telemetry_text(), id="token-telemetry")
             yield VerticalScroll(id="conversation")
             with Vertical(id="composer-wrap"):
@@ -219,8 +221,8 @@ class OmniCrawlApp(App[None]):
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
 
         if callable(getattr(self.agent, "preload_mcp_tools", None)):
+            # MCP 预加载属于内部初始化：继续锁定输入，但不显示瞬时等待消息。
             self.is_generating = True
-            self._set_runtime_status("等待", "waiting")
             self._preload_mcp_tools()
         else:
             self._set_runtime_status("完成", "complete")
@@ -266,9 +268,13 @@ class OmniCrawlApp(App[None]):
         if self._command_matches:
             return
         text = event.value.strip()
-        if not text or self.is_generating:
+        if not text:
             return
         event.input.value = ""
+        if self.is_generating:
+            self._pending_inputs.append(text)
+            self._append_message("status", f"消息已排队（{len(self._pending_inputs)}）")
+            return
         self._submit(text)
 
     def _refresh_command_menu(self, value: str) -> None:
@@ -297,11 +303,11 @@ class OmniCrawlApp(App[None]):
         lines = Text()
         for index, option in enumerate(self._command_matches):
             marker = "›" if index == self._command_selection else " "
-            style = "bold #00e5c3" if index == self._command_selection else "#8fa4ad"
+            style = f"bold {ACCENT_BLUE}" if index == self._command_selection else TEXT_SECONDARY
             lines.append(f"{marker} {option['command']}", style=style)
             description = option.get("description", "").strip()
             if description:
-                lines.append(f"  · {description}", style="#526872")
+                lines.append(f"  · {description}", style=TEXT_MUTED)
             if index < len(self._command_matches) - 1:
                 lines.append("\n")
         menu.update(lines)
@@ -316,8 +322,18 @@ class OmniCrawlApp(App[None]):
         menu.update("")
         self.query_one("#composer-wrap").styles.height = 3
 
-    def action_focus_composer(self) -> None:
+    def action_cancel_or_focus(self) -> None:
+        if self.is_generating:
+            self.cancel_pending_turn()
+            return
         self.query_one("#composer", Input).focus()
+
+    def action_copy_or_clear_composer(self) -> None:
+        composer = self.query_one("#composer", Input)
+        if composer.selected_text:
+            self.copy_to_clipboard(composer.selected_text)
+            return
+        composer.clear()
 
     def action_clear_conversation(self) -> None:
         if self.is_generating:
@@ -329,13 +345,8 @@ class OmniCrawlApp(App[None]):
         self._stream_render_pending = False
         self._tool_messages.clear()
         self._reasoning_message = None
+        self._runtime_status_message = None
         self._append_message("status", "已清空当前视图，不影响会话历史。")
-
-    def action_cancel_or_quit(self) -> None:
-        if self.is_generating:
-            self.cancel_pending_turn()
-            return
-        self.exit()
 
     def cancel_pending_turn(self) -> None:
         """标记当前回合已取消，使工作线程在下一个可中断点退出。"""
@@ -567,8 +578,8 @@ class OmniCrawlApp(App[None]):
         self._tool_messages[self._tool_call_key(tool_call)] = tool_message
         conversation.mount(tool_message)
         self.conversation_text += f"{tool_call.name}\n"
-        conversation.scroll_end(animate=False)
         self._set_runtime_status("正在调用", "working")
+        conversation.scroll_end(animate=False)
 
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
         output = str(result.output or "无输出")
@@ -641,7 +652,6 @@ class OmniCrawlApp(App[None]):
         if not delta:
             return
         self._reasoning_message = None
-        self._set_runtime_status("正在回复", "working")
         conversation = self.query_one("#conversation", VerticalScroll)
         if self._stream_message is None:
             self._stream_message = Static("", classes="message assistant-message")
@@ -652,6 +662,7 @@ class OmniCrawlApp(App[None]):
         if not self._stream_render_pending:
             self._stream_render_pending = True
             self.set_timer(self.STREAM_RENDER_INTERVAL_SECONDS, self._render_stream_markdown)
+        self._set_runtime_status("正在回复", "working")
         conversation.scroll_end(animate=False)
 
     def _render_stream_markdown(self) -> None:
@@ -670,6 +681,7 @@ class OmniCrawlApp(App[None]):
         track_tool: bool = False,
     ) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
+        follow_with_runtime_status = self._runtime_status_message is not None
         if merge_with_previous and self._stream_message is not None:
             self._stream_markdown += text
             self._stream_message.update(RichMarkdown(self._stream_markdown))
@@ -694,6 +706,8 @@ class OmniCrawlApp(App[None]):
             if track_tool:
                 self._tool_messages[f"legacy:{id(widget)}"] = widget
         self.conversation_text += f"{text}\n"
+        if follow_with_runtime_status:
+            self._render_status_indicator()
         conversation.scroll_end(animate=False)
 
     def _finish_turn(self) -> None:
@@ -702,22 +716,35 @@ class OmniCrawlApp(App[None]):
         self._reasoning_message = None
         self._set_runtime_status("完成", "complete")
         self.query_one("#composer", Input).focus()
+        self._drain_pending_inputs()
+
+    def _drain_pending_inputs(self) -> None:
+        """在当前回合完成后按 FIFO 处理提交内容，避免 worker 重叠。"""
+
+        while (
+            self._pending_inputs
+            and not self.is_generating
+            and len(self.screen_stack) == 1
+        ):
+            self._submit(self._pending_inputs.popleft())
 
     def _set_runtime_status(self, text: str, state: str) -> None:
         self._runtime_status_text = text
         self._runtime_status_state = state
         self._status_dot_visible = True
-        status = self.query_one("#runtime-status", Static)
-        status.set_class(state in {"working", "waiting"}, "working")
-        status.set_class(state == "warning", "warning")
-        status.set_class(state in {"complete", "ready"}, "ready")
         self._render_status_indicator()
+
+    def _remove_runtime_status_message(self) -> None:
+        status = self._runtime_status_message
+        self._runtime_status_message = None
+        if status is not None:
+            status.remove()
 
     def _tick_status_indicator(self) -> None:
         """任务运行期间只闪烁状态点，正文和布局保持稳定。"""
 
         # 模态审批成为当前 Screen 后，主工作台组件不在活动查询树中。此时暂停
-        # 闪烁，既避免计时器访问隐藏状态栏，也不干扰 Ctrl+C 的审批取消绑定。
+        # 闪烁，既避免计时器访问隐藏状态，也不干扰 Esc 的审批取消绑定。
         if len(self.screen_stack) > 1:
             return
         if self._runtime_status_state not in {"working", "waiting"}:
@@ -729,18 +756,27 @@ class OmniCrawlApp(App[None]):
         self._render_status_indicator()
 
     def _render_status_indicator(self) -> None:
-        status_widgets = self.query("#runtime-status")
-        if not status_widgets:
-            return
-        status = status_widgets.first(Static)
         is_active = self._runtime_status_state in {"working", "waiting"}
-        status.display = is_active
         if not is_active:
-            # 完成、就绪及其他非活动状态不展示，也不保留固定宽度占位。
-            status.update("")
+            self._remove_runtime_status_message()
             return
+
+        conversations = self.query("#conversation")
+        if not conversations:
+            return
+        conversation = conversations.first(VerticalScroll)
+        status = self._runtime_status_message
+        if status is None:
+            status = Static("", classes="message runtime-status-message")
+            self._runtime_status_message = status
+            conversation.mount(status)
+        status.set_class(True, "working")
+        status.set_class(False, "warning")
         dot = "●" if self._status_dot_visible else " "
         status.update(f"{dot} {self._runtime_status_text}")
+        if conversation.children and conversation.children[-1] is not status:
+            conversation.move_child(status, after=conversation.children[-1])
+        conversation.scroll_end(animate=False)
 
     def _token_telemetry_text(self) -> Text:
         """生成紧凑 Token 遥测；CTX 使用最近请求输入量表示当前上下文占用。"""
@@ -792,6 +828,8 @@ class OmniCrawlApp(App[None]):
         def receive(action: SettingsAction | None) -> None:
             if action is not None and action.name == "model":
                 self._open_model_picker(refresh=False)
+            else:
+                self._drain_pending_inputs()
             self._refresh_context_summary()
 
         self.push_screen(SettingsScreen(self.agent), receive)
@@ -802,15 +840,16 @@ class OmniCrawlApp(App[None]):
         def receive(result: ModelPickerResult | None) -> None:
             if result is None:
                 self._append_message("status", "已取消模型切换。")
-                return
-            # 切换后旧模型 token 与新模型上下文上限不应混显。
-            self._input_tokens = 0
-            self._output_tokens = 0
-            self._cached_input_tokens = 0
-            self._refresh_context_summary()
-            self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
-            message = result.message or f"当前模型已切换为 {result.model}"
-            self._append_message("status", message)
+            else:
+                # 切换后旧模型 token 与新模型上下文上限不应混显。
+                self._input_tokens = 0
+                self._output_tokens = 0
+                self._cached_input_tokens = 0
+                self._refresh_context_summary()
+                self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
+                message = result.message or f"当前模型已切换为 {result.model}"
+                self._append_message("status", message)
+            self._drain_pending_inputs()
 
         self.push_screen(
             ModelPickerScreen(

@@ -25,6 +25,13 @@ from ...config.model_catalog import (
 )
 from ...config.llm import save_active_model_ref
 from ...agent import AgentError
+from .theme import (
+    ACCENT_GREEN,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    terminal_css,
+)
 
 
 @dataclass(frozen=True)
@@ -59,10 +66,10 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         ("slash", "focus_search", "搜索"),
     ]
 
-    CSS = """
+    CSS = terminal_css("""
     ModelPickerScreen {
         align: center middle;
-        background: rgba(5, 8, 10, 0.92);
+        background: $terminal-overlay;
     }
     #model-picker-dialog {
         width: 110;
@@ -70,11 +77,11 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         height: 28;
         max-height: 90%;
         padding: 1 2;
-        border: solid #39a7ff;
-        background: #0b1014;
+        border: solid $terminal-blue;
+        background: $terminal-surface;
     }
     #model-picker-title {
-        color: #00e5c3;
+        color: $terminal-green;
         text-style: bold;
         height: 1;
         margin-bottom: 1;
@@ -82,12 +89,12 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
     #model-picker-search {
         height: 3;
         border: none;
-        background: #0a0e12;
-        color: #d9e4e8;
+        background: $terminal-panel;
+        color: $terminal-text;
         margin-bottom: 1;
     }
     #model-picker-search:focus {
-        border-left: thick #00e5c3;
+        border-left: thick $terminal-green;
     }
     #model-picker-body {
         height: 1fr;
@@ -98,40 +105,40 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
     .model-column {
         width: 1fr;
         height: 1fr;
-        border: solid #16232a;
+        border: solid $terminal-border;
         padding: 0 1;
-        background: #0a0e12;
+        background: $terminal-background;
     }
     .model-column.active-column {
-        border: solid #00e5c3;
+        border: solid $terminal-green;
     }
     .model-column-title {
-        color: #8fa4ad;
+        color: $terminal-text-secondary;
         text-style: bold;
         height: 1;
         margin-bottom: 1;
     }
     .model-column-list {
         height: 1fr;
-        color: #d9e4e8;
+        color: $terminal-text;
     }
     #model-picker-diagnostics {
         height: auto;
         max-height: 3;
-        color: #f4b860;
+        color: $terminal-amber;
         margin-top: 1;
     }
     #model-picker-help {
         height: 1;
-        color: #59676d;
+        color: $terminal-text-muted;
         margin-top: 1;
     }
     #model-picker-status {
         height: 1;
-        color: #39a7ff;
+        color: $terminal-blue;
         margin-top: 0;
     }
-    """
+    """)
 
     def __init__(
         self,
@@ -459,7 +466,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         current: str,
     ) -> Text:
         if not items:
-            return Text("（空）", style="#59676d")
+            return Text("（空）", style=TEXT_MUTED)
         rendered = Text()
         # 列表区域高度固定，使用跟随选中项的窗口而不是永远截取前 40 项。
         # 这样方向键可以访问并看见发现列表中的每个模型。
@@ -471,7 +478,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         )
         window_end = min(len(items), window_start + window_size)
         if window_start > 0:
-            rendered.append(f"... 前面 {window_start} 项\n", style="#59676d")
+            rendered.append(f"... 前面 {window_start} 项\n", style=TEXT_MUTED)
         for index, item in enumerate(
             items[window_start:window_end],
             start=window_start,
@@ -479,12 +486,18 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             is_selected = index == selected
             is_current = _is_current(item, current)
             marker = "●" if is_current else ("›" if is_selected else " ")
-            style = "#00e5c3 bold" if is_selected else ("#d9e4e8" if is_current else "#8fa4ad")
+            style = (
+                f"{ACCENT_GREEN} bold"
+                if is_selected
+                else TEXT_PRIMARY
+                if is_current
+                else TEXT_SECONDARY
+            )
             title = item.display_name or item.model_id
             rendered.append(f"{marker} {title}\n", style=style)
         remaining = len(items) - window_end
         if remaining > 0:
-            rendered.append(f"... 后面 {remaining} 项\n", style="#59676d")
+            rendered.append(f"... 后面 {remaining} 项\n", style=TEXT_MUTED)
         return rendered
 
     def _render_status(self) -> None:

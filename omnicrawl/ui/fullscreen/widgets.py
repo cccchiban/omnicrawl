@@ -11,33 +11,34 @@ from textual.containers import Container, Horizontal
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
+from .theme import terminal_css
 from .tool_diff import tool_disclosure_body, tool_disclosure_title
 
 
 class ConfirmationScreen(ModalScreen[bool]):
     """受限工具的全屏模态确认框。"""
 
-    BINDINGS = [("ctrl+c", "cancel_confirmation", "取消")]
+    BINDINGS = [("escape", "cancel_confirmation", "取消")]
 
-    CSS = """
-    ConfirmationScreen { align: center middle; background: rgba(5, 8, 10, 0.92); }
+    CSS = terminal_css("""
+    ConfirmationScreen { align: center middle; background: $terminal-overlay; }
     #confirmation-dialog {
         width: 78;
         max-width: 92%;
         max-height: 22;
         padding: 1 2;
-        border: solid #39a7ff;
-        background: #0b1014;
+        border: solid $terminal-blue;
+        background: $terminal-surface;
     }
-    #confirmation-title { color: #00e5c3; text-style: bold; margin-bottom: 1; }
-    #confirmation-body { color: #d9e4e8; height: auto; max-height: 13; overflow-y: auto; }
+    #confirmation-title { color: $terminal-green; text-style: bold; margin-bottom: 1; }
+    #confirmation-body { color: $terminal-text; height: auto; max-height: 13; overflow-y: auto; }
     #confirmation-actions { height: 3; align: right middle; margin-top: 1; }
-    #confirmation-actions Button { margin-left: 1; min-width: 12; }
-    #approve { background: #00bfa5; color: #04100e; }
-    #approve:focus { border: tall #68f7df; }
-    #reject { background: #151c21; color: #aab8bd; }
-    #reject:focus { border: tall #59676d; }
-    """
+    #confirmation-actions Button { margin-left: 1; min-width: 12; background: $terminal-surface; }
+    #approve { background: $terminal-surface; color: $terminal-green; }
+    #approve:focus { border: tall $terminal-blue; }
+    #reject { background: $terminal-panel; color: $terminal-text-secondary; }
+    #reject:focus { border: tall $terminal-border-strong; }
+    """)
 
     def __init__(self, prompt: str) -> None:
         super().__init__()
@@ -62,14 +63,14 @@ class ConfirmationScreen(ModalScreen[bool]):
 
 
 class ReasoningDisclosure(Static):
-    """默认折叠的单次模型思考记录。"""
+    """默认展开、可点击折叠的单次模型思考记录。"""
 
     can_focus = True
 
     def __init__(self) -> None:
-        super().__init__(classes="message reasoning-message collapsed")
+        super().__init__(classes="message reasoning-message")
         self.reasoning_text = ""
-        self.expanded = False
+        self.expanded = True
         self._refresh_display()
 
     def append_delta(self, delta: str) -> None:
