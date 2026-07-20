@@ -39,6 +39,14 @@ from .tools import (
     workspace_tool_result,
 )
 from .windows_desktop import WindowsDesktopTools
+from .context_compaction import (
+    ContextCompactionService,
+    ModelSummaryCompactor,
+    RuntimeSummaryModelAdapter,
+    SessionEvidenceRecallService,
+    SourceEvent,
+    TokenUsageSample,
+)
 from .history import compact_history
 from .execution import AgentLoopLimits, AgentLoopObservation, AgentLoopRunner
 from .llm_protocol import (
@@ -101,6 +109,10 @@ from ..approval import (
     APPROVAL_MODE_REVIEW,
     load_approval_mode,
     normalize_approval_mode,
+)
+from ..config.context_compaction import (
+    ContextCompactionConfig,
+    load_context_compaction_config,
 )
 from ..config.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
 from ..config.subagents import SubAgentConfig, load_subagent_config
@@ -199,6 +211,37 @@ def _validate_int_range(name: str, value: int, *, min_value: int, max_value: int
     return value
 
 
+def _validate_context_compaction_window(
+    config: ContextCompactionConfig | None,
+    llm: LLMConfig,
+    *,
+    context_window_tokens: int | None = None,
+) -> None:
+    """确保自动压缩能在下一次主模型请求达到窗口上限前触发。"""
+
+    if config is None or not config.enabled:
+        return
+    context_window = (
+        llm.context_window_tokens
+        if context_window_tokens is None
+        else context_window_tokens
+    )
+    output_reserve = max(
+        config.target_summary_tokens,
+        int(getattr(llm, "max_output_tokens", 0) or 8_192),
+    )
+    required_window = (
+        config.trigger_context_tokens
+        + config.next_user_reserve_tokens
+        + output_reserve
+    )
+    if context_window <= required_window:
+        raise AgentError(
+            "启用 context_compaction 时，活动模型上下文窗口必须大于 "
+            f"{required_window} Token，当前为 {context_window}。"
+        )
+
+
 @dataclass
 class AgentConfig:
     """本地 Agent 配置。
@@ -228,6 +271,9 @@ class AgentConfig:
     resume_session_id: str = ""
     mcp_config: MCPConfig | None = None
     subagents: SubAgentConfig = field(default_factory=load_subagent_config)
+    context_compaction: ContextCompactionConfig = field(
+        default_factory=load_context_compaction_config
+    )
     approval_mode: str = field(default_factory=load_approval_mode)
     workspace_detection_summary: str = ""
     temp_workspace: AgentTempWorkspaceConfig = field(
@@ -274,6 +320,9 @@ class AgentConfig:
             raise AgentError("temp_workspace 必须是 AgentTempWorkspaceConfig。")
         if not isinstance(self.subagents, SubAgentConfig):
             raise AgentError("subagents 必须是 SubAgentConfig。")
+        if not isinstance(self.context_compaction, ContextCompactionConfig):
+            raise AgentError("context_compaction 必须是 ContextCompactionConfig。")
+        _validate_context_compaction_window(self.context_compaction, self.llm)
         if not isinstance(self.workspace_detection_summary, str):
             raise AgentError("workspace_detection_summary 必须是字符串。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
@@ -729,11 +778,7 @@ class LocalToolAgent:
         return self._session_facade().prompt_history_texts(limit)
 
     def compact_conversation(self) -> str:
-        """手动压缩当前会话历史，并把摘要写入会话转录。
-
-        摘要采用本地确定性规则生成，避免为了压缩再发起一次模型请求。这样即使模型
-        服务暂不可用，用户仍能通过 `/compact` 明确建立恢复边界。
-        """
+        """手动确定性压缩当前会话；该入口不产生模型调用。"""
 
         if len(self._history) < 4:
             raise AgentError("当前会话内容太少，暂不需要压缩。")
@@ -741,6 +786,35 @@ class LocalToolAgent:
         if not summary:
             raise AgentError("当前会话内容太少，暂不需要压缩。")
         return summary
+
+    def compact_conversation_model(self) -> str:
+        """显式使用结构化摘要模型压缩；关闭开关时拒绝产生隐式费用。"""
+
+        config = self.config.context_compaction
+        if not config.enabled:
+            raise AgentError("模型压缩功能已关闭，请先启用 context_compaction.enabled。")
+        source_events = self._context_compaction_source_events()
+        service = self._context_compaction_service()
+        outcome = service.manual_compact(
+            source_events=source_events,
+            target_summary_tokens=config.target_summary_tokens,
+            reasoning_effort=config.reasoning_effort,
+            preserve_exact_evidence=config.preserve_exact_evidence,
+        )
+        if outcome.compact_payload is None:
+            if not outcome.fallback_required:
+                raise AgentError(outcome.diagnostic or "当前会话内容太少，暂不需要模型压缩。")
+            self._append_session_event(
+                "context_compaction_failed",
+                {"mode": "manual_model", "reason": outcome.diagnostic},
+            )
+            summary = self._compact_history(force=True)
+            if not summary:
+                raise AgentError("模型摘要失败，且当前会话无法建立确定性压缩边界。")
+            return summary + "\n\n（模型摘要失败，已使用本地确定性降级。）"
+        self._append_session_event("compact_summary", dict(outcome.compact_payload))
+        self._history = list(outcome.history_projection or ())
+        return str(outcome.compact_payload["content"])
 
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
@@ -862,6 +936,7 @@ class LocalToolAgent:
         self.__dict__.pop("_workspace_tools", None)
         self.__dict__.pop("_windows_desktop_tools", None)
         self.__dict__.pop("_agent_session_facade", None)
+        self.__dict__.pop("_context_compaction_service_instance", None)
 
         self._temp_workspace = prepared["temp_workspace"]
         self._session_store = prepared["session_store"]
@@ -1220,6 +1295,10 @@ class LocalToolAgent:
             raise AgentError(str(exc)) from exc
 
         runtime_token = next_llm.catalog_key or next_llm.model
+        _validate_context_compaction_window(
+            getattr(self.config, "context_compaction", None),
+            next_llm,
+        )
 
         # 先构建候选 Runtime 并持久化，全部成功后才更新 Agent 内存配置。
         manager = getattr(self, "_runtime_manager", None)
@@ -1235,6 +1314,7 @@ class LocalToolAgent:
         self.config.llm = next_llm
         self._runtime_model_id = runtime_token
         self.__dict__.pop("_client", None)
+        self.__dict__.pop("_context_compaction_service_instance", None)
 
     @property
     def context_window_tokens(self) -> int:
@@ -1266,6 +1346,11 @@ class LocalToolAgent:
 
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise AgentError("上下文长度必须是正整数 Token。")
+        _validate_context_compaction_window(
+            getattr(self.config, "context_compaction", None),
+            self.config.llm,
+            context_window_tokens=tokens,
+        )
         manager = getattr(self, "_runtime_manager", None)
         if manager is not None:
             manager.set_context_window_tokens(tokens)
@@ -2249,9 +2334,24 @@ class LocalToolAgent:
         status = on_status or (lambda _message: None)
         report_tool_start = on_tool_start or (lambda _step, _tool_call: None)
         report_tool_result = on_tool_result or (lambda _tool_call, _result: None)
-        report_token_usage = on_token_usage or (
+        external_token_usage = on_token_usage or (
             lambda _input_tokens, _output_tokens, _cached_input_tokens: None
         )
+        turn_usage = TokenUsageSample()
+
+        def report_token_usage(
+            input_tokens: int,
+            output_tokens: int,
+            cached_input_tokens: int,
+        ) -> None:
+            nonlocal turn_usage
+            turn_usage = turn_usage.add(
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+            )
+            external_token_usage(input_tokens, output_tokens, cached_input_tokens)
+
         _report_protocol_wait = on_protocol_wait or (lambda: None)
         report_retry_status = on_retry_status or status
 
@@ -2297,8 +2397,9 @@ class LocalToolAgent:
             self._pending_user_text = pending_text or text
             self._append_prompt_history(text)
             self._append_session_event("user_message", {"content": text})
+            context_messages = self._context_messages(turn_id=turn_id)
             working_messages = [
-                *self._context_messages(turn_id=turn_id),
+                *context_messages,
                 *self._history,
                 {"role": "user", "content": text},
             ]
@@ -2316,9 +2417,13 @@ class LocalToolAgent:
                     working_messages
                 )
 
-            # 完整构造的 Agent 才持有 llm 配置；部分内部单测使用最小对象并
-            # 替换了模型请求方法，此时跳过 Runtime 快照，不改变其测试边界。
-            if getattr(self.config, "llm", None) is not None:
+            # 完整构造的 Agent 才持有带 profile_id 的 LLMConfig；部分内部单测
+            # 使用最小对象并替换模型请求方法，此时跳过 Runtime 快照。
+            llm_config = getattr(self.config, "llm", None)
+            has_injected_runtime_manager = "_ensure_runtime_manager" in self.__dict__
+            if llm_config is not None and (
+                hasattr(llm_config, "profile_id") or has_injected_runtime_manager
+            ):
                 runtime_manager = self._ensure_runtime_manager()
                 runtime_snapshot = runtime_manager.acquire_turn()
                 self._active_runtime_snapshot = runtime_snapshot
@@ -2356,7 +2461,14 @@ class LocalToolAgent:
             if final_reply and not loop_result.content_streamed:
                 on_delta(final_reply)
             self._append_session_event("assistant_message", {"content": final_reply})
-            self._append_history(text, final_reply, loop_result.reasoning)
+            self._turn_context_compaction_context_messages = context_messages
+            self._turn_context_compaction_usage = turn_usage
+            try:
+                # 保持既有三参数调用形态，兼容宿主扩展和最小测试替身。
+                self._append_history(text, final_reply, loop_result.reasoning)
+            finally:
+                self.__dict__.pop("_turn_context_compaction_context_messages", None)
+                self.__dict__.pop("_turn_context_compaction_usage", None)
             self._pending_user_text = None
             self._dispatch_plugin_hook(
                 "turn.end",
@@ -3046,9 +3158,14 @@ class LocalToolAgent:
         if isinstance(after_payload.get("displayText"), str):
             display_text = after_payload["displayText"]
 
+        model_output = (
+            result.output
+            if tool.model_output_is_bounded
+            else self._truncate_tool_output(result.output)
+        )
         return ToolResult(
             ok=result.ok,
-            output=self._truncate_tool_output(result.output),
+            output=model_output,
             full_output=display_text,
             ui_artifact=result.ui_artifact,
             model_images=result.model_images,
@@ -3193,6 +3310,18 @@ class LocalToolAgent:
             mcp_call=self._tool_mcp_call,
             mcp_read_resource=self._tool_mcp_read_resource,
             mcp_get_prompt=self._tool_mcp_get_prompt,
+            evidence_recall=(
+                self._tool_recall_session_evidence
+                if getattr(self, "_session_store", None) is not None
+                and bool(
+                    getattr(
+                        getattr(self.config, "context_compaction", None),
+                        "enabled",
+                        False,
+                    )
+                )
+                else None
+            ),
             subagent=(
                 self._tool_subagent
                 if getattr(self, "_subagent_coordinator", None) is not None
@@ -3328,6 +3457,61 @@ class LocalToolAgent:
             ok=True,
             output=f"已发送到右侧 HTML 显示区（{source}）。",
             ui_artifact=artifact,
+        )
+
+    def _tool_recall_session_evidence(self, arguments: dict[str, Any]) -> ToolResult:
+        """恢复当前有效摘要授权的事件，不接受 Session ID 或 artifact 路径。"""
+
+        store = getattr(self, "_session_store", None)
+        state = getattr(self, "_session_state", None)
+        if store is None or state is None:
+            output = {
+                "schema_version": 1,
+                "ok": False,
+                "items": [],
+                "diagnostics": [
+                    {
+                        "code": "session_unavailable",
+                        "message": "当前没有可读取的活动 Session。",
+                    }
+                ],
+                "truncated": False,
+            }
+            return ToolResult(ok=False, output=json.dumps(output, ensure_ascii=False))
+
+        service = getattr(self, "_session_evidence_recall_service", None)
+        if not isinstance(service, SessionEvidenceRecallService):
+            service = SessionEvidenceRecallService()
+            self._session_evidence_recall_service = service
+        try:
+            events = tuple(
+                SourceEvent(event.event_id, event.type, dict(event.payload))
+                for event in store.read_session_events(state.session_id)
+            )
+            result = service.recall(
+                events=events,
+                event_ids=arguments.get("event_ids"),
+                artifact_reader=lambda artifact_path: store.read_artifact_text(
+                    state.session_id,
+                    artifact_path,
+                ),
+            )
+        except Exception:
+            result = {
+                "schema_version": 1,
+                "ok": False,
+                "items": [],
+                "diagnostics": [
+                    {
+                        "code": "evidence_unavailable",
+                        "message": "当前 Session 证据暂时不可读取。",
+                    }
+                ],
+                "truncated": False,
+            }
+        return ToolResult(
+            ok=bool(result.get("ok", False)),
+            output=json.dumps(result, ensure_ascii=False, separators=(",", ":")),
         )
 
     def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
@@ -3815,7 +3999,7 @@ class LocalToolAgent:
         return {"role": "assistant", "content": assistant_text}
 
     def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
-        """写入对话历史；reasoning 仅用于本地兼容签名，不回传给 Chat Completions。"""
+        """写入完整回合，先记录可选预算快照，再执行现有确定性压缩。"""
 
         self._history.extend(
             [
@@ -3823,7 +4007,115 @@ class LocalToolAgent:
                 self._assistant_message(assistant_text, reasoning),
             ]
         )
-        self._compact_history(force=False)
+        config = getattr(self.config, "context_compaction", None)
+        if config is None or not config.enabled:
+            self._compact_history(force=False)
+            return
+        self._run_context_compaction_after_turn(
+            context_messages=getattr(
+                self,
+                "_turn_context_compaction_context_messages",
+                (),
+            ),
+            usage=getattr(
+                self,
+                "_turn_context_compaction_usage",
+                TokenUsageSample(),
+            ),
+        )
+
+    def _run_context_compaction_after_turn(
+        self,
+        *,
+        context_messages: Sequence[Mapping[str, Any]],
+        usage: TokenUsageSample,
+    ) -> None:
+        config = self.config.context_compaction
+        service = self._context_compaction_service()
+        try:
+            outcome = service.after_complete_turn(
+                source_events=self._context_compaction_source_events(),
+                system_prompt=self._system_prompt(),
+                context_messages=context_messages,
+                history_messages=self._history,
+                tool_schemas=self._chat_completion_tools(),
+                recent_turns=config.recent_turns,
+                recent_context_ratio=config.recent_context_ratio,
+                target_summary_tokens=config.target_summary_tokens,
+                next_user_reserve_tokens=config.next_user_reserve_tokens,
+                trigger_context_tokens=config.trigger_context_tokens,
+                context_window_tokens=int(
+                    getattr(
+                        getattr(self.config, "llm", None),
+                        "context_window_tokens",
+                        128_000,
+                    )
+                ),
+                emergency_context_ratio=config.emergency_context_ratio,
+                minimum_turns_between_model_compactions=(
+                    config.minimum_turns_between_model_compactions
+                ),
+                reasoning_effort=config.reasoning_effort,
+                preserve_exact_evidence=config.preserve_exact_evidence,
+                usage=usage,
+            )
+        except Exception:
+            LOGGER.warning("上下文压缩自动流程失败，已跳过本回合。", exc_info=True)
+            return
+
+        if outcome.measurement_payload:
+            self._append_session_event(
+                "context_compaction_measurement",
+                dict(outcome.measurement_payload),
+            )
+        if outcome.compact_payload is not None:
+            self._append_session_event(
+                "compact_summary",
+                dict(outcome.compact_payload),
+            )
+            self._history = list(outcome.history_projection or ())
+            return
+        if outcome.fallback_required:
+            self._append_session_event(
+                "context_compaction_failed",
+                {"mode": "automatic_model", "reason": outcome.diagnostic},
+            )
+            fallback = self._compact_history(force=True)
+            if not fallback:
+                LOGGER.warning("模型摘要失败后无法建立确定性压缩边界：%s", outcome.diagnostic)
+
+    def _context_compaction_service(self) -> ContextCompactionService:
+        existing = getattr(self, "_context_compaction_service_instance", None)
+        if existing is not None and hasattr(existing, "after_complete_turn"):
+            return existing
+        legacy = getattr(self, "_context_compaction_measurement", None)
+        if legacy is not None and hasattr(legacy, "after_complete_turn"):
+            return legacy
+        llm_config = getattr(self.config, "llm", None)
+        if not isinstance(llm_config, LLMConfig):
+            return ContextCompactionService()
+        model_adapter = RuntimeSummaryModelAdapter(
+            parent_llm=llm_config,
+            summary_profile=self.config.context_compaction.summary_profile,
+            reasoning_effort=self.config.context_compaction.reasoning_effort,
+            allow_cross_provider=self.config.context_compaction.allow_cross_provider,
+            workspace_root=self.workspace_root,
+        )
+        service = ContextCompactionService(
+            compactor=ModelSummaryCompactor(model_adapter, max_input_tokens=64_000)
+        )
+        self._context_compaction_service_instance = service
+        return service
+
+    def _context_compaction_source_events(self) -> tuple[SourceEvent, ...]:
+        store = getattr(self, "_session_store", None)
+        state = getattr(self, "_session_state", None)
+        if store is None or state is None:
+            return ()
+        return tuple(
+            SourceEvent(event.event_id, event.type, dict(event.payload))
+            for event in store.read_session_events(state.session_id)
+        )
 
     def _compact_history(self, *, force: bool = False) -> str:
         """把早期历史压缩成单条摘要消息，避免长会话被硬裁剪。

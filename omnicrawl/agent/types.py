@@ -64,3 +64,5 @@ class ToolDefinition:
     argument_schema: str
     requires_confirmation: bool
     run: Callable[[dict[str, Any]], ToolResult]
+    # 仅供 Host 内建、已自行执行模型 Token 预算的工具使用；模型参数不能设置。
+    model_output_is_bounded: bool = False

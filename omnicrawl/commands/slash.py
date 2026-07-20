@@ -498,6 +498,14 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
         except AgentError as exc:
             return f"会话压缩失败：{exc}"
         return f"已压缩当前会话，后续恢复将从摘要边界继续。\n{summary}"
+    if normalized == "/compact --model":
+        try:
+            summary = agent.compact_conversation_model()
+        except AgentError as exc:
+            return f"模型会话压缩失败：{exc}"
+        return f"已使用结构化摘要模型压缩当前会话，完整转录仍保留。\n{summary}"
+    if normalized.startswith("/compact "):
+        return "用法：/compact 或 /compact --model。"
     if normalized == "/rename" or normalized.startswith("/rename "):
         parts = text.split(None, 1)
         if len(parts) == 1 or not parts[1].strip():
@@ -902,6 +910,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/history",
         "/undo",
         "/compact",
+        "/compact --model",
         "/rename",
         "/archive",
         "/archives",
@@ -944,7 +953,8 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/resume": "恢复指定会话 ID。",
         "/history": "查看或筛选提示历史。",
         "/undo": "回退最近一轮对话；不撤销已产生的外部副作用。",
-        "/compact": "压缩当前会话上下文。",
+        "/compact": "使用本地确定性规则压缩当前会话上下文。",
+        "/compact --model": "使用结构化摘要模型压缩当前会话上下文。",
         "/rename": "重命名当前会话。",
         "/archive": "归档当前会话并开启新会话。",
         "/archives": "查看已归档会话。",

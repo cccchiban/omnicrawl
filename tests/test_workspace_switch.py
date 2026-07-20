@@ -138,6 +138,25 @@ class WorkspaceSwitchTest(unittest.TestCase):
                 finally:
                     agent.close()
 
+    def test_should_refresh_context_compaction_service_when_workspace_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            orig_workspace = Path(temp_dir) / "project_a"
+            target_workspace = Path(temp_dir) / "project_b"
+            orig_workspace.mkdir()
+            target_workspace.mkdir()
+            config = self._make_config(orig_workspace)
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._context_compaction_service_instance = object()
+                try:
+                    agent.switch_workspace(target_workspace)
+                    self.assertNotIn(
+                        "_context_compaction_service_instance",
+                        agent.__dict__,
+                    )
+                finally:
+                    agent.close()
+
     def test_switch_workspace_rebuilds_workspace_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             orig_workspace = Path(temp_dir) / "project_a"

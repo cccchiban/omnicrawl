@@ -51,6 +51,25 @@ approval:
 memory:
   enabled: true
 
+# 模型辅助压缩默认关闭。开启后在完整回合结束时测量预算，达到 70K 才调用
+# 摘要模型；普通 /compact 始终保持本地确定性，/compact --model 为显式模型入口。
+# 开启后还会注册 recall_session_evidence，只按当前有效摘要的事件 ID 恢复证据。
+context_compaction:
+  enabled: false
+  trigger_context_tokens: 70000
+  next_user_reserve_tokens: 4096
+  minimum_turns_between_model_compactions: 4
+  emergency_context_ratio: 0.85
+  # 空值复用当前模型；也可填写 models.yaml key/alias、model_id 或 profile/model_id。
+  summary_profile: ""
+  reasoning_effort: low
+  recent_turns: 6
+  recent_context_ratio: 0.25
+  target_summary_tokens: 6000
+  preserve_exact_evidence: true
+  allow_cross_provider: false
+  failure_fallback: deterministic
+
 api:
   bearer_token: "请替换为随机长令牌"
   host: "127.0.0.1"

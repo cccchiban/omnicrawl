@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
+from .context_compaction.evidence import RECALL_SESSION_EVIDENCE_TOOL_NAME
 from .types import ToolCall, ToolDefinition, ToolResult
 from ..mcp import MCPClientManager, MCPToolMeta
 from ..state.session_artifacts import redact_sensitive_text
@@ -237,6 +238,7 @@ def build_agent_tools(
     mcp_call: MCPToolRunner,
     mcp_read_resource: MCPResourceRunner,
     mcp_get_prompt: MCPPromptRunner,
+    evidence_recall: ToolRunner | None = None,
     subagent: ToolRunner | None = None,
     windows_window: ToolRunner | None = None,
     windows_control: ToolRunner | None = None,
@@ -357,6 +359,40 @@ def build_agent_tools(
             ),
         ]
     )
+    if evidence_recall is not None:
+        tools.append(
+            ToolDefinition(
+                name=RECALL_SESSION_EVIDENCE_TOOL_NAME,
+                description=(
+                    "按结构化会话摘要中显示的来源事件 ID，恢复当前 Session 的精确证据。"
+                    "仅允许读取当前有效摘要引用的事件；单次最多 8 个 ID、合计约 4000 Token。"
+                    "缺失、未授权或不可读内容会返回结构化诊断，不会恢复整个冷历史。"
+                ),
+                argument_schema=json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "event_ids": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 8,
+                                "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128,
+                                },
+                            }
+                        },
+                        "required": ["event_ids"],
+                        "additionalProperties": False,
+                    },
+                    ensure_ascii=False,
+                ),
+                requires_confirmation=False,
+                run=evidence_recall,
+                model_output_is_bounded=True,
+            )
+        )
     windows_runners = (
         windows_window,
         windows_control,
