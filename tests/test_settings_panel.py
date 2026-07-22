@@ -11,12 +11,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from omnicrawl.agent import AgentError, LocalToolAgent
+from omnicrawl.config.context_compaction import ContextCompactionConfig
 from omnicrawl.mcp.config import MCPConfig
 from omnicrawl.config.settings import (
     SettingsConfigError,
     load_feature_enabled,
     save_context_window_tokens,
     save_feature_enabled,
+    save_subagent_setting,
 )
 from omnicrawl.config.subagents import SubAgentConfig
 from omnicrawl.extensions.plugin_manager import PluginRuntime
@@ -37,18 +39,87 @@ class SettingsConfigTests(unittest.TestCase):
             saved = save_feature_enabled("mcp", True, path)
             save_feature_enabled("plugins", True, path)
             save_feature_enabled("subagents", True, path)
+            save_feature_enabled("context_compaction", True, path)
 
             self.assertEqual(saved, path)
-            for section in ("memory", "mcp", "plugins", "subagents"):
+            for section in (
+                "memory",
+                "mcp",
+                "plugins",
+                "subagents",
+                "context_compaction",
+            ):
                 self.assertTrue(
                     load_feature_enabled(section, default=False, config_path=path)
                 )
             text = path.read_text(encoding="utf-8")
             self.assertIn("demo:", text)
             self.assertIn("enabled: true", text)
+    def test_subagent_advanced_setting_round_trip_preserves_other_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.yaml"
+            path.write_text(
+                "subagents:\n"
+                "  enabled: true\n"
+                "  allow_worktree: false\n"
+                "  result_summary_chars: 2400\n",
+                encoding="utf-8",
+            )
+
+            saved = save_subagent_setting("max_concurrency", 4, path)
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved, path)
+        self.assertEqual(data["subagents"]["max_concurrency"], 4)
+        self.assertTrue(data["subagents"]["enabled"])
+        self.assertFalse(data["subagents"]["allow_worktree"])
+        self.assertEqual(data["subagents"]["result_summary_chars"], 2400)
+
+    def test_subagent_advanced_setting_rejects_excluded_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.yaml"
+            for key in ("result_summary_chars", "default_max_turns", "default_max_tool_calls"):
+                with self.assertRaises(SettingsConfigError):
+                    save_subagent_setting(key, 1, path)
 
 
-class ContextWindowPersistenceTests(unittest.TestCase):
+class SettingsScreenAdvancedTests(unittest.TestCase):
+    def test_subagent_advanced_rows_exclude_result_and_execution_budget_fields(self) -> None:
+        screen = object.__new__(SettingsScreen)
+        screen._agent = SimpleNamespace(
+            config=SimpleNamespace(
+                subagents=SubAgentConfig(
+                    max_concurrency=2,
+                    max_tasks_per_batch=4,
+                    max_total_tasks=8,
+                    default_timeout_seconds=300,
+                    model_request_concurrency=2,
+                    verify_command_timeout_seconds=120,
+                    task_retention_minutes=60,
+                )
+            )
+        )
+        screen._row_keys = ("subagents_advanced",)
+
+        labels = SettingsScreen._row_labels()
+        self.assertIn("subagents_advanced", labels)
+        self.assertIn("最大并发数", SettingsScreen._subagent_advanced_labels().values())
+        self.assertNotIn("result_summary_chars", SettingsScreen._subagent_advanced_keys())
+        self.assertNotIn("default_max_turns", SettingsScreen._subagent_advanced_keys())
+        self.assertNotIn("default_max_tool_calls", SettingsScreen._subagent_advanced_keys())
+
+    def test_subagent_advanced_setting_updates_runtime_config(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            subagents=SubAgentConfig(enabled=False, max_concurrency=2)
+        )
+
+        LocalToolAgent.set_subagent_advanced_setting(agent, "max_concurrency", 4)
+
+        self.assertEqual(agent.config.subagents.max_concurrency, 4)
+
+
+
     def test_custom_model_context_window_is_saved_to_models_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             models_path = Path(temp_dir) / "models.yaml"
@@ -110,7 +181,10 @@ class SettingsCommandTests(unittest.TestCase):
         self.assertFalse(singular.handled)
 
     def test_settings_screen_declares_navigation_bindings(self) -> None:
-        descriptions = " ".join(binding[2] for binding in SettingsScreen.BINDINGS)
+        descriptions = " ".join(
+            binding.description if hasattr(binding, "description") else binding[2]
+            for binding in SettingsScreen.BINDINGS
+        )
         self.assertIn("选择", descriptions)
         self.assertIn("取消", descriptions)
         self.assertIn("上一项", descriptions)
@@ -215,6 +289,70 @@ class SettingsScreenFailureTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentRuntimeSettingsTests(unittest.TestCase):
+    def test_context_compaction_toggle_rebuilds_evidence_tool(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            llm=SimpleNamespace(context_window_tokens=128_000, max_output_tokens=8_192),
+            context_compaction=ContextCompactionConfig(enabled=False),
+        )
+        agent._tools = {"read_file": object()}
+        agent._build_tools = Mock(return_value={"recall_session_evidence": object()})
+        agent._context_compaction_service_instance = object()
+
+        LocalToolAgent.set_context_compaction_enabled(agent, True)
+
+        self.assertTrue(agent.config.context_compaction.enabled)
+        self.assertIn("recall_session_evidence", agent._tools)
+        self.assertNotIn("_context_compaction_service_instance", agent.__dict__)
+
+    def test_context_compaction_toggle_rejects_unsafe_context_window(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            llm=SimpleNamespace(context_window_tokens=80_000, max_output_tokens=8_192),
+            context_compaction=ContextCompactionConfig(enabled=False),
+        )
+        agent._tools = {}
+        agent._build_tools = Mock(return_value={})
+
+        with self.assertRaisesRegex(AgentError, "上下文窗口必须大于"):
+            LocalToolAgent.set_context_compaction_enabled(agent, True)
+
+        self.assertFalse(agent.config.context_compaction.enabled)
+        agent._build_tools.assert_not_called()
+
+    def test_context_compaction_disable_removes_evidence_tool(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            llm=SimpleNamespace(context_window_tokens=128_000, max_output_tokens=8_192),
+            context_compaction=ContextCompactionConfig(enabled=True),
+        )
+        agent._tools = {"recall_session_evidence": object()}
+        agent._build_tools = Mock(return_value={"read_file": object()})
+
+        LocalToolAgent.set_context_compaction_enabled(agent, False)
+
+        self.assertFalse(agent.config.context_compaction.enabled)
+        self.assertNotIn("recall_session_evidence", agent._tools)
+
+    def test_context_compaction_tool_rebuild_failure_restores_runtime(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        previous_tools = {"read_file": object()}
+        previous_service = object()
+        agent.config = SimpleNamespace(
+            llm=SimpleNamespace(context_window_tokens=128_000, max_output_tokens=8_192),
+            context_compaction=ContextCompactionConfig(enabled=False),
+        )
+        agent._tools = previous_tools
+        agent._context_compaction_service_instance = previous_service
+        agent._build_tools = Mock(side_effect=RuntimeError("工具表重建失败"))
+
+        with self.assertRaisesRegex(RuntimeError, "工具表重建失败"):
+            LocalToolAgent.set_context_compaction_enabled(agent, True)
+
+        self.assertFalse(agent.config.context_compaction.enabled)
+        self.assertIs(agent._tools, previous_tools)
+        self.assertIs(agent._context_compaction_service_instance, previous_service)
+
     def test_memory_toggle_rebuilds_tools_after_store_swap(self) -> None:
         agent = object.__new__(LocalToolAgent)
         old_store = object()

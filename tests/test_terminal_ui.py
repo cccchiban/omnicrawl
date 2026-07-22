@@ -243,7 +243,7 @@ class TerminalUITest(unittest.TestCase):
                 self.events: list[str] = []
 
             def prompt(self) -> str:
-                return "▸ "
+                return "$ "
 
             def inline_turn_base(self, _user_text: str) -> None:
                 pass
@@ -1063,7 +1063,7 @@ class TerminalUITest(unittest.TestCase):
         rendered = output.getvalue()
         # 新格式：╭─ 步骤 N · tool_name
         self.assertIn("步骤 2", rendered)
-        self.assertIn("powershell", rendered)
+        self.assertIn("执行 PowerShell", rendered)
         self.assertIn("Write-Output hello", rendered)
 
     def test_tool_call_card_does_not_overflow_narrow_terminal(self) -> None:
@@ -1131,7 +1131,7 @@ class TerminalUITest(unittest.TestCase):
         # 连续工具之间有空行分隔
         self.assertIn("first", rendered)
         self.assertIn("步骤 2", rendered)
-        self.assertIn("powershell", rendered)
+        self.assertIn("执行 PowerShell", rendered)
 
     def test_tool_call_start_uses_static_ansi_status_marker(self) -> None:
         ui = TerminalUI(TerminalCapabilities(ansi=True))
@@ -1147,7 +1147,7 @@ class TerminalUITest(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn("◌", rendered)
-        self.assertIn("powershell", rendered)
+        self.assertIn("执行 PowerShell", rendered)
         self.assertIn("Write-Output hi", rendered)
         self.assertNotIn("\033[5m", rendered)  # 不使用终端兼容性不稳定的 BLINK
 

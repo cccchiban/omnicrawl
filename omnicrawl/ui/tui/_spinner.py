@@ -23,7 +23,7 @@ _STATUS_LABEL_INTERVAL_SECONDS = 2.0
 
 
 class InputBar:
-    """终端底部持久输入栏（▸ + token 状态行）。
+    """终端底部持久输入栏（$ + token 状态行）。
 
     在 AI 输出期间以“输出前清除、输出后追加”的方式维护，避免直接在
     模型输出位置原地重绘时覆盖正文。输入栏同时收集用户预输入。
@@ -65,7 +65,7 @@ class InputBar:
             return
 
         ui = self._ui
-        prompt_prefix = color_text("▸", "primary", self._caps)
+        prompt_prefix = color_text("$", "primary", self._caps)
         terminal_width = max(1, shutil.get_terminal_size((100, 30)).columns)
         input_width = max(1, terminal_width - ui.prompt_width() - 1)
         input_rows = _split_display_rows(self._pre_input, input_width)
@@ -182,7 +182,7 @@ class WaitingIndicator:
     """模型返回前的现代 spinner 等待动画。
 
     带轮播状态文字、经过时间计数，以及预输入收集。
-    spinner 运行时同时显示输入栏（▸ + token 状态行）。
+    spinner 运行时同时显示输入栏（$ + token 状态行）。
     """
 
     def __init__(self, status_line: StatusLine, *, caps: TerminalCapabilities | None = None, input_bar: InputBar | None = None) -> None:
@@ -283,7 +283,7 @@ class WaitingIndicator:
             caps=self._caps,
             max_width=terminal_width,
         )
-        prompt_prefix = color_text("▸", "primary", self._caps)
+        prompt_prefix = color_text("$", "primary", self._caps)
         pre_input_text = self._input_bar._pre_input if self._input_bar else self._pre_input
         input_rows = _split_display_rows(
             pre_input_text,

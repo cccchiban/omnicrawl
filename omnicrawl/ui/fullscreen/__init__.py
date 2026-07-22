@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
@@ -21,6 +21,7 @@ from .hud import (
     compact_token_count,
     context_summary_text,
     gradient_text,
+    pending_queue_text,
     token_telemetry_text,
 )
 # 保留这些模块级名称作为既有测试和扩展的 patch 点；实际分派位于 commands.py。
@@ -50,7 +51,75 @@ from .theme import (
     terminal_css,
 )
 from .turns import AgentTurnCallbacks, AgentTurnController
-from .widgets import ConfirmationScreen, ReasoningDisclosure, ToolDisclosure
+from .widgets import AssistantMessage, ConfirmationScreen, ReasoningDisclosure, ToolDisclosure
+
+
+_MOUSE_REPORTING_DISABLE_SEQUENCE = (
+    "\x1b[?1000l"
+    "\x1b[?1002l"
+    "\x1b[?1003l"
+    "\x1b[?1015l"
+    "\x1b[?1006l"
+)
+
+
+def _disable_terminal_mouse_reporting(output_stream: Any | None = None) -> None:
+    """在 Textual Driver 停止后兜底关闭所有可能启用的鼠标报告模式。"""
+
+    output_stream = sys.__stdout__ if output_stream is None else output_stream
+    if output_stream is None:
+        return
+    try:
+        # 退出阶段不能继续使用 Driver.write：Windows WriterThread 此时已经停止，
+        # 写入只会滞留在无人消费的队列中，因此必须直接写回真实控制台流。
+        output_stream.write(_MOUSE_REPORTING_DISABLE_SEQUENCE)
+        output_stream.flush()
+    except (AttributeError, OSError, ValueError):
+        # 关闭窗口或重定向流已提前失效时，不应让兜底清理覆盖原始退出结果。
+        return
+
+
+def _restore_windows_vt_input_mode_if_needed(
+    *,
+    platform_name: str | None = None,
+    input_stream: Any | None = None,
+    output_stream: Any | None = None,
+    win32_api: Any | None = None,
+) -> bool:
+    """恢复可能被锁屏或息屏重置的 Windows 控制台 VT 输入模式。"""
+
+    if (platform_name or sys.platform) != "win32":
+        return False
+
+    if win32_api is None:
+        from textual.drivers import win32 as win32_api
+
+    input_stream = sys.__stdin__ if input_stream is None else input_stream
+    output_stream = sys.__stdout__ if output_stream is None else output_stream
+    if input_stream is None or output_stream is None:
+        return False
+
+    try:
+        input_mode = win32_api.get_console_mode(input_stream)
+        required_input_mode = win32_api.ENABLE_VIRTUAL_TERMINAL_INPUT
+        if input_mode == required_input_mode:
+            return False
+
+        # Textual 的 Windows 输入线程只解析 VT 字符序列；普通控制台模式下，
+        # 方向键会变成空字符的虚拟键记录，鼠标会变成其未处理的 MOUSE_EVENT。
+        if not win32_api.set_console_mode(input_stream, required_input_mode):
+            return False
+
+        output_mode = win32_api.get_console_mode(output_stream)
+        win32_api.set_console_mode(
+            output_stream,
+            output_mode | win32_api.ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+        )
+        return True
+    except (AttributeError, OSError, ValueError):
+        # 重定向输入、非控制台 Host 或终端关闭期间可能无法读取 ConsoleMode；
+        # 此时保留 Textual 当前状态，避免定时器异常打断主事件循环。
+        return False
 
 
 @dataclass(frozen=True)
@@ -82,6 +151,12 @@ class OmniCrawlApp(App[None]):
         content-align: left middle;
         text-overflow: ellipsis;
     }
+    #queue-count {
+        width: 8;
+        min-width: 8;
+        max-width: 8;
+        content-align: right middle;
+    }
     /* 第二行 Token 跳过外边距与 18 列品牌栏，和第一行上下文摘要对齐。
        height 必须至少为 2：Textual 的 border-bottom 会占用 1 行布局高度，
        若 height=1 则内容区高度被压成 0，导致 IN/OUT/CA/CTX 有 content 但不渲染。 */
@@ -99,23 +174,24 @@ class OmniCrawlApp(App[None]):
     .runtime-status-message.warning { color: $terminal-red; }
     #conversation {
         height: 1fr;
-        padding: 1 1;
+        padding: 0 1;
         background: $terminal-background;
         scrollbar-color: $terminal-scrollbar;
         scrollbar-color-hover: $terminal-green;
         scrollbar-background: $terminal-background;
     }
     .message { margin: 0 0 1 0; padding: 0 1; background: transparent; border: none; }
-    .user-message { color: $terminal-text; background: $terminal-panel; }
+    #conversation > .message:last-child { margin-bottom: 0; }
+    .user-message { color: $terminal-text; background: $terminal-user-background; }
     .assistant-message { color: $terminal-text; }
     .status-message { color: $terminal-text-muted; }
     .tool-message { color: $terminal-amber; padding-left: 2; }
     .tool-message:hover { color: $terminal-amber; background: $terminal-amber-soft; }
     .tool-message:focus { color: $terminal-text; background: $terminal-amber-soft; }
     .error-message { color: $terminal-red; }
-    .reasoning-message { color: $terminal-text-muted; padding-left: 2; }
-    .reasoning-message:hover { color: $terminal-blue; background: $terminal-hover; }
-    .reasoning-message:focus { color: $terminal-green; background: $terminal-hover; }
+    .reasoning-message { color: $terminal-text; padding-left: 2; background: $terminal-reasoning-background; }
+    .reasoning-message:hover { color: $terminal-text; background: $terminal-reasoning-hover-background; }
+    .reasoning-message:focus { color: $terminal-text; background: $terminal-reasoning-focus-background; border-left: thick $terminal-blue; text-style: bold; }
     .reasoning-message.collapsed { height: 1; }
     #composer-wrap { height: 3; min-height: 3; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
     #command-menu {
@@ -140,6 +216,8 @@ class OmniCrawlApp(App[None]):
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
     MONITOR_POLL_INTERVAL_SECONDS = 0.5
     STATUS_BLINK_INTERVAL_SECONDS = 0.45
+    INTERACTION_WATCHDOG_INTERVAL_SECONDS = 0.5
+    STALE_INTERACTION_TICKS = 6
     MAX_TOOL_OUTPUT_CHARS = 3_500
 
     def __init__(self, agent: LocalToolAgent, startup: FullscreenStartup) -> None:
@@ -184,7 +262,7 @@ class OmniCrawlApp(App[None]):
                 command,
             ),
         )
-        self._stream_message: Static | None = None
+        self._stream_message: AssistantMessage | None = None
         self._stream_markdown = ""
         self._stream_render_pending = False
         self._tool_messages: dict[str, ToolDisclosure] = {}
@@ -201,14 +279,17 @@ class OmniCrawlApp(App[None]):
         self._status_dot_visible = True
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
+        self._interaction_watchdog_signature: tuple[object, ...] | None = None
+        self._interaction_watchdog_stable_ticks = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
             with Horizontal(id="topbar"):
                 yield Static(self._gradient_text("◆ OMNICRAWL"), id="brand")
                 yield Static(self._context_summary_text(), id="context-summary")
+                yield Static(self._pending_queue_text(), id="queue-count")
             yield Static(self._token_telemetry_text(), id="token-telemetry")
-            yield VerticalScroll(id="conversation")
+            yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
                 yield Static("", id="command-menu")
                 yield Input(placeholder="› 输入消息或 / 命令", id="composer")
@@ -217,6 +298,10 @@ class OmniCrawlApp(App[None]):
         self.agent.set_confirm_handler(self._confirm_tool)
         self.query_one("#composer", Input).focus()
         self.set_interval(self.STATUS_BLINK_INTERVAL_SECONDS, self._tick_status_indicator)
+        self.set_interval(
+            self.INTERACTION_WATCHDOG_INTERVAL_SECONDS,
+            self._recover_stale_mouse_interaction,
+        )
         if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
 
@@ -226,6 +311,121 @@ class OmniCrawlApp(App[None]):
             self._preload_mcp_tools()
         else:
             self._set_runtime_status("完成", "complete")
+
+    def on_app_blur(self, _event: events.AppBlur) -> None:
+        """窗口失焦时终止可能丢失 MouseUp 的交互。"""
+
+        self._reset_mouse_interaction_state()
+
+    def on_app_focus(self, _event: events.AppFocus) -> None:
+        """窗口重新聚焦时恢复输入焦点和终端鼠标报告。"""
+
+        self._reset_mouse_interaction_state(
+            focus_composer=True,
+            rearm_terminal_protocols=True,
+        )
+
+    def _recover_stale_mouse_interaction(self) -> None:
+        """释放长时间没有变化的鼠标按下状态，避免输入事件永久失效。"""
+
+        driver = self._driver
+        if not driver.is_headless and _restore_windows_vt_input_mode_if_needed():
+            # 控制台模式被系统重置后不会再产生 Textual 可识别的 AppFocus，
+            # 因此必须由周期看门狗主动恢复，且设置页等模态界面也不能跳过。
+            self._reset_mouse_interaction_state(rearm_terminal_protocols=True)
+
+        if len(self.screen_stack) > 1:
+            self._interaction_watchdog_signature = None
+            self._interaction_watchdog_stable_ticks = 0
+            return
+
+        screen = self.screen
+        captured = self.mouse_captured
+        down_buttons = getattr(driver, "_down_buttons", [])
+        mouse_down_offset = getattr(screen, "_mouse_down_offset", None)
+        selecting = bool(getattr(screen, "_selecting", False))
+        if captured is None and not selecting and mouse_down_offset is None and not down_buttons:
+            self._interaction_watchdog_signature = None
+            self._interaction_watchdog_stable_ticks = 0
+            return
+
+        select_state = getattr(screen, "_select_state", None)
+        last_move = getattr(driver, "_last_move_event", None)
+        last_move_signature = None
+        if last_move is not None:
+            last_move_signature = (
+                last_move.screen_x,
+                last_move.screen_y,
+                last_move.button,
+            )
+        conversations = self.query("#conversation")
+        if not conversations:
+            self._interaction_watchdog_signature = None
+            self._interaction_watchdog_stable_ticks = 0
+            return
+        signature = (
+            captured,
+            mouse_down_offset,
+            getattr(select_state, "end", None),
+            getattr(captured, "selection", None),
+            getattr(captured, "position", None),
+            conversations.first(VerticalScroll).scroll_y,
+            last_move_signature,
+            tuple(down_buttons),
+        )
+        if signature != self._interaction_watchdog_signature:
+            self._interaction_watchdog_signature = signature
+            self._interaction_watchdog_stable_ticks = 0
+            return
+
+        self._interaction_watchdog_stable_ticks += 1
+        if self._interaction_watchdog_stable_ticks >= self.STALE_INTERACTION_TICKS:
+            self._reset_mouse_interaction_state(
+                focus_composer=True,
+                rearm_terminal_protocols=True,
+            )
+
+    def _reset_mouse_interaction_state(
+        self,
+        *,
+        focus_composer: bool = False,
+        rearm_terminal_protocols: bool = False,
+    ) -> None:
+        """统一清除 Textual 组件、Screen 和 Driver 的未完成鼠标状态。"""
+
+        self.capture_mouse(None)
+        screen = self.screen
+        screen.clear_selection()
+        # Textual 8.2.7 的公开 clear_selection() 不会清理这两个按下状态；
+        # MouseUp 丢失后必须同步复位，否则选区自动滚动仍会继续拦截鼠标。
+        screen._mouse_down_offset = None
+        screen._selecting = False
+
+        driver = self._driver
+        down_buttons = getattr(driver, "_down_buttons", None)
+        if isinstance(down_buttons, list):
+            down_buttons.clear()
+        if rearm_terminal_protocols:
+            if not driver.is_headless:
+                _restore_windows_vt_input_mode_if_needed()
+            enable_mouse_support = getattr(driver, "_enable_mouse_support", None)
+            if callable(enable_mouse_support):
+                enable_mouse_support()
+            write = getattr(driver, "write", None)
+            if callable(write):
+                write("\033[?1004h")
+                write("\x1b[>1u")
+            enable_bracketed_paste = getattr(driver, "_enable_bracketed_paste", None)
+            if callable(enable_bracketed_paste):
+                enable_bracketed_paste()
+            flush = getattr(driver, "flush", None)
+            if callable(flush):
+                flush()
+
+        self._interaction_watchdog_signature = None
+        self._interaction_watchdog_stable_ticks = 0
+        if focus_composer and len(self.screen_stack) == 1:
+            self.query_one("#composer", Input).focus()
 
     @work(thread=True, exclusive=True, group="mcp-preload", exit_on_error=False)
     def _preload_mcp_tools(self) -> None:
@@ -273,6 +473,7 @@ class OmniCrawlApp(App[None]):
         event.input.value = ""
         if self.is_generating:
             self._pending_inputs.append(text)
+            self._refresh_pending_queue_count()
             self._append_message("status", f"消息已排队（{len(self._pending_inputs)}）")
             return
         self._submit(text)
@@ -323,15 +524,21 @@ class OmniCrawlApp(App[None]):
         self.query_one("#composer-wrap").styles.height = 3
 
     def action_cancel_or_focus(self) -> None:
+        self._reset_mouse_interaction_state(
+            focus_composer=not self.is_generating,
+            rearm_terminal_protocols=True,
+        )
         if self.is_generating:
             self.cancel_pending_turn()
-            return
-        self.query_one("#composer", Input).focus()
 
     def action_copy_or_clear_composer(self) -> None:
         composer = self.query_one("#composer", Input)
         if composer.selected_text:
             self.copy_to_clipboard(composer.selected_text)
+            return
+        selected_text = self.screen.get_selected_text()
+        if selected_text:
+            self.copy_to_clipboard(selected_text)
             return
         composer.clear()
 
@@ -535,6 +742,28 @@ class OmniCrawlApp(App[None]):
                 return False
         return result["approved"]
 
+    @staticmethod
+    def _is_conversation_at_end(conversation: VerticalScroll) -> bool:
+        """判断用户是否仍在消息流底部，避免后台更新抢回滚动位置。"""
+
+        return conversation.is_vertical_scroll_end
+
+    @staticmethod
+    def _scroll_conversation_if_following(
+        conversation: VerticalScroll,
+        follow_latest: bool,
+        *,
+        defer_until_refresh: bool = False,
+    ) -> None:
+        """仅在用户原本位于底部时跟随新增内容。"""
+
+        if follow_latest:
+            # Textual 的锚定语义会在内容重新布局后持续跟随底部，并在用户手动
+            # 滚动时自动释放；这比跨刷新排队 scroll_end 更能避免流式更新竞态。
+            conversation.anchor()
+            if defer_until_refresh:
+                conversation.call_after_refresh(conversation.scroll_end, animate=False)
+
     def _handle_status(self, message: str) -> None:
         if message:
             self._set_runtime_status("等待", "waiting")
@@ -570,6 +799,7 @@ class OmniCrawlApp(App[None]):
         self._stream_markdown = ""
         self._reasoning_message = None
         conversation = self.query_one("#conversation", VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
         tool_message = ToolDisclosure(
             str(tool_call.name),
             self._public_tool_arguments(tool_call),
@@ -578,10 +808,16 @@ class OmniCrawlApp(App[None]):
         self._tool_messages[self._tool_call_key(tool_call)] = tool_message
         conversation.mount(tool_message)
         self.conversation_text += f"{tool_call.name}\n"
-        self._set_runtime_status("正在调用", "working")
-        conversation.scroll_end(animate=False)
+        self._set_runtime_status(
+            "正在调用",
+            "working",
+            follow_latest=follow_latest,
+        )
+        self._scroll_conversation_if_following(conversation, follow_latest)
 
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
+        conversation = self.query_one("#conversation", VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
         output = str(result.output or "无输出")
         if len(output) > self.MAX_TOOL_OUTPUT_CHARS:
             output = (
@@ -604,7 +840,7 @@ class OmniCrawlApp(App[None]):
             finished_at=time.perf_counter(),
         )
         self.conversation_text += f"结果  {tool_message.status}\n{output}\n"
-        self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+        self._scroll_conversation_if_following(conversation, follow_latest)
         self._set_runtime_status("正在思考", "working")
 
     @staticmethod
@@ -641,20 +877,22 @@ class OmniCrawlApp(App[None]):
         if not delta:
             return
         conversation = self.query_one("#conversation", VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
         if self._reasoning_message is None:
             self._reasoning_message = ReasoningDisclosure()
             conversation.mount(self._reasoning_message)
         self._reasoning_message.append_delta(delta)
         self._set_runtime_status("正在思考", "working")
-        conversation.scroll_end(animate=False)
+        self._scroll_conversation_if_following(conversation, follow_latest)
 
     def _append_delta(self, delta: str) -> None:
         if not delta:
             return
         self._reasoning_message = None
         conversation = self.query_one("#conversation", VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
         if self._stream_message is None:
-            self._stream_message = Static("", classes="message assistant-message")
+            self._stream_message = AssistantMessage(self._stream_markdown)
             self._stream_markdown = "◇ "
             conversation.mount(self._stream_message)
         self._stream_markdown += delta
@@ -662,15 +900,30 @@ class OmniCrawlApp(App[None]):
         if not self._stream_render_pending:
             self._stream_render_pending = True
             self.set_timer(self.STREAM_RENDER_INTERVAL_SECONDS, self._render_stream_markdown)
-        self._set_runtime_status("正在回复", "working")
-        conversation.scroll_end(animate=False)
+        self._set_runtime_status(
+            "正在回复",
+            "working",
+            follow_latest=follow_latest,
+        )
+        self._scroll_conversation_if_following(conversation, follow_latest)
 
     def _render_stream_markdown(self) -> None:
         """合并短时间内的流式分片，避免逐片重解析完整 Markdown。"""
 
         self._stream_render_pending = False
         if self._stream_message is not None:
-            self._stream_message.update(RichMarkdown(self._stream_markdown))
+            conversations = self.query("#conversation")
+            if not conversations or self._stream_message.parent is None:
+                self._stream_render_pending = False
+                return
+            conversation = conversations.first(VerticalScroll)
+            follow_latest = self._is_conversation_at_end(conversation)
+            self._stream_message.update(self._stream_markdown)
+            self._scroll_conversation_if_following(
+                conversation,
+                follow_latest,
+                defer_until_refresh=True,
+            )
 
     def _append_message(
         self,
@@ -681,21 +934,24 @@ class OmniCrawlApp(App[None]):
         track_tool: bool = False,
     ) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
         follow_with_runtime_status = self._runtime_status_message is not None
         if merge_with_previous and self._stream_message is not None:
             self._stream_markdown += text
-            self._stream_message.update(RichMarkdown(self._stream_markdown))
+            self._stream_message.update(self._stream_markdown)
         else:
             prefixes = {
-                "user": "▸ ",
+                "user": "$ ",
                 "assistant": "◇ ",
                 "status": "· ",
                 "tool": "⌁ ",
                 "error": "△ ",
             }
             prefixed_text = f"{prefixes.get(kind, '· ')}{text}"
-            renderable = RichMarkdown(prefixed_text) if kind == "assistant" else Text(prefixed_text)
-            widget = Static(renderable, classes=f"message {kind}-message")
+            if kind == "assistant":
+                widget = AssistantMessage(prefixed_text)
+            else:
+                widget = Static(Text(prefixed_text), classes=f"message {kind}-message")
             if merge_with_previous:
                 self._stream_message = widget
                 self._stream_markdown = text
@@ -707,8 +963,8 @@ class OmniCrawlApp(App[None]):
                 self._tool_messages[f"legacy:{id(widget)}"] = widget
         self.conversation_text += f"{text}\n"
         if follow_with_runtime_status:
-            self._render_status_indicator()
-        conversation.scroll_end(animate=False)
+            self._render_status_indicator(follow_latest=follow_latest)
+        self._scroll_conversation_if_following(conversation, follow_latest)
 
     def _finish_turn(self) -> None:
         self._render_stream_markdown()
@@ -726,13 +982,21 @@ class OmniCrawlApp(App[None]):
             and not self.is_generating
             and len(self.screen_stack) == 1
         ):
-            self._submit(self._pending_inputs.popleft())
+            text = self._pending_inputs.popleft()
+            self._refresh_pending_queue_count()
+            self._submit(text)
 
-    def _set_runtime_status(self, text: str, state: str) -> None:
+    def _set_runtime_status(
+        self,
+        text: str,
+        state: str,
+        *,
+        follow_latest: bool | None = None,
+    ) -> None:
         self._runtime_status_text = text
         self._runtime_status_state = state
         self._status_dot_visible = True
-        self._render_status_indicator()
+        self._render_status_indicator(follow_latest=follow_latest)
 
     def _remove_runtime_status_message(self) -> None:
         status = self._runtime_status_message
@@ -755,7 +1019,7 @@ class OmniCrawlApp(App[None]):
         self._status_dot_visible = not self._status_dot_visible
         self._render_status_indicator()
 
-    def _render_status_indicator(self) -> None:
+    def _render_status_indicator(self, *, follow_latest: bool | None = None) -> None:
         is_active = self._runtime_status_state in {"working", "waiting"}
         if not is_active:
             self._remove_runtime_status_message()
@@ -765,6 +1029,8 @@ class OmniCrawlApp(App[None]):
         if not conversations:
             return
         conversation = conversations.first(VerticalScroll)
+        if follow_latest is None:
+            follow_latest = self._is_conversation_at_end(conversation)
         status = self._runtime_status_message
         if status is None:
             status = Static("", classes="message runtime-status-message")
@@ -774,9 +1040,25 @@ class OmniCrawlApp(App[None]):
         status.set_class(False, "warning")
         dot = "●" if self._status_dot_visible else " "
         status.update(f"{dot} {self._runtime_status_text}")
-        if conversation.children and conversation.children[-1] is not status:
+        if (
+            status.parent is conversation
+            and conversation.children
+            and conversation.children[-1] is not status
+        ):
             conversation.move_child(status, after=conversation.children[-1])
-        conversation.scroll_end(animate=False)
+        self._scroll_conversation_if_following(conversation, follow_latest)
+
+    def _pending_queue_text(self) -> Text:
+        """生成右上角 FIFO 排队消息计数。"""
+
+        return pending_queue_text(len(self._pending_inputs))
+
+    def _refresh_pending_queue_count(self) -> None:
+        """同步右上角排队消息计数。"""
+
+        queue_widgets = self.query("#queue-count")
+        if queue_widgets:
+            queue_widgets.first(Static).update(self._pending_queue_text())
 
     def _token_telemetry_text(self) -> Text:
         """生成紧凑 Token 遥测；CTX 使用最近请求输入量表示当前上下文占用。"""
@@ -828,6 +1110,11 @@ class OmniCrawlApp(App[None]):
         def receive(action: SettingsAction | None) -> None:
             if action is not None and action.name == "model":
                 self._open_model_picker(refresh=False)
+            elif action is not None and action.name == "subagents_advanced":
+                self.push_screen(
+                    SettingsScreen(self.agent, advanced=True),
+                    lambda _action: self._open_settings(),
+                )
             else:
                 self._drain_pending_inputs()
             self._refresh_context_summary()
@@ -863,7 +1150,12 @@ class OmniCrawlApp(App[None]):
 def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> None:
     """运行默认全屏 TUI。"""
 
-    OmniCrawlApp(agent, startup).run()
+    try:
+        OmniCrawlApp(agent, startup).run()
+    finally:
+        # Driver 正常会关闭鼠标报告，但退出期间的焦点/看门狗重启或 Driver
+        # 内部清理异常可能让模式泄漏到后续 PowerShell Read-Host，必须再兜底一次。
+        _disable_terminal_mouse_reporting()
 
 
 __all__ = [

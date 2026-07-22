@@ -70,6 +70,16 @@ def token_telemetry_text(
     return rendered
 
 
+def pending_queue_text(pending_count: int) -> Text:
+    """生成与 Token 遥测字段一致的排队数量文本。"""
+
+    pending_count = max(0, int(pending_count))
+    rendered = Text()
+    rendered.append("排队 ", style=TEXT_MUTED)
+    rendered.append(str(pending_count), style=f"{ACCENT_AMBER} bold")
+    return rendered
+
+
 def gradient_text(text: str) -> Text:
     """保留既有调用接口，以终端 ANSI 主强调色渲染品牌文字。"""
 

@@ -7,10 +7,38 @@ from omnicrawl.ui.fullscreen.tool_diff import (
     gutter_diff_text,
     plain_tool_title,
     tool_disclosure_body,
+    tool_disclosure_title,
 )
 
 
 class FullscreenToolDiffTest(unittest.TestCase):
+    def test_tool_title_uses_semantic_colors_without_bold_font(self) -> None:
+        title = tool_disclosure_title(
+            tool_name="replace_text",
+            arguments={
+                "path": "omnicrawl/mcp/server.py",
+                "old_text": "a\nb\nc\n",
+                "new_text": "a\n",
+            },
+            status="成功",
+            duration_seconds=0.044,
+            expanded=False,
+        )
+
+        def style_for(fragment: str) -> str:
+            offset = title.plain.index(fragment)
+            for span in title.spans:
+                if span.start <= offset < span.end:
+                    return str(span.style)
+            self.fail(f"未找到片段样式：{fragment}")
+
+        self.assertEqual(style_for("M"), "yellow")
+        self.assertEqual(style_for("omnicrawl/mcp/server.py"), "default")
+        self.assertEqual(style_for("-2"), "red")
+        self.assertEqual(style_for("✓ 成功"), "green")
+        self.assertEqual(style_for("44ms"), "dim")
+        self.assertTrue(all("bold" not in str(span.style) for span in title.spans))
+
     def test_replace_text_title_and_gutter_diff(self) -> None:
         arguments = {
             "path": "omnicrawl/ui/fullscreen/hud.py",
@@ -75,19 +103,93 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertEqual(change.stats_label, "append +2 lines")
         self.assertIn("append", change.body.plain)
 
-    def test_non_file_tools_keep_legacy_title_and_body(self) -> None:
+    def test_read_file_title_includes_file_name_and_returned_line_range(self) -> None:
+        title = plain_tool_title(
+            tool_name="read_file",
+            arguments={"path": "omnicrawl/ui/fullscreen/tool_diff.py"},
+            status="成功",
+            duration_seconds=0.136,
+            result_text="18: first\n19: second\n20: third",
+        )
+        self.assertIn("R  omnicrawl/ui/fullscreen/tool_diff.py", title)
+        self.assertIn("tool_diff.py", title)
+        self.assertIn("第 18-20 行", title)
+        self.assertNotIn("3 行", title)
+        self.assertIn("✓ 成功  136ms", title)
+
+    def test_search_text_title_includes_search_path_and_target(self) -> None:
+        title = plain_tool_title(
+            tool_name="search_text",
+            arguments={"path": "omnicrawl/ui", "pattern": "read_file"},
+            status="成功",
+            duration_seconds=0.136,
+            result_text="omnicrawl/ui/tool_diff.py:1: read_file",
+        )
+        self.assertIn("S  omnicrawl/ui  |  目标: read_file", title)
+        self.assertNotIn("文件: omnicrawl/ui", title)
+        self.assertIn("目标: read_file", title)
+        self.assertIn("✓ 成功  136ms", title)
+
+    def test_read_file_title_does_not_claim_lines_before_result(self) -> None:
+        title = plain_tool_title(
+            tool_name="read_file",
+            arguments={"path": "README.md"},
+            status="调用中",
+            duration_seconds=0.0,
+        )
+        self.assertIn("README.md", title)
+        self.assertNotIn("行", title)
+
+    def test_list_files_title_uses_operation_summary(self) -> None:
+        title = plain_tool_title(
+            tool_name="list_files",
+            arguments={"path": ".", "recursive": False},
+            status="成功",
+            duration_seconds=1.8,
+            result_text="README.md\nomnicrawl/\ntests/",
+        )
+        self.assertEqual(title, "L  .  |  3 项  ✓ 成功  1.8s")
+        self.assertNotIn("列出文件", title)
+        self.assertNotIn("≡", title)
+
+    def test_command_tool_title_uses_short_name_and_context(self) -> None:
+        title = plain_tool_title(
+            tool_name="bash",
+            arguments={"command": "pytest -q tests/test_fullscreen_tool_diff.py"},
+            status="成功",
+            duration_seconds=1.8,
+        )
+        self.assertEqual(
+            title,
+            "▶  Bash  |  cmd: pytest -q tests/test_fullscreen_tool_diff.py  ✓ 成功  1.8s",
+        )
+        self.assertNotIn("执行 Bash", title)
+
         title = plain_tool_title(
             tool_name="read_file",
             arguments={"path": "README.md"},
             status="成功",
             duration_seconds=0.13,
         )
-        self.assertEqual(title, "▸ ⌁ read_file · 成功 · 0.13s")
+        self.assertNotIn("▸", title)
+        self.assertIn("R  README.md", title)
         body = tool_disclosure_body(
             tool_name="read_file",
             arguments={"path": "README.md"},
             result_text="读取完成",
         ).plain
+        mcp_body = tool_disclosure_body(
+            tool_name="trusted.read_file",
+            arguments={"path": "README.md"},
+            result_text="读取完成",
+        ).plain
+        self.assertIn("工具：trusted.read_file", mcp_body)
+        self.assertIn("R  (未指定文件)", plain_tool_title(
+            tool_name="trusted.read_file",
+            arguments={},
+            status="成功",
+            duration_seconds=0.001,
+        ))
         self.assertIn("参数：", body)
         self.assertIn("README.md", body)
         self.assertIn("结果：", body)

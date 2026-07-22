@@ -243,13 +243,25 @@ class WorkspaceTools:
     ) -> WorkspaceCommandResult:
         """在指定的显式 Shell 中运行命令，不提供默认解释器回退。"""
 
-        unsupported_keys = set(arguments) - {"command", "timeout_seconds"}
+        unsupported_keys = set(arguments) - {
+            "command",
+            "diagnostic_command",
+            "timeout_seconds",
+        }
         if unsupported_keys:
             names = "、".join(sorted(unsupported_keys))
             raise WorkspaceToolError(f"显式命令工具不支持参数：{names}。")
         command = str(arguments.get("command") or "").strip()
         if not command:
             raise WorkspaceToolError("command 不能为空。")
+        diagnostic_value = arguments.get("diagnostic_command")
+        if diagnostic_value is not None and (
+            not isinstance(diagnostic_value, str) or not diagnostic_value.strip()
+        ):
+            raise WorkspaceToolError("diagnostic_command 必须是非空字符串。")
+        diagnostic_command = (
+            diagnostic_value.strip() if isinstance(diagnostic_value, str) else ""
+        )
 
         timeout = _read_limited_int(
             arguments,
@@ -258,10 +270,25 @@ class WorkspaceTools:
             minimum=1,
             maximum=MAX_COMMAND_TIMEOUT_SECONDS,
         )
-        return self._run_command_invocation(
+        primary_result = self._run_command_invocation(
             self.command_invocation(command, shell=shell),
             timeout_seconds=timeout,
             display_kind="Shell",
+        )
+        if not diagnostic_command:
+            return primary_result
+
+        diagnostic_result = self._run_command_invocation(
+            self.command_invocation(diagnostic_command, shell=shell),
+            timeout_seconds=timeout,
+            display_kind="Shell",
+        )
+        return WorkspaceCommandResult(
+            ok=primary_result.ok and diagnostic_result.ok,
+            output=(
+                f"主命令结果：\n{primary_result.output}\n\n"
+                f"诊断命令结果：\n{diagnostic_result.output}"
+            ),
         )
 
     def run_argv_command(
@@ -306,8 +333,17 @@ class WorkspaceTools:
     ) -> WorkspaceCommandResult:
         """执行已经完成解释器/参数校验的进程，并复用既有超时回收逻辑。"""
 
+        process_environment = os.environ.copy()
+        process_environment.update(
+            {
+                "LANG": "C.UTF-8",
+                "LC_ALL": "C.UTF-8",
+                "PYTHONIOENCODING": "utf-8",
+            }
+        )
         popen_kwargs: dict[str, Any] = {
             "cwd": str(self.workspace_root),
+            "env": process_environment,
             "shell": False,
             "stdout": subprocess.PIPE,
             "stderr": subprocess.PIPE,
@@ -379,8 +415,21 @@ class WorkspaceTools:
             executable = _find_powershell_executable()
             if executable is None:
                 raise WorkspaceToolError("未找到 PowerShell 可执行文件。")
+            utf8_prefix = (
+                "$__OmniCrawlUtf8 = [System.Text.UTF8Encoding]::new($false); "
+                "[Console]::InputEncoding = $__OmniCrawlUtf8; "
+                "[Console]::OutputEncoding = $__OmniCrawlUtf8; "
+                "$OutputEncoding = $__OmniCrawlUtf8; "
+            )
             return WorkspaceCommandInvocation(
-                args=[str(executable), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command],
+                args=[
+                    str(executable),
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    f"{utf8_prefix}{command}",
+                ],
                 label="PowerShell",
             )
         raise WorkspaceToolError("shell 仅支持 bash 或 powershell。")

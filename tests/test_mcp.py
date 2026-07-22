@@ -9,8 +9,7 @@ import yaml
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from omnicrawl.agent import LocalToolAgent, ToolCall, ToolDefinition
-from omnicrawl.agent.tools import normalize_tool_call
+from omnicrawl.agent import LocalToolAgent
 from omnicrawl.mcp.client import MCPClientManager, _resolve_stdio_command
 from omnicrawl.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
 from omnicrawl.mcp.registry import MCPPromptMeta, MCPResourceMeta, MCPToolMeta, namespace_capability_name
@@ -143,17 +142,17 @@ class MCPSecurityTest(unittest.TestCase):
 
         self.assertTrue(mcp_tool_requires_confirmation(meta, config.policy))
 
-    def test_trusted_read_tool_can_skip_confirmation(self) -> None:
+    def test_trusted_tool_requires_confirmation(self) -> None:
         config = MCPConfig(enabled=True)
         meta = MCPToolMeta(
-            logical_name="trusted.workspace.read_file",
+            logical_name="trusted.read_file",
             server_name="trusted",
-            tool_name="workspace.read_file",
+            tool_name="read_file",
             description="read",
             risk_level="trusted",
         )
 
-        self.assertFalse(mcp_tool_requires_confirmation(meta, config.policy))
+        self.assertTrue(mcp_tool_requires_confirmation(meta, config.policy))
 
     def test_trusted_tool_with_read_substring_and_side_effect_requires_confirmation(self) -> None:
         config = MCPConfig(enabled=True)
@@ -204,7 +203,7 @@ class MCPManagerTest(unittest.TestCase):
         which.assert_called_once_with("npx")
         self.assertEqual(resolved, r"C:\Program Files\nodejs\npx.CMD")
 
-    def test_stdio_local_server_discovers_and_calls_capabilities(self) -> None:
+    def test_stdio_local_server_discovers_resources_and_prompts_without_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             (workspace / "README.md").write_text("hello mcp", encoding="utf-8")
@@ -225,10 +224,6 @@ class MCPManagerTest(unittest.TestCase):
             manager = MCPClientManager(config, workspace_root=workspace, approval_mode_getter=lambda: "manual")
 
             manager.discover()
-            tool_result = manager.call_tool(
-                "local_project.workspace.read_file",
-                {"path": "README.md", "max_lines": 5},
-            )
             resource_result = manager.read_resource("local_project:project://README.md")
             prompt_result = manager.get_prompt(
                 "local_project.code_review",
@@ -236,8 +231,7 @@ class MCPManagerTest(unittest.TestCase):
             )
             manager.close()
 
-        self.assertTrue(tool_result.ok)
-        self.assertIn("hello mcp", tool_result.output)
+        self.assertEqual(manager.registry.tools, {})
         self.assertTrue(resource_result.ok)
         self.assertIn("hello mcp", resource_result.output)
         self.assertTrue(prompt_result.ok)
@@ -376,38 +370,40 @@ class MCPAgentCommandTest(unittest.TestCase):
         self.assertIn("mcp_get_prompt__trusted.code_review", tools)
         self.assertFalse(tools["trusted.echo"].requires_confirmation)
 
-    def test_mcp_resource_tool_name_falls_back_to_workspace_read_file(self) -> None:
-        tools = {
-            "local_project.workspace.read_file": ToolDefinition(
-                name="local_project.workspace.read_file",
-                description="读取文件。",
-                argument_schema=(
-                    '{"type":"object","properties":{"path":{"type":"string"},'
-                    '"start_line":{"type":"integer"},"max_lines":{"type":"integer"}}}'
-                ),
-                requires_confirmation=False,
-                run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+    def test_agent_builds_resource_and_prompt_tools_without_workspace_fallback(self) -> None:
+        manager = MCPClientManager(MCPConfig(enabled=True))
+        manager.registry.add_resource(
+            MCPResourceMeta(
+                logical_uri="local_project:project://README.md",
+                server_name="local_project",
+                uri="project://README.md",
+                name="README.md",
             )
-        }
-
-        call = normalize_tool_call(
-            ToolCall(
-                name="mcp_read_resource__local_project:project://docs/SKILL_INSTALLATION.md",
-                arguments={},
-            ),
-            tools,
         )
+        manager.registry.add_prompt(
+            MCPPromptMeta(
+                logical_name="local_project.code_review",
+                server_name="local_project",
+                prompt_name="code_review",
+                description="Review",
+            )
+        )
+        agent = object.__new__(LocalToolAgent)
+        agent._mcp_manager = manager
 
-        self.assertEqual(call.name, "local_project.workspace.read_file")
-        self.assertEqual(call.arguments["path"], "docs/SKILL_INSTALLATION.md")
+        tools = {tool.name: tool for tool in LocalToolAgent._build_mcp_tools(agent)}
+
+        self.assertIn("mcp_read_resource__local_project:project://README.md", tools)
+        self.assertIn("mcp_get_prompt__local_project.code_review", tools)
+        self.assertNotIn("workspace.read_file", tools)
 
     def test_agent_prioritizes_mcp_tools_in_prompt_order(self) -> None:
         manager = MCPClientManager(MCPConfig(enabled=True))
         manager.registry.add_tool(
             MCPToolMeta(
-                logical_name="trusted.workspace.read_file",
+                logical_name="trusted.read_file",
                 server_name="trusted",
-                tool_name="workspace.read_file",
+                tool_name="read_file",
                 description="Read file through MCP",
                 input_schema={"type": "object"},
                 requires_confirmation=False,
@@ -422,7 +418,7 @@ class MCPAgentCommandTest(unittest.TestCase):
         tool_names = list(tools)
 
         self.assertLess(
-            tool_names.index("trusted.workspace.read_file"),
+            tool_names.index("trusted.read_file"),
             tool_names.index("read_file"),
         )
 
@@ -473,52 +469,25 @@ class MCPAgentCommandTest(unittest.TestCase):
 
 
 class LocalMCPServerTest(unittest.TestCase):
-    def test_local_read_file_schema_supports_extended_selectors(self) -> None:
+    def test_local_server_exposes_no_workspace_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             server = LocalMCPServer(Path(temp_dir))
-            schema = server._tools["workspace.read_file"].input_schema
-
-        properties = schema["properties"]
-        self.assertIn("function_name", properties)
-        self.assertIn("text", properties)
-        self.assertIn("context_lines", properties)
-
-    def test_local_server_blocks_protected_paths_and_supports_tools(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            (workspace / "README.md").write_text("alpha\nbeta\n", encoding="utf-8")
-            (workspace / "config.json").write_text("secret", encoding="utf-8")
-            server = LocalMCPServer(workspace)
-
-            read_response = server.handle_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "workspace.read_file",
-                        "arguments": {"path": "README.md", "max_lines": 1},
-                    },
-                }
-            )
-            blocked_response = server.handle_message(
+            tools = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            unknown_tool = server.handle_message(
                 {
                     "jsonrpc": "2.0",
                     "id": 2,
                     "method": "tools/call",
                     "params": {
                         "name": "workspace.read_file",
-                        "arguments": {"path": "config.json"},
+                        "arguments": {"path": "README.md"},
                     },
                 }
             )
 
-        read_result = read_response["result"]
-        blocked_result = blocked_response["result"]
-        self.assertFalse(read_result["isError"])
-        self.assertIn("alpha", read_result["content"][0]["text"])
-        self.assertTrue(blocked_result["isError"])
-        self.assertIn("受保护路径", blocked_result["content"][0]["text"])
+        self.assertEqual(tools["result"]["tools"], [])
+        self.assertIn("error", unknown_tool)
+        self.assertIn("未知工具", unknown_tool["error"]["message"])
 
     def test_local_server_resources_and_prompts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -559,70 +528,6 @@ class LocalMCPServerTest(unittest.TestCase):
         )
         self.assertIn("resource text", resource["result"]["contents"][0]["text"])
         self.assertIn("高风险改动", prompt["result"]["messages"][0]["content"]["text"])
-
-    def test_local_server_exposes_explicit_shell_tools_and_rejects_legacy_tool(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            server = LocalMCPServer(Path(temp_dir))
-            tool_names = set(server._tools)
-
-            legacy_response = server.handle_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "workspace.run_command",
-                        "arguments": {"command": "Write-Output legacy"},
-                    },
-                }
-            )
-
-        self.assertIn("workspace.powershell", tool_names)
-        self.assertIn("workspace.bash", tool_names)
-        self.assertNotIn("workspace.run_command", tool_names)
-        self.assertIn("error", legacy_response)
-        self.assertIn("未知工具", legacy_response["error"]["message"])
-
-    def test_local_server_powershell_nonzero_exit_is_error(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            server = LocalMCPServer(Path(temp_dir))
-            response = server.handle_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "workspace.powershell",
-                        "arguments": {"command": "exit 7"},
-                    },
-                }
-            )
-
-        result = response["result"]
-        self.assertTrue(result["isError"])
-        self.assertIn("退出码：7", result["content"][0]["text"])
-
-    def test_local_server_explicit_shell_schema_rejects_shell_argument(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            server = LocalMCPServer(Path(temp_dir))
-            response = server.handle_message(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "workspace.powershell",
-                        "arguments": {
-                            "command": "Write-Output blocked",
-                            "shell": "bash",
-                        },
-                    },
-                }
-            )
-
-        result = response["result"]
-        self.assertTrue(result["isError"])
-        self.assertIn("不支持参数：shell", result["content"][0]["text"])
 
 
 if __name__ == "__main__":

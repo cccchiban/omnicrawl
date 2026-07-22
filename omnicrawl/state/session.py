@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +15,7 @@ from typing import Any
 _STORE_LOCKS: dict[Path, threading.RLock] = {}
 _STORE_LOCKS_GUARD = threading.Lock()
 
+from ..extensions.plugin_models import OMNICRAWL_VERSION
 from .prompt_history import (
     MAX_PROMPT_HISTORY_DISPLAY_CHARS,
     PromptHistoryEntry,
@@ -75,6 +78,50 @@ from .session_locking import (
     atomic_write_text as _atomic_write_text,
     exclusive_session_write as _exclusive_session_write,
 )
+
+
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+_RUNTIME_SOURCE_FILES = (
+    "omnicrawl/state/session.py",
+    "omnicrawl/agent/core.py",
+    "omnicrawl/agent/subagents/coordinator.py",
+    "omnicrawl/agent/llm_protocol.py",
+)
+
+
+def _runtime_identity() -> dict[str, Any]:
+    """返回不含凭据的进程启动与源码身份，供会话诊断使用。"""
+
+    package_root = Path(__file__).resolve().parents[1]
+    source_files: dict[str, dict[str, int]] = {}
+    digest = hashlib.sha256()
+    for relative_name in _RUNTIME_SOURCE_FILES:
+        relative_path = Path(*relative_name.split("/"))
+        path = package_root / relative_path.relative_to("omnicrawl")
+        try:
+            content = path.read_bytes()
+            stat = path.stat()
+        except OSError:
+            continue
+        source_files[relative_name] = {
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+        digest.update(relative_name.encode("utf-8"))
+        digest.update(content)
+
+    loaded_modules = sorted(
+        name
+        for name in _RUNTIME_SOURCE_FILES
+        if name.replace("/", ".").removesuffix(".py") in sys.modules
+    )
+    return {
+        "version": OMNICRAWL_VERSION,
+        "process_started_at": _format_datetime(_PROCESS_STARTED_AT),
+        "source_fingerprint": digest.hexdigest()[:16],
+        "source_files": source_files,
+        "loaded_modules": loaded_modules,
+    }
 
 
 class SessionStore:
@@ -152,6 +199,7 @@ class SessionStore:
                 {
                     "workspace_root": workspace,
                     "title": entry.title,
+                    "runtime": _runtime_identity(),
                 },
                 now=timestamp,
             )

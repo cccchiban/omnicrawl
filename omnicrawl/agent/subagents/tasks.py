@@ -117,6 +117,17 @@ class SubAgentTaskManager:
         )
         self._cleanup_thread.start()
 
+    def set_max_workers(self, max_workers: int) -> None:
+        """调整后续后台任务可使用的线程池上限。"""
+
+        if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
+            raise ValueError("max_workers 必须是正整数。")
+        with self._lock:
+            if self._closed:
+                return
+            # ThreadPoolExecutor 后续提交会读取该上限；已运行 Future 不受影响。
+            self._executor._max_workers = max_workers  # type: ignore[attr-defined]
+
     def spawn(
         self,
         *,

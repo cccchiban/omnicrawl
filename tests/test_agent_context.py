@@ -21,6 +21,7 @@ from omnicrawl.agent import (
 from omnicrawl.agent.history import restore_history_window
 from omnicrawl.agent.llm_protocol import assistant_tool_call_message, function_name_for_tool
 from omnicrawl.agent.prompt_context import build_system_prompt
+from omnicrawl.config.context_compaction import ContextCompactionConfig
 from omnicrawl.mcp.config import MCPConfig
 from omnicrawl.project import ProjectStore
 from omnicrawl.session import SessionStore
@@ -55,6 +56,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 llm=SimpleNamespace(api_key=""),
                 workspace_root=Path(temp_dir),
                 memory_enabled=False,
+                context_compaction=ContextCompactionConfig(enabled=False),
                 temp_workspace=AgentTempWorkspaceConfig(),
             )
 
@@ -74,6 +76,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 ),
                 workspace_root=Path(temp_dir),
                 memory_enabled=False,
+                context_compaction=ContextCompactionConfig(enabled=False),
                 session_enabled=False,
                 skills_enabled=False,
                 mcp_config=MCPConfig(enabled=True),
@@ -105,6 +108,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 ),
                 workspace_root=workspace,
                 memory_enabled=False,
+                context_compaction=ContextCompactionConfig(enabled=False),
                 skills_enabled=False,
                 mcp_config=MCPConfig(enabled=False),
                 temp_workspace=AgentTempWorkspaceConfig(cleanup_enabled=False),
@@ -1327,8 +1331,8 @@ class AgentContextInjectionTest(unittest.TestCase):
         agent._system_prompt = lambda: "system prompt"  # type: ignore[method-assign]
         agent._build_extra_body = lambda: {"thinking": {"type": "disabled"}}  # type: ignore[method-assign]
         agent._tools = {
-            "local_project.workspace.read_file": ToolDefinition(
-                name="local_project.workspace.read_file",
+            "demo.read_file": ToolDefinition(
+                name="demo.read_file",
                 description="读取文件。",
                 argument_schema=(
                     '{"type":"object","properties":{"path":{"type":"string"}},'
@@ -1656,6 +1660,18 @@ class AgentContextInjectionTest(unittest.TestCase):
     def test_system_prompt_rejects_dynamic_placeholders(self) -> None:
         with self.assertRaisesRegex(ValueError, "动态占位符"):
             build_system_prompt("工作区：{workspace_root}")
+
+    def test_system_prompt_constrains_repeated_exploration_and_shell_mixing(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
+
+        prompt = LocalToolAgent._system_prompt(agent)
+
+        self.assertIn("证据已经足够", prompt)
+        self.assertIn("不要重复执行相同的读取、搜索或验证命令", prompt)
+        self.assertIn("Bash 工具中不得使用 PowerShell 语法", prompt)
+        self.assertIn("diagnostic_command", prompt)
+        self.assertIn("不要只更换角色重复调用", prompt)
 
     def test_active_skill_body_is_context_message_not_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

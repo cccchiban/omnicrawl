@@ -107,7 +107,7 @@ COLOR_ACCENT = _16_COLORS["accent"]
 
 # 对话前缀
 AI_PREFIX = "◆"
-USER_PREFIX = "▸"
+USER_PREFIX = "$"
 
 # ── 256 色映射 ────────────────────────────────────────────────
 

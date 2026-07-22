@@ -67,18 +67,29 @@ def create_openai_client(profile: ProviderProfile) -> Any:
             ),
         )
     try:
+        import httpx
         from openai import OpenAI
     except ImportError as exc:
         raise ModelError(
             code=ModelErrorCode.CONFIGURATION_ERROR,
-            message="缺少 openai 依赖，请先执行：pip install -r requirements.txt",
+            message="缺少 openai/httpx 依赖，请先执行：pip install -r requirements.txt",
         ) from exc
 
     kwargs: dict[str, Any] = {"api_key": api_key}
     base_url = profile.base_url.strip()
     if base_url:
         kwargs["base_url"] = base_url
-    return OpenAI(**kwargs)
+    # OpenAI SDK 默认 trust_env=True，会在 Windows 上读取系统代理注册表。
+    # 本地代理常把 HTTPS 代理地址声明为 https://127.0.0.1:port，但实际只
+    # 支持明文 HTTP CONNECT，HTTPX 随后会在代理握手阶段抛出 SSLEOFError。
+    # OmniCrawl 当前没有 Provider 代理配置，因此默认直连 Provider；需要代理
+    # 时应在 Provider 层显式增加受控配置，而不是隐式继承系统代理。
+    http_client = httpx.Client(trust_env=False, follow_redirects=True)
+    try:
+        return OpenAI(**kwargs, http_client=http_client)
+    except Exception:
+        http_client.close()
+        raise
 
 
 def resolve_api_key(profile: ProviderProfile) -> str:

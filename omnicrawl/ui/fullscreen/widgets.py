@@ -8,8 +8,9 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
+from textual.selection import Selection
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Button, RichLog, Static
 
 from .theme import terminal_css
 from .tool_diff import tool_disclosure_body, tool_disclosure_title
@@ -62,10 +63,46 @@ class ConfirmationScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class ReasoningDisclosure(Static):
-    """默认展开、可点击折叠的单次模型思考记录。"""
+class AssistantMessage(RichLog, can_focus=False):
+    """支持 Textual 原生鼠标选择且不抢占输入焦点的 AI Markdown 回复。"""
 
-    can_focus = True
+    DEFAULT_CSS = """
+    AssistantMessage {
+        height: auto;
+        padding: 0 1;
+        background: transparent;
+        overflow-x: hidden;
+        overflow-y: hidden;
+    }
+    """
+
+    def __init__(self, markdown: str = "") -> None:
+        super().__init__(
+            classes="message assistant-message",
+            markup=False,
+            wrap=True,
+            auto_scroll=False,
+        )
+        if markdown:
+            self.update(markdown)
+
+    def update(self, markdown: str) -> None:
+        """用完整 Markdown 重绘当前消息，同时保留 RichLog 的可选区能力。"""
+
+        self.clear()
+        self.write(RichMarkdown(markdown), scroll_end=False)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """从 RichLog 的渲染行提取纯文本，供鼠标复制使用。"""
+
+        text = "\n".join(line.text.rstrip() for line in self.lines)
+        return selection.extract(text), "\n"
+
+
+class ReasoningDisclosure(Static):
+    """默认展开、可点击折叠且不抢占输入焦点的单次模型思考记录。"""
+
+    can_focus = False
 
     def __init__(self) -> None:
         super().__init__(classes="message reasoning-message")
@@ -83,27 +120,28 @@ class ReasoningDisclosure(Static):
         self._refresh_display()
 
     def _refresh_display(self) -> None:
-        marker = "▾" if self.expanded else "▸"
         if self.expanded:
-            self.update(RichMarkdown(f"{marker} **思考过程**\n\n{self.reasoning_text}"))
+            self.update(RichMarkdown(f"**思考过程**\n\n{self.reasoning_text}"))
         else:
-            self.update(Text(f"{marker} 思考过程（点击展开）"))
+            self.update(Text("思考过程（点击展开）"))
 
 
 class ToolDisclosure(Static):
-    """默认折叠的工具调用记录。"""
+    """工具调用记录；写入文件和替换文本默认展开，其他工具默认折叠。"""
 
-    can_focus = True
+    can_focus = False
 
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
-        super().__init__(classes="message tool-message collapsed")
+        expanded_by_default = tool_name in {"write_file", "replace_text"}
+        classes = "message tool-message" if expanded_by_default else "message tool-message collapsed"
+        super().__init__(classes=classes)
         self.tool_name = tool_name
         self.arguments = arguments
         self.started_at = started_at
         self.status = "调用中"
         self.duration_seconds = 0.0
         self.result_text = ""
-        self.expanded = False
+        self.expanded = expanded_by_default
         self._refresh_display()
 
     def finish(self, *, ok: bool, output: str, finished_at: float) -> None:
@@ -118,14 +156,15 @@ class ToolDisclosure(Static):
         self._refresh_display()
 
     def _refresh_display(self) -> None:
-        # 文件变更工具（write_file / replace_text）走 git 旁注行号 diff 样式；
-        # 其他工具保持原有「参数 + 结果」摘要，避免扩大展示协议。
+        # 工作区工具与文件变更工具使用统一的短标识 + 上下文摘要；其他工具
+        # 保持「参数 + 结果」正文，避免标题泄露完整参数或内部工具协议。
         title = tool_disclosure_title(
             tool_name=self.tool_name,
             arguments=self.arguments,
             status=self.status,
             duration_seconds=self.duration_seconds,
             expanded=self.expanded,
+            result_text=self.result_text,
         )
         if not self.expanded:
             self.update(title)

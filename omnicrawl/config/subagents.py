@@ -18,6 +18,40 @@ class SubAgentConfigError(RuntimeConfigError):
     """SubAgent 配置读取或安全校验失败。"""
 
 
+_SUBAGENT_ADVANCED_SETTING_RULES: dict[str, tuple[str, float, float]] = {
+    "max_concurrency": ("int", 1, 4),
+    "max_tasks_per_batch": ("int", 1, 4),
+    "max_total_tasks": ("int", 1, 32),
+    "default_timeout_seconds": ("number", 1.0, 3600.0),
+    "model_request_concurrency": ("int", 1, 4),
+    "verify_command_timeout_seconds": ("int", 1, 360),
+    "task_retention_minutes": ("int", 1, 10_080),
+}
+SUBAGENT_ADVANCED_SETTING_KEYS = tuple(_SUBAGENT_ADVANCED_SETTING_RULES)
+
+
+def validate_subagent_advanced_setting(name: str, value: Any) -> int | float:
+    """校验设置面板允许调整的 SubAgent 资源参数。"""
+
+    rule = _SUBAGENT_ADVANCED_SETTING_RULES.get(name)
+    if rule is None:
+        raise SubAgentConfigError(f"设置面板不支持配置项 subagents.{name}。")
+    value_type, minimum, maximum = rule
+    if value_type == "int":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise SubAgentConfigError(f"配置项 subagents.{name} 必须是整数。")
+        normalized: int | float = value
+    else:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise SubAgentConfigError(f"配置项 subagents.{name} 必须是数字。")
+        normalized = float(value)
+    if normalized < minimum or normalized > maximum:
+        raise SubAgentConfigError(
+            f"配置项 subagents.{name} 必须在 {minimum:g} 到 {maximum:g} 之间，当前值：{normalized:g}。"
+        )
+    return normalized
+
+
 @dataclass(frozen=True)
 class SubAgentConfig:
     """SubAgent 全局边界。

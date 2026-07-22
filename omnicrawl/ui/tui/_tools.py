@@ -10,6 +10,7 @@ import sys
 import threading
 from typing import Any
 
+from ..tool_labels import tool_display
 from ._colors import (
     ANSI_CLEAR_LINE,
     color_text,
@@ -54,10 +55,12 @@ def print_tool_call_start(
     marker = color_text("◌", "warning", caps)
     line_width = max(1, shutil.get_terminal_size((100, 30)).columns)
     # 窄终端优先保证信息不溢出，不强行保留装饰性框线。
+    display = tool_display(tool_name)
+    display_name = f"{display.icon} {display.name}"
     header_prefix = f"◌ 步骤 {max(1, step)} · "
     decoration = " ─ ─ ─" if line_width >= 36 else ""
     tool_width = max(1, line_width - _display_width(indent) - _display_width(header_prefix) - _display_width(decoration))
-    visible_tool_name = _ellipsize_display_text(tool_name, tool_width)
+    visible_tool_name = _ellipsize_display_text(display_name, tool_width)
 
     # 工具记录是次级信息：使用单一语义色的紧凑标题，避免小窗口内多层框线挤压正文。
     header = (

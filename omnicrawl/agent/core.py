@@ -115,7 +115,12 @@ from ..config.context_compaction import (
     load_context_compaction_config,
 )
 from ..config.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
-from ..config.subagents import SubAgentConfig, load_subagent_config
+from ..config.subagents import (
+    SubAgentConfig,
+    SubAgentConfigError,
+    load_subagent_config,
+    validate_subagent_advanced_setting,
+)
 from ..extensions.plugin_models import HOOK_POLICIES
 from ..llm import (
     LLMConfig,
@@ -1203,6 +1208,15 @@ class LocalToolAgent:
                 temp_workspace.close()
             except Exception as exc:
                 close_errors.append(exc)
+        client = getattr(self, "_client", None)
+        if client is not None:
+            try:
+                close_client = getattr(client, "close", None)
+                if callable(close_client):
+                    close_client()
+            except Exception as exc:
+                close_errors.append(exc)
+            self._client = None
         runtime_manager = getattr(self, "_runtime_manager", None)
         if runtime_manager is not None:
             try:
@@ -1357,6 +1371,30 @@ class LocalToolAgent:
         self.config.llm.context_window_tokens = tokens
         return tokens
 
+    def set_context_compaction_enabled(self, enabled: bool) -> None:
+        """切换模型辅助压缩，并同步受摘要授权的证据恢复工具。"""
+
+        if not isinstance(enabled, bool):
+            raise AgentError("上下文压缩开关必须是布尔值。")
+        current = self.config.context_compaction
+        if current.enabled == enabled:
+            return
+        next_config = replace(current, enabled=enabled)
+        _validate_context_compaction_window(next_config, self.config.llm)
+
+        previous_tools = self._tools
+        previous_service = self.__dict__.get("_context_compaction_service_instance")
+        self.config.context_compaction = next_config
+        self.__dict__.pop("_context_compaction_service_instance", None)
+        try:
+            self._tools = self._build_tools()
+        except Exception:
+            self.config.context_compaction = current
+            self._tools = previous_tools
+            if previous_service is not None:
+                self._context_compaction_service_instance = previous_service
+            raise
+
     def set_memory_enabled(self, enabled: bool) -> None:
         """切换 Memory 工具，并在新存储准备成功后替换旧运行态。"""
 
@@ -1431,6 +1469,35 @@ class LocalToolAgent:
         self._plugin_manager = manager
         if getattr(self.config.subagents, "enabled", False):
             self._refresh_subagent_definitions()
+            # Agent 定义来源变化后同步刷新 subagent_type 枚举，避免模型继续
+            # 使用旧插件状态下的角色 Schema。
+            self._tools = self._build_tools()
+
+    def set_subagent_advanced_setting(self, name: str, value: int | float) -> None:
+        """即时更新面板开放的 SubAgent 资源参数，不改变权限边界。"""
+
+        try:
+            normalized = validate_subagent_advanced_setting(name, value)
+        except SubAgentConfigError as exc:
+            raise AgentError(str(exc)) from exc
+
+        current = self.config.subagents
+        next_config = replace(current, **{name: normalized})
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is not None:
+            coordinator.config = next_config
+            task_manager = coordinator._task_manager
+            if name == "task_retention_minutes":
+                task_manager.retention_seconds = max(60.0, normalized * 60)
+            if name == "max_concurrency":
+                task_manager.set_max_workers(int(normalized))
+        self.config.subagents = next_config
+        if name == "model_request_concurrency":
+            self._subagent_model_request_semaphore = (
+                threading.BoundedSemaphore(int(normalized))
+                if next_config.enabled
+                else None
+            )
 
     def set_subagents_enabled(self, enabled: bool) -> None:
         """安全切换 SubAgent；关闭前等待现有任务和审批退出。"""
@@ -1888,9 +1955,15 @@ class LocalToolAgent:
         requested = str(task_model or "").strip()
         definition_model = str(definition.model or "inherit").strip()
         # task 字段存在时优先级最高；显式 ``model=inherit`` 的含义是要求
-        # 使用父模型，而不是回退到角色定义中的模型覆盖。
+        # 使用父模型，而不是回退到角色定义中的模型覆盖。函数调用模型也常会为
+        # 可选字段生成裸 ``default`` 占位值；该值不是可安全发送的网关模型 ID，
+        # 因此在任务级 API 中与 ``inherit`` 保持相同语义。
         if requested:
-            selection = "inherit" if requested.casefold() == "inherit" else requested
+            selection = (
+                "inherit"
+                if requested.casefold() in {"inherit", "default"}
+                else requested
+            )
         elif definition_model and definition_model.casefold() != "inherit":
             selection = definition_model
         else:
@@ -2256,13 +2329,6 @@ class LocalToolAgent:
             int(getattr(model_config, "request_timeout_seconds", 180)),
             max(1, int(self.config.subagents.default_timeout_seconds)),
         )
-        request_retries = max(
-            1,
-            min(
-                int(getattr(self.config, "request_retry_count", 1)),
-                int(getattr(model_config, "request_retry_count", 1)),
-            ),
-        )
         selected_runtime_manager = (
             runtime_manager
             if runtime_manager is not None
@@ -2279,7 +2345,9 @@ class LocalToolAgent:
             client=None if selected_runtime_manager is not None else self._llm_client(),
             model=model_config.model,
             request_timeout_seconds=request_timeout,
-            request_retry_count=request_retries,
+            # 子任务失败后由 Coordinator 返回结构化错误并交还主 Agent；
+            # 不在独立模型请求内部自动放大重试成本。
+            request_retry_count=1,
             workspace_root=self.workspace_root,
             system_prompt_provider=lambda: system_prompt,
             prompt_cache_identity_provider=lambda: {
@@ -2931,14 +2999,23 @@ class LocalToolAgent:
             return client
 
         try:
+            import httpx
             from openai import OpenAI
         except ImportError as exc:
-            raise AgentError("缺少 openai 依赖，请先执行：pip install -r requirements.txt") from exc
+            raise AgentError(
+                "缺少 openai/httpx 依赖，请先执行：pip install -r requirements.txt"
+            ) from exc
 
-        client = OpenAI(
-            api_key=self.config.llm.api_key,
-            base_url=self.config.llm.base_url,
-        )
+        http_client = httpx.Client(trust_env=False, follow_redirects=True)
+        try:
+            client = OpenAI(
+                api_key=self.config.llm.api_key,
+                base_url=self.config.llm.base_url,
+                http_client=http_client,
+            )
+        except Exception:
+            http_client.close()
+            raise
         self._client = client
         return client
 
@@ -3326,6 +3403,11 @@ class LocalToolAgent:
                 self._tool_subagent
                 if getattr(self, "_subagent_coordinator", None) is not None
                 else None
+            ),
+            subagent_types=(
+                self._subagent_coordinator.available_agent_types()
+                if getattr(self, "_subagent_coordinator", None) is not None
+                else ()
             ),
             windows_window=(windows_desktop.run_window if windows_desktop is not None else None),
             windows_control=(windows_desktop.run_control if windows_desktop is not None else None),

@@ -9,11 +9,7 @@ import json
 import re
 from typing import Any
 
-from .config import (
-    MCPPolicyConfig,
-    MCP_RISK_EXTERNAL,
-    MCP_RISK_RESTRICTED,
-)
+from .config import MCPPolicyConfig
 from .registry import MCPToolMeta
 
 
@@ -43,69 +39,12 @@ _AUTHORIZATION_ASSIGNMENT_PATTERN = re.compile(
 )
 _BEARER_SECRET_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _PROVIDER_SECRET_PATTERN = re.compile(r"\b(?:sk|ak|ah)-[A-Za-z0-9_-]{24,}\b")
-_WRITE_KEYWORDS = (
-    "append",
-    "create",
-    "edit",
-    "modify",
-    "patch",
-    "replace",
-    "save",
-    "update",
-    "write",
-)
-_COMMAND_KEYWORDS = (
-    "command",
-    "exec",
-    "powershell",
-    "run",
-    "shell",
-    "spawn",
-    "terminal",
-)
-_DESTRUCTIVE_KEYWORDS = (
-    "delete",
-    "destroy",
-    "drop",
-    "force",
-    "kill",
-    "remove",
-    "reset",
-    "truncate",
-)
-# trusted Server 也只能通过完整工具名匹配获得免确认资格，不能因为名称
-# “包含 read” 就放行 read_file_and_send_email 之类的混合副作用工具。
-# 当前内置只读 Server 的公开工具名在此显式列出；其他 Server 工具默认确认。
-_TRUSTED_READ_ONLY_TOOL_NAMES = frozenset(
-    {
-        "workspace.list_files",
-        "workspace.read_file",
-        "workspace.search_text",
-    }
-)
 
 
 def mcp_tool_requires_confirmation(meta: MCPToolMeta, policy: MCPPolicyConfig) -> bool:
-    """按 Host 策略判断 MCP Tool 是否需要进入现有审批门。
+    """所有 MCP Tool 默认需要通过 Host 审批。"""
 
-    Server 自称可信不代表免审；这里用名称关键词和 Server 风险等级做保守判断。
-    外部或受限 Server 默认需要确认，trusted Server 的明显只读工具才自动放行。
-    """
-
-    lowered_name = meta.tool_name.lower()
-    if any(keyword in lowered_name for keyword in _DESTRUCTIVE_KEYWORDS):
-        return True
-    if policy.require_confirmation_for_command and any(
-        keyword in lowered_name for keyword in _COMMAND_KEYWORDS
-    ):
-        return True
-    if policy.require_confirmation_for_write and any(
-        keyword in lowered_name for keyword in _WRITE_KEYWORDS
-    ):
-        return True
-    if meta.risk_level in {MCP_RISK_EXTERNAL, MCP_RISK_RESTRICTED}:
-        return True
-    return lowered_name not in _TRUSTED_READ_ONLY_TOOL_NAMES
+    return True
 
 
 def validate_tool_arguments(

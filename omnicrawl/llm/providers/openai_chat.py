@@ -11,7 +11,7 @@ from ..capabilities import (
     conservative_openai_chat_capabilities,
     merge_capabilities,
 )
-from ..errors import ModelError, ModelErrorCode
+from ..errors import ModelError, ModelErrorCode, map_openai_exception
 from ..protocol import (
     PROTOCOL_OPENAI_CHAT_COMPLETIONS,
     ConversationMessage,
@@ -129,18 +129,24 @@ class OpenAIChatCompletionsRuntime:
                         message="当前网关不支持 prompt_cache_key，已自动移除后重试。",
                     )
                 except Exception as retry_exc:
+                    mapped = map_openai_exception(retry_exc)
                     raise ModelError(
-                        code=ModelErrorCode.INVALID_REQUEST,
-                        message=f"Agent 请求失败：{format_openai_error(retry_exc)}",
-                        retryable=is_retryable_model_request_error(retry_exc),
+                        code=mapped.code,
+                        message=f"Agent 请求失败：{mapped.message}",
+                        retryable=mapped.retryable,
+                        status_code=mapped.status_code,
+                        provider=mapped.provider,
+                        protocol=PROTOCOL_OPENAI_CHAT_COMPLETIONS,
                     ) from retry_exc
             else:
+                mapped = map_openai_exception(exc)
                 raise ModelError(
-                    code=ModelErrorCode.INVALID_REQUEST
-                    if not is_retryable_model_request_error(exc)
-                    else ModelErrorCode.CONNECTION_FAILED,
-                    message=f"Agent 请求失败：{format_openai_error(exc)}",
-                    retryable=is_retryable_model_request_error(exc),
+                    code=mapped.code,
+                    message=f"Agent 请求失败：{mapped.message}",
+                    retryable=mapped.retryable,
+                    status_code=mapped.status_code,
+                    provider=mapped.provider,
+                    protocol=PROTOCOL_OPENAI_CHAT_COMPLETIONS,
                 ) from exc
 
         buffers: dict[int, dict[str, Any]] = {}

@@ -85,7 +85,7 @@ SubAgent 的价值不是简单“多开几个模型请求”，而是建立以�
 ### 2.1 目标
 
 1. **降低上下文污染**：子任务中间过程不进入父 Agent 主历史，父上下文只接收有界结果。
-2. **稳定工具入口**：Agent 定义增减不改变工具列表和模型 Tool Schema 数量。
+2. **稳定工具入口**：Agent 定义增减不改变工具列表和模型 Tool Schema 数量；统一 `subagent` 工具的角色枚举按当前配置动态收窄。
 3. **角色化能力边界**：可通过 Markdown 定义角色、模型、工具范围和预算。
 4. **安全继承而非安全绕过**：子 Agent 的能力不得超过父 Agent 和 Host 安全策略。
 5. **有界并发**：限制深度、任务数、并发数、模型轮次、工具次数、Token 和墙钟时间。
@@ -444,7 +444,10 @@ Phase 1 只提供同步、有界批量执行：
         "properties": {
           "description": {"type": "string", "maxLength": 120},
           "prompt": {"type": "string", "maxLength": 12000},
-          "subagent_type": {"type": "string"},
+          "subagent_type": {
+            "type": "string",
+            "enum": ["当前配置下可执行的角色名称"]
+          },
           "context": {"type": "string", "enum": ["fresh"]},
           "model": {"type": "string"}
         },
@@ -483,11 +486,11 @@ action: run | spawn | list | get | cancel | apply_worktree | discard_worktree | 
 ```json
 {
   "context": "fresh | fork",
-  "model": "models.yaml key / alias / profile/model_id / inherit"
+  "model": "models.yaml key / alias / profile/model_id / inherit / default（继承父模型）"
 }
 ```
 
-`context=fork` 需显式设置 `subagents.allow_fork=true`；`model` 的优先级高于定义中的 `model`，显式 `inherit` 表示使用父模型。模型值复用现有 Catalog/Profile 解析，不接受调用方传入凭据、Runtime、工具列表或任意 system prompt。
+`context=fork` 需显式设置 `subagents.allow_fork=true`；`model` 的优先级高于定义中的 `model`。继承父模型时应省略该字段；显式 `inherit` 与裸 `default` 均表示使用父模型，后者用于兼容函数调用模型为可选字段生成的占位值，绝不作为 Provider 的 wire model 发送。模型值复用现有 Catalog/Profile 解析，不接受调用方传入凭据、Runtime、工具列表或任意 system prompt。
 
 任务级 `isolation` / `run_in_background` / `name` 仍不由工具参数覆盖，继续只读定义 frontmatter。
 Worktree 结果由父 Agent 通过顶层 action 显式处理（已落地）：
@@ -941,7 +944,7 @@ subagent_task_cancelled
 subagent_task_timed_out
 ```
 
-这些事件不加入 `MODEL_CONTEXT_EVENT_TYPES`，恢复父对话时不会自动把高频进度喂给模型。
+这些事件不加入 `MODEL_CONTEXT_EVENT_TYPES`，恢复父对话时不会自动把高频进度喂给模型。`subagent_task_failed` 的 `SUBAGENT_MODEL_ERROR` 只保存错误分类和有限运行元数据，不保存原始异常文本、凭据或完整请求内容；父 Agent 不应仅更换角色重复调用，除非模型配置、网络/运行环境已变化或用户明确要求重试。
 
 完整子任务输出如需持久化，写入父 Session 管控的 artifact 或：
 
@@ -961,6 +964,8 @@ subagent_task_timed_out
 ---
 
 ## 15. 模型选择与 Runtime
+
+每个 `session_started` 事件还记录 `payload.runtime`：OmniCrawl 版本、进程启动时间、关键源码文件大小/修改时间、已加载模块和源码指纹。该信息用于判断会话是否由修改前的长驻进程创建，不包含密钥或模型请求正文。
 
 ### 15.1 选择优先级
 
@@ -1204,13 +1209,15 @@ OMNICRAWL_SUBAGENT_VERIFY_TIMEOUT_SECONDS
 | `SUBAGENT_PERMISSION_DENIED` | 委派或内部工具审批被拒绝 |
 | `SUBAGENT_TIMEOUT` | 超时 |
 | `SUBAGENT_CANCELLED` | 被父任务、用户或系统取消 |
-| `SUBAGENT_MODEL_ERROR` | 模型请求失败 |
+| `SUBAGENT_MODEL_ERROR` | 模型请求失败；子任务不自动重试，结构化错误直接交还父 Agent。错误结果会附带脱敏的 `diagnostic`：`category`、`exception_type`、`provider`、`status_code`、`retryable`、`model_selection`（逻辑模型 key）、`wire_model`（实际发送的模型 ID） |
 | `SUBAGENT_TOOL_ERROR` | 工具错误导致任务失败 |
 | `SUBAGENT_PARTIAL` | 已有部分结果但未完成 |
 | `SUBAGENT_WORKSPACE_CHANGED` | 运行中工作区已切换 |
 | `SUBAGENT_RESULT_TOO_LARGE` | 结果超限且 artifact 写入失败 |
 
-批量任务默认 `fail_fast=false`：一个任务失败不取消其他任务。只有 Host 安全错误、父取消或工作区切换才强制取消整批。
+批量任务默认 `fail_fast=false`：一个任务失败不取消其他任务。只有 Host 安全错误、父取消或工作区切换才强制取消整批。Host 在工具 Schema 和 Coordinator 参数入口执行两层角色校验；Schema 只暴露当前配置可执行的角色，未知或当前权限开关未启用的角色不会进入线程池。每次子任务模型请求只尝试一次，失败后由父 Agent 决定是否改用自身能力继续，不自动再次消耗子任务模型配额。
+
+OpenAI SDK Client 默认使用 `trust_env=true`，在 Windows 上会隐式读取系统代理。OmniCrawl 的 OpenAI Client 工厂和兼容入口统一使用 `httpx.Client(trust_env=False, follow_redirects=True)`，避免本地代理协议不匹配导致连接阶段的 `SSLEOFError`；当前 Provider 配置没有显式代理字段，因此不继承系统代理。
 
 ---
 

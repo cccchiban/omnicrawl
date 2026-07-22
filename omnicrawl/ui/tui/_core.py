@@ -182,10 +182,10 @@ class TerminalUI(_MarkdownRendererMixin, BaseUI):
     # ── 提示符 ────────────────────────────────────────────────
 
     def prompt(self) -> str:
-        return f"\n{color_text('▸', 'primary', self.capabilities)} "
+        return f"\n{color_text('$', 'primary', self.capabilities)} "
 
     def prompt_width(self) -> int:
-        return _display_width("▸ ")
+        return _display_width("$ ")
 
     # ── 输入状态覆盖 ───────────────────────────────────────────
 

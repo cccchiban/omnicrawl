@@ -33,11 +33,23 @@ class OpenAIResponseLLM:
             raise LLMError("缺少 API Key，请在 config.yaml 的 llm 配置 中配置，或设置 OPENAI_API_KEY。")
 
         try:
+            import httpx
             from openai import OpenAI
         except ImportError as exc:
-            raise LLMError("缺少 openai 依赖，请先执行：pip install -r requirements.txt") from exc
+            raise LLMError(
+                "缺少 openai/httpx 依赖，请先执行：pip install -r requirements.txt"
+            ) from exc
 
-        self._client = OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
+        http_client = httpx.Client(trust_env=False, follow_redirects=True)
+        try:
+            self._client = OpenAI(
+                api_key=self.config.api_key,
+                base_url=self.config.base_url,
+                http_client=http_client,
+            )
+        except Exception:
+            http_client.close()
+            raise
         self._history: list[dict[str, str]] = []
 
     def ask(self, user_text: str) -> str:

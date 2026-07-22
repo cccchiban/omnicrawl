@@ -27,6 +27,11 @@ class SessionStoreTest(unittest.TestCase):
             event = json.loads(lines[0])
             self.assertEqual(event["type"], "session_started")
             self.assertEqual(event["session_id"], state.session_id)
+            runtime = event["payload"]["runtime"]
+            self.assertEqual(runtime["version"], "0.1.0")
+            self.assertTrue(runtime["process_started_at"])
+            self.assertRegex(runtime["source_fingerprint"], r"^[0-9a-f]{16}$")
+            self.assertIn("omnicrawl/agent/core.py", runtime["source_files"])
 
     def test_append_event_updates_index_and_restore_messages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

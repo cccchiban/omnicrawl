@@ -60,6 +60,8 @@ def _agent_config(
             api_key="test-key",
             base_url="https://example.test/v1",
             model="test-model",
+            context_window_tokens=128_000,
+            request_retry_count=3,
         ),
         workspace_root=workspace,
         memory_enabled=False,
@@ -185,6 +187,14 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                         ],
                     )
                     self.assertEqual(schema["properties"]["tasks"]["maxItems"], 4)
+                    model_schema = schema["properties"]["tasks"]["items"]["properties"]["model"]
+                    self.assertIn("省略", model_schema["description"])
+                    self.assertIn("default", model_schema["description"])
+                    self.assertEqual(
+                        schema["properties"]["tasks"]["items"]["properties"]
+                        ["subagent_type"]["enum"],
+                        ["explore", "plan"],
+                    )
                     self.assertEqual(
                         schema["properties"]["max_concurrency"]["maximum"],
                         4,
@@ -196,6 +206,23 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                     )
                 finally:
                     agent.close()
+
+    def test_plugin_definition_refresh_rebuilds_subagent_schema(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        manager = object()
+        next_tools = {"subagent": object()}
+        agent.config = SimpleNamespace(subagents=SimpleNamespace(enabled=True))
+        agent._on_plugin_settings_changed = Mock(return_value=manager)
+        agent._refresh_subagent_definitions = Mock()
+        agent._build_tools = Mock(return_value=next_tools)
+        agent._tools = {"stale": object()}
+
+        LocalToolAgent.set_plugin_enabled(agent, True)
+
+        self.assertIs(agent._plugin_manager, manager)
+        agent._refresh_subagent_definitions.assert_called_once_with()
+        agent._build_tools.assert_called_once_with()
+        self.assertIs(agent._tools, next_tools)
 
     def test_verify_profile_is_opt_in_and_its_fixed_tool_is_child_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -224,7 +251,14 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                     self.assertNotIn("bash", child_tools)
                     self.assertNotIn("powershell", child_tools)
                     self.assertNotIn("verify_command", agent._tools)
+                    schema = json.loads(agent._tools["subagent"].argument_schema)
+                    self.assertEqual(
+                        schema["properties"]["tasks"]["items"]["properties"]
+                        ["subagent_type"]["enum"],
+                        ["explore", "plan", "verify"],
+                    )
                     protocol = agent._subagent_llm_protocol(definition, child_tools)
+                    self.assertEqual(protocol.request_retry_count, 1)
                     self.assertIn(
                         "只可读取、搜索，并调用 Host 提供的 verify_command",
                         protocol.system_prompt_provider(),

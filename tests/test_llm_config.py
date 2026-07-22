@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 import yaml
 from pathlib import Path
 from unittest.mock import patch
 
+from omnicrawl.agent.core import LocalToolAgent
 from omnicrawl.config.model_store import CustomModelRecord, ModelStore
 from omnicrawl.llm import (
     LLMConfig,
@@ -16,9 +18,68 @@ from omnicrawl.llm import (
     normalize_reasoning_effort,
     save_reasoning_effort,
 )
+from omnicrawl.llm.providers.openai_common import create_openai_client
+from omnicrawl.llm.registry import ProviderProfile
 
 
 class LLMConfigTest(unittest.TestCase):
+    def test_should_disable_system_proxy_when_creating_openai_client(self) -> None:
+        profile = ProviderProfile(
+            id="openai",
+            provider="openai",
+            api_key="test-key",
+            base_url="https://example.test/v1",
+        )
+
+        with patch("httpx.Client") as http_client, patch("openai.OpenAI") as openai_client:
+            result = create_openai_client(profile)
+
+        http_client.assert_called_once_with(trust_env=False, follow_redirects=True)
+        openai_client.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            http_client=http_client.return_value,
+        )
+        self.assertIs(result, openai_client.return_value)
+
+    def test_should_disable_system_proxy_in_legacy_responses_client(self) -> None:
+        config = LLMConfig(
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            model="demo-model",
+        )
+
+        with patch("httpx.Client") as http_client, patch("openai.OpenAI") as openai_client:
+            result = OpenAIResponseLLM(config)
+
+        http_client.assert_called_once_with(trust_env=False, follow_redirects=True)
+        openai_client.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            http_client=http_client.return_value,
+        )
+        self.assertIs(result._client, openai_client.return_value)
+
+    def test_should_disable_system_proxy_in_legacy_agent_client(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            llm=SimpleNamespace(
+                api_key="test-key",
+                base_url="https://example.test/v1",
+            )
+        )
+
+        with patch("httpx.Client") as http_client, patch("openai.OpenAI") as openai_client:
+            result = agent._llm_client()
+
+        http_client.assert_called_once_with(trust_env=False, follow_redirects=True)
+        openai_client.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            http_client=http_client.return_value,
+        )
+        self.assertIs(result, openai_client.return_value)
+
     def test_reasoning_effort_supports_xhigh_and_common_depths(self) -> None:
         self.assertEqual(normalize_reasoning_effort("low"), "low")
         self.assertEqual(normalize_reasoning_effort("medium"), "medium")

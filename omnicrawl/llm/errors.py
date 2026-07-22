@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Mapping
 
 
 _HTML_ERROR_RE = re.compile(
@@ -56,7 +56,11 @@ def map_openai_exception(
     """把 OpenAI SDK / 网关异常映射为统一错误。"""
 
     message = str(exc).strip()
-    lowered = message.lower()
+    # OpenAI SDK / 兼容网关有时只在异常 response JSON 中放业务错误码，
+    # 而 str(exc) 仅包含通用的 "422 Unprocessable Entity"。结构化内容只用于
+    # 内部分流，绝不拼回公开提示或持久化记录，避免泄露网关原始响应。
+    detail_text = _extract_structured_error_text(exc)
+    lowered = "\n".join(part for part in (message, detail_text) if part).lower()
     status_code = _extract_http_status_code(exc, message)
 
     if "model not found" in lowered or "invalid_model" in lowered:
@@ -266,6 +270,44 @@ def _http_status_error(status_code: int, *, provider: str) -> ModelError:
         status_code=status_code,
         provider=provider,
     )
+
+
+def _extract_structured_error_text(exc: Exception) -> str:
+    """从 SDK 已解析的错误 body 中提取有限分类线索，不向调用方暴露原文。"""
+
+    payloads: list[Any] = [getattr(exc, "body", None)]
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            payloads.append(response.json())
+        except Exception:
+            pass
+
+    fragments: list[str] = []
+    for payload in payloads:
+        _collect_error_text_fragments(payload, fragments, depth=0)
+    return "\n".join(fragments)
+
+
+def _collect_error_text_fragments(value: Any, fragments: list[str], *, depth: int) -> None:
+    """只保留标准错误字段，避免把响应的任意内容用于分类或日志。"""
+
+    if depth > 4 or len(fragments) >= 12:
+        return
+    if isinstance(value, str):
+        fragments.append(value[:512])
+        return
+    if not isinstance(value, Mapping):
+        return
+    for key in ("message", "type", "code", "error", "detail"):
+        item = value.get(key)
+        if isinstance(item, str):
+            fragments.append(item[:512])
+        elif isinstance(item, Mapping):
+            _collect_error_text_fragments(item, fragments, depth=depth + 1)
+        elif isinstance(item, list):
+            for nested in item[:4]:
+                _collect_error_text_fragments(nested, fragments, depth=depth + 1)
 
 
 def _extract_http_status_code(exc: Exception, message: str) -> int | None:

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
+from omnicrawl.config.context_compaction import ContextCompactionConfig
 from omnicrawl.config.subagents import SubAgentConfig
 from omnicrawl.temp_workspace import AgentTempWorkspaceConfig
 
@@ -22,6 +23,7 @@ class WorkspaceSwitchTest(unittest.TestCase):
             ),
             workspace_root=workspace,
             memory_enabled=False,
+            context_compaction=ContextCompactionConfig(enabled=False),
             session_enabled=False,
             skills_enabled=False,
             mcp_config=None,
@@ -242,6 +244,19 @@ class WorkspaceSwitchTest(unittest.TestCase):
                 agent.close()
 
         monitor_manager.close.assert_called_once_with()
+
+    def test_close_closes_legacy_openai_client(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = self._make_config(workspace)
+            client = SimpleNamespace(close=Mock())
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                agent._client = client
+                agent.close()
+
+        client.close.assert_called_once_with()
+        self.assertIsNone(agent._client)
 
     def test_close_cancels_subagents_before_shared_resources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

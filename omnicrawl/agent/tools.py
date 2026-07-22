@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .context_compaction.evidence import RECALL_SESSION_EVIDENCE_TOOL_NAME
 from .types import ToolCall, ToolDefinition, ToolResult
 from ..mcp import MCPClientManager, MCPToolMeta
 from ..state.session_artifacts import redact_sensitive_text
-from ..workspace_tools import DEFAULT_COMMAND_TIMEOUT_SECONDS, WorkspaceToolError
+from ..workspace_tools import (
+    DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    MAX_COMMAND_TIMEOUT_SECONDS,
+    WorkspaceToolError,
+)
 
 
 TOOL_NAME_ALIASES = {
@@ -240,6 +243,7 @@ def build_agent_tools(
     mcp_get_prompt: MCPPromptRunner,
     evidence_recall: ToolRunner | None = None,
     subagent: ToolRunner | None = None,
+    subagent_types: Sequence[str] = (),
     windows_window: ToolRunner | None = None,
     windows_control: ToolRunner | None = None,
     windows_input: ToolRunner | None = None,
@@ -306,12 +310,30 @@ def build_agent_tools(
             ToolDefinition(
                 name="bash",
                 description=(
-                    "使用 Git Bash 在工作区执行 Bash 命令。"
-                    "适合 POSIX Shell 语法、管道和 Bash 脚本；不应使用 PowerShell 语法。"
+                    "使用 Git Bash 在工作区执行 Bash 主命令。只接受 POSIX Shell 语法，"
+                    "不得使用 PowerShell 语法；需要在主命令后采集日志时使用独立的 "
+                    "diagnostic_command，Host 会保留主命令失败状态。"
                 ),
-                argument_schema=(
-                    '{"command":"git status --short | sed -n \'1,20p\'",'
-                    f'"timeout_seconds":{DEFAULT_COMMAND_TIMEOUT_SECONDS}}}'
+                argument_schema=json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "minLength": 1},
+                            "diagnostic_command": {
+                                "type": "string",
+                                "minLength": 1,
+                            },
+                            "timeout_seconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": MAX_COMMAND_TIMEOUT_SECONDS,
+                                "default": DEFAULT_COMMAND_TIMEOUT_SECONDS,
+                            },
+                        },
+                        "required": ["command"],
+                        "additionalProperties": False,
+                    },
+                    ensure_ascii=False,
                 ),
                 requires_confirmation=True,
                 run=bash,
@@ -319,12 +341,30 @@ def build_agent_tools(
             ToolDefinition(
                 name="powershell",
                 description=(
-                    "使用 PowerShell 在 Windows 工作区执行命令，优先使用 PowerShell 7。"
-                    "适合 PowerShell cmdlet、对象管道和 Windows 系统查询。"
+                    "使用 PowerShell 在 Windows 工作区执行主命令，优先使用 PowerShell 7。"
+                    "只接受 PowerShell 语法，不得使用 Bash 语法；需要在主命令后采集日志时"
+                    "使用独立的 diagnostic_command，Host 会保留主命令失败状态。"
                 ),
-                argument_schema=(
-                    '{"command":"Get-ChildItem -File | Select-Object -First 20",'
-                    f'"timeout_seconds":{DEFAULT_COMMAND_TIMEOUT_SECONDS}}}'
+                argument_schema=json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "minLength": 1},
+                            "diagnostic_command": {
+                                "type": "string",
+                                "minLength": 1,
+                            },
+                            "timeout_seconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": MAX_COMMAND_TIMEOUT_SECONDS,
+                                "default": DEFAULT_COMMAND_TIMEOUT_SECONDS,
+                            },
+                        },
+                        "required": ["command"],
+                        "additionalProperties": False,
+                    },
+                    ensure_ascii=False,
                 ),
                 requires_confirmation=True,
                 run=powershell,
@@ -480,6 +520,15 @@ def build_agent_tools(
             ]
         )
     if subagent is not None:
+        available_subagent_types = sorted(
+            {
+                str(name).strip().casefold()
+                for name in subagent_types
+                if isinstance(name, str) and name.strip()
+            }
+        )
+        if not available_subagent_types:
+            raise ValueError("注册 SubAgent 工具时必须提供至少一个可用角色。")
         tools.append(
             ToolDefinition(
                 name="subagent",
@@ -538,7 +587,10 @@ def build_agent_tools(
                                             "minLength": 1,
                                             "maxLength": 12000,
                                         },
-                                        "subagent_type": {"type": "string"},
+                                        "subagent_type": {
+                                            "type": "string",
+                                            "enum": available_subagent_types,
+                                        },
                                         "context": {
                                             "type": "string",
                                             "enum": ["fresh", "fork"],
@@ -547,6 +599,10 @@ def build_agent_tools(
                                             "type": "string",
                                             "minLength": 1,
                                             "maxLength": 200,
+                                            "description": (
+                                                "可选模型覆盖。继承当前父模型时应省略；"
+                                                "裸值 default 与 inherit 均按继承处理。"
+                                            ),
                                         },
                                     },
                                     "required": [
@@ -706,24 +762,6 @@ def normalize_tool_call(
     aliases = tool_name_aliases or TOOL_NAME_ALIASES
     argument_aliases = argument_name_aliases or ARGUMENT_NAME_ALIASES
     raw_name = re.sub(r"\s+", "", tool_call.name.strip())
-    if raw_name not in tools:
-        resource_fallback = mcp_resource_tool_fallback(raw_name, tools)
-        if resource_fallback is not None:
-            fallback_name, fallback_path = resource_fallback
-            arguments = dict(tool_call.arguments)
-            arguments.setdefault("path", fallback_path)
-            return ToolCall(
-                name=fallback_name,
-                arguments=normalize_tool_arguments(
-                    fallback_name,
-                    arguments,
-                    tools,
-                    argument_name_aliases=argument_aliases,
-                ),
-                id=tool_call.id,
-                function_name=tool_call.function_name,
-            )
-
     name = normalize_tool_name(raw_name, tools, tool_name_aliases=aliases)
     return ToolCall(
         name=name,
@@ -765,34 +803,6 @@ def normalize_tool_name(
         if len(matches) == 1:
             return matches[0]
     return name
-
-
-def mcp_resource_tool_fallback(
-    requested_name: str,
-    tools: dict[str, ToolDefinition],
-) -> tuple[str, str] | None:
-    """兼容模型把项目文档 Resource 工具名写成未注册具体 URI 的情况。"""
-
-    prefix = "mcp_read_resource__"
-    if not requested_name.startswith(prefix):
-        return None
-
-    logical_uri = requested_name[len(prefix) :]
-    server_name, separator, resource_uri = logical_uri.partition(":")
-    if not separator or not server_name or not resource_uri.startswith("project://"):
-        return None
-
-    relative_path = resource_uri[len("project://") :].strip().lstrip("/\\")
-    if not relative_path or "\\" in relative_path:
-        return None
-    path = Path(relative_path)
-    if path.is_absolute() or ".." in path.parts or path.suffix.lower() != ".md":
-        return None
-
-    fallback_name = f"{server_name}.workspace.read_file"
-    if fallback_name not in tools:
-        return None
-    return fallback_name, relative_path
 
 
 def normalize_tool_arguments(

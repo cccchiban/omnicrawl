@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
+from .subagents import validate_subagent_advanced_setting
 
 
 class SettingsConfigError(RuntimeConfigError):
@@ -88,6 +89,24 @@ def save_context_window_tokens(
         raise SettingsConfigError(str(exc)) from exc
 
 
+def save_subagent_setting(
+    name: str,
+    value: Any,
+    config_path: str | Path | None = None,
+) -> Path:
+    """保留 ``subagents`` 其他配置，只更新面板允许的资源参数。"""
+
+    try:
+        normalized = validate_subagent_advanced_setting(name, value)
+        data: dict[str, Any] = load_config_data(config_path)
+        section = get_section(data, "subagents")
+        section[name] = normalized
+        data["subagents"] = section
+        return save_config_data(data, config_path)
+    except RuntimeConfigError as exc:
+        raise SettingsConfigError(str(exc)) from exc
+
+
 def save_feature_enabled(
     section_name: str,
     enabled: bool,
@@ -112,4 +131,5 @@ __all__ = [
     "load_feature_enabled",
     "save_context_window_tokens",
     "save_feature_enabled",
+    "save_subagent_setting",
 ]

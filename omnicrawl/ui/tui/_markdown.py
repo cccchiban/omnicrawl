@@ -448,7 +448,7 @@ def _render_basic_markdown_stream_line(
             # 子列表使用 ◦ 标记
             normalized_marker = "◦ "
         elif marker in {"-", "*", "+"}:
-            # 顶级列表使用 • 标记（避免与用户输入前缀 ▸ 冲突）
+            # 顶级列表使用 • 标记（避免与用户输入前缀 $ 冲突）
             normalized_marker = "• "
         else:
             normalized_marker = f"{marker} "

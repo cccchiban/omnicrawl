@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..workspace.tools import (
-    DEFAULT_COMMAND_TIMEOUT_SECONDS,
     MAX_FILE_READ_CHARS,
     WorkspaceToolError,
     WorkspaceTools,
@@ -19,16 +17,8 @@ class LocalMCPServerError(RuntimeError):
     """Local MCP Server 参数校验或工具执行失败。"""
 
 
-@dataclass(frozen=True)
-class _ToolSpec:
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    handler: Callable[[dict[str, Any]], str]
-
-
 class LocalMCPServer:
-    """把当前项目的安全文件工具暴露为本地 stdio MCP Server。"""
+    """提供本地 stdio MCP Server 的 Resource 和 Prompt 能力。"""
 
     def __init__(self, workspace_root: Path | None = None) -> None:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
@@ -89,110 +79,10 @@ class LocalMCPServer:
             return None
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
-    def _build_tools(self) -> dict[str, _ToolSpec]:
-        return {
-            "workspace.list_files": _ToolSpec(
-                name="workspace.list_files",
-                description="列出工作区内文件和目录，自动跳过受保护路径。",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "default": "."},
-                        "recursive": {"type": "boolean", "default": False},
-                    },
-                },
-                handler=self._tool_list_files,
-            ),
-            "workspace.read_file": _ToolSpec(
-                name="workspace.read_file",
-                description="读取工作区内 UTF-8 文本文件，禁止读取受保护路径。",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "start_line": {"type": "integer", "default": 1},
-                        "max_lines": {"type": "integer", "default": 200},
-                        "function_name": {"type": "string"},
-                        "text": {"type": "string"},
-                        "context_lines": {"type": "integer", "default": 20},
-                    },
-                    "required": ["path"],
-                },
-                handler=self._tool_read_file,
-            ),
-            "workspace.search_text": _ToolSpec(
-                name="workspace.search_text",
-                description="在工作区文本文件中搜索正则或普通文本。",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "path": {"type": "string", "default": "."},
-                        "case_sensitive": {"type": "boolean", "default": False},
-                        "max_results": {"type": "integer", "default": 50},
-                    },
-                    "required": ["pattern"],
-                },
-                handler=self._tool_search_text,
-            ),
-            "workspace.replace_text": _ToolSpec(
-                name="workspace.replace_text",
-                description="在工作区单个 UTF-8 文本文件中替换指定文本。",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "old_text": {"type": "string", "minLength": 1},
-                        "new_text": {"type": "string"},
-                        "count": {"type": "integer", "default": 1, "minimum": 0},
-                    },
-                    "required": ["path", "old_text", "new_text"],
-                },
-                handler=self._tool_replace_text,
-            ),
-            "workspace.write_file": _ToolSpec(
-                name="workspace.write_file",
-                description="写入或追加工作区内 UTF-8 文本文件。",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                        "mode": {"type": "string", "default": "overwrite"},
-                    },
-                    "required": ["path", "content"],
-                },
-                handler=self._tool_write_file,
-            ),
-            "workspace.bash": _ToolSpec(
-                name="workspace.bash",
-                description="使用 Git Bash 在工作区执行 Bash 命令，设置超时并截断输出。",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                        "timeout_seconds": {"type": "integer", "default": DEFAULT_COMMAND_TIMEOUT_SECONDS},
-                    },
-                    "required": ["command"],
-                    "additionalProperties": False,
-                },
-                handler=self._tool_bash,
-            ),
-            "workspace.powershell": _ToolSpec(
-                name="workspace.powershell",
-                description="使用 PowerShell 在工作区执行命令，设置超时并截断输出。",
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                        "timeout_seconds": {"type": "integer", "default": DEFAULT_COMMAND_TIMEOUT_SECONDS},
-                    },
-                    "required": ["command"],
-                    "additionalProperties": False,
-                },
-                handler=self._tool_powershell,
-            ),
-        }
+    def _build_tools(self) -> dict[str, Any]:
+        """Local MCP Server 不再暴露工作区工具。"""
+
+        return {}
 
     def _build_prompts(self) -> dict[str, dict[str, Any]]:
         return {
@@ -334,51 +224,6 @@ class LocalMCPServer:
             ],
         }
 
-    def _tool_list_files(self, arguments: dict[str, Any]) -> str:
-        try:
-            return self._workspace_tools.list_files(arguments)
-        except WorkspaceToolError as exc:
-            raise LocalMCPServerError(str(exc)) from exc
-
-    def _tool_read_file(self, arguments: dict[str, Any]) -> str:
-        try:
-            return self._workspace_tools.read_file(arguments)
-        except WorkspaceToolError as exc:
-            raise LocalMCPServerError(str(exc)) from exc
-
-    def _tool_search_text(self, arguments: dict[str, Any]) -> str:
-        try:
-            return self._workspace_tools.search_text(arguments)
-        except WorkspaceToolError as exc:
-            raise LocalMCPServerError(str(exc)) from exc
-
-    def _tool_replace_text(self, arguments: dict[str, Any]) -> str:
-        try:
-            return self._workspace_tools.replace_text(arguments)
-        except WorkspaceToolError as exc:
-            raise LocalMCPServerError(str(exc)) from exc
-
-    def _tool_write_file(self, arguments: dict[str, Any]) -> str:
-        try:
-            return self._workspace_tools.write_file(arguments)
-        except WorkspaceToolError as exc:
-            raise LocalMCPServerError(str(exc)) from exc
-
-    def _tool_bash(self, arguments: dict[str, Any]) -> str:
-        return self._tool_shell_command(arguments, shell="bash")
-
-    def _tool_powershell(self, arguments: dict[str, Any]) -> str:
-        return self._tool_shell_command(arguments, shell="powershell")
-
-    def _tool_shell_command(self, arguments: dict[str, Any], *, shell: str) -> str:
-        try:
-            result = self._workspace_tools.run_shell_command(arguments, shell=shell)
-        except WorkspaceToolError as exc:
-            raise LocalMCPServerError(str(exc)) from exc
-        if not result.ok:
-            raise LocalMCPServerError(result.output)
-        return result.output
-
     def _read_project_text(self, raw_path: str) -> str:
         try:
             return self._workspace_tools.read_project_text(raw_path)
@@ -387,9 +232,6 @@ class LocalMCPServer:
 
     def _should_skip_path(self, path: Path) -> bool:
         return self._workspace_tools.should_skip_path(path)
-
-    def _relative_path(self, path: Path) -> str:
-        return self._workspace_tools.relative_path(path)
 
 
 def main() -> None:

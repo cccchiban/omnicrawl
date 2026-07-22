@@ -7,12 +7,15 @@ import unittest
 from pathlib import Path
 
 from omnicrawl.agent.execution import AgentLoopBudgetExceeded
+from omnicrawl.agent.llm_protocol import AgentProtocolError
 from omnicrawl.agent.subagents.coordinator import (
     SubAgentCancelled,
     SubAgentCoordinator,
     SubAgentExecutionResult,
     SubAgentPublicResult,
+    _build_failure_diagnostics,
 )
+from omnicrawl.llm.errors import ModelError, ModelErrorCode
 from omnicrawl.agent.subagents.approval import (
     ApprovalBroker,
     current_subagent_approval_scope,
@@ -44,6 +47,38 @@ class _Registry(AgentDefinitionRegistry):
 
 
 class SubAgentCoordinatorTest(unittest.TestCase):
+    def test_model_failure_exposes_safe_classification_and_no_raw_message(self) -> None:
+        root_error = ModelError(
+            code=ModelErrorCode.AUTHENTICATION_FAILED,
+            message="api_key=secret-value",
+            status_code=401,
+            provider="openai",
+            retryable=False,
+        )
+        wrapped_error = AgentProtocolError("Agent 模型请求中断：api_key=secret-value")
+        wrapped_error.__cause__ = root_error
+
+        diagnostic = _build_failure_diagnostics(
+            wrapped_error,
+            model="migrated-default",
+            wire_model="gpt-5.6-luna",
+        )
+
+        self.assertEqual(diagnostic["category"], "AUTHENTICATION_FAILED")
+        self.assertEqual(diagnostic["model_selection"], "migrated-default")
+        self.assertEqual(diagnostic["wire_model"], "gpt-5.6-luna")
+        self.assertEqual(diagnostic["exception_type"], "ModelError")
+        self.assertEqual(diagnostic["provider"], "openai")
+        self.assertEqual(diagnostic["status_code"], 401)
+        self.assertFalse(diagnostic["retryable"])
+        self.assertNotIn("secret-value", str(diagnostic))
+
+        generic_diagnostic = _build_failure_diagnostics(
+            AgentProtocolError("HTTP 401 unauthorized"),
+        )
+        self.assertEqual(generic_diagnostic["category"], "AUTHENTICATION_FAILED")
+        self.assertEqual(generic_diagnostic["status_code"], 401)
+
     def _arguments(self, **task_overrides):
         task = {
             "description": "检查调用链",
@@ -870,6 +905,14 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             "子任务模型请求失败。",
         )
         self.assertNotIn("完整子任务 prompt", json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(
+            payload["results"][0]["error"]["diagnostic"]["category"],
+            "UNKNOWN",
+        )
+        self.assertEqual(
+            payload["results"][0]["error"]["diagnostic"]["exception_type"],
+            "RuntimeError",
+        )
 
     def test_failure_messages_are_redacted_before_publication(self) -> None:
         def execute(*_args):

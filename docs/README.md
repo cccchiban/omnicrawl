@@ -14,6 +14,7 @@
 - `HOOK_PLUGIN_DESIGN.md`：Hook 生命周期、NPM 插件契约、CLI 安装管理、权限隔离、覆盖/删除语义与回滚方案。
 - `memory_system_design.md`：Agent 记忆系统的流程、存储结构和清理机制设计。
 - `session_design.md`：Agent 会话系统的生命周期、持久化、恢复和长会话压缩设计；包含初始方案与当前实施状态说明。
+- `context_compaction_cost_optimization_design.md`：模型辅助上下文压缩、70K 自动触发、结构化摘要、缓存测量和按事件 ID 恢复证据的设计与实施基线。
 - `session_store_technical_debt.md`：SessionStore 并发一致性、敏感信息、版本迁移和崩溃恢复治理记录；主要项目已完成，保留历史问题与残余限制。
 - `agent_refactor_plan.md`：Agent、MCP、Session、API、全屏 UI 等大文件与高耦合模块的分阶段治理计划；阶段 7 架构复查已收尾。
 - `MCP_USAGE.md`：MCP 配置、调用、排障和渐进式披露使用规范。

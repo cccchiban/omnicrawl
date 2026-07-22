@@ -517,6 +517,26 @@ class SubAgentForkExecutionTest(unittest.TestCase):
             "parent-model",
         )
 
+    def test_default_task_placeholder_uses_parent_model(self) -> None:
+        """模型为可选字段编造 default 时，不得将其发送到 Provider。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent_llm = self._llm("parent-model")
+            agent = self._agent(Path(temp_dir), parent_llm)
+
+            with patch("omnicrawl.agent.core.apply_model_selection") as select_model:
+                execution_context = agent._prepare_subagent_execution(
+                    self._definition(model="definition-key"),
+                    "fresh",
+                    "DEFAULT",
+                )
+
+        select_model.assert_not_called()
+        self.assertEqual(
+            execution_context.model_snapshot.descriptor.model_id,
+            "parent-model",
+        )
+
     def test_definition_model_is_used_when_task_does_not_override_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             parent_llm = self._llm("parent-model")

@@ -32,6 +32,14 @@ ACCENT_AMBER_SOFT = TRANSPARENT
 ACCENT_RED = "red"
 ACCENT_PURPLE = "magenta"
 
+# 使用 RGBA 颜色表达透明度，避免 ANSI 颜色名后附百分比在不同 Textual
+# 解析路径中被当作实色处理。终端支持真彩色时会与底色混合，ANSI 降级时
+# 仍保留蓝色语义。
+REASONING_BACKGROUND = "rgba(0, 160, 210, 0.24)"
+REASONING_HOVER_BACKGROUND = "rgba(0, 160, 210, 0.32)"
+REASONING_FOCUS_BACKGROUND = "rgba(0, 102, 204, 0.40)"
+USER_BACKGROUND = "rgba(170, 80, 210, 0.26)"
+
 _CSS_GREEN = "ansi_green"
 _CSS_BLUE = "ansi_blue"
 _CSS_AMBER = "ansi_yellow"
@@ -62,6 +70,12 @@ TERMINAL_THEME = Theme(
         "terminal-surface": TRANSPARENT,
         "terminal-panel": TRANSPARENT,
         "terminal-hover": TRANSPARENT,
+        # 思考块使用低不透明度的 RGBA 蓝色，叠加终端背景后呈现淡蓝色；
+        # 悬停和聚焦使用更高对比度的独立背景，确保文字始终清晰。
+        "terminal-reasoning-background": REASONING_BACKGROUND,
+        "terminal-reasoning-hover-background": REASONING_HOVER_BACKGROUND,
+        "terminal-reasoning-focus-background": REASONING_FOCUS_BACKGROUND,
+         "terminal-user-background": USER_BACKGROUND,
         "terminal-overlay": TRANSPARENT,
         "terminal-text": TERMINAL_FOREGROUND,
         "terminal-text-secondary": TERMINAL_FOREGROUND,
@@ -84,9 +98,11 @@ TERMINAL_THEME = Theme(
         "block-cursor-foreground": TERMINAL_BACKGROUND,
         "block-cursor-text-style": "reverse",
         "footer-key-foreground": _CSS_BLUE,
-        "input-cursor-background": TERMINAL_FOREGROUND,
-        "input-cursor-foreground": TERMINAL_BACKGROUND,
-        "input-cursor-text-style": "reverse",
+        # Textual 全屏驱动会隐藏终端硬件光标；输入框依靠软件光标绘制。
+        # 使用显式 ANSI 黑白色，避免 ansi_default + reverse 在不同终端中与背景融合。
+        "input-cursor-background": "ansi_white",
+        "input-cursor-foreground": "ansi_black",
+        "input-cursor-text-style": "none",
         "input-selection-background": _CSS_BLUE,
         "input-selection-foreground": TERMINAL_FOREGROUND,
     },

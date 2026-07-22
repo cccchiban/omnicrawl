@@ -10,7 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from omnicrawl.workspace.monitor import BackgroundMonitorManager
-from omnicrawl.workspace.tools import WorkspaceToolError, WorkspaceTools
+from omnicrawl.workspace.tools import (
+    WorkspaceCommandInvocation,
+    WorkspaceCommandResult,
+    WorkspaceToolError,
+    WorkspaceTools,
+)
 
 
 class WorkspaceReadFileTest(unittest.TestCase):
@@ -151,6 +156,81 @@ class ExplicitShellCommandTest(unittest.TestCase):
                     {"command": "Write-Output blocked", "shell": "bash"},
                     shell="powershell",
                 )
+
+    def test_shell_command_forces_utf8_subprocess_environment(self) -> None:
+        class CompletedProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "中文输出", ""
+
+        process = CompletedProcess()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tools = WorkspaceTools(Path(temp_dir))
+            with (
+                patch.object(
+                    tools,
+                    "command_invocation",
+                    return_value=WorkspaceCommandInvocation(
+                        args=["shell", "command"],
+                        label="Bash",
+                    ),
+                ),
+                patch("omnicrawl.workspace.tools.subprocess.Popen", return_value=process) as popen,
+                patch.dict(
+                    "omnicrawl.workspace.tools.os.environ",
+                    {"PYTHONUTF8": "0"},
+                ),
+                patch(
+                    "omnicrawl.workspace.monitor._assign_process_to_kill_on_close_job",
+                    return_value=None,
+                ),
+            ):
+                result = tools.run_shell_command({"command": "command"}, shell="bash")
+
+        environment = popen.call_args.kwargs["env"]
+        self.assertEqual(environment["PYTHONIOENCODING"], "utf-8")
+        self.assertEqual(environment["PYTHONUTF8"], "0")
+        self.assertEqual(environment["LANG"], "C.UTF-8")
+        self.assertTrue(result.ok)
+        self.assertIn("中文输出", result.output)
+
+    def test_powershell_invocation_forces_utf8_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            invocation = WorkspaceTools(Path(temp_dir)).command_invocation(
+                "Write-Output '中文'",
+                shell="powershell",
+            )
+
+        command = invocation.args[-1]
+        self.assertIn("[Console]::OutputEncoding", command)
+        self.assertIn("$OutputEncoding", command)
+        self.assertTrue(command.endswith("Write-Output '中文'"))
+
+    def test_diagnostic_command_cannot_mask_primary_command_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tools = WorkspaceTools(Path(temp_dir))
+            with patch.object(
+                tools,
+                "_run_command_invocation",
+                side_effect=(
+                    WorkspaceCommandResult(ok=False, output="退出码：7\n\nShell：Bash"),
+                    WorkspaceCommandResult(ok=True, output="退出码：0\n\nShell：Bash\n\ndiag"),
+                ),
+            ) as run:
+                result = tools.run_shell_command(
+                    {
+                        "command": "python -m unittest > test.log 2>&1",
+                        "diagnostic_command": "tail -n 40 test.log",
+                    },
+                    shell="bash",
+                )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("主命令结果", result.output)
+        self.assertIn("诊断命令结果", result.output)
+        self.assertIn("diag", result.output)
 
     def test_explicit_shell_timeout_terminates_started_process_tree(self) -> None:
         class TimedOutProcess:

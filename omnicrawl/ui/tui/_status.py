@@ -18,7 +18,7 @@ from ._colors import (
 from ._capabilities import TerminalCapabilities
 from ._display import _display_unit_width, _display_width, _iter_display_units, _split_display_rows
 
-USER_PREFIX = "▸"
+USER_PREFIX = "$"
 
 
 class StatusLine:

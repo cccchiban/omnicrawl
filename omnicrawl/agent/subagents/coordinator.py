@@ -13,7 +13,9 @@ from typing import Any, Callable, Mapping, Sequence
 
 from ..execution import AgentLoopBudgetExceeded
 from ..types import ToolDefinition, ToolResult
+from ...config.llm import LLMError
 from ...config.subagents import SubAgentConfig
+from ...llm.errors import ModelError, map_openai_exception
 from ...state.session_artifacts import redact_sensitive_text
 from .approval import (
     ApprovalBroker,
@@ -28,6 +30,66 @@ from .verify import VERIFY_COMMAND_TOOL_NAME
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _failure_root_exception(exc: BaseException) -> BaseException:
+    """沿异常因果链找到最具体的底层异常，避免公开包装器文本。"""
+
+    current = exc
+    seen: set[int] = set()
+    for _ in range(8):
+        if id(current) in seen:
+            break
+        seen.add(id(current))
+        cause = current.__cause__ or current.__context__
+        if cause is None:
+            break
+        current = cause
+    return current
+
+
+def _build_failure_diagnostics(
+    exc: BaseException,
+    *,
+    model: str = "",
+    wire_model: str = "",
+) -> dict[str, Any]:
+    """构建可持久化的 SubAgent 失败分类，不保存原始异常文本。"""
+
+    root = _failure_root_exception(exc)
+    diagnostic: dict[str, Any] = {
+        "category": "UNKNOWN",
+        "exception_type": type(root).__name__,
+        "retryable": False,
+    }
+    if isinstance(root, ModelError):
+        diagnostic["category"] = (
+            root.code.value if hasattr(root.code, "value") else str(root.code)
+        )
+        diagnostic["retryable"] = bool(root.retryable)
+        if root.provider:
+            diagnostic["provider"] = redact_sensitive_text(root.provider)
+        if root.status_code is not None:
+            diagnostic["status_code"] = int(root.status_code)
+    elif isinstance(root, LLMError):
+        diagnostic["category"] = "CONFIGURATION_ERROR"
+    elif isinstance(root, Exception):
+        mapped = map_openai_exception(root)
+        diagnostic["category"] = (
+            mapped.code.value if hasattr(mapped.code, "value") else str(mapped.code)
+        )
+        diagnostic["retryable"] = bool(mapped.retryable)
+        if mapped.code.value != "UNKNOWN" and mapped.provider:
+            diagnostic["provider"] = redact_sensitive_text(mapped.provider)
+        if mapped.code.value != "UNKNOWN" and mapped.status_code is not None:
+            diagnostic["status_code"] = int(mapped.status_code)
+    if model:
+        safe_selection = redact_sensitive_text(model)
+        diagnostic["model"] = safe_selection
+        diagnostic["model_selection"] = safe_selection
+    if wire_model:
+        diagnostic["wire_model"] = redact_sensitive_text(wire_model)
+    return diagnostic
 
 
 READ_ONLY_TOOL_NAMES = frozenset(
@@ -336,6 +398,15 @@ class SubAgentCoordinator:
         return self._task_manager.drain_notifications(
             owner_id=self._owner_id,
             session_id=session_id,
+        )
+
+    def available_agent_types(self) -> tuple[str, ...]:
+        """返回当前配置下可以实际创建任务的角色名称。"""
+
+        return tuple(
+            definition.name
+            for definition in self.registry.list_all()
+            if not self._unsupported_definition_reason(definition)
         )
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -1057,14 +1128,31 @@ class SubAgentCoordinator:
                 if emit_events:
                     self._emit_cancellation_event_safely(task, result)
                 raise
+            model = ""
+            wire_model = ""
+            model_snapshot = task.execution_context.model_snapshot
+            if model_snapshot is not None:
+                model = str(model_snapshot.selection or "").strip()
+                wire_model = str(model_snapshot.descriptor.model_id or "").strip()
+            diagnostic = _build_failure_diagnostics(
+                exc,
+                model=model,
+                wire_model=wire_model,
+            )
             LOGGER.warning(
-                "SubAgent task model execution failed: %s",
-                type(exc).__name__,
+                "SubAgent task model execution failed: category=%s exception=%s provider=%s "
+                "status=%s retryable=%s",
+                diagnostic["category"],
+                diagnostic["exception_type"],
+                diagnostic.get("provider", ""),
+                diagnostic.get("status_code", ""),
+                diagnostic["retryable"],
             )
             result = self._failure_payload(
                 task,
                 code="SUBAGENT_MODEL_ERROR",
                 message="子任务模型请求失败。",
+                diagnostic=diagnostic,
             )
             if emit_events:
                 self._emit_terminal_event(task, result)
@@ -1400,6 +1488,17 @@ class SubAgentCoordinator:
                     "AGENT_DEFINITION_INVALID",
                     f"tasks[{index}].subagent_type 必须是非空字符串。",
                 )
+            normalized_agent_type = agent_type.strip().casefold()
+            definition = self.registry.get(normalized_agent_type)
+            if definition is None:
+                available = ", ".join(self.available_agent_types()) or "无"
+                return (
+                    "AGENT_TYPE_NOT_FOUND",
+                    f"未找到 Agent 定义：{normalized_agent_type}。当前可用：{available}。",
+                )
+            unsupported = self._unsupported_definition_reason(definition)
+            if unsupported:
+                return "AGENT_DEFINITION_INVALID", unsupported
             if not isinstance(context, str) or context not in {"fresh", "fork"}:
                 return "AGENT_DEFINITION_INVALID", "context 仅支持 fresh 或 fork。"
             if context == "fork" and not self.config.allow_fork:
@@ -1523,6 +1622,7 @@ class SubAgentCoordinator:
         *,
         code: str,
         message: str,
+        diagnostic: Mapping[str, Any] | None = None,
     ) -> dict:
         return {
             "task_id": task.task_id,
@@ -1540,7 +1640,11 @@ class SubAgentCoordinator:
                 "model_turns": 0,
                 "tool_calls": 0,
             },
-            "error": {"code": code, "message": redact_sensitive_text(message)},
+            "error": {
+                "code": code,
+                "message": redact_sensitive_text(message),
+                **({"diagnostic": dict(diagnostic)} if diagnostic else {}),
+            },
         }
 
     @classmethod
