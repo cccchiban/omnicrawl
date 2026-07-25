@@ -4,13 +4,14 @@ requires = ["setuptools>=58", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "omnicrawl"
-version = "0.1.0"
+name = "omnicrawl-agent"
+version = "0.1.1"
 description = "Local OmniCrawl agent with TUI, tools, MCP and NPM Hook plugins"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [{ name = "OmniCrawl" }]
+urls = { Repository = "https://github.com/cccchiban/omnicrawl" }
 dependencies = [
     "openai>=1.68.0",
     "markdown>=3.4.0",
@@ -27,6 +28,8 @@ dependencies = [
 windows = ["pywin32>=306"]
 
 [project.scripts]
+# ocl 是面向用户的短命令；保留 omnicrawl 兼容已有脚本。
+ocl = "omnicrawl.__main__:main"
 omnicrawl = "omnicrawl.__main__:main"
 
 [tool.setuptools.packages.find]
@@ -39,4 +42,6 @@ omnicrawl = [
     "agent/subagents/builtin/*.md",
     "agent/context_compaction/summary_prompt.md",
     "extensions/node_runner.mjs",
+    "config/templates/config.example.yaml",
+    "config/templates/models.example.yaml",
 ]

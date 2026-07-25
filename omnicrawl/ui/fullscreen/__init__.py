@@ -16,6 +16,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
 from ...agent import AgentError, LocalToolAgent
+from ...config.runtime import resolve_config_path, resolve_models_path
 from ...agent.tools import public_tool_arguments
 from .hud import (
     compact_token_count,
@@ -38,6 +39,7 @@ from ...commands.slash import (
     handle_session_command,
     handle_subagent_task_command,
 )
+from .channel_manager import ChannelManagerResult, ChannelManagerScreen
 from .commands import CommandDispatcher
 from .model_picker import ModelPickerResult, ModelPickerScreen
 from .settings import SettingsAction, SettingsScreen
@@ -1255,6 +1257,30 @@ class OmniCrawlApp(App[None]):
         def receive(action: SettingsAction | None) -> None:
             if action is not None and action.name == "model":
                 self._open_model_picker(refresh=False)
+            elif action is not None and action.name == "channels":
+                def apply_channels(configuration) -> None:
+                    self.agent.set_model(configuration.default_key)
+
+                def receive_channels(result: ChannelManagerResult | None) -> None:
+                    if result is not None:
+                        self._input_tokens = 0
+                        self._output_tokens = 0
+                        self._cached_input_tokens = 0
+                        self._append_message(
+                            "status",
+                            f"模型渠道已保存，当前模型：{self.agent.current_model}",
+                        )
+                    self._refresh_context_summary()
+                    self._open_settings()
+
+                self.push_screen(
+                    ChannelManagerScreen(
+                        resolve_config_path(),
+                        resolve_models_path(),
+                        apply_configuration=apply_channels,
+                    ),
+                    receive_channels,
+                )
             elif action is not None and action.name == "subagents_advanced":
                 self.push_screen(
                     SettingsScreen(self.agent, advanced=True),

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .plugin_models import (
+    OMNICRAWL_VERSION,
     PluginInstallError,
     PluginManifest,
     PluginRecord,
@@ -601,7 +602,7 @@ def smoke_test_worker(plugin_root: Path, plugin_name: str) -> None:
         client.initialize(
             {
                 "apiVersion": "1",
-                "omnicrawlVersion": "0.1.0",
+                "omnicrawlVersion": OMNICRAWL_VERSION,
                 "permissions": [],
             },
             timeout_ms=5000,

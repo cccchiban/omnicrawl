@@ -165,7 +165,7 @@ class PluginRuntime {
         apiVersion: String(this.manifest.apiVersion || "1"),
       },
       runtime: {
-        omnicrawlVersion: params.omnicrawlVersion || process.env.OMNICRAWL_VERSION || "0.1.0",
+        omnicrawlVersion: params.omnicrawlVersion || process.env.OMNICRAWL_VERSION || "0.1.1",
         nodeVersion: process.version,
       },
       hooks: {

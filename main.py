@@ -1,7 +1,7 @@
 """项目根启动入口。
 
 开发态：``python main.py`` / ``python main.py plugin ...``
-安装后：``omnicrawl`` / ``omnicrawl plugin ...``（见 pyproject.toml console script）
+安装后：``ocl`` / ``omnicrawl`` / ``ocl plugin ...``（见 pyproject.toml console script）
 
 Windows 下普通 TUI 路径仍可弹新 PowerShell 窗口；plugin 子命令必须在弹窗前处理。
 """

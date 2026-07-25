@@ -14,6 +14,10 @@ from typing import Sequence
 
 from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
 from omnicrawl.approval import approval_mode_label, load_approval_mode
+from omnicrawl.config.bootstrap import (
+    format_startup_report,
+    initialize_user_configuration,
+)
 from omnicrawl.llm import LLMError, load_llm_config
 from omnicrawl.project_context import (
     ProjectContextError,
@@ -58,6 +62,19 @@ def _load_fullscreen_ui():
     return FullscreenStartup, run_fullscreen_tui
 
 
+def _run_channel_setup_wizard(config_path: Path, models_path: Path) -> bool:
+    """按需加载首次启动渠道向导，避免插件 CLI 提前加载 Textual。"""
+
+    try:
+        from omnicrawl.ui.fullscreen.channel_manager import run_channel_setup
+    except ModuleNotFoundError as exc:
+        dependency = exc.name or "textual"
+        raise UIStartupError(
+            f"缺少首次配置界面依赖：{dependency}。请重新安装 omnicrawl-agent。"
+        ) from exc
+    return run_channel_setup(config_path, models_path)
+
+
 def run_plugin_cli(argv: Sequence[str]) -> int | None:
     """若 argv 以 plugin 开头则执行插件 CLI 并返回退出码；否则返回 None。"""
 
@@ -86,6 +103,16 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         return int(plugin_exit)
 
     args = _parse_args(raw_argv)
+    setup = initialize_user_configuration(
+        channel_setup=_run_channel_setup_wizard,
+    )
+    for line in format_startup_report(setup):
+        print(line)
+    if setup.errors:
+        return 1
+    if not setup.api_key_configured:
+        return 2
+
     # 包安装后 app_root 可能是 site-packages；工作区检测仍从 cwd 向上找项目标记。
     app_root = Path.cwd().resolve()
     plugin_runtime = None

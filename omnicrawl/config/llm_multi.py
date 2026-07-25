@@ -408,8 +408,12 @@ def _config_from_custom_record(config: LLMConfig, record: Any) -> LLMConfig:
             f"但 Profile {record.profile} 为 {profile.provider}。"
         )
 
-    api_key = resolve_api_key(profile) or config.api_key
-    base_url = profile.base_url or config.base_url
+    api_key = resolve_api_key(profile)
+    if not api_key:
+        raise LLMError(
+            f"Profile {profile.id} 缺少 API Key；不同模型渠道不会复用当前模型凭据。"
+        )
+    base_url = profile.base_url
     return LLMConfig(
         api_key=api_key,
         base_url=base_url,
@@ -467,8 +471,12 @@ def _config_from_profile_model(
             provider_options=dict(config.provider_options),
         )
 
-    api_key = resolve_api_key(profile) or config.api_key
-    base_url = profile.base_url or config.base_url
+    api_key = resolve_api_key(profile)
+    if not api_key:
+        raise LLMError(
+            f"Profile {profile.id} 缺少 API Key；不同模型渠道不会复用当前模型凭据。"
+        )
+    base_url = profile.base_url
     protocol = profile.resolve_protocol() or config.protocol or "openai_chat_completions"
     return LLMConfig(
         api_key=api_key,

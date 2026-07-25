@@ -149,7 +149,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self._row_keys = (
             tuple(SUBAGENT_ADVANCED_SETTING_KEYS)
             if advanced
-            else ("model", "reasoning", "context", "approval", "subagents_advanced")
+            else ("model", "channels", "reasoning", "context", "approval", "subagents_advanced")
             + tuple(item[0] for item in _FEATURES)
         )
 
@@ -202,8 +202,8 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if self._busy:
             return
         key = self._row_keys[self._selected]
-        if not self._advanced and key == "model":
-            self.dismiss(SettingsAction("model"))
+        if not self._advanced and key in {"model", "channels"}:
+            self.dismiss(SettingsAction(key))
             return
         if not self._advanced and key == "subagents_advanced":
             self.dismiss(SettingsAction("subagents_advanced"))
@@ -375,6 +375,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             }
         values = {
             "model": str(getattr(self._agent, "current_model", "未设置") or "未设置"),
+            "channels": "管理",
             "reasoning": _REASONING_LABELS.get(str(getattr(self._agent, "reasoning_effort", "none") or "none"), "默认"),
             "context": f"{int(getattr(self._agent, 'context_window_tokens', 128_000)) // 1000}K",
             "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))),
@@ -392,6 +393,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     def _row_labels() -> dict[str, str]:
         return {
             "model": "模型",
+            "channels": "模型渠道",
             "reasoning": "推理强度",
             "context": "上下文长度（K）",
             "approval": "工具审批",

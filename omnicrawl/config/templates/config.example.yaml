@@ -1,0 +1,105 @@
+# OmniCrawl 首次启动配置
+# API Key 会在首次启动时交互式写入当前用户配置目录。
+version: 2
+
+llm:
+  active_model:
+    source: custom
+    key: default-chat
+
+  defaults:
+    request_timeout_seconds: 180
+    request_retry_count: 5
+    discovery_timeout_seconds: 10
+    discovery_cache_ttl_seconds: 300
+    reasoning_effort: ""
+    thinking_type: disabled
+
+  profiles:
+    openai-main:
+      provider: openai
+      enabled: true
+      base_url: "https://api.openai.com/v1"
+      api_key_env: OPENAI_API_KEY
+      default_protocol: openai_chat_completions
+      discovery:
+        enabled: true
+      default_context_window_tokens: 128000
+
+    anthropic-main:
+      provider: anthropic
+      enabled: false
+      base_url: "https://api.anthropic.com"
+      api_key_env: ANTHROPIC_API_KEY
+      default_protocol: anthropic_messages
+      discovery:
+        enabled: true
+      default_context_window_tokens: 200000
+
+    gemini-main:
+      provider: gemini
+      enabled: false
+      base_url: "https://generativelanguage.googleapis.com"
+      api_key_env: GEMINI_API_KEY
+      default_protocol: gemini_generate_content
+      discovery:
+        enabled: true
+      default_context_window_tokens: 1000000
+
+approval:
+  mode: manual
+
+memory:
+  enabled: true
+
+context_compaction:
+  enabled: false
+  trigger_context_tokens: 70000
+  next_user_reserve_tokens: 4096
+  minimum_turns_between_model_compactions: 4
+  emergency_context_ratio: 0.85
+  summary_profile: ""
+  reasoning_effort: low
+  recent_turns: 6
+  recent_context_ratio: 0.25
+  target_summary_tokens: 6000
+  preserve_exact_evidence: true
+  allow_cross_provider: false
+  failure_fallback: deterministic
+
+api:
+  bearer_token: "请替换为随机长令牌"
+  host: "127.0.0.1"
+  port: 8765
+  allowed_origins:
+    - "http://localhost:5173"
+  confirmation_timeout_seconds: 300
+
+agent_temp:
+  enabled: true
+  directory: ".agent_tmp"
+  cleanup_enabled: true
+  cleanup_interval_hours: 24
+
+plugins:
+  enabled: false
+
+subagents:
+  enabled: false
+  max_depth: 1
+  max_concurrency: 2
+  max_tasks_per_batch: 4
+  default_timeout_seconds: 3600
+  model_request_concurrency: 2
+  allow_background: false
+  allow_fork: false
+  allow_worktree: false
+  allow_standard_agent: false
+  allow_shared_workspace_writes: false
+  enable_verify_agent: false
+  verify_command_timeout_seconds: 120
+  task_retention_minutes: 60
+  result_summary_chars: 6000
+
+mcp:
+  enabled: false

@@ -1118,13 +1118,14 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
             rows = list(app.screen.query(".settings-row"))
-            self.assertEqual(len(rows), 10)
+            self.assertEqual(len(rows), 11)
             self.assertTrue(
                 all(str(row.content).strip() for row in rows),
                 [repr(str(row.content)) for row in rows],
             )
             self.assertIn("模型：demo-model", str(rows[0].content))
-            self.assertIn("上下文长度（K）：128K", str(rows[2].content))
+            self.assertIn("模型渠道：管理", str(rows[1].content))
+            self.assertIn("上下文长度（K）：128K", str(rows[3].content))
             self.assertTrue(
                 any("上下文压缩：已关闭" in str(row.content) for row in rows)
             )

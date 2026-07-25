@@ -9,22 +9,158 @@ from unittest.mock import Mock, patch
 
 import yaml
 
+import omnicrawl.config.runtime as runtime_module
 from omnicrawl.entry import _parse_args, run_application
 from omnicrawl.runtime_config import (
     RuntimeConfigError,
     default_config_path,
     load_config_data,
+    resolve_config_path,
+    resolve_models_path,
     save_config_data,
+    user_config_dir,
 )
 from omnicrawl.ui import UIStartupError
 from omnicrawl.ui.windows_launcher import launch_in_powershell_window
 
 
 class RuntimeConfigTest(unittest.TestCase):
-    def test_default_config_path_points_to_project_root_yaml(self) -> None:
-        expected_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    def test_default_config_path_points_to_user_config_directory(self) -> None:
+        self.assertEqual(default_config_path(), user_config_dir() / "config.yaml")
 
-        self.assertEqual(default_config_path(), expected_path)
+    def test_should_prefer_environment_paths_over_default_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cwd = root / "cwd"
+            user_dir = root / "user"
+            source_dir = root / "source"
+            env_dir = root / "env"
+            cwd.mkdir()
+            user_dir.mkdir()
+            source_dir.mkdir()
+            env_dir.mkdir()
+            env_config = env_dir / "config.yaml"
+            env_models = env_dir / "models.yaml"
+            env_config.write_text("env: true", encoding="utf-8")
+            env_models.write_text("env: true", encoding="utf-8")
+            (cwd / "config.yaml").write_text("cwd: true", encoding="utf-8")
+            (cwd / "models.yaml").write_text("cwd: true", encoding="utf-8")
+            (user_dir / "config.yaml").write_text("user: true", encoding="utf-8")
+            (user_dir / "models.yaml").write_text("user: true", encoding="utf-8")
+            (source_dir / "config.yaml").write_text("source: true", encoding="utf-8")
+            (source_dir / "models.yaml").write_text("source: true", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {
+                    "AI_CONFIG_FILE": str(env_config),
+                    "AI_MODELS_FILE": str(env_models),
+                },
+                clear=False,
+            ):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
+                    with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                        with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
+                            config_path = resolve_config_path()
+                            models_path = resolve_models_path()
+
+            self.assertEqual(config_path, env_config)
+            self.assertEqual(models_path, env_models)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cwd = root / "cwd"
+            user_dir = root / "user"
+            source_dir = root / "source"
+            cwd.mkdir()
+            user_dir.mkdir()
+            source_dir.mkdir()
+            cwd_config = cwd / "config.yaml"
+            cwd_models = cwd / "models.yaml"
+            cwd_config.write_text("cwd: true", encoding="utf-8")
+            cwd_models.write_text("cwd: true", encoding="utf-8")
+            (user_dir / "config.yaml").write_text("user: true", encoding="utf-8")
+            (user_dir / "models.yaml").write_text("user: true", encoding="utf-8")
+            (source_dir / "config.yaml").write_text("source: true", encoding="utf-8")
+            (source_dir / "models.yaml").write_text("source: true", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"AI_CONFIG_FILE": "", "AI_MODELS_FILE": ""},
+                clear=False,
+            ):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
+                    with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                        with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
+                            config_path = resolve_config_path()
+                            models_path = resolve_models_path()
+
+            self.assertEqual(config_path, cwd_config)
+            self.assertEqual(models_path, cwd_models)
+
+    def test_should_fallback_to_source_directory_only_in_development(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cwd = root / "cwd"
+            user_dir = root / "user"
+            source_dir = root / "source"
+            cwd.mkdir()
+            user_dir.mkdir()
+            source_dir.mkdir()
+            source_config = source_dir / "config.yaml"
+            source_models = source_dir / "models.yaml"
+            source_config.write_text("source: true", encoding="utf-8")
+            source_models.write_text("source: true", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"AI_CONFIG_FILE": "", "AI_MODELS_FILE": ""},
+                clear=False,
+            ):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
+                    with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                        with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
+                            with patch.object(
+                                runtime_module,
+                                "_is_development_environment",
+                                return_value=True,
+                                create=True,
+                            ):
+                                config_path = resolve_config_path()
+                                models_path = resolve_models_path()
+
+            self.assertEqual(config_path, source_config)
+            self.assertEqual(models_path, source_models)
+
+    def test_should_keep_user_directory_as_target_when_no_candidate_exists_in_production(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cwd = root / "cwd"
+            user_dir = root / "user"
+            source_dir = root / "source"
+            cwd.mkdir()
+            user_dir.mkdir()
+            source_dir.mkdir()
+
+            with patch.dict(
+                os.environ,
+                {"AI_CONFIG_FILE": "", "AI_MODELS_FILE": ""},
+                clear=False,
+            ):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
+                    with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                        with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
+                            with patch.object(
+                                runtime_module,
+                                "_is_development_environment",
+                                return_value=False,
+                                create=True,
+                            ):
+                                config_path = resolve_config_path()
+                                models_path = resolve_models_path()
+
+            self.assertEqual(config_path, user_dir / "config.yaml")
+            self.assertEqual(models_path, user_dir / "models.yaml")
 
     def test_load_config_data_accepts_utf8_bom_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -77,25 +213,55 @@ class RuntimeConfigTest(unittest.TestCase):
             json_path.write_text("not valid json and must not be parsed", encoding="utf-8")
 
             with patch(
-                "omnicrawl.config.runtime.default_config_path",
-                return_value=yaml_path,
+                "omnicrawl.config.runtime.Path.cwd",
+                return_value=Path(temp_dir),
             ):
-                with self.assertRaisesRegex(RuntimeConfigError, "不会读取或自动迁移 JSON"):
-                    load_config_data()
+                with patch(
+                    "omnicrawl.config.runtime.user_config_dir",
+                    return_value=Path(temp_dir),
+                ):
+                    with patch(
+                        "omnicrawl.config.runtime.project_root",
+                        return_value=Path(temp_dir),
+                    ):
+                        with self.assertRaisesRegex(RuntimeConfigError, "不会读取或自动迁移 JSON"):
+                            load_config_data()
 
     def test_parse_args_accepts_resume_session_id(self) -> None:
         args = _parse_args(["--resume", "20260616-201530-a1b2c3"])
 
         self.assertEqual(args.resume, "20260616-201530-a1b2c3")
 
-    def test_main_reports_readable_error_when_fullscreen_ui_dependency_is_missing(self) -> None:
+    def test_main_stops_before_tui_when_api_key_is_missing(self) -> None:
+        setup = SimpleNamespace(api_key_configured=False, errors=())
         with patch("omnicrawl.entry.configure_console_encoding"):
             with patch(
-                "omnicrawl.entry._load_fullscreen_ui",
-                side_effect=UIStartupError("缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。"),
-            ):
-                with patch("builtins.print") as print_mock:
-                    code = run_application([])
+                "omnicrawl.entry.initialize_user_configuration",
+                return_value=setup,
+            ) as initialize:
+                with patch("omnicrawl.entry.format_startup_report", return_value=("missing key",)):
+                    with patch("omnicrawl.entry.load_llm_config") as load_llm_config:
+                        with patch("builtins.print") as print_mock:
+                            code = run_application([])
+
+        self.assertEqual(code, 2)
+        initialize.assert_called_once()
+        self.assertTrue(callable(initialize.call_args.kwargs["channel_setup"]))
+        load_llm_config.assert_not_called()
+        print_mock.assert_called_once_with("missing key")
+
+    def test_main_reports_readable_error_when_fullscreen_ui_dependency_is_missing(self) -> None:
+        with patch("omnicrawl.entry.configure_console_encoding"):
+            with patch("omnicrawl.entry.initialize_user_configuration") as initialize:
+                initialize.return_value = SimpleNamespace(
+                    api_key_configured=True,
+                    errors=(),
+                )
+                with patch("omnicrawl.entry.format_startup_report", return_value=()):
+                    with patch("omnicrawl.entry.load_llm_config", return_value=SimpleNamespace()):
+                        with patch("omnicrawl.entry._load_fullscreen_ui", side_effect=UIStartupError("缺少可选终端界面依赖：textual。请执行 pip install -r requirements.txt。")):
+                            with patch("builtins.print") as print_mock:
+                                code = run_application([])
 
         self.assertEqual(code, 1)
         print_mock.assert_called_once_with(
@@ -131,7 +297,13 @@ class RuntimeConfigTest(unittest.TestCase):
                                                     fullscreen_startup,
                                                     run_fullscreen_tui,
                                                 )
-                                                code = run_application(["--resume", "session-demo"])
+                                                with patch("omnicrawl.entry.initialize_user_configuration") as initialize:
+                                                    initialize.return_value = SimpleNamespace(
+                                                        api_key_configured=True,
+                                                        errors=(),
+                                                    )
+                                                    with patch("omnicrawl.entry.format_startup_report", return_value=()):
+                                                        code = run_application(["--resume", "session-demo"])
 
         self.assertEqual(code, 0)
         agent_config_class.assert_called_once_with(

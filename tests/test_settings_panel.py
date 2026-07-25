@@ -184,7 +184,15 @@ class SettingsCommandTests(unittest.TestCase):
         self.assertFalse(settings.open_settings is False)
         self.assertFalse(singular.handled)
 
-    def test_settings_screen_declares_navigation_bindings(self) -> None:
+    def test_settings_screen_exposes_model_channel_manager(self) -> None:
+        screen = object.__new__(SettingsScreen)
+        screen._agent = SimpleNamespace(current_model="demo")
+        screen._advanced = False
+        screen._row_keys = ("model", "channels")
+
+        self.assertEqual(SettingsScreen._row_labels()["channels"], "模型渠道")
+        self.assertEqual(screen._current_row_values()["channels"], "管理")
+
         descriptions = " ".join(
             binding.description if hasattr(binding, "description") else binding[2]
             for binding in SettingsScreen.BINDINGS

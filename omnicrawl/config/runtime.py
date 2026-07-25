@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -19,14 +20,34 @@ class RuntimeConfigError(RuntimeError):
     """本地配置文件读取或校验失败时抛出。"""
 
 
+def user_config_dir(
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+) -> Path:
+    """返回跨平台的用户配置目录，不依赖当前工作目录或 site-packages。"""
+
+    env = os.environ if environ is None else environ
+    platform = platform_name or sys.platform
+    if platform.startswith("win"):
+        appdata = env.get("APPDATA", "").strip()
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "OmniCrawl"
+
+    config_home = env.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(config_home) if config_home else Path.home() / ".config"
+    return base / "omnicrawl"
+
+
 def project_root() -> Path:
+    """返回源码项目根目录，保留旧调用名供开发工具使用。"""
+
     return Path(__file__).resolve().parent.parent.parent
 
 
 def default_config_path() -> Path:
-    """返回项目默认 YAML 配置文件路径。"""
+    """返回用户默认运行配置路径。"""
 
-    return project_root() / DEFAULT_CONFIG_FILENAME
+    return user_config_dir() / DEFAULT_CONFIG_FILENAME
 
 
 def default_yaml_config_path() -> Path:
@@ -36,29 +57,71 @@ def default_yaml_config_path() -> Path:
 
 
 def default_models_path() -> Path:
-    return project_root() / DEFAULT_MODELS_FILENAME
+    """返回用户默认模型目录配置路径。"""
+
+    return user_config_dir() / DEFAULT_MODELS_FILENAME
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
-    """按显式参数、环境变量、项目默认路径的顺序解析 YAML 配置。"""
+    """按显式路径、环境变量、工作区、用户目录和开发源码回退解析。"""
 
     if config_path is not None:
         path = Path(config_path).expanduser()
     else:
         raw_env = os.getenv(CONFIG_PATH_ENV, "").strip()
-        path = Path(raw_env).expanduser() if raw_env else default_config_path()
+        path = (
+            Path(raw_env).expanduser()
+            if raw_env
+            else _resolve_default_path(DEFAULT_CONFIG_FILENAME)
+        )
     _validate_yaml_path(path, source="运行配置")
     return path
 
 
 def resolve_models_path(models_path: str | Path | None = None) -> Path:
+    """按显式路径、环境变量、工作区、用户目录和开发源码回退解析。"""
+
     if models_path is not None:
         path = Path(models_path).expanduser()
     else:
         raw_env = os.getenv(MODELS_PATH_ENV, "").strip()
-        path = Path(raw_env).expanduser() if raw_env else default_models_path()
+        path = (
+            Path(raw_env).expanduser()
+            if raw_env
+            else _resolve_default_path(DEFAULT_MODELS_FILENAME)
+        )
     _validate_yaml_path(path, source="模型配置")
     return path
+
+
+def _resolve_default_path(filename: str) -> Path:
+    """查找默认配置；找不到现有文件时返回用户目录作为创建目标。"""
+
+    working_directory_path = Path.cwd() / filename
+    if working_directory_path.is_file():
+        return working_directory_path
+
+    user_path = user_config_dir() / filename
+    if user_path.is_file():
+        return user_path
+
+    if _is_development_environment():
+        source_path = project_root() / filename
+        if source_path.is_file():
+            return source_path
+
+    return user_path
+
+
+def _is_development_environment() -> bool:
+    """仅在源码项目中启用源码配置回退，避免 Wheel 误读安装目录文件。"""
+
+    root = project_root()
+    return (
+        (root / "pyproject.toml").is_file()
+        and (root / "setup.cfg").is_file()
+        and (root / "omnicrawl").is_dir()
+    )
 
 
 def load_config_data(config_path: str | Path | None = None) -> dict[str, Any]:

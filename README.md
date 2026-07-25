@@ -67,26 +67,26 @@ python main.py
 OmniCrawl 支持在 Host 生命周期节点分发 Hook，并通过独立 Node Worker 加载 NPM 插件。默认关闭，不影响现有 TUI / Skill / MCP / Session。
 
 ```powershell
-# 诊断环境（以下三条等价）
+# 诊断环境（源码入口和安装入口均可）
 python main.py plugin doctor
-python -m omnicrawl plugin doctor
-omnicrawl plugin doctor   # 需先 pip install -e .
+ocl plugin doctor
+omnicrawl plugin doctor   # 兼容入口
 
-# 启用全局插件系统（写入 config.yaml 的 plugins.enabled）
-python main.py plugin system enable
+# 启用全局插件系统（写入用户配置目录的 config.yaml）
+ocl plugin system enable
 
 # 注册本地开发插件（dev 模式，不进可回滚 store）
-python main.py plugin install .\path\to\plugin --dev --project
+ocl plugin install .\path\to\plugin --dev --project
 
 # 从 NPM 安装（需 Node 20+；强制 --ignore-scripts）
-python main.py plugin install @scope/name@1.2.3 --project --enable --yes
+ocl plugin install @scope/name@1.2.3 --project --enable --yes
 
-python main.py plugin list
-python main.py plugin disable @scope/name --project
-python main.py plugin rollback @scope/name --project
+ocl plugin list
+ocl plugin disable @scope/name --project
+ocl plugin rollback @scope/name --project
 ```
 
-TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、上下文长度（32K–2048K）、审批模式、记忆、MCP、插件、子任务和上下文压缩总开关；修改立即生效并持久化到当前项目配置。上下文压缩默认关闭，开启后仅在完整回合结束且预计下一次请求达到 70K Token 时使用模型辅助压缩，并同步启用受当前摘要约束的证据恢复工具。上下文长度按当前活动模型保存：自定义模型写入 `models.yaml`，其他模型写入 `config.yaml` 默认值。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
+TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、上下文长度（32K–2048K）、审批模式、记忆、MCP、插件、子任务和上下文压缩总开关；修改立即生效并持久化到用户配置目录。上下文压缩默认关闭，开启后仅在完整回合结束且预计下一次请求达到 70K Token 时使用模型辅助压缩，并同步启用受当前摘要约束的证据恢复工具。上下文长度按当前活动模型保存：自定义模型写入 `models.yaml`，其他模型写入 `config.yaml` 默认值。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
 
 设计说明见 `docs/HOOK_PLUGIN_DESIGN.md`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。插件若要提供最低优先级的 Agent Markdown 定义，必须在 manifest 的 `omnicrawl.agents` 中声明包内路径，并同时声明且获批 `agent:definitions` 权限。
 
@@ -94,23 +94,52 @@ TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸
 
 运行终端工作台需要 Python `>=3.9,<4.0`。
 
+### 从源码运行
+
 ```powershell
 pip install -r requirements.txt
 
-# 可选：安装 console script（omnicrawl）
-# 若本机 pip/setuptools 较旧，加 --no-build-isolation 更稳
+# 可选：安装可编辑 console script；同时提供 ocl 和 omnicrawl 两个命令
 pip install -e . --no-build-isolation
 ```
+
+### 从 PyPI 安装
+
+```powershell
+python -m pip install omnicrawl-agent
+```
+
+安装完成后，推荐使用短命令 `ocl`；旧命令 `omnicrawl` 仍保留兼容：
+
+```powershell
+ocl
+# 等价兼容入口
+omnicrawl
+```
+
+首次启动会按配置查找顺序选择 `config.yaml` 和 `models.yaml`：如果没有环境变量或当前工作目录配置，才会在用户配置目录创建文件，并打开模型渠道配置向导。向导预置 OpenAI、Anthropic、Gemini 三种请求方式；OpenAI 可选择 Chat Completions 或 Responses 协议。每个渠道独立配置渠道名称、Base URL、API Key 和模型 ID，同一种请求方式可通过 `A` 添加多个不同渠道。
+
+渠道列表使用 `↑↓` 选择、`空格` 启用或禁用、`Enter` 编辑、`A` 添加、`D` 二次确认删除、`F` 设为默认，最后按 `Ctrl+S` 保存。API Key 仅写入实际使用的本机 `config.yaml`，不会进入 `models.yaml` 或发布包。Windows 用户配置目录为 `%APPDATA%\\OmniCrawl`；Linux/macOS 为 `~/.config/omnicrawl`。如果首次启动没有保存至少一个已启用且具备 Key 的默认渠道，程序会显示提示并退出，配置完成后重新运行 `ocl` 即可。
+
+首次启动还会检查 Node.js、模型目录和插件注册状态。Node.js 或插件检查失败只会影响插件功能，不会阻止无插件模式启动。
 
 ## 运行
 
 ### 终端 TUI
 
+安装包启动：
+
+```powershell
+ocl
+```
+
+源码目录启动仍可使用：
+
 ```powershell
 python main.py
 ```
 
-从 IDE、测试窗口或普通命令行运行时，Windows 会自动弹出独立 PowerShell 窗口。
+从 IDE、测试窗口或普通命令行运行时，源码入口的 Windows 行为可能会弹出独立 PowerShell 窗口；`ocl` 和 `python -m omnicrawl` 在当前控制台运行。
 
 ### 本地 HTTP/SSE API
 
@@ -133,6 +162,7 @@ python -m omnicrawl.api
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
 - 输入 `/model`：打开双列模型选择界面（自定义 `models.yaml` + API 自动发现）；列表默认获得焦点，使用 `↑↓` 选择、`←→` 切列、`Enter` 确认，按 `/` 可进入搜索框；`/model --refresh` 刷新发现缓存；`/model <key|alias|model_id|profile/model_id>` 直接切换。
+- 输入 `/settings`：打开运行设置；选择“模型渠道”可再次进入渠道管理界面，新增、编辑、启用、禁用、删除渠道或切换默认模型，保存后当前 Agent 立即重新加载默认渠道。
 - 输入 `/approval`：查看当前工具审批模式；输入 `/approval:manual`、`/approval:auto`、`/approval:review` 可切换审批模式并同步写入配置文件。
 - 任务执行中按 `Esc`：请求取消当前操作；空闲时按 `Esc` 聚焦输入框。`Ctrl+C` 在输入框有选区时复制选中文本，无选区时清空输入框；`Ctrl+L` 只清空当前视图，不清空会话数据。可按 `Ctrl+Q`、输入 `退出`/`结束` 或关闭窗口退出工作台。
 
@@ -174,7 +204,8 @@ python main.py
 │   │   ├── llm_client.py         # OpenAI Responses 网络客户端（遗留/审查）
 │   │   ├── model_catalog.py      # 自定义 + 自动发现双列目录
 │   │   ├── model_store.py        # models.yaml
-│   │   └── runtime.py            # 严格 YAML 配置仓库
+│   │   ├── runtime.py            # 用户配置路径、严格 YAML 配置仓库
+│   │   └── templates/            # 首次启动随 Wheel 分发的配置模板
 │   ├── llm/                     # 统一模型协议、Runtime Manager、Provider Adapter
 │   │   └── providers/            # openai_chat / openai_responses / anthropic / gemini
 │   ├── workspace/               # 工作区工具、Monitor、临时目录
@@ -236,11 +267,25 @@ models:
     context_window_tokens: 128000
 ```
 
-程序只读取 YAML 运行配置，不再解析、迁移或回退到 JSON。请复制模板后填写本地配置：
+程序只读取 YAML 运行配置，不再解析、迁移或回退到 JSON。配置文件按以下顺序分别查找：
+
+1. `AI_CONFIG_FILE` / `AI_MODELS_FILE` 指定的文件。
+2. 当前工作目录下的 `config.yaml` / `models.yaml`。
+3. 用户配置目录：Windows `%APPDATA%\\OmniCrawl`，Linux/macOS `~/.config/omnicrawl`。
+4. 仅源码开发环境中的项目根目录；安装 Wheel 后不会从 `site-packages` 回退读取配置。
+
+如果没有找到现有文件，首次启动会把用户配置目录作为创建目标。源码开发时也可以手工复制模板到当前工作目录：
 
 ```powershell
 copy config.example.yaml config.yaml
 copy models.example.yaml models.yaml
+```
+
+如需将配置放到其他位置，可显式设置：
+
+```powershell
+$env:AI_CONFIG_FILE = "D:\\path\\to\\config.yaml"
+$env:AI_MODELS_FILE = "D:\\path\\to\\models.yaml"
 ```
 
 显式配置路径和 `AI_CONFIG_FILE` 也必须指向 `.yaml` 或 `.yml` 文件；传入 JSON 会直接报错。若工作区仍残留旧 `config.json`，程序不会读取它，并会提示根据 YAML 模板手工配置。历史 `config.json` 与 `*.migrated.bak` 仍被 `.gitignore` 保护，防止旧凭据误提交。
@@ -298,14 +343,14 @@ subagents:
 
 MCP 可在配置文件的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 提供项目文档 Resource、健康状态 Resource 和常用 Prompt；工作区文件、搜索、写入及命令操作由 Agent 内置工具提供，不再通过 MCP 重复暴露。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `docs/MCP_USAGE.md`。
 
-如果没有本地配置文件，必须设置对应环境变量；如果同时存在，环境变量优先，便于临时覆盖本地配置：
+如果不想把 API Key 写入用户配置目录，也可以设置对应环境变量；环境变量优先于配置文件，便于临时覆盖本地配置：
 
 ```powershell
 $env:OPENAI_API_KEY = "你的 API Key"
 $env:OMNICRAWL_MODEL = "default-chat"   # 或 OPENAI_MODEL=裸模型ID
 $env:OPENAI_THINKING_TYPE = "disabled"
 $env:OPENAI_BASE_URL = "https://xxx.xx/v1"
-python main.py
+ocl
 ```
 
 如果要强制使用某个语音后端：
