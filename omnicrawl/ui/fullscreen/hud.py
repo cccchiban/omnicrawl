@@ -7,11 +7,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from rich.text import Text
 
 from .theme import (
-    ACCENT_AMBER,
-    ACCENT_BLUE,
     ACCENT_GREEN,
-    ACCENT_PURPLE,
-    ACCENT_RED,
     BORDER_SUBTLE,
     TEXT_MUTED,
     TEXT_PRIMARY,
@@ -44,29 +40,21 @@ def token_telemetry_text(
     ratio = input_tokens / context_limit
     percent = min(999, round(ratio * 100))
     filled = min(12, max(0, round(min(1.0, ratio) * 12)))
-    bar_color = (
-        ACCENT_GREEN
-        if ratio < 0.6
-        else ACCENT_AMBER
-        if ratio < 0.85
-        else ACCENT_RED
-    )
-
     rendered = Text()
     rendered.append("IN ", style=TEXT_MUTED)
-    rendered.append(compact_token_count(input_tokens), style=f"{ACCENT_BLUE} bold")
+    rendered.append(compact_token_count(input_tokens), style=TEXT_PRIMARY)
     rendered.append("  OUT ", style=TEXT_MUTED)
-    rendered.append(compact_token_count(output_tokens), style=f"{ACCENT_PURPLE} bold")
+    rendered.append(compact_token_count(output_tokens), style=TEXT_PRIMARY)
     rendered.append("  CA ", style=TEXT_MUTED)
-    rendered.append(compact_token_count(cached_input_tokens), style=f"{ACCENT_GREEN} bold")
+    rendered.append(compact_token_count(cached_input_tokens), style=TEXT_PRIMARY)
     rendered.append("  CTX ", style=TEXT_MUTED)
     rendered.append(
         f"{compact_token_count(input_tokens)}/{compact_token_count(context_limit)} ",
         style=TEXT_PRIMARY,
     )
-    rendered.append("█" * filled, style=bar_color)
-    rendered.append("░" * (12 - filled), style=BORDER_SUBTLE)
-    rendered.append(f" {percent}%", style=f"{bar_color} bold")
+    rendered.append("█" * filled, style=TEXT_PRIMARY)
+    rendered.append("░" * (12 - filled), style=TEXT_PRIMARY)
+    rendered.append(f" {percent}%", style=TEXT_PRIMARY)
     return rendered
 
 
@@ -76,7 +64,7 @@ def pending_queue_text(pending_count: int) -> Text:
     pending_count = max(0, int(pending_count))
     rendered = Text()
     rendered.append("排队 ", style=TEXT_MUTED)
-    rendered.append(str(pending_count), style=f"{ACCENT_AMBER} bold")
+    rendered.append(str(pending_count), style=f"{TEXT_PRIMARY} bold")
     return rendered
 
 
@@ -133,22 +121,16 @@ def context_summary_text(
         "review": "REV",
         "模型审查": "REV",
     }.get(raw_approval.lower(), raw_approval.upper())
-    approval_color = {
-        "MAN": ACCENT_AMBER,
-        "AUTO": ACCENT_GREEN,
-        "REV": ACCENT_PURPLE,
-    }.get(approval, TEXT_PRIMARY)
-
     rendered = Text()
     fields = (
-        ("PRJ", compact_hud_value(workspace_name, 24), ACCENT_GREEN),
-        ("MDL", compact_hud_value(model, 28), ACCENT_BLUE),
-        ("THK", compact_hud_value(reasoning_effort.upper(), 8), ACCENT_PURPLE),
-        ("APR", compact_hud_value(approval, 6), approval_color),
+        ("PRJ", compact_hud_value(workspace_name, 24)),
+        ("MDL", compact_hud_value(model, 28)),
+        ("THK", compact_hud_value(reasoning_effort.upper(), 8)),
+        ("APR", compact_hud_value(approval, 6)),
     )
-    for index, (label, value, color) in enumerate(fields):
+    for index, (label, value) in enumerate(fields):
         if index:
             rendered.append("  ·  ", style=BORDER_SUBTLE)
         rendered.append(f"{label} ", style=TEXT_MUTED)
-        rendered.append(value, style=f"{color} bold")
+        rendered.append(value, style=f"{TEXT_PRIMARY} bold")
     return rendered

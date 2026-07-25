@@ -280,8 +280,6 @@ class SharedWriterLockTests(unittest.TestCase):
                 tools=tuple(sorted(STANDARD_WRITE_TOOL_NAMES | {"read_file"})),
                 disallowed_tools=(),
                 model="inherit",
-                max_turns=5,
-                max_tool_calls=10,
                 permission_mode=mode,
                 background=False,
                 isolation=isolation,

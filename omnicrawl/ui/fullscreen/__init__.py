@@ -13,7 +13,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Input, Static
+from textual.widgets import Static, TextArea
 
 from ...agent import AgentError, LocalToolAgent
 from ...agent.tools import public_tool_arguments
@@ -51,7 +51,13 @@ from .theme import (
     terminal_css,
 )
 from .turns import AgentTurnCallbacks, AgentTurnController
-from .widgets import AssistantMessage, ConfirmationScreen, ReasoningDisclosure, ToolDisclosure
+from .widgets import (
+    AssistantMessage,
+    ConfirmationScreen,
+    ReasoningDisclosure,
+    SubAgentProgressTree,
+    ToolDisclosure,
+)
 
 
 _MOUSE_REPORTING_DISABLE_SEQUENCE = (
@@ -133,6 +139,42 @@ class FullscreenStartup:
     temp_label: str
 
 
+class Composer(TextArea):
+    """多行编辑器：Enter 由应用提交，Ctrl+Enter 插入真实换行。"""
+
+    def __init__(
+        self,
+        *,
+        submit_handler: Callable[[], None],
+        command_key_handler: Callable[[events.Key], bool],
+        copy_or_clear_handler: Callable[[], None],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._submit_handler = submit_handler
+        self._command_key_handler = command_key_handler
+        self._copy_or_clear_handler = copy_or_clear_handler
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "ctrl+c":
+            self._copy_or_clear_handler()
+            event.prevent_default()
+            event.stop()
+        elif self._command_key_handler(event):
+            event.prevent_default()
+            event.stop()
+        elif event.key == "enter":
+            self._submit_handler()
+            event.prevent_default()
+            event.stop()
+        elif event.key in {"ctrl+enter", "ctrl+\r", "ctrl+j"}:
+            # Windows Terminal / VS Code 在 Kitty 扩展按键协议不可用时，可能将
+            # Ctrl+Enter 上报为 ctrl+\r 或 ctrl+j，而非 ctrl+enter。
+            self.insert("\n")
+            event.prevent_default()
+            event.stop()
+
+
 class OmniCrawlApp(App[None]):
     """可控全屏渲染的 OmniCrawl 工作台。"""
 
@@ -141,9 +183,8 @@ class OmniCrawlApp(App[None]):
     CSS = terminal_css("""
     Screen { background: $terminal-canvas; color: $terminal-text; }
     #shell { height: 1fr; background: $terminal-background; }
-    /* 顶部第一行只保留品牌与稳态上下文；瞬时运行态放入对话流。 */
+    /* 顶部第一行由稳态上下文占满；瞬时运行态放入对话流。 */
     #topbar { height: 1; padding: 0 1; background: $terminal-surface; align: left middle; }
-    #brand { width: 18; min-width: 18; max-width: 18; color: $terminal-green; text-style: bold; content-align: left middle; }
     #context-summary {
         width: 1fr;
         min-width: 0;
@@ -157,12 +198,12 @@ class OmniCrawlApp(App[None]):
         max-width: 8;
         content-align: right middle;
     }
-    /* 第二行 Token 跳过外边距与 18 列品牌栏，和第一行上下文摘要对齐。
+    /* 第二行 Token 使用与第一行上下文摘要相同的左边距。
        height 必须至少为 2：Textual 的 border-bottom 会占用 1 行布局高度，
        若 height=1 则内容区高度被压成 0，导致 IN/OUT/CA/CTX 有 content 但不渲染。 */
     #token-telemetry {
         height: 2;
-        padding: 0 1 0 19;
+        padding: 0 1;
         background: $terminal-panel;
         color: $terminal-text-muted;
         content-align: left middle;
@@ -170,7 +211,6 @@ class OmniCrawlApp(App[None]):
         border-bottom: solid $terminal-border;
     }
     .runtime-status-message { color: $terminal-text-muted; text-style: bold; }
-    .runtime-status-message.working { color: $terminal-blue; }
     .runtime-status-message.warning { color: $terminal-red; }
     #conversation {
         height: 1fr;
@@ -185,15 +225,19 @@ class OmniCrawlApp(App[None]):
     .user-message { color: $terminal-text; background: $terminal-user-background; }
     .assistant-message { color: $terminal-text; }
     .status-message { color: $terminal-text-muted; }
+    .subagent-tree-message { color: $terminal-text; padding-left: 2; }
     .tool-message { color: $terminal-amber; padding-left: 2; }
     .tool-message:hover { color: $terminal-amber; background: $terminal-amber-soft; }
     .tool-message:focus { color: $terminal-text; background: $terminal-amber-soft; }
+    .replace-text-message,
+    .replace-text-message:hover,
+    .replace-text-message:focus { background: $terminal-replace-text-background; }
     .error-message { color: $terminal-red; }
     .reasoning-message { color: $terminal-text; padding-left: 2; background: $terminal-reasoning-background; }
     .reasoning-message:hover { color: $terminal-text; background: $terminal-reasoning-hover-background; }
     .reasoning-message:focus { color: $terminal-text; background: $terminal-reasoning-focus-background; border-left: thick $terminal-blue; text-style: bold; }
     .reasoning-message.collapsed { height: 1; }
-    #composer-wrap { height: 3; min-height: 3; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
+    #composer-wrap { height: 2; min-height: 2; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
     #command-menu {
         display: none;
         height: auto;
@@ -203,8 +247,22 @@ class OmniCrawlApp(App[None]):
         color: $terminal-text-secondary;
         border-left: thick $terminal-blue;
     }
-    #composer { height: 3; border: none; padding: 0 1; background: $terminal-surface; color: $terminal-text; }
+    #composer {
+        height: 1;
+        border: none;
+        padding: 0 1;
+        background: $terminal-surface;
+        color: $terminal-text;
+        overflow-x: hidden;
+    }
+    #composer .text-area--cursor-line { background: $terminal-panel; }
+    #composer .text-area--cursor {
+        color: $input-cursor-foreground;
+        background: $input-cursor-background;
+        text-style: $input-cursor-text-style;
+    }
     #composer:focus { border-left: thick $terminal-green; background: $terminal-panel; }
+    #composer:focus .text-area--cursor-line { background: $terminal-panel; }
     """)
 
     BINDINGS = [
@@ -215,10 +273,25 @@ class OmniCrawlApp(App[None]):
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
     MONITOR_POLL_INTERVAL_SECONDS = 0.5
-    STATUS_BLINK_INTERVAL_SECONDS = 0.45
+    STATUS_SPINNER_INTERVAL_SECONDS = 0.16
+    STATUS_SPINNER_FRAMES = (
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+    )
     INTERACTION_WATCHDOG_INTERVAL_SECONDS = 0.5
     STALE_INTERACTION_TICKS = 6
     MAX_TOOL_OUTPUT_CHARS = 3_500
+    COMPOSER_MIN_ROWS = 1
+    COMPOSER_MAX_ROWS = 5
+    COMPOSER_BORDER_ROWS = 1
 
     def __init__(self, agent: LocalToolAgent, startup: FullscreenStartup) -> None:
         super().__init__()
@@ -266,6 +339,7 @@ class OmniCrawlApp(App[None]):
         self._stream_markdown = ""
         self._stream_render_pending = False
         self._tool_messages: dict[str, ToolDisclosure] = {}
+        self._subagent_trees: dict[str, SubAgentProgressTree] = {}
         self._reasoning_message: ReasoningDisclosure | None = None
         # UI 私有的 Monitor cursor、暂停状态和失败隔离均由无 Textual 的适配器
         # 持有；本应用只安排定时刷新并渲染它返回的结构化事件批次。
@@ -276,7 +350,7 @@ class OmniCrawlApp(App[None]):
         self._runtime_status_text = "完成"
         self._runtime_status_state = "complete"
         self._runtime_status_message: Static | None = None
-        self._status_dot_visible = True
+        self._status_spinner_index = 0
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
         self._interaction_watchdog_signature: tuple[object, ...] | None = None
@@ -285,19 +359,28 @@ class OmniCrawlApp(App[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
             with Horizontal(id="topbar"):
-                yield Static(self._gradient_text("◆ OMNICRAWL"), id="brand")
                 yield Static(self._context_summary_text(), id="context-summary")
                 yield Static(self._pending_queue_text(), id="queue-count")
             yield Static(self._token_telemetry_text(), id="token-telemetry")
             yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
                 yield Static("", id="command-menu")
-                yield Input(placeholder="› 输入消息或 / 命令", id="composer")
+                yield Composer(
+                    submit_handler=self._submit_composer_text,
+                    command_key_handler=self._handle_composer_command_key,
+                    copy_or_clear_handler=self.action_copy_or_clear_composer,
+                    placeholder="› 输入消息或 / 命令",
+                    id="composer",
+                    soft_wrap=True,
+                    show_line_numbers=False,
+                    highlight_cursor_line=False,
+                )
 
     def on_mount(self) -> None:
         self.agent.set_confirm_handler(self._confirm_tool)
-        self.query_one("#composer", Input).focus()
-        self.set_interval(self.STATUS_BLINK_INTERVAL_SECONDS, self._tick_status_indicator)
+        self.query_one("#composer", TextArea).focus()
+        self._resize_composer_to_text()
+        self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
         self.set_interval(
             self.INTERACTION_WATCHDOG_INTERVAL_SECONDS,
             self._recover_stale_mouse_interaction,
@@ -328,62 +411,73 @@ class OmniCrawlApp(App[None]):
     def _recover_stale_mouse_interaction(self) -> None:
         """释放长时间没有变化的鼠标按下状态，避免输入事件永久失效。"""
 
-        driver = self._driver
-        if not driver.is_headless and _restore_windows_vt_input_mode_if_needed():
-            # 控制台模式被系统重置后不会再产生 Textual 可识别的 AppFocus，
-            # 因此必须由周期看门狗主动恢复，且设置页等模态界面也不能跳过。
-            self._reset_mouse_interaction_state(rearm_terminal_protocols=True)
+        try:
+            driver = self._driver
+            if not driver.is_headless and _restore_windows_vt_input_mode_if_needed():
+                # 控制台模式被系统重置后不会再产生 Textual 可识别的 AppFocus，
+                # 因此必须由周期看门狗主动恢复，且设置页等模态界面也不能跳过。
+                self._reset_mouse_interaction_state(rearm_terminal_protocols=True)
 
-        if len(self.screen_stack) > 1:
-            self._interaction_watchdog_signature = None
-            self._interaction_watchdog_stable_ticks = 0
-            return
+            if len(self.screen_stack) > 1:
+                self._interaction_watchdog_signature = None
+                self._interaction_watchdog_stable_ticks = 0
+                return
 
-        screen = self.screen
-        captured = self.mouse_captured
-        down_buttons = getattr(driver, "_down_buttons", [])
-        mouse_down_offset = getattr(screen, "_mouse_down_offset", None)
-        selecting = bool(getattr(screen, "_selecting", False))
-        if captured is None and not selecting and mouse_down_offset is None and not down_buttons:
-            self._interaction_watchdog_signature = None
-            self._interaction_watchdog_stable_ticks = 0
-            return
+            screen = self.screen
+            captured = self.mouse_captured
+            down_buttons = getattr(driver, "_down_buttons", [])
+            mouse_down_offset = getattr(screen, "_mouse_down_offset", None)
+            selecting = bool(getattr(screen, "_selecting", False))
+            if captured is None and not selecting and mouse_down_offset is None and not down_buttons:
+                self._interaction_watchdog_signature = None
+                self._interaction_watchdog_stable_ticks = 0
+                return
 
-        select_state = getattr(screen, "_select_state", None)
-        last_move = getattr(driver, "_last_move_event", None)
-        last_move_signature = None
-        if last_move is not None:
-            last_move_signature = (
-                last_move.screen_x,
-                last_move.screen_y,
-                last_move.button,
+            select_state = getattr(screen, "_select_state", None)
+            last_move = getattr(driver, "_last_move_event", None)
+            last_move_signature = None
+            if last_move is not None:
+                last_move_signature = (
+                    last_move.screen_x,
+                    last_move.screen_y,
+                    last_move.button,
+                )
+            conversations = self.query("#conversation")
+            if not conversations:
+                self._interaction_watchdog_signature = None
+                self._interaction_watchdog_stable_ticks = 0
+                return
+            signature = (
+                captured,
+                mouse_down_offset,
+                getattr(select_state, "end", None),
+                getattr(captured, "selection", None),
+                getattr(captured, "position", None),
+                conversations.first(VerticalScroll).scroll_y,
+                last_move_signature,
+                tuple(down_buttons),
             )
-        conversations = self.query("#conversation")
-        if not conversations:
+            if signature != self._interaction_watchdog_signature:
+                self._interaction_watchdog_signature = signature
+                self._interaction_watchdog_stable_ticks = 0
+                return
+
+            self._interaction_watchdog_stable_ticks += 1
+            if self._interaction_watchdog_stable_ticks >= self.STALE_INTERACTION_TICKS:
+                self._reset_mouse_interaction_state(
+                    focus_composer=True,
+                    rearm_terminal_protocols=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            # 这是周期自愈边界，而不是业务主流程。锁屏恢复、窗口关闭或 Driver
+            # 正在停止时，私有终端状态可能短暂不可读；异常若逃逸，Textual 会
+            # 将定时器错误升级为致命退出，正是长时间闲置后窗口自行结束的根因。
             self._interaction_watchdog_signature = None
             self._interaction_watchdog_stable_ticks = 0
-            return
-        signature = (
-            captured,
-            mouse_down_offset,
-            getattr(select_state, "end", None),
-            getattr(captured, "selection", None),
-            getattr(captured, "position", None),
-            conversations.first(VerticalScroll).scroll_y,
-            last_move_signature,
-            tuple(down_buttons),
-        )
-        if signature != self._interaction_watchdog_signature:
-            self._interaction_watchdog_signature = signature
-            self._interaction_watchdog_stable_ticks = 0
-            return
-
-        self._interaction_watchdog_stable_ticks += 1
-        if self._interaction_watchdog_stable_ticks >= self.STALE_INTERACTION_TICKS:
-            self._reset_mouse_interaction_state(
-                focus_composer=True,
-                rearm_terminal_protocols=True,
-            )
+            try:
+                self.log.debug("终端输入自愈暂时跳过", exc)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _reset_mouse_interaction_state(
         self,
@@ -425,7 +519,7 @@ class OmniCrawlApp(App[None]):
         self._interaction_watchdog_signature = None
         self._interaction_watchdog_stable_ticks = 0
         if focus_composer and len(self.screen_stack) == 1:
-            self.query_one("#composer", Input).focus()
+            self.query_one("#composer", TextArea).focus()
 
     @work(thread=True, exclusive=True, group="mcp-preload", exit_on_error=False)
     def _preload_mcp_tools(self) -> None:
@@ -440,37 +534,62 @@ class OmniCrawlApp(App[None]):
         finally:
             self.call_from_thread(self._finish_turn)
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "composer":
-            self._refresh_command_menu(event.value)
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id == "composer":
+            self._refresh_command_menu(event.text_area.text)
+            self._resize_composer_to_text()
 
-    def on_key(self, event: events.Key) -> None:
-        """菜单打开时接管选择键；Enter/Tab 只补全，绝不触发提交。"""
+    def on_resize(self, _event: events.Resize) -> None:
+        """窗口宽度变化后，按 Textual 重算的软折行高度更新输入区。"""
 
-        composer = self.query_one("#composer", Input)
-        if not composer.has_focus or not self._command_matches:
-            return
+        self.call_after_refresh(self._resize_composer_to_text)
+
+    def _resize_composer_to_text(self) -> None:
+        """让输入区从一行起步，随软折行增长且不挤占整个消息区。"""
+
+        composer = self.query_one("#composer", TextArea)
+        composer_rows = min(
+            self.COMPOSER_MAX_ROWS,
+            max(self.COMPOSER_MIN_ROWS, composer.virtual_size.height),
+        )
+        composer.styles.height = composer_rows
+        menu_rows = len(self._command_matches)
+        self.query_one("#composer-wrap").styles.height = (
+            self.COMPOSER_BORDER_ROWS + composer_rows + menu_rows
+        )
+
+    def _handle_composer_command_key(self, event: events.Key) -> bool:
+        """菜单打开时消费选择键；Enter/Tab 只补全，不提交命令。"""
+
+        if not self._command_matches:
+            return False
+        composer = self.query_one("#composer", TextArea)
         if event.key in {"up", "down"}:
             offset = -1 if event.key == "up" else 1
             self._command_selection = (self._command_selection + offset) % len(self._command_matches)
             self._render_command_menu()
-            event.prevent_default()
-            event.stop()
-        elif event.key in {"enter", "tab"}:
+            return True
+        if event.key in {"enter", "tab"}:
             selected = self._command_matches[self._command_selection]
-            composer.value = selected["insert"]
-            composer.cursor_position = len(composer.value)
+            target = selected["insert"]
+            # 输入已是完整命令时，Enter 必须提交执行；否则会反复“补全”同一文本，
+            # 导致 /settings、/new 这类无参数命令永远打不开。
+            if composer.text == target or composer.text.strip() == selected["command"]:
+                self._hide_command_menu()
+                return event.key != "enter"
+            composer.text = target
+            composer.cursor_location = (0, len(composer.text))
             self._hide_command_menu()
-            event.prevent_default()
-            event.stop()
+            return True
+        return False
+    def _submit_composer_text(self) -> None:
+        """提交编辑器内容，保留内部换行且忽略纯空白输入。"""
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if self._command_matches:
-            return
-        text = event.value.strip()
+        composer = self.query_one("#composer", TextArea)
+        text = composer.text.strip()
         if not text:
             return
-        event.input.value = ""
+        composer.clear()
         if self.is_generating:
             self._pending_inputs.append(text)
             self._refresh_pending_queue_count()
@@ -513,7 +632,7 @@ class OmniCrawlApp(App[None]):
                 lines.append("\n")
         menu.update(lines)
         menu.display = True
-        self.query_one("#composer-wrap").styles.height = 3 + len(self._command_matches)
+        self._resize_composer_to_text()
 
     def _hide_command_menu(self) -> None:
         self._command_matches = []
@@ -521,7 +640,7 @@ class OmniCrawlApp(App[None]):
         menu = self.query_one("#command-menu", Static)
         menu.display = False
         menu.update("")
-        self.query_one("#composer-wrap").styles.height = 3
+        self._resize_composer_to_text()
 
     def action_cancel_or_focus(self) -> None:
         self._reset_mouse_interaction_state(
@@ -532,7 +651,7 @@ class OmniCrawlApp(App[None]):
             self.cancel_pending_turn()
 
     def action_copy_or_clear_composer(self) -> None:
-        composer = self.query_one("#composer", Input)
+        composer = self.query_one("#composer", TextArea)
         if composer.selected_text:
             self.copy_to_clipboard(composer.selected_text)
             return
@@ -551,6 +670,7 @@ class OmniCrawlApp(App[None]):
         self._stream_markdown = ""
         self._stream_render_pending = False
         self._tool_messages.clear()
+        self._subagent_trees.clear()
         self._reasoning_message = None
         self._runtime_status_message = None
         self._append_message("status", "已清空当前视图，不影响会话历史。")
@@ -769,26 +889,45 @@ class OmniCrawlApp(App[None]):
             self._set_runtime_status("等待", "waiting")
 
     def _handle_subagent_event(self, event_name: str, payload: dict[str, Any]) -> None:
-        """以最小状态行展示子任务生命周期，不暴露 prompt、工具输出或原始异常。"""
+        """按批次原地更新子任务树，不暴露 prompt、结果或原始异常。"""
 
-        agent_type = str(payload.get("agent_type") or "subagent")
-        description = str(payload.get("description") or payload.get("task_id") or "任务")
-        label = f"{agent_type} · {description}"
-        if event_name == "subagent.task.queued":
-            self._append_message("status", f"子任务排队：{label}")
-        elif event_name in {"subagent.task.started", "subagent.task.running"}:
-            self._append_message("status", f"子任务运行中：{label}")
-        elif event_name == "subagent.task.waiting_approval":
-            self._append_message("status", f"子任务等待审批：{label}")
-        elif event_name == "subagent.task.completed":
-            self._append_message("status", f"子任务完成：{label}")
-        elif event_name == "subagent.task.failed":
-            self._append_message("error", f"子任务失败：{label}")
-        elif event_name in {
-            "subagent.task.cancelled",
-            "subagent.task.approval_cancelled",
-        }:
-            self._append_message("status", f"子任务取消：{label}")
+        status_by_event = {
+            "subagent.task.queued": "queued",
+            "subagent.task.started": "running",
+            "subagent.task.running": "running",
+            "subagent.task.waiting_approval": "waiting_approval",
+            "subagent.task.completed": "completed",
+            "subagent.task.failed": "failed",
+            "subagent.task.cancelled": "cancelled",
+            "subagent.task.approval_cancelled": "cancelled",
+        }
+        status = status_by_event.get(event_name)
+        if status is None:
+            return
+
+        task_id = str(payload.get("task_id") or "task")
+        batch_id = str(payload.get("batch_id") or f"batch-{task_id}")
+        conversation = self.query_one("#conversation", VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
+        tree = self._subagent_trees.get(batch_id)
+        if tree is None or tree.parent is None:
+            tree = SubAgentProgressTree(batch_id)
+            self._subagent_trees[batch_id] = tree
+            conversation.mount(tree)
+        tree.update_task(
+            task_id=task_id,
+            agent_type=str(payload.get("agent_type") or "subagent"),
+            description=str(payload.get("description") or task_id),
+            status=status,
+        )
+        # 运行状态始终保持为消息流末项；树新增或增高后需恢复这一顺序。
+        if self._runtime_status_message is not None:
+            self._render_status_indicator(follow_latest=follow_latest)
+        self._scroll_conversation_if_following(
+            conversation,
+            follow_latest,
+            defer_until_refresh=True,
+        )
 
     def _handle_tool_start(self, step: int, tool_call: Any) -> None:
         del step  # Agent 仍按步骤回调，但极简 HUD 不展示内部步骤编号。
@@ -971,7 +1110,7 @@ class OmniCrawlApp(App[None]):
         self.is_generating = False
         self._reasoning_message = None
         self._set_runtime_status("完成", "complete")
-        self.query_one("#composer", Input).focus()
+        self.query_one("#composer", TextArea).focus()
         self._drain_pending_inputs()
 
     def _drain_pending_inputs(self) -> None:
@@ -993,9 +1132,15 @@ class OmniCrawlApp(App[None]):
         *,
         follow_latest: bool | None = None,
     ) -> None:
+        status_changed = (
+            text != self._runtime_status_text or state != self._runtime_status_state
+        )
         self._runtime_status_text = text
         self._runtime_status_state = state
-        self._status_dot_visible = True
+        # 流式思考和回复分片会重复上报同一状态；仅在阶段切换时重置，
+        # 否则高频事件会把动画持续钉在首帧。
+        if status_changed:
+            self._status_spinner_index = 0
         self._render_status_indicator(follow_latest=follow_latest)
 
     def _remove_runtime_status_message(self) -> None:
@@ -1005,18 +1150,20 @@ class OmniCrawlApp(App[None]):
             status.remove()
 
     def _tick_status_indicator(self) -> None:
-        """任务运行期间只闪烁状态点，正文和布局保持稳定。"""
+        """任务运行期间轮换固定宽度的 Braille 状态帧。"""
 
         # 模态审批成为当前 Screen 后，主工作台组件不在活动查询树中。此时暂停
-        # 闪烁，既避免计时器访问隐藏状态，也不干扰 Esc 的审批取消绑定。
+        # 动画，既避免计时器访问隐藏状态，也不干扰 Esc 的审批取消绑定。
         if len(self.screen_stack) > 1:
             return
+        for tree in self._subagent_trees.values():
+            if tree.parent is not None:
+                tree.refresh_elapsed()
         if self._runtime_status_state not in {"working", "waiting"}:
-            if not self._status_dot_visible:
-                self._status_dot_visible = True
-                self._render_status_indicator()
             return
-        self._status_dot_visible = not self._status_dot_visible
+        self._status_spinner_index = (
+            self._status_spinner_index + 1
+        ) % len(self.STATUS_SPINNER_FRAMES)
         self._render_status_indicator()
 
     def _render_status_indicator(self, *, follow_latest: bool | None = None) -> None:
@@ -1036,10 +1183,8 @@ class OmniCrawlApp(App[None]):
             status = Static("", classes="message runtime-status-message")
             self._runtime_status_message = status
             conversation.mount(status)
-        status.set_class(True, "working")
-        status.set_class(False, "warning")
-        dot = "●" if self._status_dot_visible else " "
-        status.update(f"{dot} {self._runtime_status_text}")
+        spinner_frame = self.STATUS_SPINNER_FRAMES[self._status_spinner_index]
+        status.update(f"{spinner_frame} {self._runtime_status_text}")
         if (
             status.parent is conversation
             and conversation.children
@@ -1147,15 +1292,19 @@ class OmniCrawlApp(App[None]):
         )
 
 
-def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> None:
+def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> int:
     """运行默认全屏 TUI。"""
 
+    app = OmniCrawlApp(agent, startup)
     try:
-        OmniCrawlApp(agent, startup).run()
+        app.run()
     finally:
         # Driver 正常会关闭鼠标报告，但退出期间的焦点/看门狗重启或 Driver
         # 内部清理异常可能让模式泄漏到后续 PowerShell Read-Host，必须再兜底一次。
         _disable_terminal_mouse_reporting()
+    # Textual 会捕获定时器和消息处理异常并通过 return_code 报告，而不会重新抛出。
+    # 必须向启动器透传，否则致命退出会被错误显示成“对话已结束”。
+    return int(getattr(app, "return_code", 0) or 0)
 
 
 __all__ = [

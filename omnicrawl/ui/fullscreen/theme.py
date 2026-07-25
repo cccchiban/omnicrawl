@@ -34,11 +34,12 @@ ACCENT_PURPLE = "magenta"
 
 # 使用 RGBA 颜色表达透明度，避免 ANSI 颜色名后附百分比在不同 Textual
 # 解析路径中被当作实色处理。终端支持真彩色时会与底色混合，ANSI 降级时
-# 仍保留蓝色语义。
+# 仍保留对应的颜色语义。
 REASONING_BACKGROUND = "rgba(0, 160, 210, 0.24)"
 REASONING_HOVER_BACKGROUND = "rgba(0, 160, 210, 0.32)"
 REASONING_FOCUS_BACKGROUND = "rgba(0, 102, 204, 0.40)"
 USER_BACKGROUND = "rgba(170, 80, 210, 0.26)"
+REPLACE_TEXT_BACKGROUND = "rgba(128, 128, 128, 0.16)"
 
 _CSS_GREEN = "ansi_green"
 _CSS_BLUE = "ansi_blue"
@@ -75,7 +76,8 @@ TERMINAL_THEME = Theme(
         "terminal-reasoning-background": REASONING_BACKGROUND,
         "terminal-reasoning-hover-background": REASONING_HOVER_BACKGROUND,
         "terminal-reasoning-focus-background": REASONING_FOCUS_BACKGROUND,
-         "terminal-user-background": USER_BACKGROUND,
+        "terminal-user-background": USER_BACKGROUND,
+        "terminal-replace-text-background": REPLACE_TEXT_BACKGROUND,
         "terminal-overlay": TRANSPARENT,
         "terminal-text": TERMINAL_FOREGROUND,
         "terminal-text-secondary": TERMINAL_FOREGROUND,

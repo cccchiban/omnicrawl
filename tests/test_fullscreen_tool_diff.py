@@ -152,7 +152,7 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertNotIn("列出文件", title)
         self.assertNotIn("≡", title)
 
-    def test_command_tool_title_uses_short_name_and_context(self) -> None:
+    def test_command_tool_title_uses_only_symbol_and_context(self) -> None:
         title = plain_tool_title(
             tool_name="bash",
             arguments={"command": "pytest -q tests/test_fullscreen_tool_diff.py"},
@@ -161,9 +161,18 @@ class FullscreenToolDiffTest(unittest.TestCase):
         )
         self.assertEqual(
             title,
-            "▶  Bash  |  cmd: pytest -q tests/test_fullscreen_tool_diff.py  ✓ 成功  1.8s",
+            "B  cmd: pytest -q tests/test_fullscreen_tool_diff.py  ✓ 成功  1.8s",
         )
-        self.assertNotIn("执行 Bash", title)
+        self.assertNotIn("Bash", title)
+
+        title = plain_tool_title(
+            tool_name="powershell",
+            arguments={"command": "Get-ChildItem"},
+            status="成功",
+            duration_seconds=0.13,
+        )
+        self.assertEqual(title, "P  cmd: Get-ChildItem  ✓ 成功  130ms")
+        self.assertNotIn("PowerShell", title)
 
         title = plain_tool_title(
             tool_name="read_file",

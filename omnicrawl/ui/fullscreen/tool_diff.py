@@ -83,11 +83,11 @@ def _list_result_summary(result_text: str) -> str | None:
 
 
 def _generic_tool_name(operation: str, display_name: str) -> str:
-    """返回普通工具标题中的短名称，去掉冗余的动作前缀。"""
+    """返回普通工具标题中的短名称，命令工具只保留其单字母标识。"""
 
     short_names = {
-        "bash": "Bash",
-        "powershell": "PowerShell",
+        "bash": "",
+        "powershell": "",
         "display_html": "HTML",
         "subagent": "SubAgent",
     }
@@ -277,12 +277,12 @@ def tool_disclosure_title(
         rendered = Text()
         rendered.append(display.icon, style=COLOR_TITLE)
         rendered.append("  ", style=COLOR_META)
-        rendered.append(
-            _generic_tool_name(operation, display.name),
-            style=TEXT_PRIMARY,
-        )
+        short_name = _generic_tool_name(operation, display.name)
+        if short_name:
+            rendered.append(short_name, style=TEXT_PRIMARY)
         if context:
-            rendered.append("  |  ", style=COLOR_GUTTER)
+            if short_name:
+                rendered.append("  |  ", style=COLOR_GUTTER)
             rendered.append(context, style=TEXT_SECONDARY)
         rendered.append("  ", style=COLOR_META)
         _append_status(

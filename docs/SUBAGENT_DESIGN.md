@@ -12,6 +12,10 @@
 
 ## 实施状态（2026-07-17）
 
+2026-07-22 补充：全屏 TUI 已将逐事件追加的“排队 / 运行 / 完成”状态行改为按
+`batch_id` 聚合、按 `task_id` 原地更新的进度树。等待、运行、等待审批、完成、失败
+和取消均使用图标、文字与语义色共同表达；树中不保存或展示 prompt、完整结果和原始异常。
+
 已完成：
 
 - Phase 0：新增内部 `AgentLoopRunner`，主 Agent 继续独占 Session、Plugin turn、Runtime 快照、历史提交和公开回调；工具批次仍保持整批审批、读操作并行、写/删除屏障和原序回填。
@@ -88,7 +92,7 @@ SubAgent 的价值不是简单“多开几个模型请求”，而是建立以�
 2. **稳定工具入口**：Agent 定义增减不改变工具列表和模型 Tool Schema 数量；统一 `subagent` 工具的角色枚举按当前配置动态收窄。
 3. **角色化能力边界**：可通过 Markdown 定义角色、模型、工具范围和预算。
 4. **安全继承而非安全绕过**：子 Agent 的能力不得超过父 Agent 和 Host 安全策略。
-5. **有界并发**：限制深度、任务数、并发数、模型轮次、工具次数、Token 和墙钟时间。
+5. **有界并发**：限制深度、任务数、并发、超时和结果大小。
 6. **可观察与可取消**：父 Session、TUI 和 API 能看到任务状态，父取消会级联所有子任务。
 7. **Provider 无关**：继续支持 OpenAI Chat/Responses、Anthropic、Gemini 统一 Runtime。
 8. **渐进式落地**：Phase 1 不改变 API 单顶层 Run、Session v1 格式和现有公共导出。
@@ -289,8 +293,6 @@ disallowedTools:
   - bash
   - powershell
 model: inherit
-maxTurns: 20
-maxToolCalls: 40
 permissionMode: delegated-read-only
 background: false
 skills: []
@@ -316,8 +318,6 @@ class AgentDefinition:
     tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     model: str = "inherit"
-    max_turns: int = 20
-    max_tool_calls: int = 40
     permission_mode: str = "delegated-read-only"
     background: bool = False
     isolation: str = "shared"
@@ -365,8 +365,6 @@ name: explore
 description: 快速只读探索代码和文档，返回文件与行号证据
 tools: [list_files, read_file, search_text]
 disallowedTools: [subagent, write_file, replace_text, bash, powershell, monitor, memory_write]
-maxTurns: 20
-maxToolCalls: 50
 permissionMode: delegated-read-only
 ```
 
@@ -379,8 +377,6 @@ name: plan
 description: 只读软件架构与实施计划专家
 tools: [list_files, read_file, search_text, memory_search, memory_read]
 disallowedTools: [subagent, write_file, replace_text, bash, powershell, monitor, memory_write]
-maxTurns: 15
-maxToolCalls: 40
 permissionMode: delegated-read-only
 ```
 
@@ -442,8 +438,8 @@ Phase 1 只提供同步、有界批量执行：
       "items": {
         "type": "object",
         "properties": {
-          "description": {"type": "string", "maxLength": 120},
-          "prompt": {"type": "string", "maxLength": 12000},
+          "description": {"type": "string", "minLength": 1},
+          "prompt": {"type": "string", "minLength": 1},
           "subagent_type": {
             "type": "string",
             "enum": ["当前配置下可执行的角色名称"]
@@ -465,7 +461,7 @@ Phase 1 只提供同步、有界批量执行：
 }
 ```
 
-Phase 1 不允许模型指定任务 ID、工作区路径、工具列表、权限模式或任意 system prompt。这些由 Host 根据已加载定义生成。
+Phase 1 不允许模型指定任务 ID、工作区路径、工具列表、权限模式或任意 system prompt。描述和提示词由 Host 仅做非空校验；原始 prompt 不进入公开生命周期事件，描述在各公开出口按边界截断。
 
 ### 8.3 Phase 2 Schema 扩展
 
@@ -627,9 +623,9 @@ Phase 3 仍默认深度 1。若未来开放递归，必须同时限制：
 ```python
 @dataclass(frozen=True)
 class AgentLoopLimits:
-    max_model_turns: int
-    max_tool_calls: int
-    timeout_seconds: float
+    max_model_turns: int | None = None
+    max_tool_calls: int | None = None
+    timeout_seconds: float | None = None
 
 @dataclass
 class AgentLoopResult:
@@ -675,14 +671,12 @@ class AgentLoopRunner:
 子 Agent 满足任一条件结束：
 
 - 模型不再返回工具调用，返回最终文本；
-- 达到 `max_model_turns`；
-- 达到 `max_tool_calls`；
-- 超过 timeout；
+- 超过 Host 为子任务配置的 timeout；
 - 父取消、任务取消、关闭或工作区切换；
 - 审批被拒绝且任务无法继续；
 - 模型或工具发生不可恢复错误。
 
-预算耗尽不是普通成功。结果状态应为 `failed` 或 `partial`，并包含明确错误码。
+超时不是普通成功。结果状态应为 `failed` 或 `partial`，并包含明确错误码。
 
 ---
 
@@ -790,9 +784,9 @@ ApprovalBroker 规则：
 class SubAgentGlobalLimits:
     max_concurrency: int = 2
     max_tasks_per_batch: int = 4
-    max_total_tasks: int = 8
     max_depth: int = 1
-    max_timeout_seconds: int = 600
+    default_timeout_seconds: float = 3600
+    model_request_concurrency: int = 2
 ```
 
 需要至少两个信号量：
@@ -989,19 +983,15 @@ Phase 3.1B 采用第 2 种：所有完整 `LLMConfig` 子任务在创建时复�
 
 父 Agent 当前回合和所有子任务结束前，不允许切换当前模型，或将模型切换语义明确为“只影响后续新任务”。当前实现采用后者：任务创建时冻结模型快照，运行中 `/model` 只影响下一回合/新任务。
 
-### 15.3 Token 预算
+### 15.3 子任务资源边界
+
+当前实现由 Host 统一控制子任务超时、任务批次上限、任务并发、模型请求并发和结果摘要大小；不再为角色或全局配置注入模型回合数、工具调用数或 Token 配额。循环执行器仍保留可选的回合/工具预算字段，供其他受控调用方使用。
 
 ```python
 @dataclass(frozen=True)
 class SubAgentLimits:
-    max_model_turns: int = 20
-    max_tool_calls: int = 50
-    timeout_seconds: float = 300.0
-    max_input_tokens: int = 0
-    max_output_tokens: int = 0
+    timeout_seconds: float = 3600.0
 ```
-
-0 表示由模型上下文和 Host 默认值推导，不表示无限。
 
 ---
 
@@ -1023,7 +1013,7 @@ class SubAgentLimits:
 
 | Hook | 模式 | 能力 |
 |---|---|---|
-| `subagent.task.before` | guard/transform | 可缩小预算、修改标签或拒绝；不能扩大工具/权限 |
+| `subagent.task.before` | guard/transform | 可缩小超时、结果边界或修改标签；不能扩大工具/权限 |
 | `subagent.task.after` | observe/notify | 观察脱敏摘要和 usage |
 | `subagent.task.error` | notify | 观察错误分类 |
 | `subagent.task.cancelled` | notify | 观察取消原因 |
@@ -1117,25 +1107,16 @@ POST   /api/v1/subagents/{task_id}/cancel
 
 ### 18.1 展示方式
 
-SubAgent 在对话区作为可折叠任务组展示：
+SubAgent 在对话区按 `batch_id` 聚合为一棵进度树，并按 `task_id` 原地更新节点：
 
 ```text
-SubAgent 批次：3 个任务，2 个并发
-  ✓ explore · 定位 Session 恢复逻辑 · 12.4s
-  … plan · 设计迁移方案 · 运行中
-  … verify · 运行固定测试与编译检查 · 运行中
+◇ 并行子任务  1/3 完成
+├─ ✓ 审查 Agent 变更  explore · 完成 · 00:18
+├─ ● 审查全屏 TUI 变更  explore · 运行中 · 00:07
+└─ ○ 运行回归测试  verify · 等待中
 ```
 
-点击/展开后显示：
-
-- task ID；
-- Agent 类型和模型；
-- 当前状态；
-- 最近工具；
-- 工具/模型轮次；
-- Token；
-- 耗时；
-- 最终摘要和 artifact 引用。
+树节点只展示安全元数据：Agent 类型、有界描述、等待/运行/等待审批/完成/失败/取消状态和耗时；不保存或展示原始 prompt、完整结果、Token 明细、最近工具或原始异常。节点不提供独立折叠或交互控制，任务查询和取消继续使用 `/tasks`、`/task` 命令。
 
 ### 18.2 Slash Command
 
@@ -1168,10 +1149,7 @@ subagents:
   max_depth: 1
   max_concurrency: 2
   max_tasks_per_batch: 4
-  max_total_tasks: 8
-  default_max_turns: 20
-  default_max_tool_calls: 50
-  default_timeout_seconds: 300
+  default_timeout_seconds: 3600
   model_request_concurrency: 2
   allow_background: false
   allow_fork: false
@@ -1205,7 +1183,7 @@ OMNICRAWL_SUBAGENT_VERIFY_TIMEOUT_SECONDS
 | `SUBAGENT_DISABLED` | 子 Agent 功能未启用 |
 | `AGENT_TYPE_NOT_FOUND` | 定义不存在 |
 | `AGENT_DEFINITION_INVALID` | 定义文件无效 |
-| `SUBAGENT_LIMIT_EXCEEDED` | 深度、任务数、并发或预算超限 |
+| `SUBAGENT_LIMIT_EXCEEDED` | 深度、任务数、并发或超时边界超限 |
 | `SUBAGENT_PERMISSION_DENIED` | 委派或内部工具审批被拒绝 |
 | `SUBAGENT_TIMEOUT` | 超时 |
 | `SUBAGENT_CANCELLED` | 被父任务、用户或系统取消 |
@@ -1363,7 +1341,7 @@ tests/
 #### 定义与加载
 
 - frontmatter 缺失/损坏；
-- name、description、maxTurns、工具字段校验；
+- name、description、permission/isolation、工具字段校验；
 - 项目/用户/内置/插件优先级；
 - 同名碰撞诊断；
 - 热重载失败回退；

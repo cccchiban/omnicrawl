@@ -24,6 +24,7 @@ class ModelErrorCode(str, Enum):
     CONNECTION_FAILED = "CONNECTION_FAILED"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     INVALID_REQUEST = "INVALID_REQUEST"
+    CONTEXT_LENGTH_EXCEEDED = "CONTEXT_LENGTH_EXCEEDED"
     UNSUPPORTED_CAPABILITY = "UNSUPPORTED_CAPABILITY"
     STREAM_INTERRUPTED = "STREAM_INTERRUPTED"
     MODEL_DISCOVERY_FAILED = "MODEL_DISCOVERY_FAILED"
@@ -88,6 +89,46 @@ def map_openai_exception(
             provider="openai",
         )
 
+    if _contains_any(
+        lowered,
+        ("rate limit", "too many requests", "insufficient_quota", "quota", "429"),
+    ):
+        return ModelError(
+            code=ModelErrorCode.RATE_LIMITED,
+            message="模型服务限流或额度不足。请稍后重试，或检查账号额度和并发限制。",
+            retryable=True,
+            status_code=429,
+            provider="openai",
+        )
+
+    if _contains_any(
+        lowered,
+        (
+            "context length",
+            "context window",
+            "maximum context",
+            "max context",
+            "context limit",
+            "too many tokens",
+            "token limit",
+            "input is too long",
+            "prompt is too long",
+            "请求过长",
+            "上下文过长",
+            "上下文长度",
+            "超过上下文",
+            "超出上下文",
+            "token 超限",
+            "令牌超限",
+        ),
+    ):
+        return ModelError(
+            code=ModelErrorCode.CONTEXT_LENGTH_EXCEEDED,
+            message="模型服务拒绝请求：输入上下文超过该模型的容量上限。",
+            status_code=status_code,
+            provider="openai",
+        )
+
     if status_code is not None:
         return _http_status_error(status_code, provider="openai")
 
@@ -121,18 +162,6 @@ def map_openai_exception(
             code=ModelErrorCode.REQUEST_TIMEOUT,
             message="模型服务请求超时。请稍后重试，或适当调大 AGENT_REQUEST_TIMEOUT_SECONDS。",
             retryable=True,
-            provider="openai",
-        )
-
-    if _contains_any(
-        lowered,
-        ("rate limit", "too many requests", "insufficient_quota", "quota", "429"),
-    ):
-        return ModelError(
-            code=ModelErrorCode.RATE_LIMITED,
-            message="模型服务限流或额度不足。请稍后重试，或检查账号额度和并发限制。",
-            retryable=True,
-            status_code=429,
             provider="openai",
         )
 

@@ -142,6 +142,64 @@ class ContextBudgetManager:
             cache_hit_ratio=cache_hit_ratio,
         )
 
+    def select_recovery_batch(
+        self,
+        events: Sequence[SourceEvent],
+    ) -> CompactionBatch | None:
+        """选择由上下文超限中断的未完成回合，供一次性恢复重试使用。
+
+        与常规自动压缩不同，这里允许最后一条 ``user_message`` 尚未配对
+        ``assistant_message``。调用方必须确保失败发生在任何工具执行和可见输出之前，
+        否则重试可能重复外部副作用或拼接两段回复。
+        """
+        boundary_index = -1
+        previous_summary: Mapping[str, Any] | None = None
+        previous_covered: tuple[str, ...] = ()
+        for index, event in enumerate(events):
+            if event.type != "compact_summary":
+                continue
+            boundary_index = index
+            previous_summary = event.payload
+            covered = event.payload.get("covered_event_ids", [])
+            if isinstance(covered, list):
+                previous_covered = tuple(
+                    item for item in covered if isinstance(item, str) and item
+                )
+
+        carried_events: list[SourceEvent] = []
+        if boundary_index >= 0 and previous_summary is not None:
+            remaining_ids = previous_summary.get("remaining_event_ids", [])
+            if isinstance(remaining_ids, list) and remaining_ids:
+                remaining_set = {
+                    item for item in remaining_ids if isinstance(item, str) and item
+                }
+                carried_events = [
+                    event for event in events[:boundary_index] if event.event_id in remaining_set
+                ]
+            else:
+                remaining_count = previous_summary.get("remaining_message_count", 0)
+                if isinstance(remaining_count, int) and remaining_count > 0:
+                    model_events = [
+                        event
+                        for event in events[:boundary_index]
+                        if event.type in _MODEL_CONTEXT_EVENT_TYPES
+                    ]
+                    carried_events = model_events[-remaining_count:]
+
+        candidates = [*carried_events, *events[boundary_index + 1 :]]
+        recoverable_events = [
+            event for event in candidates if event.type in _MODEL_CONTEXT_EVENT_TYPES
+        ]
+        if not recoverable_events or recoverable_events[-1].type != "user_message":
+            return None
+        return CompactionBatch(
+            events=tuple(recoverable_events),
+            recent_events=(),
+            previous_summary=previous_summary,
+            previous_covered_event_ids=previous_covered,
+            single_large_turn=True,
+        )
+
     def select_batch(
         self,
         events: Sequence[SourceEvent],

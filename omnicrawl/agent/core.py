@@ -125,6 +125,8 @@ from ..extensions.plugin_models import HOOK_POLICIES
 from ..llm import (
     LLMConfig,
     LLMError,
+    ModelError,
+    ModelErrorCode,
     ModelRuntimeManager,
     OpenAIResponseLLM,
     load_llm_config,
@@ -171,6 +173,32 @@ SUBAGENT_LIFECYCLE_WAIT_SECONDS = 5.0
 
 SYSTEM_PROMPT_FILE = "system_prompt.md"
 AGENTS_INSTRUCTIONS_FILE = "AGENTS.md"
+_CONTEXT_OVERFLOW_RECOVERY_PROMPT = "请依据上方的结构化工作摘要继续完成当前任务。"
+_CONTEXT_OVERFLOW_ERROR_MARKERS = (
+    "context length",
+    "context window",
+    "maximum context",
+    "max context",
+    "context limit",
+    "too many tokens",
+    "token limit",
+    "input is too long",
+    "prompt is too long",
+    "请求过长",
+    "上下文过长",
+    "上下文长度",
+    "超过上下文",
+    "超出上下文",
+    "token 超限",
+    "令牌超限",
+)
+_RATE_LIMIT_ERROR_MARKERS = (
+    "rate limit",
+    "too many requests",
+    "insufficient_quota",
+    "quota",
+    "429",
+)
 _CONTINUE_LAST_TASK_TEXTS = {
     "继续",
     "继续上次",
@@ -2232,8 +2260,6 @@ class LocalToolAgent:
                         subagent_approval_scope=approval_scope,
                     ),
                     limits=AgentLoopLimits(
-                        max_model_turns=definition.max_turns,
-                        max_tool_calls=definition.max_tool_calls,
                         timeout_seconds=self.config.subagents.default_timeout_seconds,
                     ),
                     cancel_check=cancel_check,
@@ -2406,6 +2432,9 @@ class LocalToolAgent:
             lambda _input_tokens, _output_tokens, _cached_input_tokens: None
         )
         turn_usage = TokenUsageSample()
+        visible_output_seen = False
+        tool_execution_seen = False
+        context_overflow_recovered = False
 
         def report_token_usage(
             input_tokens: int,
@@ -2499,44 +2528,98 @@ class LocalToolAgent:
             def request_main_reply(
                 messages: list[dict[str, Any]],
             ) -> AgentModelReply:
+                nonlocal visible_output_seen
                 # 初次请求和每次工具观察后的后续请求都先 drain，确保当前回合
                 # 内完成的后台任务无需等到下一条用户消息才被父 Agent 看见。
                 self._inject_subagent_notifications(messages)
+
+                def report_main_delta(delta: str) -> None:
+                    nonlocal visible_output_seen
+                    if delta:
+                        visible_output_seen = True
+                    on_delta(delta)
+
                 return self._request_agent_reply(
                     messages,
-                    on_delta,
+                    report_main_delta,
                     report_token_usage,
                     _report_protocol_wait,
                     report_retry_status,
                 )
 
-            loop_result = AgentLoopRunner().run(
-                messages=working_messages,
-                request_reply=request_main_reply,
-                execute_tool_batch=lambda calls, first_step: self._execute_tool_batch(
+            def execute_main_tool_batch(
+                calls: Sequence[ToolCall],
+                first_step: int,
+            ) -> list[AgentLoopObservation]:
+                nonlocal tool_execution_seen
+                tool_execution_seen = True
+                return self._execute_tool_batch(
                     calls,
                     first_step,
                     report_tool_start=report_tool_start,
                     report_tool_result=report_tool_result,
                     check_cancelled=check_cancelled,
                     status=status,
-                ),
-                # 主 Agent 明确不设置循环预算；后续 SubAgent 可使用同一 Runner
-                # 传入 AgentLoopLimits，而不改变当前产品行为。
-                cancel_check=check_cancelled,
-            )
+                )
+
+            try:
+                loop_result = AgentLoopRunner().run(
+                    messages=working_messages,
+                    request_reply=request_main_reply,
+                    execute_tool_batch=execute_main_tool_batch,
+                    # 主 Agent 明确不设置循环预算；后续 SubAgent 可使用同一 Runner
+                    # 传入 AgentLoopLimits，而不改变当前产品行为。
+                    cancel_check=check_cancelled,
+                )
+            except Exception as exc:
+                if not self._can_recover_context_overflow(
+                    exc,
+                    visible_output_seen=visible_output_seen or tool_execution_seen,
+                ):
+                    raise
+                recovered_messages = self._recover_context_overflow_for_retry(
+                    status=status,
+                    check_cancelled=check_cancelled,
+                )
+                if recovered_messages is None:
+                    raise
+                context_overflow_recovered = True
+                # 失败请求尚未产生任何可见文本或工具副作用；从新的摘要投影重建
+                # Runner，避免把未完成的原始用户消息再次附加到模型上下文。
+                working_messages = [*context_messages, *recovered_messages]
+                if (
+                    isinstance(subagent_config, SubAgentConfig)
+                    and subagent_config.enabled
+                    and subagent_config.allow_fork
+                ):
+                    self._active_fork_context_messages = self._freeze_fork_context_messages(
+                        working_messages
+                    )
+                loop_result = AgentLoopRunner().run(
+                    messages=working_messages,
+                    request_reply=request_main_reply,
+                    execute_tool_batch=execute_main_tool_batch,
+                    cancel_check=check_cancelled,
+                )
             final_reply = loop_result.final_text
             if final_reply and not loop_result.content_streamed:
                 on_delta(final_reply)
             self._append_session_event("assistant_message", {"content": final_reply})
-            self._turn_context_compaction_context_messages = context_messages
-            self._turn_context_compaction_usage = turn_usage
-            try:
-                # 保持既有三参数调用形态，兼容宿主扩展和最小测试替身。
-                self._append_history(text, final_reply, loop_result.reasoning)
-            finally:
-                self.__dict__.pop("_turn_context_compaction_context_messages", None)
-                self.__dict__.pop("_turn_context_compaction_usage", None)
+            if context_overflow_recovered:
+                self._history.append(self._assistant_message(final_reply, loop_result.reasoning))
+                self._run_context_compaction_after_turn(
+                    context_messages=context_messages,
+                    usage=turn_usage,
+                )
+            else:
+                self._turn_context_compaction_context_messages = context_messages
+                self._turn_context_compaction_usage = turn_usage
+                try:
+                    # 保持既有三参数调用形态，兼容宿主扩展和最小测试替身。
+                    self._append_history(text, final_reply, loop_result.reasoning)
+                finally:
+                    self.__dict__.pop("_turn_context_compaction_context_messages", None)
+                    self.__dict__.pop("_turn_context_compaction_usage", None)
             self._pending_user_text = None
             self._dispatch_plugin_hook(
                 "turn.end",
@@ -4079,6 +4162,100 @@ class LocalToolAgent:
     @staticmethod
     def _assistant_message(assistant_text: str, reasoning: str = "") -> dict[str, Any]:
         return {"role": "assistant", "content": assistant_text}
+
+    def _can_recover_context_overflow(
+        self,
+        exc: Exception,
+        *,
+        visible_output_seen: bool,
+    ) -> bool:
+        """只识别未产生可见输出的明确上下文容量失败。"""
+        if visible_output_seen:
+            return False
+        config = getattr(self.config, "context_compaction", None)
+        if config is None or not config.enabled:
+            return False
+        candidates = (exc, *self._exception_causes(exc))
+        # 先扫描完整异常链，避免外层包装错误的 token 文案掩盖内层限流原因。
+        for candidate in candidates:
+            if isinstance(candidate, ModelError) and candidate.code == ModelErrorCode.RATE_LIMITED:
+                return False
+            status_code = getattr(candidate, "status_code", None)
+            if status_code == 429:
+                return False
+            if any(marker in str(candidate).casefold() for marker in _RATE_LIMIT_ERROR_MARKERS):
+                return False
+
+        for candidate in candidates:
+            if isinstance(candidate, ModelError):
+                if candidate.code == ModelErrorCode.CONTEXT_LENGTH_EXCEEDED:
+                    return True
+                if candidate.code != ModelErrorCode.INVALID_REQUEST:
+                    continue
+                message = candidate.message
+            else:
+                message = str(candidate)
+            lowered = message.casefold()
+            if any(marker in lowered for marker in _CONTEXT_OVERFLOW_ERROR_MARKERS):
+                return True
+        return False
+
+    @staticmethod
+    def _exception_causes(exc: Exception) -> tuple[BaseException, ...]:
+        """以有界链遍历包装异常，避免第三方异常构造环导致恢复逻辑失控。"""
+        causes: list[BaseException] = []
+        current = exc.__cause__ or exc.__context__
+        while current is not None and len(causes) < 4 and current not in causes:
+            causes.append(current)
+            current = current.__cause__ or current.__context__
+        return tuple(causes)
+
+    def _recover_context_overflow_for_retry(
+        self,
+        *,
+        status: Callable[[str], None],
+        check_cancelled: Callable[[], None],
+    ) -> list[dict[str, Any]] | None:
+        """为当前未完成回合生成摘要，并返回仅含摘要和续接指令的重试历史。"""
+        check_cancelled()
+        config = self.config.context_compaction
+        service = self._context_compaction_service()
+        try:
+            outcome = service.recover_from_context_overflow(
+                source_events=self._context_compaction_source_events(),
+                target_summary_tokens=config.target_summary_tokens,
+                reasoning_effort=config.reasoning_effort,
+                preserve_exact_evidence=config.preserve_exact_evidence,
+            )
+        except Exception:
+            LOGGER.warning("上下文超限后的模型压缩失败，无法自动续接当前回合。", exc_info=True)
+            return None
+        if outcome.compact_payload is None or outcome.history_projection is None:
+            diagnostic = outcome.diagnostic or "模型摘要未生成可用投影。"
+            self._append_session_event(
+                "context_overflow_recovery_failed",
+                {"reason": diagnostic},
+            )
+            return None
+        self._append_session_event("compact_summary", dict(outcome.compact_payload))
+        self._history = list(outcome.history_projection)
+        self._append_session_event(
+            "context_overflow_recovery",
+            {
+                "mode": "model_summary",
+                "decision_reason": "context_overflow_recovery",
+                "single_large_turn": bool(outcome.compact_payload.get("single_large_turn")),
+            },
+        )
+        self._append_session_event(
+            "user_message",
+            {"content": _CONTEXT_OVERFLOW_RECOVERY_PROMPT},
+        )
+        self._history.append(
+            {"role": "user", "content": _CONTEXT_OVERFLOW_RECOVERY_PROMPT}
+        )
+        status("检测到上下文超限，已压缩当前任务上下文并自动继续。")
+        return list(self._history)
 
     def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
         """写入完整回合，先记录可选预算快照，再执行现有确定性压缩。"""

@@ -78,7 +78,12 @@ class SettingsConfigTests(unittest.TestCase):
     def test_subagent_advanced_setting_rejects_excluded_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.yaml"
-            for key in ("result_summary_chars", "default_max_turns", "default_max_tool_calls"):
+            for key in (
+                "result_summary_chars",
+                "max_total_tasks",
+                "default_max_turns",
+                "default_max_tool_calls",
+            ):
                 with self.assertRaises(SettingsConfigError):
                     save_subagent_setting(key, 1, path)
 
@@ -91,8 +96,7 @@ class SettingsScreenAdvancedTests(unittest.TestCase):
                 subagents=SubAgentConfig(
                     max_concurrency=2,
                     max_tasks_per_batch=4,
-                    max_total_tasks=8,
-                    default_timeout_seconds=300,
+                    default_timeout_seconds=3600,
                     model_request_concurrency=2,
                     verify_command_timeout_seconds=120,
                     task_retention_minutes=60,

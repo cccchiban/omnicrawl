@@ -93,10 +93,7 @@ subagents:
   max_depth: 1
   max_concurrency: 2
   max_tasks_per_batch: 4
-  max_total_tasks: 8
-  default_max_turns: 20
-  default_max_tool_calls: 50
-  default_timeout_seconds: 300
+  default_timeout_seconds: 3600
   model_request_concurrency: 2
   allow_background: false
   # 仅开放已脱敏父公开上下文的 read_only/verify Fork；默认关闭。

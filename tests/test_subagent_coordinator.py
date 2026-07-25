@@ -134,7 +134,27 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         self.assertEqual(overflow_result["error"]["code"], "SUBAGENT_LIMIT_EXCEEDED")
 
 
-    def test_batch_runs_with_bounded_concurrency_and_preserves_input_order(self) -> None:
+
+    def test_accepts_unbounded_task_description_and_prompt_text(self) -> None:
+        received: list[tuple[str, str]] = []
+
+        def execute(_definition, _tools, description, prompt, _cancel_check):
+            received.append((description, prompt))
+            return SubAgentExecutionResult("完成", 1, 0)
+
+        coordinator = SubAgentCoordinator(
+            config=SubAgentConfig(enabled=True),
+            registry=_Registry([self._definition()]),
+            tools_provider=lambda: {},
+            execute_task=execute,
+        )
+        description = "任务" * 121
+        prompt = "提示" * 6_001
+        result = coordinator.run(self._arguments(description=description, prompt=prompt))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(received, [(description, prompt)])
+
         barrier = threading.Barrier(2)
         lock = threading.Lock()
         active = 0

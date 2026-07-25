@@ -19,8 +19,6 @@ disallowedTools:
   - memory_write
   - display_html
 model: inherit
-maxTurns: 12
-maxToolCalls: 16
 permissionMode: explicit-command-allowlist
 background: true
 isolation: shared

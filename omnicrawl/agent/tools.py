@@ -580,12 +580,10 @@ def build_agent_tools(
                                         "description": {
                                             "type": "string",
                                             "minLength": 1,
-                                            "maxLength": 120,
                                         },
                                         "prompt": {
                                             "type": "string",
                                             "minLength": 1,
-                                            "maxLength": 12000,
                                         },
                                         "subagent_type": {
                                             "type": "string",

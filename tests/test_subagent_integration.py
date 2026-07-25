@@ -187,6 +187,9 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                         ],
                     )
                     self.assertEqual(schema["properties"]["tasks"]["maxItems"], 4)
+                    task_properties = schema["properties"]["tasks"]["items"]["properties"]
+                    self.assertNotIn("maxLength", task_properties["description"])
+                    self.assertNotIn("maxLength", task_properties["prompt"])
                     model_schema = schema["properties"]["tasks"]["items"]["properties"]["model"]
                     self.assertIn("省略", model_schema["description"])
                     self.assertIn("default", model_schema["description"])
@@ -551,8 +554,6 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                 name="explore",
                 description="explore",
                 system_prompt="只读。",
-                max_turns=2,
-                max_tool_calls=2,
             )
 
             def run_task(index):
@@ -664,8 +665,6 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                 description="explore",
                 system_prompt="只读。",
                 tools=("read_file",),
-                max_turns=5,
-                max_tool_calls=5,
             )
 
             result = agent._execute_subagent_task(
@@ -770,8 +769,6 @@ class SubAgentProviderRuntimeContractTest(unittest.TestCase):
             description="只读探索",
             system_prompt="只读取证据并返回结论。",
             tools=("read_file",) if with_read_file else (),
-            max_turns=3,
-            max_tool_calls=2,
         )
 
     @staticmethod

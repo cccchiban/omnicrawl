@@ -67,17 +67,46 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1006l",
         )
 
-    async def test_fullscreen_layout_uses_single_line_hud_and_compact_composer(self) -> None:
-        """界面应使用两行稳态 HUD、无侧栏和三行高的紧凑输入舱。"""
+    def test_should_propagate_textual_fatal_return_code(self) -> None:
+        """Textual 捕获定时器异常后返回的非零状态不能被误报为正常结束。"""
 
-        from textual.widgets import Input, Static
+        from io import StringIO
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, run_fullscreen_tui
+
+        output = StringIO()
+
+        class FatalApp:
+            return_code = 1
+
+            def __init__(self, _agent, _startup) -> None:
+                pass
+
+            def run(self) -> None:
+                pass
+
+        with patch("omnicrawl.ui.fullscreen.OmniCrawlApp", FatalApp), patch(
+            "omnicrawl.ui.fullscreen.sys.__stdout__",
+            output,
+        ):
+            exit_code = run_fullscreen_tui(
+                object(),
+                FullscreenStartup(False, "none", "", "", ""),
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(output.getvalue().endswith("\x1b[?1006l"))
+
+    async def test_fullscreen_layout_uses_single_line_hud_and_compact_composer(self) -> None:
+        """界面应使用两行稳态 HUD、无侧栏和五行高的多行输入舱。"""
+
+        from textual.widgets import TextArea, Static
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
         from omnicrawl.ui.fullscreen.theme import (
-            ACCENT_BLUE,
-            ACCENT_AMBER,
             TERMINAL_BACKGROUND,
             TERMINAL_FOREGROUND,
+            TEXT_PRIMARY,
             THEME_NAME,
         )
 
@@ -104,15 +133,22 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app.query("#hint")), 0)
             self.assertEqual(app.query_one("#topbar").region.y, 0)
             self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
-            # 顶部只保留品牌与稳态上下文；运行态进入对话区且空闲时不存在。
-            self.assertEqual(app.query_one("#brand").region.width, 18)
-            self.assertEqual(len(app.query("#topbar > *")), 3)
+            # 顶部由稳态上下文占满；运行态进入对话区且空闲时不存在。
+            self.assertEqual(len(app.query("#brand")), 0)
+            self.assertEqual(len(app.query("#topbar > *")), 2)
             queue = app.query_one("#queue-count", Static)
             self.assertEqual(str(queue.content), "排队 0")
-            self.assertIn(ACCENT_AMBER, str(queue.content.spans))
+            self.assertIn(TEXT_PRIMARY, str(queue.content.spans))
             self.assertIn("bold", str(queue.content.spans))
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
-            context = app.query_one("#context-summary", Static).content
+            topbar = app.query_one("#topbar")
+            context_widget = app.query_one("#context-summary", Static)
+            self.assertEqual(context_widget.region.x, topbar.content_region.x)
+            self.assertEqual(
+                context_widget.region.width + queue.region.width,
+                topbar.content_region.width,
+            )
+            context = context_widget.content
             self.assertIn("PRJ workspace", context.plain)
             self.assertNotIn("D:/workspace", context.plain)
             self.assertIn("MDL demo-model", context.plain)
@@ -123,7 +159,10 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(app.current_theme.ansi)
             self.assertEqual(app.current_theme.background, TERMINAL_BACKGROUND)
             self.assertEqual(app.current_theme.foreground, TERMINAL_FOREGROUND)
-            self.assertIn(ACCENT_BLUE, str(context.spans))
+            self.assertIn(TEXT_PRIMARY, str(context.spans))
+            self.assertNotIn("ansi_blue", str(context.spans))
+            self.assertNotIn("ansi_green", str(context.spans))
+            self.assertNotIn("ansi_magenta", str(context.spans))
             token_widget = app.query_one("#token-telemetry", Static)
             telemetry = str(token_widget.content)
             self.assertIn("IN 0", telemetry)
@@ -136,17 +175,72 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("CTX", rendered_token)
             self.assertEqual(
                 token_widget.content_region.x,
-                app.query_one("#context-summary").region.x,
+                context_widget.region.x,
             )
-            self.assertEqual(app.query_one("#composer-wrap").region.height, 3)
-            composer = app.query_one("#composer", Input)
-            self.assertGreater(composer.region.height, 0)
+            self.assertEqual(app.query_one("#composer-wrap").region.height, 2)
+            composer = app.query_one("#composer", TextArea)
+            self.assertEqual(composer.region.height, 1)
             self.assertTrue(composer.has_focus)
-            cursor_style = composer.get_component_rich_style("input--cursor")
+            cursor_style = composer.get_component_rich_style("text-area--cursor")
             self.assertEqual(cursor_style.color.number, 0)  # ansi_black
             self.assertEqual(cursor_style.bgcolor.number, 7)  # ansi_white
             self.assertFalse(cursor_style.reverse)
             self.assertEqual(composer.styles.background.a, 0)
+
+    async def test_composer_starts_on_one_row_and_grows_with_wrapped_text(self) -> None:
+        """输入区初始一行，长文本和真实换行均自动扩展，最多保留五行。"""
+
+        from textual.widgets import TextArea
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        submitted: list[str] = []
+        app._submit = submitted.append  # type: ignore[method-assign]
+
+        async with app.run_test(size=(30, 20)) as pilot:
+            composer = app.query_one("#composer", TextArea)
+            self.assertEqual(composer.region.height, 1)
+            for ctrl_enter_key in ("ctrl+enter", "ctrl+\r", "ctrl+j"):
+                composer.clear()
+                await pilot.press("a", ctrl_enter_key, "b")
+                await pilot.pause()
+                self.assertEqual(composer.text, "a\nb")
+
+            composer.text = "第一行\n第二行\n第三行"
+            await pilot.pause()
+            self.assertEqual(composer.region.height, 3)
+
+            composer.text = "这是一个用于验证软折行不会出现横向滚动条的很长输入内容"
+            await pilot.pause()
+            self.assertTrue(composer.soft_wrap)
+            self.assertFalse(composer.show_horizontal_scrollbar)
+            self.assertGreater(composer.region.height, 1)
+
+            composer.text = "\n".join(f"第 {index} 行" for index in range(8))
+            await pilot.pause()
+            self.assertEqual(composer.region.height, app.COMPOSER_MAX_ROWS)
+
+            composer.clear()
+            await pilot.pause()
+            self.assertEqual(composer.region.height, 1)
+
+            composer.text = "第一行\n第二行"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertEqual(submitted, ["第一行\n第二行"])
+            self.assertEqual(composer.text, "")
 
     def test_terminal_css_is_transparent_and_self_contained(self) -> None:
         import re
@@ -155,6 +249,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
         from omnicrawl.ui.fullscreen.settings import SettingsScreen
         from omnicrawl.ui.fullscreen.theme import (
+            REPLACE_TEXT_BACKGROUND,
             REASONING_BACKGROUND,
             REASONING_FOCUS_BACKGROUND,
             REASONING_HOVER_BACKGROUND,
@@ -172,6 +267,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             re.findall(r"(?<!-)background:\s*([^;]+);", OmniCrawlApp.CSS)
         )
         self.assertIn(USER_BACKGROUND, app_backgrounds)
+        self.assertIn(".assistant-message { color: ansi_default; }", OmniCrawlApp.CSS)
+        self.assertIn(
+            f".replace-text-message:focus {{ background: {REPLACE_TEXT_BACKGROUND}; }}",
+            OmniCrawlApp.CSS,
+        )
+        self.assertIn(REPLACE_TEXT_BACKGROUND, app_backgrounds)
+        self.assertEqual(REPLACE_TEXT_BACKGROUND, "rgba(128, 128, 128, 0.16)")
         self.assertIn(REASONING_BACKGROUND, app_backgrounds)
         self.assertIn(REASONING_HOVER_BACKGROUND, app_backgrounds)
         self.assertIn(REASONING_FOCUS_BACKGROUND, app_backgrounds)
@@ -179,9 +281,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             app_backgrounds
             - {
                 USER_BACKGROUND,
+                REPLACE_TEXT_BACKGROUND,
                 REASONING_BACKGROUND,
                 REASONING_HOVER_BACKGROUND,
                 REASONING_FOCUS_BACKGROUND,
+                "ansi_white",
             },
             {"transparent"},
         )
@@ -223,7 +327,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_should_keep_composer_focused_when_historical_reply_is_clicked(self) -> None:
         """点击历史回复只用于选择文本，不能夺走固定输入框焦点。"""
 
-        from textual.widgets import Input
+        from textual.widgets import TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -250,7 +354,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.click(reply, offset=(2, 0))
             await pilot.pause()
 
-            self.assertTrue(app.query_one("#composer", Input).has_focus)
+            self.assertTrue(app.query_one("#composer", TextArea).has_focus)
 
     async def test_should_hide_horizontal_scrollbar_when_assistant_message_wraps(self) -> None:
         """AI 回复由 RichLog 渲染时只能换行，不能在消息底部生成横向滚动条。"""
@@ -289,7 +393,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_should_recover_stale_mouse_selection_when_release_is_missing(self) -> None:
         """终端漏掉 MouseUp 时，选区、捕获和驱动按键状态必须自动复位。"""
 
-        from textual.widgets import Input
+        from textual.widgets import TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -329,13 +433,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app.screen._mouse_down_offset)
             self.assertIsNone(app.mouse_captured)
             self.assertEqual(app._driver._down_buttons, [])
-            self.assertTrue(app.query_one("#composer", Input).has_focus)
+            self.assertTrue(app.query_one("#composer", TextArea).has_focus)
 
     async def test_should_reset_mouse_state_and_reporting_when_app_focus_changes(self) -> None:
         """失焦应立即清理交互状态，重新聚焦时应恢复终端鼠标报告。"""
 
         from textual import events
-        from textual.widgets import Input
+        from textual.widgets import TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -353,7 +457,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
-            composer = app.query_one("#composer", Input)
+            composer = app.query_one("#composer", TextArea)
             await pilot.mouse_down(composer, offset=(2, 0))
             app._driver._down_buttons.append(1)
             await pilot.pause()
@@ -462,10 +566,44 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 ["mouse", "\x1b[?1004h", "\x1b[>1u", "paste", "flush"],
             )
 
+    async def test_should_keep_running_when_terminal_recovery_raises(self) -> None:
+        """终端自愈的瞬时异常不能通过定时器升级为整个 TUI 的致命退出。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            with patch.object(
+                type(app._driver),
+                "is_headless",
+                new=property(lambda _driver: False),
+            ), patch(
+                "omnicrawl.ui.fullscreen._restore_windows_vt_input_mode_if_needed",
+                side_effect=RuntimeError("console mode unavailable"),
+            ):
+                app._recover_stale_mouse_interaction()
+
+            await pilot.pause()
+            self.assertFalse(app._exit)
+            self.assertIsNone(app._interaction_watchdog_signature)
+            self.assertEqual(app._interaction_watchdog_stable_ticks, 0)
+
     async def test_ctrl_c_copies_selection_or_clears_unselected_input(self) -> None:
         """Ctrl+C 有输入选区时复制，无选区时只清空输入框。"""
 
-        from textual.widgets import Input
+        from textual.widgets import TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -485,21 +623,21 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
 
         async with app.run_test(size=(100, 32)) as pilot:
-            composer = app.query_one("#composer", Input)
-            composer.value = "selected text"
-            await pilot.press("ctrl+shift+a", "ctrl+c")
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "selected text"
+            await pilot.press("f7", "ctrl+c")
             await pilot.pause()
 
             self.assertEqual(copied, ["selected text"])
-            self.assertEqual(composer.value, "selected text")
+            self.assertEqual(composer.text, "selected text")
             self.assertFalse(app._cancel_requested.is_set())
 
-            composer.cursor_position = len(composer.value)
+            composer.move_cursor((0, len(composer.text)))
             app.is_generating = True
             await pilot.press("ctrl+c")
             await pilot.pause()
 
-            self.assertEqual(composer.value, "")
+            self.assertEqual(composer.text, "")
             self.assertFalse(app._cancel_requested.is_set())
 
     async def test_ctrl_c_copies_selected_ai_reply(self) -> None:
@@ -529,17 +667,28 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             reply = app._stream_message
             assert reply is not None
 
+            # 必须覆盖真实的拖动选择。此前只发送 MouseDown/MouseUp，实际没有
+            # 行内偏移量时会退化为整条回复选择，掩盖 RichLog 无法精确选取的问题。
+            from textual import events
+
             await pilot.mouse_down(reply, offset=(2, 0))
+            await pilot._post_mouse_events(
+                [events.MouseMove],
+                reply,
+                offset=(10, 0),
+                button=1,
+            )
             await pilot.mouse_up(reply, offset=(10, 0))
             await pilot.pause()
+            self.assertEqual(app.screen.get_selected_text(), " 可以复制的")
             await pilot.press("ctrl+c")
             await pilot.pause()
 
-            self.assertEqual(copied, ["◇ 可以复制的 AI 回复"])
+            self.assertEqual(copied, [" 可以复制的"])
 
         """生成期间提交的多条消息应按 FIFO 顺序自动发送。"""
 
-        from textual.widgets import Input, Static
+        from textual.widgets import Static, TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -572,18 +721,18 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
-            composer = app.query_one("#composer", Input)
-            composer.value = "first"
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "first"
             await pilot.press("enter")
             await pilot.pause()
             self.assertTrue(first_started.wait(timeout=1))
 
-            composer.value = "second"
+            composer.text = "second"
             await pilot.press("enter")
             await pilot.pause()
-            composer.value = "/skills"
+            composer.text = "/skills"
             app._hide_command_menu()
-            app.on_input_submitted(Input.Submitted(composer, "/skills"))
+            app._submit_composer_text()
             await pilot.pause()
 
             self.assertEqual(agent.calls, ["first"])
@@ -604,7 +753,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_queued_modal_command_resumes_after_screen_closes(self) -> None:
         """排队的弹窗命令应暂停后续消息，并在弹窗关闭后恢复。"""
 
-        from textual.widgets import Input
+        from textual.widgets import TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
         from omnicrawl.ui.fullscreen.settings import SettingsScreen
@@ -638,15 +787,17 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
-            composer = app.query_one("#composer", Input)
-            composer.value = "first"
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "first"
             await pilot.press("enter")
             await pilot.pause()
             self.assertTrue(first_started.wait(timeout=1))
 
+            composer.text = "/settings"
             app._hide_command_menu()
-            app.on_input_submitted(Input.Submitted(composer, "/settings"))
-            app.on_input_submitted(Input.Submitted(composer, "after settings"))
+            app._submit_composer_text()
+            composer.text = "after settings"
+            app._submit_composer_text()
             release_first.set()
 
             for _ in range(60):
@@ -703,12 +854,12 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         async with app.run_test(size=(100, 32)) as pilot:
             composer = app.query_one("#composer")
-            composer.value = "first"
+            composer.text = "first"
             await pilot.press("enter")
             await pilot.pause()
             self.assertTrue(first_started.wait(timeout=1))
 
-            composer.value = "after cancel"
+            composer.text = "after cancel"
             await pilot.press("enter")
             await pilot.press("escape")
             release_first.set()
@@ -758,38 +909,110 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await pilot.hover("#approve", offset=(2, 1)))
             self.assertEqual(approve.styles.background.a, 0)
 
-    def test_subagent_events_render_only_safe_task_status(self) -> None:
-        from omnicrawl.ui.fullscreen import OmniCrawlApp
+    async def test_subagent_events_update_one_safe_progress_tree_in_place(self) -> None:
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.widgets import SubAgentProgressTree
 
-        app = object.__new__(OmniCrawlApp)
-        messages = []
-        app._append_message = lambda role, text: messages.append((role, text))
-        payload = {
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        first_payload = {
+            "batch_id": "batch-a1b2c3d4e5f6",
             "task_id": "task-a1b2c3d4e5f6",
             "agent_type": "explore",
             "description": "检查 Session",
             "summary": "不应展示的完整结果",
             "prompt": "不应展示的任务 prompt",
         }
+        second_payload = {
+            "batch_id": "batch-a1b2c3d4e5f6",
+            "task_id": "task-b1b2c3d4e5f6",
+            "agent_type": "verify",
+            "description": "运行回归测试",
+        }
 
-        app._handle_subagent_event("subagent.task.queued", payload)
-        app._handle_subagent_event("subagent.task.running", payload)
-        app._handle_subagent_event("subagent.task.started", payload)
-        app._handle_subagent_event("subagent.task.waiting_approval", payload)
-        app._handle_subagent_event("subagent.task.completed", payload)
-        app._handle_subagent_event("subagent.task.failed", payload)
-        app._handle_subagent_event("subagent.task.cancelled", payload)
-        app._handle_subagent_event("subagent.task.approval_cancelled", payload)
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._handle_subagent_event("subagent.task.queued", first_payload)
+            app._handle_subagent_event("subagent.task.running", first_payload)
+            app._handle_subagent_event("subagent.task.started", first_payload)
+            app._handle_subagent_event("subagent.task.queued", second_payload)
+            app._handle_subagent_event("subagent.task.completed", first_payload)
+            await pilot.pause()
 
-        rendered = "\n".join(text for _role, text in messages)
-        self.assertIn("子任务排队：explore · 检查 Session", rendered)
-        self.assertIn("子任务运行中：explore · 检查 Session", rendered)
-        self.assertIn("子任务等待审批：explore · 检查 Session", rendered)
-        self.assertIn("子任务完成：explore · 检查 Session", rendered)
-        self.assertIn("子任务失败：explore · 检查 Session", rendered)
-        self.assertIn("子任务取消：explore · 检查 Session", rendered)
-        self.assertNotIn("完整结果", rendered)
-        self.assertNotIn("任务 prompt", rendered)
+            trees = list(app.query(SubAgentProgressTree))
+            self.assertEqual(len(trees), 1)
+            rendered = trees[0].render_text().plain
+            self.assertIn("◇ 并行子任务  1/2 完成", rendered)
+            self.assertIn("├─ ✓ 检查 Session  explore · 完成", rendered)
+            self.assertIn("└─ ○ 运行回归测试  verify · 等待中", rendered)
+            self.assertEqual(rendered.count("检查 Session"), 1)
+            self.assertNotIn("完整结果", rendered)
+            self.assertNotIn("任务 prompt", rendered)
+
+            app._handle_subagent_event(
+                "subagent.task.waiting_approval",
+                second_payload,
+            )
+            await pilot.pause()
+            self.assertIn("verify · 等待审批", trees[0].render_text().plain)
+
+            app._handle_subagent_event("subagent.task.failed", second_payload)
+            app._handle_subagent_event("subagent.task.running", second_payload)
+            await pilot.pause()
+            terminal_rendered = trees[0].render_text().plain
+            self.assertIn("× 运行回归测试  verify · 失败", terminal_rendered)
+            self.assertNotIn("运行回归测试  verify · 运行中", terminal_rendered)
+
+    async def test_subagent_progress_tree_formats_terminal_elapsed_time(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from omnicrawl.ui.fullscreen.widgets import SubAgentProgressTree
+
+        class ProgressTreeHarness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SubAgentProgressTree("batch-demo")
+
+        app = ProgressTreeHarness()
+        async with app.run_test(size=(80, 12)) as pilot:
+            tree = app.query_one(SubAgentProgressTree)
+            tree.update_task(
+                task_id="task-demo",
+                agent_type="explore",
+                description="检查 Agent 变更",
+                status="queued",
+                now=10.0,
+            )
+            tree.update_task(
+                task_id="task-demo",
+                agent_type="explore",
+                description="检查 Agent 变更",
+                status="running",
+                now=12.0,
+            )
+            tree.update_task(
+                task_id="task-demo",
+                agent_type="explore",
+                description="检查 Agent 变更",
+                status="completed",
+                now=77.0,
+            )
+            await pilot.pause()
+
+            rendered = tree.render_text(now=90.0).plain
+            self.assertIn("◇ 子任务进度  1/1 完成", rendered)
+            self.assertIn(
+                "└─ ✓ 检查 Agent 变更  explore · 完成 · 01:05",
+                rendered,
+            )
 
     def test_subagent_confirmation_hides_complete_prompts(self) -> None:
         from omnicrawl.commands.slash import format_tool_confirmation
@@ -1527,13 +1750,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(selected.model_id, "current-match")
 
     async def test_token_telemetry_updates_counts_and_context_progress(self) -> None:
-        """Token 回调应刷新缩写统计，并按配置上限生成彩色上下文进度条。"""
+        """Token 回调应刷新缩写统计与默认前景色的上下文进度条。"""
 
         from rich.text import Text
         from textual.widgets import Static
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
-        from omnicrawl.ui.fullscreen.theme import ACCENT_AMBER
+        from omnicrawl.ui.fullscreen.theme import TEXT_MUTED
 
         class FakeAgent:
             current_model = "demo-model"
@@ -1558,7 +1781,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("CA 50K", telemetry.plain)
             self.assertIn("CTX 62.5K/100K", telemetry.plain)
             self.assertIn("62%", telemetry.plain)
-            self.assertIn(ACCENT_AMBER, str(telemetry.spans))
+            self.assertIn(TEXT_MUTED, str(telemetry.spans))
+            self.assertIn("default", str(telemetry.spans))
+            self.assertNotIn("blue", str(telemetry.spans))
+            self.assertNotIn("magenta", str(telemetry.spans))
+            self.assertNotIn("green", str(telemetry.spans))
+            self.assertNotIn("yellow", str(telemetry.spans))
+            self.assertNotIn("red", str(telemetry.spans))
 
     async def test_context_summary_uses_windows_workspace_folder_name(self) -> None:
         """顶部项目名解析不应依赖测试进程当前运行的平台。"""
@@ -1588,7 +1817,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_slash_menu_filters_commands_and_completion_does_not_submit(self) -> None:
         """斜杠菜单应包含动态 Skill，最多八项，Enter/Tab 只补全不执行。"""
 
-        from textual.widgets import Input, Static
+        from textual.widgets import Static, TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -1618,7 +1847,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         app._submit = submitted.append  # type: ignore[method-assign]
 
         async with app.run_test(size=(120, 40)) as pilot:
-            composer = app.query_one("#composer", Input)
+            composer = app.query_one("#composer", TextArea)
             menu = app.query_one("#command-menu", Static)
             await pilot.press("/")
             await pilot.pause()
@@ -1626,21 +1855,71 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(app._command_matches), 8)
             self.assertIn("/new", str(menu.content))
 
-            composer.value = "/skill:ui"
+            composer.text = "/skill:ui"
             await pilot.pause()
             self.assertEqual([item["command"] for item in app._command_matches], ["/skill:ui-design"])
             await pilot.press("enter")
             await pilot.pause()
-            self.assertEqual(composer.value, "/skill:ui-design ")
+            self.assertEqual(composer.text, "/skill:ui-design ")
             self.assertEqual(submitted, [])
             self.assertFalse(menu.display)
 
-            composer.value = "/mem"
+            composer.text = "/mem"
             await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
-            self.assertEqual(composer.value, "/memory:clean")
+            self.assertEqual(composer.text, "/memory:clean")
             self.assertEqual(submitted, [])
+
+    async def test_should_submit_exact_slash_command_when_menu_already_matches(self) -> None:
+        """输入已完整匹配的斜杠命令时，Enter 应提交而不是反复补全。"""
+
+        from textual.widgets import Static, TextArea
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = "D:/workspace"
+            current_session_id = "session-demo"
+            skill_manager = None
+            _memory_store = None
+            _mcp_manager = SimpleNamespace(enabled=False)
+            _plugin_manager = SimpleNamespace(enabled=False)
+            config = SimpleNamespace(
+                subagents=SimpleNamespace(enabled=False),
+                context_compaction=SimpleNamespace(enabled=False),
+            )
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            composer = app.query_one("#composer", TextArea)
+            menu = app.query_one("#command-menu", Static)
+            composer.text = "/settings"
+            await pilot.pause()
+            self.assertTrue(menu.display)
+            self.assertEqual(
+                [item["command"] for item in app._command_matches],
+                ["/settings"],
+            )
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            self.assertIsInstance(app.screen, SettingsScreen)
+            self.assertEqual(composer.text, "")
+            self.assertFalse(menu.display)
+            self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
 
     async def test_confirm_tool_returns_when_cancelled_while_waiting_for_approval(self) -> None:
         """审批模态框等待期间取消必须解除后台线程，不能永久停在确认页。"""
@@ -1736,8 +2015,10 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(conversation.is_vertical_scroll_end)
 
-    async def test_runtime_indicator_only_shows_while_active(self) -> None:
-        """活动状态应闪烁显示，默认和完成状态必须隐藏且不占空间。"""
+    async def test_should_render_all_braille_spinner_frames_before_restarting_when_runtime_is_active(
+        self,
+    ) -> None:
+        """活动状态应轮换 Braille 动画帧，完成后必须隐藏且不占空间。"""
 
         from textual.widgets import Static
 
@@ -1757,20 +2038,40 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
+            expected_spinner_frames = (
+                "⠋",
+                "⠙",
+                "⠹",
+                "⠸",
+                "⠼",
+                "⠴",
+                "⠦",
+                "⠧",
+                "⠇",
+                "⠏",
+            )
+            self.assertEqual(app.STATUS_SPINNER_FRAMES, expected_spinner_frames)
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
 
             app._set_runtime_status("正在思考", "working")
             await pilot.pause()
             status = app.query_one(".runtime-status-message", Static)
             self.assertEqual(status.parent.id, "conversation")
-            self.assertIn("正在思考", str(status.content))
+            self.assertFalse(status.has_class("working"))
+            self.assertIn(str(status.content)[0], app.STATUS_SPINNER_FRAMES)
 
-            app._status_dot_visible = False
-            app._render_status_indicator()
-            self.assertEqual(str(status.content), "  正在思考")
-            app._status_dot_visible = True
-            app._render_status_indicator()
-            self.assertEqual(str(status.content), "● 正在思考")
+            # 等待 UI 首次刷新时计时器可能已经推进一帧；重新设置状态后同步断言
+            # 首帧，再手动调用 tick，避免测试依赖运行环境的调度时机。
+            app._set_runtime_status("正在检查", "working")
+            self.assertEqual(str(status.content), "⠋ 正在检查")
+            app._tick_status_indicator()
+            self.assertEqual(str(status.content), "⠙ 正在检查")
+            # 思考分片会重复上报同一阶段，不能把已推进的帧重置为首帧。
+            app._set_runtime_status("正在检查", "working")
+            self.assertEqual(str(status.content), "⠙ 正在检查")
+            for spinner_frame in (*expected_spinner_frames[2:], expected_spinner_frames[0]):
+                app._tick_status_indicator()
+                self.assertEqual(str(status.content), f"{spinner_frame} 正在检查")
 
             app._append_delta("开始回复。")
             await pilot.pause()
@@ -1879,7 +2180,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_agent_turn_errors_and_cancellation_release_input_for_next_submission(self) -> None:
         """取消、预期异常和未知异常结束后，输入锁都必须解除且允许下一轮提交。"""
 
-        from textual.widgets import Input
+        from textual.widgets import TextArea
 
         from omnicrawl.agent import AgentError
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
@@ -1916,13 +2217,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
-            composer = app.query_one("#composer", Input)
+            composer = app.query_one("#composer", TextArea)
             for text, expected in (
                 ("取消", "当前任务已取消。"),
                 ("预期失败", "Agent 请求失败：配置无效"),
                 ("未知失败", "界面任务异常：连接中断"),
             ):
-                composer.value = text
+                composer.text = text
                 await pilot.press("enter")
                 # Textual 的 worker 可能尚未开始执行；先观察本轮输入已被
                 # Agent 接收，避免把上一轮 `is_generating=False` 误认为本轮完成。
@@ -1942,7 +2243,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(app.is_generating)
                 self.assertIn(expected, app.conversation_text)
 
-            composer.value = "恢复"
+            composer.text = "恢复"
             await pilot.press("enter")
             for _ in range(40):
                 if not app.is_generating and "恢复" in agent.calls:
@@ -2078,7 +2379,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_fullscreen_app_renders_stream_events_with_merged_tool_record(self) -> None:
         """全屏界面必须将同一工具的开始与结果聚合为一条可扫描记录。"""
 
-        from textual.widgets import Input, Static
+        from textual.widgets import Static, TextArea
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -2122,8 +2423,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
-            composer = app.query_one("#composer", Input)
-            composer.value = "你好"
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "你好"
             await pilot.press("enter")
             await pilot.pause(0.8)
 
@@ -2143,6 +2444,18 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("读取完成", expanded)
             self.assertEqual(app.agent.seen_statuses, ["正在思考", "正在回复", "等待", "正在调用"])
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
+            assistant_record = app.query_one(".assistant-message")
+            self.assertEqual(assistant_record.styles.background.a, 0)
+
+            replace_call = SimpleNamespace(
+                name="replace_text",
+                arguments={"path": "README.md", "old_text": "旧", "new_text": "新"},
+            )
+            app._handle_tool_start(2, replace_call)
+            await pilot.pause()
+            replace_record = app.query_one(".replace-text-message", Static)
+            self.assertTrue(replace_record.has_class("tool-message"))
+            self.assertEqual(replace_record.styles.background.a, 0.16)
 
     async def test_stream_records_preserve_model_tool_model_visual_order(self) -> None:
         """工具边界后的推理和最终回复不得写回工具之前的旧回复组件。"""

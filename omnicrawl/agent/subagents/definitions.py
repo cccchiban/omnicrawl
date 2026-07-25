@@ -15,6 +15,7 @@ _ALLOWED_FIELDS = {
     "tools",
     "disallowedTools",
     "model",
+    # 兼容旧角色定义：这两个字段不再参与运行预算，存在时仅忽略。
     "maxTurns",
     "maxToolCalls",
     "permissionMode",
@@ -49,8 +50,6 @@ class AgentDefinition:
     tools: tuple[str, ...] = ()
     disallowed_tools: tuple[str, ...] = ()
     model: str = "inherit"
-    max_turns: int = 20
-    max_tool_calls: int = 40
     permission_mode: str = "delegated-read-only"
     background: bool = False
     isolation: str = "shared"
@@ -267,8 +266,6 @@ def parse_agent_definition(path: Path, *, source: str) -> AgentDefinition:
     tools = _string_tuple(raw, "tools", file_path)
     disallowed_tools = _string_tuple(raw, "disallowedTools", file_path)
     model = _optional_string(raw, "model", "inherit", file_path, max_length=200)
-    max_turns = _positive_int(raw, "maxTurns", 20, file_path, maximum=100)
-    max_tool_calls = _positive_int(raw, "maxToolCalls", 40, file_path, maximum=500)
     permission_mode = _optional_string(
         raw,
         "permissionMode",
@@ -292,8 +289,6 @@ def parse_agent_definition(path: Path, *, source: str) -> AgentDefinition:
         tools=tools,
         disallowed_tools=disallowed_tools,
         model=model,
-        max_turns=max_turns,
-        max_tool_calls=max_tool_calls,
         permission_mode=permission_mode,
         background=background,
         isolation=isolation,
@@ -368,22 +363,6 @@ def _string_tuple(raw: Mapping[str, Any], name: str, path: Path) -> tuple[str, .
     if len(normalized) != len(stripped_items):
         raise AgentDefinitionError(f"Agent 定义 {name} 不允许重复项：{path}")
     return normalized
-
-
-def _positive_int(
-    raw: Mapping[str, Any],
-    name: str,
-    default: int,
-    path: Path,
-    *,
-    maximum: int,
-) -> int:
-    value = raw.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > maximum:
-        raise AgentDefinitionError(
-            f"Agent 定义 {name} 必须是 1 到 {maximum} 的整数：{path}"
-        )
-    return value
 
 
 def _bool_value(raw: Mapping[str, Any], name: str, default: bool, path: Path) -> bool:

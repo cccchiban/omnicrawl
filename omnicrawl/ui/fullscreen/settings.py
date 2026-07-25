@@ -56,7 +56,6 @@ _CONTEXT_WINDOW_OPTIONS_K = (32, 64, 128, 256, 512, 1024, 2048)
 _SUBAGENT_ADVANCED_LABELS = {
     "max_concurrency": "最大并发数",
     "max_tasks_per_batch": "每批最大任务数",
-    "max_total_tasks": "最大总任务数",
     "default_timeout_seconds": "子任务超时（秒）",
     "model_request_concurrency": "模型请求并发数",
     "verify_command_timeout_seconds": "验证检查超时（秒）",
@@ -65,7 +64,6 @@ _SUBAGENT_ADVANCED_LABELS = {
 _SUBAGENT_ADVANCED_OPTIONS: dict[str, tuple[int | float, ...]] = {
     "max_concurrency": (1, 2, 3, 4),
     "max_tasks_per_batch": (1, 2, 3, 4),
-    "max_total_tasks": (1, 4, 8, 16, 32),
     "default_timeout_seconds": (30, 60, 120, 300, 600, 1200, 3600),
     "model_request_concurrency": (1, 2, 3, 4),
     "verify_command_timeout_seconds": (30, 60, 120, 180, 240, 360),

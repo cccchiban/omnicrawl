@@ -254,6 +254,44 @@ class LLMConfigTest(unittest.TestCase):
             (14, 2, 9),
         )
 
+    def test_context_length_gateway_error_is_classified_without_exposing_raw_body(self) -> None:
+        class ContextLengthGatewayError(RuntimeError):
+            status_code = 422
+
+            def __init__(self) -> None:
+                super().__init__("422 Unprocessable Entity")
+                self.response = SimpleNamespace(
+                    status_code=422,
+                    json=lambda: {
+                        "error": {
+                            "message": "maximum context length is 8192 tokens; received 9000",
+                            "type": "context_length_exceeded",
+                        }
+                    },
+                )
+
+        from omnicrawl.llm.errors import ModelErrorCode, map_openai_exception
+
+        mapped = map_openai_exception(ContextLengthGatewayError())
+
+        self.assertEqual(mapped.code, ModelErrorCode.CONTEXT_LENGTH_EXCEEDED)
+        self.assertEqual(mapped.status_code, 422)
+        self.assertIn("输入上下文超过", mapped.message)
+        self.assertNotIn("8192", mapped.message)
+        self.assertNotIn("9000", mapped.message)
+
+    def test_should_classify_rate_limit_before_token_markers(self) -> None:
+        class RateLimitError(RuntimeError):
+            status_code = 429
+
+        from omnicrawl.llm.errors import ModelErrorCode, map_openai_exception
+
+        mapped = map_openai_exception(
+            RateLimitError("Rate limit reached: token limit exceeded for this minute")
+        )
+
+        self.assertEqual(mapped.code, ModelErrorCode.RATE_LIMITED)
+
     def test_format_request_error_hides_html_gateway_body(self) -> None:
         raw_error = RuntimeError(
             "<html>\n"

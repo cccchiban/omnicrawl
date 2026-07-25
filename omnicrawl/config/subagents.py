@@ -1,4 +1,4 @@
-"""SubAgent 运行配置：默认关闭，环境变量只能关闭能力或收紧预算。"""
+"""SubAgent 运行配置：默认关闭，环境变量只能关闭能力或收紧超时/并发。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ class SubAgentConfigError(RuntimeConfigError):
 _SUBAGENT_ADVANCED_SETTING_RULES: dict[str, tuple[str, float, float]] = {
     "max_concurrency": ("int", 1, 4),
     "max_tasks_per_batch": ("int", 1, 4),
-    "max_total_tasks": ("int", 1, 32),
     "default_timeout_seconds": ("number", 1.0, 3600.0),
     "model_request_concurrency": ("int", 1, 4),
     "verify_command_timeout_seconds": ("int", 1, 360),
@@ -64,10 +63,7 @@ class SubAgentConfig:
     max_depth: int = 1
     max_concurrency: int = 2
     max_tasks_per_batch: int = 4
-    max_total_tasks: int = 8
-    default_max_turns: int = 20
-    default_max_tool_calls: int = 50
-    default_timeout_seconds: float = 300.0
+    default_timeout_seconds: float = 3600.0
     model_request_concurrency: int = 2
     allow_background: bool = False
     allow_fork: bool = False
@@ -92,13 +88,10 @@ def load_subagent_config(config_path: str | Path | None = None) -> SubAgentConfi
     max_depth = _int_field(section, "max_depth", 1, 1, 1)
     max_concurrency = _int_field(section, "max_concurrency", 2, 1, 4)
     max_tasks_per_batch = _int_field(section, "max_tasks_per_batch", 4, 1, 4)
-    max_total_tasks = _int_field(section, "max_total_tasks", 8, 1, 32)
-    default_max_turns = _int_field(section, "default_max_turns", 20, 1, 100)
-    default_max_tool_calls = _int_field(section, "default_max_tool_calls", 50, 1, 500)
     default_timeout_seconds = _number_field(
         section,
         "default_timeout_seconds",
-        300.0,
+        3600.0,
         1.0,
         3600.0,
     )
@@ -163,9 +156,6 @@ def load_subagent_config(config_path: str | Path | None = None) -> SubAgentConfi
         max_depth=max_depth,
         max_concurrency=max_concurrency,
         max_tasks_per_batch=max_tasks_per_batch,
-        max_total_tasks=max_total_tasks,
-        default_max_turns=default_max_turns,
-        default_max_tool_calls=default_max_tool_calls,
         default_timeout_seconds=float(default_timeout_seconds),
         model_request_concurrency=model_request_concurrency,
         allow_background=dangerous_flags["allow_background"],

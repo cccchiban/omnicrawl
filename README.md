@@ -262,9 +262,7 @@ subagents:
   max_concurrency: 2
   max_tasks_per_batch: 4
   model_request_concurrency: 2
-  default_max_turns: 20
-  default_max_tool_calls: 50
-  default_timeout_seconds: 300
+  default_timeout_seconds: 3600
   allow_background: false
   allow_fork: false
   allow_worktree: false
@@ -275,7 +273,7 @@ subagents:
   task_retention_minutes: 60
 ```
 
-启用后加载顺序为项目 `.omnicrawl/agents/*.md`、兼容项目 `.agents/agents/*.md`、用户 `~/.omnicrawl/agents/*.md`、包内 `explore`/`plan`/`verify`/`general-purpose`、已批准插件定义；同名时高优先级来源获胜。环境变量只能关闭能力或收紧并发、超时等限制，不能扩大配置。当前实现支持 1–4 个同步任务、有界任务并发、独立模型请求限流、输入顺序聚合、失败隔离和同步 `fail_fast`；默认仅只读，显式启用 `verify` 后只能执行固定的全量 unittest、compileall 和 `git diff --check`。显式设置 `allow_fork: true` 后可使用创建时冻结、脱敏的父公开上下文；任务模型按任务 > 角色定义 > 父模型解析并以独立 Runtime 运行。显式设置 `allow_background: true` 后支持 `spawn/list/get/cancel`，终态任务与未消费通知按 TTL 自动回收，通知只注入一次。父 Run 取消、Agent 关闭和工作区切换会级联取消并有界等待；跨进程恢复只导入安全任务快照，非终态任务折叠为 `SUBAGENT_INTERRUPTED`，不自动重跑或恢复 prompt、Runtime、审批和通知。显式开启 `allow_worktree` 与 `allow_standard_agent` 后，`general-purpose` 可在独立 worktree 写入，主工作树脏时拒绝创建/应用，父 Agent 通过控制动作审查并 apply/discard；共享工作区写入还需额外开启 `allow_shared_workspace_writes` 并受单写锁约束。跨父 Run 的后台审批记录仍仅存在于当前进程，不跨进程恢复；后台 `fail_fast` 尚未开放。
+启用后加载顺序为项目 `.omnicrawl/agents/*.md`、兼容项目 `.agents/agents/*.md`、用户 `~/.omnicrawl/agents/*.md`、包内 `explore`/`plan`/`verify`/`general-purpose`、已批准插件定义；同名时高优先级来源获胜。环境变量只能关闭能力或收紧并发、超时等限制，不能扩大配置。当前实现支持每批 1–4 个同步任务、有界任务并发、独立模型请求限流、输入顺序聚合、失败隔离和同步 `fail_fast`；单个子任务不设模型回合或工具调用上限，默认超时为 3600 秒。默认仅只读，显式启用 `verify` 后只能执行固定的全量 unittest、compileall 和 `git diff --check`。显式设置 `allow_fork: true` 后可使用创建时冻结、脱敏的父公开上下文；任务模型按任务 > 角色定义 > 父模型解析并以独立 Runtime 运行。显式设置 `allow_background: true` 后支持 `spawn/list/get/cancel`，终态任务与未消费通知按 TTL 自动回收，通知只注入一次。父 Run 取消、Agent 关闭和工作区切换会级联取消并有界等待；跨进程恢复只导入安全任务快照，非终态任务折叠为 `SUBAGENT_INTERRUPTED`，不自动重跑或恢复 prompt、Runtime、审批和通知。显式开启 `allow_worktree` 与 `allow_standard_agent` 后，`general-purpose` 可在独立 worktree 写入，主工作树脏时拒绝创建/应用，父 Agent 通过控制动作审查并 apply/discard；共享工作区写入还需额外开启 `allow_shared_workspace_writes` 并受单写锁约束。跨父 Run 的后台审批记录仍仅存在于当前进程，不跨进程恢复；后台 `fail_fast` 尚未开放。
 
 思考深度可在 `llm.reasoning_effort`（或 `llm.defaults.reasoning_effort`）配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
 

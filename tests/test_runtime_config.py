@@ -173,6 +173,37 @@ class RuntimeConfigTest(unittest.TestCase):
         power_shell_command = command[-1]
         self.assertIn("'--resume' '20260616-201530-a1b2c3'", power_shell_command)
 
+    def test_windows_launcher_cleans_terminal_before_close_prompt(self) -> None:
+        """子进程退出后应由仍存活的 PowerShell 宿主清理协议和残留输入。"""
+
+        popen_calls: list[dict[str, object]] = []
+
+        def fake_popen(command, **kwargs):
+            popen_calls.append({"command": command, **kwargs})
+            return object()
+
+        with patch("omnicrawl.ui.windows_launcher.os.name", "nt"):
+            with patch("omnicrawl.ui.windows_launcher._running_in_powershell_child", return_value=False):
+                with patch("omnicrawl.ui.windows_launcher.subprocess.Popen", side_effect=fake_popen):
+                    with patch("omnicrawl.ui.windows_launcher.subprocess.CREATE_NEW_CONSOLE", 16, create=True):
+                        launched = launch_in_powershell_window(Path("main.py"), [])
+
+        self.assertTrue(launched)
+        command = popen_calls[0]["command"]
+        self.assertIsInstance(command, list)
+        self.assertNotIn("-NoExit", command)
+        power_shell_command = command[-1]
+        self.assertIn("$appExitCode=$LASTEXITCODE", power_shell_command)
+        self.assertIn("$esc=[char]27", power_shell_command)
+        for mode in ("1000l", "1003l", "1006l", "1004l", "2004l", "<u", "25h"):
+            self.assertIn(mode, power_shell_command)
+        self.assertIn("FlushInputBuffer", power_shell_command)
+        self.assertLess(
+            power_shell_command.index("FlushInputBuffer"),
+            power_shell_command.index("Read-Host"),
+        )
+        self.assertIn("界面意外退出", power_shell_command)
+
 
 if __name__ == "__main__":
     unittest.main()

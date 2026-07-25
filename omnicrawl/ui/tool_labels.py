@@ -45,7 +45,7 @@ _TOOL_DISPLAY_ICONS = {
     "search_text": "S",
     "replace_text": "✎",
     "write_file": "✚",
-    "bash": "▶",
+    "bash": "B",
     "powershell": "P",
     "monitor": "◌",
     "display_html": "▤",
@@ -77,7 +77,7 @@ _MCP_OPERATION_ICONS = {
     "search_text": "S",
     "replace_text": "✎",
     "write_file": "✚",
-    "bash": "▶",
+    "bash": "B",
     "powershell": "P",
 }
 

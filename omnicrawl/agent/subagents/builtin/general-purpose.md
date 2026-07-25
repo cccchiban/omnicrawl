@@ -19,7 +19,6 @@ disallowedTools:
   - search_skills
 model: inherit
 permissionMode: standard
-maxTurns: 40
 isolation: worktree
 background: false
 ---

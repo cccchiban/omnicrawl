@@ -11,6 +11,24 @@ from ..workspace.context import LAUNCH_CWD_ENV
 POWERSHELL_CHILD_ENV = "AI_VOICE_CHAT_IN_POWERSHELL"
 
 
+def _powershell_terminal_cleanup() -> str:
+    """生成由父 PowerShell 执行的终端协议复位命令。"""
+
+    # Python 子进程可能在 Textual Driver 完成清理前异常结束，因此最终兜底必须
+    # 由仍然存活的父 PowerShell 执行。Windows PowerShell 5.1 不支持 `\e` 转义，
+    # 使用 [char]27 兼容系统自带版本；短暂等待后清空已经排队的 VT 输入，
+    # 避免鼠标移动序列被后续 Read-Host 当成普通文字回显。
+    return (
+        "$esc=[char]27; "
+        "[Console]::Write("
+        '"${esc}[?1000l${esc}[?1002l${esc}[?1003l${esc}[?1015l${esc}[?1006l'
+        '${esc}[?1004l${esc}[?2004l${esc}[<u${esc}[?1049l${esc}[?25h"); '
+        "[Console]::Out.Flush(); "
+        "Start-Sleep -Milliseconds 50; "
+        "try { $Host.UI.RawUI.FlushInputBuffer() } catch {}; "
+    )
+
+
 def configure_console_encoding() -> None:
     """尽量使用 UTF-8 输出，减少 Windows 命令行中文乱码概率。"""
 
@@ -40,15 +58,21 @@ def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None
         f"$env:{LAUNCH_CWD_ENV}={_powershell_single_quoted(str(launch_cwd))}; "
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; "
         f"& {_powershell_single_quoted(sys.executable)} {_powershell_single_quoted(str(script_path))}{script_args}; "
+        "$appExitCode=$LASTEXITCODE; "
+        f"{_powershell_terminal_cleanup()}"
         "Write-Host ''; "
+        "if ($appExitCode -ne 0) { "
+        "Write-Host \"OmniCrawl 界面意外退出（代码 $appExitCode），请保留上方错误信息。\" "
+        "-ForegroundColor Red; "
+        "}; "
         "Read-Host '对话已结束，按 Enter 关闭窗口'"
+        "; exit $appExitCode"
     )
 
     try:
         subprocess.Popen(
             [
                 "powershell.exe",
-                "-NoExit",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-Command",

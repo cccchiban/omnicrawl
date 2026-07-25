@@ -163,7 +163,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         if plugin_runtime is not None:
             agent.add_close_callback(plugin_runtime.close)
             plugin_runtime.notify_app_started()
-        run_fullscreen_tui(
+        tui_exit_code = run_fullscreen_tui(
             agent,
             fullscreen_startup(
                 thinking_enabled=config.thinking_enabled,
@@ -173,6 +173,9 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 temp_label=agent_temp_status_label(temp_workspace_config),
             ),
         )
+        # 真实全屏入口返回 Textual 退出码；测试替身和旧扩展可能仍返回 None
+        # 或其他哨兵值，此时保持历史上的正常退出语义。
+        exit_code = tui_exit_code if isinstance(tui_exit_code, int) else 0
     except AgentError as exc:
         print(f"Agent 初始化失败：{exc}")
         exit_code = 1

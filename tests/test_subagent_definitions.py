@@ -26,7 +26,7 @@ def _definition_text(name: str, description: str, body: str, **fields) -> str:
 
 
 class AgentDefinitionParsingTest(unittest.TestCase):
-    def test_parses_yaml_lists_and_phase1_fields(self) -> None:
+    def test_parses_yaml_lists_and_role_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "reviewer.md"
             path.write_text(
@@ -37,8 +37,6 @@ class AgentDefinitionParsingTest(unittest.TestCase):
                     tools=["read_file", "search_text"],
                     disallowedTools=["write_file", "subagent"],
                     model="inherit",
-                    maxTurns=12,
-                    maxToolCalls=24,
                     permissionMode="delegated-read-only",
                     background=False,
                     isolation="shared",
@@ -53,12 +51,26 @@ class AgentDefinitionParsingTest(unittest.TestCase):
         self.assertEqual(definition.name, "security-reviewer")
         self.assertEqual(definition.tools, ("read_file", "search_text"))
         self.assertEqual(definition.disallowed_tools, ("write_file", "subagent"))
-        self.assertEqual(definition.max_turns, 12)
-        self.assertEqual(definition.max_tool_calls, 24)
         self.assertEqual(definition.system_prompt, "只读取并返回证据。")
         self.assertEqual(definition.source, "project")
 
-    def test_rejects_oversized_file_or_prompt_body(self) -> None:
+    def test_ignores_removed_execution_budget_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "reviewer.md"
+            path.write_text(
+                _definition_text(
+                    "security-reviewer",
+                    "只读审查",
+                    "只读取并返回证据。",
+                    maxTurns=12,
+                ),
+                encoding="utf-8",
+            )
+
+            definition = parse_agent_definition(path, source="project")
+
+        self.assertEqual(definition.name, "security-reviewer")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             oversized = root / "oversized.md"

@@ -15,8 +15,6 @@ disallowedTools:
   - memory_write
   - display_html
 model: inherit
-maxTurns: 20
-maxToolCalls: 50
 permissionMode: delegated-read-only
 background: false
 isolation: shared

@@ -13,6 +13,8 @@ class ToolLabelsTest(unittest.TestCase):
     def test_builtin_and_mcp_tools_use_friendly_labels(self) -> None:
         self.assertEqual(tool_display("list_files").icon, "L")
         self.assertEqual(tool_display("read_file").icon, "R")
+        self.assertEqual(tool_display("bash").icon, "B")
+        self.assertEqual(tool_display("trusted.bash").icon, "B")
         self.assertEqual(tool_display("powershell").icon, "P")
         self.assertEqual(tool_display("trusted.powershell").icon, "P")
         self.assertEqual(tool_display("read_file").name, "读取文件")

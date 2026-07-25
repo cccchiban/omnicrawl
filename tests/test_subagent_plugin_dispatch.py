@@ -110,8 +110,6 @@ class PluginDispatchContextTests(unittest.TestCase):
             tools=("list_files", "read_file"),
             model="inherit",
             permission_mode="delegated-read-only",
-            max_turns=2,
-            max_tool_calls=4,
             isolation="shared",
             background=False,
         )
@@ -149,8 +147,6 @@ class PluginDispatchContextTests(unittest.TestCase):
             tools=("list_files",),
             model="inherit",
             permission_mode="delegated-read-only",
-            max_turns=1,
-            max_tool_calls=1,
             isolation="shared",
             background=False,
         )

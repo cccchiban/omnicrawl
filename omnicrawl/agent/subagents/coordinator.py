@@ -220,9 +220,9 @@ class _ActiveBatch:
 class SubAgentCoordinator:
     """验证模型请求、收窄工具权限并执行受限任务批次。
 
-    支持 1–4 个 ``fresh`` 任务，以及显式配置后的 ``fork`` 任务。默认 profile
+    支持每批至多 4 个 ``fresh`` 任务，以及显式配置后的 ``fork`` 任务。默认 profile
     只读；显式启用的 verify profile 仅可追加 Host 固定的 ``verify_command``。
-    Fork 和模型快照均在任务进入线程池前由 Host 冻结。任务并发和模型请求并发分别受 Host
+    Fork 和模型快照均在任务进入线程池前由 Host 冻结。批次任务数与模型请求并发分别受 Host
     配置控制；Coordinator 只负责前者，后者由 ``LocalToolAgent`` 在实际请求边界
     使用信号量限制。批次结果始终按输入顺序返回，避免完成顺序改变模型语义。
     """
@@ -881,14 +881,6 @@ class SubAgentCoordinator:
             if unsupported:
                 return self._top_level_error("AGENT_DEFINITION_INVALID", unsupported)
 
-            effective_definition = replace(
-                definition,
-                max_turns=min(definition.max_turns, self.config.default_max_turns),
-                max_tool_calls=min(
-                    definition.max_tool_calls,
-                    self.config.default_max_tool_calls,
-                ),
-            )
             context = task.get("context", "fresh")
             model = task.get("model", "")
             try:
@@ -896,7 +888,7 @@ class SubAgentCoordinator:
                 # worker 启动后再读取父历史或当前模型，否则 /model、下一回合或
                 # 工作区状态变化会导致同一 task_id 使用不同输入。
                 execution_context = self._prepare_execution(
-                    effective_definition,
+                    definition,
                     context,
                     model,
                 )
@@ -916,8 +908,8 @@ class SubAgentCoordinator:
                     description=description,
                     prompt=prompt,
                     agent_type=agent_type,
-                    definition=effective_definition,
-                    tools=self._tools_for_definition(effective_definition),
+                    definition=definition,
+                    tools=self._tools_for_definition(definition),
                     execution_context=execution_context,
                 )
             )
@@ -1429,11 +1421,7 @@ class SubAgentCoordinator:
         tasks = arguments.get("tasks")
         if not isinstance(tasks, list):
             return "SUBAGENT_LIMIT_EXCEEDED", "tasks 必须是数组。"
-        task_limit = min(
-            4,
-            self.config.max_tasks_per_batch,
-            self.config.max_total_tasks,
-        )
+        task_limit = self.config.max_tasks_per_batch
         if not 1 <= len(tasks) <= task_limit:
             return (
                 "SUBAGENT_LIMIT_EXCEEDED",
@@ -1465,23 +1453,15 @@ class SubAgentCoordinator:
             agent_type = task.get("subagent_type")
             context = task.get("context", "fresh")
             model = task.get("model", "")
-            if (
-                not isinstance(description, str)
-                or not description.strip()
-                or len(description.strip()) > 120
-            ):
+            if not isinstance(description, str) or not description.strip():
                 return (
                     "AGENT_DEFINITION_INVALID",
-                    f"tasks[{index}].description 必须是 1 到 120 字符的字符串。",
+                    f"tasks[{index}].description 必须是非空字符串。",
                 )
-            if (
-                not isinstance(prompt, str)
-                or not prompt.strip()
-                or len(prompt.strip()) > 12_000
-            ):
+            if not isinstance(prompt, str) or not prompt.strip():
                 return (
                     "AGENT_DEFINITION_INVALID",
-                    f"tasks[{index}].prompt 必须是 1 到 12000 字符的字符串。",
+                    f"tasks[{index}].prompt 必须是非空字符串。",
                 )
             if not isinstance(agent_type, str) or not agent_type.strip():
                 return (

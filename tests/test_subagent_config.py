@@ -14,7 +14,7 @@ from omnicrawl.config.subagents import (
 
 
 class SubAgentConfigTest(unittest.TestCase):
-    def test_defaults_are_disabled_and_keep_design_limits(self) -> None:
+    def test_defaults_are_disabled_with_unlimited_turns_and_calls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config = load_subagent_config(Path(temp_dir) / "missing.yaml")
 
@@ -22,6 +22,7 @@ class SubAgentConfigTest(unittest.TestCase):
         self.assertEqual(config.max_depth, 1)
         self.assertEqual(config.max_concurrency, 2)
         self.assertEqual(config.max_tasks_per_batch, 4)
+        self.assertEqual(config.default_timeout_seconds, 3600.0)
         self.assertFalse(config.allow_background)
         self.assertFalse(config.allow_fork)
         self.assertFalse(config.allow_shared_workspace_writes)
@@ -30,16 +31,13 @@ class SubAgentConfigTest(unittest.TestCase):
         self.assertFalse(config.enable_verify_agent)
         self.assertEqual(config.verify_command_timeout_seconds, 120)
 
-    def test_yaml_loads_phase1b_values(self) -> None:
+    def test_yaml_loads_supported_subagent_values(self) -> None:
         payload = {
             "subagents": {
                 "enabled": True,
                 "max_depth": 1,
                 "max_concurrency": 2,
                 "max_tasks_per_batch": 4,
-                "max_total_tasks": 8,
-                "default_max_turns": 12,
-                "default_max_tool_calls": 24,
                 "default_timeout_seconds": 90,
                 "model_request_concurrency": 2,
                 "result_summary_chars": 2400,
@@ -54,9 +52,6 @@ class SubAgentConfigTest(unittest.TestCase):
                 "  max_depth: 1\n"
                 "  max_concurrency: 2\n"
                 "  max_tasks_per_batch: 4\n"
-                "  max_total_tasks: 8\n"
-                "  default_max_turns: 12\n"
-                "  default_max_tool_calls: 24\n"
                 "  default_timeout_seconds: 90\n"
                 "  model_request_concurrency: 2\n"
                 "  result_summary_chars: 2400\n",
@@ -66,8 +61,29 @@ class SubAgentConfigTest(unittest.TestCase):
             yaml_config = load_subagent_config(yaml_path)
 
         self.assertTrue(yaml_config.enabled)
-        self.assertEqual(yaml_config.default_max_turns, 12)
         self.assertEqual(yaml_config.default_timeout_seconds, 90.0)
+
+    def test_legacy_execution_budget_settings_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.yaml"
+            path.write_text(
+                json.dumps(
+                    {
+                        "subagents": {
+                            "max_total_tasks": 8,
+                            "default_max_turns": 12,
+                            "default_max_tool_calls": 24,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = load_subagent_config(path)
+
+        self.assertEqual(config.default_timeout_seconds, 3600.0)
+        self.assertFalse(hasattr(config, "max_total_tasks"))
+        self.assertFalse(hasattr(config, "default_max_turns"))
+        self.assertFalse(hasattr(config, "default_max_tool_calls"))
 
     def test_environment_can_only_disable_or_tighten(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

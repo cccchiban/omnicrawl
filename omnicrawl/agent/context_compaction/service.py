@@ -139,6 +139,36 @@ class ContextCompactionService:
             measurement_payload=measurement_payload,
         )
 
+    def recover_from_context_overflow(
+        self,
+        *,
+        source_events: Sequence[SourceEvent],
+        target_summary_tokens: int,
+        reasoning_effort: str,
+        preserve_exact_evidence: bool,
+    ) -> ContextCompactionOutcome:
+        """压缩当前未完成回合，并返回可用于同回合重试的上下文投影。"""
+        batch = self._budget_manager.select_recovery_batch(source_events)
+        if batch is None:
+            return ContextCompactionOutcome(
+                measurement_payload={},
+                fallback_required=True,
+                diagnostic="没有可安全压缩的上下文超限回合。",
+            )
+        return self._compact_batch(
+            batch,
+            source_events=source_events,
+            target_summary_tokens=target_summary_tokens,
+            reasoning_effort=reasoning_effort,
+            preserve_exact_evidence=preserve_exact_evidence,
+            retired_token_estimate=estimate_json_tokens(
+                [event.to_prompt_dict() for event in batch.events]
+            ),
+            manual=False,
+            decision_reason="context_overflow_recovery",
+            measurement_payload={},
+        )
+
     def manual_compact(
         self,
         *,

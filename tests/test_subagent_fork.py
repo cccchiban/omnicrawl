@@ -323,8 +323,6 @@ class SubAgentForkExecutionTest(unittest.TestCase):
             description="只读探索",
             system_prompt="只读分析并给出结论。",
             model=model,
-            max_turns=2,
-            max_tool_calls=2,
         )
 
     def _agent(self, workspace: Path, parent_llm: LLMConfig) -> LocalToolAgent:
