@@ -109,3 +109,11 @@ subagents:
 
 mcp:
   enabled: false
+  default_timeout_seconds: 30
+  max_tool_output_chars: 6000
+  servers: {}
+  policy:
+    require_confirmation_for_write: true
+    require_confirmation_for_command: true
+    allow_external_network_tools: false
+    audit_log_enabled: true

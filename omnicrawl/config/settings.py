@@ -14,6 +14,48 @@ class SettingsConfigError(RuntimeConfigError):
     """设置文件读取、类型校验或写回失败。"""
 
 
+def _serialize_mcp_config(config: Any) -> dict[str, Any]:
+    """把 MCP 不可变配置转换为可写回 YAML 的普通对象。"""
+
+    servers: dict[str, Any] = {}
+    for name, server in config.servers.items():
+        servers[name] = {
+            "enabled": server.enabled,
+            "transport": server.transport,
+            "command": server.command,
+            "args": list(server.args),
+            "url": server.url,
+            "env": dict(server.env),
+            "timeout_seconds": server.timeout_seconds,
+            "risk_level": server.risk_level,
+        }
+    return {
+        "enabled": config.enabled,
+        "default_timeout_seconds": config.default_timeout_seconds,
+        "max_tool_output_chars": config.max_tool_output_chars,
+        "servers": servers,
+        "policy": {
+            "require_confirmation_for_write": config.policy.require_confirmation_for_write,
+            "require_confirmation_for_command": config.policy.require_confirmation_for_command,
+            "allow_external_network_tools": config.policy.allow_external_network_tools,
+            "audit_log_enabled": config.policy.audit_log_enabled,
+        },
+    }
+
+
+def save_mcp_config(config: Any, config_path: str | Path | None = None) -> Path:
+    """保留其他配置段，只更新完整的 MCP 配置并原子写回。"""
+
+    if not hasattr(config, "servers") or not hasattr(config, "policy"):
+        raise SettingsConfigError("MCP 配置对象无效。")
+    try:
+        data: dict[str, Any] = load_config_data(config_path)
+        data["mcp"] = _serialize_mcp_config(config)
+        return save_config_data(data, config_path)
+    except RuntimeConfigError as exc:
+        raise SettingsConfigError(str(exc)) from exc
+
+
 def load_feature_enabled(
     section_name: str,
     *,
@@ -131,5 +173,6 @@ __all__ = [
     "load_feature_enabled",
     "save_context_window_tokens",
     "save_feature_enabled",
+    "save_mcp_config",
     "save_subagent_setting",
 ]

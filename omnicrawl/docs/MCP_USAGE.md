@@ -19,7 +19,7 @@
 默认边界：
 
 - MCP 默认关闭，设置 `mcp.enabled=true` 才会连接启用的 Server。
-- 当前可用传输是本地 `stdio`；`streamable_http` 会识别但暂不连接。
+- 当前可用传输是本地 `stdio` 和远程 `streamable_http`；远程传输使用 MCP Streamable HTTP 的 JSON/SSE 响应和会话 ID。
 - 外部网络能力默认不暴露，除非配置策略明确允许。
 - 高风险 MCP Tool 必须继续走 Host 侧审批或审查，不能只信任 Server 声明。
 - 审计日志默认写入 `logs/mcp-audit.jsonl`，该目录不提交到仓库。
@@ -136,7 +136,8 @@
 配置要求：
 
 - Server 名称只能使用小写字母、数字、下划线和连字符。
-- `stdio` 必须提供 `command`。
+- `stdio` 必须提供 `command`；`streamable_http` 必须提供 `url`。
+- `env` 仅作为 `stdio` 子进程环境变量传入；Streamable HTTP 不会把它隐式转换为请求头。
 - `timeout_seconds` 范围是 1 到 360 秒。
 - `risk_level=trusted` 只表示来源可信，不代表跳过审批。
 - 不要把真实密钥写进 `config.example.yaml` 或源码；真实密钥只能存在本地 `config.yaml` 或环境变量。
@@ -151,9 +152,19 @@
 
 ---
 
-## 4. MCP 调用规范
+## 4. `/settings` 三级管理
 
-### 4.1 Tool 命名与调用
+全屏 TUI 的 `/settings` 提供三级 MCP 管理入口：
+
+1. `运行设置 → MCP 工具`：保留 MCP 总开关入口。
+2. `MCP 全局设置`：管理总开关、外部网络 Tool 策略、写入/命令确认、审计日志、默认超时和 Tool 输出上限。
+3. `MCP Server`：按 Server 启用/禁用、添加、编辑和删除；编辑器支持 `stdio` / `streamable_http`、命令/参数、URL、超时、风险等级和连接测试。
+
+设置默认保存到用户配置目录 `~/.OmniCrawl/config.yaml`，显式配置路径或环境变量仍会生效；保存后事务式重建当前 Agent 的 MCP Manager。stdio 环境变量只显示已配置数量；编辑时留空保持原值，输入 `KEY=VALUE;KEY2=VALUE` 才替换，凭据不会回显。Streamable HTTP 当前不提供隐式 Header 映射，需要鉴权时应使用服务端明确支持的安全接入方式。
+
+## 5. MCP 调用规范
+
+### 5.1 Tool 命名与调用
 
 MCP Tool 注入 Agent 后使用 `server.tool` 名称。当前内置 `local_project` Server 不暴露工作区 Tool；它仅提供项目文档 Resource、健康状态 Resource 和常用 Prompt。其他启用的 MCP Server 仍按其能力发现结果注册 Tool，并统一经过 Host 审批。
 
@@ -164,7 +175,7 @@ MCP Tool 注入 Agent 后使用 `server.tool` 名称。当前内置 `local_proje
 - 写入或命令类工具不要绕过 Host 审批；审批拒绝时应基于拒绝原因调整方案或停止。
 - 参数必须符合 Tool schema；缺必填字段、类型不符、超长字符串会被 Host 拦截。
 
-### 4.2 Resource 读取
+### 5.2 Resource 读取
 
 Resource 用于只读上下文，不产生副作用。常见 URI：
 
@@ -176,7 +187,7 @@ Resource 用于只读上下文，不产生副作用。常见 URI：
 
 在 Agent 工具列表中，Resource 会转换为 `mcp_read_resource__{logical_uri}` 工具。`omnicrawl://docs/` 下的文档随 PyPI 安装包提供；只在需要上下文正文时读取，不要把所有 Resource 一次性读完。
 
-### 4.3 Prompt 获取
+### 5.3 Prompt 获取
 
 Prompt 用于稳定任务模板，常见 Prompt：
 
@@ -189,7 +200,7 @@ Prompt 用于稳定任务模板，常见 Prompt：
 
 ---
 
-## 5. 安全与审批规范
+## 6. 安全与审批规范
 
 Host 侧永远是最终安全边界：
 
@@ -208,7 +219,7 @@ AI 调用 MCP 时必须遵守：
 
 ---
 
-## 6. 审计与可观测性
+## 7. 审计与可观测性
 
 MCP Tool 调用会记录审计事件：
 
@@ -231,12 +242,12 @@ logs/mcp-audit.jsonl
 
 ---
 
-## 7. 常见排障路径
+## 8. 常见排障路径
 
 | 现象 | 优先检查 |
 |------|----------|
 | `/mcp` 显示 MCP 已关闭 | `config.yaml` 的 `mcp.enabled` 或 `MCP_ENABLED` |
-| Server 为 degraded | `/mcp` 诊断、Server 命令、超时、工作区环境 |
+| Server 为 degraded | `/mcp` 诊断、Server URL、HTTP 状态码、超时、工作区环境 |
 | Tool 不出现在列表 | Server 是否启用、能力发现是否成功、外部能力是否被策略拦截 |
 | Tool 返回 `SCHEMA_INVALID` | 参数是否缺必填字段、类型是否匹配、字符串是否超长 |
 | Tool 返回 `APPROVAL_DENIED` | 用户或审查模型拒绝，读取拒绝原因后调整方案 |
@@ -246,7 +257,7 @@ logs/mcp-audit.jsonl
 
 ---
 
-## 8. 修改 MCP 后的验证清单
+## 9. 修改 MCP 后的验证清单
 
 最低验证：
 

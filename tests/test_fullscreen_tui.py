@@ -117,6 +117,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             workspace_root = "D:/workspace"
             current_session_id = "session-demo"
             skill_manager = None
+            _mcp_manager = SimpleNamespace(
+                config=SimpleNamespace(enabled=True, enabled_servers=["one", "two"])
+            )
 
             def set_confirm_handler(self, _handler) -> None:
                 pass
@@ -142,19 +145,15 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
             # 顶部由稳态上下文占满；运行态进入对话区且空闲时不存在。
             self.assertEqual(len(app.query("#brand")), 0)
-            self.assertEqual(len(app.query("#topbar > *")), 3)
-            queue = app.query_one("#queue-count", Static)
+            self.assertEqual(len(app.query("#topbar > *")), 2)
             version = app.query_one("#version-status", Static)
-            self.assertEqual(str(queue.content), "排队 0")
             self.assertEqual(str(version.content), "v0.1.1")
-            self.assertIn(TEXT_PRIMARY, str(queue.content.spans))
-            self.assertIn("bold", str(queue.content.spans))
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
             topbar = app.query_one("#topbar")
             context_widget = app.query_one("#context-summary", Static)
             self.assertEqual(context_widget.region.x, topbar.content_region.x)
             self.assertEqual(
-                context_widget.region.width + queue.region.width + version.region.width,
+                context_widget.region.width + version.region.width,
                 topbar.content_region.width,
             )
             self.assertEqual(version.region.right, topbar.content_region.right)
@@ -164,6 +163,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("MDL demo-model", context.plain)
             self.assertIn("THK MAX", context.plain)
             self.assertIn("APR MAN", context.plain)
+            self.assertIn("QUE 0", context.plain)
             self.assertNotIn(".agent_tmp", context.plain)
             self.assertEqual(app.theme, THEME_NAME)
             self.assertTrue(app.current_theme.ansi)
@@ -177,6 +177,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             telemetry = str(token_widget.content)
             self.assertIn("IN 0", telemetry)
             self.assertIn("CTX 0/128K", telemetry)
+            self.assertIn("MCP 2", telemetry)
             # border-bottom 会占 1 行；内容区高度必须 > 0，否则终端上看不到 Token 行。
             self.assertEqual(token_widget.region.height, 2)
             self.assertGreater(token_widget.size.height, 0)
@@ -252,6 +253,30 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                         for notice in notices
                     )
                 )
+
+    def test_version_status_uses_four_animation_frames_while_checking(self) -> None:
+        from omnicrawl.ui.fullscreen.hud import version_status_text
+
+        prefix_length = len("v0.1.1  ")
+        expected_styles = [
+            ["dim", "default", "default", "default"],
+            ["default", "dim", "default", "default"],
+            ["default", "default", "dim", "default"],
+            ["default", "default", "default", "dim"],
+        ]
+        for frame, styles in enumerate(expected_styles):
+            status = version_status_text(
+                "0.1.1",
+                checking=True,
+                animation_frame=frame,
+            )
+            self.assertEqual(status.plain, "v0.1.1  ●●●●")
+            dot_spans = [
+                span
+                for span in status.spans
+                if span.start >= prefix_length and span.end <= prefix_length + 4
+            ]
+            self.assertEqual([span.style for span in dot_spans], styles)
 
     async def test_composer_starts_on_one_row_and_grows_with_wrapped_text(self) -> None:
         """输入区初始一行，长文本和真实换行均自动扩展，最多保留五行。"""
@@ -803,7 +828,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(agent.calls, ["first"])
             self.assertEqual(list(app._pending_inputs), ["second", "/skills"])
-            self.assertEqual(str(app.query_one("#queue-count", Static).content), "排队 2")
+            self.assertIn("QUE 2", app.query_one("#context-summary", Static).content.plain)
 
             release_first.set()
             for _ in range(80):
@@ -813,7 +838,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(agent.calls, ["first", "second"])
             self.assertFalse(app._pending_inputs)
-            self.assertEqual(str(app.query_one("#queue-count", Static).content), "排队 0")
+            self.assertIn("QUE 0", app.query_one("#context-summary", Static).content.plain)
             self.assertIn("完成：second", app.conversation_text)
 
     async def test_queued_modal_command_resumes_after_screen_closes(self) -> None:

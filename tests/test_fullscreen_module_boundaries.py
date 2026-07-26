@@ -13,7 +13,7 @@ class FullscreenModuleBoundaryTests(unittest.TestCase):
     def test_fullscreen_support_modules_are_real_files(self) -> None:
         package_path = Path(fullscreen.__file__).resolve().parent
 
-        for module_name in ("widgets", "hud", "turns", "commands", "monitor", "tool_diff"):
+        for module_name in ("widgets", "hud", "turns", "commands", "monitor", "tool_diff", "mcp_settings"):
             with self.subTest(module=module_name):
                 module = importlib.import_module(f"omnicrawl.ui.fullscreen.{module_name}")
                 self.assertEqual(module.__name__, f"omnicrawl.ui.fullscreen.{module_name}")

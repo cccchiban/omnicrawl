@@ -49,6 +49,7 @@ from .channel_manager import ChannelManagerResult, ChannelManagerScreen
 from .commands import CommandDispatcher
 from .model_picker import ModelPickerResult, ModelPickerScreen
 from .settings import SettingsAction, SettingsScreen
+from .mcp_settings import MCPServerListScreen, MCPSettingsAction, MCPSettingsScreen
 from .monitor import MonitorStateAdapter, format_monitor_display_batch
 from .theme import (
     ACCENT_BLUE,
@@ -201,12 +202,6 @@ class OmniCrawlApp(App[None]):
         color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
-    }
-    #queue-count {
-        width: 8;
-        min-width: 8;
-        max-width: 8;
-        content-align: right middle;
     }
     #version-status {
         width: 22;
@@ -373,6 +368,8 @@ class OmniCrawlApp(App[None]):
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
         self._announced_update_version: str | None = None
+        self._version_checking = False
+        self._version_check_frame = 0
         self._interaction_watchdog_signature: tuple[object, ...] | None = None
         self._interaction_watchdog_stable_ticks = 0
 
@@ -380,7 +377,6 @@ class OmniCrawlApp(App[None]):
         with Vertical(id="shell"):
             with Horizontal(id="topbar"):
                 yield Static(self._context_summary_text(), id="context-summary")
-                yield Static(self._pending_queue_text(), id="queue-count")
                 yield Static(
                     version_status_text(self.startup.current_version),
                     id="version-status",
@@ -405,6 +401,7 @@ class OmniCrawlApp(App[None]):
         self.query_one("#composer", TextArea).focus()
         self._resize_composer_to_text()
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
+        self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_version_check)
         self.set_interval(
             self.INTERACTION_WATCHDOG_INTERVAL_SECONDS,
             self._recover_stale_mouse_interaction,
@@ -412,6 +409,9 @@ class OmniCrawlApp(App[None]):
         if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
         if self.startup.version_check_enabled:
+            self._version_checking = True
+            self._version_check_frame = 0
+            self._render_version_status()
             self._check_for_updates()
 
         if callable(getattr(self.agent, "preload_mcp_tools", None)):
@@ -554,13 +554,32 @@ class OmniCrawlApp(App[None]):
         result = check_latest_version(self.startup.current_version)
         self.call_from_thread(self._apply_version_check, result)
 
+    def _tick_version_check(self) -> None:
+        """检查更新期间让版本号右侧的四点指示器循环移动。"""
+
+        if not self._version_checking:
+            return
+        self._version_check_frame = (self._version_check_frame + 1) % 4
+        self._render_version_status()
+
+    def _render_version_status(self, latest_version: str | None = None) -> None:
+        """在主线程绘制版本号、升级提示或检查更新动画。"""
+
+        self.query_one("#version-status", Static).update(
+            version_status_text(
+                self.startup.current_version,
+                latest_version,
+                checking=self._version_checking,
+                animation_frame=self._version_check_frame,
+            )
+        )
+
     def _apply_version_check(self, result: VersionCheckResult) -> None:
         """在 Textual 主线程更新版本区域，并只提示一次可用升级。"""
 
+        self._version_checking = False
         latest = result.latest_version if result.update_available else None
-        self.query_one("#version-status", Static).update(
-            version_status_text(result.current_version, latest)
-        )
+        self._render_version_status(latest)
         if latest is None or latest == self._announced_update_version:
             return
         self._announced_update_version = latest
@@ -1262,11 +1281,9 @@ class OmniCrawlApp(App[None]):
         return pending_queue_text(len(self._pending_inputs))
 
     def _refresh_pending_queue_count(self) -> None:
-        """同步右上角排队消息计数。"""
+        """同步上下文行中的 FIFO 排队消息计数。"""
 
-        queue_widgets = self.query("#queue-count")
-        if queue_widgets:
-            queue_widgets.first(Static).update(self._pending_queue_text())
+        self._refresh_context_summary()
 
     def _token_telemetry_text(self) -> Text:
         """生成紧凑 Token 遥测；CTX 使用最近请求输入量表示当前上下文占用。"""
@@ -1276,6 +1293,7 @@ class OmniCrawlApp(App[None]):
             self._output_tokens,
             self._cached_input_tokens,
             getattr(self.agent, "context_window_tokens", 128_000),
+            self._mcp_enabled_count(),
         )
 
     @staticmethod
@@ -1290,8 +1308,21 @@ class OmniCrawlApp(App[None]):
 
         return gradient_text(text)
 
+    def _mcp_enabled_count(self) -> int:
+        """返回当前全局启用的 MCP Server 数量，不触发 MCP 能力发现。"""
+
+        manager = getattr(self.agent, "_mcp_manager", None)
+        config = getattr(manager, "config", None)
+        if not bool(getattr(config, "enabled", False)):
+            return 0
+        enabled_servers = getattr(config, "enabled_servers", ())
+        try:
+            return max(0, len(enabled_servers))
+        except TypeError:
+            return 0
+
     def _context_summary_text(self) -> Text:
-        """用短键值字段渲染项目、模型、推理强度和审批模式。"""
+        """用短键值字段渲染项目、模型、推理、审批和排队状态。"""
 
         reasoning_effort = str(getattr(self.agent, "reasoning_effort", "") or "")
         if not reasoning_effort:
@@ -1305,12 +1336,14 @@ class OmniCrawlApp(App[None]):
             approval_mode=str(
                 getattr(self.agent, "approval_mode", None) or self.startup.approval_label
             ),
+            pending_count=len(self._pending_inputs),
         )
 
     def _refresh_context_summary(self) -> None:
-        """刷新取消侧栏后的顶部运行上下文。"""
+        """刷新顶部上下文和随 MCP 设置变化的遥测字段。"""
 
         self.query_one("#context-summary", Static).update(self._context_summary_text())
+        self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
 
     def _open_settings(self) -> None:
         """打开中文设置面板；模型项关闭后复用现有模型选择器。"""
@@ -1347,11 +1380,26 @@ class OmniCrawlApp(App[None]):
                     SettingsScreen(self.agent, advanced=True),
                     lambda _action: self._open_settings(),
                 )
+            elif action is not None and action.name == "mcp_settings":
+                self.push_screen(
+                    MCPSettingsScreen(self.agent),
+                    self._receive_mcp_settings,
+                )
             else:
                 self._drain_pending_inputs()
             self._refresh_context_summary()
 
         self.push_screen(SettingsScreen(self.agent), receive)
+
+    def _receive_mcp_settings(self, action: MCPSettingsAction | None) -> None:
+        if action is not None and action.name == "servers":
+            self.push_screen(
+                MCPServerListScreen(self.agent),
+                lambda _result: self._open_settings(),
+            )
+        else:
+            self._open_settings()
+        self._refresh_context_summary()
 
     def _open_model_picker(self, *, refresh: bool = False) -> None:
         """打开双列模型选择界面；切换成功后刷新 HUD 并清零最近 Token 显示。"""

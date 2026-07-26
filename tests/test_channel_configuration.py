@@ -12,6 +12,8 @@ from omnicrawl.config.llm_multi import apply_model_selection
 from omnicrawl.config.model_store import CustomModelRecord, ModelStore
 from omnicrawl.llm.registry import ProviderProfile
 
+import omnicrawl.config.runtime as runtime_module
+
 from omnicrawl.config.channels import (
     ChannelConfig,
     ChannelConfiguration,
@@ -21,6 +23,49 @@ from omnicrawl.config.channels import (
 
 
 class ChannelConfigurationTests(unittest.TestCase):
+    def test_should_read_project_config_but_write_default_to_user_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            project_dir = root / "project"
+            user_dir = root / "user"
+            project_dir.mkdir()
+            user_dir.mkdir()
+            project_config = project_dir / "config.yaml"
+            project_models = project_dir / "models.yaml"
+            project_config.write_text("version: 2\nllm: {}\n", encoding="utf-8")
+            project_models.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+            channels = ChannelConfiguration(
+                channels=(
+                    ChannelConfig(
+                        key="demo",
+                        name="Demo",
+                        profile_id="demo",
+                        provider="openai",
+                        protocol="openai_chat_completions",
+                        base_url="https://api.example/v1",
+                        api_key="secret",
+                        model_id="demo-model",
+                    ),
+                ),
+                default_key="demo",
+            )
+
+            with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=project_dir):
+                    with patch.object(runtime_module, "_is_development_environment", return_value=True):
+                        written_config, written_models = save_channel_configuration(channels)
+
+            self.assertEqual(written_config, user_dir / "config.yaml")
+            self.assertEqual(written_models, user_dir / "models.yaml")
+            self.assertEqual(
+                yaml.safe_load((project_dir / "config.yaml").read_text(encoding="utf-8")),
+                {"version": 2, "llm": {}},
+            )
+            self.assertEqual(
+                yaml.safe_load((user_dir / "config.yaml").read_text(encoding="utf-8"))["llm"]["active_model"]["key"],
+                "demo",
+            )
+
     def test_should_persist_multiple_channels_when_protocol_is_shared(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

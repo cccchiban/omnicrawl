@@ -16,24 +16,48 @@ from omnicrawl.config.channels import (
 
 
 class UserConfigDirectoryTest(unittest.TestCase):
-    def test_windows_config_directory_uses_appdata(self) -> None:
+    def test_windows_config_directory_uses_hidden_home_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            self.assertEqual(
-                user_config_dir({"APPDATA": str(root)}, platform_name="win32"),
-                root / "OmniCrawl",
-            )
+            home = Path(temp_dir)
+            with patch("omnicrawl.config.runtime.Path.home", return_value=home):
+                self.assertEqual(
+                    user_config_dir({"APPDATA": str(home / "appdata")}, platform_name="win32"),
+                    home / ".OmniCrawl",
+                )
 
-    def test_unix_config_directory_uses_xdg_config_home(self) -> None:
+    def test_unix_config_directory_uses_same_hidden_home_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            self.assertEqual(
-                user_config_dir({"XDG_CONFIG_HOME": str(root)}, platform_name="linux"),
-                root / "omnicrawl",
-            )
+            home = Path(temp_dir)
+            with patch("omnicrawl.config.runtime.Path.home", return_value=home):
+                self.assertEqual(
+                    user_config_dir({"XDG_CONFIG_HOME": str(home / "config")}, platform_name="linux"),
+                    home / ".OmniCrawl",
+                )
 
 
 class FirstRunConfigurationTest(unittest.TestCase):
+    def test_normal_initialization_migrates_legacy_config_first(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "config.yaml"
+            models_path = root / "models.yaml"
+            with patch("omnicrawl.config.bootstrap.migrate_legacy_user_config") as migrate:
+                with patch(
+                    "omnicrawl.config.bootstrap.resolve_config_write_path",
+                    return_value=config_path,
+                ):
+                    with patch(
+                        "omnicrawl.config.bootstrap.resolve_models_write_path",
+                        return_value=models_path,
+                    ):
+                        result = initialize_user_configuration(
+                            prompt=lambda _message: "secret-key",
+                        )
+
+            migrate.assert_called_once_with()
+            self.assertTrue(result.config_path.is_file())
+            self.assertTrue(result.models_path.is_file())
+
     def test_initialize_creates_templates_and_saves_api_key(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             result = initialize_user_configuration(

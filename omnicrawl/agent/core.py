@@ -115,6 +115,7 @@ from ..config.context_compaction import (
     ContextCompactionConfig,
     load_context_compaction_config,
 )
+from ..config.runtime import global_agents_path
 from ..config.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
 from ..config.subagents import (
     SubAgentConfig,
@@ -1457,7 +1458,13 @@ class LocalToolAgent:
         if not isinstance(enabled, bool):
             raise AgentError("MCP 开关必须是布尔值。")
         current_config = self.config.mcp_config or load_mcp_config()
-        next_config = replace(current_config, enabled=enabled)
+        self.apply_mcp_config(replace(current_config, enabled=enabled))
+
+    def apply_mcp_config(self, next_config: MCPConfig) -> None:
+        """事务式替换 MCP 配置并重建运行中的连接管理器。"""
+
+        if not isinstance(next_config, MCPConfig):
+            raise AgentError("MCP 配置类型无效。")
         previous_manager = getattr(self, "_mcp_manager", None)
         previous_config = self.config.mcp_config
         try:
@@ -2944,20 +2951,32 @@ class LocalToolAgent:
         return messages
 
     def _load_agents_instructions(self) -> str:
-        """读取工作区根目录的 AGENTS.md；缺失时保持原 user prompt。"""
+        """合并用户级和项目级 AGENTS.md，项目级规则排在后面并优先。"""
 
         workspace_root = getattr(self, "workspace_root", None)
-        if workspace_root is None:
+        paths: list[tuple[str, Path]] = [("用户级", global_agents_path())]
+        if workspace_root is not None:
+            paths.append(("项目级", workspace_root / AGENTS_INSTRUCTIONS_FILE))
+
+        sections: list[str] = []
+        for scope, path in paths:
+            if not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8").strip()
+            except UnicodeDecodeError as exc:
+                raise AgentError(f"{scope} {AGENTS_INSTRUCTIONS_FILE} 必须是 UTF-8 文本。") from exc
+            except OSError as exc:
+                raise AgentError(f"读取{scope} {AGENTS_INSTRUCTIONS_FILE} 失败：{exc}") from exc
+            if content:
+                sections.append(f"【{scope} AGENTS.md】\n{content}")
+
+        if not sections:
             return ""
-        path = workspace_root / AGENTS_INSTRUCTIONS_FILE
-        if not path.is_file():
-            return ""
-        try:
-            return path.read_text(encoding="utf-8").strip()
-        except UnicodeDecodeError as exc:
-            raise AgentError(f"{AGENTS_INSTRUCTIONS_FILE} 必须是 UTF-8 文本。") from exc
-        except OSError as exc:
-            raise AgentError(f"读取 {AGENTS_INSTRUCTIONS_FILE} 失败：{exc}") from exc
+        return (
+            "用户级规则提供默认协作约束；项目级规则针对当前工作区，项目级规则优先。\n\n"
+            + "\n\n".join(sections)
+        )
 
     def _request_agent_reply(
         self,

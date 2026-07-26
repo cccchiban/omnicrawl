@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 
 DEFAULT_CONFIG_FILENAME = "config.yaml"
 DEFAULT_MODELS_FILENAME = "models.yaml"
+GLOBAL_AGENTS_FILENAME = "AGENTS.md"
+USER_CONFIG_DIRNAME = ".OmniCrawl"
 CONFIG_PATH_ENV = "AI_CONFIG_FILE"
 MODELS_PATH_ENV = "AI_MODELS_FILE"
 _YAML_SUFFIXES = {".yaml", ".yml"}
@@ -24,18 +27,91 @@ def user_config_dir(
     environ: Mapping[str, str] | None = None,
     platform_name: str | None = None,
 ) -> Path:
-    """返回跨平台的用户配置目录，不依赖当前工作目录或 site-packages。"""
+    """返回统一的用户配置目录，不依赖当前工作目录或 site-packages。
+
+    配置统一放在用户主目录下，便于安装版和源码版使用同一位置：
+    ``~/.OmniCrawl``。``environ`` 和 ``platform_name`` 保留用于测试及兼容
+    旧调用方，但新目录本身不再按操作系统区分。
+    """
+
+    return Path.home() / USER_CONFIG_DIRNAME
+
+
+def legacy_user_config_dirs(
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+) -> tuple[Path, ...]:
+    """返回升级前的用户配置目录，按兼容顺序排列。"""
 
     env = os.environ if environ is None else environ
     platform = platform_name or sys.platform
     if platform.startswith("win"):
         appdata = env.get("APPDATA", "").strip()
         base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-        return base / "OmniCrawl"
+        return (base / "OmniCrawl", Path.home() / ".omnicrawl")
 
     config_home = env.get("XDG_CONFIG_HOME", "").strip()
     base = Path(config_home) if config_home else Path.home() / ".config"
-    return base / "omnicrawl"
+    return (base / "omnicrawl", Path.home() / ".omnicrawl")
+
+
+def global_agents_path() -> Path:
+    """返回用户级全局 AGENTS.md 路径。"""
+
+    return user_config_dir() / GLOBAL_AGENTS_FILENAME
+
+
+def migrate_legacy_user_config(
+    *,
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+    legacy_dirs: Iterable[Path] | None = None,
+) -> Path:
+    """把旧用户目录迁移到 ``~/.OmniCrawl`` 并删除旧目录。
+
+    目标目录中的文件不会被覆盖；发生同名冲突时，旧文件保存为
+    ``<name>.migrated.bak``（必要时追加序号），然后再删除旧目录。任何
+    无法迁移的文件都会中止操作并保留旧目录，避免升级过程造成配置丢失。
+    """
+
+    target = user_config_dir(environ=environ, platform_name=platform_name)
+    target.mkdir(parents=True, exist_ok=True)
+    candidates = (
+        tuple(legacy_dirs)
+        if legacy_dirs is not None
+        else legacy_user_config_dirs(environ, platform_name)
+    )
+    for legacy in candidates:
+        legacy = Path(legacy).expanduser()
+        try:
+            if not legacy.is_dir() or legacy.resolve() == target.resolve():
+                continue
+        except OSError as exc:
+            raise RuntimeConfigError(f"检查旧配置目录失败：{legacy}，{exc}") from exc
+
+        try:
+            for item in tuple(legacy.iterdir()):
+                destination = target / item.name
+                if destination.exists():
+                    destination = _migration_backup_path(target, item.name)
+                shutil.move(str(item), str(destination))
+            legacy.rmdir()
+        except OSError as exc:
+            raise RuntimeConfigError(
+                f"迁移旧配置目录失败：{legacy} -> {target}，{exc}。旧目录已保留，请修复权限后重试。"
+            ) from exc
+    return target
+
+
+def _migration_backup_path(target: Path, name: str) -> Path:
+    """为迁移冲突生成不覆盖既有文件的备份路径。"""
+
+    candidate = target / f"{name}.migrated.bak"
+    index = 1
+    while candidate.exists():
+        candidate = target / f"{name}.migrated.{index}.bak"
+        index += 1
+    return candidate
 
 
 def project_root() -> Path:
@@ -95,22 +171,51 @@ def resolve_models_path(models_path: str | Path | None = None) -> Path:
 
 
 def _resolve_default_path(filename: str) -> Path:
-    """查找默认配置；找不到现有文件时返回用户目录作为创建目标。"""
-
-    working_directory_path = Path.cwd() / filename
-    if working_directory_path.is_file():
-        return working_directory_path
+    """按用户目录、工作区、源码回退顺序查找默认配置。"""
 
     user_path = user_config_dir() / filename
     if user_path.is_file():
         return user_path
 
+    for legacy_dir in legacy_user_config_dirs():
+        legacy_path = legacy_dir / filename
+        if legacy_path.is_file():
+            return legacy_path
+
     if _is_development_environment():
+        working_directory_path = Path.cwd() / filename
+        if working_directory_path.is_file():
+            return working_directory_path
+
         source_path = project_root() / filename
         if source_path.is_file():
             return source_path
 
     return user_path
+
+
+def resolve_config_write_path(config_path: str | Path | None = None) -> Path:
+    """解析配置写入路径；未显式指定时始终写入用户目录。"""
+
+    if config_path is not None:
+        path = Path(config_path).expanduser()
+    else:
+        raw_env = os.getenv(CONFIG_PATH_ENV, "").strip()
+        path = Path(raw_env).expanduser() if raw_env else user_config_dir() / DEFAULT_CONFIG_FILENAME
+    _validate_yaml_path(path, source="运行配置")
+    return path
+
+
+def resolve_models_write_path(models_path: str | Path | None = None) -> Path:
+    """解析模型配置写入路径；未显式指定时始终写入用户目录。"""
+
+    if models_path is not None:
+        path = Path(models_path).expanduser()
+    else:
+        raw_env = os.getenv(MODELS_PATH_ENV, "").strip()
+        path = Path(raw_env).expanduser() if raw_env else user_config_dir() / DEFAULT_MODELS_FILENAME
+    _validate_yaml_path(path, source="模型配置")
+    return path
 
 
 def _is_development_environment() -> bool:
@@ -149,7 +254,7 @@ def save_config_data(data: Mapping[str, Any], config_path: str | Path | None = N
     if not isinstance(data, Mapping):
         raise RuntimeConfigError("配置数据必须是对象。")
 
-    path = resolve_config_path(config_path)
+    path = resolve_config_write_path(config_path)
     _atomic_write_text(path, _dump_yaml(dict(data)))
     return path
 

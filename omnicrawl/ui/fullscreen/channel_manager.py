@@ -27,7 +27,7 @@ from ...config.channels import (
     save_channel_configuration,
     unique_channel_key,
 )
-from .theme import terminal_css
+from .theme import terminal_css, terminal_select_css
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
         height: 2;
         color: $terminal-amber;
     }
-    """)
+    """ + terminal_select_css())
 
     def __init__(
         self,
@@ -113,7 +113,7 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
                     value=self._draft.provider,
                     allow_blank=False,
                     id="channel-editor-provider",
-                    classes="channel-editor-control",
+                    classes="channel-editor-control choice-select",
                 )
                 yield Label("请求协议", classes="channel-editor-label")
                 yield Select(
@@ -124,7 +124,7 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
                     value=self._draft.protocol,
                     allow_blank=False,
                     id="channel-editor-protocol",
-                    classes="channel-editor-control",
+                    classes="channel-editor-control choice-select",
                 )
                 yield Label("渠道名称", classes="channel-editor-label")
                 yield Input(

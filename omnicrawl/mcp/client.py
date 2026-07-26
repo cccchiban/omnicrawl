@@ -15,7 +15,9 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
+
+import httpx
 
 from .audit import MCPAuditLogger
 from .config import (
@@ -23,6 +25,7 @@ from .config import (
     MCPServerConfig,
     MCP_RISK_EXTERNAL,
     MCP_TRANSPORT_STDIO,
+    MCP_TRANSPORT_STREAMABLE_HTTP,
     load_mcp_config,
 )
 from .registry import (
@@ -36,6 +39,7 @@ from .security import mcp_tool_requires_confirmation, validate_tool_arguments
 
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
+MCP_STREAMABLE_HTTP_PROTOCOL_VERSION = "2025-03-26"
 
 
 class MCPClientError(RuntimeError):
@@ -94,7 +98,7 @@ class MCPClientManager:
     ) -> None:
         self.config = config or load_mcp_config()
         self.registry = MCPCapabilityRegistry()
-        self._connections: dict[str, _StdioMCPConnection] = {}
+        self._connections: dict[str, _MCPConnection] = {}
         self._server_status: dict[str, str] = {
             name: "disabled" for name in self.config.servers
         }
@@ -138,7 +142,14 @@ class MCPClientManager:
             return
 
         for server in enabled_servers:
-            if server.transport != MCP_TRANSPORT_STDIO:
+            if server.transport == MCP_TRANSPORT_STDIO:
+                connection: _MCPConnection = _StdioMCPConnection(
+                    server,
+                    self._audit_logger.workspace_root,
+                )
+            elif server.transport == MCP_TRANSPORT_STREAMABLE_HTTP:
+                connection = _StreamableHTTPMCPConnection(server)
+            else:
                 self._server_status[server.name] = "unsupported"
                 self.registry.add_diagnostic(
                     "warning",
@@ -148,7 +159,6 @@ class MCPClientManager:
                 )
                 continue
 
-            connection = _StdioMCPConnection(server, self._audit_logger.workspace_root)
             try:
                 capabilities = connection.discover()
             except Exception as exc:
@@ -168,7 +178,7 @@ class MCPClientManager:
             self._register_capabilities(server, capabilities)
 
     def close(self) -> None:
-        """关闭所有由 Host 启动的 stdio MCP Server。"""
+        """关闭所有由 Host 启动的 MCP 连接。"""
 
         for connection in list(self._connections.values()):
             connection.close()
@@ -575,6 +585,190 @@ class _DiscoveredCapabilities:
     tools: list[dict[str, Any]]
     resources: list[dict[str, Any]]
     prompts: list[dict[str, Any]]
+
+
+class _MCPConnection(Protocol):
+    def discover(self) -> _DiscoveredCapabilities: ...
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
+
+    def read_resource(self, uri: str) -> dict[str, Any]: ...
+
+    def get_prompt(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
+
+    def close(self) -> None: ...
+
+
+class _StreamableHTTPMCPConnection:
+    """MCP Streamable HTTP 客户端。
+
+    每个 JSON-RPC 请求通过 HTTP POST 发送到同一端点。服务端可以返回
+    ``application/json`` 或 ``text/event-stream``；初始化响应中的
+    ``Mcp-Session-Id`` 会附加到后续请求。
+    """
+
+    def __init__(self, server: MCPServerConfig) -> None:
+        self.server = server
+        self._client = httpx.Client(timeout=server.timeout_seconds)
+        self._session_id: str | None = None
+        self._initialized = False
+        self._next_request_id = 1
+        self._lock = threading.Lock()
+
+    def discover(self) -> _DiscoveredCapabilities:
+        self._request(
+            "initialize",
+            {
+                "protocolVersion": MCP_STREAMABLE_HTTP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "ai-voice-agent", "version": "0.1"},
+            },
+        )
+        self._initialized = True
+        self._request("notifications/initialized", {}, notification=True)
+        return _DiscoveredCapabilities(
+            tools=self._list_capability("tools/list", "tools"),
+            resources=self._list_capability("resources/list", "resources"),
+            prompts=self._list_capability("prompts/list", "prompts"),
+        )
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        payload = self._request("tools/call", {"name": name, "arguments": arguments})
+        if not isinstance(payload, dict):
+            raise MCPClientError("MCP Tool 返回结果必须是 JSON 对象。")
+        return payload
+
+    def read_resource(self, uri: str) -> dict[str, Any]:
+        payload = self._request("resources/read", {"uri": uri})
+        if not isinstance(payload, dict):
+            raise MCPClientError("MCP Resource 返回结果必须是 JSON 对象。")
+        return payload
+
+    def get_prompt(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        payload = self._request("prompts/get", {"name": name, "arguments": arguments})
+        if not isinstance(payload, dict):
+            raise MCPClientError("MCP Prompt 返回结果必须是 JSON 对象。")
+        return payload
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _list_capability(self, method: str, result_key: str) -> list[dict[str, Any]]:
+        try:
+            payload = self._request(method, {})
+        except Exception:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        values = payload.get(result_key, [])
+        if not isinstance(values, list):
+            return []
+        return [value for value in values if isinstance(value, dict)]
+
+    def _request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        notification: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            request_id: int | None = None
+            message: dict[str, Any] = {"jsonrpc": "2.0", "method": method, "params": params}
+            if not notification:
+                request_id = self._next_request_id
+                self._next_request_id += 1
+                message["id"] = request_id
+
+            headers = {
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            }
+            if self._session_id:
+                headers["Mcp-Session-Id"] = self._session_id
+            if self._initialized:
+                headers["MCP-Protocol-Version"] = MCP_STREAMABLE_HTTP_PROTOCOL_VERSION
+
+            if not self.server.url:
+                raise MCPClientError("streamable_http MCP Server 缺少 url。")
+            try:
+                response = self._client.post(self.server.url, headers=headers, json=message)
+            except httpx.TimeoutException as exc:
+                raise TimeoutError(
+                    f"MCP 请求超过 {self.server.timeout_seconds} 秒：{self.server.name}"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise MCPClientError(f"MCP Server HTTP 请求失败：{exc}") from exc
+
+            session_id = response.headers.get("Mcp-Session-Id")
+            if session_id:
+                self._session_id = session_id
+
+            if notification and response.status_code == 202:
+                return {}
+            if response.is_error:
+                raise MCPClientError(
+                    f"MCP Server HTTP 请求失败：HTTP {response.status_code}"
+                )
+            if not response.content:
+                return {}
+
+            content_type = response.headers.get("content-type", "").lower()
+            if "text/event-stream" in content_type:
+                payloads = _parse_sse_json_payloads(response.text)
+                if request_id is not None:
+                    for payload in payloads:
+                        if payload.get("id") == request_id:
+                            return _unwrap_json_rpc_response(payload, method)
+                if payloads:
+                    return _unwrap_json_rpc_response(payloads[0], method)
+                raise MCPClientError("MCP Streamable HTTP 返回空 SSE 事件流。")
+
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise MCPClientError("MCP Streamable HTTP 返回的不是合法 JSON。") from exc
+            if not isinstance(payload, dict):
+                raise MCPClientError("MCP Streamable HTTP 响应必须是 JSON 对象。")
+            return _unwrap_json_rpc_response(payload, method)
+
+
+def _parse_sse_json_payloads(text: str) -> list[dict[str, Any]]:
+    """解析 Streamable HTTP 的 SSE data 事件，忽略非 JSON 事件。"""
+
+    payloads: list[dict[str, Any]] = []
+    data_lines: list[str] = []
+    for line in text.splitlines() + [""]:
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+            continue
+        if line.strip() or not data_lines:
+            continue
+        raw_data = "\n".join(data_lines).strip()
+        data_lines.clear()
+        if not raw_data:
+            continue
+        try:
+            payload = json.loads(raw_data)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _unwrap_json_rpc_response(payload: dict[str, Any], method: str) -> dict[str, Any]:
+    if "error" in payload:
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or json.dumps(error, ensure_ascii=False)
+        else:
+            message = str(error)
+        raise MCPClientError(f"MCP 请求 {method} 失败：{message}")
+    result = payload.get("result", {})
+    if not isinstance(result, dict):
+        raise MCPClientError(f"MCP 请求 {method} 返回结果必须是 JSON 对象。")
+    return result
 
 
 def _resolve_stdio_command(command: str) -> str:

@@ -111,6 +111,62 @@ TERMINAL_THEME = Theme(
 )
 
 
+
+def terminal_select_css(selector: str = ".choice-select") -> str:
+    """返回终端主题下可点击、可见选中态的下拉框样式。"""
+
+    return f"""
+    {selector} {{
+        height: 3;
+        min-height: 3;
+        width: 1fr;
+        color: $terminal-text;
+    }}
+    {selector} > SelectCurrent {{
+        height: 3;
+        min-height: 3;
+        padding: 0 1;
+        border: solid $terminal-border;
+        background: $terminal-background;
+        color: $terminal-text;
+        pointer: pointer;
+    }}
+    {selector} > SelectCurrent:hover {{
+        border: solid $terminal-blue;
+        background: $terminal-hover;
+    }}
+    {selector} > SelectCurrent:focus,
+    {selector}.-expanded > SelectCurrent {{
+        border: tall $terminal-blue;
+        background: $terminal-background;
+    }}
+    {selector} > SelectCurrent Static#label,
+    {selector} > SelectCurrent.-has-value Static#label {{
+        color: $terminal-text;
+    }}
+    {selector} > SelectOverlay {{
+        max-height: 12;
+        padding: 0;
+        border: solid $terminal-blue;
+        background: $terminal-background;
+        color: $terminal-text;
+    }}
+    {selector} > SelectOverlay:focus {{
+        border: tall $terminal-blue;
+    }}
+    {selector} > SelectOverlay > .option-list--option {{
+        height: 2;
+        padding: 0 1;
+    }}
+    {selector} > SelectOverlay > .option-list--option-hover,
+    {selector} > SelectOverlay > .option-list--option-highlighted {{
+        background: $terminal-blue;
+        color: $terminal-text;
+        text-style: bold;
+    }}
+    """
+
+
 def terminal_css(source: str) -> str:
     """展开终端主题占位符，使独立 Screen 不依赖父 App 注册主题。"""
 

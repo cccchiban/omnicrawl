@@ -141,7 +141,7 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(messages[0]["role"], "user")
         self.assertTrue(
             messages[0]["content"].startswith(
-                '<project_instructions source="AGENTS.md" trust="workspace-user">'
+                '<project_instructions source="AGENTS.md" trust="user-and-workspace">'
             )
         )
         self.assertIn("<authority_boundary>", messages[0]["content"])
@@ -219,12 +219,39 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(agent._history[-2]["content"], "请检查项目状态")
         self.assertNotIn("project_instructions", agent._history[-2]["content"])
 
+    def test_global_and_project_agents_are_both_loaded_with_project_last(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            global_agents = root / "global" / "AGENTS.md"
+            global_agents.parent.mkdir()
+            global_agents.write_text("全局规则", encoding="utf-8")
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "AGENTS.md").write_text("项目规则", encoding="utf-8")
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+
+            with patch("omnicrawl.agent.core.global_agents_path", return_value=global_agents):
+                messages = LocalToolAgent._project_instructions_messages(agent)
+
+        self.assertEqual(len(messages), 1)
+        content = messages[0]["content"]
+        self.assertIn("全局规则", content)
+        self.assertIn("项目规则", content)
+        self.assertLess(content.index("全局规则"), content.index("项目规则"))
+        self.assertIn("用户级", content)
+        self.assertIn("项目级", content)
+
     def test_missing_agents_md_adds_no_project_context_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             agent = object.__new__(LocalToolAgent)
             agent.workspace_root = Path(temp_dir)
 
-            messages = LocalToolAgent._project_instructions_messages(agent)
+            with patch(
+                "omnicrawl.agent.core.global_agents_path",
+                return_value=Path(temp_dir) / "missing-global" / "AGENTS.md",
+            ):
+                messages = LocalToolAgent._project_instructions_messages(agent)
 
         self.assertEqual(messages, [])
 

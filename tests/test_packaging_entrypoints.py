@@ -15,14 +15,14 @@ class PackagingEntryPointTest(unittest.TestCase):
         setup_cfg = (ROOT / "setup.cfg").read_text(encoding="utf-8")
 
         self.assertIn('name = "omnicrawl-agent"', pyproject)
-        self.assertIn('version = "0.1.3"', pyproject)
+        self.assertIn('version = "0.1.4"', pyproject)
         self.assertIn("name = omnicrawl-agent", setup_cfg)
-        self.assertIn("version = 0.1.3", setup_cfg)
+        self.assertIn("version = 0.1.4", setup_cfg)
         self.assertIn(
             "Repository = https://github.com/cccchiban/omnicrawl",
             setup_cfg,
         )
-        self.assertEqual(OMNICRAWL_VERSION, "0.1.3")
+        self.assertEqual(OMNICRAWL_VERSION, "0.1.4")
         self.assertIn('"docs/*.md"', pyproject)
         self.assertIn("docs/*.md", setup_cfg)
         self.assertFalse((ROOT / "docs").exists())

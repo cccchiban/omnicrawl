@@ -22,6 +22,7 @@ from .runtime import (
     dump_yaml_text,
     load_raw_file,
     resolve_models_path,
+    resolve_models_write_path,
 )
 
 
@@ -148,7 +149,7 @@ def parse_model_store(data: Mapping[str, Any], *, path: Path | None = None) -> M
 
 
 def save_model_store(store: ModelStore, models_path: str | Path | None = None) -> Path:
-    path = resolve_models_path(models_path if models_path is not None else store.path)
+    path = resolve_models_write_path(models_path)
     payload: dict[str, Any] = {"version": store.version, "models": {}}
     for record in store.models:
         item: dict[str, Any] = {

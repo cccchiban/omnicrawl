@@ -265,7 +265,37 @@ class ChannelManagerScreenTests(unittest.IsolatedAsyncioTestCase):
                 dialog.region.y + dialog.region.height,
             )
 
-    async def test_should_switch_protocol_options_when_provider_changes(self) -> None:
+    async def test_should_open_and_select_provider_with_mouse(self) -> None:
+        class EditorApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(ChannelEditorScreen(None, existing_keys=set()))
+
+        app = EditorApp()
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            provider = screen.query_one("#channel-editor-provider", Select)
+            self.assertIn("choice-select", provider.classes)
+            current = provider.query_one("SelectCurrent")
+            self.assertEqual(current.styles.border.top[0], "solid")
+
+            await pilot.click(provider, offset=(2, 1))
+            await pilot.pause()
+            self.assertTrue(provider.expanded)
+            overlay = provider.query_one("SelectOverlay")
+            await pilot.click(overlay, offset=(2, 2))
+            await pilot.pause()
+
+            self.assertFalse(provider.expanded)
+            self.assertEqual(provider.value, "anthropic")
+            self.assertEqual(
+                screen.query_one("#channel-editor-protocol", Select).value,
+                "anthropic_messages",
+            )
+
         results: list[ChannelConfig | None] = []
 
         class EditorApp(App):

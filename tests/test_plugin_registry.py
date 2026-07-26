@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from omnicrawl.extensions.plugin_models import (
     HandlerRegistration,
@@ -19,6 +20,7 @@ from omnicrawl.extensions.plugin_registry import (
     merge_registry_documents,
     resolve_replacements,
     save_registry_document,
+    user_plugins_root,
 )
 
 
@@ -36,6 +38,12 @@ def _manifest(name: str, handlers: list[HandlerRegistration]) -> PluginManifest:
 
 
 class PluginRegistryTest(unittest.TestCase):
+    def test_user_plugins_root_is_under_shared_user_config_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            with patch("omnicrawl.extensions.plugin_registry.Path.home", return_value=home):
+                self.assertEqual(user_plugins_root(), home / ".OmniCrawl" / "plugins")
+
     def test_atomic_write_and_load(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "registry.json"

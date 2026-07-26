@@ -14,7 +14,9 @@ from omnicrawl.entry import _parse_args, run_application
 from omnicrawl.runtime_config import (
     RuntimeConfigError,
     default_config_path,
+    global_agents_path,
     load_config_data,
+    migrate_legacy_user_config,
     resolve_config_path,
     resolve_models_path,
     save_config_data,
@@ -25,8 +27,83 @@ from omnicrawl.ui.windows_launcher import launch_in_powershell_window
 
 
 class RuntimeConfigTest(unittest.TestCase):
-    def test_default_config_path_points_to_user_config_directory(self) -> None:
-        self.assertEqual(default_config_path(), user_config_dir() / "config.yaml")
+    def test_user_config_directory_is_hidden_directory_in_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            home.mkdir()
+            with patch("omnicrawl.config.runtime.Path.home", return_value=home):
+                self.assertEqual(user_config_dir(), home / ".OmniCrawl")
+                self.assertEqual(global_agents_path(), home / ".OmniCrawl" / "AGENTS.md")
+                self.assertEqual(default_config_path(), home / ".OmniCrawl" / "config.yaml")
+
+    def test_migrate_legacy_user_config_moves_files_and_removes_old_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            appdata = root / "appdata"
+            legacy = appdata / "OmniCrawl"
+            legacy.mkdir(parents=True)
+            (legacy / "config.yaml").write_text("legacy: true\n", encoding="utf-8")
+            (legacy / "AGENTS.md").write_text("# global\n", encoding="utf-8")
+
+            with patch("omnicrawl.config.runtime.Path.home", return_value=home):
+                migrated = migrate_legacy_user_config(
+                    environ={"APPDATA": str(appdata)},
+                    platform_name="win32",
+                )
+
+            target = home / ".OmniCrawl"
+            self.assertEqual(migrated, target)
+            self.assertEqual((target / "config.yaml").read_text(encoding="utf-8"), "legacy: true\n")
+            self.assertTrue((target / "AGENTS.md").is_file())
+            self.assertFalse(legacy.exists())
+
+    def test_migrate_legacy_user_config_preserves_target_conflicts_in_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            appdata = root / "appdata"
+            legacy = appdata / "OmniCrawl"
+            legacy.mkdir(parents=True)
+            target = home / ".OmniCrawl"
+            target.mkdir(parents=True)
+            (target / "config.yaml").write_text("new: true\n", encoding="utf-8")
+            (legacy / "config.yaml").write_text("old: true\n", encoding="utf-8")
+
+            with patch("omnicrawl.config.runtime.Path.home", return_value=home):
+                migrate_legacy_user_config(
+                    environ={"APPDATA": str(appdata)},
+                    platform_name="win32",
+                )
+
+            self.assertEqual((target / "config.yaml").read_text(encoding="utf-8"), "new: true\n")
+            backup = target / "config.yaml.migrated.bak"
+            self.assertEqual(backup.read_text(encoding="utf-8"), "old: true\n")
+            self.assertFalse(legacy.exists())
+
+    def test_should_read_legacy_config_when_migration_has_not_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            user_dir = root / "user"
+            legacy_dir = root / "legacy"
+            user_dir.mkdir()
+            legacy_dir.mkdir()
+            legacy_config = legacy_dir / "config.yaml"
+            legacy_config.write_text("legacy: true\n", encoding="utf-8")
+
+            with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                with patch(
+                    "omnicrawl.config.runtime.legacy_user_config_dirs",
+                    return_value=(legacy_dir,),
+                ):
+                    with patch.object(
+                        runtime_module,
+                        "_is_development_environment",
+                        return_value=False,
+                    ):
+                        resolved = resolve_config_path()
+
+        self.assertEqual(resolved, legacy_config)
 
     def test_should_prefer_environment_paths_over_default_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -95,8 +172,84 @@ class RuntimeConfigTest(unittest.TestCase):
                             config_path = resolve_config_path()
                             models_path = resolve_models_path()
 
-            self.assertEqual(config_path, cwd_config)
-            self.assertEqual(models_path, cwd_models)
+            self.assertEqual(config_path, user_dir / "config.yaml")
+            self.assertEqual(models_path, user_dir / "models.yaml")
+
+    def test_should_prefer_user_directory_over_project_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cwd = root / "cwd"
+            user_dir = root / "user"
+            source_dir = root / "source"
+            cwd.mkdir()
+            user_dir.mkdir()
+            source_dir.mkdir()
+            cwd_config = cwd / "config.yaml"
+            user_config = user_dir / "config.yaml"
+            cwd_config.write_text("cwd: true", encoding="utf-8")
+            user_config.write_text("user: true", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"AI_CONFIG_FILE": "", "AI_MODELS_FILE": ""},
+                clear=False,
+            ):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
+                    with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                        with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
+                            self.assertEqual(resolve_config_path(), user_config)
+
+    def test_should_write_default_config_to_user_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cwd = root / "cwd"
+            user_dir = root / "user"
+            cwd.mkdir()
+            user_dir.mkdir()
+            (cwd / "config.yaml").write_text("project: true", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"AI_CONFIG_FILE": "", "AI_MODELS_FILE": ""},
+                clear=False,
+            ):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
+                    with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                        saved = save_config_data({"user": True})
+
+            self.assertEqual(saved, user_dir / "config.yaml")
+            self.assertTrue(saved.is_file())
+            self.assertEqual(yaml.safe_load(saved.read_text(encoding="utf-8")), {"user": True})
+            self.assertEqual(
+                yaml.safe_load((cwd / "config.yaml").read_text(encoding="utf-8")),
+                {"project": True},
+            )
+
+    def test_installed_mode_ignores_working_directory_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cwd = root / "cwd"
+            user_dir = root / "user"
+            cwd.mkdir()
+            user_dir.mkdir()
+            cwd_config = cwd / "config.yaml"
+            cwd_config.write_text("cwd: true", encoding="utf-8")
+            user_config = user_dir / "config.yaml"
+            user_config.write_text("user: true", encoding="utf-8")
+
+            with patch.dict(
+                os.environ,
+                {"AI_CONFIG_FILE": "", "AI_MODELS_FILE": ""},
+                clear=False,
+            ):
+                with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
+                    with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
+                        with patch.object(
+                            runtime_module,
+                            "_is_development_environment",
+                            return_value=False,
+                        ):
+                            self.assertEqual(resolve_config_path(), user_config)
 
     def test_should_fallback_to_source_directory_only_in_development(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -119,15 +272,16 @@ class RuntimeConfigTest(unittest.TestCase):
             ):
                 with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
                     with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
-                        with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
-                            with patch.object(
-                                runtime_module,
-                                "_is_development_environment",
-                                return_value=True,
-                                create=True,
-                            ):
-                                config_path = resolve_config_path()
-                                models_path = resolve_models_path()
+                        with patch("omnicrawl.config.runtime.legacy_user_config_dirs", return_value=()):
+                            with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
+                                with patch.object(
+                                    runtime_module,
+                                    "_is_development_environment",
+                                    return_value=True,
+                                    create=True,
+                                ):
+                                    config_path = resolve_config_path()
+                                    models_path = resolve_models_path()
 
             self.assertEqual(config_path, source_config)
             self.assertEqual(models_path, source_models)
@@ -149,15 +303,16 @@ class RuntimeConfigTest(unittest.TestCase):
             ):
                 with patch("omnicrawl.config.runtime.Path.cwd", return_value=cwd):
                     with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
-                        with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
-                            with patch.object(
-                                runtime_module,
-                                "_is_development_environment",
-                                return_value=False,
-                                create=True,
-                            ):
-                                config_path = resolve_config_path()
-                                models_path = resolve_models_path()
+                        with patch("omnicrawl.config.runtime.legacy_user_config_dirs", return_value=()):
+                            with patch("omnicrawl.config.runtime.project_root", return_value=source_dir):
+                                with patch.object(
+                                    runtime_module,
+                                    "_is_development_environment",
+                                    return_value=False,
+                                    create=True,
+                                ):
+                                    config_path = resolve_config_path()
+                                    models_path = resolve_models_path()
 
             self.assertEqual(config_path, user_dir / "config.yaml")
             self.assertEqual(models_path, user_dir / "models.yaml")
@@ -220,12 +375,13 @@ class RuntimeConfigTest(unittest.TestCase):
                     "omnicrawl.config.runtime.user_config_dir",
                     return_value=Path(temp_dir),
                 ):
-                    with patch(
-                        "omnicrawl.config.runtime.project_root",
-                        return_value=Path(temp_dir),
-                    ):
-                        with self.assertRaisesRegex(RuntimeConfigError, "不会读取或自动迁移 JSON"):
-                            load_config_data()
+                    with patch("omnicrawl.config.runtime.legacy_user_config_dirs", return_value=()):
+                        with patch(
+                            "omnicrawl.config.runtime.project_root",
+                            return_value=Path(temp_dir),
+                        ):
+                            with self.assertRaisesRegex(RuntimeConfigError, "不会读取或自动迁移 JSON"):
+                                load_config_data()
 
     def test_parse_args_accepts_resume_session_id(self) -> None:
         args = _parse_args(["--resume", "20260616-201530-a1b2c3"])

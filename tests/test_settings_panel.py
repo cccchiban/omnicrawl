@@ -12,12 +12,13 @@ from unittest.mock import Mock, patch
 
 from omnicrawl.agent import AgentError, LocalToolAgent
 from omnicrawl.config.context_compaction import ContextCompactionConfig
-from omnicrawl.mcp.config import MCPConfig
+from omnicrawl.mcp.config import MCPConfig, MCPPolicyConfig, MCPServerConfig
 from omnicrawl.config.settings import (
     SettingsConfigError,
     load_feature_enabled,
     save_context_window_tokens,
     save_feature_enabled,
+    save_mcp_config,
     save_subagent_setting,
 )
 from omnicrawl.config.subagents import SubAgentConfig
@@ -86,6 +87,204 @@ class SettingsConfigTests(unittest.TestCase):
             ):
                 with self.assertRaises(SettingsConfigError):
                     save_subagent_setting(key, 1, path)
+
+
+class MCPSettingsConfigTests(unittest.TestCase):
+    def test_mcp_config_round_trip_preserves_other_sections_and_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.yaml"
+            path.write_text("llm:\n  provider: openai\n", encoding="utf-8")
+            config = MCPConfig(
+                enabled=True,
+                default_timeout_seconds=60,
+                max_tool_output_chars=12000,
+                servers={
+                    "remote": MCPServerConfig(
+                        name="remote",
+                        transport="streamable_http",
+                        url="https://example.com/mcp",
+                        env={"TOKEN": "secret"},
+                        risk_level="external",
+                    )
+                },
+                policy=MCPPolicyConfig(allow_external_network_tools=True),
+            )
+
+            saved = save_mcp_config(config, path)
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved, path)
+        self.assertEqual(data["llm"]["provider"], "openai")
+        self.assertEqual(data["mcp"]["servers"]["remote"]["env"]["TOKEN"], "secret")
+        self.assertTrue(data["mcp"]["policy"]["allow_external_network_tools"])
+
+
+class MCPSettingsScreenTests(unittest.IsolatedAsyncioTestCase):
+    async def test_should_preserve_stdio_arguments_with_spaces_when_saved(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from omnicrawl.ui.fullscreen.mcp_settings import MCPServerEditorScreen
+
+        config = MCPConfig(enabled=True)
+
+        class FakeAgent:
+            workspace_root = Path.cwd()
+
+            def __init__(self) -> None:
+                self.config = SimpleNamespace(mcp_config=config)
+
+        class HostApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+        server = MCPServerConfig(
+            name="demo",
+            command="python",
+            args=["-c", "print('hello world')", r"C:\Program Files\demo"],
+        )
+        app = HostApp()
+        async with app.run_test(size=(110, 40)) as pilot:
+            screen = MCPServerEditorScreen(
+                FakeAgent(),
+                server,
+                existing_names={"demo"},
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            saved = screen._read_server()
+
+        self.assertEqual(saved.args, server.args)
+
+    async def test_should_open_editor_when_adding_server(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from omnicrawl.ui.fullscreen.mcp_settings import (
+            MCPServerEditorScreen,
+            MCPServerListScreen,
+        )
+
+        config = MCPConfig(enabled=True)
+
+        class FakeAgent:
+            workspace_root = Path.cwd()
+
+            def __init__(self) -> None:
+                self.config = SimpleNamespace(mcp_config=config)
+                self._mcp_manager = SimpleNamespace(config=config)
+
+        class HostApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+        app = HostApp()
+        async with app.run_test(size=(110, 40)) as pilot:
+            screen = MCPServerListScreen(FakeAgent())
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.action_add()
+            await pilot.pause()
+            self.assertIsInstance(app.screen, MCPServerEditorScreen)
+
+    async def test_should_open_and_select_server_options_with_mouse(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Select, Static
+        from omnicrawl.ui.fullscreen.mcp_settings import MCPServerEditorScreen
+
+        config = MCPConfig(enabled=True)
+
+        class FakeAgent:
+            workspace_root = Path.cwd()
+
+            def __init__(self) -> None:
+                self.config = SimpleNamespace(mcp_config=config)
+                self._mcp_manager = SimpleNamespace(config=config)
+
+        class HostApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+        app = HostApp()
+        async with app.run_test(size=(110, 40)) as pilot:
+            app.push_screen(
+                MCPServerEditorScreen(
+                    FakeAgent(),
+                    MCPServerConfig(name="demo"),
+                    existing_names={"demo"},
+                )
+            )
+            await pilot.pause()
+            screen = app.screen
+            transport = screen.query_one("#mcp-editor-transport", Select)
+            risk = screen.query_one("#mcp-editor-risk", Select)
+            self.assertIn("choice-select", transport.classes)
+            current = transport.query_one("SelectCurrent")
+            self.assertEqual(current.styles.border.top[0], "solid")
+
+            await pilot.click(transport, offset=(2, 1))
+            await pilot.pause()
+            self.assertTrue(transport.expanded)
+            await pilot.click(transport.query_one("SelectOverlay"), offset=(2, 2))
+            await pilot.pause()
+            self.assertEqual(transport.value, "streamable_http")
+
+            await pilot.click(risk, offset=(2, 1))
+            await pilot.pause()
+            await pilot.click(risk.query_one("SelectOverlay"), offset=(2, 3))
+            await pilot.pause()
+            self.assertEqual(risk.value, "external")
+
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from omnicrawl.ui.fullscreen.mcp_settings import (
+            MCPServerEditorScreen,
+            MCPServerListScreen,
+            MCPSettingsScreen,
+        )
+
+        config = MCPConfig(
+            enabled=True,
+            servers={
+                "demo": MCPServerConfig(
+                    name="demo",
+                    transport="streamable_http",
+                    url="https://example.com/mcp",
+                )
+            },
+        )
+
+        class FakeAgent:
+            workspace_root = Path.cwd()
+
+            def __init__(self) -> None:
+                self.config = SimpleNamespace(mcp_config=config)
+                self._mcp_manager = SimpleNamespace(config=config)
+
+            def apply_mcp_config(self, value) -> None:
+                self.config.mcp_config = value
+                self._mcp_manager.config = value
+
+        class HostApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+        app = HostApp()
+        async with app.run_test(size=(110, 40)) as pilot:
+            app.push_screen(MCPSettingsScreen(FakeAgent()))
+            await pilot.pause()
+            self.assertIsInstance(app.screen, MCPSettingsScreen)
+            app.push_screen(MCPServerListScreen(FakeAgent()))
+            await pilot.pause()
+            self.assertIsInstance(app.screen, MCPServerListScreen)
+            app.push_screen(
+                MCPServerEditorScreen(
+                    FakeAgent(),
+                    config.servers["demo"],
+                    existing_names={"demo"},
+                )
+            )
+            await pilot.pause()
+            self.assertIsInstance(app.screen, MCPServerEditorScreen)
 
 
 class SettingsScreenAdvancedTests(unittest.TestCase):

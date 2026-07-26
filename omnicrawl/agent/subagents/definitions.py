@@ -112,7 +112,7 @@ class AgentDefinitionRegistry:
         directories = (
             ("project", workspace / ".omnicrawl" / "agents"),
             ("project-compat", workspace / ".agents" / "agents"),
-            ("user", self._home_directory / ".omnicrawl" / "agents"),
+            ("user", self._home_directory / ".OmniCrawl" / "agents"),
             ("builtin", self._builtin_directory),
         )
         for source, directory in directories:

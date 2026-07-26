@@ -30,7 +30,9 @@ _WRITE_LOCK = threading.RLock()
 
 
 def user_plugins_root() -> Path:
-    return Path.home() / ".omnicrawl" / "plugins"
+    """返回统一用户配置目录下的插件根目录。"""
+
+    return Path.home() / ".OmniCrawl" / "plugins"
 
 
 def user_registry_path() -> Path:

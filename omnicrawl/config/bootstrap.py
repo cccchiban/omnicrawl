@@ -17,8 +17,9 @@ from .runtime import (
     DEFAULT_MODELS_FILENAME,
     RuntimeConfigError,
     load_config_data,
-    resolve_config_path,
-    resolve_models_path,
+    migrate_legacy_user_config,
+    resolve_config_write_path,
+    resolve_models_write_path,
     save_config_data,
     user_config_dir as runtime_user_config_dir,
 )
@@ -73,9 +74,14 @@ def initialize_user_configuration(
     ``AI_CONFIG_FILE`` / ``AI_MODELS_FILE`` 覆盖，否则使用系统用户配置目录。
     """
 
+    migration_error: str | None = None
     if config_dir is None:
-        config_path = resolve_config_path()
-        models_path = resolve_models_path()
+        try:
+            migrate_legacy_user_config()
+        except RuntimeConfigError as exc:
+            migration_error = str(exc)
+        config_path = resolve_config_write_path()
+        models_path = resolve_models_write_path()
         resolved_dir = config_path.parent
     else:
         resolved_dir = Path(config_dir).expanduser().resolve()
@@ -89,6 +95,8 @@ def initialize_user_configuration(
     models_created = _ensure_template(models_path, "models.example.yaml")
 
     errors: list[str] = []
+    if migration_error:
+        errors.append(migration_error)
     config_data: dict[str, object] = {}
     model_store = ModelStore(version=1, models=(), path=models_path)
     try:

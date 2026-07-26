@@ -208,6 +208,9 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if not self._advanced and key == "subagents_advanced":
             self.dismiss(SettingsAction("subagents_advanced"))
             return
+        if not self._advanced and key == "mcp":
+            self.dismiss(SettingsAction("mcp_settings"))
+            return
         if not self._advanced and key == "reasoning":
             current = str(getattr(self._agent, "reasoning_effort", "none") or "none")
             try:
@@ -382,7 +385,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "subagents_advanced": "进入",
         }
         for key, _label, _section in _FEATURES:
-            values[key] = "已开启" if self._feature_enabled(key) else "已关闭"
+            values[key] = "进入" if key == "mcp" else ("已开启" if self._feature_enabled(key) else "已关闭")
         return values
 
     @staticmethod

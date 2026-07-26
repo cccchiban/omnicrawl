@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import yaml
@@ -11,7 +13,13 @@ from unittest.mock import patch
 
 from omnicrawl.agent import LocalToolAgent
 from omnicrawl.mcp.client import MCPClientManager, _resolve_stdio_command
-from omnicrawl.mcp.config import MCPConfig, MCPConfigError, MCPServerConfig, load_mcp_config
+from omnicrawl.mcp.config import (
+    MCPConfig,
+    MCPConfigError,
+    MCPServerConfig,
+    MCP_TRANSPORT_STREAMABLE_HTTP,
+    load_mcp_config,
+)
 from omnicrawl.mcp.registry import MCPPromptMeta, MCPResourceMeta, MCPToolMeta, namespace_capability_name
 from omnicrawl.mcp.server import LocalMCPServer
 from omnicrawl.mcp.security import mcp_tool_requires_confirmation
@@ -195,6 +203,148 @@ class MCPSecurityTest(unittest.TestCase):
 
 
 class MCPManagerTest(unittest.TestCase):
+    def test_should_connect_streamable_http_when_server_is_enabled(self) -> None:
+        state = {
+            "session_id": "session-test",
+            "methods": [],
+            "missing_session": False,
+            "missing_protocol_version": False,
+            "initialize_protocol_version": None,
+        }
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler protocol name
+                length = int(self.headers.get("Content-Length", "0"))
+                request = json.loads(self.rfile.read(length).decode("utf-8"))
+                state["methods"].append(request.get("method"))
+                if request.get("method") == "initialize":
+                    state["initialize_protocol_version"] = request.get("params", {}).get(
+                        "protocolVersion"
+                    )
+                if request.get("method") != "initialize" and self.headers.get("Mcp-Session-Id") != state["session_id"]:
+                    state["missing_session"] = True
+                if request.get("method") != "initialize" and self.headers.get("MCP-Protocol-Version") != "2025-03-26":
+                    state["missing_protocol_version"] = True
+
+                if request.get("method", "").startswith("notifications/"):
+                    self.send_response(202)
+                    self.end_headers()
+                    return
+
+                method = request.get("method")
+                if method == "initialize":
+                    result = {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "demo", "version": "1"},
+                    }
+                elif method == "tools/list":
+                    result = {
+                        "tools": [
+                            {
+                                "name": "echo",
+                                "description": "Echo text",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    }
+                else:
+                    result = {"resources": [], "prompts": []}
+
+                body = json.dumps(
+                    {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Mcp-Session-Id", state["session_id"])
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+        http_server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=http_server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            config = MCPConfig(
+                enabled=True,
+                servers={
+                    "remote": MCPServerConfig(
+                        name="remote",
+                        enabled=True,
+                        transport=MCP_TRANSPORT_STREAMABLE_HTTP,
+                        url=f"http://127.0.0.1:{http_server.server_port}/mcp",
+                        timeout_seconds=5,
+                        risk_level="trusted",
+                    )
+                },
+            )
+            manager = MCPClientManager(config)
+            manager.discover()
+            status = manager.format_status()
+            manager.close()
+        finally:
+            http_server.shutdown()
+            thread.join(timeout=5)
+            http_server.server_close()
+
+        self.assertIn("remote: 启用, streamable_http, connected", status)
+        self.assertIn("remote.echo", manager.registry.tools)
+        self.assertEqual(state["methods"][:2], ["initialize", "notifications/initialized"])
+        self.assertEqual(state["initialize_protocol_version"], "2025-03-26")
+        self.assertFalse(state["missing_session"])
+        self.assertFalse(state["missing_protocol_version"])
+
+    def test_should_send_protocol_header_after_initialize_without_session(self) -> None:
+        from omnicrawl.mcp.client import _StreamableHTTPMCPConnection
+
+        server = MCPServerConfig(
+            name="remote",
+            transport=MCP_TRANSPORT_STREAMABLE_HTTP,
+            url="https://example.com/mcp",
+        )
+        connection = _StreamableHTTPMCPConnection(server)
+        connection._initialized = True
+        response = SimpleNamespace(
+            headers={"content-type": "application/json"},
+            status_code=200,
+            content=b'{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}',
+            is_error=False,
+            json=lambda: {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
+        )
+        with patch.object(connection._client, "post", return_value=response) as post:
+            connection._request("tools/list", {})
+        connection.close()
+
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["MCP-Protocol-Version"],
+            "2025-03-26",
+        )
+
+    def test_should_parse_sse_response_when_streamable_http_returns_event_stream(self) -> None:
+        from omnicrawl.mcp.client import _StreamableHTTPMCPConnection
+
+        server = MCPServerConfig(
+            name="remote",
+            transport=MCP_TRANSPORT_STREAMABLE_HTTP,
+            url="https://example.com/mcp",
+        )
+        connection = _StreamableHTTPMCPConnection(server)
+        response = SimpleNamespace(
+            headers={"content-type": "text/event-stream"},
+            status_code=200,
+            content=b"event-stream",
+            text='data: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n',
+            is_error=False,
+        )
+        with patch.object(connection._client, "post", return_value=response):
+            result = connection._request("demo", {})
+        connection.close()
+
+        self.assertEqual(result, {"ok": True})
+
     def test_enabled_without_servers_records_degraded_diagnostic(self) -> None:
         manager = MCPClientManager(MCPConfig(enabled=True))
 

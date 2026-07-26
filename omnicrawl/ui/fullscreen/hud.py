@@ -30,6 +30,7 @@ def token_telemetry_text(
     output_tokens: int,
     cached_input_tokens: int,
     context_limit: int,
+    mcp_enabled_count: int = 0,
 ) -> Text:
     """生成 Token 统计与上下文占用进度。"""
 
@@ -37,6 +38,7 @@ def token_telemetry_text(
     input_tokens = max(0, int(input_tokens))
     output_tokens = max(0, int(output_tokens))
     cached_input_tokens = max(0, int(cached_input_tokens))
+    mcp_enabled_count = max(0, int(mcp_enabled_count))
     ratio = input_tokens / context_limit
     percent = min(999, round(ratio * 100))
     filled = min(12, max(0, round(min(1.0, ratio) * 12)))
@@ -55,25 +57,41 @@ def token_telemetry_text(
     rendered.append("█" * filled, style=TEXT_PRIMARY)
     rendered.append("░" * (12 - filled), style=TEXT_PRIMARY)
     rendered.append(f" {percent}%", style=TEXT_PRIMARY)
+    rendered.append("  MCP ", style=TEXT_MUTED)
+    rendered.append(str(mcp_enabled_count), style=TEXT_PRIMARY)
     return rendered
 
 
 def pending_queue_text(pending_count: int) -> Text:
-    """生成与 Token 遥测字段一致的排队数量文本。"""
+    """生成顶部上下文行中的 FIFO 排队数量文本。"""
 
     pending_count = max(0, int(pending_count))
     rendered = Text()
-    rendered.append("排队 ", style=TEXT_MUTED)
+    rendered.append("QUE ", style=TEXT_MUTED)
     rendered.append(str(pending_count), style=f"{TEXT_PRIMARY} bold")
     return rendered
 
 
-def version_status_text(current_version: str, latest_version: str | None = None) -> Text:
-    """生成右上角版本号；存在更新时同时显示最新版本。"""
+def version_status_text(
+    current_version: str,
+    latest_version: str | None = None,
+    *,
+    checking: bool = False,
+    animation_frame: int = 0,
+) -> Text:
+    """生成右上角版本号、升级提示或检查更新动画。"""
 
     current = str(current_version or "unknown").strip()
     rendered = Text(f"v{current}", style=f"{TEXT_PRIMARY} bold")
-    if latest_version:
+    if checking:
+        active_index = animation_frame % 4
+        rendered.append("  ", style=TEXT_MUTED)
+        for index in range(4):
+            rendered.append(
+                "●",
+                style=TEXT_MUTED if index == active_index else TEXT_PRIMARY,
+            )
+    elif latest_version:
         rendered.append("  ↑ ", style=ACCENT_GREEN)
         rendered.append(f"v{latest_version}", style=f"{ACCENT_GREEN} bold")
     return rendered
@@ -110,6 +128,7 @@ def context_summary_text(
     model: str,
     reasoning_effort: str,
     approval_mode: str,
+    pending_count: int = 0,
 ) -> Text:
     """用短键值字段渲染项目、模型、推理强度和审批模式。
 
@@ -144,4 +163,6 @@ def context_summary_text(
             rendered.append("  ·  ", style=BORDER_SUBTLE)
         rendered.append(f"{label} ", style=TEXT_MUTED)
         rendered.append(value, style=f"{TEXT_PRIMARY} bold")
+    rendered.append("  ·  ", style=BORDER_SUBTLE)
+    rendered.append(pending_queue_text(pending_count))
     return rendered

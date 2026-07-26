@@ -117,9 +117,9 @@ ocl
 omnicrawl
 ```
 
-首次启动会按配置查找顺序选择 `config.yaml` 和 `models.yaml`：如果没有环境变量或当前工作目录配置，才会在用户配置目录创建文件，并打开模型渠道配置向导。向导预置 OpenAI、Anthropic、Gemini 三种请求方式；OpenAI 可选择 Chat Completions 或 Responses 协议。每个渠道独立配置渠道名称、Base URL、API Key 和模型 ID，同一种请求方式可通过 `A` 添加多个不同渠道。
+首次启动会按配置查找顺序选择 `config.yaml` 和 `models.yaml`：优先读取环境变量指定路径，其次读取用户配置目录 `~/.OmniCrawl`；仅源码开发环境在用户目录没有文件时才回退到当前工作目录和项目根目录。所有未显式指定路径的配置写入都固定保存到 `~/.OmniCrawl`，并打开模型渠道配置向导。向导预置 OpenAI、Anthropic、Gemini 三种请求方式；OpenAI 可选择 Chat Completions 或 Responses 协议。每个渠道独立配置渠道名称、Base URL、API Key 和模型 ID，同一种请求方式可通过 `A` 添加多个不同渠道。
 
-渠道列表使用 `↑↓` 选择、`空格` 启用或禁用、`Enter` 编辑、`A` 添加、`D` 二次确认删除、`F` 设为默认，最后按 `Ctrl+S` 保存。API Key 仅写入实际使用的本机 `config.yaml`，不会进入 `models.yaml` 或发布包。Windows 用户配置目录为 `%APPDATA%\\OmniCrawl`；Linux/macOS 为 `~/.config/omnicrawl`。如果首次启动没有保存至少一个已启用且具备 Key 的默认渠道，程序会显示提示并退出，配置完成后重新运行 `ocl` 即可。
+渠道列表使用 `↑↓` 选择、`空格` 启用或禁用、`Enter` 编辑、`A` 添加、`D` 二次确认删除、`F` 设为默认，最后按 `Ctrl+S` 保存。API Key 仅写入实际使用的本机 `config.yaml`，不会进入 `models.yaml` 或发布包。所有系统统一使用用户主目录下的 `~/.OmniCrawl` 保存配置。升级后首次启动会将旧的 `%APPDATA%\\OmniCrawl`、`~/.config/omnicrawl` 或 `~/.omnicrawl` 内容迁移到新目录；迁移成功后旧目录会被删除，冲突文件会保留为 `.migrated.bak` 备份。如果首次启动没有保存至少一个已启用且具备 Key 的默认渠道，程序会显示提示并退出，配置完成后重新运行 `ocl` 即可。
 
 首次启动还会检查 Node.js、模型目录和插件注册状态。Node.js 或插件检查失败只会影响插件功能，不会阻止无插件模式启动。
 
@@ -272,15 +272,19 @@ models:
 程序只读取 YAML 运行配置，不再解析、迁移或回退到 JSON。配置文件按以下顺序分别查找：
 
 1. `AI_CONFIG_FILE` / `AI_MODELS_FILE` 指定的文件。
-2. 当前工作目录下的 `config.yaml` / `models.yaml`。
-3. 用户配置目录：Windows `%APPDATA%\\OmniCrawl`，Linux/macOS `~/.config/omnicrawl`。
-4. 仅源码开发环境中的项目根目录；安装 Wheel 后不会从 `site-packages` 回退读取配置。
+2. 用户配置目录：所有系统统一为 `~/.OmniCrawl`。
+3. 仅源码开发环境中的当前工作目录和项目根目录；安装 Wheel 后不会从工作目录或 `site-packages` 回退读取配置。
 
-如果没有找到现有文件，首次启动会把用户配置目录作为创建目标。源码开发时也可以手工复制模板到当前工作目录：
+未显式指定配置路径时，保存操作不会沿用读取到的项目目录路径，而是统一写入 `~/.OmniCrawl`；显式路径或环境变量仍可用于指定其他写入位置。
+
+如果没有找到现有文件，首次启动会在 `~/.OmniCrawl` 创建 `config.yaml` 和 `models.yaml`。用户级全局规则放在 `~/.OmniCrawl/AGENTS.md`；当前项目目录中的 `AGENTS.md` 仍然保留，并且项目级规则优先于全局规则。插件注册表和用户级 SubAgent 定义也统一位于 `~/.OmniCrawl` 下。
+
+源码开发时如需手工准备配置，可以复制到用户目录：
 
 ```powershell
-copy config.example.yaml config.yaml
-copy models.example.yaml models.yaml
+New-Item -ItemType Directory -Force "$HOME\\.OmniCrawl"
+Copy-Item config.example.yaml "$HOME\\.OmniCrawl\\config.yaml"
+Copy-Item models.example.yaml "$HOME\\.OmniCrawl\\models.yaml"
 ```
 
 如需将配置放到其他位置，可显式设置：
@@ -320,7 +324,7 @@ subagents:
   task_retention_minutes: 60
 ```
 
-启用后加载顺序为项目 `.omnicrawl/agents/*.md`、兼容项目 `.agents/agents/*.md`、用户 `~/.omnicrawl/agents/*.md`、包内 `explore`/`plan`/`verify`/`general-purpose`、已批准插件定义；同名时高优先级来源获胜。环境变量只能关闭能力或收紧并发、超时等限制，不能扩大配置。当前实现支持每批 1–4 个同步任务、有界任务并发、独立模型请求限流、输入顺序聚合、失败隔离和同步 `fail_fast`；单个子任务不设模型回合或工具调用上限，默认超时为 3600 秒。默认仅只读，显式启用 `verify` 后只能执行固定的全量 unittest、compileall 和 `git diff --check`。显式设置 `allow_fork: true` 后可使用创建时冻结、脱敏的父公开上下文；任务模型按任务 > 角色定义 > 父模型解析并以独立 Runtime 运行。显式设置 `allow_background: true` 后支持 `spawn/list/get/cancel`，终态任务与未消费通知按 TTL 自动回收，通知只注入一次。父 Run 取消、Agent 关闭和工作区切换会级联取消并有界等待；跨进程恢复只导入安全任务快照，非终态任务折叠为 `SUBAGENT_INTERRUPTED`，不自动重跑或恢复 prompt、Runtime、审批和通知。显式开启 `allow_worktree` 与 `allow_standard_agent` 后，`general-purpose` 可在独立 worktree 写入，主工作树脏时拒绝创建/应用，父 Agent 通过控制动作审查并 apply/discard；共享工作区写入还需额外开启 `allow_shared_workspace_writes` 并受单写锁约束。跨父 Run 的后台审批记录仍仅存在于当前进程，不跨进程恢复；后台 `fail_fast` 尚未开放。
+启用后加载顺序为项目 `.omnicrawl/agents/*.md`、兼容项目 `.agents/agents/*.md`、用户 `~/.OmniCrawl/agents/*.md`、包内 `explore`/`plan`/`verify`/`general-purpose`、已批准插件定义；同名时高优先级来源获胜。环境变量只能关闭能力或收紧并发、超时等限制，不能扩大配置。当前实现支持每批 1–4 个同步任务、有界任务并发、独立模型请求限流、输入顺序聚合、失败隔离和同步 `fail_fast`；单个子任务不设模型回合或工具调用上限，默认超时为 3600 秒。默认仅只读，显式启用 `verify` 后只能执行固定的全量 unittest、compileall 和 `git diff --check`。显式设置 `allow_fork: true` 后可使用创建时冻结、脱敏的父公开上下文；任务模型按任务 > 角色定义 > 父模型解析并以独立 Runtime 运行。显式设置 `allow_background: true` 后支持 `spawn/list/get/cancel`，终态任务与未消费通知按 TTL 自动回收，通知只注入一次。父 Run 取消、Agent 关闭和工作区切换会级联取消并有界等待；跨进程恢复只导入安全任务快照，非终态任务折叠为 `SUBAGENT_INTERRUPTED`，不自动重跑或恢复 prompt、Runtime、审批和通知。显式开启 `allow_worktree` 与 `allow_standard_agent` 后，`general-purpose` 可在独立 worktree 写入，主工作树脏时拒绝创建/应用，父 Agent 通过控制动作审查并 apply/discard；共享工作区写入还需额外开启 `allow_shared_workspace_writes` 并受单写锁约束。跨父 Run 的后台审批记录仍仅存在于当前进程，不跨进程恢复；后台 `fail_fast` 尚未开放。
 
 思考深度可在 `llm.reasoning_effort`（或 `llm.defaults.reasoning_effort`）配置，支持 `none`、`low`、`medium`、`high`、`xhigh`、`max`；也兼容 `x-high`、`x_high` 等写法。设置为 `low` 及以上会自动启用 thinking。
 
@@ -343,7 +347,7 @@ subagents:
 
 设计细节与实施状态见 `omnicrawl/docs/` 中对应的技术文档；历史架构文档已归档至飞书知识空间 `ocl`。
 
-MCP 可在配置文件的 `mcp` 段配置。当前实现支持本地 `stdio` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；`streamable_http` 会被识别但暂不连接。MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 提供项目文档 Resource、健康状态 Resource 和常用 Prompt；工作区文件、搜索、写入及命令操作由 Agent 内置工具提供，不再通过 MCP 重复暴露。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。MCP 的渐进式阅读、配置、调用和排障规范见 `omnicrawl/docs/MCP_USAGE.md`。
+MCP 可在配置文件的 `mcp` 段配置。当前实现支持本地 `stdio` 和远程 `streamable_http` MCP Server 的初始化、能力发现、工具调用、Resource 读取、Prompt 获取、审计日志和 `/mcp` 状态诊断；Streamable HTTP 支持 JSON/SSE 响应和 `Mcp-Session-Id` 会话复用。MCP Tool 默认需要审批，避免第三方 Server 通过模糊工具名绕过确认。内置 `local_project` Server 可通过 `python -m omnicrawl.mcp.server` 提供项目文档 Resource、健康状态 Resource 和常用 Prompt；工作区文件、搜索、写入及命令操作由 Agent 内置工具提供，不再通过 MCP 重复暴露。环境变量 `MCP_ENABLED`、`MCP_DEFAULT_TIMEOUT_SECONDS` 和 `MCP_MAX_TOOL_OUTPUT_CHARS` 可临时覆盖全局配置。全屏 TUI 中可通过 `/settings` 按“运行设置 → MCP 全局设置 → MCP Server”三级管理 MCP 总开关、安全策略、超时、输出限制以及 Server 的传输、地址/命令、风险等级和连接测试；stdio 环境变量只显示配置数量，凭据不会回显，Streamable HTTP 不会把这些变量隐式转换为请求头。MCP 的渐进式阅读、配置、调用和排障规范见 `omnicrawl/docs/MCP_USAGE.md`。
 
 如果不想把 API Key 写入用户配置目录，也可以设置对应环境变量；环境变量优先于配置文件，便于临时覆盖本地配置：
 

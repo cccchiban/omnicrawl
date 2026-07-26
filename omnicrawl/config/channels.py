@@ -26,7 +26,9 @@ from .runtime import (
     load_config_data,
     load_raw_file,
     resolve_config_path,
+    resolve_config_write_path,
     resolve_models_path,
+    resolve_models_write_path,
 )
 
 
@@ -223,11 +225,13 @@ def save_channel_configuration(
         raise ChannelConfigError("至少需要保留一个模型渠道。")
     _validate_channels(channels)
 
-    resolved_config = resolve_config_path(config_path)
-    resolved_models = resolve_models_path(models_path)
+    source_config = resolve_config_path(config_path)
+    source_models = resolve_models_path(models_path)
+    resolved_config = resolve_config_write_path(config_path)
+    resolved_models = resolve_models_write_path(models_path)
     try:
-        config_data = load_config_data(resolved_config)
-        models_data = load_raw_file(resolved_models) if resolved_models.exists() else {}
+        config_data = load_config_data(source_config)
+        models_data = load_raw_file(source_models) if source_models.exists() else {}
     except RuntimeConfigError as exc:
         raise ChannelConfigError(str(exc)) from exc
 
