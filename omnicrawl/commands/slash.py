@@ -564,16 +564,13 @@ def handle_model_command(agent: LocalToolAgent, command: str) -> str | None:
     """处理模型查看与切换命令；返回 None 表示不是模型命令。
 
     语义：
-    - `/model` / `/models`：列出双列目录（非交互环境）
+    - `/model`：列出双列目录（非交互环境）
     - `/model --refresh`：刷新发现缓存后列出
     - `/model <key|alias|model_id|profile/model_id>`：直接切换
     """
 
     text = command.strip()
     normalized = text.lower()
-    if normalized == "/models":
-        text = "/model"
-        normalized = text
     if normalized != "/model" and not normalized.startswith("/model "):
         return None
 
@@ -628,7 +625,8 @@ def handle_reasoning_command(agent: LocalToolAgent, command: str) -> str | None:
 
 
 def _format_catalog_models(agent: LocalToolAgent, *, refresh: bool) -> str:
-    """文本模式展示双列目录；发现失败时回退到旧 /models 列表。"""
+    """文本模式展示双列目录；发现失败时回退到模型列表。"""
+
 
     current_model = agent.current_model
     if refresh:
@@ -896,7 +894,6 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/new",
         "/workspace",
         "/model",
-        "/models",
         "/settings",
         "/reasoning",
         "/skills",
@@ -940,7 +937,6 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/workspace": "切换当前 Agent 的工作区目录。",
         "/new": "开启一个空白会话。",
         "/model": "打开/查看模型目录，或输入 key、alias、profile/model_id 切换。",
-        "/models": "/model 的兼容别名。",
         "/settings": "打开中文设置面板，修改运行时开关并立即保存。",
         "/reasoning": "查看或切换推理强度。",
         "/skills": "查看当前已加载的 Skill。",

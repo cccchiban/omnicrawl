@@ -179,7 +179,7 @@ class CommandDispatcher:
             return CommandOutcome(handled=True, message=subagent_task_message)
 
         normalized = stripped.lower()
-        if normalized in {"/model", "/models"}:
+        if normalized == "/model":
             # 全屏 TUI 打开双列选择器；纯文本路径由 App 决定是否回退到列表输出。
             return CommandOutcome(
                 handled=True,

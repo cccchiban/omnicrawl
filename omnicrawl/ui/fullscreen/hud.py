@@ -68,6 +68,17 @@ def pending_queue_text(pending_count: int) -> Text:
     return rendered
 
 
+def version_status_text(current_version: str, latest_version: str | None = None) -> Text:
+    """生成右上角版本号；存在更新时同时显示最新版本。"""
+
+    current = str(current_version or "unknown").strip()
+    rendered = Text(f"v{current}", style=f"{TEXT_PRIMARY} bold")
+    if latest_version:
+        rendered.append("  ↑ ", style=ACCENT_GREEN)
+        rendered.append(f"v{latest_version}", style=f"{ACCENT_GREEN} bold")
+    return rendered
+
+
 def gradient_text(text: str) -> Text:
     """保留既有调用接口，以终端 ANSI 主强调色渲染品牌文字。"""
 

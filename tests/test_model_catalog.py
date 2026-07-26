@@ -161,6 +161,11 @@ class ModelCatalogTest(unittest.TestCase):
         self.assertEqual(agent.current_model, "new-model")
         self.assertIn("当前模型已切换为 new-model", message or "")
 
+    def test_handle_model_command_rejects_removed_models_alias(self) -> None:
+        agent = _FakeAgent()
+
+        self.assertIsNone(handle_model_command(agent, "/models"))
+
     def test_handle_model_command_rejects_models_outside_detected_base_url_list(self) -> None:
         agent = _FakeAgent()
 

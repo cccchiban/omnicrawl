@@ -123,7 +123,14 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp，每 24 小时自动清理"),
+            FullscreenStartup(
+                True,
+                "max",
+                "人工确认",
+                "D:/workspace",
+                ".agent_tmp，每 24 小时自动清理",
+                current_version="0.1.1",
+            ),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -135,9 +142,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
             # 顶部由稳态上下文占满；运行态进入对话区且空闲时不存在。
             self.assertEqual(len(app.query("#brand")), 0)
-            self.assertEqual(len(app.query("#topbar > *")), 2)
+            self.assertEqual(len(app.query("#topbar > *")), 3)
             queue = app.query_one("#queue-count", Static)
+            version = app.query_one("#version-status", Static)
             self.assertEqual(str(queue.content), "排队 0")
+            self.assertEqual(str(version.content), "v0.1.1")
             self.assertIn(TEXT_PRIMARY, str(queue.content.spans))
             self.assertIn("bold", str(queue.content.spans))
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
@@ -145,9 +154,10 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             context_widget = app.query_one("#context-summary", Static)
             self.assertEqual(context_widget.region.x, topbar.content_region.x)
             self.assertEqual(
-                context_widget.region.width + queue.region.width,
+                context_widget.region.width + queue.region.width + version.region.width,
                 topbar.content_region.width,
             )
+            self.assertEqual(version.region.right, topbar.content_region.right)
             context = context_widget.content
             self.assertIn("PRJ workspace", context.plain)
             self.assertNotIn("D:/workspace", context.plain)
@@ -186,6 +196,62 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cursor_style.bgcolor.number, 7)  # ansi_white
             self.assertFalse(cursor_style.reverse)
             self.assertEqual(composer.styles.background.a, 0)
+
+    async def test_background_version_check_updates_hud_and_adds_notice(self) -> None:
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.version_check import VersionCheckResult
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = "D:/workspace"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        result = VersionCheckResult(
+            current_version="0.1.1",
+            latest_version="0.1.2",
+        )
+        with patch(
+            "omnicrawl.ui.fullscreen.check_latest_version",
+            return_value=result,
+        ):
+            app = OmniCrawlApp(
+                FakeAgent(),
+                FullscreenStartup(
+                    True,
+                    "max",
+                    "人工确认",
+                    "D:/workspace",
+                    ".agent_tmp",
+                    current_version="0.1.1",
+                    version_check_enabled=True,
+                ),
+            )
+            async with app.run_test(size=(100, 30)) as pilot:
+                for _ in range(20):
+                    await pilot.pause(0.01)
+                    version_text = str(
+                        app.query_one("#version-status", Static).content
+                    )
+                    if "0.1.2" in version_text:
+                        break
+
+                self.assertEqual(version_text, "v0.1.1  ↑ v0.1.2")
+                notices = [str(widget.content) for widget in app.query(".status-message")]
+                self.assertTrue(
+                    any(
+                        "发现新版本 0.1.2" in notice
+                        and "pip install --upgrade omnicrawl-agent" in notice
+                        for notice in notices
+                    )
+                )
 
     async def test_composer_starts_on_one_row_and_grows_with_wrapped_text(self) -> None:
         """输入区初始一行，长文本和真实换行均自动扩展，最多保留五行。"""
@@ -1816,7 +1882,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(r"D:\projects", context.plain)
 
     async def test_slash_menu_filters_commands_and_completion_does_not_submit(self) -> None:
-        """斜杠菜单应包含动态 Skill，最多八项，Enter/Tab 只补全不执行。"""
+        """斜杠菜单应保留全部候选，展示窗口最多八项，Enter/Tab 只补全不执行。"""
 
         from textual.widgets import Static, TextArea
 
@@ -1853,8 +1919,28 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.press("/")
             await pilot.pause()
             self.assertTrue(menu.display)
-            self.assertEqual(len(app._command_matches), 8)
+            self.assertGreater(len(app._command_matches), 8)
             self.assertIn("/new", str(menu.content))
+            self.assertNotIn(
+                "/models",
+                [item["command"] for item in app._command_matches],
+            )
+            self.assertIn(
+                "/skill:ui-design",
+                [item["command"] for item in app._command_matches],
+            )
+            for _ in range(len(app._command_matches) - 1):
+                await pilot.press("down")
+                await pilot.pause()
+            self.assertEqual(
+                app._command_matches[app._command_selection]["command"],
+                "/skill:ui-design",
+            )
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertEqual(composer.text, "/skill:ui-design ")
+            self.assertEqual(submitted, [])
+            self.assertFalse(menu.display)
 
             composer.text = "/skill:ui"
             await pilot.pause()

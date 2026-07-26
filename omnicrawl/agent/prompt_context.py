@@ -73,12 +73,17 @@ def build_context_messages(
     tools: Iterable[ToolDefinition],
     agent_temp_dir: str,
     workspace_detection_summary: str = "",
+    inherited_skill_context: str = "",
 ) -> list[dict[str, str]]:
     """按稳定到动态的顺序构造 system 之外的上下文消息。"""
 
     messages: list[dict[str, str]] = []
     messages.extend(build_project_instructions_messages(project_instructions))
-    skill_message = build_skill_context_message(skill_manager, active_skills)
+    skill_message = (
+        {"role": "user", "content": inherited_skill_context}
+        if inherited_skill_context
+        else build_skill_context_message(skill_manager, active_skills)
+    )
     if skill_message:
         messages.append(skill_message)
     tool_message = build_tool_capabilities_message(tools)

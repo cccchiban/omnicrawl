@@ -320,6 +320,9 @@ class RuntimeConfigTest(unittest.TestCase):
         agent_config = agent_class.call_args.args[0]
         self.assertEqual(agent_config, agent_config_class.return_value)
         fullscreen_startup.assert_called_once()
+        self.assertTrue(
+            fullscreen_startup.call_args.kwargs["version_check_enabled"]
+        )
         run_fullscreen_tui.assert_called_once_with(agent, fullscreen_startup.return_value)
         agent.close.assert_called_once()
 

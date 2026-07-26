@@ -52,7 +52,7 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 - 命令工具不是系统级沙箱；所有命令均通过明确的 PowerShell 或 Git Bash 解释器以 `shell=False` 启动，并由 Host 注入 UTF-8 子进程环境。不要混用两种 Shell 的语法。需要在测试或构建失败后读取日志时，应把主操作放入 `command`、日志读取放入 `diagnostic_command`；两者独立执行，任一失败都会使工具返回失败，诊断步骤不会掩盖主命令退出状态。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
 - Windows 桌面工具不能突破 UAC、安全桌面、锁屏、受保护媒体或跨权限（UIPI）边界；不要用它们绕过访问控制。输入文本与剪贴板写入内容不会进入确认页或工具参数会话记录；截图 Base64 只存在于当前模型工具循环，不写入 Session 或长期历史。读取剪贴板和截图结果仍应按敏感数据处理。
 - MCP 默认关闭；开启后会在启动时发现已启用的 MCP Server，并把 Tool 以 `server.tool` 名称追加到 Agent 工具列表，同时按需读取 Resource 和 Prompt。单个 Server 失败只会显示降级诊断，不影响内置工具。
-- SubAgent 默认关闭。read_only 角色只能使用工作区读取/搜索和可用的 Memory 只读工具；`memory_write`、MCP Tool、Skill 控制面、父控制面和再次创建 SubAgent 均不会因父 Host 已注册而进入子工具集。模型任务参数也不能提交自定义工具、Skill、MCP Server 或 permission profile。显式设置 `subagents.enable_verify_agent=true` 后，内置 `verify` 额外获得子任务私有的 `verify_command`：只能选择 `unit_tests`、`compileall`、`git_diff_check` 三项固定检查，Host 以静态 argv 和 `shell=False` 启动。通用写 Agent 还需显式开启 standard/worktree 开关，写入和变更性操作继续经过来源明确的审批。任务并发与模型请求并发分别受配置上限约束，父历史、活动 Skill、Runtime 字段和普通 Session 消息不会被 fresh 子循环覆盖；Fork 只消费创建时冻结且已脱敏的父公开上下文。父 Session 归档/恢复会先取消旧会话子任务，待处理 Worktree 会阻止切换工作区，避免旧任务或旧仓库写能力进入新的所有权边界。结果会先脱敏和裁剪，大结果写入父 Session 管控的 JSON artifact；Provider reasoning 不进入公开结果，API/TUI 只接收安全生命周期摘要。
+- SubAgent 默认关闭。`delegated-read-only` 角色继承父 Host 已注册的 MCP Tool/Resource/Prompt、Skill 上下文、桌面/浏览器工具及其他外部能力，但硬性移除 `write_file`、`replace_text`、`memory_write` 和递归 `subagent`。`bash`、`powershell`、`monitor` 只允许通过 Host 只读命令策略的查询、联网和浏览器 CLI 命令；重定向、脚本解释器、文件原地修改、Git 变更及未知命令会在执行前拒绝。MCP 的外部副作用由 MCP 自身权限和 Host 审批约束，不等同于本地工作区写权限。fresh 子任务在入队前冻结父 Skill 索引或当前活动 Skill 正文，Fork 继续使用冻结的父公开上下文。模型任务参数仍不能提交自定义工具、Skill、MCP Server 或 permission profile。显式设置 `subagents.enable_verify_agent=true` 后，内置 `verify` 只获得固定读取工具与子任务私有 `verify_command`。通用写 Agent 仍需显式开启 standard/worktree 开关。父 Session 归档/恢复会取消旧会话子任务，结果继续经过脱敏、裁剪和受控 artifact 持久化。
 - Agent 不再限制主循环的连续工具步骤；系统提示要求证据充分后及时收尾，并禁止在状态未变化时重复相同读取、搜索或验证。SubAgent 按角色定义和全局配置限制模型回合、工具次数与调用边界时间，工具 Schema 只列出当前配置可执行的角色；子任务模型请求失败后不自动重试，而是返回带有脱敏 `diagnostic`（错误分类、异常类型、Provider、状态码和可重试性）的结构化错误交还主 Agent。主 Agent 遇到 `SUBAGENT_MODEL_ERROR` 时不得只更换角色重复调用，除非运行环境已改变或用户明确要求重试。时间预算会阻止继续启动新步骤，并收紧单次模型请求超时，但无法强制终止不响应取消的第三方 SDK 或系统调用。主 Agent 返回空响应时会最多尝试 5 次，每次请求超时 180 秒。可通过环境变量调整：
 
 ```powershell
@@ -86,7 +86,7 @@ ocl plugin disable @scope/name --project
 ocl plugin rollback @scope/name --project
 ```
 
-TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、上下文长度（32K–2048K）、审批模式、记忆、MCP、插件、子任务和上下文压缩总开关；修改立即生效并持久化到用户配置目录。上下文压缩默认关闭，开启后仅在完整回合结束且预计下一次请求达到 70K Token 时使用模型辅助压缩，并同步启用受当前摘要约束的证据恢复工具。上下文长度按当前活动模型保存：自定义模型写入 `models.yaml`，其他模型写入 `config.yaml` 默认值。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
+TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、上下文长度（32K–2048K）、审批模式、记忆、MCP、插件、子任务和上下文压缩总开关；修改立即生效并持久化到用户配置目录。上下文压缩默认关闭，开启后仅在完整回合结束且预计下一次请求达到 70K Token 时使用模型辅助压缩，并同步启用受当前摘要约束的证据恢复工具。压缩完成时，项目目标、约束、决策、完成/当前状态、文件产物和后续事项会自动同步到本地长期记忆；`/compact` 与 `/compact --model` 同样生效，记忆写入失败不会影响会话压缩。上下文长度按当前活动模型保存：自定义模型写入 `models.yaml`，其他模型写入 `config.yaml` 默认值。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
 
 设计说明见 `docs/HOOK_PLUGIN_DESIGN.md`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。插件若要提供最低优先级的 Agent Markdown 定义，必须在 manifest 的 `omnicrawl.agents` 中声明包内路径，并同时声明且获批 `agent:definitions` 权限。
 
@@ -122,6 +122,8 @@ omnicrawl
 渠道列表使用 `↑↓` 选择、`空格` 启用或禁用、`Enter` 编辑、`A` 添加、`D` 二次确认删除、`F` 设为默认，最后按 `Ctrl+S` 保存。API Key 仅写入实际使用的本机 `config.yaml`，不会进入 `models.yaml` 或发布包。Windows 用户配置目录为 `%APPDATA%\\OmniCrawl`；Linux/macOS 为 `~/.config/omnicrawl`。如果首次启动没有保存至少一个已启用且具备 Key 的默认渠道，程序会显示提示并退出，配置完成后重新运行 `ocl` 即可。
 
 首次启动还会检查 Node.js、模型目录和插件注册状态。Node.js 或插件检查失败只会影响插件功能，不会阻止无插件模式启动。
+
+TUI 首屏显示后会在后台通过 PyPI RSS 检查 `omnicrawl-agent` 最新版本，请求超时为 3 秒，成功结果在用户配置目录的 `version-check.json` 中缓存 24 小时。右上角始终显示当前版本；发现更新时显示 `v当前版本 ↑ v最新版本`，并在对话区提示 `pip install --upgrade omnicrawl-agent`。离线、代理、RSS 或缓存异常均静默降级，不会延迟或阻止启动。
 
 ## 运行
 

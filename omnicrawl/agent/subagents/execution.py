@@ -59,6 +59,9 @@ class SubAgentExecutionContext:
     model_snapshot: SubAgentModelSnapshot | None = None
     fork_messages: tuple[dict[str, Any], ...] = ()
     parent_system_prompt: str = ""
+    # fresh 任务在入队前冻结父 Skill 索引或当前活动 Skill 正文，避免后台任务
+    # 在父 Agent 下一回合切换 Skill 后读取到新的可变状态。Fork 已从父公开消息继承。
+    skill_context: str = ""
     plugin_dispatch: "PluginDispatchContext | None" = None
     # worktree 会话与工作区根由 Host 在 prepare 阶段绑定；execute 期间切换
     # WorkspaceTools 根目录，结束后收集 diff/branch 供父 Agent 审查应用。

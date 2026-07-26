@@ -269,22 +269,38 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                 finally:
                     agent.close()
 
-    def test_fresh_context_does_not_inherit_parent_skill_state(self) -> None:
-        """fresh 子任务只接收角色定义，不读取父 Skill 索引或活动 Skill 正文。"""
+    def test_should_inherit_skill_snapshot_when_context_is_fresh(self) -> None:
+        """fresh 子任务继承父 Skill 能力，但仍使用独立消息列表。"""
 
-        class _ExplodingSkillManager:
+        class _SkillManager:
             def list_all(self):
-                raise AssertionError("fresh SubAgent 不得读取父 SkillManager")
+                return [SimpleNamespace(name="web-fetcher")]
 
             def format_skills_for_prompt(self, _skills):
-                raise AssertionError("fresh SubAgent 不得格式化父 Skill 索引")
+                return (
+                    "<skill><name>web-fetcher</name>"
+                    "<description>读取网页</description>"
+                    "<location>D:/skills/web-fetcher/SKILL.md</location></skill>"
+                )
+
+        active_skill = SimpleNamespace(
+            skill=SimpleNamespace(
+                meta=SimpleNamespace(
+                    name="web-fetcher",
+                    scope="user",
+                    description="读取网页",
+                    source_path=Path("D:/skills/web-fetcher/SKILL.md"),
+                ),
+                body="使用受限联网工具读取并核验网页来源。",
+            )
+        )
 
         with tempfile.TemporaryDirectory() as temp_dir:
             agent = object.__new__(LocalToolAgent)
             agent.workspace_root = Path(temp_dir)
             agent.config = SimpleNamespace(workspace_detection_summary="workspace")
-            agent._skill_manager = _ExplodingSkillManager()
-            agent._active_skills = ["PRIVATE_PARENT_SKILL_BODY"]
+            agent._skill_manager = _SkillManager()
+            agent._active_skills = []
             agent._load_agents_instructions = lambda: "项目协作规范"
             agent._agent_temp_dir_display = lambda: ".agent_tmp"
             child_tools = {
@@ -297,20 +313,37 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                 )
             }
 
-            messages = agent._build_subagent_messages(
-                SubAgentExecutionContext(context="fresh"),
+            indexed_context = SubAgentExecutionContext(
+                context="fresh",
+                skill_context=agent._freeze_subagent_skill_context(),
+            )
+            indexed_messages = agent._build_subagent_messages(
+                indexed_context,
                 child_tools,
-                "检查 Skill 隔离",
-                "只读取公开项目上下文。",
+                "检查 Skill 继承",
+                "使用可用 Skill 完成任务。",
+            )
+            agent._active_skills = [active_skill]
+            active_context = SubAgentExecutionContext(
+                context="fresh",
+                skill_context=agent._freeze_subagent_skill_context(),
+            )
+            active_messages = agent._build_subagent_messages(
+                active_context,
+                child_tools,
+                "检查 Skill 继承",
+                "使用当前 Skill 完成任务。",
             )
 
-        rendered = json.dumps(messages, ensure_ascii=False)
-        self.assertIn("项目协作规范", rendered)
-        self.assertIn("read_file", rendered)
-        self.assertIn('context=\\"fresh\\"', rendered)
-        self.assertNotIn("PRIVATE_PARENT_SKILL_BODY", rendered)
-        self.assertNotIn("<skill_index", rendered)
-        self.assertNotIn("<active_skill_instructions", rendered)
+        indexed_rendered = json.dumps(indexed_messages, ensure_ascii=False)
+        active_rendered = json.dumps(active_messages, ensure_ascii=False)
+        self.assertIn("项目协作规范", indexed_rendered)
+        self.assertIn("read_file", indexed_rendered)
+        self.assertIn('context=\\"fresh\\"', indexed_rendered)
+        self.assertIn("<skill_index", indexed_rendered)
+        self.assertIn("web-fetcher", indexed_rendered)
+        self.assertIn("<active_skill_instructions", active_rendered)
+        self.assertIn("使用受限联网工具读取并核验网页来源。", active_rendered)
 
     def test_tool_executor_does_not_swallow_cancellation_from_subagent(self) -> None:
         class RunCancelled(RuntimeError):

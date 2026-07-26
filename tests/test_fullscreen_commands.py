@@ -89,6 +89,7 @@ class CommandDispatcherTests(unittest.TestCase):
         mcp = dispatcher.dispatch("/mcp")
         # 裸 /model 打开双列选择界面，不在分派阶段执行探测。
         model = dispatcher.dispatch("/model")
+        removed_alias = dispatcher.dispatch("/models")
         # 带参数时仍走慢命令 worker。
         switch = dispatcher.dispatch("/model gpt-test")
 
@@ -98,6 +99,7 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertFalse(model.model_picker_refresh)
         self.assertIsNone(model.command)
         self.assertTrue(model.refresh_context)
+        self.assertFalse(removed_alias.handled)
         self.assertEqual(switch.execution, "slow")
         self.assertTrue(switch.refresh_context)
         self.assertEqual(mcp.command(), "MCP 状态")

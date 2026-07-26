@@ -18,12 +18,18 @@ from textual.widgets import Static, TextArea
 from ...agent import AgentError, LocalToolAgent
 from ...config.runtime import resolve_config_path, resolve_models_path
 from ...agent.tools import public_tool_arguments
+from ...version_check import (
+    VersionCheckResult,
+    check_latest_version,
+    current_version,
+)
 from .hud import (
     compact_token_count,
     context_summary_text,
     gradient_text,
     pending_queue_text,
     token_telemetry_text,
+    version_status_text,
 )
 # 保留这些模块级名称作为既有测试和扩展的 patch 点；实际分派位于 commands.py。
 from ...commands.slash import (
@@ -139,6 +145,8 @@ class FullscreenStartup:
     approval_label: str
     workspace_label: str
     temp_label: str
+    current_version: str = current_version()
+    version_check_enabled: bool = False
 
 
 class Composer(TextArea):
@@ -199,6 +207,14 @@ class OmniCrawlApp(App[None]):
         min-width: 8;
         max-width: 8;
         content-align: right middle;
+    }
+    #version-status {
+        width: 22;
+        min-width: 22;
+        max-width: 22;
+        color: $terminal-text;
+        content-align: right middle;
+        text-overflow: ellipsis;
     }
     /* 第二行 Token 使用与第一行上下文摘要相同的左边距。
        height 必须至少为 2：Textual 的 border-bottom 会占用 1 行布局高度，
@@ -291,6 +307,7 @@ class OmniCrawlApp(App[None]):
     INTERACTION_WATCHDOG_INTERVAL_SECONDS = 0.5
     STALE_INTERACTION_TICKS = 6
     MAX_TOOL_OUTPUT_CHARS = 3_500
+    COMMAND_MENU_VISIBLE_OPTIONS = 8
     COMPOSER_MIN_ROWS = 1
     COMPOSER_MAX_ROWS = 5
     COMPOSER_BORDER_ROWS = 1
@@ -355,6 +372,7 @@ class OmniCrawlApp(App[None]):
         self._status_spinner_index = 0
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
+        self._announced_update_version: str | None = None
         self._interaction_watchdog_signature: tuple[object, ...] | None = None
         self._interaction_watchdog_stable_ticks = 0
 
@@ -363,6 +381,10 @@ class OmniCrawlApp(App[None]):
             with Horizontal(id="topbar"):
                 yield Static(self._context_summary_text(), id="context-summary")
                 yield Static(self._pending_queue_text(), id="queue-count")
+                yield Static(
+                    version_status_text(self.startup.current_version),
+                    id="version-status",
+                )
             yield Static(self._token_telemetry_text(), id="token-telemetry")
             yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
@@ -389,6 +411,8 @@ class OmniCrawlApp(App[None]):
         )
         if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
+        if self.startup.version_check_enabled:
+            self._check_for_updates()
 
         if callable(getattr(self.agent, "preload_mcp_tools", None)):
             # MCP 预加载属于内部初始化：继续锁定输入，但不显示瞬时等待消息。
@@ -523,6 +547,31 @@ class OmniCrawlApp(App[None]):
         if focus_composer and len(self.screen_stack) == 1:
             self.query_one("#composer", TextArea).focus()
 
+    @work(thread=True, exclusive=True, group="version-check", exit_on_error=False)
+    def _check_for_updates(self) -> None:
+        """首屏完成后在后台检查 PyPI，避免网络状态影响 TUI 启动。"""
+
+        result = check_latest_version(self.startup.current_version)
+        self.call_from_thread(self._apply_version_check, result)
+
+    def _apply_version_check(self, result: VersionCheckResult) -> None:
+        """在 Textual 主线程更新版本区域，并只提示一次可用升级。"""
+
+        latest = result.latest_version if result.update_available else None
+        self.query_one("#version-status", Static).update(
+            version_status_text(result.current_version, latest)
+        )
+        if latest is None or latest == self._announced_update_version:
+            return
+        self._announced_update_version = latest
+        self._append_message(
+            "status",
+            (
+                f"发现新版本 {latest}（当前 {result.current_version}）。"
+                "可执行 pip install --upgrade omnicrawl-agent 更新。"
+            ),
+        )
+
     @work(thread=True, exclusive=True, group="mcp-preload", exit_on_error=False)
     def _preload_mcp_tools(self) -> None:
         """主界面显示后在后台发现 MCP，避免阻塞 Textual 首屏绘制。"""
@@ -555,7 +604,7 @@ class OmniCrawlApp(App[None]):
             max(self.COMPOSER_MIN_ROWS, composer.virtual_size.height),
         )
         composer.styles.height = composer_rows
-        menu_rows = len(self._command_matches)
+        menu_rows = min(len(self._command_matches), self.COMMAND_MENU_VISIBLE_OPTIONS)
         self.query_one("#composer-wrap").styles.height = (
             self.COMPOSER_BORDER_ROWS + composer_rows + menu_rows
         )
@@ -600,7 +649,7 @@ class OmniCrawlApp(App[None]):
         self._submit(text)
 
     def _refresh_command_menu(self, value: str) -> None:
-        """根据当前斜杠前缀实时筛选统一命令源，最多展示八项。"""
+        """根据当前斜杠前缀实时筛选统一命令源，并保留完整候选供上下键选择。"""
 
         query = value.strip().lower()
         if not query.startswith("/") or any(char.isspace() for char in value):
@@ -613,7 +662,7 @@ class OmniCrawlApp(App[None]):
         ]
         # Python 排序稳定：仅把前缀命中提到前面，同级保留统一命令源的产品顺序。
         matches.sort(key=lambda option: not option["command"].lower().startswith(query))
-        self._command_matches = matches[:8]
+        self._command_matches = matches
         self._command_selection = 0
         if not self._command_matches:
             self._hide_command_menu()
@@ -623,14 +672,26 @@ class OmniCrawlApp(App[None]):
     def _render_command_menu(self) -> None:
         menu = self.query_one("#command-menu", Static)
         lines = Text()
-        for index, option in enumerate(self._command_matches):
+        visible_limit = self.COMMAND_MENU_VISIBLE_OPTIONS
+        visible_start = max(
+            0,
+            min(
+                self._command_selection - visible_limit + 1,
+                len(self._command_matches) - visible_limit,
+            ),
+        )
+        visible_matches = self._command_matches[
+            visible_start : visible_start + visible_limit
+        ]
+        for offset, option in enumerate(visible_matches):
+            index = visible_start + offset
             marker = "›" if index == self._command_selection else " "
             style = f"bold {ACCENT_BLUE}" if index == self._command_selection else TEXT_SECONDARY
             lines.append(f"{marker} {option['command']}", style=style)
             description = option.get("description", "").strip()
             if description:
                 lines.append(f"  · {description}", style=TEXT_MUTED)
-            if index < len(self._command_matches) - 1:
+            if offset < len(visible_matches) - 1:
                 lines.append("\n")
         menu.update(lines)
         menu.display = True

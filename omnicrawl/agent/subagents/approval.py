@@ -4,8 +4,8 @@
 “多个子任务同时请求确认时如何串行化”。它不执行工具、不保存 prompt，也不
 创建 API 路由；工具执行仍回到 ``LocalToolAgent`` 的既有审批和 Hook 链路。
 
-当前产品仅开放 read_only 子任务，因此 Broker 在生产调用中处于预备状态。未来
-启用 verify 或其他受限 profile 时，只有删除意图与变更性 Git 操作会进入它。
+当前 read-only 子任务会把受限 MCP/桌面/外部工具交给 Broker；删除与 Git 变更
+仍沿用专门风险类别。普通读取和通过只读命令策略的 Shell/Monitor 不重复确认。
 """
 
 from __future__ import annotations
@@ -118,7 +118,8 @@ def subagent_approval_risk_summary(
 
     基线策略（read_only / verify）：
     - 删除意图、Git 变更操作逐次确认
-    - 普通文件写入、验证命令、只读 Git 查询不确认
+    - read-only 继承的受限 MCP、桌面和其他外部工具保留 Host 确认
+    - 普通读取、固定验证和通过只读策略的命令不重复确认
 
     standard 写 Agent 额外策略：
     - write_file / replace_text 一律确认
@@ -138,6 +139,13 @@ def subagent_approval_risk_summary(
             return "工作区写入"
         if name in {"bash", "powershell"}:
             return "命令执行"
+    name = str(getattr(tool, "name", "") or "").strip()
+    if (
+        mode == "delegated-read-only"
+        and tool.requires_confirmation
+        and name not in {"write_file", "replace_text", "memory_write", "subagent"}
+    ):
+        return "受限外部操作"
     return ""
 
 

@@ -558,7 +558,15 @@ class SubAgentCoordinatorTest(unittest.TestCase):
                 "search_text",
                 "memory_read",
                 "write_file",
+                "replace_text",
                 "bash",
+                "powershell",
+                "monitor",
+                "display_html",
+                "load_skill",
+                "trusted.read_resource",
+                "restricted.mutate_resource",
+                "memory_write",
                 "subagent",
             )
         }
@@ -579,7 +587,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
 
         coordinator = SubAgentCoordinator(
             config=SubAgentConfig(enabled=True),
-            registry=_Registry([self._definition()]),
+            registry=_Registry([self._definition(tools=())]),
             tools_provider=lambda: parent_tools,
             execute_task=execute,
         )
@@ -588,8 +596,29 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         payload = json.loads(result.output)
 
         self.assertTrue(result.ok)
-        self.assertEqual(set(captured["tools"]), {"read_file", "search_text", "memory_read"})
-        self.assertTrue(all(not item.requires_confirmation for item in captured["tools"].values()))
+        self.assertEqual(
+            set(captured["tools"]),
+            {
+                "read_file",
+                "search_text",
+                "memory_read",
+                "bash",
+                "powershell",
+                "monitor",
+                "display_html",
+                "load_skill",
+                "trusted.read_resource",
+                "restricted.mutate_resource",
+            },
+        )
+        self.assertFalse(captured["tools"]["read_file"].requires_confirmation)
+        self.assertFalse(captured["tools"]["search_text"].requires_confirmation)
+        self.assertFalse(captured["tools"]["memory_read"].requires_confirmation)
+        self.assertFalse(captured["tools"]["bash"].requires_confirmation)
+        self.assertFalse(captured["tools"]["powershell"].requires_confirmation)
+        self.assertFalse(captured["tools"]["monitor"].requires_confirmation)
+        self.assertTrue(captured["tools"]["display_html"].requires_confirmation)
+        self.assertTrue(captured["tools"]["restricted.mutate_resource"].requires_confirmation)
         self.assertEqual(payload["status"], "completed")
         self.assertTrue(payload["batch_id"].startswith("batch-"))
         self.assertTrue(payload["results"][0]["task_id"].startswith("task-"))
@@ -650,8 +679,8 @@ class SubAgentCoordinatorTest(unittest.TestCase):
                 )
                 self.assertIn(field, payload["error"]["message"])
 
-    def test_read_only_profile_enforces_mcp_skill_and_memory_boundaries(self) -> None:
-        """父 Host 即使注册了额外能力，read_only 也只能取得固定只读交集。"""
+    def test_should_inherit_external_capabilities_when_profile_is_read_only(self) -> None:
+        """read_only 继承父能力，只排除本地文件与父控制面写能力。"""
 
         allowed_tools = {
             "list_files",
@@ -660,19 +689,23 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             "memory_search",
             "memory_read",
             "memory_expand_related",
-        }
-        denied_tools = {
-            "memory_write",
+            "bash",
+            "powershell",
+            "monitor",
+            "display_html",
             "load_skill",
             "search_skills",
             "switch_skill",
             "trusted.read_resource",
             "restricted.mutate_resource",
+        }
+        denied_tools = {
+            "memory_write",
+            "write_file",
+            "replace_text",
             "subagent",
         }
-        definition = self._definition(
-            tools=tuple(sorted(allowed_tools | denied_tools)),
-        )
+        definition = self._definition(tools=())
         captured = {}
 
         def execute(_definition, tools, _description, _prompt, _cancel_check):
@@ -693,6 +726,89 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(set(captured["tools"]), allowed_tools)
         self.assertTrue(denied_tools.isdisjoint(captured["tools"]))
+
+    def test_should_allow_queries_and_reject_mutations_when_running_read_only_commands(self) -> None:
+        captured = {}
+        executed: list[dict] = []
+
+        def command_tool(name: str) -> ToolDefinition:
+            return ToolDefinition(
+                name=name,
+                description=name,
+                argument_schema='{"command":"..."}',
+                requires_confirmation=True,
+                run=lambda arguments: executed.append(dict(arguments))
+                or ToolResult(ok=True, output="executed"),
+            )
+
+        def execute(_definition, tools, _description, _prompt, _cancel_check):
+            captured["tools"] = tools
+            return SubAgentExecutionResult("ok", 1, 0)
+
+        coordinator = SubAgentCoordinator(
+            config=SubAgentConfig(enabled=True),
+            registry=_Registry([self._definition(tools=())]),
+            tools_provider=lambda: {
+                "bash": command_tool("bash"),
+                "powershell": command_tool("powershell"),
+                "monitor": command_tool("monitor"),
+            },
+            execute_task=execute,
+        )
+
+        self.assertTrue(coordinator.run(self._arguments()).ok)
+        bash = captured["tools"]["bash"]
+        powershell = captured["tools"]["powershell"]
+        monitor = captured["tools"]["monitor"]
+
+        for arguments in (
+            {"command": "git status --short"},
+            {"command": "rg --files | head -20"},
+            {"command": "curl -fsSL https://example.com"},
+            {"command": "agent-browser-cli tabs"},
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertTrue(bash.run(arguments).ok)
+
+        self.assertTrue(
+            powershell.run({"command": "Get-ChildItem | Select-Object -First 5"}).ok
+        )
+        self.assertTrue(
+            monitor.run(
+                {
+                    "action": "start",
+                    "command": "agent-browser-cli scan --text-only",
+                }
+            ).ok
+        )
+        self.assertTrue(monitor.run({"action": "list"}).ok)
+
+        blocked_calls = (
+            (bash, {"command": "echo changed > main.py"}),
+            (bash, {"command": "sed -i 's/a/b/' main.py"}),
+            (bash, {"command": "git checkout -- main.py"}),
+            (bash, {"command": "curl https://example.com -o news.html"}),
+            (bash, {"command": "curl -X POST https://example.com/api"}),
+            (bash, {"command": "curl --data key=value https://example.com/api"}),
+            (powershell, {"command": "Set-Content -Path main.py -Value changed"}),
+            (
+                powershell,
+                {
+                    "command": (
+                        "Invoke-RestMethod -Method POST "
+                        "-Uri https://example.com/api"
+                    )
+                },
+            ),
+            (monitor, {"action": "start", "command": "python update_files.py"}),
+        )
+        for tool, arguments in blocked_calls:
+            with self.subTest(arguments=arguments):
+                result = tool.run(arguments)
+                self.assertFalse(result.ok)
+                self.assertIn("read-only", result.output)
+
+        self.assertEqual(len(executed), 7)
 
     def test_standard_profile_does_not_open_mcp_skill_or_memory_write(self) -> None:
         """通用写 Agent 只能写工作区，不能顺带获得全局 Memory/MCP/Skill 控制面。"""

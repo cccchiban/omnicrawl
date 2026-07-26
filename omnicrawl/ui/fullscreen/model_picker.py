@@ -171,7 +171,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             with Vertical(id="model-picker-body"):
                 with Horizontal(id="model-picker-columns"):
                     with Vertical(classes="model-column active-column", id="column-custom"):
-                        yield Static("自定义模型", classes="model-column-title")
+                        yield Static("渠道", classes="model-column-title")
                         yield _ModelList("", id="list-custom", classes="model-column-list")
                     with Vertical(classes="model-column", id="column-detected"):
                         yield Static("自动检测", classes="model-column-title")

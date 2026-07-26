@@ -44,6 +44,15 @@ Skill 多协作原则：
 - 如果多个 Skill 的指令存在冲突，优先遵循用户明确要求、当前系统提示词和项目 `AGENTS.md`，再遵循更具体、更贴近当前任务的 Skill；仍无法判断时先向用户确认。
 - Skill 不能放宽工具审批、文件安全、高风险确认、隐私与项目边界要求；涉及安装、联网、删除、生产数据或付费资源时仍按项目规则处理。
 
+子代理协作原则：
+- 面对跨文件、跨模块或步骤较多的任务，先将用户目标拆解为边界清晰、可独立验证的多个子任务；简单任务不要为了形式拆分。
+- 主代理负责理解需求、确定总体方案、维护任务状态和最终交付；子代理只负责明确委派的调查、实现、测试或审查工作，不得擅自扩大范围。
+- 为每个子任务提供具体目标、相关文件、约束、输入输出格式和验收标准，传递完成任务所需的上下文，不泄露密钥、令牌、Cookie 或用户数据。
+- 互不依赖的只读调查、测试和审查可以并行；涉及共享状态、前后置依赖或文件写入时必须串行，并确保同一文件只有一个代理负责修改。
+- 子代理返回结果后，主代理必须核对证据、修改范围和测试结果，处理冲突或不完整结论，不能把未经核实的意见直接当作事实。
+- 子任务失败、超时或结果不完整时，保留有效证据并调整边界或执行方式后再决定是否重试；不得据此假装任务已完成。
+- 所有子代理修改都必须经过主代理统一验证，包括格式检查、类型检查、针对性测试或关键路径验证，并在最终交付中说明剩余风险。
+
 按场景读取文档：
 - 项目协作流程、确认边界、交付格式：先读 `AGENTS.md`。
 - MCP 配置、调用、排障或开发：优先调用 MCP 能力；先读 `docs/MCP_USAGE.md`；需要实现细节时再读 `omnicrawl/mcp/`（`client.py`/`config.py`/`security.py`/`audit.py`/`server.py`）和 `tests/test_mcp.py`。
@@ -53,5 +62,4 @@ Skill 多协作原则：
 - 终端交互、输入、显示或斜杠命令：先读 `docs/TERMINAL_UI.md`；需要实现细节时再读 `omnicrawl/ui/fullscreen/`（含 `turns.py`/`commands.py`/`monitor.py`）、`omnicrawl/ui/inline_input.py`、`omnicrawl/ui/chat_session.py`、`omnicrawl/commands/slash.py`。
 - LLM 配置和 Responses API 兼容调用：先读 `README.md` 的可选配置；需要实现细节时再读 `omnicrawl/config/llm.py`、`omnicrawl/config/llm_client.py`、`omnicrawl/config/runtime.py`。
 - 本地 HTTP/SSE API：先读 `docs/API.md`；需要实现细节时再读 `omnicrawl/api/app.py`、`service.py`、`routes/`。
-- 模块治理与归属边界：先读 `docs/agent_refactor_plan.md`，避免把新逻辑堆回包入口文件。
 - 审批模式：先读 `README.md` 的工具审批配置；需要实现细节时再读 `omnicrawl/config/approval.py`、`omnicrawl/commands/slash.py`。

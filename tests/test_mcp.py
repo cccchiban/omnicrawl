@@ -65,6 +65,33 @@ class MCPConfigTest(unittest.TestCase):
         self.assertEqual(server.timeout_seconds, 3)
         self.assertEqual(server.risk_level, "trusted")
 
+    def test_load_mcp_config_accepts_hyphenated_streamable_http_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "mcp": {
+                            "enabled": True,
+                            "servers": {
+                                "fathom": {
+                                    "enabled": True,
+                                    "transport": "streamable-http",
+                                    "url": "https://example.com/mcp",
+                                }
+                            },
+                        }
+                    },
+                    allow_unicode=True,
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_mcp_config(config_path)
+
+        self.assertEqual(config.servers["fathom"].transport, "streamable_http")
+
     def test_load_mcp_config_rejects_invalid_name_and_missing_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"

@@ -218,6 +218,8 @@ def _load_server_config(
         default=MCP_TRANSPORT_STDIO,
         config_key=f"mcp.servers.{normalized_name}.transport",
     )
+    if transport == "streamable-http":
+        transport = MCP_TRANSPORT_STREAMABLE_HTTP
     if transport not in VALID_MCP_TRANSPORTS:
         allowed = ", ".join(sorted(VALID_MCP_TRANSPORTS))
         raise MCPConfigError(

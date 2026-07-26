@@ -25,6 +25,10 @@ from .approval import (
 )
 from .definitions import AgentDefinition, AgentDefinitionRegistry
 from .execution import SubAgentExecutionContext
+from .read_only_commands import (
+    READ_ONLY_COMMAND_TOOL_NAMES,
+    wrap_read_only_command_tool,
+)
 from .tasks import SubAgentTaskManager, SubAgentTaskSpec
 from .verify import VERIFY_COMMAND_TOOL_NAME
 
@@ -101,6 +105,12 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "memory_read",
         "memory_expand_related",
     }
+)
+# delegated-read-only 继承父 Host 已注册的 MCP、Skill、桌面、浏览器和其他外部
+# 能力，只硬拒绝已知本地写入口与递归调度。命令工具另加运行前只读判定，不能
+# 因为进入动态继承集合就绕过工作区文件保护。
+READ_ONLY_BLOCKED_TOOL_NAMES = frozenset(
+    {"write_file", "replace_text", "memory_write", "subagent"}
 )
 # verify profile 只能在既有只读能力上追加一个固定检查入口；绝不能把原始
 # bash/powershell/monitor 或其他命令工具加入这里。
@@ -1562,12 +1572,20 @@ class SubAgentCoordinator:
         )
 
     def _read_only_tools(self, definition: AgentDefinition) -> dict[str, ToolDefinition]:
+        """继承父工具，仅移除本地写入口并包装 Shell/Monitor 命令。"""
+
         parent_tools = self._tools_provider()
-        return self._filter_profile_tools(
+        profile_tools = frozenset(parent_tools) - READ_ONLY_BLOCKED_TOOL_NAMES
+        filtered = self._filter_profile_tools(
             definition,
             available_tools=parent_tools,
-            profile_tools=READ_ONLY_TOOL_NAMES,
+            profile_tools=profile_tools,
         )
+        for name in READ_ONLY_TOOL_NAMES.intersection(filtered):
+            filtered[name] = replace(filtered[name], requires_confirmation=False)
+        for name in READ_ONLY_COMMAND_TOOL_NAMES.intersection(filtered):
+            filtered[name] = wrap_read_only_command_tool(filtered[name])
+        return filtered
 
     def _verify_tools(self, definition: AgentDefinition) -> dict[str, ToolDefinition]:
         # 只读工具来自父 Host；verify_command 由 Host 单独提供，确保它不会出现在
@@ -1578,6 +1596,7 @@ class SubAgentCoordinator:
             definition,
             available_tools=available_tools,
             profile_tools=VERIFY_TOOL_NAMES,
+            clear_confirmation=True,
         )
 
     @staticmethod
@@ -1586,15 +1605,22 @@ class SubAgentCoordinator:
         *,
         available_tools: Mapping[str, ToolDefinition],
         profile_tools: frozenset[str],
+        clear_confirmation: bool = False,
     ) -> dict[str, ToolDefinition]:
         allowlist = set(definition.tools) if definition.tools else set(profile_tools)
         allowlist &= profile_tools
         allowlist -= set(definition.disallowed_tools)
-        return {
-            name: replace(available_tools[name], requires_confirmation=False)
+        result = {
+            name: available_tools[name]
             for name in sorted(allowlist)
             if name in available_tools
         }
+        if clear_confirmation:
+            result = {
+                name: replace(tool, requires_confirmation=False)
+                for name, tool in result.items()
+            }
+        return result
 
     @staticmethod
     def _failure_payload(

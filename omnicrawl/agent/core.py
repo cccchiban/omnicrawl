@@ -67,6 +67,7 @@ from .prompt_context import (
     build_context_messages,
     build_project_instructions_messages,
     build_prompt_cache_identity,
+    build_skill_context_message,
     build_system_prompt,
 )
 from .session_facade import AgentSessionFacade
@@ -135,6 +136,7 @@ from ..llm import (
 from ..memory import (
     MemoryStore,
     MemoryStoreError,
+    MemoryWriteRequest,
 )
 from ..mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
 from ..project import ProjectEntry, ProjectStore
@@ -847,6 +849,7 @@ class LocalToolAgent:
             return summary + "\n\n（模型摘要失败，已使用本地确定性降级。）"
         self._append_session_event("compact_summary", dict(outcome.compact_payload))
         self._history = list(outcome.history_projection or ())
+        self._write_compaction_memories(outcome.compact_payload)
         return str(outcome.compact_payload["content"])
 
     def resume_session(self, session_id: str) -> SessionState:
@@ -1899,6 +1902,20 @@ class LocalToolAgent:
                 snapshot.append(dict(message))
         return tuple(snapshot)
 
+    def _freeze_subagent_skill_context(self) -> str:
+        """冻结当前 Skill 索引或已激活 Skill 正文，供 fresh 子任务继承。"""
+
+        manager = getattr(self, "_skill_manager", None)
+        if manager is None:
+            return ""
+        message = build_skill_context_message(
+            manager,
+            tuple(getattr(self, "_active_skills", ()) or ()),
+        )
+        if not message:
+            return ""
+        return redact_sensitive_text(str(message.get("content") or ""))
+
     def _prepare_subagent_execution(
         self,
         definition: AgentDefinition,
@@ -1924,6 +1941,7 @@ class LocalToolAgent:
         plugin_dispatch = self._freeze_subagent_plugin_dispatch_context()
         fork_messages: tuple[dict[str, Any], ...] = ()
         parent_system_prompt = ""
+        skill_context = ""
         if normalized_context == "fork":
             active_messages = getattr(self, "_active_fork_context_messages", None)
             if not isinstance(active_messages, tuple):
@@ -1932,6 +1950,8 @@ class LocalToolAgent:
                 raise AgentError("Fork 只能在活动父 Agent 回合内创建。")
             fork_messages = self._freeze_fork_context_messages(active_messages)
             parent_system_prompt = redact_sensitive_text(self._system_prompt())
+        else:
+            skill_context = self._freeze_subagent_skill_context()
 
         worktree_session = None
         # 测试 / 轻量构造可能没有完整 workspace_root；shared 模式允许空根。
@@ -1966,6 +1986,7 @@ class LocalToolAgent:
             model_snapshot=model_snapshot,
             fork_messages=fork_messages,
             parent_system_prompt=parent_system_prompt,
+            skill_context=skill_context,
             plugin_dispatch=plugin_dispatch,
             worktree_session=worktree_session,
             workspace_root=workspace_root,
@@ -2078,6 +2099,7 @@ class LocalToolAgent:
                     "workspace_detection_summary",
                     "",
                 ),
+                inherited_skill_context=execution_context.skill_context,
             ),
             {
                 "role": "user",
@@ -2329,7 +2351,10 @@ class LocalToolAgent:
                 )
         else:
             capability_rules = (
-                "只可读取和搜索；不得写文件、执行命令、修改 Memory 或创建其他 SubAgent；"
+                "不得使用 write_file、replace_text、memory_write 或创建其他 SubAgent；"
+                "可以继承 Host 提供的 MCP、Skill、浏览器、桌面与其他外部能力；"
+                "bash、powershell、monitor 仅可执行通过 Host 只读命令策略的命令，"
+                "不得以重定向、脚本解释器、Git 变更或其他方式修改本地工作区文件；"
             )
 
         prompt_parts: list[str] = []
@@ -4239,6 +4264,7 @@ class LocalToolAgent:
             return None
         self._append_session_event("compact_summary", dict(outcome.compact_payload))
         self._history = list(outcome.history_projection)
+        self._write_compaction_memories(outcome.compact_payload)
         self._append_session_event(
             "context_overflow_recovery",
             {
@@ -4333,6 +4359,7 @@ class LocalToolAgent:
                 dict(outcome.compact_payload),
             )
             self._history = list(outcome.history_projection or ())
+            self._write_compaction_memories(outcome.compact_payload)
             return
         if outcome.fallback_required:
             self._append_session_event(
@@ -4402,7 +4429,107 @@ class LocalToolAgent:
         )
         summary_message = {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{result.summary}"}
         self._history = [summary_message, *result.recent_messages]
+        self._write_compaction_memories({"content": result.summary})
         return result.summary
+
+    def _write_compaction_memories(self, compact_payload: Mapping[str, Any]) -> None:
+        """把压缩结果中的稳定项目信息写入长期记忆；失败不影响压缩。"""
+
+        store = getattr(self, "_memory_store", None)
+        if store is None:
+            return
+
+        structured = compact_payload.get("structured")
+        project_sections: list[tuple[str, Any]] = []
+        task_sections: list[tuple[str, Any]] = []
+        if isinstance(structured, Mapping):
+            project_sections = [
+                ("项目目标", structured.get("objective")),
+                ("项目约束", structured.get("constraints")),
+                ("关键决策", structured.get("decisions")),
+                ("当前状态", structured.get("current_state")),
+                ("文件与产物", structured.get("artifacts")),
+            ]
+            task_sections = [
+                ("完成状态", structured.get("completed")),
+                ("后续事项", structured.get("open_issues")),
+            ]
+        else:
+            summary = str(compact_payload.get("content") or "").strip()
+            project_lines: list[str] = []
+            task_lines: list[str] = []
+            for line in summary.splitlines():
+                stripped = line.strip()
+                if stripped.startswith(
+                    (
+                        "- 既有摘要：",
+                        "- 原始目标：",
+                        "- 已压缩的用户后续要求：",
+                    )
+                ):
+                    project_lines.append(stripped.removeprefix("- ").strip())
+                elif stripped.startswith(
+                    ("- 已完成/已回复要点：", "- 压缩前状态：", "- 下一步：")
+                ):
+                    task_lines.append(stripped.removeprefix("- ").strip())
+            project_sections = [("项目目标与用户要求", project_lines)]
+            task_sections = [("完成状态与后续事项", task_lines)]
+
+        def render_memory(title: str, sections: Sequence[tuple[str, Any]]) -> str:
+            lines = [f"## {title}"]
+            for heading, raw_items in sections:
+                if not isinstance(raw_items, Sequence) or isinstance(raw_items, (str, bytes)):
+                    continue
+                items: list[str] = []
+                for raw_item in raw_items:
+                    if isinstance(raw_item, Mapping):
+                        text = str(raw_item.get("text") or "").strip()
+                    else:
+                        text = str(raw_item or "").strip()
+                    if text:
+                        items.append(text)
+                if not items:
+                    continue
+                lines.append(f"### {heading}")
+                lines.extend(f"- {item}" for item in items)
+            return "\n".join(lines) if len(lines) > 1 else ""
+
+        project_content = render_memory("压缩会话中的项目上下文", project_sections)
+        task_content = render_memory("压缩会话中的任务状态", task_sections)
+        requests: list[MemoryWriteRequest] = []
+        if project_content:
+            requests.append(
+                MemoryWriteRequest(
+                    content=project_content,
+                    related_directories=[
+                        "project-context/general",
+                        "task-history/general",
+                    ],
+                    storage_directory="project-context/general",
+                    source_event="context_compaction",
+                )
+            )
+        if task_content:
+            requests.append(
+                MemoryWriteRequest(
+                    content=task_content,
+                    related_directories=[
+                        "task-history/general",
+                        "project-context/general",
+                    ],
+                    storage_directory="task-history/general",
+                    source_event="context_compaction",
+                )
+            )
+        if not requests:
+            return
+        try:
+            store.write(requests)
+        except Exception:
+            LOGGER.warning(
+                "会话压缩结果写入长期记忆失败，已保留压缩结果。",
+                exc_info=True,
+            )
 
     @staticmethod
     def _confirm_in_terminal(tool_name: str, arguments: dict[str, Any]) -> bool:

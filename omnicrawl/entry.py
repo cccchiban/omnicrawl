@@ -198,6 +198,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 approval_label=approval_mode_label(approval_mode),
                 workspace_label=project_context_status_label(project_context),
                 temp_label=agent_temp_status_label(temp_workspace_config),
+                version_check_enabled=True,
             ),
         )
         # 真实全屏入口返回 Textual 退出码；测试替身和旧扩展可能仍返回 None

@@ -58,6 +58,16 @@ class SubAgentApprovalPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(subagent_approval_risk_summary(write, {"path": "note.txt"}), "")
+        restricted_external = _tool("restricted.mutate_resource", confirmation=True)
+        custom_mcp_external = _tool("news_server.publish", confirmation=True)
+        self.assertEqual(
+            subagent_approval_risk_summary(restricted_external, {"action": "update"}),
+            "受限外部操作",
+        )
+        self.assertEqual(
+            subagent_approval_risk_summary(custom_mcp_external, {"action": "publish"}),
+            "受限外部操作",
+        )
         self.assertEqual(
             subagent_approval_risk_summary(shell, {"command": "python -m unittest"}),
             "",
