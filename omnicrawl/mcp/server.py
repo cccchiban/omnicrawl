@@ -6,6 +6,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..documentation import (
+    BUNDLED_DOC_URI_PREFIX,
+    BundledDocumentationError,
+    bundled_doc_names,
+    bundled_doc_uri,
+    read_bundled_doc,
+)
 from ..workspace.tools import (
     MAX_FILE_READ_CHARS,
     WorkspaceToolError,
@@ -183,6 +190,16 @@ class LocalMCPServer:
                         "mimeType": "text/markdown",
                     }
                 )
+
+        for name in bundled_doc_names():
+            resources.append(
+                {
+                    "uri": bundled_doc_uri(name),
+                    "name": f"omnicrawl/docs/{name}",
+                    "description": "随 OmniCrawl 安装包提供的只读技术文档。",
+                    "mimeType": "text/markdown",
+                }
+            )
         return {"resources": resources}
 
     def _read_resource(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -196,9 +213,14 @@ class LocalMCPServer:
             text = self._read_project_text("AGENTS.md")
         elif uri.startswith("project://"):
             text = self._read_project_text(uri[len("project://") :])
+        elif uri.startswith(BUNDLED_DOC_URI_PREFIX):
+            try:
+                text = read_bundled_doc(uri)
+            except BundledDocumentationError as exc:
+                raise LocalMCPServerError(str(exc)) from exc
         else:
             raise LocalMCPServerError(f"不支持的 Resource URI：{uri}")
-        return {"contents": [{"uri": uri, "mimeType": "text/plain", "text": text}]}
+        return {"contents": [{"uri": uri, "mimeType": "text/markdown", "text": text}]}
 
     def _list_prompts(self) -> dict[str, Any]:
         return {"prompts": list(self._prompts.values())}

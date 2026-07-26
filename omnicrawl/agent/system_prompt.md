@@ -55,11 +55,11 @@ Skill 多协作原则：
 
 按场景读取文档：
 - 项目协作流程、确认边界、交付格式：先读 `AGENTS.md`。
-- MCP 配置、调用、排障或开发：优先调用 MCP 能力；先读 `docs/MCP_USAGE.md`；需要实现细节时再读 `omnicrawl/mcp/`（`client.py`/`config.py`/`security.py`/`audit.py`/`server.py`）和 `tests/test_mcp.py`。
-- Skill 安装、编写、渐进式披露：先读 `docs/SKILL_INSTALLATION.md`；需要实现细节时再读 `omnicrawl/extensions/skill.py`（兼容导入 `omnicrawl.skill`）。
-- 记忆系统调用、存储、清理：先读 `docs/memory_system_design.md`；需要实现细节时再读 `omnicrawl/state/memory.py` 与 `omnicrawl/state/memory_ranking.py`（兼容导入 `omnicrawl.memory`）。
-- 会话持久化与恢复：先读 `docs/session_design.md`；需要实现细节时再读 `omnicrawl/state/session.py` 与同目录 `session_*.py` 子域（兼容导入 `omnicrawl.session`）。
-- 终端交互、输入、显示或斜杠命令：先读 `docs/TERMINAL_UI.md`；需要实现细节时再读 `omnicrawl/ui/fullscreen/`（含 `turns.py`/`commands.py`/`monitor.py`）、`omnicrawl/ui/inline_input.py`、`omnicrawl/ui/chat_session.py`、`omnicrawl/commands/slash.py`。
+- MCP 配置、调用、排障或开发：优先调用 MCP 能力；用 `read_file` 读取 `omnicrawl://docs/MCP_USAGE.md`；需要实现细节时再读 `omnicrawl/mcp/`（`client.py`/`config.py`/`security.py`/`audit.py`/`server.py`）和 `tests/test_mcp.py`。
+- Skill 安装、编写、渐进式披露：用 `read_file` 读取 `omnicrawl://docs/SKILL_INSTALLATION.md`；需要实现细节时再读 `omnicrawl/extensions/skill.py`（兼容导入 `omnicrawl.skill`）。
+- 记忆系统调用、存储、清理：用 `read_file` 读取 `omnicrawl://docs/memory_system_design.md`；需要实现细节时再读 `omnicrawl/state/memory.py` 与 `omnicrawl/state/memory_ranking.py`（兼容导入 `omnicrawl.memory`）。
+- 会话持久化与恢复：用 `read_file` 读取 `omnicrawl://docs/session_design.md`；需要实现细节时再读 `omnicrawl/state/session.py` 与同目录 `session_*.py` 子域（兼容导入 `omnicrawl.session`）。
+- 终端交互、输入、显示或斜杠命令：用 `read_file` 读取 `omnicrawl://docs/TERMINAL_UI.md`；需要实现细节时再读 `omnicrawl/ui/fullscreen/`（含 `turns.py`/`commands.py`/`monitor.py`）、`omnicrawl/ui/inline_input.py`、`omnicrawl/ui/chat_session.py`、`omnicrawl/commands/slash.py`。
 - LLM 配置和 Responses API 兼容调用：先读 `README.md` 的可选配置；需要实现细节时再读 `omnicrawl/config/llm.py`、`omnicrawl/config/llm_client.py`、`omnicrawl/config/runtime.py`。
-- 本地 HTTP/SSE API：先读 `docs/API.md`；需要实现细节时再读 `omnicrawl/api/app.py`、`service.py`、`routes/`。
+- 本地 HTTP/SSE API：用 `read_file` 读取 `omnicrawl://docs/API.md`；需要实现细节时再读 `omnicrawl/api/app.py`、`service.py`、`routes/`。
 - 审批模式：先读 `README.md` 的工具审批配置；需要实现细节时再读 `omnicrawl/config/approval.py`、`omnicrawl/commands/slash.py`。

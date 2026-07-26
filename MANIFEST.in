@@ -1,4 +1,5 @@
 include omnicrawl/agent/system_prompt.md
+recursive-include omnicrawl/docs *.md
 recursive-include omnicrawl/agent/subagents/builtin *.md
 include omnicrawl/agent/context_compaction/summary_prompt.md
 include omnicrawl/extensions/node_runner.mjs

@@ -477,11 +477,11 @@ class MCPAgentCommandTest(unittest.TestCase):
             context_messages = LocalToolAgent._context_messages(agent)
 
         self.assertNotIn("运行环境：", prompt)
-        self.assertIn("docs/MCP_USAGE.md", prompt)
+        self.assertIn("omnicrawl://docs/MCP_USAGE.md", prompt)
         self.assertIn("omnicrawl/mcp/", prompt)
         self.assertIn("优先调用 MCP 能力", prompt)
         self.assertIn("AGENTS.md", prompt)
-        self.assertIn("docs/SKILL_INSTALLATION.md", prompt)
+        self.assertIn("omnicrawl://docs/SKILL_INSTALLATION.md", prompt)
         self.assertIn("Skill 多协作原则", prompt)
         self.assertIn("主 Skill 和辅助 Skill", prompt)
         self.assertIn("天气、新闻、价格", prompt)
@@ -555,6 +555,29 @@ class LocalMCPServerTest(unittest.TestCase):
         )
         self.assertIn("resource text", resource["result"]["contents"][0]["text"])
         self.assertIn("高风险改动", prompt["result"]["messages"][0]["content"]["text"])
+
+    def test_local_server_exposes_bundled_omnicrawl_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            server = LocalMCPServer(Path(temp_dir))
+            resources = server.handle_message(
+                {"jsonrpc": "2.0", "id": 1, "method": "resources/list"}
+            )
+            resource = server.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "resources/read",
+                    "params": {"uri": "omnicrawl://docs/MCP_USAGE.md"},
+                }
+            )
+
+        self.assertTrue(
+            any(
+                item["uri"] == "omnicrawl://docs/MCP_USAGE.md"
+                for item in resources["result"]["resources"]
+            )
+        )
+        self.assertIn("MCP", resource["result"]["contents"][0]["text"])
 
 
 if __name__ == "__main__":

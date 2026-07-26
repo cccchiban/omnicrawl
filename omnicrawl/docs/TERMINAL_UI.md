@@ -13,7 +13,7 @@ OmniCrawl 使用基于 Textual 的**全屏终端工作台**。框架统一管理
 ## 视觉与交互约定
 
 ```text
-PRJ project  ·  MDL deepseek-v4-flash  ·  THK MAX  ·  APR MAN                    排队 0  v0.1.2
+PRJ project  ·  MDL deepseek-v4-flash  ·  THK MAX  ·  APR MAN                    排队 0  v0.1.3
 IN 18.6K  OUT 2.4K  CA 7.1K  CTX 18.6K/128K
 $ 用户问题
 思考过程（点击折叠）
@@ -71,7 +71,7 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 - `tests/test_fullscreen_tui.py`、`tests/test_fullscreen_turns.py`、`tests/test_fullscreen_commands.py`、`tests/test_fullscreen_monitor.py`：全屏工作台与状态边界回归。
 - `tests/test_terminal_ui.py`：终端样式、窄屏、Unicode、确认、工具、spinner 和回归测试。
 - `tests/test_inline_input.py`：输入编辑、删除键和历史记录测试。
-- `docs/TERMINAL_UI.md`：本文档。
+- `omnicrawl/docs/TERMINAL_UI.md`：本文档。
 
 ## 兼容范围与限制
 

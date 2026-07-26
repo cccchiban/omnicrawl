@@ -9,6 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from ..documentation import (
+    BUNDLED_DOC_URI_PREFIX,
+    BundledDocumentationError,
+    resolve_bundled_doc_uri,
+)
+
 
 MAX_FILE_READ_CHARS = 200_000
 MAX_SEARCH_RESULTS = 200
@@ -97,7 +103,14 @@ class WorkspaceTools:
         return "\n".join(entries) or "目录为空。"
 
     def read_file(self, arguments: dict[str, Any]) -> str:
-        path = self.safe_path(str(arguments.get("path") or ""))
+        raw_path = str(arguments.get("path") or "").strip()
+        if raw_path.startswith(BUNDLED_DOC_URI_PREFIX):
+            try:
+                path = resolve_bundled_doc_uri(raw_path)
+            except BundledDocumentationError as exc:
+                raise WorkspaceToolError(str(exc)) from exc
+        else:
+            path = self.safe_path(raw_path)
         function_name = _read_optional_text(arguments, "function_name")
         text_snippet = _read_optional_text(arguments, "text")
         if function_name and text_snippet:

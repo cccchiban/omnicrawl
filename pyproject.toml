@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnicrawl-agent"
-version = "0.1.2"
+version = "0.1.3"
 description = "Local OmniCrawl agent with TUI, tools, MCP and NPM Hook plugins"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -39,6 +39,7 @@ exclude = ["tests*"]
 [tool.setuptools.package-data]
 omnicrawl = [
     "agent/system_prompt.md",
+    "docs/*.md",
     "agent/subagents/builtin/*.md",
     "agent/context_compaction/summary_prompt.md",
     "extensions/node_runner.mjs",

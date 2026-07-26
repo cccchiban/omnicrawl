@@ -270,8 +270,9 @@ def build_agent_tools(
             ToolDefinition(
                 name="read_file",
                 description=(
-                    "读取 UTF-8 文本文件。可按 start_line/max_lines 读取行范围，"
-                    "按 function_name 定位函数或方法，或按 text 定位首次文字片段及上下文。"
+                    "读取工作区 UTF-8 文本文件或 omnicrawl://docs/<文件名> 内置文档。"
+                    "可按 start_line/max_lines 读取行范围，按 function_name 定位函数或方法，"
+                    "或按 text 定位首次文字片段及上下文。"
                 ),
                 argument_schema=(
                     '{"path":"main.py","start_line":1,"max_lines":200,'

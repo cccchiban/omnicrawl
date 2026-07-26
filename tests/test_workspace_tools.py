@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from omnicrawl.documentation import BUNDLED_DOC_URI_PREFIX
 from omnicrawl.workspace.monitor import BackgroundMonitorManager
 from omnicrawl.workspace.tools import (
     WorkspaceCommandInvocation,
@@ -125,6 +126,21 @@ class WorkspaceReadFileTest(unittest.TestCase):
             with self.assertRaisesRegex(WorkspaceToolError, "不能同时指定"):
                 WorkspaceTools(workspace).read_file(
                     {"path": "sample.py", "function_name": "demo", "text": "demo"}
+                )
+
+    def test_read_file_reads_bundled_omnicrawl_document(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = WorkspaceTools(Path(temp_dir)).read_file(
+                {"path": f"{BUNDLED_DOC_URI_PREFIX}MCP_USAGE.md", "max_lines": 5}
+            )
+
+        self.assertIn("MCP", output)
+
+    def test_read_file_rejects_bundled_document_path_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(WorkspaceToolError, "内置文档 URI"):
+                WorkspaceTools(Path(temp_dir)).read_file(
+                    {"path": f"{BUNDLED_DOC_URI_PREFIX}../agent/system_prompt.md"}
                 )
 
 

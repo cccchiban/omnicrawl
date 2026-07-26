@@ -169,12 +169,12 @@ MCP Tool 注入 Agent 后使用 `server.tool` 名称。当前内置 `local_proje
 Resource 用于只读上下文，不产生副作用。常见 URI：
 
 - `project://README.md`
-- `project://docs/TERMINAL_UI.md`
-- `project://docs/MCP_DESIGN_TECHNICAL.md`
+- `omnicrawl://docs/TERMINAL_UI.md`
+- `omnicrawl://docs/MCP_USAGE.md`
 - `project://agents-instructions`
 - `server://local_project/health`
 
-在 Agent 工具列表中，Resource 会转换为 `mcp_read_resource__{logical_uri}` 工具。只在需要上下文正文时读取，不要把所有 Resource 一次性读完。
+在 Agent 工具列表中，Resource 会转换为 `mcp_read_resource__{logical_uri}` 工具。`omnicrawl://docs/` 下的文档随 PyPI 安装包提供；只在需要上下文正文时读取，不要把所有 Resource 一次性读完。
 
 ### 4.3 Prompt 获取
 
