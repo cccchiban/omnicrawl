@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 
+from omnicrawl.ui.fullscreen.hud import search_index_status_text
+from omnicrawl.workspace.search_index import SearchIndexStatus
 from omnicrawl.ui.fullscreen.tool_diff import (
     describe_file_change,
     gutter_diff_text,
@@ -129,6 +131,55 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertNotIn("文件: omnicrawl/ui", title)
         self.assertIn("目标: read_file", title)
         self.assertIn("✓ 成功  136ms", title)
+
+    def test_find_files_title_includes_search_path_and_target(self) -> None:
+        title = plain_tool_title(
+            tool_name="find_files",
+            arguments={"path": "omnicrawl", "pattern": "agent"},
+            status="成功",
+            duration_seconds=0.02,
+            result_text="omnicrawl/agent/",
+        )
+        self.assertIn("F  omnicrawl  |  目标: agent", title)
+
+    def test_loading_index_status_uses_four_frame_color_wave(self) -> None:
+        status = SearchIndexStatus(file_state="loading", content_state="loading")
+        label = "正在加载项目搜索索引"
+        expected_patterns = (
+            ("dim", "dim", "default", "default"),
+            ("default", "dim", "dim", "default"),
+            ("default", "default", "dim", "dim"),
+            ("dim", "default", "default", "dim"),
+        )
+
+        for frame, pattern in enumerate(expected_patterns):
+            rendered = search_index_status_text(status, frame)
+            self.assertEqual(rendered.plain, label)
+            for index in range(8):
+                style = next(
+                    (
+                        str(span.style)
+                        for span in rendered.spans
+                        if span.start <= index < span.end
+                    ),
+                    "default",
+                )
+                self.assertEqual(style, pattern[index % 4], (frame, index))
+
+    def test_index_progress_text_is_visible_only_while_loading_or_building(self) -> None:
+        building = search_index_status_text(
+            SearchIndexStatus(
+                file_state="ready",
+                content_state="building",
+                content_processed=25,
+                content_total=100,
+            )
+        )
+        ready = search_index_status_text(
+            SearchIndexStatus(file_state="ready", content_state="ready")
+        )
+        self.assertEqual(building.plain, "正在建立项目内容索引 25%")
+        self.assertEqual(ready.plain, "")
 
     def test_read_file_title_does_not_claim_lines_before_result(self) -> None:
         title = plain_tool_title(

@@ -300,14 +300,34 @@ class AgentSessionFacade:
             raise self._error_type(str(exc)) from exc
 
     def undo_last_turn(self) -> SessionState:
-        """持久化回退最近轮次，并据此重建运行时模型历史。"""
+        """原子恢复最近轮次副作用，成功后再提交会话逻辑回退。"""
 
         state = self._require_session_state()
         store = self.require_session_store()
         try:
-            restored = store.undo_last_turn(state.session_id)
+            plan = store.prepare_undo_last_turn(state.session_id)
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
+
+        restore_side_effects = getattr(self._owner, "_restore_turn_side_effects", None)
+        rollback_side_effects = None
+        if callable(restore_side_effects):
+            rollback_side_effects = restore_side_effects(plan)
+        try:
+            restored = store.commit_undo_plan(
+                plan,
+                side_effects_reverted=rollback_side_effects is not None,
+            )
+        except SessionStoreError as exc:
+            if rollback_side_effects is not None:
+                try:
+                    rollback_side_effects()
+                except Exception as rollback_exc:
+                    raise self._error_type(
+                        f"会话回退提交失败，且副作用反向恢复失败：{rollback_exc}"
+                    ) from exc
+            raise self._error_type(str(exc)) from exc
+
         self._owner._session_state = restored
         self._owner._history = restore_history_window(
             restored.messages,
@@ -315,6 +335,9 @@ class AgentSessionFacade:
         )
         self._owner._pending_user_text = None
         self._owner._active_skills = []
+        refresh_workspace = getattr(self._owner, "_refresh_workspace_after_undo", None)
+        if rollback_side_effects is not None and callable(refresh_workspace):
+            refresh_workspace()
         return restored
 
     def rename_current_session(self, title: str) -> SessionState:
@@ -358,6 +381,9 @@ class AgentSessionFacade:
             raise self._error_type(str(exc)) from exc
         self._clear_runtime_context()
         self._owner._session_state = self.start_session()
+        bind_memory = getattr(self._owner, "_bind_current_session_memory_store", None)
+        if callable(bind_memory):
+            bind_memory()
         return archived_state
 
     def delete_session(self, session_id: str) -> None:
@@ -369,6 +395,9 @@ class AgentSessionFacade:
         store = self.require_session_store()
         try:
             store.delete_session(session_id)
+            delete_memory = getattr(self._owner, "_delete_session_memory", None)
+            if callable(delete_memory):
+                delete_memory(session_id)
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
 
@@ -445,6 +474,9 @@ class AgentSessionFacade:
         )
         self._owner._pending_user_text = None
         self._owner._active_skills = []
+        bind_memory = getattr(self._owner, "_bind_current_session_memory_store", None)
+        if callable(bind_memory):
+            bind_memory()
         # 运行时 /session resume 也要恢复跨进程 SubAgent 控制面快照。
         importer = getattr(self._owner, "import_recovered_subagent_tasks", None)
         if callable(importer):

@@ -26,6 +26,7 @@ models.yaml
 .pi-subagents/
 node_modules/
 memory/
+.oclmemory/
 logs/
 nul
 

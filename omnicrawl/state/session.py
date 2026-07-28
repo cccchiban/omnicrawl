@@ -41,6 +41,7 @@ from .session_models import (
     SessionIndexEntry,
     SessionState,
     SessionStoreError,
+    SessionUndoPlan,
     clean_title as _clean_title,
     ensure_timezone as _ensure_timezone,
     format_datetime as _format_datetime,
@@ -243,85 +244,121 @@ class SessionStore:
             self._update_entry_after_event(entry, event)
             return event
 
-    def undo_last_turn(self, session_id: str) -> SessionState:
-        """逻辑回退最近一轮对话，并返回回退后的可恢复状态。
-
-        转录保持仅追加：被回退轮次的事件仍作为本地审计记录存在，新的
-        `turn_undone` 事件声明哪些事件不再属于有效转录。工具或命令已经造成的
-        外部副作用不会由会话存储自动撤销。
-        """
+    def prepare_undo_last_turn(self, session_id: str) -> SessionUndoPlan:
+        """返回最近轮次的稳定事件计划，不修改转录。"""
 
         with self._exclusive_write():
             self.ensure()
             normalized_id = _normalize_session_id(session_id)
             entry = self._entry_by_id(normalized_id)
             active_events = _active_session_events(self._read_events(entry))
+            return self._build_undo_plan(normalized_id, active_events)
 
-            last_user_index = next(
-                (
-                    index
-                    for index in range(len(active_events) - 1, -1, -1)
-                    if active_events[index].type == "user_message"
-                ),
-                -1,
-            )
-            if last_user_index < 0:
-                raise SessionStoreError("当前会话没有可回退的对话轮次。")
+    def commit_undo_plan(
+        self,
+        plan: SessionUndoPlan,
+        *,
+        side_effects_reverted: bool = False,
+    ) -> SessionState:
+        """确认计划仍是最后一轮后追加 ``turn_undone`` 事件。"""
 
-            assistant_index = next(
-                (
-                    index
-                    for index in range(last_user_index + 1, len(active_events))
-                    if active_events[index].type == "assistant_message"
-                ),
-                -1,
-            )
-            if assistant_index < 0:
-                # 取消或异常中断只持久化 user_message。优先移除这个未完成轮次，
-                # 避免它阻塞继续回退，也避免恢复时继续进入模型上下文。
-                terminal_index = next(
-                    (
-                        index
-                        for index in range(len(active_events) - 1, last_user_index, -1)
-                        if active_events[index].type
-                        in {"turn_cancelled", "session_interrupted"}
-                    ),
-                    len(active_events) - 1,
-                )
-                turn_events = active_events[last_user_index : terminal_index + 1]
-                undo_kind = "incomplete"
-            else:
-                # 回退整轮业务事件；紧随回复生成的压缩摘要也依赖该轮，必须一并
-                # 失效，否则恢复时摘要仍可能带回已经回退的内容。
-                turn_events = active_events[last_user_index : assistant_index + 1]
-                turn_events.extend(
-                    event
-                    for event in active_events[assistant_index + 1 :]
-                    if event.type == "compact_summary"
-                )
-                undo_kind = "complete"
-
-            message_events = [
-                event for event in turn_events if event.type in MESSAGE_EVENT_TYPES
-            ]
-            expected_message_count = 1 if undo_kind == "incomplete" else 2
-            if len(message_events) != expected_message_count:
-                raise SessionStoreError("当前会话最后一轮结构异常，无法安全回退。")
+        with self._exclusive_write():
+            self.ensure()
+            normalized_id = _normalize_session_id(plan.session_id)
+            entry = self._entry_by_id(normalized_id)
+            active_events = _active_session_events(self._read_events(entry))
+            current = self._build_undo_plan(normalized_id, active_events)
+            if current.event_ids != plan.event_ids:
+                raise SessionStoreError("最近一轮在回退期间发生变化，已取消回退。")
 
             self.append_event(
                 normalized_id,
                 TURN_UNDONE_EVENT_TYPE,
                 {
-                    "event_ids": [event.event_id for event in turn_events],
-                    "user_event_id": message_events[0].event_id,
-                    "assistant_event_id": (
-                        message_events[1].event_id if len(message_events) > 1 else None
-                    ),
-                    "message_count": len(message_events),
-                    "kind": undo_kind,
+                    "event_ids": list(plan.event_ids),
+                    "user_event_id": plan.user_event_id,
+                    "assistant_event_id": plan.assistant_event_id,
+                    "message_count": 1 if plan.kind == "incomplete" else 2,
+                    "kind": plan.kind,
+                    "side_effects_reverted": side_effects_reverted,
                 },
             )
             return self.load_session(normalized_id)
+
+    def undo_last_turn(self, session_id: str) -> SessionState:
+        """兼容入口：仅逻辑回退最近一轮对话。"""
+
+        plan = self.prepare_undo_last_turn(session_id)
+        return self.commit_undo_plan(plan)
+
+    @staticmethod
+    def _build_undo_plan(
+        session_id: str,
+        active_events: list[SessionEvent],
+    ) -> SessionUndoPlan:
+        last_user_index = next(
+            (
+                index
+                for index in range(len(active_events) - 1, -1, -1)
+                if active_events[index].type == "user_message"
+            ),
+            -1,
+        )
+        if last_user_index < 0:
+            raise SessionStoreError("当前会话没有可回退的对话轮次。")
+
+        assistant_index = next(
+            (
+                index
+                for index in range(last_user_index + 1, len(active_events))
+                if active_events[index].type == "assistant_message"
+            ),
+            -1,
+        )
+        if assistant_index < 0:
+            terminal_index = next(
+                (
+                    index
+                    for index in range(len(active_events) - 1, last_user_index, -1)
+                    if active_events[index].type
+                    in {"turn_cancelled", "session_interrupted"}
+                ),
+                len(active_events) - 1,
+            )
+            turn_events = active_events[last_user_index : terminal_index + 1]
+            undo_kind = "incomplete"
+        else:
+            turn_events = active_events[last_user_index : assistant_index + 1]
+            turn_events.extend(
+                event
+                for event in active_events[assistant_index + 1 :]
+                if event.type
+                in {
+                    "compact_summary",
+                    "turn_snapshot",
+                    "turn_cancelled",
+                    "session_interrupted",
+                }
+            )
+            undo_kind = "complete"
+
+        message_events = [
+            event for event in turn_events if event.type in MESSAGE_EVENT_TYPES
+        ]
+        expected_message_count = 1 if undo_kind == "incomplete" else 2
+        if len(message_events) != expected_message_count:
+            raise SessionStoreError("当前会话最后一轮结构异常，无法安全回退。")
+
+        return SessionUndoPlan(
+            session_id=session_id,
+            event_ids=tuple(event.event_id for event in turn_events),
+            events=tuple(turn_events),
+            user_event_id=message_events[0].event_id,
+            assistant_event_id=(
+                message_events[1].event_id if len(message_events) > 1 else None
+            ),
+            kind=undo_kind,
+        )
 
     def prepare_subagent_result(
         self,

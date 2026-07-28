@@ -1,6 +1,7 @@
 """Agent 子系统内部模块。
 
-本文件由原合并入口按既有模块边界恢复，职责说明见模块内公开对象。
+记忆工具按作用域绑定到不同的 MemoryStore。实际 Agent 不再暴露一个可跨作用域
+查询的通用入口；保留旧函数名仅用于兼容旧调用方和迁移期测试。
 """
 
 from __future__ import annotations
@@ -23,9 +24,7 @@ from ..memory import (
 )
 
 
-def memory_search_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
-    """执行 memory_search 的参数校验和结果格式化，保持原工具返回语义。"""
-
+def _memory_search_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
     query = str(arguments.get("query") or "").strip()
     reason = str(arguments.get("reason") or "").strip()
     if not query:
@@ -48,9 +47,7 @@ def memory_search_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolR
     return json_tool_result([search_result_to_dict(result) for result in results])
 
 
-def memory_read_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
-    """执行 memory_read 的 id 校验和结果格式化。"""
-
+def _memory_read_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
     memory_ids = read_required_string_list(arguments, "memory_ids")
     if not memory_ids:
         return ToolResult(ok=False, output="memory_ids 不能为空。")
@@ -63,9 +60,7 @@ def memory_read_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolRes
     return json_tool_result([record_to_dict(record) for record in records])
 
 
-def memory_expand_related_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
-    """执行 memory_expand_related 的参数裁剪和结果格式化。"""
-
+def _memory_expand_related_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
     memory_ids = read_required_string_list(arguments, "memory_ids")
     if not memory_ids:
         return ToolResult(ok=False, output="memory_ids 不能为空。")
@@ -82,9 +77,7 @@ def memory_expand_related_result(store: MemoryStore, arguments: dict[str, Any]) 
     return json_tool_result([search_result_to_dict(result) for result in results])
 
 
-def memory_write_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
-    """把模型提交的 JSON 记忆写入请求转换成 MemoryStore 可处理的结构。"""
-
+def _memory_write_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
     raw_memories = arguments.get("memories")
     if not isinstance(raw_memories, list) or not raw_memories:
         return ToolResult(ok=False, output="memories 必须是非空列表。")
@@ -125,3 +118,68 @@ def memory_write_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolRe
         return ToolResult(ok=False, output=str(exc))
 
     return json_tool_result([record_to_dict(record) for record in records])
+
+
+# 兼容旧工具入口；新 Agent 不把这些函数直接注册给模型。
+def memory_search_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_search_result(store, arguments)
+
+
+def memory_read_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_read_result(store, arguments)
+
+
+def memory_expand_related_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_expand_related_result(store, arguments)
+
+
+def memory_write_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_write_result(store, arguments)
+
+
+def project_memory_search_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_search_result(store, arguments)
+
+
+def project_memory_read_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_read_result(store, arguments)
+
+
+def project_memory_expand_related_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_expand_related_result(store, arguments)
+
+
+def project_memory_write_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_write_result(store, arguments)
+
+
+def session_memory_search_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_search_result(store, arguments)
+
+
+def session_memory_read_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_read_result(store, arguments)
+
+
+def session_memory_expand_related_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_expand_related_result(store, arguments)
+
+
+def session_memory_write_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_write_result(store, arguments)
+
+
+def user_memory_search_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_search_result(store, arguments)
+
+
+def user_memory_read_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_read_result(store, arguments)
+
+
+def user_memory_expand_related_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_expand_related_result(store, arguments)
+
+
+def user_memory_write_result(store: MemoryStore, arguments: dict[str, Any]) -> ToolResult:
+    return _memory_write_result(store, arguments)

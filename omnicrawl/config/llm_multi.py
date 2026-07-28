@@ -154,6 +154,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
 
     api_key_env = str(profile_data.get("api_key_env") or "").strip()
     api_key_plain = str(profile_data.get("api_key") or "").strip()
+    user_agent = str(profile_data.get("user_agent") or "").strip()
     base_url = str(profile_data.get("base_url") or "").strip()
     profile_obj = ProviderProfile(
         id=profile_id,
@@ -162,6 +163,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
         base_url=base_url,
         api_key=api_key_plain,
         api_key_env=api_key_env,
+        user_agent=user_agent,
         default_protocol=protocol,
     )
     api_key = resolve_api_key(profile_obj)
@@ -225,6 +227,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
         catalog_key=catalog_key,
         model_source=source if source in {"custom", "detected"} else "custom",
         api_key_env=api_key_env,
+        user_agent=user_agent,
         request_timeout_seconds=timeout,
         request_retry_count=retries,
         provider_options=provider_options,
@@ -261,6 +264,7 @@ def parse_profiles(llm_section: Mapping[str, Any]) -> dict[str, ProviderProfile]
             base_url=str(item.get("base_url") or "").strip(),
             api_key=str(item.get("api_key") or "").strip(),
             api_key_env=str(item.get("api_key_env") or "").strip(),
+            user_agent=str(item.get("user_agent") or "").strip(),
             default_protocol=str(item.get("default_protocol") or "").strip(),
             discovery_enabled=bool(discovery.get("enabled", True)),
             default_context_window_tokens=(
@@ -299,6 +303,7 @@ def llm_config_to_profile_and_descriptor(config: LLMConfig) -> tuple[Any, Any]:
         base_url=getattr(config, "base_url", ""),
         api_key=getattr(config, "api_key", ""),
         api_key_env=getattr(config, "api_key_env", ""),
+        user_agent=getattr(config, "user_agent", ""),
         default_protocol=protocol,
         request_timeout_seconds=float(getattr(config, "request_timeout_seconds", 180)),
         request_retry_count=int(getattr(config, "request_retry_count", 5)),
@@ -390,6 +395,7 @@ def apply_model_selection(config: LLMConfig, selection: str) -> LLMConfig:
         catalog_key="",
         model_source=config.model_source if config.model_source != "legacy" else "legacy",
         api_key_env=config.api_key_env,
+        user_agent=config.user_agent,
         request_timeout_seconds=config.request_timeout_seconds,
         request_retry_count=config.request_retry_count,
         provider_options=dict(config.provider_options),
@@ -433,6 +439,7 @@ def _config_from_custom_record(config: LLMConfig, record: Any) -> LLMConfig:
         catalog_key=record.key,
         model_source="custom",
         api_key_env=profile.api_key_env,
+        user_agent=profile.user_agent,
         request_timeout_seconds=int(profile.request_timeout_seconds or config.request_timeout_seconds),
         request_retry_count=int(profile.request_retry_count or config.request_retry_count),
         provider_options=dict(record.provider_options or profile.provider_options or {}),
@@ -466,6 +473,7 @@ def _config_from_profile_model(
             catalog_key="",
             model_source="detected",
             api_key_env=config.api_key_env,
+            user_agent=config.user_agent,
             request_timeout_seconds=config.request_timeout_seconds,
             request_retry_count=config.request_retry_count,
             provider_options=dict(config.provider_options),
@@ -496,6 +504,7 @@ def _config_from_profile_model(
         catalog_key="",
         model_source="detected",
         api_key_env=profile.api_key_env,
+        user_agent=profile.user_agent,
         request_timeout_seconds=int(profile.request_timeout_seconds or config.request_timeout_seconds),
         request_retry_count=int(profile.request_retry_count or config.request_retry_count),
         provider_options=dict(profile.provider_options or {}),

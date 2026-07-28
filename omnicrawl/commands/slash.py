@@ -33,6 +33,7 @@ from ..config.runtime import RuntimeConfigError
 
 _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "list_files": "列出目录内容",
+    "find_files": "按名称或路径查找文件",
     "read_file": "读取文件内容",
     "search_text": "在文件中搜索文本",
     "replace_text": "替换文件中的文本",
@@ -49,6 +50,18 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "memory_read": "读取记忆内容",
     "memory_expand_related": "展开相关记忆",
     "memory_write": "写入长期记忆",
+    "project_memory_search": "搜索项目级记忆",
+    "project_memory_read": "读取项目级记忆",
+    "project_memory_expand_related": "展开项目级相关记忆",
+    "project_memory_write": "写入项目级记忆",
+    "session_memory_search": "搜索当前会话记忆",
+    "session_memory_read": "读取当前会话记忆",
+    "session_memory_expand_related": "展开当前会话相关记忆",
+    "session_memory_write": "写入当前会话记忆",
+    "user_memory_search": "搜索用户级记忆",
+    "user_memory_read": "读取用户级记忆",
+    "user_memory_expand_related": "展开用户级相关记忆",
+    "user_memory_write": "写入用户级记忆",
     "subagent": "分发只读子任务",
 }
 
@@ -172,7 +185,7 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
             detail += f"，模型图片最大边：{arguments['max_dimension']}"
         return _truncate_for_display(detail, 240)
 
-    if tool_name == "memory_write":
+    if tool_name == "memory_write" or tool_name.endswith("_memory_write"):
         memories = arguments.get("memories", [])
         if isinstance(memories, list) and memories:
             return f"写入 {len(memories)} 条记忆"
@@ -236,7 +249,7 @@ def format_skills_list(agent: LocalToolAgent) -> str:
 
     metas = sm.list_all()
     if not metas:
-        return "当前没有已加载的 Skill。在 .claude/skills/ 或 ~/.tui-agent/skills/ 下创建 SKILL.md 来添加。"
+        return "当前没有已加载的 Skill。在 .omnicrawl/skills/、~/.omnicrawl/skills/ 或 $OMNICRAWL_ENTERPRISE_DIR/ 下创建 SKILL.md 来添加。"
 
     lines = [f"已加载 {sm.count} 个 Skill："]
     for meta in metas:
@@ -487,8 +500,7 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
         except AgentError as exc:
             return f"会话回退失败：{exc}"
         return (
-            "已回退最近一轮对话，持久化转录与模型上下文已同步更新。\n"
-            "注意：该轮已经执行的文件修改、命令或其他外部副作用不会自动撤销。"
+            "已回退最近一轮（事务式）：会话转录、模型上下文、工作区文件与三类记忆已同步恢复。"
         )
     if normalized.startswith("/undo "):
         return "用法：/undo。"
@@ -948,7 +960,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/task": "查看或取消一个后台 SubAgent 任务。",
         "/resume": "恢复指定会话 ID。",
         "/history": "查看或筛选提示历史。",
-        "/undo": "回退最近一轮对话；不撤销已产生的外部副作用。",
+        "/undo": "原子回退最近一轮对话、工作区文件和三类记忆；冲突或不可逆操作时拒绝。",
         "/compact": "使用本地确定性规则压缩当前会话上下文。",
         "/compact --model": "使用结构化摘要模型压缩当前会话上下文。",
         "/rename": "重命名当前会话。",

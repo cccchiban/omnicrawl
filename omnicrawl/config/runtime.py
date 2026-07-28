@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -328,6 +329,40 @@ def _dump_yaml(data: Mapping[str, Any]) -> str:
     )
 
 
+# 与 session_locking 保持同量级：Windows 目标文件短暂占用时 os.replace 可能 WinError 5。
+# config 层不依赖 state，因此在此内联同等短重试，避免循环导入。
+_ATOMIC_REPLACE_MAX_ATTEMPTS = 8
+_ATOMIC_REPLACE_RETRY_SECONDS = 0.05
+
+
+def _is_transient_windows_access_denied(exc: BaseException) -> bool:
+    """判断是否为 Windows 上可重试的目标文件占用错误。"""
+
+    if sys.platform != "win32":
+        return False
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) == 5:
+        return True
+    if isinstance(exc, PermissionError):
+        return True
+    return getattr(exc, "errno", None) in {getattr(os, "EACCES", 13), 13}
+
+
+def _replace_with_retry(temp_path: Path, path: Path) -> None:
+    """原子替换；Windows 短暂 Access Denied 时短退避重试。"""
+
+    attempts = _ATOMIC_REPLACE_MAX_ATTEMPTS if sys.platform == "win32" else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            os.replace(temp_path, path)
+            return
+        except OSError as exc:
+            if attempt >= attempts or not _is_transient_windows_access_denied(exc):
+                raise
+            time.sleep(_ATOMIC_REPLACE_RETRY_SECONDS * attempt)
+
+
 def _atomic_write_text(path: Path, text: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -345,7 +380,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
                     os.fsync(handle.fileno())
                 except OSError:
                     pass
-            os.replace(tmp_path, path)
+            _replace_with_retry(tmp_path, path)
         finally:
             if tmp_path.exists():
                 try:

@@ -22,6 +22,7 @@ from ..workspace_tools import (
 
 TOOL_NAME_ALIASES = {
     "bashcommand": "bash",
+    "findfiles": "find_files",
     "listfiles": "list_files",
     "monitorcommand": "monitor",
     "powershellcommand": "powershell",
@@ -80,6 +81,51 @@ ARGUMENT_NAME_ALIASES = {
     "maxDimension": "max_dimension",
     "maxdimension": "max_dimension",
 }
+
+
+MEMORY_WRITE_ARGUMENT_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {
+            "memories": {
+                "type": "array",
+                "minItems": 1,
+                "description": "待写入或合并的记忆对象列表。",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "简洁、可独立理解且已经确认的记忆正文。",
+                        },
+                        "related_directories": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "与该记忆相关的分类目录，可省略或传空数组。",
+                        },
+                        "storage_directory": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "可选存储分类目录；省略时由后端自动分类。",
+                        },
+                        "source_event": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "可选来源标识，例如本轮对话或上下文压缩。",
+                        },
+                    },
+                    "required": ["content"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["memories"],
+        "additionalProperties": False,
+    },
+    ensure_ascii=False,
+)
+
 
 ToolRunner = Callable[[dict[str, Any]], ToolResult]
 MCPToolRunner = Callable[[MCPToolMeta, dict[str, Any]], ToolResult]
@@ -241,6 +287,7 @@ def build_agent_tools(
     mcp_call: MCPToolRunner,
     mcp_read_resource: MCPResourceRunner,
     mcp_get_prompt: MCPPromptRunner,
+    find_files: ToolRunner | None = None,
     evidence_recall: ToolRunner | None = None,
     subagent: ToolRunner | None = None,
     subagent_types: Sequence[str] = (),
@@ -249,6 +296,18 @@ def build_agent_tools(
     windows_input: ToolRunner | None = None,
     windows_clipboard: ToolRunner | None = None,
     windows_screenshot: ToolRunner | None = None,
+    project_memory_search: ToolRunner | None = None,
+    project_memory_read: ToolRunner | None = None,
+    project_memory_expand_related: ToolRunner | None = None,
+    project_memory_write: ToolRunner | None = None,
+    session_memory_search: ToolRunner | None = None,
+    session_memory_read: ToolRunner | None = None,
+    session_memory_expand_related: ToolRunner | None = None,
+    session_memory_write: ToolRunner | None = None,
+    user_memory_search: ToolRunner | None = None,
+    user_memory_read: ToolRunner | None = None,
+    user_memory_expand_related: ToolRunner | None = None,
+    user_memory_write: ToolRunner | None = None,
 ) -> dict[str, ToolDefinition]:
     """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。"""
 
@@ -267,6 +326,24 @@ def build_agent_tools(
                 requires_confirmation=True,
                 run=list_files,
             ),
+            *(
+                [
+                    ToolDefinition(
+                        name="find_files",
+                        description=(
+                            "仅按文件名、目录名或相对路径查找工作区条目，不读取文件内容。"
+                        ),
+                        argument_schema=(
+                            '{"pattern":"agent","path":".","kind":"all|file|directory",'
+                            '"case_sensitive":false,"max_results":50}'
+                        ),
+                        requires_confirmation=True,
+                        run=find_files,
+                    )
+                ]
+                if find_files is not None
+                else []
+            ),
             ToolDefinition(
                 name="read_file",
                 description=(
@@ -283,7 +360,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="search_text",
-                description="在工作区文本文件中搜索正则或普通文本。",
+                description="在工作区 UTF-8 文本文件中搜索普通关键词（精确子串，不支持正则）。",
                 argument_schema='{"pattern": "class Agent", "path": ".", "case_sensitive": false, "max_results": 50}',
                 requires_confirmation=True,
                 run=search_text,
@@ -631,46 +708,140 @@ def build_agent_tools(
             )
         )
     if memory_enabled:
-        tools.extend(
-            [
-                ToolDefinition(
-                    name="memory_search",
-                    description="按当前任务检索候选长期记忆摘要，不返回完整正文。",
-                    argument_schema=(
-                        '{"query":"用户偏好或项目主题","reason":"为什么当前需要查记忆",'
-                        '"candidate_directories":["project-context/general"],"max_results":5}'
-                    ),
-                    requires_confirmation=False,
-                    run=memory_search,
-                ),
-                ToolDefinition(
-                    name="memory_read",
-                    description="按记忆 id 读取完整长期记忆内容，并对实际读取的记忆加深回忆。",
-                    argument_schema='{"memory_ids":["20260603-164500"]}',
-                    requires_confirmation=False,
-                    run=memory_read,
-                ),
-                ToolDefinition(
-                    name="memory_expand_related",
-                    description="沿已读记忆的关联目录扩展候选摘要，默认只展开一层关系。",
-                    argument_schema='{"memory_ids":["20260603-164500"],"max_depth":1,"max_results":5}',
-                    requires_confirmation=False,
-                    run=memory_expand_related,
-                ),
-                ToolDefinition(
-                    name="memory_write",
-                    description="写入或合并具有长期价值的记忆，内容应短而准确。",
-                    argument_schema=(
-                        '{"memories":[{"content":"用户偏好中文交付摘要。",'
-                        '"related_directories":["user-preferences/communication-style"],'
-                        '"storage_directory":"user-preferences/communication-style",'
-                        '"source_event":"本轮对话"}]}'
-                    ),
-                    requires_confirmation=False,
-                    run=memory_write,
-                ),
-            ]
+        scoped_runners = (
+            project_memory_search,
+            project_memory_read,
+            project_memory_expand_related,
+            project_memory_write,
+            session_memory_search,
+            session_memory_read,
+            session_memory_expand_related,
+            session_memory_write,
+            user_memory_search,
+            user_memory_read,
+            user_memory_expand_related,
+            user_memory_write,
         )
+        if any(runner is not None for runner in scoped_runners):
+            if not all(runner is not None for runner in scoped_runners):
+                raise ValueError("三类记忆工具必须完整提供 search/read/expand/write 绑定。")
+            scope_definitions = (
+                (
+                    "project",
+                    "项目级",
+                    "当前项目的具体技术信息；存储与检索严格绑定当前工作区",
+                    project_memory_search,
+                    project_memory_read,
+                    project_memory_expand_related,
+                    project_memory_write,
+                ),
+                (
+                    "session",
+                    "会话级",
+                    "当前会话的目标、约束、决策、文件、完成状态和后续事项；禁止跨会话读取",
+                    session_memory_search,
+                    session_memory_read,
+                    session_memory_expand_related,
+                    session_memory_write,
+                ),
+                (
+                    "user",
+                    "用户级",
+                    "用户习惯、稳定偏好和用户纠错；跨项目、跨会话共享",
+                    user_memory_search,
+                    user_memory_read,
+                    user_memory_expand_related,
+                    user_memory_write,
+                ),
+            )
+            for (
+                prefix,
+                label,
+                purpose,
+                search_runner,
+                read_runner,
+                expand_runner,
+                write_runner,
+            ) in scope_definitions:
+                assert search_runner is not None
+                assert read_runner is not None
+                assert expand_runner is not None
+                assert write_runner is not None
+                tools.extend(
+                    [
+                        ToolDefinition(
+                            name=f"{prefix}_memory_search",
+                            description=f"搜索{label}记忆摘要。{purpose}。",
+                            argument_schema=(
+                                '{"query":"要检索的主题","reason":"为什么当前需要该作用域记忆",'
+                                '"candidate_directories":["project-context/general"],"max_results":5}'
+                            ),
+                            requires_confirmation=False,
+                            run=search_runner,
+                        ),
+                        ToolDefinition(
+                            name=f"{prefix}_memory_read",
+                            description=f"按 id 读取{label}记忆全文，并加深实际读取的记忆。",
+                            argument_schema='{"memory_ids":["20260603-164500"]}',
+                            requires_confirmation=False,
+                            run=read_runner,
+                        ),
+                        ToolDefinition(
+                            name=f"{prefix}_memory_expand_related",
+                            description=f"沿关联目录扩展{label}记忆摘要，默认只展开一层。",
+                            argument_schema=(
+                                '{"memory_ids":["20260603-164500"],'
+                                '"max_depth":1,"max_results":5}'
+                            ),
+                            requires_confirmation=False,
+                            run=expand_runner,
+                        ),
+                        ToolDefinition(
+                            name=f"{prefix}_memory_write",
+                            description=f"写入或合并{label}记忆。仅允许写入：{purpose}。",
+                            argument_schema=MEMORY_WRITE_ARGUMENT_SCHEMA,
+                            requires_confirmation=False,
+                            run=write_runner,
+                        ),
+                    ]
+                )
+        else:
+            # 兼容旧调用方；LocalToolAgent 已始终提供三类作用域绑定。
+            tools.extend(
+                [
+                    ToolDefinition(
+                        name="memory_search",
+                        description="按当前任务检索候选长期记忆摘要，不返回完整正文。",
+                        argument_schema=(
+                            '{"query":"用户偏好或项目主题","reason":"为什么当前需要查记忆",'
+                            '"candidate_directories":["project-context/general"],"max_results":5}'
+                        ),
+                        requires_confirmation=False,
+                        run=memory_search,
+                    ),
+                    ToolDefinition(
+                        name="memory_read",
+                        description="按记忆 id 读取完整长期记忆内容，并对实际读取的记忆加深回忆。",
+                        argument_schema='{"memory_ids":["20260603-164500"]}',
+                        requires_confirmation=False,
+                        run=memory_read,
+                    ),
+                    ToolDefinition(
+                        name="memory_expand_related",
+                        description="沿已读记忆的关联目录扩展候选摘要，默认只展开一层关系。",
+                        argument_schema='{"memory_ids":["20260603-164500"],"max_depth":1,"max_results":5}',
+                        requires_confirmation=False,
+                        run=memory_expand_related,
+                    ),
+                    ToolDefinition(
+                        name="memory_write",
+                        description="写入或合并具有长期价值的记忆，内容应短而准确。",
+                        argument_schema=MEMORY_WRITE_ARGUMENT_SCHEMA,
+                        requires_confirmation=False,
+                        run=memory_write,
+                    ),
+                ]
+            )
     return {tool.name: tool for tool in tools}
 
 

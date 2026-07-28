@@ -75,6 +75,8 @@ _FEATURES = (
     ("plugins", "插件功能", "plugins"),
     ("subagents", "子任务功能", "subagents"),
     ("context_compaction", "上下文压缩", "context_compaction"),
+    ("file_name_index", "文件名快速索引", "file_name_index"),
+    ("content_index", "内容关键词索引", "content_index"),
 )
 
 
@@ -257,6 +259,12 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if key in {"subagents", "context_compaction"}:
             config = getattr(self._agent, "config", None)
             return bool(getattr(getattr(config, key, None), "enabled", False))
+        if key == "file_name_index":
+            config = getattr(self._agent, "config", None)
+            return bool(getattr(config, "file_name_index_enabled", False))
+        if key == "content_index":
+            config = getattr(self._agent, "config", None)
+            return bool(getattr(config, "content_index_enabled", False))
         return False
 
     def _subagent_config_value(self, key: str) -> int | float:
@@ -328,6 +336,8 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
                     "plugins": "set_plugin_enabled",
                     "subagents": "set_subagents_enabled",
                     "context_compaction": "set_context_compaction_enabled",
+                    "file_name_index": "set_file_name_index_enabled",
+                    "content_index": "set_content_index_enabled",
                 }[key]
                 setter = getattr(self._agent, setter_name)
                 try:

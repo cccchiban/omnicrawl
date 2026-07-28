@@ -30,7 +30,7 @@ from ..protocol import (
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
 from ..usage import usage_from_gemini_payload
-from .openai_common import parse_tool_arguments, resolve_api_key
+from .openai_common import parse_tool_arguments, resolve_api_key, user_agent_headers
 
 
 _GEMINI_OPTION_ALLOWLIST = frozenset(
@@ -259,15 +259,20 @@ def _create_gemini_client(profile: ProviderProfile) -> Any:
         ) from exc
 
     kwargs: dict[str, Any] = {"api_key": api_key}
-    # http_options 可用于自定义 base_url；首版仅在 profile.base_url 非空时尝试。
+    http_options: dict[str, Any] = {}
     if profile.base_url.strip():
+        http_options["base_url"] = profile.base_url.strip()
+    headers = user_agent_headers(profile)
+    if headers:
+        http_options["headers"] = headers
+    if http_options:
         try:
             from google.genai import types as genai_types
 
-            kwargs["http_options"] = genai_types.HttpOptions(base_url=profile.base_url.strip())
+            kwargs["http_options"] = genai_types.HttpOptions(**http_options)
         except Exception:
-            # 旧版本 SDK 可能不支持；忽略自定义 base_url 并依赖默认官方地址。
-            pass
+            # 兼容旧版 SDK：保留结构化选项，让 SDK 自己决定支持的字段。
+            kwargs["http_options"] = http_options
     return genai.Client(**kwargs)
 
 

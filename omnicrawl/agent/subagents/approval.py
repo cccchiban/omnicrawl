@@ -143,7 +143,15 @@ def subagent_approval_risk_summary(
     if (
         mode == "delegated-read-only"
         and tool.requires_confirmation
-        and name not in {"write_file", "replace_text", "memory_write", "subagent"}
+        and name not in {
+            "write_file",
+            "replace_text",
+            "memory_write",
+            "project_memory_write",
+            "session_memory_write",
+            "user_memory_write",
+            "subagent",
+        }
     ):
         return "受限外部操作"
     return ""

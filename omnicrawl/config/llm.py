@@ -56,6 +56,7 @@ class LLMConfig:
     catalog_key: str = ""
     model_source: str = "legacy"  # legacy | custom | detected
     api_key_env: str = ""
+    user_agent: str = ""
     request_timeout_seconds: int = 180
     request_retry_count: int = 5
     provider_options: dict[str, Any] = field(default_factory=dict)
@@ -64,6 +65,9 @@ class LLMConfig:
         self.api_key = self.api_key.strip()
         self.base_url = self.base_url.strip()
         self.model = self.model.strip()
+        self.user_agent = self.user_agent.strip()
+        if "\r" in self.user_agent or "\n" in self.user_agent:
+            raise LLMError("配置项 llm.user_agent 不能包含换行。")
         self.thinking_type = (self.thinking_type.strip() or DEFAULT_THINKING_TYPE).lower()
         self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort)
         if isinstance(self.context_window_tokens, bool) or not isinstance(
@@ -191,6 +195,9 @@ def load_llm_config() -> LLMConfig:
         ),
         reasoning_effort=_read_optional_config_text(
             llm_section, "reasoning_effort", "REASONING_EFFORT", DEFAULT_REASONING_EFFORT
+        ),
+        user_agent=_read_optional_config_text(
+            llm_section, "user_agent", "OPENAI_USER_AGENT", ""
         ),
         context_window_tokens=_read_context_window_tokens(llm_section),
         model_source="legacy",

@@ -246,6 +246,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                         set(child_tools),
                         {
                             "list_files",
+                            "find_files",
                             "read_file",
                             "search_text",
                             "verify_command",
@@ -385,32 +386,42 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
             close=lambda: None,
         )
         agent = SimpleNamespace(add_close_callback=lambda _callback: None)
+        def fake_load_feature_enabled(section: str, default: bool = True, **_kwargs) -> bool:
+            # 测试不得依赖本机用户配置，固定索引开关为默认关闭。
+            return False if section in {"file_name_index", "content_index"} else bool(default)
+
         with patch("omnicrawl.api.app.detect_project_context", return_value=project_context):
             with patch("omnicrawl.api.app.load_llm_config", return_value="llm-config"):
                 with patch(
-                    "omnicrawl.api.app.load_agent_temp_workspace_config",
-                    return_value="temp-config",
+                    "omnicrawl.api.app.load_feature_enabled",
+                    side_effect=fake_load_feature_enabled,
                 ):
                     with patch(
-                        "omnicrawl.api.app.load_subagent_config",
-                        return_value="subagent-config",
+                        "omnicrawl.api.app.load_agent_temp_workspace_config",
+                        return_value="temp-config",
                     ):
                         with patch(
-                            "omnicrawl.extensions.plugin_manager.PluginRuntime.from_config_data",
-                            return_value=plugin_runtime,
+                            "omnicrawl.api.app.load_subagent_config",
+                            return_value="subagent-config",
                         ):
-                            with patch("omnicrawl.api.app.AgentConfig") as config_class:
-                                with patch(
-                                    "omnicrawl.api.app.LocalToolAgent",
-                                    return_value=agent,
-                                ):
-                                    created = create_default_agent()
+                            with patch(
+                                "omnicrawl.extensions.plugin_manager.PluginRuntime.from_config_data",
+                                return_value=plugin_runtime,
+                            ):
+                                with patch("omnicrawl.api.app.AgentConfig") as config_class:
+                                    with patch(
+                                        "omnicrawl.api.app.LocalToolAgent",
+                                        return_value=agent,
+                                    ):
+                                        created = create_default_agent()
 
         self.assertIs(created, agent)
         config_class.assert_called_once_with(
             llm="llm-config",
             workspace_root=Path("D:/workspace"),
             workspace_detection_summary="workspace",
+            file_name_index_enabled=False,
+            content_index_enabled=False,
             temp_workspace="temp-config",
             subagents="subagent-config",
         )

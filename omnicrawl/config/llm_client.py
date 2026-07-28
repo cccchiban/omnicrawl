@@ -41,12 +41,16 @@ class OpenAIResponseLLM:
             ) from exc
 
         http_client = httpx.Client(trust_env=False, follow_redirects=True)
+        openai_kwargs: dict[str, Any] = {
+            "api_key": self.config.api_key,
+            "base_url": self.config.base_url,
+            "http_client": http_client,
+        }
+        user_agent = getattr(self.config, "user_agent", "").strip()
+        if user_agent:
+            openai_kwargs["default_headers"] = {"User-Agent": user_agent}
         try:
-            self._client = OpenAI(
-                api_key=self.config.api_key,
-                base_url=self.config.base_url,
-                http_client=http_client,
-            )
+            self._client = OpenAI(**openai_kwargs)
         except Exception:
             http_client.close()
             raise

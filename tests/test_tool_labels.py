@@ -12,6 +12,7 @@ from omnicrawl.ui.tool_labels import (
 class ToolLabelsTest(unittest.TestCase):
     def test_builtin_and_mcp_tools_use_friendly_labels(self) -> None:
         self.assertEqual(tool_display("list_files").icon, "L")
+        self.assertEqual(tool_display("find_files").icon, "F")
         self.assertEqual(tool_display("read_file").icon, "R")
         self.assertEqual(tool_display("bash").icon, "B")
         self.assertEqual(tool_display("trusted.bash").icon, "B")

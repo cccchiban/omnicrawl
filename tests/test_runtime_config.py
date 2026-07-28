@@ -344,6 +344,34 @@ class RuntimeConfigTest(unittest.TestCase):
             "auto",
         )
 
+    def test_should_retry_atomic_config_replace_when_windows_temporarily_denies_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            original_replace = os.replace
+            replace_attempts = 0
+
+            def temporarily_denied(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+                nonlocal replace_attempts
+                replace_attempts += 1
+                if replace_attempts < 3:
+                    error = PermissionError(13, "Access is denied", str(dst))
+                    error.winerror = 5
+                    raise error
+                original_replace(src, dst)
+
+            with (
+                patch.object(runtime_module.os, "replace", side_effect=temporarily_denied),
+                patch.object(runtime_module.sys, "platform", "win32"),
+                patch.object(runtime_module.time, "sleep"),
+            ):
+                save_config_data({"approval": {"mode": "manual"}}, config_path)
+
+            self.assertEqual(replace_attempts, 3)
+            self.assertEqual(
+                yaml.safe_load(config_path.read_text(encoding="utf-8"))["approval"]["mode"],
+                "manual",
+            )
+
     def test_explicit_json_config_path_is_rejected_for_load_and_save(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.json"
@@ -437,29 +465,42 @@ class RuntimeConfigTest(unittest.TestCase):
         )
         agent = Mock()
 
+        def fake_load_feature_enabled(section: str, default: bool = True, **_kwargs) -> bool:
+            # 测试不得依赖本机 ~/.OmniCrawl/config.yaml，避免索引开关污染断言。
+            defaults = {
+                "memory": True,
+                "file_name_index": False,
+                "content_index": False,
+            }
+            return bool(defaults.get(section, default))
+
         with patch("omnicrawl.entry.configure_console_encoding"):
             with patch("omnicrawl.entry.load_llm_config", return_value=config):
                 with patch("omnicrawl.entry.load_approval_mode", return_value="manual"):
-                    with patch("omnicrawl.entry.load_agent_temp_workspace_config", return_value="temp-config"):
-                        with patch("omnicrawl.entry.load_subagent_config", return_value="subagent-config"):
-                            with patch("omnicrawl.entry.detect_project_context", return_value=project_context):
-                                with patch("omnicrawl.entry.agent_temp_status_label", return_value=".agent_tmp"):
-                                    with patch("omnicrawl.entry.AgentConfig") as agent_config_class:
-                                        with patch("omnicrawl.entry.LocalToolAgent", return_value=agent) as agent_class:
-                                            with patch("omnicrawl.entry._load_fullscreen_ui") as load_fullscreen_ui:
-                                                fullscreen_startup = Mock()
-                                                run_fullscreen_tui = Mock()
-                                                load_fullscreen_ui.return_value = (
-                                                    fullscreen_startup,
-                                                    run_fullscreen_tui,
-                                                )
-                                                with patch("omnicrawl.entry.initialize_user_configuration") as initialize:
-                                                    initialize.return_value = SimpleNamespace(
-                                                        api_key_configured=True,
-                                                        errors=(),
+                    with patch(
+                        "omnicrawl.entry.load_feature_enabled",
+                        side_effect=fake_load_feature_enabled,
+                    ):
+                        with patch("omnicrawl.entry.load_agent_temp_workspace_config", return_value="temp-config"):
+                            with patch("omnicrawl.entry.load_subagent_config", return_value="subagent-config"):
+                                with patch("omnicrawl.entry.detect_project_context", return_value=project_context):
+                                    with patch("omnicrawl.entry.agent_temp_status_label", return_value=".agent_tmp"):
+                                        with patch("omnicrawl.entry.AgentConfig") as agent_config_class:
+                                            with patch("omnicrawl.entry.LocalToolAgent", return_value=agent) as agent_class:
+                                                with patch("omnicrawl.entry._load_fullscreen_ui") as load_fullscreen_ui:
+                                                    fullscreen_startup = Mock()
+                                                    run_fullscreen_tui = Mock()
+                                                    load_fullscreen_ui.return_value = (
+                                                        fullscreen_startup,
+                                                        run_fullscreen_tui,
                                                     )
-                                                    with patch("omnicrawl.entry.format_startup_report", return_value=()):
-                                                        code = run_application(["--resume", "session-demo"])
+                                                    with patch("omnicrawl.entry.initialize_user_configuration") as initialize:
+                                                        initialize.return_value = SimpleNamespace(
+                                                            api_key_configured=True,
+                                                            errors=(),
+                                                        )
+                                                        with patch("omnicrawl.entry.format_startup_report", return_value=()):
+                                                            code = run_application(["--resume", "session-demo"])
 
         self.assertEqual(code, 0)
         agent_config_class.assert_called_once_with(
@@ -468,6 +509,8 @@ class RuntimeConfigTest(unittest.TestCase):
             workspace_detection_summary="workspace",
             approval_mode="manual",
             memory_enabled=True,
+            file_name_index_enabled=False,
+            content_index_enabled=False,
             temp_workspace="temp-config",
             subagents="subagent-config",
             resume_session_id="session-demo",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import threading
 import time
@@ -28,6 +29,7 @@ from .hud import (
     context_summary_text,
     gradient_text,
     pending_queue_text,
+    search_index_status_text,
     token_telemetry_text,
     version_status_text,
 )
@@ -76,6 +78,22 @@ _MOUSE_REPORTING_DISABLE_SEQUENCE = (
     "\x1b[?1015l"
     "\x1b[?1006l"
 )
+_PASTE_COMPACT_LINE_THRESHOLD = 5
+_PASTE_PLACEHOLDER_PATTERN = re.compile(r"\[粘贴 #\d+ \+\d+ 行\]")
+
+
+def _normalize_pasted_text(text: str) -> str:
+    """把终端粘贴中的 CRLF/CR 统一为 TextArea 使用的 LF。"""
+
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _count_paste_lines(text: str) -> int:
+    """按编辑器语义统计粘贴行数，保留末尾空行。"""
+
+    if not text:
+        return 0
+    return text.count("\n") + 1
 
 
 def _disable_terminal_mouse_reporting(output_stream: Any | None = None) -> None:
@@ -151,7 +169,7 @@ class FullscreenStartup:
 
 
 class Composer(TextArea):
-    """多行编辑器：Enter 由应用提交，Ctrl+Enter 插入真实换行。"""
+    """多行编辑器：Enter 由应用提交，Shift+Enter 插入真实换行。"""
 
     def __init__(
         self,
@@ -159,12 +177,31 @@ class Composer(TextArea):
         submit_handler: Callable[[], None],
         command_key_handler: Callable[[events.Key], bool],
         copy_or_clear_handler: Callable[[], None],
+        paste_handler: Callable[[str], str | None],
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._submit_handler = submit_handler
         self._command_key_handler = command_key_handler
         self._copy_or_clear_handler = copy_or_clear_handler
+        self._paste_handler = paste_handler
+
+    def _insert_paste_text(self, text: str) -> None:
+        replacement = self._paste_handler(text)
+        insert_text = replacement if replacement is not None else _normalize_pasted_text(text)
+        if result := self._replace_via_keyboard(insert_text, *self.selection):
+            self.move_cursor(result.end_location)
+            self.focus()
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        self._insert_paste_text(event.text)
+        event.prevent_default()
+        event.stop()
+
+    def action_paste(self) -> None:
+        if self.read_only:
+            return
+        self._insert_paste_text(self.app.clipboard)
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "ctrl+c":
@@ -178,9 +215,9 @@ class Composer(TextArea):
             self._submit_handler()
             event.prevent_default()
             event.stop()
-        elif event.key in {"ctrl+enter", "ctrl+\r", "ctrl+j"}:
+        elif event.key in {"shift+enter", "shift+\r", "shift+j"}:
             # Windows Terminal / VS Code 在 Kitty 扩展按键协议不可用时，可能将
-            # Ctrl+Enter 上报为 ctrl+\r 或 ctrl+j，而非 ctrl+enter。
+            # Shift+Enter 上报为 shift+\r 或 shift+j，而非 shift+enter。
             self.insert("\n")
             event.prevent_default()
             event.stop()
@@ -204,24 +241,38 @@ class OmniCrawlApp(App[None]):
         text-overflow: ellipsis;
     }
     #version-status {
-        width: 22;
-        min-width: 22;
-        max-width: 22;
+        width: 34;
+        min-width: 34;
+        max-width: 34;
         color: $terminal-text;
         content-align: right middle;
         text-overflow: ellipsis;
     }
-    /* 第二行 Token 使用与第一行上下文摘要相同的左边距。
-       height 必须至少为 2：Textual 的 border-bottom 会占用 1 行布局高度，
-       若 height=1 则内容区高度被压成 0，导致 IN/OUT/CA/CTX 有 content 但不渲染。 */
-    #token-telemetry {
+    /* 第二行左侧展示 Token，右侧在后台建索引时显示进度。 */
+    #telemetry-row {
         height: 2;
         padding: 0 1;
         background: $terminal-panel;
+        border-bottom: solid $terminal-border;
+    }
+    #token-telemetry {
+        width: 1fr;
+        min-width: 0;
+        height: 1;
+        padding: 0;
         color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
-        border-bottom: solid $terminal-border;
+    }
+    #index-status {
+        width: 34;
+        min-width: 34;
+        max-width: 34;
+        height: 1;
+        padding: 0;
+        color: $terminal-text-muted;
+        content-align: right middle;
+        text-overflow: ellipsis;
     }
     .runtime-status-message { color: $terminal-text-muted; text-style: bold; }
     .runtime-status-message.warning { color: $terminal-red; }
@@ -258,6 +309,8 @@ class OmniCrawlApp(App[None]):
         padding: 0 1;
         background: $terminal-surface;
         color: $terminal-text-secondary;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
         border-left: thick $terminal-blue;
     }
     #composer {
@@ -370,8 +423,11 @@ class OmniCrawlApp(App[None]):
         self._announced_update_version: str | None = None
         self._version_checking = False
         self._version_check_frame = 0
+        self._search_index_frame = 0
         self._interaction_watchdog_signature: tuple[object, ...] | None = None
         self._interaction_watchdog_stable_ticks = 0
+        self._paste_sequence = 0
+        self._compact_pastes: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
@@ -381,7 +437,9 @@ class OmniCrawlApp(App[None]):
                     version_status_text(self.startup.current_version),
                     id="version-status",
                 )
-            yield Static(self._token_telemetry_text(), id="token-telemetry")
+            with Horizontal(id="telemetry-row"):
+                yield Static(self._token_telemetry_text(), id="token-telemetry")
+                yield Static(self._search_index_status_text(), id="index-status")
             yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
                 yield Static("", id="command-menu")
@@ -389,6 +447,7 @@ class OmniCrawlApp(App[None]):
                     submit_handler=self._submit_composer_text,
                     command_key_handler=self._handle_composer_command_key,
                     copy_or_clear_handler=self.action_copy_or_clear_composer,
+                    paste_handler=self._compact_paste_if_needed,
                     placeholder="› 输入消息或 / 命令",
                     id="composer",
                     soft_wrap=True,
@@ -402,6 +461,7 @@ class OmniCrawlApp(App[None]):
         self._resize_composer_to_text()
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_version_check)
+        self.set_interval(0.5, self._tick_search_index_status)
         self.set_interval(
             self.INTERACTION_WATCHDOG_INTERVAL_SECONDS,
             self._recover_stale_mouse_interaction,
@@ -562,6 +622,29 @@ class OmniCrawlApp(App[None]):
         self._version_check_frame = (self._version_check_frame + 1) % 4
         self._render_version_status()
 
+    def _tick_search_index_status(self) -> None:
+        """加载索引时推进四帧颜色波浪，并在主线程刷新 HUD。"""
+
+        self._search_index_frame = (self._search_index_frame + 1) % 4
+        self._render_search_index_status()
+
+    def _search_index_status_text(self) -> Text:
+        getter = getattr(self.agent, "search_index_status", None)
+        status = getter() if callable(getter) else None
+        return search_index_status_text(status, self._search_index_frame)
+
+    def _render_search_index_status(self) -> None:
+        """轮询只读状态快照，不让后台索引线程直接接触 Textual 组件。"""
+
+        widgets = self.query("#index-status")
+        if widgets:
+            widget = widgets.first(Static)
+            rendered = self._search_index_status_text()
+            current = widget.content
+            if isinstance(current, Text) and current == rendered:
+                return
+            widget.update(rendered)
+
     def _render_version_status(self, latest_version: str | None = None) -> None:
         """在主线程绘制版本号、升级提示或检查更新动画。"""
 
@@ -604,8 +687,36 @@ class OmniCrawlApp(App[None]):
         finally:
             self.call_from_thread(self._finish_turn)
 
+    def _compact_paste_if_needed(self, text: str) -> str | None:
+        pasted_text = _normalize_pasted_text(text)
+        line_count = _count_paste_lines(pasted_text)
+        if line_count <= _PASTE_COMPACT_LINE_THRESHOLD:
+            return None
+        self._paste_sequence += 1
+        placeholder = f"[粘贴 #{self._paste_sequence} +{line_count} 行]"
+        self._compact_pastes[placeholder] = pasted_text
+        return placeholder
+
+    def _expand_compact_paste_placeholders(self, text: str) -> str:
+        if not self._compact_pastes:
+            return text
+        return _PASTE_PLACEHOLDER_PATTERN.sub(
+            lambda match: self._compact_pastes.get(match.group(0), match.group(0)),
+            text,
+        )
+
+    def _prune_compact_paste_placeholders(self, text: str) -> None:
+        if not self._compact_pastes:
+            return
+        self._compact_pastes = {
+            placeholder: pasted_text
+            for placeholder, pasted_text in self._compact_pastes.items()
+            if placeholder in text
+        }
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "composer":
+            self._prune_compact_paste_placeholders(event.text_area.text)
             self._refresh_command_menu(event.text_area.text)
             self._resize_composer_to_text()
 
@@ -656,10 +767,11 @@ class OmniCrawlApp(App[None]):
         """提交编辑器内容，保留内部换行且忽略纯空白输入。"""
 
         composer = self.query_one("#composer", TextArea)
-        text = composer.text.strip()
+        text = self._expand_compact_paste_placeholders(composer.text).strip()
         if not text:
             return
         composer.clear()
+        self._compact_pastes.clear()
         if self.is_generating:
             self._pending_inputs.append(text)
             self._refresh_pending_queue_count()
@@ -690,7 +802,7 @@ class OmniCrawlApp(App[None]):
 
     def _render_command_menu(self) -> None:
         menu = self.query_one("#command-menu", Static)
-        lines = Text()
+        lines = Text(no_wrap=True, overflow="ellipsis")
         visible_limit = self.COMMAND_MENU_VISIBLE_OPTIONS
         visible_start = max(
             0,
@@ -707,7 +819,7 @@ class OmniCrawlApp(App[None]):
             marker = "›" if index == self._command_selection else " "
             style = f"bold {ACCENT_BLUE}" if index == self._command_selection else TEXT_SECONDARY
             lines.append(f"{marker} {option['command']}", style=style)
-            description = option.get("description", "").strip()
+            description = " ".join(option.get("description", "").split())
             if description:
                 lines.append(f"  · {description}", style=TEXT_MUTED)
             if offset < len(visible_matches) - 1:
@@ -742,6 +854,7 @@ class OmniCrawlApp(App[None]):
             self.copy_to_clipboard(selected_text)
             return
         composer.clear()
+        self._compact_pastes.clear()
 
     def action_clear_conversation(self) -> None:
         if self.is_generating:

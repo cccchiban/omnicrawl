@@ -33,9 +33,10 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 内置工具：
 
 - `list_files`：列出工作区文件，默认执行前会要求确认。
+- `find_files`：只按文件名、目录名或相对路径搜索，不读取文件内容；可选后台内存索引，默认执行前会要求确认。
 - `read_file`：读取工作区内 UTF-8 文本文件，默认执行前会要求确认。
 - `read_file` 支持 `start_line`/`max_lines` 行范围、`function_name` 函数或方法定位，以及 `text`/`context_lines` 文字片段上下文定位；Python 优先使用 AST，其他常见代码使用声明与大括号范围回退。
-- `search_text`：在工作区内搜索文本或正则，默认执行前会要求确认。
+- `search_text`：在工作区 UTF-8 文本中搜索普通关键词的精确子串，不解释正则；可选后台内容索引，默认执行前会要求确认。
 - `replace_text`：替换单个文件中的文本，默认执行前会要求确认。
 - `write_file`：写入或追加文件，默认执行前会要求确认。
 - `bash`：使用 Git Bash 执行 Bash 命令，只接受 POSIX Shell 语法；可用独立 `diagnostic_command` 在主命令后采集日志，默认执行前会要求确认。
@@ -47,6 +48,7 @@ Agent 启动时会自动创建该目录，并通过 `.agent_tmp/.last_cleanup` �
 安全边界：
 
 - 文件工具只能访问当前项目目录内的路径；`config.yaml`、`models.yaml` 和历史 `config.json`、`.env`、`.git`、虚拟环境和缓存目录仍是受保护路径。
+- `file_name_index.enabled` 与 `content_index.enabled` 默认均为 `false`，可在 `/settings` 独立开启。快照按 PRJ 路径哈希隔离存入 `~/.OmniCrawl/search-index/`；Windows NTFS 优先用 USN Journal 从持久化游标追增量，日志不可用或失效时在后台重建。用户主目录或文件系统根目录本身不允许内容关键词搜索，但其明确子目录仍可搜索；文件名搜索不受此限制。
 - `approval.mode` 默认为 `manual`，所有受限工具都会先在终端显示确认页；按 `Enter`、`Y` 或 `1` 允许，按 `N` 或 `2` 拒绝；方向键只会被消费，不会触发工具执行。
 - `approval.mode` 设为 `auto` 时完全自动批准受限工具；设为 `review` 时只把疑似删除行为交给同一模型的非思考模式审查，其他工具调用自动执行。自动模式不显示确认页，只显示步骤和执行记录。
 - 命令工具不是系统级沙箱；所有命令均通过明确的 PowerShell 或 Git Bash 解释器以 `shell=False` 启动，并由 Host 注入 UTF-8 子进程环境。不要混用两种 Shell 的语法。需要在测试或构建失败后读取日志时，应把主操作放入 `command`、日志读取放入 `diagnostic_command`；两者独立执行，任一失败都会使工具返回失败，诊断步骤不会掩盖主命令退出状态。确认前请检查命令内容，尤其是删除、移动、覆盖、联网下载、安装依赖、修改系统配置等操作。
@@ -67,13 +69,14 @@ python main.py
 OmniCrawl 支持在 Host 生命周期节点分发 Hook，并通过独立 Node Worker 加载 NPM 插件。默认关闭，不影响现有 TUI / Skill / MCP / Session。
 
 ```powershell
-# 诊断环境（源码入口和安装入口均可）
-python main.py plugin doctor
+# 诊断环境
 ocl plugin doctor
-omnicrawl plugin doctor   # 兼容入口
+# 源码目录也可使用 Python 入口
+python main.py plugin doctor
 
-# 启用全局插件系统（写入用户配置目录的 config.yaml）
+# 启用或关闭全局插件系统
 ocl plugin system enable
+ocl plugin system disable
 
 # 注册本地开发插件（dev 模式，不进可回滚 store）
 ocl plugin install .\path\to\plugin --dev --project
@@ -81,12 +84,24 @@ ocl plugin install .\path\to\plugin --dev --project
 # 从 NPM 安装（需 Node 20+；强制 --ignore-scripts）
 ocl plugin install @scope/name@1.2.3 --project --enable --yes
 
+# 查看插件
 ocl plugin list
+ocl plugin list --project
+ocl plugin list --user
+ocl plugin list --all --json
+
+# 查看详情、启用、禁用、更新、回滚和卸载
+ocl plugin info @scope/name
+ocl plugin enable @scope/name --project
 ocl plugin disable @scope/name --project
+ocl plugin update @scope/name --project --yes
 ocl plugin rollback @scope/name --project
+ocl plugin uninstall @scope/name --project --yes
 ```
 
-TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装/更新/卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、上下文长度（32K–2048K）、审批模式、记忆、MCP、插件、子任务和上下文压缩总开关；修改立即生效并持久化到用户配置目录。上下文压缩默认关闭，开启后仅在完整回合结束且预计下一次请求达到 70K Token 时使用模型辅助压缩，并同步启用受当前摘要约束的证据恢复工具。压缩完成时，项目目标、约束、决策、完成/当前状态、文件产物和后续事项会自动同步到本地长期记忆；`/compact` 与 `/compact --model` 同样生效，记忆写入失败不会影响会话压缩。上下文长度按当前活动模型保存：自定义模型写入 `models.yaml`，其他模型写入 `config.yaml` 默认值。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
+以上命令统一使用 `ocl plugin ...` 短命令；源码目录下也兼容 Python 入口，但不作为管理提示展示。
+
+TUI 内可输入 `/plugins` 查看当前 Worker 只读状态；安装、更新、启用、禁用、回滚和卸载仍走进程级 CLI。输入 `/settings` 可打开中文设置面板，修改模型、推理强度、上下文长度（32K–2048K）、审批模式、记忆、MCP、插件、子任务、上下文压缩、文件名快速索引和内容关键词索引开关；修改立即生效并持久化到用户配置目录。上下文压缩默认关闭，开启后仅在完整回合结束且预计下一次请求达到 70K Token 时使用模型辅助压缩，并同步启用受当前摘要约束的证据恢复工具。压缩完成时，项目目标、约束、决策、完成/当前状态、文件产物和后续事项会自动同步到本地长期记忆；`/compact` 与 `/compact --model` 同样生效，记忆写入失败不会影响会话压缩。上下文长度按当前活动模型保存：自定义模型写入 `models.yaml`，其他模型写入 `config.yaml` 默认值。高风险的 Worktree、共享写入和网络安装等细项不会通过面板开放。
 
 插件架构历史设计文档已归档至飞书知识空间 `ocl`。注意：Worker 隔离用于故障边界，**不是**恶意代码沙箱；只安装可信插件。插件若要提供最低优先级的 Agent Markdown 定义，必须在 manifest 的 `omnicrawl.agents` 中声明包内路径，并同时声明且获批 `agent:definitions` 权限。
 
@@ -157,10 +172,10 @@ python -m omnicrawl.api
 运行后：
 
 - TUI 会以透明背景启动为全屏 Textual 工作台，继承终端默认前景色、背景色和 ANSI 调色板；顶部 HUD 显示工作区、模型、推理、审批和 Token 摘要，主区保留对话、工具记录，以及始终跟随最新内容的临时运行状态，输入框固定在底部。
-- 在输入框按 Enter 发送消息；任务生成期间提交的消息会进入 FIFO 队列，当前回合结束后自动逐条发送，对话区会显示当前排队数量。
+- 在输入框按 Enter 发送消息，Shift+Enter 插入换行；任务生成期间提交的消息会进入 FIFO 队列，当前回合结束后自动逐条发送，对话区会显示当前排队数量。
 - 需要人工审批的工具会显示居中确认模态框；选择“允许执行”或“拒绝”后继续，按 `Esc` 会取消当前任务并拒绝等待中的确认。
 - 输入 `/new`：清空模型对话历史，开启新对话。
-- 输入 `/undo`：持久化回退最近一轮用户消息与助手回复；若该轮被取消则回退未完成轮次。命令可连续执行，但不会撤销已经产生的文件修改、命令执行等外部副作用。
+- 输入 `/undo`：事务式回退最近一轮用户消息、助手回复、工作区文件和项目/会话/用户三类记忆；若文件或记忆在该轮结束后又被修改，或该轮执行过 Shell、MCP、桌面控制等无法证明可逆的外部操作，则整轮拒绝回退。旧的纯对话轮次仍可回退，有副作用但没有快照的旧轮次会被拒绝。
 - 输入 `/skills`：查看已加载的 Skill；输入 `/skill:<名称> 任务` 可手动调用指定 Skill。
 - 输入 `/mcp`：查看 MCP 开关、Server 连接状态、已发现能力和最近诊断。
 - 输入 `/model`：打开双列模型选择界面（自定义 `models.yaml` + API 自动发现）；列表默认获得焦点，使用 `↑↓` 选择、`←→` 切列、`Enter` 确认，按 `/` 可进入搜索框；`/model --refresh` 刷新发现缓存；`/model <key|alias|model_id|profile/model_id>` 直接切换。

@@ -137,10 +137,27 @@
 
 - Server 名称只能使用小写字母、数字、下划线和连字符。
 - `stdio` 必须提供 `command`；`streamable_http` 必须提供 `url`。
-- `env` 仅作为 `stdio` 子进程环境变量传入；Streamable HTTP 不会把它隐式转换为请求头。
+- `env` 仅作为 `stdio` 子进程环境变量传入；`stdio` Server 不需要额外认证。
+- `headers` 仅用于 `streamable_http`，会原样附加到每个 HTTP 请求，可声明 `Authorization`、`X-API-Key` 等认证头；不会注入 `stdio` 子进程。
 - `timeout_seconds` 范围是 1 到 360 秒。
 - `risk_level=trusted` 只表示来源可信，不代表跳过审批。
 - 不要把真实密钥写进 `config.example.yaml` 或源码；真实密钥只能存在本地 `config.yaml` 或环境变量。
+- HTTP 认证示例：
+
+```yaml
+mcp:
+  servers:
+    remote_service:
+      enabled: true
+      transport: streamable_http
+      url: https://example.com/mcp
+      headers:
+        Authorization: "Bearer replace-with-token"
+        X-API-Key: "replace-with-api-key"
+      timeout_seconds: 30
+      risk_level: external
+```
+
 - 引入外部 MCP Server 前，必须先明确能力范围、数据边界、成本和是否联网。
 
 环境变量：
@@ -158,9 +175,9 @@
 
 1. `运行设置 → MCP 工具`：保留 MCP 总开关入口。
 2. `MCP 全局设置`：管理总开关、外部网络 Tool 策略、写入/命令确认、审计日志、默认超时和 Tool 输出上限。
-3. `MCP Server`：按 Server 启用/禁用、添加、编辑和删除；编辑器支持 `stdio` / `streamable_http`、命令/参数、URL、超时、风险等级和连接测试。
+3. `MCP Server`：按 Server 启用/禁用、添加、编辑和删除；编辑器支持 `stdio` / `streamable_http`、命令/参数、URL、HTTP 请求头、超时、风险等级和连接测试。
 
-设置默认保存到用户配置目录 `~/.OmniCrawl/config.yaml`，显式配置路径或环境变量仍会生效；保存后事务式重建当前 Agent 的 MCP Manager。stdio 环境变量只显示已配置数量；编辑时留空保持原值，输入 `KEY=VALUE;KEY2=VALUE` 才替换，凭据不会回显。Streamable HTTP 当前不提供隐式 Header 映射，需要鉴权时应使用服务端明确支持的安全接入方式。
+设置默认保存到用户配置目录 `~/.OmniCrawl/config.yaml`，显式配置路径或环境变量仍会生效；保存后事务式重建当前 Agent 的 MCP Manager。stdio 环境变量和 HTTP 请求头只显示已配置数量；编辑时留空保持原值，输入 `KEY=VALUE;KEY2=VALUE` 才替换，凭据不会回显。HTTP 请求头只附加到远程 Streamable HTTP 请求，协议保留头由 Client 自动维护。
 
 ## 5. MCP 调用规范
 
@@ -238,7 +255,7 @@ MCP Tool 调用会记录审计事件：
 logs/mcp-audit.jsonl
 ```
 
-排查时优先用工具结果中的 `audit_id` 关联审计日志。审计日志只保存脱敏参数和输出预览，不保存完整密钥、大文件正文或模型隐藏推理内容。
+排查时优先用工具结果中的 `audit_id` 关联审计日志。审计日志只保存脱敏参数和输出预览，不保存 MCP 配置中的完整请求头、密钥、大文件正文或模型隐藏推理内容。
 
 ---
 

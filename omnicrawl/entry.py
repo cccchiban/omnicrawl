@@ -179,6 +179,12 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 workspace_detection_summary=project_context.detection_summary,
                 approval_mode=approval_mode,
                 memory_enabled=load_feature_enabled("memory", default=True),
+                file_name_index_enabled=load_feature_enabled(
+                    "file_name_index", default=False
+                ),
+                content_index_enabled=load_feature_enabled(
+                    "content_index", default=False
+                ),
                 temp_workspace=temp_workspace_config,
                 subagents=subagent_config,
                 resume_session_id=args.resume,

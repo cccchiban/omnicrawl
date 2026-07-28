@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -62,6 +63,18 @@ from .memory_tools import (
     memory_read_result,
     memory_search_result,
     memory_write_result,
+    project_memory_expand_related_result,
+    project_memory_read_result,
+    project_memory_search_result,
+    project_memory_write_result,
+    session_memory_expand_related_result,
+    session_memory_read_result,
+    session_memory_search_result,
+    session_memory_write_result,
+    user_memory_expand_related_result,
+    user_memory_read_result,
+    user_memory_search_result,
+    user_memory_write_result,
 )
 from .prompt_context import (
     build_context_messages,
@@ -138,6 +151,7 @@ from ..memory import (
     MemoryStore,
     MemoryStoreError,
     MemoryWriteRequest,
+    migrate_legacy_memory,
 )
 from ..mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
 from ..project import ProjectEntry, ProjectStore
@@ -149,6 +163,13 @@ from ..session import (
     SessionEventReadResult,
     SessionState,
     SessionStore,
+    SessionUndoPlan,
+)
+from ..state.turn_snapshot import (
+    GitSnapshotStore,
+    GitTreeSnapshot,
+    SnapshotError,
+    SnapshotRoot,
 )
 from ..state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 from ..skill import SkillManager, SkillMatchResult
@@ -165,6 +186,7 @@ from ..workspace_tools import (
     WorkspaceTools,
 )
 from ..workspace.monitor import BackgroundMonitorManager, MonitorPollResult, MonitorTaskSnapshot
+from ..workspace.search_index import ProjectSearchIndex, SearchIndexStatus
 
 
 LOGGER = logging.getLogger(__name__)
@@ -218,6 +240,53 @@ _CONTINUE_LAST_TASK_TEXTS = {
 
 class AgentError(RuntimeError):
     """Agent 循环、工具调用或安全校验失败时抛出。"""
+
+
+@dataclass
+class _ActiveTurnSnapshot:
+    """当前模型轮次的影子快照与副作用账本。"""
+
+    snapshot_id: str
+    store: GitSnapshotStore
+    roots: dict[str, SnapshotRoot]
+    before: dict[str, GitTreeSnapshot]
+    executed_tools: list[str] = field(default_factory=list)
+    irreversible_tools: list[str] = field(default_factory=list)
+    completed: bool = False
+
+
+_READ_ONLY_UNDO_TOOLS = frozenset(
+    {
+        "list_files",
+        "find_files",
+        "read_file",
+        "search_text",
+        "display_html",
+        "recall_session_evidence",
+        "memory_search",
+        "memory_read",
+        "memory_expand_related",
+        "project_memory_search",
+        "project_memory_read",
+        "project_memory_expand_related",
+        "session_memory_search",
+        "session_memory_read",
+        "session_memory_expand_related",
+        "user_memory_search",
+        "user_memory_read",
+        "user_memory_expand_related",
+    }
+)
+_REVERSIBLE_UNDO_TOOLS = frozenset(
+    {
+        "replace_text",
+        "write_file",
+        "memory_write",
+        "project_memory_write",
+        "session_memory_write",
+        "user_memory_write",
+    }
+)
 
 
 def _read_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -301,7 +370,9 @@ class AgentConfig:
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
     memory_enabled: bool = True
-    memory_directory: str = "memory"
+    file_name_index_enabled: bool = False
+    content_index_enabled: bool = False
+    memory_directory: str = ".oclmemory"
     session_enabled: bool = True
     session_directory: str = ".agent_sessions"
     resume_session_id: str = ""
@@ -345,6 +416,10 @@ class AgentConfig:
         )
         if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
             raise AgentError("memory_directory 必须是非空字符串。")
+        if not isinstance(self.file_name_index_enabled, bool):
+            raise AgentError("file_name_index_enabled 必须是布尔值。")
+        if not isinstance(self.content_index_enabled, bool):
+            raise AgentError("content_index_enabled 必须是布尔值。")
         if not isinstance(self.session_directory, str) or not self.session_directory.strip():
             raise AgentError("session_directory 必须是非空字符串。")
         if not isinstance(self.resume_session_id, str):
@@ -410,7 +485,19 @@ class LocalToolAgent:
         self._session_state = self._start_or_resume_session() if self._session_store is not None else None
         self._emit_session_lifecycle_hooks()
         self._project_store = self._create_project_store() if self._session_store is not None else None
-        self._memory_store = self._create_memory_store() if self.config.memory_enabled else None
+        if self.config.memory_enabled:
+            (
+                self._project_memory_store,
+                self._session_memory_store,
+                self._user_memory_store,
+            ) = self._create_memory_stores()
+            # 旧内部字段保留为项目级别别名，兼容尚未迁移的调用方。
+            self._memory_store = self._project_memory_store
+        else:
+            self._project_memory_store = None
+            self._session_memory_store = None
+            self._user_memory_store = None
+            self._memory_store = None
         self._workspace_tools = WorkspaceTools(
             self.workspace_root,
             command_timeout_seconds=self.config.command_timeout_seconds,
@@ -426,6 +513,15 @@ class LocalToolAgent:
 
         if not self.config.llm.api_key.strip():
             raise AgentError("缺少 API Key，请在 config.yaml 的 llm 配置中填写，或设置 OPENAI_API_KEY。")
+
+        self._search_index = ProjectSearchIndex(
+            self.workspace_root,
+            file_name_enabled=self.config.file_name_index_enabled,
+            content_enabled=self.config.content_index_enabled,
+            should_skip=self._workspace_tools.should_skip_path,
+        )
+        self._workspace_tools.search_index = self._search_index
+        self._search_index.start()
 
         self._client: Any | None = None
         self._mcp_manager = self._create_mcp_manager()
@@ -498,7 +594,7 @@ class LocalToolAgent:
         if manager is None:
             return (
                 "插件子系统：未注入 PluginManager（无插件模式）。\n"
-                "管理命令：python main.py plugin doctor / list / install ..."
+                "管理命令：ocl plugin doctor / list / install ..."
             )
         enabled = bool(getattr(manager, "enabled", False))
         lines = [
@@ -508,7 +604,7 @@ class LocalToolAgent:
         rows = list_status() if callable(list_status) else []
         if not rows:
             lines.append("当前工作区没有已加载的插件 Worker。")
-            lines.append("管理命令：python main.py plugin list")
+            lines.append("管理命令：ocl plugin list")
             return "\n".join(lines)
         lines.append(f"已加载 Worker：{len(rows)}")
         for row in rows:
@@ -527,7 +623,7 @@ class LocalToolAgent:
             last_error = str(row.get("lastError") or "").strip()
             if last_error:
                 lines.append(f"    lastError: {last_error[:160]}")
-        lines.append("管理命令：python main.py plugin list|enable|disable|install ...")
+        lines.append("管理命令：ocl plugin list|info|enable|disable|install|update|rollback|uninstall ...")
         return "\n".join(lines)
 
     def _ensure_mcp_tools_ready(
@@ -551,13 +647,26 @@ class LocalToolAgent:
         self._tools = self._build_tools()
 
     def clean_memory(self) -> list[str]:
-        """手动清理过期记忆，供 /memory:clean 命令调用。"""
+        """清理三类作用域中的过期记忆，供管理入口调用。"""
 
-        store = self._require_memory_store()
+        deleted: list[str] = []
+        stores = (
+            ("project", getattr(self, "_project_memory_store", None)),
+            ("session", getattr(self, "_session_memory_store", None)),
+            ("user", getattr(self, "_user_memory_store", None)),
+        )
+        if not any(store is not None for _scope, store in stores):
+            raise AgentError("记忆系统未启用。")
         try:
-            return store.clean_expired_memories()
+            for scope, store in stores:
+                if store is None:
+                    continue
+                deleted.extend(
+                    f"{scope}:{path}" for path in store.clean_expired_memories()
+                )
         except MemoryStoreError as exc:
             raise AgentError(str(exc)) from exc
+        return deleted
 
     def list_monitor_tasks(self) -> list[MonitorTaskSnapshot]:
         """列出当前 Agent 受管的后台任务，供 TUI 与本地 API 只读展示。"""
@@ -672,6 +781,7 @@ class LocalToolAgent:
         if self._session_store is not None:
             self._session_facade().discard_current_empty_session()
             self._session_state = self._start_session()
+            self._bind_current_session_memory_store()
 
     @property
     def current_session_id(self) -> str:
@@ -856,7 +966,9 @@ class LocalToolAgent:
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
 
-        return self._session_facade().resume_session(session_id)
+        state = self._session_facade().resume_session(session_id)
+        self._bind_current_session_memory_store()
+        return state
 
     def _cancel_subagents_for_session_transition(self, reason: str) -> None:
         """在归档/恢复父 Session 前取消旧会话的全部子任务。"""
@@ -975,11 +1087,28 @@ class LocalToolAgent:
         self.__dict__.pop("_agent_session_facade", None)
         self.__dict__.pop("_context_compaction_service_instance", None)
 
+        self._workspace_tools = WorkspaceTools(
+            new_root,
+            command_timeout_seconds=self.config.command_timeout_seconds,
+            extra_protection_message=self._workspace_extra_protection_message,
+        )
+        self._search_index = ProjectSearchIndex(
+            new_root,
+            file_name_enabled=self.config.file_name_index_enabled,
+            content_enabled=self.config.content_index_enabled,
+            should_skip=self._workspace_tools.should_skip_path,
+        )
+        self._workspace_tools.search_index = self._search_index
+        self._search_index.start()
+
         self._temp_workspace = prepared["temp_workspace"]
         self._session_store = prepared["session_store"]
         self._session_state = prepared["session_state"]
         self._project_store = prepared["project_store"]
-        self._memory_store = prepared["memory_store"]
+        self._project_memory_store = prepared["project_memory_store"]
+        self._session_memory_store = prepared["session_memory_store"]
+        self._user_memory_store = prepared["user_memory_store"]
+        self._memory_store = self._project_memory_store
         self._mcp_manager = prepared["mcp_manager"]
         self._tools = prepared["tools"]
         if "skill_manager" in prepared:
@@ -1025,7 +1154,9 @@ class LocalToolAgent:
             "session_store": None,
             "session_state": None,
             "project_store": None,
-            "memory_store": None,
+            "project_memory_store": None,
+            "session_memory_store": None,
+            "user_memory_store": None,
             "mcp_manager": None,
             "tools": {},
         }
@@ -1033,6 +1164,9 @@ class LocalToolAgent:
         previous_session_store = getattr(self, "_session_store", None)
         previous_session_state = getattr(self, "_session_state", None)
         previous_project_store = getattr(self, "_project_store", None)
+        previous_project_memory_store = getattr(self, "_project_memory_store", None)
+        previous_session_memory_store = getattr(self, "_session_memory_store", None)
+        previous_user_memory_store = getattr(self, "_user_memory_store", None)
         previous_memory_store = getattr(self, "_memory_store", None)
         previous_mcp_manager = getattr(self, "_mcp_manager", None)
         previous_tools = getattr(self, "_tools", None)
@@ -1068,9 +1202,18 @@ class LocalToolAgent:
                 self._project_store = project_store
 
             if self.config.memory_enabled:
-                memory_store = self._create_memory_store()
-                prepared["memory_store"] = memory_store
-                self._memory_store = memory_store
+                (
+                    project_memory_store,
+                    session_memory_store,
+                    user_memory_store,
+                ) = self._create_memory_stores()
+                prepared["project_memory_store"] = project_memory_store
+                prepared["session_memory_store"] = session_memory_store
+                prepared["user_memory_store"] = user_memory_store
+                self._project_memory_store = project_memory_store
+                self._session_memory_store = session_memory_store
+                self._user_memory_store = user_memory_store
+                self._memory_store = project_memory_store
 
             mcp_manager = self._create_mcp_manager()
             prepared["mcp_manager"] = mcp_manager
@@ -1092,6 +1235,9 @@ class LocalToolAgent:
             self._session_store = previous_session_store
             self._session_state = previous_session_state
             self._project_store = previous_project_store
+            self._project_memory_store = previous_project_memory_store
+            self._session_memory_store = previous_session_memory_store
+            self._user_memory_store = previous_user_memory_store
             self._memory_store = previous_memory_store
             self._mcp_manager = previous_mcp_manager
             if previous_tools is not None:
@@ -1112,6 +1258,9 @@ class LocalToolAgent:
             self._session_store = previous_session_store
             self._session_state = previous_session_state
             self._project_store = previous_project_store
+            self._project_memory_store = previous_project_memory_store
+            self._session_memory_store = previous_session_memory_store
+            self._user_memory_store = previous_user_memory_store
             self._memory_store = previous_memory_store
             self._mcp_manager = previous_mcp_manager
             if previous_tools is not None:
@@ -1169,6 +1318,14 @@ class LocalToolAgent:
             except Exception:
                 pass
             self.__dict__.pop("_temp_workspace", None)
+
+        old_search_index = getattr(self, "_search_index", None)
+        if old_search_index is not None:
+            try:
+                old_search_index.close()
+            except Exception:
+                pass
+            self.__dict__.pop("_search_index", None)
 
         old_monitor_manager = getattr(self, "_monitor_manager", None)
         if old_monitor_manager is not None:
@@ -1232,6 +1389,12 @@ class LocalToolAgent:
         if monitor_manager is not None:
             try:
                 monitor_manager.close()
+            except Exception as exc:
+                close_errors.append(exc)
+        search_index = getattr(self, "_search_index", None)
+        if search_index is not None:
+            try:
+                search_index.close()
             except Exception as exc:
                 close_errors.append(exc)
         temp_workspace = getattr(self, "_temp_workspace", None)
@@ -1427,27 +1590,99 @@ class LocalToolAgent:
                 self._context_compaction_service_instance = previous_service
             raise
 
+    def search_index_status(self) -> SearchIndexStatus:
+        """返回文件名/内容索引的线程安全状态快照，供 TUI 只读展示。"""
+
+        manager = getattr(self, "_search_index", None)
+        if manager is None:
+            return SearchIndexStatus()
+        return manager.status()
+
+    def set_file_name_index_enabled(self, enabled: bool) -> None:
+        """运行时切换文件名索引；工具本身始终保留直接扫描降级。"""
+
+        self._set_search_index_enabled(file_name_enabled=enabled)
+
+    def set_content_index_enabled(self, enabled: bool) -> None:
+        """运行时切换内容索引；受限根目录仍不会建立项目级内容索引。"""
+
+        self._set_search_index_enabled(content_enabled=enabled)
+
+    def _set_search_index_enabled(
+        self,
+        *,
+        file_name_enabled: bool | None = None,
+        content_enabled: bool | None = None,
+    ) -> None:
+        if file_name_enabled is not None and not isinstance(file_name_enabled, bool):
+            raise AgentError("文件名索引开关必须是布尔值。")
+        if content_enabled is not None and not isinstance(content_enabled, bool):
+            raise AgentError("内容索引开关必须是布尔值。")
+        next_file_name = (
+            self.config.file_name_index_enabled
+            if file_name_enabled is None
+            else file_name_enabled
+        )
+        next_content = (
+            self.config.content_index_enabled
+            if content_enabled is None
+            else content_enabled
+        )
+        if (
+            next_file_name == self.config.file_name_index_enabled
+            and next_content == self.config.content_index_enabled
+        ):
+            return
+
+        toolbox = self._workspace_toolbox()
+        candidate = ProjectSearchIndex(
+            self.workspace_root,
+            file_name_enabled=next_file_name,
+            content_enabled=next_content,
+            should_skip=toolbox.should_skip_path,
+        )
+        previous = getattr(self, "_search_index", None)
+        if previous is not None:
+            previous.close()
+        self._search_index = candidate
+        toolbox.search_index = candidate
+        self.config.file_name_index_enabled = next_file_name
+        self.config.content_index_enabled = next_content
+        candidate.start()
+
     def set_memory_enabled(self, enabled: bool) -> None:
         """切换 Memory 工具，并在新存储准备成功后替换旧运行态。"""
 
         if not isinstance(enabled, bool):
             raise AgentError("Memory 开关必须是布尔值。")
         if enabled:
-            try:
-                next_store = self._create_memory_store()
-            except AgentError:
-                raise
+            if not hasattr(self.config, "memory_directory") and hasattr(self, "_create_memory_store"):
+                # 兼容旧嵌入调用方覆盖的单 Store 工厂。
+                project_store = self._create_memory_store()
+                session_store = None
+                user_store = None
+            else:
+                project_store, session_store, user_store = self._create_memory_stores()
         else:
-            next_store = None
+            project_store = session_store = user_store = None
         previous_enabled = self.config.memory_enabled
-        previous_store = self._memory_store
+        previous_project_store = getattr(self, "_project_memory_store", getattr(self, "_memory_store", None))
+        previous_session_store = getattr(self, "_session_memory_store", None)
+        previous_user_store = getattr(self, "_user_memory_store", None)
+        previous_legacy_store = getattr(self, "_memory_store", None)
         self.config.memory_enabled = enabled
-        self._memory_store = next_store
+        self._project_memory_store = project_store
+        self._session_memory_store = session_store
+        self._user_memory_store = user_store
+        self._memory_store = project_store
         try:
             next_tools = self._build_tools()
         except Exception:
             self.config.memory_enabled = previous_enabled
-            self._memory_store = previous_store
+            self._project_memory_store = previous_project_store
+            self._session_memory_store = previous_session_store
+            self._user_memory_store = previous_user_store
+            self._memory_store = previous_legacy_store
             raise
         self._tools = next_tools
         # MemoryStore 当前没有外部进程资源；引用替换后旧实例自然失效。
@@ -1629,21 +1864,75 @@ class LocalToolAgent:
         arguments["_subagent_origin"] = request.origin.as_public_dict()
         return bool(self._confirm(request.tool_name, arguments))
 
-    def _create_memory_store(self) -> MemoryStore:
-        """创建记忆存储，并把目录限制在工作区内。
+    def _create_memory_stores(self) -> tuple[MemoryStore, MemoryStore | None, MemoryStore]:
+        """创建项目级、当前会话级和用户级记忆存储。"""
 
-        记忆目录由专用工具读写，普通文件工具会把 memory/ 视为受保护目录。
-        这里不复用 _safe_path，是为了允许 MemoryStore 自己访问该受保护目录。
-        """
-
-        raw_directory = self.config.memory_directory.strip()
+        raw_directory = str(getattr(self.config, "memory_directory", ".oclmemory")).strip()
         candidate = Path(raw_directory)
         if not candidate.is_absolute():
             candidate = self.workspace_root / candidate
-        resolved = candidate.resolve()
-        if not self._is_relative_to(resolved, self.workspace_root):
-            raise AgentError(f"记忆目录必须位于工作区内：{raw_directory}")
-        return MemoryStore(resolved)
+        project_root = candidate.resolve()
+        if not self._is_relative_to(project_root, self.workspace_root.resolve()):
+            raise AgentError(f"项目级记忆目录必须位于工作区内：{raw_directory}")
+
+        legacy_root = (self.workspace_root / "memory").resolve()
+        try:
+            migration = migrate_legacy_memory(legacy_root, project_root)
+        except MemoryStoreError as exc:
+            raise AgentError(str(exc)) from exc
+        if migration.migrated and migration.backup_path is not None:
+            LOGGER.info(
+                "旧记忆已迁移到项目级目录；源目录备份为 %s（导入 %d 条）",
+                migration.backup_path,
+                migration.imported_count,
+            )
+
+        project_store = MemoryStore(project_root)
+        user_root = self._memory_user_data_root()
+        user_store = MemoryStore(user_root / "User_memory")
+        session_store = self._create_current_session_memory_store()
+        return project_store, session_store, user_store
+
+    def _create_memory_store(self) -> MemoryStore:
+        """兼容旧调用方，返回项目级记忆存储。"""
+
+        return self._create_memory_stores()[0]
+
+    def _memory_user_data_root(self) -> Path:
+        """返回用户级记忆与会话级记忆共享的用户数据根目录。"""
+
+        return (Path.home() / ".omnicrawl").resolve()
+
+    def _create_current_session_memory_store(self) -> MemoryStore | None:
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            return None
+        session_id = str(state.session_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", session_id):
+            raise AgentError(f"会话 ID 不能用于记忆目录：{session_id}")
+        return MemoryStore(self._memory_user_data_root() / "Session_memory" / session_id)
+
+    def _bind_current_session_memory_store(self) -> None:
+        """按当前 Session 重新绑定会话级记忆，防止跨会话读取。"""
+
+        if not bool(getattr(self.config, "memory_enabled", False)):
+            self._session_memory_store = None
+            return
+        self._session_memory_store = self._create_current_session_memory_store()
+
+    def _delete_session_memory(self, session_id: str) -> None:
+        """删除已删除 Session 的专属记忆目录，避免留下不可见孤儿数据。"""
+
+        if not bool(getattr(self.config, "memory_enabled", False)):
+            return
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", str(session_id).strip()):
+            return
+        path = self._memory_user_data_root() / "Session_memory" / str(session_id).strip()
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+        except OSError as exc:
+            raise AgentError(f"删除会话级记忆失败：{path}，{exc}") from exc
 
     def _create_session_store(self) -> SessionStore:
         """创建会话存储，并限制在工作区内。"""
@@ -2358,7 +2647,7 @@ class LocalToolAgent:
                 )
         else:
             capability_rules = (
-                "不得使用 write_file、replace_text、memory_write 或创建其他 SubAgent；"
+                "不得使用 write_file、replace_text、任何 *_memory_write 或创建其他 SubAgent；"
                 "可以继承 Host 提供的 MCP、Skill、浏览器、桌面与其他外部能力；"
                 "bash、powershell、monitor 仅可执行通过 Host 只读命令策略的命令，"
                 "不得以重定向、脚本解释器、Git 变更或其他方式修改本地工作区文件；"
@@ -2467,6 +2756,8 @@ class LocalToolAgent:
         visible_output_seen = False
         tool_execution_seen = False
         context_overflow_recovered = False
+        active_turn_snapshot: _ActiveTurnSnapshot | None = None
+        turn_snapshot_finalization_started = False
 
         def report_token_usage(
             input_tokens: int,
@@ -2523,6 +2814,7 @@ class LocalToolAgent:
         runtime_manager: ModelRuntimeManager | None = None
         runtime_snapshot = None
         try:
+            active_turn_snapshot = self._begin_turn_snapshot()
             self._pending_user_text = pending_text or text
             self._append_prompt_history(text)
             self._append_session_event("user_message", {"content": text})
@@ -2592,6 +2884,10 @@ class LocalToolAgent:
                     report_tool_result=report_tool_result,
                     check_cancelled=check_cancelled,
                     status=status,
+                    record_tool_execution=lambda tool_call: self._record_turn_tool_execution(
+                        active_turn_snapshot,
+                        tool_call,
+                    ),
                 )
 
             try:
@@ -2658,35 +2954,61 @@ class LocalToolAgent:
                 {"userText": text, "assistantText": final_reply},
                 turn_id=turn_id,
             )
+            turn_snapshot_finalization_started = True
+            self._complete_turn_snapshot(active_turn_snapshot)
             turn_terminal_sent = True
             return final_reply
         except KeyboardInterrupt as exc:
+            snapshot_failure: Exception | None = None
+            if not turn_snapshot_finalization_started:
+                turn_snapshot_finalization_started = True
+                try:
+                    self._complete_turn_snapshot(active_turn_snapshot)
+                except Exception as completion_exc:
+                    snapshot_failure = completion_exc
+            terminal_exc = snapshot_failure or exc
             self._append_session_event(
                 "turn_cancelled",
-                {"user_text": text, "reason": str(exc)},
+                {"user_text": text, "reason": str(terminal_exc)},
             )
             if not turn_terminal_sent:
                 self._dispatch_plugin_hook(
                     "turn.cancelled",
-                    {"userText": text, "reason": str(exc)},
+                    {"userText": text, "reason": str(terminal_exc)},
                     turn_id=turn_id,
                 )
                 turn_terminal_sent = True
+            if snapshot_failure is not None:
+                raise snapshot_failure from exc
             raise
         except Exception as exc:
-            event_type = "turn_cancelled" if self._is_turn_cancel_exception(exc) else "session_interrupted"
+            snapshot_failure = None
+            if not turn_snapshot_finalization_started:
+                turn_snapshot_finalization_started = True
+                try:
+                    self._complete_turn_snapshot(active_turn_snapshot)
+                except Exception as completion_exc:
+                    snapshot_failure = completion_exc
+            terminal_exc = snapshot_failure or exc
+            event_type = (
+                "turn_cancelled"
+                if self._is_turn_cancel_exception(terminal_exc)
+                else "session_interrupted"
+            )
             self._append_session_event(
                 event_type,
-                {"user_text": text, "reason": str(exc)},
+                {"user_text": text, "reason": str(terminal_exc)},
             )
             if not turn_terminal_sent:
                 hook_name = "turn.cancelled" if event_type == "turn_cancelled" else "turn.error"
                 self._dispatch_plugin_hook(
                     hook_name,
-                    {"userText": text, "reason": str(exc)},
+                    {"userText": text, "reason": str(terminal_exc)},
                     turn_id=turn_id,
                 )
                 turn_terminal_sent = True
+            if snapshot_failure is not None:
+                raise snapshot_failure from exc
             raise
         finally:
             if runtime_manager is not None and runtime_snapshot is not None:
@@ -2712,6 +3034,7 @@ class LocalToolAgent:
         status: Callable[[str], None],
         tools: Mapping[str, ToolDefinition] | None = None,
         persist_session_events: bool = True,
+        record_tool_execution: Callable[[ToolCall], None] | None = None,
         subagent_approval_scope: SubAgentApprovalScope | None = None,
     ) -> list[AgentLoopObservation]:
         """规范化、审批并执行一次模型回复中的完整工具批次。
@@ -2775,6 +3098,8 @@ class LocalToolAgent:
                     ok=False,
                     output=f"未知工具：{tool_call.name}。可用工具：{', '.join(active_tools)}",
                 )
+            if record_tool_execution is not None:
+                record_tool_execution(tool_call)
             return self._execute_approved_tool(tool, tool_call.arguments)
 
         parallel_indexes: list[int] = []
@@ -3134,12 +3459,16 @@ class LocalToolAgent:
             ) from exc
 
         http_client = httpx.Client(trust_env=False, follow_redirects=True)
+        openai_kwargs: dict[str, Any] = {
+            "api_key": self.config.llm.api_key,
+            "base_url": self.config.llm.base_url,
+            "http_client": http_client,
+        }
+        user_agent = getattr(self.config.llm, "user_agent", "").strip()
+        if user_agent:
+            openai_kwargs["default_headers"] = {"User-Agent": user_agent}
         try:
-            client = OpenAI(
-                api_key=self.config.llm.api_key,
-                base_url=self.config.llm.base_url,
-                http_client=http_client,
-            )
+            client = OpenAI(**openai_kwargs)
         except Exception:
             http_client.close()
             raise
@@ -3497,8 +3826,13 @@ class LocalToolAgent:
         windows_desktop = self._windows_desktop_toolbox()
         return build_agent_tools(
             mcp_manager=self._mcp_manager,
-            memory_enabled=self._memory_store is not None,
+            memory_enabled=getattr(
+                self,
+                "_project_memory_store",
+                getattr(self, "_memory_store", None),
+            ) is not None,
             list_files=self._tool_list_files,
+            find_files=self._tool_find_files,
             read_file=self._tool_read_file,
             search_text=self._tool_search_text,
             replace_text=self._tool_replace_text,
@@ -3510,6 +3844,18 @@ class LocalToolAgent:
             memory_read=self._tool_memory_read,
             memory_expand_related=self._tool_memory_expand_related,
             memory_write=self._tool_memory_write,
+            project_memory_search=self._tool_project_memory_search,
+            project_memory_read=self._tool_project_memory_read,
+            project_memory_expand_related=self._tool_project_memory_expand_related,
+            project_memory_write=self._tool_project_memory_write,
+            session_memory_search=self._tool_session_memory_search,
+            session_memory_read=self._tool_session_memory_read,
+            session_memory_expand_related=self._tool_session_memory_expand_related,
+            session_memory_write=self._tool_session_memory_write,
+            user_memory_search=self._tool_user_memory_search,
+            user_memory_read=self._tool_user_memory_read,
+            user_memory_expand_related=self._tool_user_memory_expand_related,
+            user_memory_write=self._tool_user_memory_write,
             display_html=self._tool_display_html,
             mcp_call=self._tool_mcp_call,
             mcp_read_resource=self._tool_mcp_read_resource,
@@ -3588,6 +3934,9 @@ class LocalToolAgent:
 
     def _tool_list_files(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().list_files, arguments)
+
+    def _tool_find_files(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().find_files, arguments)
 
     def _tool_read_file(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().read_file, arguments)
@@ -3724,16 +4073,63 @@ class LocalToolAgent:
         )
 
     def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_search_result(self._require_memory_store(), arguments)
+        return memory_search_result(self._require_memory_store("project"), arguments)
 
     def _tool_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_read_result(self._require_memory_store(), arguments)
+        return memory_read_result(self._require_memory_store("project"), arguments)
 
     def _tool_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_expand_related_result(self._require_memory_store(), arguments)
+        return memory_expand_related_result(self._require_memory_store("project"), arguments)
 
     def _tool_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_write_result(self._require_memory_store(), arguments)
+        return memory_write_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_search_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_read_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_expand_related_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_write_result(self._require_memory_store("project"), arguments)
+
+    def _tool_session_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_search_result(self._require_memory_store("session"), arguments)
+
+    def _tool_session_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_read_result(self._require_memory_store("session"), arguments)
+
+    def _tool_session_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_expand_related_result(self._require_memory_store("session"), arguments)
+
+    def _tool_session_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_write_result(self._require_memory_store("session"), arguments)
+
+    def _tool_user_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_search_result(self._require_memory_store("user"), arguments)
+
+    def _tool_user_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_read_result(self._require_memory_store("user"), arguments)
+
+    def _tool_user_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_expand_related_result(self._require_memory_store("user"), arguments)
+
+    def _tool_user_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_write_result(self._require_memory_store("user"), arguments)
+
+    def _require_memory_store(self, scope: str = "project") -> MemoryStore:
+        stores = {
+            "project": getattr(self, "_project_memory_store", getattr(self, "_memory_store", None)),
+            "session": getattr(self, "_session_memory_store", None),
+            "user": getattr(self, "_user_memory_store", None),
+        }
+        store = stores.get(scope)
+        if store is None:
+            raise AgentError(f"{scope} 级记忆系统未启用。")
+        return store
 
     def _tool_mcp_call(self, meta: MCPToolMeta, arguments: dict[str, Any]) -> ToolResult:
         return mcp_tool_result(self._mcp_manager, meta, arguments)
@@ -3743,11 +4139,6 @@ class LocalToolAgent:
 
     def _tool_mcp_get_prompt(self, logical_name: str, arguments: dict[str, Any]) -> ToolResult:
         return mcp_prompt_result(self._mcp_manager, logical_name, arguments)
-
-    def _require_memory_store(self) -> MemoryStore:
-        if self._memory_store is None:
-            raise AgentError("记忆系统未启用。")
-        return self._memory_store
 
     def _require_session_store(self) -> SessionStore:
         return self._session_facade().require_session_store()
@@ -3924,6 +4315,7 @@ class LocalToolAgent:
             self.workspace_root,
             command_timeout_seconds=command_timeout,
             extra_protection_message=self._workspace_extra_protection_message,
+            search_index=getattr(self, "_search_index", None),
         )
         self._workspace_tools = toolbox
         return toolbox
@@ -3984,6 +4376,265 @@ class LocalToolAgent:
         except OSError:
             resolved = path
         return resolved == self._memory_store.root or self._is_relative_to(resolved, self._memory_store.root)
+
+    def _turn_snapshot_roots(self) -> dict[str, SnapshotRoot]:
+        """构造工作区与三类记忆根；工作区排除独立管理的运行态目录。"""
+
+        roots: dict[str, SnapshotRoot] = {}
+        workspace = self.workspace_root.resolve()
+        excluded = {".git"}
+        for candidate in (
+            getattr(getattr(self, "_session_store", None), "root", None),
+            getattr(getattr(self, "_project_memory_store", None), "root", None),
+            getattr(getattr(self, "_session_memory_store", None), "root", None),
+            getattr(getattr(self, "_user_memory_store", None), "root", None),
+        ):
+            if not isinstance(candidate, Path):
+                continue
+            try:
+                excluded.add(candidate.resolve().relative_to(workspace).as_posix())
+            except (OSError, ValueError):
+                continue
+        roots["workspace"] = SnapshotRoot(workspace, tuple(sorted(excluded)))
+
+        session_store = getattr(self, "_session_store", None)
+        session_state = getattr(self, "_session_state", None)
+        if isinstance(session_store, SessionStore) and session_state is not None:
+            session_root = session_store.root.resolve()
+            artifact_relative = (
+                session_store.artifacts_dir
+                / session_state.session_id
+            ).resolve().relative_to(session_root).as_posix()
+            roots["session_runtime"] = SnapshotRoot(
+                session_root,
+                excluded=(f"{artifact_relative}/undo",),
+                included=(
+                    session_store.history_path.resolve()
+                    .relative_to(session_root)
+                    .as_posix(),
+                    artifact_relative,
+                ),
+            )
+
+        for name, attribute in (
+            ("project_memory", "_project_memory_store"),
+            ("session_memory", "_session_memory_store"),
+            ("user_memory", "_user_memory_store"),
+        ):
+            store = getattr(self, attribute, None)
+            root = getattr(store, "root", None)
+            if isinstance(root, Path):
+                roots[name] = SnapshotRoot(root)
+        return roots
+
+    def _begin_turn_snapshot(self) -> _ActiveTurnSnapshot | None:
+        """在模型执行前捕获轮次起点；会话未启用时保持旧行为。"""
+
+        session_store = getattr(self, "_session_store", None)
+        session_state = getattr(self, "_session_state", None)
+        if not isinstance(session_store, SessionStore) or session_state is None:
+            return None
+        git_dir = (
+            session_store.artifacts_dir
+            / session_state.session_id
+            / "undo"
+            / "shadow.git"
+        )
+        try:
+            store = GitSnapshotStore(git_dir)
+            roots = self._turn_snapshot_roots()
+            return _ActiveTurnSnapshot(
+                snapshot_id=uuid.uuid4().hex,
+                store=store,
+                roots=roots,
+                before=store.capture(roots),
+            )
+        except SnapshotError as exc:
+            raise AgentError(f"无法创建本轮 Git 快照，已在执行工具前中止：{exc}") from exc
+
+    def _record_turn_tool_execution(
+        self,
+        snapshot: _ActiveTurnSnapshot | None,
+        tool_call: ToolCall,
+    ) -> None:
+        """记录实际执行过的工具；未知或外部工具会阻止事务式 undo。"""
+
+        if snapshot is None:
+            return
+        name = tool_call.name
+        snapshot.executed_tools.append(name)
+        if self._tool_is_undo_safe(name, tool_call.arguments):
+            return
+        snapshot.irreversible_tools.append(name)
+
+    @staticmethod
+    def _tool_is_undo_safe(name: str, arguments: Mapping[str, Any]) -> bool:
+        if name in _READ_ONLY_UNDO_TOOLS or name in _REVERSIBLE_UNDO_TOOLS:
+            return True
+        if name == "subagent":
+            return str(arguments.get("action") or "run").strip() in {
+                "list",
+                "get",
+                "list_worktrees",
+            }
+        if name == "monitor":
+            return str(arguments.get("action") or "list").strip() in {"list", "poll"}
+        if name == "windows_window":
+            return str(arguments.get("action") or "list").strip() in {"list", "get"}
+        if name == "windows_clipboard":
+            return str(arguments.get("action") or "read_text").strip() == "read_text"
+        if name == "windows_screenshot":
+            return True
+        return False
+
+    def _complete_turn_snapshot(self, snapshot: _ActiveTurnSnapshot | None) -> None:
+        """捕获轮次终点并把可恢复元数据作为 Session 事件持久化。"""
+
+        if snapshot is None or snapshot.completed:
+            return
+        try:
+            after = snapshot.store.capture(snapshot.roots)
+        except SnapshotError as exc:
+            raise AgentError(f"本轮结束 Git 快照失败，副作用无法安全回退：{exc}") from exc
+        self._append_session_event(
+            "turn_snapshot",
+            {
+                "version": 1,
+                "snapshot_id": snapshot.snapshot_id,
+                "roots": {
+                    name: {
+                        "before": snapshot.before[name].to_payload(),
+                        "after": after[name].to_payload(),
+                    }
+                    for name in snapshot.roots
+                },
+                "executed_tools": list(snapshot.executed_tools),
+                "irreversible_tools": list(dict.fromkeys(snapshot.irreversible_tools)),
+            },
+        )
+        snapshot.completed = True
+
+    def _restore_turn_side_effects(
+        self,
+        plan: SessionUndoPlan,
+    ) -> Callable[[], None] | None:
+        """预检并恢复计划中的快照，返回在 Session 提交失败时使用的反向恢复。"""
+
+        snapshot_events = [event for event in plan.events if event.type == "turn_snapshot"]
+        if not snapshot_events:
+            potential_side_effects = []
+            requested_calls = {
+                str(event.payload.get("tool_call_id") or ""): event.payload
+                for event in plan.events
+                if event.type == "tool_call_requested"
+                and str(event.payload.get("tool_call_id") or "")
+            }
+            for event in plan.events:
+                if event.type == "compact_summary":
+                    potential_side_effects.append("context_compaction")
+                if event.type != "tool_result" or event.payload.get("ok") is False:
+                    continue
+                tool_name = str(event.payload.get("tool") or "").strip()
+                request_payload = requested_calls.get(
+                    str(event.payload.get("tool_call_id") or ""),
+                    {},
+                )
+                arguments = request_payload.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                if tool_name and not self._tool_is_undo_safe(tool_name, arguments):
+                    potential_side_effects.append(tool_name)
+                elif tool_name in _REVERSIBLE_UNDO_TOOLS:
+                    potential_side_effects.append(tool_name)
+            if potential_side_effects:
+                names = "、".join(dict.fromkeys(potential_side_effects))
+                raise AgentError(
+                    "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：" + names
+                )
+            return None
+        if len(snapshot_events) != 1:
+            raise AgentError("当前轮次包含多个 Git 快照事件，无法安全回退。")
+
+        payload = snapshot_events[0].payload
+        irreversible = payload.get("irreversible_tools", [])
+        if not isinstance(irreversible, list):
+            raise AgentError("轮次快照的不可逆工具账本格式无效。")
+        blocker_names = [str(name).strip() for name in irreversible if str(name).strip()]
+        if blocker_names:
+            raise AgentError(
+                "该轮执行了无法由 Git 证明可逆的操作，已拒绝整轮回退："
+                + "、".join(dict.fromkeys(blocker_names))
+            )
+
+        roots_payload = payload.get("roots")
+        if not isinstance(roots_payload, dict):
+            raise AgentError("轮次快照缺少 roots。")
+        roots = self._turn_snapshot_roots()
+        if set(roots_payload) != set(roots):
+            raise AgentError("当前工作区或记忆作用域与轮次快照不一致，已拒绝回退。")
+
+        before: dict[str, GitTreeSnapshot] = {}
+        after: dict[str, GitTreeSnapshot] = {}
+        try:
+            for name, value in roots_payload.items():
+                if not isinstance(value, dict):
+                    raise SnapshotError(f"快照根 {name} 格式无效。")
+                before_payload = value.get("before")
+                after_payload = value.get("after")
+                if not isinstance(before_payload, dict) or not isinstance(
+                    after_payload, dict
+                ):
+                    raise SnapshotError(f"快照根 {name} 缺少 before/after。")
+                before[name] = GitTreeSnapshot.from_payload(before_payload)
+                after[name] = GitTreeSnapshot.from_payload(after_payload)
+            session_store = self._session_facade().require_session_store()
+            git_dir = (
+                session_store.artifacts_dir
+                / plan.session_id
+                / "undo"
+                / "shadow.git"
+            )
+            snapshot_store = GitSnapshotStore(git_dir)
+            snapshot_store.transition(roots=roots, expected=after, target=before)
+        except SnapshotError as exc:
+            raise AgentError(f"副作用回退冲突或失败：{exc}") from exc
+
+        def rollback() -> None:
+            snapshot_store.transition(roots=roots, expected=before, target=after)
+
+        return rollback
+
+    def _refresh_workspace_after_undo(self) -> None:
+        """文件树恢复后重建搜索索引，避免查询到已回退内容。"""
+
+        current = getattr(self, "_search_index", None)
+        if current is None:
+            return
+        rebuilt: ProjectSearchIndex | None = None
+        try:
+            current.close()
+            rebuilt = ProjectSearchIndex(
+                self.workspace_root,
+                file_name_enabled=bool(
+                    getattr(self.config, "file_name_index_enabled", False)
+                ),
+                content_enabled=bool(
+                    getattr(self.config, "content_index_enabled", False)
+                ),
+                should_skip=self._workspace_tools.should_skip_path,
+            )
+            rebuilt.start()
+            self._search_index = rebuilt
+            self._workspace_tools.search_index = rebuilt
+        except Exception as exc:  # noqa: BLE001 - 索引失败不能推翻已提交的 undo
+            LOGGER.warning("undo 后重建项目搜索索引失败：%s", exc)
+            if rebuilt is not None:
+                try:
+                    rebuilt.close()
+                except Exception:  # noqa: BLE001 - 已处于降级清理路径
+                    pass
+            self._search_index = None
+            self._workspace_tools.search_index = None
 
     def _is_session_path(self, path: Path) -> bool:
         """普通文件工具不直接访问会话目录，避免模型误写转录文件。"""
@@ -4452,9 +5103,13 @@ class LocalToolAgent:
         return result.summary
 
     def _write_compaction_memories(self, compact_payload: Mapping[str, Any]) -> None:
-        """把压缩结果中的稳定项目信息写入长期记忆；失败不影响压缩。"""
+        """把压缩结果写入当前会话级记忆；失败不影响压缩。"""
 
-        store = getattr(self, "_memory_store", None)
+        store = getattr(self, "_session_memory_store", None)
+        if store is None and not hasattr(self, "_session_memory_store"):
+            # 兼容旧测试/嵌入调用方手工构造的 Agent；正式实例始终显式绑定
+            # 会话级 Store，因此不会把项目级记忆当作压缩记忆目标。
+            store = getattr(self, "_memory_store", None)
         if store is None:
             return
 

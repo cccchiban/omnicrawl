@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from omnicrawl.memory import MemoryStore, MemoryWriteRequest
 from omnicrawl.state import memory as memory_module
@@ -53,6 +55,42 @@ class MemoryModuleBoundaryTests(unittest.TestCase):
             self.assertEqual(records[0].content, "用户偏好简洁回答。")
             index_path = Path(temp_dir) / "index.json"
             self.assertTrue(index_path.is_file())
+
+    def test_should_retry_memory_index_replace_when_windows_temporarily_denies_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MemoryStore(Path(temp_dir))
+            original_replace = Path.replace
+            replace_attempts = 0
+
+            def temporarily_denied(source: Path, destination: Path) -> Path:
+                nonlocal replace_attempts
+                replace_attempts += 1
+                if replace_attempts < 3:
+                    error = PermissionError(13, "Access is denied", str(destination))
+                    error.winerror = 5
+                    raise error
+                return original_replace(source, destination)
+
+            with (
+                mock.patch.object(Path, "replace", autospec=True, side_effect=temporarily_denied),
+                mock.patch("omnicrawl.state.session_locking.sys.platform", "win32"),
+                mock.patch("omnicrawl.state.session_locking.time.sleep"),
+            ):
+                written = store.write(
+                    [
+                        MemoryWriteRequest(
+                            content="短暂占用后仍应写入记忆索引。",
+                            related_directories=["project-context/general"],
+                            storage_directory="project-context/general",
+                        )
+                    ]
+                )
+
+            index_path = Path(temp_dir) / "index.json"
+            self.assertEqual(replace_attempts, 3)
+            self.assertEqual(len(written), 1)
+            self.assertTrue(index_path.is_file())
+            self.assertEqual(len(json.loads(index_path.read_text(encoding="utf-8"))["memories"]), 1)
 
     def test_search_scoring_prefers_token_hits(self) -> None:
         now = datetime(2026, 7, 12, tzinfo=timezone.utc)

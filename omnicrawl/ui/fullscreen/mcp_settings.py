@@ -337,12 +337,12 @@ class MCPServerListScreen(ModalScreen[Optional[MCPSettingsAction]]):
 
 
 class MCPServerEditorScreen(ModalScreen[Optional[MCPServerConfig]]):
-    """第三级编辑器：敏感环境变量只显示摘要。"""
+    """第三级编辑器：敏感环境变量和 HTTP 请求头只显示摘要。"""
 
     BINDINGS = [("escape", "cancel", "取消"), Binding("ctrl+s", "save", "保存", priority=True)]
     CSS = terminal_css("""
     MCPServerEditorScreen { align: center middle; background: $terminal-overlay; }
-    #mcp-editor-dialog { width: 88; max-width: 96%; height: 35; max-height: 95%; padding: 1 2; border: solid $terminal-blue; background: $terminal-surface; }
+    #mcp-editor-dialog { width: 88; max-width: 96%; height: 39; max-height: 95%; padding: 1 2; border: solid $terminal-blue; background: $terminal-surface; }
     #mcp-editor-title { height: 1; margin-bottom: 1; color: $terminal-green; text-style: bold; }
     #mcp-editor-form { height: 1fr; }
     .mcp-editor-control { height: 3; margin-bottom: 1; }
@@ -375,6 +375,9 @@ class MCPServerEditorScreen(ModalScreen[Optional[MCPServerConfig]]):
                 env_note = f"stdio 环境变量：已配置 {len(d.env)} 项；留空保持原值，输入 KEY=VALUE;KEY2=VALUE 可替换"
                 yield Static(env_note, id="mcp-editor-env-note")
                 yield Input("", placeholder="仅传给 stdio 子进程；凭据不会回显", password=True, id="mcp-editor-env", classes="mcp-editor-control")
+                headers_note = f"HTTP 请求头：已配置 {len(d.headers)} 项；仅 streamable_http 使用，留空保持原值"
+                yield Static(headers_note, id="mcp-editor-headers-note")
+                yield Input("", placeholder="例如 Authorization=Bearer TOKEN;X-API-Key=KEY", password=True, id="mcp-editor-headers", classes="mcp-editor-control")
                 yield Static(" ", id="mcp-editor-status")
             with Horizontal(id="mcp-editor-actions"):
                 yield Button("取消", id="mcp-editor-cancel")
@@ -435,9 +438,18 @@ class MCPServerEditorScreen(ModalScreen[Optional[MCPServerConfig]]):
                 if not separator or not key.strip():
                     raise MCPConfigError("环境变量格式必须是 KEY=VALUE。")
                 env[key.strip()] = value
-        result = MCPServerConfig(name=name, enabled=self._draft.enabled, transport=transport, command=command, args=args, url=url, env=env, timeout_seconds=timeout, risk_level=risk)
+        headers_text = self.query_one("#mcp-editor-headers", Input).value.strip()
+        headers = dict(self._draft.headers)
+        if headers_text:
+            headers = {}
+            for item in headers_text.split(";"):
+                key, separator, value = item.partition("=")
+                if not separator or not key.strip():
+                    raise MCPConfigError("请求头格式必须是 Header=Value。")
+                headers[key.strip()] = value.strip()
+        result = MCPServerConfig(name=name, enabled=self._draft.enabled, transport=transport, command=command, args=args, url=url, env=env, headers=headers, timeout_seconds=timeout, risk_level=risk)
         from ...mcp.config import _load_server_config
-        return _load_server_config(name, {"enabled": result.enabled, "transport": result.transport, "command": result.command, "args": result.args, "url": result.url, "env": result.env, "timeout_seconds": result.timeout_seconds, "risk_level": result.risk_level}, default_timeout_seconds=30)
+        return _load_server_config(name, {"enabled": result.enabled, "transport": result.transport, "command": result.command, "args": result.args, "url": result.url, "env": result.env, "headers": result.headers, "timeout_seconds": result.timeout_seconds, "risk_level": result.risk_level}, default_timeout_seconds=30)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

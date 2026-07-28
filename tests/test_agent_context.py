@@ -591,8 +591,10 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         self.assertEqual(
             [event["type"] for event in events],
-            ["session_started", "user_message", "assistant_message"],
+            ["session_started", "user_message", "assistant_message", "turn_snapshot"],
         )
+        self.assertEqual(events[-1]["payload"]["version"], 1)
+        self.assertIn("workspace", events[-1]["payload"]["roots"])
         self.assertEqual(restored.messages[-2]["content"], "记录会话")
         self.assertEqual(restored.messages[-1]["content"], "完成")
 
@@ -1699,6 +1701,20 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn("Bash 工具中不得使用 PowerShell 语法", prompt)
         self.assertIn("diagnostic_command", prompt)
         self.assertIn("不要只更换角色重复调用", prompt)
+
+    def test_system_prompt_describes_memory_operating_protocol(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
+
+        prompt = LocalToolAgent._system_prompt(agent)
+
+        self.assertIn("记忆不会自动注入当前上下文", prompt)
+        self.assertIn("先搜索摘要，再按需读取全文", prompt)
+        self.assertIn("必须提供具体 `query` 和说明检索目的的 `reason`", prompt)
+        self.assertIn("project_memory_write", prompt)
+        self.assertIn("session_memory_write", prompt)
+        self.assertIn("user_memory_write", prompt)
+        self.assertIn("任何作用域都禁止写入密码、API Key、Token、Cookie", prompt)
 
     def test_active_skill_body_is_context_message_not_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

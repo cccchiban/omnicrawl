@@ -27,9 +27,9 @@ DEFAULT_MAX_RESULTS = 3
 # 默认扫描的作用域目录（优先级从低到高，后加载的覆盖先加载的）
 SKILL_SCOPES: list[tuple[str, str]] = [
     # (scope标识, 环境变量或固定路径)
-    ("enterprise", "TUI_AGENT_ENTERPRISE_DIR"),
-    ("user", "~/.tui-agent/skills"),
-    ("project", ".claude/skills"),
+    ("enterprise", "OMNICRAWL_ENTERPRISE_DIR"),
+    ("user", "~/.omnicrawl/skills"),
+    ("project", ".omnicrawl/skills"),
 ]
 
 
@@ -145,9 +145,9 @@ class SkillManager:
         """遍历所有作用域目录，构建 Skill 索引。
 
         加载顺序（低优先级先，高优先级覆盖）：
-        1. 企业级  — $TUI_AGENT_ENTERPRISE_DIR
-        2. 个人级  — ~/.tui-agent/skills/
-        3. 项目级  — <cwd>/.claude/skills/
+        1. 企业级  — $OMNICRAWL_ENTERPRISE_DIR
+        2. 个人级  — ~/.omnicrawl/skills/
+        3. 项目级  — <cwd>/.omnicrawl/skills/
         4. 额外路径 — extra_paths（CLI --skill、settings.json）
 
         同名 Skill 保留先加载的（即更高优先级的），记录碰撞诊断。
@@ -168,10 +168,10 @@ class SkillManager:
                 if env_val:
                     self._scan_directory(Path(env_val).expanduser().resolve(), scope)
             elif scope == "user":
-                user_skills = home_dir / ".tui-agent" / "skills"
+                user_skills = home_dir / ".omnicrawl" / "skills"
                 self._scan_directory(user_skills, scope)
             elif scope == "project":
-                project_skills = work_dir / ".claude" / "skills"
+                project_skills = work_dir / ".omnicrawl" / "skills"
                 self._scan_directory(project_skills, scope)
 
         for raw_path in (extra_paths or []):

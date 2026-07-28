@@ -207,7 +207,11 @@ class WorkspaceSwitchTest(unittest.TestCase):
             with patch("openai.OpenAI", return_value=SimpleNamespace()):
                 agent = LocalToolAgent(config)
                 try:
-                    self.assertTrue({"read_file", "bash", "powershell", "monitor"}.issubset(agent._tools))
+                    self.assertTrue(
+                        {"find_files", "read_file", "bash", "powershell", "monitor"}.issubset(
+                            agent._tools
+                        )
+                    )
                     self.assertNotIn("run_command", agent._tools)
                     schema = agent._tools["read_file"].argument_schema
                     self.assertIn("function_name", schema)

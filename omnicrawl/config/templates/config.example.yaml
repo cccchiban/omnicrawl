@@ -21,6 +21,8 @@ llm:
       enabled: true
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
+      # 可选：覆盖该渠道请求使用的 HTTP User-Agent。
+      # user_agent: "OmniCrawl/1.0"
       default_protocol: openai_chat_completions
       discovery:
         enabled: true
@@ -51,6 +53,14 @@ approval:
 
 memory:
   enabled: true
+
+# 两类搜索索引均默认关闭；可在 TUI /settings 中独立启用。
+# 快照按 PRJ 隔离保存到 ~/.OmniCrawl/search-index/，不会写入项目目录。
+file_name_index:
+  enabled: false
+
+content_index:
+  enabled: false
 
 context_compaction:
   enabled: false
@@ -106,6 +116,15 @@ mcp:
   default_timeout_seconds: 30
   max_tool_output_chars: 6000
   servers: {}
+  # 远程 Streamable HTTP Server 可在这里声明认证请求头：
+  # servers:
+  #   remote_service:
+  #     enabled: true
+  #     transport: streamable_http
+  #     url: https://example.com/mcp
+  #     headers:
+  #       Authorization: "Bearer replace-with-token"
+  #       X-API-Key: "replace-with-api-key"
   policy:
     require_confirmation_for_write: true
     require_confirmation_for_command: true

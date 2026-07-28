@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from omnicrawl.session import DurableWritePolicy, SessionStore, SessionStoreError
 from omnicrawl.state import session_locking
@@ -71,6 +72,48 @@ class SessionLockingUnitTest(unittest.TestCase):
             session_locking.append_text_line(history, '{"a":2}', fsync=True)
             lines = [line for line in history.read_text(encoding="utf-8").splitlines() if line]
             self.assertEqual(len(lines), 2)
+    def test_should_retry_atomic_replace_when_windows_temporarily_denies_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "index.json"
+            original_replace = Path.replace
+            replace_attempts = 0
+
+            def temporarily_denied(source: Path, destination: Path) -> Path:
+                nonlocal replace_attempts
+                replace_attempts += 1
+                if replace_attempts < 3:
+                    error = PermissionError(13, "Access is denied", str(destination))
+                    error.winerror = 5
+                    raise error
+                return original_replace(source, destination)
+
+            with (
+                mock.patch.object(Path, "replace", autospec=True, side_effect=temporarily_denied),
+                mock.patch.object(session_locking.sys, "platform", "win32"),
+                mock.patch.object(session_locking.time, "sleep") as sleep_mock,
+            ):
+                session_locking.atomic_write_text(target, '{"ok": true}\n', fsync=False)
+
+            self.assertEqual(replace_attempts, 3)
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["ok"], True)
+            self.assertEqual(sleep_mock.call_count, 2)
+
+    def test_should_raise_after_windows_access_denied_retries_are_exhausted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "index.json"
+            access_denied = PermissionError(13, "Access is denied", str(target))
+            access_denied.winerror = 5
+
+            with (
+                mock.patch.object(Path, "replace", autospec=True, side_effect=access_denied) as replace_mock,
+                mock.patch.object(session_locking.sys, "platform", "win32"),
+                mock.patch.object(session_locking.time, "sleep"),
+            ):
+                with self.assertRaisesRegex(SessionStoreError, "原子写入失败"):
+                    session_locking.atomic_write_text(target, "{}\n", fsync=False)
+
+            self.assertGreater(replace_mock.call_count, 1)
+            self.assertEqual(list(Path(temp_dir).glob("*.tmp")), [])
 
 
 class SessionStoreCrossProcessTest(unittest.TestCase):

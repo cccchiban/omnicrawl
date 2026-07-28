@@ -229,7 +229,7 @@ def _cmd_install(args: argparse.Namespace, root: Path) -> int:
         print(f"- {item}", file=sys.stderr)
     if not config.enabled:
         print(
-            "提示：全局 plugins.enabled=false。需要时执行：python main.py plugin system enable",
+            "提示：全局 plugins.enabled=false。需要时执行：ocl plugin system enable",
             file=sys.stderr,
         )
     return EXIT_OK
@@ -285,7 +285,7 @@ def _cmd_enable(args: argparse.Namespace, root: Path, enabled: bool) -> int:
     config = parse_plugins_config(get_section(load_config_data(), "plugins"))
     if enabled and not config.enabled:
         print(
-            "提示：插件已启用，但全局 plugins.enabled=false。请执行 plugin system enable。",
+            "提示：插件已启用，但全局 plugins.enabled=false。请执行 ocl plugin system enable。",
             file=sys.stderr,
         )
     return EXIT_OK

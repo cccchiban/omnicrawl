@@ -23,16 +23,16 @@ Skill 是一组面向特定任务的专用指令。它不会替代工具权限�
 
 | 作用域 | 目录 | 适用场景 |
 |------|------|----------|
-| 项目级 | `.claude/skills/<skill-name>/SKILL.md` | 只给当前项目使用，推荐优先使用 |
-| 个人级 | `~/.tui-agent/skills/<skill-name>/SKILL.md` | 当前用户多个项目复用 |
-| 企业级 | `$TUI_AGENT_ENTERPRISE_DIR/<skill-name>/SKILL.md` | 管理员统一分发 |
+| 项目级 | `.omnicrawl/skills/<skill-name>/SKILL.md` | 只给当前项目使用，推荐优先使用 |
+| 个人级 | `~/.omnicrawl/skills/<skill-name>/SKILL.md` | 当前用户多个项目复用 |
+| 企业级 | `$OMNICRAWL_ENTERPRISE_DIR/<skill-name>/SKILL.md` | 管理员统一分发 |
 
 同名 Skill 按当前实现由后加载作用域覆盖前面作用域：项目级优先于个人级，个人级优先于企业级。额外路径 `skill_paths` 的优先级最高。
 
 推荐目录结构：
 
 ```text
-.claude/skills/
+.omnicrawl/skills/
 └── python-code-review/
     ├── SKILL.md
     ├── references/
@@ -104,7 +104,7 @@ Agent 对 Skill 的读取分三层：
 
 | 项目 | 默认值 |
 |------|--------|
-| 安装位置 | 项目级 `.claude/skills/` |
+| 安装位置 | 项目级 `.omnicrawl/skills/` |
 | 安装方式 | 先检查仓库结构和 `SKILL.md` 元数据，再复制必要的 Skill 目录 |
 | 单 Skill 仓库 | 只有 Skill 名称、描述与用户目标一致时才直接安装 |
 | 泛称仓库 | 仓库名为 `skills`、`claude-skills`、`agent-skills` 等泛称时，必须检查 README、分支和 tag |
@@ -134,7 +134,7 @@ Agent 对 Skill 的读取分三层：
 
 ### 5.1 本地创建
 
-1. 在 `.claude/skills/<skill-name>/` 下创建 `SKILL.md`。
+1. 在 `.omnicrawl/skills/<skill-name>/` 下创建 `SKILL.md`。
 2. 填写 `name`、`description` 和正文。
 3. 重启程序，或在下一次精确调用 `/skill:<skill-name>` 时让系统重新发现。
 4. 输入 `/skills` 确认已加载。
@@ -149,7 +149,7 @@ Agent 对 Skill 的读取分三层：
 3. 对泛称仓库或语义不一致场景，继续检查远程分支、tag 和子目录，直到找到唯一目标或需要用户确认。
 4. 检查目标 Skill 的 frontmatter 字段是否符合本项目规则。
 5. 检查 `scripts/` 是否会联网、写文件或执行高风险命令。
-6. 只复制目标 Skill 的必要文件到 `.claude/skills/<skill-name>/` 或 `~/.tui-agent/skills/<skill-name>/`，不要把完整仓库、临时脚本或无关示例复制到正式目录。
+6. 只复制目标 Skill 的必要文件到 `.omnicrawl/skills/<skill-name>/`、`~/.omnicrawl/skills/<skill-name>/` 或 `$OMNICRAWL_ENTERPRISE_DIR/<skill-name>/`，不要把完整仓库、临时脚本或无关示例复制到正式目录。
 7. 重启程序并执行 `/skills` 验证。
 8. 交付说明中写明 Skill 名称、来源仓库或本地路径、来源分支或 commit、安装目录、核心文件验证结果；如排除过不匹配候选，也要说明排除原因。
 
@@ -174,8 +174,8 @@ Agent 对 Skill 的读取分三层：
 
 ## 7. 维护约定
 
-- 项目专用 Skill 放 `.claude/skills/`，可随项目提交。
-- 个人习惯类 Skill 放 `~/.tui-agent/skills/`，不写入项目仓库。
+- 项目专用 Skill 放 `.omnicrawl/skills/`，可随项目提交。
+- 个人习惯类 Skill 放 `~/.omnicrawl/skills/`，不写入项目仓库。
 - 修改 Skill 后用 `/skills` 和 `/skill:name` 做最小验证。
 - 不在 Skill 中保存密钥、Token、私人路径或真实生产数据。
 - 不让 Skill 承诺“自动安装依赖”“自动执行命令”；涉及安装、联网、删除、写入等操作仍必须走用户确认。

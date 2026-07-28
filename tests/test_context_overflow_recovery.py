@@ -134,7 +134,8 @@ class ContextOverflowRecoveryTest(unittest.TestCase):
                 "assistant_message",
             ],
         )
-        self.assertEqual(events[-1].type, "context_compaction_measurement")
+        self.assertEqual(events[-2].type, "context_compaction_measurement")
+        self.assertEqual(events[-1].type, "turn_snapshot")
         compact = next(event.payload for event in events if event.type == "compact_summary")
         self.assertEqual(compact["decision_reason"], "context_overflow_recovery")
         self.assertTrue(compact["single_large_turn"])

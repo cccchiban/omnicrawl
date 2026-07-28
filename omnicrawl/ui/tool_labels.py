@@ -19,6 +19,7 @@ class ToolDisplay:
 
 _TOOL_DISPLAY_NAMES = {
     "list_files": "列出文件",
+    "find_files": "查找文件",
     "read_file": "读取文件",
     "search_text": "搜索文本",
     "replace_text": "替换文本",
@@ -37,10 +38,23 @@ _TOOL_DISPLAY_NAMES = {
     "memory_read": "读取记忆",
     "memory_expand_related": "扩展关联记忆",
     "memory_write": "写入记忆",
+    "project_memory_search": "搜索项目记忆",
+    "project_memory_read": "读取项目记忆",
+    "project_memory_expand_related": "扩展项目记忆",
+    "project_memory_write": "写入项目记忆",
+    "session_memory_search": "搜索会话记忆",
+    "session_memory_read": "读取会话记忆",
+    "session_memory_expand_related": "扩展会话记忆",
+    "session_memory_write": "写入会话记忆",
+    "user_memory_search": "搜索用户记忆",
+    "user_memory_read": "读取用户记忆",
+    "user_memory_expand_related": "扩展用户记忆",
+    "user_memory_write": "写入用户记忆",
 }
 
 _TOOL_DISPLAY_ICONS = {
     "list_files": "L",
+    "find_files": "F",
     "read_file": "R",
     "search_text": "S",
     "replace_text": "✎",
@@ -59,6 +73,18 @@ _TOOL_DISPLAY_ICONS = {
     "memory_read": "◎",
     "memory_expand_related": "◎",
     "memory_write": "◎",
+    "project_memory_search": "◎",
+    "project_memory_read": "◎",
+    "project_memory_expand_related": "◎",
+    "project_memory_write": "◎",
+    "session_memory_search": "◎",
+    "session_memory_read": "◎",
+    "session_memory_expand_related": "◎",
+    "session_memory_write": "◎",
+    "user_memory_search": "◎",
+    "user_memory_read": "◎",
+    "user_memory_expand_related": "◎",
+    "user_memory_write": "◎",
 }
 
 _MCP_OPERATION_NAMES = {

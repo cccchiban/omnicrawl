@@ -25,6 +25,10 @@ from .session_models import SessionStoreError
 DEFAULT_LOCK_TIMEOUT_SECONDS = 30.0
 DEFAULT_LOCK_POLL_SECONDS = 0.05
 LOCK_FILE_NAME = ".session_store.lock"
+# Windows 上目标文件被只读打开/杀软扫描时，os.replace 可能短暂返回 WinError 5。
+# 这里对可恢复的拒绝访问做短重试，避免会话索引写一次失败就中断整轮对话。
+ATOMIC_REPLACE_MAX_ATTEMPTS = 8
+ATOMIC_REPLACE_RETRY_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -214,6 +218,7 @@ def atomic_write_text(
     """同目录临时文件写入后原子替换。
 
     Windows 上 `Path.replace` 可覆盖已存在目标；POSIX 亦为原子 rename。
+    若目标文件被短暂占用导致 WinError 5 / PermissionError，按短退避重试。
     """
 
     path = path.resolve()
@@ -234,7 +239,7 @@ def atomic_write_text(
             file.flush()
             if fsync:
                 os.fsync(file.fileno())
-        temp_path.replace(path)
+        _replace_with_retry(temp_path, path)
         if fsync:
             _fsync_directory(path.parent)
     except OSError as exc:
@@ -244,6 +249,49 @@ def atomic_write_text(
             except OSError:
                 pass
         raise SessionStoreError(f"原子写入失败：{path}，{exc}") from exc
+
+
+def _is_transient_windows_access_denied(exc: BaseException) -> bool:
+    """判断是否为 Windows 上可重试的目标文件占用错误。"""
+
+    if sys.platform != "win32":
+        return False
+    if not isinstance(exc, OSError):
+        return False
+    winerror = getattr(exc, "winerror", None)
+    if winerror == 5:
+        return True
+    # 部分包装路径只保留 errno=EACCES / PermissionError，无 winerror。
+    if isinstance(exc, PermissionError):
+        return True
+    return getattr(exc, "errno", None) in {getattr(os, "EACCES", 13), 13}
+
+
+def replace_with_retry(temp_path: Path, path: Path) -> None:
+    """原子替换目标文件；Windows 短暂拒绝访问时短退避重试。
+
+    供 session / memory 等状态层共用，避免各处重复实现 WinError 5 处理。
+    失败时仍抛出原始 ``OSError``，由调用方包装业务错误。
+    """
+
+    attempts = ATOMIC_REPLACE_MAX_ATTEMPTS if sys.platform == "win32" else 1
+    last_error: OSError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            temp_path.replace(path)
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt >= attempts or not _is_transient_windows_access_denied(exc):
+                raise
+            # 线性退避，把总等待控制在约 0.05+0.10+...≈1.4s 内。
+            time.sleep(ATOMIC_REPLACE_RETRY_SECONDS * attempt)
+    if last_error is not None:  # pragma: no cover - 循环已保证 raise
+        raise last_error
+
+
+# 兼容内部旧名；新代码请直接调用 replace_with_retry。
+_replace_with_retry = replace_with_retry
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -301,6 +349,8 @@ def _release_os_lock(handle: TextIO) -> None:
 
 
 __all__ = [
+    "ATOMIC_REPLACE_MAX_ATTEMPTS",
+    "ATOMIC_REPLACE_RETRY_SECONDS",
     "DEFAULT_LOCK_POLL_SECONDS",
     "DEFAULT_LOCK_TIMEOUT_SECONDS",
     "DurableWritePolicy",
@@ -310,4 +360,5 @@ __all__ = [
     "atomic_write_text",
     "exclusive_session_write",
     "process_lock_for_root",
+    "replace_with_retry",
 ]

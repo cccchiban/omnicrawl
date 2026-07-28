@@ -31,7 +31,7 @@ from ..protocol import (
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
 from ..usage import usage_from_anthropic_payload
-from .openai_common import parse_tool_arguments, resolve_api_key
+from .openai_common import parse_tool_arguments, resolve_api_key, user_agent_headers
 
 
 _ANTHROPIC_OPTION_ALLOWLIST = frozenset(
@@ -371,6 +371,9 @@ def _create_anthropic_client(profile: ProviderProfile) -> Any:
     kwargs: dict[str, Any] = {"api_key": api_key}
     if profile.base_url.strip():
         kwargs["base_url"] = profile.base_url.strip()
+    headers = user_agent_headers(profile)
+    if headers:
+        kwargs["default_headers"] = headers
     timeout = profile.request_timeout_seconds
     if timeout:
         kwargs["timeout"] = timeout

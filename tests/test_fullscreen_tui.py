@@ -178,9 +178,14 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("IN 0", telemetry)
             self.assertIn("CTX 0/128K", telemetry)
             self.assertIn("MCP 2", telemetry)
-            # border-bottom 会占 1 行；内容区高度必须 > 0，否则终端上看不到 Token 行。
-            self.assertEqual(token_widget.region.height, 2)
+            # 第二行容器保留底边框，Token 与索引状态各占一行内容高度。
+            telemetry_row = app.query_one("#telemetry-row")
+            index_widget = app.query_one("#index-status", Static)
+            self.assertEqual(telemetry_row.region.height, 2)
+            self.assertEqual(token_widget.region.height, 1)
             self.assertGreater(token_widget.size.height, 0)
+            self.assertEqual(index_widget.region.x, version.region.x)
+            self.assertEqual(index_widget.region.width, version.region.width)
             rendered_token = "".join(segment.text for segment in token_widget.render_line(0))
             self.assertIn("IN", rendered_token)
             self.assertIn("CTX", rendered_token)
@@ -303,9 +308,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(30, 20)) as pilot:
             composer = app.query_one("#composer", TextArea)
             self.assertEqual(composer.region.height, 1)
-            for ctrl_enter_key in ("ctrl+enter", "ctrl+\r", "ctrl+j"):
+            for shift_enter_key in ("shift+enter", "shift+\r", "shift+j"):
                 composer.clear()
-                await pilot.press("a", ctrl_enter_key, "b")
+                await pilot.press("a", shift_enter_key, "b")
                 await pilot.pause()
                 self.assertEqual(composer.text, "a\nb")
 
@@ -331,6 +336,93 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
             self.assertEqual(submitted, ["第一行\n第二行"])
+            self.assertEqual(composer.text, "")
+
+    async def test_long_paste_is_compacted_in_composer_and_expanded_on_submit(self) -> None:
+        """超过五行的粘贴内容只在输入框中缩略，提交仍发送原文。"""
+
+        from textual import events
+        from textual.widgets import TextArea
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        submitted: list[str] = []
+        app._submit = submitted.append  # type: ignore[method-assign]
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            composer = app.query_one("#composer", TextArea)
+            short_paste = "\n".join(f"短粘贴 {index}" for index in range(5))
+            composer.post_message(events.Paste(short_paste))
+            await pilot.pause()
+
+            self.assertEqual(composer.text, short_paste)
+
+            composer.clear()
+            long_paste = "\n".join(f"长粘贴 {index}" for index in range(6))
+            composer.post_message(events.Paste(long_paste))
+            await pilot.pause()
+
+            self.assertEqual(composer.text, "[粘贴 #1 +6 行]")
+            self.assertEqual(composer.region.height, 1)
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            self.assertEqual(submitted, [long_paste])
+            self.assertEqual(composer.text, "")
+
+            app._clipboard = "\n".join(f"剪贴板粘贴 {index}" for index in range(8))
+            composer.action_paste()
+            await pilot.pause()
+
+            self.assertEqual(composer.text, "[粘贴 #2 +8 行]")
+
+    async def test_long_paste_is_expanded_when_queued_during_generation(self) -> None:
+        """生成期间排队的长粘贴也必须保存原文，而不是保存占位符。"""
+
+        from textual import events
+        from textual.widgets import TextArea
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            composer = app.query_one("#composer", TextArea)
+            app.is_generating = True
+            long_paste = "\n".join(f"排队粘贴 {index}" for index in range(7))
+            composer.post_message(events.Paste(long_paste))
+            await pilot.pause()
+
+            self.assertEqual(composer.text, "[粘贴 #1 +7 行]")
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            self.assertEqual(list(app._pending_inputs), [long_paste])
             self.assertEqual(composer.text, "")
 
     def test_terminal_css_is_transparent_and_self_contained(self) -> None:
@@ -777,6 +869,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(copied, [" 可以复制的"])
 
+    async def test_pending_messages_are_drained_in_fifo_order(self) -> None:
         """生成期间提交的多条消息应按 FIFO 顺序自动发送。"""
 
         from textual.widgets import Static, TextArea
@@ -801,7 +894,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 self.calls.append(text)
                 if text == "first":
                     first_started.set()
-                    release_first.wait(timeout=1)
+                    release_first.wait(timeout=2)
                 on_delta(f"完成：{text}")
                 return text
 
@@ -816,7 +909,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             composer.text = "first"
             await pilot.press("enter")
             await pilot.pause()
-            self.assertTrue(first_started.wait(timeout=1))
+            self.assertTrue(first_started.wait(timeout=2))
 
             composer.text = "second"
             await pilot.press("enter")
@@ -1209,7 +1302,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
             rows = list(app.screen.query(".settings-row"))
-            self.assertEqual(len(rows), 11)
+            self.assertEqual(len(rows), 13)
             self.assertTrue(
                 all(str(row.content).strip() for row in rows),
                 [repr(str(row.content)) for row in rows],
@@ -1219,6 +1312,12 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("上下文长度（K）：128K", str(rows[3].content))
             self.assertTrue(
                 any("上下文压缩：已关闭" in str(row.content) for row in rows)
+            )
+            self.assertTrue(
+                any("文件名快速索引：已关闭" in str(row.content) for row in rows)
+            )
+            self.assertTrue(
+                any("内容关键词索引：已关闭" in str(row.content) for row in rows)
             )
             settings_list = app.screen.query_one("#settings-list")
             compaction_row = app.screen.query_one(
@@ -1906,6 +2005,55 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(context.plain.startswith("PRJ omnicrawl  ·  MDL "))
         self.assertNotIn(r"D:\projects", context.plain)
 
+    async def test_should_keep_composer_visible_when_slash_description_spans_multiple_lines(self) -> None:
+        """单个多行 Skill 描述不能把输入框挤出 composer 容器。"""
+
+        from textual.widgets import TextArea
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeSkillManager:
+            def list_all(self):
+                return [
+                    SimpleNamespace(
+                        name="multiline-skill",
+                        description="第一行介绍\n第二行介绍\n第三行介绍",
+                    )
+                ]
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = "D:/workspace"
+            current_session_id = "session-demo"
+            skill_manager = FakeSkillManager()
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(50, 20)) as pilot:
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "/skill:multiline"
+            await pilot.pause()
+
+            composer_wrap = app.query_one("#composer-wrap")
+            menu = app.query_one("#command-menu")
+            self.assertTrue(menu.display)
+            self.assertEqual(menu.region.height, 1)
+            self.assertIn("第一行介绍 第二行介绍 第三行介绍", str(menu.content))
+            self.assertGreater(composer.region.height, 0)
+            self.assertLessEqual(
+                composer.region.bottom,
+                composer_wrap.content_region.bottom,
+                (composer.region, menu.region, composer_wrap.region, composer_wrap.content_region),
+            )
+
     async def test_slash_menu_filters_commands_and_completion_does_not_submit(self) -> None:
         """斜杠菜单应保留全部候选，展示窗口最多八项，Enter/Tab 只补全不执行。"""
 
@@ -2311,10 +2459,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             def run_stream(self, text: str, on_delta, **callbacks) -> str:
                 self.calls.append(text)
                 if text == "取消":
-                    # 留出一个可预测的协议检查点，让测试能够在回合运行期间
-                    # 设置取消令牌，而非在提交前被 `_submit()` 清除。
-                    time.sleep(0.25)
-                    callbacks["cancel_check"]()
+                    # 轮询协议检查点，避免单次 sleep 与 UI 取消信号的竞态：
+                    # 测试先观察到本轮输入进入 Agent，再按 Esc 设置取消令牌。
+                    deadline = time.time() + 2.0
+                    while time.time() < deadline:
+                        callbacks["cancel_check"]()
+                        time.sleep(0.05)
+                    raise AssertionError("取消令牌未在协议检查点生效")
                 if text == "预期失败":
                     raise AgentError("配置无效")
                 if text == "未知失败":

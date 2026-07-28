@@ -180,6 +180,18 @@ class SessionIndexEntry:
 
 
 @dataclass(frozen=True)
+class SessionUndoPlan:
+    """最近一轮的稳定事件集合，供副作用预检后原子提交回退。"""
+
+    session_id: str
+    event_ids: tuple[str, ...]
+    events: tuple[SessionEvent, ...]
+    user_event_id: str
+    assistant_event_id: str | None
+    kind: str
+
+
+@dataclass(frozen=True)
 class SessionState:
     """从 JSONL 转录恢复出的会话状态。"""
 

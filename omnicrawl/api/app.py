@@ -17,6 +17,7 @@ from ..agent import AgentConfig, LocalToolAgent
 from ..state.session_artifacts import redact_sensitive_text
 from ..config.llm import load_llm_config
 from ..config.runtime import get_section, load_config_data
+from ..config.settings import load_feature_enabled
 from ..config.subagents import load_subagent_config
 from ..workspace.context import detect_project_context
 from ..workspace.temp import load_agent_temp_workspace_config
@@ -100,6 +101,12 @@ def create_default_agent() -> LocalToolAgent:
                 llm=load_llm_config(),
                 workspace_root=project_context.workspace_root,
                 workspace_detection_summary=project_context.detection_summary,
+                file_name_index_enabled=load_feature_enabled(
+                    "file_name_index", default=False
+                ),
+                content_index_enabled=load_feature_enabled(
+                    "content_index", default=False
+                ),
                 temp_workspace=load_agent_temp_workspace_config(),
                 subagents=load_subagent_config(),
             ),

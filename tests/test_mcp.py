@@ -100,6 +100,42 @@ class MCPConfigTest(unittest.TestCase):
 
         self.assertEqual(config.servers["fathom"].transport, "streamable_http")
 
+    def test_load_mcp_config_reads_http_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "config.yaml"
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "mcp": {
+                            "enabled": True,
+                            "servers": {
+                                "remote": {
+                                    "transport": "streamable_http",
+                                    "url": "https://example.com/mcp",
+                                    "headers": {
+                                        "Authorization": "Bearer test-token",
+                                        "X-API-Key": "test-key",
+                                    },
+                                }
+                            },
+                        }
+                    },
+                    allow_unicode=True,
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_mcp_config(config_path)
+
+        self.assertEqual(
+            config.servers["remote"].headers,
+            {
+                "Authorization": "Bearer test-token",
+                "X-API-Key": "test-key",
+            },
+        )
+
     def test_load_mcp_config_rejects_invalid_name_and_missing_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"
@@ -209,6 +245,7 @@ class MCPManagerTest(unittest.TestCase):
             "methods": [],
             "missing_session": False,
             "missing_protocol_version": False,
+            "missing_custom_headers": False,
             "initialize_protocol_version": None,
         }
 
@@ -225,6 +262,8 @@ class MCPManagerTest(unittest.TestCase):
                     state["missing_session"] = True
                 if request.get("method") != "initialize" and self.headers.get("MCP-Protocol-Version") != "2025-03-26":
                     state["missing_protocol_version"] = True
+                if self.headers.get("Authorization") != "Bearer test-token" or self.headers.get("X-API-Key") != "test-key":
+                    state["missing_custom_headers"] = True
 
                 if request.get("method", "").startswith("notifications/"):
                     self.send_response(202)
@@ -276,6 +315,10 @@ class MCPManagerTest(unittest.TestCase):
                         enabled=True,
                         transport=MCP_TRANSPORT_STREAMABLE_HTTP,
                         url=f"http://127.0.0.1:{http_server.server_port}/mcp",
+                        headers={
+                            "Authorization": "Bearer test-token",
+                            "X-API-Key": "test-key",
+                        },
                         timeout_seconds=5,
                         risk_level="trusted",
                     )
@@ -296,6 +339,7 @@ class MCPManagerTest(unittest.TestCase):
         self.assertEqual(state["initialize_protocol_version"], "2025-03-26")
         self.assertFalse(state["missing_session"])
         self.assertFalse(state["missing_protocol_version"])
+        self.assertFalse(state["missing_custom_headers"])
 
     def test_should_send_protocol_header_after_initialize_without_session(self) -> None:
         from omnicrawl.mcp.client import _StreamableHTTPMCPConnection
@@ -304,6 +348,7 @@ class MCPManagerTest(unittest.TestCase):
             name="remote",
             transport=MCP_TRANSPORT_STREAMABLE_HTTP,
             url="https://example.com/mcp",
+            headers={"authorization": "Bearer test-token", "content-type": "text/plain"},
         )
         connection = _StreamableHTTPMCPConnection(server)
         connection._initialized = True
@@ -318,10 +363,10 @@ class MCPManagerTest(unittest.TestCase):
             connection._request("tools/list", {})
         connection.close()
 
-        self.assertEqual(
-            post.call_args.kwargs["headers"]["MCP-Protocol-Version"],
-            "2025-03-26",
-        )
+        request_headers = post.call_args.kwargs["headers"]
+        self.assertEqual(request_headers["authorization"], "Bearer test-token")
+        self.assertEqual(request_headers["Content-Type"], "application/json")
+        self.assertEqual(request_headers["MCP-Protocol-Version"], "2025-03-26")
 
     def test_should_parse_sse_response_when_streamable_http_returns_event_stream(self) -> None:
         from omnicrawl.mcp.client import _StreamableHTTPMCPConnection
@@ -379,6 +424,23 @@ class MCPManagerTest(unittest.TestCase):
 
         which.assert_called_once_with("npx")
         self.assertEqual(resolved, r"C:\Program Files\nodejs\npx.CMD")
+
+    def test_stdio_headers_are_not_injected_into_child_process_environment(self) -> None:
+        from omnicrawl.mcp.client import _StdioMCPConnection
+
+        server = MCPServerConfig(
+            name="local",
+            command="python",
+            headers={"Authorization": "Bearer should-not-be-used"},
+        )
+        connection = _StdioMCPConnection(server, Path.cwd())
+        fake_process = SimpleNamespace()
+        with patch("omnicrawl.mcp.client.subprocess.Popen", return_value=fake_process) as popen:
+            connection._start()
+
+        environment = popen.call_args.kwargs["env"]
+        self.assertNotIn("Authorization", environment)
+        self.assertNotIn("Bearer should-not-be-used", environment.values())
 
     def test_stdio_local_server_discovers_resources_and_prompts_without_tools(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -247,7 +247,28 @@ class ChannelManagerScreenTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("OpenAI 主渠道", status)
                 self.assertIn("API Key", status)
 
-    async def test_should_keep_actions_visible_in_compact_terminal(self) -> None:
+    async def test_should_save_custom_user_agent_from_editor(self) -> None:
+        results: list[ChannelConfig | None] = []
+
+        class EditorApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(ChannelEditorScreen(None, existing_keys=set()), results.append)
+
+        app = EditorApp()
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.screen.query_one("#channel-editor-key", Input).value = "test-key"
+            app.screen.query_one("#channel-editor-user-agent", Input).value = "OmniCrawl-Test/1.0"
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+        self.assertEqual(len(results), 1)
+        self.assertIsNotNone(results[0])
+        self.assertEqual(results[0].user_agent, "OmniCrawl-Test/1.0")
+
         class EditorApp(App):
             def compose(self) -> ComposeResult:
                 yield Static("probe")

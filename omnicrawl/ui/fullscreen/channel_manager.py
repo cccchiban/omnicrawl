@@ -55,7 +55,7 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
     #channel-editor-dialog {
         width: 78;
         max-width: 95%;
-        height: 34;
+        height: 38;
         max-height: 94%;
         padding: 1 2;
         border: solid $terminal-blue;
@@ -140,6 +140,13 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
                     id="channel-editor-url",
                     classes="channel-editor-control",
                 )
+                yield Label("User-Agent（可选）", classes="channel-editor-label")
+                yield Input(
+                    self._draft.user_agent,
+                    placeholder="例如：OmniCrawl/1.0 或公司网关要求的 UA",
+                    id="channel-editor-user-agent",
+                    classes="channel-editor-control",
+                )
                 yield Label("API Key", classes="channel-editor-label")
                 yield Input(
                     self._draft.api_key,
@@ -194,6 +201,7 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
         protocol = str(self.query_one("#channel-editor-protocol", Select).value)
         name = self.query_one("#channel-editor-name", Input).value.strip()
         base_url = self.query_one("#channel-editor-url", Input).value.strip()
+        user_agent = self.query_one("#channel-editor-user-agent", Input).value.strip()
         api_key = self.query_one("#channel-editor-key", Input).value.strip()
         model_id = self.query_one("#channel-editor-model", Input).value.strip()
         if not name or not base_url or not api_key or not model_id:
@@ -224,6 +232,7 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
                     "anthropic": "ANTHROPIC_API_KEY",
                     "gemini": "GEMINI_API_KEY",
                 }[provider],
+                user_agent=user_agent,
                 model_id=model_id,
                 enabled=enabled,
             )

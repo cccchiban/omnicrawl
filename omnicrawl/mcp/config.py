@@ -59,6 +59,9 @@ class MCPServerConfig:
     args: list[str] = field(default_factory=list)
     url: str | None = None
     env: dict[str, str] = field(default_factory=dict)
+    # 仅由 Streamable HTTP Client 使用；stdio Server 通过本地进程边界信任，
+    # 不会把这些值注入子进程环境或以请求头形式发送。
+    headers: dict[str, str] = field(default_factory=dict)
     timeout_seconds: int = 30
     risk_level: str = MCP_RISK_RESTRICTED
 
@@ -246,6 +249,11 @@ def _load_server_config(
         "env",
         config_key=f"mcp.servers.{normalized_name}.env",
     )
+    headers = _read_text_map_field(
+        section,
+        "headers",
+        config_key=f"mcp.servers.{normalized_name}.headers",
+    )
     timeout_seconds = _read_int_field(
         section,
         "timeout_seconds",
@@ -281,6 +289,7 @@ def _load_server_config(
         args=args,
         url=url,
         env=env,
+        headers=headers,
         timeout_seconds=timeout_seconds,
         risk_level=risk_level,
     )

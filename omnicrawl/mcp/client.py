@@ -680,14 +680,22 @@ class _StreamableHTTPMCPConnection:
                 self._next_request_id += 1
                 message["id"] = request_id
 
-            headers = {
+            # 认证头等用户自定义 Header 只属于远程 HTTP 连接；协议头由
+            # Client 维护，并覆盖同名（大小写不敏感）配置，避免配置破坏会话。
+            headers = dict(self.server.headers)
+            managed_headers = {
                 "Accept": "application/json, text/event-stream",
                 "Content-Type": "application/json",
             }
             if self._session_id:
-                headers["Mcp-Session-Id"] = self._session_id
+                managed_headers["Mcp-Session-Id"] = self._session_id
             if self._initialized:
-                headers["MCP-Protocol-Version"] = MCP_STREAMABLE_HTTP_PROTOCOL_VERSION
+                managed_headers["MCP-Protocol-Version"] = MCP_STREAMABLE_HTTP_PROTOCOL_VERSION
+            for name, value in managed_headers.items():
+                for existing_name in list(headers):
+                    if existing_name.lower() == name.lower():
+                        del headers[existing_name]
+                headers[name] = value
 
             if not self.server.url:
                 raise MCPClientError("streamable_http MCP Server 缺少 url。")

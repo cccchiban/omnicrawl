@@ -123,7 +123,58 @@ class ChannelConfigurationTests(unittest.TestCase):
                 ["OpenAI 官方", "OpenAI 代理"],
             )
 
-    def test_should_restore_config_when_models_write_fails(self) -> None:
+    def test_should_persist_user_agent_in_profile_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "config.yaml"
+            models_path = root / "models.yaml"
+            config_path.write_text("version: 2\nllm: {}\n", encoding="utf-8")
+            models_path.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+            channel = ChannelConfig(
+                key="proxy",
+                name="代理渠道",
+                profile_id="proxy",
+                provider="openai",
+                protocol="openai_chat_completions",
+                base_url="https://proxy.example/v1",
+                api_key="secret",
+                user_agent="OmniCrawl-Test/1.0",
+                model_id="demo-model",
+            )
+
+            save_channel_configuration(
+                ChannelConfiguration((channel,), "proxy"), config_path, models_path
+            )
+
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            models = yaml.safe_load(models_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                config["llm"]["profiles"]["proxy"]["user_agent"],
+                "OmniCrawl-Test/1.0",
+            )
+            self.assertNotIn("user_agent", models["models"]["proxy"])
+            self.assertEqual(
+                load_channel_configuration(config_path, models_path).channels[0].user_agent,
+                "OmniCrawl-Test/1.0",
+            )
+
+    def test_should_reject_user_agent_with_newline(self) -> None:
+        channel = ChannelConfig(
+            key="proxy",
+            name="代理渠道",
+            profile_id="proxy",
+            provider="openai",
+            protocol="openai_chat_completions",
+            base_url="https://proxy.example/v1",
+            api_key="secret",
+            user_agent="bad\nvalue",
+            model_id="demo-model",
+        )
+        with self.assertRaisesRegex(Exception, "User-Agent"):
+            from omnicrawl.config.channels import _validate_channels
+
+            _validate_channels((channel,))
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             config_path = root / "config.yaml"

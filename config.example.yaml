@@ -21,6 +21,8 @@ llm:
       enabled: true
       base_url: "https://api.openai.com/v1"
       api_key_env: OPENAI_API_KEY
+      # 可选：覆盖该渠道请求使用的 HTTP User-Agent。
+      # user_agent: "OmniCrawl/1.0"
       # 也可以直接写 api_key，但不推荐提交到仓库；此处仅保留占位符
       # api_key: "YOUR_OPENAI_API_KEY"
       default_protocol: openai_chat_completions
@@ -50,6 +52,14 @@ approval:
 # TUI /settings 可即时修改并写回这些功能总开关。
 memory:
   enabled: true
+
+# 两类搜索索引均默认关闭；可在 TUI /settings 中独立启用。
+# 快照按 PRJ 隔离保存到 ~/.OmniCrawl/search-index/，不会写入项目目录。
+file_name_index:
+  enabled: false
+
+content_index:
+  enabled: false
 
 # 模型辅助压缩默认关闭。开启后在完整回合结束时测量预算，达到 70K 才调用
 # 摘要模型；普通 /compact 始终保持本地确定性，/compact --model 为显式模型入口。
@@ -112,6 +122,15 @@ mcp:
   default_timeout_seconds: 30
   max_tool_output_chars: 6000
   servers: {}
+  # 远程 Streamable HTTP Server 可在这里声明认证请求头：
+  # servers:
+  #   remote_service:
+  #     enabled: true
+  #     transport: streamable_http
+  #     url: https://example.com/mcp
+  #     headers:
+  #       Authorization: "Bearer replace-with-token"
+  #       X-API-Key: "replace-with-api-key"
   policy:
     require_confirmation_for_write: true
     require_confirmation_for_command: true

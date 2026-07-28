@@ -85,11 +85,19 @@ def create_openai_client(profile: ProviderProfile) -> Any:
     # OmniCrawl 当前没有 Provider 代理配置，因此默认直连 Provider；需要代理
     # 时应在 Provider 层显式增加受控配置，而不是隐式继承系统代理。
     http_client = httpx.Client(trust_env=False, follow_redirects=True)
+    headers = user_agent_headers(profile)
+    if headers:
+        kwargs["default_headers"] = headers
     try:
         return OpenAI(**kwargs, http_client=http_client)
     except Exception:
         http_client.close()
         raise
+
+
+def user_agent_headers(profile: ProviderProfile) -> dict[str, str]:
+    user_agent = getattr(profile, "user_agent", "").strip()
+    return {"User-Agent": user_agent} if user_agent else {}
 
 
 def resolve_api_key(profile: ProviderProfile) -> str:

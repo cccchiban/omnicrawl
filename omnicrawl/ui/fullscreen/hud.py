@@ -72,6 +72,38 @@ def pending_queue_text(pending_count: int) -> Text:
     return rendered
 
 
+def search_index_status_text(status: object, animation_frame: int = 0) -> Text:
+    """生成版本号下方的后台索引进度；加载阶段显示四帧颜色波浪。"""
+
+    file_state = str(getattr(status, "file_state", "disabled"))
+    content_state = str(getattr(status, "content_state", "disabled"))
+    file_processed = max(0, int(getattr(status, "file_processed", 0) or 0))
+    content_processed = max(0, int(getattr(status, "content_processed", 0) or 0))
+    content_total = max(0, int(getattr(status, "content_total", 0) or 0))
+
+    if content_state == "building":
+        if content_total:
+            percent = min(100, round(content_processed * 100 / content_total))
+            return Text(f"正在建立项目内容索引 {percent}%", style=TEXT_MUTED)
+        suffix = f" {file_processed}项" if file_processed else ""
+        return Text(f"正在扫描项目内容索引{suffix}", style=TEXT_MUTED)
+    if file_state == "building":
+        suffix = f" {file_processed}项" if file_processed else ""
+        return Text(f"正在建立项目文件索引{suffix}", style=TEXT_MUTED)
+    if file_state == "loading" or content_state == "loading":
+        label = "正在加载项目搜索索引"
+        active_pattern = {2, 3}
+        frame = int(animation_frame) % 4
+        rendered = Text()
+        for index, character in enumerate(label):
+            style = TEXT_PRIMARY if (index - frame) % 4 in active_pattern else TEXT_MUTED
+            rendered.append(character, style=style)
+        return rendered
+    if file_state == "error" or content_state == "error":
+        return Text("项目搜索索引不可用", style=TEXT_MUTED)
+    return Text()
+
+
 def version_status_text(
     current_version: str,
     latest_version: str | None = None,

@@ -172,6 +172,7 @@ def build_catalog(
                 base_url=config.base_url,
                 api_key=config.api_key,
                 api_key_env=config.api_key_env,
+                user_agent=config.user_agent,
                 default_protocol=config.protocol or "openai_chat_completions",
                 discovery_enabled=True,
                 discovery_timeout_seconds=timeout_seconds,

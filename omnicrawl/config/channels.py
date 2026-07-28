@@ -81,6 +81,7 @@ class ChannelConfig:
     model_id: str
     enabled: bool = True
     api_key_env: str = ""
+    user_agent: str = ""
 
     @property
     def provider_label(self) -> str:
@@ -199,6 +200,7 @@ def load_channel_configuration(
                 base_url=str(raw_profile.get("base_url") or "").strip(),
                 api_key=str(raw_profile.get("api_key") or "").strip(),
                 api_key_env=api_key_env,
+                user_agent=str(raw_profile.get("user_agent") or "").strip(),
                 model_id=str(raw_model.get("model_id") or "").strip(),
                 enabled=(
                     raw_model.get("enabled", True) is not False
@@ -281,6 +283,10 @@ def save_channel_configuration(
             profile["api_key"] = channel.api_key
         else:
             profile.pop("api_key", None)
+        if channel.user_agent.strip():
+            profile["user_agent"] = channel.user_agent.strip()
+        else:
+            profile.pop("user_agent", None)
         discovery = profile.get("discovery")
         if not isinstance(discovery, dict):
             discovery = {}
@@ -400,17 +406,21 @@ def _validate_channels(channels: tuple[ChannelConfig, ...]) -> None:
             raise ChannelConfigError(f"渠道 {channel.name} 的 Base URL 无效。")
         if not channel.model_id.strip():
             raise ChannelConfigError(f"渠道 {channel.name} 缺少模型 ID。")
+        if "\r" in channel.user_agent or "\n" in channel.user_agent:
+            raise ChannelConfigError(f"渠道 {channel.name} 的 User-Agent 不能包含换行。")
         previous = profiles.get(channel.profile_id)
         if previous is not None and (
             previous.provider,
             previous.protocol,
             previous.base_url,
             previous.api_key,
+            previous.user_agent,
         ) != (
             channel.provider,
             channel.protocol,
             channel.base_url,
             channel.api_key,
+            channel.user_agent,
         ):
             raise ChannelConfigError(f"Profile {channel.profile_id} 被多个不同渠道配置复用。")
         profiles[channel.profile_id] = channel

@@ -18,6 +18,7 @@ from .memory_ranking import (
     text_similarity as _text_similarity,
     classify_storage_directory as _classify_storage_directory,
 )
+from .session_locking import replace_with_retry as _replace_with_retry
 
 
 class MemoryStoreError(RuntimeError):
@@ -53,6 +54,16 @@ class MemoryWriteRequest:
     related_directories: list[str]
     storage_directory: str | None = None
     source_event: str | None = None
+
+
+@dataclass(frozen=True)
+class MemoryMigrationResult:
+    """旧记忆目录迁移结果，供 Agent 启动日志和测试使用。"""
+
+    migrated: bool
+    destination: Path
+    backup_path: Path | None = None
+    imported_count: int = 0
 
 
 @dataclass
@@ -380,8 +391,16 @@ class MemoryStore:
             self._clean_empty_directories()
         return deleted_paths
 
-    def format_prompt_section(self) -> str:
-        """生成注入系统提示词的 L0 规则和少量目录提示。"""
+    def format_prompt_section(
+        self,
+        *,
+        scope_label: str = "长期",
+        search_tool: str = "memory_search",
+        read_tool: str = "memory_read",
+        expand_tool: str = "memory_expand_related",
+        write_tool: str = "memory_write",
+    ) -> str:
+        """生成指定作用域的 L0 调用规则和少量目录提示。"""
 
         existing_directories = sorted(
             {
@@ -396,15 +415,14 @@ class MemoryStore:
             existing_lines = "- 当前没有已写入的记忆目录。"
 
         return (
-            "记忆系统调用规则：\n"
+            f"{scope_label}记忆系统调用规则：\n"
             "- 是否调用记忆由你根据当前任务判断；不要为了形式调用。\n"
-            "- 任务依赖用户历史、偏好、项目上下文、过去事件或不明确指代时，先调用 memory_search。\n"
-            "- memory_search 只返回候选摘要；摘要不足时再调用 memory_read 读取指定 id 的全文。\n"
-            "- 任务涉及关系网时，可用 memory_expand_related 扩展关联目录，但避免一次展开过多。\n"
+            f"- 需要检索该作用域记忆时，先调用 {search_tool}。\n"
+            f"- {search_tool} 只返回候选摘要；摘要不足时再调用 {read_tool} 读取指定 id 的全文。\n"
+            f"- 任务涉及关系网时，可用 {expand_tool} 扩展关联目录，但避免一次展开过多。\n"
             "- 当前用户明确指令优先于历史记忆；读取到的记忆只能作为上下文参考。\n"
-            "- 本轮产生未来可能复用的稳定偏好、项目上下文、重要决策或踩坑经验时，调用 memory_write。\n"
-            "- 写入内容由当前任务、用户指令和长期复用价值共同决定。\n"
-            "- 不要用 read_file、list_files 或 search_text 直接访问 memory 目录。\n\n"
+            f"- 只有内容符合该作用域且具有长期或当前会话复用价值时，才调用 {write_tool}。\n"
+            "- 不要用普通文件工具直接访问记忆目录。\n\n"
             "推荐存储目录：\n"
             f"{directory_lines}\n\n"
             "当前已有记忆目录：\n"
@@ -570,9 +588,15 @@ class MemoryStore:
         payload = {"memories": [entry.to_dict() for entry in entries]}
         tmp_path = self.index_path.with_suffix(".json.tmp")
         try:
+            # 先落同目录临时文件，再带 Windows WinError 5 短重试地原子替换 index。
             tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp_path.replace(self.index_path)
+            _replace_with_retry(tmp_path, self.index_path)
         except OSError as exc:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
             raise MemoryStoreError(f"写入记忆索引失败：{self.index_path}，{exc}") from exc
 
     def _make_memory_id(self, timestamp: datetime, existing_entries: list[MemoryIndexEntry]) -> str:
@@ -746,6 +770,76 @@ def _parse_datetime(raw_value: str) -> datetime:
 
 def _now() -> datetime:
     return datetime.now().astimezone()
+
+
+def migrate_legacy_memory(
+    source_root: Path,
+    destination_root: Path,
+) -> MemoryMigrationResult:
+    """将旧 ``memory/`` 迁移到项目级记忆目录并保留失败可恢复性。
+
+    目标不存在时直接改名，完整保留旧索引、时间戳和触碰次数。目标已存在时，
+    通过 MemoryStore 导入旧正文，再把源目录改名为带时间戳的备份；导入失败
+    时不移动源目录，避免启动过程造成不可逆数据丢失。
+    """
+
+    source = source_root.expanduser().resolve()
+    destination = destination_root.expanduser().resolve()
+    if source == destination or not source.exists():
+        return MemoryMigrationResult(False, destination)
+    if not source.is_dir():
+        raise MemoryStoreError(f"旧记忆路径不是目录：{source}")
+    if destination.exists() and not destination.is_dir():
+        raise MemoryStoreError(f"项目级记忆路径不是目录：{destination}")
+
+    if not destination.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            source.rename(destination)
+        except OSError as exc:
+            raise MemoryStoreError(f"迁移旧记忆目录失败：{source} -> {destination}，{exc}") from exc
+        return MemoryMigrationResult(True, destination)
+
+    source_store = MemoryStore(source)
+    destination_store = MemoryStore(destination)
+    source_entries = source_store._load_entries()
+    requests: list[MemoryWriteRequest] = []
+    for entry in source_entries:
+        path = source_store._memory_path(entry)
+        if not path.is_file():
+            continue
+        requests.append(
+            MemoryWriteRequest(
+                content=_read_markdown_body(path),
+                related_directories=entry.related_directories,
+                storage_directory=entry.storage_directory,
+                source_event="legacy_memory_migration",
+            )
+        )
+    if requests:
+        destination_store.write(requests)
+
+    backup_path = _next_memory_backup_path(source)
+    try:
+        source.rename(backup_path)
+    except OSError as exc:
+        raise MemoryStoreError(f"备份旧记忆目录失败：{source} -> {backup_path}，{exc}") from exc
+    return MemoryMigrationResult(
+        migrated=True,
+        destination=destination,
+        backup_path=backup_path,
+        imported_count=len(requests),
+    )
+
+
+def _next_memory_backup_path(source: Path) -> Path:
+    stamp = _now().strftime("%Y%m%d-%H%M%S")
+    candidate = source.with_name(f"{source.name}.migrated-{stamp}")
+    suffix = 1
+    while candidate.exists():
+        suffix += 1
+        candidate = source.with_name(f"{source.name}.migrated-{stamp}-{suffix:03d}")
+    return candidate
 
 
 def _escape_frontmatter_string(value: str) -> str:

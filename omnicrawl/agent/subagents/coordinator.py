@@ -99,18 +99,36 @@ def _build_failure_diagnostics(
 READ_ONLY_TOOL_NAMES = frozenset(
     {
         "list_files",
+        "find_files",
         "read_file",
         "search_text",
         "memory_search",
         "memory_read",
         "memory_expand_related",
+        "project_memory_search",
+        "project_memory_read",
+        "project_memory_expand_related",
+        "session_memory_search",
+        "session_memory_read",
+        "session_memory_expand_related",
+        "user_memory_search",
+        "user_memory_read",
+        "user_memory_expand_related",
     }
 )
 # delegated-read-only 继承父 Host 已注册的 MCP、Skill、桌面、浏览器和其他外部
 # 能力，只硬拒绝已知本地写入口与递归调度。命令工具另加运行前只读判定，不能
 # 因为进入动态继承集合就绕过工作区文件保护。
 READ_ONLY_BLOCKED_TOOL_NAMES = frozenset(
-    {"write_file", "replace_text", "memory_write", "subagent"}
+    {
+        "write_file",
+        "replace_text",
+        "memory_write",
+        "project_memory_write",
+        "session_memory_write",
+        "user_memory_write",
+        "subagent",
+    }
 )
 # verify profile 只能在既有只读能力上追加一个固定检查入口；绝不能把原始
 # bash/powershell/monitor 或其他命令工具加入这里。

@@ -127,7 +127,24 @@ def _tool_title_context(tool_name: str, arguments: Any, result_text: str) -> str
     if operation == "windows_screenshot":
         target = str(args.get("target") or "").strip()
         return target or "截图"
-    if operation in {"memory_search", "memory_read", "memory_expand_related", "memory_write"}:
+    if operation in {
+        "memory_search",
+        "memory_read",
+        "memory_expand_related",
+        "memory_write",
+        "project_memory_search",
+        "project_memory_read",
+        "project_memory_expand_related",
+        "project_memory_write",
+        "session_memory_search",
+        "session_memory_read",
+        "session_memory_expand_related",
+        "session_memory_write",
+        "user_memory_search",
+        "user_memory_read",
+        "user_memory_expand_related",
+        "user_memory_write",
+    }:
         query = str(args.get("query") or "").strip()
         ids = args.get("memory_ids")
         if query:
@@ -222,7 +239,7 @@ def _workspace_tool_title(
         if line_range is not None:
             rendered.append("  |  ", style=COLOR_GUTTER)
             rendered.append(f"第 {line_range[0]}-{line_range[1]} 行", style=COLOR_META)
-    elif operation == "search_text":
+    elif operation in {"find_files", "search_text"}:
         path = _compact_title_value(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
         pattern = _compact_title_value(args.get("pattern"), max_chars=36)
         rendered.append(f"{display_icon}  ", style=COLOR_TITLE)

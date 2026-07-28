@@ -14,6 +14,7 @@ from ..documentation import (
     BundledDocumentationError,
     resolve_bundled_doc_uri,
 )
+from .search_index import ProjectSearchIndex, is_forbidden_content_search_root
 
 
 MAX_FILE_READ_CHARS = 200_000
@@ -73,6 +74,7 @@ class WorkspaceTools:
         command_timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
         max_file_read_chars: int | None = None,
         extra_protection_message: Callable[[Path], str | None] | None = None,
+        search_index: ProjectSearchIndex | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.command_timeout_seconds = max(
@@ -81,6 +83,7 @@ class WorkspaceTools:
         )
         self.max_file_read_chars = max_file_read_chars
         self._extra_protection_message = extra_protection_message
+        self.search_index = search_index
 
     def list_files(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or "."))
@@ -176,12 +179,18 @@ class WorkspaceTools:
             truncation_hint="已截断，可提高 start_line 继续读取。",
         )
 
-    def search_text(self, arguments: dict[str, Any]) -> str:
-        pattern = str(arguments.get("pattern") or "")
+    def find_files(self, arguments: dict[str, Any]) -> str:
+        """按名称或相对路径查找文件和目录，不读取文件内容。"""
+
+        pattern = str(arguments.get("pattern") or "").strip()
         if not pattern:
             raise WorkspaceToolError("pattern 不能为空。")
-
         root = self.safe_path(str(arguments.get("path") or "."))
+        if not root.exists():
+            raise WorkspaceToolError(f"路径不存在：{self.relative_path(root)}")
+        kind = str(arguments.get("kind") or "all").strip().lower()
+        if kind not in {"all", "file", "directory"}:
+            raise WorkspaceToolError("kind 仅支持 all、file 或 directory。")
         case_sensitive = bool(arguments.get("case_sensitive", False))
         max_results = _read_limited_int(
             arguments,
@@ -190,12 +199,65 @@ class WorkspaceTools:
             minimum=1,
             maximum=MAX_SEARCH_RESULTS,
         )
-        flags = 0 if case_sensitive else re.IGNORECASE
-        try:
-            regex = re.compile(pattern, flags)
-        except re.error:
-            regex = re.compile(re.escape(pattern), flags)
 
+        indexed = None
+        if self.search_index is not None:
+            indexed = self.search_index.search_files(
+                pattern,
+                root=root,
+                kind=kind,
+                case_sensitive=case_sensitive,
+                max_results=max_results,
+            )
+        if indexed is None:
+            indexed = self._scan_file_names(
+                pattern,
+                root=root,
+                kind=kind,
+                case_sensitive=case_sensitive,
+                max_results=max_results,
+            )
+        lines = [f"{path}{'/' if is_dir else ''}" for path, is_dir in indexed]
+        suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
+        return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
+
+    def search_text(self, arguments: dict[str, Any]) -> str:
+        """在 UTF-8 文本中执行普通关键词子串搜索，不解释正则表达式。"""
+
+        pattern = str(arguments.get("pattern") or "")
+        if not pattern:
+            raise WorkspaceToolError("pattern 不能为空。")
+
+        root = self.safe_path(str(arguments.get("path") or "."))
+        if is_forbidden_content_search_root(root):
+            raise WorkspaceToolError(
+                "用户主目录或文件系统根目录本身不支持内容关键词搜索；"
+                "请把 path 指向其下的具体项目子目录。"
+            )
+        if not root.exists():
+            raise WorkspaceToolError(f"路径不存在：{self.relative_path(root)}")
+        case_sensitive = bool(arguments.get("case_sensitive", False))
+        max_results = _read_limited_int(
+            arguments,
+            "max_results",
+            default=50,
+            minimum=1,
+            maximum=MAX_SEARCH_RESULTS,
+        )
+        indexed = None
+        if self.search_index is not None:
+            indexed = self.search_index.search_text(
+                pattern,
+                root=root,
+                case_sensitive=case_sensitive,
+                max_results=max_results,
+            )
+        if indexed is not None:
+            lines = [f"{path}:{line_no}: {line}" for path, line_no, line in indexed]
+            suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
+            return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
+
+        needle = pattern if case_sensitive else pattern.casefold()
         files = [root] if root.is_file() else self.iter_search_files(root)
         results: list[str] = []
         for file_path in files:
@@ -206,11 +268,60 @@ class WorkspaceTools:
             except WorkspaceToolError:
                 continue
             for line_no, line in enumerate(lines, start=1):
-                if regex.search(line):
+                candidate = line if case_sensitive else line.casefold()
+                if needle in candidate:
                     results.append(f"{self.relative_path(file_path)}:{line_no}: {line}")
                     if len(results) >= max_results:
                         return "\n".join(results) + "\n... 已达到 max_results。"
         return "\n".join(results) or "未找到匹配结果。"
+
+    def _scan_file_names(
+        self,
+        pattern: str,
+        *,
+        root: Path,
+        kind: str,
+        case_sensitive: bool,
+        max_results: int,
+    ) -> list[tuple[str, bool]]:
+        needle = pattern if case_sensitive else pattern.casefold()
+        candidates = [root] if root.is_file() else self._iter_search_entries(root)
+        results: list[tuple[str, bool]] = []
+        for entry in candidates:
+            if self.should_skip_path(entry):
+                continue
+            relative = self.relative_path(entry)
+            candidate = relative if case_sensitive else relative.casefold()
+            name = entry.name if case_sensitive else entry.name.casefold()
+            is_dir = entry.is_dir()
+            if kind == "file" and is_dir:
+                continue
+            if kind == "directory" and not is_dir:
+                continue
+            if needle not in candidate and needle not in name:
+                continue
+            results.append((relative, is_dir))
+            if len(results) >= max_results:
+                break
+        return results
+
+    def _iter_search_entries(self, root: Path) -> list[Path]:
+        entries: list[Path] = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            current_dir = Path(dirpath)
+            dirnames[:] = [
+                dirname
+                for dirname in sorted(dirnames, key=lambda value: value.lower())
+                if not self.should_skip_path(current_dir / dirname)
+            ]
+            entries.extend(current_dir / dirname for dirname in dirnames)
+            entries.extend(
+                current_dir / filename
+                for filename in sorted(filenames, key=lambda value: value.lower())
+                if not self.should_skip_path(current_dir / filename)
+            )
+        return entries
+
 
     def replace_text(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or ""))
@@ -229,6 +340,8 @@ class WorkspaceTools:
 
         replace_count = occurrences if count <= 0 else min(count, occurrences)
         path.write_text(original.replace(old_text, new_text, replace_count), encoding="utf-8")
+        if self.search_index is not None:
+            self.search_index.refresh_path(path)
         return f"已修改 {self.relative_path(path)}，替换 {replace_count} 处。"
 
     def write_file(self, arguments: dict[str, Any]) -> str:
@@ -246,6 +359,8 @@ class WorkspaceTools:
         else:
             path.write_text(content, encoding="utf-8")
             action = "写入"
+        if self.search_index is not None:
+            self.search_index.refresh_path(path)
         return f"已{action} {self.relative_path(path)}，字符数：{len(content)}。"
 
     def run_shell_command(

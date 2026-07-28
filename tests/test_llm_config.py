@@ -42,7 +42,26 @@ class LLMConfigTest(unittest.TestCase):
         )
         self.assertIs(result, openai_client.return_value)
 
-    def test_should_disable_system_proxy_in_legacy_responses_client(self) -> None:
+    def test_should_send_custom_user_agent_to_openai_client(self) -> None:
+        profile = ProviderProfile(
+            id="openai",
+            provider="openai",
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            user_agent="OmniCrawl-Test/1.0",
+        )
+
+        with patch("httpx.Client") as http_client, patch("openai.OpenAI") as openai_client:
+            create_openai_client(profile)
+
+        http_client.assert_called_once_with(trust_env=False, follow_redirects=True)
+        openai_client.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://example.test/v1",
+            default_headers={"User-Agent": "OmniCrawl-Test/1.0"},
+            http_client=http_client.return_value,
+        )
+
         config = LLMConfig(
             api_key="test-key",
             base_url="https://example.test/v1",
@@ -108,7 +127,33 @@ class LLMConfigTest(unittest.TestCase):
 
         self.assertEqual(config.context_window_tokens, 200_000)
 
-    def test_should_prefer_saved_default_over_profile_default_for_detected_model(self) -> None:
+    def test_load_multi_model_config_reads_profile_user_agent(self) -> None:
+        from omnicrawl.config.llm_multi import load_multi_model_llm_config
+
+        with patch(
+            "omnicrawl.config.llm_multi.load_model_store",
+            return_value=ModelStore(version=1, models=()),
+        ):
+            config = load_multi_model_llm_config(
+                {
+                    "profiles": {
+                        "openai": {
+                            "provider": "openai",
+                            "api_key": "test-key",
+                            "base_url": "https://example.test/v1",
+                            "user_agent": "OmniCrawl-Test/1.0",
+                        }
+                    },
+                    "active_model": {
+                        "source": "detected",
+                        "profile": "openai",
+                        "model_id": "demo-model",
+                    },
+                }
+            )
+
+        self.assertEqual(config.user_agent, "OmniCrawl-Test/1.0")
+
         from omnicrawl.config.llm_multi import load_multi_model_llm_config
 
         with patch(

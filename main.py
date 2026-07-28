@@ -3,6 +3,8 @@
 开发态：``python main.py`` / ``python main.py plugin ...``
 安装后：``ocl`` / ``omnicrawl`` / ``ocl plugin ...``（见 pyproject.toml console script）
 
+插件管理推荐使用 ``ocl plugin ...``；``python main.py plugin ...`` 仍可用于源码目录。
+
 Windows 下普通 TUI 路径仍可弹新 PowerShell 窗口；plugin 子命令必须在弹窗前处理。
 """
 

@@ -104,6 +104,7 @@ class MCPSettingsConfigTests(unittest.TestCase):
                         transport="streamable_http",
                         url="https://example.com/mcp",
                         env={"TOKEN": "secret"},
+                        headers={"Authorization": "Bearer secret-token"},
                         risk_level="external",
                     )
                 },
@@ -116,6 +117,10 @@ class MCPSettingsConfigTests(unittest.TestCase):
         self.assertEqual(saved, path)
         self.assertEqual(data["llm"]["provider"], "openai")
         self.assertEqual(data["mcp"]["servers"]["remote"]["env"]["TOKEN"], "secret")
+        self.assertEqual(
+            data["mcp"]["servers"]["remote"]["headers"]["Authorization"],
+            "Bearer secret-token",
+        )
         self.assertTrue(data["mcp"]["policy"]["allow_external_network_tools"])
 
 

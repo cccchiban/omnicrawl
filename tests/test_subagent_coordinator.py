@@ -684,6 +684,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
 
         allowed_tools = {
             "list_files",
+            "find_files",
             "read_file",
             "search_text",
             "memory_search",
@@ -815,6 +816,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
 
         allowed_tools = {
             "list_files",
+            "find_files",
             "read_file",
             "search_text",
             "memory_search",

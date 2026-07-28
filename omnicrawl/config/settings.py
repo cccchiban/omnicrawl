@@ -26,6 +26,7 @@ def _serialize_mcp_config(config: Any) -> dict[str, Any]:
             "args": list(server.args),
             "url": server.url,
             "env": dict(server.env),
+            "headers": dict(server.headers),
             "timeout_seconds": server.timeout_seconds,
             "risk_level": server.risk_level,
         }

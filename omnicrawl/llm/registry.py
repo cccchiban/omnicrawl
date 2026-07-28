@@ -32,6 +32,7 @@ class ProviderProfile:
     base_url: str = ""
     api_key: str = ""
     api_key_env: str = ""
+    user_agent: str = ""
     default_protocol: str = ""
     discovery_enabled: bool = True
     default_context_window_tokens: int = 0
