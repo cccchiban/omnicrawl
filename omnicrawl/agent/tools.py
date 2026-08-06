@@ -308,8 +308,13 @@ def build_agent_tools(
     user_memory_read: ToolRunner | None = None,
     user_memory_expand_related: ToolRunner | None = None,
     user_memory_write: ToolRunner | None = None,
+    disabled_tools: frozenset[str] = frozenset(),
 ) -> dict[str, ToolDefinition]:
-    """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。"""
+    """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。
+
+    ``disabled_tools`` 中的工具名（含 MCP 动态工具）不会出现在结果表中；
+    模型不可见即不可调用，与审批模式无关。
+    """
 
     tools = build_mcp_tools(
         mcp_manager=mcp_manager,
@@ -842,7 +847,9 @@ def build_agent_tools(
                     ),
                 ]
             )
-    return {tool.name: tool for tool in tools}
+    return {
+        tool.name: tool for tool in tools if tool.name not in disabled_tools
+    }
 
 
 def build_mcp_tools(

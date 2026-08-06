@@ -207,8 +207,10 @@ class WorkspaceSwitchTest(unittest.TestCase):
             with patch("openai.OpenAI", return_value=SimpleNamespace()):
                 agent = LocalToolAgent(config)
                 try:
+                    # 默认开关：powershell 关闭，其余 shell/读取工具启用。
+                    self.assertNotIn("powershell", agent._tools)
                     self.assertTrue(
-                        {"find_files", "read_file", "bash", "powershell", "monitor"}.issubset(
+                        {"find_files", "read_file", "bash", "monitor"}.issubset(
                             agent._tools
                         )
                     )
@@ -216,6 +218,18 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     schema = agent._tools["read_file"].argument_schema
                     self.assertIn("function_name", schema)
                     self.assertIn("context_lines", schema)
+                finally:
+                    agent.close()
+
+    def test_agent_registers_powershell_when_explicitly_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            config = self._make_config(workspace, disabled_tools=frozenset())
+            with patch("openai.OpenAI", return_value=SimpleNamespace()):
+                agent = LocalToolAgent(config)
+                try:
+                    self.assertIn("powershell", agent._tools)
+                    self.assertIn("bash", agent._tools)
                 finally:
                     agent.close()
 

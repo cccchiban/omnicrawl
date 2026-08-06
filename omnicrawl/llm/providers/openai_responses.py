@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -65,10 +66,15 @@ class OpenAIResponsesRuntime:
         options = request.generation_options
         extra_body = dict(sanitize_provider_options(options.provider_options))
         if options.reasoning_effort and options.reasoning_effort not in {"none", "disabled", ""}:
-            extra_body.setdefault("thinking", {"type": "enabled"})
-            extra_body.setdefault("reasoning_effort", options.reasoning_effort)
+            effort = options.reasoning_effort
         else:
-            extra_body.setdefault("thinking", {"type": "disabled"})
+            effort = "none"
+        # 统一走标准 Responses 思考参数 reasoning.effort（各档位含 none 实测
+        # 均被网关接受且 none 能真正关闭思考）。旧 chat 风格扩展字段
+        # thinking / reasoning_effort 在 Responses 网关不被识别，移除避免冗余。
+        extra_body.pop("thinking", None)
+        extra_body.pop("reasoning_effort", None)
+        extra_body.setdefault("reasoning", {"effort": effort})
 
         tools = _tools_for_responses(request)
         input_items = _messages_to_responses_input(request.messages)
@@ -339,11 +345,12 @@ def _messages_to_responses_input(
             continue
         if message.role == "assistant":
             text_parts: list[str] = []
+            tool_call_items: list[dict[str, Any]] = []
             for block in message.blocks:
                 if isinstance(block, TextBlock):
                     text_parts.append(block.text)
                 elif isinstance(block, ToolCallBlock):
-                    items.append(
+                    tool_call_items.append(
                         {
                             "type": "function_call",
                             "call_id": block.call_id or block.provider_call_id,
@@ -359,6 +366,23 @@ def _messages_to_responses_input(
                         "content": [{"type": "output_text", "text": text}],
                     }
                 )
+            # 思考模式 + 工具调用历史：上游（Console Go）要求回传 reasoning_content，
+            # 但该字段是 chat completions 专用字段，Responses API 携带会导致网关
+            # decode 失败（HTTP 400）。标准 Responses 格式是 reasoning item：
+            # 实测带工具调用历史时必须携带（否则上游 400 "reasoning_content must
+            # be passed back"），且无工具调用时不能携带（上游 400 invalid message）。
+            # reasoning 为空时用占位文本兜底（上游只检查存在性，不校验内容）。
+            if tool_call_items:
+                reasoning_text = message.reasoning or "…"
+                items.append(
+                    {
+                        "type": "reasoning",
+                        "id": "rs_"
+                        + hashlib.sha1(reasoning_text.encode("utf-8")).hexdigest()[:16],
+                        "summary": [{"type": "summary_text", "text": reasoning_text}],
+                    }
+                )
+            items.extend(tool_call_items)
             continue
         content: list[dict[str, Any]] = []
         for block in message.blocks:

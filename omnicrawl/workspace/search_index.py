@@ -27,8 +27,16 @@ from .usn import (
 )
 
 INDEX_SCHEMA_VERSION = 1
-FALLBACK_RESCAN_INTERVAL_SECONDS = 30.0
+# 无 USN 时的低频核对周期：全量目录核对本身不读文件内容，
+# 但内容索引需要重读变化的文件，周期不宜过短。
+FALLBACK_RESCAN_INTERVAL_SECONDS = 300.0
 USN_POLL_INTERVAL_SECONDS = 1.0
+# 超过该大小的文件不建立内容索引（仍保留文件名条目），避免把大二进制/
+# 大文本整体读入内存并让 trigram 索引无意义膨胀。
+MAX_CONTENT_INDEX_BYTES = 2 * 1024 * 1024
+# 短关键词（不足 3 字符无法生成 trigram）按 rowid 分批拉取内容，
+# 控制单次搜索的内存峰值，而不是一次性把整个 FTS 表读入 Python。
+SHORT_PATTERN_BATCH_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -131,7 +139,9 @@ class ProjectSearchIndex:
         self._stop_event.set()
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=5.0)
+            # 给构建/增量应用留足退出时间，避免切换开关后旧线程仍与新实例
+            # 并发写同一个 sqlite 文件（WAL 下会表现为反复等待写锁）。
+            thread.join(timeout=10.0)
 
     def wait_until_ready(self, timeout: float = 10.0) -> bool:
         return self._ready_event.wait(timeout=max(0.0, timeout))
@@ -192,11 +202,17 @@ class ProjectSearchIndex:
     def search_text(
         self, pattern: str, *, root: Path, case_sensitive: bool, max_results: int,
     ) -> list[tuple[str, int, str]] | None:
-        """用 trigram FTS 找候选文件，再逐行执行精确子串复核。"""
+        """用 trigram FTS 找候选文件，再逐行执行精确子串复核。
+
+        短模式（不足 3 字符无法生成 trigram）按 rowid 分批拉取内容并边读边
+        匹配，避免把整个 FTS 内容一次性读入 Python 内存。
+        """
 
         if not self.content_ready:
             return None
         relative_root = self._relative(root)
+        needle = pattern if case_sensitive else pattern.casefold()
+        results: list[tuple[str, int, str]] = []
         try:
             with self._connect() as connection:
                 if len(pattern) >= 3:
@@ -206,30 +222,72 @@ class ProjectSearchIndex:
                         "WHERE content_fts MATCH ?",
                         (quoted,),
                     ).fetchall()
+                    rows.sort(key=lambda row: str(row[0]).casefold())
+                    for relative_path, content in rows:
+                        self._append_line_matches(
+                            results,
+                            relative_path,
+                            content,
+                            relative_root=relative_root,
+                            root=root,
+                            needle=needle,
+                            case_sensitive=case_sensitive,
+                            limit=max_results,
+                        )
                 else:
-                    rows = connection.execute(
-                        "SELECT path, content FROM content_fts"
-                    ).fetchall()
+                    last_rowid = 0
+                    while True:
+                        batch = connection.execute(
+                            "SELECT rowid, path, content FROM content_fts "
+                            "WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                            (last_rowid, SHORT_PATTERN_BATCH_SIZE),
+                        ).fetchall()
+                        if not batch:
+                            break
+                        for _rowid, relative_path, content in batch:
+                            self._append_line_matches(
+                                results,
+                                relative_path,
+                                content,
+                                relative_root=relative_root,
+                                root=root,
+                                needle=needle,
+                                case_sensitive=case_sensitive,
+                                limit=None,
+                            )
+                        last_rowid = batch[-1][0]
         except sqlite3.Error:
             return None
+        # 短模式按 rowid 顺序收集，最后统一按路径排序后截断，
+        # 与长模式（排序遍历 + 提前截断）的结果语义一致。
+        results.sort(key=lambda match: str(match[0]).casefold())
+        return results[:max_results]
 
-        needle = pattern if case_sensitive else pattern.casefold()
-        results: list[tuple[str, int, str]] = []
-        for relative_path, content in sorted(
-            rows, key=lambda row: str(row[0]).casefold()
-        ):
-            relative_path = str(relative_path)
-            if not _is_relative_entry(relative_path, relative_root):
-                continue
-            if root.is_file() and relative_path != relative_root:
-                continue
-            for line_number, line in enumerate(str(content).splitlines(), start=1):
-                candidate = line if case_sensitive else line.casefold()
-                if needle in candidate:
-                    results.append((relative_path, line_number, line))
-                    if len(results) >= max_results:
-                        return results
-        return results
+    @staticmethod
+    def _append_line_matches(
+        results: list[tuple[str, int, str]],
+        relative_path: object,
+        content: object,
+        *,
+        relative_root: str,
+        root: Path,
+        needle: str,
+        case_sensitive: bool,
+        limit: int | None,
+    ) -> None:
+        """在单文件内容上逐行匹配；limit 非空时满额即停止收集。"""
+
+        relative_path = str(relative_path)
+        if not _is_relative_entry(relative_path, relative_root):
+            return
+        if root.is_file() and relative_path != relative_root:
+            return
+        for line_number, line in enumerate(str(content).splitlines(), start=1):
+            candidate = line if case_sensitive else line.casefold()
+            if needle in candidate:
+                results.append((relative_path, line_number, line))
+                if limit is not None and len(results) >= limit:
+                    return
 
     def refresh_path(self, path: Path) -> None:
         """同步 Agent 自身的写入；构建未完成时登记为构建后的补偿更新。"""
@@ -262,8 +320,22 @@ class ProjectSearchIndex:
             except (OSError, UsnJournalError):
                 reader = None
 
-            if not self._restore_snapshot(reader):
-                self._rebuild(reader)
+            # 快照恢复（含 USN 增量回放）失败不能杀死索引线程：
+            # 降级为全量重建，一次记录损坏不应让索引永久停留在 error。
+            try:
+                restored = self._restore_snapshot(reader)
+            except (OSError, sqlite3.Error, UsnJournalError):
+                restored = False
+                reader = None
+            if not restored:
+                try:
+                    self._rebuild(reader)
+                except (OSError, sqlite3.Error, UsnJournalError) as exc:
+                    # 只有数据库级故障（磁盘损坏、文件系统异常）才进入 error；
+                    # 普通 USN 问题已在上面降级为无 USN 的完整核对。
+                    self._set_error(f"索引重建失败：{exc}")
+                    self._ready_event.set()
+                    return
             self._drain_dirty_paths()
             self._mark_ready()
             self._ready_event.set()
@@ -276,14 +348,21 @@ class ProjectSearchIndex:
                     try:
                         self._apply_usn_updates(reader)
                     except (OSError, sqlite3.Error, UsnJournalError):
+                        # 增量失效：立即降级为低频核对（last_fallback_scan=0
+                        # 让下一轮循环直接执行一次重建），而不是等满一个周期。
                         reader = None
-                        last_fallback_scan = time.monotonic()
+                        last_fallback_scan = 0.0
                 elif (
                     time.monotonic() - last_fallback_scan
                     >= FALLBACK_RESCAN_INTERVAL_SECONDS
                 ):
-                    self._rebuild(None)
-                    self._mark_ready()
+                    try:
+                        self._rebuild(None)
+                    except (OSError, sqlite3.Error, UsnJournalError) as exc:
+                        # 核对失败只记录状态并继续等下一周期，线程不退出。
+                        self._set_error(f"索引核对失败：{exc}")
+                    else:
+                        self._mark_ready()
                     last_fallback_scan = time.monotonic()
                 self._drain_dirty_paths()
         except Exception as exc:  # noqa: BLE001 - 后台索引必须隔离故障
@@ -351,10 +430,24 @@ class ProjectSearchIndex:
             content_total=len(files),
         )
 
+        content_enabled = self.content_enabled and self._content_root_allowed
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # 记录旧快照中“路径 → (mtime, size)”映射，用于判断内容是否需要重读；
+            # 未变化的文件保留现有 content_fts 行，使低频核对只重读真正变化的文件，
+            # 而不是把整个项目的内容全部重读一遍重建 trigram。
+            previous_meta = {
+                str(path): (int(mtime_ns), int(size))
+                for path, mtime_ns, size in connection.execute(
+                    "SELECT path, mtime_ns, size FROM entries WHERE is_dir = 0"
+                )
+            }
+            previous_content_paths = {
+                str(path) for path, in connection.execute("SELECT path FROM content_fts")
+            }
+            disk_paths = {entry.path for entry in files}
+
             connection.execute("DELETE FROM entries")
-            connection.execute("DELETE FROM content_fts")
             connection.executemany(
                 "INSERT INTO entries(path, is_dir, mtime_ns, size, file_reference, parent_reference) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -371,30 +464,53 @@ class ProjectSearchIndex:
                 ],
             )
             content_processed = 0
-            if self.content_enabled and self._content_root_allowed:
+            failed: list[str] = []
+            if content_enabled:
+                # 删除磁盘上已不存在的文件残留内容；随后逐文件核对。
+                connection.executemany(
+                    "DELETE FROM content_fts WHERE path = ?",
+                    [(path,) for path in sorted(previous_content_paths - disk_paths)],
+                )
                 for entry in files:
                     if self._stop_event.is_set():
                         connection.rollback()
                         return
+                    if (
+                        entry.path in previous_content_paths
+                        and previous_meta.get(entry.path)
+                        == (entry.mtime_ns, entry.size)
+                    ):
+                        # 内容未变化：保留旧 FTS 行，跳过重读。
+                        content_processed += 1
+                        continue
                     content = self._read_indexable_text(
                         self.workspace_root / entry.path
                     )
                     if content is not None:
                         connection.execute(
+                            "DELETE FROM content_fts WHERE path = ?", (entry.path,),
+                        )
+                        connection.execute(
                             "INSERT INTO content_fts(path, content) VALUES (?, ?)",
                             (entry.path, content),
                         )
+                    else:
+                        # 内容读不到（二进制/过大/瞬态锁）：移除旧行，登记重试。
+                        connection.execute(
+                            "DELETE FROM content_fts WHERE path = ?", (entry.path,),
+                        )
+                        failed.append(entry.path)
                     content_processed += 1
                     if content_processed % 25 == 0 or content_processed == len(files):
                         self._set_status(content_processed=content_processed)
+            else:
+                connection.execute("DELETE FROM content_fts")
             root_stat = self.workspace_root.stat()
             meta_values = {
                 "schema_version": str(INDEX_SCHEMA_VERSION),
                 "workspace_root": str(self.workspace_root),
                 "snapshot_complete": "1",
-                "content_complete": (
-                    "1" if self.content_enabled and self._content_root_allowed else "0"
-                ),
+                "content_complete": "1" if content_enabled else "0",
                 "root_file_reference": str(int(root_stat.st_ino)),
             }
             connection.executemany(
@@ -404,13 +520,23 @@ class ProjectSearchIndex:
             connection.commit()
 
         self._load_name_entries()
+        # 内容读取失败的文件登记为补偿更新，由 _drain_dirty_paths 在后续轮询
+        # 中重试，而不是静默丢失内容条目。
+        if failed:
+            with self._lock:
+                self._dirty_paths.update(self.workspace_root / path for path in failed)
         if reader is not None and start_state is not None:
-            end_state = reader.query_state()
-            if end_state.journal_id != start_state.journal_id:
-                raise UsnJournalError("索引构建期间 USN Journal 已重建。")
-            self._apply_usn_range(
-                reader, start_state.next_usn, end_state.next_usn, end_state.journal_id,
-            )
+            try:
+                end_state = reader.query_state()
+                if end_state.journal_id != start_state.journal_id:
+                    raise UsnJournalError("索引构建期间 USN Journal 已重建。")
+                self._apply_usn_range(
+                    reader, start_state.next_usn, end_state.next_usn, end_state.journal_id,
+                )
+            except (OSError, sqlite3.Error, UsnJournalError):
+                # 回放失败不清空已建好的快照，只丢弃游标，
+                # 让下次启动回到无 USN 的完整核对路径。
+                self._save_usn_cursor(None, None)
         else:
             self._save_usn_cursor(None, None)
 
@@ -568,21 +694,26 @@ class ProjectSearchIndex:
             references[int(root_reference)] = "."
         return references
 
-    def _refresh_absolute_path(self, path: Path, *, recursive: bool = False) -> None:
+    def _refresh_absolute_path(self, path: Path, *, recursive: bool = False) -> bool:
+        """刷新单个路径；返回 False 表示内容条目读取失败（需要后续重试）。"""
+
         if not _is_relative_to(path.resolve(strict=False), self.workspace_root):
-            return
+            return True
         relative = self._relative(path)
         if not path.exists() or self._skip(path):
             self._delete_relative_path(relative, include_descendants=True)
-            return
+            return True
         if recursive and path.is_dir():
             self._delete_relative_path(relative, include_descendants=True)
+            ok = True
             for entry in self._scan_subtree(path):
-                self._upsert_entry(entry)
-            return
+                if not self._upsert_entry(entry):
+                    ok = False
+            return ok
         entry = self._entry_for_path(path)
-        if entry is not None:
-            self._upsert_entry(entry)
+        if entry is None:
+            return True
+        return self._upsert_entry(entry)
 
     def _scan_subtree(self, root: Path) -> Iterable[_Entry]:
         root_entry = self._entry_for_path(root)
@@ -610,7 +741,10 @@ class ProjectSearchIndex:
                 if entry is not None:
                     yield entry
 
-    def _upsert_entry(self, entry: _Entry) -> None:
+    def _upsert_entry(self, entry: _Entry) -> bool:
+        """写入文件名条目并尝试刷新内容条目；返回内容是否成功写入。"""
+
+        content_ok = True
         with self._connect() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO entries"
@@ -633,7 +767,10 @@ class ProjectSearchIndex:
                         "INSERT INTO content_fts(path, content) VALUES (?, ?)",
                         (entry.path, content),
                     )
+                else:
+                    content_ok = False
             connection.commit()
+        return content_ok
 
     def _delete_relative_path(
         self, relative: str, *, include_descendants: bool
@@ -662,10 +799,20 @@ class ProjectSearchIndex:
         with self._lock:
             paths = tuple(self._dirty_paths)
             self._dirty_paths.clear()
+        pending: list[Path] = []
         for path in paths:
             if self._stop_event.is_set():
                 return
-            self._refresh_absolute_path(path)
+            try:
+                # 内容读取失败（文件被独占锁定、瞬态 IO 错误）返回 False，
+                # 登记到下一轮轮询重试，而不是静默丢失内容条目。
+                if not self._refresh_absolute_path(path):
+                    pending.append(path)
+            except (OSError, sqlite3.Error):
+                pending.append(path)
+        if pending:
+            with self._lock:
+                self._dirty_paths.update(pending)
         if paths:
             self._reload_name_entries_if_enabled()
 
@@ -743,10 +890,27 @@ class ProjectSearchIndex:
             connection.close()
 
     def _read_indexable_text(self, path: Path) -> str | None:
+        """读取可索引文本；非 UTF-8、超过大小上限或读取失败返回 None。
+
+        OSError（Windows 独占锁、瞬态 IO）会短暂重试一次再放弃，
+        由调用方把路径登记为补偿更新，后续轮询继续尝试。
+        """
+
+        try:
+            if path.stat().st_size > MAX_CONTENT_INDEX_BYTES:
+                return None
+        except OSError:
+            return None
         try:
             return path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError:
             return None
+        except OSError:
+            time.sleep(0.05)
+            try:
+                return path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                return None
 
     def _skip(self, path: Path) -> bool:
         try:

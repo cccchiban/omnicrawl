@@ -108,6 +108,30 @@ class _BlockingAgent:
         self.release.set()
 
 
+class _InterruptThenSucceedRuntime:
+    """第一次流式输出部分内容后中断，第二次完整成功。"""
+
+    def __init__(self, identity: ModelIdentity) -> None:
+        self.identity = identity
+        self.capabilities = ModelCapabilities(streaming=True, tools=True)
+        self.calls = 0
+
+    def stream_turn(self, request, *, cancel_check=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield TextDelta(text="partial")
+            raise ModelError(
+                code=ModelErrorCode.STREAM_INTERRUPTED,
+                message="connection reset",
+                retryable=True,
+            )
+        yield TextDelta(text="完整回复")
+        yield ResponseCompleted(finish_reason="stop")
+
+    def close(self) -> None:
+        pass
+
+
 class ReviewRegressionTests(unittest.TestCase):
     def _profile_descriptor(self):
         identity = ModelIdentity(
@@ -161,6 +185,80 @@ class ReviewRegressionTests(unittest.TestCase):
 
         self.assertEqual(runtime.calls, 1)
         self.assertEqual(retries, [])
+
+    def test_stream_interrupt_retries_when_rollback_provided(self) -> None:
+        """提供 on_stream_rollback 时，已输出内容后的流式中断应回滚并自动重试。"""
+        identity, profile, descriptor = self._profile_descriptor()
+        runtime = _InterruptThenSucceedRuntime(identity)
+        manager = ModelRuntimeManager()
+        manager.bootstrap(profile, descriptor, runtime=runtime)
+        retries: list[str] = []
+        rollbacks: list[str] = []
+        protocol = AgentLLMProtocol(
+            client=None,
+            model="demo",
+            request_timeout_seconds=10,
+            request_retry_count=2,
+            workspace_root=Path.cwd(),
+            system_prompt_provider=lambda: "system",
+            prompt_cache_identity_provider=lambda: {},
+            tools_provider=lambda: [],
+            extra_body_provider=lambda: {},
+            tool_name_from_function_name=lambda name: name,
+            function_name_for_tool=lambda name: name,
+            runtime_manager=manager,
+        )
+
+        deltas: list[str] = []
+        reply = protocol.request_reply(
+            [{"role": "user", "content": "hello"}],
+            on_delta=lambda text: deltas.append(text),
+            on_token_usage=lambda *_args: None,
+            on_protocol_wait=lambda: None,
+            on_retry_status=retries.append,
+            on_stream_rollback=lambda: rollbacks.append("rollback"),
+        )
+
+        self.assertEqual(runtime.calls, 2)
+        self.assertEqual(rollbacks, ["rollback"])
+        self.assertEqual(len(retries), 1)
+        self.assertIn("撤销已显示内容", retries[0])
+        self.assertEqual(reply.content, "完整回复")
+        # 重试成功后只保留新回复的增量，半截旧内容不得拼接进历史。
+        self.assertEqual(deltas, ["partial", "完整回复"])
+        manager.close()
+
+    def test_stream_interrupt_no_rollback_no_retry_keeps_error(self) -> None:
+        """未提供 on_stream_rollback 时保持既有语义：可见输出后中断直接失败。"""
+        identity, profile, descriptor = self._profile_descriptor()
+        runtime = _InterruptingRuntime(identity)
+        manager = ModelRuntimeManager()
+        manager.bootstrap(profile, descriptor, runtime=runtime)
+        protocol = AgentLLMProtocol(
+            client=None,
+            model="demo",
+            request_timeout_seconds=10,
+            request_retry_count=3,
+            workspace_root=Path.cwd(),
+            system_prompt_provider=lambda: "system",
+            prompt_cache_identity_provider=lambda: {},
+            tools_provider=lambda: [],
+            extra_body_provider=lambda: {},
+            tool_name_from_function_name=lambda name: name,
+            function_name_for_tool=lambda name: name,
+            runtime_manager=manager,
+        )
+        with self.assertRaises(AgentProtocolError) as ctx:
+            protocol.request_reply(
+                [{"role": "user", "content": "hello"}],
+                on_delta=lambda _text: None,
+                on_token_usage=lambda *_args: None,
+                on_protocol_wait=lambda: None,
+                on_retry_status=lambda _message: None,
+            )
+        self.assertIn("模型流中断", str(ctx.exception))
+        self.assertEqual(runtime.calls, 1)
+        manager.close()
 
     def test_openai_responses_deduplicates_done_and_completed_function_call(self) -> None:
         identity, profile, descriptor = self._profile_descriptor()

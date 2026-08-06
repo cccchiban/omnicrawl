@@ -96,6 +96,7 @@ MessageBlock = Union[TextBlock, ImageBlock, ToolCallBlock, ToolResultBlock]
 class ConversationMessage:
     role: str  # user | assistant | tool | system
     blocks: tuple[MessageBlock, ...] = ()
+    reasoning: str = ""  # 思考模式思维链；回传历史时须原样携带
 
     @property
     def text(self) -> str:
@@ -393,7 +394,16 @@ def conversation_from_openai_messages(
                         ToolCallBlock(call_id=call_id, name=name, arguments=arguments)
                     )
         if blocks or role in {"user", "assistant", "system"}:
-            converted.append(ConversationMessage(role=role, blocks=tuple(blocks)))
+            reasoning = message.get("reasoning_content")
+            converted.append(
+                ConversationMessage(
+                    role=role,
+                    blocks=tuple(blocks),
+                    # 思考模式网关要求历史 assistant 消息回传 reasoning_content，
+                    # 转换时保留以免二次请求被拒（HTTP 400）。
+                    reasoning=reasoning if isinstance(reasoning, str) else "",
+                )
+            )
     return tuple(converted)
 
 

@@ -93,6 +93,7 @@ class ContextOverflowRecoveryTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 requests.append(list(messages))
                 if len(requests) == 1:
@@ -154,6 +155,7 @@ class ContextOverflowRecoveryTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 nonlocal calls
                 calls += 1
@@ -206,6 +208,7 @@ class ContextOverflowRecoveryTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 nonlocal calls
                 calls += 1

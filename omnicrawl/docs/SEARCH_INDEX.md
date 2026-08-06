@@ -25,20 +25,30 @@ content_index:
 
 ## 数据与增量更新
 
-索引严格限定在当前 PRJ，跳过 `.git`、虚拟环境、`.env`、运行配置和其他受保护路径。持久化文件按规范化 PRJ 路径的 SHA-256 前缀隔离，保存在：
+索引严格限定在当前 PRJ，跳过 `.git`、虚拟环境、`.env`、运行配置和其他受保护路径。
+索引层额外忽略构建产物/缓存/工具私有目录（`build`、`dist`、`.pytest_cache`、
+`.agents`、`.claude`、`.codex`、`.pi-subagents`、`.agent_tmp`、`logs`、`designs` 等，
+见 `WorkspaceTools.INDEX_EXCLUDED_NAMES`）：这些目录不进索引快照，但普通工具
+仍可直接访问和搜索——`find_files`/`search_text` 在走索引的同时会补充扫描这些
+目录，保证开启索引后结果与直接扫描一致。持久化文件按规范化 PRJ 路径的
+SHA-256 前缀隔离，保存在：
 
 ```text
 ~/.OmniCrawl/search-index/<workspace-hash>.sqlite3
 ```
 
-文件名快照启动后加载到内存；内容使用 SQLite FTS5 trigram 查找候选文件，再逐行复核精确子串和大小写，避免 FTS 分词改变工具结果。
+文件名快照启动后加载到内存；内容使用 SQLite FTS5 trigram 查找候选文件，再逐行复核精确子串和大小写，避免 FTS 分词改变工具结果。超过 2MB 的文件只保留文件名条目，不建立内容索引，避免大文件撑爆 trigram 表。
 
-Agent 的 `write_file` 和 `replace_text` 会立即刷新对应条目。Windows 本地 NTFS 卷优先直接读取 USN Journal V2 记录，并持久化 Journal ID 与 USN 游标；游标连续时，后续启动只回放增量。以下情况会在后台完整重建：
+Agent 的 `write_file` 和 `replace_text` 会立即刷新对应条目；内容读取失败（如
+Windows 独占锁）的文件会登记为补偿更新，在后续轮询中重试，不会静默丢失。
+Windows 本地 NTFS 卷优先直接读取 USN Journal V2 记录，并持久化 Journal ID 与 USN 游标；游标连续时，后续启动只回放增量。以下情况会在后台完整重建：
 
 - 卷不是 NTFS或系统拒绝读取 Journal；
 - Journal ID 变化、游标早于 `LowestValidUsn` 或快照版本不兼容；
 - USN 记录损坏或无法映射到现有 PRJ 路径。
 
+USN 回放或增量应用失败只会降级到低频完整核对，索引服务不会因此退出；
+核对按文件 mtime/size 增量重读，未变化的文件保留现有内容索引。
 非 Windows、非 NTFS 或 USN 不可用时，索引使用低频完整核对来同步外部变更。
 
 ## 根目录限制

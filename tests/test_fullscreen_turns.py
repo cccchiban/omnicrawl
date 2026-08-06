@@ -33,6 +33,7 @@ class AgentTurnControllerTests(unittest.TestCase):
             on_subagent_event=lambda name, payload: events.append(
                 ("subagent", name, payload.get("task_id"))
             ),
+            on_stream_rollback=lambda: events.append(("stream_rollback",)),
         )
 
     def test_run_forwards_full_stream_protocol_without_reordering_events(self) -> None:
@@ -62,6 +63,7 @@ class AgentTurnControllerTests(unittest.TestCase):
                     "subagent.task.started",
                     {"task_id": "task-a1b2c3d4e5f6"},
                 )
+                callbacks["on_stream_rollback"]()
                 callbacks["cancel_check"]()
                 return "最终回复"
 
@@ -82,6 +84,7 @@ class AgentTurnControllerTests(unittest.TestCase):
                 "cancel_check",
                 "on_reasoning_delta",
                 "on_subagent_event",
+                "on_stream_rollback",
             },
         )
         self.assertEqual(
@@ -96,6 +99,7 @@ class AgentTurnControllerTests(unittest.TestCase):
                 ("token_usage", 12, 8, 3),
                 ("retry_status", "正在重试"),
                 ("subagent", "subagent.task.started", "task-a1b2c3d4e5f6"),
+                ("stream_rollback",),
             ],
         )
 

@@ -136,6 +136,7 @@ from ..config.subagents import (
     load_subagent_config,
     validate_subagent_advanced_setting,
 )
+from ..config.tools import load_disabled_tools
 from ..extensions.plugin_models import HOOK_POLICIES
 from ..llm import (
     LLMConfig,
@@ -382,6 +383,8 @@ class AgentConfig:
         default_factory=load_context_compaction_config
     )
     approval_mode: str = field(default_factory=load_approval_mode)
+    # 内置工具开关：默认除 powershell 外全部启用；配置 tools 段可覆盖。
+    disabled_tools: frozenset[str] = field(default_factory=load_disabled_tools)
     workspace_detection_summary: str = ""
     temp_workspace: AgentTempWorkspaceConfig = field(
         default_factory=load_agent_temp_workspace_config
@@ -436,6 +439,14 @@ class AgentConfig:
         _validate_context_compaction_window(self.context_compaction, self.llm)
         if not isinstance(self.workspace_detection_summary, str):
             raise AgentError("workspace_detection_summary 必须是字符串。")
+        if isinstance(self.disabled_tools, str):
+            raise AgentError("disabled_tools 必须是字符串集合，不能是单个字符串。")
+        try:
+            self.disabled_tools = frozenset(self.disabled_tools)
+        except TypeError:
+            raise AgentError("disabled_tools 必须是字符串集合。")
+        if not all(isinstance(name, str) and name for name in self.disabled_tools):
+            raise AgentError("disabled_tools 的元素必须是非空字符串。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
 
 
@@ -518,7 +529,7 @@ class LocalToolAgent:
             self.workspace_root,
             file_name_enabled=self.config.file_name_index_enabled,
             content_enabled=self.config.content_index_enabled,
-            should_skip=self._workspace_tools.should_skip_path,
+            should_skip=self._workspace_tools.should_index_skip,
         )
         self._workspace_tools.search_index = self._search_index
         self._search_index.start()
@@ -1096,7 +1107,7 @@ class LocalToolAgent:
             new_root,
             file_name_enabled=self.config.file_name_index_enabled,
             content_enabled=self.config.content_index_enabled,
-            should_skip=self._workspace_tools.should_skip_path,
+            should_skip=self._workspace_tools.should_index_skip,
         )
         self._workspace_tools.search_index = self._search_index
         self._search_index.start()
@@ -1639,7 +1650,7 @@ class LocalToolAgent:
             self.workspace_root,
             file_name_enabled=next_file_name,
             content_enabled=next_content,
-            should_skip=toolbox.should_skip_path,
+            should_skip=toolbox.should_index_skip,
         )
         previous = getattr(self, "_search_index", None)
         if previous is not None:
@@ -2536,6 +2547,7 @@ class LocalToolAgent:
                     cancel_check,
                     None,
                     runtime_snapshot,
+                    lambda: None,
                 )
             # 不能无期限阻塞在并发槽位上；等待期间持续检查父回合取消，
             # 确保尚未发起 Provider 请求的任务也能及时退出。
@@ -2552,6 +2564,7 @@ class LocalToolAgent:
                     cancel_check,
                     None,
                     runtime_snapshot,
+                    lambda: None,
                 )
             finally:
                 semaphore.release()
@@ -2735,11 +2748,15 @@ class LocalToolAgent:
         cancel_check: Callable[[], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         on_subagent_event: Callable[[str, dict[str, Any]], None] | None = None,
+        on_stream_rollback: Callable[[], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
 
         外层继续拥有用户输入、Skill、Session、Plugin 与 Runtime 生命周期；内部
         ``AgentLoopRunner`` 只处理模型与整批工具观察之间的协议循环。
+
+        ``on_stream_rollback`` 可选：模型流式输出已展示部分内容后中断并自动重试
+        前调用，外层应撤销已显示的半截回复，避免与新内容拼接错乱。
         """
 
         text = user_text.strip()
@@ -2869,6 +2886,7 @@ class LocalToolAgent:
                     report_token_usage,
                     _report_protocol_wait,
                     report_retry_status,
+                    on_stream_rollback=on_stream_rollback,
                 )
 
             def execute_main_tool_batch(
@@ -2971,6 +2989,15 @@ class LocalToolAgent:
                 "turn_cancelled",
                 {"user_text": text, "reason": str(terminal_exc)},
             )
+            # 被取消的回合同样写入历史：只保留任务文本与已执行工具摘要，
+            # 保证用户紧接着发送的后续消息仍能看到上一轮任务与进度，
+            # 避免 Agent 把延续任务误判为无前置信息的新任务。
+            self._history.extend(
+                [
+                    {"role": "user", "content": text},
+                    self._assistant_message(self._cancelled_turn_summary(active_turn_snapshot)),
+                ]
+            )
             if not turn_terminal_sent:
                 self._dispatch_plugin_hook(
                     "turn.cancelled",
@@ -2999,6 +3026,15 @@ class LocalToolAgent:
                 event_type,
                 {"user_text": text, "reason": str(terminal_exc)},
             )
+            if event_type == "turn_cancelled":
+                # 与 KeyboardInterrupt 取消路径一致：把任务文本与已执行工具摘要
+                # 写入历史，避免后续回合丢失被取消任务的前置上下文。
+                self._history.extend(
+                    [
+                        {"role": "user", "content": text},
+                        self._assistant_message(self._cancelled_turn_summary(active_turn_snapshot)),
+                    ]
+                )
             if not turn_terminal_sent:
                 hook_name = "turn.cancelled" if event_type == "turn_cancelled" else "turn.error"
                 self._dispatch_plugin_hook(
@@ -3310,6 +3346,7 @@ class LocalToolAgent:
         on_token_usage: Callable[[int, int, int], None],
         on_protocol_wait: Callable[[], None],
         on_retry_status: Callable[[str], None],
+        on_stream_rollback: Callable[[], None] | None = None,
     ) -> AgentModelReply:
         """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
 
@@ -3336,6 +3373,7 @@ class LocalToolAgent:
                 getattr(self, "_cancel_check", None),
                 getattr(self, "_reasoning_delta_callback", None),
                 getattr(self, "_active_runtime_snapshot", None),
+                on_stream_rollback,
             )
         except AgentProtocolError as exc:
             self._dispatch_plugin_hook(
@@ -3824,6 +3862,9 @@ class LocalToolAgent:
 
     def _build_tools(self) -> dict[str, ToolDefinition]:
         windows_desktop = self._windows_desktop_toolbox()
+        disabled_tools = frozenset(
+            getattr(getattr(self, "config", None), "disabled_tools", ())
+        )
         return build_agent_tools(
             mcp_manager=self._mcp_manager,
             memory_enabled=getattr(
@@ -3891,6 +3932,7 @@ class LocalToolAgent:
             windows_screenshot=(
                 windows_desktop.run_screenshot if windows_desktop is not None else None
             ),
+            disabled_tools=disabled_tools,
         )
 
     def _build_mcp_tools(self) -> list[ToolDefinition]:
@@ -4621,7 +4663,7 @@ class LocalToolAgent:
                 content_enabled=bool(
                     getattr(self.config, "content_index_enabled", False)
                 ),
-                should_skip=self._workspace_tools.should_skip_path,
+                should_skip=self._workspace_tools.should_index_skip,
             )
             rebuilt.start()
             self._search_index = rebuilt
@@ -4856,7 +4898,34 @@ class LocalToolAgent:
 
     @staticmethod
     def _assistant_message(assistant_text: str, reasoning: str = "") -> dict[str, Any]:
-        return {"role": "assistant", "content": assistant_text}
+        # 思考模式下网关要求历史 assistant 消息必须回传 reasoning_content，
+        # 否则二次请求会被拒绝（HTTP 400：reasoning_content must be passed back）。
+        message: dict[str, Any] = {"role": "assistant", "content": assistant_text}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        return message
+
+    @staticmethod
+    def _cancelled_turn_summary(snapshot: _ActiveTurnSnapshot | None) -> str:
+        """生成被取消回合的历史摘要（已执行工具名 + 次数）。
+
+        取消时没有最终回复可写，但任务文本与已执行工具对后续回合延续上下文
+        至关重要。刻意用纯文本 assistant 消息而非未配对的 tool_calls，避免
+        破坏 chat/responses 协议的“assistant tool_calls 必须紧跟 tool 结果”约束。
+        """
+
+        if snapshot is None:
+            return "（上一回合被取消，未生成最终回复）"
+        counts: dict[str, int] = {}
+        for name in snapshot.executed_tools:
+            counts[name] = counts.get(name, 0) + 1
+        if not counts:
+            return "（上一回合被取消，未生成最终回复，未执行任何工具）"
+        summary = "，".join(
+            f"{name}×{count}" if count > 1 else name
+            for name, count in counts.items()
+        )
+        return f"（上一回合被取消，未生成最终回复）已执行工具：{summary}"
 
     def _can_recover_context_overflow(
         self,

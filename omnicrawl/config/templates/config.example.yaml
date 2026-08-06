@@ -54,6 +54,13 @@ approval:
 memory:
   enabled: true
 
+# 内置工具开关：默认除 powershell 关闭外，其余全部启用。
+# 只在需要禁用某个工具时取消注释并设为 false。
+# tools:
+#   powershell: false
+#   bash: true
+#   windows_screenshot: true
+
 # 两类搜索索引均默认关闭；可在 TUI /settings 中独立启用。
 # 快照按 PRJ 隔离保存到 ~/.OmniCrawl/search-index/，不会写入项目目录。
 file_name_index:

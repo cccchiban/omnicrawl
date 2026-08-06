@@ -302,7 +302,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
 
         manager = FakeRuntimeManager()
         agent._ensure_runtime_manager = lambda: manager  # type: ignore[method-assign]
-        agent._request_agent_reply = lambda *_args: AgentModelReply(  # type: ignore[method-assign]
+        agent._request_agent_reply = lambda *_args, **_kwargs: AgentModelReply(  # type: ignore[method-assign]
             {"role": "assistant", "content": "完成"},
             "完成",
         )

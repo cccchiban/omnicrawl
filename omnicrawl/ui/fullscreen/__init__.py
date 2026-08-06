@@ -25,6 +25,7 @@ from ...version_check import (
     current_version,
 )
 from .hud import (
+    SEARCH_INDEX_WAVE_FRAMES,
     compact_token_count,
     context_summary_text,
     gradient_text,
@@ -327,7 +328,7 @@ class OmniCrawlApp(App[None]):
         background: $input-cursor-background;
         text-style: $input-cursor-text-style;
     }
-    #composer:focus { border-left: thick $terminal-green; background: $terminal-panel; }
+    #composer:focus { border-left: solid $terminal-green; background: $terminal-panel; }
     #composer:focus .text-area--cursor-line { background: $terminal-panel; }
     """)
 
@@ -340,6 +341,8 @@ class OmniCrawlApp(App[None]):
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
     MONITOR_POLL_INTERVAL_SECONDS = 0.5
     STATUS_SPINNER_INTERVAL_SECONDS = 0.16
+    # 索引加载光波的刷新间隔：8 帧 × 0.25s 整圈 2s，波速为原 4 帧/0.5s 的两倍。
+    SEARCH_INDEX_ANIMATION_INTERVAL_SECONDS = 0.25
     STATUS_SPINNER_FRAMES = (
         "⠋",
         "⠙",
@@ -405,6 +408,7 @@ class OmniCrawlApp(App[None]):
         self._stream_message: AssistantMessage | None = None
         self._stream_markdown = ""
         self._stream_render_pending = False
+        self._stream_start_text_len: int | None = None
         self._tool_messages: dict[str, ToolDisclosure] = {}
         self._subagent_trees: dict[str, SubAgentProgressTree] = {}
         self._reasoning_message: ReasoningDisclosure | None = None
@@ -461,7 +465,10 @@ class OmniCrawlApp(App[None]):
         self._resize_composer_to_text()
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_version_check)
-        self.set_interval(0.5, self._tick_search_index_status)
+        self.set_interval(
+            self.SEARCH_INDEX_ANIMATION_INTERVAL_SECONDS,
+            self._tick_search_index_status,
+        )
         self.set_interval(
             self.INTERACTION_WATCHDOG_INTERVAL_SECONDS,
             self._recover_stale_mouse_interaction,
@@ -623,9 +630,9 @@ class OmniCrawlApp(App[None]):
         self._render_version_status()
 
     def _tick_search_index_status(self) -> None:
-        """加载索引时推进四帧颜色波浪，并在主线程刷新 HUD。"""
+        """加载索引时推进八帧颜色波浪，并在主线程刷新 HUD。"""
 
-        self._search_index_frame = (self._search_index_frame + 1) % 4
+        self._search_index_frame = (self._search_index_frame + 1) % SEARCH_INDEX_WAVE_FRAMES
         self._render_search_index_status()
 
     def _search_index_status_text(self) -> Text:
@@ -864,6 +871,7 @@ class OmniCrawlApp(App[None]):
         self._stream_message = None
         self._stream_markdown = ""
         self._stream_render_pending = False
+        self._stream_start_text_len = None
         self._tool_messages.clear()
         self._subagent_trees.clear()
         self._reasoning_message = None
@@ -911,6 +919,7 @@ class OmniCrawlApp(App[None]):
                 "正在准备工具调用",
             ),
             on_retry_status=lambda status: self.call_from_thread(self._handle_status, status),
+            on_stream_rollback=lambda: self.call_from_thread(self._rollback_stream),
             on_reasoning_delta=lambda delta: self.call_from_thread(
                 self._append_reasoning_delta,
                 delta,
@@ -1131,6 +1140,7 @@ class OmniCrawlApp(App[None]):
         # 返回后的最终回答会继续写入旧组件，在视觉上倒插到工具记录之前。
         self._stream_message = None
         self._stream_markdown = ""
+        self._stream_start_text_len = None
         self._reasoning_message = None
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
@@ -1226,6 +1236,8 @@ class OmniCrawlApp(App[None]):
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
         if self._stream_message is None:
+            # 记录本轮流式输出起点，供模型流中断自动重试前回滚已显示内容。
+            self._stream_start_text_len = len(self.conversation_text)
             self._stream_message = AssistantMessage(self._stream_markdown)
             self._stream_markdown = "◇ "
             conversation.mount(self._stream_message)
@@ -1258,6 +1270,33 @@ class OmniCrawlApp(App[None]):
                 follow_latest,
                 defer_until_refresh=True,
             )
+
+    def _rollback_stream(self) -> None:
+        """撤销本轮流式输出已展示的内容，供模型流中断自动重试前调用。
+
+        重试成功后模型会重新生成完整回复；若不清除半截内容，新旧文本会
+        在同一消息组件内拼接错乱。推理组件同样移除，因其内容也来自旧请求。
+        """
+
+        if self._stream_message is not None:
+            try:
+                if self._stream_message.parent is not None:
+                    self._stream_message.remove()
+            except Exception:
+                pass
+            self._stream_message = None
+        self._stream_markdown = ""
+        self._stream_render_pending = False
+        if self._stream_start_text_len is not None:
+            self.conversation_text = self.conversation_text[: self._stream_start_text_len]
+            self._stream_start_text_len = None
+        if self._reasoning_message is not None:
+            try:
+                if self._reasoning_message.parent is not None:
+                    self._reasoning_message.remove()
+            except Exception:
+                pass
+            self._reasoning_message = None
 
     def _append_message(
         self,
@@ -1292,6 +1331,7 @@ class OmniCrawlApp(App[None]):
             else:
                 self._stream_message = None
                 self._stream_markdown = ""
+                self._stream_start_text_len = None
             conversation.mount(widget)
             if track_tool:
                 self._tool_messages[f"legacy:{id(widget)}"] = widget

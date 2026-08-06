@@ -70,6 +70,7 @@ def _build_agent(
         on_token_usage,
         _on_protocol_wait,
         _on_retry_status,
+        on_stream_rollback=None,
     ):
         on_token_usage(1_000, 100, 250)
         return AgentModelReply(

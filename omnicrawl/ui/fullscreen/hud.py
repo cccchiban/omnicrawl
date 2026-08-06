@@ -13,6 +13,11 @@ from .theme import (
     TEXT_PRIMARY,
 )
 
+# “正在加载项目搜索索引”光波的周期帧数。8 帧比原 4 帧更细，配合
+# 0.25s 刷新间隔（见 OmniCrawlApp.SEARCH_INDEX_ANIMATION_INTERVAL_SECONDS）
+# 让光效更快且更平滑。
+SEARCH_INDEX_WAVE_FRAMES = 8
+
 
 def compact_token_count(value: int) -> str:
     """使用 K/M 缩写压缩 Token 数，同时保留小数量的精确值。"""
@@ -73,7 +78,7 @@ def pending_queue_text(pending_count: int) -> Text:
 
 
 def search_index_status_text(status: object, animation_frame: int = 0) -> Text:
-    """生成版本号下方的后台索引进度；加载阶段显示四帧颜色波浪。"""
+    """生成版本号下方的后台索引进度；加载阶段显示八帧颜色波浪。"""
 
     file_state = str(getattr(status, "file_state", "disabled"))
     content_state = str(getattr(status, "content_state", "disabled"))
@@ -92,11 +97,18 @@ def search_index_status_text(status: object, animation_frame: int = 0) -> Text:
         return Text(f"正在建立项目文件索引{suffix}", style=TEXT_MUTED)
     if file_state == "loading" or content_state == "loading":
         label = "正在加载项目搜索索引"
-        active_pattern = {2, 3}
-        frame = int(animation_frame) % 4
+        # 八帧滑动光波：锋头加粗、锋身常亮、其余减弱为 dim。每帧向前推进
+        # 1 字符、整圈 8 字符，比原 4 帧/0.5s 的动画更流畅且速度翻倍。
+        frame = int(animation_frame) % SEARCH_INDEX_WAVE_FRAMES
         rendered = Text()
         for index, character in enumerate(label):
-            style = TEXT_PRIMARY if (index - frame) % 4 in active_pattern else TEXT_MUTED
+            position = (index - frame) % SEARCH_INDEX_WAVE_FRAMES
+            if position == 2:
+                style = f"{TEXT_PRIMARY} bold"
+            elif position == 3:
+                style = TEXT_PRIMARY
+            else:
+                style = TEXT_MUTED
             rendered.append(character, style=style)
         return rendered
     if file_state == "error" or content_state == "error":

@@ -189,6 +189,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 captured_messages.append(messages)
                 return AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成")
@@ -274,6 +275,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 raise AgentError("Agent 请求失败：无法连接模型服务。")
 
@@ -305,6 +307,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 captured_messages.append(messages)
                 return AgentModelReply(message={"role": "assistant", "content": "已继续"}, content="已继续")
@@ -342,6 +345,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 raise AgentError("Agent 请求失败：无法连接模型服务。")
 
@@ -419,6 +423,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 captured_messages.append(messages)
                 return next(replies)
@@ -479,7 +484,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 AgentModelReply({"role": "assistant", "content": "完成"}, "完成"),
             ])
             captured_messages = []
-            agent._request_agent_reply = lambda messages, *_args: (captured_messages.append(list(messages)), next(replies))[1]  # type: ignore[method-assign]
+            agent._request_agent_reply = lambda messages, *_args, **_kwargs: (captured_messages.append(list(messages)), next(replies))[1]  # type: ignore[method-assign]
 
             result_holder: list[str] = []
             thread = threading.Thread(
@@ -547,7 +552,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 AgentModelReply({"role": "assistant", "content": None}, "", calls),
                 AgentModelReply({"role": "assistant", "content": "完成"}, "完成"),
             ])
-            agent._request_agent_reply = lambda *_args: next(replies)  # type: ignore[method-assign]
+            agent._request_agent_reply = lambda *_args, **_kwargs: next(replies)  # type: ignore[method-assign]
 
             LocalToolAgent.run_stream(agent, "执行", lambda _delta: None)
 
@@ -575,6 +580,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 return AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成")
 
@@ -630,6 +636,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 nonlocal calls
                 calls += 1
@@ -707,6 +714,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 nonlocal calls
                 calls += 1
@@ -1088,6 +1096,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 return AgentModelReply(message={"role": "assistant", "content": "第三轮回答"}, content="第三轮回答")
 
@@ -1133,6 +1142,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 raise UserCancelled("用户取消")
 
@@ -1149,6 +1159,136 @@ class AgentContextInjectionTest(unittest.TestCase):
 
         self.assertEqual(events[-1]["type"], "turn_cancelled")
         self.assertEqual(events[-1]["payload"]["user_text"], "取消这一轮")
+
+    def test_run_stream_cancelled_turn_preserves_task_in_history(self) -> None:
+        """被取消的回合必须把任务文本与已执行工具摘要写入历史。
+
+        否则用户取消后紧接着发送的延续消息会丢失前置上下文（AI 误判为
+        新任务并重新探索项目）。两种取消入口（KeyboardInterrupt 与自定义
+        取消异常）行为必须一致。
+        """
+
+        class UserCancelled(RuntimeError):
+            pass
+
+        def build_agent(temp_dir: str) -> LocalToolAgent:
+            workspace = Path(temp_dir)
+            agent = object.__new__(LocalToolAgent)
+            agent.workspace_root = workspace
+            agent.config = SimpleNamespace(
+                max_history_turns=6,
+                max_tool_output_chars=6000,
+            )
+            agent._history = []
+            agent._skill_manager = None
+            agent._active_skills = []
+            agent._tools = {
+                "read_file": ToolDefinition(
+                    "read_file",
+                    "read",
+                    "{}",
+                    False,
+                    lambda _args: ToolResult(ok=True, output="文件内容"),
+                ),
+            }
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            agent._session_store = store
+            agent._session_state = state
+            return agent
+
+        def run_with_cancel(agent: LocalToolAgent, cancel_exc: Exception) -> None:
+            calls = [
+                ToolCall(
+                    "read_file",
+                    {"path": "a.txt"},
+                    "call_1",
+                    function_name_for_tool("read_file"),
+                )
+            ]
+            call_count = 0
+
+            def fake_request(
+                _messages,
+                _on_delta,
+                _on_token_usage,
+                _on_protocol_wait,
+                _on_retry_status,
+                on_stream_rollback=None,
+            ):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    # 第一轮回复携带工具调用并正常执行，写入 executed_tools。
+                    return AgentModelReply(
+                        message=assistant_tool_call_message(
+                            {},
+                            "",
+                            calls,
+                            "",
+                            function_name_for_tool=function_name_for_tool,
+                        ),
+                        content="",
+                        tool_calls=calls,
+                    )
+                raise cancel_exc
+
+            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
+
+            with self.assertRaises(type(cancel_exc)):
+                LocalToolAgent.run_stream(agent, "取消这一轮", lambda _delta: None)
+
+        for cancel_exc in (KeyboardInterrupt("用户取消"), UserCancelled("用户取消")):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                agent = build_agent(temp_dir)
+                run_with_cancel(agent, cancel_exc)
+                self.assertEqual(
+                    [message["content"] for message in agent._history],
+                    [
+                        "取消这一轮",
+                        "（上一回合被取消，未生成最终回复）已执行工具：read_file",
+                    ],
+                    f"取消异常 {type(cancel_exc).__name__} 未保留回合上下文",
+                )
+                # 摘要为纯文本 assistant 消息，不携带未配对的 tool_calls 或 reasoning
+                self.assertEqual(agent._history[1]["role"], "assistant")
+                self.assertNotIn("tool_calls", agent._history[1])
+                self.assertNotIn("reasoning_content", agent._history[1])
+
+    def test_cancelled_turn_summary_covers_tool_counts_and_empty_case(self) -> None:
+        from omnicrawl.agent.core import _ActiveTurnSnapshot
+
+        class FakeStore:
+            def capture(self, roots):  # noqa: ARG002 - 测试替身
+                return {}
+
+        snapshot = _ActiveTurnSnapshot(
+            snapshot_id="s1",
+            store=FakeStore(),  # type: ignore[arg-type]
+            roots={},
+            before={},
+            executed_tools=["read_file", "search_text", "read_file"],
+        )
+        summary = LocalToolAgent._cancelled_turn_summary(snapshot)
+        self.assertEqual(
+            summary,
+            "（上一回合被取消，未生成最终回复）已执行工具：read_file×2，search_text",
+        )
+        self.assertEqual(
+            LocalToolAgent._cancelled_turn_summary(None),
+            "（上一回合被取消，未生成最终回复）",
+        )
+        self.assertIn(
+            "未执行任何工具",
+            LocalToolAgent._cancelled_turn_summary(
+                _ActiveTurnSnapshot(
+                    snapshot_id="s2",
+                    store=FakeStore(),  # type: ignore[arg-type]
+                    roots={},
+                    before={},
+                )
+            ),
+        )
 
     def test_compact_command_writes_summary_and_is_listed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1266,6 +1406,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                 _on_token_usage,
                 _on_protocol_wait,
                 _on_retry_status,
+                on_stream_rollback=None,
             ):
                 return AgentModelReply(message={"role": "assistant", "content": "完成"}, content="完成")
 

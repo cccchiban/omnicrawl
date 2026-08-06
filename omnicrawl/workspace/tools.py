@@ -36,6 +36,27 @@ PROTECTED_NAMES = {
     "models.yaml",
 }
 
+# 仅索引层忽略的目录名：这些目录仍然可以被普通工具读取和搜索（直接扫描），
+# 但不进入后台索引快照。它们要么是构建产物/缓存（频繁变化、无检索价值），
+# 要么是其他 AI 工具的工作目录（含会话转录等私有数据，索引会泄露隐私并
+# 导致快照持续失效）。不要把它们加入 PROTECTED_NAMES，否则 Agent 将完全
+# 无法访问这些目录。
+INDEX_EXCLUDED_NAMES = {
+    "build",
+    "dist",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".coverage",
+    ".agents",
+    ".claude",
+    ".codex",
+    ".pi-subagents",
+    ".agent_tmp",
+    "logs",
+    "designs",
+}
+
 
 class WorkspaceToolError(RuntimeError):
     """工作区工具参数校验或执行失败。"""
@@ -217,6 +238,22 @@ class WorkspaceTools:
                 case_sensitive=case_sensitive,
                 max_results=max_results,
             )
+        else:
+            # 索引快照不包含 INDEX_EXCLUDED_NAMES 目录（构建产物/缓存/工具私有
+            # 目录），开启索引后需要补充扫描这些目录，保证结果与直接扫描一致。
+            extra = self._scan_index_excluded(
+                pattern,
+                root=root,
+                kind=kind,
+                case_sensitive=case_sensitive,
+                max_results=max_results,
+            )
+            if extra:
+                merged = dict(indexed)
+                merged.update(extra)
+                indexed = sorted(
+                    merged.items(), key=lambda item: item[0].casefold()
+                )[:max_results]
         lines = [f"{path}{'/' if is_dir else ''}" for path, is_dir in indexed]
         suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
         return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
@@ -253,6 +290,18 @@ class WorkspaceTools:
                 max_results=max_results,
             )
         if indexed is not None:
+            # 与 find_files 相同：补充扫描索引排除目录，保持结果一致。
+            extra = self._scan_index_excluded_text(
+                pattern,
+                root=root,
+                case_sensitive=case_sensitive,
+                max_results=max_results,
+            )
+            if extra:
+                indexed = sorted(
+                    set(indexed) | set(extra),
+                    key=lambda match: str(match[0]).casefold(),
+                )[:max_results]
             lines = [f"{path}:{line_no}: {line}" for path, line_no, line in indexed]
             suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
             return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
@@ -312,7 +361,10 @@ class WorkspaceTools:
             dirnames[:] = [
                 dirname
                 for dirname in sorted(dirnames, key=lambda value: value.lower())
+                # 目录 symlink/junction 一律跳过，与索引快照的 _scan_entries
+                # 行为保持一致，避免开启/关闭索引时 find_files 结果集不同。
                 if not self.should_skip_path(current_dir / dirname)
+                and not (current_dir / dirname).is_symlink()
             ]
             entries.extend(current_dir / dirname for dirname in dirnames)
             entries.extend(
@@ -322,6 +374,90 @@ class WorkspaceTools:
             )
         return entries
 
+
+    def _index_excluded_roots(self, root: Path) -> list[Path]:
+        """root 下（含 root 自身，若它命中排除名单）的索引排除目录。
+
+        索引快照跳过 INDEX_EXCLUDED_NAMES 目录后，工具层必须补充扫描这些
+        目录，否则开启索引会丢失这些目录内的匹配结果。排除目录整棵子树
+        都不进索引，因此无需继续下钻。
+        """
+
+        if root.is_file():
+            return [root] if self.is_index_excluded_path(root) else []
+        if self.is_index_excluded_path(root):
+            return [root]
+        roots: list[Path] = []
+        for dirpath, dirnames, _filenames in os.walk(root):
+            current_dir = Path(dirpath)
+            for name in sorted(dirnames, key=lambda value: value.lower()):
+                candidate = current_dir / name
+                if self.is_index_excluded_path(candidate):
+                    roots.append(candidate)
+            dirnames[:] = [
+                name for name in dirnames
+                if not self.is_index_excluded_path(current_dir / name)
+            ]
+        return roots
+
+    def _scan_index_excluded(
+        self,
+        pattern: str,
+        *,
+        root: Path,
+        kind: str,
+        case_sensitive: bool,
+        max_results: int,
+    ) -> list[tuple[str, bool]]:
+        """补充扫描索引排除目录中的文件名匹配，与 find_files 合并。"""
+
+        results: list[tuple[str, bool]] = []
+        for extra_root in self._index_excluded_roots(root):
+            results.extend(
+                self._scan_file_names(
+                    pattern,
+                    root=extra_root,
+                    kind=kind,
+                    case_sensitive=case_sensitive,
+                    max_results=max_results,
+                )
+            )
+        return results
+
+    def _scan_index_excluded_text(
+        self,
+        pattern: str,
+        *,
+        root: Path,
+        case_sensitive: bool,
+        max_results: int,
+    ) -> list[tuple[str, int, str]]:
+        """补充扫描索引排除目录中的文本匹配，与 search_text 合并。"""
+
+        needle = pattern if case_sensitive else pattern.casefold()
+        results: list[tuple[str, int, str]] = []
+        for extra_root in self._index_excluded_roots(root):
+            files = (
+                [extra_root]
+                if extra_root.is_file()
+                else self.iter_search_files(extra_root)
+            )
+            for file_path in files:
+                if self.should_skip_path(file_path):
+                    continue
+                try:
+                    lines = self.read_text(file_path).splitlines()
+                except WorkspaceToolError:
+                    continue
+                for line_no, line in enumerate(lines, start=1):
+                    candidate = line if case_sensitive else line.casefold()
+                    if needle in candidate:
+                        results.append(
+                            (self.relative_path(file_path), line_no, line)
+                        )
+                        if len(results) >= max_results:
+                            return results
+        return results
 
     def replace_text(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or ""))
@@ -604,7 +740,9 @@ class WorkspaceTools:
             dirnames[:] = [
                 dirname
                 for dirname in sorted(dirnames, key=lambda value: value.lower())
+                # 与 _iter_search_entries 保持一致：目录 symlink/junction 不遍历。
                 if not self.should_skip_path(current_dir / dirname)
+                and not (current_dir / dirname).is_symlink()
             ]
             for filename in sorted(filenames, key=lambda value: value.lower()):
                 file_path = current_dir / filename
@@ -618,6 +756,20 @@ class WorkspaceTools:
         if self._extra_protection_message is None:
             return False
         return bool(self._extra_protection_message(path))
+
+    def should_index_skip(self, path: Path) -> bool:
+        """索引层专属跳过规则：保护路径 + 索引忽略目录。
+
+        与 :meth:`should_skip_path` 的区别是额外排除 INDEX_EXCLUDED_NAMES
+        中的构建产物/缓存/工具私有目录；这些目录只是不进索引快照，
+        直接扫描时仍然可以被 find_files/search_text 命中。
+        """
+
+        return self.should_skip_path(path) or self.is_index_excluded_path(path)
+
+    @staticmethod
+    def is_index_excluded_path(path: Path) -> bool:
+        return any(part in INDEX_EXCLUDED_NAMES for part in path.parts)
 
     @staticmethod
     def is_protected_path(path: Path) -> bool:

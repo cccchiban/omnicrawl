@@ -142,29 +142,46 @@ class FullscreenToolDiffTest(unittest.TestCase):
         )
         self.assertIn("F  omnicrawl  |  目标: agent", title)
 
-    def test_loading_index_status_uses_four_frame_color_wave(self) -> None:
+    def test_loading_index_status_uses_eight_frame_color_wave(self) -> None:
+        """加载光波为八帧：加粗锋头、常亮锋身、其余 dim，逐帧右移一字符。"""
+
+        from rich.style import Style
+
         status = SearchIndexStatus(file_state="loading", content_state="loading")
         label = "正在加载项目搜索索引"
+        bold_primary = Style.parse("default bold")
+        primary = Style.parse("default")
+        muted = Style.parse("dim")
         expected_patterns = (
-            ("dim", "dim", "default", "default"),
-            ("default", "dim", "dim", "default"),
-            ("default", "default", "dim", "dim"),
-            ("dim", "default", "default", "dim"),
+            (muted, muted, bold_primary, primary, muted, muted, muted, muted),
+            (muted, muted, muted, bold_primary, primary, muted, muted, muted),
+            (muted, muted, muted, muted, bold_primary, primary, muted, muted),
+            (muted, muted, muted, muted, muted, bold_primary, primary, muted),
+            (muted, muted, muted, muted, muted, muted, bold_primary, primary),
+            (primary, muted, muted, muted, muted, muted, muted, bold_primary),
+            (bold_primary, primary, muted, muted, muted, muted, muted, muted),
+            (muted, bold_primary, primary, muted, muted, muted, muted, muted),
         )
 
         for frame, pattern in enumerate(expected_patterns):
             rendered = search_index_status_text(status, frame)
             self.assertEqual(rendered.plain, label)
-            for index in range(8):
-                style = next(
+            for index in range(len(label)):
+                raw_style = next(
                     (
-                        str(span.style)
+                        span.style
                         for span in rendered.spans
                         if span.start <= index < span.end
                     ),
-                    "default",
+                    Style(),
                 )
-                self.assertEqual(style, pattern[index % 4], (frame, index))
+                # Text.append 会把样式字符串原样存进 span；统一解析后再比较。
+                style = (
+                    Style.parse(raw_style)
+                    if isinstance(raw_style, str)
+                    else raw_style
+                )
+                self.assertEqual(style, pattern[index % 8], (frame, index))
 
     def test_index_progress_text_is_visible_only_while_loading_or_building(self) -> None:
         building = search_index_status_text(

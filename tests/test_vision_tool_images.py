@@ -88,6 +88,62 @@ class VisionToolImageProtocolTest(unittest.TestCase):
         )
         self.assertEqual(gemini[0]["parts"][1]["inline_data"]["data"], _IMAGE_BASE64)
 
+    def test_responses_input_emits_reasoning_item_only_for_tool_call_history(self) -> None:
+        # 思考模式 + 工具调用历史：上游（Console Go）要求回传 reasoning，
+        # 但 Responses API 不接受 chat 专用字段 reasoning_content，必须用标准
+        # reasoning item；无工具调用时不能携带（上游 400 invalid message）。
+        with_tools = _messages_to_responses_input(
+            (
+                ConversationMessage(role="user", blocks=(TextBlock("读取文件"),)),
+                ConversationMessage(
+                    role="assistant",
+                    blocks=(
+                        TextBlock("我先查看。"),
+                        ToolCallBlock("call_1", "read_file", {"path": "README.md"}),
+                    ),
+                    reasoning="先读取文件。",
+                ),
+                ConversationMessage(
+                    role="tool",
+                    blocks=(ToolResultBlock("call_1", True, "ok"),),
+                ),
+            )
+        )
+        types = [item.get("type") or item.get("role") for item in with_tools]
+        self.assertEqual(
+            types,
+            ["user", "assistant", "reasoning", "function_call", "function_call_output"],
+        )
+        reasoning_item = with_tools[2]
+        self.assertEqual(reasoning_item["summary"][0]["type"], "summary_text")
+        self.assertEqual(reasoning_item["summary"][0]["text"], "先读取文件。")
+        for item in with_tools:
+            self.assertNotIn("reasoning_content", item, "Responses 输入禁止携带 reasoning_content")
+
+        # 无工具调用：不带 reasoning item
+        without_tools = _messages_to_responses_input(
+            (
+                ConversationMessage(role="user", blocks=(TextBlock("hi"),)),
+                ConversationMessage(role="assistant", blocks=(TextBlock("hello"),), reasoning="think"),
+            )
+        )
+        flat = [item.get("type") or item.get("role") for item in without_tools]
+        self.assertNotIn("reasoning", flat)
+
+        # reasoning 为空但有工具调用：占位文本兜底
+        placeholder = _messages_to_responses_input(
+            (
+                ConversationMessage(role="user", blocks=(TextBlock("hi"),)),
+                ConversationMessage(
+                    role="assistant",
+                    blocks=(ToolCallBlock("call_2", "list_files", {"path": "."}),),
+                    reasoning="",
+                ),
+            )
+        )
+        item = [i for i in placeholder if i.get("type") == "reasoning"][0]
+        self.assertTrue(item["summary"][0]["text"].strip())
+
     def test_anthropic_and_gemini_merge_tool_result_with_image_observation(self) -> None:
         messages = (
             ConversationMessage(

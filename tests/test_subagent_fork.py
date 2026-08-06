@@ -117,7 +117,7 @@ class SubAgentForkCoordinatorTest(unittest.TestCase):
             prepare_execution=lambda definition, context, model: prepared.append(
                 (definition, context, model)
             ) or SubAgentExecutionContext(context=context),
-            execute_task=lambda *_args: executed.append(True),
+            execute_task=lambda *_args, **_kwargs: executed.append(True),
         )
 
         payload = json.loads(coordinator.run(self._arguments(context="fork")).output)
@@ -223,10 +223,10 @@ class SubAgentForkCoordinatorTest(unittest.TestCase):
             config=SubAgentConfig(enabled=True, allow_fork=True),
             registry=_Registry([self._definition()]),
             tools_provider=lambda: {},
-            prepare_execution=lambda *_args: (_ for _ in ()).throw(
+            prepare_execution=lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 RuntimeError("api_key=very-secret")
             ),
-            execute_task=lambda *_args: self.fail("准备失败时不得执行"),
+            execute_task=lambda *_args, **_kwargs: self.fail("准备失败时不得执行"),
         )
 
         payload = json.loads(coordinator.run(self._arguments(model="chosen")).output)
@@ -239,8 +239,8 @@ class SubAgentForkCoordinatorTest(unittest.TestCase):
             config=SubAgentConfig(enabled=True, allow_fork=True),
             registry=_Registry([self._definition()]),
             tools_provider=lambda: {},
-            prepare_execution=lambda *_args: self.fail("非法模型不得进入 Host 解析"),
-            execute_task=lambda *_args: self.fail("非法模型不得执行"),
+            prepare_execution=lambda *_args, **_kwargs: self.fail("非法模型不得进入 Host 解析"),
+            execute_task=lambda *_args, **_kwargs: self.fail("非法模型不得执行"),
         )
 
         empty = json.loads(coordinator.run(self._arguments(model=" ")).output)
@@ -280,11 +280,11 @@ class SubAgentForkRunStreamTest(unittest.TestCase):
         agent._context_messages = lambda **_kwargs: [
             {"role": "user", "content": "项目规范"}
         ]
-        agent._append_history = lambda *_args: None
+        agent._append_history = lambda *_args, **_kwargs: None
         agent._inject_subagent_notifications = lambda _messages: None
         captured = []
 
-        def request_reply(messages, *_args):
+        def request_reply(messages, *_args, **_kwargs):
             captured.extend(agent._active_fork_context_messages)
             return AgentModelReply(
                 message={"role": "assistant", "content": "完成"},

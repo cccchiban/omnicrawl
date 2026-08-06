@@ -366,6 +366,11 @@ class AgentAPIService:
                 ),
                 on_protocol_wait=lambda: self._on_status(run, "正在继续", check_cancelled),
                 on_retry_status=lambda message: self._on_status(run, message, check_cancelled),
+                on_stream_rollback=lambda: self._on_status(
+                    run,
+                    "模型流中断，先前输出已作废，正在自动重试",
+                    check_cancelled,
+                ),
                 cancel_check=check_cancelled,
                 on_subagent_event=lambda event_name, payload: self._on_subagent_event(
                     run,

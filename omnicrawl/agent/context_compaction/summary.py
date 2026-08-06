@@ -111,6 +111,7 @@ class RuntimeSummaryModelAdapter:
                 lambda: None,
                 lambda _status: None,
                 runtime_snapshot=snapshot,
+                on_stream_rollback=lambda: None,
             )
             return SummaryModelResponse(
                 content=reply.content,

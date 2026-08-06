@@ -12,7 +12,6 @@ from .llm import (
     KNOWN_AVAILABLE_MODELS,
     LLMConfig,
     LLMError,
-    VALID_REASONING_EFFORTS,
     load_llm_config,
 )
 
@@ -129,7 +128,7 @@ class OpenAIResponseLLM:
         return reply
 
     def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
-        """写入历史；思考模式下保存思维链，但仅在工具调用场景中回传。"""
+        """写入历史；思考模式下保存思维链，随历史原样回传给网关。"""
 
         assistant_msg: dict[str, str] = {"role": "assistant", "content": assistant_text}
         if reasoning:
@@ -142,27 +141,29 @@ class OpenAIResponseLLM:
         )
 
     def _build_input_messages(self, user_text: str) -> list[dict[str, str]]:
-        """组合历史消息和本轮用户输入。
+        """组合历史消息和本轮用户输入，原样回传 reasoning_content。
 
-        简单对话（无工具调用）场景下，剔除 assistant 的 reasoning_content，
-        因为 API 在两段 user 消息之间没有工具调用时会忽略它。
+        思考模式网关（如 Console Go）要求历史 assistant 消息必须回传
+        reasoning_content，剔除会导致二次请求被拒（HTTP 400）。
         """
 
-        messages = [*self._history, {"role": "user", "content": user_text}]
-        return [
-            {k: v for k, v in msg.items() if k != "reasoning_content"}
-            for msg in messages
-        ]
+        return [*self._history, {"role": "user", "content": user_text}]
 
     def _build_extra_body(self) -> dict[str, Any]:
-        """构造网关扩展参数；根据 reasoning_effort 决定是否启用思考模式。"""
+        """构造网关扩展参数；统一使用标准 Responses 思考参数 reasoning.effort。
 
-        thinking_type = "enabled" if self.config.thinking_enabled else "disabled"
-        body: dict[str, Any] = {"thinking": {"type": thinking_type}}
-        if self.config.thinking_enabled and self.config.reasoning_effort:
-            if self.config.reasoning_effort in VALID_REASONING_EFFORTS:
-                body["reasoning_effort"] = self.config.reasoning_effort
-        return body
+        axo 网关实测忽略 ``thinking.type=disabled``（仍输出思考摘要）；标准参数
+        ``reasoning.effort=none`` 是唯一可靠关闭思考的方式，其余档位同样生效。
+        """
+
+        effort = str(self.config.reasoning_effort or "").strip()
+        if (
+            not effort
+            or effort in {"none", "disabled"}
+            or not self.config.thinking_enabled
+        ):
+            effort = "none"
+        return {"reasoning": {"effort": effort}}
 
     def _trim_history(self) -> None:
         """只保留最近若干轮，避免语音对话运行时间长后请求体过大。"""

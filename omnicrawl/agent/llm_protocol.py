@@ -28,6 +28,14 @@ class RetryableAgentRequestError(AgentProtocolError):
     """模型请求遇到临时连接或服务端错误，可按请求重试策略重新发起。"""
 
 
+class StreamInterruptedAfterOutputError(RetryableAgentRequestError):
+    """模型流在已输出可见内容后中断。
+
+    仅当调用方提供 ``on_stream_rollback`` 回调时，上层才会在重试前撤销
+    已展示的内容再重新发起；未提供回调时保持既有行为（直接失败）。
+    """
+
+
 @dataclass(frozen=True)
 class AgentLLMProtocol:
     """封装模型请求协议与 tool call 聚合逻辑。
@@ -60,11 +68,16 @@ class AgentLLMProtocol:
         cancel_check: Callable[[], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         runtime_snapshot: Any = None,
+        on_stream_rollback: Callable[[], None] | None = None,
     ) -> AgentModelReply:
         """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。
 
         同一次请求的所有重试必须绑定同一个 Runtime 快照；Agent 工具循环可传入
         更外层获取的快照，使工具执行前后的多次模型请求也保持同一 Provider/协议。
+
+        ``on_stream_rollback`` 可选：当流式输出已展示部分内容后中断并决定重试时，
+        先调用该回调撤销已显示内容（例如删除 UI 中半截回复），再重新发起请求，
+        避免重试成功后旧内容与新回复拼接错乱。
         """
 
         owned_snapshot = None
@@ -91,6 +104,16 @@ class AgentLLMProtocol:
                     raise AgentProtocolError(
                         f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
                     ) from exc
+                except StreamInterruptedAfterOutputError as exc:
+                    last_retryable_error = exc
+                    if attempt < self.request_retry_count and on_stream_rollback is not None:
+                        on_stream_rollback()
+                        on_retry_status(
+                            f"模型流在输出后中断，正在撤销已显示内容并重试 "
+                            f"{attempt + 1}/{self.request_retry_count}：{exc}"
+                        )
+                        continue
+                    raise AgentProtocolError(f"Agent 模型流中断：{exc}") from exc
                 except RetryableAgentRequestError as exc:
                     last_retryable_error = exc
                     if attempt < self.request_retry_count:
@@ -248,9 +271,7 @@ class AgentLLMProtocol:
                     ModelErrorCode.RATE_LIMITED,
                 }:
                     if has_streamed_visible or completed_calls:
-                        raise AgentProtocolError(
-                            f"模型流在已输出内容后中断，已停止自动重试：{exc}"
-                        ) from exc
+                        raise StreamInterruptedAfterOutputError(str(exc)) from exc
                     raise RetryableAgentRequestError(str(exc)) from exc
                 raise AgentProtocolError(str(exc)) from exc
             except Exception as exc:
@@ -264,9 +285,7 @@ class AgentLLMProtocol:
                 if is_retryable_model_request_error(exc):
                     formatted = OpenAIResponseLLM.format_request_error(exc)
                     if has_streamed_visible or completed_calls:
-                        raise AgentProtocolError(
-                            f"模型流在已输出内容后中断，已停止自动重试：{formatted}"
-                        ) from exc
+                        raise StreamInterruptedAfterOutputError(formatted) from exc
                     raise RetryableAgentRequestError(formatted) from exc
                 raise AgentProtocolError(
                     f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
@@ -401,9 +420,7 @@ class AgentLLMProtocol:
                 raise cancellation_error
             formatted = OpenAIResponseLLM.format_request_error(exc)
             if has_streamed_visible or tool_call_delta_buffers:
-                raise AgentProtocolError(
-                    f"模型流在已输出内容后中断，已停止自动重试：{formatted}"
-                ) from exc
+                raise StreamInterruptedAfterOutputError(formatted) from exc
             raise RetryableAgentRequestError(formatted) from exc
 
         if latest_usage is not None:

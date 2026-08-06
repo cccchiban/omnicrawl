@@ -43,6 +43,7 @@ class AgentTurnCallbacks:
     on_retry_status: Callable[[str], None]
     on_reasoning_delta: Callable[[str], None]
     on_subagent_event: Callable[[str, dict[str, Any]], None]
+    on_stream_rollback: Callable[[], None] | None = None
 
 
 class AgentTurnController:
@@ -77,6 +78,7 @@ class AgentTurnController:
             cancel_check=self.raise_if_cancelled,
             on_reasoning_delta=callbacks.on_reasoning_delta,
             on_subagent_event=callbacks.on_subagent_event,
+            on_stream_rollback=callbacks.on_stream_rollback,
         )
 
     def raise_if_cancelled(self) -> None:

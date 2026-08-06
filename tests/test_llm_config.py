@@ -233,8 +233,8 @@ class LLMConfigTest(unittest.TestCase):
 
         body = OpenAIResponseLLM._build_extra_body(llm)
 
-        self.assertEqual(body["thinking"]["type"], "enabled")
-        self.assertEqual(body["reasoning_effort"], "xhigh")
+        # 统一走标准 Responses 思考参数 reasoning.effort。
+        self.assertEqual(body, {"reasoning": {"effort": "xhigh"}})
 
     def test_reasoning_effort_none_disables_thinking_even_when_type_enabled(self) -> None:
         config = LLMConfig(
@@ -249,7 +249,94 @@ class LLMConfigTest(unittest.TestCase):
 
         body = OpenAIResponseLLM._build_extra_body(llm)
 
-        self.assertEqual(body, {"thinking": {"type": "disabled"}})
+        # axo 网关忽略 thinking.type=disabled（仍输出思考摘要），关闭思考必须
+        # 使用标准 Responses 参数 reasoning: {"effort": "none"}。
+        self.assertEqual(body, {"reasoning": {"effort": "none"}})
+
+    def test_responses_runtime_disabled_thinking_sends_standard_reasoning_param(self) -> None:
+        """Responses Runtime 关闭思考时也必须用 reasoning.effort=none。"""
+
+        from omnicrawl.llm.capabilities import ModelCapabilities
+        from omnicrawl.llm.protocol import (
+            ConversationMessage,
+            GenerationOptions,
+            ModelIdentity,
+            ModelTurnRequest,
+            TextBlock,
+        )
+        from omnicrawl.llm.providers.openai_responses import OpenAIResponsesRuntime
+        from omnicrawl.llm.registry import ModelDescriptor
+
+        captured: dict = {}
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return iter([])  # 空流式事件，stream_turn 立即结束
+
+        class FakeClient:
+            responses = FakeResponses()
+
+        identity = ModelIdentity(
+            profile_id="p1",
+            provider="openai",
+            protocol="openai_responses",
+            model_id="m1",
+        )
+        runtime = OpenAIResponsesRuntime(
+            identity=identity,
+            capabilities=ModelCapabilities(streaming=True, tools=True),
+            client=FakeClient(),
+            profile=ProviderProfile(id="p1", provider="openai"),
+            descriptor=ModelDescriptor(identity=identity),
+        )
+        request = ModelTurnRequest(
+            identity=identity,
+            system_prompt="sys",
+            messages=(ConversationMessage(role="user", blocks=(TextBlock("hi"),)),),
+            generation_options=GenerationOptions(reasoning_effort="none"),
+        )
+
+        list(runtime.stream_turn(request))
+
+        self.assertEqual(captured["extra_body"], {"reasoning": {"effort": "none"}})
+        self.assertNotIn("thinking", captured["extra_body"])
+
+        # 有档位时同样走标准 reasoning.effort，且旧扩展字段被移除
+        captured.clear()
+        list(
+            runtime.stream_turn(
+                ModelTurnRequest(
+                    identity=identity,
+                    system_prompt="sys",
+                    messages=(ConversationMessage(role="user", blocks=(TextBlock("hi"),)),),
+                    generation_options=GenerationOptions(reasoning_effort="max"),
+                )
+            )
+        )
+        self.assertEqual(captured["extra_body"], {"reasoning": {"effort": "max"}})
+        self.assertNotIn("thinking", captured["extra_body"])
+        self.assertNotIn("reasoning_effort", captured["extra_body"])
+
+        # 旧扩展字段（thinking / reasoning_effort）会被清理，不与标准参数并存
+        captured.clear()
+        list(
+            runtime.stream_turn(
+                ModelTurnRequest(
+                    identity=identity,
+                    system_prompt="sys",
+                    messages=(ConversationMessage(role="user", blocks=(TextBlock("hi"),)),),
+                    generation_options=GenerationOptions(
+                        reasoning_effort="max",
+                        provider_options={
+                            "thinking": {"type": "enabled"},
+                            "reasoning_effort": "max",
+                        },
+                    ),
+                )
+            )
+        )
+        self.assertEqual(captured["extra_body"], {"reasoning": {"effort": "max"}})
 
     def test_save_reasoning_effort_preserves_config_and_syncs_thinking_type(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

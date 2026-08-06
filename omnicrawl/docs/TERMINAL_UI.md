@@ -13,7 +13,7 @@ OmniCrawl 使用基于 Textual 的**全屏终端工作台**。框架统一管理
 ## 视觉与交互约定
 
 ```text
-PRJ project  ·  MDL deepseek-v4-flash  ·  THK MAX  ·  APR MAN  ·  QUE 0                    v0.1.5
+PRJ project  ·  MDL deepseek-v4-flash  ·  THK MAX  ·  APR MAN  ·  QUE 0                    v0.1.6
 IN 18.6K  OUT 2.4K  CA 7.1K  CTX 18.6K/128K  MCP 0                 正在建立项目内容索引 42%
 $ 用户问题
 思考过程（点击折叠）
