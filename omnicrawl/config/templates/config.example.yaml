@@ -48,6 +48,12 @@ llm:
         enabled: true
       default_context_window_tokens: 1000000
 
+# 视觉模型代理：模型引用复用 llm.profiles / models.yaml，不在这里存 API Key。
+# models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。
+vision:
+  enabled: false
+  models: []
+
 approval:
   mode: manual
 
@@ -59,6 +65,7 @@ memory:
 # tools:
 #   powershell: false
 #   bash: true
+#   read_image: true
 #   windows_screenshot: true
 
 # 两类搜索索引均默认关闭；可在 TUI /settings 中独立启用。

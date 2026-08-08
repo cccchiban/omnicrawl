@@ -5,6 +5,7 @@ tools:
   - list_files
   - find_files
   - read_file
+  - read_image
   - search_text
   - memory_search
   - memory_read

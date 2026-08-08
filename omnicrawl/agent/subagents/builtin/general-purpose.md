@@ -7,6 +7,7 @@ tools:
   - list_files
   - find_files
   - read_file
+  - read_image
   - search_text
   - write_file
   - replace_text

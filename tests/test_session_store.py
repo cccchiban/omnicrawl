@@ -28,7 +28,7 @@ class SessionStoreTest(unittest.TestCase):
             self.assertEqual(event["type"], "session_started")
             self.assertEqual(event["session_id"], state.session_id)
             runtime = event["payload"]["runtime"]
-            self.assertEqual(runtime["version"], "0.1.6")
+            self.assertEqual(runtime["version"], "0.1.7")
             self.assertTrue(runtime["process_started_at"])
             self.assertRegex(runtime["source_fingerprint"], r"^[0-9a-f]{16}$")
             self.assertIn("omnicrawl/agent/core.py", runtime["source_files"])

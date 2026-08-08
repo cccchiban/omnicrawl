@@ -46,6 +46,12 @@ llm:
     #   discovery:
     #     enabled: true
 
+# 视觉模型代理：复用上面的 profiles 和 models.yaml，不在此重复保存 API Key。
+# models 按顺序故障转移；也可在 TUI /settings → 视觉 中添加和排序。
+vision:
+  enabled: false
+  models: []
+
 approval:
   mode: manual
 

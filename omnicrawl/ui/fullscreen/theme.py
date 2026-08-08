@@ -22,6 +22,9 @@ TEXT_ON_ACCENT = "default"
 BORDER_SUBTLE = "dim"
 BORDER_STRONG = "default"
 SCROLLBAR = "default"
+# 顶部 HUD 分隔竖线使用的灰色（ANSI 亮黑）：比 dim 更清晰可见，又比默认
+# 前景克制，避免竖线与正文抢注意力。
+BORDER_MUTED = "bright_black"
 
 ACCENT_GREEN = "green"
 ACCENT_GREEN_SOFT = TRANSPARENT
@@ -86,6 +89,7 @@ TERMINAL_THEME = Theme(
         "terminal-text-on-accent": TERMINAL_FOREGROUND,
         "terminal-border": TERMINAL_FOREGROUND,
         "terminal-border-strong": TERMINAL_FOREGROUND,
+        "terminal-border-muted": "ansi_bright_black",
         "terminal-scrollbar": TERMINAL_FOREGROUND,
         "terminal-green": _CSS_GREEN,
         "terminal-green-soft": ACCENT_GREEN_SOFT,

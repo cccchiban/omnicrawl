@@ -10,10 +10,14 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
+from textual.events import Resize
+from textual.geometry import Size
 from textual.selection import Selection
 from textual.screen import ModalScreen
+from textual.strip import Strip
 from textual.widgets import Button, RichLog, Static
 
+from .latex import latex_to_text
 from .theme import terminal_css
 from .tool_diff import tool_disclosure_body, tool_disclosure_title
 
@@ -113,10 +117,14 @@ class AssistantMessage(RichLog, can_focus=False):
             self.update(markdown)
 
     def update(self, markdown: str) -> None:
-        """用完整 Markdown 重绘当前消息，同时保留 RichLog 的可选区能力。"""
+        """用完整 Markdown 重绘当前消息，同时保留 RichLog 的可选区能力。
+
+        渲染前把 LaTeX 公式片段（$..$、$$..$$ 等）转换为终端可读的
+        Unicode 数学文本；无公式时走快速路径，不影响流式渲染性能。
+        """
 
         self.clear()
-        self.write(RichMarkdown(markdown), scroll_end=False)
+        self.write(RichMarkdown(latex_to_text(markdown)), scroll_end=False)
 
     def _render_line(self, y: int, scroll_x: int, width: int):
         """给 RichLog 行补充文本坐标，供 Screen 命中鼠标拖选位置。"""
@@ -253,31 +261,163 @@ class SubAgentProgressTree(Static):
         return f"{minutes:02d}:{seconds:02d}"
 
 
-class ReasoningDisclosure(Static):
-    """默认展开、可点击折叠且不抢占输入焦点的单次模型思考记录。"""
+class ReasoningDisclosure(RichLog, can_focus=False):
+    """默认展开、可点击折叠且不抢占输入焦点的单次模型思考记录。
 
-    can_focus = False
+    流式性能设计（与主回复流同一套合并节流策略）：
+    - 完整行增量提交：append_delta 按换行切分，已完成的行直接写入
+      RichLog 只追加新行；历史行不重解析、不重绘（惰性渲染），避免
+      旧实现"每个分片都全量重解析整段文本"的 O(N·L) 开销；
+    - 未完成行（tail）合并刷新：最多每 STREAM_RENDER_INTERVAL_SECONDS
+      渲染一次，分片突发时合并到一次刷新；
+    - 渲染用纯 Text 而非 RichMarkdown：思考内容无需 Markdown 解析，
+      进一步消除逐分片全量解析瓶颈。
+    """
+
+    DEFAULT_CSS = """
+    ReasoningDisclosure {
+        height: auto;
+        min-height: 0;
+    }
+    """
+
+    STREAM_RENDER_INTERVAL_SECONDS = 0.05
+    COLLAPSED_HINT = "思考过程（点击展开）"
 
     def __init__(self) -> None:
-        super().__init__(classes="message reasoning-message")
-        self.reasoning_text = ""
+        super().__init__(
+            classes="message reasoning-message",
+            markup=False,
+            wrap=True,
+            auto_scroll=False,
+        )
+        self.reasoning_text = ""  # 完整累积文本（折叠恢复/测试断言依据）
         self.expanded = True
-        self._refresh_display()
+        self._tail = ""  # 尚未以换行结束的未完成行，按节流合并渲染
+        self._tail_lines: list[Strip] = []  # 未完成行按当前宽度换行后的行集
+        self._last_render_at: float | None = None
+        self._render_timer = None  # 挂起的合并刷新定时器（textual Timer）
+        self._render_pending = False
+        # 挂载前写入会进入 deferred 队列，首次布局完成后自动渲染。
+        self.write(Text("思考过程", style="bold"), scroll_end=False)
+
+    def on_resize(self, event: Resize) -> None:
+        """首次布局完成后重新计入 deferred 写入和未完成尾行。"""
+
+        super().on_resize(event)
+        if self.expanded and (self._tail or self._tail_lines):
+            # 重新测量尾行宽度；同时恢复 RichLog.write 对 virtual_size 的覆盖。
+            self._render_tail()
 
     def append_delta(self, delta: str) -> None:
+        if not delta:
+            return
         self.reasoning_text += delta
-        self._refresh_display()
+        if not self.expanded:
+            # 折叠期间不渲染，只累积文本；重新展开时一次补齐。
+            self._tail += delta
+            return
+        self._tail += delta
+        while "\n" in self._tail:
+            line, self._tail = self._tail.split("\n", 1)
+            self.write(Text(line), scroll_end=False)
+        if self._tail:
+            self._schedule_tail_render()
+
+    def flush_tail(self) -> None:
+        """推理阶段结束时同步补齐未完成行，保证展示内容完整。
+
+        思考块关闭（首个回复分片、工具调用、回合结束）时调用；同时
+        取消可能挂起的定时刷新，避免失效的延时渲染。
+        """
+
+        if self._render_timer is not None:
+            self._render_timer.stop()
+            self._render_timer = None
+        self._render_pending = False
+        if self._tail:
+            self._render_tail()
+        elif self._tail_lines:
+            self._tail_lines = []
+            self._sync_virtual_size()
+            self.refresh()
 
     def on_click(self) -> None:
         self.expanded = not self.expanded
         self.set_class(not self.expanded, "collapsed")
-        self._refresh_display()
-
-    def _refresh_display(self) -> None:
         if self.expanded:
-            self.update(RichMarkdown(f"**思考过程**\n\n{self.reasoning_text}"))
+            # 重新展开时立即补齐此前合并挂起的未完成行。
+            self._render_tail()
         else:
-            self.update(Text("思考过程（点击展开）"))
+            self.refresh()
+
+    def _schedule_tail_render(self) -> None:
+        """前缘节流：空闲时立即渲染，忙碌时合并到 50ms 后的延时刷新。"""
+
+        now = time.monotonic()
+        if (
+            self._last_render_at is None
+            or now - self._last_render_at >= self.STREAM_RENDER_INTERVAL_SECONDS
+        ):
+            self._render_tail()
+        elif not self._render_pending:
+            self._render_pending = True
+            self._render_timer = self.set_timer(
+                self.STREAM_RENDER_INTERVAL_SECONDS,
+                self._render_tail_now,
+            )
+
+    def _render_tail_now(self) -> None:
+        self._render_timer = None
+        self._render_pending = False
+        if self.parent is None:
+            # 思考块已被移除（如流中断回滚），不再渲染。
+            return
+        self._render_tail()
+
+    def _render_tail(self) -> None:
+        self._last_render_at = time.monotonic()
+        width = self.scrollable_content_region.width
+        if width <= 0:
+            width = self.min_width  # 尚未完成布局时按最小宽度占位，布局后自动修正
+        if self._tail:
+            wrapped = Text(self._tail).wrap(self.app.console, width, overflow="fold")
+            self._tail_lines = [self._to_strip(line) for line in wrapped]
+        else:
+            self._tail_lines = []
+        self._sync_virtual_size()
+        self.refresh()
+
+    def _to_strip(self, text: Text) -> Strip:
+        """把 Text 转成与 RichLog 已提交行一致的 Strip，供 _render_line 裁剪。"""
+
+        return Strip(
+            list(text.render(self.app.console)),
+            cell_length=text.cell_len,
+        )
+
+    def _sync_virtual_size(self) -> None:
+        """让容器按"已完成行 + 未完成行"计算自然高度，否则 tail 行不可见。"""
+
+        height = len(self.lines) + (len(self._tail_lines) if self._tail_lines else 0)
+        self.virtual_size = Size(self._widest_line_width, max(1, height))
+
+    def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        if y < len(self.lines):
+            return super()._render_line(y, scroll_x, width)
+        if not self.expanded:
+            # 折叠态只显示提示行，不显示思考正文。
+            if y == 0:
+                return self._to_strip(Text(self.COLLAPSED_HINT)).crop_extend(
+                    0, width, self.rich_style
+                )
+            return Strip.blank(width, self.rich_style)
+        tail_index = y - len(self.lines)
+        if 0 <= tail_index < len(self._tail_lines):
+            return self._tail_lines[tail_index].crop_extend(
+                0, width, self.rich_style
+            )
+        return Strip.blank(width, self.rich_style)
 
 
 class ToolDisclosure(Static):
@@ -306,6 +446,21 @@ class ToolDisclosure(Static):
         self.status = "成功" if ok else "失败"
         self.duration_seconds = max(0.0, finished_at - self.started_at)
         self.result_text = output
+        self._refresh_display()
+
+    def refresh_elapsed(self, now: float | None = None) -> None:
+        """调用期间实时刷新已耗时；终态记录不再重绘。
+
+        与 SubAgentTree.refresh_elapsed 同语义：只有「调用中」的工具行
+        参与 tick 刷新，完成后保留 finish() 记录的最终耗时。
+        """
+
+        if self.status != "调用中":
+            return
+        self.duration_seconds = max(
+            0.0,
+            (time.perf_counter() if now is None else now) - self.started_at,
+        )
         self._refresh_display()
 
     def on_click(self) -> None:

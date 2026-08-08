@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from omnicrawl.agent.core import LocalToolAgent
 from omnicrawl.agent.execution import AgentLoopObservation, AgentLoopRunner
@@ -12,6 +14,9 @@ from omnicrawl.agent.types import (
     ToolImageAttachment,
     ToolResult,
 )
+from omnicrawl.agent.vision_proxy import VisionAnalysis, VisionProxyError
+from omnicrawl.config.llm import ActiveModelRef
+from omnicrawl.config.vision import VisionConfiguration
 from omnicrawl.llm.protocol import (
     ConversationMessage,
     ImageBlock,
@@ -200,7 +205,84 @@ class VisionToolImageProtocolTest(unittest.TestCase):
         image_url = followups[0]["content"][1]["image_url"]["url"]
         self.assertEqual(image_url, f"data:image/png;base64,{_IMAGE_BASE64}")
 
-    def test_screenshot_base64_is_not_written_to_session_tool_result_event(self) -> None:
+    def test_non_visual_main_model_routes_image_to_text_vision_proxy(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            llm=SimpleNamespace(),
+            max_tool_output_chars=6000,
+            vision=VisionConfiguration(
+                enabled=True,
+                models=(ActiveModelRef(source="custom", key="vision-model"),),
+            ),
+        )
+        agent.workspace_root = Path.cwd()
+        agent._active_runtime_snapshot = SimpleNamespace(
+            runtime=SimpleNamespace(capabilities=SimpleNamespace(vision=False))
+        )
+        result = ToolResult(
+            ok=True,
+            output='{"path":"screen.png","media_type":"image/png"}',
+            full_output="读取完成",
+            model_images=(ToolImageAttachment("image/png", _IMAGE_BASE64),),
+        )
+        proxy = SimpleNamespace(
+            analyze=lambda images, **kwargs: VisionAnalysis(
+                text="画面中显示一个设置窗口。",
+                model="vision-model",
+            )
+        )
+        with patch("omnicrawl.agent.core.VisionModelProxy", return_value=proxy):
+            prepared, followups = agent._prepare_tool_result_for_model(
+                ToolCall("read_image", {"path": "screen.png"}, "call_1"),
+                result,
+            )
+
+        self.assertTrue(prepared.ok)
+        self.assertEqual(prepared.model_images, ())
+        self.assertIn("读取完成", prepared.full_output)
+        self.assertIn("画面中显示一个设置窗口。", prepared.full_output)
+        self.assertEqual(len(followups), 1)
+        self.assertEqual(followups[0]["role"], "user")
+        self.assertIn("vision_observation", followups[0]["content"])
+        self.assertIn("画面中显示一个设置窗口。", followups[0]["content"])
+
+    def test_visual_proxy_failure_becomes_tool_error_without_image_leak(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(
+            llm=SimpleNamespace(),
+            max_tool_output_chars=6000,
+            vision=VisionConfiguration(
+                enabled=True,
+                models=(ActiveModelRef(source="custom", key="vision-model"),),
+            ),
+        )
+        agent.workspace_root = Path.cwd()
+        agent._active_runtime_snapshot = SimpleNamespace(
+            runtime=SimpleNamespace(capabilities=SimpleNamespace(vision=False))
+        )
+        result = ToolResult(
+            ok=True,
+            output='{"path":"screen.png"}',
+            model_images=(ToolImageAttachment("image/png", _IMAGE_BASE64),),
+        )
+        proxy = SimpleNamespace(
+            analyze=lambda _images, **_kwargs: (_ for _ in ()).throw(
+                VisionProxyError("两个视觉模型都不可用")
+            )
+        )
+        with patch("omnicrawl.agent.core.VisionModelProxy", return_value=proxy):
+            prepared, followups = agent._prepare_tool_result_for_model(
+                ToolCall("windows_screenshot", {"target": "desktop"}, "call_1"),
+                result,
+            )
+
+        self.assertFalse(prepared.ok)
+        self.assertIn("两个视觉模型都不可用", prepared.output)
+        self.assertEqual(prepared.model_images, ())
+        self.assertEqual(followups, ())
+        self.assertNotIn(_IMAGE_BASE64, prepared.output)
+
+    def test_session_projection_still_omits_image_data_after_proxy(self) -> None:
         agent = LocalToolAgent.__new__(LocalToolAgent)
         result = ToolResult(
             True,

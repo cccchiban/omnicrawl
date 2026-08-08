@@ -211,7 +211,9 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn("进度实时可见。", sent_messages[0]["content"])
         self.assertIn("不得覆盖 system 安全规则", sent_messages[0]["content"])
         self.assertIn('<tool_capabilities source="host-tool-registry"', sent_messages[1]["content"])
-        self.assertIn("read_file", sent_messages[1]["content"])
+        self.assertIn("search_tools", sent_messages[1]["content"])
+        self.assertIn("invoke_tool", sent_messages[1]["content"])
+        self.assertNotIn("read_file", sent_messages[1]["content"])
         self.assertIn('<runtime_context source="host-runtime"', sent_messages[2]["content"])
         self.assertIn("工作区检测：从启动目录发现 .git", sent_messages[2]["content"])
         self.assertEqual(sent_messages[3]["content"], "上一轮问题")
@@ -679,121 +681,6 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertTrue(artifact_exists)
         self.assertEqual(artifact_text, long_output)
 
-    def test_display_html_tool_returns_ui_artifact_and_persists_html_artifact(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            html = "<!doctype html><html><body><h1>采集结果</h1></body></html>"
-            agent = object.__new__(LocalToolAgent)
-            agent.workspace_root = workspace
-            agent.config = SimpleNamespace(max_history_turns=6, max_tool_output_chars=6000)
-            agent._history = []
-            agent._skill_manager = None
-            agent._active_skills = []
-            agent._workspace_tools = None
-            agent._memory_store = None
-            agent._session_store = None
-            agent._tools = {
-                "display_html": ToolDefinition(
-                    name="display_html",
-                    description="显示 HTML",
-                    argument_schema='{"title":"数据预览","html":"...","path":""}',
-                    requires_confirmation=False,
-                    run=lambda arguments: LocalToolAgent._tool_display_html(agent, arguments),
-                )
-            }
-            store = SessionStore(workspace / ".agent_sessions")
-            state = store.start_session(workspace)
-            agent._session_store = store
-            agent._session_state = state
-
-            calls = 0
-
-            def fake_request(
-                _messages,
-                _on_delta,
-                _on_token_usage,
-                _on_protocol_wait,
-                _on_retry_status,
-                on_stream_rollback=None,
-            ):
-                nonlocal calls
-                calls += 1
-                if calls == 1:
-                    return AgentModelReply(
-                        message={
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [
-                                {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {"name": "display_html", "arguments": "{}"},
-                                }
-                            ],
-                        },
-                        content="",
-                        tool_calls=[
-                            ToolCall(
-                                name="display_html",
-                                arguments={"title": "采集结果", "html": html},
-                                id="call_1",
-                                function_name="display_html",
-                            )
-                        ],
-                    )
-                return AgentModelReply(message={"role": "assistant", "content": "已展示"}, content="已展示")
-
-            agent._request_agent_reply = fake_request  # type: ignore[method-assign]
-            seen_results: list[ToolResult] = []
-
-            LocalToolAgent.run_stream(
-                agent,
-                "展示采集结果",
-                lambda _delta: None,
-                on_tool_result=lambda _tool_call, result: seen_results.append(result),
-            )
-
-            events = [
-                json.loads(line)
-                for line in state.path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-            payload = next(event["payload"] for event in events if event["type"] == "tool_result")
-            html_artifact = payload["ui_artifact"]
-            html_artifact_path = workspace / ".agent_sessions" / html_artifact["artifact_path"]
-            html_artifact_exists = html_artifact_path.is_file()
-            html_artifact_text = html_artifact_path.read_text(encoding="utf-8")
-
-        self.assertEqual(seen_results[0].ui_artifact["type"], "html")
-        self.assertEqual(seen_results[0].ui_artifact["html"], html)
-        self.assertEqual(html_artifact["type"], "html")
-        self.assertEqual(html_artifact["title"], "采集结果")
-        self.assertNotIn("html", html_artifact)
-        self.assertTrue(html_artifact["redacted"])
-        self.assertTrue(html_artifact_exists)
-        self.assertEqual(html_artifact_text, html)
-
-    def test_display_html_tool_reads_path_without_workspace_read_truncation(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            html_path = workspace / "large.html"
-            html = "<!doctype html><html><body>" + ("数据" * 200) + "</body></html>"
-            html_path.write_text(html, encoding="utf-8")
-            agent = object.__new__(LocalToolAgent)
-            agent.workspace_root = workspace
-            agent.config = SimpleNamespace(command_timeout_seconds=120)
-            agent._workspace_tools = None
-            agent._memory_store = None
-            agent._session_store = None
-
-            result = LocalToolAgent._tool_display_html(
-                agent,
-                {"title": "大 HTML", "path": "large.html"},
-            )
-
-        self.assertTrue(result.ok)
-        self.assertEqual(result.ui_artifact["html"], html)
-        self.assertNotIn("文件内容已截断", result.ui_artifact["html"])
 
     def test_resume_session_restores_recent_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1535,14 +1422,22 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertEqual(messages[1], {"role": "user", "content": "读取 README"})
         tools = call["tools"]
         assert isinstance(tools, list)
+        self.assertEqual(len(tools), 2)
         self.assertEqual(tools[0]["type"], "function")
-        function = tools[0]["function"]
-        self.assertRegex(function["name"], r"^[A-Za-z0-9_-]{1,64}$")
-        self.assertNotIn(".", function["name"])
-        self.assertNotIn(":", function["name"])
-        self.assertEqual(function["description"], "读取文件。")
-        self.assertEqual(function["parameters"]["type"], "object")
-        self.assertEqual(function["parameters"]["required"], ["path"])
+        search_function = tools[0]["function"]
+        invoke_function = tools[1]["function"]
+        for function in (search_function, invoke_function):
+            self.assertRegex(function["name"], r"^[A-Za-z0-9_-]{1,64}$")
+            self.assertNotIn(".", function["name"])
+            self.assertNotIn(":", function["name"])
+            self.assertEqual(function["parameters"]["type"], "object")
+        self.assertIn("search_tools", search_function["description"])
+        self.assertEqual(search_function["parameters"]["required"], ["query"])
+        self.assertIn("invoke_tool", invoke_function["description"])
+        self.assertEqual(
+            invoke_function["parameters"]["required"],
+            ["tool_name", "arguments"],
+        )
 
     def test_reasoning_deltas_are_forwarded_to_optional_callback(self) -> None:
         class FakeChatCompletions:

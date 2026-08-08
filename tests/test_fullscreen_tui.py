@@ -100,6 +100,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
     async def test_fullscreen_layout_uses_single_line_hud_and_compact_composer(self) -> None:
         """界面应使用两行稳态 HUD、无侧栏和五行高的多行输入舱。"""
 
+        from rich.text import Text
         from textual.widgets import TextArea, Static
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
@@ -136,7 +137,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             self.assertEqual(len(app.query("#sidebar")), 0)
             self.assertEqual(len(app.query("#header")), 0)
@@ -145,26 +146,36 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
             # 顶部由稳态上下文占满；运行态进入对话区且空闲时不存在。
             self.assertEqual(len(app.query("#brand")), 0)
-            self.assertEqual(len(app.query("#topbar > *")), 2)
-            version = app.query_one("#version-status", Static)
-            self.assertEqual(str(version.content), "v0.1.1")
+            self.assertEqual(len(app.query("#topbar > *")), 5)
+            version_widget = app.query_one("#version-status", Static)
+            self.assertEqual(str(version_widget.content), "v0.1.1")
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
             topbar = app.query_one("#topbar")
             context_widget = app.query_one("#context-summary", Static)
             self.assertEqual(context_widget.region.x, topbar.content_region.x)
-            self.assertEqual(
-                context_widget.region.width + version.region.width,
-                topbar.content_region.width,
-            )
-            self.assertEqual(version.region.right, topbar.content_region.right)
+            # 左段与状态字段紧凑紧排，版本号与行尾闭合竖线被弹性占位推到行尾。
+            status_widget = app.query_one("#status-summary", Static)
+            topbar_tail = app.query_one("#topbar .hud-tail", Static)
+            self.assertEqual(status_widget.region.x, context_widget.region.right)
+            self.assertGreater(version_widget.region.x, status_widget.region.right)
+            self.assertEqual(topbar_tail.region.x, version_widget.region.right)
+            self.assertEqual(topbar_tail.region.right, topbar.content_region.right)
             context = context_widget.content
-            self.assertIn("PRJ workspace", context.plain)
+            self.assertTrue(context.plain.startswith("│ PRJ workspace"))
             self.assertNotIn("D:/workspace", context.plain)
             self.assertIn("MDL demo-model", context.plain)
             self.assertIn("THK MAX", context.plain)
-            self.assertIn("APR MAN", context.plain)
-            self.assertIn("QUE 0", context.plain)
             self.assertNotIn(".agent_tmp", context.plain)
+            # 审批模式、排队数与 MCP 数量在状态字段，用 │ 与左段分隔；
+            # 版本号前的分隔竖线位于 QUE 0 之后。
+            status = status_widget.content
+            self.assertIn("APR MAN", status.plain)
+            self.assertIn("QUE 0", status.plain)
+            self.assertIn("MCP 2", status.plain)
+            self.assertTrue(status.plain.startswith("│ "))
+            self.assertIn("QUE 0 │", status.plain)
+            self.assertNotIn("·", context.plain)
+            self.assertNotIn("·", status.plain)
             self.assertEqual(app.theme, THEME_NAME)
             self.assertTrue(app.current_theme.ansi)
             self.assertEqual(app.current_theme.background, TERMINAL_BACKGROUND)
@@ -176,16 +187,34 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             token_widget = app.query_one("#token-telemetry", Static)
             telemetry = str(token_widget.content)
             self.assertIn("IN 0", telemetry)
-            self.assertIn("CTX 0/128K", telemetry)
-            self.assertIn("MCP 2", telemetry)
+            self.assertTrue(telemetry.startswith("│ "))
+            # CTX 占用紧跟 tok/s 之后，位于第二行左段。
+            self.assertIn("CTX 0%", telemetry)
+            self.assertIn("0/128K", telemetry)
+            self.assertNotIn("MCP", telemetry)
+            self.assertNotIn("·", telemetry)
             # 第二行容器保留底边框，Token 与索引状态各占一行内容高度。
             telemetry_row = app.query_one("#telemetry-row")
             index_widget = app.query_one("#index-status", Static)
             self.assertEqual(telemetry_row.region.height, 2)
             self.assertEqual(token_widget.region.height, 1)
             self.assertGreater(token_widget.size.height, 0)
-            self.assertEqual(index_widget.region.x, version.region.x)
-            self.assertEqual(index_widget.region.width, version.region.width)
+            # 索引状态空闲时为空文本，渲染后组件整体隐藏避免竖线占位。
+            app._render_search_index_status()
+            self.assertFalse(index_widget.display)
+            # 行尾闭合竖线常驻，空闲时仍贴住第二行右缘。
+            row_tail = app.query_one("#telemetry-row .hud-tail", Static)
+            self.assertEqual(row_tail.region.right, telemetry_row.content_region.right)
+            # 使用非空状态模拟真实索引加载，避免后台轮询在下一帧把手动显示复位。
+            with patch.object(
+                app,
+                "_search_index_status_text",
+                return_value=Text("正在建立项目文件索引"),
+            ):
+                app._render_search_index_status()
+                await pilot.pause()
+            self.assertEqual(index_widget.region.right, row_tail.region.x)
+            self.assertEqual(row_tail.region.right, telemetry_row.content_region.right)
             rendered_token = "".join(segment.text for segment in token_widget.render_line(0))
             self.assertIn("IN", rendered_token)
             self.assertIn("CTX", rendered_token)
@@ -202,6 +231,52 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(cursor_style.bgcolor.number, 7)  # ansi_white
             self.assertFalse(cursor_style.reverse)
             self.assertEqual(composer.styles.background.a, 0)
+
+    async def test_hud_edges_remain_aligned_when_terminal_is_compact(self) -> None:
+        """窄终端下顶部两行的尾部分隔线不得溢出内容区。"""
+
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            approval_mode = "manual"
+            reasoning_effort = "max"
+            workspace_root = "D:/workspace"
+            current_session_id = "session-demo"
+            skill_manager = None
+            _mcp_manager = SimpleNamespace(
+                config=SimpleNamespace(enabled=True, enabled_servers=[])
+            )
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(
+                True,
+                "max",
+                "人工确认",
+                "D:/workspace",
+                ".agent_tmp",
+                current_version="0.1.1",
+            ),
+        )
+
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause(0.1)
+            app._render_search_index_status()
+            await pilot.pause(0.1)
+
+            topbar = app.query_one("#topbar")
+            telemetry_row = app.query_one("#telemetry-row")
+            top_tail = app.query_one("#topbar .hud-tail", Static)
+            row_tail = app.query_one("#telemetry-row .hud-tail", Static)
+
+            self.assertEqual(top_tail.region.right, topbar.content_region.right)
+            self.assertEqual(row_tail.region.right, telemetry_row.content_region.right)
 
     async def test_background_version_check_updates_hud_and_adds_notice(self) -> None:
         from textual.widgets import Static
@@ -249,7 +324,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                     if "0.1.2" in version_text:
                         break
 
-                self.assertEqual(version_text, "v0.1.1  ↑ v0.1.2")
+                self.assertIn("v0.1.1  ↑ v0.1.2", version_text)
                 notices = [str(widget.content) for widget in app.query(".status-message")]
                 self.assertTrue(
                     any(
@@ -921,7 +996,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(agent.calls, ["first"])
             self.assertEqual(list(app._pending_inputs), ["second", "/skills"])
-            self.assertIn("QUE 2", app.query_one("#context-summary", Static).content.plain)
+            self.assertIn(
+                "QUE 2", app.query_one("#status-summary", Static).content.plain
+            )
 
             release_first.set()
             for _ in range(80):
@@ -931,7 +1008,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(agent.calls, ["first", "second"])
             self.assertFalse(app._pending_inputs)
-            self.assertIn("QUE 0", app.query_one("#context-summary", Static).content.plain)
+            self.assertIn(
+                "QUE 0", app.query_one("#status-summary", Static).content.plain
+            )
             self.assertIn("完成：second", app.conversation_text)
 
     async def test_queued_modal_command_resumes_after_screen_closes(self) -> None:
@@ -1198,6 +1277,33 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 rendered,
             )
 
+    async def test_tool_disclosure_elapsed_refreshes_only_while_running(self) -> None:
+        from textual.app import App, ComposeResult
+
+        from omnicrawl.ui.fullscreen.widgets import ToolDisclosure
+        from omnicrawl.ui.tool_labels import format_duration
+
+        class ToolHarness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ToolDisclosure(
+                    "read_file",
+                    {"path": "README.md"},
+                    started_at=10.0,
+                )
+
+        app = ToolHarness()
+        async with app.run_test(size=(80, 12)) as pilot:
+            record = app.query_one(ToolDisclosure)
+            record.refresh_elapsed(now=11.25)
+            self.assertEqual(record.duration_seconds, 1.25)
+            self.assertIn(format_duration(1.25), record.render().plain)
+
+            record.finish(ok=True, output="读取完成", finished_at=12.0)
+            record.refresh_elapsed(now=99.0)
+            self.assertEqual(record.duration_seconds, 2.0)
+            self.assertIn(format_duration(2.0), record.render().plain)
+            await pilot.pause()
+
     def test_subagent_confirmation_hides_complete_prompts(self) -> None:
         from omnicrawl.commands.slash import format_tool_confirmation
 
@@ -1302,14 +1408,15 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
             rows = list(app.screen.query(".settings-row"))
-            self.assertEqual(len(rows), 13)
+            self.assertEqual(len(rows), 15)
             self.assertTrue(
                 all(str(row.content).strip() for row in rows),
                 [repr(str(row.content)) for row in rows],
             )
             self.assertIn("模型：demo-model", str(rows[0].content))
             self.assertIn("模型渠道：管理", str(rows[1].content))
-            self.assertIn("上下文长度（K）：128K", str(rows[3].content))
+            self.assertIn("视觉：已关闭", str(rows[2].content))
+            self.assertIn("上下文长度（K）：128K", str(rows[4].content))
             self.assertTrue(
                 any("上下文压缩：已关闭" in str(row.content) for row in rows)
             )
@@ -1318,6 +1425,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(
                 any("内容关键词索引：已关闭" in str(row.content) for row in rows)
+            )
+            self.assertTrue(
+                any("工具开关：进入" in str(row.content) for row in rows)
             )
             settings_list = app.screen.query_one("#settings-list")
             compaction_row = app.screen.query_one(
@@ -1472,13 +1582,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 {"custom": items, "detected": [], "diagnostics": [], "error": ""}
             )
 
-            self.assertEqual(getattr(screen.focused, "id", None), "list-custom")
+            self.assertEqual(getattr(screen.focused, "id", None), "list-channels")
             await pilot.press("down")
             await pilot.pause()
-            self.assertEqual(screen._index_custom, 1)
+            self.assertEqual(screen._index_channels, 1)
             await pilot.press("up")
             await pilot.pause()
-            self.assertEqual(screen._index_custom, 0)
+            self.assertEqual(screen._index_channels, 0)
 
             await pilot.press("slash")
             await pilot.pause()
@@ -1488,8 +1598,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.press("down")
             await pilot.pause()
 
-            self.assertEqual(screen._index_custom, 1)
-            self.assertEqual(getattr(screen.focused, "id", None), "list-custom")
+            self.assertEqual(screen._index_channels, 1)
+            self.assertEqual(getattr(screen.focused, "id", None), "list-channels")
             self.assertEqual(agent.current_model, "model-0")
 
     async def test_should_apply_model_selection_immediately(self) -> None:
@@ -1754,7 +1864,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.press("tab")
             self.assertEqual(screen.focused.id, "model-picker-search")
 
-    async def test_custom_models_move_down_and_up(self) -> None:
+    async def test_channels_move_down_and_up(self) -> None:
         from textual.app import App, ComposeResult
         from textual.widgets import Static
         from omnicrawl.config.model_catalog import CatalogModel
@@ -1795,12 +1905,100 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 }
             )
             screen._active_column = 0
-            screen._index_custom = 0
+            screen._index_channels = 0
             screen._focus_active_list()
             await pilot.press("down")
-            self.assertEqual(screen._index_custom, 1)
+            self.assertEqual(screen._index_channels, 1)
             await pilot.press("up")
-            self.assertEqual(screen._index_custom, 0)
+            self.assertEqual(screen._index_channels, 0)
+
+    async def test_channel_selection_filters_models_and_wraps(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import (
+            ModelPickerScreen,
+            _ChannelChoice,
+        )
+
+        class TestPickerScreen(ModelPickerScreen):
+            def on_mount(self) -> None:
+                pass
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(TestPickerScreen(SimpleNamespace(current_model="")))
+
+        channels = [
+            _ChannelChoice(
+                key="openai-main",
+                name="OpenAI 主渠道",
+                profile_id="openai-main",
+                provider="openai",
+                protocol="openai_chat_completions",
+                model_id="gpt-5.2",
+            ),
+            _ChannelChoice(
+                key="anthropic-main",
+                name="Anthropic 主渠道",
+                profile_id="anthropic-main",
+                provider="anthropic",
+                protocol="anthropic_messages",
+                model_id="claude-sonnet-4-5",
+            ),
+        ]
+        detected = [
+            CatalogModel(
+                source="detected",
+                key="openai-main/gpt-5.2",
+                profile_id="openai-main",
+                provider="openai",
+                protocol="openai_chat_completions",
+                model_id="gpt-5.2",
+                display_name="gpt-5.2",
+            ),
+            CatalogModel(
+                source="detected",
+                key="anthropic-main/claude-sonnet-4-5",
+                profile_id="anthropic-main",
+                provider="anthropic",
+                protocol="anthropic_messages",
+                model_id="claude-sonnet-4-5",
+                display_name="claude-sonnet-4-5",
+            ),
+        ]
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen._apply_catalog(
+                {
+                    "channels": channels,
+                    "custom": [],
+                    "detected": detected,
+                    "diagnostics": [],
+                    "error": "",
+                }
+            )
+            models = screen.query_one("#list-models", Static).content.plain
+            self.assertIn("gpt-5.2", models)
+            self.assertNotIn("claude-sonnet-4-5", models)
+
+            screen._focus_active_list()
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(screen._index_channels, 1)
+            models = screen.query_one("#list-models", Static).content.plain
+            self.assertIn("claude-sonnet-4-5", models)
+            self.assertNotIn("gpt-5.2", models)
+
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(screen._index_channels, 0)
 
     async def test_model_list_shows_only_model_names(self) -> None:
         from omnicrawl.config.model_catalog import CatalogModel
@@ -1886,9 +2084,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             screen._apply_catalog(
                 {"custom": [], "detected": items, "diagnostics": [], "error": ""}
             )
-            rendered = str(screen.query_one("#list-detected", Static).content)
+            rendered = str(screen.query_one("#list-models", Static).content)
 
-            self.assertEqual(screen._index_detected, 51)
+            self.assertEqual(screen._index_models, 51)
             self.assertIn("model-51", rendered)
 
     async def test_should_keep_current_model_selected_when_catalog_refreshes_with_filter(self) -> None:
@@ -1970,8 +2168,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("IN 62.5K", telemetry.plain)
             self.assertIn("OUT 2.4K", telemetry.plain)
             self.assertIn("CA 50K", telemetry.plain)
-            self.assertIn("CTX 62.5K/100K", telemetry.plain)
-            self.assertIn("62%", telemetry.plain)
+            # 上下文占用条随 Token 用量同步更新，紧跟 tok/s 之后。
+            self.assertIn("CTX 62%", telemetry.plain)
+            self.assertIn("62.5K/100K", telemetry.plain)
             self.assertIn(TEXT_MUTED, str(telemetry.spans))
             self.assertIn("default", str(telemetry.spans))
             self.assertNotIn("blue", str(telemetry.spans))
@@ -1979,6 +2178,89 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("green", str(telemetry.spans))
             self.assertNotIn("yellow", str(telemetry.spans))
             self.assertNotIn("red", str(telemetry.spans))
+
+    async def test_token_rate_shown_while_streaming_and_reset_after_turn(self) -> None:
+        """流式生成期间顶部遥测显示实时 tok/s，回合结束后归零为 --。"""
+
+        import time
+
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            # 手工构造 1 秒前的采样点：400 ASCII 字符 ≈ 100 token。
+            # 跨度 1.0s → 速率约 100.0 tok/s（同一 tick 内误差 < 1%）。
+            app._generation_samples.append((time.monotonic() - 1.0, 100.0))
+            app._refresh_token_rate()
+            await pilot.pause()
+            telemetry = app.query_one("#token-telemetry", Static)
+            self.assertIn("tok/s 100.0", telemetry.content.plain)
+            # MCP 数量已移入第一行右段状态卡片。
+            self.assertIn(
+                "MCP 0", app.query_one("#status-summary", Static).content.plain
+            )
+
+            app._finish_turn()
+            await pilot.pause()
+            self.assertEqual(app._tokens_per_second, 0.0)
+            self.assertEqual(len(app._generation_samples), 0)
+            self.assertIn("tok/s --", telemetry.content.plain)
+
+    async def test_token_rate_accumulates_from_stream_deltas(self) -> None:
+        """思考与正文流增量都会计入实时生成速率；估算值按字符加权。"""
+
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            self.assertEqual(app._tokens_per_second, 0.0)
+            # 思考流增量：400 ASCII ≈ 100 token；正文流增量：100 CJK ≈ 100 token。
+            app._append_reasoning_delta("A" * 400)
+            app._append_delta("问题" * 50)
+            self.assertEqual(
+                round(app._estimate_generation_tokens("A" * 400)),
+                100,
+            )
+            self.assertEqual(
+                round(app._estimate_generation_tokens("问题" * 50)),
+                100,
+            )
+            app._refresh_token_rate()
+            await pilot.pause()
+            self.assertGreater(app._tokens_per_second, 0.0)
+            self.assertIn(
+                "tok/s",
+                app.query_one("#token-telemetry", Static).content.plain,
+            )
+            self.assertGreaterEqual(len(app._generation_samples), 2)
 
     async def test_context_summary_uses_windows_workspace_folder_name(self) -> None:
         """顶部项目名解析不应依赖测试进程当前运行的平台。"""
@@ -2002,7 +2284,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         context = app._context_summary_text()
-        self.assertTrue(context.plain.startswith("PRJ omnicrawl  ·  MDL "))
+        # PRJ 段固定 16 cell：omnicrawl（9）后补 1 空格再闭合竖线。
+        self.assertTrue(context.plain.startswith("│ PRJ omnicrawl  │ MDL "))
         self.assertNotIn(r"D:\projects", context.plain)
 
     async def test_should_keep_composer_visible_when_slash_description_spans_multiple_lines(self) -> None:
@@ -2609,6 +2892,155 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(all(message.styles.margin.bottom == 1 for message in messages[:-1]))
             self.assertEqual(messages[-1].styles.margin.bottom, 0)
 
+    async def test_reasoning_single_line_does_not_reserve_blank_rows_during_reply(self) -> None:
+        """单行思考在回复流开始后仍应保持正文和自然高度。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ReasoningDisclosure
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_reasoning_delta("仅一行思考")
+            await pilot.pause(0.1)
+            widget = app.query_one(ReasoningDisclosure)
+
+            self.assertLessEqual(widget.size.height, 3)
+            self.assertEqual(widget.virtual_size.height, 2)
+            self.assertIn(
+                "仅一行思考",
+                "".join(
+                    segment.text
+                    for line_number in range(widget.size.height)
+                    for segment in widget.render_line(line_number)
+                ),
+            )
+
+            for delta in ("回", "复", "内", "容"):
+                app._append_delta(delta)
+                await pilot.pause()
+
+            self.assertLessEqual(widget.size.height, 3)
+            self.assertEqual(widget.virtual_size.height, 2)
+            rendered = "".join(
+                segment.text
+                for line_number in range(widget.size.height)
+                for segment in widget.render_line(line_number)
+            )
+            self.assertIn("思考过程", rendered)
+            self.assertIn("仅一行思考", rendered)
+
+    async def test_reasoning_burst_is_coalesced_and_complete_after_flush(self) -> None:
+        """突发分片必须合并渲染（不逐分片全量重绘）；flush_tail 后内容完整。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ReasoningDisclosure
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_reasoning_delta("开头")
+            widget = app.query_one(ReasoningDisclosure)
+            await pilot.pause()
+
+            render_count = 0
+            original_render_tail = widget._render_tail
+
+            def counting_render_tail() -> None:
+                nonlocal render_count
+                render_count += 1
+                original_render_tail()
+
+            widget._render_tail = counting_render_tail
+
+            # 紧贴循环内的 200 个分片属于同一突发，合并刷新必须把渲染次数
+            # 压到远低于分片数（前缘渲染 + 至多一个延时合并）。
+            for index in range(200):
+                widget.append_delta(f"片段{index}")
+            self.assertLess(render_count, 10)
+
+            widget.flush_tail()
+            await pilot.pause()
+            self.assertEqual(
+                widget.reasoning_text,
+                "开头" + "".join(f"片段{index}" for index in range(200)),
+            )
+            rendered = "".join(
+                segment.text
+                for line_number in range(widget.size.height)
+                for segment in widget.render_line(line_number)
+            )
+            self.assertIn("片段199", rendered)
+
+            # flush 后折叠/展开交互保持可用。
+            await pilot.click(".reasoning-message")
+            await pilot.pause()
+            self.assertFalse(widget.expanded)
+            await pilot.click(".reasoning-message")
+            await pilot.pause()
+            self.assertTrue(widget.expanded)
+
+    async def test_assistant_message_renders_latex_math(self) -> None:
+        """模型回复中的 LaTeX 公式应转换为终端可读的 Unicode 数学文本。"""
+
+        from omnicrawl.ui.fullscreen import (
+            AssistantMessage,
+            FullscreenStartup,
+            OmniCrawlApp,
+        )
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_message(
+                "assistant",
+                "勾股定理 $a^2 + b^2 = c^2$，以及块级公式："
+                "$$\\frac{1}{2} + \\alpha = 1$$",
+            )
+            await pilot.pause()
+            message = app.query_one(AssistantMessage)
+            rendered = "".join(
+                segment.text
+                for line_number in range(message.size.height)
+                for segment in message.render_line(line_number)
+            )
+            self.assertIn("a² + b² = c²", rendered)
+            self.assertIn("1/2", rendered)
+            self.assertIn("α", rendered)
+            self.assertNotIn("$a^2", rendered)
+            self.assertNotIn("$\\frac", rendered)
+
     async def test_confirmation_screen_returns_explicit_approval(self) -> None:
         """人工审批必须通过全屏模态框返回明确结果。"""
 
@@ -2842,8 +3274,10 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             context = app.query_one("#context-summary", Static).content
             self.assertIn("MDL demo-model", context.plain)
             self.assertIn("THK LOW", context.plain)
-            self.assertIn("APR AUTO", context.plain)
             self.assertNotIn("完全自动批准", context.plain)
+            # 审批模式已移入右段状态卡片。
+            status = app.query_one("#status-summary", Static).content
+            self.assertIn("APR AUTO", status.plain)
 
     async def test_parallel_tool_results_update_their_matching_disclosures(self) -> None:
         """并发工具即使逆序完成，也必须更新各自的调用记录。"""

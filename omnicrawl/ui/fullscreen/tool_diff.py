@@ -88,7 +88,6 @@ def _generic_tool_name(operation: str, display_name: str) -> str:
     short_names = {
         "bash": "",
         "powershell": "",
-        "display_html": "HTML",
         "subagent": "SubAgent",
     }
     return short_names.get(operation, display_name.removeprefix("执行 "))
@@ -121,9 +120,6 @@ def _tool_title_context(tool_name: str, arguments: Any, result_text: str) -> str
         if task_count:
             context += f"  {task_count} 项"
         return context
-    if operation == "display_html":
-        path = str(args.get("path") or "").strip()
-        return f"{_compact_title_value(path, max_chars=MAX_PATH_CHARS)}" if path else "artifact"
     if operation == "windows_screenshot":
         target = str(args.get("target") or "").strip()
         return target or "截图"
@@ -239,6 +235,14 @@ def _workspace_tool_title(
         if line_range is not None:
             rendered.append("  |  ", style=COLOR_GUTTER)
             rendered.append(f"第 {line_range[0]}-{line_range[1]} 行", style=COLOR_META)
+    elif operation == "read_image":
+        path = _compact_title_value(
+            args.get("path") or "(未指定图片)",
+            max_chars=MAX_PATH_CHARS,
+        )
+        rendered.append(f"{display_icon}  ", style=COLOR_TITLE)
+        rendered.append(path, style=TEXT_PRIMARY)
+        rendered.append("  |  图片", style=COLOR_META)
     elif operation in {"find_files", "search_text"}:
         path = _compact_title_value(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
         pattern = _compact_title_value(args.get("pattern"), max_chars=36)

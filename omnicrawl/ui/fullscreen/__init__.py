@@ -31,6 +31,7 @@ from .hud import (
     gradient_text,
     pending_queue_text,
     search_index_status_text,
+    status_summary_text,
     token_telemetry_text,
     version_status_text,
 )
@@ -53,6 +54,8 @@ from .commands import CommandDispatcher
 from .model_picker import ModelPickerResult, ModelPickerScreen
 from .settings import SettingsAction, SettingsScreen
 from .mcp_settings import MCPServerListScreen, MCPSettingsAction, MCPSettingsScreen
+from .tool_settings import ToolSettingsScreen
+from .vision_settings import VisionSettingsResult, VisionSettingsScreen
 from .monitor import MonitorStateAdapter, format_monitor_display_batch
 from .theme import (
     ACCENT_BLUE,
@@ -232,24 +235,47 @@ class OmniCrawlApp(App[None]):
     CSS = terminal_css("""
     Screen { background: $terminal-canvas; color: $terminal-text; }
     #shell { height: 1fr; background: $terminal-background; }
-    /* 顶部第一行由稳态上下文占满；瞬时运行态放入对话流。 */
+    /* 顶部两行紧凑靠左：内容按实际宽度紧排，剩余空间留白在行尾；
+       弹性占位把版本号/索引状态推到整行尾部，行首与字段间用 │ 分隔。 */
     #topbar { height: 1; padding: 0 1; background: $terminal-surface; align: left middle; }
     #context-summary {
-        width: 1fr;
+        width: auto;
+        min-width: 0;
+        max-width: 1fr;
+        color: $terminal-text-muted;
+        content-align: left middle;
+        text-overflow: ellipsis;
+        text-wrap: nowrap;
+    }
+    #status-summary {
+        width: auto;
         min-width: 0;
         color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
+        text-wrap: nowrap;
     }
     #version-status {
-        width: 34;
-        min-width: 34;
+        width: auto;
+        min-width: 0;
         max-width: 34;
+        height: 1;
+        padding: 0 0 0 1;
         color: $terminal-text;
-        content-align: right middle;
+        content-align: left middle;
         text-overflow: ellipsis;
     }
-    /* 第二行左侧展示 Token，右侧在后台建索引时显示进度。 */
+    /* 弹性占位：吃掉行内剩余空间，把行尾元素推到最右端。 */
+    .hud-spacer { width: 1fr; height: 1; }
+    /* 行尾闭合竖线：灰色，与行首/字段间 │ 呼应，始终贴住容器右缘。 */
+    .hud-tail {
+        width: 1;
+        height: 1;
+        color: $terminal-border-muted;
+        content-align: center middle;
+    }
+    /* 第二行左侧展示 Token 明细，右侧在后台建索引时显示进度。 */
+    #telemetry-row .hud-spacer { display: none; }
     #telemetry-row {
         height: 2;
         padding: 0 1;
@@ -259,6 +285,7 @@ class OmniCrawlApp(App[None]):
     #token-telemetry {
         width: 1fr;
         min-width: 0;
+        max-width: 100%;
         height: 1;
         padding: 0;
         color: $terminal-text-muted;
@@ -266,13 +293,12 @@ class OmniCrawlApp(App[None]):
         text-overflow: ellipsis;
     }
     #index-status {
-        width: 34;
-        min-width: 34;
-        max-width: 34;
+        width: 26;
+        min-width: 26;
+        max-width: 26;
         height: 1;
-        padding: 0;
         color: $terminal-text-muted;
-        content-align: right middle;
+        content-align: center middle;
         text-overflow: ellipsis;
     }
     .runtime-status-message { color: $terminal-text-muted; text-style: bold; }
@@ -339,6 +365,10 @@ class OmniCrawlApp(App[None]):
     ]
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
+    # 生成速率统计窗口：只统计最近窗口内的增量，平滑瞬时抖动。
+    TOKEN_RATE_WINDOW_SECONDS = 2.0
+    # 顶部 tok/s 遥测的刷新间隔（生成期间才触发刷新）。
+    TOKEN_RATE_REFRESH_INTERVAL_SECONDS = 0.5
     MONITOR_POLL_INTERVAL_SECONDS = 0.5
     STATUS_SPINNER_INTERVAL_SECONDS = 0.16
     # 索引加载光波的刷新间隔：8 帧 × 0.25s 整圈 2s，波速为原 4 帧/0.5s 的两倍。
@@ -418,6 +448,10 @@ class OmniCrawlApp(App[None]):
         self._input_tokens = 0
         self._output_tokens = 0
         self._cached_input_tokens = 0
+        # 实时生成速率：滑动窗口内 (时刻, 估算 token 数) 采样点。
+        # 采样源是 UI 收到的流式文本增量，因此是估算值而非供应商用量。
+        self._generation_samples: deque[tuple[float, float]] = deque()
+        self._tokens_per_second = 0.0
         self._runtime_status_text = "完成"
         self._runtime_status_state = "complete"
         self._runtime_status_message: Static | None = None
@@ -437,13 +471,18 @@ class OmniCrawlApp(App[None]):
         with Vertical(id="shell"):
             with Horizontal(id="topbar"):
                 yield Static(self._context_summary_text(), id="context-summary")
+                yield Static(self._status_summary_text(), id="status-summary")
+                yield Static("", classes="hud-spacer")
                 yield Static(
                     version_status_text(self.startup.current_version),
                     id="version-status",
                 )
+                yield Static("│", classes="hud-tail")
             with Horizontal(id="telemetry-row"):
                 yield Static(self._token_telemetry_text(), id="token-telemetry")
+                yield Static("", classes="hud-spacer")
                 yield Static(self._search_index_status_text(), id="index-status")
+                yield Static("│", classes="hud-tail")
             yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
                 yield Static("", id="command-menu")
@@ -463,11 +502,16 @@ class OmniCrawlApp(App[None]):
         self.agent.set_confirm_handler(self._confirm_tool)
         self.query_one("#composer", TextArea).focus()
         self._resize_composer_to_text()
+        self.call_after_refresh(self._refresh_hud_layout)
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_version_check)
         self.set_interval(
             self.SEARCH_INDEX_ANIMATION_INTERVAL_SECONDS,
             self._tick_search_index_status,
+        )
+        self.set_interval(
+            self.TOKEN_RATE_REFRESH_INTERVAL_SECONDS,
+            self._refresh_token_rate,
         )
         self.set_interval(
             self.INTERACTION_WATCHDOG_INTERVAL_SECONDS,
@@ -641,7 +685,10 @@ class OmniCrawlApp(App[None]):
         return search_index_status_text(status, self._search_index_frame)
 
     def _render_search_index_status(self) -> None:
-        """轮询只读状态快照，不让后台索引线程直接接触 Textual 组件。"""
+        """轮询只读状态快照，不让后台索引线程直接接触 Textual 组件。
+
+        空闲时索引状态为空文本，隐藏整个组件以免竖线占位造成行内空白。
+        """
 
         widgets = self.query("#index-status")
         if widgets:
@@ -649,11 +696,14 @@ class OmniCrawlApp(App[None]):
             rendered = self._search_index_status_text()
             current = widget.content
             if isinstance(current, Text) and current == rendered:
+                # 内容未变时仍需同步隐藏状态（首次渲染两者都为空）。
+                widget.display = bool(rendered)
                 return
             widget.update(rendered)
+            widget.display = bool(rendered)
 
     def _render_version_status(self, latest_version: str | None = None) -> None:
-        """在主线程绘制版本号、升级提示或检查更新动画。"""
+        """在主线程重绘行尾版本号：版本、升级提示或检查更新动画。"""
 
         self.query_one("#version-status", Static).update(
             version_status_text(
@@ -727,9 +777,55 @@ class OmniCrawlApp(App[None]):
             self._refresh_command_menu(event.text_area.text)
             self._resize_composer_to_text()
 
-    def on_resize(self, _event: events.Resize) -> None:
-        """窗口宽度变化后，按 Textual 重算的软折行高度更新输入区。"""
+    def _refresh_hud_layout(self) -> None:
+        """按当前终端宽度收缩顶部 HUD，避免固定字段把尾线推出屏幕。"""
 
+        topbar = self.query_one("#topbar")
+        content_width = topbar.content_region.width
+        if content_width <= 0:
+            return
+
+        context = self.query_one("#context-summary", Static)
+        status = self.query_one("#status-summary", Static)
+        spacer = self.query_one("#topbar .hud-spacer", Static)
+        version = self.query_one("#version-status", Static)
+
+        # 左侧上下文、状态、版本和尾线的完整宽度为
+        # 64 + 28 + 7 + 1 = 100。小于该宽度时只压缩上下文字段，
+        # 不让状态和版本覆盖彼此；上下文已设置 nowrap，会以省略号收尾。
+        if content_width < 100:
+            compact_context_width = max(1, content_width - 36)
+            context.styles.width = compact_context_width
+            context.styles.min_width = 0
+            context.styles.max_width = compact_context_width
+            status.styles.width = 28
+            status.styles.min_width = 0
+            status.styles.max_width = 28
+            spacer.styles.width = 0
+            spacer.styles.min_width = 0
+            version.styles.width = 7
+            version.styles.min_width = 7
+            version.styles.max_width = 7
+            return
+
+        # 恢复宽窗口下的自然字段宽度和弹性间隔；这些值覆盖窄窗口时
+        # 写入的 inline style，使终端从窄窗口拖回宽窗口后也能重新对齐。
+        context.styles.width = "auto"
+        context.styles.min_width = 0
+        context.styles.max_width = "1fr"
+        status.styles.width = "auto"
+        status.styles.min_width = 0
+        status.styles.max_width = None
+        spacer.styles.width = "1fr"
+        spacer.styles.min_width = None
+        version.styles.width = "auto"
+        version.styles.min_width = 0
+        version.styles.max_width = 34
+
+    def on_resize(self, _event: events.Resize) -> None:
+        """窗口变化时同步 HUD 宽度，并重算输入区软折行高度。"""
+
+        self.call_after_refresh(self._refresh_hud_layout)
         self.call_after_refresh(self._resize_composer_to_text)
 
     def _resize_composer_to_text(self) -> None:
@@ -1138,6 +1234,9 @@ class OmniCrawlApp(App[None]):
         self._render_stream_markdown()
         # 工具调用是模型 pass 的明确边界。必须封口此前的回复组件，否则工具
         # 返回后的最终回答会继续写入旧组件，在视觉上倒插到工具记录之前。
+        if self._reasoning_message is not None:
+            # 先补齐未完成行，再封口思考组件。
+            self._reasoning_message.flush_tail()
         self._stream_message = None
         self._stream_markdown = ""
         self._stream_start_text_len = None
@@ -1211,6 +1310,85 @@ class OmniCrawlApp(App[None]):
         self._cached_input_tokens = max(0, int(cached))
         self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
 
+    @staticmethod
+    def _estimate_generation_tokens(text: str) -> float:
+        """把流式文本增量粗略估算为 token 数。
+
+        CJK 字符按 1 token、其他字符按 4 字符 1 token 估算。供应商不提供
+        流中逐片 token 计数，该估算只用于实时速率展示，不做精确计量。
+        """
+
+        cjk = sum(1 for ch in text if ord(ch) > 0x2E7F)
+        return cjk + (len(text) - cjk) / 4.0
+
+    def _prune_generation_samples(self) -> None:
+        """丢弃窗口之外的采样点，保持滑动窗口有界。"""
+
+        cutoff = time.monotonic() - self.TOKEN_RATE_WINDOW_SECONDS
+        while self._generation_samples and self._generation_samples[0][0] < cutoff:
+            self._generation_samples.popleft()
+
+    def _record_generation_delta(self, delta: str) -> None:
+        """记录思考/正文流增量的时间与估算 token，供 tok/s 实时计算。"""
+
+        if not delta:
+            return
+        self._generation_samples.append(
+            (time.monotonic(), self._estimate_generation_tokens(delta))
+        )
+        self._prune_generation_samples()
+
+    def _update_token_telemetry(self) -> None:
+        """刷新顶部遥测行；widget 不在活动查询树中时静默跳过。
+
+        定时器回调可能在模态屏打开或应用关闭过程中触发，此时主工作台
+        组件已不在活动 Screen 的 DOM 中，直接 query_one 会抛 NoMatches。
+        """
+
+        try:
+            self.query_one("#token-telemetry", Static).update(
+                self._token_telemetry_text()
+            )
+        except Exception:
+            pass
+
+    def _refresh_token_rate(self) -> None:
+        """重算最近窗口内的生成速率并刷新顶部遥测；无采样时跳过。"""
+
+        if len(self.screen_stack) > 1:
+            # 模态审批屏成为活动 Screen 后主工作台不在查询树中，此时跳过。
+            return
+        if not self._generation_samples:
+            if self._tokens_per_second:
+                self._tokens_per_second = 0.0
+                self._update_token_telemetry()
+            return
+        self._prune_generation_samples()
+        if not self._generation_samples:
+            # 窗口过期：速率归零并刷新，避免残留旧速率。
+            self._tokens_per_second = 0.0
+            self._update_token_telemetry()
+            return
+        now = time.monotonic()
+        span = min(
+            now - self._generation_samples[0][0],
+            self.TOKEN_RATE_WINDOW_SECONDS,
+        )
+        # 防御刚收到大量增量立即刷新导致的瞬时尖峰。
+        span = max(span, 0.25)
+        total = sum(tokens for _, tokens in self._generation_samples)
+        rate = total / span if span > 0 else 0.0
+        if rate != self._tokens_per_second:
+            self._tokens_per_second = rate
+            self._update_token_telemetry()
+
+    def _reset_token_rate(self) -> None:
+        """回合结束或流回滚时归零速率并刷新遥测，避免残留旧速率。"""
+
+        self._generation_samples.clear()
+        self._tokens_per_second = 0.0
+        self._update_token_telemetry()
+
     def _refresh_monitor_events(self) -> None:
         """渲染适配器返回的后台任务增量日志，不影响模型回合。"""
 
@@ -1226,12 +1404,16 @@ class OmniCrawlApp(App[None]):
             self._reasoning_message = ReasoningDisclosure()
             conversation.mount(self._reasoning_message)
         self._reasoning_message.append_delta(delta)
+        self._record_generation_delta(delta)
         self._set_runtime_status("正在思考", "working")
         self._scroll_conversation_if_following(conversation, follow_latest)
 
     def _append_delta(self, delta: str) -> None:
         if not delta:
             return
+        if self._reasoning_message is not None:
+            # 思考阶段结束，同步补齐未完成行，保证推理内容展示完整。
+            self._reasoning_message.flush_tail()
         self._reasoning_message = None
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
@@ -1243,6 +1425,7 @@ class OmniCrawlApp(App[None]):
             conversation.mount(self._stream_message)
         self._stream_markdown += delta
         self.conversation_text += f"{delta}\n"
+        self._record_generation_delta(delta)
         if not self._stream_render_pending:
             self._stream_render_pending = True
             self.set_timer(self.STREAM_RENDER_INTERVAL_SECONDS, self._render_stream_markdown)
@@ -1297,6 +1480,7 @@ class OmniCrawlApp(App[None]):
             except Exception:
                 pass
             self._reasoning_message = None
+        self._reset_token_rate()
 
     def _append_message(
         self,
@@ -1343,7 +1527,11 @@ class OmniCrawlApp(App[None]):
     def _finish_turn(self) -> None:
         self._render_stream_markdown()
         self.is_generating = False
+        if self._reasoning_message is not None:
+            # 推理后直接结束回合（无回复/无工具）时，同样补齐未完成行。
+            self._reasoning_message.flush_tail()
         self._reasoning_message = None
+        self._reset_token_rate()
         self._set_runtime_status("完成", "complete")
         self.query_one("#composer", TextArea).focus()
         self._drain_pending_inputs()
@@ -1394,6 +1582,11 @@ class OmniCrawlApp(App[None]):
         for tree in self._subagent_trees.values():
             if tree.parent is not None:
                 tree.refresh_elapsed()
+        for tool_message in self._tool_messages.values():
+            # 工具行与子代理树同节奏实时跳动；已完成的记录不在 dict 中，
+            # 历史回放写入的 legacy 记录由 refresh_elapsed 的状态判断跳过。
+            if tool_message.parent is not None:
+                tool_message.refresh_elapsed()
         if self._runtime_status_state not in {"working", "waiting"}:
             return
         self._status_spinner_index = (
@@ -1439,14 +1632,14 @@ class OmniCrawlApp(App[None]):
         self._refresh_context_summary()
 
     def _token_telemetry_text(self) -> Text:
-        """生成紧凑 Token 遥测；CTX 使用最近请求输入量表示当前上下文占用。"""
+        """生成第二行遥测：项目名、CTX 占用、IN/OUT/CA 与 tok/s。"""
 
         return token_telemetry_text(
             self._input_tokens,
             self._output_tokens,
             self._cached_input_tokens,
             getattr(self.agent, "context_window_tokens", 128_000),
-            self._mcp_enabled_count(),
+            self._tokens_per_second,
         )
 
     @staticmethod
@@ -1474,8 +1667,22 @@ class OmniCrawlApp(App[None]):
         except TypeError:
             return 0
 
+    def _status_summary_text(self) -> Text:
+        """生成第一行状态字段：审批模式、MCP 数量与排队数。
+
+        版本号由行尾独立组件（#version-status）呈现。
+        """
+
+        return status_summary_text(
+            approval_mode=str(
+                getattr(self.agent, "approval_mode", None) or self.startup.approval_label
+            ),
+            mcp_enabled_count=self._mcp_enabled_count(),
+            pending_count=len(self._pending_inputs),
+        )
+
     def _context_summary_text(self) -> Text:
-        """用短键值字段渲染项目、模型、推理、审批和排队状态。"""
+        """用短键值字段渲染左段卡片：项目、模型、推理强度。"""
 
         reasoning_effort = str(getattr(self.agent, "reasoning_effort", "") or "")
         if not reasoning_effort:
@@ -1486,16 +1693,13 @@ class OmniCrawlApp(App[None]):
             ),
             model=str(getattr(self.agent, "current_model", "") or "NO MODEL"),
             reasoning_effort=reasoning_effort,
-            approval_mode=str(
-                getattr(self.agent, "approval_mode", None) or self.startup.approval_label
-            ),
-            pending_count=len(self._pending_inputs),
         )
 
     def _refresh_context_summary(self) -> None:
-        """刷新顶部上下文和随 MCP 设置变化的遥测字段。"""
+        """刷新顶部两段卡片与随 MCP 设置变化的遥测字段。"""
 
         self.query_one("#context-summary", Static).update(self._context_summary_text())
+        self.query_one("#status-summary", Static).update(self._status_summary_text())
         self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
 
     def _open_settings(self) -> None:
@@ -1537,6 +1741,32 @@ class OmniCrawlApp(App[None]):
                 self.push_screen(
                     MCPSettingsScreen(self.agent),
                     self._receive_mcp_settings,
+                )
+            elif action is not None and action.name == "tools_settings":
+                self.push_screen(
+                    ToolSettingsScreen(self.agent),
+                    lambda _action: self._open_settings(),
+                )
+            elif action is not None and action.name == "vision":
+                def apply_vision(configuration) -> None:
+                    self.agent.set_vision_configuration(configuration)
+
+                def receive_vision(result: VisionSettingsResult | None) -> None:
+                    if result is not None:
+                        state = "已启用" if result.configuration.enabled else "已停用"
+                        self._append_message(
+                            "status",
+                            f"视觉模型代理{state}，已配置 {len(result.configuration.models)} 个故障转移模型。",
+                        )
+                    self._open_settings()
+
+                self.push_screen(
+                    VisionSettingsScreen(
+                        self.agent,
+                        resolve_config_path(),
+                        apply_configuration=apply_vision,
+                    ),
+                    receive_vision,
                 )
             else:
                 self._drain_pending_inputs()

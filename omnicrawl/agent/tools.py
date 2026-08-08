@@ -27,6 +27,7 @@ TOOL_NAME_ALIASES = {
     "monitorcommand": "monitor",
     "powershellcommand": "powershell",
     "readfile": "read_file",
+    "readimage": "read_image",
     "searchtext": "search_text",
     "replacetext": "replace_text",
     "writefile": "write_file",
@@ -139,6 +140,17 @@ def public_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str
     普通工具保持既有参数语义；`subagent` 的完整任务 prompt 只存在于实际执行
     调用栈中，公开出口仅保留调度元数据和有界描述。
     """
+
+    if tool_name == "invoke_tool":
+        target = str(arguments.get("tool_name") or "")[:200]
+        inner = arguments.get("arguments")
+        public = {"tool_name": target}
+        if isinstance(inner, dict):
+            public["argument_keys"] = sorted(str(key)[:100] for key in inner)[:50]
+            public["argument_count"] = len(inner)
+        else:
+            public["arguments_valid"] = False
+        return public
 
     if tool_name in {
         "windows_window",
@@ -283,10 +295,10 @@ def build_agent_tools(
     memory_read: ToolRunner,
     memory_expand_related: ToolRunner,
     memory_write: ToolRunner,
-    display_html: ToolRunner,
     mcp_call: MCPToolRunner,
     mcp_read_resource: MCPResourceRunner,
     mcp_get_prompt: MCPPromptRunner,
+    read_image: ToolRunner | None = None,
     find_files: ToolRunner | None = None,
     evidence_recall: ToolRunner | None = None,
     subagent: ToolRunner | None = None,
@@ -362,6 +374,36 @@ def build_agent_tools(
                 ),
                 requires_confirmation=True,
                 run=read_file,
+            ),
+            *(
+                [
+                    ToolDefinition(
+                        name="read_image",
+                        description=(
+                            "读取本机 PNG、JPEG、WebP 或 GIF 图片。path 可使用工作区相对路径或本机绝对路径；"
+                            "图片内容会在 vision 模型可用时以内联方式提供给模型，不支持 URL。"
+                        ),
+                        argument_schema=json.dumps(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "minLength": 1},
+                                    "detail": {
+                                        "type": "string",
+                                        "enum": ["auto", "low", "high"],
+                                    },
+                                },
+                                "required": ["path"],
+                                "additionalProperties": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        requires_confirmation=True,
+                        run=read_image,
+                    )
+                ]
+                if read_image is not None
+                else []
             ),
             ToolDefinition(
                 name="search_text",
@@ -465,20 +507,6 @@ def build_agent_tools(
                 ),
                 requires_confirmation=True,
                 run=monitor,
-            ),
-            ToolDefinition(
-                name="display_html",
-                description=(
-                    "向支持 HTML 的客户端提供网页或数据看板 artifact。"
-                    "适合爬虫结果、表格、图表、网页预览等需要直观看的内容；"
-                    "可直接传 html，或传工作区内 .html/.htm 文件路径。"
-                ),
-                argument_schema=(
-                    '{"title": "数据预览", "html": "<!doctype html>...", '
-                    '"path": ".agent_tmp/files/result.html"}'
-                ),
-                requires_confirmation=False,
-                run=display_html,
             ),
         ]
     )

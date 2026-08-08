@@ -151,7 +151,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self._row_keys = (
             tuple(SUBAGENT_ADVANCED_SETTING_KEYS)
             if advanced
-            else ("model", "channels", "reasoning", "context", "approval", "subagents_advanced")
+            else ("model", "channels", "vision", "reasoning", "context", "approval", "tools", "subagents_advanced")
             + tuple(item[0] for item in _FEATURES)
         )
 
@@ -204,11 +204,14 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if self._busy:
             return
         key = self._row_keys[self._selected]
-        if not self._advanced and key in {"model", "channels"}:
+        if not self._advanced and key in {"model", "channels", "vision"}:
             self.dismiss(SettingsAction(key))
             return
         if not self._advanced and key == "subagents_advanced":
             self.dismiss(SettingsAction("subagents_advanced"))
+            return
+        if not self._advanced and key == "tools":
+            self.dismiss(SettingsAction("tools_settings"))
             return
         if not self._advanced and key == "mcp":
             self.dismiss(SettingsAction("mcp_settings"))
@@ -265,6 +268,10 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if key == "content_index":
             config = getattr(self._agent, "config", None)
             return bool(getattr(config, "content_index_enabled", False))
+        if key == "vision":
+            config = getattr(self._agent, "config", None)
+            vision = getattr(config, "vision", None)
+            return bool(getattr(vision, "enabled", False))
         return False
 
     def _subagent_config_value(self, key: str) -> int | float:
@@ -389,9 +396,11 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         values = {
             "model": str(getattr(self._agent, "current_model", "未设置") or "未设置"),
             "channels": "管理",
+            "vision": "已开启" if self._feature_enabled("vision") else "已关闭",
             "reasoning": _REASONING_LABELS.get(str(getattr(self._agent, "reasoning_effort", "none") or "none"), "默认"),
             "context": f"{int(getattr(self._agent, 'context_window_tokens', 128_000)) // 1000}K",
             "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))),
+            "tools": "进入",
             "subagents_advanced": "进入",
         }
         for key, _label, _section in _FEATURES:
@@ -407,9 +416,11 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         return {
             "model": "模型",
             "channels": "模型渠道",
+            "vision": "视觉",
             "reasoning": "推理强度",
             "context": "上下文长度（K）",
             "approval": "工具审批",
+            "tools": "工具开关",
             "subagents_advanced": "子任务高级设置",
             **_SUBAGENT_ADVANCED_LABELS,
             **{key: label for key, label, _section in _FEATURES},

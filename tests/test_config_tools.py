@@ -41,7 +41,7 @@ class ToolSwitchConfigTest(unittest.TestCase):
         self.assertEqual(switches["powershell"], False)
         self.assertEqual(switches["bash"], True)
         self.assertEqual(switches["windows_screenshot"], True)
-        self.assertEqual(switches["memory_write"], True)
+        self.assertEqual(switches["project_memory_write"], True)
 
     def test_load_disabled_tools_default_only_powershell(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

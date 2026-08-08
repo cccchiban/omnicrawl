@@ -130,15 +130,27 @@ class _ProviderContractFakeRuntime:
             self.cancel_checks += 1
             cancel_check()
 
-        if self.emit_tool_on_first_turn and len(self.requests) == 1:
-            if not request.tools:
-                raise AssertionError("工具往返契约要求子任务收到只读工具 schema。")
-            function_name = request.tools[0].name
-            yield ToolCallStarted(call_id="provider-call-1", name=function_name)
+        if self.emit_tool_on_first_turn and len(self.requests) in {1, 2}:
+            if len(request.tools) != 2:
+                raise AssertionError(
+                    "工具往返契约要求子任务只收到 search_tools 和 invoke_tool。"
+                )
+            if len(self.requests) == 1:
+                function_name = request.tools[0].name
+                arguments = {"query": "read file", "limit": 4}
+                call_id = "provider-call-1"
+            else:
+                function_name = request.tools[1].name
+                arguments = {
+                    "tool_name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }
+                call_id = "provider-call-2"
+            yield ToolCallStarted(call_id=call_id, name=function_name)
             yield ToolCallCompleted(
-                call_id="provider-call-1",
+                call_id=call_id,
                 name=function_name,
-                arguments={"path": "README.md"},
+                arguments=arguments,
             )
             yield UsageUpdated(input_tokens=7, output_tokens=3, cached_input_tokens=1)
             yield ResponseCompleted(finish_reason="tool_calls")
@@ -248,6 +260,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                             "list_files",
                             "find_files",
                             "read_file",
+                            "read_image",
                             "search_text",
                             "verify_command",
                         },
@@ -339,7 +352,9 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
         indexed_rendered = json.dumps(indexed_messages, ensure_ascii=False)
         active_rendered = json.dumps(active_messages, ensure_ascii=False)
         self.assertIn("项目协作规范", indexed_rendered)
-        self.assertIn("read_file", indexed_rendered)
+        self.assertIn("search_tools", indexed_rendered)
+        self.assertIn("invoke_tool", indexed_rendered)
+        self.assertNotIn("read_file", indexed_rendered)
         self.assertIn('context=\\"fresh\\"', indexed_rendered)
         self.assertIn("<skill_index", indexed_rendered)
         self.assertIn("web-fetcher", indexed_rendered)
@@ -998,30 +1013,34 @@ class SubAgentProviderRuntimeContractTest(unittest.TestCase):
                         )
 
                         self.assertEqual(result.final_text, f"{protocol} 已整理 README")
-                        self.assertEqual(result.model_turns, 2)
-                        self.assertEqual(result.tool_calls, 1)
+                        self.assertEqual(result.model_turns, 3)
+                        self.assertEqual(result.tool_calls, 2)
                         self.assertEqual(
                             (result.input_tokens, result.output_tokens, result.cached_input_tokens),
-                            (18, 10, 4),
+                            (25, 13, 5),
                         )
                         self.assertEqual(tool_invocations, [{"path": "README.md"}])
-                        self.assertEqual(len(runtime.requests), 2)
-                        self.assertEqual(runtime.cancel_checks, 2)
-                        self.assertEqual(len(runtime.requests[0].tools), 1)
+                        self.assertEqual(len(runtime.requests), 3)
+                        self.assertEqual(runtime.cancel_checks, 3)
+                        self.assertEqual(len(runtime.requests[0].tools), 2)
                         tool_results = [
                             block
-                            for message in runtime.requests[1].messages
+                            for message in runtime.requests[2].messages
                             if message.role == "tool"
                             for block in message.blocks
                             if isinstance(block, ToolResultBlock)
                         ]
-                        self.assertEqual(len(tool_results), 1)
-                        self.assertEqual(tool_results[0].call_id, "provider-call-1")
+                        self.assertEqual(len(tool_results), 2)
+                        tool_result = next(
+                            block
+                            for block in tool_results
+                            if "工具：read_file" in block.content
+                        )
+                        self.assertEqual(tool_result.call_id, "provider-call-2")
                         # Host 会将工具结果包装为可读的状态上下文；契约应固定该
                         # 包装仍保留原始正文，而不是错误地要求直接透传 output。
-                        self.assertIn("状态：成功", tool_results[0].content)
-                        self.assertIn("工具：read_file", tool_results[0].content)
-                        self.assertIn("README 内容", tool_results[0].content)
+                        self.assertIn("状态：成功", tool_result.content)
+                        self.assertIn("README 内容", tool_result.content)
                     finally:
                         manager.close()
                     self.assertTrue(runtime.closed)

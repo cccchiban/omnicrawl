@@ -180,7 +180,8 @@ def build_tool_capabilities_message(tools: Iterable[ToolDefinition]) -> dict[str
         return None
     lines = [
         '<tool_capabilities source="host-tool-registry" trust="host">',
-        "工具由 Host 通过原生 tool_calls 提供；需要工具时使用工具协议，不要在正文手写函数调用。",
+        "Provider 只暴露 search_tools 和 invoke_tool；真实工具目录、Schema、审批和执行器由 Host 持有。"
+        "需要工具时使用原生 tool_calls，不要在正文手写函数调用。",
         "<tools>",
     ]
     for tool in tool_list:

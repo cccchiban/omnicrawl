@@ -35,6 +35,7 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "list_files": "列出目录内容",
     "find_files": "按名称或路径查找文件",
     "read_file": "读取文件内容",
+    "read_image": "读取图片",
     "search_text": "在文件中搜索文本",
     "replace_text": "替换文件中的文本",
     "write_file": "写入文件",
@@ -123,6 +124,13 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
                     detail += f" → \"{_truncate_for_display(new, 80)}\""
             return detail
         return ""
+
+    if tool_name == "read_image":
+        path = arguments.get("path", "")
+        detail = f"文件：{path}" if isinstance(path, str) and path.strip() else ""
+        if arguments.get("detail"):
+            detail += f"，视觉细节：{arguments['detail']}"
+        return _truncate_for_display(detail, 240)
 
     if tool_name == "windows_window":
         action = arguments.get("action", "")

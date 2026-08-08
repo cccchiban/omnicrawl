@@ -211,7 +211,6 @@ class EvidenceRecallToolIntegrationTest(unittest.TestCase):
             memory_read=runner,
             memory_expand_related=runner,
             memory_write=runner,
-            display_html=runner,
             mcp_call=lambda _meta, _arguments: ToolResult(ok=True, output="ok"),
             mcp_read_resource=lambda _uri: ToolResult(ok=True, output="ok"),
             mcp_get_prompt=lambda _name, _arguments: ToolResult(ok=True, output="ok"),

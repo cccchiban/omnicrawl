@@ -680,5 +680,223 @@ class PluginRuntimeSettingsTests(unittest.TestCase):
             start.assert_called_once()
 
 
+class AgentToolSwitchRuntimeTests(unittest.TestCase):
+    """LocalToolAgent.set_tool_enabled 的运行时切换与回滚。"""
+
+    @staticmethod
+    def _make_agent() -> LocalToolAgent:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(disabled_tools=frozenset({"powershell"}))
+        # 完整工具池：模拟真实 _build_tools 按 disabled_tools 过滤后的表。
+        agent._tool_pool = {"powershell": "p", "bash": "b", "read_file": "r"}
+
+        def rebuild() -> dict[str, str]:
+            return {
+                name: run
+                for name, run in agent._tool_pool.items()
+                if name not in agent.config.disabled_tools
+            }
+
+        agent._build_tools = rebuild
+        agent._tools = rebuild()
+        return agent
+
+    def test_set_tool_enabled_disables_bash_at_runtime(self) -> None:
+        agent = self._make_agent()
+
+        LocalToolAgent.set_tool_enabled(agent, "bash", False)
+
+        self.assertNotIn("bash", agent._tools)
+        # powershell 默认禁用，仍不在工具表中。
+        self.assertNotIn("powershell", agent._tools)
+        self.assertIn("read_file", agent._tools)
+        self.assertEqual(agent.config.disabled_tools, frozenset({"powershell", "bash"}))
+
+    def test_set_tool_enabled_enables_powershell_at_runtime(self) -> None:
+        agent = self._make_agent()
+
+        LocalToolAgent.set_tool_enabled(agent, "powershell", True)
+
+        self.assertIn("powershell", agent._tools)
+        self.assertEqual(agent.config.disabled_tools, frozenset())
+
+    def test_set_tool_enabled_noop_when_state_unchanged(self) -> None:
+        agent = self._make_agent()
+        before = dict(agent._tools)
+
+        LocalToolAgent.set_tool_enabled(agent, "powershell", False)
+
+        self.assertEqual(agent.config.disabled_tools, frozenset({"powershell"}))
+        self.assertEqual(agent._tools, before)
+
+    def test_set_tool_enabled_rolls_back_on_rebuild_failure(self) -> None:
+        agent = self._make_agent()
+
+        def broken_rebuild() -> dict[str, str]:
+            raise RuntimeError("rebuild boom")
+
+        agent._build_tools = broken_rebuild
+
+        with self.assertRaisesRegex(RuntimeError, "rebuild boom"):
+            LocalToolAgent.set_tool_enabled(agent, "bash", False)
+
+        self.assertEqual(agent.config.disabled_tools, frozenset({"powershell"}))
+        self.assertEqual(agent._tools, {"bash": "b", "read_file": "r"})
+
+    def test_set_tool_enabled_rejects_unknown_name_and_non_bool(self) -> None:
+        agent = self._make_agent()
+
+        with self.assertRaisesRegex(AgentError, "不支持工具"):
+            LocalToolAgent.set_tool_enabled(agent, "unknown_tool", False)
+        with self.assertRaisesRegex(AgentError, "布尔值"):
+            LocalToolAgent.set_tool_enabled(agent, "bash", "yes")
+        self.assertEqual(agent.config.disabled_tools, frozenset({"powershell"}))
+
+
+class ToolSettingsScreenTests(unittest.IsolatedAsyncioTestCase):
+    """第二级工具开关面板：渲染、切换与持久化。"""
+
+    async def test_should_render_all_tool_rows_with_states(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.tools import TOOL_SWITCH_KEYS
+        from omnicrawl.ui.fullscreen.tool_settings import ToolSettingsScreen
+
+        class FakeAgent:
+            config = SimpleNamespace(disabled_tools=frozenset({"powershell"}))
+            _tools = {"powershell": None, "bash": None, "read_file": None}
+
+        class HostApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+        app = HostApp()
+        async with app.run_test(size=(100, 40)) as pilot:
+            app.push_screen(ToolSettingsScreen(FakeAgent()))
+            await pilot.pause()
+
+            rows = list(app.screen.query(".tool-settings-row"))
+            self.assertEqual(len(rows), len(TOOL_SWITCH_KEYS))
+            powershell = app.screen.query_one("#tool-settings-row-powershell", Static)
+            self.assertIn("已关闭", str(powershell.content))
+            bash = app.screen.query_one("#tool-settings-row-bash", Static)
+            self.assertIn("已启用", str(bash.content))
+            # 未注册的窗口工具显示条件标注，不参与当前工具表。
+            windows = app.screen.query_one("#tool-settings-row-windows_window", Static)
+            self.assertIn("（未注册）", str(windows.content))
+
+    async def test_should_toggle_selected_tool_and_persist(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.tools import TOOL_SWITCH_KEYS
+        from omnicrawl.ui.fullscreen.tool_settings import ToolSettingsScreen
+
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.config = SimpleNamespace(
+                    disabled_tools=frozenset({"powershell"})
+                )
+                self._tools = {}
+                self.calls: list[tuple[str, bool]] = []
+
+            def set_tool_enabled(self, name: str, enabled: bool) -> None:
+                self.calls.append((name, enabled))
+                disabled = set(self.config.disabled_tools)
+                if enabled:
+                    disabled.discard(name)
+                else:
+                    disabled.add(name)
+                self.config.disabled_tools = frozenset(disabled)
+
+        agent = FakeAgent()
+
+        class HostApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+        app = HostApp()
+        with patch(
+            "omnicrawl.ui.fullscreen.tool_settings.save_tool_switch",
+            return_value=Path("config.yaml"),
+        ) as save_switch:
+            async with app.run_test(size=(100, 40)) as pilot:
+                screen = ToolSettingsScreen(agent)
+                app.push_screen(screen)
+                await pilot.pause()
+
+                screen._selected = TOOL_SWITCH_KEYS.index("powershell")
+                worker = screen._apply_tool_switch("powershell", True)
+                await worker.wait()
+
+                self.assertEqual(agent.calls, [("powershell", True)])
+                save_switch.assert_called_once_with("powershell", True)
+                self.assertIn("已保存", screen._status)
+                self.assertNotIn("已关闭", screen._row_text("powershell"))
+
+    async def test_should_revert_runtime_when_save_fails(self) -> None:
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.tools import TOOL_SWITCH_KEYS
+        from omnicrawl.ui.fullscreen.tool_settings import ToolSettingsScreen
+
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.config = SimpleNamespace(
+                    disabled_tools=frozenset({"powershell"})
+                )
+                self._tools = {}
+                self.calls: list[tuple[str, bool]] = []
+
+            def set_tool_enabled(self, name: str, enabled: bool) -> None:
+                self.calls.append((name, enabled))
+                disabled = set(self.config.disabled_tools)
+                if enabled:
+                    disabled.discard(name)
+                else:
+                    disabled.add(name)
+                self.config.disabled_tools = frozenset(disabled)
+
+        agent = FakeAgent()
+
+        class HostApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+        app = HostApp()
+        with patch(
+            "omnicrawl.ui.fullscreen.tool_settings.save_tool_switch",
+            side_effect=OSError("disk full"),
+        ):
+            async with app.run_test(size=(100, 40)) as pilot:
+                screen = ToolSettingsScreen(agent)
+                app.push_screen(screen)
+                await pilot.pause()
+
+                screen._selected = TOOL_SWITCH_KEYS.index("powershell")
+                worker = screen._apply_tool_switch("powershell", True)
+                await worker.wait()
+
+                self.assertEqual(agent.calls, [("powershell", True), ("powershell", False)])
+                self.assertEqual(agent.config.disabled_tools, frozenset({"powershell"}))
+                self.assertIn("设置未完成", screen._status)
+
+    async def test_settings_panel_exposes_tools_entry(self) -> None:
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+
+        screen = object.__new__(SettingsScreen)
+        screen._agent = SimpleNamespace(
+            current_model="demo",
+            config=SimpleNamespace(disabled_tools=frozenset({"powershell"})),
+        )
+        screen._advanced = False
+        screen._row_keys = ("model", "tools")
+
+        self.assertEqual(SettingsScreen._row_labels()["tools"], "工具开关")
+        self.assertEqual(screen._current_row_values()["tools"], "进入")
+
+
 if __name__ == "__main__":
     unittest.main()
