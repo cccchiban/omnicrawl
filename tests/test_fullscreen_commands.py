@@ -14,6 +14,7 @@ class CommandDispatcherTests(unittest.TestCase):
     def setUp(self) -> None:
         class FakeAgent:
             workspace_root = "D:/workspace"
+            skill_manager = None
 
             def __init__(self) -> None:
                 self.reset_calls = 0
@@ -47,15 +48,23 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertTrue(outcome.refresh_context)
         self.assertEqual(self.agent.reset_calls, 1)
 
-    def test_exit_words_are_handled_without_agent_side_effect(self) -> None:
-        """退出语义由 UI 执行，分派器仅显式返回退出意图。"""
+    def test_quit_command_requests_tui_exit_without_agent_side_effect(self) -> None:
+        """/quit 只请求退出当前 TUI，不触发 Agent 关闭或其他副作用。"""
 
-        outcome = CommandDispatcher(self.agent).dispatch("结束")
+        outcome = CommandDispatcher(self.agent).dispatch("/quit")
 
         self.assertTrue(outcome.handled)
         self.assertTrue(outcome.exit_requested)
         self.assertIsNone(outcome.message)
+        self.assertEqual(outcome.execution, "immediate")
         self.assertEqual(self.agent.reset_calls, 0)
+
+    def test_slash_command_options_include_quit(self) -> None:
+        from omnicrawl.commands.slash import build_slash_command_options
+
+        options = build_slash_command_options(self.agent)
+
+        self.assertIn("/quit", {option["command"] for option in options})
 
     def test_workspace_query_is_immediate_but_switch_is_lazy(self) -> None:
         """查询工作区无需 worker；切换必须延迟到 UI 的慢命令 worker。"""

@@ -199,13 +199,14 @@ class ProjectSearchIndex:
                 break
         return results
 
-    def search_text(
+    def search_literal(
         self, pattern: str, *, root: Path, case_sensitive: bool, max_results: int,
     ) -> list[tuple[str, int, str]] | None:
         """用 trigram FTS 找候选文件，再逐行执行精确子串复核。
 
-        短模式（不足 3 字符无法生成 trigram）按 rowid 分批拉取内容并边读边
-        匹配，避免把整个 FTS 内容一次性读入 Python 内存。
+        只服务 grep 工具的字面量模式（use_regex=false）；正则模式由工具层
+        直接扫描，不经索引。短模式（不足 3 字符无法生成 trigram）按 rowid
+        分批拉取内容并边读边匹配，避免把整个 FTS 内容一次性读入 Python 内存。
         """
 
         if not self.content_ready:

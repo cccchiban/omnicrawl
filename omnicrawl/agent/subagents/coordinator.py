@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
@@ -102,7 +103,8 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "find_files",
         "read_file",
         "read_image",
-        "search_text",
+        "grep",
+        "web_search",
         "memory_search",
         "memory_read",
         "memory_expand_related",
@@ -309,6 +311,7 @@ class SubAgentCoordinator:
         self._terminal_task_ids: set[str] = set()
         self._lifecycle_lock = threading.RLock()
         self._active_batches: dict[str, _ActiveBatch] = {}
+        self._active_owner: object | None = None
         self._accepting = True
         self._closed = False
         self._resume_when_idle = False
@@ -344,6 +347,14 @@ class SubAgentCoordinator:
         """注入父 Run 取消检查提供器；每个批次创建时冻结一次引用。"""
 
         self._cancel_check_provider = provider
+
+    def cancel_active(self, reason: str = "父 Agent 回合已取消。") -> None:
+        """立即发出同步批次、审批和后台任务的取消信号，不等待 worker。"""
+
+        with self._lifecycle_lock:
+            batches = tuple(self._active_batches.values())
+        for batch in batches:
+            self._request_batch_cancel(batch, reason)
 
     def cancel_and_wait(
         self,
@@ -961,7 +972,12 @@ class SubAgentCoordinator:
         try:
             for index, task in enumerate(tasks):
                 cancel_check()
-                future = executor.submit(self._execute_prepared_task, task, cancel_check)
+                future = executor.submit(
+                    copy_context().run,
+                    self._execute_prepared_task,
+                    task,
+                    cancel_check,
+                )
                 self._track_future(batch, future, index)
                 pending.add(future)
 
@@ -1007,6 +1023,7 @@ class SubAgentCoordinator:
                 cancel_check()
                 index = next_index
                 future = executor.submit(
+                    copy_context().run,
                     self._execute_prepared_task,
                     tasks[index],
                     cancel_check,

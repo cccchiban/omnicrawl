@@ -6,7 +6,7 @@ tools:
   - find_files
   - read_file
   - read_image
-  - search_text
+  - grep
   - memory_search
   - memory_read
   - memory_expand_related

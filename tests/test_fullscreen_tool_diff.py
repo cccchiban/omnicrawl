@@ -119,15 +119,15 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertNotIn("3 行", title)
         self.assertIn("✓ 成功  136ms", title)
 
-    def test_search_text_title_includes_search_path_and_target(self) -> None:
+    def test_grep_title_includes_search_path_and_target(self) -> None:
         title = plain_tool_title(
-            tool_name="search_text",
+            tool_name="grep",
             arguments={"path": "omnicrawl/ui", "pattern": "read_file"},
             status="成功",
             duration_seconds=0.136,
             result_text="omnicrawl/ui/tool_diff.py:1: read_file",
         )
-        self.assertIn("S  omnicrawl/ui  |  目标: read_file", title)
+        self.assertIn("G  omnicrawl/ui  |  目标: read_file", title)
         self.assertNotIn("文件: omnicrawl/ui", title)
         self.assertIn("目标: read_file", title)
         self.assertIn("✓ 成功  136ms", title)
@@ -229,7 +229,7 @@ class FullscreenToolDiffTest(unittest.TestCase):
         )
         self.assertEqual(
             title,
-            "B  cmd: pytest -q tests/test_fullscreen_tool_diff.py  ✓ 成功  1.8s",
+            "B  pytest -q tests/test_fullscreen_tool_diff.py  ✓ 成功  1.8s",
         )
         self.assertNotIn("Bash", title)
 
@@ -239,7 +239,7 @@ class FullscreenToolDiffTest(unittest.TestCase):
             status="成功",
             duration_seconds=0.13,
         )
-        self.assertEqual(title, "P  cmd: Get-ChildItem  ✓ 成功  130ms")
+        self.assertEqual(title, "P  Get-ChildItem  ✓ 成功  130ms")
         self.assertNotIn("PowerShell", title)
 
         title = plain_tool_title(

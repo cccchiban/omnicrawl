@@ -28,7 +28,7 @@ class SessionStoreTest(unittest.TestCase):
             self.assertEqual(event["type"], "session_started")
             self.assertEqual(event["session_id"], state.session_id)
             runtime = event["payload"]["runtime"]
-            self.assertEqual(runtime["version"], "0.1.7")
+            self.assertEqual(runtime["version"], "0.1.8")
             self.assertTrue(runtime["process_started_at"])
             self.assertRegex(runtime["source_fingerprint"], r"^[0-9a-f]{16}$")
             self.assertIn("omnicrawl/agent/core.py", runtime["source_files"])
@@ -414,6 +414,26 @@ class SessionStoreTest(unittest.TestCase):
             "工具执行结果：run_command 成功\n模型可见截断输出\n"
             f"完整输出 artifact：{payload['artifact_path']}",
         )
+
+    def test_large_tool_result_artifact_is_not_silently_truncated(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "workspace"
+            workspace.mkdir()
+            store = SessionStore(workspace / ".agent_sessions")
+            state = store.start_session(workspace)
+            output = "A" * (128 * 1024 + 37)
+
+            store.append_event(
+                state.session_id,
+                "tool_result",
+                {"tool": "run_command", "ok": True, "output": output},
+            )
+            event = json.loads(state.path.read_text(encoding="utf-8").splitlines()[-1])
+            artifact = (workspace / ".agent_sessions" / event["payload"]["artifact_path"])
+
+            self.assertTrue(artifact.is_file())
+            self.assertEqual(artifact.read_text(encoding="utf-8"), output)
+            self.assertFalse(event["payload"]["artifact_truncated"])
 
     def test_subagent_events_do_not_enter_restored_model_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

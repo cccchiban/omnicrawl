@@ -125,6 +125,23 @@ def project_context_status_label(context: ProjectContext) -> str:
     return str(context.workspace_root)
 
 
+def should_disable_content_index(context: ProjectContext) -> bool:
+    """启动目录或工作区根目录是用户主目录/文件系统根时，自动禁用内容索引。
+
+    不修改配置文件：只在运行时强制关闭 content_index，避免在终端默认用户
+    目录或盘符根启动时意外建立大范围内容索引（此时工作区通常已回退到
+    Agent 程序目录，`workspace_root` 本身不再是受限根目录）。
+    """
+
+    for candidate in (
+        getattr(context, "workspace_root", None),
+        getattr(context, "start_path", None),
+    ):
+        if candidate is not None and _is_too_broad_workspace(candidate):
+            return True
+    return False
+
+
 def _launch_start_path(start_path: Path | None) -> Path:
     raw_launch_cwd = os.getenv(LAUNCH_CWD_ENV, "").strip()
     if raw_launch_cwd:

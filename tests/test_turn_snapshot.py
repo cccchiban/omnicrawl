@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -21,6 +22,29 @@ from omnicrawl.state.turn_snapshot import (
 
 
 class GitSnapshotStoreTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "仅 Windows 存在 DOS 保留设备名")
+    def test_capture_excludes_nul_device_from_forced_add(self) -> None:
+        """强制暂存忽略文件时，不能把 Windows 的 NUL 设备交给 Git。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "workspace"
+            root.mkdir()
+            (root / "tracked.txt").write_text("content\n", encoding="utf-8")
+            snapshots = GitSnapshotStore(Path(temp_dir) / "shadow.git")
+            add_arguments: list[str] = []
+            original_git = snapshots._git
+
+            def record_git(arguments, **kwargs):
+                if "add" in arguments:
+                    add_arguments.extend(arguments)
+                return original_git(arguments, **kwargs)
+
+            snapshots._git = record_git  # type: ignore[method-assign]
+
+            snapshots.capture({"workspace": SnapshotRoot(root)})
+
+            self.assertIn(":(exclude)NUL", add_arguments)
+
     def test_restores_workspace_without_touching_user_git_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "workspace"

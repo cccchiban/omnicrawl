@@ -285,7 +285,7 @@ class WindowsDesktopToolIntegrationTest(unittest.TestCase):
             memory_enabled=False,
             list_files=runner,
             read_file=runner,
-            search_text=runner,
+            grep=runner,
             replace_text=runner,
             write_file=runner,
             bash=runner,

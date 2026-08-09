@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import fnmatch
 import os
 import re
 import shutil
@@ -14,6 +15,7 @@ from ..documentation import (
     BundledDocumentationError,
     resolve_bundled_doc_uri,
 )
+from ..llm.stream_registry import current_stream_scope, registered_resource
 from .search_index import ProjectSearchIndex, is_forbidden_content_search_root
 
 
@@ -96,6 +98,7 @@ class WorkspaceTools:
         max_file_read_chars: int | None = None,
         extra_protection_message: Callable[[Path], str | None] | None = None,
         search_index: ProjectSearchIndex | None = None,
+        resource_owner: object | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.command_timeout_seconds = max(
@@ -105,6 +108,7 @@ class WorkspaceTools:
         self.max_file_read_chars = max_file_read_chars
         self._extra_protection_message = extra_protection_message
         self.search_index = search_index
+        self._resource_owner = resource_owner
 
     def list_files(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or "."))
@@ -258,12 +262,32 @@ class WorkspaceTools:
         suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
         return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
 
-    def search_text(self, arguments: dict[str, Any]) -> str:
-        """在 UTF-8 文本中执行普通关键词子串搜索，不解释正则表达式。"""
+    def grep(self, arguments: dict[str, Any]) -> str:
+        """在 UTF-8 文本文件中执行 grep 风格搜索。
+
+        pattern 默认按正则表达式解释；use_regex=false 时按精确子串匹配，
+        此时索引层（FTS trigram）可用作加速。支持输出匹配行上下文
+        （context_lines）、每文件匹配计数（count）、仅列出匹配文件
+        （files_with_matches），以及 include/exclude 文件名 glob 过滤。
+        """
 
         pattern = str(arguments.get("pattern") or "")
         if not pattern:
             raise WorkspaceToolError("pattern 不能为空。")
+
+        use_regex = bool(arguments.get("use_regex", True))
+        case_sensitive = bool(arguments.get("case_sensitive", False))
+        if use_regex:
+            try:
+                regex = re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
+            except re.error as exc:
+                raise WorkspaceToolError(
+                    f"无效的正则表达式：{exc}。可设置 use_regex=false 按精确子串匹配。"
+                ) from exc
+            needle = None
+        else:
+            regex = None
+            needle = pattern if case_sensitive else pattern.casefold()
 
         root = self.safe_path(str(arguments.get("path") or "."))
         if is_forbidden_content_search_root(root):
@@ -273,7 +297,7 @@ class WorkspaceTools:
             )
         if not root.exists():
             raise WorkspaceToolError(f"路径不存在：{self.relative_path(root)}")
-        case_sensitive = bool(arguments.get("case_sensitive", False))
+
         max_results = _read_limited_int(
             arguments,
             "max_results",
@@ -281,48 +305,265 @@ class WorkspaceTools:
             minimum=1,
             maximum=MAX_SEARCH_RESULTS,
         )
-        indexed = None
-        if self.search_index is not None:
-            indexed = self.search_index.search_text(
+        context_lines = _read_limited_int(
+            arguments,
+            "context_lines",
+            default=0,
+            minimum=0,
+            maximum=50,
+        )
+        count_only = bool(arguments.get("count", False))
+        files_only = bool(arguments.get("files_with_matches", False))
+        include_re = _compile_glob(_read_optional_text(arguments, "include"))
+        exclude_re = _compile_glob(_read_optional_text(arguments, "exclude"))
+
+        # 计数与仅列文件模式直接扫描：计数需要全量匹配行，索引只返回截断列表。
+        if count_only:
+            return self._grep_count_files(
+                root,
+                regex=regex,
+                needle=needle,
+                case_sensitive=case_sensitive,
+                include_re=include_re,
+                exclude_re=exclude_re,
+                max_results=max_results,
+            )
+        if files_only:
+            return self._grep_list_files(
+                root,
+                regex=regex,
+                needle=needle,
+                case_sensitive=case_sensitive,
+                include_re=include_re,
+                exclude_re=exclude_re,
+                max_results=max_results,
+            )
+
+        # 默认输出匹配行：字面量模式优先走索引加速，正则模式直接扫描。
+        truncated = False
+        if not use_regex and self.search_index is not None:
+            indexed = self.search_index.search_literal(
                 pattern,
                 root=root,
                 case_sensitive=case_sensitive,
                 max_results=max_results,
             )
-        if indexed is not None:
-            # 与 find_files 相同：补充扫描索引排除目录，保持结果一致。
-            extra = self._scan_index_excluded_text(
-                pattern,
-                root=root,
-                case_sensitive=case_sensitive,
-                max_results=max_results,
-            )
-            if extra:
-                indexed = sorted(
+            if indexed is not None:
+                # 与 find_files 相同：补充扫描索引排除目录，保持结果一致。
+                extra = self._scan_index_excluded_literal(
+                    pattern,
+                    root=root,
+                    case_sensitive=case_sensitive,
+                    max_results=max_results,
+                    include_re=include_re,
+                    exclude_re=exclude_re,
+                )
+                merged = sorted(
                     set(indexed) | set(extra),
                     key=lambda match: str(match[0]).casefold(),
                 )[:max_results]
-            lines = [f"{path}:{line_no}: {line}" for path, line_no, line in indexed]
-            suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
-            return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
+                match_lines = list(merged)
+                truncated = len(merged) >= max_results
+            else:
+                match_lines, truncated = self._scan_grep(
+                    root,
+                    regex=regex,
+                    needle=needle,
+                    case_sensitive=case_sensitive,
+                    include_re=include_re,
+                    exclude_re=exclude_re,
+                    max_results=max_results,
+                )
+        else:
+            match_lines, truncated = self._scan_grep(
+                root,
+                regex=regex,
+                needle=needle,
+                case_sensitive=case_sensitive,
+                include_re=include_re,
+                exclude_re=exclude_re,
+                max_results=max_results,
+            )
+        output = self._format_grep_matches(match_lines, context_lines=context_lines)
+        if truncated:
+            output += "\n... 已达到 max_results。"
+        return output
 
-        needle = pattern if case_sensitive else pattern.casefold()
+    def _grep_count_files(
+        self,
+        root: Path,
+        *,
+        regex: re.Pattern[str] | None,
+        needle: str | None,
+        case_sensitive: bool,
+        include_re: re.Pattern[str] | None,
+        exclude_re: re.Pattern[str] | None,
+        max_results: int,
+    ) -> str:
+        """输出每个文件的匹配行数（grep -c 语义）。"""
+
         files = [root] if root.is_file() else self.iter_search_files(root)
-        results: list[str] = []
+        counts: list[str] = []
+        truncated = False
         for file_path in files:
             if self.should_skip_path(file_path):
+                continue
+            if include_re is not None and not include_re.match(file_path.name):
+                continue
+            if exclude_re is not None and exclude_re.match(file_path.name):
                 continue
             try:
                 lines = self.read_text(file_path).splitlines()
             except WorkspaceToolError:
                 continue
+            if regex is not None:
+                count = sum(1 for line in lines if regex.search(line))
+            else:
+                candidates = (
+                    lines if case_sensitive else (line.casefold() for line in lines)
+                )
+                count = sum(1 for line in candidates if needle in line)
+            if count:
+                counts.append(f"{self.relative_path(file_path)}: {count}")
+                if len(counts) >= max_results:
+                    truncated = True
+                    break
+        result = "\n".join(counts) or "未找到匹配结果。"
+        if truncated:
+            result += "\n... 已达到 max_results。"
+        return result
+
+    def _grep_list_files(
+        self,
+        root: Path,
+        *,
+        regex: re.Pattern[str] | None,
+        needle: str | None,
+        case_sensitive: bool,
+        include_re: re.Pattern[str] | None,
+        exclude_re: re.Pattern[str] | None,
+        max_results: int,
+    ) -> str:
+        """只输出包含匹配的文件路径（grep -l 语义）。"""
+
+        files = [root] if root.is_file() else self.iter_search_files(root)
+        matched: list[str] = []
+        truncated = False
+        for file_path in files:
+            if self.should_skip_path(file_path):
+                continue
+            if include_re is not None and not include_re.match(file_path.name):
+                continue
+            if exclude_re is not None and exclude_re.match(file_path.name):
+                continue
+            try:
+                lines = self.read_text(file_path).splitlines()
+            except WorkspaceToolError:
+                continue
+            if regex is not None:
+                found = any(regex.search(line) for line in lines)
+            else:
+                found = any(
+                    needle in (line if case_sensitive else line.casefold())
+                    for line in lines
+                )
+            if found:
+                matched.append(self.relative_path(file_path))
+                if len(matched) >= max_results:
+                    truncated = True
+                    break
+        result = "\n".join(matched) or "未找到匹配结果。"
+        if truncated:
+            result += "\n... 已达到 max_results。"
+        return result
+
+    def _scan_grep(
+        self,
+        root: Path,
+        *,
+        regex: re.Pattern[str] | None,
+        needle: str | None,
+        case_sensitive: bool,
+        include_re: re.Pattern[str] | None,
+        exclude_re: re.Pattern[str] | None,
+        max_results: int,
+    ) -> tuple[list[tuple[str, int, str]], bool]:
+        """直接扫描收集匹配行；返回（匹配行列表，是否达到 max_results）。"""
+
+        files = [root] if root.is_file() else self.iter_search_files(root)
+        match_lines: list[tuple[str, int, str]] = []
+        truncated = False
+        for file_path in files:
+            if self.should_skip_path(file_path):
+                continue
+            if include_re is not None and not include_re.match(file_path.name):
+                continue
+            if exclude_re is not None and exclude_re.match(file_path.name):
+                continue
+            try:
+                lines = self.read_text(file_path).splitlines()
+            except WorkspaceToolError:
+                continue
+            relative = self.relative_path(file_path)
             for line_no, line in enumerate(lines, start=1):
-                candidate = line if case_sensitive else line.casefold()
-                if needle in candidate:
-                    results.append(f"{self.relative_path(file_path)}:{line_no}: {line}")
-                    if len(results) >= max_results:
-                        return "\n".join(results) + "\n... 已达到 max_results。"
-        return "\n".join(results) or "未找到匹配结果。"
+                if regex is not None:
+                    hit = bool(regex.search(line))
+                else:
+                    candidate = line if case_sensitive else line.casefold()
+                    hit = needle in candidate
+                if hit:
+                    match_lines.append((relative, line_no, line))
+                    if len(match_lines) >= max_results:
+                        truncated = True
+                        break
+            if truncated:
+                break
+        return match_lines, truncated
+
+    def _format_grep_matches(
+        self,
+        match_lines: list[tuple[str, int, str]],
+        *,
+        context_lines: int,
+    ) -> str:
+        """把匹配行格式化为 grep 风格输出。
+
+        匹配行使用 ``path:line_no: line``，上下文行使用 ``path-line_no- line``，
+        与 grep -n -C 的标记习惯一致；相邻匹配的上下文区间自动去重。
+        """
+
+        if not match_lines:
+            return "未找到匹配结果。"
+        by_file: dict[str, list[int]] = {}
+        file_order: list[str] = []
+        for relative, line_no, _line in match_lines:
+            if relative not in by_file:
+                by_file[relative] = []
+                file_order.append(relative)
+            by_file[relative].append(line_no)
+
+        out: list[str] = []
+        for relative in file_order:
+            try:
+                file_lines = self.read_text(
+                    self.workspace_root / relative
+                ).splitlines()
+            except WorkspaceToolError:
+                continue
+            covered: set[int] = set()
+            for line_no in by_file[relative]:
+                start = max(0, line_no - 1 - context_lines)
+                end = min(len(file_lines), line_no + context_lines)
+                for index in range(start, end):
+                    current = index + 1
+                    if current in covered:
+                        continue
+                    covered.add(current)
+                    if current == line_no:
+                        out.append(f"{relative}:{current}: {file_lines[index]}")
+                    else:
+                        out.append(f"{relative}-{current}- {file_lines[index]}")
+        return "\n".join(out)
 
     def _scan_file_names(
         self,
@@ -424,15 +665,17 @@ class WorkspaceTools:
             )
         return results
 
-    def _scan_index_excluded_text(
+    def _scan_index_excluded_literal(
         self,
         pattern: str,
         *,
         root: Path,
         case_sensitive: bool,
         max_results: int,
+        include_re: re.Pattern[str] | None = None,
+        exclude_re: re.Pattern[str] | None = None,
     ) -> list[tuple[str, int, str]]:
-        """补充扫描索引排除目录中的文本匹配，与 search_text 合并。"""
+        """补充扫描索引排除目录中的字面量匹配，与 grep 的索引结果合并。"""
 
         needle = pattern if case_sensitive else pattern.casefold()
         results: list[tuple[str, int, str]] = []
@@ -444,6 +687,10 @@ class WorkspaceTools:
             )
             for file_path in files:
                 if self.should_skip_path(file_path):
+                    continue
+                if include_re is not None and not include_re.match(file_path.name):
+                    continue
+                if exclude_re is not None and exclude_re.match(file_path.name):
                     continue
                 try:
                     lines = self.read_text(file_path).splitlines()
@@ -526,6 +773,9 @@ class WorkspaceTools:
         diagnostic_command = (
             diagnostic_value.strip() if isinstance(diagnostic_value, str) else ""
         )
+        command_warning = test_output_filtering_command_warning(command, shell=shell)
+        if command_warning:
+            raise WorkspaceToolError(command_warning)
 
         timeout = _read_limited_int(
             arguments,
@@ -625,7 +875,6 @@ class WorkspaceTools:
         except OSError as exc:
             raise WorkspaceToolError(f"命令执行失败：{exc}") from exc
 
-        # 复用 Monitor 已验证的进程树回收逻辑；局部导入避免模块初始化时循环依赖。
         from .monitor import (
             BackgroundMonitorManager,
             _assign_process_to_kill_on_close_job,
@@ -633,13 +882,25 @@ class WorkspaceTools:
         )
 
         job_handle = _assign_process_to_kill_on_close_job(process)
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            BackgroundMonitorManager._terminate_process_tree(process, job_handle=job_handle)
-            job_handle = None
-            raise WorkspaceToolError(f"命令执行超过 {timeout_seconds} 秒，已终止。")
-        finally:
+
+        def terminate_process() -> None:
+            BackgroundMonitorManager._terminate_process_tree(
+                process,
+                job_handle=job_handle,
+            )
+
+        resource_owner = current_stream_scope()
+        with registered_resource(
+            process,
+            owner=resource_owner,
+            close_callback=terminate_process,
+        ):
+            try:
+                stdout, stderr = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                BackgroundMonitorManager._terminate_process_tree(process, job_handle=job_handle)
+                job_handle = None
+                raise WorkspaceToolError(f"命令执行超过 {timeout_seconds} 秒，已终止。")
             _close_windows_handle(job_handle)
 
         output_parts = [
@@ -672,7 +933,7 @@ class WorkspaceTools:
                     "未找到可用的 Git Bash。请安装 Git for Windows，或设置 PATH 后重试。"
                 )
             return WorkspaceCommandInvocation(
-                args=[str(executable), "-lc", command],
+                args=[str(executable), "-o", "pipefail", "-lc", command],
                 label="Bash",
             )
         if normalized_shell == "powershell":
@@ -692,7 +953,16 @@ class WorkspaceTools:
                     "-NoProfile",
                     "-NonInteractive",
                     "-Command",
-                    f"{utf8_prefix}{command}",
+                    (
+                        "$ErrorActionPreference = 'Stop'; "
+                        f"{utf8_prefix}"
+                        "& {\n"
+                        f"{command}\n"
+                        "}\n"
+                        "$__OmniCrawlExitCode = $LASTEXITCODE; "
+                        "if ($null -ne $__OmniCrawlExitCode) "
+                        "{ exit $__OmniCrawlExitCode }"
+                    ),
                 ],
                 label="PowerShell",
             )
@@ -762,7 +1032,7 @@ class WorkspaceTools:
 
         与 :meth:`should_skip_path` 的区别是额外排除 INDEX_EXCLUDED_NAMES
         中的构建产物/缓存/工具私有目录；这些目录只是不进索引快照，
-        直接扫描时仍然可以被 find_files/search_text 命中。
+        直接扫描时仍然可以被 find_files/grep 命中。
         """
 
         return self.should_skip_path(path) or self.is_index_excluded_path(path)
@@ -804,6 +1074,47 @@ class WorkspaceTools:
         if not numbered:
             numbered.append("文件为空，或指定范围没有内容。")
         return "\n".join(([header] if header else []) + numbered)
+
+
+def _compile_glob(pattern: str) -> re.Pattern[str] | None:
+    """把 include/exclude 文件名 glob 编译为正则；空模式返回 None。"""
+
+    if not pattern:
+        return None
+    return re.compile(fnmatch.translate(pattern), re.IGNORECASE)
+
+
+def test_output_filtering_command_warning(command: str, *, shell: str) -> str:
+    """阻止测试/构建主命令用 head/tail 丢弃原始诊断输出。
+
+    `diagnostic_command` 是单独的诊断通道，主命令必须保留完整 stdout/stderr，
+    否则 pytest/unittest 的失败位置会在 Shell 层永久丢失。这里只拦截明确的
+    测试或构建命令与常见裁剪器组合，不影响普通业务命令中的合法管道。
+    """
+
+    normalized = re.sub(r"\s+", " ", command.strip()).casefold()
+    test_or_build = re.search(
+        r"(?:pytest|unittest(?:\s+discover)?|(?:npm|pnpm|yarn)\s+(?:test|run\s+test)|"
+        r"(?:cargo|go)\s+test|(?:mvn|gradle)\s+test|(?:cmake\s+--build))",
+        normalized,
+    )
+    if test_or_build is None:
+        return ""
+    filter_names = (
+        ("tail|head|grep|rg", "tail/head/grep/rg")
+        if shell == "bash"
+        else ("select-object|select-string|out-host", "Select-Object/Select-String/Out-Host")
+    )
+    filter_pattern = re.search(
+        rf"(?:^|\|\s*)(?:{filter_names[0]})(?:\s|$)",
+        normalized,
+    )
+    if filter_pattern is None:
+        return ""
+    return (
+        f"不要在主命令中使用 {filter_names[1]} 裁剪测试或构建输出；"
+        f"请让主命令完整执行，并将这些报告命令放到独立的 diagnostic_command。"
+    )
 
 
 def _read_limited_int(

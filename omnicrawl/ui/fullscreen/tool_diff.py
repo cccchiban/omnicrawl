@@ -101,7 +101,7 @@ def _tool_title_context(tool_name: str, arguments: Any, result_text: str) -> str
     operation = _tool_operation(tool_name)
     if operation in {"bash", "powershell"}:
         command = str(args.get("command") or "").strip()
-        return f"cmd: {_compact_title_value(command, max_chars=64)}" if command else ""
+        return _compact_title_value(command, max_chars=64) if command else ""
     if operation == "monitor":
         action = str(args.get("action") or "").strip()
         command = str(args.get("command") or "").strip()
@@ -243,7 +243,7 @@ def _workspace_tool_title(
         rendered.append(f"{display_icon}  ", style=COLOR_TITLE)
         rendered.append(path, style=TEXT_PRIMARY)
         rendered.append("  |  图片", style=COLOR_META)
-    elif operation in {"find_files", "search_text"}:
+    elif operation in {"find_files", "grep"}:
         path = _compact_title_value(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
         pattern = _compact_title_value(args.get("pattern"), max_chars=36)
         rendered.append(f"{display_icon}  ", style=COLOR_TITLE)

@@ -94,7 +94,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             "name": "explore",
             "description": "只读探索",
             "system_prompt": "只读。",
-            "tools": ("read_file", "search_text", "memory_read", "write_file", "bash", "subagent"),
+            "tools": ("read_file", "grep", "memory_read", "write_file", "bash", "subagent"),
             "disallowed_tools": (),
             "source_path": Path("explore.md"),
             "source": "builtin",
@@ -555,7 +555,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             name: _tool(name)
             for name in (
                 "read_file",
-                "search_text",
+                "grep",
                 "memory_read",
                 "write_file",
                 "replace_text",
@@ -600,7 +600,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             set(captured["tools"]),
             {
                 "read_file",
-                "search_text",
+                "grep",
                 "memory_read",
                 "bash",
                 "powershell",
@@ -612,7 +612,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             },
         )
         self.assertFalse(captured["tools"]["read_file"].requires_confirmation)
-        self.assertFalse(captured["tools"]["search_text"].requires_confirmation)
+        self.assertFalse(captured["tools"]["grep"].requires_confirmation)
         self.assertFalse(captured["tools"]["memory_read"].requires_confirmation)
         self.assertFalse(captured["tools"]["bash"].requires_confirmation)
         self.assertFalse(captured["tools"]["powershell"].requires_confirmation)
@@ -626,7 +626,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         self.assertEqual(payload["results"][0]["usage"]["input_tokens"], 100)
 
     def test_definition_can_only_narrow_read_only_profile(self) -> None:
-        definition = self._definition(disallowed_tools=("search_text", "memory_read"))
+        definition = self._definition(disallowed_tools=("grep", "memory_read"))
         captured = {}
 
         def execute(_definition, tools, _description, _prompt, _cancel_check):
@@ -638,7 +638,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             registry=_Registry([definition]),
             tools_provider=lambda: {
                 "read_file": _tool("read_file"),
-                "search_text": _tool("search_text"),
+                "grep": _tool("grep"),
                 "memory_read": _tool("memory_read"),
                 "write_file": _tool("write_file"),
             },
@@ -686,7 +686,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             "list_files",
             "find_files",
             "read_file",
-            "search_text",
+            "grep",
             "memory_search",
             "memory_read",
             "memory_expand_related",
@@ -818,7 +818,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             "list_files",
             "find_files",
             "read_file",
-            "search_text",
+            "grep",
             "memory_search",
             "memory_read",
             "memory_expand_related",

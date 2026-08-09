@@ -28,7 +28,6 @@ TOOL_NAME_ALIASES = {
     "powershellcommand": "powershell",
     "readfile": "read_file",
     "readimage": "read_image",
-    "searchtext": "search_text",
     "replacetext": "replace_text",
     "writefile": "write_file",
 }
@@ -285,7 +284,8 @@ def build_agent_tools(
     memory_enabled: bool,
     list_files: ToolRunner,
     read_file: ToolRunner,
-    search_text: ToolRunner,
+    grep: ToolRunner,
+    web_search: ToolRunner | None = None,
     replace_text: ToolRunner,
     write_file: ToolRunner,
     bash: ToolRunner,
@@ -406,11 +406,42 @@ def build_agent_tools(
                 else []
             ),
             ToolDefinition(
-                name="search_text",
-                description="在工作区 UTF-8 文本文件中搜索普通关键词（精确子串，不支持正则）。",
-                argument_schema='{"pattern": "class Agent", "path": ".", "case_sensitive": false, "max_results": 50}',
+                name="grep",
+                description=(
+                    "在工作区 UTF-8 文本文件中执行 grep 风格搜索：pattern 默认按正则表达式"
+                    "解释（use_regex=false 时按精确子串），支持大小写开关、匹配行上下文、"
+                    "每文件计数、仅列出匹配文件，以及 include/exclude 文件名过滤。"
+                ),
+                argument_schema=(
+                    '{"pattern": "class Agent", "path": ".", "use_regex": true, '
+                    '"case_sensitive": false, "context_lines": 0, "count": false, '
+                    '"files_with_matches": false, "include": "*.py", '
+                    '"exclude": "*.min.js", "max_results": 50}'
+                ),
                 requires_confirmation=True,
-                run=search_text,
+                run=grep,
+            ),
+            *(
+                [
+                    ToolDefinition(
+                        name="web_search",
+                        description=(
+                            "使用 Google、Bing 或 DuckDuckGo 搜索公开网页，返回标题、链接与摘要。"
+                            "请求自带桌面 Chrome 浏览器环境模拟（UA、Sec-Fetch-* 等请求头与跟随重定向），"
+                            "降低被搜索引擎拦截的概率；检测到验证码或异常流量拦截时返回明确错误，"
+                            "不会绕过验证码。engine 可选 google/bing/duckduckgo，默认 google；"
+                            "language 为可选的语言区域提示，max_results 默认 5。"
+                        ),
+                        argument_schema=(
+                            '{"query": "关键词", "engine": "google|bing|duckduckgo", '
+                            '"max_results": 5, "language": "zh-CN"}'
+                        ),
+                        requires_confirmation=True,
+                        run=web_search,
+                    )
+                ]
+                if web_search is not None
+                else []
             ),
             ToolDefinition(
                 name="replace_text",
@@ -435,9 +466,10 @@ def build_agent_tools(
             ToolDefinition(
                 name="bash",
                 description=(
-                    "使用 Git Bash 在工作区执行 Bash 主命令。只接受 POSIX Shell 语法，"
-                    "不得使用 PowerShell 语法；需要在主命令后采集日志时使用独立的 "
-                    "diagnostic_command，Host 会保留主命令失败状态。"
+                    "使用 Git Bash 执行完整的主命令并保留真实退出码。测试或构建命令不得在主命令中"
+                    "使用 tail/head/grep/rg 裁剪输出；需要查看末尾日志时，把裁剪操作放入独立的 "
+                    "diagnostic_command。Bash 管道默认启用 pipefail，不能让后续命令掩盖上游失败。"
+                    "只接受 POSIX Shell 语法，不得使用 PowerShell 语法。"
                 ),
                 argument_schema=json.dumps(
                     {
@@ -466,9 +498,9 @@ def build_agent_tools(
             ToolDefinition(
                 name="powershell",
                 description=(
-                    "使用 PowerShell 在 Windows 工作区执行主命令，优先使用 PowerShell 7。"
-                    "只接受 PowerShell 语法，不得使用 Bash 语法；需要在主命令后采集日志时"
-                    "使用独立的 diagnostic_command，Host 会保留主命令失败状态。"
+                    "使用 PowerShell 执行完整的主命令并保留真实退出码。测试或构建命令不得在主命令中"
+                    "使用 Select-Object、Select-String 等裁剪输出；需要查看诊断日志时使用独立的 "
+                    "diagnostic_command。只接受 PowerShell 语法，不得使用 Bash 语法。"
                 ),
                 argument_schema=json.dumps(
                     {
@@ -1077,7 +1109,13 @@ def mcp_tool_result(
     if result.retryable:
         output_parts.append("可重试：是")
     output_parts.append(f"输出：\n{result.output}")
-    return ToolResult(ok=result.ok, output="\n".join(output_parts))
+    full_output_parts = list(output_parts)
+    full_output_parts[-1] = f"输出：\n{result.full_output or result.output}"
+    return ToolResult(
+        ok=result.ok,
+        output="\n".join(output_parts),
+        full_output="\n".join(full_output_parts),
+    )
 
 
 def mcp_resource_result(mcp_manager: MCPClientManager, logical_uri: str) -> ToolResult:
@@ -1093,7 +1131,13 @@ def mcp_resource_result(mcp_manager: MCPClientManager, logical_uri: str) -> Tool
     if result.retryable:
         output_parts.append("可重试：是")
     output_parts.append(f"输出：\n{result.output}")
-    return ToolResult(ok=result.ok, output="\n".join(output_parts))
+    full_output_parts = list(output_parts)
+    full_output_parts[-1] = f"输出：\n{result.full_output or result.output}"
+    return ToolResult(
+        ok=result.ok,
+        output="\n".join(output_parts),
+        full_output="\n".join(full_output_parts),
+    )
 
 
 def mcp_prompt_result(
@@ -1117,7 +1161,13 @@ def mcp_prompt_result(
     if result.retryable:
         output_parts.append("可重试：是")
     output_parts.append(f"输出：\n{result.output}")
-    return ToolResult(ok=result.ok, output="\n".join(output_parts))
+    full_output_parts = list(output_parts)
+    full_output_parts[-1] = f"输出：\n{result.full_output or result.output}"
+    return ToolResult(
+        ok=result.ok,
+        output="\n".join(output_parts),
+        full_output="\n".join(full_output_parts),
+    )
 
 
 def read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:

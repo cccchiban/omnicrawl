@@ -221,7 +221,51 @@ class ExplicitShellCommandTest(unittest.TestCase):
         command = invocation.args[-1]
         self.assertIn("[Console]::OutputEncoding", command)
         self.assertIn("$OutputEncoding", command)
-        self.assertTrue(command.endswith("Write-Output '中文'"))
+        self.assertIn("$ErrorActionPreference = 'Stop'", command)
+        self.assertIn("$LASTEXITCODE", command)
+        self.assertTrue(command.endswith("{ exit $__OmniCrawlExitCode }"))
+        self.assertTrue(command.rstrip().endswith("{ exit $__OmniCrawlExitCode }"))
+
+    def test_powershell_native_failure_preserves_exit_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            command = f"& '{sys.executable}' -c \"import sys; sys.exit(7)\""
+            result = WorkspaceTools(Path(temp_dir)).run_shell_command(
+                {"command": command}, shell="powershell"
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("退出码：7", result.output)
+
+    def test_bash_pipeline_preserves_upstream_failure_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = WorkspaceTools(Path(temp_dir)).run_shell_command(
+                {"command": "false | true"}, shell="bash"
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("退出码：", result.output)
+
+    def test_test_output_filter_pipeline_is_rejected_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tools = WorkspaceTools(Path(temp_dir))
+            invocation = WorkspaceCommandInvocation(args=["shell"], label="Bash")
+            with (
+                patch.object(tools, "command_invocation", return_value=invocation),
+                patch.object(
+                    tools,
+                    "_run_command_invocation",
+                    return_value=WorkspaceCommandResult(ok=True, output="should not run"),
+                ) as run,
+            ):
+                with self.assertRaisesRegex(WorkspaceToolError, "不要在主命令中使用 tail/head"):
+                    tools.run_shell_command(
+                        {
+                            "command": "python -m pytest tests/ -q 2>&1 | tail -6",
+                        },
+                        shell="bash",
+                    )
+
+        run.assert_not_called()
 
     def test_diagnostic_command_cannot_mask_primary_command_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -376,7 +420,32 @@ class BackgroundMonitorTest(unittest.TestCase):
             finally:
                 manager.close()
 
-    def test_close_terminates_running_monitor(self) -> None:
+    def test_long_monitor_line_is_split_into_recoverable_events(self) -> None:
+        from omnicrawl.workspace.monitor import MAX_EVENT_CHARS
+
+        class FakeStream:
+            def __init__(self, text: str) -> None:
+                self._lines = iter([text, ""])
+
+            def readline(self) -> str:
+                return next(self._lines)
+
+            def close(self) -> None:
+                pass
+
+        class FakeTask:
+            monitor_id = "monitor-test"
+            events: list = []
+            next_sequence = 1
+            dropped_events = 0
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = BackgroundMonitorManager(WorkspaceTools(Path(temp_dir)))
+            task = FakeTask()
+            manager._read_stream(task, "stdout", FakeStream("x" * (MAX_EVENT_CHARS * 2 + 1)))
+
+        self.assertEqual([len(event.text) for event in task.events], [MAX_EVENT_CHARS, MAX_EVENT_CHARS, 1])
+
         command = f"& '{sys.executable}' -u -c \"import time; time.sleep(30)\""
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = BackgroundMonitorManager(WorkspaceTools(Path(temp_dir)))

@@ -261,15 +261,15 @@ YYYYMMDD-HHMMSS-随机短 ID
 
 ### 6.3 工具结果压缩
 
-工具输出可能很大，直接保存和回放会导致上下文膨胀。建议分级处理：
+工具输出可能很大，直接保存和回放会导致上下文膨胀。当前实现分离三类数据：
 
-| 输出大小 | 保存策略 |
+| 数据层 | 保存策略 |
 |----------|----------|
-| 小于 8KB | 直接写入 `tool_result.payload.output`。 |
-| 8KB 到 128KB | JSONL 中保存摘要，完整输出写入 `.agent_sessions/artifacts/`。 |
-| 大于 128KB | 默认只保存摘要、哈希、文件路径和前后片段。 |
+| 模型观察 | 受 `max_tool_output_chars` 限制；超限使用头尾预览并明确标记，仅限制模型上下文，不改变执行状态。 |
+| UI 展示 | 默认折叠标题保持紧凑；展开详情使用工具结果的完整脱敏输出。 |
+| Session 转录 | 8KB 以内内联；更大输出写入 `.agent_sessions/artifacts/`，JSONL 保存摘要、哈希、大小和路径。artifact 不再按 128KB 截断，`artifact_truncated` 仅作为兼容字段保留且当前始终为 `false`。 |
 
-恢复时默认加载摘要；只有用户要求复查完整工具输出时，再读取 artifact。
+恢复时默认加载模型摘要；只有用户要求复查完整工具输出时，再读取 artifact。Shell 测试/构建命令不得在主命令中使用 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出裁剪器；报告命令必须通过独立的 `diagnostic_command` 执行。
 
 ## 7. 会话恢复
 
@@ -542,7 +542,7 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 |--------|------|
 | 新会话创建 | 启动后检查 `index.json` 和 `sessions/<id>.jsonl` 是否生成。 |
 | 普通多轮 | 连续提问两轮，确认第二轮能引用第一轮。 |
-| 工具调用转录 | 触发 `read_file` 或 `search_text`，确认 JSONL 有 tool call 和 result。 |
+| 工具调用转录 | 触发 `read_file` 或 `grep`，确认 JSONL 有 tool call 和 result。 |
 | `/new` | 执行后生成新 session，旧 session 保留。 |
 | `/resume` | 重启程序后恢复旧 session，追问旧上下文能正确回答。 |
 | 中断恢复 | 生成中取消，确认 JSONL 记录中断，恢复时提示状态。 |

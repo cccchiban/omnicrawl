@@ -225,7 +225,7 @@ Host 侧永远是最终安全边界：
 - 普通文件工具只能访问工作区内路径。
 - 外部 MCP Server 默认不暴露能力，除非策略允许。
 - 命令执行必须设置超时，输出会截断。
-- `manual` 模式下，写入、替换、命令、删除倾向工具默认需要确认；`review` 模式下，仅疑似删除行为会进入自动审查。
+- `manual` 模式下，写入、替换、命令、删除倾向工具默认需要确认；`review`（自动审查）模式下，通过 bash/powershell 执行的命令会进入自动审查。
 
 AI 调用 MCP 时必须遵守：
 
@@ -290,7 +290,7 @@ python -m compileall omnicrawl
 - 受保护路径会被拒绝。
 - Resource 可按 URI 读取。
 - Prompt 可按名称获取。
-- `manual` 模式下写入和命令类工具仍需要 Host 审批；`review` 模式下重点验证删除类工具会进入 Host 审查。
+- `manual` 模式下写入和命令类工具仍需要 Host 审批；`review`（自动审查）模式下，通过 bash/powershell 执行的命令会进入 Host 自动审查。
 - `/mcp` 能显示 Server、Tool、Resource、Prompt 和诊断。
 
 涉及安全策略时，重点验证：

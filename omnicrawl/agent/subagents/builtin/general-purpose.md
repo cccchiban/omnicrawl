@@ -8,7 +8,8 @@ tools:
   - find_files
   - read_file
   - read_image
-  - search_text
+  - grep
+  - web_search
   - write_file
   - replace_text
   - bash

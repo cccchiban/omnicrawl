@@ -20,7 +20,13 @@ from .process_control import (
     assign_process_to_kill_on_close_job as _assign_process_to_kill_on_close_job,
     close_windows_handle as _close_windows_handle,
 )
-from .tools import WorkspaceCommandResult, WorkspaceToolError, WorkspaceTools
+from .tools import (
+    MAX_COMMAND_TIMEOUT_SECONDS,
+    WorkspaceCommandResult,
+    WorkspaceToolError,
+    WorkspaceTools,
+    test_output_filtering_command_warning,
+)
 
 
 MAX_ACTIVE_MONITORS = 20
@@ -202,6 +208,10 @@ class BackgroundMonitorManager:
         shell = str(arguments.get("shell") or "powershell").strip().lower()
         if shell not in {"bash", "powershell"}:
             raise WorkspaceMonitorError("shell 仅支持 bash 或 powershell。")
+
+        warning = test_output_filtering_command_warning(command, shell=shell)
+        if warning:
+            raise WorkspaceMonitorError(warning)
 
         with self._lock:
             if self._closed:
@@ -385,8 +395,15 @@ class BackgroundMonitorManager:
             for raw_line in iter(stream.readline, ""):
                 line = raw_line.rstrip("\r\n")
                 if len(line) > MAX_EVENT_CHARS:
-                    line = line[:MAX_EVENT_CHARS] + " ... 单行输出已截断。"
+                    for offset in range(0, len(line), MAX_EVENT_CHARS):
+                        self._record_event(
+                            task,
+                            stream_name,
+                            line[offset : offset + MAX_EVENT_CHARS],
+                        )
+                    continue
                 self._record_event(task, stream_name, line)
+
         finally:
             try:
                 stream.close()

@@ -5,7 +5,7 @@
 
 插件管理推荐使用 ``ocl plugin ...``；``python main.py plugin ...`` 仍可用于源码目录。
 
-Windows 下普通 TUI 路径仍可弹新 PowerShell 窗口；plugin 子命令必须在弹窗前处理。
+Windows 下普通 TUI 路径在没有交互式终端时才弹新 PowerShell 窗口；已有 PowerShell、Windows Terminal 或 VS Code 集成终端时直接复用当前终端。plugin 子命令必须在弹窗前处理。
 """
 
 from __future__ import annotations

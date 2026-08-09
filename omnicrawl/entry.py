@@ -23,6 +23,7 @@ from omnicrawl.project_context import (
     ProjectContextError,
     detect_project_context,
     project_context_status_label,
+    should_disable_content_index,
 )
 from omnicrawl.runtime_config import RuntimeConfigError, load_config_data
 from omnicrawl.config.settings import load_feature_enabled
@@ -182,8 +183,9 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 file_name_index_enabled=load_feature_enabled(
                     "file_name_index", default=False
                 ),
-                content_index_enabled=load_feature_enabled(
-                    "content_index", default=False
+                content_index_enabled=(
+                    load_feature_enabled("content_index", default=False)
+                    and not should_disable_content_index(project_context)
                 ),
                 temp_workspace=temp_workspace_config,
                 subagents=subagent_config,

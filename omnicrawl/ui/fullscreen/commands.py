@@ -90,7 +90,7 @@ class CommandDispatcher:
     兼容性。
     """
 
-    _EXIT_WORDS = frozenset({"退出", "结束", "再见"})
+    _EXIT_WORDS = frozenset({"/quit", "退出", "结束", "再见"})
 
     def __init__(
         self,

@@ -34,7 +34,7 @@ class AgentDefinitionParsingTest(unittest.TestCase):
                     "security-reviewer",
                     "只读审查",
                     "只读取并返回证据。",
-                    tools=["read_file", "search_text"],
+                    tools=["read_file", "grep"],
                     disallowedTools=["write_file", "subagent"],
                     model="inherit",
                     permissionMode="delegated-read-only",
@@ -49,7 +49,7 @@ class AgentDefinitionParsingTest(unittest.TestCase):
             definition = parse_agent_definition(path, source="project")
 
         self.assertEqual(definition.name, "security-reviewer")
-        self.assertEqual(definition.tools, ("read_file", "search_text"))
+        self.assertEqual(definition.tools, ("read_file", "grep"))
         self.assertEqual(definition.disallowed_tools, ("write_file", "subagent"))
         self.assertEqual(definition.system_prompt, "只读取并返回证据。")
         self.assertEqual(definition.source, "project")

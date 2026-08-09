@@ -16,8 +16,16 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
+if sys.platform == "win32":
+    from textual.drivers import win32 as _textual_win32
+    from textual.drivers.windows_driver import WindowsDriver as _TextualWindowsDriver
+else:
+    _textual_win32 = None
+    _TextualWindowsDriver = object
+
 from ...agent import AgentError, LocalToolAgent
 from ...config.runtime import resolve_config_path, resolve_models_path
+from ...llm.stream_registry import stream_scope
 from ...agent.tools import public_tool_arguments
 from ...version_check import (
     VersionCheckResult,
@@ -159,6 +167,52 @@ def _restore_windows_vt_input_mode_if_needed(
         return False
 
 
+def _restore_windows_raw_input_mode_if_needed(
+    *,
+    platform_name: str | None = None,
+    input_stream: Any | None = None,
+    output_stream: Any | None = None,
+    win32_api: Any | None = None,
+) -> bool:
+    """恢复可保留修饰键的 Windows 原始控制台输入模式。"""
+
+    if (platform_name or sys.platform) != "win32":
+        return False
+
+    if win32_api is None:
+        from textual.drivers import win32 as win32_api
+
+    input_stream = sys.__stdin__ if input_stream is None else input_stream
+    output_stream = sys.__stdout__ if output_stream is None else output_stream
+    if input_stream is None or output_stream is None:
+        return False
+
+    try:
+        input_mode = win32_api.get_console_mode(input_stream)
+        required_input_mode = (
+            input_mode
+            | win32_api.ENABLE_MOUSE_INPUT
+            | win32_api.ENABLE_WINDOW_INPUT
+            | win32_api.ENABLE_EXTENDED_FLAGS
+        ) & ~(
+            win32_api.ENABLE_QUICK_EDIT_MODE
+            | win32_api.ENABLE_VIRTUAL_TERMINAL_INPUT
+        )
+        if input_mode == required_input_mode:
+            return False
+        if not win32_api.set_console_mode(input_stream, required_input_mode):
+            return False
+
+        output_mode = win32_api.get_console_mode(output_stream)
+        win32_api.set_console_mode(
+            output_stream,
+            output_mode | win32_api.ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+        )
+        return True
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 @dataclass(frozen=True)
 class FullscreenStartup:
     """启动阶段提供给顶部上下文条的只读摘要。"""
@@ -208,8 +262,24 @@ class Composer(TextArea):
         self._insert_paste_text(self.app.clipboard)
 
     def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            self.app.action_cancel_or_focus()
+            event.prevent_default()
+            event.stop()
+            return
+        # 某些 Windows Terminal / VS Code 组合会把 Shift+Enter 归一为
+        # Key("enter", "\n")；先判断换行事件，避免被普通 Enter 分支提交。
+        is_newline_key = event.key in {
+            "shift+enter",
+            "shift+\r",
+            "shift+j",
+        } or (event.key == "enter" and event.character == "\n")
         if event.key == "ctrl+c":
             self._copy_or_clear_handler()
+            event.prevent_default()
+            event.stop()
+        elif is_newline_key:
+            self.insert("\n")
             event.prevent_default()
             event.stop()
         elif self._command_key_handler(event):
@@ -219,12 +289,296 @@ class Composer(TextArea):
             self._submit_handler()
             event.prevent_default()
             event.stop()
-        elif event.key in {"shift+enter", "shift+\r", "shift+j"}:
-            # Windows Terminal / VS Code 在 Kitty 扩展按键协议不可用时，可能将
-            # Shift+Enter 上报为 shift+\r 或 shift+j，而非 shift+enter。
-            self.insert("\n")
-            event.prevent_default()
-            event.stop()
+
+
+class OmniCrawlWindowsEventMonitor(
+    _textual_win32.EventMonitor if _textual_win32 is not None else object
+):
+    """将 Windows 原始控制台记录转换为 Textual 事件。"""
+
+    WINDOWS_ALT_PRESSED = 0x0003
+    WINDOWS_CTRL_PRESSED = 0x000C
+    WINDOWS_SHIFT_PRESSED = 0x0010
+    WINDOWS_RETURN_KEY = 0x000D
+    WINDOWS_TAB_KEY = 0x0009
+    WINDOWS_ESCAPE_KEY = 0x001B
+    WINDOWS_MODIFIER_KEYS = {0x0010, 0x0011, 0x0012}
+    WINDOWS_SPECIAL_KEYS = {
+        0x0021: "pageup",
+        0x0022: "pagedown",
+        0x0023: "end",
+        0x0024: "home",
+        0x0025: "left",
+        0x0026: "up",
+        0x0027: "right",
+        0x0028: "down",
+        0x002D: "insert",
+        0x002E: "delete",
+    }
+    WINDOWS_MOUSE_BUTTONS = (
+        (0x0001, 1),
+        (0x0004, 2),
+        (0x0002, 3),
+        (0x0008, 4),
+        (0x0010, 5),
+    )
+    WINDOWS_MOUSE_BUTTON_MASK = 0x001F
+    WINDOWS_MOUSE_MOVED = 0x0001
+    WINDOWS_MOUSE_DOUBLE_CLICK = 0x0002
+    WINDOWS_MOUSE_WHEELED = 0x0004
+    WINDOWS_MOUSE_HWHEELED = 0x0008
+
+    @classmethod
+    def _key_with_modifiers(cls, key: str, control_key_state: int) -> str:
+        """生成与 Textual XTermParser 一致的修饰键名称。"""
+
+        modifiers: list[str] = []
+        if control_key_state & cls.WINDOWS_ALT_PRESSED:
+            modifiers.append("alt")
+        if control_key_state & cls.WINDOWS_CTRL_PRESSED:
+            modifiers.append("ctrl")
+        if control_key_state & cls.WINDOWS_SHIFT_PRESSED:
+            modifiers.append("shift")
+        return "+".join([*modifiers, key])
+
+    @classmethod
+    def key_event_to_textual(cls, key_event: Any) -> events.Key | None:
+        """转换需依赖虚拟键码的原始 Windows 按键事件。"""
+
+        if not getattr(key_event, "bKeyDown", False):
+            return None
+
+        character = getattr(key_event.uChar, "UnicodeChar", "")
+        virtual_key = int(getattr(key_event, "wVirtualKeyCode", 0))
+        control_key_state = int(getattr(key_event, "dwControlKeyState", 0))
+        if virtual_key in cls.WINDOWS_MODIFIER_KEYS:
+            return None
+
+        if (
+            virtual_key == cls.WINDOWS_RETURN_KEY
+            and character in {"\r", "\n"}
+            and control_key_state & cls.WINDOWS_SHIFT_PRESSED
+        ):
+            return events.Key(
+                cls._key_with_modifiers("enter", control_key_state), character
+            )
+        if (
+            virtual_key == cls.WINDOWS_TAB_KEY
+            and character == "\t"
+            and control_key_state & cls.WINDOWS_SHIFT_PRESSED
+        ):
+            return events.Key(
+                cls._key_with_modifiers("tab", control_key_state), None
+            )
+
+        key_name = cls.WINDOWS_SPECIAL_KEYS.get(virtual_key)
+        if key_name is None and 0x0070 <= virtual_key <= 0x0087:
+            key_name = f"f{virtual_key - 0x006F}"
+        if key_name is not None and character == "\x00":
+            return events.Key(
+                cls._key_with_modifiers(key_name, control_key_state), None
+            )
+        if virtual_key == cls.WINDOWS_ESCAPE_KEY:
+            return events.Key("escape", None)
+        return None
+
+    @classmethod
+    def mouse_events_from_raw(
+        cls,
+        mouse_event: Any,
+        *,
+        previous_button_state: int,
+        previous_position: tuple[int, int],
+    ) -> tuple[list[events.MouseEvent], int, tuple[int, int]]:
+        """将原始鼠标记录转换为 Textual 鼠标消息并保留按钮状态。"""
+
+        x = int(mouse_event.dwMousePosition.X)
+        y = int(mouse_event.dwMousePosition.Y)
+        delta_x = x - previous_position[0]
+        delta_y = y - previous_position[1]
+        control_key_state = int(mouse_event.dwControlKeyState)
+        button_state = int(mouse_event.dwButtonState) & cls.WINDOWS_MOUSE_BUTTON_MASK
+        event_flags = int(mouse_event.dwEventFlags)
+        shift = bool(control_key_state & cls.WINDOWS_SHIFT_PRESSED)
+        meta = bool(control_key_state & cls.WINDOWS_ALT_PRESSED)
+        ctrl = bool(control_key_state & cls.WINDOWS_CTRL_PRESSED)
+
+        def make_mouse_event(
+            event_type: type[events.MouseEvent], button: int = 0
+        ) -> events.MouseEvent:
+            return event_type(
+                None,
+                x,
+                y,
+                delta_x,
+                delta_y,
+                button,
+                shift,
+                meta,
+                ctrl,
+                screen_x=x,
+                screen_y=y,
+            )
+
+        messages: list[events.MouseEvent] = []
+        if event_flags & cls.WINDOWS_MOUSE_WHEELED:
+            wheel_delta = (int(mouse_event.dwButtonState) >> 16) & 0xFFFF
+            if wheel_delta & 0x8000:
+                wheel_delta -= 0x10000
+            if wheel_delta:
+                event_type = (
+                    events.MouseScrollUp
+                    if wheel_delta > 0
+                    else events.MouseScrollDown
+                )
+                messages.append(make_mouse_event(event_type))
+        elif event_flags & cls.WINDOWS_MOUSE_HWHEELED:
+            wheel_delta = (int(mouse_event.dwButtonState) >> 16) & 0xFFFF
+            if wheel_delta & 0x8000:
+                wheel_delta -= 0x10000
+            if wheel_delta:
+                event_type = (
+                    events.MouseScrollRight
+                    if wheel_delta > 0
+                    else events.MouseScrollLeft
+                )
+                messages.append(make_mouse_event(event_type))
+        elif event_flags & cls.WINDOWS_MOUSE_MOVED:
+            button = next(
+                (
+                    button_number
+                    for mask, button_number in cls.WINDOWS_MOUSE_BUTTONS
+                    if button_state & mask
+                ),
+                0,
+            )
+            messages.append(make_mouse_event(events.MouseMove, button))
+        else:
+            released = previous_button_state & ~button_state
+            pressed = button_state & ~previous_button_state
+            for mask, button in cls.WINDOWS_MOUSE_BUTTONS:
+                if released & mask:
+                    messages.append(make_mouse_event(events.MouseUp, button))
+            for mask, button in cls.WINDOWS_MOUSE_BUTTONS:
+                if pressed & mask:
+                    messages.append(make_mouse_event(events.MouseDown, button))
+            if event_flags & cls.WINDOWS_MOUSE_DOUBLE_CLICK:
+                for mask, button in cls.WINDOWS_MOUSE_BUTTONS:
+                    if button_state & mask:
+                        messages.append(make_mouse_event(events.MouseDown, button))
+                        break
+
+        return messages, button_state, (x, y)
+
+    def run(self) -> None:
+        if _textual_win32 is None:
+            return
+
+        win32 = _textual_win32
+        exit_requested = self.exit_event.is_set
+        parser = win32.XTermParser(debug=win32.constants.DEBUG)
+
+        try:
+            read_count = win32.wintypes.DWORD(0)
+            h_in = win32.GetStdHandle(win32.STD_INPUT_HANDLE)
+            max_events = 1024
+            key_event_type = 0x0001
+            mouse_event_type = 0x0002
+            window_buffer_size_event = 0x0004
+            focus_event_type = 0x0010
+            input_records = (win32.INPUT_RECORD * max_events)()
+            read_console_input = win32.KERNEL32.ReadConsoleInputW
+            keys: list[str] = []
+            mouse_button_state = 0
+            mouse_position = (0, 0)
+
+            def flush_keys() -> None:
+                if not keys:
+                    return
+                for parsed_event in parser.feed(
+                    "".join(keys)
+                    .encode("utf-16", "surrogatepass")
+                    .decode("utf-16")
+                ):
+                    self.process_event(parsed_event)
+                del keys[:]
+
+            while not exit_requested():
+                for event in parser.tick():
+                    self.process_event(event)
+
+                if win32.wait_for_handles([h_in], 100) is None:
+                    continue
+
+                read_console_input(
+                    h_in,
+                    win32.byref(input_records),
+                    max_events,
+                    win32.byref(read_count),
+                )
+                read_input_records = input_records[: read_count.value]
+                new_size: tuple[int, int] | None = None
+
+                for input_record in read_input_records:
+                    event_type = input_record.EventType
+                    if event_type == key_event_type:
+                        key_event = input_record.Event.KeyEvent
+                        normalized_event = self.key_event_to_textual(key_event)
+                        if normalized_event is not None:
+                            flush_keys()
+                            self.process_event(normalized_event)
+                        elif key_event.bKeyDown:
+                            key = key_event.uChar.UnicodeChar
+                            if key and key != "\x00":
+                                keys.append(key)
+                    elif event_type == mouse_event_type:
+                        flush_keys()
+                        mouse_messages, mouse_button_state, mouse_position = (
+                            self.mouse_events_from_raw(
+                                input_record.Event.MouseEvent,
+                                previous_button_state=mouse_button_state,
+                                previous_position=mouse_position,
+                            )
+                        )
+                        for mouse_message in mouse_messages:
+                            self.process_event(mouse_message)
+                    elif event_type == window_buffer_size_event:
+                        size = input_record.Event.WindowBufferSizeEvent.dwSize
+                        new_size = (size.X, size.Y)
+                    elif event_type == focus_event_type:
+                        flush_keys()
+                        focus_event = input_record.Event.FocusEvent
+                        self.process_event(
+                            events.AppFocus()
+                            if focus_event.bSetFocus
+                            else events.AppBlur()
+                        )
+
+                flush_keys()
+                if new_size is not None:
+                    self.on_size_change(*new_size)
+        except Exception as error:
+            self.app.log.error("EVENT MONITOR ERROR", error)
+
+
+class OmniCrawlWindowsDriver(_TextualWindowsDriver):
+    """Windows 全屏输入驱动：使用原始控制台事件保留修饰键。"""
+
+    KEYBOARD_PROTOCOL = "\x1b[>25u"
+    RAW_INPUT_PROTOCOL_RESET = (
+        _MOUSE_REPORTING_DISABLE_SEQUENCE + "\x1b[?1004l\x1b[?2004l\x1b[<u"
+    )
+
+    def start_application_mode(self) -> None:
+        original_event_monitor = _textual_win32.EventMonitor
+        _textual_win32.EventMonitor = OmniCrawlWindowsEventMonitor
+        try:
+            super().start_application_mode()
+        finally:
+            _textual_win32.EventMonitor = original_event_monitor
+        _restore_windows_raw_input_mode_if_needed()
+        self.write(self.RAW_INPUT_PROTOCOL_RESET)
+        self.flush()
 
 
 class OmniCrawlApp(App[None]):
@@ -394,7 +748,11 @@ class OmniCrawlApp(App[None]):
     COMPOSER_BORDER_ROWS = 1
 
     def __init__(self, agent: LocalToolAgent, startup: FullscreenStartup) -> None:
-        super().__init__()
+        super().__init__(
+            driver_class=(
+                OmniCrawlWindowsDriver if sys.platform == "win32" else None
+            )
+        )
         self.register_theme(TERMINAL_THEME)
         self.theme = THEME_NAME
         self.agent = agent
@@ -550,10 +908,16 @@ class OmniCrawlApp(App[None]):
 
         try:
             driver = self._driver
-            if not driver.is_headless and _restore_windows_vt_input_mode_if_needed():
-                # 控制台模式被系统重置后不会再产生 Textual 可识别的 AppFocus，
-                # 因此必须由周期看门狗主动恢复，且设置页等模态界面也不能跳过。
-                self._reset_mouse_interaction_state(rearm_terminal_protocols=True)
+            if not driver.is_headless:
+                restore_input_mode = (
+                    _restore_windows_raw_input_mode_if_needed
+                    if isinstance(driver, OmniCrawlWindowsDriver)
+                    else _restore_windows_vt_input_mode_if_needed
+                )
+                if restore_input_mode():
+                    # 控制台模式被系统重置后不会再产生 Textual 可识别的 AppFocus，
+                    # 因此必须由周期看门狗主动恢复，且设置页等模态界面也不能跳过。
+                    self._reset_mouse_interaction_state(rearm_terminal_protocols=True)
 
             if len(self.screen_stack) > 1:
                 self._interaction_watchdog_signature = None
@@ -637,18 +1001,25 @@ class OmniCrawlApp(App[None]):
         if isinstance(down_buttons, list):
             down_buttons.clear()
         if rearm_terminal_protocols:
-            if not driver.is_headless:
-                _restore_windows_vt_input_mode_if_needed()
-            enable_mouse_support = getattr(driver, "_enable_mouse_support", None)
-            if callable(enable_mouse_support):
-                enable_mouse_support()
-            write = getattr(driver, "write", None)
-            if callable(write):
-                write("\033[?1004h")
-                write("\x1b[>1u")
-            enable_bracketed_paste = getattr(driver, "_enable_bracketed_paste", None)
-            if callable(enable_bracketed_paste):
-                enable_bracketed_paste()
+            if isinstance(driver, OmniCrawlWindowsDriver):
+                if not driver.is_headless:
+                    _restore_windows_raw_input_mode_if_needed()
+                write = getattr(driver, "write", None)
+                if callable(write):
+                    write(OmniCrawlWindowsDriver.RAW_INPUT_PROTOCOL_RESET)
+            else:
+                if not driver.is_headless:
+                    _restore_windows_vt_input_mode_if_needed()
+                enable_mouse_support = getattr(driver, "_enable_mouse_support", None)
+                if callable(enable_mouse_support):
+                    enable_mouse_support()
+                write = getattr(driver, "write", None)
+                if callable(write):
+                    write("\033[?1004h")
+                    write(OmniCrawlWindowsDriver.KEYBOARD_PROTOCOL)
+                enable_bracketed_paste = getattr(driver, "_enable_bracketed_paste", None)
+                if callable(enable_bracketed_paste):
+                    enable_bracketed_paste()
             flush = getattr(driver, "flush", None)
             if callable(flush):
                 flush()
@@ -736,7 +1107,8 @@ class OmniCrawlApp(App[None]):
         """主界面显示后在后台发现 MCP，避免阻塞 Textual 首屏绘制。"""
 
         try:
-            self._turn_controller.preload_mcp_tools()
+            with self._turn_controller.scope():
+                self._turn_controller.preload_mcp_tools()
         except AgentError as exc:
             self.call_from_thread(self._append_message, "error", f"MCP 能力加载失败：{exc}")
         except Exception as exc:
@@ -832,9 +1204,14 @@ class OmniCrawlApp(App[None]):
         """让输入区从一行起步，随软折行增长且不挤占整个消息区。"""
 
         composer = self.query_one("#composer", TextArea)
+        explicit_rows = composer.text.count("\n") + 1 if composer.text else 1
         composer_rows = min(
             self.COMPOSER_MAX_ROWS,
-            max(self.COMPOSER_MIN_ROWS, composer.virtual_size.height),
+            max(
+                self.COMPOSER_MIN_ROWS,
+                explicit_rows,
+                composer.virtual_size.height,
+            ),
         )
         composer.styles.height = composer_rows
         menu_rows = min(len(self._command_matches), self.COMMAND_MENU_VISIBLE_OPTIONS)
@@ -875,6 +1252,9 @@ class OmniCrawlApp(App[None]):
             return
         composer.clear()
         self._compact_pastes.clear()
+        if self.is_generating and text == "/quit":
+            self._handle_command(text)
+            return
         if self.is_generating:
             self._pending_inputs.append(text)
             self._refresh_pending_queue_count()
@@ -940,12 +1320,13 @@ class OmniCrawlApp(App[None]):
         self._resize_composer_to_text()
 
     def action_cancel_or_focus(self) -> None:
-        self._reset_mouse_interaction_state(
-            focus_composer=not self.is_generating,
-            rearm_terminal_protocols=True,
-        )
         if self.is_generating:
             self.cancel_pending_turn()
+        else:
+            self._reset_mouse_interaction_state(
+                focus_composer=True,
+                rearm_terminal_protocols=True,
+            )
 
     def action_copy_or_clear_composer(self) -> None:
         composer = self.query_one("#composer", TextArea)
@@ -978,7 +1359,9 @@ class OmniCrawlApp(App[None]):
         """标记当前回合已取消，使工作线程在下一个可中断点退出。"""
 
         self._cancel_requested.set()
-        self._set_runtime_status("等待", "waiting")
+        closed = self._turn_controller.cancel()
+        self._set_runtime_status("已取消", "complete")
+        return closed
 
     def _submit(self, text: str) -> None:
         if self._handle_command(text):
@@ -1049,7 +1432,8 @@ class OmniCrawlApp(App[None]):
         """在工作线程执行可能连接网络或启动 MCP Server 的斜杠命令。"""
 
         try:
-            message = command()
+            with self._turn_controller.scope():
+                message = command()
         except AgentError as exc:
             self.call_from_thread(self._append_message, "error", f"命令执行失败：{exc}")
         except Exception as exc:
@@ -1100,6 +1484,9 @@ class OmniCrawlApp(App[None]):
         if not outcome.handled:
             return False
         if outcome.exit_requested:
+            self.cancel_pending_turn()
+            self._pending_inputs.clear()
+            self._refresh_pending_queue_count()
             self.exit()
             return True
         if outcome.open_model_picker:
@@ -1261,12 +1648,7 @@ class OmniCrawlApp(App[None]):
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
-        output = str(result.output or "无输出")
-        if len(output) > self.MAX_TOOL_OUTPUT_CHARS:
-            output = (
-                f"{output[:self.MAX_TOOL_OUTPUT_CHARS]}\n"
-                f"... 界面展示已截断（原始输出 {len(result.output)} 字符）。"
-            )
+        output = str(getattr(result, "full_output", "") or result.output or "无输出")
         key = self._tool_call_key(tool_call)
         tool_message = self._tool_messages.pop(key, None)
         if tool_message is None:

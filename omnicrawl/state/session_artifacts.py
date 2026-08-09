@@ -121,8 +121,9 @@ class SessionArtifactStore:
             return {"summary": summary, "artifacts": []}
 
         output_hash = hashlib.sha256(safe_result.encode("utf-8")).hexdigest()
-        truncated = len(safe_result) > SUBAGENT_RESULT_LARGE_OUTPUT_CHARS
-        persisted_result = safe_result[:SUBAGENT_RESULT_LARGE_OUTPUT_CHARS]
+        truncated = False
+        persisted_result = safe_result
+
         artifact_document = {
             "version": 1,
             "task_id": task_id,
@@ -191,12 +192,14 @@ class SessionArtifactStore:
         payload["output_preview"] = redact_sensitive_text(preview_text(output, TOOL_RESULT_PREVIEW_CHARS))
         payload["output"] = tool_output_summary(output)
         payload["storage"] = "artifact"
-        payload["artifact_truncated"] = len(output) > TOOL_RESULT_LARGE_OUTPUT_CHARS
+        # artifact 已取消 128KB 内容上限；保留字段供旧会话读取，但明确表示
+        # 当前持久化文本始终完整，避免恢复逻辑误把完整结果当成丢失数据。
+        payload["artifact_truncated"] = False
         payload["artifact_path"] = self._write_tool_result_artifact(
             session_id=session_id,
             output=output,
             output_hash=output_hash,
-            truncated=bool(payload["artifact_truncated"]),
+            truncated=False,
         )
         return payload
 
@@ -260,11 +263,10 @@ class SessionArtifactStore:
         path = (session_artifacts_dir / filename).resolve()
         if not is_relative_to(path, self.root):
             raise SessionStoreError(f"artifact 路径越界：{filename}")
-        artifact_text = output[:TOOL_RESULT_LARGE_OUTPUT_CHARS] if truncated else output
-        artifact_text = redact_sensitive_text(artifact_text)
+        artifact_text = redact_sensitive_text(output)
         if truncated:
             artifact_text += (
-                "\n... artifact 已按 128KB 上限截断，"
+                "\n... artifact 已按安全上限截断，"
                 f"原始输出字符数：{len(output)}，sha256：{output_hash}。"
             )
         try:

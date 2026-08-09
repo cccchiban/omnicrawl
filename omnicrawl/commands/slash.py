@@ -36,7 +36,7 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "find_files": "按名称或路径查找文件",
     "read_file": "读取文件内容",
     "read_image": "读取图片",
-    "search_text": "在文件中搜索文本",
+    "grep": "在文件中搜索文本",
     "replace_text": "替换文件中的文本",
     "write_file": "写入文件",
     "bash": "执行 Bash 命令",
@@ -912,6 +912,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
 
     commands = [
         "/new",
+        "/quit",
         "/workspace",
         "/model",
         "/settings",
@@ -956,6 +957,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
     builtin_descriptions = {
         "/workspace": "切换当前 Agent 的工作区目录。",
         "/new": "开启一个空白会话。",
+        "/quit": "退出当前 TUI，不关闭宿主窗口。",
         "/model": "打开/查看模型目录，或输入 key、alias、profile/model_id 切换。",
         "/settings": "打开中文设置面板，修改运行时开关并立即保存。",
         "/reasoning": "查看或切换推理强度。",
@@ -977,7 +979,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/approval": "查看当前工具审批模式。",
         "/approval:manual": "工具执行前逐次询问。",
         "/approval:auto": "自动批准工具执行。",
-        "/approval:review": "仅对疑似删除行为进行审查。",
+        "/approval:review": "自动审查 bash/powershell 命令。",
         "/auto-approve:off": "兼容命令：关闭自动审批。",
         "/auto-approve:on": "兼容命令：开启自动审批。",
         "/auto-review:on": "兼容命令：开启审查模式。",

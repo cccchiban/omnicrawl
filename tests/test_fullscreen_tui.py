@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import sys
 import threading
 import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
@@ -411,6 +412,221 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.press("enter")
             await pilot.pause()
             self.assertEqual(submitted, ["第一行\n第二行"])
+            self.assertEqual(composer.text, "")
+
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
+    def test_windows_driver_uses_raw_console_input_for_modifier_keys(self) -> None:
+        """Windows Driver 必须关闭 VT 输入，避免终端吞掉 Shift 修饰位。"""
+
+        from textual.drivers import win32 as textual_win32
+        from textual.drivers.windows_driver import WindowsDriver
+
+        from omnicrawl.ui.fullscreen import (
+            FullscreenStartup,
+            OmniCrawlApp,
+            OmniCrawlWindowsDriver,
+            OmniCrawlWindowsEventMonitor,
+        )
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        self.assertIs(app.driver_class, OmniCrawlWindowsDriver)
+
+        driver = object.__new__(OmniCrawlWindowsDriver)
+        protocol_calls: list[str] = []
+        driver.write = protocol_calls.append  # type: ignore[method-assign]
+        driver.flush = lambda: protocol_calls.append("flush")  # type: ignore[method-assign]
+
+        input_mode = 0x0001 | textual_win32.ENABLE_VIRTUAL_TERMINAL_INPUT
+        observed_event_monitors: list[object] = []
+        original_event_monitor = textual_win32.EventMonitor
+        with patch.object(WindowsDriver, "start_application_mode") as base_start, patch.object(
+            textual_win32,
+            "get_console_mode",
+            side_effect=[input_mode, 0x0001],
+        ) as get_console_mode, patch.object(
+            textual_win32,
+            "set_console_mode",
+            return_value=True,
+        ) as set_console_mode:
+            base_start.side_effect = lambda: observed_event_monitors.append(
+                textual_win32.EventMonitor
+            )
+            driver.start_application_mode()
+
+        base_start.assert_called_once_with()
+        self.assertEqual(observed_event_monitors, [OmniCrawlWindowsEventMonitor])
+        self.assertIs(textual_win32.EventMonitor, original_event_monitor)
+        get_console_mode.assert_has_calls(
+            [call(sys.__stdin__), call(sys.__stdout__)]
+        )
+        set_console_mode.assert_has_calls(
+            [
+                call(
+                    sys.__stdin__,
+                    (
+                        input_mode
+                        | textual_win32.ENABLE_MOUSE_INPUT
+                        | textual_win32.ENABLE_WINDOW_INPUT
+                        | textual_win32.ENABLE_EXTENDED_FLAGS
+                    )
+                    & ~(
+                        textual_win32.ENABLE_QUICK_EDIT_MODE
+                        | textual_win32.ENABLE_VIRTUAL_TERMINAL_INPUT
+                    ),
+                ),
+                call(sys.__stdout__, 0x0001 | textual_win32.ENABLE_VIRTUAL_TERMINAL_PROCESSING),
+            ]
+        )
+        self.assertEqual(
+            protocol_calls,
+            [OmniCrawlWindowsDriver.RAW_INPUT_PROTOCOL_RESET, "flush"],
+        )
+
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
+    def test_windows_driver_recovers_shift_enter_when_terminal_drops_modifier(self) -> None:
+        """终端未提供 Kitty 修饰位时，Driver 仍应从 Windows 键态恢复 Shift。"""
+
+        from textual import events
+        from textual.drivers import win32
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        record = win32.KEY_EVENT_RECORD()
+        record.bKeyDown = True
+        record.wVirtualKeyCode = 0x0D
+        record.uChar.UnicodeChar = "\r"
+        record.dwControlKeyState = OmniCrawlWindowsEventMonitor.WINDOWS_SHIFT_PRESSED
+
+        event = OmniCrawlWindowsEventMonitor.key_event_to_textual(record)
+
+        self.assertIsInstance(event, events.Key)
+        self.assertEqual(event.key, "shift+enter")
+        self.assertEqual(event.character, "\r")
+
+        record.dwControlKeyState = 0
+        self.assertIsNone(OmniCrawlWindowsEventMonitor.key_event_to_textual(record))
+
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
+    def test_windows_event_monitor_maps_raw_navigation_keys(self) -> None:
+        """原始控制台的导航键必须保留修饰状态并转换为 Textual 事件。"""
+
+        from textual import events
+        from textual.drivers import win32
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        record = win32.KEY_EVENT_RECORD()
+        record.bKeyDown = True
+        record.wVirtualKeyCode = 0x25
+        record.uChar.UnicodeChar = "\x00"
+        record.dwControlKeyState = OmniCrawlWindowsEventMonitor.WINDOWS_SHIFT_PRESSED
+
+        event = OmniCrawlWindowsEventMonitor.key_event_to_textual(record)
+
+        self.assertIsInstance(event, events.Key)
+        self.assertEqual(event.key, "shift+left")
+        self.assertIsNone(event.character)
+
+        record.dwControlKeyState = 0
+        event = OmniCrawlWindowsEventMonitor.key_event_to_textual(record)
+        self.assertIsInstance(event, events.Key)
+        self.assertEqual(event.key, "left")
+        self.assertIsNone(event.character)
+
+        record.wVirtualKeyCode = 0x10
+        self.assertIsNone(OmniCrawlWindowsEventMonitor.key_event_to_textual(record))
+
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
+    def test_windows_event_monitor_maps_raw_mouse_clicks(self) -> None:
+        """原始控制台鼠标按下和释放必须成为 Textual 鼠标事件。"""
+
+        from textual import events
+        from textual.drivers import win32
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        record = win32.MOUSE_EVENT_RECORD()
+        record.dwMousePosition.X = 4
+        record.dwMousePosition.Y = 7
+        record.dwButtonState = 0x0001
+        record.dwControlKeyState = OmniCrawlWindowsEventMonitor.WINDOWS_SHIFT_PRESSED
+        record.dwEventFlags = 0
+
+        messages, button_state, position = OmniCrawlWindowsEventMonitor.mouse_events_from_raw(
+            record,
+            previous_button_state=0,
+            previous_position=(0, 0),
+        )
+
+        self.assertEqual(button_state, 0x0001)
+        self.assertEqual(position, (4, 7))
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], events.MouseDown)
+        self.assertEqual(messages[0].button, 1)
+        self.assertEqual((messages[0].screen_x, messages[0].screen_y), (4, 7))
+        self.assertEqual((messages[0].delta_x, messages[0].delta_y), (4, 7))
+        self.assertTrue(messages[0].shift)
+
+        record.dwButtonState = 0
+        messages, button_state, position = OmniCrawlWindowsEventMonitor.mouse_events_from_raw(
+            record,
+            previous_button_state=button_state,
+            previous_position=position,
+        )
+
+        self.assertEqual(button_state, 0)
+        self.assertEqual(position, (4, 7))
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], events.MouseUp)
+        self.assertEqual(messages[0].button, 1)
+
+    async def test_should_insert_newline_when_shift_enter_is_reported_as_lf_enter(self) -> None:
+        """终端把 Shift+Enter 退化为 LF 形式的 Enter 时仍应插入换行。"""
+
+        from textual import events
+        from textual.widgets import TextArea
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        submitted: list[str] = []
+        app._submit = submitted.append  # type: ignore[method-assign]
+
+        async with app.run_test(size=(80, 24)) as pilot:
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "第一行"
+            composer.cursor_location = (0, len("第一行"))
+            composer.on_key(events.Key("enter", "\n"))
+            await pilot.pause()
+
+            self.assertEqual(composer.text, "第一行\n")
+            self.assertEqual(submitted, [])
+
+            composer.on_key(events.Key("enter", "\r"))
+            await pilot.pause()
+            self.assertEqual(submitted, ["第一行"])
             self.assertEqual(composer.text, "")
 
     async def test_long_paste_is_compacted_in_composer_and_expanded_on_submit(self) -> None:
@@ -821,7 +1037,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(
                 protocol_calls,
-                ["mouse", "\x1b[?1004h", "\x1b[>1u", "paste", "flush"],
+                ["mouse", "\x1b[?1004h", "\x1b[>25u", "paste", "flush"],
             )
 
     async def test_should_keep_running_when_terminal_recovery_raises(self) -> None:
@@ -1171,6 +1387,34 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(approve.styles.background.a, 0)
             self.assertTrue(await pilot.hover("#approve", offset=(2, 1)))
             self.assertEqual(approve.styles.background.a, 0)
+
+    async def test_tool_result_ui_keeps_raw_result_for_session_artifact_recovery(self) -> None:
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+            config = SimpleNamespace(max_tool_output_chars=10)
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        call = SimpleNamespace(name="bash", arguments={"command": "pytest"})
+        result = SimpleNamespace(ok=True, output="0123456789ABCDEFGHIJ")
+
+        async with app.run_test(size=(100, 20)) as pilot:
+            app._handle_tool_result(call, result)
+            await pilot.pause()
+            record = app.query_one(".tool-message")
+            await pilot.click(".tool-message")
+            await pilot.pause()
+            self.assertIn("0123456789", str(record.content))
+            self.assertIn("ABCDEFGHIJ", str(record.content))
 
     async def test_subagent_events_update_one_safe_progress_tree_in_place(self) -> None:
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
@@ -3222,7 +3466,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
-            for index, name in enumerate(("read_file", "search_text"), start=1):
+            for index, name in enumerate(("read_file", "grep"), start=1):
                 app._append_reasoning_delta(f"思考 {index}")
                 call = SimpleNamespace(name=name, arguments={})
                 app._handle_tool_start(index, call)
@@ -3297,7 +3541,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
         first = SimpleNamespace(name="read_file", arguments={}, id="call_1")
-        second = SimpleNamespace(name="search_text", arguments={}, id="call_2")
+        second = SimpleNamespace(name="grep", arguments={}, id="call_2")
 
         async with app.run_test(size=(120, 40)) as pilot:
             app._handle_tool_start(1, first)
@@ -3309,7 +3553,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             records = list(app.query(ToolDisclosure))
             self.assertEqual(len(records), 2)
             self.assertIn("R  (未指定文件)  ✓ 成功", str(records[0].content))
-            self.assertIn("S  .  |  目标: (未指定)  ✗ 失败", str(records[1].content))
+            self.assertIn("G  .  |  目标: (未指定)  ✗ 失败", str(records[1].content))
             records[0].on_click()
             records[1].on_click()
             self.assertIn("read-ok", str(records[0].content))
@@ -3511,8 +3755,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.click(".tool-message")
             await pilot.pause()
             rendered = str(record.content)
-            self.assertIn("界面展示已截断", rendered)
-            self.assertLess(len(rendered), 5_000)
+            self.assertIn("x" * 20_000, rendered)
+            self.assertNotIn("界面展示已截断", rendered)
 
     async def test_fullscreen_app_appends_monitor_events_without_starting_agent_turn(self) -> None:
         """后台日志到达时应直接显示，不应触发模型新回合。"""

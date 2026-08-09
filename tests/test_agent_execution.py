@@ -53,7 +53,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
 
     def test_runner_hands_each_reply_to_one_batch_callback_and_preserves_observation_order(self) -> None:
         first = ToolCall("read_file", {"path": "a.py"}, "call_1")
-        second = ToolCall("search_text", {"text": "Agent"}, "call_2")
+        second = ToolCall("grep", {"text": "Agent"}, "call_2")
         replies = iter(
             [
                 AgentModelReply(
@@ -164,7 +164,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
                 request_reply=lambda _messages: AgentModelReply(
                     {"role": "assistant", "content": None},
                     "",
-                    [tool_call, ToolCall("search_text", {}, "call_2")],
+                    [tool_call, ToolCall("grep", {}, "call_2")],
                 ),
                 execute_tool_batch=lambda _calls, _first_step: self.fail("超预算批次不应执行"),
                 limits=AgentLoopLimits(max_tool_calls=1),
@@ -185,7 +185,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
         agent.config = SimpleNamespace(max_tool_output_chars=6000)
         agent._tools = {
             "read_file": ToolDefinition("read_file", "read", "{}", False, lambda _args: run("read")),
-            "search_text": ToolDefinition("search_text", "search", "{}", False, lambda _args: run("search")),
+            "grep": ToolDefinition("grep", "search", "{}", False, lambda _args: run("search")),
         }
         events: list[str] = []
 
@@ -200,7 +200,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
         agent._approve_tool_for_batch = approve  # type: ignore[method-assign]
         agent._append_session_event = lambda _event, _payload: None  # type: ignore[method-assign]
         agent._execute_tool_batch(
-            [ToolCall("read_file", {}, "call_1"), ToolCall("search_text", {}, "call_2")],
+            [ToolCall("read_file", {}, "call_1"), ToolCall("grep", {}, "call_2")],
             1,
             report_tool_start=lambda _step, _call: None,
             report_tool_result=lambda _call, _result: None,
@@ -208,7 +208,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
             status=lambda _message: None,
         )
 
-        self.assertEqual(events[:2], ["approve:read_file", "approve:search_text"])
+        self.assertEqual(events[:2], ["approve:read_file", "approve:grep"])
         self.assertCountEqual(events[2:], ["execute:read", "execute:search"])
 
     def test_subagent_public_arguments_projection_is_idempotent(self) -> None:
@@ -274,6 +274,16 @@ class AgentLoopRunnerTest(unittest.TestCase):
         self.assertEqual(requested["arguments"]["task_count"], 1)
         self.assertNotIn("tasks", requested["arguments"])
         self.assertNotIn("should-not-persist", str(requested))
+
+    def test_tool_output_truncation_preserves_head_and_tail(self) -> None:
+        agent = object.__new__(LocalToolAgent)
+        agent.config = SimpleNamespace(max_tool_output_chars=10)
+
+        output = LocalToolAgent._truncate_tool_output(agent, "0123456789ABCDEFGHIJ")
+
+        self.assertIn("01234", output)
+        self.assertIn("FGHIJ", output)
+        self.assertIn("... 工具输出已截断。", output)
 
     def test_local_agent_acquires_and_releases_one_runtime_snapshot_per_turn(self) -> None:
         agent = object.__new__(LocalToolAgent)

@@ -107,8 +107,13 @@ class OpenAIResponseLLM:
 
         chunks: list[str] = []
         reasoning_chunks: list[str] = []
+        from ..llm.stream_registry import registered_stream_events, stream_owner_for
+
         try:
-            for event in stream:
+            for event in registered_stream_events(
+                stream,
+                owner=stream_owner_for(),
+            ):
                 for delta in self.extract_stream_text(event):
                     chunks.append(delta)
                     on_delta(delta)

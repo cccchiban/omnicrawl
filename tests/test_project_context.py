@@ -8,10 +8,12 @@ from unittest.mock import patch
 from omnicrawl.project_context import (
     LAUNCH_CWD_ENV,
     WORKSPACE_ROOT_ENV,
+    ProjectContext,
     ProjectContextError,
     detect_project_context,
     find_project_root,
     project_context_status_label,
+    should_disable_content_index,
 )
 
 
@@ -101,6 +103,48 @@ class ProjectContextTest(unittest.TestCase):
         ):
             with self.assertRaises(ProjectContextError):
                 detect_project_context(app_root=Path(tempfile.gettempdir()))
+
+    def test_should_disable_content_index_when_started_from_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_home = Path(temp_dir) / "home"
+            fake_home.mkdir()
+            context = ProjectContext(
+                workspace_root=fake_home / "agent_app",
+                start_path=fake_home,
+                source="fallback_app",
+            )
+
+            with patch("omnicrawl.project_context.Path.home", return_value=fake_home):
+                self.assertTrue(should_disable_content_index(context))
+
+    def test_should_disable_content_index_when_workspace_is_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_home = Path(temp_dir) / "home"
+            fake_home.mkdir()
+            context = ProjectContext(
+                workspace_root=fake_home,
+                start_path=fake_home / "launch_dir",
+                source="environment",
+            )
+
+            with patch("omnicrawl.project_context.Path.home", return_value=fake_home):
+                self.assertTrue(should_disable_content_index(context))
+
+    def test_should_not_disable_content_index_in_project_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_home = Path(temp_dir) / "home"
+            project = Path(temp_dir) / "project"
+            fake_home.mkdir()
+            project.mkdir()
+            context = ProjectContext(
+                workspace_root=project,
+                start_path=project / "src",
+                source="marker",
+                marker="pyproject.toml",
+            )
+
+            with patch("omnicrawl.project_context.Path.home", return_value=fake_home):
+                self.assertFalse(should_disable_content_index(context))
 
 
 if __name__ == "__main__":

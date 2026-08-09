@@ -48,10 +48,10 @@ Host -> role=tool 结果
 - 内置文件、命令、后台任务、记忆、Windows 桌面和 SubAgent 工具保留在 Host 目录。
 - MCP Tool、Resource 和 Prompt 继续由 MCP Manager 发现并写入 Host 目录。
 - 主 Agent 和 SubAgent 都只向其 Provider 暴露 `search_tools` 与 `invoke_tool`。
-- AgentLoop 的批次审批、并发只读调用、写入/删除串行屏障、输出截断、视觉图片回填、视觉模型故障转移和 Session 事件保持不变。
+- AgentLoop 的批次审批、并发只读调用、写入/删除串行屏障、模型上下文有界输出摘要（头尾预览）、完整 `full_output` UI 展示、视觉图片回填、视觉模型故障转移和 Session 事件保持不变。
 - 旧的内部测试夹具仍可直接构造真实 `ToolCall`，但生产 Provider 不会注册真实工具名。
 
-## 实现位置
+命令工具的主命令必须保留完整测试/构建输出和真实退出码。Bash 启动时默认启用 `pipefail`；测试或构建命令中如果使用 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出裁剪命令，Host 会在执行前拒绝，并提示改用独立的 `diagnostic_command`。
 
 - `omnicrawl/agent/host_tools.py`：Host 目录、工具搜索、紧凑 Schema、参数校验和固定 Provider 工具。
 - `omnicrawl/agent/tools.py`：真实内置工具和 MCP 工具定义。

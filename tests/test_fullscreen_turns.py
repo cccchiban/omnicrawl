@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import threading
+import time
 import unittest
+from contextvars import copy_context
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
 
+from omnicrawl.llm.stream_registry import register_stream, unregister_stream
 from omnicrawl.ui.fullscreen.turns import AgentTurnCallbacks, AgentTurnController
 
 
@@ -103,6 +107,104 @@ class AgentTurnControllerTests(unittest.TestCase):
             ],
         )
 
+    def test_cancel_closes_the_active_model_stream_without_waiting_for_next_event(self) -> None:
+        """取消必须主动关闭阻塞模型流，而不是等待下一个流事件。"""
+
+        class BlockingStream:
+            def __init__(self) -> None:
+                self.closed = threading.Event()
+
+            def close(self) -> None:
+                self.closed.set()
+
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.stream = BlockingStream()
+                self.started = threading.Event()
+
+            def preload_mcp_tools(self) -> None:
+                raise AssertionError("本测试不应调用 MCP 预热")
+
+            def run_stream(self, _text: str, _on_delta, **callbacks: Any) -> str:
+                register_stream(self.stream)
+                self.started.set()
+                while not self.stream.closed.wait(0.01):
+                    callbacks["cancel_check"]()
+                callbacks["cancel_check"]()
+                return "不应完成"
+
+        agent = FakeAgent()
+        cancellation = threading.Event()
+        controller = AgentTurnController(agent, cancellation)
+        worker = threading.Thread(
+            target=lambda: controller.run("需要立即取消", self._callbacks([])),
+            daemon=True,
+        )
+        worker.start()
+        self.assertTrue(agent.started.wait(1.0))
+
+        try:
+            started_at = time.monotonic()
+            controller.cancel()
+            elapsed = time.monotonic() - started_at
+            self.assertLess(elapsed, 0.5)
+            self.assertTrue(agent.stream.closed.is_set())
+        finally:
+            agent.stream.close()
+            unregister_stream(agent.stream)
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+
+    def test_parallel_worker_resource_is_cancelled_with_the_turn_scope(self) -> None:
+        """并行工具中的阻塞资源也必须在取消时立即关闭。"""
+
+        class BlockingStream:
+            def __init__(self) -> None:
+                self.closed = threading.Event()
+
+            def close(self) -> None:
+                self.closed.set()
+
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.stream = BlockingStream()
+                self.started = threading.Event()
+
+            def preload_mcp_tools(self) -> None:
+                raise AssertionError("本测试不应调用 MCP 预热")
+
+            def run_stream(self, _text: str, _on_delta, **callbacks: Any) -> str:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    context = copy_context()
+                    executor.submit(
+                        context.run,
+                        register_stream,
+                        self.stream,
+                    ).result()
+                    self.started.set()
+                    while not self.stream.closed.wait(0.01):
+                        callbacks["cancel_check"]()
+                    callbacks["cancel_check"]()
+                return "不应完成"
+
+        agent = FakeAgent()
+        controller = AgentTurnController(agent, threading.Event())
+        worker = threading.Thread(
+            target=lambda: controller.run("并行工具", self._callbacks([])),
+            daemon=True,
+        )
+        worker.start()
+        self.assertTrue(agent.started.wait(1.0))
+
+        try:
+            controller.cancel()
+            self.assertTrue(agent.stream.closed.wait(0.5))
+        finally:
+            agent.stream.close()
+            unregister_stream(agent.stream)
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+
     def test_run_cancels_at_agent_protocol_checkpoint(self) -> None:
         """预先请求取消时，控制器传入的检查函数必须立即中断 Agent。"""
 
@@ -125,6 +227,7 @@ class AgentTurnControllerTests(unittest.TestCase):
         with self.assertRaisesRegex(KeyboardInterrupt, "用户取消当前任务"):
             controller.run("需要取消", self._callbacks([]))
         self.assertFalse(agent.continued_after_cancel)
+
 
     def test_preload_delegates_to_agent_without_swallowing_failures(self) -> None:
         """MCP 预热归控制器转发，异常仍交由 UI 层按照既有文案分类。"""

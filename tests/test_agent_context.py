@@ -471,11 +471,11 @@ class AgentContextInjectionTest(unittest.TestCase):
 
             agent._tools = {
                 "read_file": ToolDefinition("read_file", "read", "{}", False, concurrent_tool("read")),
-                "search_text": ToolDefinition("search_text", "search", "{}", False, concurrent_tool("search", ok=False)),
+                "grep": ToolDefinition("grep", "search", "{}", False, concurrent_tool("search", ok=False)),
             }
             calls = [
                 ToolCall("read_file", {}, "call_1", function_name_for_tool("read_file")),
-                ToolCall("search_text", {}, "call_2", function_name_for_tool("search_text")),
+                ToolCall("grep", {}, "call_2", function_name_for_tool("grep")),
             ]
             replies = iter([
                 AgentModelReply(
@@ -1154,12 +1154,12 @@ class AgentContextInjectionTest(unittest.TestCase):
             store=FakeStore(),  # type: ignore[arg-type]
             roots={},
             before={},
-            executed_tools=["read_file", "search_text", "read_file"],
+            executed_tools=["read_file", "grep", "read_file"],
         )
         summary = LocalToolAgent._cancelled_turn_summary(snapshot)
         self.assertEqual(
             summary,
-            "（上一回合被取消，未生成最终回复）已执行工具：read_file×2，search_text",
+            "（上一回合被取消，未生成最终回复）已执行工具：read_file×2，grep",
         )
         self.assertEqual(
             LocalToolAgent._cancelled_turn_summary(None),

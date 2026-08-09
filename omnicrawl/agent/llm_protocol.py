@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterable
 
 from .types import AgentModelReply, ToolCall, ToolDefinition
 from ..llm import OpenAIResponseLLM, VALID_REASONING_EFFORTS
+from ..llm.stream_registry import registered_stream_events, stream_owner_for
 
 
 class AgentProtocolError(RuntimeError):
@@ -382,7 +383,10 @@ class AgentLLMProtocol:
         cancellation_error: Exception | None = None
 
         try:
-            for event in stream:
+            for event in registered_stream_events(
+                stream,
+                owner=stream_owner_for(cancel_check),
+            ):
                 if cancel_check is not None:
                     try:
                         cancel_check()

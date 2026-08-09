@@ -13,6 +13,7 @@ import shutil
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -24,6 +25,7 @@ from .approval_policy import (
     description_has_delete_intent,
     is_delete_behavior_tool_call,
     is_git_mutation_tool_call,
+    is_shell_command_tool_call,
     parse_tool_review_response,
     text_has_delete_intent,
     tool_accepts_shell_command,
@@ -188,7 +190,11 @@ from ..state.turn_snapshot import (
     SnapshotError,
     SnapshotRoot,
 )
-from ..state.session_artifacts import redact_sensitive_text, redact_sensitive_values
+from ..state.session_artifacts import (
+    preview_text,
+    redact_sensitive_text,
+    redact_sensitive_values,
+)
 from ..skill import SkillManager, SkillMatchResult
 from ..temp_workspace import (
     AgentTempWorkspace,
@@ -278,7 +284,7 @@ _READ_ONLY_UNDO_TOOLS = frozenset(
         "find_files",
         "read_file",
         "read_image",
-        "search_text",
+        "grep",
         "recall_session_evidence",
         "memory_search",
         "memory_read",
@@ -792,6 +798,13 @@ class LocalToolAgent:
         if coordinator is None:
             raise AgentError("SubAgent 功能未启用。")
         return coordinator.get_task(task_id)
+
+    def cancel_active_turn(self, reason: str = "父 Agent 回合已取消。") -> None:
+        """主动取消当前回合关联的 SubAgent、审批和后台任务，不等待收尾。"""
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is not None:
+            coordinator.cancel_active(reason)
 
     def cancel_subagent_task(self, task_id: str) -> dict[str, Any]:
         """请求取消当前会话的后台 SubAgent 任务，不等待其最终退出。"""
@@ -3264,8 +3277,13 @@ class LocalToolAgent:
                 call_step, tool_call, _tool, _denied = normalized_calls[index]
                 report_tool_start(call_step, tool_call)
             with ThreadPoolExecutor(max_workers=len(parallel_indexes)) as executor:
+                turn_context = copy_context()
                 futures = {
-                    index: executor.submit(execute_call, index)
+                    index: executor.submit(
+                        turn_context.copy().run,
+                        execute_call,
+                        index,
+                    )
                     for index in parallel_indexes
                 }
                 # 按模型调用顺序等待并回填，而不是按任务完成顺序回填。
@@ -3929,7 +3947,7 @@ class LocalToolAgent:
         if mode == APPROVAL_MODE_AUTO:
             return True, ""
         if mode == APPROVAL_MODE_REVIEW:
-            if not self._is_delete_behavior_tool_call(tool, arguments):
+            if not is_shell_command_tool_call(tool, arguments):
                 return True, ""
             return self._review_tool_call(tool, arguments)
         return self._confirm(
@@ -4026,7 +4044,8 @@ class LocalToolAgent:
             find_files=self._tool_find_files,
             read_file=self._tool_read_file,
             read_image=self._tool_read_image,
-            search_text=self._tool_search_text,
+            grep=self._tool_grep,
+            web_search=self._tool_web_search,
             replace_text=self._tool_replace_text,
             write_file=self._tool_write_file,
             bash=self._tool_bash,
@@ -4139,8 +4158,18 @@ class LocalToolAgent:
             workspace_root=Path(self._workspace_toolbox().workspace_root),
         )
 
-    def _tool_search_text(self, arguments: dict[str, Any]) -> ToolResult:
-        return workspace_tool_result(self._workspace_toolbox().search_text, arguments)
+    def _tool_grep(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().grep, arguments)
+
+    def _tool_web_search(self, arguments: dict[str, Any]) -> ToolResult:
+        """使用 Google/Bing/DuckDuckGo 搜索公开网页（见 omnicrawl/web_search.py）。"""
+
+        try:
+            from omnicrawl.web_search import WebSearch
+
+            return ToolResult(ok=True, output=WebSearch().search(arguments))
+        except RuntimeError as exc:
+            return ToolResult(ok=False, output=str(exc))
 
     def _tool_replace_text(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().replace_text, arguments)
@@ -4957,9 +4986,13 @@ class LocalToolAgent:
         self._session_facade().append_prompt_history(text)
 
     def _truncate_tool_output(self, output: str) -> str:
-        if len(output) <= self.config.max_tool_output_chars:
+        maximum = max(1, int(self.config.max_tool_output_chars))
+        if len(output) <= maximum:
             return output
-        return output[: self.config.max_tool_output_chars] + "\n... 工具输出已截断。"
+        return (
+            f"{preview_text(output, maximum)}\n"
+            "... 工具输出已截断。"
+        )
 
     @staticmethod
     def _tool_result_message(tool_call: ToolCall, result: ToolResult) -> dict[str, Any]:

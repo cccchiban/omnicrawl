@@ -29,6 +29,7 @@ from ..protocol import (
     UsageUpdated,
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
+from ..stream_registry import registered_stream_events, stream_owner_for
 from ..usage import usage_from_gemini_payload
 from .openai_common import parse_tool_arguments, resolve_api_key, user_agent_headers
 
@@ -112,7 +113,10 @@ class GeminiGenerateContentRuntime:
         emitted_calls: set[str] = set()
         finish_reason = "stop"
         try:
-            for chunk in stream:
+            for chunk in registered_stream_events(
+                stream,
+                owner=stream_owner_for(cancel_check),
+            ):
                 if cancel_check is not None:
                     cancel_check()
                 usage = usage_from_gemini_payload(chunk)

@@ -109,19 +109,30 @@ class WorkspaceSearchContractTest(unittest.TestCase):
         self.assertIn("nested", output)
         self.assertIn("AgentCore.py", output)
 
-    def test_search_text_treats_regex_metacharacters_as_literal_keyword(self) -> None:
+    def test_grep_matches_regex_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
             (workspace / "sample.txt").write_text("axb\na.*b\n", encoding="utf-8")
-            output = WorkspaceTools(workspace).search_text({"pattern": "a.*b"})
+            output = WorkspaceTools(workspace).grep({"pattern": "a.b"})
+
+        self.assertIn("sample.txt:1: axb", output)
+        self.assertNotIn("sample.txt:2", output)
+
+    def test_grep_literal_mode_treats_regex_metacharacters_as_keyword(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            (workspace / "sample.txt").write_text("axb\na.*b\n", encoding="utf-8")
+            output = WorkspaceTools(workspace).grep(
+                {"pattern": "a.*b", "use_regex": False}
+            )
 
         self.assertIn("sample.txt:2: a.*b", output)
         self.assertNotIn("sample.txt:1: axb", output)
 
-    def test_search_text_rejects_user_home_itself(self) -> None:
+    def test_grep_rejects_user_home_itself(self) -> None:
         tools = WorkspaceTools(Path.home())
         with self.assertRaisesRegex(WorkspaceToolError, "具体项目子目录"):
-            tools.search_text({"pattern": "needle", "path": "."})
+            tools.grep({"pattern": "needle", "path": "."})
 
     def test_search_indexes_are_disabled_by_default(self) -> None:
         config = AgentConfig(
@@ -161,14 +172,14 @@ class ProjectSearchIndexTest(unittest.TestCase):
                 self.assertIn(
                     "AgentCore.py", tools.find_files({"pattern": "agentcore"})
                 )
-                self.assertIn("keyword", tools.search_text({"pattern": "keyword"}))
+                self.assertIn("keyword", tools.grep({"pattern": "keyword", "use_regex": False}))
 
                 tools.write_file(
                     {"path": "src/new.txt", "content": "fresh indexed value"}
                 )
                 self.assertIn("new.txt", tools.find_files({"pattern": "new.txt"}))
                 self.assertIn(
-                    "fresh indexed value", tools.search_text({"pattern": "fresh"})
+                    "fresh indexed value", tools.grep({"pattern": "fresh", "use_regex": False})
                 )
             finally:
                 index.close()
@@ -208,7 +219,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
                 self.assertIn("recover.py", tools.find_files({"pattern": "recover"}))
                 self.assertIn(
                     "recovered keyword",
-                    tools.search_text({"pattern": "recovered keyword"}),
+                    tools.grep({"pattern": "recovered keyword", "use_regex": False}),
                 )
             finally:
                 index.close()
@@ -303,7 +314,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
                 )
                 self.assertIn(
                     "after rename keyword",
-                    tools.search_text({"pattern": "after rename keyword"}),
+                    tools.grep({"pattern": "after rename keyword", "use_regex": False}),
                 )
             finally:
                 index.close()
@@ -334,7 +345,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
                     tools.find_files({"pattern": "nested.py"}), "未找到匹配结果。",
                 )
                 self.assertEqual(
-                    tools.search_text({"pattern": "stale keyword"}), "未找到匹配结果。",
+                    tools.grep({"pattern": "stale keyword", "use_regex": False}), "未找到匹配结果。",
                 )
             finally:
                 index.close()
@@ -377,7 +388,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
                 self.assertFalse(rebuild.called)
                 self.assertIn("cached.py", tools.find_files({"pattern": "cached"}))
                 self.assertIn(
-                    "persisted keyword", tools.search_text({"pattern": "persisted"})
+                    "persisted keyword", tools.grep({"pattern": "persisted", "use_regex": False})
                 )
             finally:
                 second.close()
@@ -420,7 +431,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
                 self.assertIn("recover.py", tools.find_files({"pattern": "recover"}))
                 self.assertIn(
                     "replay failure keyword",
-                    tools.search_text({"pattern": "replay failure keyword"}),
+                    tools.grep({"pattern": "replay failure keyword", "use_regex": False}),
                 )
             finally:
                 second.close()
@@ -463,10 +474,10 @@ class ProjectSearchIndexTest(unittest.TestCase):
                         "未变化文件不应在核对时被重新读取",
                     )
                     self.assertIn(
-                        "changed content", tools.search_text({"pattern": "changed"})
+                        "changed content", tools.grep({"pattern": "changed", "use_regex": False})
                     )
                     self.assertIn(
-                        "stable content", tools.search_text({"pattern": "stable"})
+                        "stable content", tools.grep({"pattern": "stable", "use_regex": False})
                     )
             finally:
                 index.close()
@@ -490,10 +501,10 @@ class ProjectSearchIndexTest(unittest.TestCase):
             index.start()
             try:
                 self.assertTrue(index.wait_until_ready(5))
-                self.assertIn("ab", tools.search_text({"pattern": "ab"}))
-                self.assertIn("ke", tools.search_text({"pattern": "ke"}))
+                self.assertIn("ab", tools.grep({"pattern": "ab", "use_regex": False}))
+                self.assertIn("ke", tools.grep({"pattern": "ke", "use_regex": False}))
                 self.assertEqual(
-                    tools.search_text({"pattern": "xy"}), "未找到匹配结果。",
+                    tools.grep({"pattern": "xy", "use_regex": False}), "未找到匹配结果。",
                 )
             finally:
                 index.close()
@@ -522,7 +533,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
                 self.assertIn("big.bin", tools.find_files({"pattern": "big.bin"}))
                 # 内容不应进入 FTS：直接查询索引，不能命中 big.bin。
                 self.assertEqual(
-                    index.search_text(
+                    index.search_literal(
                         "x" * 8, root=workspace, case_sensitive=False, max_results=5,
                     ),
                     [],
@@ -545,7 +556,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
             # 索引关闭时：直接扫描能命中排除目录。
             self.assertIn("artifact.py", tools.find_files({"pattern": "artifact"}))
             self.assertIn(
-                "excluded dir keyword", tools.search_text({"pattern": "excluded"})
+                "excluded dir keyword", tools.grep({"pattern": "excluded", "use_regex": False})
             )
 
             index = ProjectSearchIndex(
@@ -571,7 +582,7 @@ class ProjectSearchIndexTest(unittest.TestCase):
                 # 工具层合并排除目录的补充扫描，结果与直接扫描一致。
                 self.assertIn("artifact.py", tools.find_files({"pattern": "artifact"}))
                 self.assertIn(
-                    "excluded dir keyword", tools.search_text({"pattern": "excluded"})
+                    "excluded dir keyword", tools.grep({"pattern": "excluded", "use_regex": False})
                 )
                 self.assertIn("main.py", tools.find_files({"pattern": "main"}))
             finally:

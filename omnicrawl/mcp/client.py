@@ -54,6 +54,7 @@ class MCPToolCallResult:
     server_name: str
     tool_name: str
     output: str
+    full_output: str = ""
     error_code: str | None = None
     retryable: bool = False
     duration_ms: int = 0
@@ -68,6 +69,7 @@ class MCPResourceReadResult:
     server_name: str
     uri: str
     output: str
+    full_output: str = ""
     error_code: str | None = None
     retryable: bool = False
     duration_ms: int = 0
@@ -81,6 +83,7 @@ class MCPPromptReadResult:
     server_name: str
     prompt_name: str
     output: str
+    full_output: str = ""
     error_code: str | None = None
     retryable: bool = False
     duration_ms: int = 0
@@ -266,6 +269,7 @@ class MCPClientManager:
             server_name=meta.server_name,
             tool_name=meta.tool_name,
             output=_truncate_output(output, self.config.max_tool_output_chars),
+            full_output=output,
             error_code=error_code,
             retryable=retryable,
             duration_ms=duration_ms,
@@ -343,6 +347,7 @@ class MCPClientManager:
             server_name=meta.server_name,
             uri=meta.uri,
             output=_truncate_output(output, self.config.max_tool_output_chars),
+            full_output=output,
             error_code=error_code,
             retryable=retryable,
             duration_ms=int((time.perf_counter() - started) * 1000),
@@ -395,6 +400,7 @@ class MCPClientManager:
             server_name=meta.server_name,
             prompt_name=meta.prompt_name,
             output=_truncate_output(output, self.config.max_tool_output_chars),
+            full_output=output,
             error_code=error_code,
             retryable=retryable,
             duration_ms=int((time.perf_counter() - started) * 1000),
@@ -576,7 +582,7 @@ class MCPClientManager:
             duration_ms=result.duration_ms,
             ok=result.ok,
             error_code=result.error_code,
-            output=result.output,
+            output=result.full_output or result.output,
         )
 
 

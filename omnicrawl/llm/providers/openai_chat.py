@@ -32,6 +32,7 @@ from ..protocol import (
     UsageUpdated,
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
+from ..stream_registry import registered_stream_events, stream_owner_for
 from ..usage import usage_from_openai_payload
 from .openai_common import (
     build_prompt_cache_key,
@@ -153,7 +154,10 @@ class OpenAIChatCompletionsRuntime:
         started: set[int] = set()
         finish_reason = "stop"
         try:
-            for event in stream:
+            for event in registered_stream_events(
+                stream,
+                owner=stream_owner_for(cancel_check),
+            ):
                 if cancel_check is not None:
                     cancel_check()
                 usage = usage_from_openai_payload(event)

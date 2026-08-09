@@ -14,12 +14,16 @@ from omnicrawl.llm.capabilities import (
     merge_capabilities,
 )
 from omnicrawl.llm.protocol import (
+    GenerationOptions,
     ModelIdentity,
+    ModelTurnRequest,
     ResponseCompleted,
     TextDelta,
     ToolCallCompleted,
     UsageUpdated,
 )
+from omnicrawl.llm.providers.openai_common import build_prompt_cache_key
+from omnicrawl.llm.providers.openai_responses import OpenAIResponsesRuntime
 from omnicrawl.llm.registry import ModelDescriptor, ProviderProfile
 from omnicrawl.llm.runtime import ModelRuntimeManager
 
@@ -219,6 +223,142 @@ class ModelRuntimeTests(unittest.TestCase):
         self.assertEqual(options.max_output_tokens, 512)
         self.assertEqual(options.temperature, 0.9)
         manager.close()
+
+    def test_should_send_stable_prompt_cache_key_for_gpt_responses_runtime(self) -> None:
+        """GPT Responses 请求必须带稳定的缓存路由键。"""
+
+        calls: list[dict] = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            return iter(
+                [
+                    type(
+                        "ResponseTextDelta",
+                        (),
+                        {"type": "response.output_text.delta", "delta": "完成"},
+                    )()
+                ]
+            )
+
+        identity = ModelIdentity(
+            profile_id="p1",
+            provider="openai",
+            protocol="openai_responses",
+            model_id="gpt-5.4-mini",
+        )
+        profile = ProviderProfile(
+            id="p1",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="test-key",
+            default_protocol="openai_responses",
+        )
+        descriptor = ModelDescriptor(
+            identity=identity,
+            display_name=identity.model_id,
+            capabilities=ModelCapabilities(
+                streaming=True,
+                tools=True,
+                reasoning=True,
+            ),
+            context_window_tokens=128_000,
+        )
+        runtime = OpenAIResponsesRuntime(
+            identity=identity,
+            capabilities=descriptor.capabilities.resolved(),
+            client=type(
+                "FakeClient",
+                (),
+                {"responses": type("FakeResponses", (), {"create": staticmethod(create)})()},
+            )(),
+            profile=profile,
+            descriptor=descriptor,
+            _owns_client=False,
+        )
+        request = ModelTurnRequest(
+            identity=identity,
+            system_prompt="stable system prompt",
+            messages=(),
+            generation_options=GenerationOptions(request_timeout_seconds=30),
+            prompt_cache_identity={"workspace": "w", "prompt": "stable"},
+        )
+
+        list(runtime.stream_turn(request))
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0].get("prompt_cache_key"),
+            build_prompt_cache_key(
+                request.prompt_cache_identity,
+                model=identity.model_id,
+            ),
+        )
+
+    def test_should_retry_responses_without_prompt_cache_key_when_gateway_rejects_it(self) -> None:
+        """不支持 prompt_cache_key 的网关应降级重试一次。"""
+
+        calls: list[dict] = []
+
+        def create(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError("unknown parameter prompt_cache_key")
+            return iter(
+                [
+                    type(
+                        "ResponseTextDelta",
+                        (),
+                        {"type": "response.output_text.delta", "delta": "完成"},
+                    )()
+                ]
+            )
+
+        identity = ModelIdentity(
+            profile_id="p1",
+            provider="openai",
+            protocol="openai_responses",
+            model_id="gpt-5.4-mini",
+        )
+        profile = ProviderProfile(
+            id="p1",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="test-key",
+            default_protocol="openai_responses",
+        )
+        descriptor = ModelDescriptor(
+            identity=identity,
+            display_name=identity.model_id,
+            capabilities=ModelCapabilities(streaming=True, tools=True, reasoning=True),
+            context_window_tokens=128_000,
+        )
+        runtime = OpenAIResponsesRuntime(
+            identity=identity,
+            capabilities=descriptor.capabilities.resolved(),
+            client=type(
+                "FakeClient",
+                (),
+                {"responses": type("FakeResponses", (), {"create": staticmethod(create)})()},
+            )(),
+            profile=profile,
+            descriptor=descriptor,
+            _owns_client=False,
+        )
+        request = ModelTurnRequest(
+            identity=identity,
+            system_prompt="stable system prompt",
+            messages=(),
+            generation_options=GenerationOptions(request_timeout_seconds=30),
+            prompt_cache_identity={"workspace": "w", "prompt": "stable"},
+        )
+
+        events = list(runtime.stream_turn(request))
+
+        self.assertEqual(len(calls), 2)
+        self.assertIn("prompt_cache_key", calls[0])
+        self.assertNotIn("prompt_cache_key", calls[1])
+        self.assertEqual(events[0].text, "完成")
 
     def test_agent_protocol_uses_runtime_stream(self) -> None:
         profile, descriptor = self._descriptor()

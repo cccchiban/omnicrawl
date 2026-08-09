@@ -20,6 +20,7 @@ from ..protocol import (
     ModelIdentity,
     ModelStreamEvent,
     ModelTurnRequest,
+    ProviderWarning,
     ReasoningDelta,
     ResponseCompleted,
     TextBlock,
@@ -31,11 +32,14 @@ from ..protocol import (
     UsageUpdated,
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
+from ..stream_registry import registered_stream_events, stream_owner_for
 from ..usage import usage_from_openai_payload
 from .openai_common import (
+    build_prompt_cache_key,
     create_openai_client,
     format_openai_error,
     is_retryable_model_request_error,
+    is_unsupported_prompt_cache_error,
     parse_tool_arguments,
     resolve_api_key,
     sanitize_provider_options,
@@ -93,16 +97,44 @@ class OpenAIResponsesRuntime:
         if options.temperature is not None:
             kwargs["temperature"] = options.temperature
 
+        prompt_cache_key = build_prompt_cache_key(
+            request.prompt_cache_identity,
+            model=self.identity.model_id,
+        )
+        if prompt_cache_key:
+            kwargs["prompt_cache_key"] = prompt_cache_key
+        prompt_cache_warning = False
+
         try:
             stream = self.client.responses.create(**kwargs)
         except Exception as exc:
-            raise ModelError(
-                code=ModelErrorCode.CONNECTION_FAILED
-                if is_retryable_model_request_error(exc)
-                else ModelErrorCode.INVALID_REQUEST,
-                message=f"Responses 请求失败：{format_openai_error(exc)}",
-                retryable=is_retryable_model_request_error(exc),
-            ) from exc
+            if "prompt_cache_key" in kwargs and is_unsupported_prompt_cache_error(exc):
+                kwargs.pop("prompt_cache_key", None)
+                try:
+                    stream = self.client.responses.create(**kwargs)
+                    prompt_cache_warning = True
+                except Exception as retry_exc:
+                    retryable = is_retryable_model_request_error(retry_exc)
+                    raise ModelError(
+                        code=(
+                            ModelErrorCode.CONNECTION_FAILED
+                            if retryable
+                            else ModelErrorCode.INVALID_REQUEST
+                        ),
+                        message=f"Responses 请求失败：{format_openai_error(retry_exc)}",
+                        retryable=retryable,
+                    ) from retry_exc
+            else:
+                retryable = is_retryable_model_request_error(exc)
+                raise ModelError(
+                    code=(
+                        ModelErrorCode.CONNECTION_FAILED
+                        if retryable
+                        else ModelErrorCode.INVALID_REQUEST
+                    ),
+                    message=f"Responses 请求失败：{format_openai_error(exc)}",
+                    retryable=retryable,
+                ) from exc
 
         # 累积 function_call 参数分片，并记录已完成 call_id，避免 SDK 在
         # output_item.done 与 response.completed.output 重复报告同一调用。
@@ -110,7 +142,10 @@ class OpenAIResponsesRuntime:
         emitted_call_ids: set[str] = set()
         finish_reason = "stop"
         try:
-            for event in stream:
+            for event in registered_stream_events(
+                stream,
+                owner=stream_owner_for(cancel_check),
+            ):
                 if cancel_check is not None:
                     cancel_check()
                 usage = usage_from_openai_payload(event)
@@ -195,6 +230,14 @@ class OpenAIResponsesRuntime:
                 message=f"Responses 流式回复中断：{format_openai_error(exc)}",
                 retryable=is_retryable_model_request_error(exc),
             ) from exc
+
+        # Responses 的降级提示放在正常流事件之后，避免在模型首个文本增量前
+        # 插入非内容事件，保持 UI 首屏输出和旧 Provider 的事件顺序稳定。
+        if prompt_cache_warning:
+            yield ProviderWarning(
+                code="prompt_cache_unsupported",
+                message="当前网关不支持 prompt_cache_key，已自动移除后重试。",
+            )
 
         # 收尾未完成的 function call
         for call_id, buf in list(call_buffers.items()):

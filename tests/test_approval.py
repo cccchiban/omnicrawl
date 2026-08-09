@@ -9,6 +9,7 @@ import yaml
 from unittest.mock import patch
 
 from omnicrawl.agent import LocalToolAgent, ToolDefinition, ToolCall
+from omnicrawl.agent.approval_policy import is_shell_command_tool_call
 from omnicrawl.agent.tools import normalize_tool_call
 from omnicrawl.approval import (
     APPROVAL_MODE_AUTO,
@@ -139,7 +140,7 @@ class ApprovalCommandTest(unittest.TestCase):
         self.assertEqual(read_call.arguments["start_line"], 2)
         self.assertEqual(read_call.arguments["max_lines"], 30)
 
-    def test_review_mode_skips_non_delete_tool_calls(self) -> None:
+    def test_delete_intent_skips_non_delete_tool_calls(self) -> None:
         tool = ToolDefinition(
             name="powershell",
             description="使用 PowerShell 在工作区执行命令。",
@@ -161,7 +162,7 @@ class ApprovalCommandTest(unittest.TestCase):
             )
         )
 
-    def test_review_mode_detects_delete_commands(self) -> None:
+    def test_delete_intent_detects_delete_commands(self) -> None:
         tool = ToolDefinition(
             name="powershell",
             description="使用 PowerShell 在工作区执行命令。",
@@ -195,7 +196,7 @@ class ApprovalCommandTest(unittest.TestCase):
             )
         )
 
-    def test_review_mode_detects_cmd_and_script_delete_commands(self) -> None:
+    def test_delete_intent_detects_cmd_and_script_delete_commands(self) -> None:
         tool = ToolDefinition(
             name="demo.shell",
             description="执行 shell 命令。",
@@ -217,7 +218,7 @@ class ApprovalCommandTest(unittest.TestCase):
             )
         )
 
-    def test_review_mode_detects_delete_like_mcp_tools(self) -> None:
+    def test_delete_intent_detects_delete_like_mcp_tools(self) -> None:
         tool = ToolDefinition(
             name="demo.file_operation",
             description="Delete a file in the workspace.",
@@ -233,7 +234,7 @@ class ApprovalCommandTest(unittest.TestCase):
             )
         )
 
-    def test_review_mode_detects_camel_case_delete_like_mcp_tools(self) -> None:
+    def test_delete_intent_detects_camel_case_delete_like_mcp_tools(self) -> None:
         tool = ToolDefinition(
             name="demo.fileOperation",
             description="removeFile in the workspace.",
@@ -249,7 +250,7 @@ class ApprovalCommandTest(unittest.TestCase):
             )
         )
 
-    def test_review_mode_skips_generic_mcp_description_without_delete_arguments(self) -> None:
+    def test_delete_intent_skips_generic_mcp_description_without_delete_arguments(self) -> None:
         tool = ToolDefinition(
             name="demo.file_operation",
             description="Create, update, read, or delete files in the workspace.",
@@ -264,6 +265,64 @@ class ApprovalCommandTest(unittest.TestCase):
                 {"path": "note.txt", "content": "delete 这个词只是正文"},
             )
         )
+
+
+    def test_auto_review_reviews_bash_and_powershell_commands(self) -> None:
+        bash_tool = ToolDefinition(
+            name="bash",
+            description="使用 Git Bash 执行命令。",
+            argument_schema='{"command": "pytest"}',
+            requires_confirmation=True,
+            run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+        )
+        powershell_tool = ToolDefinition(
+            name="powershell",
+            description="使用 PowerShell 执行命令。",
+            argument_schema='{"command": "Get-ChildItem"}',
+            requires_confirmation=True,
+            run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+        )
+
+        # 无论命令内容是否与删除相关，bash/powershell 命令都要进入自动审查。
+        self.assertTrue(is_shell_command_tool_call(bash_tool, {"command": "pytest"}))
+        self.assertTrue(
+            is_shell_command_tool_call(powershell_tool, {"command": "Get-ChildItem"})
+        )
+
+    def test_auto_review_skips_non_shell_tools(self) -> None:
+        read_tool = ToolDefinition(
+            name="read_file",
+            description="读取文件。",
+            argument_schema='{"path": "main.py"}',
+            requires_confirmation=False,
+            run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+        )
+        replace_tool = ToolDefinition(
+            name="replace_text",
+            description="替换文本。",
+            argument_schema='{"path": "main.py", "old_text": "a", "new_text": "b"}',
+            requires_confirmation=True,
+            run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+        )
+
+        self.assertFalse(is_shell_command_tool_call(read_tool, {"path": "main.py"}))
+        self.assertFalse(
+            is_shell_command_tool_call(
+                replace_tool,
+                {"path": "main.py", "old_text": "a", "new_text": "b"},
+            )
+        )
+
+    def test_auto_review_accepts_shell_tool_aliases(self) -> None:
+        alias_tool = ToolDefinition(
+            name="bashcommand",
+            description="执行 shell 命令。",
+            argument_schema='{"command": "pwd"}',
+            requires_confirmation=True,
+            run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+        )
+
+        self.assertTrue(is_shell_command_tool_call(alias_tool, {"command": "pwd"}))
 
 
 if __name__ == "__main__":

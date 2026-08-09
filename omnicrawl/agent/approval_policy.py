@@ -13,14 +13,13 @@ from .types import ToolDefinition
 
 
 TOOL_REVIEW_SYSTEM_PROMPT = (
-    "你是本地 OmniCrawl 的工具调用安全审查器。"
-    "review 模式下，Host 只会把疑似删除行为的工具调用交给你审查；非删除行为由 Host 自动放行。"
-    "你只判断这一次工具调用是否可以自动批准，不执行工具，也不补写方案。"
+    "你是本地 OmniCrawl 的命令执行安全审查器。"
+    "自动审查模式下，Host 会把通过 bash 和 powershell 工具执行的命令交给你审查；其他工具调用由 Host 自动放行。"
+    "你只判断这一次命令执行是否可以自动批准，不执行命令，也不补写方案。"
     "请用严格 JSON 回复：{\"approve\": true/false, \"reason\": \"一句中文理由\"}。"
-    "删除目标清晰、位于工作区内、影响范围明确时可以批准。"
-    "当请求明显越界访问、读取密钥、破坏系统、递归或批量删除大量文件、修改真实生产数据、"
-    "执行无法判断影响的危险删除命令，或参数不足以判断时，必须拒绝。"
-    "如果工具调用经判断不是删除行为，可以批准并说明无需删除审批。"
+    "命令目标清晰、位于工作区内、影响范围明确、且不会破坏工作区或系统时可以批准。"
+    "当命令明显越界访问、读取密钥、破坏系统、删除或覆盖大量文件、修改真实生产数据、"
+    "执行无法判断影响的危险命令，或参数不足以判断时，必须拒绝。"
 )
 
 _DELETE_COMMAND_PATTERN = re.compile(
@@ -103,6 +102,18 @@ _DELETE_INTENT_KEYS = {
     "verb",
 }
 _MCP_DELETE_INTENT_KEYS = _DELETE_INTENT_KEYS
+
+
+def is_shell_command_tool_call(tool: ToolDefinition, arguments: dict[str, Any]) -> bool:
+    """判断工具调用是否通过 bash 或 powershell 执行命令，供自动审查模式决定是否进入审查。
+
+    自动审查模式的目标是减少普通文件读写、搜索等工具的审批噪音，只把真正需要
+    守住的 bash/powershell 命令执行交给审查模型。这里优先按工具名识别，同时兼容
+    bashcommand / powershellcommand 这类常见别名；不扫描正文参数，避免误判。
+    """
+
+    normalized_name = re.sub(r"[^a-z0-9]+", "_", tool.name.casefold()).strip("_")
+    return normalized_name in {"bash", "bashcommand", "powershell", "powershellcommand"}
 
 
 def is_delete_behavior_tool_call(tool: ToolDefinition, arguments: dict[str, Any]) -> bool:

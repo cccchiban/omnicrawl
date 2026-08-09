@@ -196,6 +196,9 @@ class GitSnapshotStore:
             )
             pathspecs = list(root.included) or ["."]
             exclusions = tuple(dict.fromkeys((".git", *root.excluded)))
+            if os.name == "nt":
+                # `-f` 会绕过 .gitignore；Git for Windows 不能把 NUL 设备写入索引。
+                exclusions = (*exclusions, "NUL")
             for excluded in exclusions:
                 pathspecs.append(f":(exclude){excluded}")
                 pathspecs.append(f":(exclude){excluded}/**")

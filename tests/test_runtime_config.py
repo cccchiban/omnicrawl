@@ -525,6 +525,18 @@ class RuntimeConfigTest(unittest.TestCase):
         run_fullscreen_tui.assert_called_once_with(agent, fullscreen_startup.return_value)
         agent.close.assert_called_once()
 
+    def test_windows_launcher_stays_in_existing_interactive_terminal(self) -> None:
+        """从 PowerShell 等交互式终端启动时不应另开窗口。"""
+
+        with patch("omnicrawl.ui.windows_launcher.os.name", "nt"):
+            with patch("omnicrawl.ui.windows_launcher._running_in_powershell_child", return_value=False):
+                with patch("omnicrawl.ui.windows_launcher._has_interactive_terminal", return_value=True):
+                    with patch("omnicrawl.ui.windows_launcher.subprocess.Popen") as popen:
+                        launched = launch_in_powershell_window(Path("main.py"), [])
+
+        self.assertFalse(launched)
+        popen.assert_not_called()
+
     def test_windows_launcher_forwards_resume_argument(self) -> None:
         popen_calls: list[dict[str, object]] = []
 
@@ -534,12 +546,13 @@ class RuntimeConfigTest(unittest.TestCase):
 
         with patch("omnicrawl.ui.windows_launcher.os.name", "nt"):
             with patch("omnicrawl.ui.windows_launcher._running_in_powershell_child", return_value=False):
-                with patch("omnicrawl.ui.windows_launcher.subprocess.Popen", side_effect=fake_popen):
-                    with patch("omnicrawl.ui.windows_launcher.subprocess.CREATE_NEW_CONSOLE", 16, create=True):
-                        launched = launch_in_powershell_window(
-                            Path("main.py"),
-                            ["--resume", "20260616-201530-a1b2c3"],
-                        )
+                with patch("omnicrawl.ui.windows_launcher._has_interactive_terminal", return_value=False):
+                    with patch("omnicrawl.ui.windows_launcher.subprocess.Popen", side_effect=fake_popen):
+                        with patch("omnicrawl.ui.windows_launcher.subprocess.CREATE_NEW_CONSOLE", 16, create=True):
+                            launched = launch_in_powershell_window(
+                                Path("main.py"),
+                                ["--resume", "20260616-201530-a1b2c3"],
+                            )
 
         self.assertTrue(launched)
         command = popen_calls[0]["command"]
@@ -547,8 +560,9 @@ class RuntimeConfigTest(unittest.TestCase):
         power_shell_command = command[-1]
         self.assertIn("'--resume' '20260616-201530-a1b2c3'", power_shell_command)
 
-    def test_windows_launcher_cleans_terminal_before_close_prompt(self) -> None:
-        """子进程退出后应由仍存活的 PowerShell 宿主清理协议和残留输入。"""
+
+    def test_windows_launcher_cleans_terminal_before_exit(self) -> None:
+        """子进程退出后应由仍存活的 PowerShell 宿主清理协议并立即退出。"""
 
         popen_calls: list[dict[str, object]] = []
 
@@ -572,11 +586,10 @@ class RuntimeConfigTest(unittest.TestCase):
         for mode in ("1000l", "1003l", "1006l", "1004l", "2004l", "<u", "25h"):
             self.assertIn(mode, power_shell_command)
         self.assertIn("FlushInputBuffer", power_shell_command)
-        self.assertLess(
-            power_shell_command.index("FlushInputBuffer"),
-            power_shell_command.index("Read-Host"),
-        )
+        self.assertNotIn("Read-Host", power_shell_command)
+        self.assertIn("exit $appExitCode", power_shell_command)
         self.assertIn("界面意外退出", power_shell_command)
+
 
 
 if __name__ == "__main__":

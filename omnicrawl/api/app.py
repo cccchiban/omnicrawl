@@ -19,7 +19,7 @@ from ..config.llm import load_llm_config
 from ..config.runtime import get_section, load_config_data
 from ..config.settings import load_feature_enabled
 from ..config.subagents import load_subagent_config
-from ..workspace.context import detect_project_context
+from ..workspace.context import detect_project_context, should_disable_content_index
 from ..workspace.temp import load_agent_temp_workspace_config
 from .deps import data, error_response
 from .models import APIConfig, APIServiceError
@@ -104,8 +104,9 @@ def create_default_agent() -> LocalToolAgent:
                 file_name_index_enabled=load_feature_enabled(
                     "file_name_index", default=False
                 ),
-                content_index_enabled=load_feature_enabled(
-                    "content_index", default=False
+                content_index_enabled=(
+                    load_feature_enabled("content_index", default=False)
+                    and not should_disable_content_index(project_context)
                 ),
                 temp_workspace=load_agent_temp_workspace_config(),
                 subagents=load_subagent_config(),

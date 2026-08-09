@@ -43,10 +43,21 @@ def _running_in_powershell_child() -> bool:
     return os.getenv(POWERSHELL_CHILD_ENV) == "1"
 
 
-def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None) -> bool:
-    """从 IDE 或测试窗口启动时，弹出独立 PowerShell 运行本脚本。"""
+def _has_interactive_terminal() -> bool:
+    """判断是否已有可复用的交互式终端。"""
 
-    if os.name != "nt" or _running_in_powershell_child():
+    return bool(
+        sys.stdin is not None
+        and sys.stdout is not None
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    )
+
+
+def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None) -> bool:
+    """从没有交互式终端的启动方式弹出独立 PowerShell 运行本脚本。"""
+
+    if os.name != "nt" or _running_in_powershell_child() or _has_interactive_terminal():
         return False
 
     script_path = script_path.resolve()
@@ -65,8 +76,7 @@ def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None
         "Write-Host \"OmniCrawl 界面意外退出（代码 $appExitCode），请保留上方错误信息。\" "
         "-ForegroundColor Red; "
         "}; "
-        "Read-Host '对话已结束，按 Enter 关闭窗口'"
-        "; exit $appExitCode"
+        "exit $appExitCode"
     )
 
     try:

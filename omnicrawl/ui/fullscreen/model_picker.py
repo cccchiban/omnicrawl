@@ -67,6 +67,23 @@ class _ModelList(Static):
     can_focus = True
 
 
+class _ModelPickerSearchInput(Input):
+    """搜索框方向键直接交还模型列表导航。"""
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key not in {"up", "down"}:
+            return
+        screen = getattr(self, "screen", None)
+        focus_list = getattr(screen, "_focus_active_list", None)
+        move = getattr(screen, "action_move_up" if event.key == "up" else "action_move_down", None)
+        if callable(focus_list):
+            focus_list()
+        if callable(move):
+            move()
+        event.prevent_default()
+        event.stop()
+
+
 class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
     """宽终端左右双列，窄终端上下分区。"""
 
@@ -188,7 +205,10 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
                 "选择视觉模型" if self._selection_only else "模型切换",
                 id="model-picker-title",
             )
-            yield Input(placeholder="搜索 key / 别名 / 模型 ID / provider / tag", id="model-picker-search")
+            yield _ModelPickerSearchInput(
+                placeholder="搜索 key / 别名 / 模型 ID / provider / tag",
+                id="model-picker-search",
+            )
             with Vertical(id="model-picker-body"):
                 with Horizontal(id="model-picker-columns"):
                     with Vertical(classes="model-column active-column", id="column-channels"):
@@ -243,7 +263,6 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self._render_lists()
 
     def action_move_up(self) -> None:
-        self._focus_active_list()
         if self._active_column == 0:
             channels = self._filtered_channels(self._channels)
             if channels:
@@ -254,7 +273,6 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self._render_lists()
 
     def action_move_down(self) -> None:
-        self._focus_active_list()
         if self._active_column == 0:
             channels = self._filtered_channels(self._channels)
             if channels:
