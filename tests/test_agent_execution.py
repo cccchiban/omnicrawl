@@ -52,7 +52,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
         self.assertEqual(result.messages, messages)
 
     def test_runner_hands_each_reply_to_one_batch_callback_and_preserves_observation_order(self) -> None:
-        first = ToolCall("read_file", {"path": "a.py"}, "call_1")
+        first = ToolCall("read", {"path": "a.py"}, "call_1")
         second = ToolCall("grep", {"text": "Agent"}, "call_2")
         replies = iter(
             [
@@ -104,7 +104,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
         self.assertTrue(result.content_streamed)
 
     def test_runner_checks_cancellation_before_request_and_after_batch(self) -> None:
-        call = ToolCall("read_file", {}, "call_1")
+        call = ToolCall("read", {}, "call_1")
         replies = iter(
             [
                 AgentModelReply(
@@ -137,7 +137,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
         self.assertGreaterEqual(checks, 3)
 
     def test_runner_rejects_model_turn_and_tool_call_budget_overruns(self) -> None:
-        tool_call = ToolCall("read_file", {}, "call_1")
+        tool_call = ToolCall("read", {}, "call_1")
         runner = AgentLoopRunner()
 
         with self.assertRaisesRegex(AgentLoopBudgetExceeded, "模型回合预算"):
@@ -184,7 +184,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
         agent = object.__new__(LocalToolAgent)
         agent.config = SimpleNamespace(max_tool_output_chars=6000)
         agent._tools = {
-            "read_file": ToolDefinition("read_file", "read", "{}", False, lambda _args: run("read")),
+            "read": ToolDefinition("read", "read", "{}", False, lambda _args: run("read")),
             "grep": ToolDefinition("grep", "search", "{}", False, lambda _args: run("search")),
         }
         events: list[str] = []
@@ -200,7 +200,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
         agent._approve_tool_for_batch = approve  # type: ignore[method-assign]
         agent._append_session_event = lambda _event, _payload: None  # type: ignore[method-assign]
         agent._execute_tool_batch(
-            [ToolCall("read_file", {}, "call_1"), ToolCall("grep", {}, "call_2")],
+            [ToolCall("read", {}, "call_1"), ToolCall("grep", {}, "call_2")],
             1,
             report_tool_start=lambda _step, _call: None,
             report_tool_result=lambda _call, _result: None,
@@ -208,7 +208,7 @@ class AgentLoopRunnerTest(unittest.TestCase):
             status=lambda _message: None,
         )
 
-        self.assertEqual(events[:2], ["approve:read_file", "approve:grep"])
+        self.assertEqual(events[:2], ["approve:read", "approve:grep"])
         self.assertCountEqual(events[2:], ["execute:read", "execute:search"])
 
     def test_subagent_public_arguments_projection_is_idempotent(self) -> None:

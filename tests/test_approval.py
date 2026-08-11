@@ -119,8 +119,30 @@ class ApprovalCommandTest(unittest.TestCase):
 
     def test_normalize_tool_call_accepts_common_tool_and_argument_aliases(self) -> None:
         tools = {
-            "read_file": ToolDefinition(
-                name="read_file",
+            "read_image": ToolDefinition(
+                name="read_image",
+                description="读取图片。",
+                argument_schema='{"path":"a.png","detail":"auto"}',
+                requires_confirmation=True,
+                run=lambda _arguments: None,  # type: ignore[arg-type,return-value]
+            ),
+        }
+
+        read_call = normalize_tool_call(
+            ToolCall(
+                name="readimage",
+                arguments={"path": "a.png", "detail": "high"},
+            ),
+            tools,
+        )
+
+        self.assertEqual(read_call.name, "read_image")
+        self.assertEqual(read_call.arguments["detail"], "high")
+
+    def test_normalize_tool_call_accepts_argument_name_aliases(self) -> None:
+        tools = {
+            "read": ToolDefinition(
+                name="read",
                 description="读取文件。",
                 argument_schema='{"path":"main.py","start_line":1,"max_lines":200}',
                 requires_confirmation=True,
@@ -130,13 +152,13 @@ class ApprovalCommandTest(unittest.TestCase):
 
         read_call = normalize_tool_call(
             ToolCall(
-                name="readfile",
+                name="read",
                 arguments={"path": "README.md", "startline": 2, "maxlines": 30},
             ),
             tools,
         )
 
-        self.assertEqual(read_call.name, "read_file")
+        self.assertEqual(read_call.name, "read")
         self.assertEqual(read_call.arguments["start_line"], 2)
         self.assertEqual(read_call.arguments["max_lines"], 30)
 
@@ -291,7 +313,7 @@ class ApprovalCommandTest(unittest.TestCase):
 
     def test_auto_review_skips_non_shell_tools(self) -> None:
         read_tool = ToolDefinition(
-            name="read_file",
+            name="read",
             description="读取文件。",
             argument_schema='{"path": "main.py"}',
             requires_confirmation=False,

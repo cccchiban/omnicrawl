@@ -540,7 +540,7 @@ class SkillManager:
         """将所有 Skill 的元数据以 XML 格式输出，供上下文消息使用。
 
         Pi 风格渐进式披露：只列出 name + description + location，
-        AI 自己用 read_file 工具加载需要的 SKILL.md 全文。
+        AI 自己用 read 工具加载需要的 SKILL.md 全文。
         disable_model_invocation=True 的技能不列出。
         """
         visible = [s for s in skills if not s.disable_model_invocation]
@@ -551,7 +551,7 @@ class SkillManager:
             "",
             "以下 Skill 提供了针对特定任务的专用指令。"
             "当你判断当前任务匹配某个 Skill 的描述时，"
-            "请使用 read_file 工具加载对应的 SKILL.md 文件，"
+            "请使用 read 工具加载对应的 SKILL.md 文件，"
             "然后严格遵循其中的指令执行。"
             "Skill 文件中引用的相对路径应相对于 SKILL.md 所在目录解析。",
             "",

@@ -18,9 +18,9 @@ class ToolDisplay:
 
 
 _TOOL_DISPLAY_NAMES = {
-    "list_files": "列出文件",
-    "find_files": "查找文件",
-    "read_file": "读取文件",
+    "list": "列出文件",
+    "find": "查找文件",
+    "read": "读取文件",
     "read_image": "读取图片",
     "grep": "搜索文本",
     "web_search": "网页搜索",
@@ -54,9 +54,9 @@ _TOOL_DISPLAY_NAMES = {
 }
 
 _TOOL_DISPLAY_ICONS = {
-    "list_files": "L",
-    "find_files": "F",
-    "read_file": "R",
+    "list": "L",
+    "find": "F",
+    "read": "R",
     "read_image": "▧",
     "grep": "G",
     "web_search": "W",
@@ -90,8 +90,8 @@ _TOOL_DISPLAY_ICONS = {
 }
 
 _MCP_OPERATION_NAMES = {
-    "list_files": "列出文件",
-    "read_file": "读取文件",
+    "list": "列出文件",
+    "read": "读取文件",
     "grep": "搜索文本",
     "replace_text": "替换文本",
     "write_file": "写入文件",
@@ -100,8 +100,8 @@ _MCP_OPERATION_NAMES = {
 }
 
 _MCP_OPERATION_ICONS = {
-    "list_files": "L",
-    "read_file": "R",
+    "list": "L",
+    "read": "R",
     "grep": "G",
     "replace_text": "✎",
     "write_file": "✚",

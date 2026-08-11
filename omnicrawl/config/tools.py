@@ -19,9 +19,9 @@ class ToolSwitchConfigError(RuntimeConfigError):
 
 # 可开关的内置工具（含条件注册工具；未注册条件下配置开关不会报错）。
 TOOL_SWITCH_KEYS: tuple[str, ...] = (
-    "list_files",
-    "find_files",
-    "read_file",
+    "list",
+    "find",
+    "read",
     "read_image",
     "grep",
     "web_search",
@@ -58,9 +58,9 @@ TOOL_SWITCH_DEFAULTS: dict[str, bool] = {
 TOOL_SWITCH_DEFAULTS["powershell"] = False
 
 TOOL_SWITCH_LABELS: dict[str, str] = {
-    "list_files": "列出目录内容",
-    "find_files": "按名称或路径查找文件",
-    "read_file": "读取文件内容",
+    "list": "列出目录内容",
+    "find": "按名称或路径查找文件",
+    "read": "读取文件内容",
     "read_image": "读取图片",
     "grep": "在文件中搜索文本（grep）",
     "web_search": "网页搜索（Google/Bing/DuckDuckGo）",

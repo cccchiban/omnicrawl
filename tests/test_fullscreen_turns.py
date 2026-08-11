@@ -56,9 +56,9 @@ class AgentTurnControllerTests(unittest.TestCase):
                 callbacks["on_status"]("正在思考")
                 callbacks["on_reasoning_delta"]("分析中")
                 callbacks["on_protocol_wait"]()
-                callbacks["on_tool_start"](1, SimpleNamespace(name="read_file"))
+                callbacks["on_tool_start"](1, SimpleNamespace(name="read"))
                 callbacks["on_tool_result"](
-                    SimpleNamespace(name="read_file"),
+                    SimpleNamespace(name="read"),
                     SimpleNamespace(output="读取完成"),
                 )
                 callbacks["on_token_usage"](12, 8, 3)
@@ -98,8 +98,8 @@ class AgentTurnControllerTests(unittest.TestCase):
                 ("status", "正在思考"),
                 ("reasoning", "分析中"),
                 ("protocol_wait",),
-                ("tool_start", 1, "read_file"),
-                ("tool_result", "read_file", "读取完成"),
+                ("tool_start", 1, "read"),
+                ("tool_result", "read", "读取完成"),
                 ("token_usage", 12, 8, 3),
                 ("retry_status", "正在重试"),
                 ("subagent", "subagent.task.started", "task-a1b2c3d4e5f6"),

@@ -277,7 +277,7 @@ class SharedWriterLockTests(unittest.TestCase):
                 name="writer",
                 description="w",
                 system_prompt="x",
-                tools=tuple(sorted(STANDARD_WRITE_TOOL_NAMES | {"read_file"})),
+                tools=tuple(sorted(STANDARD_WRITE_TOOL_NAMES | {"read"})),
                 disallowed_tools=(),
                 model="inherit",
                 permission_mode=mode,
@@ -293,7 +293,7 @@ class SharedWriterLockTests(unittest.TestCase):
                 requires_confirmation=False,
                 run=lambda arguments: None,
             )
-            for name in sorted(STANDARD_WRITE_TOOL_NAMES | {"read_file"})
+            for name in sorted(STANDARD_WRITE_TOOL_NAMES | {"read"})
         }
         empty_builtin = Path(tempfile.mkdtemp())
         coordinator = SubAgentCoordinator(

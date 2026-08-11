@@ -85,35 +85,28 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertEqual(switch.command(), "已切换工作区：D:/next")
         self.assertEqual(self.agent.workspace_calls, ["D:/next"])
 
-    def test_mcp_and_model_commands_remain_lazy(self) -> None:
-        """可能触发连接或模型探测的命令不能在分派阶段执行。"""
+    def test_mcp_command_remains_lazy(self) -> None:
+        """可能触发连接的 /mcp 不能在分派阶段执行。"""
 
         calls: list[tuple[str, Any]] = []
         dispatcher = CommandDispatcher(
             self.agent,
             format_mcp=lambda agent: calls.append(("mcp", agent)) or "MCP 状态",
-            handle_model=lambda agent, text: calls.append(("model", text)) or "模型状态",
         )
 
         mcp = dispatcher.dispatch("/mcp")
-        # 裸 /model 打开双列选择界面，不在分派阶段执行探测。
-        model = dispatcher.dispatch("/model")
+        # /model 已移除：模型设置只能通过设置面板进入，分派不再识别。
+        removed_model = dispatcher.dispatch("/model")
         removed_alias = dispatcher.dispatch("/models")
-        # 带参数时仍走慢命令 worker。
-        switch = dispatcher.dispatch("/model gpt-test")
+        removed_switch = dispatcher.dispatch("/model gpt-test")
 
         self.assertEqual(calls, [])
         self.assertEqual(mcp.execution, "slow")
-        self.assertTrue(model.open_model_picker)
-        self.assertFalse(model.model_picker_refresh)
-        self.assertIsNone(model.command)
-        self.assertTrue(model.refresh_context)
+        self.assertFalse(removed_model.handled)
         self.assertFalse(removed_alias.handled)
-        self.assertEqual(switch.execution, "slow")
-        self.assertTrue(switch.refresh_context)
+        self.assertFalse(removed_switch.handled)
         self.assertEqual(mcp.command(), "MCP 状态")
-        self.assertEqual(switch.command(), "模型状态")
-        self.assertEqual(calls, [("mcp", self.agent), ("model", "/model gpt-test")])
+        self.assertEqual(calls, [("mcp", self.agent)])
 
     def test_settings_opens_chinese_settings_panel_only_for_plural_command(self) -> None:
         settings = CommandDispatcher(self.agent).dispatch("/settings")
@@ -123,12 +116,6 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertTrue(settings.open_settings)
         self.assertTrue(settings.refresh_context)
         self.assertFalse(singular.handled)
-
-    def test_model_refresh_opens_picker_with_refresh_flag(self) -> None:
-        outcome = CommandDispatcher(self.agent).dispatch("/model --refresh")
-        self.assertTrue(outcome.handled)
-        self.assertTrue(outcome.open_model_picker)
-        self.assertTrue(outcome.model_picker_refresh)
 
     def test_plugins_command_is_readonly_immediate(self) -> None:
         """/plugins 只读状态应即时返回，不走慢命令 worker。"""

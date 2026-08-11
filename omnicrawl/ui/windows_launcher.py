@@ -55,7 +55,11 @@ def _has_interactive_terminal() -> bool:
 
 
 def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None) -> bool:
-    """从没有交互式终端的启动方式弹出独立 PowerShell 运行本脚本。"""
+    """从没有交互式终端的启动方式弹出独立 PowerShell 运行本脚本。
+
+    脚本结束后（无论 /quit 正常退出还是异常退出）窗口不关闭：先显式
+    回到启动目录，再以 ``-NoExit`` 保留一个可用提示符，方便用户继续操作。
+    """
 
     if os.name != "nt" or _running_in_powershell_child() or _has_interactive_terminal():
         return False
@@ -72,11 +76,18 @@ def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None
         "$appExitCode=$LASTEXITCODE; "
         f"{_powershell_terminal_cleanup()}"
         "Write-Host ''; "
+        # 显式回到启动目录：子进程的工作目录变化不会影响父 PowerShell，
+        # 但这里把“回到原路径”作为明确契约，也覆盖命令中途切目录的情况。
+        f"Set-Location -LiteralPath {_powershell_single_quoted(str(launch_cwd))}; "
         "if ($appExitCode -ne 0) { "
         "Write-Host \"OmniCrawl 界面意外退出（代码 $appExitCode），请保留上方错误信息。\" "
         "-ForegroundColor Red; "
+        "} else { "
+        "Write-Host 'OmniCrawl 已退出，已回到启动目录，可直接继续输入命令。' "
+        "-ForegroundColor DarkGray; "
         "}; "
-        "exit $appExitCode"
+        # 不执行 exit：配合 powershell.exe 的 -NoExit，窗口保持打开并停在启动目录。
+        "Write-Host ''"
     )
 
     try:
@@ -85,6 +96,7 @@ def launch_in_powershell_window(script_path: Path, argv: list[str] | None = None
                 "powershell.exe",
                 "-ExecutionPolicy",
                 "Bypass",
+                "-NoExit",
                 "-Command",
                 command,
             ],

@@ -37,11 +37,11 @@ class HostToolCatalogTest(unittest.TestCase):
         )
 
     def test_provider_surface_contains_only_fixed_tools(self) -> None:
-        catalog = HostToolCatalog({"read_file": self._tool("read_file")})
+        catalog = HostToolCatalog({"read": self._tool("read")})
         provider_tools = build_provider_tools(catalog)
 
         self.assertEqual(set(provider_tools), {SEARCH_TOOLS_NAME, INVOKE_TOOL_NAME})
-        self.assertNotIn("read_file", provider_tools)
+        self.assertNotIn("read", provider_tools)
         self.assertFalse(provider_tools[SEARCH_TOOLS_NAME].requires_confirmation)
         self.assertFalse(provider_tools[INVOKE_TOOL_NAME].requires_confirmation)
 
@@ -58,9 +58,105 @@ class HostToolCatalogTest(unittest.TestCase):
         self.assertEqual(entry["parameters"]["required"], ["notes", "mode"])
         self.assertNotIn("description", json.dumps(entry["parameters"], ensure_ascii=False))
 
+    def _simple_tool(
+        self, name: str, description: str, properties: dict | None = None
+    ) -> ToolDefinition:
+        return ToolDefinition(
+            name=name,
+            description=description,
+            argument_schema=json.dumps(
+                {
+                    "type": "object",
+                    "properties": properties or {"path": {"type": "string"}},
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                ensure_ascii=False,
+            ),
+            requires_confirmation=False,
+            run=lambda _arguments: ToolResult(ok=True, output="ok"),
+        )
+
+    def test_search_matches_parameter_names(self) -> None:
+        """参数名参与匹配：查询命中参数名时工具应进入候选。"""
+
+        catalog = HostToolCatalog(
+            {
+                "run_pipeline": self._simple_tool(
+                    "run_pipeline",
+                    "执行数据流水线",
+                    properties={"pattern": {"type": "string"}},
+                )
+            }
+        )
+
+        result = catalog.search({"query": "pattern", "limit": 4})
+        payload = json.loads(result.output)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["tools"][0]["name"], "run_pipeline")
+
+    def test_search_matches_tool_name_alias(self) -> None:
+        """工具别名参与搜索：readimage 应命中 read_image 且排在无关工具之前。"""
+
+        catalog = HostToolCatalog(
+            {
+                "read_image": self._simple_tool("read_image", "读取图片内容"),
+                "list": self._simple_tool("list", "列出目录文件"),
+            }
+        )
+
+        result = catalog.search({"query": "readimage", "limit": 4})
+        payload = json.loads(result.output)
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertEqual(payload["tools"][0]["name"], "read_image")
+
+    def test_search_normalizes_fullwidth_query(self) -> None:
+        """全角/半角归一化：全角查询与工具名等价命中。"""
+
+        catalog = HostToolCatalog(
+            {"read": self._simple_tool("read", "读取文件内容")}
+        )
+
+        result = catalog.search({"query": "ＲＥＡＤ", "limit": 4})
+        payload = json.loads(result.output)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["tools"][0]["name"], "read")
+
+    def test_search_fuzzy_matches_misspelled_tool_name(self) -> None:
+        """拼写错误兜底：generate_repor 以模糊相似度命中 generate_report。"""
+
+        catalog = HostToolCatalog(
+            {
+                "generate_report": self._simple_tool(
+                    "generate_report",
+                    "生成报表",
+                )
+            }
+        )
+
+        result = catalog.search({"query": "generate_repor", "limit": 4})
+        payload = json.loads(result.output)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["tools"][0]["name"], "generate_report")
+
+    def test_search_chinese_bigram_ignores_stop_words(self) -> None:
+        """中文 bigram 分词 + 停止词：整段查询含虚词时仍按相邻两字命中描述。"""
+
+        catalog = HostToolCatalog(
+            {
+                "read": self._simple_tool("read", "读取内容"),
+                "list": self._simple_tool("list", "列出目录"),
+            }
+        )
+
+        result = catalog.search({"query": "请帮我读取文件", "limit": 4})
+        payload = json.loads(result.output)
+        self.assertGreaterEqual(payload["count"], 1)
+        self.assertEqual(payload["tools"][0]["name"], "read")
+
     def test_prepare_invocation_normalizes_and_validates_arguments(self) -> None:
-        catalog = HostToolCatalog({"read_file": ToolDefinition(
-            name="read_file",
+        catalog = HostToolCatalog({"read": ToolDefinition(
+            name="read",
             description="读取文件",
             argument_schema=(
                 '{"type":"object","properties":'
@@ -73,14 +169,14 @@ class HostToolCatalogTest(unittest.TestCase):
 
         prepared = catalog.prepare_invocation(
             {
-                "tool_name": "readfile",
+                "tool_name": "read",
                 "arguments": {"path": "README.md", "startline": 2},
             }
         )
 
         self.assertFalse(isinstance(prepared, ToolResult))
         assert not isinstance(prepared, ToolResult)
-        self.assertEqual(prepared.tool_name, "read_file")
+        self.assertEqual(prepared.tool_name, "read")
         self.assertEqual(prepared.arguments, {"path": "README.md", "start_line": 2})
 
     def test_prepare_invocation_returns_structured_retryable_error(self) -> None:
@@ -101,6 +197,128 @@ class HostToolCatalogTest(unittest.TestCase):
         self.assertIn("contract", payload["error"])
         self.assertTrue(payload["error"]["issues"])
 
+    def test_prepare_invocation_drops_blank_optional_string(self) -> None:
+        """空串归一化：可选字符串字段传空串或纯空白视为未提供，不再报参数错误。"""
+
+        catalog = HostToolCatalog(
+            {
+                "read": ToolDefinition(
+                    name="read",
+                    description="读取文件",
+                    argument_schema=(
+                        '{"type":"object","properties":'
+                        '{"path":{"type":"string"},'
+                        '"mode":{"type":"string","minLength":1}},'
+                        '"required":["path"],"additionalProperties":false}'
+                    ),
+                    requires_confirmation=True,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                )
+            }
+        )
+
+        for blank in ("", "   "):
+            prepared = catalog.prepare_invocation(
+                {
+                    "tool_name": "read",
+                    "arguments": {"path": "a.txt", "mode": blank},
+                }
+            )
+            self.assertFalse(isinstance(prepared, ToolResult))
+            assert not isinstance(prepared, ToolResult)
+            self.assertEqual(prepared.arguments, {"path": "a.txt"})
+
+    def test_prepare_invocation_keeps_blank_required_string_for_error(self) -> None:
+        """必填字段的空串保留给 Schema 校验，不会因归一化静默通过。"""
+
+        catalog = HostToolCatalog(
+            {
+                "read": ToolDefinition(
+                    name="read",
+                    description="读取文件",
+                    argument_schema=(
+                        '{"type":"object","properties":'
+                        '{"path":{"type":"string","minLength":1}},'
+                        '"required":["path"],"additionalProperties":false}'
+                    ),
+                    requires_confirmation=True,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                )
+            }
+        )
+
+        result = catalog.prepare_invocation(
+            {"tool_name": "read", "arguments": {"path": ""}}
+        )
+        self.assertIsInstance(result, ToolResult)
+        assert isinstance(result, ToolResult)
+        payload = json.loads(result.output)
+        self.assertFalse(result.ok)
+        self.assertEqual(payload["error"]["code"], "invalid_arguments")
+        self.assertTrue(payload["error"]["issues"])
+
+    def test_prepare_invocation_accepts_blank_diagnostic_command(self) -> None:
+        """放宽约束：bash 的 diagnostic_command 允许空串（minLength 0），校验通过。"""
+
+        catalog = HostToolCatalog(
+            {
+                "bash": ToolDefinition(
+                    name="bash",
+                    description="执行命令",
+                    argument_schema=(
+                        '{"type":"object","properties":'
+                        '{"command":{"type":"string","minLength":1},'
+                        '"diagnostic_command":{"type":"string","minLength":0}},'
+                        '"required":["command"],"additionalProperties":false}'
+                    ),
+                    requires_confirmation=True,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                )
+            }
+        )
+
+        for blank in ("", "   "):
+            prepared = catalog.prepare_invocation(
+                {
+                    "tool_name": "bash",
+                    "arguments": {
+                        "command": "echo ok",
+                        "diagnostic_command": blank,
+                    },
+                }
+            )
+            self.assertFalse(isinstance(prepared, ToolResult))
+            assert not isinstance(prepared, ToolResult)
+            self.assertEqual(prepared.arguments["command"], "echo ok")
+
+    def test_prepare_invocation_still_requires_command(self) -> None:
+        """回归：放宽只针对可选 diagnostic_command，必填 command 仍然强制。"""
+
+        catalog = HostToolCatalog(
+            {
+                "bash": ToolDefinition(
+                    name="bash",
+                    description="执行命令",
+                    argument_schema=(
+                        '{"type":"object","properties":'
+                        '{"command":{"type":"string","minLength":1},'
+                        '"diagnostic_command":{"type":"string","minLength":0}},'
+                        '"required":["command"],"additionalProperties":false}'
+                    ),
+                    requires_confirmation=True,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                )
+            }
+        )
+
+        result = catalog.prepare_invocation(
+            {"tool_name": "bash", "arguments": {"diagnostic_command": "tail x"}}
+        )
+        self.assertIsInstance(result, ToolResult)
+        assert isinstance(result, ToolResult)
+        payload = json.loads(result.output)
+        self.assertEqual(payload["error"]["code"], "invalid_arguments")
+
 
 class HostToolDispatchTest(unittest.TestCase):
     def test_invoke_tool_resolves_real_tool_before_approval_and_execution(self) -> None:
@@ -109,8 +327,8 @@ class HostToolDispatchTest(unittest.TestCase):
         agent = object.__new__(LocalToolAgent)
         agent.config = SimpleNamespace(max_tool_output_chars=6000)
         agent._tools = {
-            "read_file": ToolDefinition(
-                name="read_file",
+            "read": ToolDefinition(
+                name="read",
                 description="读取文件",
                 argument_schema=(
                     '{"type":"object","properties":{"path":{"type":"string"}},'
@@ -135,7 +353,7 @@ class HostToolDispatchTest(unittest.TestCase):
             [
                 ToolCall(
                     INVOKE_TOOL_NAME,
-                    {"tool_name": "read_file", "arguments": {"path": "README.md"}},
+                    {"tool_name": "read", "arguments": {"path": "README.md"}},
                     "call-1",
                 )
             ],
@@ -146,9 +364,9 @@ class HostToolDispatchTest(unittest.TestCase):
             status=lambda _message: None,
         )
 
-        self.assertEqual(approvals, ["read_file"])
+        self.assertEqual(approvals, ["read"])
         self.assertEqual(executed, [{"path": "README.md"}])
-        self.assertEqual(observations[0].tool_call.name, "read_file")
+        self.assertEqual(observations[0].tool_call.name, "read")
         self.assertEqual(observations[0].message["tool_call_id"], "call-1")
         self.assertIn("file content", observations[0].message["content"])
 
@@ -157,8 +375,8 @@ class HostToolDispatchTest(unittest.TestCase):
         agent = object.__new__(LocalToolAgent)
         agent.config = SimpleNamespace(max_tool_output_chars=6000)
         agent._tools = {
-            "read_file": ToolDefinition(
-                name="read_file",
+            "read": ToolDefinition(
+                name="read",
                 description="读取文件",
                 argument_schema=(
                     '{"type":"object","properties":{"path":{"type":"string"}},'
@@ -177,7 +395,7 @@ class HostToolDispatchTest(unittest.TestCase):
                 ToolCall(
                     INVOKE_TOOL_NAME,
                     {
-                        "tool_name": "read_file",
+                        "tool_name": "read",
                         "arguments": {"unexpected": True},
                     },
                     "call-invalid",
@@ -195,15 +413,15 @@ class HostToolDispatchTest(unittest.TestCase):
         payload = json.loads(observations[0].result.output)
         self.assertEqual(payload["error"]["code"], "invalid_arguments")
         self.assertEqual(events[0][1]["tool"], INVOKE_TOOL_NAME)
-        self.assertEqual(events[0][1]["arguments"]["tool_name"], "read_file")
+        self.assertEqual(events[0][1]["arguments"]["tool_name"], "read")
 
     def test_plugin_argument_rewrite_is_revalidated_before_approval(self) -> None:
         executed: list[dict[str, object]] = []
         agent = object.__new__(LocalToolAgent)
         agent.config = SimpleNamespace(max_tool_output_chars=6000)
         agent._tools = {
-            "read_file": ToolDefinition(
-                name="read_file",
+            "read": ToolDefinition(
+                name="read",
                 description="读取文件",
                 argument_schema=(
                     '{"type":"object","properties":{"path":{"type":"string"}},'
@@ -225,7 +443,7 @@ class HostToolDispatchTest(unittest.TestCase):
 
         agent._dispatch_plugin_hook = rewrite_arguments  # type: ignore[method-assign]
         observations = agent._execute_tool_batch(
-            [ToolCall("read_file", {"path": "README.md"}, "call-2")],
+            [ToolCall("read", {"path": "README.md"}, "call-2")],
             1,
             report_tool_start=lambda _step, _call: None,
             report_tool_result=lambda _call, _result: None,

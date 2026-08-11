@@ -142,7 +142,7 @@ class _ProviderContractFakeRuntime:
             else:
                 function_name = request.tools[1].name
                 arguments = {
-                    "tool_name": "read_file",
+                    "tool_name": "read",
                     "arguments": {"path": "README.md"},
                 }
                 call_id = "provider-call-2"
@@ -257,9 +257,9 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                     self.assertEqual(
                         set(child_tools),
                         {
-                            "list_files",
-                            "find_files",
-                            "read_file",
+                            "list",
+                            "find",
+                            "read",
                             "read_image",
                             "grep",
                             "verify_command",
@@ -318,8 +318,8 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
             agent._load_agents_instructions = lambda: "项目协作规范"
             agent._agent_temp_dir_display = lambda: ".agent_tmp"
             child_tools = {
-                "read_file": ToolDefinition(
-                    name="read_file",
+                "read": ToolDefinition(
+                    name="read",
                     description="读取文件",
                     argument_schema="{}",
                     requires_confirmation=False,
@@ -354,7 +354,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
         self.assertIn("项目协作规范", indexed_rendered)
         self.assertIn("search_tools", indexed_rendered)
         self.assertIn("invoke_tool", indexed_rendered)
-        self.assertNotIn("read_file", indexed_rendered)
+        self.assertNotIn("read", indexed_rendered)
         self.assertIn('context=\\"fresh\\"', indexed_rendered)
         self.assertIn("<skill_index", indexed_rendered)
         self.assertIn("web-fetcher", indexed_rendered)
@@ -681,7 +681,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                     AgentModelReply(
                         message={"role": "assistant", "content": None},
                         content="",
-                        tool_calls=[ToolCall("read_file", {"path": "README.md"}, "call_1")],
+                        tool_calls=[ToolCall("read", {"path": "README.md"}, "call_1")],
                     ),
                     AgentModelReply(
                         message={"role": "assistant", "content": "完成"},
@@ -711,8 +711,8 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                 lambda _definition, _tools, **_kwargs: Protocol(runtime_manager)
             )
             child_tools = {
-                "read_file": ToolDefinition(
-                    name="read_file",
+                "read": ToolDefinition(
+                    name="read",
                     description="read",
                     argument_schema='{"path":"README.md"}',
                     requires_confirmation=False,
@@ -723,7 +723,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                 name="explore",
                 description="explore",
                 system_prompt="只读。",
-                tools=("read_file",),
+                tools=("read",),
             )
 
             result = agent._execute_subagent_task(
@@ -827,7 +827,7 @@ class SubAgentProviderRuntimeContractTest(unittest.TestCase):
             name="explore",
             description="只读探索",
             system_prompt="只读取证据并返回结论。",
-            tools=("read_file",) if with_read_file else (),
+            tools=("read",) if with_read_file else (),
         )
 
     @staticmethod
@@ -991,8 +991,8 @@ class SubAgentProviderRuntimeContractTest(unittest.TestCase):
                     )
                     tool_invocations: list[dict[str, str]] = []
                     child_tools = {
-                        "read_file": ToolDefinition(
-                            name="read_file",
+                        "read": ToolDefinition(
+                            name="read",
                             description="读取 README",
                             argument_schema='{"path": "README.md"}',
                             requires_confirmation=False,
@@ -1034,7 +1034,7 @@ class SubAgentProviderRuntimeContractTest(unittest.TestCase):
                         tool_result = next(
                             block
                             for block in tool_results
-                            if "工具：read_file" in block.content
+                            if "工具：read" in block.content
                         )
                         self.assertEqual(tool_result.call_id, "provider-call-2")
                         # Host 会将工具结果包装为可读的状态上下文；契约应固定该

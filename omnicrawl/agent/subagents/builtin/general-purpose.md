@@ -4,9 +4,9 @@ description: >
   通用实现型子代理。用于需要写入文件、局部改代码或在隔离 worktree 中落地改动的任务。
   默认要求逐工具审批；isolation=worktree 时改动先落在独立分支，由父 Agent 审查后应用。
 tools:
-  - list_files
-  - find_files
-  - read_file
+  - list
+  - find
+  - read
   - read_image
   - grep
   - web_search

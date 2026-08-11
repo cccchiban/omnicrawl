@@ -9,16 +9,87 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
 from .llm_protocol import tool_parameters_schema
-from .tools import normalize_tool_call, normalize_tool_name
+from .tools import TOOL_NAME_ALIASES, normalize_tool_call, normalize_tool_name
 from .types import ToolCall, ToolDefinition, ToolResult
 
 SEARCH_TOOLS_NAME = "search_tools"
 INVOKE_TOOL_NAME = "invoke_tool"
 PROVIDER_TOOL_NAMES = (SEARCH_TOOLS_NAME, INVOKE_TOOL_NAME)
+
+# 英文查询中的虚词：命中这些词不能代表工具能力，分词阶段直接丢弃。
+_EN_STOP_WORDS = frozenset(
+    {
+        "a", "an", "and", "at", "for", "help", "in", "me", "of", "on",
+        "or", "please", "show", "the", "to", "with",
+    }
+)
+# 中文查询中的单字虚词：单字命中价值极低，分词阶段丢弃。
+_HAN_STOP_WORDS = frozenset("请帮我的一了么吗呢啊吧和与或把被让给下就都")
+# 别名反查表：工具名 -> 常见误写/缩写（来自 TOOL_NAME_ALIASES），搜索时等价命中。
+_ALIASES_BY_TOOL_NAME: dict[str, tuple[str, ...]] = {}
+for _alias, _real_name in TOOL_NAME_ALIASES.items():
+    _ALIASES_BY_TOOL_NAME.setdefault(_real_name, []).append(_alias)
+_ALIASES_BY_TOOL_NAME = {
+    name: tuple(aliases) for name, aliases in _ALIASES_BY_TOOL_NAME.items()
+}
+
+
+def _normalize_text(value: str) -> str:
+    """搜索用文本归一化：NFKC 折叠全角/半角差异后再统一小写。"""
+
+    return unicodedata.normalize("NFKC", value).casefold().strip()
+
+
+def _query_terms(value: str) -> list[str]:
+    """把归一化后的查询拆成匹配用词元。
+
+    - 英文/数字：整段保留，过滤虚词；
+    - 中文：整段保留 + 相邻两字 bigram，让"读取文件"能命中描述里的
+      "读取"或"文件"；同时补充首尾单字（过滤虚词），让"写文件"
+      这类查询能命中描述里的"写"。
+    """
+
+    normalized = _normalize_text(value)
+    terms: list[str] = []
+    for ascii_part in re.findall(r"[a-z0-9_]+", normalized):
+        if ascii_part not in _EN_STOP_WORDS:
+            terms.append(ascii_part)
+    for han_part in re.findall(r"[\u4e00-\u9fff]+", normalized):
+        if len(han_part) == 1:
+            if han_part not in _HAN_STOP_WORDS:
+                terms.append(han_part)
+        else:
+            terms.append(han_part)
+            terms.extend(
+                han_part[index : index + 2] for index in range(len(han_part) - 1)
+            )
+            for edge in (han_part[0], han_part[-1]):
+                if edge not in _HAN_STOP_WORDS:
+                    terms.append(edge)
+    return terms
+
+
+@lru_cache(maxsize=256)
+def _schema_property_names(schema_json: str) -> frozenset[str]:
+    """从工具参数 Schema 提取第一层属性名，供搜索做低权重匹配。"""
+
+    try:
+        schema = json.loads(schema_json)
+    except Exception:
+        return frozenset()
+    if not isinstance(schema, dict):
+        return frozenset()
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return frozenset()
+    return frozenset(str(key) for key in properties)
 
 _SEARCH_TOOLS_SCHEMA = json.dumps(
     {
@@ -207,8 +278,8 @@ class HostToolCatalog:
         normalized = normalize_tool_name(requested_name, self._tools)
         if normalized in self._tools:
             return normalized
-        folded = requested_name.casefold()
-        matches = [name for name in self._tools if name.casefold() == folded]
+        folded = _normalize_text(requested_name)
+        matches = [name for name in self._tools if _normalize_text(name) == folded]
         return matches[0] if len(matches) == 1 else normalized
 
     def _suggest(self, requested_name: str) -> list[str]:
@@ -223,11 +294,24 @@ class HostToolCatalog:
 
     @staticmethod
     def _match_score(query: str, tool: ToolDefinition) -> int:
-        query_folded = query.casefold().strip()
-        name = tool.name.casefold()
-        description = tool.description.casefold()
+        """查询与工具的多层匹配打分。
+
+        档位设计（分数越高越优先）：
+        - 完全等于工具名：+1000，直接置顶；
+        - 查询是工具名连续子串 / 等于工具别名：+300；
+        - 查询是描述连续子串：+120；
+        - 工具名拼写错误（相似度 >= 0.85）：+150 兑底；
+        - 别名是查询的子串：+60；
+        - 分词命中工具名：+80，命中描述：+20；
+        - 参数名命中：+10（最低权重）。
+        所有文本先做 NFKC 归一化，全角/半角等价。
+        """
+
+        query_folded = _normalize_text(query)
         if not query_folded:
             return 0
+        name = _normalize_text(tool.name)
+        description = _normalize_text(tool.description)
         if query_folded == name:
             return 1000
         score = 0
@@ -235,11 +319,27 @@ class HostToolCatalog:
             score += 300
         if query_folded in description:
             score += 120
+        # 工具别名（readimage -> read_image）等价于工具名子串档。
+        for alias in _ALIASES_BY_TOOL_NAME.get(tool.name, ()):
+            alias_folded = _normalize_text(alias)
+            if query_folded == alias_folded:
+                score += 300
+            elif alias_folded in query_folded or query_folded in alias_folded:
+                score += 60
+        # 拼写错误兑底：与工具名相似度足够高时给中等分。
+        if query_folded != name:
+            similarity = SequenceMatcher(None, query_folded, name).ratio()
+            if similarity >= 0.85:
+                score += 150
         for term in _query_terms(query_folded):
             if term in name:
                 score += 80
             elif term in description:
                 score += 20
+        # 参数名命中（低权重）：查询/参数名互为子串即可。
+        for parameter in _schema_property_names(tool.argument_schema):
+            if parameter in query_folded or query_folded in parameter:
+                score += 10
         return score
 
 
@@ -492,10 +592,6 @@ def _validate_number_bound(
             issues.append({"path": path, "message": f"{message_prefix} {bound}。"})
         elif key == "maximum" and comparable > bound:
             issues.append({"path": path, "message": f"{message_prefix} {bound}。"})
-
-
-def _query_terms(value: str) -> list[str]:
-    return re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+", value.casefold())
 
 
 def _short_text(value: str, limit: int) -> str:

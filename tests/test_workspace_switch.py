@@ -171,7 +171,7 @@ class WorkspaceSwitchTest(unittest.TestCase):
                 agent = LocalToolAgent(config)
                 try:
                     agent.switch_workspace(target_workspace)
-                    read_tool = agent._tools.get("read_file")
+                    read_tool = agent._tools.get("read")
                     self.assertIsNotNone(read_tool)
                     result = read_tool.run({"path": "hello.txt"})
                     self.assertTrue(result.ok)
@@ -210,12 +210,12 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     # 默认开关：powershell 关闭，其余 shell/读取工具启用。
                     self.assertNotIn("powershell", agent._tools)
                     self.assertTrue(
-                        {"find_files", "read_file", "bash", "monitor"}.issubset(
+                        {"find", "read", "bash", "monitor"}.issubset(
                             agent._tools
                         )
                     )
                     self.assertNotIn("run_command", agent._tools)
-                    schema = agent._tools["read_file"].argument_schema
+                    schema = agent._tools["read"].argument_schema
                     self.assertIn("function_name", schema)
                     self.assertIn("context_lines", schema)
                 finally:

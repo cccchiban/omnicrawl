@@ -203,6 +203,12 @@ class OpenAIChatCompletionsRuntime:
                 retryable=is_retryable_model_request_error(exc),
             ) from exc
 
+        # 流迭代器正常耗尽后仍要确认取消状态：外层主动 close() 的流可能
+        # 以“正常结束、无可见内容”返回，此时必须优先处理取消，不能把
+        # 结果继续转换为空响应或可重试请求。
+        if cancel_check is not None:
+            cancel_check()
+
         # 将缓冲的完整 tool call 收尾为 Completed 事件
         for idx in sorted(buffers.keys()):
             buf = buffers[idx]

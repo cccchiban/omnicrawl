@@ -262,7 +262,7 @@ class SubAgentProgressTree(Static):
 
 
 class ReasoningDisclosure(RichLog, can_focus=False):
-    """默认展开、可点击折叠且不抢占输入焦点的单次模型思考记录。
+    """始终展开、不抢占输入焦点的单次模型思考记录（无折叠功能）。
 
     流式性能设计（与主回复流同一套合并节流策略）：
     - 完整行增量提交：append_delta 按换行切分，已完成的行直接写入
@@ -282,7 +282,6 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     """
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
-    COLLAPSED_HINT = "思考过程（点击展开）"
 
     def __init__(self) -> None:
         super().__init__(
@@ -291,8 +290,7 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             wrap=True,
             auto_scroll=False,
         )
-        self.reasoning_text = ""  # 完整累积文本（折叠恢复/测试断言依据）
-        self.expanded = True
+        self.reasoning_text = ""  # 完整累积文本（测试断言依据）
         self._tail = ""  # 尚未以换行结束的未完成行，按节流合并渲染
         self._tail_lines: list[Strip] = []  # 未完成行按当前宽度换行后的行集
         self._last_render_at: float | None = None
@@ -305,7 +303,7 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         """首次布局完成后重新计入 deferred 写入和未完成尾行。"""
 
         super().on_resize(event)
-        if self.expanded and (self._tail or self._tail_lines):
+        if self._tail or self._tail_lines:
             # 重新测量尾行宽度；同时恢复 RichLog.write 对 virtual_size 的覆盖。
             self._render_tail()
 
@@ -313,10 +311,6 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         if not delta:
             return
         self.reasoning_text += delta
-        if not self.expanded:
-            # 折叠期间不渲染，只累积文本；重新展开时一次补齐。
-            self._tail += delta
-            return
         self._tail += delta
         while "\n" in self._tail:
             line, self._tail = self._tail.split("\n", 1)
@@ -340,15 +334,6 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         elif self._tail_lines:
             self._tail_lines = []
             self._sync_virtual_size()
-            self.refresh()
-
-    def on_click(self) -> None:
-        self.expanded = not self.expanded
-        self.set_class(not self.expanded, "collapsed")
-        if self.expanded:
-            # 重新展开时立即补齐此前合并挂起的未完成行。
-            self._render_tail()
-        else:
             self.refresh()
 
     def _schedule_tail_render(self) -> None:
@@ -405,13 +390,6 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
         if y < len(self.lines):
             return super()._render_line(y, scroll_x, width)
-        if not self.expanded:
-            # 折叠态只显示提示行，不显示思考正文。
-            if y == 0:
-                return self._to_strip(Text(self.COLLAPSED_HINT)).crop_extend(
-                    0, width, self.rich_style
-                )
-            return Strip.blank(width, self.rich_style)
         tail_index = y - len(self.lines)
         if 0 <= tail_index < len(self._tail_lines):
             return self._tail_lines[tail_index].crop_extend(
@@ -421,15 +399,32 @@ class ReasoningDisclosure(RichLog, can_focus=False):
 
 
 class ToolDisclosure(Static):
-    """工具调用记录；写入文件和替换文本默认展开，其他工具默认折叠。"""
+    """工具调用记录；写入/替换文件与 shell 工具默认展开，其他工具默认折叠。
+
+    bash/powershell 等 shell 工具的展开正文只显示前五行，超出部分以
+    提示行截断，避免大段命令输出刷屏；文件变更工具保持完整正文。
+    """
 
     can_focus = False
 
+    # shell 工具的展开正文行数上限（不含标题行）。
+    MAX_EXPANDED_BODY_LINES = 5
+    # 正文被截断时替换尾部内容的提示行。
+    TRUNCATION_HINT = "…（内容过长，仅显示前五行）"
+    # 需要限制正文行数的 shell 工具。
+    SHELL_TOOL_NAMES = frozenset({"bash", "powershell"})
+
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
-        expanded_by_default = tool_name in {"write_file", "replace_text"}
+        expanded_by_default = tool_name in {
+            "write_file",
+            "replace_text",
+            *self.SHELL_TOOL_NAMES,
+        }
         classes = "message tool-message"
         if tool_name == "replace_text":
             classes += " replace-text-message"
+        if tool_name in self.SHELL_TOOL_NAMES:
+            classes += " shell-tool-message"
         if not expanded_by_default:
             classes += " collapsed"
         super().__init__(classes=classes)
@@ -440,6 +435,8 @@ class ToolDisclosure(Static):
         self.duration_seconds = 0.0
         self.result_text = ""
         self.expanded = expanded_by_default
+        # shell 工具的展开正文受五行上限约束，其他工具不受限。
+        self._limit_body_lines = tool_name in self.SHELL_TOOL_NAMES
         self._refresh_display()
 
     def finish(self, *, ok: bool, output: str, finished_at: float) -> None:
@@ -487,9 +484,40 @@ class ToolDisclosure(Static):
             arguments=self.arguments,
             result_text=self.result_text,
         )
+        if self._limit_body_lines and body.plain:
+            body = self._truncate_body_lines(body)
         rendered = Text()
         rendered.append_text(title)
         if body.plain:
             rendered.append("\n")
             rendered.append_text(body)
         self.update(rendered)
+
+    def _truncate_body_lines(self, body: Text) -> Text:
+        """把展开正文中的输出内容截断为前五行，并追加一行截断提示。
+
+        只对"结果："之后的输出内容做行数限制（保留 Rich 样式），头部
+        的"工具/参数/结果"元信息行不占额度；超出上限的行丢弃，提示行
+        使用弱化样式，让用户知道还有更多内容但没有被刷屏。
+        """
+
+        parts = body.split("\n")
+        # 定位"结果："标记之后的内容行；无标记时（如文件变更工具正文）
+        # 退化为对整个正文做限制。
+        result_start = len(parts)
+        for index, part in enumerate(parts):
+            if part.plain.startswith("结果："):
+                result_start = index + 1
+                break
+        result_lines = parts[result_start:]
+        if len(result_lines) <= self.MAX_EXPANDED_BODY_LINES:
+            return body
+        truncated = Text()
+        for part in parts[:result_start]:
+            truncated.append_text(part)
+            truncated.append("\n")
+        for part in result_lines[: self.MAX_EXPANDED_BODY_LINES]:
+            truncated.append_text(part)
+            truncated.append("\n")
+        truncated.append(self.TRUNCATION_HINT, style="dim")
+        return truncated

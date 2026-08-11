@@ -167,7 +167,7 @@ class ContextBudgetManagerTest(unittest.TestCase):
             system_prompt="system",
             context_messages=[{"role": "user", "content": "project context"}],
             history_messages=history,
-            tool_schemas=[{"type": "function", "function": {"name": "read_file"}}],
+            tool_schemas=[{"type": "function", "function": {"name": "read"}}],
             recent_turns=1,
             target_summary_tokens=20,
             next_user_reserve_tokens=100,

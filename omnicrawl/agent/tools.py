@@ -22,11 +22,8 @@ from ..workspace_tools import (
 
 TOOL_NAME_ALIASES = {
     "bashcommand": "bash",
-    "findfiles": "find_files",
-    "listfiles": "list_files",
     "monitorcommand": "monitor",
     "powershellcommand": "powershell",
-    "readfile": "read_file",
     "readimage": "read_image",
     "replacetext": "replace_text",
     "writefile": "write_file",
@@ -282,8 +279,8 @@ def build_agent_tools(
     *,
     mcp_manager: MCPClientManager,
     memory_enabled: bool,
-    list_files: ToolRunner,
-    read_file: ToolRunner,
+    list: ToolRunner,
+    read: ToolRunner,
     grep: ToolRunner,
     web_search: ToolRunner | None = None,
     replace_text: ToolRunner,
@@ -299,7 +296,7 @@ def build_agent_tools(
     mcp_read_resource: MCPResourceRunner,
     mcp_get_prompt: MCPPromptRunner,
     read_image: ToolRunner | None = None,
-    find_files: ToolRunner | None = None,
+    find: ToolRunner | None = None,
     evidence_recall: ToolRunner | None = None,
     subagent: ToolRunner | None = None,
     subagent_types: Sequence[str] = (),
@@ -337,16 +334,16 @@ def build_agent_tools(
     tools.extend(
         [
             ToolDefinition(
-                name="list_files",
+                name="list",
                 description="列出工作区内的文件和目录，可选择递归。",
                 argument_schema='{"path": ".", "recursive": false}',
                 requires_confirmation=True,
-                run=list_files,
+                run=list,
             ),
             *(
                 [
                     ToolDefinition(
-                        name="find_files",
+                        name="find",
                         description=(
                             "仅按文件名、目录名或相对路径查找工作区条目，不读取文件内容。"
                         ),
@@ -355,14 +352,14 @@ def build_agent_tools(
                             '"case_sensitive":false,"max_results":50}'
                         ),
                         requires_confirmation=True,
-                        run=find_files,
+                        run=find,
                     )
                 ]
-                if find_files is not None
+                if find is not None
                 else []
             ),
             ToolDefinition(
-                name="read_file",
+                name="read",
                 description=(
                     "读取工作区 UTF-8 文本文件或 omnicrawl://docs/<文件名> 内置文档。"
                     "可按 start_line/max_lines 读取行范围，按 function_name 定位函数或方法，"
@@ -373,7 +370,7 @@ def build_agent_tools(
                     '"function_name":"Class.method","text":"目标片段","context_lines":20}'
                 ),
                 requires_confirmation=True,
-                run=read_file,
+                run=read,
             ),
             *(
                 [
@@ -478,7 +475,7 @@ def build_agent_tools(
                             "command": {"type": "string", "minLength": 1},
                             "diagnostic_command": {
                                 "type": "string",
-                                "minLength": 1,
+                                "minLength": 0,
                             },
                             "timeout_seconds": {
                                 "type": "integer",
@@ -509,7 +506,7 @@ def build_agent_tools(
                             "command": {"type": "string", "minLength": 1},
                             "diagnostic_command": {
                                 "type": "string",
-                                "minLength": 1,
+                                "minLength": 0,
                             },
                             "timeout_seconds": {
                                 "type": "integer",
@@ -1019,7 +1016,7 @@ def normalize_tool_name(
     *,
     tool_name_aliases: dict[str, str] | None = None,
 ) -> str:
-    """把 readfile/tablist 这类常见误写映射为当前 Host 真实工具名。"""
+    """把 bashcommand/readimage 这类常见误写映射为当前 Host 真实工具名。"""
 
     name = re.sub(r"\s+", "", raw_name.strip())
     if name in tools:
@@ -1049,7 +1046,12 @@ def normalize_tool_arguments(
     *,
     argument_name_aliases: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """按工具 schema 归一化参数名，兼容 startline/maxlines/tabId 等写法。"""
+    """按工具 schema 归一化参数名，兼容 startline/maxlines/tabId 等写法。
+
+    同时做空串归一化：可选字段若传入空字符串或纯空白，视为未提供并丢弃，
+    避免 minLength 等约束把"显式传空"误判为参数错误。必填字段的空串
+    仍保留给后续 Schema 校验报错，不会静默通过。
+    """
 
     aliases = argument_name_aliases or ARGUMENT_NAME_ALIASES
     canonical_keys = tool_argument_keys(tool_name, tools)
@@ -1057,6 +1059,7 @@ def normalize_tool_arguments(
         normalize_identifier(key): key
         for key in canonical_keys
     }
+    optional_blank_ignored_keys = _tool_optional_blank_ignored_keys(tool_name, tools)
     normalized: dict[str, Any] = {}
     for key, value in arguments.items():
         canonical_key = key
@@ -1065,8 +1068,53 @@ def normalize_tool_arguments(
             canonical_key = alias_key
         else:
             canonical_key = normalized_to_key.get(normalize_identifier(key), key)
+        if (
+            canonical_key in optional_blank_ignored_keys
+            and isinstance(value, str)
+            and not value.strip()
+        ):
+            continue
         normalized[canonical_key] = value
     return normalized
+
+
+def _tool_optional_blank_ignored_keys(
+    tool_name: str,
+    tools: dict[str, ToolDefinition],
+) -> set[str]:
+    """返回 schema 中非必填、且值为空串/纯空白时应视为未提供的字段名。
+
+    规则：字段不在 required 中，且 schema 对字符串显式声明了 minLength >= 1。
+    这类字段的语义是"提供就必须非空"，因此空串与未提供等价；
+    未声明 minLength 的可选字段（如替换文本）保留原值，避免改变行为。
+    """
+
+    tool = tools.get(tool_name)
+    if tool is None:
+        return set()
+    try:
+        schema = json.loads(tool.argument_schema)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(schema, dict):
+        return set()
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return set()
+    required = schema.get("required")
+    required_keys = set(required) if isinstance(required, list) else set()
+    ignored: set[str] = set()
+    for key, child in properties.items():
+        if not isinstance(key, str) or not isinstance(child, dict):
+            continue
+        if key in required_keys:
+            continue
+        if child.get("type") != "string":
+            continue
+        min_length = child.get("minLength")
+        if isinstance(min_length, int) and min_length >= 1:
+            ignored.add(key)
+    return ignored
 
 
 def tool_argument_keys(tool_name: str, tools: dict[str, ToolDefinition]) -> set[str]:

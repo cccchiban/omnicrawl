@@ -199,8 +199,8 @@ class EvidenceRecallToolIntegrationTest(unittest.TestCase):
         return build_agent_tools(
             mcp_manager=manager,
             memory_enabled=False,
-            list_files=runner,
-            read_file=runner,
+            list=runner,
+            read=runner,
             grep=runner,
             replace_text=runner,
             write_file=runner,

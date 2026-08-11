@@ -12,7 +12,7 @@ import re
 import shutil
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -214,6 +214,11 @@ from ..workspace.search_index import ProjectSearchIndex, SearchIndexStatus
 
 LOGGER = logging.getLogger(__name__)
 
+# 工具执行默认超时（秒）：10 分钟。挂起工具（MCP 无响应、网络等待等）
+# 必须限时返回错误结果，否则长会话回合会无限等待、无任何提示。
+DEFAULT_TOOL_TIMEOUT_SECONDS = 600
+MAX_TOOL_TIMEOUT_SECONDS = 3600
+
 # 生命周期回收只等待合作式取消。超时后宁可拒绝关闭/切换，也不能在子线程
 # 仍持有 Runtime、Session、MCP 或工作区工具引用时拆除共享资源。
 SUBAGENT_LIFECYCLE_WAIT_SECONDS = 5.0
@@ -280,9 +285,9 @@ class _ActiveTurnSnapshot:
 
 _READ_ONLY_UNDO_TOOLS = frozenset(
     {
-        "list_files",
-        "find_files",
-        "read_file",
+        "list",
+        "find",
+        "read",
         "read_image",
         "grep",
         "recall_session_evidence",
@@ -420,6 +425,14 @@ class AgentConfig:
             max_value=MAX_COMMAND_TIMEOUT_SECONDS,
         )
     )
+    tool_timeout_seconds: int = field(
+        default_factory=lambda: _read_int_env(
+            "AGENT_TOOL_TIMEOUT_SECONDS",
+            DEFAULT_TOOL_TIMEOUT_SECONDS,
+            min_value=1,
+            max_value=MAX_TOOL_TIMEOUT_SECONDS,
+        )
+    )
 
     def __post_init__(self) -> None:
         self.request_retry_count = _validate_int_range(
@@ -439,6 +452,12 @@ class AgentConfig:
             self.command_timeout_seconds,
             min_value=1,
             max_value=MAX_COMMAND_TIMEOUT_SECONDS,
+        )
+        self.tool_timeout_seconds = _validate_int_range(
+            "AGENT_TOOL_TIMEOUT_SECONDS",
+            self.tool_timeout_seconds,
+            min_value=1,
+            max_value=MAX_TOOL_TIMEOUT_SECONDS,
         )
         if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
             raise AgentError("memory_directory 必须是非空字符串。")
@@ -2302,7 +2321,7 @@ class LocalToolAgent:
 
         该方法只在父 Agent 的 ``subagent`` 工具调用线程中执行。随后同步或后台
         worker 只消费返回的私有快照，绝不再读取父 ``_history``、当前模型或本轮
-        可变 messages，从而避免父后续工具回合、``/model`` 与 Session 状态串扰。
+        可变 messages，从而避免父后续工具回合、模型切换与 Session 状态串扰。
         """
 
         normalized_context = str(context or "").strip()
@@ -2520,7 +2539,7 @@ class LocalToolAgent:
         本方法不修改父 `_history`、`_pending_user_text`、`_active_skills`、
         `_active_runtime_snapshot` 或普通 Session 消息。Fork 只消费 Coordinator 在
         排队前冻结的公开消息，不读取父回合此后的可变状态；带模型快照的任务始终
-        使用独立 RuntimeManager，避免父 `/model` 与子执行相互阻塞或错配。
+        使用独立 RuntimeManager，避免父模型切换与子执行相互阻塞或错配。
         """
 
         if execution_context is None:
@@ -2885,7 +2904,6 @@ class LocalToolAgent:
         self._cancel_check = cancel_check
         self._reasoning_delta_callback = on_reasoning_delta
         self._subagent_event_callback = on_subagent_event
-        check_cancelled()
         self._ensure_mcp_tools_ready(status)
         text = self._apply_skill_command(text, status)
         pending_text = getattr(self, "_pending_user_text", None)
@@ -2911,11 +2929,17 @@ class LocalToolAgent:
         turn_terminal_sent = False
         runtime_manager: ModelRuntimeManager | None = None
         runtime_snapshot = None
+        user_message_persisted = False
         try:
+            # 首个取消检查点放在 try 内：用户提交后立即 ESC 时，取消异常
+            # 也能进入统一收尾（补写 user_message 并保留取消摘要），避免
+            # 用户任务完全丢失在会话记录之外。
+            check_cancelled()
             active_turn_snapshot = self._begin_turn_snapshot()
             self._pending_user_text = pending_text or text
             self._append_prompt_history(text)
             self._append_session_event("user_message", {"content": text})
+            user_message_persisted = True
             context_messages = self._context_messages(turn_id=turn_id)
             working_messages = [
                 *context_messages,
@@ -3068,9 +3092,20 @@ class LocalToolAgent:
                 except Exception as completion_exc:
                     snapshot_failure = completion_exc
             terminal_exc = snapshot_failure or exc
+            if not user_message_persisted:
+                # 取消发生在用户消息持久化之前（快速 ESC 竞态）：补写
+                # 提示历史与 user_message，保证 Session 恢复投影与内存
+                # 历史一致，后续提问仍能看到被取消的任务。
+                self._append_prompt_history(text)
+                self._append_session_event("user_message", {"content": text})
+                user_message_persisted = True
             self._append_session_event(
                 "turn_cancelled",
-                {"user_text": text, "reason": str(terminal_exc)},
+                {
+                    "user_text": text,
+                    "reason": str(terminal_exc),
+                    "summary": self._cancelled_turn_summary(active_turn_snapshot),
+                },
             )
             # 被取消的回合同样写入历史：只保留任务文本与已执行工具摘要，
             # 保证用户紧接着发送的后续消息仍能看到上一轮任务与进度，
@@ -3105,9 +3140,23 @@ class LocalToolAgent:
                 if self._is_turn_cancel_exception(terminal_exc)
                 else "session_interrupted"
             )
+            if event_type == "turn_cancelled" and not user_message_persisted:
+                # 取消被 Provider/协议层包装成普通异常时，同样可能发生在
+                # 消息持久化之前；补写后取消回合才能被完整恢复。
+                self._append_prompt_history(text)
+                self._append_session_event("user_message", {"content": text})
+                user_message_persisted = True
             self._append_session_event(
                 event_type,
-                {"user_text": text, "reason": str(terminal_exc)},
+                {
+                    "user_text": text,
+                    "reason": str(terminal_exc),
+                    **(
+                        {"summary": self._cancelled_turn_summary(active_turn_snapshot)}
+                        if event_type == "turn_cancelled"
+                        else {}
+                    ),
+                },
             )
             if event_type == "turn_cancelled":
                 # 与 KeyboardInterrupt 取消路径一致：把任务文本与已执行工具摘要
@@ -3159,13 +3208,25 @@ class LocalToolAgent:
         persist_session_events: bool = True,
         record_tool_execution: Callable[[ToolCall], None] | None = None,
         subagent_approval_scope: SubAgentApprovalScope | None = None,
+        tool_timeout_seconds: int | None = None,
     ) -> list[AgentLoopObservation]:
         """规范化、审批并执行一次模型回复中的完整工具批次。
 
         所有调用先按模型顺序完成规范化和审批，之后才允许任何工具开始执行。
         非屏障调用可并行；写入和显式删除调用会先等待前一并行组，再独占执行。
         最终 observation 始终按模型调用顺序回填，与实际完成先后无关。
+
+        ``tool_timeout_seconds`` 缺省时读 ``AgentConfig.tool_timeout_seconds``
+        （默认 600 秒）：挂起工具在限时后返回错误结果，不再无限等待。超时
+        后工具线程仍在后台运行（无法安全强杀），其结果被丢弃。
         """
+
+        if tool_timeout_seconds is None:
+            tool_timeout_seconds = getattr(
+                getattr(self, "config", None),
+                "tool_timeout_seconds",
+                DEFAULT_TOOL_TIMEOUT_SECONDS,
+            )
 
         active_tools = self._tools if tools is None else tools
         active_tools = dict(active_tools)
@@ -3276,7 +3337,8 @@ class LocalToolAgent:
             for index in parallel_indexes:
                 call_step, tool_call, _tool, _denied = normalized_calls[index]
                 report_tool_start(call_step, tool_call)
-            with ThreadPoolExecutor(max_workers=len(parallel_indexes)) as executor:
+            executor = ThreadPoolExecutor(max_workers=len(parallel_indexes))
+            try:
                 turn_context = copy_context()
                 futures = {
                     index: executor.submit(
@@ -3288,7 +3350,17 @@ class LocalToolAgent:
                 }
                 # 按模型调用顺序等待并回填，而不是按任务完成顺序回填。
                 for index in parallel_indexes:
-                    results[index] = futures[index].result()
+                    try:
+                        results[index] = futures[index].result(
+                            timeout=tool_timeout_seconds
+                        )
+                    except FutureTimeoutError:
+                        # 限时内未完成：返回结构化超时结果，让模型看到并继续。
+                        results[index] = _tool_timeout_result(tool_timeout_seconds)
+            finally:
+                # 超时线程仍在后台运行：不等待其结束，避免回合被拖到工具自然
+                # 完成（with 块退出会 shutdown(wait=True)，这里显式不等待）。
+                executor.shutdown(wait=False)
             parallel_indexes.clear()
 
         for index, (_call_step, tool_call, tool, denied_result) in enumerate(normalized_calls):
@@ -3298,7 +3370,11 @@ class LocalToolAgent:
                 flush_parallel()
                 call_step, current_call, _tool, _denied = normalized_calls[index]
                 report_tool_start(call_step, current_call)
-                results[index] = execute_call(index)
+                results[index] = _execute_call_with_timeout(
+                    execute_call,
+                    index,
+                    tool_timeout_seconds,
+                )
             else:
                 parallel_indexes.append(index)
         flush_parallel()
@@ -3386,10 +3462,23 @@ class LocalToolAgent:
 
     @staticmethod
     def _is_turn_cancel_exception(exc: Exception) -> bool:
-        """识别 UI 主动取消异常，避免把用户停止生成误记为异常中断。"""
+        """识别 UI 主动取消异常，避免把用户停止生成误记为异常中断。
 
-        name = exc.__class__.__name__.casefold()
-        return "cancel" in name
+        优先依据统一取消错误码（``ModelErrorCode.CANCELLED``）判断，
+        同时兼容基于类名的旧取消约定；包装异常沿因果链检查，确保
+        Provider/协议层包装后的取消仍然进入 ``turn_cancelled`` 收尾。
+        """
+
+        for candidate in (exc, *LocalToolAgent._exception_causes(exc)):
+            name = candidate.__class__.__name__.casefold()
+            if "cancel" in name:
+                return True
+            if (
+                isinstance(candidate, ModelError)
+                and candidate.code == ModelErrorCode.CANCELLED
+            ):
+                return True
+        return False
 
     def _project_instructions_messages(self) -> list[dict[str, str]]:
         """构造项目规范上下文消息，保留给测试和兼容调用使用。
@@ -4040,9 +4129,9 @@ class LocalToolAgent:
                 "_project_memory_store",
                 getattr(self, "_memory_store", None),
             ) is not None,
-            list_files=self._tool_list_files,
-            find_files=self._tool_find_files,
-            read_file=self._tool_read_file,
+            list=self._tool_list,
+            find=self._tool_find,
+            read=self._tool_read,
             read_image=self._tool_read_image,
             grep=self._tool_grep,
             web_search=self._tool_web_search,
@@ -4143,13 +4232,13 @@ class LocalToolAgent:
         except ValueError as exc:
             raise AgentError(str(exc)) from exc
 
-    def _tool_list_files(self, arguments: dict[str, Any]) -> ToolResult:
+    def _tool_list(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().list_files, arguments)
 
-    def _tool_find_files(self, arguments: dict[str, Any]) -> ToolResult:
+    def _tool_find(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().find_files, arguments)
 
-    def _tool_read_file(self, arguments: dict[str, Any]) -> ToolResult:
+    def _tool_read(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().read_file, arguments)
 
     def _tool_read_image(self, arguments: dict[str, Any]) -> ToolResult:
@@ -5542,3 +5631,46 @@ class LocalToolAgent:
             return True
         except ValueError:
             return False
+
+
+def _tool_timeout_result(timeout_seconds: int) -> ToolResult:
+    """构造工具执行超时的结构化错误结果。
+
+    返回给模型的是可读的超时说明；后台线程无法安全强杀，其结果被丢弃，
+    因此该结果会在会话里留下“工具超时”记录，提示模型下一步处理。
+    """
+
+    return ToolResult(
+        ok=False,
+        output=(
+            f"工具执行超时（超过 {timeout_seconds} 秒未完成），已中止等待。"
+            "（后台线程仍在运行，其结果已被丢弃。）"
+        ),
+    )
+
+
+def _execute_call_with_timeout(
+    execute_call: Callable[[int], ToolResult],
+    index: int,
+    timeout_seconds: int,
+) -> ToolResult:
+    """在独立线程执行串行工具并限时等待；超时返回错误结果不阻塞回合。
+
+    与并行分支的 ``future.result(timeout=...)`` 保持同一语义：超时后线程
+    继续运行但结果被丢弃，回合继续推进。
+    """
+
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(
+            copy_context().copy().run,
+            execute_call,
+            index,
+        )
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FutureTimeoutError:
+            return _tool_timeout_result(timeout_seconds)
+    finally:
+        # 超时线程仍在后台运行：不等待其结束，避免串行屏障被拖到工具自然完成。
+        executor.shutdown(wait=False)

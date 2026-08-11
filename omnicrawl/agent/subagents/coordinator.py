@@ -99,9 +99,9 @@ def _build_failure_diagnostics(
 
 READ_ONLY_TOOL_NAMES = frozenset(
     {
-        "list_files",
-        "find_files",
-        "read_file",
+        "list",
+        "find",
+        "read",
         "read_image",
         "grep",
         "web_search",

@@ -28,7 +28,7 @@ class SessionStoreTest(unittest.TestCase):
             self.assertEqual(event["type"], "session_started")
             self.assertEqual(event["session_id"], state.session_id)
             runtime = event["payload"]["runtime"]
-            self.assertEqual(runtime["version"], "0.1.8")
+            self.assertEqual(runtime["version"], "0.1.9")
             self.assertTrue(runtime["process_started_at"])
             self.assertRegex(runtime["source_fingerprint"], r"^[0-9a-f]{16}$")
             self.assertIn("omnicrawl/agent/core.py", runtime["source_files"])
@@ -44,7 +44,7 @@ class SessionStoreTest(unittest.TestCase):
             store.append_event(
                 state.session_id,
                 "tool_result",
-                {"tool": "read_file", "ok": True, "output": "README"},
+                {"tool": "read", "ok": True, "output": "README"},
             )
             store.append_event(state.session_id, "assistant_message", {"content": "第一轮回答"})
             restored = store.load_session(state.session_id)
@@ -53,7 +53,7 @@ class SessionStoreTest(unittest.TestCase):
                 restored.messages,
                 [
                     {"role": "user", "content": "第一轮问题"},
-                    {"role": "assistant", "content": "工具执行结果：read_file 成功\nREADME"},
+                    {"role": "assistant", "content": "工具执行结果：read 成功\nREADME"},
                     {"role": "assistant", "content": "第一轮回答"},
                 ],
             )
@@ -120,7 +120,7 @@ class SessionStoreTest(unittest.TestCase):
             store.append_event(
                 state.session_id,
                 "tool_result",
-                {"tool": "read_file", "ok": True, "output": "第二轮工具结果"},
+                {"tool": "read", "ok": True, "output": "第二轮工具结果"},
             )
             store.append_event(state.session_id, "assistant_message", {"content": "第二轮回答"})
 
@@ -173,7 +173,7 @@ class SessionStoreTest(unittest.TestCase):
             store.append_event(
                 state.session_id,
                 "tool_call_requested",
-                {"tool": "read_file", "arguments": {"path": "README.md"}},
+                {"tool": "read", "arguments": {"path": "README.md"}},
             )
             store.append_event(
                 state.session_id,

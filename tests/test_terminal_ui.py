@@ -229,7 +229,7 @@ class TerminalUITest(unittest.TestCase):
                 if text == "第一问":
                     callbacks["on_status"]("正在加载 MCP")
                     on_delta("第一段")
-                    tool_call = types.SimpleNamespace(name="read_file", arguments={})
+                    tool_call = types.SimpleNamespace(name="read", arguments={})
                     callbacks["on_tool_start"](1, tool_call)
                     callbacks["on_tool_result"](
                         tool_call,
@@ -320,8 +320,8 @@ class TerminalUITest(unittest.TestCase):
                             run_inline_chat(agent, ui)
 
         self.assertEqual(agent.requests, ["第一问", "第二问"])
-        self.assertLess(ui.events.index("delta:第一段"), ui.events.index("tool:1:read_file"))
-        self.assertLess(ui.events.index("tool:1:read_file"), ui.events.index("result:文件内容"))
+        self.assertLess(ui.events.index("delta:第一段"), ui.events.index("tool:1:read"))
+        self.assertLess(ui.events.index("tool:1:read"), ui.events.index("result:文件内容"))
         self.assertLess(ui.events.index("result:文件内容"), ui.events.index("delta:第二段"))
 
     def test_complex_display_width_detection(self) -> None:
@@ -475,7 +475,7 @@ class TerminalUITest(unittest.TestCase):
             input_bar=input_bar,
             waiting_indicator=waiting,
         )
-        tool_call = types.SimpleNamespace(name="read_file", arguments={})
+        tool_call = types.SimpleNamespace(name="read", arguments={})
         result = types.SimpleNamespace(ok=True, output="读取成功")
 
         controller.start()
@@ -486,7 +486,7 @@ class TerminalUITest(unittest.TestCase):
 
         self.assertEqual(queued, "排队消息")
         self.assertEqual(waiting.events, ["start", "stop"])
-        self.assertLess(ui.events.index(("delta", "第一段")), ui.events.index(("tool", "1:read_file")))
+        self.assertLess(ui.events.index(("delta", "第一段")), ui.events.index(("tool", "1:read")))
         self.assertIn(("flush", ""), ui.events)
 
     def test_stream_turn_controller_preserves_unsubmitted_draft(self) -> None:

@@ -54,7 +54,7 @@ def _compact_title_value(value: Any, *, max_chars: int) -> str:
 
 
 def _read_result_line_range(result_text: str) -> tuple[int, int] | None:
-    """从 read_file 的行号输出中提取实际返回内容的首尾源码行号。"""
+    """从 read 的行号输出中提取实际返回内容的首尾源码行号。"""
 
     if not result_text:
         return None
@@ -214,7 +214,7 @@ def _workspace_tool_title(
 
     args = arguments if isinstance(arguments, dict) else {}
     rendered = Text()
-    if operation == "list_files":
+    if operation == "list":
         path = _compact_title_value(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
         rendered.append("L  ", style=COLOR_TITLE)
         rendered.append(path, style=TEXT_PRIMARY)
@@ -224,7 +224,7 @@ def _workspace_tool_title(
             rendered.append(summary, style=COLOR_META)
         else:
             rendered.append("目录", style=TEXT_SECONDARY)
-    elif operation == "read_file":
+    elif operation == "read":
         path = _compact_title_value(
             args.get("path") or "(未指定文件)",
             max_chars=MAX_PATH_CHARS,
@@ -243,7 +243,7 @@ def _workspace_tool_title(
         rendered.append(f"{display_icon}  ", style=COLOR_TITLE)
         rendered.append(path, style=TEXT_PRIMARY)
         rendered.append("  |  图片", style=COLOR_META)
-    elif operation in {"find_files", "grep"}:
+    elif operation in {"find", "grep"}:
         path = _compact_title_value(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
         pattern = _compact_title_value(args.get("pattern"), max_chars=36)
         rendered.append(f"{display_icon}  ", style=COLOR_TITLE)

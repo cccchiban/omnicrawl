@@ -542,7 +542,7 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 |--------|------|
 | 新会话创建 | 启动后检查 `index.json` 和 `sessions/<id>.jsonl` 是否生成。 |
 | 普通多轮 | 连续提问两轮，确认第二轮能引用第一轮。 |
-| 工具调用转录 | 触发 `read_file` 或 `grep`，确认 JSONL 有 tool call 和 result。 |
+| 工具调用转录 | 触发 `read` 或 `grep`，确认 JSONL 有 tool call 和 result。 |
 | `/new` | 执行后生成新 session，旧 session 保留。 |
 | `/resume` | 重启程序后恢复旧 session，追问旧上下文能正确回答。 |
 | 中断恢复 | 生成中取消，确认 JSONL 记录中断，恢复时提示状态。 |

@@ -104,7 +104,7 @@ class VisionToolImageProtocolTest(unittest.TestCase):
                     role="assistant",
                     blocks=(
                         TextBlock("我先查看。"),
-                        ToolCallBlock("call_1", "read_file", {"path": "README.md"}),
+                        ToolCallBlock("call_1", "read", {"path": "README.md"}),
                     ),
                     reasoning="先读取文件。",
                 ),
@@ -141,7 +141,7 @@ class VisionToolImageProtocolTest(unittest.TestCase):
                 ConversationMessage(role="user", blocks=(TextBlock("hi"),)),
                 ConversationMessage(
                     role="assistant",
-                    blocks=(ToolCallBlock("call_2", "list_files", {"path": "."}),),
+                    blocks=(ToolCallBlock("call_2", "list", {"path": "."}),),
                     reasoning="",
                 ),
             )
@@ -321,7 +321,7 @@ class VisionToolImageProtocolTest(unittest.TestCase):
 
     def test_runner_appends_all_tool_results_before_visual_followups(self) -> None:
         first = ToolCall("windows_screenshot", {}, "call_1")
-        second = ToolCall("read_file", {}, "call_2")
+        second = ToolCall("read", {}, "call_2")
         replies = iter(
             [
                 AgentModelReply(

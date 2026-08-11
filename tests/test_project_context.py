@@ -13,7 +13,7 @@ from omnicrawl.project_context import (
     detect_project_context,
     find_project_root,
     project_context_status_label,
-    should_disable_content_index,
+    should_disable_broad_workspace_indexes,
 )
 
 
@@ -104,7 +104,7 @@ class ProjectContextTest(unittest.TestCase):
             with self.assertRaises(ProjectContextError):
                 detect_project_context(app_root=Path(tempfile.gettempdir()))
 
-    def test_should_disable_content_index_when_started_from_home(self) -> None:
+    def test_should_disable_indexes_when_started_from_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_home = Path(temp_dir) / "home"
             fake_home.mkdir()
@@ -115,9 +115,9 @@ class ProjectContextTest(unittest.TestCase):
             )
 
             with patch("omnicrawl.project_context.Path.home", return_value=fake_home):
-                self.assertTrue(should_disable_content_index(context))
+                self.assertTrue(should_disable_broad_workspace_indexes(context))
 
-    def test_should_disable_content_index_when_workspace_is_home(self) -> None:
+    def test_should_disable_indexes_when_workspace_is_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_home = Path(temp_dir) / "home"
             fake_home.mkdir()
@@ -128,9 +128,9 @@ class ProjectContextTest(unittest.TestCase):
             )
 
             with patch("omnicrawl.project_context.Path.home", return_value=fake_home):
-                self.assertTrue(should_disable_content_index(context))
+                self.assertTrue(should_disable_broad_workspace_indexes(context))
 
-    def test_should_not_disable_content_index_in_project_directory(self) -> None:
+    def test_should_not_disable_indexes_in_project_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_home = Path(temp_dir) / "home"
             project = Path(temp_dir) / "project"
@@ -144,7 +144,7 @@ class ProjectContextTest(unittest.TestCase):
             )
 
             with patch("omnicrawl.project_context.Path.home", return_value=fake_home):
-                self.assertFalse(should_disable_content_index(context))
+                self.assertFalse(should_disable_broad_workspace_indexes(context))
 
 
 if __name__ == "__main__":

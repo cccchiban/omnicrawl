@@ -292,6 +292,38 @@ class ExplicitShellCommandTest(unittest.TestCase):
         self.assertIn("诊断命令结果", result.output)
         self.assertIn("diag", result.output)
 
+    def test_blank_diagnostic_command_is_skipped_without_error(self) -> None:
+        """空串/纯空白 diagnostic_command 直接跳过，不执行诊断命令、不报错。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tools = WorkspaceTools(Path(temp_dir))
+            with patch.object(
+                tools,
+                "_run_command_invocation",
+                return_value=WorkspaceCommandResult(
+                    ok=True, output="main ok"
+                ),
+            ) as run:
+                result = tools.run_shell_command(
+                    {"command": "echo main", "diagnostic_command": "   "},
+                    shell="bash",
+                )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("诊断命令结果", result.output)
+
+    def test_non_string_diagnostic_command_is_still_rejected(self) -> None:
+        """回归：类型错误仍拦截，只有字符串空串被放宽。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tools = WorkspaceTools(Path(temp_dir))
+            with self.assertRaisesRegex(WorkspaceToolError, "必须是字符串"):
+                tools.run_shell_command(
+                    {"command": "echo main", "diagnostic_command": 123},
+                    shell="bash",
+                )
+
     def test_explicit_shell_timeout_terminates_started_process_tree(self) -> None:
         class TimedOutProcess:
             def communicate(self, timeout=None):

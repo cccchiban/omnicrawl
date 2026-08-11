@@ -94,7 +94,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             "name": "explore",
             "description": "只读探索",
             "system_prompt": "只读。",
-            "tools": ("read_file", "grep", "memory_read", "write_file", "bash", "subagent"),
+            "tools": ("read", "grep", "memory_read", "write_file", "bash", "subagent"),
             "disallowed_tools": (),
             "source_path": Path("explore.md"),
             "source": "builtin",
@@ -554,7 +554,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         parent_tools = {
             name: _tool(name)
             for name in (
-                "read_file",
+                "read",
                 "grep",
                 "memory_read",
                 "write_file",
@@ -599,7 +599,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         self.assertEqual(
             set(captured["tools"]),
             {
-                "read_file",
+                "read",
                 "grep",
                 "memory_read",
                 "bash",
@@ -611,7 +611,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
                 "restricted.mutate_resource",
             },
         )
-        self.assertFalse(captured["tools"]["read_file"].requires_confirmation)
+        self.assertFalse(captured["tools"]["read"].requires_confirmation)
         self.assertFalse(captured["tools"]["grep"].requires_confirmation)
         self.assertFalse(captured["tools"]["memory_read"].requires_confirmation)
         self.assertFalse(captured["tools"]["bash"].requires_confirmation)
@@ -637,7 +637,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
             config=SubAgentConfig(enabled=True),
             registry=_Registry([definition]),
             tools_provider=lambda: {
-                "read_file": _tool("read_file"),
+                "read": _tool("read"),
                 "grep": _tool("grep"),
                 "memory_read": _tool("memory_read"),
                 "write_file": _tool("write_file"),
@@ -648,7 +648,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         result = coordinator.run(self._arguments())
 
         self.assertTrue(result.ok)
-        self.assertEqual(set(captured["tools"]), {"read_file"})
+        self.assertEqual(set(captured["tools"]), {"read"})
 
     def test_model_cannot_inject_tool_skill_or_mcp_capabilities(self) -> None:
         """任务参数只能选择 Host 定义，不能携带自定义权限声明。"""
@@ -683,9 +683,9 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         """read_only 继承父能力，只排除本地文件与父控制面写能力。"""
 
         allowed_tools = {
-            "list_files",
-            "find_files",
-            "read_file",
+            "list",
+            "find",
+            "read",
             "grep",
             "memory_search",
             "memory_read",
@@ -815,9 +815,9 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         """通用写 Agent 只能写工作区，不能顺带获得全局 Memory/MCP/Skill 控制面。"""
 
         allowed_tools = {
-            "list_files",
-            "find_files",
-            "read_file",
+            "list",
+            "find",
+            "read",
             "grep",
             "memory_search",
             "memory_read",
@@ -896,7 +896,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         coordinator = SubAgentCoordinator(
             config=SubAgentConfig(enabled=True),
             registry=_Registry([self._definition()]),
-            tools_provider=lambda: {"read_file": _tool("read_file")},
+            tools_provider=lambda: {"read": _tool("read")},
             execute_task=execute,
             event_sink=lambda name, payload: events.append((name, payload)),
         )
@@ -1078,7 +1078,7 @@ class SubAgentCoordinatorTest(unittest.TestCase):
         coordinator = SubAgentCoordinator(
             config=SubAgentConfig(enabled=True),
             registry=_Registry([self._definition()]),
-            tools_provider=lambda: {"read_file": _tool("read_file")},
+            tools_provider=lambda: {"read": _tool("read")},
             execute_task=execute,
         )
 

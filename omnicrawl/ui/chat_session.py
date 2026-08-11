@@ -8,7 +8,6 @@ from .inline_input import read_line_autocomplete
 from ..commands.slash import (
     build_slash_commands,
     format_tool_confirmation,
-    handle_model_command,
     handle_approval_command,
     handle_reasoning_command,
     handle_session_command,
@@ -147,14 +146,6 @@ def run_inline_chat(
         subagent_task_message = handle_subagent_task_command(agent, user_text)
         if subagent_task_message is not None:
             print(subagent_task_message)
-            continue
-
-        before_model = agent.current_model
-        model_message = handle_model_command(agent, user_text)
-        if model_message is not None:
-            if agent.current_model != before_model:
-                ui.set_model_label(agent.current_model)
-            ui.notice(model_message)
             continue
 
         approval_message = handle_approval_command(agent, user_text)

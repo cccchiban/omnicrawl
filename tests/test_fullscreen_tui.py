@@ -108,6 +108,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         from omnicrawl.ui.fullscreen.theme import (
             TERMINAL_BACKGROUND,
             TERMINAL_FOREGROUND,
+            TEXT_MUTED,
             TEXT_PRIMARY,
             THEME_NAME,
         )
@@ -147,82 +148,81 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.query_one("#token-telemetry").region.y, 1)
             # 顶部由稳态上下文占满；运行态进入对话区且空闲时不存在。
             self.assertEqual(len(app.query("#brand")), 0)
-            self.assertEqual(len(app.query("#topbar > *")), 5)
-            version_widget = app.query_one("#version-status", Static)
-            self.assertEqual(str(version_widget.content), "v0.1.1")
+            self.assertEqual(len(app.query("#topbar > *")), 2)
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
             topbar = app.query_one("#topbar")
             context_widget = app.query_one("#context-summary", Static)
             self.assertEqual(context_widget.region.x, topbar.content_region.x)
-            # 左段与状态字段紧凑紧排，版本号与行尾闭合竖线被弹性占位推到行尾。
+            # 第一行仅项目绝对路径 + 行尾索引状态；第二行为遥测（左）+ 模型/状态（右），
+            # 各组件内容紧排，行首无竖线，无行尾闭合元素。
+            index_widget = app.query_one("#index-status", Static)
+            self.assertEqual(index_widget.region.y, 0)
             status_widget = app.query_one("#status-summary", Static)
-            topbar_tail = app.query_one("#topbar .hud-tail", Static)
-            self.assertEqual(status_widget.region.x, context_widget.region.right)
-            self.assertGreater(version_widget.region.x, status_widget.region.right)
-            self.assertEqual(topbar_tail.region.x, version_widget.region.right)
-            self.assertEqual(topbar_tail.region.right, topbar.content_region.right)
+            self.assertEqual(status_widget.region.y, 1)
+            self.assertLessEqual(status_widget.region.right, app.query_one("#telemetry-row").content_region.right)
             context = context_widget.content
-            self.assertTrue(context.plain.startswith("│ PRJ workspace"))
-            self.assertNotIn("D:/workspace", context.plain)
-            self.assertIn("MDL demo-model", context.plain)
-            self.assertIn("THK MAX", context.plain)
+            # 第一行显示项目绝对路径（灰色），不再取文件夹名。
+            self.assertTrue(context.plain.startswith("D:/workspace"))
+            self.assertIn("D:/workspace", context.plain)
+            self.assertNotIn("demo-model", context.plain)
+            self.assertNotIn("THK MAX", context.plain)
             self.assertNotIn(".agent_tmp", context.plain)
-            # 审批模式、排队数与 MCP 数量在状态字段，用 │ 与左段分隔；
-            # 版本号前的分隔竖线位于 QUE 0 之后。
+            # 模型、推理强度、审批模式、排队数与 MCP 数量在第二行右段，
+            # 前置 ⁕ 分隔符（衔接遥测 t/s），以 QUE 段收束。
             status = status_widget.content
             self.assertIn("APR MAN", status.plain)
             self.assertIn("QUE 0", status.plain)
             self.assertIn("MCP 2", status.plain)
-            self.assertTrue(status.plain.startswith("│ "))
-            self.assertIn("QUE 0 │", status.plain)
+            self.assertTrue(status.plain.startswith("⁕ demo-model"))
+            self.assertIn("THK MAX", status.plain)
+            self.assertTrue(status.plain.endswith("QUE 0 " ))
             self.assertNotIn("·", context.plain)
             self.assertNotIn("·", status.plain)
             self.assertEqual(app.theme, THEME_NAME)
             self.assertTrue(app.current_theme.ansi)
             self.assertEqual(app.current_theme.background, TERMINAL_BACKGROUND)
             self.assertEqual(app.current_theme.foreground, TERMINAL_FOREGROUND)
-            self.assertIn(TEXT_PRIMARY, str(context.spans))
+            self.assertIn(TEXT_MUTED, str(context.spans))
             self.assertNotIn("ansi_blue", str(context.spans))
             self.assertNotIn("ansi_green", str(context.spans))
             self.assertNotIn("ansi_magenta", str(context.spans))
             token_widget = app.query_one("#token-telemetry", Static)
             telemetry = str(token_widget.content)
-            self.assertIn("IN 0", telemetry)
-            self.assertTrue(telemetry.startswith("│ "))
-            # CTX 占用紧跟 tok/s 之后，位于第二行左段。
-            self.assertIn("CTX 0%", telemetry)
-            self.assertIn("0/128K", telemetry)
+            # 遥测位于第二行最左：用量/总量 + 百分比起头（上下文限制 128K）。
+            self.assertTrue(telemetry.startswith("0/128K 0%"))
+            self.assertIn("0/128K 0%", telemetry)
+            self.assertIn("↑0", telemetry)
+            self.assertIn("↓0", telemetry)
+            self.assertIn("†0", telemetry)
+            self.assertIn("CH0%", telemetry)
+            self.assertIn("-- t/s", telemetry)
             self.assertNotIn("MCP", telemetry)
             self.assertNotIn("·", telemetry)
-            # 第二行容器保留底边框，Token 与索引状态各占一行内容高度。
+            self.assertNotIn("omnicrawl", telemetry)
+            # 第二行容器：模型/状态与遥测同排，单行内容 + 底边框。
             telemetry_row = app.query_one("#telemetry-row")
-            index_widget = app.query_one("#index-status", Static)
             self.assertEqual(telemetry_row.region.height, 2)
             self.assertEqual(token_widget.region.height, 1)
             self.assertGreater(token_widget.size.height, 0)
-            # 索引状态空闲时为空文本，渲染后组件整体隐藏避免竖线占位。
+            # 索引状态空闲时为空文本，渲染后组件整体隐藏避免分隔符占位。
             app._render_search_index_status()
             self.assertFalse(index_widget.display)
-            # 行尾闭合竖线常驻，空闲时仍贴住第二行右缘。
-            row_tail = app.query_one("#telemetry-row .hud-tail", Static)
-            self.assertEqual(row_tail.region.right, telemetry_row.content_region.right)
             # 使用非空状态模拟真实索引加载，避免后台轮询在下一帧把手动显示复位。
             with patch.object(
                 app,
                 "_search_index_status_text",
-                return_value=Text("正在建立项目文件索引"),
+                return_value=Text("⠋ 加载索引"),
             ):
                 app._render_search_index_status()
                 await pilot.pause()
-            self.assertEqual(index_widget.region.right, row_tail.region.x)
-            self.assertEqual(row_tail.region.right, telemetry_row.content_region.right)
+            self.assertTrue(index_widget.display)
+            self.assertIn("⁕", str(index_widget.content))
+            self.assertIn("加载索引", str(index_widget.content))
             rendered_token = "".join(segment.text for segment in token_widget.render_line(0))
-            self.assertIn("IN", rendered_token)
-            self.assertIn("CTX", rendered_token)
-            self.assertEqual(
-                token_widget.content_region.x,
-                context_widget.region.x,
-            )
+            self.assertIn("↑0", rendered_token)
+            self.assertIn("0/128K", rendered_token)
+            # 模型/状态段紧贴遥测右侧（遥测在最左）。
+            self.assertEqual(status_widget.region.x, token_widget.region.right)
             self.assertEqual(app.query_one("#composer-wrap").region.height, 2)
             composer = app.query_one("#composer", TextArea)
             self.assertEqual(composer.region.height, 1)
@@ -233,8 +233,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(cursor_style.reverse)
             self.assertEqual(composer.styles.background.a, 0)
 
-    async def test_hud_edges_remain_aligned_when_terminal_is_compact(self) -> None:
-        """窄终端下顶部两行的尾部分隔线不得溢出内容区。"""
+    async def test_hud_fits_within_content_when_terminal_is_compact(self) -> None:
+        """较窄终端下顶部两行各段不得溢出内容区（第二行满数据约 86 cell）。"""
 
         from textual.widgets import Static
 
@@ -266,98 +266,22 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-        async with app.run_test(size=(80, 30)) as pilot:
+        async with app.run_test(size=(100, 30)) as pilot:
             await pilot.pause(0.1)
             app._render_search_index_status()
             await pilot.pause(0.1)
 
             topbar = app.query_one("#topbar")
             telemetry_row = app.query_one("#telemetry-row")
-            top_tail = app.query_one("#topbar .hud-tail", Static)
-            row_tail = app.query_one("#telemetry-row .hud-tail", Static)
 
-            self.assertEqual(top_tail.region.right, topbar.content_region.right)
-            self.assertEqual(row_tail.region.right, telemetry_row.content_region.right)
-
-    async def test_background_version_check_updates_hud_and_adds_notice(self) -> None:
-        from textual.widgets import Static
-
-        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
-        from omnicrawl.version_check import VersionCheckResult
-
-        class FakeAgent:
-            current_model = "demo-model"
-            approval_mode = "manual"
-            reasoning_effort = "max"
-            workspace_root = "D:/workspace"
-            current_session_id = "session-demo"
-            skill_manager = None
-
-            def set_confirm_handler(self, _handler) -> None:
-                pass
-
-        result = VersionCheckResult(
-            current_version="0.1.1",
-            latest_version="0.1.2",
-        )
-        with patch(
-            "omnicrawl.ui.fullscreen.check_latest_version",
-            return_value=result,
-        ):
-            app = OmniCrawlApp(
-                FakeAgent(),
-                FullscreenStartup(
-                    True,
-                    "max",
-                    "人工确认",
-                    "D:/workspace",
-                    ".agent_tmp",
-                    current_version="0.1.1",
-                    version_check_enabled=True,
-                ),
+            self.assertLessEqual(
+                app.query_one("#context-summary", Static).region.right,
+                topbar.content_region.right,
             )
-            async with app.run_test(size=(100, 30)) as pilot:
-                for _ in range(20):
-                    await pilot.pause(0.01)
-                    version_text = str(
-                        app.query_one("#version-status", Static).content
-                    )
-                    if "0.1.2" in version_text:
-                        break
-
-                self.assertIn("v0.1.1  ↑ v0.1.2", version_text)
-                notices = [str(widget.content) for widget in app.query(".status-message")]
-                self.assertTrue(
-                    any(
-                        "发现新版本 0.1.2" in notice
-                        and "pip install --upgrade omnicrawl-agent" in notice
-                        for notice in notices
-                    )
-                )
-
-    def test_version_status_uses_four_animation_frames_while_checking(self) -> None:
-        from omnicrawl.ui.fullscreen.hud import version_status_text
-
-        prefix_length = len("v0.1.1  ")
-        expected_styles = [
-            ["dim", "default", "default", "default"],
-            ["default", "dim", "default", "default"],
-            ["default", "default", "dim", "default"],
-            ["default", "default", "default", "dim"],
-        ]
-        for frame, styles in enumerate(expected_styles):
-            status = version_status_text(
-                "0.1.1",
-                checking=True,
-                animation_frame=frame,
+            self.assertLessEqual(
+                app.query_one("#status-summary", Static).region.right,
+                telemetry_row.content_region.right,
             )
-            self.assertEqual(status.plain, "v0.1.1  ●●●●")
-            dot_spans = [
-                span
-                for span in status.spans
-                if span.start >= prefix_length and span.end <= prefix_length + 4
-            ]
-            self.assertEqual([span.style for span in dot_spans], styles)
 
     async def test_composer_starts_on_one_row_and_grows_with_wrapped_text(self) -> None:
         """输入区初始一行，长文本和真实换行均自动扩展，最多保留五行。"""
@@ -490,10 +414,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             protocol_calls,
-            [OmniCrawlWindowsDriver.RAW_INPUT_PROTOCOL_RESET, "flush"],
+            ["flush"],
         )
 
-    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
     def test_windows_driver_recovers_shift_enter_when_terminal_drops_modifier(self) -> None:
         """终端未提供 Kitty 修饰位时，Driver 仍应从 Windows 键态恢复 Shift。"""
 
@@ -589,6 +512,33 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(position, (4, 7))
         self.assertEqual(len(messages), 1)
         self.assertIsInstance(messages[0], events.MouseUp)
+        self.assertEqual(messages[0].button, 1)
+
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
+    def test_should_map_raw_double_click_to_single_down(self) -> None:
+        """双击原始记录不能为一次物理按下重复生成 MouseDown。"""
+
+        from textual import events
+        from textual.drivers import win32
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        record = win32.MOUSE_EVENT_RECORD()
+        record.dwMousePosition.X = 4
+        record.dwMousePosition.Y = 7
+        record.dwButtonState = 0x0001
+        record.dwEventFlags = OmniCrawlWindowsEventMonitor.WINDOWS_MOUSE_DOUBLE_CLICK
+
+        messages, _button_state, _position = (
+            OmniCrawlWindowsEventMonitor.mouse_events_from_raw(
+                record,
+                previous_button_state=0,
+                previous_position=(0, 0),
+            )
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], events.MouseDown)
         self.assertEqual(messages[0].button, 1)
 
     async def test_should_insert_newline_when_shift_enter_is_reported_as_lf_enter(self) -> None:
@@ -908,6 +858,196 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app.mouse_captured)
             self.assertEqual(app._driver._down_buttons, [])
             self.assertTrue(app.query_one("#composer", TextArea).has_focus)
+
+    async def _wait_until(
+        self,
+        pilot,
+        predicate,
+        *,
+        attempts: int = 40,
+        interval: float = 0.05,
+    ) -> bool:
+        """轮询等待异步状态（Textual 消息/动画以事件循环节奏生效）。"""
+
+        for _ in range(attempts):
+            if predicate():
+                return True
+            await pilot.pause(interval)
+        return predicate()
+
+    async def test_should_drag_conversation_scrollbar_from_track_by_mouse(self) -> None:
+        """按住滚动条任意位置（含轨道）都能拖动：按下即抓取并跳到对应位置。"""
+
+        from textual import events
+        from textual.scrollbar import ScrollBar
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            for i in range(40):
+                app._append_delta(f"第 {i} 行内容足够长让消息区溢出显示滚动条" * 2 + "\n")
+            app._render_stream_markdown()
+            await pilot.pause(0.3)
+            conversation = app.query_one("#conversation")
+            scrollbar = conversation.vertical_scrollbar
+            self.assertIsInstance(scrollbar, ScrollBar)
+            self.assertGreater(conversation.max_scroll_y, 0)
+            x = scrollbar.region.x + scrollbar.region.width // 2
+            # 内容在顶部时，thumb 只占滚动条上部；点轨道下部 y=28（底部附近）。
+            track_y = scrollbar.region.bottom - 2
+            app.post_message(
+                events.MouseDown(
+                    None, x, track_y, 0, 0, 1, False, False, False,
+                    screen_x=x, screen_y=track_y,
+                )
+            )
+            await self._wait_until(
+                pilot, lambda: scrollbar.grabbed is not None,
+                attempts=60,
+            )
+            self.assertIsNotNone(
+                scrollbar.grabbed,
+                "按住轨道必须进入拖动状态（Textual 原生只抓 thumb）",
+            )
+            await self._wait_until(pilot, lambda: conversation.scroll_y > 0)
+            jumped = conversation.scroll_y
+            self.assertGreater(jumped, 0, "按住轨道应先跳到点击位置对应的比例")
+            # 按住向上拖动两行：位置应随拖动回退。
+            move_y = track_y - 2
+            self.assertIsNotNone(
+                scrollbar.grabbed,
+                "拖动开始前 grab 必须保持（看门狗/恢复逻辑不得打断）："
+                f"grabbed={scrollbar.grabbed} captured="
+                f"{type(app.mouse_captured).__name__ if app.mouse_captured else None}",
+            )
+            app.post_message(
+                events.MouseMove(
+                    None, x, move_y, 0, move_y - track_y, 1, False, False, False,
+                    screen_x=x, screen_y=move_y,
+                )
+            )
+            await self._wait_until(
+                pilot,
+                lambda: conversation.scroll_y < jumped - 1,
+                attempts=60,
+            )
+            app.post_message(
+                events.MouseUp(
+                    None, x, move_y, 0, move_y - track_y, 1, False, False, False,
+                    screen_x=x, screen_y=move_y,
+                )
+            )
+            await self._wait_until(pilot, lambda: scrollbar.grabbed is None)
+            self.assertIsNone(scrollbar.grabbed, "MouseUp 后必须释放拖动")
+            self.assertLess(
+                conversation.scroll_y,
+                jumped,
+                "向上拖动后位置应回退到跳转点之前："
+                f"scroll_y={conversation.scroll_y} jumped={jumped} "
+                f"grabbed={scrollbar.grabbed} position={scrollbar.position} "
+                f"captured={type(app.mouse_captured).__name__ if app.mouse_captured else None} "
+                f"max={conversation.max_scroll_y}",
+            )
+
+    async def test_should_recover_stale_scrollbar_drag_when_release_is_missing(self) -> None:
+        """滚动条拖动丢失释放事件后必须由 stale 看门狗复位。"""
+
+        from textual import events
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        app.INTERACTION_WATCHDOG_INTERVAL_SECONDS = 0.05
+        app.STALE_INTERACTION_TICKS = 2
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            for i in range(40):
+                app._append_delta(f"第 {i} 行内容足够长让消息区溢出显示滚动条" * 2 + "\n")
+            app._render_stream_markdown()
+            await pilot.pause(0.3)
+            conversation = app.query_one("#conversation")
+            scrollbar = conversation.vertical_scrollbar
+            x = scrollbar.region.x + scrollbar.region.width // 2
+            thumb_y = scrollbar.region.y + 5  # 顶部时 thumb 覆盖该行
+            app.post_message(
+                events.MouseDown(
+                    None, x, thumb_y, 0, 0, 1, False, False, False,
+                    screen_x=x, screen_y=thumb_y,
+                )
+            )
+            await self._wait_until(pilot, lambda: scrollbar.grabbed is not None)
+            self.assertIsNotNone(scrollbar.grabbed)
+            # 停顿超过 stale 阈值，模拟终端漏掉 MouseUp 后的残留捕获。
+            await pilot.pause(0.4)
+            self.assertIsNone(scrollbar.grabbed)
+            self.assertIsNone(app.mouse_captured)
+
+    async def test_should_not_capture_scrollbar_when_secondary_button_is_pressed(self) -> None:
+        """右键或中键点击消息区滚动条不能启动左键式拖动。"""
+
+        from textual import events
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            for index in range(40):
+                app._append_delta(f"第 {index} 行内容足够长让消息区溢出显示滚动条" * 2 + "\n")
+            app._render_stream_markdown()
+            await pilot.pause(0.3)
+            conversation = app.query_one("#conversation")
+            scrollbar = conversation.vertical_scrollbar
+            x = scrollbar.region.x + scrollbar.region.width // 2
+            y = scrollbar.region.bottom - 2
+            initial_scroll_y = conversation.scroll_y
+
+            for button in (2, 3):
+                app.post_message(
+                    events.MouseDown(
+                        None, x, y, 0, 0, button, False, False, False,
+                        screen_x=x, screen_y=y,
+                    )
+                )
+                await pilot.pause()
+                self.assertIsNone(scrollbar.grabbed)
+                self.assertIsNone(app.mouse_captured)
+                self.assertEqual(conversation.scroll_y, initial_scroll_y)
 
     async def test_should_reset_mouse_state_and_reporting_when_app_focus_changes(self) -> None:
         """失焦应立即清理交互状态，重新聚焦时应恢复终端鼠标报告。"""
@@ -1411,8 +1551,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             app._handle_tool_result(call, result)
             await pilot.pause()
             record = app.query_one(".tool-message")
-            await pilot.click(".tool-message")
-            await pilot.pause()
+            # bash 默认展开：无需点击即可看到输出内容。
+            self.assertFalse(record.has_class("collapsed"))
             self.assertIn("0123456789", str(record.content))
             self.assertIn("ABCDEFGHIJ", str(record.content))
 
@@ -1530,7 +1670,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         class ToolHarness(App[None]):
             def compose(self) -> ComposeResult:
                 yield ToolDisclosure(
-                    "read_file",
+                    "read",
                     {"path": "README.md"},
                     started_at=10.0,
                 )
@@ -2105,6 +2245,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 }
             )
             screen._focus_active_list()
+            # 焦点设置异步生效，先等一帧再按 Tab，避免按键落入未就绪状态。
+            await pilot.pause()
             await pilot.press("tab")
             self.assertEqual(screen.focused.id, "model-picker-search")
 
@@ -2152,8 +2294,10 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             screen._index_channels = 0
             screen._focus_active_list()
             await pilot.press("down")
+            await self._wait_until(pilot, lambda: screen._index_channels == 1)
             self.assertEqual(screen._index_channels, 1)
             await pilot.press("up")
+            await self._wait_until(pilot, lambda: screen._index_channels == 0)
             self.assertEqual(screen._index_channels, 0)
 
     async def test_channel_selection_filters_models_and_wraps(self) -> None:
@@ -2409,12 +2553,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             telemetry = app.query_one("#token-telemetry", Static).content
             self.assertIsInstance(telemetry, Text)
-            self.assertIn("IN 62.5K", telemetry.plain)
-            self.assertIn("OUT 2.4K", telemetry.plain)
-            self.assertIn("CA 50K", telemetry.plain)
-            # 上下文占用条随 Token 用量同步更新，紧跟 tok/s 之后。
-            self.assertIn("CTX 62%", telemetry.plain)
+            self.assertIn("↑62.5K", telemetry.plain)
+            self.assertIn("↓2.4K", telemetry.plain)
+            self.assertIn("†50K", telemetry.plain)
+            # 上下文占用为用量/总量 + 百分比（位于实时速率之前）；缓存占比 CH 同步。
+            self.assertIn("62%", telemetry.plain)
             self.assertIn("62.5K/100K", telemetry.plain)
+            self.assertIn("CH50%", telemetry.plain)
             self.assertIn(TEXT_MUTED, str(telemetry.spans))
             self.assertIn("default", str(telemetry.spans))
             self.assertNotIn("blue", str(telemetry.spans))
@@ -2424,7 +2569,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("red", str(telemetry.spans))
 
     async def test_token_rate_shown_while_streaming_and_reset_after_turn(self) -> None:
-        """流式生成期间顶部遥测显示实时 tok/s，回合结束后归零为 --。"""
+        """流式生成期间顶部遥测显示实时 t/s，回合结束后归零为 --。"""
 
         import time
 
@@ -2447,12 +2592,12 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         async with app.run_test(size=(120, 40)) as pilot:
             # 手工构造 1 秒前的采样点：400 ASCII 字符 ≈ 100 token。
-            # 跨度 1.0s → 速率约 100.0 tok/s（同一 tick 内误差 < 1%）。
+            # 跨度 1.0s → 速率约 100.0 t/s（同一 tick 内误差 < 1%）。
             app._generation_samples.append((time.monotonic() - 1.0, 100.0))
             app._refresh_token_rate()
             await pilot.pause()
             telemetry = app.query_one("#token-telemetry", Static)
-            self.assertIn("tok/s 100.0", telemetry.content.plain)
+            self.assertIn("100.0 t/s", telemetry.content.plain)
             # MCP 数量已移入第一行右段状态卡片。
             self.assertIn(
                 "MCP 0", app.query_one("#status-summary", Static).content.plain
@@ -2462,7 +2607,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app._tokens_per_second, 0.0)
             self.assertEqual(len(app._generation_samples), 0)
-            self.assertIn("tok/s --", telemetry.content.plain)
+            self.assertIn("-- t/s", telemetry.content.plain)
 
     async def test_token_rate_accumulates_from_stream_deltas(self) -> None:
         """思考与正文流增量都会计入实时生成速率；估算值按字符加权。"""
@@ -2501,13 +2646,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertGreater(app._tokens_per_second, 0.0)
             self.assertIn(
-                "tok/s",
+                "t/s",
                 app.query_one("#token-telemetry", Static).content.plain,
             )
             self.assertGreaterEqual(len(app._generation_samples), 2)
 
-    async def test_context_summary_uses_windows_workspace_folder_name(self) -> None:
-        """顶部项目名解析不应依赖测试进程当前运行的平台。"""
+    async def test_context_summary_shows_full_workspace_path_in_muted_style(self) -> None:
+        """顶部显示项目绝对路径（灰色），不做平台相关的 basename 解析。"""
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -2528,9 +2673,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         context = app._context_summary_text()
-        # PRJ 段固定 16 cell：omnicrawl（9）后补 1 空格再闭合竖线。
-        self.assertTrue(context.plain.startswith("│ PRJ omnicrawl  │ MDL "))
-        self.assertNotIn(r"D:\projects", context.plain)
+        # 第一行显示完整绝对路径（灰色），模型名已移入第二行。
+        self.assertTrue(context.plain.startswith(r"D:\projects\omnicrawl"))
+        self.assertNotIn("demo-model", context.plain)
+        status = app._status_summary_text()
+        # 第二行右段：⁕ 分隔后模型名起头，接 THK 与状态字段。
+        self.assertTrue(status.plain.startswith("⁕ demo-model"))
+        self.assertIn("THK MAX", status.plain)
 
     async def test_should_keep_composer_visible_when_slash_description_spans_multiple_lines(self) -> None:
         """单个多行 Skill 描述不能把输入框挤出 composer 容器。"""
@@ -2567,10 +2716,14 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(50, 20)) as pilot:
             composer = app.query_one("#composer", TextArea)
             composer.text = "/skill:multiline"
-            await pilot.pause()
+            menu = app.query_one("#command-menu")
+            menu_is_ready = await self._wait_until(
+                pilot,
+                lambda: menu.display and menu.region.height == 1,
+            )
 
             composer_wrap = app.query_one("#composer-wrap")
-            menu = app.query_one("#command-menu")
+            self.assertTrue(menu_is_ready)
             self.assertTrue(menu.display)
             self.assertEqual(menu.region.height, 1)
             self.assertIn("第一行介绍 第二行介绍 第三行介绍", str(menu.content))
@@ -2729,7 +2882,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         async with app.run_test(size=(120, 40)) as pilot:
             worker = threading.Thread(
-                target=lambda: decision.append(app._confirm_tool("read_file", {"path": "README.md"})),
+                target=lambda: decision.append(app._confirm_tool("read", {"path": "README.md"})),
                 daemon=True,
             )
             worker.start()
@@ -2769,7 +2922,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FakeAgent(),
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
-        tool_call = SimpleNamespace(name="read_file", arguments={"path": "README.md"})
+        tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
         tool_result = SimpleNamespace(ok=True, output="读取完成")
 
         async with app.run_test(size=(100, 20)) as pilot:
@@ -2895,7 +3048,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FakeAgent(),
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
-        tool_call = SimpleNamespace(name="read_file", arguments={"path": "README.md"})
+        tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
         async with app.run_test(size=(100, 32)) as pilot:
             app._set_runtime_status("正在思考", "working")
@@ -3072,69 +3225,6 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("MCP 能力加载失败：Server 启动失败", app.conversation_text)
         self.assertFalse(app.is_generating)
 
-    async def test_reasoning_sections_are_separate_expanded_and_clickable(self) -> None:
-        """每次模型推理应独立成段、默认展开，并且可通过点击折叠正文。"""
-
-        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ReasoningDisclosure
-
-        class FakeAgent:
-            current_model = "demo-model"
-            current_session_id = "session-demo"
-            skill_manager = None
-
-            def set_confirm_handler(self, _handler) -> None:
-                pass
-
-        app = OmniCrawlApp(
-            FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
-        )
-
-        async with app.run_test(size=(100, 32)) as pilot:
-            app._append_message("user", "检查并整理配置。")
-            app._append_reasoning_delta("先检查配置。")
-            first = app.query_one(ReasoningDisclosure)
-            self.assertTrue(first.expanded)
-            self.assertGreater(first.styles.background.a, 0)
-
-            await pilot.pause()
-            first_text = "".join(
-                segment.text
-                for line_number in range(first.size.height)
-                for segment in first.render_line(line_number)
-            )
-            self.assertIn("先检查配置", first_text)
-            self.assertNotIn("▾", first_text)
-            self.assertNotIn("▸", first_text)
-
-            await pilot.click(".reasoning-message")
-            await pilot.pause()
-            self.assertFalse(first.expanded)
-            collapsed_text = "".join(segment.text for segment in first.render_line(0))
-            self.assertNotIn("先检查配置", collapsed_text)
-            self.assertNotIn("▾", collapsed_text)
-            self.assertNotIn("▸", collapsed_text)
-            self.assertEqual(first.reasoning_text, "先检查配置。")
-
-            app._handle_tool_start(1, SimpleNamespace(name="read_file", arguments={}))
-            app._append_reasoning_delta("再整理结果。")
-            app._append_message("assistant", "配置已经整理完成。")
-            self.assertEqual(len(app.query(ReasoningDisclosure)), 2)
-            second = app.query(ReasoningDisclosure)[1]
-            self.assertTrue(second.expanded)
-
-            await pilot.pause()
-            second_text = "".join(
-                segment.text
-                for line_number in range(second.size.height)
-                for segment in second.render_line(line_number)
-            )
-            self.assertIn("再整理结果", second_text)
-            messages = list(app.query(".message"))
-            self.assertGreaterEqual(len(messages), 5)
-            self.assertEqual(messages[0].styles.margin.bottom, 1)
-            self.assertTrue(all(message.styles.margin.bottom == 1 for message in messages[:-1]))
-            self.assertEqual(messages[-1].styles.margin.bottom, 0)
 
     async def test_reasoning_single_line_does_not_reserve_blank_rows_during_reply(self) -> None:
         """单行思考在回复流开始后仍应保持正文和自然高度。"""
@@ -3236,13 +3326,16 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("片段199", rendered)
 
-            # flush 后折叠/展开交互保持可用。
+            # 折叠功能已移除：点击后内容仍保持展开可见。
             await pilot.click(".reasoning-message")
             await pilot.pause()
-            self.assertFalse(widget.expanded)
-            await pilot.click(".reasoning-message")
-            await pilot.pause()
-            self.assertTrue(widget.expanded)
+            still_rendered = "".join(
+                segment.text
+                for line_number in range(widget.size.height)
+                for segment in widget.render_line(line_number)
+            )
+            self.assertIn("片段199", still_rendered)
+            self.assertFalse(widget.has_class("collapsed"))
 
     async def test_assistant_message_renders_latex_math(self) -> None:
         """模型回复中的 LaTeX 公式应转换为终端可读的 Unicode 数学文本。"""
@@ -3338,7 +3431,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 self.seen_statuses = ["正在思考"]
                 on_delta(f"回复：{text}")
                 self.seen_statuses.append("正在回复")
-                tool_call = SimpleNamespace(name="read_file", arguments={"path": "README.md"})
+                tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
                 callbacks["on_protocol_wait"]()
                 self.seen_statuses.append("等待")
                 callbacks["on_tool_start"](1, tool_call)
@@ -3369,7 +3462,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(app.is_generating)
             self.assertIn("回复：你好", app.conversation_text)
-            self.assertIn("read_file", app.conversation_text)
+            self.assertIn("read", app.conversation_text)
             self.assertEqual(len(app.query(".tool-message")), 1)
             tool_record = app.query_one(".tool-message", Static)
             collapsed = str(tool_record.content)
@@ -3418,7 +3511,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FakeAgent(),
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
-        tool_call = SimpleNamespace(name="read_file", arguments={"path": "README.md"})
+        tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
         async with app.run_test(size=(120, 40)) as pilot:
             app._append_reasoning_delta("第一轮思考")
@@ -3466,7 +3559,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
-            for index, name in enumerate(("read_file", "grep"), start=1):
+            for index, name in enumerate(("read", "grep"), start=1):
                 app._append_reasoning_delta(f"思考 {index}")
                 call = SimpleNamespace(name=name, arguments={})
                 app._handle_tool_start(index, call)
@@ -3516,11 +3609,14 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
 
             context = app.query_one("#context-summary", Static).content
-            self.assertIn("MDL demo-model", context.plain)
-            self.assertIn("THK LOW", context.plain)
+            # 第一行仅项目名；模型与推理强度已移入第二行左段。
+            self.assertNotIn("demo-model", context.plain)
+            self.assertNotIn("THK LOW", context.plain)
             self.assertNotIn("完全自动批准", context.plain)
-            # 审批模式已移入右段状态卡片。
+            # 模型/推理强度/审批模式都在第二行左段。
             status = app.query_one("#status-summary", Static).content
+            self.assertIn("demo-model", status.plain)
+            self.assertIn("THK LOW", status.plain)
             self.assertIn("APR AUTO", status.plain)
 
     async def test_parallel_tool_results_update_their_matching_disclosures(self) -> None:
@@ -3540,7 +3636,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FakeAgent(),
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
-        first = SimpleNamespace(name="read_file", arguments={}, id="call_1")
+        first = SimpleNamespace(name="read", arguments={}, id="call_1")
         second = SimpleNamespace(name="grep", arguments={}, id="call_2")
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -3576,7 +3672,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FakeAgent(),
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
-        tool_call = SimpleNamespace(name="read_file", arguments={"path": "README.md"})
+        tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
         async with app.run_test(size=(120, 40)) as pilot:
             app._handle_tool_start(1, tool_call)
@@ -3703,7 +3799,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FakeAgent(),
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
-        tool_call = SimpleNamespace(name="read_file", arguments={"path": "README.md"})
+        tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
         async with app.run_test(size=(120, 40)) as pilot:
             with patch("omnicrawl.ui.fullscreen.time.perf_counter", side_effect=[10.0, 10.126]):
@@ -3725,38 +3821,6 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(record.expanded)
             self.assertIn("读取完成", str(record.content))
 
-    async def test_tool_result_truncates_large_output_for_rendering(self) -> None:
-        """工具的大输出只能保留预览，且仅在展开调用记录后显示。"""
-
-        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ToolDisclosure
-
-        class FakeAgent:
-            current_model = "demo-model"
-            current_session_id = "session-demo"
-            skill_manager = None
-
-            def set_confirm_handler(self, _handler) -> None:
-                pass
-
-        app = OmniCrawlApp(
-            FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
-        )
-        tool_call = SimpleNamespace(name="powershell", arguments={"command": "Write-Output long"})
-        result = SimpleNamespace(ok=True, output="x" * 20_000)
-
-        async with app.run_test(size=(120, 40)) as pilot:
-            app._handle_tool_start(1, tool_call)
-            app._handle_tool_result(tool_call, result)
-            await pilot.pause()
-
-            record = app.query_one(ToolDisclosure)
-            self.assertNotIn("界面展示已截断", str(record.content))
-            await pilot.click(".tool-message")
-            await pilot.pause()
-            rendered = str(record.content)
-            self.assertIn("x" * 20_000, rendered)
-            self.assertNotIn("界面展示已截断", rendered)
 
     async def test_fullscreen_app_appends_monitor_events_without_starting_agent_turn(self) -> None:
         """后台日志到达时应直接显示，不应触发模型新回合。"""
@@ -3944,10 +4008,361 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             patched_handler.assert_called_once_with(app.agent, "/approval:auto")
             self.assertIn("已通过 patch 切换审批", app.conversation_text)
 
-    async def test_model_command_runs_outside_event_loop(self) -> None:
-        """模型列表检测较慢时，事件循环仍必须能够继续处理界面事件。"""
+    async def test_shell_tools_expand_by_default_and_limit_body_to_five_lines(self) -> None:
+        """bash/powershell 默认展开，但展开正文最多五行，超出以提示行截断。"""
 
+        from textual.app import App, ComposeResult
+
+        from omnicrawl.ui.fullscreen.widgets import ToolDisclosure
+
+        class ToolHarness(App[None]):
+            def __init__(self, name: str, output: str) -> None:
+                super().__init__()
+                self._name = name
+                self._output = output
+
+            def compose(self) -> ComposeResult:
+                yield ToolDisclosure(
+                    self._name,
+                    {"command": "echo test"},
+                    started_at=1.0,
+                )
+
+        for name in ("bash", "powershell"):
+            with self.subTest(name=name):
+                app = ToolHarness(name, "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行")
+                async with app.run_test(size=(100, 24)) as pilot:
+                    record = app.query_one(ToolDisclosure)
+                    # 默认展开：无 collapsed class，且正文可见。
+                    self.assertFalse(record.has_class("collapsed"))
+                    self.assertTrue(record.expanded)
+
+                    record.finish(ok=True, output=app._output, finished_at=2.0)
+                    await pilot.pause()
+                    rendered = record.render().plain
+                    for expected in ("第一行", "第二行", "第三行", "第四行", "第五行"):
+                        self.assertIn(expected, rendered)
+                    self.assertNotIn("第六行", rendered)
+                    self.assertNotIn("第七行", rendered)
+                    self.assertIn("仅显示前五行", rendered)
+
+
+    async def test_shell_tools_with_short_output_are_not_truncated(self) -> None:
+        """bash/powershell 输出不超过五行时保持完整，不出现截断提示。"""
+
+        from textual.app import App, ComposeResult
+
+        from omnicrawl.ui.fullscreen.widgets import ToolDisclosure
+
+        class ToolHarness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ToolDisclosure("bash", {"command": "echo test"}, started_at=1.0)
+
+        app = ToolHarness()
+        async with app.run_test(size=(100, 24)) as pilot:
+            record = app.query_one(ToolDisclosure)
+            record.finish(ok=True, output="只有两行\n完成", finished_at=2.0)
+            await pilot.pause()
+            rendered = record.render().plain
+            self.assertIn("只有两行", rendered)
+            self.assertIn("完成", rendered)
+            self.assertNotIn("仅显示前五行", rendered)
+
+
+    async def test_file_change_tools_keep_full_body_when_expanded(self) -> None:
+        """write_file/replace_text 等文件工具默认展开且不受五行限制。"""
+
+        from textual.app import App, ComposeResult
+
+        from omnicrawl.ui.fullscreen.widgets import ToolDisclosure
+
+        class ToolHarness(App[None]):
+            def __init__(self, name: str) -> None:
+                super().__init__()
+                self._name = name
+
+            def compose(self) -> ComposeResult:
+                yield ToolDisclosure(self._name, {"path": "a.txt"}, started_at=1.0)
+
+        for name in ("write_file", "replace_text"):
+            with self.subTest(name=name):
+                app = ToolHarness(name)
+                async with app.run_test(size=(100, 24)) as pilot:
+                    record = app.query_one(ToolDisclosure)
+                    self.assertFalse(record.has_class("collapsed"))
+                    record.finish(
+                        ok=True,
+                        output="第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行",
+                        finished_at=2.0,
+                    )
+                    await pilot.pause()
+                    rendered = record.render().plain
+                    self.assertIn("第六行", rendered)
+                    self.assertIn("第七行", rendered)
+                    self.assertNotIn("仅显示前五行", rendered)
+
+
+    async def test_model_picker_esc_returns_to_settings_panel_without_cancel_tip(self) -> None:
+        """ESC 离开模型选择器：返回设置面板（与其他选项页面一致），无取消提示。"""
+
+        from textual.app import ComposeResult
+        from textual.screen import ModalScreen
         from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        class DummyModelPicker(ModalScreen):
+            def __init__(self, _agent, *, refresh_on_open: bool = False) -> None:
+                super().__init__()
+                self.refresh_on_open = refresh_on_open
+
+            def compose(self) -> ComposeResult:
+                yield Static("模型选择器", id="dummy-model-picker")
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            with patch(
+                "omnicrawl.ui.fullscreen.ModelPickerScreen",
+                DummyModelPicker,
+            ):
+                app._open_settings()
+                await pilot.pause()
+                app.screen.action_confirm()
+                await pilot.pause()
+                self.assertIsInstance(app.screen, DummyModelPicker)
+
+                # ESC 取消：参考渠道/工具等选项页面，返回设置面板。
+                app.screen.dismiss(None)
+                await pilot.pause()
+                self.assertIsInstance(app.screen, SettingsScreen, "取消后应回到设置面板")
+                self.assertNotIn("已取消模型切换", app.conversation_text)
+
+
+    async def test_model_picker_switch_returns_to_settings_panel_without_tip(self) -> None:
+        """切换模型后：返回设置面板（与其他选项页面一致），无切换提示。"""
+
+        from textual.app import ComposeResult
+        from textual.screen import ModalScreen
+        from textual.widgets import Static
+
+        from omnicrawl.ui.fullscreen import (
+            FullscreenStartup,
+            ModelPickerResult,
+            OmniCrawlApp,
+        )
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+
+        class FakeAgent:
+            current_model = "old-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        class DummyModelPicker(ModalScreen):
+            def __init__(self, _agent, *, refresh_on_open: bool = False) -> None:
+                super().__init__()
+                self.refresh_on_open = refresh_on_open
+
+            def compose(self) -> ComposeResult:
+                yield Static("模型选择器", id="dummy-model-picker")
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            with patch(
+                "omnicrawl.ui.fullscreen.ModelPickerScreen",
+                DummyModelPicker,
+            ):
+                app._open_settings()
+                await pilot.pause()
+                app.screen.action_confirm()
+                await pilot.pause()
+
+                app.screen.dismiss(
+                    ModelPickerResult(
+                        model="new-model",
+                        source="custom",
+                        key="channel-1",
+                        message="已切换为渠道 channel-1",
+                    )
+                )
+                await pilot.pause()
+                self.assertIsInstance(app.screen, SettingsScreen, "切换后应回到设置面板")
+                self.assertNotIn("已切换为渠道", app.conversation_text)
+                self.assertNotIn("当前模型已切换", app.conversation_text)
+
+
+    async def test_model_picker_dialog_uses_white_border(self) -> None:
+        """模型设置页面边框为白色，搜索框焦点左条为细线。"""
+
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        self.assertIn("border: solid white", ModelPickerScreen.CSS)
+        self.assertIn("border-left: solid ansi_green", ModelPickerScreen.CSS)
+        self.assertNotIn("border-left: thick ansi_green", ModelPickerScreen.CSS)
+
+
+    async def test_command_menu_uses_thin_blue_border(self) -> None:
+        """输入框输入 / 后的预选框左侧蓝条为细线。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        # #command-menu 是唯一使用 solid ansi_blue 的样式块（细线）。
+        self.assertIn("#command-menu", app.CSS)
+        self.assertIn("border-left: solid ansi_blue", app.CSS)
+
+
+    async def test_model_picker_loads_channels_before_models(self) -> None:
+        """两阶段加载：左侧渠道先就绪并渲染，右侧模型随后补齐。
+
+        阶段一完成回调只依赖本地渠道配置与 custom 模型；阶段二（网络
+        发现）在渠道展示后才启动，失败也不能摧毁已展示的渠道。
+        """
+
+        from textual.app import App, ComposeResult
+        from textual.widgets import Static
+
+        from omnicrawl.config.channels import ChannelConfig
+        from omnicrawl.config.model_catalog import CatalogModel
+        from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
+
+        fetch_models_called: list[bool] = []
+
+        class TestPickerScreen(ModelPickerScreen):
+            def _load_catalog(self, *, refresh: bool) -> None:
+                # 阻断自动两阶段，由测试手动驱动顺序。
+                del refresh
+
+            def _fetch_models(self, *, refresh: bool) -> None:
+                # 模拟阶段二异步入口：记录调用，不触发真实网络发现。
+                del refresh
+                fetch_models_called.append(True)
+
+        agent = SimpleNamespace(current_model="", config=SimpleNamespace(llm=None))
+        channel = ChannelConfig(
+            key="channel-1",
+            name="渠道一",
+            profile_id="profile-a",
+            provider="openai",
+            protocol="openai_chat_completions",
+            base_url="",
+            api_key="",
+            model_id="",
+        )
+        custom = CatalogModel(
+            source="custom",
+            key="channel-1",
+            profile_id="profile-a",
+            provider="openai",
+            protocol="openai_chat_completions",
+            model_id="gpt-4o",
+            display_name="渠道一",
+        )
+        detected = CatalogModel(
+            source="detected",
+            key="profile-a/gpt-4o",
+            profile_id="profile-a",
+            provider="openai",
+            protocol="openai_chat_completions",
+            model_id="gpt-4o",
+            display_name="gpt-4o",
+        )
+
+        class PickerApp(App):
+            def compose(self) -> ComposeResult:
+                yield Static("probe")
+
+            def on_mount(self) -> None:
+                self.push_screen(TestPickerScreen(agent))
+
+        app = PickerApp()
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+
+            # 阶段一完成：左侧渠道已渲染，右侧模型尚未加载。
+            screen._loading = True  # 模拟 _load_catalog 已进入加载态
+            screen._apply_channels(
+                {
+                    "channels": [channel],
+                    "custom": [custom],
+                    "channel_error": "",
+                    "error": "",
+                }
+            )
+            await pilot.pause()
+            self.assertEqual(len(screen._channels), 1)
+            self.assertEqual(screen._detected, [])
+            self.assertTrue(screen._loading, "阶段二进行中应保持加载态")
+            self.assertIn(
+                "渠道一",
+                screen.query_one("#list-channels", Static).content.plain,
+            )
+            self.assertEqual(
+                screen.query_one("#list-models", Static).content.plain,
+                "（空）",
+            )
+            self.assertIn("正在发现可用模型", screen._status)
+            self.assertEqual(fetch_models_called, [True], "渠道就绪后立即启动模型发现")
+
+            # 阶段二完成：右侧模型渲染，渠道列保持完整。
+            screen._apply_catalog(
+                {"detected": [detected], "diagnostics": [], "error": ""}
+            )
+            await pilot.pause()
+            self.assertFalse(screen._loading)
+            self.assertEqual(screen._detected, [detected])
+            self.assertIn(
+                "gpt-4o",
+                screen.query_one("#list-models", Static).content.plain,
+            )
+            self.assertEqual(len(screen._channels), 1)
+
+            # 阶段二失败：保留已展示渠道，状态行说明原因。
+            screen._apply_catalog({"detected": [], "diagnostics": [], "error": "超时"})
+            await pilot.pause()
+            self.assertFalse(screen._loading)
+            self.assertEqual(len(screen._channels), 1)
+            self.assertIn("模型发现失败：超时", screen._status)
+
+
+    async def test_finish_turn_after_cancel_keeps_cancelled_terminal_state(self) -> None:
+        """取消回合的终态不能被 finally 的通用完成逻辑覆盖为“完成”。
+
+        worker 在异常分支后通过 finally 调用 ``_finish_turn``；若取消标志
+        已置位，状态文本必须保留“已取消”，否则 UI 会误导用户认为任务
+        正常完成。
+        """
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
 
@@ -3964,16 +4379,276 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
         )
 
-        def delayed_model_command(_agent, _text: str) -> str:
-            time.sleep(0.25)
-            return "模型列表已加载"
+        async with app.run_test(size=(120, 40)) as pilot:
+            app._cancel_requested.set()
+            app._finish_turn()
+            await pilot.pause()
+            self.assertEqual(app._runtime_status_text, "已取消")
+            self.assertFalse(app.is_generating)
+
+            # 未取消的普通回合仍然以“完成”收尾。
+            app._cancel_requested.clear()
+            app.is_generating = True
+            app._finish_turn()
+            await pilot.pause()
+            self.assertEqual(app._runtime_status_text, "完成")
+
+
+    async def test_should_scroll_conversation_with_navigation_keys_when_composer_has_focus(self) -> None:
+        """输入框保持焦点时，四个导航键都应滚动消息区。"""
+
+        from textual.widgets import TextArea
+        from textual.containers import VerticalScroll
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 20)) as pilot:
+            conversation = app.query_one("#conversation", VerticalScroll)
+            composer = app.query_one("#composer", TextArea)
+            for index in range(30):
+                app._append_message("status", f"历史记录 {index}")
+            await pilot.pause()
+            conversation.scroll_end(animate=False)
+            await pilot.pause()
+            self.assertTrue(composer.has_focus)
+            self.assertGreater(conversation.max_scroll_y, 0)
+            bottom = conversation.max_scroll_y
+
+            await pilot.press("up")
+            await pilot.pause()
+            self.assertLess(conversation.scroll_y, bottom)
+
+            await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(conversation.scroll_y, bottom)
+
+            await pilot.press("pageup")
+            await pilot.pause()
+            self.assertLess(conversation.scroll_y, bottom)
+
+            await pilot.press("pagedown")
+            await pilot.pause()
+            self.assertEqual(conversation.scroll_y, bottom)
+
+
+    async def test_should_scroll_conversation_with_mouse_wheel_at_message_area(self) -> None:
+        """消息区收到真实滚轮消息时应沿指针方向滚动。"""
+
+        from textual import events
+        from textual.containers import VerticalScroll
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 20)) as pilot:
+            conversation = app.query_one("#conversation", VerticalScroll)
+            for index in range(30):
+                app._append_message("status", f"历史记录 {index}")
+            await pilot.pause()
+            conversation.scroll_end(animate=False)
+            await pilot.pause()
+            conversation.scroll_to(y=0, animate=False, immediate=True)
+            await pilot.pause()
+            wheel = events.MouseScrollDown(
+                None,
+                conversation.region.x + 2,
+                conversation.region.y + 1,
+                0,
+                0,
+                0,
+                False,
+                False,
+                False,
+                screen_x=conversation.region.x + 2,
+                screen_y=conversation.region.y + 1,
+            )
+
+            app.post_message(wheel)
+            await pilot.pause()
+
+            self.assertGreater(conversation.scroll_y, 0)
+
+
+    async def test_reasoning_click_keeps_content_expanded(self) -> None:
+        """思考块点击后仍保持展开：折叠功能已移除，正文始终可见。"""
+
+        from textual import events
+        from textual.containers import VerticalScroll
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.widgets import ReasoningDisclosure
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 20)) as pilot:
+            conversation = app.query_one("#conversation", VerticalScroll)
+            app._append_reasoning_delta("思考内容")
+            await pilot.pause()
+            conversation.scroll_end(animate=False)
+            await pilot.pause()
+            reasoning = app.query_one(ReasoningDisclosure)
+            x = reasoning.region.x + 2
+            y = reasoning.region.y
+
+            app.post_message(events.MouseDown(
+                None, x, y, 0, 0, 1, False, False, False, screen_x=x, screen_y=y
+            ))
+            app.post_message(events.MouseUp(
+                None, x, y, 0, 0, 1, False, False, False, screen_x=x, screen_y=y
+            ))
+            await pilot.pause()
+
+            # 无折叠功能：点击后正文仍完整展示。
+            rendered = "".join(
+                segment.text
+                for line_number in range(reasoning.size.height)
+                for segment in reasoning.render_line(line_number)
+            )
+            self.assertIn("思考内容", rendered)
+            self.assertEqual(reasoning.reasoning_text, "思考内容")
+            self.assertFalse(reasoning.has_class("collapsed"))
+
+
+    async def test_reasoning_sections_are_separate_and_always_expanded(self) -> None:
+        """每次模型推理应独立成段，且始终展开（折叠功能已移除）。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ReasoningDisclosure
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_message("user", "检查并整理配置。")
+            app._append_reasoning_delta("先检查配置。")
+            first = app.query_one(ReasoningDisclosure)
+            self.assertFalse(first.has_class("collapsed"))
+            self.assertGreater(first.styles.background.a, 0)
+
+            await pilot.pause()
+            first_text = "".join(
+                segment.text
+                for line_number in range(first.size.height)
+                for segment in first.render_line(line_number)
+            )
+            self.assertIn("先检查配置", first_text)
+            self.assertNotIn("▾", first_text)
+            self.assertNotIn("▸", first_text)
+
+            await pilot.click(".reasoning-message")
+            await pilot.pause()
+            # 点击不再折叠：正文依然完整可见。
+            still_text = "".join(
+                segment.text
+                for line_number in range(first.size.height)
+                for segment in first.render_line(line_number)
+            )
+            self.assertIn("先检查配置", still_text)
+            self.assertFalse(first.has_class("collapsed"))
+            self.assertEqual(first.reasoning_text, "先检查配置。")
+
+            app._handle_tool_start(1, SimpleNamespace(name="read", arguments={}))
+            app._append_reasoning_delta("再整理结果。")
+            app._append_message("assistant", "配置已经整理完成。")
+            self.assertEqual(len(app.query(ReasoningDisclosure)), 2)
+            second = app.query(ReasoningDisclosure)[1]
+            self.assertFalse(second.has_class("collapsed"))
+
+            await pilot.pause()
+            second_text = "".join(
+                segment.text
+                for line_number in range(second.size.height)
+                for segment in second.render_line(line_number)
+            )
+            self.assertIn("再整理结果", second_text)
+            messages = list(app.query(".message"))
+            self.assertGreaterEqual(len(messages), 5)
+            self.assertEqual(messages[0].styles.margin.bottom, 1)
+            self.assertTrue(all(message.styles.margin.bottom == 1 for message in messages[:-1]))
+            self.assertEqual(messages[-1].styles.margin.bottom, 0)
+
+
+    async def test_tool_result_large_output_limited_to_five_lines_when_expanded(self) -> None:
+        """shell 工具的大输出在展开记录中只显示前五行，并带截断提示。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ToolDisclosure
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        tool_call = SimpleNamespace(name="powershell", arguments={"command": "Write-Output long"})
+        result = SimpleNamespace(ok=True, output="\n".join(f"输出行{index}" for index in range(1, 9)))
 
         async with app.run_test(size=(120, 40)) as pilot:
-            with patch("omnicrawl.ui.fullscreen.handle_model_command", side_effect=delayed_model_command):
-                started = time.monotonic()
-                self.assertTrue(app._handle_command("/model demo-model"))
-                elapsed = time.monotonic() - started
-                self.assertLess(elapsed, 0.1)
-                await pilot.pause(0.35)
+            app._handle_tool_start(1, tool_call)
+            app._handle_tool_result(tool_call, result)
+            await pilot.pause()
 
-            self.assertIn("模型列表已加载", app.conversation_text)
+            record = app.query_one(ToolDisclosure)
+            # shell 工具默认展开，无需点击即可看到正文。
+            self.assertFalse(record.has_class("collapsed"))
+            rendered = str(record.content)
+            for index in range(1, 6):
+                self.assertIn(f"输出行{index}", rendered)
+            self.assertNotIn("输出行6", rendered)
+            self.assertNotIn("输出行7", rendered)
+            self.assertNotIn("输出行8", rendered)
+            self.assertIn("仅显示前五行", rendered)
+
+            # 折叠后标题行保留，正文隐藏。
+            await pilot.click(".tool-message")
+            await pilot.pause()
+            self.assertTrue(record.has_class("collapsed"))

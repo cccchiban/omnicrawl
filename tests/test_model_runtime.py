@@ -412,7 +412,7 @@ class ModelRuntimeTests(unittest.TestCase):
             prompt_cache_identity_provider=lambda: {},
             tools_provider=lambda: [],
             extra_body_provider=lambda: {},
-            tool_name_from_function_name=lambda name: "read_file" if name == "tool_demo" else name,
+            tool_name_from_function_name=lambda name: "read" if name == "tool_demo" else name,
             function_name_for_tool=lambda name: "tool_demo",
             runtime_manager=manager,
         )
@@ -424,7 +424,7 @@ class ModelRuntimeTests(unittest.TestCase):
             on_retry_status=lambda _msg: None,
         )
         self.assertEqual(len(reply.tool_calls), 1)
-        self.assertEqual(reply.tool_calls[0].name, "read_file")
+        self.assertEqual(reply.tool_calls[0].name, "read")
         self.assertEqual(reply.tool_calls[0].function_name, "tool_demo")
         self.assertEqual(reply.tool_calls[0].arguments, {"path": "a.txt"})
         manager.close()

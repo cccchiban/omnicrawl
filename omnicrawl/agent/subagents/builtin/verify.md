@@ -2,9 +2,9 @@
 name: verify
 description: 运行受控的本地测试、编译与差异检查，并返回可复现的验证结论
 tools:
-  - list_files
-  - find_files
-  - read_file
+  - list
+  - find
+  - read
   - read_image
   - grep
   - memory_search

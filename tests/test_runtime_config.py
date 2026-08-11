@@ -561,8 +561,8 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertIn("'--resume' '20260616-201530-a1b2c3'", power_shell_command)
 
 
-    def test_windows_launcher_cleans_terminal_before_exit(self) -> None:
-        """子进程退出后应由仍存活的 PowerShell 宿主清理协议并立即退出。"""
+    def test_windows_launcher_keeps_window_open_after_exit(self) -> None:
+        """子进程退出后应由仍存活的 PowerShell 宿主清理协议，并保留窗口回到启动目录。"""
 
         popen_calls: list[dict[str, object]] = []
 
@@ -579,15 +579,17 @@ class RuntimeConfigTest(unittest.TestCase):
         self.assertTrue(launched)
         command = popen_calls[0]["command"]
         self.assertIsInstance(command, list)
-        self.assertNotIn("-NoExit", command)
+        self.assertIn("-NoExit", command)
         power_shell_command = command[-1]
         self.assertIn("$appExitCode=$LASTEXITCODE", power_shell_command)
         self.assertIn("$esc=[char]27", power_shell_command)
         for mode in ("1000l", "1003l", "1006l", "1004l", "2004l", "<u", "25h"):
             self.assertIn(mode, power_shell_command)
         self.assertIn("FlushInputBuffer", power_shell_command)
+        # 退出后显式回到启动目录，且不直接关闭窗口。
+        self.assertIn("Set-Location -LiteralPath", power_shell_command)
+        self.assertNotIn("exit $appExitCode", power_shell_command)
         self.assertNotIn("Read-Host", power_shell_command)
-        self.assertIn("exit $appExitCode", power_shell_command)
         self.assertIn("界面意外退出", power_shell_command)
 
 

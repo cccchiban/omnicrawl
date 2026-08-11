@@ -107,7 +107,7 @@ class PluginDispatchContextTests(unittest.TestCase):
         definition = AgentDefinition(
             name="explore",
             description="read only",
-            tools=("list_files", "read_file"),
+            tools=("list", "read"),
             model="inherit",
             permission_mode="delegated-read-only",
             isolation="shared",
@@ -144,7 +144,7 @@ class PluginDispatchContextTests(unittest.TestCase):
         definition = AgentDefinition(
             name="explore",
             description="read only",
-            tools=("list_files",),
+            tools=("list",),
             model="inherit",
             permission_mode="delegated-read-only",
             isolation="shared",

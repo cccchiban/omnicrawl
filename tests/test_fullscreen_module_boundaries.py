@@ -50,7 +50,6 @@ class FullscreenModuleBoundaryTests(unittest.TestCase):
             "format_mcp_status",
             "format_skills_list",
             "handle_approval_command",
-            "handle_model_command",
             "handle_reasoning_command",
             "handle_session_command",
         ):

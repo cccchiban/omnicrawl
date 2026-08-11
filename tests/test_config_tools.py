@@ -66,7 +66,7 @@ class ToolSwitchConfigTest(unittest.TestCase):
         self.assertEqual(switches["powershell"], True)
         self.assertEqual(switches["bash"], False)
         self.assertEqual(switches["windows_screenshot"], False)
-        self.assertEqual(switches["read_file"], True)
+        self.assertEqual(switches["read"], True)
         self.assertEqual(disabled, frozenset({"bash", "windows_screenshot"}))
 
     def test_unknown_tool_name_raises(self) -> None:

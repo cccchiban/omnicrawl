@@ -172,8 +172,8 @@ class TestRegistration:
         tools = build_agent_tools(
             mcp_manager=mcp,
             memory_enabled=False,
-            list_files=lambda a: None,
-            read_file=lambda a: None,
+            list=lambda a: None,
+            read=lambda a: None,
             grep=lambda a: None,
             web_search=lambda a: None,
             replace_text=lambda a: None,
@@ -202,8 +202,8 @@ class TestRegistration:
         tools = build_agent_tools(
             mcp_manager=mcp,
             memory_enabled=False,
-            list_files=lambda a: None,
-            read_file=lambda a: None,
+            list=lambda a: None,
+            read=lambda a: None,
             grep=lambda a: None,
             replace_text=lambda a: None,
             write_file=lambda a: None,

@@ -766,10 +766,8 @@ class WorkspaceTools:
         if not command:
             raise WorkspaceToolError("command 不能为空。")
         diagnostic_value = arguments.get("diagnostic_command")
-        if diagnostic_value is not None and (
-            not isinstance(diagnostic_value, str) or not diagnostic_value.strip()
-        ):
-            raise WorkspaceToolError("diagnostic_command 必须是非空字符串。")
+        if diagnostic_value is not None and not isinstance(diagnostic_value, str):
+            raise WorkspaceToolError("diagnostic_command 必须是字符串。")
         diagnostic_command = (
             diagnostic_value.strip() if isinstance(diagnostic_value, str) else ""
         )

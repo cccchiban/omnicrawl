@@ -145,7 +145,7 @@ class VerifyProfileCoordinatorTest(unittest.TestCase):
             system_prompt="只运行 Host 提供的固定检查。",
             # 定义即使错误地要求 Bash/写文件，Coordinator 也只能把权限收窄为
             # read-only + verify_command，不能借 definition 反向扩大 Host 权限。
-            tools=("read_file", VERIFY_COMMAND_TOOL_NAME, "bash", "write_file"),
+            tools=("read", VERIFY_COMMAND_TOOL_NAME, "bash", "write_file"),
             disallowed_tools=(),
             permission_mode="explicit-command-allowlist",
             background=True,
@@ -180,7 +180,7 @@ class VerifyProfileCoordinatorTest(unittest.TestCase):
             config=SubAgentConfig(enabled=True, enable_verify_agent=True),
             registry=_Registry(self._definition()),
             tools_provider=lambda: {
-                "read_file": _tool("read_file"),
+                "read": _tool("read"),
                 "bash": _tool("bash"),
                 "powershell": _tool("powershell"),
                 "write_file": _tool("write_file"),
@@ -192,7 +192,7 @@ class VerifyProfileCoordinatorTest(unittest.TestCase):
         result = coordinator.run(self._arguments())
 
         self.assertTrue(result.ok)
-        self.assertEqual(set(captured["tools"]), {"read_file", VERIFY_COMMAND_TOOL_NAME})
+        self.assertEqual(set(captured["tools"]), {"read", VERIFY_COMMAND_TOOL_NAME})
         self.assertTrue(
             all(not tool.requires_confirmation for tool in captured["tools"].values())
         )

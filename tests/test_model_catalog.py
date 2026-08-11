@@ -20,7 +20,6 @@ from omnicrawl.model_catalog import (
     save_llm_model,
 )
 from omnicrawl.config.model_catalog import _discover_for_profile
-from omnicrawl.slash_commands import handle_model_command
 
 
 class _FakeResponse:
@@ -126,6 +125,34 @@ class ModelCatalogTest(unittest.TestCase):
         self.assertEqual(detect_model_provider("qwen3.6-plus"), "qwen")
         self.assertEqual(detect_model_provider("glm-5.1"), "glm")
 
+    def test_build_catalog_without_detected_skips_network_discovery(self) -> None:
+        """``include_detected=False`` 只返回本地数据，不触发网络发现。
+
+        两阶段加载的第一步（渠道列）依赖该行为：在模型网络发现完成
+        前即可安全地展示本地渠道，且发现函数绝不能被调用。
+        """
+
+        from omnicrawl.config.model_catalog import build_catalog
+
+        discovered = Mock(side_effect=AssertionError("不应触发网络发现"))
+        with (
+            patch("omnicrawl.config.model_catalog._discover_for_profile", discovered),
+            patch(
+                "omnicrawl.config.model_catalog.load_model_store",
+                return_value=SimpleNamespace(models=[]),
+            ),
+        ):
+            catalog = build_catalog(
+                config=_FakeAgent().config.llm,
+                include_detected=False,
+                config_data={"llm": {}},
+            )
+
+        self.assertEqual(catalog["custom"], [])
+        self.assertEqual(catalog["detected"], [])
+        self.assertEqual(catalog["diagnostics"], [])
+        discovered.assert_not_called()
+
     def test_save_llm_model_preserves_existing_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"
@@ -145,39 +172,6 @@ class ModelCatalogTest(unittest.TestCase):
         self.assertEqual(data["llm"]["model"], "new-model")
         self.assertEqual(data["llm"]["base_url"], "https://example.test/v1")
         self.assertFalse(data["voice"]["text_to_speech_enabled"])
-
-    def test_handle_model_command_switches_agent_and_persists(self) -> None:
-        agent = _FakeAgent()
-
-        with patch(
-            "omnicrawl.slash_commands.detect_model_options",
-            return_value=[ModelOption(id="new-model", name="new-model", provider="other")],
-        ), patch(
-            "omnicrawl.slash_commands.save_llm_model",
-            return_value=Path("config.yaml"),
-        ):
-            message = handle_model_command(agent, "/model new-model")
-
-        self.assertEqual(agent.current_model, "new-model")
-        self.assertIn("当前模型已切换为 new-model", message or "")
-
-    def test_handle_model_command_rejects_removed_models_alias(self) -> None:
-        agent = _FakeAgent()
-
-        self.assertIsNone(handle_model_command(agent, "/models"))
-
-    def test_handle_model_command_rejects_models_outside_detected_base_url_list(self) -> None:
-        agent = _FakeAgent()
-
-        with patch(
-            "omnicrawl.slash_commands.detect_model_options",
-            return_value=ensure_current_model_option([], "allowed-model"),
-        ):
-            message = handle_model_command(agent, "/model blocked-model")
-
-        self.assertEqual(agent.current_model, "old-model")
-        self.assertIn("不在当前 base_url", message or "")
-
 
 if __name__ == "__main__":
     unittest.main()

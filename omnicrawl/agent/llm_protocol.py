@@ -37,6 +37,35 @@ class StreamInterruptedAfterOutputError(RetryableAgentRequestError):
     """
 
 
+# Provider 以“正常结束”形态表达输出被截断的 finish_reason 值：
+# - openai chat: length（max_tokens 用尽）/ content_filter；
+# - openai responses: incomplete；
+# - anthropic: max_tokens。
+# 这些值必须进入重试/回滚路径，绝不能静默当正常完成（否则半截回复会
+# 直接结束回合且不提示用户）。
+_TRUNCATED_FINISH_REASONS = frozenset(
+    {"length", "incomplete", "max_tokens", "content_filter", "failed"}
+)
+
+
+def _raise_if_finish_truncated(
+    finish_reason: str,
+    *,
+    has_visible_output: bool,
+) -> None:
+    """finish_reason 表示截断时抛对应协议错误，触发上层重试/回滚。"""
+
+    if finish_reason not in _TRUNCATED_FINISH_REASONS:
+        return
+    message = (
+        f"模型输出被截断（finish_reason={finish_reason}），"
+        "可能是输出长度或上下文窗口上限导致。"
+    )
+    if has_visible_output:
+        raise StreamInterruptedAfterOutputError(message)
+    raise RetryableAgentRequestError(message)
+
+
 @dataclass(frozen=True)
 class AgentLLMProtocol:
     """封装模型请求协议与 tool call 聚合逻辑。
@@ -88,6 +117,10 @@ class AgentLLMProtocol:
         try:
             last_retryable_error: Exception | None = None
             for attempt in range(1, self.request_retry_count + 1):
+                # 开始请求前必须确认当前回合未被取消，避免在取消竞态中
+                # 发起新的模型请求或继续重试（ESC 取消后流被关闭的场景）。
+                if cancel_check is not None:
+                    cancel_check()
                 try:
                     return self.request_reply_once(
                         messages,
@@ -101,7 +134,13 @@ class AgentLLMProtocol:
                 except EmptyAgentReply as exc:
                     last_retryable_error = exc
                     if attempt < self.request_retry_count:
+                        # 空响应被识别后、重试前再次确认取消状态，防止取消
+                        # 信号被空响应重试循环吞掉。
+                        if cancel_check is not None:
+                            cancel_check()
                         continue
+                    if cancel_check is not None:
+                        cancel_check()
                     raise AgentProtocolError(
                         f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
                     ) from exc
@@ -113,6 +152,8 @@ class AgentLLMProtocol:
                             f"模型流在输出后中断，正在撤销已显示内容并重试 "
                             f"{attempt + 1}/{self.request_retry_count}：{exc}"
                         )
+                        if cancel_check is not None:
+                            cancel_check()
                         continue
                     raise AgentProtocolError(f"Agent 模型流中断：{exc}") from exc
                 except RetryableAgentRequestError as exc:
@@ -121,6 +162,8 @@ class AgentLLMProtocol:
                         on_retry_status(
                             f"模型请求中断，正在重试 {attempt + 1}/{self.request_retry_count}：{exc}"
                         )
+                        if cancel_check is not None:
+                            cancel_check()
                         continue
                     raise AgentProtocolError(f"Agent 模型请求中断：{exc}") from exc
 
@@ -177,6 +220,7 @@ class AgentLLMProtocol:
             GenerationOptions,
             ModelTurnRequest,
             ReasoningDelta,
+            ResponseCompleted,
             TextDelta,
             ToolCallCompleted,
             ToolCallStarted,
@@ -227,6 +271,7 @@ class AgentLLMProtocol:
             protocol_wait_sent = False
             latest_usage: tuple[int, int, int] | None = None
             cancellation_error: Exception | None = None
+            finish_reason = "stop"
 
             try:
                 for event in snapshot.runtime.stream_turn(request, cancel_check=cancel_check):
@@ -261,7 +306,17 @@ class AgentLLMProtocol:
                             event.output_tokens,
                             event.cached_input_tokens,
                         )
+                    elif isinstance(event, ResponseCompleted):
+                        # Provider 用 finish_reason 表达“正常结束但输出被截断”
+                        # （length/incomplete/max_tokens/content_filter），
+                        # 必须读取并在循环后检查，避免半截回复静默结束回合。
+                        finish_reason = event.finish_reason or "stop"
             except ModelError as exc:
+                # 取消是用户主动行为：无论取消来自 Provider 内部检查还是
+                # 外层关闭流后的重新检查，都必须原样传播，不得包装成
+                # 可重试错误或普通协议错误，否则取消历史收尾会丢失。
+                if exc.code == ModelErrorCode.CANCELLED:
+                    raise
                 if exc.code == ModelErrorCode.EMPTY_RESPONSE:
                     raise EmptyAgentReply(str(exc)) from exc
                 if exc.retryable or exc.code in {
@@ -291,6 +346,19 @@ class AgentLLMProtocol:
                 raise AgentProtocolError(
                     f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
                 ) from exc
+
+            if cancel_check is not None:
+                # 流迭代器正常耗尽后仍要确认取消状态：外层主动 close() 的流
+                # 可能以“正常结束、无可见内容”返回，此时必须优先处理取消，
+                # 不能把结果继续转换为空响应或可重试请求。
+                cancel_check()
+
+            # 截断检查必须先于空响应判定：截断（length/incomplete/...）是
+            # 可恢复的限时/容量问题，应走重试；空响应则可能是模型行为。
+            _raise_if_finish_truncated(
+                finish_reason,
+                has_visible_output=has_streamed_visible or bool(completed_calls),
+            )
 
             if latest_usage is not None:
                 on_token_usage(*latest_usage)
@@ -381,6 +449,7 @@ class AgentLLMProtocol:
         has_streamed_visible = False
         protocol_wait_sent = False
         cancellation_error: Exception | None = None
+        finish_reason = "stop"
 
         try:
             for event in registered_stream_events(
@@ -396,6 +465,11 @@ class AgentLLMProtocol:
                 usage = OpenAIResponseLLM.extract_token_usage(event)
                 if usage is not None:
                     latest_usage = usage
+                # 与 Runtime 路径一致：记录 Provider 的 finish_reason，循环后
+                # 检查截断，避免半截回复被当作正常完成静默结束回合。
+                finish = _read_finish_reason(event)
+                if finish:
+                    finish_reason = finish
 
                 delta = extract_stream_delta(event)
                 if delta is None:
@@ -426,6 +500,17 @@ class AgentLLMProtocol:
             if has_streamed_visible or tool_call_delta_buffers:
                 raise StreamInterruptedAfterOutputError(formatted) from exc
             raise RetryableAgentRequestError(formatted) from exc
+
+        if cancel_check is not None:
+            # 与 Runtime 路径一致：流迭代器正常耗尽后必须确认取消状态，
+            # 防止外层 close() 的流以空响应形式继续进入重试循环。
+            cancel_check()
+
+        # 截断检查必须先于空响应判定，与 Runtime 路径保持一致。
+        _raise_if_finish_truncated(
+            finish_reason,
+            has_visible_output=has_streamed_visible or bool(tool_call_delta_buffers),
+        )
 
         if latest_usage is not None:
             on_token_usage(*latest_usage)
@@ -673,6 +758,23 @@ def read_attr_or_key(value: Any, key: str) -> Any:
         data = value.model_dump()
         return data.get(key) if isinstance(data, dict) else None
     return None
+
+
+def _read_finish_reason(event: Any) -> str:
+    """从 OpenAI 流式事件提取 choices[0].finish_reason，兼容 SDK 模型与字典。"""
+
+    choices = getattr(event, "choices", None)
+    if isinstance(choices, list) and choices:
+        finish = read_attr_or_key(choices[0], "finish_reason")
+        if isinstance(finish, str) and finish:
+            return finish
+    elif isinstance(event, dict):
+        choices_data = event.get("choices")
+        if isinstance(choices_data, list) and choices_data:
+            finish = read_attr_or_key(choices_data[0], "finish_reason")
+            if isinstance(finish, str) and finish:
+                return finish
+    return ""
 
 
 def extract_stream_delta(event: Any) -> Any | None:

@@ -384,8 +384,7 @@ class SettingsCommandTests(unittest.TestCase):
 
         self.assertTrue(settings.handled)
         self.assertTrue(settings.open_settings)
-        self.assertFalse(settings.open_model_picker)
-        self.assertFalse(settings.open_settings is False)
+        self.assertTrue(settings.refresh_context)
         self.assertFalse(singular.handled)
 
     def test_settings_screen_exposes_model_channel_manager(self) -> None:
@@ -511,7 +510,7 @@ class AgentRuntimeSettingsTests(unittest.TestCase):
             llm=SimpleNamespace(context_window_tokens=128_000, max_output_tokens=8_192),
             context_compaction=ContextCompactionConfig(enabled=False),
         )
-        agent._tools = {"read_file": object()}
+        agent._tools = {"read": object()}
         agent._build_tools = Mock(return_value={"recall_session_evidence": object()})
         agent._context_compaction_service_instance = object()
 
@@ -543,7 +542,7 @@ class AgentRuntimeSettingsTests(unittest.TestCase):
             context_compaction=ContextCompactionConfig(enabled=True),
         )
         agent._tools = {"recall_session_evidence": object()}
-        agent._build_tools = Mock(return_value={"read_file": object()})
+        agent._build_tools = Mock(return_value={"read": object()})
 
         LocalToolAgent.set_context_compaction_enabled(agent, False)
 
@@ -552,7 +551,7 @@ class AgentRuntimeSettingsTests(unittest.TestCase):
 
     def test_context_compaction_tool_rebuild_failure_restores_runtime(self) -> None:
         agent = object.__new__(LocalToolAgent)
-        previous_tools = {"read_file": object()}
+        previous_tools = {"read": object()}
         previous_service = object()
         agent.config = SimpleNamespace(
             llm=SimpleNamespace(context_window_tokens=128_000, max_output_tokens=8_192),
@@ -576,7 +575,7 @@ class AgentRuntimeSettingsTests(unittest.TestCase):
         agent.config = SimpleNamespace(memory_enabled=True)
         agent._memory_store = old_store
         agent._create_memory_store = Mock(return_value=next_store)
-        agent._build_tools = Mock(return_value={"read_file": object()})
+        agent._build_tools = Mock(return_value={"read": object()})
 
         LocalToolAgent.set_memory_enabled(agent, True)
 
@@ -688,7 +687,7 @@ class AgentToolSwitchRuntimeTests(unittest.TestCase):
         agent = object.__new__(LocalToolAgent)
         agent.config = SimpleNamespace(disabled_tools=frozenset({"powershell"}))
         # 完整工具池：模拟真实 _build_tools 按 disabled_tools 过滤后的表。
-        agent._tool_pool = {"powershell": "p", "bash": "b", "read_file": "r"}
+        agent._tool_pool = {"powershell": "p", "bash": "b", "read": "r"}
 
         def rebuild() -> dict[str, str]:
             return {
@@ -709,7 +708,7 @@ class AgentToolSwitchRuntimeTests(unittest.TestCase):
         self.assertNotIn("bash", agent._tools)
         # powershell 默认禁用，仍不在工具表中。
         self.assertNotIn("powershell", agent._tools)
-        self.assertIn("read_file", agent._tools)
+        self.assertIn("read", agent._tools)
         self.assertEqual(agent.config.disabled_tools, frozenset({"powershell", "bash"}))
 
     def test_set_tool_enabled_enables_powershell_at_runtime(self) -> None:
@@ -741,7 +740,7 @@ class AgentToolSwitchRuntimeTests(unittest.TestCase):
             LocalToolAgent.set_tool_enabled(agent, "bash", False)
 
         self.assertEqual(agent.config.disabled_tools, frozenset({"powershell"}))
-        self.assertEqual(agent._tools, {"bash": "b", "read_file": "r"})
+        self.assertEqual(agent._tools, {"bash": "b", "read": "r"})
 
     def test_set_tool_enabled_rejects_unknown_name_and_non_bool(self) -> None:
         agent = self._make_agent()
@@ -765,7 +764,7 @@ class ToolSettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeAgent:
             config = SimpleNamespace(disabled_tools=frozenset({"powershell"}))
-            _tools = {"powershell": None, "bash": None, "read_file": None}
+            _tools = {"powershell": None, "bash": None, "read": None}
 
         class HostApp(App):
             def compose(self) -> ComposeResult:

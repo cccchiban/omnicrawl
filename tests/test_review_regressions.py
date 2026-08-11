@@ -265,7 +265,7 @@ class ReviewRegressionTests(unittest.TestCase):
         item = {
             "type": "function_call",
             "call_id": "call-1",
-            "name": "read_file",
+            "name": "read",
             "arguments": '{"path":"a.txt"}',
         }
         events = [
@@ -302,7 +302,7 @@ class ReviewRegressionTests(unittest.TestCase):
                     blocks=(
                         ToolCallBlock(
                             call_id="gemini-1",
-                            name="read_file",
+                            name="read",
                             arguments={"path": "a.txt"},
                         ),
                     ),
@@ -314,7 +314,7 @@ class ReviewRegressionTests(unittest.TestCase):
             )
         )
         response = contents[1]["parts"][0]["function_response"]
-        self.assertEqual(response["name"], "read_file")
+        self.assertEqual(response["name"], "read")
 
     def test_multi_model_config_rejects_protocol_provider_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

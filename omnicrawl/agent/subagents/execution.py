@@ -33,7 +33,7 @@ class SubAgentModelSnapshot:
     """任务创建时冻结的模型选择。
 
     ``llm_config`` 仅在进程内用于构造该任务的独立 Runtime；它绝不进入 Session、
-    SSE、artifact、日志或公开 ToolResult。这样任务运行期间父 Agent 的 ``/model``
+    SSE、artifact、日志或公开 ToolResult。这样任务运行期间父 Agent 的模型
     切换只会影响后续任务，不会改变已创建的子任务模型身份。
     """
 

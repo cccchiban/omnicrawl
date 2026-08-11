@@ -16,7 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 HOOK_API_VERSION = "1"
-OMNICRAWL_VERSION = "0.1.8"
+OMNICRAWL_VERSION = "0.1.9"
 PLUGIN_SCHEMA_VERSION = 1
 
 HANDLER_MODE_OBSERVE = "observe"

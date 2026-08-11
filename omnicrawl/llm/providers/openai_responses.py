@@ -231,6 +231,12 @@ class OpenAIResponsesRuntime:
                 retryable=is_retryable_model_request_error(exc),
             ) from exc
 
+        # 流迭代器正常耗尽后仍要确认取消状态：外层主动 close() 的流可能
+        # 以“正常结束、无可见内容”返回，此时必须优先处理取消，不能把
+        # 结果继续转换为空响应或可重试请求。
+        if cancel_check is not None:
+            cancel_check()
+
         # Responses 的降级提示放在正常流事件之后，避免在模型首个文本增量前
         # 插入非内容事件，保持 UI 首屏输出和旧 Provider 的事件顺序稳定。
         if prompt_cache_warning:

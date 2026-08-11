@@ -105,9 +105,9 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertEqual(change.stats_label, "append +2 lines")
         self.assertIn("append", change.body.plain)
 
-    def test_read_file_title_includes_file_name_and_returned_line_range(self) -> None:
+    def test_read_title_includes_file_name_and_returned_line_range(self) -> None:
         title = plain_tool_title(
-            tool_name="read_file",
+            tool_name="read",
             arguments={"path": "omnicrawl/ui/fullscreen/tool_diff.py"},
             status="成功",
             duration_seconds=0.136,
@@ -132,9 +132,9 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertIn("目标: read_file", title)
         self.assertIn("✓ 成功  136ms", title)
 
-    def test_find_files_title_includes_search_path_and_target(self) -> None:
+    def test_find_title_includes_search_path_and_target(self) -> None:
         title = plain_tool_title(
-            tool_name="find_files",
+            tool_name="find",
             arguments={"path": "omnicrawl", "pattern": "agent"},
             status="成功",
             duration_seconds=0.02,
@@ -142,46 +142,23 @@ class FullscreenToolDiffTest(unittest.TestCase):
         )
         self.assertIn("F  omnicrawl  |  目标: agent", title)
 
-    def test_loading_index_status_uses_eight_frame_color_wave(self) -> None:
-        """加载光波为八帧：加粗锋头、常亮锋身、其余 dim，逐帧右移一字符。"""
+    def test_loading_index_status_uses_thinking_spinner_frames(self) -> None:
+        """加载/构建期间显示与状态指示器同款的十帧旋转动画 + “加载索引”。"""
 
-        from rich.style import Style
+        from omnicrawl.ui.fullscreen.hud import SEARCH_INDEX_SPINNER_FRAMES
 
         status = SearchIndexStatus(file_state="loading", content_state="loading")
-        label = "正在加载项目搜索索引"
-        bold_primary = Style.parse("default bold")
-        primary = Style.parse("default")
-        muted = Style.parse("dim")
-        expected_patterns = (
-            (muted, muted, bold_primary, primary, muted, muted, muted, muted),
-            (muted, muted, muted, bold_primary, primary, muted, muted, muted),
-            (muted, muted, muted, muted, bold_primary, primary, muted, muted),
-            (muted, muted, muted, muted, muted, bold_primary, primary, muted),
-            (muted, muted, muted, muted, muted, muted, bold_primary, primary),
-            (primary, muted, muted, muted, muted, muted, muted, bold_primary),
-            (bold_primary, primary, muted, muted, muted, muted, muted, muted),
-            (muted, bold_primary, primary, muted, muted, muted, muted, muted),
-        )
-
-        for frame, pattern in enumerate(expected_patterns):
+        self.assertEqual(len(SEARCH_INDEX_SPINNER_FRAMES), 10)
+        for frame in range(len(SEARCH_INDEX_SPINNER_FRAMES)):
             rendered = search_index_status_text(status, frame)
-            self.assertEqual(rendered.plain, label)
-            for index in range(len(label)):
-                raw_style = next(
-                    (
-                        span.style
-                        for span in rendered.spans
-                        if span.start <= index < span.end
-                    ),
-                    Style(),
-                )
-                # Text.append 会把样式字符串原样存进 span；统一解析后再比较。
-                style = (
-                    Style.parse(raw_style)
-                    if isinstance(raw_style, str)
-                    else raw_style
-                )
-                self.assertEqual(style, pattern[index % 8], (frame, index))
+            self.assertEqual(
+                rendered.plain,
+                f"{SEARCH_INDEX_SPINNER_FRAMES[frame]} 加载索引",
+            )
+            self.assertNotEqual(
+                search_index_status_text(status, frame).plain,
+                search_index_status_text(status, frame + 1).plain,
+            )
 
     def test_index_progress_text_is_visible_only_while_loading_or_building(self) -> None:
         building = search_index_status_text(
@@ -195,12 +172,12 @@ class FullscreenToolDiffTest(unittest.TestCase):
         ready = search_index_status_text(
             SearchIndexStatus(file_state="ready", content_state="ready")
         )
-        self.assertEqual(building.plain, "正在建立项目内容索引 25%")
+        self.assertEqual(building.plain, "⠋ 加载索引")
         self.assertEqual(ready.plain, "")
 
-    def test_read_file_title_does_not_claim_lines_before_result(self) -> None:
+    def test_read_title_does_not_claim_lines_before_result(self) -> None:
         title = plain_tool_title(
-            tool_name="read_file",
+            tool_name="read",
             arguments={"path": "README.md"},
             status="调用中",
             duration_seconds=0.0,
@@ -208,9 +185,9 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertIn("README.md", title)
         self.assertNotIn("行", title)
 
-    def test_list_files_title_uses_operation_summary(self) -> None:
+    def test_list_title_uses_operation_summary(self) -> None:
         title = plain_tool_title(
-            tool_name="list_files",
+            tool_name="list",
             arguments={"path": ".", "recursive": False},
             status="成功",
             duration_seconds=1.8,
@@ -243,7 +220,7 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertNotIn("PowerShell", title)
 
         title = plain_tool_title(
-            tool_name="read_file",
+            tool_name="read",
             arguments={"path": "README.md"},
             status="成功",
             duration_seconds=0.13,
@@ -251,18 +228,18 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertNotIn("▸", title)
         self.assertIn("R  README.md", title)
         body = tool_disclosure_body(
-            tool_name="read_file",
+            tool_name="read",
             arguments={"path": "README.md"},
             result_text="读取完成",
         ).plain
         mcp_body = tool_disclosure_body(
-            tool_name="trusted.read_file",
+            tool_name="trusted.read",
             arguments={"path": "README.md"},
             result_text="读取完成",
         ).plain
-        self.assertIn("工具：trusted.read_file", mcp_body)
+        self.assertIn("工具：trusted.read", mcp_body)
         self.assertIn("R  (未指定文件)", plain_tool_title(
-            tool_name="trusted.read_file",
+            tool_name="trusted.read",
             arguments={},
             status="成功",
             duration_seconds=0.001,

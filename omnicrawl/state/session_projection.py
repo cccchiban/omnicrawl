@@ -65,6 +65,9 @@ def session_title_from_events(
     return title
 
 
+CANCELLED_TURN_DEFAULT_SUMMARY = "（上一回合被取消，未生成最终回复）"
+
+
 def event_to_model_message(event: SessionEvent) -> dict[str, str] | None:
     if event.type == "user_message":
         content = event.payload.get("content", "")
@@ -72,6 +75,13 @@ def event_to_model_message(event: SessionEvent) -> dict[str, str] | None:
     if event.type == "assistant_message":
         content = event.payload.get("content", "")
         return {"role": "assistant", "content": content} if isinstance(content, str) and content.strip() else None
+    if event.type == "turn_cancelled":
+        # 取消回合必须投影为可恢复的 assistant 摘要：仅靠 user_message
+        # 无法让 /resume 复现进程内历史，后续提问会丢失取消上下文。
+        summary = event.payload.get("summary", "")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = CANCELLED_TURN_DEFAULT_SUMMARY
+        return {"role": "assistant", "content": summary}
     if event.type == "compact_summary":
         content = event.payload.get("content", "")
         if isinstance(content, str) and content.strip():

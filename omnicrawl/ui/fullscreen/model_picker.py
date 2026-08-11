@@ -1,6 +1,8 @@
 """双列模型选择 Screen：渠道选择 + 当前渠道模型。
 
-网络发现与切换在 worker 中执行；UI 更新只通过主线程回调完成。
+加载分两阶段：先读取本地渠道配置与 custom 模型（左侧渠道列，快速
+展示），再逐 Profile 网络发现可用模型（右侧模型列，异步补齐）；
+网络发现与切换在 worker 中执行，UI 更新只通过主线程回调完成。
 """
 
 from __future__ import annotations
@@ -109,7 +111,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         height: 28;
         max-height: 90%;
         padding: 1 2;
-        border: solid $terminal-blue;
+        border: solid white;
         background: $terminal-surface;
     }
     #model-picker-title {
@@ -126,7 +128,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         margin-bottom: 1;
     }
     #model-picker-search:focus {
-        border-left: thick $terminal-green;
+        border-left: solid $terminal-green;
     }
     #model-picker-body {
         height: 1fr;
@@ -197,6 +199,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self._index_models = 0
         self._loading = False
         self._switching = False
+        self._refresh_pending = False
         self._status = "正在加载模型目录…"
 
     def compose(self) -> ComposeResult:
@@ -331,49 +334,58 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self.query_one(list_id, _ModelList).focus()
 
     def _load_catalog(self, *, refresh: bool) -> None:
+        """分两阶段加载：先渠道（本地配置，快速展示），再模型（网络发现）。
+
+        左侧渠道列只依赖本地渠道配置与模型存储，应最先渲染；右侧模型
+        列需要逐 Profile 网络发现，在渠道就绪后异步补齐。
+        """
+
         self._loading = True
-        self._status = "正在刷新模型目录…" if refresh else "正在加载模型目录…"
+        self._refresh_pending = refresh
+        self._status = "正在刷新渠道…" if refresh else "正在加载渠道…"
         self._render_status()
-        self._fetch_catalog(refresh=refresh)
+        self._fetch_channels(refresh=refresh)
 
     @work(thread=True, exclusive=True, group="model-picker-catalog", exit_on_error=False)
-    def _fetch_catalog(self, *, refresh: bool) -> None:
+    def _fetch_channels(self, *, refresh: bool) -> None:
+        """阶段一：读取本地渠道配置与 custom 模型，不触发网络发现。"""
+
         try:
-            if refresh:
-                clear_discovery_cache()
-            catalog = build_catalog(config=self._agent.config.llm, refresh=refresh)
+            channel_configuration = load_channel_configuration()
+            channels = [
+                _channel_choice_from_config(item)
+                for item in channel_configuration.channels
+            ]
             channel_error = ""
-            try:
-                channel_configuration = load_channel_configuration()
-                channels = [
-                    _channel_choice_from_config(item)
-                    for item in channel_configuration.channels
-                ]
-            except Exception as exc:
-                channels = []
-                channel_error = str(exc)
+        except Exception as exc:
+            channels = []
+            channel_error = str(exc)
+        try:
+            catalog = build_catalog(
+                config=self._agent.config.llm,
+                refresh=refresh,
+                include_detected=False,
+            )
             payload = {
                 "channels": channels,
                 "channel_error": channel_error,
                 "custom": list(catalog.get("custom") or []),
-                "detected": list(catalog.get("detected") or []),
-                "diagnostics": list(catalog.get("diagnostics") or []),
                 "error": "",
             }
         except Exception as exc:
             payload = {
-                "channels": [],
-                "channel_error": "",
+                "channels": channels,
+                "channel_error": channel_error,
                 "custom": [],
-                "detected": [],
-                "diagnostics": [],
                 "error": str(exc),
             }
-        self.app.call_from_thread(self._apply_catalog, payload)
+        self.app.call_from_thread(self._apply_channels, payload)
 
-    def _apply_catalog(self, payload: dict[str, Any]) -> None:
-        self._loading = False
+    def _apply_channels(self, payload: dict[str, Any]) -> None:
+        """阶段一完成回调：先渲染左侧渠道，再启动右侧模型发现。"""
+
         if payload.get("error"):
+            self._loading = False
             self._status = f"目录加载失败：{payload['error']}"
             self._channels = []
             self._custom = []
@@ -381,27 +393,122 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             self._diagnostics = []
         else:
             self._custom = list(payload.get("custom") or [])
-            self._detected = list(payload.get("detected") or [])
             configured_channels = []
             for item in list(payload.get("channels") or []):
                 if isinstance(item, _ChannelChoice):
                     configured_channels.append(item)
                 elif isinstance(item, ChannelConfig):
                     configured_channels.append(_channel_choice_from_config(item))
-
             self._channels = self._merge_channel_choices(
                 configured_channels,
                 self._custom,
-                self._detected,
+                [],
             )
-            self._diagnostics = list(payload.get("diagnostics") or [])
+            self._diagnostics = []
             channel_error = str(payload.get("channel_error") or "").strip()
             if channel_error:
                 self._diagnostics.append(
                     {"profile": "渠道", "message": f"渠道列表读取失败：{channel_error}"}
                 )
-            self._status = "正在整理渠道列表…"
+            self._status = "正在发现可用模型…"
             self._select_current_entries()
+        self._index_channels = min(
+            self._index_channels,
+            max(0, len(self._filtered_channels(self._channels)) - 1),
+        )
+        self._index_models = min(
+            self._index_models,
+            max(0, len(self._filtered_models()) - 1),
+        )
+        self._render_lists()
+        self._render_status()
+        self._render_diagnostics()
+        if not payload.get("error"):
+            # 左侧渠道已就绪，继续异步发现右侧模型（网络耗时不影响渠道展示）。
+            self._fetch_models(refresh=self._refresh_pending)
+
+    @work(thread=True, exclusive=True, group="model-picker-catalog", exit_on_error=False)
+    def _fetch_models(self, *, refresh: bool) -> None:
+        """阶段二：网络发现各 Profile 可用模型，完成后补齐右侧列。"""
+
+        try:
+            if refresh:
+                clear_discovery_cache()
+            catalog = build_catalog(
+                config=self._agent.config.llm,
+                refresh=refresh,
+                include_custom=False,
+            )
+            payload = {
+                "detected": list(catalog.get("detected") or []),
+                "diagnostics": list(catalog.get("diagnostics") or []),
+                "error": "",
+            }
+        except Exception as exc:
+            payload = {
+                "detected": [],
+                "diagnostics": [],
+                "error": str(exc),
+            }
+        self.app.call_from_thread(self._apply_catalog, payload)
+
+    def _apply_catalog(self, payload: dict[str, Any]) -> None:
+        """阶段二完成回调：补齐右侧模型列并合并自动发现渠道。
+
+        兼容单次应用（测试/旧调用直接传全量 payload）：payload 带
+        ``custom``/``channels`` 时按全量语义应用；两阶段流程中阶段二
+        只携带 detected/diagnostics，此时保留阶段一已就绪的渠道数据。
+        """
+
+        if payload.get("error"):
+            # 网络发现失败不摧毁已展示的左侧渠道：保留渠道与 custom，
+            # 只清空右侧模型并在状态行说明原因。
+            self._detected = []
+            self._diagnostics = []
+            self._index_models = 0
+            self._loading = False
+            # 先渲染列表（会重置 status），再写入错误信息，保证状态行
+            # 不被列表渲染的常规状态覆盖。
+            self._render_lists()
+            self._status = f"模型发现失败：{payload['error']}"
+            self._render_status()
+            self._render_diagnostics()
+            return
+        if "custom" in payload:
+            # 全量语义（测试/旧调用）时 payload 自带 custom；两阶段流程
+            # 的阶段二不携带，沿用阶段一已就绪的 custom。
+            self._custom = list(payload.get("custom") or [])
+        self._detected = list(payload.get("detected") or [])
+        configured_channels = []
+        payload_channels = list(payload.get("channels") or [])
+        for item in payload_channels:
+            if isinstance(item, _ChannelChoice):
+                configured_channels.append(item)
+            elif isinstance(item, ChannelConfig):
+                configured_channels.append(_channel_choice_from_config(item))
+        if payload_channels:
+            # 全量语义：以 payload 渠道为基线重新合并。
+            self._channels = self._merge_channel_choices(
+                configured_channels,
+                self._custom,
+                self._detected,
+            )
+        else:
+            # 两阶段增量：保留阶段一已合并的渠道，只补齐自动发现 Profile。
+            self._channels = self._merge_channel_choices(
+                self._channels,
+                self._custom,
+                self._detected,
+            )
+        self._diagnostics = list(payload.get("diagnostics") or [])
+        channel_error = str(payload.get("channel_error") or "").strip()
+        if channel_error:
+            self._diagnostics.append(
+                {"profile": "渠道", "message": f"渠道列表读取失败：{channel_error}"}
+            )
+        self._status = "正在整理渠道列表…"
+        self._loading = False
+        self._select_current_entries()
         self._index_channels = min(
             self._index_channels,
             max(0, len(self._filtered_channels(self._channels)) - 1),

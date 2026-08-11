@@ -658,7 +658,7 @@ class MCPAgentCommandTest(unittest.TestCase):
 
         self.assertLess(
             tool_names.index("trusted.read_file"),
-            tool_names.index("read_file"),
+            tool_names.index("read"),
         )
 
     def test_system_prompt_mentions_mcp_progressive_docs(self) -> None:

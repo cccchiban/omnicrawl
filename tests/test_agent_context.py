@@ -173,8 +173,8 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._active_skills = []
             agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
             agent._tools = {
-                "read_file": ToolDefinition(
-                    name="read_file",
+                "read": ToolDefinition(
+                    name="read",
                     description="读取文件。",
                     argument_schema='{"path":"README.md"}',
                     requires_confirmation=True,
@@ -213,7 +213,7 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn('<tool_capabilities source="host-tool-registry"', sent_messages[1]["content"])
         self.assertIn("search_tools", sent_messages[1]["content"])
         self.assertIn("invoke_tool", sent_messages[1]["content"])
-        self.assertNotIn("read_file", sent_messages[1]["content"])
+        self.assertNotIn("read", sent_messages[1]["content"])
         self.assertIn('<runtime_context source="host-runtime"', sent_messages[2]["content"])
         self.assertIn("工作区检测：从启动目录发现 .git", sent_messages[2]["content"])
         self.assertEqual(sent_messages[3]["content"], "上一轮问题")
@@ -470,11 +470,11 @@ class AgentContextInjectionTest(unittest.TestCase):
                 return run
 
             agent._tools = {
-                "read_file": ToolDefinition("read_file", "read", "{}", False, concurrent_tool("read")),
+                "read": ToolDefinition("read", "read", "{}", False, concurrent_tool("read")),
                 "grep": ToolDefinition("grep", "search", "{}", False, concurrent_tool("search", ok=False)),
             }
             calls = [
-                ToolCall("read_file", {}, "call_1", function_name_for_tool("read_file")),
+                ToolCall("read", {}, "call_1", function_name_for_tool("read")),
                 ToolCall("grep", {}, "call_2", function_name_for_tool("grep")),
             ]
             replies = iter([
@@ -541,12 +541,12 @@ class AgentContextInjectionTest(unittest.TestCase):
                 return run
 
             agent._tools = {
-                "read_file": ToolDefinition("read_file", "read", "{}", False, run_named("read")),
+                "read": ToolDefinition("read", "read", "{}", False, run_named("read")),
                 "write_file": ToolDefinition("write_file", "write", "{}", False, run_named("write")),
                 "bash": ToolDefinition("bash", "bash", "{}", False, run_named("delete")),
             }
             calls = [
-                ToolCall("read_file", {}, "call_1"),
+                ToolCall("read", {}, "call_1"),
                 ToolCall("write_file", {"path": "a"}, "call_2"),
                 ToolCall("bash", {"command": "rm a"}, "call_3"),
             ]
@@ -1070,8 +1070,8 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._skill_manager = None
             agent._active_skills = []
             agent._tools = {
-                "read_file": ToolDefinition(
-                    "read_file",
+                "read": ToolDefinition(
+                    "read",
                     "read",
                     "{}",
                     False,
@@ -1087,10 +1087,10 @@ class AgentContextInjectionTest(unittest.TestCase):
         def run_with_cancel(agent: LocalToolAgent, cancel_exc: Exception) -> None:
             calls = [
                 ToolCall(
-                    "read_file",
+                    "read",
                     {"path": "a.txt"},
                     "call_1",
-                    function_name_for_tool("read_file"),
+                    function_name_for_tool("read"),
                 )
             ]
             call_count = 0
@@ -1133,7 +1133,7 @@ class AgentContextInjectionTest(unittest.TestCase):
                     [message["content"] for message in agent._history],
                     [
                         "取消这一轮",
-                        "（上一回合被取消，未生成最终回复）已执行工具：read_file",
+                        "（上一回合被取消，未生成最终回复）已执行工具：read",
                     ],
                     f"取消异常 {type(cancel_exc).__name__} 未保留回合上下文",
                 )
@@ -1154,12 +1154,12 @@ class AgentContextInjectionTest(unittest.TestCase):
             store=FakeStore(),  # type: ignore[arg-type]
             roots={},
             before={},
-            executed_tools=["read_file", "grep", "read_file"],
+            executed_tools=["read", "grep", "read"],
         )
         summary = LocalToolAgent._cancelled_turn_summary(snapshot)
         self.assertEqual(
             summary,
-            "（上一回合被取消，未生成最终回复）已执行工具：read_file×2，grep",
+            "（上一回合被取消，未生成最终回复）已执行工具：read×2，grep",
         )
         self.assertEqual(
             LocalToolAgent._cancelled_turn_summary(None),
@@ -1496,17 +1496,17 @@ class AgentContextInjectionTest(unittest.TestCase):
     def test_assistant_tool_call_message_preserves_official_function_name_only(self) -> None:
         agent = object.__new__(LocalToolAgent)
         agent._tools = {
-            "read_file": ToolDefinition(
-                name="read_file",
+            "read": ToolDefinition(
+                name="read",
                 description="读取文件。",
                 argument_schema='{"path":"README.md"}',
                 requires_confirmation=False,
                 run=lambda _arguments: ToolResult(ok=True, output="ok"),
             )
         }
-        function_name = function_name_for_tool("read_file")
+        function_name = function_name_for_tool("read")
         tool_call = ToolCall(
-            name="read_file",
+            name="read",
             arguments={"path": "README.md"},
             id="call_1",
             function_name=function_name,

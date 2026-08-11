@@ -146,9 +146,15 @@ def build_catalog(
     refresh: bool = False,
     timeout_seconds: float = MODEL_LIST_TIMEOUT_SECONDS,
     include_custom: bool = True,
+    include_detected: bool = True,
     config_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """构建双列目录：custom / detected / diagnostics / current。"""
+    """构建双列目录：custom / detected / diagnostics / current。
+
+    ``include_detected=False`` 时跳过网络发现（只返回本地配置/模型存储
+    中的 custom 条目），供双阶段加载的“先渠道后模型”流程复用，避免
+    第一阶段等待网络超时。
+    """
 
     if config is None:
         try:
@@ -217,62 +223,63 @@ def build_catalog(
 
     detected_items: list[CatalogModel] = []
     diagnostics: list[dict[str, str]] = []
-    for profile_id, profile in profiles.items():
-        if not profile.discovery_enabled:
-            continue
-        result = _discover_for_profile(
-            profile,
-            refresh=refresh,
-            timeout_seconds=timeout_seconds or profile.discovery_timeout_seconds,
-        )
-        if result.status != "ok":
-            diagnostics.append(
-                {
-                    "profile": profile_id,
-                    "status": result.status,
-                    "message": result.message or "模型列表发现失败，自定义模型仍可使用。",
-                }
+    if include_detected:
+        for profile_id, profile in profiles.items():
+            if not profile.discovery_enabled:
+                continue
+            result = _discover_for_profile(
+                profile,
+                refresh=refresh,
+                timeout_seconds=timeout_seconds or profile.discovery_timeout_seconds,
             )
-            continue
-        for model in result.models[:MAX_MODELS_PER_PROFILE]:
-            triple = (model.profile_id, model.protocol, model.model_id)
-            matched = custom_index.get(triple, "")
-            if matched:
-                for idx, custom in enumerate(custom_items):
-                    if custom.key == matched:
-                        custom_items[idx] = CatalogModel(
-                            source=custom.source,
-                            key=custom.key,
-                            profile_id=custom.profile_id,
-                            provider=custom.provider,
-                            protocol=custom.protocol,
-                            model_id=custom.model_id,
-                            display_name=custom.display_name,
-                            capabilities=custom.capabilities,
-                            context_window_tokens=custom.context_window_tokens,
-                            availability="available",
-                            matched_custom_key=custom.key,
-                            tags=custom.tags,
-                            aliases=custom.aliases,
-                            sort_order=custom.sort_order,
-                        )
-                        break
-            detected_items.append(
-                CatalogModel(
-                    source="detected",
-                    key=f"{model.profile_id}/{model.model_id}",
-                    profile_id=model.profile_id,
-                    provider=model.provider,
-                    protocol=model.protocol,
-                    model_id=model.model_id,
-                    display_name=model.display_name or model.model_id,
-                    capabilities=model.capabilities,
-                    context_window_tokens=model.context_window_tokens
-                    or profile.default_context_window_tokens,
-                    availability="available",
-                    matched_custom_key=matched,
+            if result.status != "ok":
+                diagnostics.append(
+                    {
+                        "profile": profile_id,
+                        "status": result.status,
+                        "message": result.message or "模型列表发现失败，自定义模型仍可使用。",
+                    }
                 )
-            )
+                continue
+            for model in result.models[:MAX_MODELS_PER_PROFILE]:
+                triple = (model.profile_id, model.protocol, model.model_id)
+                matched = custom_index.get(triple, "")
+                if matched:
+                    for idx, custom in enumerate(custom_items):
+                        if custom.key == matched:
+                            custom_items[idx] = CatalogModel(
+                                source=custom.source,
+                                key=custom.key,
+                                profile_id=custom.profile_id,
+                                provider=custom.provider,
+                                protocol=custom.protocol,
+                                model_id=custom.model_id,
+                                display_name=custom.display_name,
+                                capabilities=custom.capabilities,
+                                context_window_tokens=custom.context_window_tokens,
+                                availability="available",
+                                matched_custom_key=custom.key,
+                                tags=custom.tags,
+                                aliases=custom.aliases,
+                                sort_order=custom.sort_order,
+                            )
+                            break
+                detected_items.append(
+                    CatalogModel(
+                        source="detected",
+                        key=f"{model.profile_id}/{model.model_id}",
+                        profile_id=model.profile_id,
+                        provider=model.provider,
+                        protocol=model.protocol,
+                        model_id=model.model_id,
+                        display_name=model.display_name or model.model_id,
+                        capabilities=model.capabilities,
+                        context_window_tokens=model.context_window_tokens
+                        or profile.default_context_window_tokens,
+                        availability="available",
+                        matched_custom_key=matched,
+                    )
+                )
 
     return {
         "current": _current_catalog_view(config, custom_items, detected_items),

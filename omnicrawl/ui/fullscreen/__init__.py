@@ -13,7 +13,10 @@ from typing import Any, Callable
 from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.geometry import Offset
+from textual.scrollbar import ScrollBar
 from textual.widgets import Static, TextArea
 
 if sys.platform == "win32":
@@ -27,13 +30,9 @@ from ...agent import AgentError, LocalToolAgent
 from ...config.runtime import resolve_config_path, resolve_models_path
 from ...llm.stream_registry import stream_scope
 from ...agent.tools import public_tool_arguments
-from ...version_check import (
-    VersionCheckResult,
-    check_latest_version,
-    current_version,
-)
+from ...version_check import current_version
 from .hud import (
-    SEARCH_INDEX_WAVE_FRAMES,
+    SEARCH_INDEX_SPINNER_FRAMES,
     compact_token_count,
     context_summary_text,
     gradient_text,
@@ -41,7 +40,6 @@ from .hud import (
     search_index_status_text,
     status_summary_text,
     token_telemetry_text,
-    version_status_text,
 )
 # 保留这些模块级名称作为既有测试和扩展的 patch 点；实际分派位于 commands.py。
 from ...commands.slash import (
@@ -52,7 +50,6 @@ from ...commands.slash import (
     format_skills_list,
     format_tool_confirmation,
     handle_approval_command,
-    handle_model_command,
     handle_reasoning_command,
     handle_session_command,
     handle_subagent_task_command,
@@ -67,6 +64,7 @@ from .vision_settings import VisionSettingsResult, VisionSettingsScreen
 from .monitor import MonitorStateAdapter, format_monitor_display_batch
 from .theme import (
     ACCENT_BLUE,
+    BORDER_MUTED,
     TERMINAL_THEME,
     TEXT_MUTED,
     TEXT_SECONDARY,
@@ -285,6 +283,14 @@ class Composer(TextArea):
         elif self._command_key_handler(event):
             event.prevent_default()
             event.stop()
+        elif event.key in {"up", "down"}:
+            scroll_action = getattr(
+                self.app,
+                f"action_scroll_conversation_{event.key}",
+            )
+            scroll_action()
+            event.prevent_default()
+            event.stop()
         elif event.key == "enter":
             self._submit_handler()
             event.prevent_default()
@@ -462,11 +468,6 @@ class OmniCrawlWindowsEventMonitor(
             for mask, button in cls.WINDOWS_MOUSE_BUTTONS:
                 if pressed & mask:
                     messages.append(make_mouse_event(events.MouseDown, button))
-            if event_flags & cls.WINDOWS_MOUSE_DOUBLE_CLICK:
-                for mask, button in cls.WINDOWS_MOUSE_BUTTONS:
-                    if button_state & mask:
-                        messages.append(make_mouse_event(events.MouseDown, button))
-                        break
 
         return messages, button_state, (x, y)
 
@@ -577,7 +578,6 @@ class OmniCrawlWindowsDriver(_TextualWindowsDriver):
         finally:
             _textual_win32.EventMonitor = original_event_monitor
         _restore_windows_raw_input_mode_if_needed()
-        self.write(self.RAW_INPUT_PROTOCOL_RESET)
         self.flush()
 
 
@@ -604,32 +604,13 @@ class OmniCrawlApp(App[None]):
     #status-summary {
         width: auto;
         min-width: 0;
+        max-width: 100%;
         color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
         text-wrap: nowrap;
     }
-    #version-status {
-        width: auto;
-        min-width: 0;
-        max-width: 34;
-        height: 1;
-        padding: 0 0 0 1;
-        color: $terminal-text;
-        content-align: left middle;
-        text-overflow: ellipsis;
-    }
-    /* 弹性占位：吃掉行内剩余空间，把行尾元素推到最右端。 */
-    .hud-spacer { width: 1fr; height: 1; }
-    /* 行尾闭合竖线：灰色，与行首/字段间 │ 呼应，始终贴住容器右缘。 */
-    .hud-tail {
-        width: 1;
-        height: 1;
-        color: $terminal-border-muted;
-        content-align: center middle;
-    }
     /* 第二行左侧展示 Token 明细，右侧在后台建索引时显示进度。 */
-    #telemetry-row .hud-spacer { display: none; }
     #telemetry-row {
         height: 2;
         padding: 0 1;
@@ -637,7 +618,7 @@ class OmniCrawlApp(App[None]):
         border-bottom: solid $terminal-border;
     }
     #token-telemetry {
-        width: 1fr;
+        width: auto;
         min-width: 0;
         max-width: 100%;
         height: 1;
@@ -647,12 +628,12 @@ class OmniCrawlApp(App[None]):
         text-overflow: ellipsis;
     }
     #index-status {
-        width: 26;
-        min-width: 26;
-        max-width: 26;
+        width: auto;
+        min-width: 0;
+        max-width: 100%;
         height: 1;
         color: $terminal-text-muted;
-        content-align: center middle;
+        content-align: left middle;
         text-overflow: ellipsis;
     }
     .runtime-status-message { color: $terminal-text-muted; text-style: bold; }
@@ -681,7 +662,7 @@ class OmniCrawlApp(App[None]):
     .reasoning-message { color: $terminal-text; padding-left: 2; background: $terminal-reasoning-background; }
     .reasoning-message:hover { color: $terminal-text; background: $terminal-reasoning-hover-background; }
     .reasoning-message:focus { color: $terminal-text; background: $terminal-reasoning-focus-background; border-left: thick $terminal-blue; text-style: bold; }
-    .reasoning-message.collapsed { height: 1; }
+    .tool-message.shell-tool-message { max-height: 10; overflow-y: hidden; }
     #composer-wrap { height: 2; min-height: 2; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
     #command-menu {
         display: none;
@@ -692,7 +673,7 @@ class OmniCrawlApp(App[None]):
         color: $terminal-text-secondary;
         text-wrap: nowrap;
         text-overflow: ellipsis;
-        border-left: thick $terminal-blue;
+        border-left: solid $terminal-blue;
     }
     #composer {
         height: 1;
@@ -716,6 +697,8 @@ class OmniCrawlApp(App[None]):
         ("escape", "cancel_or_focus", "取消 / 输入框"),
         ("ctrl+c", "copy_or_clear_composer", "复制 / 清空输入"),
         ("ctrl+l", "clear_conversation", "清空视图"),
+        Binding("pageup", "scroll_conversation_page_up", "上翻消息", priority=True),
+        Binding("pagedown", "scroll_conversation_page_down", "下翻消息", priority=True),
     ]
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
@@ -725,8 +708,6 @@ class OmniCrawlApp(App[None]):
     TOKEN_RATE_REFRESH_INTERVAL_SECONDS = 0.5
     MONITOR_POLL_INTERVAL_SECONDS = 0.5
     STATUS_SPINNER_INTERVAL_SECONDS = 0.16
-    # 索引加载光波的刷新间隔：8 帧 × 0.25s 整圈 2s，波速为原 4 帧/0.5s 的两倍。
-    SEARCH_INDEX_ANIMATION_INTERVAL_SECONDS = 0.25
     STATUS_SPINNER_FRAMES = (
         "⠋",
         "⠙",
@@ -780,10 +761,6 @@ class OmniCrawlApp(App[None]):
                 command_agent,
                 command,
             ),
-            handle_model=lambda command_agent, command: handle_model_command(
-                command_agent,
-                command,
-            ),
             handle_approval=lambda command_agent, command: handle_approval_command(
                 command_agent,
                 command,
@@ -816,9 +793,6 @@ class OmniCrawlApp(App[None]):
         self._status_spinner_index = 0
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
-        self._announced_update_version: str | None = None
-        self._version_checking = False
-        self._version_check_frame = 0
         self._search_index_frame = 0
         self._interaction_watchdog_signature: tuple[object, ...] | None = None
         self._interaction_watchdog_stable_ticks = 0
@@ -829,18 +803,10 @@ class OmniCrawlApp(App[None]):
         with Vertical(id="shell"):
             with Horizontal(id="topbar"):
                 yield Static(self._context_summary_text(), id="context-summary")
-                yield Static(self._status_summary_text(), id="status-summary")
-                yield Static("", classes="hud-spacer")
-                yield Static(
-                    version_status_text(self.startup.current_version),
-                    id="version-status",
-                )
-                yield Static("│", classes="hud-tail")
+                yield Static(self._search_index_status_text(), id="index-status")
             with Horizontal(id="telemetry-row"):
                 yield Static(self._token_telemetry_text(), id="token-telemetry")
-                yield Static("", classes="hud-spacer")
-                yield Static(self._search_index_status_text(), id="index-status")
-                yield Static("│", classes="hud-tail")
+                yield Static(self._status_summary_text(), id="status-summary")
             yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
                 yield Static("", id="command-menu")
@@ -856,15 +822,33 @@ class OmniCrawlApp(App[None]):
                     highlight_cursor_line=False,
                 )
 
+    def action_scroll_conversation_up(self) -> None:
+        """在固定输入框获得焦点时向上滚动一行消息。"""
+
+        self.query_one("#conversation", VerticalScroll).scroll_up()
+
+    def action_scroll_conversation_down(self) -> None:
+        """在固定输入框获得焦点时向下滚动一行消息。"""
+
+        self.query_one("#conversation", VerticalScroll).scroll_down()
+
+    def action_scroll_conversation_page_up(self) -> None:
+        """在固定输入框获得焦点时向上翻动消息区。"""
+
+        self.query_one("#conversation", VerticalScroll).scroll_page_up()
+
+    def action_scroll_conversation_page_down(self) -> None:
+        """在固定输入框获得焦点时向下翻动消息区。"""
+
+        self.query_one("#conversation", VerticalScroll).scroll_page_down()
+
     def on_mount(self) -> None:
         self.agent.set_confirm_handler(self._confirm_tool)
         self.query_one("#composer", TextArea).focus()
         self._resize_composer_to_text()
-        self.call_after_refresh(self._refresh_hud_layout)
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
-        self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_version_check)
         self.set_interval(
-            self.SEARCH_INDEX_ANIMATION_INTERVAL_SECONDS,
+            self.STATUS_SPINNER_INTERVAL_SECONDS,
             self._tick_search_index_status,
         )
         self.set_interval(
@@ -877,11 +861,6 @@ class OmniCrawlApp(App[None]):
         )
         if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
-        if self.startup.version_check_enabled:
-            self._version_checking = True
-            self._version_check_frame = 0
-            self._render_version_status()
-            self._check_for_updates()
 
         if callable(getattr(self.agent, "preload_mcp_tools", None)):
             # MCP 预加载属于内部初始化：继续锁定输入，但不显示瞬时等待消息。
@@ -902,6 +881,132 @@ class OmniCrawlApp(App[None]):
             focus_composer=True,
             rearm_terminal_protocols=True,
         )
+
+    async def on_event(self, event: events.Event) -> None:
+        """在 Textual 标准处理之前补齐滚动条鼠标交互。
+
+        Textual 8.2.7 的 ``ScrollBar`` 只对渲染在 thumb 上的 MouseDown 启动
+        拖动（meta ``@mouse.down: grab``）；轨道上按下只触发一次性跳转，
+        且无法“按住滑动”。这里让滚动条任意位置按住都能拖动：thumb 上原位
+        抓取，轨道上先跳到点击位置对应的比例再抓取。
+
+        拖动中的 MouseMove 由本方法直接换算并滚动容器：Textual 的
+        ``ScrollBar._on_mouse_move`` 只把 ``ScrollTo`` 消息发给滚动条自身，
+        而滚动条 ``_allow_scroll`` 恒为 False，消息实际不会生效，原生
+        拖动因此不可靠。
+        """
+
+        captured_scrollbar = self.mouse_captured
+        if (
+            isinstance(captured_scrollbar, ScrollBar)
+            and isinstance(event, (events.MouseMove, events.MouseUp))
+            and event.button != 1
+        ):
+            # Textual 的滚动条鼠标处理不区分按键；非左键事件不能推进或结束
+            # 已存在的左键拖动，也不能触发渲染元数据中的 grab 动作。
+            return
+        if isinstance(event, events.MouseMove) and isinstance(
+            captured_scrollbar, ScrollBar
+        ):
+            self._drag_scrollbar_by_mouse(captured_scrollbar, event)
+        elif isinstance(event, events.MouseDown) and not event.is_forwarded:
+            try:
+                widget, _region = self.get_widget_at(event.x, event.y)
+            except Exception:  # noqa: BLE001
+                widget = None
+            if isinstance(widget, ScrollBar):
+                if event.button != 1:
+                    # 必须在进入 Textual 默认分发前返回；ScrollBarRender 的
+                    # @mouse.down 元数据本身也不会校验鼠标按键。
+                    return
+                if not widget.grabbed:
+                    self._begin_scrollbar_drag(widget, event)
+        await super().on_event(event)
+
+    def _drag_scrollbar_by_mouse(
+        self,
+        scrollbar: ScrollBar,
+        event: events.MouseMove,
+    ) -> None:
+        """拖动中按鼠标位移换算目标位置并滚动容器（立即、无动画）。"""
+
+        if not scrollbar.grabbed:
+            return
+        parent = scrollbar.parent
+        virtual_size = scrollbar.window_virtual_size
+        window_size = scrollbar.window_size
+        if parent is None or not window_size or virtual_size <= window_size:
+            return
+        ratio = virtual_size / window_size
+        if scrollbar.vertical:
+            target = scrollbar.grabbed_position + (
+                (event.screen_y - scrollbar.grabbed.y) * ratio
+            )
+            maximum = float(parent.max_scroll_y)
+            parent.scroll_to(y=target, animate=False)
+        else:
+            target = scrollbar.grabbed_position + (
+                (event.screen_x - scrollbar.grabbed.x) * ratio
+            )
+            maximum = float(parent.max_scroll_x)
+            parent.scroll_to(x=target, animate=False)
+        target = min(max(0.0, target), maximum)
+        # 同步 thumb 位置：滚动容器的异步刷新会回填 position，这里先对齐
+        # 保证 grab 起点与下次位移计算连续。
+        scrollbar.position = target
+
+    @staticmethod
+    def _scrollbar_thumb_bounds(
+        scrollbar: ScrollBar,
+        bar_size: int,
+    ) -> tuple[float, float]:
+        """计算滚动条 thumb 在条身内的区间，与 ScrollBarRender 公式一致。"""
+
+        virtual_size = scrollbar.window_virtual_size
+        window_size = scrollbar.window_size
+        if bar_size <= 0 or virtual_size <= window_size:
+            return (0.0, float(bar_size))
+        thumb_size = max(1.0, window_size * bar_size / virtual_size)
+        position_ratio = scrollbar.position / (virtual_size - window_size)
+        start = (bar_size - thumb_size) * position_ratio
+        return (start, start + thumb_size)
+
+    def _begin_scrollbar_drag(
+        self,
+        scrollbar: ScrollBar,
+        event: events.MouseDown,
+    ) -> None:
+        """滚动条按下：thumb 上原位抓取；轨道上先按比例跳转再抓取。"""
+
+        region = scrollbar.region
+        if scrollbar.vertical:
+            bar_size = region.height
+            position_in_bar = event.screen_y - region.y
+        else:
+            bar_size = region.width
+            position_in_bar = event.screen_x - region.x
+        parent = scrollbar.parent
+        thumb_start, thumb_end = self._scrollbar_thumb_bounds(scrollbar, bar_size)
+        on_thumb = thumb_start <= position_in_bar <= thumb_end
+        if not on_thumb and parent is not None and bar_size > 0:
+            # 轨道点击：先跳到点击位置对应的滚动比例，再进入拖动状态，
+            # 用户不移动即停在跳转点，继续移动则从该点拖动。
+            ratio = min(1.0, max(0.0, position_in_bar / bar_size))
+            if scrollbar.vertical:
+                target = ratio * parent.max_scroll_y
+                parent.scroll_to(y=target, animate=False)
+            else:
+                target = ratio * parent.max_scroll_x
+                parent.scroll_to(x=target, animate=False)
+            # scroll_to 的生效与 scrollbar.position 的同步是异步的；先手动
+            # 对齐 thumb 位置，保证抓取后的拖动起点正确。
+            scrollbar.position = target
+        # 本方法在 App.on_event 更新 mouse_position 之前执行，capture_mouse
+        # 会把它写进 MouseCapture.mouse_position（即 grabbed 起点）。不同步
+        # 的话拖动偏移全错；且若起点恰好是 Offset(0,0)，ScrollBar._on_mouse_up
+        # 的 ``if self.grabbed`` 判定为 False，MouseUp 后永不释放、交互卡死。
+        self.mouse_position = Offset(event.screen_x, event.screen_y)
+        scrollbar.action_grab()
 
     def _recover_stale_mouse_interaction(self) -> None:
         """释放长时间没有变化的鼠标按下状态，避免输入事件永久失效。"""
@@ -1029,25 +1134,12 @@ class OmniCrawlApp(App[None]):
         if focus_composer and len(self.screen_stack) == 1:
             self.query_one("#composer", TextArea).focus()
 
-    @work(thread=True, exclusive=True, group="version-check", exit_on_error=False)
-    def _check_for_updates(self) -> None:
-        """首屏完成后在后台检查 PyPI，避免网络状态影响 TUI 启动。"""
-
-        result = check_latest_version(self.startup.current_version)
-        self.call_from_thread(self._apply_version_check, result)
-
-    def _tick_version_check(self) -> None:
-        """检查更新期间让版本号右侧的四点指示器循环移动。"""
-
-        if not self._version_checking:
-            return
-        self._version_check_frame = (self._version_check_frame + 1) % 4
-        self._render_version_status()
-
     def _tick_search_index_status(self) -> None:
-        """加载索引时推进八帧颜色波浪，并在主线程刷新 HUD。"""
+        """加载索引时推进与状态指示器同款的旋转动画帧，并刷新 HUD。"""
 
-        self._search_index_frame = (self._search_index_frame + 1) % SEARCH_INDEX_WAVE_FRAMES
+        self._search_index_frame = (self._search_index_frame + 1) % len(
+            SEARCH_INDEX_SPINNER_FRAMES
+        )
         self._render_search_index_status()
 
     def _search_index_status_text(self) -> Text:
@@ -1058,13 +1150,20 @@ class OmniCrawlApp(App[None]):
     def _render_search_index_status(self) -> None:
         """轮询只读状态快照，不让后台索引线程直接接触 Textual 组件。
 
-        空闲时索引状态为空文本，隐藏整个组件以免竖线占位造成行内空白。
+        空闲时索引状态为空文本，隐藏整个组件；非空闲时前置 "⁕ " 分隔
+        符（与第二行字段段衔接），隐藏时不会留下悬空分隔符。
         """
 
         widgets = self.query("#index-status")
         if widgets:
             widget = widgets.first(Static)
             rendered = self._search_index_status_text()
+            if rendered:
+                # 前置分隔符属于组件内容，随组件一起隐藏/显示。
+                rendered = Text.assemble(
+                    ("⁕ ", BORDER_MUTED),
+                    rendered,
+                )
             current = widget.content
             if isinstance(current, Text) and current == rendered:
                 # 内容未变时仍需同步隐藏状态（首次渲染两者都为空）。
@@ -1072,35 +1171,6 @@ class OmniCrawlApp(App[None]):
                 return
             widget.update(rendered)
             widget.display = bool(rendered)
-
-    def _render_version_status(self, latest_version: str | None = None) -> None:
-        """在主线程重绘行尾版本号：版本、升级提示或检查更新动画。"""
-
-        self.query_one("#version-status", Static).update(
-            version_status_text(
-                self.startup.current_version,
-                latest_version,
-                checking=self._version_checking,
-                animation_frame=self._version_check_frame,
-            )
-        )
-
-    def _apply_version_check(self, result: VersionCheckResult) -> None:
-        """在 Textual 主线程更新版本区域，并只提示一次可用升级。"""
-
-        self._version_checking = False
-        latest = result.latest_version if result.update_available else None
-        self._render_version_status(latest)
-        if latest is None or latest == self._announced_update_version:
-            return
-        self._announced_update_version = latest
-        self._append_message(
-            "status",
-            (
-                f"发现新版本 {latest}（当前 {result.current_version}）。"
-                "可执行 pip install --upgrade omnicrawl-agent 更新。"
-            ),
-        )
 
     @work(thread=True, exclusive=True, group="mcp-preload", exit_on_error=False)
     def _preload_mcp_tools(self) -> None:
@@ -1149,55 +1219,9 @@ class OmniCrawlApp(App[None]):
             self._refresh_command_menu(event.text_area.text)
             self._resize_composer_to_text()
 
-    def _refresh_hud_layout(self) -> None:
-        """按当前终端宽度收缩顶部 HUD，避免固定字段把尾线推出屏幕。"""
-
-        topbar = self.query_one("#topbar")
-        content_width = topbar.content_region.width
-        if content_width <= 0:
-            return
-
-        context = self.query_one("#context-summary", Static)
-        status = self.query_one("#status-summary", Static)
-        spacer = self.query_one("#topbar .hud-spacer", Static)
-        version = self.query_one("#version-status", Static)
-
-        # 左侧上下文、状态、版本和尾线的完整宽度为
-        # 64 + 28 + 7 + 1 = 100。小于该宽度时只压缩上下文字段，
-        # 不让状态和版本覆盖彼此；上下文已设置 nowrap，会以省略号收尾。
-        if content_width < 100:
-            compact_context_width = max(1, content_width - 36)
-            context.styles.width = compact_context_width
-            context.styles.min_width = 0
-            context.styles.max_width = compact_context_width
-            status.styles.width = 28
-            status.styles.min_width = 0
-            status.styles.max_width = 28
-            spacer.styles.width = 0
-            spacer.styles.min_width = 0
-            version.styles.width = 7
-            version.styles.min_width = 7
-            version.styles.max_width = 7
-            return
-
-        # 恢复宽窗口下的自然字段宽度和弹性间隔；这些值覆盖窄窗口时
-        # 写入的 inline style，使终端从窄窗口拖回宽窗口后也能重新对齐。
-        context.styles.width = "auto"
-        context.styles.min_width = 0
-        context.styles.max_width = "1fr"
-        status.styles.width = "auto"
-        status.styles.min_width = 0
-        status.styles.max_width = None
-        spacer.styles.width = "1fr"
-        spacer.styles.min_width = None
-        version.styles.width = "auto"
-        version.styles.min_width = 0
-        version.styles.max_width = 34
-
     def on_resize(self, _event: events.Resize) -> None:
-        """窗口变化时同步 HUD 宽度，并重算输入区软折行高度。"""
+        """窗口变化时重算输入区软折行高度。"""
 
-        self.call_after_refresh(self._refresh_hud_layout)
         self.call_after_refresh(self._resize_composer_to_text)
 
     def _resize_composer_to_text(self) -> None:
@@ -1489,9 +1513,6 @@ class OmniCrawlApp(App[None]):
             self._refresh_pending_queue_count()
             self.exit()
             return True
-        if outcome.open_model_picker:
-            self._open_model_picker(refresh=outcome.model_picker_refresh)
-            return True
         if outcome.open_settings:
             self._open_settings()
             return True
@@ -1565,11 +1586,28 @@ class OmniCrawlApp(App[None]):
         """仅在用户原本位于底部时跟随新增内容。"""
 
         if follow_latest:
-            # Textual 的锚定语义会在内容重新布局后持续跟随底部，并在用户手动
-            # 滚动时自动释放；这比跨刷新排队 scroll_end 更能避免流式更新竞态。
-            conversation.anchor()
-            if defer_until_refresh:
-                conversation.call_after_refresh(conversation.scroll_end, animate=False)
+            if conversation.max_scroll_y > 0:
+                # Textual 的锚定语义会在内容重新布局后持续跟随底部，并在用户
+                # 手动滚动时自动释放；这比跨刷新排队 scroll_end 更能避免流式
+                # 更新竞态。
+                conversation.anchor()
+                if defer_until_refresh:
+                    conversation.call_after_refresh(conversation.scroll_end, animate=False)
+            else:
+                # 内容不足一屏时，Textual 8.2.7 的 anchor 会让 compositor 在
+                # 布局时把 scroll_y 设为「内容高度 - 容器高度」的负值（该路径
+                # 不经过 validate/clamp），消息被推到视口底部、顶部出现大片
+                # 空白。此时无需滚动，取消锚定并保持顶部对齐；布局完成后若
+                # 内容已超出一屏（跨屏边界），再恢复底部跟随。
+                conversation.anchor(False)
+                conversation.scroll_y = 0
+                conversation.call_after_refresh(
+                    lambda: (
+                        conversation.anchor()
+                        if conversation.max_scroll_y > 0
+                        else None
+                    )
+                )
 
     def _handle_status(self, message: str) -> None:
         if message:
@@ -1908,13 +1946,16 @@ class OmniCrawlApp(App[None]):
 
     def _finish_turn(self) -> None:
         self._render_stream_markdown()
+        was_cancelled = self._cancel_requested.is_set()
         self.is_generating = False
         if self._reasoning_message is not None:
             # 推理后直接结束回合（无回复/无工具）时，同样补齐未完成行。
             self._reasoning_message.flush_tail()
         self._reasoning_message = None
         self._reset_token_rate()
-        self._set_runtime_status("完成", "complete")
+        # 取消回合的终态不能被 finally 中的通用完成逻辑覆盖为“完成”：
+        # 状态文本保持与 cancel_pending_turn 展示的“已取消”一致。
+        self._set_runtime_status("已取消" if was_cancelled else "完成", "complete")
         self.query_one("#composer", TextArea).focus()
         self._drain_pending_inputs()
 
@@ -2050,31 +2091,31 @@ class OmniCrawlApp(App[None]):
             return 0
 
     def _status_summary_text(self) -> Text:
-        """生成第一行状态字段：审批模式、MCP 数量与排队数。
+        """生成第二行左段：模型、推理强度、审批模式、MCP 数量与排队数。
 
-        版本号由行尾独立组件（#version-status）呈现。
+        行尾由 #token-telemetry 自带 “⁕ ” 前置分隔符衔接 CTX 段。
         """
 
+        reasoning_effort = str(getattr(self.agent, "reasoning_effort", "") or "")
+        if not reasoning_effort:
+            reasoning_effort = self.startup.reasoning_effort or "DEFAULT"
         return status_summary_text(
             approval_mode=str(
                 getattr(self.agent, "approval_mode", None) or self.startup.approval_label
             ),
             mcp_enabled_count=self._mcp_enabled_count(),
             pending_count=len(self._pending_inputs),
+            model=str(getattr(self.agent, "current_model", "") or "NO MODEL"),
+            reasoning_effort=reasoning_effort,
         )
 
     def _context_summary_text(self) -> Text:
-        """用短键值字段渲染左段卡片：项目、模型、推理强度。"""
+        """渲染第一行左段：项目名；行尾由 #index-status 衔接。"""
 
-        reasoning_effort = str(getattr(self.agent, "reasoning_effort", "") or "")
-        if not reasoning_effort:
-            reasoning_effort = self.startup.reasoning_effort or "DEFAULT"
         return context_summary_text(
             workspace=str(
                 getattr(self.agent, "workspace_root", "") or self.startup.workspace_label
             ),
-            model=str(getattr(self.agent, "current_model", "") or "NO MODEL"),
-            reasoning_effort=reasoning_effort,
         )
 
     def _refresh_context_summary(self) -> None:
@@ -2167,21 +2208,27 @@ class OmniCrawlApp(App[None]):
         self._refresh_context_summary()
 
     def _open_model_picker(self, *, refresh: bool = False) -> None:
-        """打开双列模型选择界面；切换成功后刷新 HUD 并清零最近 Token 显示。"""
+        """打开双列模型选择界面；结束后返回设置面板。
+
+        模型选择器只能从设置面板进入（``/model`` 命令已移除）。退出
+        （切换成功或按 ESC 取消）时与设置面板其他选项页面保持一致：
+        重新打开设置面板，且不显示取消/切换提示文案。
+        """
 
         def receive(result: ModelPickerResult | None) -> None:
-            if result is None:
-                self._append_message("status", "已取消模型切换。")
-            else:
+            if result is not None:
                 # 切换后旧模型 token 与新模型上下文上限不应混显。
                 self._input_tokens = 0
                 self._output_tokens = 0
                 self._cached_input_tokens = 0
                 self._refresh_context_summary()
-                self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
-                message = result.message or f"当前模型已切换为 {result.model}"
-                self._append_message("status", message)
+                self.query_one("#token-telemetry", Static).update(
+                    self._token_telemetry_text()
+                )
             self._drain_pending_inputs()
+            # 参考设置面板其他选项页面（渠道/工具/MCP/视觉/子代理）：
+            # 关闭当前页后重新打开设置面板回到主菜单。
+            self._open_settings()
 
         self.push_screen(
             ModelPickerScreen(

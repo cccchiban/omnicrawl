@@ -187,8 +187,10 @@ def read_only_command_denial_reason(
 
     diagnostic = arguments.get("diagnostic_command")
     if diagnostic is not None:
-        if not isinstance(diagnostic, str) or not diagnostic.strip():
-            return "diagnostic_command 必须是非空字符串。"
+        if not isinstance(diagnostic, str):
+            return "diagnostic_command 必须是字符串。"
+        if not diagnostic.strip():
+            return ""
         reason = _command_text_denial_reason(diagnostic, shell=shell)
         if reason:
             return f"diagnostic_command 不符合只读策略：{reason}"

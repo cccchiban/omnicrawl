@@ -376,7 +376,7 @@ def apply_model_selection(config: LLMConfig, selection: str) -> LLMConfig:
 
     # 裸 model_id：仅替换 model，保留当前 Profile 凭据与协议。
     # 若 token 看起来像自定义 key（含 : 或仅字母数字连字符的别名风格）且 store 已加载，
-    # 仍允许作为 provider 侧真实 model_id 使用——这是旧 /model <id> 兼容路径。
+    # 仍允许作为 provider 侧真实 model_id 使用——这是旧模型切换参数兼容路径。
     # 检测到的模型不继承上一自定义模型的 max_output/temperature。
     return LLMConfig(
         api_key=config.api_key,
