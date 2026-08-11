@@ -24,10 +24,14 @@ from .theme import (
     TEXT_MUTED,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
+    TOOL_TEXT,
 )
 
 
 FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
+# 豁免“原始输出 + 五行折叠”规则的工具：write_file 保留文件变更预览
+# （diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
+FULL_BODY_TOOLS = frozenset({"write_file"})
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
 MAX_PREVIEW_CHARS_PER_LINE = 160
@@ -337,21 +341,19 @@ def tool_disclosure_body(
     arguments: Any,
     result_text: str,
 ) -> Text:
-    """生成展开后的正文（不含标题行）。"""
+    """生成展开后的正文（不含标题行）。
 
-    if is_file_change_tool(tool_name):
+    除 write_file 外的所有工具统一直接展示工具返回的原始输出（灰色），
+    不再包装“工具/参数/结果”元信息；write_file 保留文件变更预览正文
+    （diff/rewrite 摘要），是唯一不受五行折叠限制的工具。
+    """
+
+    if _tool_operation(tool_name) in FULL_BODY_TOOLS:
         return file_change_body(tool_name, arguments, result_text)
 
     rendered = Text()
-    rendered.append("工具：", style=COLOR_META)
-    rendered.append(str(tool_name), style=COLOR_CTX)
-    if arguments:
-        rendered.append("\n参数：", style=COLOR_META)
-        rendered.append(str(arguments), style=COLOR_CTX)
-        rendered.append("\n")
     if result_text:
-        rendered.append("结果：\n", style=COLOR_META)
-        rendered.append(result_text, style=COLOR_CTX)
+        rendered.append(result_text, style=TOOL_TEXT)
     return rendered
 
 
@@ -579,6 +581,7 @@ def plain_tool_title(
 
 __all__ = [
     "FILE_CHANGE_TOOLS",
+    "FULL_BODY_TOOLS",
     "FileChangeView",
     "describe_file_change",
     "file_change_body",

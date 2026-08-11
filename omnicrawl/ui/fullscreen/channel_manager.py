@@ -520,36 +520,7 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         if self.is_mounted:
             self.query_one("#channel-manager-status", Static).update(message)
 
-
-class ChannelSetupApp(App[bool]):
-    """首次启动时承载渠道管理 Screen 的轻量 Textual App。"""
-
-    CSS = "Screen { background: transparent; }"
-
-    def __init__(self, config_path: Path, models_path: Path) -> None:
-        super().__init__()
-        self._config_path = config_path
-        self._models_path = models_path
-
-    def on_mount(self) -> None:
-        self.push_screen(
-            ChannelManagerScreen(
-                self._config_path,
-                self._models_path,
-                required=True,
-            ),
-            self._receive_result,
-        )
-
-    def _receive_result(self, result: ChannelManagerResult | None) -> None:
-        self.exit(result is not None)
-
-
-def run_channel_setup(config_path: Path, models_path: Path) -> bool:
-    """在当前终端运行首次启动渠道配置向导。"""
-
-    result = ChannelSetupApp(config_path, models_path).run()
-    return bool(result)
+from .channel_setup import ChannelSetupApp, run_channel_setup
 
 
 __all__ = [

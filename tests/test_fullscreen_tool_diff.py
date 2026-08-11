@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from omnicrawl.ui.fullscreen.hud import search_index_status_text
+from omnicrawl.ui.fullscreen.hud import (
+    search_index_status_text,
+    token_telemetry_text,
+)
 from omnicrawl.workspace.search_index import SearchIndexStatus
 from omnicrawl.ui.fullscreen.tool_diff import (
     describe_file_change,
@@ -41,7 +44,9 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertEqual(style_for("44ms"), "dim")
         self.assertTrue(all("bold" not in str(span.style) for span in title.spans))
 
-    def test_replace_text_title_and_gutter_diff(self) -> None:
+    def test_replace_text_title_keeps_change_summary_and_body_is_raw(self) -> None:
+        """replace_text 标题保留文件变更摘要；正文改为原始输出（无 diff 预览）。"""
+
         arguments = {
             "path": "omnicrawl/ui/fullscreen/hud.py",
             "old_text": "alpha\nbeta\ngamma\n",
@@ -63,13 +68,9 @@ class FullscreenToolDiffTest(unittest.TestCase):
             tool_name="replace_text",
             arguments=arguments,
             result_text="已修改 hud.py，替换 1 处。",
-        ).plain
-        self.assertIn("│", body)
-        self.assertIn("- ", body)
-        self.assertIn("+ ", body)
-        self.assertIn("beta", body)
-        self.assertIn("beta2", body)
-        self.assertIn("结果：已修改", body)
+        )
+        # 除 write_file 外：正文直接展示原始输出，不再包装 diff/元信息。
+        self.assertEqual(body.plain, "已修改 hud.py，替换 1 处。")
 
     def test_write_file_overwrite_uses_rewrite_stats_without_fake_deletes(self) -> None:
         arguments = {
@@ -104,6 +105,22 @@ class FullscreenToolDiffTest(unittest.TestCase):
         change = describe_file_change("write_file", arguments)
         self.assertEqual(change.stats_label, "append +2 lines")
         self.assertIn("append", change.body.plain)
+
+    def test_write_file_body_keeps_change_preview_and_full_result(self) -> None:
+        """write_file 是唯一豁免工具：正文保留文件变更预览与完整结果文本。"""
+
+        body = tool_disclosure_body(
+            tool_name="write_file",
+            arguments={
+                "path": "notes/demo.txt",
+                "content": "line-one\nline-two\n",
+            },
+            result_text="已写入 notes/demo.txt。",
+        ).plain
+        self.assertIn("rewrite", body)
+        self.assertIn("+ ", body)
+        self.assertIn("line-one", body)
+        self.assertIn("已写入 notes/demo.txt。", body)
 
     def test_read_title_includes_file_name_and_returned_line_range(self) -> None:
         title = plain_tool_title(
@@ -159,6 +176,28 @@ class FullscreenToolDiffTest(unittest.TestCase):
                 search_index_status_text(status, frame).plain,
                 search_index_status_text(status, frame + 1).plain,
             )
+
+    def test_cache_rate_uses_input_tokens_as_denominator(self) -> None:
+        """顶部 CH% 是缓存率：缓存命中输入 ÷ 本次总输入，而非上下文窗口。"""
+
+        # 常规：CA 是 IN 的子集，比率不超过 100%。
+        telemetry = token_telemetry_text(
+            input_tokens=62_500,
+            output_tokens=2_400,
+            cached_input_tokens=50_000,
+            context_limit=100_000,
+        )
+        self.assertIn("CH80%", telemetry.plain)
+        # 无输入时缓存率视为 0%，不因上下文窗口出现虚假比例。
+        self.assertIn(
+            "CH0%",
+            token_telemetry_text(0, 0, 0, 128_000).plain,
+        )
+        # 异常数据（CA > IN）封顶 100%。
+        self.assertIn(
+            "CH100%",
+            token_telemetry_text(1_000, 0, 2_000, 128_000).plain,
+        )
 
     def test_index_progress_text_is_visible_only_while_loading_or_building(self) -> None:
         building = search_index_status_text(
@@ -237,17 +276,15 @@ class FullscreenToolDiffTest(unittest.TestCase):
             arguments={"path": "README.md"},
             result_text="读取完成",
         ).plain
-        self.assertIn("工具：trusted.read", mcp_body)
+        # 除 write_file 外：正文为原始输出，不再包装“工具/参数/结果”元信息。
+        self.assertEqual(body, "读取完成")
+        self.assertEqual(mcp_body, "读取完成")
         self.assertIn("R  (未指定文件)", plain_tool_title(
             tool_name="trusted.read",
             arguments={},
             status="成功",
             duration_seconds=0.001,
         ))
-        self.assertIn("参数：", body)
-        self.assertIn("README.md", body)
-        self.assertIn("结果：", body)
-        self.assertIn("读取完成", body)
 
     def test_gutter_diff_counts_insert_and_delete_lines(self) -> None:
         text, added, removed = gutter_diff_text("a\nb\nc\n", "a\nx\nc\n")

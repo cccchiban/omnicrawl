@@ -151,7 +151,17 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self._row_keys = (
             tuple(SUBAGENT_ADVANCED_SETTING_KEYS)
             if advanced
-            else ("model", "channels", "vision", "reasoning", "context", "approval", "tools", "subagents_advanced")
+            else (
+                "model",
+                "channels",
+                "vision",
+                "image_gen",
+                "reasoning",
+                "context",
+                "approval",
+                "tools",
+                "subagents_advanced",
+            )
             + tuple(item[0] for item in _FEATURES)
         )
 
@@ -204,7 +214,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if self._busy:
             return
         key = self._row_keys[self._selected]
-        if not self._advanced and key in {"model", "channels", "vision"}:
+        if not self._advanced and key in {"model", "channels", "vision", "image_gen"}:
             self.dismiss(SettingsAction(key))
             return
         if not self._advanced and key == "subagents_advanced":
@@ -272,6 +282,10 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             config = getattr(self._agent, "config", None)
             vision = getattr(config, "vision", None)
             return bool(getattr(vision, "enabled", False))
+        if key == "image_gen":
+            config = getattr(self._agent, "config", None)
+            image_gen = getattr(config, "image_gen", None)
+            return bool(getattr(image_gen, "enabled", False))
         return False
 
     def _subagent_config_value(self, key: str) -> int | float:
@@ -290,76 +304,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     def _apply_setting(self, key: str, value: object) -> None:
         self.app.call_from_thread(self._set_busy, True, "正在应用设置…")
         try:
-            if key == "reasoning":
-                previous = str(getattr(self._agent, "reasoning_effort", "none") or "none")
-                normalized = self._agent.set_reasoning_effort(str(value))
-                try:
-                    path = save_reasoning_effort(normalized)
-                except Exception:
-                    self._agent.set_reasoning_effort(previous)
-                    raise
-                message = f"推理强度已设为 {_REASONING_LABELS[normalized]}，已保存到 {path}。"
-            elif key == "context":
-                previous = int(getattr(self._agent, "context_window_tokens", 128_000))
-                tokens = int(value)
-                self._agent.set_context_window_tokens(tokens)
-                try:
-                    path = save_context_window_tokens(
-                        tokens,
-                        model_source=str(getattr(getattr(self._agent, "config", None), "llm", None) and getattr(self._agent.config.llm, "model_source", "legacy") or "legacy"),
-                        catalog_key=str(getattr(getattr(self._agent, "config", None), "llm", None) and getattr(self._agent.config.llm, "catalog_key", "") or ""),
-                    )
-                except Exception:
-                    self._agent.set_context_window_tokens(previous)
-                    raise
-                message = f"上下文长度已设为 {tokens // 1000}K，已保存到 {path}。"
-            elif key == "approval":
-                previous = str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))
-                mode = str(value)
-                self._agent.set_approval_mode(mode)
-                try:
-                    path = save_approval_mode(mode)
-                except Exception:
-                    self._agent.set_approval_mode(previous)
-                    raise
-                message = f"审批模式已设为 {approval_mode_label(mode)}，已保存到 {path}。"
-            elif self._advanced:
-                normalized = validate_subagent_advanced_setting(key, value)
-                previous = self._subagent_config_value(key)
-                self._agent.set_subagent_advanced_setting(key, normalized)
-                try:
-                    path = save_subagent_setting(key, normalized)
-                except Exception:
-                    self._agent.set_subagent_advanced_setting(key, previous)
-                    raise
-                message = f"{_SUBAGENT_ADVANCED_LABELS[key]}已设为 {normalized:g}，已保存到 {path}。"
-            else:
-                enabled = bool(value)
-                previous = self._feature_enabled(key)
-                path = save_feature_enabled(key, enabled)
-                setter_name = {
-                    "memory": "set_memory_enabled",
-                    "mcp": "set_mcp_enabled",
-                    "plugins": "set_plugin_enabled",
-                    "subagents": "set_subagents_enabled",
-                    "context_compaction": "set_context_compaction_enabled",
-                    "file_name_index": "set_file_name_index_enabled",
-                    "content_index": "set_content_index_enabled",
-                }[key]
-                setter = getattr(self._agent, setter_name)
-                try:
-                    setter(enabled)
-                except Exception as setter_error:
-                    try:
-                        save_feature_enabled(key, previous)
-                    except Exception as rollback_error:
-                        raise SettingsConfigError(
-                            "运行时设置应用失败，且配置回滚失败；"
-                            f"当前配置与运行态可能不一致：{setter_error}；{rollback_error}"
-                        ) from rollback_error
-                    raise
-                label = dict((item[0], item[1]) for item in _FEATURES)[key]
-                message = f"{label}已{'开启' if enabled else '关闭'}，已保存到 {path}。"
+            message = _apply_setting_value(self, key, value)
         except (AgentError, LLMError, SettingsConfigError, SubAgentConfigError, OSError) as exc:
             message = f"设置未完成：{exc}"
         except Exception as exc:
@@ -397,6 +342,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "model": str(getattr(self._agent, "current_model", "未设置") or "未设置"),
             "channels": "管理",
             "vision": "已开启" if self._feature_enabled("vision") else "已关闭",
+            "image_gen": "已开启" if self._feature_enabled("image_gen") else "已关闭",
             "reasoning": _REASONING_LABELS.get(str(getattr(self._agent, "reasoning_effort", "none") or "none"), "默认"),
             "context": f"{int(getattr(self._agent, 'context_window_tokens', 128_000)) // 1000}K",
             "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))),
@@ -417,6 +363,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "model": "模型",
             "channels": "模型渠道",
             "vision": "视觉",
+            "image_gen": "图像生成",
             "reasoning": "推理强度",
             "context": "上下文长度（K）",
             "approval": "工具审批",
@@ -425,6 +372,85 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             **_SUBAGENT_ADVANCED_LABELS,
             **{key: label for key, label, _section in _FEATURES},
         }
+
+
+def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str:
+    """按 key 应用单个设置并返回提示消息；失败抛异常由 _apply_setting 统一处理。
+
+    P4 重构自 SettingsScreen._apply_setting 的 try 块；每个分支都遵循
+    "记录旧值 → 应用 → 写盘 → 失败回滚 → 提示消息" 的模式。
+    """
+
+    if key == "reasoning":
+        previous = str(getattr(screen._agent, "reasoning_effort", "none") or "none")
+        normalized = screen._agent.set_reasoning_effort(str(value))
+        try:
+            path = save_reasoning_effort(normalized)
+        except Exception:
+            screen._agent.set_reasoning_effort(previous)
+            raise
+        return f"推理强度已设为 {_REASONING_LABELS[normalized]}，已保存到 {path}。"
+    elif key == "context":
+        previous = int(getattr(screen._agent, "context_window_tokens", 128_000))
+        tokens = int(value)
+        screen._agent.set_context_window_tokens(tokens)
+        try:
+            path = save_context_window_tokens(
+                tokens,
+                model_source=str(getattr(getattr(screen._agent, "config", None), "llm", None) and getattr(screen._agent.config.llm, "model_source", "legacy") or "legacy"),
+                catalog_key=str(getattr(getattr(screen._agent, "config", None), "llm", None) and getattr(screen._agent.config.llm, "catalog_key", "") or ""),
+            )
+        except Exception:
+            screen._agent.set_context_window_tokens(previous)
+            raise
+        return f"上下文长度已设为 {tokens // 1000}K，已保存到 {path}。"
+    elif key == "approval":
+        previous = str(getattr(screen._agent, "approval_mode", APPROVAL_MODE_MANUAL))
+        mode = str(value)
+        screen._agent.set_approval_mode(mode)
+        try:
+            path = save_approval_mode(mode)
+        except Exception:
+            screen._agent.set_approval_mode(previous)
+            raise
+        return f"审批模式已设为 {approval_mode_label(mode)}，已保存到 {path}。"
+    elif screen._advanced:
+        normalized = validate_subagent_advanced_setting(key, value)
+        previous = screen._subagent_config_value(key)
+        screen._agent.set_subagent_advanced_setting(key, normalized)
+        try:
+            path = save_subagent_setting(key, normalized)
+        except Exception:
+            screen._agent.set_subagent_advanced_setting(key, previous)
+            raise
+        return f"{_SUBAGENT_ADVANCED_LABELS[key]}已设为 {normalized:g}，已保存到 {path}。"
+    else:
+        enabled = bool(value)
+        previous = screen._feature_enabled(key)
+        path = save_feature_enabled(key, enabled)
+        setter_name = {
+            "memory": "set_memory_enabled",
+            "mcp": "set_mcp_enabled",
+            "plugins": "set_plugin_enabled",
+            "subagents": "set_subagents_enabled",
+            "context_compaction": "set_context_compaction_enabled",
+            "file_name_index": "set_file_name_index_enabled",
+            "content_index": "set_content_index_enabled",
+        }[key]
+        setter = getattr(screen._agent, setter_name)
+        try:
+            setter(enabled)
+        except Exception as setter_error:
+            try:
+                save_feature_enabled(key, previous)
+            except Exception as rollback_error:
+                raise SettingsConfigError(
+                    "运行时设置应用失败，且配置回滚失败；"
+                    f"当前配置与运行态可能不一致：{setter_error}；{rollback_error}"
+                ) from rollback_error
+            raise
+        label = dict((item[0], item[1]) for item in _FEATURES)[key]
+        return f"{label}已{'开启' if enabled else '关闭'}，已保存到 {path}。"
 
 
 __all__ = ["SettingsAction", "SettingsScreen"]

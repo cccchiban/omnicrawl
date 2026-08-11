@@ -1,15 +1,13 @@
-"""网页搜索工具：查询 Google、Bing 或 DuckDuckGo 并返回标题、链接与摘要。
+"""网页搜索工具：查询 Bing、DuckDuckGo 或雅虎并返回标题、链接与摘要。
 
 实现要点：
 - 使用 httpx（项目既有依赖）发起请求，不引入新依赖。
 - 请求自带桌面 Chrome 浏览器环境模拟（User-Agent、Accept、Sec-Fetch-* 等
-  请求头、跟随重定向、干净会话），降低被搜索引擎当作脚本请求拦截的概率；
-  Google 附带官方 CONSENT 同意 Cookie（等同浏览器中点击“接受”），避免被
-  重定向到 consent.google.com。
+  请求头、跟随重定向、干净会话），降低被搜索引擎当作脚本请求拦截的概率。
 - 只访问公开搜索页面，不做验证码或明确反爬页面的绕过：检测到验证码或
   “unusual traffic” 等拦截特征时返回明确错误提示，由用户换引擎或稍后重试。
-- 三引擎解析各自独立，输出统一为 标题/链接/摘要 结构；链接会还原 Google
-  的 /url?q= 与 DuckDuckGo 的 uddg= 跳转参数。
+- 各引擎解析独立，输出统一为 标题/链接/摘要 结构；链接会还原雅虎的
+  跳转参数与 DuckDuckGo 的 uddg= 跳转参数。
 """
 
 from __future__ import annotations
@@ -31,7 +29,7 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-SUPPORTED_ENGINES = ("google", "bing", "duckduckgo")
+SUPPORTED_ENGINES = ("bing", "duckduckgo", "yahoo")
 
 # 桌面浏览器常规请求头：与搜索引擎期望的浏览器环境一致。
 # Accept-Encoding 由 httpx 自动处理（默认 gzip, deflate, br 并自动解码），不手动设置。
@@ -50,10 +48,6 @@ _BROWSER_HEADERS = {
     "Sec-Fetch-User": "?1",
     "Cache-Control": "no-cache",
 }
-
-# Google 同意页 Cookie：Google 官方接受区域/同意选择的机制，避免每次请求
-# 都被重定向到 consent.google.com（等同浏览器首次访问时点击“接受”）。
-_GOOGLE_CONSENT_COOKIE = {"CONSENT": "YES+1"}
 
 # 拦截特征标记：出现这些内容说明引擎要求人机验证或拒绝脚本访问，此时如实报错。
 _CAPTCHA_MARKERS = (
@@ -78,8 +72,6 @@ _DDG_REGION = {
 }
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_ANCHOR_RE = re.compile(r"<a\b([^>]*)>(.*?)</a>", re.IGNORECASE | re.DOTALL)
-_ATTR_RE = re.compile(r"([a-zA-Z-]+)=\"([^\"]*)\"")
 
 
 class WebSearchError(RuntimeError):
@@ -102,25 +94,19 @@ def _strip_tags(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _extract_anchors(html_text: str) -> list[tuple[Mapping[str, str], str, str]]:
-    """提取页面中所有 <a> 对，返回 (属性表, 内部 HTML, 内部纯文本)。"""
+def _clean_yahoo_url(raw: str) -> str:
+    """还原雅虎搜索结果的跳转参数；普通链接原样返回。
 
-    pairs: list[tuple[Mapping[str, str], str, str]] = []
-    for match in _ANCHOR_RE.finditer(html_text):
-        attrs = dict(_ATTR_RE.findall(match.group(1)))
-        inner = match.group(2)
-        pairs.append((attrs, inner, _strip_tags(inner)))
-    return pairs
+    雅虎跳转链接为 r.search.yahoo.com/_ylt=.../RU=<编码目标>/RK=...，
+    RU 可能是 query 参数（?RU=）或路径段（/RU=），两种都处理；
+    HTML 中的 & 可能被编码为 &amp;，先还原再解析。
+    """
 
-
-def _clean_google_url(raw: str) -> str:
-    """还原 Google 的 /url?q=<目标>&sa=... 跳转链接；普通链接原样返回。"""
-
-    if raw.startswith("/url?"):
-        target = urllib.parse.parse_qs(urllib.parse.urlsplit(raw).query).get("q", [""])
-        if target and target[0]:
-            return target[0]
-    return raw
+    decoded = html.unescape(raw)
+    match = re.search(r"(?:/|&|\?)RU=([^/&]+)", decoded)
+    if match:
+        return urllib.parse.unquote(match.group(1))
+    return decoded
 
 
 def _clean_duckduckgo_url(raw: str) -> str:
@@ -133,25 +119,33 @@ def _clean_duckduckgo_url(raw: str) -> str:
     return raw
 
 
-def _parse_google(html_text: str) -> list[WebSearchResult]:
-    """解析 Google 搜索结果页：h3 标题锚点 + VwiC3b/IsZvec 摘要块。"""
+def _parse_yahoo(html_text: str) -> list[WebSearchResult]:
+    """解析雅虎搜索结果页：compTitle/algo 容器内 a>h3 标题锚点 + compText 摘要。
+
+    雅虎新版 HTML 结构为 ``<a href="r.search.yahoo.com/...RU=..."><h3>标题</h3></a>``，
+    链接位于 h3 外层；摘要块 class 为 compText。
+    """
 
     results: list[WebSearchResult] = []
-    for attrs, inner, text in _extract_anchors(html_text):
-        if "<h3" not in inner.lower() or not text:
+    for match in re.finditer(
+        r'<a[^>]*class="[^"]*d-ib[^"]*"[^>]*href="([^"]*)"[^>]*>.*?<h3[^>]*class="[^"]*title[^"]*"[^>]*>(.*?)</h3>',
+        html_text,
+        re.DOTALL,
+    ):
+        url = _clean_yahoo_url(match.group(1))
+        title = _strip_tags(match.group(2))
+        if not url.startswith("http") or not title:
             continue
-        url = _clean_google_url(str(attrs.get("href") or ""))
-        if not url.startswith("http"):
-            continue
-        results.append(WebSearchResult(title=text, url=url))
+        results.append(WebSearchResult(title=title, url=url))
     snippets = re.findall(
-        r'<div[^>]*class="[^"]*(?:VwiC3b|IsZvec)[^"]*"[^>]*>(.*?)</div>',
+        r'<div[^>]*class="[^"]*compText[^"]*"[^>]*>(.*?)</div>',
         html_text,
         re.DOTALL,
     )
+    # compText 会出现推广位等非正文块，只取与结果数匹配的前几段。
     for index, snippet in enumerate(snippets[: len(results)]):
         text = _strip_tags(snippet)
-        if text:
+        if text and len(text) > 4:
             results[index] = replace(results[index], snippet=text)
     return results
 
@@ -211,9 +205,9 @@ def _parse_duckduckgo(html_text: str) -> list[WebSearchResult]:
 
 
 _PARSERS = {
-    "google": _parse_google,
     "bing": _parse_bing,
     "duckduckgo": _parse_duckduckgo,
+    "yahoo": _parse_yahoo,
 }
 
 
@@ -318,7 +312,7 @@ class WebSearch:
         query = str(arguments.get("query") or "").strip()
         if not query:
             raise WebSearchError("query 不能为空。")
-        engine = str(arguments.get("engine") or "google").strip().lower()
+        engine = str(arguments.get("engine") or "bing").strip().lower()
         if engine not in SUPPORTED_ENGINES:
             raise WebSearchError(
                 f"engine 必须是 {'、'.join(SUPPORTED_ENGINES)} 之一。"
@@ -377,7 +371,6 @@ class WebSearch:
         url, params = self._endpoint(engine, query, language)
         headers = dict(_BROWSER_HEADERS)
         headers["User-Agent"] = self.user_agent
-        cookies = _GOOGLE_CONSENT_COOKIE if engine == "google" else None
         if self.http_client is not None:
             response = self.http_client.get(url, params=params)
         else:
@@ -385,7 +378,6 @@ class WebSearch:
             # 避免环境变量代理与注册表设置不一致导致行为漂移。
             with httpx.Client(
                 headers=headers,
-                cookies=cookies,
                 follow_redirects=True,
                 timeout=self.request_timeout_seconds,
                 proxy=self._resolve_proxy(),
@@ -400,15 +392,6 @@ class WebSearch:
     def _endpoint(
         engine: str, query: str, language: str | None
     ) -> tuple[str, dict[str, str]]:
-        if engine == "google":
-            return (
-                "https://www.google.com/search",
-                {
-                    "q": query,
-                    "num": str(MAX_RESULTS_PER_ENGINE),
-                    "hl": language or "zh-CN",
-                },
-            )
         if engine == "bing":
             return (
                 "https://www.bing.com/search",
@@ -416,6 +399,14 @@ class WebSearch:
                     "q": query,
                     "count": str(MAX_RESULTS_PER_ENGINE),
                     "setlang": language or "zh-CN",
+                },
+            )
+        if engine == "yahoo":
+            return (
+                "https://search.yahoo.com/search",
+                {
+                    "p": query,
+                    "n": str(MAX_RESULTS_PER_ENGINE),
                 },
             )
         region = _DDG_REGION.get(
@@ -431,12 +422,6 @@ class WebSearch:
         """检测人机验证/反爬拦截特征；发现时如实报错，不尝试绕过。"""
 
         low = (text[:4000] + text[-1000:]).lower()
-        # Google 无 JS 客户端常见响应：noscript 重定向到 /httpservice/retry/enablejs。
-        if "enablejs" in low or "/httpservice/retry/" in low:
-            raise WebSearchError(
-                "Google 要求启用 JavaScript（当前出口 IP 可能被限制为脚本请求），"
-                "无法解析结果。可稍后重试或换用 bing/duckduckgo 引擎。"
-            )
         if any(marker in low for marker in _CAPTCHA_MARKERS):
             raise WebSearchError(
                 "搜索引擎要求人机验证或检测到异常流量，已停止请求（不会绕过验证码）。"

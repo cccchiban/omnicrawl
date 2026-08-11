@@ -23,8 +23,8 @@ from omnicrawl.state.turn_snapshot import (
 
 class GitSnapshotStoreTest(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "仅 Windows 存在 DOS 保留设备名")
-    def test_capture_excludes_nul_device_from_forced_add(self) -> None:
-        """强制暂存忽略文件时，不能把 Windows 的 NUL 设备交给 Git。"""
+    def test_should_exclude_nul_case_insensitively_when_forced_add_runs(self) -> None:
+        """强制暂存忽略文件时，大小写不同的 NUL 都不能交给 Git。"""
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "workspace"
@@ -43,7 +43,7 @@ class GitSnapshotStoreTest(unittest.TestCase):
 
             snapshots.capture({"workspace": SnapshotRoot(root)})
 
-            self.assertIn(":(exclude)NUL", add_arguments)
+            self.assertIn(":(exclude,icase)NUL", add_arguments)
 
     def test_restores_workspace_without_touching_user_git_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

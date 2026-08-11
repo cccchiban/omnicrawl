@@ -479,13 +479,8 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
             # 的阶段二不携带，沿用阶段一已就绪的 custom。
             self._custom = list(payload.get("custom") or [])
         self._detected = list(payload.get("detected") or [])
-        configured_channels = []
         payload_channels = list(payload.get("channels") or [])
-        for item in payload_channels:
-            if isinstance(item, _ChannelChoice):
-                configured_channels.append(item)
-            elif isinstance(item, ChannelConfig):
-                configured_channels.append(_channel_choice_from_config(item))
+        configured_channels = coerce_channel_choices(payload_channels)
         if payload_channels:
             # 全量语义：以 payload 渠道为基线重新合并。
             self._channels = self._merge_channel_choices(
@@ -664,30 +659,9 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         custom: Sequence[CatalogModel],
         detected: Sequence[CatalogModel],
     ) -> list[_ChannelChoice]:
-        """优先使用渠道配置，同时补齐只有自动发现结果的 Profile。"""
+        """兼容转发：实现已提取为模块级 merge_channel_choices。"""
 
-        choices = list(configured)
-        known_keys = {item.key for item in choices}
-        blocked_profiles = {
-            item.profile_id for item in choices if not item.enabled and item.profile_id
-        }
-        for item in custom:
-            if item.key in known_keys:
-                continue
-            choices.append(_channel_choice_from_catalog(item))
-            known_keys.add(item.key)
-        known_profiles = {
-            item.profile_id for item in choices if item.enabled and item.profile_id
-        }
-        for item in detected:
-            if not item.profile_id or item.profile_id in known_profiles:
-                continue
-            if item.profile_id in blocked_profiles:
-                continue
-            choices.append(_channel_choice_from_catalog(item, source="detected"))
-            known_profiles.add(item.profile_id)
-        return choices
-
+        return merge_channel_choices(configured, custom, detected)
     def _select_current_entries(self) -> None:
         current = self._current_model()
         current_item = next(
@@ -788,39 +762,9 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         selected: int,
         current: str,
     ) -> Text:
-        if not channels:
-            return Text("（空）", style=TEXT_MUTED)
-        rendered = Text()
-        window_size = 4
-        selected = max(0, min(selected, len(channels) - 1))
-        window_start = max(
-            0,
-            min(selected - window_size // 2, max(0, len(channels) - window_size)),
-        )
-        window_end = min(len(channels), window_start + window_size)
-        if window_start > 0:
-            rendered.append(f"... 前面 {window_start} 个\n", style=TEXT_MUTED)
-        for index, channel in enumerate(
-            channels[window_start:window_end],
-            start=window_start,
-        ):
-            is_selected = index == selected
-            is_current = _is_current_channel(channel, current)
-            marker = "●" if is_current else ("›" if is_selected else " ")
-            style = (
-                f"{ACCENT_GREEN} bold"
-                if is_selected
-                else TEXT_PRIMARY
-                if is_current
-                else TEXT_SECONDARY
-            )
-            title = channel.name or channel.key
-            rendered.append(f"{marker} {title}\n", style=style)
-        remaining = len(channels) - window_end
-        if remaining > 0:
-            rendered.append(f"... 后面 {remaining} 个\n", style=TEXT_MUTED)
-        return rendered
+        """兼容转发：实现已提取为模块级 render_channel_text。"""
 
+        return render_channel_text(channels, selected=selected, current=current)
     def _render_column_text(
         self,
         items: Sequence[CatalogModel],
@@ -828,41 +772,9 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         selected: int,
         current: str,
     ) -> Text:
-        if not items:
-            return Text("（空）", style=TEXT_MUTED)
-        rendered = Text()
-        # 列表区域高度固定，使用跟随选中项的窗口而不是永远截取前 40 项。
-        # 这样方向键可以访问并看见发现列表中的每个模型。
-        window_size = 4
-        selected = max(0, min(selected, len(items) - 1))
-        window_start = max(
-            0,
-            min(selected - window_size // 2, max(0, len(items) - window_size)),
-        )
-        window_end = min(len(items), window_start + window_size)
-        if window_start > 0:
-            rendered.append(f"... 前面 {window_start} 项\n", style=TEXT_MUTED)
-        for index, item in enumerate(
-            items[window_start:window_end],
-            start=window_start,
-        ):
-            is_selected = index == selected
-            is_current = _is_current(item, current)
-            marker = "●" if is_current else ("›" if is_selected else " ")
-            style = (
-                f"{ACCENT_GREEN} bold"
-                if is_selected
-                else TEXT_PRIMARY
-                if is_current
-                else TEXT_SECONDARY
-            )
-            title = item.display_name or item.model_id
-            rendered.append(f"{marker} {title}\n", style=style)
-        remaining = len(items) - window_end
-        if remaining > 0:
-            rendered.append(f"... 后面 {remaining} 项\n", style=TEXT_MUTED)
-        return rendered
+        """兼容转发：实现已提取为模块级 render_column_text。"""
 
+        return render_column_text(items, selected=selected, current=current)
     def _render_status(self) -> None:
         self.query_one("#model-picker-status", Static).update(self._status)
 
@@ -961,6 +873,129 @@ def _default_persist_selection(item: CatalogModel) -> str:
         return f"已切换为 {item.profile_id}/{item.model_id}，并写入 {path}"
     path = save_llm_model(item.model_id)
     return f"已切换为 {item.model_id}，并写入 {path}"
+
+
+def coerce_channel_choices(items: Sequence[Any]) -> list[_ChannelChoice]:
+    """把 payload 中的 ChannelConfig/_ChannelChoice 混合序列归一化为 _ChannelChoice。"""
+
+    configured_channels = []
+    for item in items:
+        if isinstance(item, _ChannelChoice):
+            configured_channels.append(item)
+        elif isinstance(item, ChannelConfig):
+            configured_channels.append(_channel_choice_from_config(item))
+    return configured_channels
+
+def merge_channel_choices(
+    configured: Sequence[_ChannelChoice],
+    custom: Sequence[CatalogModel],
+    detected: Sequence[CatalogModel],
+) -> list[_ChannelChoice]:
+    """优先使用渠道配置，同时补齐只有自动发现结果的 Profile。"""
+
+    choices = list(configured)
+    known_keys = {item.key for item in choices}
+    blocked_profiles = {
+        item.profile_id for item in choices if not item.enabled and item.profile_id
+    }
+    for item in custom:
+        if item.key in known_keys:
+            continue
+        choices.append(_channel_choice_from_catalog(item))
+        known_keys.add(item.key)
+    known_profiles = {
+        item.profile_id for item in choices if item.enabled and item.profile_id
+    }
+    for item in detected:
+        if not item.profile_id or item.profile_id in known_profiles:
+            continue
+        if item.profile_id in blocked_profiles:
+            continue
+        choices.append(_channel_choice_from_catalog(item, source="detected"))
+        known_profiles.add(item.profile_id)
+    return choices
+
+
+def render_channel_text(
+    channels: Sequence[_ChannelChoice],
+    *,
+    selected: int,
+    current: str,
+) -> Text:
+    if not channels:
+        return Text("（空）", style=TEXT_MUTED)
+    rendered = Text()
+    window_size = 4
+    selected = max(0, min(selected, len(channels) - 1))
+    window_start = max(
+        0,
+        min(selected - window_size // 2, max(0, len(channels) - window_size)),
+    )
+    window_end = min(len(channels), window_start + window_size)
+    if window_start > 0:
+        rendered.append(f"... 前面 {window_start} 个\n", style=TEXT_MUTED)
+    for index, channel in enumerate(
+        channels[window_start:window_end],
+        start=window_start,
+    ):
+        is_selected = index == selected
+        is_current = _is_current_channel(channel, current)
+        marker = "●" if is_current else ("›" if is_selected else " ")
+        style = (
+            f"{ACCENT_GREEN} bold"
+            if is_selected
+            else TEXT_PRIMARY
+            if is_current
+            else TEXT_SECONDARY
+        )
+        title = channel.name or channel.key
+        rendered.append(f"{marker} {title}\n", style=style)
+    remaining = len(channels) - window_end
+    if remaining > 0:
+        rendered.append(f"... 后面 {remaining} 个\n", style=TEXT_MUTED)
+    return rendered
+
+
+def render_column_text(
+    items: Sequence[CatalogModel],
+    *,
+    selected: int,
+    current: str,
+) -> Text:
+    if not items:
+        return Text("（空）", style=TEXT_MUTED)
+    rendered = Text()
+    # 列表区域高度固定，使用跟随选中项的窗口而不是永远截取前 40 项。
+    # 这样方向键可以访问并看见发现列表中的每个模型。
+    window_size = 4
+    selected = max(0, min(selected, len(items) - 1))
+    window_start = max(
+        0,
+        min(selected - window_size // 2, max(0, len(items) - window_size)),
+    )
+    window_end = min(len(items), window_start + window_size)
+    if window_start > 0:
+        rendered.append(f"... 前面 {window_start} 项\n", style=TEXT_MUTED)
+    for index, item in enumerate(
+        items[window_start:window_end],
+        start=window_start,
+    ):
+        is_selected = index == selected
+        is_current = _is_current(item, current)
+        marker = "●" if is_current else ("›" if is_selected else " ")
+        style = (
+            f"{ACCENT_GREEN} bold"
+            if is_selected
+            else TEXT_PRIMARY
+            if is_current
+            else TEXT_SECONDARY
+        )
+        title = item.display_name or item.model_id
+        rendered.append(f"{marker} {title}\n", style=style)
+    remaining = len(items) - window_end
+    if remaining > 0:
+        rendered.append(f"... 后面 {remaining} 项\n", style=TEXT_MUTED)
+    return rendered
 
 
 __all__ = ["ModelPickerResult", "ModelPickerScreen"]

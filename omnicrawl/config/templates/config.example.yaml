@@ -54,6 +54,21 @@ vision:
   enabled: false
   models: []
 
+# 图像生成（OpenAI 兼容 Image API）：接口地址、Key、模型与默认参数在
+# TUI /settings → 图像生成 中配置；api_key 写入本地 config.yaml（不提交仓库），
+# 留空时回退环境变量 OPENAI_API_KEY。
+image_gen:
+  enabled: false
+  base_url: "https://api.openai.com/v1"
+  api_key: ""
+  api_key_env: "OPENAI_API_KEY"
+  model: "gpt-image-2"
+  size: "auto"
+  quality: "auto"
+  output_format: "png"
+  n: 1
+  timeout_seconds: 120
+
 approval:
   mode: manual
 

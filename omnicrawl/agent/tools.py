@@ -283,6 +283,8 @@ def build_agent_tools(
     read: ToolRunner,
     grep: ToolRunner,
     web_search: ToolRunner | None = None,
+    fetcher: ToolRunner | None = None,
+    image_gen: ToolRunner | None = None,
     replace_text: ToolRunner,
     write_file: ToolRunner,
     bash: ToolRunner,
@@ -423,14 +425,14 @@ def build_agent_tools(
                     ToolDefinition(
                         name="web_search",
                         description=(
-                            "使用 Google、Bing 或 DuckDuckGo 搜索公开网页，返回标题、链接与摘要。"
+                            "使用 Bing、DuckDuckGo 或雅虎搜索公开网页，返回标题、链接与摘要。"
                             "请求自带桌面 Chrome 浏览器环境模拟（UA、Sec-Fetch-* 等请求头与跟随重定向），"
                             "降低被搜索引擎拦截的概率；检测到验证码或异常流量拦截时返回明确错误，"
-                            "不会绕过验证码。engine 可选 google/bing/duckduckgo，默认 google；"
+                            "不会绕过验证码。engine 可选 bing/duckduckgo/yahoo，默认 bing；"
                             "language 为可选的语言区域提示，max_results 默认 5。"
                         ),
                         argument_schema=(
-                            '{"query": "关键词", "engine": "google|bing|duckduckgo", '
+                            '{"query": "关键词", "engine": "bing|duckduckgo|yahoo", '
                             '"max_results": 5, "language": "zh-CN"}'
                         ),
                         requires_confirmation=True,
@@ -438,6 +440,55 @@ def build_agent_tools(
                     )
                 ]
                 if web_search is not None
+                else []
+            ),
+            *(
+                [
+                    ToolDefinition(
+                        name="fetcher",
+                        description=(
+                            "从 URL 抓取网页内容：使用 curl_cffi 模拟 Chrome/Firefox/Safari/Edge 的"
+                            "浏览器指纹（TLS/JA3 与 HTTP/2）和桌面浏览器请求头；支持并行抓取多个"
+                            "URL；insecure=true 时不校验 TLS 证书（用于内网自签名证书站点）；跟随"
+                            "HTTP 重定向与 meta refresh 页面跳转；默认返回提取后的正文文本"
+                            "（max_chars 限长），max_html=true 返回原始 HTML。每个 URL 报告状态码"
+                            "与最终跳转地址。只抓取用户提供的 URL，不执行 JavaScript，不绕过验证码。"
+                        ),
+                        argument_schema=(
+                            '{"urls": "https://a.example,https://b.example", "insecure": false, '
+                            '"parallel": true, "timeout": 15, "max_chars": 8000, '
+                            '"max_html": false, "impersonate": "chrome"}'
+                        ),
+                        requires_confirmation=True,
+                        run=fetcher,
+                    )
+                ]
+                if fetcher is not None
+                else []
+            ),
+            *(
+                [
+                    ToolDefinition(
+                        name="image_gen",
+                        description=(
+                            "生成或编辑图片（OpenAI 兼容 Image API）。生成：根据 prompt 文本"
+                            "创建图片；编辑：传入本地图片路径 image 与 prompt，按描述修改已有图片。"
+                            "接口地址、API Key、模型与默认参数在 TUI 设置面板（/settings → 图像生成）"
+                            "中配置，调用时可用 size（auto 或 宽x高，如 1024x1024）、quality"
+                            "（low/medium/high/auto）、output_format（png/jpeg/webp）、n（一次生成"
+                            "张数 1~10）覆盖默认值；图片默认保存到工作区 .agent_tmp/images/，"
+                            "path 可指定保存目录或文件名。"
+                        ),
+                        argument_schema=(
+                            '{"prompt": "图像描述", "image": "编辑时传入的本地图片路径", '
+                            '"n": 1, "size": "auto", "quality": "auto", '
+                            '"output_format": "png", "path": "可选保存路径"}'
+                        ),
+                        requires_confirmation=True,
+                        run=image_gen,
+                    )
+                ]
+                if image_gen is not None
                 else []
             ),
             ToolDefinition(

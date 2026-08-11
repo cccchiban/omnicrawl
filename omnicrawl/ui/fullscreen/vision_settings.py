@@ -116,6 +116,7 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
         self._enabled = configuration.enabled
         self._models = list(configuration.models)
         self._selected = 0
+        self._rebuild_seq = 0
         self._status = "列表顺序就是故障转移顺序；按 A 从现有模型目录添加。"
 
     def compose(self) -> ComposeResult:
@@ -127,6 +128,7 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
                     for index, ref in enumerate(self._models):
                         yield Static(
                             self._row_text(index, ref),
+                            id=f"vision-model-row-{index}-0",
                             classes=(
                                 "vision-model-row selected"
                                 if index == self._selected
@@ -136,6 +138,7 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
                 else:
                     yield Static(
                         "尚未添加视觉模型，请按 A 从现有渠道/模型目录选择。",
+                        id="vision-model-row-0-0",
                         classes="vision-model-row selected",
                     )
             yield Static(self._status, id="vision-settings-status")
@@ -271,10 +274,12 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
     def _rebuild_rows(self) -> None:
         container = self.query_one("#vision-settings-list", VerticalScroll)
         container.remove_children()
+        self._rebuild_seq += 1
         if not self._models:
             container.mount(
                 Static(
                     "尚未添加视觉模型，请按 A 从现有渠道/模型目录选择。",
+                    id=f"vision-model-row-0-{self._rebuild_seq}",
                     classes="vision-model-row selected",
                 )
             )
@@ -283,6 +288,7 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
             container.mount(
                 Static(
                     self._row_text(index, ref),
+                    id=f"vision-model-row-{index}-{self._rebuild_seq}",
                     classes=(
                         "vision-model-row selected"
                         if index == self._selected

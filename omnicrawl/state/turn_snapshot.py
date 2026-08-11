@@ -200,8 +200,13 @@ class GitSnapshotStore:
                 # `-f` 会绕过 .gitignore；Git for Windows 不能把 NUL 设备写入索引。
                 exclusions = (*exclusions, "NUL")
             for excluded in exclusions:
-                pathspecs.append(f":(exclude){excluded}")
-                pathspecs.append(f":(exclude){excluded}/**")
+                pathspec_magic = (
+                    "exclude,icase"
+                    if os.name == "nt" and excluded.casefold() == "nul"
+                    else "exclude"
+                )
+                pathspecs.append(f":({pathspec_magic}){excluded}")
+                pathspecs.append(f":({pathspec_magic}){excluded}/**")
             self._git(
                 [
                     "-c",

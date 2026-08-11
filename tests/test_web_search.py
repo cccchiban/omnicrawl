@@ -12,11 +12,11 @@ from omnicrawl.web_search import (
     WebSearch,
     WebSearchError,
     _clean_duckduckgo_url,
-    _clean_google_url,
+    _clean_yahoo_url,
     _detect_windows_proxy,
     _parse_bing,
     _parse_duckduckgo,
-    _parse_google,
+    _parse_yahoo,
 )
 
 
@@ -46,13 +46,6 @@ class FakeClient:
         return FakeResponse(self.html)
 
 
-GOOGLE_HTML = """<html><head><title>s - Google Search</title></head><body>
-<div class="g"><a href="/url?q=https%3A%2F%2Fexample.com%2Fdoc&sa=U&ved=2"><h3 class="LC20lb">Example Doc - 官方文档</h3></a>
-<div class="VwiC3b">这是 <b>示例</b> 摘要内容。</div></div>
-<div class="g"><a href="https://other.org/page"><h3>Other Page</h3></a>
-<div class="IsZvec">第二条摘要。</div></div>
-</body></html>"""
-
 BING_HTML = """<html><body><ol id="b_results">
 <li class="b_algo"><h2><a href="https://bing.example.com/1">Bing 结果一</a></h2><div class="b_caption"><p>摘要第一段。</p></div></li>
 <li class="b_algo"><h2><a href="https://bing.example.com/2">Bing 结果二</a></h2><p>第二条摘要。</p></li>
@@ -63,17 +56,15 @@ DDG_HTML = """<html><body><div class="results">
 <a class="result__snippet">DDG 摘要文本</a>
 </div></body></html>"""
 
+YAHOO_HTML = """<html><body><ol class="searchCenterMiddle">
+<li><div class="compTitle options-toggle"><a class="d-ib va-top" href="https://yahoo.example.com/1"><h3 class="title">雅虎结果一</h3></a></div>
+<div class="compText">第一条摘要。</div></li>
+<li><div class="compTitle options-toggle"><a class="d-ib va-top" href="https://r.search.yahoo.com/_ylt=abc/RV=2/RU=https%3a%2f%2fyahoo.example.com%2f2/RK=2"><h3 class="title">雅虎结果二</h3></a></div>
+<div class="compText">第二条摘要。</div></li>
+</ol></body></html>"""
+
 
 class TestParsers:
-    def test_parse_google(self):
-        results = _parse_google(GOOGLE_HTML)
-        assert len(results) == 2
-        assert results[0].title == "Example Doc - 官方文档"
-        assert results[0].url == "https://example.com/doc"
-        assert "摘要内容" in results[0].snippet
-        assert results[1].url == "https://other.org/page"
-        assert results[1].snippet == "第二条摘要。"
-
     def test_parse_bing(self):
         results = _parse_bing(BING_HTML)
         assert len(results) == 2
@@ -89,16 +80,42 @@ class TestParsers:
         assert results[0].url == "https://ddg.example.com/page"
         assert results[0].snippet == "DDG 摘要文本"
 
+    def test_parse_yahoo(self):
+        results = _parse_yahoo(YAHOO_HTML)
+        assert len(results) == 2
+        assert results[0].title == "雅虎结果一"
+        assert results[0].url == "https://yahoo.example.com/1"
+        assert results[0].snippet == "第一条摘要。"
+        assert results[1].url == "https://yahoo.example.com/2"
+        assert results[1].snippet == "第二条摘要。"
+
     def test_url_cleaners(self):
-        assert _clean_google_url("/url?q=https%3A%2F%2Fa.com%2Fx&sa=U") == "https://a.com/x"
-        assert _clean_google_url("https://plain.example/page") == "https://plain.example/page"
+        assert (
+            _clean_yahoo_url(
+                "https://r.search.yahoo.com/_ylt=abc/RV=2/RU=https%3a%2f%2fyahoo.example%2fa/RK=2"
+            )
+            == "https://yahoo.example/a"
+        )
+        assert (
+            _clean_yahoo_url(
+                "//search.yahoo.com/click?x=1&RU=https%3A%2F%2Fyahoo.example%2Fb"
+            )
+            == "https://yahoo.example/b"
+        )
+        assert (
+            _clean_yahoo_url("https://direct.example/x")
+            == "https://direct.example/x"
+        )
         assert (
             _clean_duckduckgo_url(
                 "//duckduckgo.com/l/?uddg=https%3A%2F%2Fddg.example%2Fa&amp;rut=x"
             )
             == "https://ddg.example/a"
         )
-        assert _clean_duckduckgo_url("https://direct.example/x") == "https://direct.example/x"
+        assert (
+            _clean_duckduckgo_url("https://direct.example/x")
+            == "https://direct.example/x"
+        )
 
     def test_empty_results_raise(self):
         searcher = WebSearch(http_client=FakeClient("<html>no results</html>"))
@@ -109,45 +126,45 @@ class TestParsers:
 class TestValidation:
     def test_empty_query(self):
         with pytest.raises(WebSearchError, match="query 不能为空"):
-            WebSearch(http_client=FakeClient(GOOGLE_HTML)).search({"query": "  "})
+            WebSearch(http_client=FakeClient(BING_HTML)).search({"query": "  "})
 
     def test_invalid_engine(self):
         with pytest.raises(WebSearchError, match="engine 必须是"):
-            WebSearch(http_client=FakeClient(GOOGLE_HTML)).search(
-                {"query": "x", "engine": "yahoo"}
+            WebSearch(http_client=FakeClient(BING_HTML)).search(
+                {"query": "x", "engine": "baidu"}
             )
 
     def test_max_results_clamped(self):
-        searcher = WebSearch(http_client=FakeClient(GOOGLE_HTML))
+        searcher = WebSearch(http_client=FakeClient(BING_HTML))
         assert "共 1 条" in searcher.search({"query": "x", "max_results": 0})
         assert "共 1 条" in searcher.search({"query": "x", "max_results": -3})
         assert "共 2 条" in searcher.search({"query": "x", "max_results": 999})
 
-    def test_engine_default_google(self):
-        client = FakeClient(GOOGLE_HTML)
+    def test_engine_default_bing(self):
+        client = FakeClient(BING_HTML)
         WebSearch(http_client=client).search({"query": "示例"})
-        assert client.calls[0][0] == "https://www.google.com/search"
+        assert client.calls[0][0] == "https://www.bing.com/search"
 
     def test_supported_engines(self):
-        assert SUPPORTED_ENGINES == ("google", "bing", "duckduckgo")
+        assert SUPPORTED_ENGINES == ("bing", "duckduckgo", "yahoo")
 
 
 class TestFormatting:
     def test_output_contains_source_and_count(self):
-        out = WebSearch(http_client=FakeClient(GOOGLE_HTML)).search(
-            {"query": "示例", "engine": "google"}
+        out = WebSearch(http_client=FakeClient(BING_HTML)).search(
+            {"query": "示例", "engine": "bing"}
         )
-        assert "来源：google" in out
+        assert "来源：bing" in out
         assert "查询：示例" in out
         assert "共 2 条" in out
-        assert "Example Doc - 官方文档" in out
-        assert "https://example.com/doc" in out
+        assert "Bing 结果一" in out
+        assert "https://bing.example.com/1" in out
 
     def test_max_results_limits_output(self):
-        out = WebSearch(http_client=FakeClient(GOOGLE_HTML)).search(
-            {"query": "示例", "engine": "google", "max_results": 1}
+        out = WebSearch(http_client=FakeClient(BING_HTML)).search(
+            {"query": "示例", "engine": "bing", "max_results": 1}
         )
-        assert "2. Other Page" not in out
+        assert "2. Bing 结果二" not in out
 
 
 class TestCaptcha:
@@ -192,7 +209,7 @@ class TestRegistration:
         assert "web_search" in tools
         definition = tools["web_search"]
         assert definition.requires_confirmation is True
-        assert "Google" in definition.description
+        assert "bing" in definition.description.lower()
 
     def test_web_search_omitted_when_none(self):
         from omnicrawl.agent.tools import build_agent_tools
@@ -330,12 +347,12 @@ class TestProxyResolution:
 
             def get(self, url, params=None):
                 return FakeResponse(
-                    '<div class="g"><a href="https://x.example/"><h3>T</h3></a></div>'
+                    '<ol id="b_results"><li class="b_algo"><h2><a href="https://x.example/">T</a></h2></li></ol>'
                 )
 
         monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
         searcher = WebSearch(proxy="http://explicit.proxy:3128")
-        searcher.search({"query": "x", "engine": "google"})
+        searcher.search({"query": "x", "engine": "bing"})
         assert captured["proxy"] == "http://explicit.proxy:3128"
         assert captured["trust_env"] is False
 
@@ -356,11 +373,11 @@ class TestProxyResolution:
 
             def get(self, url, params=None):
                 return FakeResponse(
-                    '<div class="g"><a href="https://x.example/"><h3>T</h3></a></div>'
+                    '<ol id="b_results"><li class="b_algo"><h2><a href="https://x.example/">T</a></h2></li></ol>'
                 )
 
         monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
         searcher = WebSearch(proxy="")
-        searcher.search({"query": "x", "engine": "google"})
+        searcher.search({"query": "x", "engine": "bing"})
         assert captured["proxy"] is None
         assert captured["trust_env"] is False

@@ -470,8 +470,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         record.wVirtualKeyCode = 0x10
         self.assertIsNone(OmniCrawlWindowsEventMonitor.key_event_to_textual(record))
 
-    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
-    def test_windows_event_monitor_maps_raw_mouse_clicks(self) -> None:
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端鼠标协议")
+    def test_should_map_raw_mouse_clicks_when_windows_console_reports_buttons(self) -> None:
         """原始控制台鼠标按下和释放必须成为 Textual 鼠标事件。"""
 
         from textual import events
@@ -498,7 +498,6 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(messages[0], events.MouseDown)
         self.assertEqual(messages[0].button, 1)
         self.assertEqual((messages[0].screen_x, messages[0].screen_y), (4, 7))
-        self.assertEqual((messages[0].delta_x, messages[0].delta_y), (4, 7))
         self.assertTrue(messages[0].shift)
 
         record.dwButtonState = 0
@@ -509,14 +508,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(button_state, 0)
-        self.assertEqual(position, (4, 7))
         self.assertEqual(len(messages), 1)
         self.assertIsInstance(messages[0], events.MouseUp)
         self.assertEqual(messages[0].button, 1)
 
-    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
-    def test_should_map_raw_double_click_to_single_down(self) -> None:
-        """双击原始记录不能为一次物理按下重复生成 MouseDown。"""
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端鼠标协议")
+    def test_should_map_raw_mouse_wheel_when_windows_console_reports_delta(self) -> None:
+        """Windows 原始滚轮记录必须保留方向并进入 Textual 事件链。"""
 
         from textual import events
         from textual.drivers import win32
@@ -524,22 +522,30 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
 
         record = win32.MOUSE_EVENT_RECORD()
-        record.dwMousePosition.X = 4
-        record.dwMousePosition.Y = 7
-        record.dwButtonState = 0x0001
-        record.dwEventFlags = OmniCrawlWindowsEventMonitor.WINDOWS_MOUSE_DOUBLE_CLICK
+        record.dwMousePosition.X = 8
+        record.dwMousePosition.Y = 10
+        record.dwButtonState = 120 << 16
+        record.dwEventFlags = 0x0004
 
-        messages, _button_state, _position = (
-            OmniCrawlWindowsEventMonitor.mouse_events_from_raw(
-                record,
-                previous_button_state=0,
-                previous_position=(0, 0),
-            )
+        messages, button_state, position = OmniCrawlWindowsEventMonitor.mouse_events_from_raw(
+            record,
+            previous_button_state=0,
+            previous_position=(8, 10),
         )
 
+        self.assertEqual(button_state, 0)
+        self.assertEqual(position, (8, 10))
         self.assertEqual(len(messages), 1)
-        self.assertIsInstance(messages[0], events.MouseDown)
-        self.assertEqual(messages[0].button, 1)
+        self.assertIsInstance(messages[0], events.MouseScrollUp)
+
+        record.dwButtonState = (-120 & 0xFFFF) << 16
+        messages, _, _ = OmniCrawlWindowsEventMonitor.mouse_events_from_raw(
+            record,
+            previous_button_state=0,
+            previous_position=position,
+        )
+        self.assertEqual(len(messages), 1)
+        self.assertIsInstance(messages[0], events.MouseScrollDown)
 
     async def test_should_insert_newline_when_shift_enter_is_reported_as_lf_enter(self) -> None:
         """终端把 Shift+Enter 退化为 LF 形式的 Enter 时仍应插入换行。"""
@@ -673,11 +679,12 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         from omnicrawl.ui.fullscreen.model_picker import ModelPickerScreen
         from omnicrawl.ui.fullscreen.settings import SettingsScreen
         from omnicrawl.ui.fullscreen.theme import (
-            REPLACE_TEXT_BACKGROUND,
             REASONING_BACKGROUND,
             REASONING_FOCUS_BACKGROUND,
-            REASONING_HOVER_BACKGROUND,
             TERMINAL_FOREGROUND,
+            TOOL_BACKGROUND,
+            TOOL_FOCUS_BACKGROUND,
+            TOOL_TEXT,
             USER_BACKGROUND,
             terminal_css,
         )
@@ -693,21 +700,26 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(USER_BACKGROUND, app_backgrounds)
         self.assertIn(".assistant-message { color: ansi_default; }", OmniCrawlApp.CSS)
         self.assertIn(
-            f".replace-text-message:focus {{ background: {REPLACE_TEXT_BACKGROUND}; }}",
+            f".tool-message:focus {{ color: ansi_bright_black; "
+            f"background: {TOOL_FOCUS_BACKGROUND}; }}",
             OmniCrawlApp.CSS,
         )
-        self.assertIn(REPLACE_TEXT_BACKGROUND, app_backgrounds)
-        self.assertEqual(REPLACE_TEXT_BACKGROUND, "rgba(128, 128, 128, 0.16)")
+        self.assertIn(TOOL_BACKGROUND, app_backgrounds)
+        self.assertEqual(TOOL_BACKGROUND, "rgba(0, 170, 90, 0.22)")
+        self.assertIn(
+            f".tool-message {{ color: ansi_bright_black; padding-left: 2; "
+            f"background: {TOOL_BACKGROUND}; }}",
+            OmniCrawlApp.CSS,
+        )
         self.assertIn(REASONING_BACKGROUND, app_backgrounds)
-        self.assertIn(REASONING_HOVER_BACKGROUND, app_backgrounds)
         self.assertIn(REASONING_FOCUS_BACKGROUND, app_backgrounds)
         self.assertEqual(
             app_backgrounds
             - {
                 USER_BACKGROUND,
-                REPLACE_TEXT_BACKGROUND,
+                TOOL_BACKGROUND,
+                TOOL_FOCUS_BACKGROUND,
                 REASONING_BACKGROUND,
-                REASONING_HOVER_BACKGROUND,
                 REASONING_FOCUS_BACKGROUND,
                 "ansi_white",
             },
@@ -814,51 +826,6 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(reply.styles.overflow_x, "hidden")
             self.assertFalse(reply.show_horizontal_scrollbar)
 
-    async def test_should_recover_stale_mouse_selection_when_release_is_missing(self) -> None:
-        """终端漏掉 MouseUp 时，选区、捕获和驱动按键状态必须自动复位。"""
-
-        from textual.widgets import TextArea
-
-        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
-
-        class FakeAgent:
-            current_model = "demo-model"
-            current_session_id = "session-demo"
-            skill_manager = None
-
-            def set_confirm_handler(self, _handler) -> None:
-                pass
-
-        app = OmniCrawlApp(
-            FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
-        )
-        app.INTERACTION_WATCHDOG_INTERVAL_SECONDS = 0.05
-        # 先用较大阈值建立 mouse-down 状态，避免事件调度本身与极短恢复阈值竞争。
-        app.STALE_INTERACTION_TICKS = 100
-
-        async with app.run_test(size=(100, 32)) as pilot:
-            app._append_delta("用于复现丢失释放事件的 AI 回复")
-            app._render_stream_markdown()
-            await pilot.pause(0.2)
-            reply = app._stream_message
-            assert reply is not None
-
-            await pilot.mouse_down(reply, offset=(2, 0))
-            app._driver._down_buttons.append(1)
-            self.assertTrue(app.screen._selecting)
-            app.STALE_INTERACTION_TICKS = 2
-            app._interaction_watchdog_signature = None
-            app._interaction_watchdog_stable_ticks = 0
-
-            await pilot.pause(0.4)
-
-            self.assertFalse(app.screen._selecting)
-            self.assertIsNone(app.screen._mouse_down_offset)
-            self.assertIsNone(app.mouse_captured)
-            self.assertEqual(app._driver._down_buttons, [])
-            self.assertTrue(app.query_one("#composer", TextArea).has_focus)
-
     async def _wait_until(
         self,
         pilot,
@@ -962,50 +929,6 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 f"max={conversation.max_scroll_y}",
             )
 
-    async def test_should_recover_stale_scrollbar_drag_when_release_is_missing(self) -> None:
-        """滚动条拖动丢失释放事件后必须由 stale 看门狗复位。"""
-
-        from textual import events
-
-        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
-
-        class FakeAgent:
-            current_model = "demo-model"
-            current_session_id = "session-demo"
-            skill_manager = None
-
-            def set_confirm_handler(self, _handler) -> None:
-                pass
-
-        app = OmniCrawlApp(
-            FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
-        )
-        app.INTERACTION_WATCHDOG_INTERVAL_SECONDS = 0.05
-        app.STALE_INTERACTION_TICKS = 2
-
-        async with app.run_test(size=(100, 32)) as pilot:
-            for i in range(40):
-                app._append_delta(f"第 {i} 行内容足够长让消息区溢出显示滚动条" * 2 + "\n")
-            app._render_stream_markdown()
-            await pilot.pause(0.3)
-            conversation = app.query_one("#conversation")
-            scrollbar = conversation.vertical_scrollbar
-            x = scrollbar.region.x + scrollbar.region.width // 2
-            thumb_y = scrollbar.region.y + 5  # 顶部时 thumb 覆盖该行
-            app.post_message(
-                events.MouseDown(
-                    None, x, thumb_y, 0, 0, 1, False, False, False,
-                    screen_x=x, screen_y=thumb_y,
-                )
-            )
-            await self._wait_until(pilot, lambda: scrollbar.grabbed is not None)
-            self.assertIsNotNone(scrollbar.grabbed)
-            # 停顿超过 stale 阈值，模拟终端漏掉 MouseUp 后的残留捕获。
-            await pilot.pause(0.4)
-            self.assertIsNone(scrollbar.grabbed)
-            self.assertIsNone(app.mouse_captured)
-
     async def test_should_not_capture_scrollbar_when_secondary_button_is_pressed(self) -> None:
         """右键或中键点击消息区滚动条不能启动左键式拖动。"""
 
@@ -1050,7 +973,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(conversation.scroll_y, initial_scroll_y)
 
     async def test_should_reset_mouse_state_and_reporting_when_app_focus_changes(self) -> None:
-        """失焦应立即清理交互状态，重新聚焦时应恢复终端鼠标报告。"""
+        """失焦应立即清理交互状态，重新聚焦时应恢复键盘与鼠标协议。"""
 
         from textual import events
         from textual.widgets import TextArea
@@ -1084,13 +1007,76 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(app.screen._mouse_down_offset)
             self.assertEqual(app._driver._down_buttons, [])
 
-            mouse_reporting_rearmed: list[bool] = []
-            app._driver._enable_mouse_support = lambda: mouse_reporting_rearmed.append(True)
+            mouse_support_enabled: list[bool] = []
+            app._driver._enable_mouse_support = lambda: mouse_support_enabled.append(True)
             app.post_message(events.AppFocus())
             await pilot.pause()
 
-            self.assertEqual(mouse_reporting_rearmed, [True])
+            self.assertEqual(mouse_support_enabled, [True])
             self.assertTrue(composer.has_focus)
+
+    @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 回焦协议")
+    def test_should_rearm_windows_mouse_protocols_when_app_regains_focus(self) -> None:
+        """Windows 回焦后必须重新启用鼠标报告，不能退回终端原生选择。"""
+
+        from textual import events
+
+        from omnicrawl.ui.fullscreen import (
+            OmniCrawlWindowsDriver,
+            TerminalHandlingMixin,
+        )
+
+        protocol_calls: list[str] = []
+        driver = object.__new__(OmniCrawlWindowsDriver)
+        driver._down_buttons = [1]
+        driver._enable_mouse_support = lambda: protocol_calls.append("mouse")
+        driver._enable_bracketed_paste = lambda: protocol_calls.append("paste")
+        driver.write = protocol_calls.append
+        driver.flush = lambda: protocol_calls.append("flush")
+
+        class FakeScreen:
+            _mouse_down_offset = object()
+            _selecting = True
+
+            def clear_selection(self) -> None:
+                pass
+
+        class FakeComposer:
+            def focus(self) -> None:
+                protocol_calls.append("focus")
+
+        class Harness(TerminalHandlingMixin):
+            def __init__(self) -> None:
+                self._driver = driver
+                self.screen = FakeScreen()
+                self.screen_stack = [self.screen]
+                self._interaction_watchdog_signature = object()
+                self._interaction_watchdog_stable_ticks = 1
+
+            def capture_mouse(self, _widget) -> None:
+                pass
+
+            def query_one(self, _selector, _widget_type):
+                return FakeComposer()
+
+        with patch(
+            "omnicrawl.ui.fullscreen.terminal_handling._restore_windows_raw_input_mode_if_needed",
+            return_value=True,
+        ) as restore_raw_mode:
+            Harness().on_app_focus(events.AppFocus())
+
+        restore_raw_mode.assert_called_once_with()
+        self.assertEqual(
+            protocol_calls,
+            [
+                "mouse",
+                "\x1b[?1004h",
+                OmniCrawlWindowsDriver.KEYBOARD_PROTOCOL,
+                "paste",
+                "flush",
+                "focus",
+            ],
+        )
 
     def test_should_restore_windows_vt_input_mode_when_console_mode_is_reset(self) -> None:
         """息屏后控制台退回普通输入模式时，应恢复 Textual 所需的 VT 输入。"""
@@ -1136,7 +1122,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_should_rearm_terminal_protocols_when_vt_mode_is_lost_in_modal(self) -> None:
-        """设置页打开期间也必须自愈，否则方向键和鼠标会同时失效。"""
+        """设置页打开期间也必须自愈，否则方向键会失效。"""
 
         from textual.screen import ModalScreen
 
@@ -1170,7 +1156,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 "is_headless",
                 new=property(lambda _driver: False),
             ), patch(
-                "omnicrawl.ui.fullscreen._restore_windows_vt_input_mode_if_needed",
+                "omnicrawl.ui.fullscreen.terminal_handling._restore_windows_vt_input_mode_if_needed",
                 return_value=True,
             ):
                 app._recover_stale_mouse_interaction()
@@ -1204,7 +1190,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 "is_headless",
                 new=property(lambda _driver: False),
             ), patch(
-                "omnicrawl.ui.fullscreen._restore_windows_vt_input_mode_if_needed",
+                "omnicrawl.ui.fullscreen.terminal_handling._restore_windows_vt_input_mode_if_needed",
                 side_effect=RuntimeError("console mode unavailable"),
             ):
                 app._recover_stale_mouse_interaction()
@@ -1283,16 +1269,17 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             # 必须覆盖真实的拖动选择。此前只发送 MouseDown/MouseUp，实际没有
             # 行内偏移量时会退化为整条回复选择，掩盖 RichLog 无法精确选取的问题。
+            # 消息上下各有 1 行 blank 边框空行，内容首行从 y=1 开始。
             from textual import events
 
-            await pilot.mouse_down(reply, offset=(2, 0))
+            await pilot.mouse_down(reply, offset=(2, 1))
             await pilot._post_mouse_events(
                 [events.MouseMove],
                 reply,
-                offset=(10, 0),
+                offset=(10, 1),
                 button=1,
             )
-            await pilot.mouse_up(reply, offset=(10, 0))
+            await pilot.mouse_up(reply, offset=(10, 1))
             await pilot.pause()
             self.assertEqual(app.screen.get_selected_text(), " 可以复制的")
             await pilot.press("ctrl+c")
@@ -1792,7 +1779,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
             rows = list(app.screen.query(".settings-row"))
-            self.assertEqual(len(rows), 15)
+            self.assertEqual(len(rows), 16)
             self.assertTrue(
                 all(str(row.content).strip() for row in rows),
                 [repr(str(row.content)) for row in rows],
@@ -1800,7 +1787,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("模型：demo-model", str(rows[0].content))
             self.assertIn("模型渠道：管理", str(rows[1].content))
             self.assertIn("视觉：已关闭", str(rows[2].content))
-            self.assertIn("上下文长度（K）：128K", str(rows[4].content))
+            self.assertIn("图像生成：已关闭", str(rows[3].content))
+            self.assertIn("上下文长度（K）：128K", str(rows[5].content))
             self.assertTrue(
                 any("上下文压缩：已关闭" in str(row.content) for row in rows)
             )
@@ -2556,10 +2544,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("↑62.5K", telemetry.plain)
             self.assertIn("↓2.4K", telemetry.plain)
             self.assertIn("†50K", telemetry.plain)
-            # 上下文占用为用量/总量 + 百分比（位于实时速率之前）；缓存占比 CH 同步。
+            # 上下文占用为用量/总量 + 百分比（位于实时速率之前）；
+            # 缓存率 CH = 缓存命中输入 ÷ 本次总输入 = 50K / 62.5K = 80%。
             self.assertIn("62%", telemetry.plain)
             self.assertIn("62.5K/100K", telemetry.plain)
-            self.assertIn("CH50%", telemetry.plain)
+            self.assertIn("CH80%", telemetry.plain)
             self.assertIn(TEXT_MUTED, str(telemetry.spans))
             self.assertIn("default", str(telemetry.spans))
             self.assertNotIn("blue", str(telemetry.spans))
@@ -3413,7 +3402,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         from textual.widgets import Static, TextArea
 
-        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen import (
+            FullscreenStartup,
+            OmniCrawlApp,
+            ToolDisclosure,
+        )
 
         class FakeAgent:
             current_model = "demo-model"
@@ -3465,15 +3458,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("read", app.conversation_text)
             self.assertEqual(len(app.query(".tool-message")), 1)
             tool_record = app.query_one(".tool-message", Static)
-            collapsed = str(tool_record.content)
-            self.assertIn("R  README.md  ✓ 成功", collapsed)
-            self.assertNotIn("步骤", collapsed)
-            self.assertNotIn("读取完成", collapsed)
-            await pilot.click(".tool-message")
-            await pilot.pause()
-            expanded = str(tool_record.content)
-            self.assertIn("参数：{'path': 'README.md'}", expanded)
-            self.assertIn("读取完成", expanded)
+            content = str(tool_record.content)
+            self.assertIn("R  README.md  ✓ 成功", content)
+            self.assertIn("读取完成", content)
+            # 除 write_file 外：正文为原始输出，不再展示参数包装。
+            self.assertNotIn("参数：", content)
             self.assertEqual(app.agent.seen_statuses, ["正在思考", "正在回复", "等待", "正在调用"])
             self.assertEqual(len(app.query(".runtime-status-message")), 0)
             assistant_record = app.query_one(".assistant-message")
@@ -3485,9 +3474,10 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             )
             app._handle_tool_start(2, replace_call)
             await pilot.pause()
-            replace_record = app.query_one(".replace-text-message", Static)
+            replace_record = app.query(ToolDisclosure)[-1]
             self.assertTrue(replace_record.has_class("tool-message"))
-            self.assertEqual(replace_record.styles.background.a, 0.16)
+            # 工具调用与输出统一半透明淡绿背景。
+            self.assertEqual(replace_record.styles.background.a, 0.22)
 
     async def test_stream_records_preserve_model_tool_model_visual_order(self) -> None:
         """工具边界后的推理和最终回复不得写回工具之前的旧回复组件。"""
@@ -3650,8 +3640,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(records), 2)
             self.assertIn("R  (未指定文件)  ✓ 成功", str(records[0].content))
             self.assertIn("G  .  |  目标: (未指定)  ✗ 失败", str(records[1].content))
-            records[0].on_click()
-            records[1].on_click()
+            # 鼠标交互已禁用：工具记录始终展开，正文无需点击即可见。
             self.assertIn("read-ok", str(records[0].content))
             self.assertIn("search-failed", str(records[1].content))
 
@@ -3684,8 +3673,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("R  README.md", rendered_text)
             self.assertIn("成功", rendered_text)
 
-            await pilot.click(".tool-message")
-            await pilot.pause()
+            # 鼠标交互已禁用：正文始终展开渲染，无需点击。
             expanded_text = "".join(
                 segment.text
                 for line_number in range(record.region.height)
@@ -3723,7 +3711,6 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 40)) as pilot:
             app._handle_tool_start(1, tool_call)
             record = app.query_one(ToolDisclosure)
-            self.assertTrue(record.expanded)
             self.assertNotIn("collapsed", record.classes)
             self.assertIn("rewrite +2 lines", str(record.content))
             self.assertIn("line-one", str(record.content))
@@ -3734,12 +3721,12 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             )
             await pilot.pause()
 
-            self.assertTrue(record.expanded)
+            self.assertNotIn("collapsed", record.classes)
             self.assertIn("line-two", str(record.content))
             self.assertIn("已写入 notes/demo.txt", str(record.content))
 
     async def test_replace_text_disclosure_is_expanded_while_running_and_after_completion(self) -> None:
-        """替换文本记录默认展开，调用中和完成后都显示变更预览。"""
+        """替换文本记录默认展开：调用中显示标题摘要，完成后显示原始输出。"""
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ToolDisclosure
 
@@ -3767,10 +3754,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 40)) as pilot:
             app._handle_tool_start(1, tool_call)
             record = app.query_one(ToolDisclosure)
-            self.assertTrue(record.expanded)
             self.assertNotIn("collapsed", record.classes)
-            self.assertIn("line-two", str(record.content))
-            self.assertIn("line-three", str(record.content))
+            # 调用中无结果：正文为空，标题保留文件变更统计摘要。
+            self.assertIn("M  notes/demo.txt", str(record.content))
+            self.assertIn("+1 -1", str(record.content))
+            self.assertNotIn("line-two", str(record.content))
 
             app._handle_tool_result(
                 tool_call,
@@ -3778,12 +3766,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             )
             await pilot.pause()
 
-            self.assertTrue(record.expanded)
-            self.assertIn("line-three", str(record.content))
-            self.assertIn("已修改 notes/demo.txt", str(record.content))
+            self.assertNotIn("collapsed", record.classes)
+            # 除 write_file 外：正文为原始输出，不再展示 diff 预览。
+            self.assertNotIn("line-three", str(record.content))
+            self.assertIn("已修改 notes/demo.txt，替换 1 处。", str(record.content))
 
-    async def test_tool_disclosure_stays_collapsed_while_running_and_after_completion(self) -> None:
-        """除写入文件和替换文本外，工具执行中和完成后均应默认折叠。"""
+    async def test_tool_disclosure_stays_expanded_while_running_and_after_completion(self) -> None:
+        """鼠标交互已禁用：所有工具记录执行中和完成后均保持展开、正文可见。"""
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ToolDisclosure
 
@@ -3802,23 +3791,16 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
         async with app.run_test(size=(120, 40)) as pilot:
-            with patch("omnicrawl.ui.fullscreen.time.perf_counter", side_effect=[10.0, 10.126]):
+            with patch("omnicrawl.ui.fullscreen.rendering.time.perf_counter", side_effect=[10.0, 10.126]):
                 app._handle_tool_start(7, tool_call)
                 record = app.query_one(ToolDisclosure)
-                self.assertFalse(record.expanded)
-                self.assertEqual(str(record.content), "R  README.md  … 调用中  0ms")
+                self.assertFalse(record.has_class("collapsed"))
+                self.assertIn("R  README.md", str(record.content))
 
                 app._handle_tool_result(tool_call, SimpleNamespace(ok=True, output="读取完成"))
 
-            self.assertFalse(record.expanded)
-            self.assertEqual(str(record.content), "R  README.md  ✓ 成功  126ms")
-            self.assertNotIn("步骤", str(record.content))
-            self.assertNotIn("读取完成", str(record.content))
-
-            await pilot.pause()
-            await pilot.click(".tool-message")
-            await pilot.pause()
-            self.assertTrue(record.expanded)
+            self.assertFalse(record.has_class("collapsed"))
+            self.assertIn("R  README.md  ✓ 成功", str(record.content))
             self.assertIn("读取完成", str(record.content))
 
 
@@ -4008,8 +3990,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             patched_handler.assert_called_once_with(app.agent, "/approval:auto")
             self.assertIn("已通过 patch 切换审批", app.conversation_text)
 
-    async def test_shell_tools_expand_by_default_and_limit_body_to_five_lines(self) -> None:
-        """bash/powershell 默认展开，但展开正文最多五行，超出以提示行截断。"""
+    async def test_tools_expand_by_default_and_limit_body_to_five_lines(self) -> None:
+        """除 write_file 外所有工具默认展开，展开正文最多五行并带折叠提示。"""
 
         from textual.app import App, ComposeResult
 
@@ -4028,14 +4010,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                     started_at=1.0,
                 )
 
-        for name in ("bash", "powershell"):
+        for name in ("bash", "powershell", "read", "grep"):
             with self.subTest(name=name):
                 app = ToolHarness(name, "第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行")
                 async with app.run_test(size=(100, 24)) as pilot:
                     record = app.query_one(ToolDisclosure)
-                    # 默认展开：无 collapsed class，且正文可见。
+                    # 鼠标交互已禁用：始终展开、无 collapsed class，正文可见。
                     self.assertFalse(record.has_class("collapsed"))
-                    self.assertTrue(record.expanded)
 
                     record.finish(ok=True, output=app._output, finished_at=2.0)
                     await pilot.pause()
@@ -4047,8 +4028,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("仅显示前五行", rendered)
 
 
-    async def test_shell_tools_with_short_output_are_not_truncated(self) -> None:
-        """bash/powershell 输出不超过五行时保持完整，不出现截断提示。"""
+    async def test_tools_with_short_output_are_not_truncated(self) -> None:
+        """输出不超过五行时保持完整，不出现截断提示。"""
 
         from textual.app import App, ComposeResult
 
@@ -4069,37 +4050,31 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("仅显示前五行", rendered)
 
 
-    async def test_file_change_tools_keep_full_body_when_expanded(self) -> None:
-        """write_file/replace_text 等文件工具默认展开且不受五行限制。"""
+    async def test_write_file_keeps_full_body_when_expanded(self) -> None:
+        """write_file 是唯一豁免工具：默认展开且不受五行限制。"""
 
         from textual.app import App, ComposeResult
 
         from omnicrawl.ui.fullscreen.widgets import ToolDisclosure
 
         class ToolHarness(App[None]):
-            def __init__(self, name: str) -> None:
-                super().__init__()
-                self._name = name
-
             def compose(self) -> ComposeResult:
-                yield ToolDisclosure(self._name, {"path": "a.txt"}, started_at=1.0)
+                yield ToolDisclosure("write_file", {"path": "a.txt"}, started_at=1.0)
 
-        for name in ("write_file", "replace_text"):
-            with self.subTest(name=name):
-                app = ToolHarness(name)
-                async with app.run_test(size=(100, 24)) as pilot:
-                    record = app.query_one(ToolDisclosure)
-                    self.assertFalse(record.has_class("collapsed"))
-                    record.finish(
-                        ok=True,
-                        output="第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行",
-                        finished_at=2.0,
-                    )
-                    await pilot.pause()
-                    rendered = record.render().plain
-                    self.assertIn("第六行", rendered)
-                    self.assertIn("第七行", rendered)
-                    self.assertNotIn("仅显示前五行", rendered)
+        app = ToolHarness()
+        async with app.run_test(size=(100, 24)) as pilot:
+            record = app.query_one(ToolDisclosure)
+            self.assertFalse(record.has_class("collapsed"))
+            record.finish(
+                ok=True,
+                output="第一行\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行",
+                finished_at=2.0,
+            )
+            await pilot.pause()
+            rendered = record.render().plain
+            self.assertIn("第六行", rendered)
+            self.assertIn("第七行", rendered)
+            self.assertNotIn("仅显示前五行", rendered)
 
 
     async def test_model_picker_esc_returns_to_settings_panel_without_cancel_tip(self) -> None:
@@ -4491,7 +4466,34 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             app.post_message(wheel)
             await pilot.pause()
 
-            self.assertGreater(conversation.scroll_y, 0)
+            self.assertGreaterEqual(
+                conversation.scroll_y,
+                5,
+                "单次滚轮刻度至少应滚动 5 行，避免长对话翻阅过慢",
+            )
+
+            position_after_down = conversation.scroll_y
+            wheel_up = events.MouseScrollUp(
+                None,
+                conversation.region.x + 2,
+                conversation.region.y + 1,
+                0,
+                0,
+                0,
+                False,
+                False,
+                False,
+                screen_x=conversation.region.x + 2,
+                screen_y=conversation.region.y + 1,
+            )
+            app.post_message(wheel_up)
+            await pilot.pause()
+
+            self.assertGreaterEqual(
+                position_after_down - conversation.scroll_y,
+                5,
+                "向上滚动也应保持每刻度至少 5 行",
+            )
 
 
     async def test_reasoning_click_keeps_content_expanded(self) -> None:
@@ -4638,7 +4640,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
 
             record = app.query_one(ToolDisclosure)
-            # shell 工具默认展开，无需点击即可看到正文。
+            # 鼠标交互已禁用：shell 工具始终展开，无需点击即可看到正文。
             self.assertFalse(record.has_class("collapsed"))
             rendered = str(record.content)
             for index in range(1, 6):
@@ -4647,8 +4649,3 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("输出行7", rendered)
             self.assertNotIn("输出行8", rendered)
             self.assertIn("仅显示前五行", rendered)
-
-            # 折叠后标题行保留，正文隐藏。
-            await pilot.click(".tool-message")
-            await pilot.pause()
-            self.assertTrue(record.has_class("collapsed"))

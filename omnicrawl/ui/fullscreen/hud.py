@@ -54,15 +54,16 @@ def token_telemetry_text(
     context_limit: int,
     tokens_per_second: float = 0.0,
 ) -> Text:
-    """生成第二行遥测（最左段）：上下文占用 ⁕ 输入/输出/缓存+缓存占比 ⁕ 速率。
+    """生成第二行遥测（最左段）：上下文占用 ⁕ 输入/输出/缓存+缓存率 ⁕ 速率。
 
     字段顺序固定为 上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s，段间用 ⁕ 分隔、内容
     紧排不补固定宽度；行首直接开始（无竖线/分隔符），行尾由
     #status-summary 自带 “⁕ ” 前置分隔符衔接模型/状态段。CTX 段为
     用量/总量 + 百分比（无进度条），输入/输出/缓存精简为 ↑/↓/† 三组，
-    缓存占比以 “CH0%” 显示在 ↑/↓/† 后。``tokens_per_second`` 是 Agent
-    流式生成的实时速率（字符估算），仅在生成期间大于 0，空闲时显示
-    ``-- t/s``。
+    缓存率以 “CH0%” 显示在 ↑/↓/† 后：缓存率 = 缓存命中的输入 token
+    （†）÷ 本次请求总输入 token（↑），CA 是 IN 的子集，因此缓存率
+    不超过 100%。``tokens_per_second`` 是 Agent 流式生成的实时速率
+    （字符估算），仅在生成期间大于 0，空闲时显示 ``-- t/s``。
     """
 
     input_tokens = max(0, int(input_tokens))
@@ -73,7 +74,12 @@ def token_telemetry_text(
     except (TypeError, ValueError):
         tokens_per_second = 0.0
     context_limit = max(1, int(context_limit))
-    cache_percent = min(999, round(cached_input_tokens * 100 / context_limit))
+    # 缓存率 = 缓存命中输入 ÷ 本次总输入；无输入时视为 0%，
+    # 异常数据（CA > IN）封顶 100%。
+    if input_tokens > 0:
+        cache_percent = min(100, round(cached_input_tokens * 100 / input_tokens))
+    else:
+        cache_percent = 0
     rendered = Text()
     # CTX 段：用量/总量 + 百分比，行首直接开始，后接 ⁕ 分隔符。
     rendered.append_text(context_usage_text(input_tokens, context_limit))

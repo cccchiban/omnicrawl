@@ -141,7 +141,11 @@ from ..config.context_compaction import (
     ContextCompactionConfig,
     load_context_compaction_config,
 )
-from ..config.runtime import global_agents_path
+from ..config.runtime import global_agents_path, resolve_config_path
+from ..config.image_gen import (
+    ImageGenConfiguration,
+    load_image_gen_configuration,
+)
 from ..config.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
 from ..config.subagents import (
     SubAgentConfig,
@@ -410,6 +414,7 @@ class AgentConfig:
         default_factory=load_context_compaction_config
     )
     vision: VisionConfiguration = field(default_factory=load_vision_configuration)
+    image_gen: ImageGenConfiguration = field(default_factory=load_image_gen_configuration)
     approval_mode: str = field(default_factory=load_approval_mode)
     # 内置工具开关：默认除 powershell 外全部启用；配置 tools 段可覆盖。
     disabled_tools: frozenset[str] = field(default_factory=load_disabled_tools)
@@ -480,6 +485,8 @@ class AgentConfig:
             raise AgentError("context_compaction 必须是 ContextCompactionConfig。")
         if not isinstance(self.vision, VisionConfiguration):
             raise AgentError("vision 必须是 VisionConfiguration。")
+        if not isinstance(self.image_gen, ImageGenConfiguration):
+            raise AgentError("image_gen 必须是 ImageGenConfiguration。")
         _validate_context_compaction_window(self.context_compaction, self.llm)
         if not isinstance(self.workspace_detection_summary, str):
             raise AgentError("workspace_detection_summary 必须是字符串。")
@@ -1633,6 +1640,13 @@ class LocalToolAgent:
         if not isinstance(configuration, VisionConfiguration):
             raise AgentError("视觉代理配置必须是 VisionConfiguration。")
         self.config.vision = configuration
+
+    def set_image_gen_configuration(self, configuration: ImageGenConfiguration) -> None:
+        """运行时更新图像生成配置；持久化由图像生成设置面板负责。"""
+
+        if not isinstance(configuration, ImageGenConfiguration):
+            raise AgentError("图像生成配置必须是 ImageGenConfiguration。")
+        self.config.image_gen = configuration
 
     def set_context_compaction_enabled(self, enabled: bool) -> None:
         """切换模型辅助压缩，并同步受摘要授权的证据恢复工具。"""
@@ -4135,6 +4149,8 @@ class LocalToolAgent:
             read_image=self._tool_read_image,
             grep=self._tool_grep,
             web_search=self._tool_web_search,
+            fetcher=self._tool_fetcher,
+            image_gen=self._tool_image_gen,
             replace_text=self._tool_replace_text,
             write_file=self._tool_write_file,
             bash=self._tool_bash,
@@ -4251,12 +4267,37 @@ class LocalToolAgent:
         return workspace_tool_result(self._workspace_toolbox().grep, arguments)
 
     def _tool_web_search(self, arguments: dict[str, Any]) -> ToolResult:
-        """使用 Google/Bing/DuckDuckGo 搜索公开网页（见 omnicrawl/web_search.py）。"""
+        """使用 Bing/DuckDuckGo/雅虎搜索公开网页（见 omnicrawl/web_search.py）。"""
 
         try:
             from omnicrawl.web_search import WebSearch
 
             return ToolResult(ok=True, output=WebSearch().search(arguments))
+        except RuntimeError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+    def _tool_fetcher(self, arguments: dict[str, Any]) -> ToolResult:
+        """模拟浏览器指纹抓取网页（见 omnicrawl/fetcher.py）。"""
+
+        try:
+            from omnicrawl.fetcher import Fetcher
+
+            return ToolResult(ok=True, output=Fetcher().fetch(arguments))
+        except RuntimeError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+    def _tool_image_gen(self, arguments: dict[str, Any]) -> ToolResult:
+        """生成/编辑图片（见 omnicrawl/image_gen.py，配置见 config/image_gen.py）。"""
+
+        try:
+            from omnicrawl.image_gen import ImageGenerator
+
+            configuration = getattr(getattr(self, "config", None), "image_gen", None)
+            if configuration is not None:
+                generator = ImageGenerator(configuration=configuration)
+            else:
+                generator = ImageGenerator(config_path=resolve_config_path())
+            return ToolResult(ok=True, output=generator.run(arguments))
         except RuntimeError as exc:
             return ToolResult(ok=False, output=str(exc))
 

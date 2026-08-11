@@ -20,6 +20,7 @@ from textual.widgets import Button, RichLog, Static
 from .latex import latex_to_text
 from .theme import terminal_css
 from .tool_diff import tool_disclosure_body, tool_disclosure_title
+from .theme import TOOL_TEXT
 
 
 _SUBAGENT_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -278,6 +279,10 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     ReasoningDisclosure {
         height: auto;
         min-height: 0;
+        /* 思考块不显示内部滚动条（垂直与水平均隐藏）：超高时由消息区
+           统一滚动，避免右侧滚动条轨道/底部水平条（黑色长条）出现。 */
+        overflow-x: hidden;
+        overflow-y: hidden;
     }
     """
 
@@ -399,44 +404,33 @@ class ReasoningDisclosure(RichLog, can_focus=False):
 
 
 class ToolDisclosure(Static):
-    """工具调用记录；写入/替换文件与 shell 工具默认展开，其他工具默认折叠。
+    """工具调用记录；所有工具默认展开，正文始终可见。
 
-    bash/powershell 等 shell 工具的展开正文只显示前五行，超出部分以
-    提示行截断，避免大段命令输出刷屏；文件变更工具保持完整正文。
+    除 write_file 外，所有工具的展开正文只显示前五行（原始输出），
+    超出部分以灰色提示行截断并折叠，避免大段工具输出刷屏；
+    write_file 保留完整文件变更预览。鼠标交互已全面禁用，
+    展开/折叠不再提供切换入口。
     """
 
     can_focus = False
 
-    # shell 工具的展开正文行数上限（不含标题行）。
+    # 工具展开正文的行数上限（不含标题行）。
     MAX_EXPANDED_BODY_LINES = 5
     # 正文被截断时替换尾部内容的提示行。
     TRUNCATION_HINT = "…（内容过长，仅显示前五行）"
-    # 需要限制正文行数的 shell 工具。
-    SHELL_TOOL_NAMES = frozenset({"bash", "powershell"})
+    # 豁免五行限制的工具：write_file 保持完整正文展示。
+    UNLIMITED_TOOL_NAMES = frozenset({"write_file"})
 
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
-        expanded_by_default = tool_name in {
-            "write_file",
-            "replace_text",
-            *self.SHELL_TOOL_NAMES,
-        }
-        classes = "message tool-message"
-        if tool_name == "replace_text":
-            classes += " replace-text-message"
-        if tool_name in self.SHELL_TOOL_NAMES:
-            classes += " shell-tool-message"
-        if not expanded_by_default:
-            classes += " collapsed"
-        super().__init__(classes=classes)
+        super().__init__(classes="message tool-message")
         self.tool_name = tool_name
         self.arguments = arguments
         self.started_at = started_at
         self.status = "调用中"
         self.duration_seconds = 0.0
         self.result_text = ""
-        self.expanded = expanded_by_default
-        # shell 工具的展开正文受五行上限约束，其他工具不受限。
-        self._limit_body_lines = tool_name in self.SHELL_TOOL_NAMES
+        # 除 write_file 外的所有工具正文受五行上限约束。
+        self._limit_body_lines = tool_name not in self.UNLIMITED_TOOL_NAMES
         self._refresh_display()
 
     def finish(self, *, ok: bool, output: str, finished_at: float) -> None:
@@ -460,11 +454,6 @@ class ToolDisclosure(Static):
         )
         self._refresh_display()
 
-    def on_click(self) -> None:
-        self.expanded = not self.expanded
-        self.set_class(not self.expanded, "collapsed")
-        self._refresh_display()
-
     def _refresh_display(self) -> None:
         # 工作区工具与文件变更工具使用统一的短标识 + 上下文摘要；其他工具
         # 保持「参数 + 结果」正文，避免标题泄露完整参数或内部工具协议。
@@ -473,12 +462,9 @@ class ToolDisclosure(Static):
             arguments=self.arguments,
             status=self.status,
             duration_seconds=self.duration_seconds,
-            expanded=self.expanded,
+            expanded=True,
             result_text=self.result_text,
         )
-        if not self.expanded:
-            self.update(title)
-            return
         body = tool_disclosure_body(
             tool_name=self.tool_name,
             arguments=self.arguments,
@@ -494,30 +480,18 @@ class ToolDisclosure(Static):
         self.update(rendered)
 
     def _truncate_body_lines(self, body: Text) -> Text:
-        """把展开正文中的输出内容截断为前五行，并追加一行截断提示。
+        """把展开正文截断为前五行，并追加一行灰色折叠提示。
 
-        只对"结果："之后的输出内容做行数限制（保留 Rich 样式），头部
-        的"工具/参数/结果"元信息行不占额度；超出上限的行丢弃，提示行
-        使用弱化样式，让用户知道还有更多内容但没有被刷屏。
+        超出上限的行直接丢弃，提示行使用灰色弱化样式，让用户知道
+        还有更多输出已被折叠而不是被刷屏。
         """
 
         parts = body.split("\n")
-        # 定位"结果："标记之后的内容行；无标记时（如文件变更工具正文）
-        # 退化为对整个正文做限制。
-        result_start = len(parts)
-        for index, part in enumerate(parts):
-            if part.plain.startswith("结果："):
-                result_start = index + 1
-                break
-        result_lines = parts[result_start:]
-        if len(result_lines) <= self.MAX_EXPANDED_BODY_LINES:
+        if len(parts) <= self.MAX_EXPANDED_BODY_LINES:
             return body
         truncated = Text()
-        for part in parts[:result_start]:
+        for part in parts[: self.MAX_EXPANDED_BODY_LINES]:
             truncated.append_text(part)
             truncated.append("\n")
-        for part in result_lines[: self.MAX_EXPANDED_BODY_LINES]:
-            truncated.append_text(part)
-            truncated.append("\n")
-        truncated.append(self.TRUNCATION_HINT, style="dim")
+        truncated.append(self.TRUNCATION_HINT, style=TOOL_TEXT)
         return truncated
