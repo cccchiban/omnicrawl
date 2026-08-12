@@ -33,6 +33,20 @@ try:
 except ImportError:  # pragma: no cover - 正文提取降级为正则去标签
     _BeautifulSoup = None
 
+try:
+    import lxml  # noqa: F401  # 仅探测 lxml 可用性，bs4 用它做 C 级解析
+except ImportError:  # pragma: no cover - 解析器回退到 Python 标准库
+    lxml = None
+
+try:
+    from lxml import html as _lxml_html  # 直接解析提取用，跳过 bs4 对象树
+except ImportError:  # pragma: no cover - 降级到 bs4 路径
+    _lxml_html = None
+
+# bs4 解析器选择：优先 lxml（C 实现，解析快），缺失时回退 html.parser（纯 Python）。
+# 实测 4.7MB 页面解析耗时 html.parser≈5.0s / lxml≈3.6s（bs4 树操作仍为 Python 层）。
+_HTML_PARSER = "lxml" if lxml is not None else "html.parser"
+
 
 DEFAULT_TIMEOUT_SECONDS = 15.0
 DEFAULT_MAX_CHARS = 8000
@@ -177,13 +191,40 @@ def _extract_title(html_text: str) -> str:
 
 
 def _extract_main_text(html_text: str, max_chars: int) -> str:
-    """提取页面正文文本：优先 main/article，剔除脚本与样式后压缩空白。"""
+    """提取页面正文文本：优先 main/article，剔除脚本与样式后压缩空白。
+
+    三级降级：lxml 直接提取（C 级解析+提取）→ bs4（lxml/html.parser）→ 正则去标签。
+    """
+
+    if _lxml_html is not None:
+        # 快路径：lxml.html 直接解析与提取，避免 bs4 的 Python 对象树开销。
+        # 实测 4.7MB 页面完整提取流程从 bs4 的 ~6.1s 降到 ~200ms（约 30x）。
+        try:
+            doc = _lxml_html.fromstring(html_text)
+        except Exception:
+            doc = None
+        if doc is not None:
+            for tag in ("script", "style", "noscript", "svg", "template"):
+                for node in doc.xpath(f"//{tag}"):
+                    parent = node.getparent()
+                    if parent is not None:
+                        parent.remove(node)
+            container = None
+            for selector in ("//main", "//article", "//body"):
+                matched = doc.xpath(selector)
+                if matched:
+                    container = matched[0]
+                    break
+            if container is None:
+                container = doc
+            text = _WHITESPACE_RE.sub(" ", container.text_content()).strip()
+            return _truncate(text, max_chars)
 
     if _BeautifulSoup is None:
         # 降级：去标签后整体截断，不含正文区域优选。
         text = _WHITESPACE_RE.sub(" ", _strip_tags(html_text)).strip()
         return _truncate(text, max_chars)
-    soup = _BeautifulSoup(html_text, "html.parser")
+    soup = _BeautifulSoup(html_text, _HTML_PARSER)
     for tag in soup(["script", "style", "noscript", "svg", "template"]):
         tag.decompose()
     container = soup.find("main") or soup.find("article") or soup.body or soup

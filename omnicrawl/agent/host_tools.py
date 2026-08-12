@@ -179,22 +179,20 @@ class HostToolCatalog:
                 ranked.append((score, name, tool))
         ranked.sort(key=lambda item: (-item[0], item[1]))
         selected = ranked[:limit]
-        payload = {
-            "schema_version": 1,
-            "ok": True,
-            "query": query_text,
-            "tools": [
-                {
-                    "name": name,
-                    "description": _short_text(tool.description, 240),
-                    "parameters": compact_tool_schema(tool),
-                    "requires_confirmation": bool(tool.requires_confirmation),
-                }
-                for _score, name, tool in selected
-            ],
-            "count": len(selected),
-            "truncated": len(ranked) > len(selected),
-        }
+        entries: list[dict[str, Any]] = []
+        for _score, name, tool in selected:
+            entry: dict[str, Any] = {
+                "name": name,
+                "description": _short_text(tool.description, 160),
+                "parameters": compact_tool_schema(tool),
+            }
+            if tool.requires_confirmation:
+                entry["requires_confirmation"] = True
+            entries.append(entry)
+
+        payload: dict[str, Any] = {"tools": entries}
+        if len(ranked) > len(selected):
+            payload["truncated"] = True
         return _bounded_json_result(payload, max_chars=5200)
 
     def prepare_invocation(
@@ -595,8 +593,14 @@ def _validate_number_bound(
 
 
 def _short_text(value: str, limit: int) -> str:
-    text = str(value or "").strip()
-    return text if len(text) <= limit else text[:limit] + "..."
+    """折叠说明中的空白，并把省略号计入长度上限。"""
+
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    if limit <= 1:
+        return "…"[:limit]
+    return text[: limit - 1].rstrip() + "…"
 
 
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -606,14 +610,30 @@ def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int
 
 
 def _bounded_json_result(payload: dict[str, Any], *, max_chars: int) -> ToolResult:
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
-    if len(text) > max_chars:
-        payload = dict(payload)
-        if isinstance(payload.get("tools"), list):
-            payload["tools"] = payload["tools"][:2]
-            payload["count"] = len(payload["tools"])
-        payload["truncated"] = True
-        text = json.dumps(payload, ensure_ascii=False, indent=2)
+    """紧凑序列化，并在超限时按相关性从尾部逐项裁剪候选。"""
+
+    compact_payload = dict(payload)
+    tools = compact_payload.get("tools")
+    if isinstance(tools, list):
+        compact_payload["tools"] = list(tools)
+
+    text = json.dumps(
+        compact_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    while (
+        len(text) > max_chars
+        and isinstance(compact_payload.get("tools"), list)
+        and len(compact_payload["tools"]) > 1
+    ):
+        compact_payload["tools"].pop()
+        compact_payload["truncated"] = True
+        text = json.dumps(
+            compact_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     return ToolResult(ok=True, output=text, full_output=text)
 
 

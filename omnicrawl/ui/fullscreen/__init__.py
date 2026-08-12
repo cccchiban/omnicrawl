@@ -78,6 +78,7 @@ from .terminal_handling import (
     _restore_windows_raw_input_mode_if_needed,
     _restore_windows_vt_input_mode_if_needed,
 )
+
 from .rendering import RenderingMixin
 from .widgets import (
     AssistantMessage,
@@ -737,6 +738,68 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
             return
         composer.clear()
         self._compact_pastes.clear()
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """覆盖 Textual 的 OSC52 剪贴板实现。
+
+        Textual 默认把文本作为 OSC52 转义序列写入终端（\x1b]52;c;<base64>\a），
+        该协议仅 Windows Terminal / VS Code 等现代终端支持；传统 conhost
+        （旧版 PowerShell / cmd 窗口）会直接忽略，导致 Ctrl+C 后系统剪贴板为空。
+        这里在 Windows 上用 Win32 API 直接写入系统剪贴板（CF_UNICODETEXT），
+        失败时回退到父类 OSC52 实现（兼容 Windows Terminal）。
+        """
+        if sys.platform == "win32" and text:
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                CF_UNICODETEXT = 13
+                GMEM_MOVEABLE = 0x0002
+                GMEM_ZEROINIT = 0x0040
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                # 64 位系统上 HGLOBAL 是指针，必须显式声明 restype/argtypes，
+                # 否则 ctypes 默认按 32 位 int 截断句柄导致 GlobalLock 失败
+                kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+                kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+                kernel32.GlobalLock.restype = ctypes.c_void_p
+                kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+                user32.SetClipboardData.restype = wintypes.HANDLE
+                user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+                user32.OpenClipboard.argtypes = [wintypes.HWND]
+                # UTF-16LE 并以 NUL 结尾，供 CF_UNICODETEXT 使用
+                data = (text + "\0").encode("utf-16-le")
+                if not user32.OpenClipboard(None):
+                    # 剪贴板被其他进程占用，回退 OSC52
+                    return super().copy_to_clipboard(text)
+                try:
+                    user32.EmptyClipboard()
+                    handle = kernel32.GlobalAlloc(
+                        GMEM_MOVEABLE | GMEM_ZEROINIT, len(data)
+                    )
+                    if not handle:
+                        return super().copy_to_clipboard(text)
+                    locked = kernel32.GlobalLock(handle)
+                    if not locked:
+                        kernel32.GlobalFree(handle)
+                        return super().copy_to_clipboard(text)
+                    try:
+                        ctypes.memmove(locked, data, len(data))
+                    finally:
+                        kernel32.GlobalUnlock(handle)
+                    # 成功后句柄归系统所有，不可 GlobalFree
+                    if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+                        kernel32.GlobalFree(handle)
+                        return super().copy_to_clipboard(text)
+                finally:
+                    user32.CloseClipboard()
+                return
+            except Exception:
+                # 任何异常都回退到 OSC52
+                return super().copy_to_clipboard(text)
+        super().copy_to_clipboard(text)
 
     def action_clear_conversation(self) -> None:
         if self.is_generating:

@@ -52,11 +52,101 @@ class HostToolCatalogTest(unittest.TestCase):
         payload = json.loads(result.output)
 
         self.assertTrue(result.ok)
-        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["tools"]), 1)
         entry = payload["tools"][0]
         self.assertEqual(entry["name"], "learning_create_cards")
         self.assertEqual(entry["parameters"]["required"], ["notes", "mode"])
         self.assertNotIn("description", json.dumps(entry["parameters"], ensure_ascii=False))
+        self.assertTrue(entry["requires_confirmation"])
+
+    def test_search_omits_redundant_metadata_and_false_flags(self) -> None:
+        """搜索结果只保留调用工具所需信息，假值和可推导元数据不占 token。"""
+
+        catalog = HostToolCatalog(
+            {"read": self._simple_tool("read", "读取文件内容")}
+        )
+
+        result = catalog.search({"query": "read", "limit": 4})
+        payload = json.loads(result.output)
+
+        self.assertEqual(set(payload), {"tools"})
+        self.assertEqual(
+            set(payload["tools"][0]),
+            {"name", "description", "parameters"},
+        )
+        self.assertNotIn("\n", result.output)
+        self.assertNotIn(": ", result.output)
+
+    def test_search_emits_true_flags_only_when_actionable(self) -> None:
+        """只有确实还有候选或需要确认时，才发送对应布尔标记。"""
+
+        catalog = HostToolCatalog(
+            {
+                "read_one": self._simple_tool("read_one", "读取文件"),
+                "read_two": ToolDefinition(
+                    name="read_two",
+                    description="读取另一个文件",
+                    argument_schema='{"type":"object","properties":{}}',
+                    requires_confirmation=True,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                ),
+            }
+        )
+
+        payload = json.loads(catalog.search({"query": "read", "limit": 1}).output)
+
+        self.assertTrue(payload["truncated"])
+        self.assertNotIn("requires_confirmation", payload["tools"][0])
+
+        confirmed = json.loads(
+            catalog.search({"query": "read_two", "limit": 1}).output
+        )["tools"][0]
+        self.assertTrue(confirmed["requires_confirmation"])
+
+    def test_search_normalizes_and_limits_description(self) -> None:
+        """候选说明折叠空白且严格限制长度，不让 MCP 长描述淹没参数契约。"""
+
+        description = "  第一行\n\n" + "能力说明 " * 80
+        catalog = HostToolCatalog(
+            {"dense_tool": self._simple_tool("dense_tool", description)}
+        )
+
+        entry = json.loads(
+            catalog.search({"query": "dense_tool", "limit": 1}).output
+        )["tools"][0]
+
+        self.assertLessEqual(len(entry["description"]), 160)
+        self.assertNotIn("\n", entry["description"])
+        self.assertNotIn("  ", entry["description"])
+        self.assertTrue(entry["description"].endswith("…"))
+
+    def test_search_result_is_substantially_smaller_than_pretty_json(self) -> None:
+        """紧凑序列化应显著小于旧版缩进 JSON，防止格式回退增加 token。"""
+
+        catalog = HostToolCatalog(
+            {
+                f"read_{index}": self._simple_tool(
+                    f"read_{index}",
+                    f"读取第 {index} 类文件并返回关键内容。",
+                    properties={
+                        "path": {"type": "string", "minLength": 1},
+                        "max_lines": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2000,
+                        },
+                    },
+                )
+                for index in range(4)
+            }
+        )
+
+        result = catalog.search({"query": "read", "limit": 4})
+        pretty_size = len(
+            json.dumps(json.loads(result.output), ensure_ascii=False, indent=2)
+        )
+
+        self.assertLess(len(result.output), pretty_size * 0.7)
 
     def _simple_tool(
         self, name: str, description: str, properties: dict | None = None
@@ -92,7 +182,7 @@ class HostToolCatalogTest(unittest.TestCase):
 
         result = catalog.search({"query": "pattern", "limit": 4})
         payload = json.loads(result.output)
-        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["tools"]), 1)
         self.assertEqual(payload["tools"][0]["name"], "run_pipeline")
 
     def test_search_matches_tool_name_alias(self) -> None:
@@ -107,7 +197,7 @@ class HostToolCatalogTest(unittest.TestCase):
 
         result = catalog.search({"query": "readimage", "limit": 4})
         payload = json.loads(result.output)
-        self.assertGreaterEqual(payload["count"], 1)
+        self.assertGreaterEqual(len(payload["tools"]), 1)
         self.assertEqual(payload["tools"][0]["name"], "read_image")
 
     def test_search_normalizes_fullwidth_query(self) -> None:
@@ -119,7 +209,7 @@ class HostToolCatalogTest(unittest.TestCase):
 
         result = catalog.search({"query": "ＲＥＡＤ", "limit": 4})
         payload = json.loads(result.output)
-        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["tools"]), 1)
         self.assertEqual(payload["tools"][0]["name"], "read")
 
     def test_search_fuzzy_matches_misspelled_tool_name(self) -> None:
@@ -136,7 +226,7 @@ class HostToolCatalogTest(unittest.TestCase):
 
         result = catalog.search({"query": "generate_repor", "limit": 4})
         payload = json.loads(result.output)
-        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["tools"]), 1)
         self.assertEqual(payload["tools"][0]["name"], "generate_report")
 
     def test_search_chinese_bigram_ignores_stop_words(self) -> None:
@@ -151,7 +241,7 @@ class HostToolCatalogTest(unittest.TestCase):
 
         result = catalog.search({"query": "请帮我读取文件", "limit": 4})
         payload = json.loads(result.output)
-        self.assertGreaterEqual(payload["count"], 1)
+        self.assertGreaterEqual(len(payload["tools"]), 1)
         self.assertEqual(payload["tools"][0]["name"], "read")
 
     def test_prepare_invocation_normalizes_and_validates_arguments(self) -> None:

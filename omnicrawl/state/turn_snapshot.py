@@ -79,6 +79,11 @@ SnapshotSet = dict[str, GitTreeSnapshot]
 class GitSnapshotStore:
     """用外置 bare Git 仓库保存多个文件树，不接触用户仓库状态。"""
 
+    # 单条 Git 子命令的最长等待时间。快照只是轮次 undo 的前置，绝不允许
+    # 工作区遍历（例如误把用户主目录当根）把整轮对话卡死；超时按失败处理，
+    # 由上层（_begin_turn_snapshot）降级为“本轮禁用 undo”。
+    GIT_COMMAND_TIMEOUT_SECONDS = 120
+
     def __init__(self, git_dir: Path) -> None:
         self.git_dir = Path(git_dir).resolve()
         self._ensure_repository()
@@ -273,7 +278,12 @@ class GitSnapshotStore:
                 ["git", "init", "--bare", "--quiet", str(self.git_dir)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                timeout=self.GIT_COMMAND_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise SnapshotError(
+                f"初始化影子 Git 仓库超时（>{self.GIT_COMMAND_TIMEOUT_SECONDS}s）：{exc}"
+            ) from exc
         except OSError as exc:
             raise SnapshotError(f"无法启动 Git：{exc}") from exc
         if result.returncode != 0:
@@ -295,7 +305,14 @@ class GitSnapshotStore:
                 stderr=subprocess.PIPE,
                 env=env,
                 cwd=cwd,
+                timeout=self.GIT_COMMAND_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            # subprocess.run 超时后已 kill 子进程；这里转为 SnapshotError，
+            # 让上层降级而不是让对话永久挂起。
+            raise SnapshotError(
+                f"影子 Git 命令超时（>{self.GIT_COMMAND_TIMEOUT_SECONDS}s）：{arguments}"
+            ) from exc
         except OSError as exc:
             raise SnapshotError(f"无法启动 Git：{exc}") from exc
         if result.returncode != 0:

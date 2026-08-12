@@ -28,6 +28,14 @@ Host -> role=tool 结果
 
 `search_tools` 对高匹配度结果返回紧凑 Schema，只保留参数填写所需的字段，例如 `type`、`properties`、`required`、`enum` 和边界约束。长描述、默认值和示例不会进入搜索结果。
 
+搜索响应采用无缩进 JSON，并仅保留模型下一步调用需要的信息：
+
+```json
+{"tools":[{"name":"read","description":"读取工作区文本文件。","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}
+```
+
+顶层不重复回显查询、数量、成功状态和协议版本；候选数量可由 `tools` 数组直接获得。只有结果被限制时才返回顶层 `"truncated":true`，只有真实工具需要审批时才在对应候选返回 `"requires_confirmation":true`。工具说明会折叠空白并限制为 160 字，参数契约不做进一步省略，避免因信息不足造成错误调用和额外重试。
+
 ## Host 侧边界
 
 `invoke_tool` 的外层 Schema 只保证 `tool_name` 是字符串、`arguments` 是对象。真实参数必须由 Host 使用工具目录中的 Schema 再次校验。模型遵循契约不是安全边界。

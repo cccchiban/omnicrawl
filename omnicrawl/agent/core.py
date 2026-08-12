@@ -321,6 +321,32 @@ _REVERSIBLE_UNDO_TOOLS = frozenset(
 )
 
 
+# 工作区被误指为 Windows 用户主目录/盘根时，快照默认排除的巨型目录。
+# 路径名全部为相对工作区根的目录名（不区分大小写由 Git 处理）。
+_BROAD_WORKSPACE_EXCLUDED = frozenset(
+    {
+        ".cargo",
+        ".codex",
+        ".conda",
+        ".config",
+        ".cursor",
+        ".gradle",
+        ".agents",
+        ".cache",
+        "AppData",
+        "Documents",
+        "Downloads",
+        "Desktop",
+        "Pictures",
+        "Videos",
+        "Music",
+        ".virtualenvs",
+        ".venv",
+        "node_modules",
+    }
+)
+
+
 def _read_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
     """读取整数环境变量，并把配置错误转成 Agent 可捕获的中文错误。"""
 
@@ -4698,6 +4724,13 @@ class LocalToolAgent:
         roots: dict[str, SnapshotRoot] = {}
         workspace = self.workspace_root.resolve()
         excluded = {".git"}
+        # 防御：即使工作区被显式指向用户主目录/盘根（如 AI_WORKSPACE_ROOT），
+        # 也排除 Windows 用户目录下体量巨大的目录，避免 git add 遍历卡死。
+        try:
+            if workspace == Path.home().resolve() or workspace.parent == workspace:
+                excluded.update(_BROAD_WORKSPACE_EXCLUDED)
+        except OSError:
+            pass
         for candidate in (
             getattr(getattr(self, "_session_store", None), "root", None),
             getattr(getattr(self, "_project_memory_store", None), "root", None),
@@ -4765,7 +4798,12 @@ class LocalToolAgent:
                 before=store.capture(roots),
             )
         except SnapshotError as exc:
-            raise AgentError(f"无法创建本轮 Git 快照，已在执行工具前中止：{exc}") from exc
+            # 快照失败仅禁用本轮 undo，不中止回合：工作区过大或 Git 环境
+            # 异常时若直接抛错，整轮对话会在模型请求前就失败（曾因工作区
+            # 被误判为主目录而卡死在 git add 上）。降级后本轮失去 undo，
+            # 但对话与工具执行不受影响。
+            LOGGER.warning("无法创建本轮 Git 快照，本轮禁用事务式 undo：%s", exc)
+            return None
 
     def _record_turn_tool_execution(
         self,
@@ -4920,10 +4958,22 @@ class LocalToolAgent:
         return rollback
 
     def _refresh_workspace_after_undo(self) -> None:
-        """文件树恢复后重建搜索索引，避免查询到已回退内容。"""
+        """文件树恢复后核对搜索索引，避免查询到已回退内容。
+
+        不再销毁索引全量重建：请求后台线程做增量核对（USN 模式应用增量
+        记录，fallback 模式按 mtime 只重读变化的文件），索引实例与数据库
+        快照保留，搜索服务不中断。仅当核对请求失败（索引线程已退出等）
+        时才降级为原全量重建逻辑。
+        """
 
         current = getattr(self, "_search_index", None)
         if current is None:
+            return
+        try:
+            current.request_rebuild()
+        except Exception as exc:  # noqa: BLE001 - 索引失败不能推翻已提交的 undo
+            LOGGER.warning("undo 后触发搜索索引核对失败，降级重建：%s", exc)
+        else:
             return
         rebuilt: ProjectSearchIndex | None = None
         try:

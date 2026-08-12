@@ -69,10 +69,8 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
   - `monitor.py`：Monitor 游标/轮询状态适配（无 Textual 依赖）。
   - `widgets.py` / `hud.py` / `tool_diff.py`：界面组件、SubAgent 进度树、顶部遥测与文件变更 diff 渲染。
 - `main.py`：默认创建 Agent 后直接启动全屏工作台。
-- `omnicrawl/ui/tui/`、`stream_turn.py`、`chat_session.py`：保留为兼容输出与既有测试支持，不再作为默认交互入口。
+- `omnicrawl/ui/tui/`、`stream_turn.py`、`chat_session.py`、`inline_input.py`：旧纯 Python ANSI TUI 已删除，不再提供；纯文本兼容导出仅保留 `omnicrawl.ui.UIStartupError`。
 - `tests/test_fullscreen_tui.py`、`tests/test_fullscreen_turns.py`、`tests/test_fullscreen_commands.py`、`tests/test_fullscreen_monitor.py`：全屏工作台与状态边界回归。
-- `tests/test_terminal_ui.py`：终端样式、窄屏、Unicode、确认、工具、spinner 和回归测试。
-- `tests/test_inline_input.py`：输入编辑、删除键和历史记录测试。
 - `omnicrawl/docs/TERMINAL_UI.md`：本文档。
 
 ## 兼容范围与限制
@@ -80,14 +78,14 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 - 验收目标为 Windows Terminal、PowerShell 和 VS Code 集成终端。
 - 必须安装 `textual`；缺少依赖时执行 `pip install -r requirements.txt`。
 - 当前全屏版支持普通对话、流式 Markdown、工具记录、当前回合即时取消、`/quit` 斜杠命令和手动审批；窗口过窄时由 Textual 负责折行和滚动。
-- 旧 ANSI 模块仍保留，供测试与非交互输出使用。
+- 旧纯 Python ANSI TUI 已随 0.1.11 删除；启动路径仅为 Textual 全屏工作台。
 
 ## 验证清单
 
 每次修改 TUI 后至少执行：
 
 ```powershell
-python -m unittest tests.test_fullscreen_tui tests.test_terminal_ui tests.test_inline_input -v
+python -m unittest tests.test_fullscreen_tui tests.test_fullscreen_turns tests.test_fullscreen_commands -v
 python -m unittest discover -s tests -v
 python -m compileall -q omnicrawl main.py
 git diff --check

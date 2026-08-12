@@ -198,12 +198,18 @@ class ImageGenerator:
                 base_url=conf.base_url,
                 timeout=conf.timeout_seconds,
             )
+        import httpx
         from openai import OpenAI
 
+        # 与项目其他 OpenAI 调用保持一致（见 llm/providers/openai_common.py）：
+        # OpenAI SDK 默认 trust_env=True，会在 Windows 上读取系统代理注册表，
+        # 对可直连的中转站会导致 TLS 握手失败（EOF occurred in violation of protocol），
+        # 因此显式禁用系统代理，直连目标服务。
         return OpenAI(
             api_key=conf.resolve_api_key(),
             base_url=conf.base_url,
             timeout=conf.timeout_seconds,
+            http_client=httpx.Client(trust_env=False, follow_redirects=True),
         )
 
     def _save_results(self, result: Any, *, output_path: str | None, prefix: str) -> str:
@@ -310,7 +316,10 @@ def _download(url: str, target: Path, *, timeout: int) -> None:
     try:
         import httpx
 
-        response = httpx.get(url, timeout=timeout, follow_redirects=True)
+        # trust_env=False：与 _client() 一致，避免 Windows 系统代理干扰图片下载
+        response = httpx.get(
+            url, timeout=timeout, follow_redirects=True, trust_env=False
+        )
         response.raise_for_status()
         target.write_bytes(response.content)
     except Exception as exc:

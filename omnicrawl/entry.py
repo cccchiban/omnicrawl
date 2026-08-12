@@ -114,8 +114,12 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     if not setup.api_key_configured:
         return 2
 
-    # 包安装后 app_root 可能是 site-packages；工作区检测仍从 cwd 向上找项目标记。
-    app_root = Path.cwd().resolve()
+    # 主目录/盘根等过宽启动目录回退时使用 Agent 程序目录（而非 cwd），
+    # 否则用户在主目录直接启动会把整个主目录当工作区，导致 Git 快照
+    # 遍历 AppData/.cargo/.codex 等巨量文件而卡死（见 turn_snapshot 卡死 bug）。
+    # 包安装后本文件位于 site-packages/omnicrawl/，parent.parent 即程序根；
+    # 工作区检测仍从启动目录向上找项目标记，不影响从项目内启动的路径。
+    app_root = Path(__file__).resolve().parent.parent
     plugin_runtime = None
     try:
         config = load_llm_config()

@@ -1287,6 +1287,66 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(copied, [" 可以复制的"])
 
+    async def test_should_render_selection_highlight_for_ai_reply_and_reasoning(self) -> None:
+        """AI 回复和思考文本形成选区后必须绘制终端选择背景色。"""
+
+        from textual import events
+        from textual.geometry import Region
+
+        from omnicrawl.ui.fullscreen import (
+            AssistantMessage,
+            FullscreenStartup,
+            OmniCrawlApp,
+            ReasoningDisclosure,
+        )
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_reasoning_delta("思考内容可以复制")
+            app._append_delta("AI 回复可以复制")
+            app._render_stream_markdown()
+            await pilot.pause(0.2)
+
+            reasoning = app.query_one(ReasoningDisclosure)
+            reply = app.query_one(AssistantMessage)
+            for widget, row in ((reasoning, 2), (reply, 1)):
+                app.screen.clear_selection()
+                await pilot.mouse_down(widget, offset=(3, row))
+                await pilot._post_mouse_events(
+                    [events.MouseMove],
+                    widget,
+                    offset=(10, row),
+                    button=1,
+                )
+                await pilot.mouse_up(widget, offset=(10, row))
+                await pilot.pause()
+
+                self.assertTrue(app.screen.get_selected_text())
+                rendered_lines = widget.render_lines(
+                    Region(0, 0, widget.region.width, widget.region.height)
+                )
+                self.assertTrue(
+                    any(
+                        segment.style is not None
+                        and segment.style.bgcolor == app.selection_style.bgcolor
+                        for line in rendered_lines
+                        for segment in line
+                    ),
+                    f"{type(widget).__name__} 已形成选区，但没有绘制选择背景色",
+                )
+
     async def test_pending_messages_are_drained_in_fifo_order(self) -> None:
         """生成期间提交的多条消息应按 FIFO 顺序自动发送。"""
 

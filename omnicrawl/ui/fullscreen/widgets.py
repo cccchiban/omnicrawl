@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from rich.markdown import Markdown as RichMarkdown
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
@@ -32,6 +34,47 @@ _SUBAGENT_STATUS_PRESENTATION = {
     "failed": ("×", "失败", "red"),
     "cancelled": ("–", "已取消", "dim"),
 }
+
+
+def _apply_selection_style(
+    strip: Strip,
+    selection: Selection | None,
+    row: int,
+    selection_style: Style,
+) -> Strip:
+    """把 Textual 选区样式叠加到自定义 RichLog 行，保留原始文本样式。"""
+
+    if selection is None or (span := selection.get_span(row)) is None:
+        return strip
+    start, end = span
+    if end == -1:
+        end = sum(len(segment.text) for segment in strip)
+
+    position = 0
+    rendered: list[Segment] = []
+    for segment in strip:
+        segment_end = position + len(segment.text)
+        selected_start = max(start, position)
+        selected_end = min(end, segment_end)
+        if selected_start >= selected_end or segment.control:
+            rendered.append(segment)
+        else:
+            left = selected_start - position
+            right = selected_end - position
+            if left:
+                rendered.append(Segment(segment.text[:left], segment.style))
+            selected_segment_style = (
+                segment.style + selection_style
+                if segment.style is not None
+                else selection_style
+            )
+            rendered.append(
+                Segment(segment.text[left:right], selected_segment_style)
+            )
+            if right < len(segment.text):
+                rendered.append(Segment(segment.text[right:], segment.style))
+        position = segment_end
+    return Strip(rendered, strip.cell_length)
 
 
 @dataclass
@@ -127,10 +170,17 @@ class AssistantMessage(RichLog, can_focus=False):
         self.clear()
         self.write(RichMarkdown(latex_to_text(markdown)), scroll_end=False)
 
-    def _render_line(self, y: int, scroll_x: int, width: int):
-        """给 RichLog 行补充文本坐标，供 Screen 命中鼠标拖选位置。"""
+    def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        """给 RichLog 行补充文本坐标，并绘制 Textual 原生选择样式。"""
 
-        return super()._render_line(y, scroll_x, width).apply_offsets(scroll_x, y)
+        strip = super()._render_line(y, scroll_x, width)
+        strip = _apply_selection_style(
+            strip,
+            self.text_selection,
+            y,
+            self.screen.get_component_rich_style("screen--selection"),
+        )
+        return strip.apply_offsets(scroll_x, y)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """从 RichLog 的渲染行提取纯文本，供鼠标复制使用。"""
@@ -393,14 +443,42 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         self.virtual_size = Size(self._widest_line_width, max(1, height))
 
     def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
+        """渲染行补充文本坐标，供 Screen 命中鼠标拖选位置。
+
+        RichLog 继承版本的行不带 offset meta，导致 compositor 无法把
+        鼠标坐标映射到文本位置（思考内容此前因此不可复制）。
+        已提交行与未完成尾行分支统一补 offsets。
+        """
+
         if y < len(self.lines):
-            return super()._render_line(y, scroll_x, width)
-        tail_index = y - len(self.lines)
-        if 0 <= tail_index < len(self._tail_lines):
-            return self._tail_lines[tail_index].crop_extend(
-                0, width, self.rich_style
-            )
-        return Strip.blank(width, self.rich_style)
+            strip = super()._render_line(y, scroll_x, width)
+        else:
+            tail_index = y - len(self.lines)
+            if 0 <= tail_index < len(self._tail_lines):
+                strip = self._tail_lines[tail_index].crop_extend(
+                    0, width, self.rich_style
+                )
+            else:
+                strip = Strip.blank(width, self.rich_style)
+        strip = _apply_selection_style(
+            strip,
+            self.text_selection,
+            y,
+            self.screen.get_component_rich_style("screen--selection"),
+        )
+        return strip.apply_offsets(scroll_x, y)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """从已提交行 + 未完成尾行提取纯文本，供鼠标复制使用。
+
+        RichLog 继承版本依赖 _render() 返回 Text/Content，而思考块
+        _render() 返回 Panel 包装的 RichVisual，提取必然返回 None；
+        这里与 AssistantMessage 一致，基于行文本自行拼装。
+        """
+
+        lines = [line.text.rstrip() for line in self.lines]
+        lines.extend(line.text.rstrip() for line in self._tail_lines)
+        return selection.extract("\n".join(lines)), "\n"
 
 
 class ToolDisclosure(Static):

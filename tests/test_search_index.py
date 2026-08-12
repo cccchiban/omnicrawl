@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from omnicrawl.workspace.usn import (
     USN_REASON_DATA_OVERWRITE,
     USN_REASON_RENAME_NEW_NAME,
     USN_REASON_RENAME_OLD_NAME,
+    UsnJournalError,
     UsnJournalState,
     UsnRecord,
 )
@@ -585,6 +587,113 @@ class ProjectSearchIndexTest(unittest.TestCase):
                     "excluded dir keyword", tools.grep({"pattern": "excluded", "use_regex": False})
                 )
                 self.assertIn("main.py", tools.find_files({"pattern": "main"}))
+            finally:
+                index.close()
+
+    def test_request_rebuild_refreshes_index_without_full_recreation(self) -> None:
+        """undo 后 request_rebuild 做增量核对：不销毁索引，删除/修改/新增全生效。"""
+
+        def _unavailable_usn_factory(_root: Path) -> None:
+            raise UsnJournalError("不可用，强制 fallback 核对模式")
+
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as cache_dir:
+            workspace = Path(temp_dir)
+            (workspace / "stable.txt").write_text("stable content", encoding="utf-8")
+            (workspace / "change.txt").write_text("original content", encoding="utf-8")
+            (workspace / "removed.txt").write_text("removed content", encoding="utf-8")
+            tools = WorkspaceTools(workspace)
+            index = ProjectSearchIndex(
+                workspace,
+                file_name_enabled=True,
+                content_enabled=True,
+                should_skip=tools.should_index_skip,
+                storage_root=Path(cache_dir),
+                usn_reader_factory=_unavailable_usn_factory,
+            )
+            tools.search_index = index
+            index.start()
+            try:
+                self.assertTrue(index.wait_until_ready(5))
+                original_thread = index._thread  # type: ignore[attr-defined]
+
+                # 模拟 undo 恢复文件树：删除轮次内创建的文件、恢复被改的文件、
+                # 恢复轮次起点存在的文件，三者同时发生。
+                (workspace / "removed.txt").unlink()
+                (workspace / "change.txt").write_text(
+                    "changed keyword", encoding="utf-8"
+                )
+                (workspace / "restored.txt").write_text(
+                    "restored keyword", encoding="utf-8"
+                )
+
+                index.request_rebuild()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    result = tools.grep({"pattern": "restored", "use_regex": False})
+                    if "restored keyword" in result:
+                        break
+                    time.sleep(0.05)
+                self.assertIn(
+                    "restored keyword",
+                    tools.grep({"pattern": "restored", "use_regex": False}),
+                )
+                self.assertIn(
+                    "changed keyword",
+                    tools.grep({"pattern": "changed", "use_regex": False}),
+                )
+                self.assertIn(
+                    "stable content",
+                    tools.grep({"pattern": "stable", "use_regex": False}),
+                )
+                # 已删除文件的内容不应再可检索（残留 FTS 行被清理）。
+                self.assertNotIn(
+                    "removed content",
+                    tools.grep({"pattern": "removed", "use_regex": False}),
+                )
+                # 索引实例与后台线程未被销毁重建。
+                self.assertIs(index._thread, original_thread)  # type: ignore[attr-defined]
+            finally:
+                index.close()
+
+    def test_request_rebuild_during_build_is_consumed_after_ready(self) -> None:
+        """构建期间积压的核对请求在 ready 后第一轮循环被消费，不丢请求。"""
+
+        def _unavailable_usn_factory(_root: Path) -> None:
+            raise UsnJournalError("不可用，强制 fallback 核对模式")
+
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as cache_dir:
+            workspace = Path(temp_dir)
+            (workspace / "only.txt").write_text("only content", encoding="utf-8")
+            tools = WorkspaceTools(workspace)
+            index = ProjectSearchIndex(
+                workspace,
+                file_name_enabled=True,
+                content_enabled=True,
+                should_skip=tools.should_index_skip,
+                storage_root=Path(cache_dir),
+                usn_reader_factory=_unavailable_usn_factory,
+            )
+            tools.search_index = index
+            index.start()
+            try:
+                # 构建尚未 ready 前就请求核对（模拟 undo 发生在索引构建期间）。
+                index.request_rebuild()
+                self.assertTrue(index.wait_until_ready(5))
+                # 请求被消费后，磁盘变化仍会被核对反映（无残留旧行）。
+                (workspace / "only.txt").write_text(
+                    "updated after build", encoding="utf-8"
+                )
+                index.request_rebuild()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    result = tools.grep({"pattern": "updated", "use_regex": False})
+                    if "updated after build" in result:
+                        break
+                    time.sleep(0.05)
+                self.assertIn(
+                    "updated after build",
+                    tools.grep({"pattern": "updated", "use_regex": False}),
+                )
             finally:
                 index.close()
 
