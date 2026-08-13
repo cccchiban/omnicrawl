@@ -512,6 +512,18 @@ class AgentLLMProtocol:
             has_visible_output=has_streamed_visible or bool(tool_call_delta_buffers),
         )
 
+        # 收到过 tool_calls delta 但函数名从未完整到达：与 Runtime 路径一致，
+        # 这也是网关以“正常结束”形态包装断流的截断信号，绝不能静默丢弃
+        # （否则半截回复直接结束回合且不提示用户），必须进入回滚/重试路径。
+        if any(
+            not str(buf.get("function", {}).get("name") or "").strip()
+            for buf in tool_call_delta_buffers.values()
+        ):
+            message = "Agent 流在工具调用名称完整到达前结束，疑似连接被网关截断。"
+            if has_streamed_visible or tool_call_delta_buffers:
+                raise StreamInterruptedAfterOutputError(message)
+            raise RetryableAgentRequestError(message)
+
         if latest_usage is not None:
             on_token_usage(*latest_usage)
 
@@ -939,6 +951,10 @@ def tool_parameters_schema(tool: ToolDefinition) -> dict[str, Any]:
             "type": "object",
             "properties": properties,
         }
+        # 示例值风格没有显式 required 声明，用 minProperties 兜底：
+        # 只要工具声明了参数，就禁止空对象调用，避免模型发送空 arguments。
+        if properties:
+            schema["minProperties"] = 1
     schema.setdefault("type", "object")
     schema.setdefault("properties", {})
     return schema

@@ -440,6 +440,137 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         record.dwControlKeyState = 0
         self.assertIsNone(OmniCrawlWindowsEventMonitor.key_event_to_textual(record))
 
+    def test_windows_event_monitor_detects_multiline_clipboard_paste(self) -> None:
+        """raw input 模式下的多行按键流应与剪贴板匹配并转为 Paste 事件。"""
+
+        from textual import events
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        monitor = OmniCrawlWindowsEventMonitor(
+            loop=None, app=None, exit_event=None, process_event=lambda _event: None
+        )
+        clipboard = "第一行\n第二行\n第三行"
+        monitor._clipboard_reader = lambda: clipboard
+
+        # conhost 把粘贴文本的换行归一为 \r 的按键记录流
+        event = monitor._paste_event_for_stream("第一行\r第二行\r第三行")
+        self.assertIsInstance(event, events.Paste)
+        self.assertEqual(event.text, clipboard)
+
+        # Windows Terminal conpty 可能保留 CRLF 形式
+        event = monitor._paste_event_for_stream("第一行\r\n第二行\r\n第三行")
+        self.assertIsInstance(event, events.Paste)
+        self.assertEqual(event.text, clipboard)
+
+        # 单行（无换行）走普通按键路径，不做剪贴板比对
+        self.assertIsNone(monitor._paste_event_for_stream("单行"))
+
+        # 与剪贴板不一致的多行流不判定为粘贴
+        self.assertIsNone(monitor._paste_event_for_stream("别的\r内容"))
+
+        # 剪贴板不可读时降级为普通按键流
+        monitor._clipboard_reader = lambda: None
+        self.assertIsNone(monitor._paste_event_for_stream("第一行\r第二行"))
+
+    def test_windows_event_monitor_ignores_ctrl_passthrough_in_paste_stream(self) -> None:
+        """conhost 透传的 Ctrl 组合控制字符不应破坏粘贴匹配。"""
+
+        from textual import events
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        monitor = OmniCrawlWindowsEventMonitor(
+            loop=None, app=None, exit_event=None, process_event=lambda _event: None
+        )
+        monitor._clipboard_reader = lambda: "a\nb\nc"
+
+        # Ctrl+V 可能被 conhost 透传为 \x16 控制字符记录
+        event = monitor._paste_event_for_stream("\x16a\rb\rc")
+        self.assertIsInstance(event, events.Paste)
+        self.assertEqual(event.text, "a\nb\nc")
+
+    def test_windows_event_monitor_holds_prefix_until_paste_completes(self) -> None:
+        """大文本分批到达时前缀流应挂起等待，完整后才判定为粘贴。"""
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        monitor = OmniCrawlWindowsEventMonitor(
+            loop=None, app=None, exit_event=None, process_event=lambda _event: None
+        )
+        clipboard = "第一行\n第二行\n第三行\n第四行"
+        monitor._clipboard_reader = lambda: clipboard
+
+        # 第一批：严格前缀（含换行）→ 等待后续批次
+        self.assertTrue(monitor._is_pending_clipboard_prefix("第一行\r第二行"))
+
+        # 首批甚至可能只有一个文本字符，也必须识别为候选前缀。
+        self.assertTrue(monitor._is_pending_clipboard_prefix("第"))
+
+        # 首行超过单批 1024 条记录时，即使首批尚无换行也必须等待。
+        long_clipboard = f"{'a' * 1200}\n第二行"
+        monitor._clipboard_reader = lambda: long_clipboard
+        self.assertTrue(monitor._is_pending_clipboard_prefix("a" * 1024))
+        monitor._clipboard_reader = lambda: clipboard
+
+        # 第二批：完整 → 不再等待，且可转为 Paste 事件
+        full_stream = "第一行\r第二行\r第三行\r第四行"
+        self.assertFalse(monitor._is_pending_clipboard_prefix(full_stream))
+        self.assertIsNotNone(monitor._paste_event_for_stream(full_stream))
+
+        # 非前缀的多行流不等待
+        self.assertFalse(monitor._is_pending_clipboard_prefix("无关\r内容"))
+
+        # 单字符 \r（用户主动按 Enter）不挂起
+        self.assertFalse(monitor._is_pending_clipboard_prefix("\r"))
+
+        # 单行（无换行）不挂起
+        self.assertFalse(monitor._is_pending_clipboard_prefix("abc"))
+
+    def test_should_keep_multiline_paste_buffered_when_return_records_are_processed(self) -> None:
+        """粘贴内部的 Return 记录不能提前冲刷尚未完成的按键流。"""
+
+        from textual import events
+
+        from omnicrawl.ui.fullscreen import OmniCrawlWindowsEventMonitor
+
+        monitor = OmniCrawlWindowsEventMonitor(
+            loop=None, app=None, exit_event=None, process_event=lambda _event: None
+        )
+        clipboard = "第一行\n第二行\n第三行"
+        monitor._clipboard_reader = lambda: clipboard
+
+        buffered = ""
+        flushed: list[str] = []
+        for character in "第一行\r第二行\r第三行":
+            if character == "\r" and monitor._should_flush_before_return(buffered):
+                flushed.append(buffered)
+                buffered = ""
+            buffered += character
+
+        self.assertEqual(flushed, [])
+        paste_event = monitor._paste_event_for_stream(buffered)
+        self.assertIsInstance(paste_event, events.Paste)
+        self.assertEqual(paste_event.text, clipboard)
+
+        # 粘贴完成后紧跟的用户 Enter 应先分发 Paste，再单独作为提交键处理。
+        self.assertTrue(monitor._should_flush_before_return(buffered))
+
+        # 剪贴板自身以换行结尾时，最后一个 Return 仍属于粘贴内容。
+        monitor._clipboard_reader = lambda: "第一行\n第二行\n"
+        self.assertFalse(monitor._should_flush_before_return("第一行\r第二行"))
+
+        # 与剪贴板无关的普通输入仍需在 Enter 前立即冲刷。
+        self.assertTrue(monitor._should_flush_before_return("普通输入"))
+
+        # 手输内容恰好等于剪贴板首行时存在不可消除的字符流歧义：
+        # 先保留候选前缀，再由 50ms 短窗口回退为普通 Enter。
+        monitor._clipboard_reader = lambda: "a\nb\nc"
+        self.assertFalse(monitor._should_flush_before_return("a"))
+        monitor._pending_prefix_since = time.monotonic() - 1
+        monitor._pending_prefix_timeout = monitor.PASTE_SINGLE_LINE_PREFIX_TIMEOUT
+        self.assertTrue(monitor._should_flush_before_return("a"))
+
     @unittest.skipUnless(sys.platform == "win32", "仅验证 Windows 终端按键协议")
     def test_windows_event_monitor_maps_raw_navigation_keys(self) -> None:
         """原始控制台的导航键必须保留修饰状态并转换为 Textual 事件。"""
@@ -1398,14 +1529,20 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
 
             self.assertEqual(agent.calls, ["first"])
-            self.assertEqual(list(app._pending_inputs), ["second", "/skills"])
+            # /skills 是只读即时命令：生成期间直接展示，不进入排队队列。
+            self.assertEqual(list(app._pending_inputs), ["second"])
             self.assertIn(
-                "QUE 2", app.query_one("#status-summary", Static).content.plain
+                "QUE 1", app.query_one("#status-summary", Static).content.plain
             )
+            self.assertIn("Skill 子系统未启用。", app.conversation_text)
 
             release_first.set()
             for _ in range(80):
-                if agent.calls == ["first", "second"] and not app._pending_inputs:
+                if (
+                    agent.calls == ["first", "second"]
+                    and not app._pending_inputs
+                    and "完成：second" in app.conversation_text
+                ):
                     break
                 await pilot.pause(0.05)
 
@@ -1416,8 +1553,61 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("完成：second", app.conversation_text)
 
+    async def test_settings_opens_immediately_during_generation(self) -> None:
+        """生成期间提交 /settings 应立即打开面板，而不是进入排队队列。"""
+
+        from textual.widgets import TextArea
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+        from omnicrawl.ui.fullscreen.settings import SettingsScreen
+
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def run_stream(self, text: str, on_delta, **callbacks) -> str:
+                if text == "first":
+                    first_started.set()
+                    release_first.wait(timeout=1)
+                on_delta(f"完成：{text}")
+                return text
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "first"
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertTrue(first_started.wait(timeout=1))
+
+            composer.text = "/settings"
+            app._hide_command_menu()
+            app._submit_composer_text()
+            for _ in range(60):
+                if isinstance(app.screen, SettingsScreen):
+                    break
+                await pilot.pause(0.05)
+
+            # 即时命令：面板立即打开，且未进入排队队列。
+            self.assertIsInstance(app.screen, SettingsScreen)
+            self.assertEqual(list(app._pending_inputs), [])
+
+            release_first.set()
+            await pilot.pause()
+
     async def test_queued_modal_command_resumes_after_screen_closes(self) -> None:
-        """排队的弹窗命令应暂停后续消息，并在弹窗关闭后恢复。"""
+        """设置面板打开期间后续消息应暂停，并在面板关闭后恢复。"""
 
         from textual.widgets import TextArea
 
@@ -2617,10 +2807,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("yellow", str(telemetry.spans))
             self.assertNotIn("red", str(telemetry.spans))
 
-    async def test_token_rate_shown_while_streaming_and_reset_after_turn(self) -> None:
-        """流式生成期间顶部遥测显示实时 t/s，回合结束后归零为 --。"""
-
-        import time
+    async def test_token_rate_shows_statistical_average_and_persists_after_turn(self) -> None:
+        """顶部 t/s 为累计统计平均：回合结束后保留数值，不再归零为 --。"""
 
         from textual.widgets import Static
 
@@ -2640,26 +2828,26 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
-            # 手工构造 1 秒前的采样点：400 ASCII 字符 ≈ 100 token。
-            # 跨度 1.0s → 速率约 100.0 t/s（同一 tick 内误差 < 1%）。
-            app._generation_samples.append((time.monotonic() - 1.0, 100.0))
+            telemetry = app.query_one("#token-telemetry", Static)
+            # 尚无任何输出记录：显示占位符 --。
+            self.assertIn("-- t/s", telemetry.content.plain)
+            # 累计 200 token ÷ 累计输出时长 2.0s = 100.0 t/s。
+            app._generation_total_tokens = 200.0
+            app._generation_total_seconds = 2.0
             app._refresh_token_rate()
             await pilot.pause()
-            telemetry = app.query_one("#token-telemetry", Static)
             self.assertIn("100.0 t/s", telemetry.content.plain)
-            # MCP 数量已移入第一行右段状态卡片。
-            self.assertIn(
-                "MCP 0", app.query_one("#status-summary", Static).content.plain
-            )
-
+            self.assertEqual(app._tokens_per_second, 100.0)
+            # 回合结束（AI 输出停止）后统计平均值保留，不归零为 --。
             app._finish_turn()
             await pilot.pause()
-            self.assertEqual(app._tokens_per_second, 0.0)
-            self.assertEqual(len(app._generation_samples), 0)
-            self.assertIn("-- t/s", telemetry.content.plain)
+            self.assertEqual(app._tokens_per_second, 100.0)
+            self.assertIn("100.0 t/s", telemetry.content.plain)
 
-    async def test_token_rate_accumulates_from_stream_deltas(self) -> None:
-        """思考与正文流增量都会计入实时生成速率；估算值按字符加权。"""
+    async def test_token_rate_accumulates_cumulative_and_excludes_standby_gaps(self) -> None:
+        """累计输出 token 与输出时长；超过待机阈值的间隔不计入时长。"""
+
+        from unittest.mock import patch
 
         from textual.widgets import Static
 
@@ -2680,25 +2868,28 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         async with app.run_test(size=(120, 40)) as pilot:
             self.assertEqual(app._tokens_per_second, 0.0)
-            # 思考流增量：400 ASCII ≈ 100 token；正文流增量：100 CJK ≈ 100 token。
-            app._append_reasoning_delta("A" * 400)
-            app._append_delta("问题" * 50)
             self.assertEqual(
                 round(app._estimate_generation_tokens("A" * 400)),
                 100,
             )
-            self.assertEqual(
-                round(app._estimate_generation_tokens("问题" * 50)),
-                100,
-            )
+            # 三次增量落在 t=100.0 / 100.5 / 104.0：0.5s 间隔计入输出时长，
+            # 3.5s 间隔视为待机不计时（阈值 GENERATION_STANDBY_GAP_SECONDS=2.0s）。
+            with patch(
+                "omnicrawl.ui.fullscreen.rendering.time.monotonic",
+                side_effect=[100.0, 100.5, 104.0],
+            ):
+                app._record_generation_delta("A" * 400)
+                app._record_generation_delta("A" * 400)
+                app._record_generation_delta("A" * 400)
+            self.assertEqual(app._generation_total_tokens, 300.0)
+            self.assertEqual(app._generation_total_seconds, 0.5)
             app._refresh_token_rate()
             await pilot.pause()
-            self.assertGreater(app._tokens_per_second, 0.0)
+            self.assertEqual(app._tokens_per_second, 600.0)
             self.assertIn(
-                "t/s",
+                "600.0 t/s",
                 app.query_one("#token-telemetry", Static).content.plain,
             )
-            self.assertGreaterEqual(len(app._generation_samples), 2)
 
     async def test_context_summary_shows_full_workspace_path_in_muted_style(self) -> None:
         """顶部显示项目绝对路径（灰色），不做平台相关的 basename 解析。"""
@@ -3387,7 +3578,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(widget.has_class("collapsed"))
 
     async def test_assistant_message_renders_latex_math(self) -> None:
-        """模型回复中的 LaTeX 公式应转换为终端可读的 Unicode 数学文本。"""
+        """模型回复中的 LaTeX 公式应转换为终端可读的 Unicode 数学文本。
+
+        验证 Unicode 近似路径：行内公式转上下标、块级公式转分式与
+        希腊字母。
+        """
 
         from omnicrawl.ui.fullscreen import (
             AssistantMessage,
@@ -3426,6 +3621,80 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("α", rendered)
             self.assertNotIn("$a^2", rendered)
             self.assertNotIn("$\\frac", rendered)
+
+    async def test_assistant_message_renders_latex_fenced_block(self) -> None:
+        """Markdown 的 LaTeX fenced block 不能以灰色代码块显示。"""
+
+        from omnicrawl.ui.fullscreen import AssistantMessage, FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_message(
+                "assistant",
+                """公式：
+```latex
+\\frac{1}{2} + \\alpha = 1
+```
+""",
+            )
+            await pilot.pause()
+            message = app.query_one(AssistantMessage)
+            rendered = "".join(
+                segment.text
+                for line_number in range(message.size.height)
+                for segment in message.render_line(line_number)
+            )
+            self.assertIn("1/2", rendered)
+            self.assertIn("α", rendered)
+            self.assertNotIn("```", rendered)
+            self.assertNotIn("\\\\frac", rendered)
+
+    async def test_assistant_message_renders_latex_fence_at_message_start(self) -> None:
+        """回复首行就是 LaTeX fenced block 时，显示标记不能破坏解析。"""
+
+        from omnicrawl.ui.fullscreen import AssistantMessage, FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+        )
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_message(
+                "assistant",
+                """```latex
+\\frac{1}{2} + \\alpha = 1
+```""",
+            )
+            await pilot.pause()
+            message = app.query_one(AssistantMessage)
+            rendered = "".join(
+                segment.text
+                for line_number in range(message.size.height)
+                for segment in message.render_line(line_number)
+            )
+            self.assertIn("1/2", rendered)
+            self.assertIn("α", rendered)
+            self.assertNotIn("```", rendered)
+            self.assertNotIn("\\\\frac", rendered)
 
     async def test_confirmation_screen_returns_explicit_approval(self) -> None:
         """人工审批必须通过全屏模态框返回明确结果。"""
@@ -3786,7 +4055,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("已写入 notes/demo.txt", str(record.content))
 
     async def test_replace_text_disclosure_is_expanded_while_running_and_after_completion(self) -> None:
-        """替换文本记录默认展开：调用中显示标题摘要，完成后显示原始输出。"""
+        """替换文本记录默认展开：调用中显示标题摘要，完成后显示 diff 预览。"""
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ToolDisclosure
 
@@ -3815,10 +4084,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             app._handle_tool_start(1, tool_call)
             record = app.query_one(ToolDisclosure)
             self.assertNotIn("collapsed", record.classes)
-            # 调用中无结果：正文为空，标题保留文件变更统计摘要。
+            # 调用中无结果：正文仅展示参数推导的 diff 预览，不含结果行。
             self.assertIn("M  notes/demo.txt", str(record.content))
             self.assertIn("+1 -1", str(record.content))
-            self.assertNotIn("line-two", str(record.content))
+            self.assertIn("@@ snippet @@", str(record.content))
+            self.assertNotIn("结果：", str(record.content))
 
             app._handle_tool_result(
                 tool_call,
@@ -3827,8 +4097,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
 
             self.assertNotIn("collapsed", record.classes)
-            # 除 write_file 外：正文为原始输出，不再展示 diff 预览。
-            self.assertNotIn("line-three", str(record.content))
+            # 与 write_file 一致：正文展示旁注行号 diff 预览与结果文本。
+            self.assertIn("line-three", str(record.content))
             self.assertIn("已修改 notes/demo.txt，替换 1 处。", str(record.content))
 
     async def test_tool_disclosure_stays_expanded_while_running_and_after_completion(self) -> None:

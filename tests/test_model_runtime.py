@@ -237,6 +237,11 @@ class ModelRuntimeTests(unittest.TestCase):
                         "ResponseTextDelta",
                         (),
                         {"type": "response.output_text.delta", "delta": "完成"},
+                    )(),
+                    type(
+                        "ResponseCompleted",
+                        (),
+                        {"type": "response.completed"},
                     )()
                 ]
             )
@@ -310,6 +315,11 @@ class ModelRuntimeTests(unittest.TestCase):
                         "ResponseTextDelta",
                         (),
                         {"type": "response.output_text.delta", "delta": "完成"},
+                    )(),
+                    type(
+                        "ResponseCompleted",
+                        (),
+                        {"type": "response.completed"},
                     )()
                 ]
             )

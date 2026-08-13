@@ -138,7 +138,12 @@ class ConfirmationScreen(ModalScreen[bool]):
 
 
 class AssistantMessage(RichLog, can_focus=False):
-    """支持 Textual 原生鼠标选择且不抢占输入焦点的 AI Markdown 回复。"""
+    """支持 Textual 原生鼠标选择且不抢占输入焦点的 AI Markdown 回复。
+
+    LaTeX 公式统一由 ``latex_to_text`` 转为 Unicode 近似文本（行内
+    ``$..$``、块级 ``$$..$$``/``\\[..\\]``、数学 fenced block 与整行
+    裸公式均覆盖）。
+    """
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -157,18 +162,38 @@ class AssistantMessage(RichLog, can_focus=False):
             wrap=True,
             auto_scroll=False,
         )
+        self._last_markdown = ""  # 最近一次完整 Markdown，供挂载后重绘
         if markdown:
             self.update(markdown)
+
+    def on_mount(self) -> None:
+        """挂载后重走渲染管线，保证构造期（app 未绑定）的样式正确。"""
+
+        super().on_mount()
+        if self._last_markdown:
+            self.update(self._last_markdown)
 
     def update(self, markdown: str) -> None:
         """用完整 Markdown 重绘当前消息，同时保留 RichLog 的可选区能力。
 
-        渲染前把 LaTeX 公式片段（$..$、$$..$$ 等）转换为终端可读的
-        Unicode 数学文本；无公式时走快速路径，不影响流式渲染性能。
+        全部 LaTeX 公式（行内/块级/裸公式）统一经 ``latex_to_text`` 转为
+        Unicode 近似文本，不依赖任何可选图像渲染依赖。
         """
 
+        self._last_markdown = markdown
         self.clear()
-        self.write(RichMarkdown(latex_to_text(markdown)), scroll_end=False)
+        # ``◇ `` 是工作台给 AssistantMessage 加的显示前缀，不属于 Markdown
+        # 内容。数学 fenced 必须从行首开始，因此解析前暂时剥离它；普通
+        # Markdown 路径仍使用完整字符串，保持原有显示格式。
+        render_markdown = markdown
+        display_prefix = ""
+        if render_markdown.startswith("◇ "):
+            display_prefix = "◇ "
+            render_markdown = render_markdown[len(display_prefix) :]
+        self.write(
+            RichMarkdown(display_prefix + latex_to_text(render_markdown)),
+            scroll_end=False,
+        )
 
     def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
         """给 RichLog 行补充文本坐标，并绘制 Textual 原生选择样式。"""
@@ -484,10 +509,10 @@ class ReasoningDisclosure(RichLog, can_focus=False):
 class ToolDisclosure(Static):
     """工具调用记录；所有工具默认展开，正文始终可见。
 
-    除 write_file 外，所有工具的展开正文只显示前五行（原始输出），
-    超出部分以灰色提示行截断并折叠，避免大段工具输出刷屏；
-    write_file 保留完整文件变更预览。鼠标交互已全面禁用，
-    展开/折叠不再提供切换入口。
+    除 write_file 与 replace_text 外，所有工具的展开正文只显示前五行
+    （原始输出），超出部分以灰色提示行截断并折叠，避免大段工具输出
+    刷屏；write_file 与 replace_text 保留完整文件变更预览。鼠标交互
+    已全面禁用，展开/折叠不再提供切换入口。
     """
 
     can_focus = False
@@ -496,8 +521,8 @@ class ToolDisclosure(Static):
     MAX_EXPANDED_BODY_LINES = 5
     # 正文被截断时替换尾部内容的提示行。
     TRUNCATION_HINT = "…（内容过长，仅显示前五行）"
-    # 豁免五行限制的工具：write_file 保持完整正文展示。
-    UNLIMITED_TOOL_NAMES = frozenset({"write_file"})
+    # 豁免五行限制的工具：write_file 与 replace_text 保持完整正文展示。
+    UNLIMITED_TOOL_NAMES = frozenset({"write_file", "replace_text"})
 
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
         super().__init__(classes="message tool-message")
@@ -507,7 +532,7 @@ class ToolDisclosure(Static):
         self.status = "调用中"
         self.duration_seconds = 0.0
         self.result_text = ""
-        # 除 write_file 外的所有工具正文受五行上限约束。
+        # 除 write_file 与 replace_text 外的所有工具正文受五行上限约束。
         self._limit_body_lines = tool_name not in self.UNLIMITED_TOOL_NAMES
         self._refresh_display()
 

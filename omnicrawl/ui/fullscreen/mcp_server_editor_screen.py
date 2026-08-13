@@ -7,7 +7,6 @@ import shlex
 from typing import Any, Optional
 
 from textual.app import ComposeResult
-from textual.renderables.blank import Blank
 from textual import work
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
@@ -46,9 +45,6 @@ class MCPServerEditorScreen(ModalScreen[Optional[MCPServerConfig]]):
         self._original = server
         self._existing_names = existing_names
         self._draft = server or MCPServerConfig(name="new-server")
-
-    def render(self) -> Blank:
-        return Blank(self.styles.background)
 
     def compose(self) -> ComposeResult:
         d = self._draft

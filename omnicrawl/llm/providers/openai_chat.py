@@ -209,12 +209,25 @@ class OpenAIChatCompletionsRuntime:
         if cancel_check is not None:
             cancel_check()
 
-        # 将缓冲的完整 tool call 收尾为 Completed 事件
+        # 将缓冲的完整 tool call 收尾为 Completed 事件。流在此正常耗尽并不
+        # 代表调用一定完整：网关可能以“正常结束”形态包装断流，此时 name
+        # 缺失或 arguments 是半截 JSON 都是截断信号，绝不能静默丢弃（否则
+        # 半截回复会直接结束回合且不提示用户），交由上层回滚并重试。
         for idx in sorted(buffers.keys()):
             buf = buffers[idx]
             name = str(buf.get("name") or "").strip()
             if not name:
-                continue
+                raise ModelError(
+                    code=ModelErrorCode.STREAM_INTERRUPTED,
+                    message="Chat Completions 流在工具调用名称完整到达前结束，疑似连接被网关截断。",
+                    retryable=True,
+                )
+            if not _arguments_json_complete(buf.get("arguments", "")):
+                raise ModelError(
+                    code=ModelErrorCode.STREAM_INTERRUPTED,
+                    message="Chat Completions 流在工具调用参数完整到达前结束，疑似连接被网关截断。",
+                    retryable=True,
+                )
             call_id = str(buf.get("id") or f"call_{idx}")
             if idx not in started:
                 yield ToolCallStarted(call_id=call_id, name=name)
@@ -457,3 +470,20 @@ def _emit_tool_call_deltas(
             yield ToolCallStarted(call_id=call_id, name=buf["name"])
         if args_delta:
             yield ToolCallArgumentsDelta(call_id=call_id, delta=args_delta)
+
+
+def _arguments_json_complete(raw_arguments: Any) -> bool:
+    """工具调用参数是否为完整可解析的 JSON。
+
+    空字符串视为完整（模型可不带参数）；非空字符串必须能被 json.loads
+    解析，否则说明参数流在半途被网关截断（半截 JSON），不能当正常调用
+    收尾，否则会被 parse_tool_arguments 静默降级为 {} 并以空参数误执行。
+    """
+
+    if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+        return True
+    try:
+        json.loads(raw_arguments)
+        return True
+    except json.JSONDecodeError:
+        return False

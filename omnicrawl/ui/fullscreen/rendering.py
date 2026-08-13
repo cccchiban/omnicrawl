@@ -2,13 +2,14 @@
 
 P2 重构从 ``ui/fullscreen/__init__.py`` 的 ``OmniCrawlApp`` 拆出的独立模块
 （2026-08-11）。这里集中：Agent 协议事件聚合（status/subagent/tool/token）、
-流式 Markdown 渲染与回滚、运行时状态指示器、生成速率滑动窗口估算。
+流式 Markdown 渲染与回滚、运行时状态指示器、统计平均生成速率累计。
 
 ``RenderingMixin`` 的方法名、签名与行为与原 ``OmniCrawlApp`` 逐字一致；
 跨领域方法（``_token_telemetry_text``、``_refresh_pending_queue_count``、
 ``_submit`` 等）仍通过 ``self`` 在 ``OmniCrawlApp`` 的 MRO 上解析。
-类常量（``STREAM_RENDER_INTERVAL_SECONDS``、``TOKEN_RATE_WINDOW_SECONDS``、
-``STATUS_SPINNER_FRAMES``）与实例状态仍定义在 ``OmniCrawlApp``。
+类常量（``STREAM_RENDER_INTERVAL_SECONDS``、
+``GENERATION_STANDBY_GAP_SECONDS``、``STATUS_SPINNER_FRAMES``）与实例
+状态仍定义在 ``OmniCrawlApp``。
 """
 
 from __future__ import annotations
@@ -213,23 +214,26 @@ class RenderingMixin:
         return cjk + (len(text) - cjk) / 4.0
 
 
-    def _prune_generation_samples(self) -> None:
-        """丢弃窗口之外的采样点，保持滑动窗口有界。"""
-
-        cutoff = time.monotonic() - self.TOKEN_RATE_WINDOW_SECONDS
-        while self._generation_samples and self._generation_samples[0][0] < cutoff:
-            self._generation_samples.popleft()
-
-
     def _record_generation_delta(self, delta: str) -> None:
-        """记录思考/正文流增量的时间与估算 token，供 tok/s 实时计算。"""
+        """累计思考/正文流增量的估算 token 与连续输出时长。
+
+        每次增量把估算 token 累入总输出 token；与上一次增量的间隔不超过
+        ``GENERATION_STANDBY_GAP_SECONDS`` 的视为连续输出，该间隔计入总
+        输出时长；超过阈值的间隔为待机（工具执行、模型停顿、回合间隙），
+        不计时。这样 t/s = 总输出 token ÷ 总输出时长 只反映实际输出速度，
+        不被空闲等待稀释，且输出停止后统计平均值保留不归零。
+        """
 
         if not delta:
             return
-        self._generation_samples.append(
-            (time.monotonic(), self._estimate_generation_tokens(delta))
-        )
-        self._prune_generation_samples()
+        tokens = self._estimate_generation_tokens(delta)
+        self._generation_total_tokens += tokens
+        now = time.monotonic()
+        if self._last_generation_at is not None:
+            gap = now - self._last_generation_at
+            if 0 < gap <= self.GENERATION_STANDBY_GAP_SECONDS:
+                self._generation_total_seconds += gap
+        self._last_generation_at = now
 
 
     def _update_token_telemetry(self) -> None:
@@ -248,42 +252,23 @@ class RenderingMixin:
 
 
     def _refresh_token_rate(self) -> None:
-        """重算最近窗口内的生成速率并刷新顶部遥测；无采样时跳过。"""
+        """按累计统计平均重算 t/s 并刷新顶部遥测；无输出记录时保持 --。
+
+        速率 = 累计输出 token ÷ 累计输出时长（会话级平均值），输出停止或
+        回合结束后保留不归零；尚无输出或输出时长不可测时保持 0，显示 --。
+        """
 
         if len(self.screen_stack) > 1:
             # 模态审批屏成为活动 Screen 后主工作台不在查询树中，此时跳过。
             return
-        if not self._generation_samples:
-            if self._tokens_per_second:
-                self._tokens_per_second = 0.0
-                self._update_token_telemetry()
-            return
-        self._prune_generation_samples()
-        if not self._generation_samples:
-            # 窗口过期：速率归零并刷新，避免残留旧速率。
-            self._tokens_per_second = 0.0
-            self._update_token_telemetry()
-            return
-        now = time.monotonic()
-        span = min(
-            now - self._generation_samples[0][0],
-            self.TOKEN_RATE_WINDOW_SECONDS,
-        )
-        # 防御刚收到大量增量立即刷新导致的瞬时尖峰。
-        span = max(span, 0.25)
-        total = sum(tokens for _, tokens in self._generation_samples)
-        rate = total / span if span > 0 else 0.0
+        if self._generation_total_seconds > 0:
+            rate = self._generation_total_tokens / self._generation_total_seconds
+        else:
+            # 尚无输出记录（或单分片回复输出时长不可测）：不展示虚假速率。
+            rate = 0.0
         if rate != self._tokens_per_second:
             self._tokens_per_second = rate
             self._update_token_telemetry()
-
-
-    def _reset_token_rate(self) -> None:
-        """回合结束或流回滚时归零速率并刷新遥测，避免残留旧速率。"""
-
-        self._generation_samples.clear()
-        self._tokens_per_second = 0.0
-        self._update_token_telemetry()
 
 
     def _append_reasoning_delta(self, delta: str) -> None:
@@ -374,7 +359,16 @@ class RenderingMixin:
             except Exception:
                 pass
             self._reasoning_message = None
-        self._reset_token_rate()
+        # 撤销本次回合已累计的 token 与输出时长：重试生成的完整回复不会与
+        # 半截输出重复计数；统计平均值本身保留（不归零）。
+        snapshot = self._generation_stats_snapshot
+        if snapshot is not None:
+            (
+                self._generation_total_tokens,
+                self._generation_total_seconds,
+                self._last_generation_at,
+            ) = snapshot
+        self._refresh_token_rate()
 
 
     def _append_message(
@@ -428,7 +422,8 @@ class RenderingMixin:
             # 推理后直接结束回合（无回复/无工具）时，同样补齐未完成行。
             self._reasoning_message.flush_tail()
         self._reasoning_message = None
-        self._reset_token_rate()
+        # 回合结束刷新遥测：统计平均速率保留，不再归零为 --。
+        self._refresh_token_rate()
         # 取消回合的终态不能被 finally 中的通用完成逻辑覆盖为“完成”：
         # 状态文本保持与 cancel_pending_turn 展示的“已取消”一致。
         self._set_runtime_status("已取消" if was_cancelled else "完成", "complete")

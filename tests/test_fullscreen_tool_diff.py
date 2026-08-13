@@ -44,8 +44,8 @@ class FullscreenToolDiffTest(unittest.TestCase):
         self.assertEqual(style_for("44ms"), "dim")
         self.assertTrue(all("bold" not in str(span.style) for span in title.spans))
 
-    def test_replace_text_title_keeps_change_summary_and_body_is_raw(self) -> None:
-        """replace_text 标题保留文件变更摘要；正文改为原始输出（无 diff 预览）。"""
+    def test_replace_text_title_keeps_change_summary_and_body_shows_diff(self) -> None:
+        """replace_text 标题保留文件变更摘要；正文展示旁注行号 diff 与结果。"""
 
         arguments = {
             "path": "omnicrawl/ui/fullscreen/hud.py",
@@ -69,8 +69,11 @@ class FullscreenToolDiffTest(unittest.TestCase):
             arguments=arguments,
             result_text="已修改 hud.py，替换 1 处。",
         )
-        # 除 write_file 外：正文直接展示原始输出，不再包装 diff/元信息。
-        self.assertEqual(body.plain, "已修改 hud.py，替换 1 处。")
+        # 与 write_file 一致：正文展示旁注行号 diff 预览与完整结果文本。
+        self.assertIn("@@ snippet @@", body.plain)
+        self.assertIn("+ beta2", body.plain)
+        self.assertIn("- beta", body.plain)
+        self.assertIn("结果：已修改 hud.py，替换 1 处。", body.plain)
 
     def test_write_file_overwrite_uses_rewrite_stats_without_fake_deletes(self) -> None:
         arguments = {

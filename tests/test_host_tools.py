@@ -409,6 +409,88 @@ class HostToolCatalogTest(unittest.TestCase):
         payload = json.loads(result.output)
         self.assertEqual(payload["error"]["code"], "invalid_arguments")
 
+    def test_search_contract_adds_min_properties_for_example_style_tools(self) -> None:
+        """示例值风格工具契约应带 minProperties=1，标准 Schema 工具保持 required 声明。"""
+
+        example_style = ToolDefinition(
+            name="list",
+            description="列出工作区内的文件和目录",
+            argument_schema='{"path": ".", "recursive": false}',
+            requires_confirmation=False,
+            run=lambda _arguments: ToolResult(ok=True, output="ok"),
+        )
+        standard_style = ToolDefinition(
+            name="bash",
+            description="执行命令",
+            argument_schema=(
+                '{"type":"object","properties":{"command":{"type":"string"}},'
+                '"required":["command"]}'
+            ),
+            requires_confirmation=False,
+            run=lambda _arguments: ToolResult(ok=True, output="ok"),
+        )
+        catalog = HostToolCatalog({"list": example_style, "bash": standard_style})
+
+        example_contract = json.loads(
+            catalog.search({"query": "list", "limit": 1}).output
+        )["tools"][0]["parameters"]
+        standard_contract = json.loads(
+            catalog.search({"query": "bash", "limit": 1}).output
+        )["tools"][0]["parameters"]
+
+        self.assertEqual(example_contract["minProperties"], 1)
+        self.assertNotIn("required", example_contract)
+        self.assertEqual(standard_contract["required"], ["command"])
+        self.assertNotIn("minProperties", standard_contract)
+
+    def test_prepare_invocation_rejects_empty_arguments_for_example_style(self) -> None:
+        """回归：示例值风格工具的空 arguments 必须被拦截，而不是静默进入执行器。"""
+
+        catalog = HostToolCatalog(
+            {
+                "list": ToolDefinition(
+                    name="list",
+                    description="列出工作区内的文件和目录",
+                    argument_schema='{"path": ".", "recursive": false}',
+                    requires_confirmation=False,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                )
+            }
+        )
+
+        result = catalog.prepare_invocation(
+            {"tool_name": "list", "arguments": {}}
+        )
+        self.assertIsInstance(result, ToolResult)
+        assert isinstance(result, ToolResult)
+        payload = json.loads(result.output)
+        self.assertFalse(result.ok)
+        self.assertEqual(payload["error"]["code"], "invalid_arguments")
+        self.assertTrue(payload["error"]["retryable"])
+        self.assertTrue(any("属性至少为" in issue["message"] for issue in payload["error"]["issues"]))
+
+    def test_prepare_invocation_accepts_empty_arguments_for_no_argument_tool(self) -> None:
+        """无参数工具的空调用仍然合法，不受 minProperties 兜底影响。"""
+
+        catalog = HostToolCatalog(
+            {
+                "list_worktrees": ToolDefinition(
+                    name="list_worktrees",
+                    description="列出工作树",
+                    argument_schema="{}",
+                    requires_confirmation=False,
+                    run=lambda _arguments: ToolResult(ok=True, output="ok"),
+                )
+            }
+        )
+
+        prepared = catalog.prepare_invocation(
+            {"tool_name": "list_worktrees", "arguments": {}}
+        )
+        self.assertFalse(isinstance(prepared, ToolResult))
+        assert not isinstance(prepared, ToolResult)
+        self.assertEqual(prepared.arguments, {})
+
 
 class HostToolDispatchTest(unittest.TestCase):
     def test_invoke_tool_resolves_real_tool_before_approval_and_execution(self) -> None:

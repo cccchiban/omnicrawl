@@ -141,6 +141,10 @@ class OpenAIResponsesRuntime:
         call_buffers: dict[str, dict[str, str]] = {}
         emitted_call_ids: set[str] = set()
         finish_reason = "stop"
+        # 是否已收到 response.completed 完成事件：网关可能以“优雅关闭连接
+        # （EOF）”包装断流，SDK 层迭代看似“正常耗尽”却从未到达完成事件，
+        # 仅靠 finish_reason 无法区分正常完成与截断，需要显式跟踪该信号。
+        stream_completed_seen = False
         try:
             for event in registered_stream_events(
                 stream,
@@ -202,6 +206,7 @@ class OpenAIResponsesRuntime:
                         emitted_call_ids,
                     )
                 elif event_type == "response.completed":
+                    stream_completed_seen = True
                     response = getattr(event, "response", None)
                     if response is None and isinstance(event, dict):
                         response = event.get("response")
@@ -237,6 +242,17 @@ class OpenAIResponsesRuntime:
         if cancel_check is not None:
             cancel_check()
 
+        # 网关可能以“优雅关闭连接（EOF）”包装断流：SDK 层迭代正常耗尽，
+        # 但响应从未走到 response.completed。此时必须按流中断处理，绝不能
+        # 静默当正常完成（否则半截回复会直接结束回合且不提示用户），交由
+        # 上层回滚已输出的半截文字并自动重试。
+        if not stream_completed_seen:
+            raise ModelError(
+                code=ModelErrorCode.STREAM_INTERRUPTED,
+                message="Responses 流在收到 response.completed 前提前耗尽，疑似连接被网关截断。",
+                retryable=True,
+            )
+
         # Responses 的降级提示放在正常流事件之后，避免在模型首个文本增量前
         # 插入非内容事件，保持 UI 首屏输出和旧 Provider 的事件顺序稳定。
         if prompt_cache_warning:
@@ -245,11 +261,19 @@ class OpenAIResponsesRuntime:
                 message="当前网关不支持 prompt_cache_key，已自动移除后重试。",
             )
 
-        # 收尾未完成的 function call
+        # 收尾未完成的 function call。收到过 arguments delta 但 name 从未
+        # 到达（或调用已 emit 过）的残留条目都是截断信号：绝不能静默跳过
+        # （否则半截回复直接结束回合且不提示用户），交由上层回滚并重试。
         for call_id, buf in list(call_buffers.items()):
             name = buf.get("name") or ""
-            if not name or call_id in emitted_call_ids:
+            if call_id in emitted_call_ids:
                 continue
+            if not name:
+                raise ModelError(
+                    code=ModelErrorCode.STREAM_INTERRUPTED,
+                    message="Responses 流在工具调用名称完整到达前结束，疑似连接被网关截断。",
+                    retryable=True,
+                )
             yield ToolCallCompleted(
                 call_id=call_id,
                 name=name,

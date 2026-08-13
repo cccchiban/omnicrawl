@@ -272,7 +272,15 @@ class LLMConfigTest(unittest.TestCase):
         class FakeResponses:
             def create(self, **kwargs):
                 captured.update(kwargs)
-                return iter([])  # 空流式事件，stream_turn 立即结束
+                return iter(
+                    [
+                        type(
+                            "ResponseCompleted",
+                            (),
+                            {"type": "response.completed"},
+                        )()
+                    ]
+                )  # 空流式事件 + completed，stream_turn 立即结束
 
         class FakeClient:
             responses = FakeResponses()

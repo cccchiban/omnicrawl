@@ -327,9 +327,11 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     ]
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
-    # 生成速率统计窗口：只统计最近窗口内的增量，平滑瞬时抖动。
-    TOKEN_RATE_WINDOW_SECONDS = 2.0
-    # 顶部 tok/s 遥测的刷新间隔（生成期间才触发刷新）。
+    # 统计平均生成速率（t/s）的待机判定阈值：相邻输出增量间隔超过该值
+    # 视为“待机”（工具执行、模型停顿、回合间隙），不计入输出时长；
+    # 间隔内的时长才累计为输出时间，避免空闲等待稀释平均速率。
+    GENERATION_STANDBY_GAP_SECONDS = 2.0
+    # 顶部 t/s 遥测的刷新间隔（累计统计值变化后最多延迟一个周期显示）。
     TOKEN_RATE_REFRESH_INTERVAL_SECONDS = 0.5
     MONITOR_POLL_INTERVAL_SECONDS = 0.5
     STATUS_SPINNER_INTERVAL_SECONDS = 0.16
@@ -410,9 +412,16 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._input_tokens = 0
         self._output_tokens = 0
         self._cached_input_tokens = 0
-        # 实时生成速率：滑动窗口内 (时刻, 估算 token 数) 采样点。
-        # 采样源是 UI 收到的流式文本增量，因此是估算值而非供应商用量。
-        self._generation_samples: deque[tuple[float, float]] = deque()
+        # 统计平均生成速率（会话累计）：总输出 token ÷ 总输出时长。
+        # token 来自流式文本增量的字符估算（非供应商用量）；时长只累计
+        # 相邻增量间隔内的连续输出，待机间隔（见 GENERATION_STANDBY_GAP_SECONDS）
+        # 不计入，因此输出停止后平均值保留不归零。
+        self._generation_total_tokens = 0.0
+        self._generation_total_seconds = 0.0
+        self._last_generation_at: float | None = None
+        # 回合开始前的累计快照：模型流中断回滚时撤销本回合已累计的量，
+        # 避免重试生成的完整回复与半截输出重复计数。
+        self._generation_stats_snapshot: tuple[float, float, float | None] | None = None
         self._tokens_per_second = 0.0
         self._runtime_status_text = "完成"
         self._runtime_status_state = "complete"
@@ -651,10 +660,12 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
             return
         composer.clear()
         self._compact_pastes.clear()
-        if self.is_generating and text == "/quit":
-            self._handle_command(text)
-            return
         if self.is_generating:
+            if self._command_dispatcher.is_immediate(text):
+                # 即时命令（/settings、/skills、只读查询等）不占用回合线程，
+                # 生成期间直接执行；有 I/O 或修改回合状态的命令仍按 FIFO 排队。
+                self._handle_command(text)
+                return
             self._pending_inputs.append(text)
             self._refresh_pending_queue_count()
             self._append_message("status", f"消息已排队（{len(self._pending_inputs)}）")
@@ -831,6 +842,12 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._cancel_requested.clear()
         self._append_message("user", text)
         self._set_runtime_status("正在思考", "working")
+        # 回合开始前快照累计统计；模型流中断自动重试触发回滚时据此恢复。
+        self._generation_stats_snapshot = (
+            self._generation_total_tokens,
+            self._generation_total_seconds,
+            self._last_generation_at,
+        )
         self._run_agent_turn(text)
 
     @work(thread=True, exclusive=True, group="agent-turn", exit_on_error=False)

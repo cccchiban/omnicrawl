@@ -13,7 +13,8 @@ P1 重构从 ``ui/fullscreen/__init__.py`` 拆出的独立模块（2026-08-11）
 from __future__ import annotations
 
 import sys
-from typing import Any
+import time
+from typing import Any, Callable
 
 from textual import events
 from textual.geometry import Offset
@@ -26,6 +27,14 @@ if sys.platform == "win32":
 else:
     _textual_win32 = None
     _TextualWindowsDriver = object
+
+# 输入流开头的控制字符（ASCII < 0x20 且非 \t\r\n）。
+# conhost 在某些配置下会把 Ctrl+V 等快捷键透传为 \x16 之类的控制字符记录，
+# 粘贴文本比较前剥离，避免把用户主动按下的快捷键误算进粘贴内容。
+_STREAM_CONTROL_PREFIX_CHARS = "".join(
+    chr(code) for code in range(32) if chr(code) not in "\t\r\n"
+)
+
 
 _MOUSE_REPORTING_DISABLE_SEQUENCE = (
     "\x1b[?1000l"
@@ -140,6 +149,55 @@ def _restore_windows_raw_input_mode_if_needed(
         return False
 
 
+def _read_windows_clipboard_text() -> str | None:
+    """读取 Windows 剪贴板 CF_UNICODETEXT；不可用或非文本时返回 None。
+
+    供输入监视器把多行粘贴按键流识别为 Paste 事件。复用
+    ``copy_to_clipboard`` 的 ctypes 风格：64 位系统上 HGLOBAL 是指针，
+    必须显式声明 restype，否则 ctypes 按 32 位 int 截断句柄。剪贴板被
+    其他进程锁定或 API 异常时静默返回 None，由调用方降级为普通按键流。
+    """
+
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        CF_UNICODETEXT = 13
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.GetClipboardData.argtypes = [wintypes.UINT]
+        user32.GetClipboardData.restype = wintypes.HANDLE
+        user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+
+        if not user32.OpenClipboard(None):
+            return None
+        try:
+            if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                return None
+            handle = user32.GetClipboardData(CF_UNICODETEXT)
+            if not handle:
+                return None
+            locked = kernel32.GlobalLock(handle)
+            if not locked:
+                return None
+            try:
+                # CF_UNICODETEXT 是 NUL 结尾的宽字符串；按首个 NUL 截止，
+                # 不读取 GlobalSize 可能包含的对齐或填充字节。
+                return ctypes.wstring_at(locked)
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        return None
+
+
 
 class OmniCrawlWindowsEventMonitor(
     _textual_win32.EventMonitor if _textual_win32 is not None else object
@@ -177,6 +235,26 @@ class OmniCrawlWindowsEventMonitor(
     WINDOWS_MOUSE_DOUBLE_CLICK = 0x0002
     WINDOWS_MOUSE_WHEELED = 0x0004
     WINDOWS_MOUSE_HWHEELED = 0x0008
+
+    PASTE_PREFIX_TIMEOUT = 0.5
+    """已含换行的粘贴前缀停止到码后，最长等待时间（秒）。"""
+
+    PASTE_SINGLE_LINE_PREFIX_TIMEOUT = 0.05
+    """尚无换行的候选前缀等待窗口，避免普通输入长期不显示。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        if _textual_win32 is not None:
+            # 仅在 Windows 下传给 EventMonitor；非 win32 平台基类是 object，
+            # 不接受参数（此时类只被测试实例化，用于验证纯逻辑方法）。
+            super().__init__(*args, **kwargs)
+        # 大文本粘贴会分多次 ReadConsoleInputW 到达；前缀匹配挂起期间记录
+        # 起始时刻，超时后强制按普通按键流处理，避免用户输入被无限暂存。
+        self._pending_prefix_since: float | None = None
+        self._pending_prefix_length = 0
+        self._pending_prefix_timeout = self.PASTE_PREFIX_TIMEOUT
+        # 可注入的剪贴板读取器，测试时替换为假实现。
+        self._clipboard_reader: Callable[[], str | None] = _read_windows_clipboard_text
+
 
     @classmethod
     def _key_with_modifiers(cls, key: str, control_key_state: int) -> str:
@@ -315,6 +393,79 @@ class OmniCrawlWindowsEventMonitor(
 
         return messages, button_state, (x, y)
 
+    @staticmethod
+    def _normalize_stream_text(text: str) -> str:
+        """把按键流/剪贴板文本统一为 LF 换行后比较。"""
+
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    @staticmethod
+    def _strip_stream_control_prefix(text: str) -> str:
+        """剥离流开头的控制字符（\x16 等快捷键透传残留），不影响正文。"""
+
+        return text.lstrip(_STREAM_CONTROL_PREFIX_CHARS)
+
+    def _paste_event_for_stream(self, text: str) -> events.Paste | None:
+        """按键字符流与剪贴板完整匹配时返回 Paste 事件，否则 None。
+
+        只处理含换行的多行流：单行粘贴走普通按键路径即可正确插入，
+        避免为每次击键读取剪贴板。完整匹配才判定为粘贴，把多行内容
+        以一次 Paste 事件交给输入框（走已有的压缩/展开链路）。
+        """
+
+        if "\r" not in text and "\n" not in text:
+            return None
+        clipboard = self._clipboard_reader()
+        if not clipboard:
+            return None
+        stripped = self._strip_stream_control_prefix(text)
+        if self._normalize_stream_text(stripped) == self._normalize_stream_text(
+            clipboard
+        ):
+            return events.Paste(clipboard)
+        return None
+
+    def _is_pending_clipboard_prefix(self, text: str) -> bool:
+        """按键流是否为多行剪贴板的严格前缀（等待后续 read 批次）。
+
+        首批记录可能在剪贴板首个换行到达前就已读满，甚至只有一个
+        文本字符，因此不能要求当前流自身含换行；只要剪贴板是多行文本
+        且规范化后严格前缀匹配，就短暂等待后续批次。单独的换行仍按
+        普通 Enter 处理，避免提交键被挂起。
+        """
+
+        if text in {"\r", "\n", "\r\n"}:
+            return False
+        clipboard = self._clipboard_reader()
+        if not clipboard or ("\r" not in clipboard and "\n" not in clipboard):
+            return False
+        stripped = self._strip_stream_control_prefix(text)
+        normalized_stream = self._normalize_stream_text(stripped)
+        normalized_clipboard = self._normalize_stream_text(clipboard)
+        return (
+            normalized_clipboard.startswith(normalized_stream)
+            and normalized_stream != normalized_clipboard
+        )
+
+    def _should_flush_before_return(self, text: str) -> bool:
+        """根据当前缓冲判断 Return 是否仍属于候选多行粘贴。"""
+
+        candidate = f"{text}\r"
+        if self._paste_event_for_stream(candidate) is not None:
+            return False
+        if (
+            self._pending_prefix_since is not None
+            and time.monotonic() - self._pending_prefix_since
+            > self._pending_prefix_timeout
+        ):
+            return True
+        if not self._is_pending_clipboard_prefix(candidate):
+            return True
+        # 无法仅凭字符流区分“手输首行后 Enter”和“粘贴首个换行”；
+        # 保留严格前缀，交给短前缀超时回退，避免跨 ReadConsoleInputW
+        # 批次的粘贴在换行处被拆成提交事件。
+        return False
+
     def run(self) -> None:
         if _textual_win32 is None:
             return
@@ -337,14 +488,47 @@ class OmniCrawlWindowsEventMonitor(
             mouse_button_state = 0
             mouse_position = (0, 0)
 
-            def flush_keys() -> None:
+            def flush_keys(force: bool = False) -> None:
                 if not keys:
                     return
-                for parsed_event in parser.feed(
+                text = (
                     "".join(keys)
                     .encode("utf-16", "surrogatepass")
                     .decode("utf-16")
-                ):
+                )
+                if not force:
+                    # 多行粘贴在 raw input 模式下是普通按键记录流；与剪贴板
+                    # 完整匹配时转为一次 Paste 事件，避免换行被解析成 Enter
+                    # 导致逐段提交。前缀匹配说明大文本还在分批到达，暂缓冲刷。
+                    paste_event = self._paste_event_for_stream(text)
+                    if paste_event is not None:
+                        self.process_event(paste_event)
+                        del keys[:]
+                        self._pending_prefix_since = None
+                        self._pending_prefix_length = 0
+                        return
+                    if self._is_pending_clipboard_prefix(text):
+                        normalized_text = self._normalize_stream_text(text)
+                        normalized_length = len(normalized_text)
+                        if normalized_length > self._pending_prefix_length:
+                            self._pending_prefix_since = time.monotonic()
+                            self._pending_prefix_length = normalized_length
+                        # 只有首行及其换行时仍可能是普通 Enter，快速回退；
+                        # 已收到第二行字符或更多换行后，给跨批大粘贴更长窗口。
+                        first_newline = normalized_text.find("\n")
+                        has_multiline_evidence = (
+                            first_newline >= 0
+                            and normalized_text[first_newline + 1 :] != ""
+                        )
+                        self._pending_prefix_timeout = (
+                            self.PASTE_PREFIX_TIMEOUT
+                            if has_multiline_evidence
+                            else self.PASTE_SINGLE_LINE_PREFIX_TIMEOUT
+                        )
+                        return
+                self._pending_prefix_since = None
+                self._pending_prefix_length = 0
+                for parsed_event in parser.feed(text):
                     self.process_event(parsed_event)
                 del keys[:]
 
@@ -353,6 +537,17 @@ class OmniCrawlWindowsEventMonitor(
                     self.process_event(event)
 
                 if win32.wait_for_handles([h_in], 100) is None:
+                    # 无新事件时仍要推进前缀挂起的超时：若用户手动输入的内容
+                    # 恰好与剪贴板前缀相同且已停止输入，不能无限等待后续批次，
+                    # 超时后强制按普通按键流处理。
+                    if (
+                        self._pending_prefix_since is not None
+                        and time.monotonic() - self._pending_prefix_since
+                        > self._pending_prefix_timeout
+                    ):
+                        self._pending_prefix_since = None
+                        self._pending_prefix_length = 0
+                        flush_keys(force=True)
                     continue
 
                 read_console_input(
@@ -373,6 +568,13 @@ class OmniCrawlWindowsEventMonitor(
                             flush_keys()
                             self.process_event(normalized_event)
                         elif key_event.bKeyDown:
+                            if (
+                                key_event.wVirtualKeyCode == self.WINDOWS_RETURN_KEY
+                                and self._should_flush_before_return("".join(keys))
+                            ):
+                                # 内部换行保留；普通 Enter 或粘贴后的 Enter
+                                # 先冲刷已有文本，再单独作为提交键处理。
+                                flush_keys()
                             key = key_event.uChar.UnicodeChar
                             if key and key != "\x00":
                                 keys.append(key)

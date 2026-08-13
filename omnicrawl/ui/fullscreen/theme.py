@@ -123,7 +123,12 @@ TERMINAL_THEME = Theme(
 
 
 def terminal_select_css(selector: str = ".choice-select") -> str:
-    """返回终端主题下可点击、可见选中态的下拉框样式。"""
+    """返回终端主题下可点击、可见选中态的下拉框样式。
+
+    Textual 8.x 中 Select 是 can_focus 容器：TAB 聚焦落在 Select 自身而非内部
+    SelectCurrent，因此除 SelectCurrent:focus 外还需匹配 :focus 与 :focus-within，
+    否则收起状态下聚焦无边框反馈。
+    """
 
     return f"""
     {selector} {{
@@ -146,6 +151,8 @@ def terminal_select_css(selector: str = ".choice-select") -> str:
         background: $terminal-hover;
     }}
     {selector} > SelectCurrent:focus,
+    {selector}:focus > SelectCurrent,
+    {selector}:focus-within > SelectCurrent,
     {selector}.-expanded > SelectCurrent {{
         border: tall $terminal-blue;
         background: $terminal-background;

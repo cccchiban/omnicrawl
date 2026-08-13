@@ -449,6 +449,8 @@ def _compact_schema_node(value: Any, *, depth: int) -> Any:
             "maximum",
             "minItems",
             "maxItems",
+            "minProperties",
+            "maxProperties",
             "pattern",
         }
         return {
@@ -513,6 +515,8 @@ def _validate_schema_node(
             extras = [key for key in value if key not in properties]
             for key in extras:
                 issues.append({"path": f"{path}.{key}", "message": "不是声明的字段。"})
+        _validate_number_bound(value, schema, path, issues, "minProperties", "属性至少为")
+        _validate_number_bound(value, schema, path, issues, "maxProperties", "属性最多为")
         for key, child_schema in properties.items():
             if key in value and isinstance(child_schema, Mapping):
                 _validate_schema_node(value[key], child_schema, f"{path}.{key}", issues)
@@ -578,7 +582,7 @@ def _validate_number_bound(
     bound = schema.get(key)
     comparable = (
         len(value)
-        if key in {"minLength", "maxLength", "minItems", "maxItems"}
+        if key in {"minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"}
         else value
     )
     if isinstance(bound, (int, float)) and not isinstance(bound, bool):

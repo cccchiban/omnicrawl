@@ -182,3 +182,29 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertEqual(outcome.message, "子任务列表")
         self.assertFalse(outcome.refresh_context)
         self.assertEqual(calls, ["/tasks"])
+
+    def test_is_immediate_marks_readonly_commands_only(self) -> None:
+        """生成期间仅纯 UI/只读命令可即时执行，其余命令必须排队。"""
+
+        dispatcher = CommandDispatcher(self.agent)
+
+        immediate = [
+            "/quit", "退出", "结束", "再见",
+            "/settings", "/skills", "/plugins", "/approval",
+            "/sessions", "/archives", "/reasoning", "/tasks", "/workspace",
+            "/history 关键词", "/task task-1",
+        ]
+        queued = [
+            "请分析这个项目",
+            "/new", "/mcp", "/workspace D:/next", "/memory:clean",
+            "/approval:manual", "/auto-approve:on", "/auto-review:on",
+            "/reasoning low", "/archive", "/undo", "/compact",
+            "/rename 新标题", "/resume session-1", "/task cancel task-1",
+        ]
+
+        for command in immediate:
+            with self.subTest(command=command):
+                self.assertTrue(dispatcher.is_immediate(command))
+        for command in queued:
+            with self.subTest(command=command):
+                self.assertFalse(dispatcher.is_immediate(command))

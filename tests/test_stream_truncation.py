@@ -22,10 +22,17 @@ from omnicrawl.agent.llm_protocol import (
 )
 from omnicrawl.agent.types import ToolCall, ToolDefinition, ToolResult
 from omnicrawl.llm.capabilities import ModelCapabilities
+from omnicrawl.llm.errors import ModelError, ModelErrorCode
 from omnicrawl.llm.protocol import (
+    ModelIdentity,
     ResponseCompleted,
     TextDelta,
+    ToolCallArgumentsDelta,
+    ToolCallCompleted,
+    ToolCallStarted,
 )
+from omnicrawl.llm.providers.openai_chat import OpenAIChatCompletionsRuntime
+from omnicrawl.llm.providers.openai_responses import OpenAIResponsesRuntime
 from omnicrawl.llm.registry import ModelDescriptor, ProviderProfile
 from omnicrawl.llm.runtime import ModelRuntimeManager
 
@@ -216,6 +223,238 @@ class ProtocolTruncationTests(unittest.TestCase):
 
         protocol = self._protocol(None, client=_FakeClient())
         with self.assertRaises(RetryableAgentRequestError):
+            self._request_once(protocol, [{"role": "user", "content": "hi"}])
+
+    def test_chat_runtime_tool_call_name_missing_raises_stream_interrupted(self) -> None:
+        """Chat Runtime：文字后工具调用名称从未到达（finish_reason=stop）时，
+        必须识别为截断而不是静默当正常完成。"""
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                return iter(
+                    [
+                        {
+                            "choices": [
+                                {"delta": {"content": "半截文字"}, "finish_reason": None}
+                            ]
+                        },
+                        {
+                            "choices": [
+                                {
+                                    "delta": {
+                                        "tool_calls": [
+                                            {
+                                                "index": 0,
+                                                "id": "call_1",
+                                                "function": {"arguments": "{\"path\":"},
+                                            }
+                                        ]
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ]
+                        },
+                        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                    ]
+                )
+
+        class _FakeClient:
+            chat = SimpleNamespace(completions=_FakeCompletions())
+
+        identity = ModelIdentity(
+            profile_id="p1",
+            provider="openai",
+            protocol="openai_chat_completions",
+            model_id="demo-model",
+        )
+        profile = ProviderProfile(
+            id="p1",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="test-key",
+            default_protocol="openai_chat_completions",
+        )
+        descriptor = ModelDescriptor(
+            identity=identity,
+            display_name="demo",
+            capabilities=ModelCapabilities(streaming=True, tools=True),
+            context_window_tokens=128000,
+        )
+        runtime = OpenAIChatCompletionsRuntime(
+            identity=identity,
+            capabilities=ModelCapabilities(streaming=True, tools=True),
+            client=_FakeClient(),
+            profile=profile,
+            descriptor=descriptor,
+            _owns_client=False,
+        )
+        protocol = self._protocol(runtime)
+        with self.assertRaises(StreamInterruptedAfterOutputError):
+            self._request_once(protocol, [{"role": "user", "content": "hi"}])
+
+    def test_chat_runtime_tool_call_truncated_json_raises_stream_interrupted(self) -> None:
+        """Chat Runtime：name 已到达但 arguments 是半截 JSON（finish_reason=stop）
+        同样必须识别为截断，不能以空参数误执行。"""
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                return iter(
+                    [
+                        {
+                            "choices": [
+                                {"delta": {"content": "半截文字"}, "finish_reason": None}
+                            ]
+                        },
+                        {
+                            "choices": [
+                                {
+                                    "delta": {
+                                        "tool_calls": [
+                                            {
+                                                "index": 0,
+                                                "id": "call_1",
+                                                "function": {
+                                                    "name": "write_file",
+                                                    "arguments": "{\"path\":\"a\"",
+                                                },
+                                            }
+                                        ]
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ]
+                        },
+                        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                    ]
+                )
+
+        class _FakeClient:
+            chat = SimpleNamespace(completions=_FakeCompletions())
+
+        identity = ModelIdentity(
+            profile_id="p1",
+            provider="openai",
+            protocol="openai_chat_completions",
+            model_id="demo-model",
+        )
+        profile = ProviderProfile(
+            id="p1",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="test-key",
+            default_protocol="openai_chat_completions",
+        )
+        descriptor = ModelDescriptor(
+            identity=identity,
+            display_name="demo",
+            capabilities=ModelCapabilities(streaming=True, tools=True),
+            context_window_tokens=128000,
+        )
+        runtime = OpenAIChatCompletionsRuntime(
+            identity=identity,
+            capabilities=ModelCapabilities(streaming=True, tools=True),
+            client=_FakeClient(),
+            profile=profile,
+            descriptor=descriptor,
+            _owns_client=False,
+        )
+        protocol = self._protocol(runtime)
+        with self.assertRaises(StreamInterruptedAfterOutputError):
+            self._request_once(protocol, [{"role": "user", "content": "hi"}])
+
+    def test_responses_runtime_tool_call_name_missing_raises_stream_interrupted(self) -> None:
+        """Responses Runtime：文字后工具调用 name 缺失但收到 response.completed，
+        必须识别为截断而不是静默当正常完成。"""
+
+        class _FakeResponses:
+            def create(self, **kwargs):
+                return iter(
+                    [
+                        {"type": "response.output_text.delta", "delta": "半截文字"},
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": "call_1",
+                            "delta": "{\"path\":",
+                        },
+                        {
+                            "type": "response.completed",
+                            "response": {"status": "completed", "output": []},
+                        },
+                    ]
+                )
+
+        class _FakeClient:
+            responses = SimpleNamespace(create=_FakeResponses().create)
+
+        identity = ModelIdentity(
+            profile_id="p1",
+            provider="openai",
+            protocol="openai_responses",
+            model_id="demo-model",
+        )
+        profile = ProviderProfile(
+            id="p1",
+            provider="openai",
+            base_url="https://example.test/v1",
+            api_key="test-key",
+            default_protocol="openai_responses",
+        )
+        descriptor = ModelDescriptor(
+            identity=identity,
+            display_name="demo",
+            capabilities=ModelCapabilities(streaming=True, tools=True),
+            context_window_tokens=128000,
+        )
+        runtime = OpenAIResponsesRuntime(
+            identity=identity,
+            capabilities=ModelCapabilities(streaming=True, tools=True),
+            client=_FakeClient(),
+            profile=profile,
+            descriptor=descriptor,
+            _owns_client=False,
+        )
+        protocol = self._protocol(runtime)
+        with self.assertRaises(StreamInterruptedAfterOutputError):
+            self._request_once(protocol, [{"role": "user", "content": "hi"}])
+
+    def test_openai_client_tool_call_name_missing_raises_stream_interrupted(self) -> None:
+        """旧 client 路径：tool_calls 到达但名称缺失且 finish_reason=stop，
+        同样必须进入回滚路径而不是静默当正常完成。"""
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                return iter(
+                    [
+                        {
+                            "choices": [
+                                {"delta": {"content": "半截文字"}, "finish_reason": None}
+                            ]
+                        },
+                        {
+                            "choices": [
+                                {
+                                    "delta": {
+                                        "tool_calls": [
+                                            {
+                                                "index": 0,
+                                                "id": "call_1",
+                                                "function": {"arguments": "{\"path\":"},
+                                            }
+                                        ]
+                                    },
+                                    "finish_reason": None,
+                                }
+                            ]
+                        },
+                        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                    ]
+                )
+
+        class _FakeClient:
+            chat = SimpleNamespace(completions=_FakeCompletions())
+
+        protocol = self._protocol(None, client=_FakeClient())
+        with self.assertRaises(StreamInterruptedAfterOutputError):
             self._request_once(protocol, [{"role": "user", "content": "hi"}])
 
 

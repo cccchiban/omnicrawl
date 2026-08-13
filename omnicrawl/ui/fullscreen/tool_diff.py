@@ -29,9 +29,9 @@ from .theme import (
 
 
 FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
-# 豁免“原始输出 + 五行折叠”规则的工具：write_file 保留文件变更预览
-# （diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
-FULL_BODY_TOOLS = frozenset({"write_file"})
+# 豁免“原始输出 + 五行折叠”规则的工具：write_file 与 replace_text 保留
+# 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
+FULL_BODY_TOOLS = frozenset({"write_file", "replace_text"})
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
 MAX_PREVIEW_CHARS_PER_LINE = 160
@@ -343,9 +343,10 @@ def tool_disclosure_body(
 ) -> Text:
     """生成展开后的正文（不含标题行）。
 
-    除 write_file 外的所有工具统一直接展示工具返回的原始输出（灰色），
-    不再包装“工具/参数/结果”元信息；write_file 保留文件变更预览正文
-    （diff/rewrite 摘要），是唯一不受五行折叠限制的工具。
+    除 write_file 与 replace_text 外的所有工具统一直接展示工具返回的
+    原始输出（灰色），不再包装“工具/参数/结果”元信息；write_file 与
+    replace_text 保留文件变更预览正文（diff/rewrite 摘要），不受五行
+    折叠限制。
     """
 
     if _tool_operation(tool_name) in FULL_BODY_TOOLS:

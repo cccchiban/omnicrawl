@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import Any, Optional
 
 from textual.app import ComposeResult
-from textual.renderables.blank import Blank
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
@@ -52,9 +51,6 @@ class MCPSettingsScreen(ModalScreen[Optional[MCPSettingsAction]]):
         self._selected = 0
         self._busy = False
         self._status = "Enter/空格修改；Server 管理进入下一级。"
-
-    def render(self) -> Blank:
-        return Blank(self.styles.background)
 
     def compose(self) -> ComposeResult:
         with Container(id="mcp-settings-dialog"):

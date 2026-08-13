@@ -117,7 +117,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
                     value=self._enabled,
                     allow_blank=False,
                     id="image-gen-enabled",
-                    classes="image-gen-control",
+                    classes="image-gen-control choice-select",
                 )
                 yield Static("接口地址 base_url（官方或 OpenAI 兼容中转站）", classes="image-gen-field-label")
                 yield Input(
@@ -154,7 +154,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
                     value=c.size if c.size in _SIZES else "auto",
                     allow_blank=False,
                     id="image-gen-size",
-                    classes="image-gen-control",
+                    classes="image-gen-control choice-select",
                 )
                 yield Static("默认质量 quality", classes="image-gen-field-label")
                 yield Select(
@@ -162,7 +162,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
                     value=c.quality,
                     allow_blank=False,
                     id="image-gen-quality",
-                    classes="image-gen-control",
+                    classes="image-gen-control choice-select",
                 )
                 yield Static("默认输出格式 output_format", classes="image-gen-field-label")
                 yield Select(
@@ -170,7 +170,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
                     value=c.output_format,
                     allow_blank=False,
                     id="image-gen-format",
-                    classes="image-gen-control",
+                    classes="image-gen-control choice-select",
                 )
                 yield Static("每次默认生成张数 n", classes="image-gen-field-label")
                 yield Select(
@@ -178,7 +178,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
                     value=c.n if c.n in _COUNTS else 1,
                     allow_blank=False,
                     id="image-gen-count",
-                    classes="image-gen-control",
+                    classes="image-gen-control choice-select",
                 )
                 yield Static("请求超时 timeout_seconds", classes="image-gen-field-label")
                 yield Select(
@@ -186,7 +186,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
                     value=c.timeout_seconds if c.timeout_seconds in _TIMEOUTS else 120,
                     allow_blank=False,
                     id="image-gen-timeout",
-                    classes="image-gen-control",
+                    classes="image-gen-control choice-select",
                 )
                 yield Static(" ", id="image-gen-status")
             with Horizontal(id="image-gen-actions"):

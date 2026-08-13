@@ -189,6 +189,37 @@ class CommandDispatcher:
             )
         return CommandOutcome(handled=False)
 
+    def is_immediate(self, text: str) -> bool:
+        """判断命令是否可在 Agent 回合生成期间立即执行。
+
+        仅允许纯 UI 操作或只读查询即时响应；会修改会话/回合状态、
+        执行文件/网络 I/O 或切换工作区的命令必须保持 FIFO 排队，
+        避免与后台回合 worker 并发。返回 True 的命令必然被
+        ``dispatch`` 识别为 handled。
+        """
+
+        stripped = text.strip()
+        if stripped in self._EXIT_WORDS:
+            return True
+        if stripped in {
+            "/settings",   # 打开设置面板（纯 UI）
+            "/skills",     # 只读 Skill 列表
+            "/plugins",    # 只读插件状态
+            "/approval",   # 只读查询审批模式（切换类命令会写配置，保持排队）
+            "/sessions",   # 只读会话列表
+            "/archives",   # 只读归档列表
+            "/reasoning",  # 只读查询推理强度（切换类命令会写配置，保持排队）
+            "/tasks",      # 只读子任务列表
+            "/workspace",  # 只读当前工作区查询（切换走慢命令 worker）
+        }:
+            return True
+        if stripped.startswith("/history "):
+            return True  # 只读提示历史查询
+        parts = stripped.split()
+        if len(parts) == 2 and parts[0] == "/task" and parts[1].casefold() != "cancel":
+            return True  # 只读任务详情；/task cancel 会取消任务，保持排队
+        return False
+
     def _dispatch_workspace(self, text: str) -> CommandOutcome:
         """构造工作区切换结果，保留 UI 对 Monitor 生命周期的控制权。"""
 

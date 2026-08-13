@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import Any, Optional
 
 from textual.app import ComposeResult
-from textual.renderables.blank import Blank
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
@@ -51,9 +50,6 @@ class MCPServerListScreen(ModalScreen[Optional[MCPSettingsAction]]):
         self._selected = 0
         self._editing_name = ""
         self._status = "Enter 编辑，Space 启用/禁用，A 添加。"
-
-    def render(self) -> Blank:
-        return Blank(self.styles.background)
 
     def compose(self) -> ComposeResult:
         with Container(id="mcp-servers-dialog"):
