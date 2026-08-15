@@ -193,8 +193,12 @@ class OpenAIResponseLLM:
             data = {}
 
         texts: list[str] = []
-        for item in data.get("output", []):
-            for content in item.get("content", []):
+        for item in data.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            for content in item.get("content") or []:
+                if not isinstance(content, dict):
+                    continue
                 text = content.get("text")
                 if isinstance(text, str) and text.strip():
                     texts.append(text.strip())

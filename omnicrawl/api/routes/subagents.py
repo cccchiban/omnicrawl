@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from ...agent import AgentError
 from ..deps import data, jsonable, service
-from ..models import APIServiceError, ConfirmationDecision
+from ..models import APIServiceError
 
 
 router = APIRouter(tags=["subagents"])
@@ -65,29 +65,6 @@ async def stream_subagent_events(
         generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@router.get("/subagents/confirmations")
-def list_subagent_confirmations(request: Request) -> dict[str, Any]:
-    """列出当前 Session 仍等待远程决议的跨父 Run 后台审批。"""
-
-    return data(service(request).list_background_subagent_confirmations())
-
-
-@router.post("/subagents/confirmations/{confirmation_id}")
-def decide_subagent_confirmation(
-    confirmation_id: str,
-    payload: ConfirmationDecision,
-    request: Request,
-) -> dict[str, Any]:
-    """提交一次后台审批决定；已取消、超时或已决议的请求不能再次批准。"""
-
-    return data(
-        service(request).decide_background_subagent_confirmation(
-            confirmation_id,
-            payload.approved,
-        )
     )
 
 

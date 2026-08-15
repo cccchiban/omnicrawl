@@ -81,7 +81,7 @@ class OpenAIResponsesRuntime:
         extra_body.setdefault("reasoning", {"effort": effort})
 
         tools = _tools_for_responses(request)
-        input_items = _messages_to_responses_input(request.messages)
+        input_items = messages_to_responses_input(request.messages)
         kwargs: dict[str, Any] = {
             "model": self.identity.model_id,
             "instructions": request.system_prompt,
@@ -400,7 +400,7 @@ def _tools_for_responses(request: ModelTurnRequest) -> list[dict[str, Any]]:
     return tools
 
 
-def _messages_to_responses_input(
+def messages_to_responses_input(
     messages: tuple[ConversationMessage, ...],
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []

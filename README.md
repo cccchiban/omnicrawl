@@ -1,5 +1,9 @@
 # OmniCrawl
 
+<p align="center">
+  <img src="assets/logo.jpg" alt="OmniCrawl Logo" width="200">
+</p>
+
 OmniCrawl 是一款本地运行的个人 AI 编程助手（终端工作台），提供全屏 TUI 与本地 HTTP/SSE API。它以 Agent 循环方式执行任务：理解目标 → 读取项目文件 → 搜索文本 → 编写或修改文件 → 执行命令，并默认在工具执行前请求人工确认（也可切换自动审批模式）。
 
 ## 功能特性

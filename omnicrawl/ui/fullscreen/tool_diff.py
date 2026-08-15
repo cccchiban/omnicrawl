@@ -32,12 +32,10 @@ FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
 # 豁免“原始输出 + 五行折叠”规则的工具：write_file 与 replace_text 保留
 # 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
 FULL_BODY_TOOLS = frozenset({"write_file", "replace_text"})
-# search_tools 的返回内容（候选工具清单）对用户没有展示价值，正文完全
-# 隐藏：不显示返回内容，也不显示任何“已隐藏”提示行，只保留标题行。
-HIDDEN_BODY_TOOLS = frozenset({"search_tools"})
-# 网页抓取（fetcher）的结果只展示元信息（URL/状态/标题），隐藏页面正文：
-# 页面正文体积大、对排障价值低，折叠为一行灰色提示，避免刷屏。
-FETCHER_CONTENT_HINT = "（网页正文内容已隐藏）"
+# 正文对用户没有展示价值、完全隐藏的工具：search_tools（候选工具清单）与
+# read（文件内容只读，标题已含路径与行号摘要）。不显示返回内容，也不显示
+# 任何“已隐藏”提示行，只保留标题行。
+HIDDEN_BODY_TOOLS = frozenset({"search_tools", "read"})
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
 MAX_PREVIEW_CHARS_PER_LINE = 160
@@ -110,8 +108,10 @@ def _tool_title_context(tool_name: str, arguments: Any, result_text: str) -> str
     args = arguments if isinstance(arguments, dict) else {}
     operation = _tool_operation(tool_name)
     if operation in {"bash", "powershell"}:
+        # 命令完整展示，不做长度截断：短标题只保留单字母标识，命令本身
+        # 是用户最关心的信息，超长时由 Textual 自动换行。
         command = str(args.get("command") or "").strip()
-        return _compact_title_value(command, max_chars=64) if command else ""
+        return command if command else ""
     if operation == "monitor":
         action = str(args.get("action") or "").strip()
         command = str(args.get("command") or "").strip()
@@ -345,36 +345,28 @@ def fetcher_body(result_text: str) -> Text:
     """fetcher 结果正文：保留汇总/URL/状态/标题，隐藏网页正文内容。
 
     抓取到的页面正文体积大、对排障价值低，只展示元信息（URL、状态、
-    标题），页面正文折叠为一行灰色提示（含省略行数），避免刷屏。
+    标题），页面正文直接折叠，不显示任何“已隐藏”提示，避免刷屏。
     失败条目（"失败: ..."）原样保留，便于排障。
     """
 
     lines = result_text.splitlines()
     kept: list[str] = []
     skipping_content = False
-    hidden_lines = 0
     for line in lines:
         if skipping_content:
             # 内容块结束后（下一个条目、失败条目或结尾）恢复保留。
             if re.match(r"^\d+\.\s", line) or line.startswith("   失败: "):
                 skipping_content = False
             else:
-                hidden_lines += 1
                 continue
         if line.startswith("   内容: "):
             skipping_content = True
-            hidden_lines += 1
             continue
         kept.append(line)
 
     rendered = Text()
     if kept:
         rendered.append("\n".join(kept), style=TOOL_TEXT)
-    if hidden_lines:
-        rendered.append(
-            f"\n{FETCHER_CONTENT_HINT}（已省略 {hidden_lines} 行）",
-            style=TEXT_MUTED,
-        )
     return rendered
 
 
@@ -390,7 +382,7 @@ def tool_disclosure_body(
     原始输出（灰色），不再包装“工具/参数/结果”元信息；write_file 与
     replace_text 保留文件变更预览正文（diff/rewrite 摘要），不受五行
     折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；search_tools
-    的候选工具清单不展示给终端用户，正文完全隐藏（连提示行也没有）。
+    与 read 的正文完全不展示给终端用户（正文为空，不保留任何提示行）。
     """
 
     operation = _tool_operation(tool_name)
@@ -399,7 +391,7 @@ def tool_disclosure_body(
     if operation == "fetcher":
         return fetcher_body(result_text)
     if operation in HIDDEN_BODY_TOOLS:
-        # 候选工具清单不展示给终端用户：正文为空，连提示行也不保留。
+        # search_tools/read 正文不展示给终端用户：正文为空，不保留任何提示行。
         return Text()
 
     rendered = Text()
@@ -633,7 +625,6 @@ def plain_tool_title(
 __all__ = [
     "FILE_CHANGE_TOOLS",
     "FULL_BODY_TOOLS",
-    "FETCHER_CONTENT_HINT",
     "fetcher_body",
     "FileChangeView",
     "describe_file_change",

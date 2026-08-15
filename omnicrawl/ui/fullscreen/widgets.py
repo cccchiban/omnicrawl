@@ -509,10 +509,10 @@ class ToolDisclosure(Static):
 
     除 write_file、replace_text 与 search_tools 外，所有工具的展开正文
     做头尾采样：不超过五行时原样显示，超出时剥离前导空行后保留首尾
-    各两行有效行，中间以灰色提示行折叠（提示携带有效总行数），避免
-    大段工具输出刷屏，同时让测试汇总、错误栈尾部等关键信息直接可见；
-    write_file 与 replace_text 保留完整文件变更预览，search_tools 的
-    候选工具清单不展示给终端用户（正文完全隐藏，只保留标题行）。鼠标
+    各两行有效行，中间直接折叠（不显示任何截断提示行），避免大段工具
+    输出刷屏，同时让测试汇总、错误栈尾部等关键信息直接可见；write_file
+    与 replace_text 保留完整文件变更预览，search_tools 与 read 的正文
+    不展示给终端用户（只保留标题行，且没有任何“已隐藏”提示）。鼠标
     交互已全面禁用，展开/折叠不再提供切换入口。
     """
 
@@ -523,8 +523,6 @@ class ToolDisclosure(Static):
     # 正文被截断时首部与尾部各保留的有效行数。
     HEAD_BODY_LINES = 2
     TAIL_BODY_LINES = 2
-    # 正文被截断时替换中间内容的提示行模板（{total} 为有效总行数）。
-    TRUNCATION_HINT = "…（共 {total} 行，仅显示首尾各 2 行）"
     # 豁免五行限制的工具：write_file 与 replace_text 保持完整正文展示；
     # search_tools 已由 tool_disclosure_body 直接隐藏（正文为空），无需豁免。
     UNLIMITED_TOOL_NAMES = frozenset({"write_file", "replace_text"})
@@ -588,11 +586,10 @@ class ToolDisclosure(Static):
         self.update(rendered)
 
     def _truncate_body_lines(self, body: Text) -> Text:
-        """把展开正文做头尾采样，并追加一行灰色折叠提示。
+        """把展开正文做头尾采样，中间直接折叠，不显示截断提示。
 
         剥离前导空行后按有效（非空）行计数：不超过上限时原样返回；
-        超出时保留首尾各两行有效行，中间以灰色提示行折叠，提示行携带
-        有效总行数，让用户知道还有多少输出被折叠且尾部关键信息可见。
+        超出时保留首尾各两行有效行，中间直接折叠（不渲染任何提示行）。
         """
 
         parts = body.split("\n")
@@ -606,10 +603,6 @@ class ToolDisclosure(Static):
         for part in effective[: self.HEAD_BODY_LINES]:
             truncated.append_text(part)
             truncated.append("\n")
-        truncated.append(
-            self.TRUNCATION_HINT.format(total=len(effective)),
-            style=TOOL_TEXT,
-        )
         for part in effective[-self.TAIL_BODY_LINES :]:
             truncated.append("\n")
             truncated.append_text(part)

@@ -213,22 +213,8 @@ def format_tool_confirmation(tool_name: str, arguments: dict[str, Any]) -> str:
     if description is None:
         description = "执行操作"
     detail = _format_dangerous_tool_detail(tool_name, arguments)
-    origin = arguments.get("_subagent_origin")
 
     lines = [f"Agent 想要{description}。"]
-    if isinstance(origin, dict):
-        agent_label = _truncate_for_display(str(origin.get("agent_label", "subagent")), 80)
-        task_id = _truncate_for_display(str(origin.get("task_id", "")), 80)
-        task_description = _truncate_for_display(
-            str(origin.get("description", "")),
-            120,
-        )
-        source = f"来源：子任务 {agent_label}"
-        if task_id:
-            source += f"（{task_id}）"
-        if task_description:
-            source += f"，任务：{task_description}"
-        lines.append(source)
     if detail:
         lines.append(detail)
     lines.extend(["", "是否允许执行？"])

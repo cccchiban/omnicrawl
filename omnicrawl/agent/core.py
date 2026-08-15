@@ -97,13 +97,6 @@ from .prompt_context import (
     build_system_prompt,
 )
 from .session_facade import AgentSessionFacade
-from .subagents.approval import (
-    ApprovalBroker,
-    SubAgentApprovalRequest,
-    SubAgentApprovalScope,
-    current_subagent_approval_scope,
-    subagent_approval_risk_summary,
-)
 from .subagents.coordinator import (
     SubAgentCoordinator,
     SubAgentExecutionResult,
@@ -582,6 +575,9 @@ class LocalToolAgent:
         self._history: list[dict[str, str]] = []
         self._pending_user_text: str | None = None
         self._active_skills: list[SkillMatchResult] = []
+        # 审查请求与主对话共享上下文：按线程保存最近一次模型请求的消息快照，
+        # 供自动审查复用相同 system prompt 与消息前缀（命中会话缓存并理解用户意图）。
+        self._review_context_local = threading.local()
         self._closed = False
         self._closing = False
         self._close_callbacks: list[Callable[[], None]] = []
@@ -650,9 +646,6 @@ class LocalToolAgent:
         self._subagent_worktree_sessions: dict[str, WorktreeSession] = {}
         self._subagent_worktree_lock = threading.Lock()
         self._workspace_root_local = threading.local()
-        self._subagent_confirmation_handler: (
-            Callable[[SubAgentApprovalRequest], bool] | None
-        ) = None
         # Coordinator worker 会并发上报事件；在同一锁内完成 Session 持久化和
         # 公开回调，确保两个消费者看到相同的安全 payload 与全局事件顺序。
         self._subagent_event_lock = threading.RLock()
@@ -662,12 +655,6 @@ class LocalToolAgent:
             else None
         )
         if self.config.subagents.enabled:
-            # Broker 是 Agent 范围内的唯一人工确认槽位。定义刷新会复用它，避免
-            # 运行中的后台任务因 Registry 重载丢失既有审批来源或并发顺序。
-            self._subagent_approval_broker = ApprovalBroker(
-                approve=self._confirm_subagent_tool_call,
-                event_sink=self._handle_subagent_event,
-            )
             self._refresh_subagent_definitions()
             # 启动恢复发生在 Coordinator 创建之前；此处再导入一次跨进程终态快照。
             self.import_recovered_subagent_tasks()
@@ -1973,7 +1960,7 @@ class LocalToolAgent:
             )
 
     def set_subagents_enabled(self, enabled: bool) -> None:
-        """安全切换 SubAgent；关闭前等待现有任务和审批退出。"""
+        """安全切换 SubAgent；关闭前等待现有任务退出。"""
 
         if not isinstance(enabled, bool):
             raise AgentError("SubAgent 开关必须是布尔值。")
@@ -1989,36 +1976,21 @@ class LocalToolAgent:
             )
             if not drained:
                 raise AgentError("SubAgent 关闭失败：仍有子任务未退出。")
-        previous_broker = getattr(self, "_subagent_approval_broker", None)
         previous_semaphore = getattr(self, "_subagent_model_request_semaphore", None)
         self.config.subagents = replace(current, enabled=enabled)
         if enabled:
-            next_broker: ApprovalBroker | None = None
             try:
-                next_semaphore = threading.BoundedSemaphore(
+                self._subagent_model_request_semaphore = threading.BoundedSemaphore(
                     self.config.subagents.model_request_concurrency
                 )
-                next_broker = ApprovalBroker(
-                    approve=self._confirm_subagent_tool_call,
-                    event_sink=self._handle_subagent_event,
-                )
-                self._subagent_model_request_semaphore = next_semaphore
-                self._subagent_approval_broker = next_broker
                 self._refresh_subagent_definitions()
                 self._tools = self._build_tools()
             except Exception:
-                if next_broker is not None:
-                    next_broker.close()
                 self.config.subagents = current
                 self._subagent_model_request_semaphore = previous_semaphore
-                self._subagent_approval_broker = previous_broker
                 self._subagent_coordinator = None
                 raise
         else:
-            broker = getattr(self, "_subagent_approval_broker", None)
-            if broker is not None:
-                broker.close()
-            self._subagent_approval_broker = None
             self._subagent_coordinator = None
             self._subagent_model_request_semaphore = None
             self._tools = self._build_tools()
@@ -2028,41 +2000,18 @@ class LocalToolAgent:
 
         self._confirm = confirm
 
-    def set_subagent_confirm_handler(
-        self,
-        confirm: Callable[[SubAgentApprovalRequest], bool],
-    ) -> None:
-        """为可信 SubAgent 审批来源注册专用确认处理器。
-
-        该入口与旧的 ``set_confirm_handler`` 并存，避免把 task/batch 来源伪装为
-        普通工具参数。API 可据此安全映射到现有顶层 Run 确认；终端和全屏 TUI
-        未安装专用处理器时仍会回退到当前通用确认 UI。
-        """
-
-        self._subagent_confirmation_handler = confirm
-
     def set_subagent_event_handler(
         self,
         handler: Callable[[str, dict[str, Any]], None] | None,
     ) -> None:
         """注册跨父回合存活的 SubAgent 公开事件观察者。
 
-        ``run_stream`` 的回调只覆盖一次父回合。后台任务和审批可能在该回合结束后
+        ``run_stream`` 的回调只覆盖一次父回合。后台任务可能在该回合结束后
         才继续运行，因此 API 服务使用本入口接收相同的脱敏事件流；它不替代当前
         TUI/API Run 的临时回调，也不接触模型 prompt 或工具原始输出。
         """
 
         self._subagent_event_handler = handler
-
-    def _confirm_subagent_tool_call(self, request: SubAgentApprovalRequest) -> bool:
-        """把 Broker 请求交给专用处理器或当前交互 UI，永不暴露原始 prompt。"""
-
-        handler = getattr(self, "_subagent_confirmation_handler", None)
-        if callable(handler):
-            return bool(handler(request))
-        arguments = dict(request.public_arguments)
-        arguments["_subagent_origin"] = request.origin.as_public_dict()
-        return bool(self._confirm(request.tool_name, arguments))
 
     def _create_memory_stores(self) -> tuple[MemoryStore, MemoryStore | None, MemoryStore]:
         """创建项目级、当前会话级和用户级记忆存储。"""
@@ -2219,7 +2168,6 @@ class LocalToolAgent:
             owner_id=f"agent-{id(self)}",
             session_id_provider=lambda: self.current_session_id,
             observer_provider=lambda: getattr(self, "_subagent_event_callback", None),
-            approval_broker=getattr(self, "_subagent_approval_broker", None),
             verify_tools_provider=self._subagent_verify_tools,
             apply_worktree=self.apply_subagent_worktree,
             discard_worktree=self.discard_subagent_worktree,
@@ -2720,7 +2668,6 @@ class LocalToolAgent:
         # ``self._subagent_coordinator`` 回读，避免定义刷新时旧后台 worker 取到
         # 新 Coordinator 而丢失正确的 task/batch 身份。
         try:
-            approval_scope = current_subagent_approval_scope()
             messages = self._build_subagent_messages(
                 execution_context,
                 child_tools,
@@ -2738,6 +2685,11 @@ class LocalToolAgent:
 
         def request_child_reply(working_messages: list[dict[str, Any]]) -> AgentModelReply:
             """在独立任务并发之外，再限制 Provider 模型请求的同时在途数量。"""
+
+            # 子代理线程保存各自回合上下文，供该线程内的自动审查复用。
+            review_local = getattr(self, "_review_context_local", None)
+            if review_local is not None:
+                review_local.messages = list(working_messages)
 
             semaphore = getattr(self, "_subagent_model_request_semaphore", None)
             if semaphore is None:
@@ -2800,7 +2752,6 @@ class LocalToolAgent:
                             HostToolCatalog(child_tools)
                         ),
                         persist_session_events=False,
-                        subagent_approval_scope=approval_scope,
                     ),
                     limits=AgentLoopLimits(
                         timeout_seconds=self.config.subagents.default_timeout_seconds,
@@ -3320,7 +3271,6 @@ class LocalToolAgent:
         on_token_usage: Callable[[int, int, int], None] | None = None,
         persist_session_events: bool = True,
         record_tool_execution: Callable[[ToolCall], None] | None = None,
-        subagent_approval_scope: SubAgentApprovalScope | None = None,
         tool_timeout_seconds: int | None = None,
     ) -> list[AgentLoopObservation]:
         """规范化、审批并执行一次模型回复中的完整工具批次。
@@ -3403,25 +3353,13 @@ class LocalToolAgent:
                 )
 
             if tool is not None and denied_result is None:
-                if subagent_approval_scope is None:
-                    # 保持父 Agent 的既有调用形态：测试和宿主扩展可替换该私有
-                    # 审批钩子且只接受旧的两参数签名。只有真正的子任务路径才
-                    # 需要传入 Broker 来源和取消检查。
-                    if persist_session_events:
-                        denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
-                    else:
-                        denied_result = self._approve_tool_for_batch(
-                            tool,
-                            tool_call.arguments,
-                            persist_session_events=False,
-                        )
+                if persist_session_events:
+                    denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
                 else:
                     denied_result = self._approve_tool_for_batch(
                         tool,
                         tool_call.arguments,
-                        persist_session_events=persist_session_events,
-                        subagent_approval_scope=subagent_approval_scope,
-                        check_cancelled=check_cancelled,
+                        persist_session_events=False,
                     )
             normalized_calls.append((first_step + offset, tool_call, tool, denied_result))
 
@@ -3705,6 +3643,13 @@ class LocalToolAgent:
         if isinstance(request_payload.get("messages"), list):
             messages = request_payload["messages"]  # type: ignore[assignment]
 
+        # 自动审查复用主对话上下文：保存与实际发送完全一致的消息快照（含插件
+        # 改写），使审查请求能与主对话共享 system prompt 与消息前缀，命中会话
+        # 缓存并让审查模型理解用户意图。按线程隔离，子代理审查使用各自上下文。
+        review_local = getattr(self, "_review_context_local", None)
+        if review_local is not None:
+            review_local.messages = list(messages)
+
         try:
             reply = self._llm_protocol().request_reply(
                 messages,
@@ -3910,14 +3855,12 @@ class LocalToolAgent:
         arguments: dict[str, Any],
         *,
         persist_session_events: bool = True,
-        subagent_approval_scope: SubAgentApprovalScope | None = None,
-        check_cancelled: Callable[[], None] | None = None,
     ) -> ToolResult | None:
         """在启动批量执行前按调用顺序审批；返回值非空表示拒绝结果。
 
-        普通父工具沿用既有 ``requires_confirmation`` 与 approval mode。带有
-        ``subagent_approval_scope`` 的调用则由 Broker 执行用户已确认的窄策略：
-        仅删除意图和变更性 Git 操作需要人工确认，其他子工具不会重复打断用户。
+        子代理与父 Agent 共用同一审批模式：auto 全部放行；review 模式下
+        bash/powershell 由主代理模型携带上下文自动审查，其余工具自动放行；
+        manual 模式下 bash/powershell 人工确认，其余工具自动放行。
         """
 
         # tool.call.before：可改参数或拒绝；修改后仍走后续 schema/审批。
@@ -3956,20 +3899,7 @@ class LocalToolAgent:
             return result
 
         approval_mode = getattr(self.config, "approval_mode", "manual")
-        subagent_risk_summary = ""
         requires_confirmation = tool.requires_confirmation
-        if subagent_approval_scope is not None:
-            # 子任务不得通过 ToolDefinition.requires_confirmation=False 绕过这一
-            # 策略；反之普通写入/验证工具也不因父 Agent 的宽审批范围而重复弹窗。
-            origin = getattr(subagent_approval_scope, "origin", None)
-            permission_mode = str(getattr(origin, "permission_mode", "") or "delegated-read-only")
-            subagent_risk_summary = subagent_approval_risk_summary(
-                tool,
-                arguments,
-                permission_mode=permission_mode,
-            )
-            requires_confirmation = bool(subagent_risk_summary)
-            approval_mode = "subagent-policy"
 
         # tool.approval.before：只能拒绝，不能代表用户批准。
         approval_guard = self._dispatch_plugin_hook(
@@ -4005,17 +3935,7 @@ class LocalToolAgent:
             )
             return None
 
-        if subagent_approval_scope is not None:
-            approved = subagent_approval_scope.broker.request(
-                origin=subagent_approval_scope.origin,
-                tool_name=tool.name,
-                public_arguments=public_tool_arguments(tool.name, arguments),
-                risk_summary=subagent_risk_summary,
-                cancel_check=check_cancelled,
-            )
-            denial_reason = f"用户未批准子任务执行：{tool.name}。"
-        else:
-            approved, denial_reason = self._approve_tool_call(tool, arguments)
+        approved, denial_reason = self._approve_tool_call(tool, arguments)
 
         if not approved:
             reason = denial_reason or f"未批准执行：{tool.name}。"
@@ -4152,6 +4072,9 @@ class LocalToolAgent:
             if not is_shell_command_tool_call(tool, arguments):
                 return True, ""
             return self._review_tool_call(tool, arguments)
+        # manual 模式只对 bash/powershell 人工确认，其余工具自动放行。
+        if not is_shell_command_tool_call(tool, arguments):
+            return True, ""
         return self._confirm(
             tool.name,
             public_tool_arguments(tool.name, arguments),
@@ -4196,7 +4119,12 @@ class LocalToolAgent:
         tool: ToolDefinition,
         arguments: dict[str, Any],
     ) -> tuple[bool, str]:
-        """用同一模型的非思考模式审查工具调用是否可自动批准。"""
+        """用同一模型的非思考模式审查工具调用是否可自动批准。
+
+        审查请求复用主对话上下文（相同 system prompt + 相同消息前缀），既命中
+        会话缓存降低输入成本，也让审查模型能看到用户意图与项目上下文；审查指令
+        作为最后一条 user 消息追加。子代理线程保存的是各自回合的消息快照。
+        """
 
         review_payload = {
             "tool": tool.name,
@@ -4204,24 +4132,85 @@ class LocalToolAgent:
             "arguments": arguments,
             "workspace_root": str(self.workspace_root),
         }
+        context_messages = getattr(
+            getattr(self, "_review_context_local", None),
+            "messages",
+            None,
+        )
+        if context_messages:
+            # 与主对话相同的输入前缀 + 审查指令，指令中携带审查者身份与约束。
+            review_instruction = (
+                TOOL_REVIEW_SYSTEM_PROMPT
+                + "\n\n待审查的工具调用：\n"
+                + json.dumps(review_payload, ensure_ascii=False, indent=2)
+            )
+            try:
+                # 主对话发送前会经 conversation_from_openai_messages →
+                # messages_to_responses_input 转换为 Responses API 的 input 格式
+                # （tool→function_call_output、tool_calls→function_call、
+                # reasoning_content→reasoning item、图片→input_image）。审查必须
+                # 复用同一转换管线，否则把 Chat 风格消息（含 role=tool、
+                # tool_calls、reasoning_content 等字段）直接塞给 Responses API
+                # 会被网关以 HTTP 400 拒绝（reasoning_content 是 chat completions
+                # 专用字段，携带会导致网关 decode 失败）。
+                from ..llm.protocol import conversation_from_openai_messages
+                from ..llm.providers.openai_responses import (
+                    messages_to_responses_input,
+                )
+
+                converted_prefix = messages_to_responses_input(
+                    conversation_from_openai_messages(list(context_messages))
+                )
+                input_messages = [
+                    *converted_prefix,
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": review_instruction}
+                        ],
+                    },
+                ]
+            except Exception:
+                # 转换失败（如异常消息结构）时退回仅审查指令，保证审查可用。
+                input_messages = [
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            review_payload, ensure_ascii=False, indent=2
+                        ),
+                    }
+                ]
+                instructions = TOOL_REVIEW_SYSTEM_PROMPT
+            else:
+                instructions = self._system_prompt()
+        else:
+            # 无上下文（如纯单元测试直接调用）：退回仅审查指令的原始行为。
+            input_messages = [
+                {
+                    "role": "user",
+                    "content": json.dumps(review_payload, ensure_ascii=False, indent=2),
+                }
+            ]
+            instructions = TOOL_REVIEW_SYSTEM_PROMPT
         try:
             response = self._llm_client().responses.create(
                 model=self.config.llm.model,
-                instructions=TOOL_REVIEW_SYSTEM_PROMPT,
-                input=[
-                    {
-                        "role": "user",
-                        "content": json.dumps(review_payload, ensure_ascii=False, indent=2),
-                    }
-                ],
+                instructions=instructions,
+                input=input_messages,
                 extra_body={"thinking": {"type": "disabled"}},
                 timeout=min(self.config.request_timeout_seconds, 60),
             )
         except Exception as exc:
             return False, f"自动审查请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
 
-        review_text = OpenAIResponseLLM._extract_text(response)
-        approved, reason = self._parse_tool_review_response(review_text)
+        try:
+            review_text = OpenAIResponseLLM._extract_text(response)
+            approved, reason = self._parse_tool_review_response(review_text)
+        except Exception as exc:
+            # 网关可能返回非标准 Responses 结构（如 reasoning item 的 content 为
+            # null、output_text 为空等），解析失败时按拒绝处理并给出原因，不能把
+            # 异常抛到回合层导致整轮任务中断并显示“界面任务异常”。
+            return False, f"自动审查响应解析失败：{OpenAIResponseLLM.format_request_error(exc)}"
         if approved:
             return True, ""
         return False, f"自动审查拒绝执行：{reason or '模型未给出批准结论。'}"

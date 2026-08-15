@@ -37,28 +37,22 @@ _SHOW_CURSOR = "\x1b[?25h"
 _TRACK_BG = "\x1b[100m"  # 亮黑/灰
 _SLIDER_BG = "\x1b[103m"  # 亮黄
 
-# Logo（来自用户样式文件，去掉 mapfile 包装行）
+# Logo（来自用户指定的桌面样式文件，去除行尾空白）
 LOGO_LINES = [
-    "              .,-:;//;:=,",
-    "          . :H@@@MM@M#H/.,+%;,",
-    "       ,/X+ +M@@M@MM%=,-%HMMM@X/,",
-    "     -+@MM; $M@@MH+-,;XMMMM@MMMM@+-",
-    "    ;@M@@M- XM@X;. -+XXXXXHHH@M@M#@/.",
-    "  ,%MM@@MH ,@%=             .---=-=:=,.",
-    "  =@#@@@MX.,                -%HX$$%%%+;",
-    " =-./@M@M$                   .;@MMMM@MM:",
-    " X@/ -$MM/                    . +MM@@@M$",
-    ",@M@H: :@:                    . =X#@@@@-",
-    ",@@@MMX, .                    /H- ;@M@M=",
-    ".H@@@@M@+,                    %MM+..%#$.",
-    " /MMMM@MMH/.                  XM@MH; =;",
-    "  /%+%$XHH@$=              , .H@@@@MX,",
-    "   .=--------.           -%H.,@@@@@MX,",
-    "   .%MM@@@HHHXX$$$%+- .:$MMX =M@@MM%.",
-    "     =XMMM@MM@MM#H;,-+HMM@M+ /MMMX=",
-    "       =%@M@M#@$-.=$@MM@@@M; %M%=",
-    "         ,:+$+-,/H#MMMMMMM@= =,",
-    "               =++%%%%+/:-.",
+    '                       !cpmZmmn_',
+    '                     tdO0ZmOZwOmZOt,',
+    '                   .wmZOZmO0pwmpmwmqqZ+',
+    '                   qZwOmwwwmdpwdqpbkkbbbpO>.                    ..',
+    "                  ?bwmpZwwwpdkbpdbhahkhaohoaaap-;.        .I{kO0mOL'",
+    '                  Qpmwbqpbdpdkabhbokhooooh*o*#**######MWWWaOZOOOO0Y',
+    '                  Oqwkbqpkkbdboahoao***M*###*##MMWWWWWWMp] `I!:',
+    "                  xpwhbwpkpoooaao***##*M####MMWMWWWWW#L'",
+    '                  .bqakhada*oao*o**##*#WMMWWWW&&&&War.',
+    '                   1kkkhaoo***o#*#*M##MMWWWWWW&WWb]',
+    '                    )hha*oa**o*#**#M#MWMWMW&&&#Z:',
+    '                     :do**o*#o**#MMMWWWMWWWMb/.',
+    '                       Im*****###M#MWWWMMkv"',
+    '                          :jpo**#*##obv_',
 ]
 
 DEFAULT_DURATION = 5.0
@@ -66,6 +60,61 @@ DEFAULT_DURATION = 5.0
 # Logo 左侧留白列数与 Logo / 系统信息之间的列间距
 _LOGO_MARGIN = 2
 _INFO_GAP = 4
+
+
+def _logo_render_lines() -> list[str]:
+    """返回实际渲染的 Logo 行：去掉所有行共有的前导空格。
+
+    原 Logo 文本自带大量前导空白，会把图形推到第 25 列附近，挤占右侧
+    系统信息面板；统一去掉公共前导空格后，图形从 ``_LOGO_MARGIN`` 处开始，
+    与布局注释「从第 3 列开始」一致，并为 CPU/GPU 长名称留出更多宽度。
+    """
+    indent = min(len(line) - len(line.lstrip(" ")) for line in LOGO_LINES)
+    return [line[indent:] for line in LOGO_LINES]
+
+
+def _wrap_text(text: str, width: int) -> list[str]:
+    """把文本按 ``width`` 列折行：优先在空格处断行，超长单词按字符拆分。"""
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}" if current else word
+        if len(candidate) <= width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+            current = ""
+        while len(word) > width:
+            lines.append(word[:width])
+            word = word[width:]
+        current = word
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _wrap_info_row(key: str, value: str, width: int) -> list[tuple[str, str]]:
+    """把 ``key: value`` 拆成不超过 ``width`` 列的显示行，防止右边界截断。
+
+    返回 ``[(prefix, body), ...]``：首行 ``prefix`` 为 ``"key: "``，
+    续行 ``prefix`` 为等长空格，使值列对齐；拼接后总宽不超过 ``width``。
+    信息区过窄时键名单独一行，值从下一行顶格折行。
+    """
+    prefix = f"{key}: "
+    if width <= len(prefix):
+        chunks = _wrap_text(value, width)
+        lines = [(prefix.rstrip(), "")]
+        lines.extend(("", chunk) for chunk in chunks)
+        return lines
+    value_width = width - len(prefix)
+    chunks = _wrap_text(value, value_width)
+    lines = [(prefix, chunks[0])]
+    lines.extend((" " * len(prefix), chunk) for chunk in chunks[1:])
+    return lines
 
 
 def _is_tty(stream: TextIO | None) -> bool:
@@ -138,16 +187,25 @@ def _render_splash(
 
     width, height = shutil.get_terminal_size(fallback=(80, 24))
     info = _collect_sysinfo()
-    logo_width = max(len(line) for line in LOGO_LINES)
-    logo_rows = len(LOGO_LINES)
-    info_rows = len(info)
+    logo_lines = _logo_render_lines()
+    logo_width = max(len(line) for line in logo_lines)
+    logo_rows = len(logo_lines)
 
     # 左侧 Logo：从第 3 列开始，不再居中；右侧信息紧跟 Logo 顶部对齐
     left = _LOGO_MARGIN
     info_left = left + logo_width + _INFO_GAP
-    # 窄终端保护：信息区至少保留 24 列；放不下时整体左移，避免超宽换行破坏布局
+    # 窄终端保护：信息区至少保留 24 列；放不下时整体左移。
+    # 但下限必须保证 Logo 与信息区之间至少 1 列间隙，绝不能覆盖 Logo；
+    # 若终端仍不够宽，允许信息区超出右边界（由终端换行），优先保证 Logo 完整可见。
     if info_left + 24 > width:
-        info_left = max(left + 2, width - 24)
+        info_left = max(left + logo_width + 1, width - 24)
+
+    # 右侧系统信息按信息区宽度折行，避免 CPU/GPU 等长名称越过终端右边界被截断
+    info_width = max(1, width - info_left)
+    info_lines: list[tuple[str, str]] = []
+    for key, value in info:
+        info_lines.extend(_wrap_info_row(key, value, info_width))
+    info_rows = len(info_lines)
 
     # 垂直布局：以 Logo / 信息两者的最大高度为基准居中，滚动条置于下方
     body_rows = max(logo_rows, info_rows)
@@ -159,21 +217,15 @@ def _render_splash(
     out.flush()
 
     # 左侧 logo（亮黄色）
-    for i, line in enumerate(LOGO_LINES):
+    for i, line in enumerate(logo_lines):
         row = top + i + 1
         out.write(f"\x1b[{row};{left + 1}H" + _FG_BRIGHT_YELLOW + line + _RESET)
 
-    # 右侧系统信息：键为黄色，值为终端默认前景色
-    for i, (key, value) in enumerate(info):
+    # 右侧系统信息：键为黄色，值为终端默认前景色；长值自动折行
+    for i, (prefix, body) in enumerate(info_lines):
         row = top + i + 1
-        out.write(
-            f"\x1b[{row};{info_left + 1}H"
-            + _FG_YELLOW
-            + key
-            + ": "
-            + _RESET
-            + value
-        )
+        colored_prefix = _FG_YELLOW + prefix + _RESET if prefix.strip() else prefix
+        out.write(f"\x1b[{row};{info_left + 1}H" + colored_prefix + body)
     out.flush()
 
     bar_width = min(30, max(10, (width - 4) // 2))

@@ -18,12 +18,6 @@ from ...config.llm import LLMError
 from ...config.subagents import SubAgentConfig
 from ...llm.errors import ModelError, map_openai_exception
 from ...state.session_artifacts import redact_sensitive_text
-from .approval import (
-    ApprovalBroker,
-    SubAgentApprovalOrigin,
-    SubAgentApprovalScope,
-    activate_subagent_approval_scope,
-)
 from .definitions import AgentDefinition, AgentDefinitionRegistry
 from .execution import SubAgentExecutionContext
 from .read_only_commands import (
@@ -286,7 +280,6 @@ class SubAgentCoordinator:
         owner_id: str = "local-agent",
         session_id_provider: Callable[[], str] | None = None,
         observer_provider: Callable[[], Callable[[str, dict], None] | None] | None = None,
-        approval_broker: ApprovalBroker | None = None,
         verify_tools_provider: Callable[[], Mapping[str, ToolDefinition]] | None = None,
         apply_worktree: Callable[..., str] | None = None,
         discard_worktree: Callable[..., str] | None = None,
@@ -326,9 +319,6 @@ class SubAgentCoordinator:
         self._owner_id = owner_id
         self._session_id_provider = session_id_provider or (lambda: "")
         self._observer_provider = observer_provider or (lambda: None)
-        # Broker 由父 Agent 创建并跨定义刷新复用；Coordinator 只在任务执行和
-        # 生命周期取消边界绑定/撤销任务来源，避免并发 worker 共享可变上下文。
-        self._approval_broker = approval_broker
         # verify_command 不进入父 Agent 的普通工具表。由 Host 在准备任务时提供
         # 固定检查工具，Coordinator 仍会按定义白名单与 profile 上限再次收窄。
         self._verify_tools_provider = verify_tools_provider or (lambda: {})
@@ -374,8 +364,6 @@ class SubAgentCoordinator:
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         for batch in batches:
             self._request_batch_cancel(batch, reason)
-        if self._approval_broker is not None:
-            self._approval_broker.cancel_all()
         # close/workspace switch 是 Agent 级生命周期边界，必须覆盖该实例下
         # 所有 Session 的后台任务，不能只取消当前恢复会话。
         self._task_manager.cancel_all(owner_id=self._owner_id, session_id=None)
@@ -393,8 +381,6 @@ class SubAgentCoordinator:
             return False
         if permanent:
             self._task_manager.close(owner_id=self._owner_id)
-            if self._approval_broker is not None:
-                self._approval_broker.close()
         return True
 
     def resume_accepting_when_idle(self) -> None:
@@ -496,11 +482,6 @@ class SubAgentCoordinator:
             task_id=task_id,
             batch_id=batch_id,
         )
-        if bool(result.get("ok")) and self._approval_broker is not None:
-            if isinstance(task_id, str) and task_id:
-                self._approval_broker.cancel_task(task_id)
-            if isinstance(batch_id, str) and batch_id:
-                self._approval_broker.cancel_batch(batch_id)
         return result
 
     def run(self, arguments: dict) -> ToolResult:
@@ -1116,29 +1097,7 @@ class SubAgentCoordinator:
             cancel_check()
             if emit_events:
                 self._emit_task_event(task, "started")
-            approval_broker = self._approval_broker
-            if approval_broker is None:
-                execution = self._call_execute_task(task, cancel_check)
-            else:
-                approval_scope = SubAgentApprovalScope(
-                    broker=approval_broker,
-                    origin=SubAgentApprovalOrigin(
-                        batch_id=task.batch_id,
-                        task_id=task.task_id,
-                        agent_label=task.agent_type,
-                        description=task.description,
-                        permission_mode=task.definition.permission_mode,
-                    ),
-                )
-                try:
-                    # ContextVar 只在当前 worker 有效；子执行中的并行任务不会
-                    # 覆盖其他子任务的 task_id/batch_id，且定义刷新不影响旧任务。
-                    with activate_subagent_approval_scope(approval_scope):
-                        execution = self._call_execute_task(task, cancel_check)
-                finally:
-                    # 若确认处理器在任务取消后迟到返回，其批准不能让已终态任务
-                    # 继续；活跃 UI 槽位会保留到处理器自然返回，维持单确认不变量。
-                    approval_broker.cancel_task(task.task_id)
+            execution = self._call_execute_task(task, cancel_check)
             cancel_check()
         except KeyboardInterrupt as exc:
             result = self._cancelled_payload(
@@ -1326,8 +1285,6 @@ class SubAgentCoordinator:
     def _request_batch_cancel(self, batch: _ActiveBatch, reason: str) -> None:
         if not batch.begin_cancel(reason):
             return
-        if self._approval_broker is not None:
-            self._approval_broker.cancel_batch(batch.batch_id)
         with batch.lock:
             futures = tuple(batch.futures.items())
         self._start_cancel_cleanup(batch, futures=futures)

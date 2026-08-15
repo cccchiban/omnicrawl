@@ -15,7 +15,6 @@ from typing import Any, Callable
 from fastapi import status
 
 from ..agent import ToolCall, ToolResult
-from ..agent.subagents.approval import SubAgentApprovalOrigin, SubAgentApprovalRequest
 from ..agent.tools import public_tool_arguments
 from ..state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 from .models import (
@@ -48,43 +47,6 @@ class _SubAgentEventStream:
     condition: threading.Condition = field(default_factory=threading.Condition)
 
 
-@dataclass
-class _BackgroundSubAgentConfirmation:
-    """父 Run 结束后仍可由当前 Session 决议的单次后台审批。"""
-
-    confirmation_id: str
-    session_id: str
-    task_id: str
-    batch_id: str
-    agent_label: str
-    description: str
-    tool_name: str
-    arguments: dict[str, Any]
-    risk_summary: str
-    created_at: float = field(default_factory=time.time)
-    updated_at: float = field(default_factory=time.time)
-    status: str = "pending"
-    decision: bool | None = None
-    resolved: threading.Event = field(default_factory=threading.Event)
-
-    def as_public_dict(self) -> dict[str, Any]:
-        """只投影远程控制面所需的脱敏任务来源与工具摘要。"""
-
-        return {
-            "confirmation_id": self.confirmation_id,
-            "task_id": self.task_id,
-            "batch_id": self.batch_id,
-            "agent_label": self.agent_label,
-            "description": self.description,
-            "tool": self.tool_name,
-            "arguments": dict(self.arguments),
-            "risk_summary": self.risk_summary,
-            "status": self.status,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-        }
-
-
 class AgentAPIService:
     """单 Agent、单活动生成的线程安全服务编排器。"""
 
@@ -111,18 +73,7 @@ class AgentAPIService:
         # RunState。任务来源表只保存 Run/Session ID，不保留 prompt 或模型输出。
         self._subagent_task_sources: dict[str, _SubAgentTaskSource] = {}
         self._subagent_event_streams: dict[str, _SubAgentEventStream] = {}
-        self._background_subagent_confirmations: dict[
-            str,
-            _BackgroundSubAgentConfirmation,
-        ] = {}
         self.agent.set_confirm_handler(self._confirm_tool_call)
-        set_subagent_confirm_handler = getattr(
-            self.agent,
-            "set_subagent_confirm_handler",
-            None,
-        )
-        if callable(set_subagent_confirm_handler):
-            set_subagent_confirm_handler(self._confirm_subagent_tool_call)
         set_subagent_event_handler = getattr(
             self.agent,
             "set_subagent_event_handler",
@@ -266,59 +217,11 @@ class AgentAPIService:
             if not any(event.id > last_event_id for event in stream.events):
                 stream.condition.wait(timeout=timeout)
 
-    def list_background_subagent_confirmations(self) -> list[dict[str, Any]]:
-        """列出当前 Session 仍可决议的跨父 Run 后台审批。"""
-
-        session_id = self.current_subagent_session_id()
-        with self._lock:
-            self._expire_background_confirmations_locked()
-            confirmations = [
-                confirmation.as_public_dict()
-                for confirmation in self._background_subagent_confirmations.values()
-                if confirmation.session_id == session_id
-                and confirmation.status == "pending"
-            ]
-        return sorted(confirmations, key=lambda item: (item["created_at"], item["confirmation_id"]))
-
-    def decide_background_subagent_confirmation(
-        self,
-        confirmation_id: str,
-        approved: bool,
-    ) -> dict[str, Any]:
-        """决议当前 Session 的后台审批，首个终态操作拥有唯一胜出权。"""
-
-        session_id = self.current_subagent_session_id()
-        with self._lock:
-            self._expire_background_confirmations_locked()
-            confirmation = self._background_subagent_confirmations.get(confirmation_id)
-            if confirmation is None or confirmation.session_id != session_id:
-                raise APIServiceError(
-                    "SUBAGENT_CONFIRMATION_NOT_FOUND",
-                    "未找到当前会话的后台 SubAgent 确认请求。",
-                    status_code=status.HTTP_404_NOT_FOUND,
-                )
-            if confirmation.resolved.is_set():
-                raise APIServiceError(
-                    "CONFIRMATION_RESOLVED",
-                    "该确认请求已经处理。",
-                    status_code=status.HTTP_409_CONFLICT,
-                )
-            self._resolve_background_confirmation_locked(
-                confirmation,
-                approved=approved,
-                status_name="approved" if approved else "rejected",
-                event_name="subagent.confirmation.resolved",
-            )
-            return confirmation.as_public_dict()
-
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            self._reject_all_background_confirmations_locked(
-                event_name="subagent.confirmation.cancelled",
-            )
             active_run = self._runs.get(self._active_run_id) if self._active_run_id else None
             workers = list(self._workers.values())
         if active_run is not None:
@@ -411,94 +314,11 @@ class AgentAPIService:
             with run.condition:
                 run.condition.notify_all()
 
-    def _confirm_subagent_tool_call(self, request: SubAgentApprovalRequest) -> bool:
-        """将子任务确认路由到所属父 Run 或跨父 Run 的后台控制面。"""
-
-        with self._lock:
-            source = self._subagent_task_sources.get(request.origin.task_id)
-            active = self._runs.get(self._active_run_id) if self._active_run_id else None
-            parent_run = None
-            if active is not None and active.status in ACTIVE_RUN_STATUSES:
-                # 没有来源记录时保持旧的同步确认兼容；有记录则只允许回到创建
-                # 该任务的父 Run，避免后续无关 Run 接管旧后台任务的风险操作。
-                if source is None or source.run_id == active.run_id:
-                    parent_run = active
-            session_id = source.session_id if source is not None else ""
-
-        if parent_run is not None:
-            return self._confirm_tool_call(
-                request.tool_name,
-                dict(request.public_arguments),
-                subagent_origin=request.origin,
-                run=parent_run,
-            )
-        if not session_id:
-            # 未观察到任务创建事件时无法证明 owner/session 来源，保守拒绝。
-            return False
-        return self._confirm_background_subagent_tool_call(request, session_id)
-
-    def _confirm_background_subagent_tool_call(
-        self,
-        request: SubAgentApprovalRequest,
-        session_id: str,
-    ) -> bool:
-        """等待当前 Session 的远程决议，不依赖已结束的顶层 Run。"""
-
-        confirmation = _BackgroundSubAgentConfirmation(
-            confirmation_id=request.request_id,
-            session_id=session_id,
-            task_id=request.origin.task_id,
-            batch_id=request.origin.batch_id,
-            agent_label=request.origin.agent_label,
-            description=request.origin.description,
-            tool_name=request.tool_name,
-            arguments=redact_sensitive_values(dict(request.public_arguments)),
-            risk_summary=request.risk_summary,
-        )
-        with self._lock:
-            if self._closed:
-                return False
-            if confirmation.confirmation_id in self._background_subagent_confirmations:
-                # Broker request_id 在同一 Agent 内唯一；若重复，拒绝而不是让两个
-                # worker 共享一个可能已经被决议的 Event。
-                return False
-            self._background_subagent_confirmations[confirmation.confirmation_id] = confirmation
-            self._emit_subagent_event_locked(
-                session_id,
-                "subagent.confirmation.required",
-                {
-                    **request.origin.as_public_dict(),
-                    "confirmation_id": confirmation.confirmation_id,
-                    "tool": request.tool_name,
-                    "arguments": dict(confirmation.arguments),
-                    "risk_summary": request.risk_summary,
-                    "timeout_seconds": self.confirmation_timeout_seconds,
-                    "status": "pending",
-                },
-            )
-
-        deadline = time.monotonic() + self.confirmation_timeout_seconds
-        while not confirmation.resolved.is_set():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                with self._lock:
-                    if not confirmation.resolved.is_set():
-                        self._resolve_background_confirmation_locked(
-                            confirmation,
-                            approved=False,
-                            status_name="expired",
-                            event_name="subagent.confirmation.expired",
-                        )
-                break
-            confirmation.resolved.wait(timeout=min(0.1, remaining))
-        return confirmation.decision is True
-
     def _confirm_tool_call(
         self,
         tool_name: str,
         arguments: dict[str, Any],
         *,
-        subagent_origin: SubAgentApprovalOrigin | None = None,
         run: RunState | None = None,
     ) -> bool:
         run = self.active_run if run is None else run
@@ -506,18 +326,10 @@ class AgentAPIService:
             return False
         confirmation_id = secrets.token_hex(12)
         safe_arguments = public_tool_arguments(tool_name, arguments)
-        origin_payload = (
-            subagent_origin.as_public_dict() if subagent_origin is not None else None
-        )
         confirmation = PendingConfirmation(
             confirmation_id=confirmation_id,
             tool_name=tool_name,
             arguments=safe_arguments,
-            task_id=origin_payload["task_id"] if origin_payload is not None else None,
-            agent_label=(
-                origin_payload["agent_label"] if origin_payload is not None else None
-            ),
-            batch_id=origin_payload["batch_id"] if origin_payload is not None else None,
         )
         run.confirmations[confirmation_id] = confirmation
         run.status = "waiting_confirmation"
@@ -527,8 +339,6 @@ class AgentAPIService:
             "arguments": safe_arguments,
             "timeout_seconds": self.confirmation_timeout_seconds,
         }
-        if origin_payload is not None:
-            event_payload["subagent"] = origin_payload
         self._emit(run, "confirmation.required", event_payload)
 
         deadline = time.monotonic() + self.confirmation_timeout_seconds
@@ -662,25 +472,6 @@ class AgentAPIService:
                 },
             )
 
-            if event_name == "subagent.task.approval_cancelled":
-                request_id = safe_payload.get("request_id")
-                confirmation = (
-                    self._background_subagent_confirmations.get(str(request_id))
-                    if isinstance(request_id, str)
-                    else None
-                )
-                if (
-                    confirmation is not None
-                    and confirmation.session_id == source.session_id
-                    and not confirmation.resolved.is_set()
-                ):
-                    self._resolve_background_confirmation_locked(
-                        confirmation,
-                        approved=False,
-                        status_name="cancelled",
-                        event_name="subagent.confirmation.cancelled",
-                    )
-
             if event_name in {
                 "subagent.task.completed",
                 "subagent.task.failed",
@@ -763,74 +554,6 @@ class AgentAPIService:
             if len(stream.events) > self.max_events_per_run:
                 del stream.events[: len(stream.events) - self.max_events_per_run]
             stream.condition.notify_all()
-
-    def _resolve_background_confirmation_locked(
-        self,
-        confirmation: _BackgroundSubAgentConfirmation,
-        *,
-        approved: bool,
-        status_name: str,
-        event_name: str,
-    ) -> bool:
-        """在同一把服务锁下完成一次后台确认，迟到决议不可覆盖首个结果。"""
-
-        if confirmation.resolved.is_set():
-            return False
-        confirmation.decision = approved
-        confirmation.status = status_name
-        confirmation.updated_at = time.time()
-        confirmation.resolved.set()
-        self._emit_subagent_event_locked(
-            confirmation.session_id,
-            event_name,
-            {
-                **confirmation.as_public_dict(),
-                "approved": approved,
-            },
-        )
-        self._prune_background_confirmations_locked()
-        return True
-
-    def _expire_background_confirmations_locked(self) -> None:
-        deadline = time.time() - self.confirmation_timeout_seconds
-        for confirmation in tuple(self._background_subagent_confirmations.values()):
-            if confirmation.status != "pending" or confirmation.created_at > deadline:
-                continue
-            self._resolve_background_confirmation_locked(
-                confirmation,
-                approved=False,
-                status_name="expired",
-                event_name="subagent.confirmation.expired",
-            )
-
-    def _reject_all_background_confirmations_locked(self, *, event_name: str) -> None:
-        for confirmation in tuple(self._background_subagent_confirmations.values()):
-            if confirmation.status != "pending":
-                continue
-            self._resolve_background_confirmation_locked(
-                confirmation,
-                approved=False,
-                status_name="cancelled",
-                event_name=event_name,
-            )
-
-    def _prune_background_confirmations_locked(self) -> None:
-        """限制已终态确认的内存保留量；待决确认始终保留。"""
-
-        terminal = sorted(
-            (
-                confirmation
-                for confirmation in self._background_subagent_confirmations.values()
-                if confirmation.status != "pending"
-            ),
-            key=lambda item: (item.updated_at, item.confirmation_id),
-            reverse=True,
-        )
-        for confirmation in terminal[self.max_retained_runs :]:
-            self._background_subagent_confirmations.pop(
-                confirmation.confirmation_id,
-                None,
-            )
 
     def _on_usage(
         self,
