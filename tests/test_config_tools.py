@@ -7,7 +7,11 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import yaml
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+from omnicrawl.config.runtime import dump_toml_text
 
 from omnicrawl.agent import AgentConfig, AgentError
 from omnicrawl.config.context_compaction import ContextCompactionConfig
@@ -36,7 +40,7 @@ class ToolSwitchConfigTest(unittest.TestCase):
 
     def test_load_tool_switches_without_config_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            switches = load_tool_switches(Path(temp_dir) / "missing.yaml")
+            switches = load_tool_switches(Path(temp_dir) / "missing.toml")
 
         self.assertEqual(switches["powershell"], False)
         self.assertEqual(switches["bash"], True)
@@ -45,7 +49,7 @@ class ToolSwitchConfigTest(unittest.TestCase):
 
     def test_load_disabled_tools_default_only_powershell(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            disabled = load_disabled_tools(Path(temp_dir) / "missing.yaml")
+            disabled = load_disabled_tools(Path(temp_dir) / "missing.toml")
 
         self.assertEqual(disabled, frozenset({"powershell"}))
 
@@ -58,8 +62,8 @@ class ToolSwitchConfigTest(unittest.TestCase):
             }
         }
         with tempfile.TemporaryDirectory() as temp_dir:
-            yaml_path = Path(temp_dir) / "config.yaml"
-            yaml_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+            yaml_path = Path(temp_dir) / "config.toml"
+            yaml_path.write_text(dump_toml_text(payload), encoding="utf-8")
             switches = load_tool_switches(yaml_path)
             disabled = load_disabled_tools(yaml_path)
 
@@ -72,16 +76,16 @@ class ToolSwitchConfigTest(unittest.TestCase):
     def test_unknown_tool_name_raises(self) -> None:
         payload = {"tools": {"not_a_tool": True}}
         with tempfile.TemporaryDirectory() as temp_dir:
-            yaml_path = Path(temp_dir) / "config.yaml"
-            yaml_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+            yaml_path = Path(temp_dir) / "config.toml"
+            yaml_path.write_text(dump_toml_text(payload), encoding="utf-8")
             with self.assertRaises(ToolSwitchConfigError):
                 load_tool_switches(yaml_path)
 
     def test_non_boolean_value_raises(self) -> None:
         payload = {"tools": {"bash": "yes"}}
         with tempfile.TemporaryDirectory() as temp_dir:
-            yaml_path = Path(temp_dir) / "config.yaml"
-            yaml_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+            yaml_path = Path(temp_dir) / "config.toml"
+            yaml_path.write_text(dump_toml_text(payload), encoding="utf-8")
             with self.assertRaises(ToolSwitchConfigError):
                 load_tool_switches(yaml_path)
 
@@ -97,11 +101,11 @@ class ToolSwitchConfigTest(unittest.TestCase):
             "tools": {"powershell": False},
         }
         with tempfile.TemporaryDirectory() as temp_dir:
-            yaml_path = Path(temp_dir) / "config.yaml"
-            yaml_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+            yaml_path = Path(temp_dir) / "config.toml"
+            yaml_path.write_text(dump_toml_text(payload), encoding="utf-8")
 
             saved = save_tool_switch("powershell", True, yaml_path)
-            written = yaml.safe_load(saved.read_text(encoding="utf-8"))
+            written = tomllib.loads(saved.read_text(encoding="utf-8"))
 
         self.assertEqual(written["version"], 2)
         self.assertEqual(written["memory"]["enabled"], True)
@@ -109,8 +113,8 @@ class ToolSwitchConfigTest(unittest.TestCase):
 
     def test_save_tool_switch_unknown_name_raises(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            yaml_path = Path(temp_dir) / "config.yaml"
-            yaml_path.write_text(yaml.safe_dump({}), encoding="utf-8")
+            yaml_path = Path(temp_dir) / "config.toml"
+            yaml_path.write_text(dump_toml_text({}), encoding="utf-8")
             with self.assertRaises(ToolSwitchConfigError):
                 save_tool_switch("unknown_tool", True, yaml_path)
 

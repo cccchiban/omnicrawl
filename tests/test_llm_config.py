@@ -5,7 +5,11 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-import yaml
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+from omnicrawl.config.runtime import dump_toml_text
 from pathlib import Path
 from unittest.mock import patch
 
@@ -348,14 +352,14 @@ class LLMConfigTest(unittest.TestCase):
 
     def test_save_reasoning_effort_preserves_config_and_syncs_thinking_type(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                json.dumps({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
+                dump_toml_text({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
                 encoding="utf-8",
             )
 
             save_reasoning_effort("high", config_path)
-            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            data = tomllib.loads(config_path.read_text(encoding="utf-8"))
 
         self.assertEqual(data["llm"]["model"], "demo")
         self.assertEqual(data["llm"]["reasoning_effort"], "high")

@@ -24,10 +24,10 @@ from omnicrawl.ui.fullscreen.channel_manager import (
 
 class ChannelManagerScreenTests(unittest.IsolatedAsyncioTestCase):
     def _write_channels(self, root: Path, *, with_key: bool = True) -> tuple[Path, Path]:
-        config_path = root / "config.yaml"
-        models_path = root / "models.yaml"
-        config_path.write_text("version: 2\nllm: {}\n", encoding="utf-8")
-        models_path.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+        config_path = root / "config.toml"
+        models_path = root / "models.toml"
+        config_path.write_text("version = 2\n\n[llm]\n", encoding="utf-8")
+        models_path.write_text("version = 1\n\n[models]\n", encoding="utf-8")
         save_channel_configuration(
             ChannelConfiguration(
                 channels=(

@@ -185,7 +185,7 @@ class VisionToolImageProtocolTest(unittest.TestCase):
         tool_call = ToolCall("windows_screenshot", {"target": "desktop"}, "call_1")
         result = ToolResult(
             ok=True,
-            output='{"path":".agent_tmp/images/screenshot.png"}',
+            output='{"path":".omnicrawl/.agent_tmp/images/screenshot.png"}',
             model_images=(
                 ToolImageAttachment("image/png", _IMAGE_BASE64, "screenshot.png"),
             ),
@@ -286,7 +286,7 @@ class VisionToolImageProtocolTest(unittest.TestCase):
         agent = LocalToolAgent.__new__(LocalToolAgent)
         result = ToolResult(
             True,
-            '{"path":".agent_tmp/images/screenshot.png"}',
+            '{"path":".omnicrawl/.agent_tmp/images/screenshot.png"}',
             model_images=(ToolImageAttachment("image/png", _IMAGE_BASE64),),
         )
         tool = ToolDefinition(

@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
 from omnicrawl.approval import approval_mode_label, load_approval_mode
@@ -26,7 +26,7 @@ from omnicrawl.project_context import (
     should_disable_broad_workspace_indexes,
 )
 from omnicrawl.runtime_config import RuntimeConfigError, load_config_data
-from omnicrawl.config.settings import load_feature_enabled
+from omnicrawl.config.settings import load_feature_enabled, load_show_thinking
 from omnicrawl.config.subagents import load_subagent_config
 from omnicrawl.temp_workspace import (
     AgentTempWorkspaceError,
@@ -34,7 +34,13 @@ from omnicrawl.temp_workspace import (
     load_agent_temp_workspace_config,
 )
 from omnicrawl.ui import UIStartupError
+from omnicrawl.ui.splash import run_startup_splash
 from omnicrawl.ui.windows_launcher import configure_console_encoding
+
+
+# 启动画面最短展示秒数：TUI 比历史版本晚进入 5 秒，期间后台并行完成
+# LLM 配置、git 项目检测、插件启动、Agent 与索引初始化等全部准备。
+SPLASH_DURATION_SECONDS = 5.0
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -88,6 +94,103 @@ def run_plugin_cli(argv: Sequence[str]) -> int | None:
     return run_plugin_command(args)
 
 
+def _prepare_startup(
+    *,
+    app_root: Path,
+    resume_session_id: str,
+) -> dict[str, Any]:
+    """启动画面期间在后台执行的完整准备：配置、git 检测、插件、Agent（含索引）。
+
+    Returns:
+        字典，包含 ``agent``、``config``、``approval_mode``、
+        ``temp_workspace_config``、``subagent_config``、``project_context``、
+        ``fullscreen_startup``、``run_fullscreen_tui``、``plugin_runtime``、
+        ``plugin_lines``。
+    """
+
+    # 配置加载与项目检测的异常（LLMError 等）由 run_application 的 except
+    # 分支处理；插件启动失败在这里降级为无插件模式继续，保持历史语义。
+    config = load_llm_config()
+    approval_mode = load_approval_mode()
+    temp_workspace_config = load_agent_temp_workspace_config()
+    subagent_config = load_subagent_config()
+    project_context = detect_project_context(app_root=app_root)
+    fullscreen_startup, run_fullscreen_tui = _load_fullscreen_ui()
+
+    plugin_runtime = None
+    plugin_lines: list[str] = []
+    try:
+        from omnicrawl.extensions.plugin_manager import PluginRuntime
+
+        plugin_runtime = PluginRuntime.from_config_data(
+            load_config_data(),
+            workspace_root=project_context.workspace_root,
+        )
+        for line in plugin_runtime.start():
+            plugin_lines.append(line)
+    except Exception as exc:  # noqa: BLE001
+        plugin_lines.append(f"[plugins] 初始化失败，继续无插件模式：{exc}")
+        plugin_runtime = None
+
+    def _on_workspace_switched(new_root: Path):
+        if plugin_runtime is None:
+            return None
+        try:
+            plugin_runtime.switch_workspace(new_root)
+        except BaseException:
+            # Agent 的工作区主体已经提交；候选插件启动失败时不能继续把
+            # 旧工作区 Manager 注入新工作区。关闭旧 Manager 后降级无插件。
+            plugin_runtime.close_manager_only()
+            plugin_runtime.workspace_root = new_root
+            raise
+        return plugin_runtime.manager
+
+    def _on_plugin_settings_changed(enabled: bool):
+        if plugin_runtime is None:
+            raise AgentError("Plugin Runtime 未连接。")
+        return plugin_runtime.set_enabled(enabled)
+
+    agent = LocalToolAgent(
+        AgentConfig(
+            llm=config,
+            workspace_root=project_context.workspace_root,
+            workspace_detection_summary=project_context.detection_summary,
+            approval_mode=approval_mode,
+            memory_enabled=load_feature_enabled("memory", default=True),
+            file_name_index_enabled=(
+                load_feature_enabled("file_name_index", default=False)
+                and not should_disable_broad_workspace_indexes(project_context)
+            ),
+            content_index_enabled=(
+                load_feature_enabled("content_index", default=False)
+                and not should_disable_broad_workspace_indexes(project_context)
+            ),
+            show_thinking=load_show_thinking(),
+            temp_workspace=temp_workspace_config,
+            subagents=subagent_config,
+            resume_session_id=resume_session_id,
+        ),
+        plugin_manager=None if plugin_runtime is None else plugin_runtime.manager,
+        on_workspace_switched=_on_workspace_switched,
+        on_plugin_settings_changed=_on_plugin_settings_changed,
+    )
+    if plugin_runtime is not None:
+        agent.add_close_callback(plugin_runtime.close)
+        plugin_runtime.notify_app_started()
+    return {
+        "agent": agent,
+        "config": config,
+        "approval_mode": approval_mode,
+        "temp_workspace_config": temp_workspace_config,
+        "subagent_config": subagent_config,
+        "project_context": project_context,
+        "fullscreen_startup": fullscreen_startup,
+        "run_fullscreen_tui": run_fullscreen_tui,
+        "plugin_runtime": plugin_runtime,
+        "plugin_lines": plugin_lines,
+    }
+
+
 def run_application(argv: Sequence[str] | None = None) -> int:
     """统一应用入口。
 
@@ -120,23 +223,18 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     # 包安装后本文件位于 site-packages/omnicrawl/，parent.parent 即程序根；
     # 工作区检测仍从启动目录向上找项目标记，不影响从项目内启动的路径。
     app_root = Path(__file__).resolve().parent.parent
-    plugin_runtime = None
+
+    # 显示约 5 秒启动画面（fastfetch 式：左侧黄色 Logo + 右侧系统信息 + 底部 XP 滚动条），
+    # 同时后台并行完成全部准备：git 检测、插件启动、Agent 与索引加载。
+    # 非交互终端（测试、管道）下 splash 直接同步执行准备，行为不变。
     try:
-        config = load_llm_config()
-        approval_mode = load_approval_mode()
-        temp_workspace_config = load_agent_temp_workspace_config()
-        subagent_config = load_subagent_config()
-        project_context = detect_project_context(app_root=app_root)
-        fullscreen_startup, run_fullscreen_tui = _load_fullscreen_ui()
-
-        from omnicrawl.extensions.plugin_manager import PluginRuntime
-
-        plugin_runtime = PluginRuntime.from_config_data(
-            load_config_data(),
-            workspace_root=project_context.workspace_root,
+        prepared = run_startup_splash(
+            lambda: _prepare_startup(
+                app_root=app_root,
+                resume_session_id=args.resume,
+            ),
+            duration=SPLASH_DURATION_SECONDS,
         )
-        for line in plugin_runtime.start():
-            print(f"[plugins] {line}", file=sys.stderr)
     except LLMError as exc:
         print(f"配置加载失败：{exc}")
         return 1
@@ -152,65 +250,22 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     except UIStartupError as exc:
         print(f"界面启动失败：{exc}")
         return 1
-    except Exception as exc:  # noqa: BLE001
-        print(f"[plugins] 初始化失败，继续无插件模式：{exc}", file=sys.stderr)
-        plugin_runtime = None
 
-    agent: LocalToolAgent | None = None
+    agent: LocalToolAgent | None = prepared["agent"]
+    plugin_runtime = prepared["plugin_runtime"]
+    for line in prepared["plugin_lines"]:
+        print(line, file=sys.stderr)
+
     exit_code = 0
     try:
-        def _on_workspace_switched(new_root: Path):
-            if plugin_runtime is None:
-                return None
-            try:
-                plugin_runtime.switch_workspace(new_root)
-            except BaseException:
-                # Agent 的工作区主体已经提交；候选插件启动失败时不能继续把
-                # 旧工作区 Manager 注入新工作区。关闭旧 Manager 后降级无插件。
-                plugin_runtime.close_manager_only()
-                plugin_runtime.workspace_root = new_root
-                raise
-            return plugin_runtime.manager
-
-        def _on_plugin_settings_changed(enabled: bool):
-            if plugin_runtime is None:
-                raise AgentError("Plugin Runtime 未连接。")
-            return plugin_runtime.set_enabled(enabled)
-
-        agent = LocalToolAgent(
-            AgentConfig(
-                llm=config,
-                workspace_root=project_context.workspace_root,
-                workspace_detection_summary=project_context.detection_summary,
-                approval_mode=approval_mode,
-                memory_enabled=load_feature_enabled("memory", default=True),
-                file_name_index_enabled=(
-                    load_feature_enabled("file_name_index", default=False)
-                    and not should_disable_broad_workspace_indexes(project_context)
-                ),
-                content_index_enabled=(
-                    load_feature_enabled("content_index", default=False)
-                    and not should_disable_broad_workspace_indexes(project_context)
-                ),
-                temp_workspace=temp_workspace_config,
-                subagents=subagent_config,
-                resume_session_id=args.resume,
-            ),
-            plugin_manager=None if plugin_runtime is None else plugin_runtime.manager,
-            on_workspace_switched=_on_workspace_switched,
-            on_plugin_settings_changed=_on_plugin_settings_changed,
-        )
-        if plugin_runtime is not None:
-            agent.add_close_callback(plugin_runtime.close)
-            plugin_runtime.notify_app_started()
-        tui_exit_code = run_fullscreen_tui(
+        tui_exit_code = prepared["run_fullscreen_tui"](
             agent,
-            fullscreen_startup(
-                thinking_enabled=config.thinking_enabled,
-                reasoning_effort=config.reasoning_effort,
-                approval_label=approval_mode_label(approval_mode),
-                workspace_label=project_context_status_label(project_context),
-                temp_label=agent_temp_status_label(temp_workspace_config),
+            prepared["fullscreen_startup"](
+                thinking_enabled=prepared["config"].thinking_enabled,
+                reasoning_effort=prepared["config"].reasoning_effort,
+                approval_label=approval_mode_label(prepared["approval_mode"]),
+                workspace_label=project_context_status_label(prepared["project_context"]),
+                temp_label=agent_temp_status_label(prepared["temp_workspace_config"]),
                 version_check_enabled=True,
             ),
         )

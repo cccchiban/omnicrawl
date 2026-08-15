@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import yaml
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
 
 from omnicrawl.config.llm import LLMConfig, LLMError
 from omnicrawl.config.llm_multi import apply_model_selection
@@ -30,10 +33,10 @@ class ChannelConfigurationTests(unittest.TestCase):
             user_dir = root / "user"
             project_dir.mkdir()
             user_dir.mkdir()
-            project_config = project_dir / "config.yaml"
-            project_models = project_dir / "models.yaml"
-            project_config.write_text("version: 2\nllm: {}\n", encoding="utf-8")
-            project_models.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+            project_config = project_dir / "config.toml"
+            project_models = project_dir / "models.toml"
+            project_config.write_text("version = 2\n\n[llm]\n", encoding="utf-8")
+            project_models.write_text("version = 1\n\n[models]\n", encoding="utf-8")
             channels = ChannelConfiguration(
                 channels=(
                     ChannelConfig(
@@ -55,24 +58,24 @@ class ChannelConfigurationTests(unittest.TestCase):
                     with patch.object(runtime_module, "_is_development_environment", return_value=True):
                         written_config, written_models = save_channel_configuration(channels)
 
-            self.assertEqual(written_config, user_dir / "config.yaml")
-            self.assertEqual(written_models, user_dir / "models.yaml")
+            self.assertEqual(written_config, user_dir / "config.toml")
+            self.assertEqual(written_models, user_dir / "models.toml")
             self.assertEqual(
-                yaml.safe_load((project_dir / "config.yaml").read_text(encoding="utf-8")),
+                tomllib.loads((project_dir / "config.toml").read_text(encoding="utf-8")),
                 {"version": 2, "llm": {}},
             )
             self.assertEqual(
-                yaml.safe_load((user_dir / "config.yaml").read_text(encoding="utf-8"))["llm"]["active_model"]["key"],
+                tomllib.loads((user_dir / "config.toml").read_text(encoding="utf-8"))["llm"]["active_model"]["key"],
                 "demo",
             )
 
     def test_should_persist_multiple_channels_when_protocol_is_shared(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "config.yaml"
-            models_path = root / "models.yaml"
-            config_path.write_text("version: 2\nllm: {}\n", encoding="utf-8")
-            models_path.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+            config_path = root / "config.toml"
+            models_path = root / "models.toml"
+            config_path.write_text("version = 2\n\n[llm]\n", encoding="utf-8")
+            models_path.write_text("version = 1\n\n[models]\n", encoding="utf-8")
 
             channels = ChannelConfiguration(
                 channels=(
@@ -102,8 +105,8 @@ class ChannelConfigurationTests(unittest.TestCase):
 
             save_channel_configuration(channels, config_path, models_path)
 
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            models = yaml.safe_load(models_path.read_text(encoding="utf-8"))
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            models = tomllib.loads(models_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 set(config["llm"]["profiles"]),
                 {"openai-official", "openai-proxy"},
@@ -126,10 +129,10 @@ class ChannelConfigurationTests(unittest.TestCase):
     def test_should_persist_user_agent_in_profile_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "config.yaml"
-            models_path = root / "models.yaml"
-            config_path.write_text("version: 2\nllm: {}\n", encoding="utf-8")
-            models_path.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+            config_path = root / "config.toml"
+            models_path = root / "models.toml"
+            config_path.write_text("version = 2\n\n[llm]\n", encoding="utf-8")
+            models_path.write_text("version = 1\n\n[models]\n", encoding="utf-8")
             channel = ChannelConfig(
                 key="proxy",
                 name="代理渠道",
@@ -146,8 +149,8 @@ class ChannelConfigurationTests(unittest.TestCase):
                 ChannelConfiguration((channel,), "proxy"), config_path, models_path
             )
 
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            models = yaml.safe_load(models_path.read_text(encoding="utf-8"))
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            models = tomllib.loads(models_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 config["llm"]["profiles"]["proxy"]["user_agent"],
                 "OmniCrawl-Test/1.0",
@@ -177,11 +180,11 @@ class ChannelConfigurationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "config.yaml"
-            models_path = root / "models.yaml"
-            original_config = "version: 2\nllm:\n  profiles: {}\n"
+            config_path = root / "config.toml"
+            models_path = root / "models.toml"
+            original_config = "version = 2\n\n[llm.profiles]\n"
             config_path.write_text(original_config, encoding="utf-8")
-            models_path.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+            models_path.write_text("version = 1\n\n[models]\n", encoding="utf-8")
             channels = ChannelConfiguration(
                 channels=(
                     ChannelConfig(
@@ -252,10 +255,10 @@ class ChannelConfigurationTests(unittest.TestCase):
     def test_should_choose_enabled_default_when_requested_default_is_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "config.yaml"
-            models_path = root / "models.yaml"
-            config_path.write_text("version: 2\nllm: {}\n", encoding="utf-8")
-            models_path.write_text("version: 1\nmodels: {}\n", encoding="utf-8")
+            config_path = root / "config.toml"
+            models_path = root / "models.toml"
+            config_path.write_text("version = 2\n\n[llm]\n", encoding="utf-8")
+            models_path.write_text("version = 1\n\n[models]\n", encoding="utf-8")
             channels = ChannelConfiguration(
                 channels=(
                     ChannelConfig(

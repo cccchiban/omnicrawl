@@ -342,7 +342,7 @@ class SubAgentForkExecutionTest(unittest.TestCase):
         )
         agent._cancel_check = None
         agent._subagent_model_request_semaphore = None
-        agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+        agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
         agent._llm_client = lambda: None
         agent._dispatch_plugin_hook = lambda _hook, payload, **_kwargs: dict(payload)
         # Fork 必须使用创建时的父系统提示，而不是执行时重新读取可变状态。
@@ -550,7 +550,95 @@ class SubAgentForkExecutionTest(unittest.TestCase):
             ) as select_model:
                 execution_context = agent._prepare_subagent_execution(
                     self._definition(model="definition-key"),
-                    "fork",
+                    "fresh",
+                    "",
+                )
+
+        select_model.assert_called_once_with(parent_llm, "definition-key")
+        self.assertEqual(
+            execution_context.model_snapshot.descriptor.model_id,
+            "definition-model",
+        )
+
+    def test_subagents_toml_role_model_overrides_definition_model(self) -> None:
+        """subagents.toml 中的角色模型高于 Markdown 定义，低于任务级显式指定。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent_llm = self._llm("parent-model")
+            agent = self._agent(Path(temp_dir), parent_llm)
+            agent.config.subagents = SubAgentConfig(
+                enabled=True,
+                allow_fork=True,
+                model_overrides={"explore": "configured-key"},
+            )
+
+            configured_llm = self._llm("configured-model")
+
+            with patch(
+                "omnicrawl.agent.core.apply_model_selection",
+                return_value=configured_llm,
+            ) as select_model:
+                execution_context = agent._prepare_subagent_execution(
+                    self._definition(model="definition-key"),
+                    "fresh",
+                    "",
+                )
+
+        select_model.assert_called_once_with(parent_llm, "configured-key")
+        self.assertEqual(
+            execution_context.model_snapshot.descriptor.model_id,
+            "configured-model",
+        )
+
+    def test_task_model_still_wins_over_subagents_toml_role_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent_llm = self._llm("parent-model")
+            agent = self._agent(Path(temp_dir), parent_llm)
+            agent.config.subagents = SubAgentConfig(
+                enabled=True,
+                allow_fork=True,
+                model_overrides={"explore": "configured-key"},
+            )
+
+            task_llm = self._llm("task-model")
+
+            with patch(
+                "omnicrawl.agent.core.apply_model_selection",
+                return_value=task_llm,
+            ) as select_model:
+                execution_context = agent._prepare_subagent_execution(
+                    self._definition(model="definition-key"),
+                    "fresh",
+                    "task-key",
+                )
+
+        select_model.assert_called_once_with(parent_llm, "task-key")
+        self.assertEqual(
+            execution_context.model_snapshot.descriptor.model_id,
+            "task-model",
+        )
+
+    def test_inherit_role_config_falls_back_to_definition_model(self) -> None:
+        """角色配置显式写 inherit 时，不覆盖定义级模型。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            parent_llm = self._llm("parent-model")
+            agent = self._agent(Path(temp_dir), parent_llm)
+            agent.config.subagents = SubAgentConfig(
+                enabled=True,
+                allow_fork=True,
+                model_overrides={},
+            )
+
+            definition_llm = self._llm("definition-model")
+
+            with patch(
+                "omnicrawl.agent.core.apply_model_selection",
+                return_value=definition_llm,
+            ) as select_model:
+                execution_context = agent._prepare_subagent_execution(
+                    self._definition(model="definition-key"),
+                    "fresh",
                     "",
                 )
 

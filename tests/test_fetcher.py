@@ -359,7 +359,7 @@ class TestConfigRegistration:
         from omnicrawl.ui.tool_labels import tool_display
 
         display = tool_display("fetcher")
-        assert display.name == "网页抓取"
+        assert display.name == "fetcher"
         assert display.icon
 
     def test_build_agent_tools_contains_fetcher(self):

@@ -21,7 +21,7 @@ class _FakeWindowsDesktopTools(WindowsDesktopTools):
     def __init__(self, screenshot_directory: Path | None = None) -> None:
         super().__init__(
             screenshot_directory=screenshot_directory,
-            workspace_root=screenshot_directory.parent.parent if screenshot_directory else None,
+            workspace_root=screenshot_directory.parent.parent.parent if screenshot_directory else None,
         )
         self.window_rows = [
             {
@@ -128,7 +128,7 @@ class WindowsDesktopToolsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
-        screenshot_directory = Path(self.temp_dir.name) / ".agent_tmp" / "images"
+        screenshot_directory = Path(self.temp_dir.name) / ".omnicrawl" / ".agent_tmp" / "images"
         self.tools = _FakeWindowsDesktopTools(screenshot_directory)
 
     def test_window_list_filters_and_truncates_results(self) -> None:

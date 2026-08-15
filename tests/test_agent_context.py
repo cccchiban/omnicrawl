@@ -41,7 +41,7 @@ class AgentContextInjectionTest(unittest.TestCase):
             calls: list[str] = []
 
             class FakeTempWorkspace:
-                display_path = ".agent_tmp"
+                display_path = ".omnicrawl/.agent_tmp"
 
                 def __init__(self, *_args, **_kwargs) -> None:
                     calls.append("init")
@@ -171,7 +171,7 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._session_state = None
             agent._skill_manager = None
             agent._active_skills = []
-            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+            agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
             agent._tools = {
                 "read": ToolDefinition(
                     name="read",
@@ -895,7 +895,8 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn("/ui-design", by_command["/skill:ui-design"]["search"])
         self.assertIn("frontend UI quality", by_command["/skill:ui-design"]["description"])
 
-    def test_resume_archived_session_rejects_other_workspace_before_unarchive(self) -> None:
+    def test_resume_archived_session_allows_other_workspace_before_unarchive(self) -> None:
+        """会话已解除工作区绑定：可以跨工作区恢复已归档会话。"""
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "workspace"
             other_workspace = Path(temp_dir) / "other"
@@ -915,13 +916,15 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._pending_user_text = None
             agent._active_skills = []
 
-            with self.assertRaisesRegex(AgentError, "不能恢复其他工作区的会话"):
-                LocalToolAgent.resume_session(agent, state.session_id)
+            restored = LocalToolAgent.resume_session(agent, state.session_id)
+            self.assertEqual(restored.session_id, state.session_id)
+            self.assertIsNone(restored.archived_at)
+            self.assertTrue(agent._history)
 
             still_archived = store.load_session(state.session_id)
 
-        self.assertIsNotNone(still_archived.archived_at)
-        self.assertEqual(still_archived.path.parent.name, "archive")
+        # 恢复成功后会取消归档，与会话解除工作区绑定后的跨工作区恢复语义一致。
+        self.assertIsNone(still_archived.archived_at)
 
     def test_agent_project_methods_persist_projects_and_filter_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -952,7 +955,11 @@ class AgentContextInjectionTest(unittest.TestCase):
         self.assertIn(str(workspace.resolve()), {project.path for project in projects})
         self.assertEqual(imported.name, "外部项目")
         self.assertEqual([entry.session_id for entry in other_sessions], [other_state.session_id])
-        self.assertEqual([entry.session_id for entry in current_sessions], [state.session_id])
+        # 会话已解除工作区绑定：默认列表返回全部工作区会话。
+        self.assertEqual(
+            {entry.session_id for entry in current_sessions},
+            {state.session_id, other_state.session_id},
+        )
 
     def test_run_stream_compacts_long_history_and_persists_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1713,7 +1720,7 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._memory_store = None
             agent._skill_manager = None
             agent._active_skills = []
-            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+            agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
             agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
 
             prompt = LocalToolAgent._system_prompt(agent)
@@ -1773,7 +1780,7 @@ class AgentContextInjectionTest(unittest.TestCase):
             agent._active_skills = [
                 SkillMatchResult(skill=skill, score=1.0, reason="手动调用：demo-skill")
             ]
-            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+            agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
             agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
 
             prompt = LocalToolAgent._system_prompt(agent)

@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import yaml
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+from omnicrawl.config.runtime import dump_toml_text
 
 import omnicrawl.config.runtime as runtime_module
 from omnicrawl.entry import _parse_args, run_application
@@ -34,7 +38,7 @@ class RuntimeConfigTest(unittest.TestCase):
             with patch("omnicrawl.config.runtime.Path.home", return_value=home):
                 self.assertEqual(user_config_dir(), home / ".OmniCrawl")
                 self.assertEqual(global_agents_path(), home / ".OmniCrawl" / "AGENTS.md")
-                self.assertEqual(default_config_path(), home / ".OmniCrawl" / "config.yaml")
+                self.assertEqual(default_config_path(), home / ".OmniCrawl" / "config.toml")
 
     def test_migrate_legacy_user_config_moves_files_and_removes_old_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -43,7 +47,7 @@ class RuntimeConfigTest(unittest.TestCase):
             appdata = root / "appdata"
             legacy = appdata / "OmniCrawl"
             legacy.mkdir(parents=True)
-            (legacy / "config.yaml").write_text("legacy: true\n", encoding="utf-8")
+            (legacy / "config.toml").write_text("legacy = true\n", encoding="utf-8")
             (legacy / "AGENTS.md").write_text("# global\n", encoding="utf-8")
 
             with patch("omnicrawl.config.runtime.Path.home", return_value=home):
@@ -54,7 +58,7 @@ class RuntimeConfigTest(unittest.TestCase):
 
             target = home / ".OmniCrawl"
             self.assertEqual(migrated, target)
-            self.assertEqual((target / "config.yaml").read_text(encoding="utf-8"), "legacy: true\n")
+            self.assertEqual((target / "config.toml").read_text(encoding="utf-8"), "legacy = true\n")
             self.assertTrue((target / "AGENTS.md").is_file())
             self.assertFalse(legacy.exists())
 
@@ -67,8 +71,8 @@ class RuntimeConfigTest(unittest.TestCase):
             legacy.mkdir(parents=True)
             target = home / ".OmniCrawl"
             target.mkdir(parents=True)
-            (target / "config.yaml").write_text("new: true\n", encoding="utf-8")
-            (legacy / "config.yaml").write_text("old: true\n", encoding="utf-8")
+            (target / "config.toml").write_text("new = true\n", encoding="utf-8")
+            (legacy / "config.toml").write_text("old = true\n", encoding="utf-8")
 
             with patch("omnicrawl.config.runtime.Path.home", return_value=home):
                 migrate_legacy_user_config(
@@ -76,9 +80,9 @@ class RuntimeConfigTest(unittest.TestCase):
                     platform_name="win32",
                 )
 
-            self.assertEqual((target / "config.yaml").read_text(encoding="utf-8"), "new: true\n")
-            backup = target / "config.yaml.migrated.bak"
-            self.assertEqual(backup.read_text(encoding="utf-8"), "old: true\n")
+            self.assertEqual((target / "config.toml").read_text(encoding="utf-8"), "new = true\n")
+            backup = target / "config.toml.migrated.bak"
+            self.assertEqual(backup.read_text(encoding="utf-8"), "old = true\n")
             self.assertFalse(legacy.exists())
 
     def test_should_read_legacy_config_when_migration_has_not_completed(self) -> None:
@@ -88,8 +92,8 @@ class RuntimeConfigTest(unittest.TestCase):
             legacy_dir = root / "legacy"
             user_dir.mkdir()
             legacy_dir.mkdir()
-            legacy_config = legacy_dir / "config.yaml"
-            legacy_config.write_text("legacy: true\n", encoding="utf-8")
+            legacy_config = legacy_dir / "config.toml"
+            legacy_config.write_text("legacy = true\n", encoding="utf-8")
 
             with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
                 with patch(
@@ -116,16 +120,16 @@ class RuntimeConfigTest(unittest.TestCase):
             user_dir.mkdir()
             source_dir.mkdir()
             env_dir.mkdir()
-            env_config = env_dir / "config.yaml"
-            env_models = env_dir / "models.yaml"
-            env_config.write_text("env: true", encoding="utf-8")
-            env_models.write_text("env: true", encoding="utf-8")
-            (cwd / "config.yaml").write_text("cwd: true", encoding="utf-8")
-            (cwd / "models.yaml").write_text("cwd: true", encoding="utf-8")
-            (user_dir / "config.yaml").write_text("user: true", encoding="utf-8")
-            (user_dir / "models.yaml").write_text("user: true", encoding="utf-8")
-            (source_dir / "config.yaml").write_text("source: true", encoding="utf-8")
-            (source_dir / "models.yaml").write_text("source: true", encoding="utf-8")
+            env_config = env_dir / "config.toml"
+            env_models = env_dir / "models.toml"
+            env_config.write_text("env = true", encoding="utf-8")
+            env_models.write_text("env = true", encoding="utf-8")
+            (cwd / "config.toml").write_text("cwd = true", encoding="utf-8")
+            (cwd / "models.toml").write_text("cwd = true", encoding="utf-8")
+            (user_dir / "config.toml").write_text("user = true", encoding="utf-8")
+            (user_dir / "models.toml").write_text("user = true", encoding="utf-8")
+            (source_dir / "config.toml").write_text("source = true", encoding="utf-8")
+            (source_dir / "models.toml").write_text("source = true", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -152,14 +156,14 @@ class RuntimeConfigTest(unittest.TestCase):
             cwd.mkdir()
             user_dir.mkdir()
             source_dir.mkdir()
-            cwd_config = cwd / "config.yaml"
-            cwd_models = cwd / "models.yaml"
-            cwd_config.write_text("cwd: true", encoding="utf-8")
-            cwd_models.write_text("cwd: true", encoding="utf-8")
-            (user_dir / "config.yaml").write_text("user: true", encoding="utf-8")
-            (user_dir / "models.yaml").write_text("user: true", encoding="utf-8")
-            (source_dir / "config.yaml").write_text("source: true", encoding="utf-8")
-            (source_dir / "models.yaml").write_text("source: true", encoding="utf-8")
+            cwd_config = cwd / "config.toml"
+            cwd_models = cwd / "models.toml"
+            cwd_config.write_text("cwd = true", encoding="utf-8")
+            cwd_models.write_text("cwd = true", encoding="utf-8")
+            (user_dir / "config.toml").write_text("user = true", encoding="utf-8")
+            (user_dir / "models.toml").write_text("user = true", encoding="utf-8")
+            (source_dir / "config.toml").write_text("source = true", encoding="utf-8")
+            (source_dir / "models.toml").write_text("source = true", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -172,8 +176,8 @@ class RuntimeConfigTest(unittest.TestCase):
                             config_path = resolve_config_path()
                             models_path = resolve_models_path()
 
-            self.assertEqual(config_path, user_dir / "config.yaml")
-            self.assertEqual(models_path, user_dir / "models.yaml")
+            self.assertEqual(config_path, user_dir / "config.toml")
+            self.assertEqual(models_path, user_dir / "models.toml")
 
     def test_should_prefer_user_directory_over_project_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -184,10 +188,10 @@ class RuntimeConfigTest(unittest.TestCase):
             cwd.mkdir()
             user_dir.mkdir()
             source_dir.mkdir()
-            cwd_config = cwd / "config.yaml"
-            user_config = user_dir / "config.yaml"
-            cwd_config.write_text("cwd: true", encoding="utf-8")
-            user_config.write_text("user: true", encoding="utf-8")
+            cwd_config = cwd / "config.toml"
+            user_config = user_dir / "config.toml"
+            cwd_config.write_text("cwd = true", encoding="utf-8")
+            user_config.write_text("user = true", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -206,7 +210,7 @@ class RuntimeConfigTest(unittest.TestCase):
             user_dir = root / "user"
             cwd.mkdir()
             user_dir.mkdir()
-            (cwd / "config.yaml").write_text("project: true", encoding="utf-8")
+            (cwd / "config.toml").write_text("project = true", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -217,11 +221,11 @@ class RuntimeConfigTest(unittest.TestCase):
                     with patch("omnicrawl.config.runtime.user_config_dir", return_value=user_dir):
                         saved = save_config_data({"user": True})
 
-            self.assertEqual(saved, user_dir / "config.yaml")
+            self.assertEqual(saved, user_dir / "config.toml")
             self.assertTrue(saved.is_file())
-            self.assertEqual(yaml.safe_load(saved.read_text(encoding="utf-8")), {"user": True})
+            self.assertEqual(tomllib.loads(saved.read_text(encoding="utf-8")), {"user": True})
             self.assertEqual(
-                yaml.safe_load((cwd / "config.yaml").read_text(encoding="utf-8")),
+                tomllib.loads((cwd / "config.toml").read_text(encoding="utf-8")),
                 {"project": True},
             )
 
@@ -232,10 +236,10 @@ class RuntimeConfigTest(unittest.TestCase):
             user_dir = root / "user"
             cwd.mkdir()
             user_dir.mkdir()
-            cwd_config = cwd / "config.yaml"
-            cwd_config.write_text("cwd: true", encoding="utf-8")
-            user_config = user_dir / "config.yaml"
-            user_config.write_text("user: true", encoding="utf-8")
+            cwd_config = cwd / "config.toml"
+            cwd_config.write_text("cwd = true", encoding="utf-8")
+            user_config = user_dir / "config.toml"
+            user_config.write_text("user = true", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -260,10 +264,10 @@ class RuntimeConfigTest(unittest.TestCase):
             cwd.mkdir()
             user_dir.mkdir()
             source_dir.mkdir()
-            source_config = source_dir / "config.yaml"
-            source_models = source_dir / "models.yaml"
-            source_config.write_text("source: true", encoding="utf-8")
-            source_models.write_text("source: true", encoding="utf-8")
+            source_config = source_dir / "config.toml"
+            source_models = source_dir / "models.toml"
+            source_config.write_text("source = true", encoding="utf-8")
+            source_models.write_text("source = true", encoding="utf-8")
 
             with patch.dict(
                 os.environ,
@@ -314,16 +318,14 @@ class RuntimeConfigTest(unittest.TestCase):
                                     config_path = resolve_config_path()
                                     models_path = resolve_models_path()
 
-            self.assertEqual(config_path, user_dir / "config.yaml")
-            self.assertEqual(models_path, user_dir / "models.yaml")
+            self.assertEqual(config_path, user_dir / "config.toml")
+            self.assertEqual(models_path, user_dir / "models.toml")
 
-    def test_load_config_data_accepts_utf8_bom_yaml(self) -> None:
+    def test_load_config_data_accepts_utf8_bom_toml(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
-            payload = yaml.safe_dump(
+            config_path = Path(temp_dir) / "config.toml"
+            payload = dump_toml_text(
                 {"llm": {"model": "demo"}},
-                allow_unicode=True,
-                sort_keys=False,
             ).encode("utf-8")
             config_path.write_bytes(b"\xef\xbb\xbf" + payload)
 
@@ -331,22 +333,22 @@ class RuntimeConfigTest(unittest.TestCase):
 
         self.assertEqual(data["llm"]["model"], "demo")
 
-    def test_save_config_data_writes_yaml_utf8_without_bom(self) -> None:
+    def test_save_config_data_writes_toml_utf8_without_bom(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
 
             save_config_data({"approval": {"mode": "auto"}}, config_path)
             raw = config_path.read_bytes()
 
         self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
         self.assertEqual(
-            yaml.safe_load(raw.decode("utf-8"))["approval"]["mode"],
+            tomllib.loads(raw.decode("utf-8"))["approval"]["mode"],
             "auto",
         )
 
     def test_should_retry_atomic_config_replace_when_windows_temporarily_denies_access(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             original_replace = os.replace
             replace_attempts = 0
 
@@ -368,7 +370,7 @@ class RuntimeConfigTest(unittest.TestCase):
 
             self.assertEqual(replace_attempts, 3)
             self.assertEqual(
-                yaml.safe_load(config_path.read_text(encoding="utf-8"))["approval"]["mode"],
+                tomllib.loads(config_path.read_text(encoding="utf-8"))["approval"]["mode"],
                 "manual",
             )
 
@@ -391,7 +393,7 @@ class RuntimeConfigTest(unittest.TestCase):
 
     def test_default_loader_reports_legacy_json_without_reading_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            yaml_path = Path(temp_dir) / "config.yaml"
+            yaml_path = Path(temp_dir) / "config.toml"
             json_path = Path(temp_dir) / "config.json"
             json_path.write_text("not valid json and must not be parsed", encoding="utf-8")
 
@@ -466,7 +468,7 @@ class RuntimeConfigTest(unittest.TestCase):
         agent = Mock()
 
         def fake_load_feature_enabled(section: str, default: bool = True, **_kwargs) -> bool:
-            # 测试不得依赖本机 ~/.OmniCrawl/config.yaml，避免索引开关污染断言。
+            # 测试不得依赖本机 ~/.OmniCrawl/config.toml，避免索引开关污染断言。
             defaults = {
                 "memory": True,
                 "file_name_index": False,
@@ -475,32 +477,33 @@ class RuntimeConfigTest(unittest.TestCase):
             return bool(defaults.get(section, default))
 
         with patch("omnicrawl.entry.configure_console_encoding"):
-            with patch("omnicrawl.entry.load_llm_config", return_value=config):
-                with patch("omnicrawl.entry.load_approval_mode", return_value="manual"):
-                    with patch(
-                        "omnicrawl.entry.load_feature_enabled",
-                        side_effect=fake_load_feature_enabled,
-                    ):
-                        with patch("omnicrawl.entry.load_agent_temp_workspace_config", return_value="temp-config"):
-                            with patch("omnicrawl.entry.load_subagent_config", return_value="subagent-config"):
-                                with patch("omnicrawl.entry.detect_project_context", return_value=project_context):
-                                    with patch("omnicrawl.entry.agent_temp_status_label", return_value=".agent_tmp"):
-                                        with patch("omnicrawl.entry.AgentConfig") as agent_config_class:
-                                            with patch("omnicrawl.entry.LocalToolAgent", return_value=agent) as agent_class:
-                                                with patch("omnicrawl.entry._load_fullscreen_ui") as load_fullscreen_ui:
-                                                    fullscreen_startup = Mock()
-                                                    run_fullscreen_tui = Mock()
-                                                    load_fullscreen_ui.return_value = (
-                                                        fullscreen_startup,
-                                                        run_fullscreen_tui,
-                                                    )
-                                                    with patch("omnicrawl.entry.initialize_user_configuration") as initialize:
-                                                        initialize.return_value = SimpleNamespace(
-                                                            api_key_configured=True,
-                                                            errors=(),
+            with patch("omnicrawl.entry.load_show_thinking", return_value=True):
+                with patch("omnicrawl.entry.load_llm_config", return_value=config):
+                    with patch("omnicrawl.entry.load_approval_mode", return_value="manual"):
+                        with patch(
+                            "omnicrawl.entry.load_feature_enabled",
+                            side_effect=fake_load_feature_enabled,
+                        ):
+                            with patch("omnicrawl.entry.load_agent_temp_workspace_config", return_value="temp-config"):
+                                with patch("omnicrawl.entry.load_subagent_config", return_value="subagent-config"):
+                                    with patch("omnicrawl.entry.detect_project_context", return_value=project_context):
+                                        with patch("omnicrawl.entry.agent_temp_status_label", return_value=".omnicrawl/.agent_tmp"):
+                                            with patch("omnicrawl.entry.AgentConfig") as agent_config_class:
+                                                with patch("omnicrawl.entry.LocalToolAgent", return_value=agent) as agent_class:
+                                                    with patch("omnicrawl.entry._load_fullscreen_ui") as load_fullscreen_ui:
+                                                        fullscreen_startup = Mock()
+                                                        run_fullscreen_tui = Mock()
+                                                        load_fullscreen_ui.return_value = (
+                                                            fullscreen_startup,
+                                                            run_fullscreen_tui,
                                                         )
-                                                        with patch("omnicrawl.entry.format_startup_report", return_value=()):
-                                                            code = run_application(["--resume", "session-demo"])
+                                                        with patch("omnicrawl.entry.initialize_user_configuration") as initialize:
+                                                            initialize.return_value = SimpleNamespace(
+                                                                api_key_configured=True,
+                                                                errors=(),
+                                                            )
+                                                            with patch("omnicrawl.entry.format_startup_report", return_value=()):
+                                                                code = run_application(["--resume", "session-demo"])
 
         self.assertEqual(code, 0)
         agent_config_class.assert_called_once_with(
@@ -511,6 +514,7 @@ class RuntimeConfigTest(unittest.TestCase):
             memory_enabled=True,
             file_name_index_enabled=False,
             content_index_enabled=False,
+            show_thinking=True,
             temp_workspace="temp-config",
             subagents="subagent-config",
             resume_session_id="session-demo",

@@ -419,7 +419,7 @@ class SessionStore:
     ) -> Path:
         """把用户主动导出的会话 Markdown 保存到正式会话导出目录。
 
-        `.agent_tmp/` 仍用于一次性临时导出；这里写入 `.agent_sessions/exports/`
+        `.omnicrawl/.agent_tmp/` 仍用于一次性临时导出；这里写入 `.agent_sessions/exports/`
         是为了让恢复型会话拥有长期归档出口。导出事件只记录文件相对路径，
         不把整份 Markdown 再写回 JSONL，避免转录重复膨胀。
         """

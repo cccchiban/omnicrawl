@@ -120,7 +120,7 @@ class ActiveModelRef:
 def _require_non_empty(key: str, value: str, env_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise LLMError(
-            f"缺少配置 llm.{key}，请在 config.yaml 中填写 llm.{key}，"
+            f"缺少配置 llm.{key}，请在 config.toml 中填写 llm.{key}，"
             f"或设置环境变量 {env_name}。"
         )
 

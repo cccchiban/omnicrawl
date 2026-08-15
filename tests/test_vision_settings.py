@@ -22,13 +22,9 @@ class _HostApp(App):
 class VisionSettingsScreenTests(unittest.IsolatedAsyncioTestCase):
     async def test_can_toggle_and_save_ordered_vision_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.yaml"
+            path = Path(temp_dir) / "config.toml"
             path.write_text(
-                "vision:\n"
-                "  enabled: false\n"
-                "  models:\n"
-                "    - {source: custom, key: vision-first}\n"
-                "    - {source: custom, key: vision-second}\n",
+                "[vision]\nenabled = false\nmodels = [\n    {source = \"custom\", key = \"vision-first\"},\n    {source = \"custom\", key = \"vision-second\"},\n]\n",
                 encoding="utf-8",
             )
             applied: list[VisionConfiguration] = []
@@ -55,8 +51,8 @@ class VisionSettingsScreenTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cannot_enable_without_a_fallback_model(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.yaml"
-            path.write_text("vision:\n  enabled: false\n  models: []\n", encoding="utf-8")
+            path = Path(temp_dir) / "config.toml"
+            path.write_text("[vision]\nenabled = false\nmodels = []\n", encoding="utf-8")
             app = _HostApp()
             async with app.run_test(size=(110, 35)) as pilot:
                 app.push_screen(VisionSettingsScreen(SimpleNamespace(), path))

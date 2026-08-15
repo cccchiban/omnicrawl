@@ -129,7 +129,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
                 yield Static("API Key（留空则读取下方环境变量）", classes="image-gen-field-label")
                 yield Input(
                     c.api_key,
-                    placeholder="sk-...（仅写入本地 config.yaml）",
+                    placeholder="sk-...（仅写入本地 config.toml）",
                     password=True,
                     id="image-gen-api-key",
                     classes="image-gen-control",

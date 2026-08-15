@@ -21,7 +21,7 @@ Agent 记忆系统用于在需要时检索相关历史信息，在产生长期�
 系统采用类文件系统结构存储记忆：
 
 ```text
-.oclmemory/
+.omnicrawl/.oclmemory/
 ├── index.json
 ├── user-preferences/
 ├── project-context/
@@ -37,13 +37,13 @@ Agent 记忆系统用于在需要时检索相关历史信息，在产生长期�
 
 | 作用域 | 存储位置 | 用途 | 隔离边界 |
 |------|----------|------|------|
-| 项目级 | 当前工作区根目录 `.oclmemory/` | 当前项目技术事实、架构、配置、实现约束和可复用排障经验 | 不跨工作区 |
+| 项目级 | 当前工作区根目录 `.omnicrawl/.oclmemory/` | 当前项目技术事实、架构、配置、实现约束和可复用排障经验 | 不跨工作区 |
 | 会话级 | `~/.omnicrawl/Session_memory/<session_id>/` | 当前会话压缩后的目标、约束、决策、文件、完成状态和后续事项 | 只读当前 Session |
 | 用户级 | `~/.omnicrawl/User_memory/` | 用户习惯、稳定偏好和用户明确纠错 | 跨项目、跨会话 |
 
 工具命名按作用域分组：`project_memory_*`、`session_memory_*`、`user_memory_*`，每组包含 `search`、`read`、`expand_related` 和 `write`。上下文压缩结果只写入当前会话级记忆，不再写入项目级记忆。
 
-首次发现旧工作区 `memory/` 时，目标 `.oclmemory/` 不存在则直接改名迁移；目标已存在则导入旧正文后把源目录改名为带时间戳的 `.migrated-*` 备份。迁移失败时保留源目录。
+首次发现旧工作区 `memory/` 时，目标 `.omnicrawl/.oclmemory/` 不存在则直接改名迁移；目标已存在则导入旧正文后把源目录改名为带时间戳的 `.migrated-*` 备份。迁移失败时保留源目录。
 
 ## 3. 单条记忆结构
 
@@ -102,7 +102,7 @@ related_directories:
 建议项目级目录结构：
 
 ```text
-.oclmemory/
+.omnicrawl/.oclmemory/
 ├── index.json
 ├── user-preferences/
 ├── project-context/
@@ -507,7 +507,7 @@ class MemoryStore:
 最小项目级存储只需要：
 
 ```text
-.oclmemory/
+.omnicrawl/.oclmemory/
 ├── index.json
 └── 按分类存放的 .md 记忆文件
 ```

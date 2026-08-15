@@ -23,7 +23,7 @@ from omnicrawl.llm import LLMConfig
 class ContextCompactionConfigTest(unittest.TestCase):
     def test_defaults_keep_model_compaction_disabled_and_recent_window_at_six(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
 
             config = load_context_compaction_config(config_path)
 
@@ -37,7 +37,7 @@ class ContextCompactionConfigTest(unittest.TestCase):
         self.assertFalse(config.allow_cross_provider)
 
     def test_example_configuration_uses_only_supported_fields(self) -> None:
-        config_path = Path(__file__).resolve().parents[1] / "config.example.yaml"
+        config_path = Path(__file__).resolve().parents[1] / "config.example.toml"
 
         config = load_context_compaction_config(config_path)
 
@@ -140,11 +140,9 @@ class ContextCompactionConfigTest(unittest.TestCase):
 
     def test_loader_rejects_invalid_threshold_and_ratio(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                "context_compaction:\n"
-                "  trigger_context_tokens: 0\n"
-                "  emergency_context_ratio: 1.0\n",
+                "[context_compaction]\ntrigger_context_tokens = 0\nemergency_context_ratio = 1.0\n",
                 encoding="utf-8",
             )
 

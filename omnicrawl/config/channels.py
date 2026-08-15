@@ -22,7 +22,7 @@ from ..llm.protocol import (
 from .runtime import (
     RuntimeConfigError,
     atomic_write_text,
-    dump_yaml_text,
+    dump_toml_text,
     load_config_data,
     load_raw_file,
     resolve_config_path,
@@ -220,7 +220,7 @@ def save_channel_configuration(
     config_path: str | Path | None = None,
     models_path: str | Path | None = None,
 ) -> tuple[Path, Path]:
-    """把渠道配置写回现有 YAML，同时保证 models.yaml 不含凭据。"""
+    """把渠道配置写回现有 TOML，同时保证 models.toml 不含凭据。"""
 
     channels = tuple(configuration.channels)
     if not channels:
@@ -328,9 +328,9 @@ def save_channel_configuration(
             if resolved_models.exists()
             else None
         )
-        atomic_write_text(resolved_config, dump_yaml_text(config_data))
+        atomic_write_text(resolved_config, dump_toml_text(config_data))
         written.append((resolved_config, original_config))
-        atomic_write_text(resolved_models, dump_yaml_text(models_data))
+        atomic_write_text(resolved_models, dump_toml_text(models_data))
         written.append((resolved_models, original_models))
     except (RuntimeConfigError, OSError) as exc:
         rollback_errors: list[str] = []

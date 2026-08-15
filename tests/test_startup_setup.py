@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import yaml
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+from omnicrawl.config.runtime import dump_toml_text
 
 from omnicrawl.config.bootstrap import StartupCheck, initialize_user_configuration, user_config_dir
 from omnicrawl.config.channels import (
@@ -39,8 +43,9 @@ class FirstRunConfigurationTest(unittest.TestCase):
     def test_normal_initialization_migrates_legacy_config_first(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            config_path = root / "config.yaml"
-            models_path = root / "models.yaml"
+            config_path = root / "config.toml"
+            models_path = root / "models.toml"
+            subagents_path = root / "subagents.toml"
             with patch("omnicrawl.config.bootstrap.migrate_legacy_user_config") as migrate:
                 with patch(
                     "omnicrawl.config.bootstrap.resolve_config_write_path",
@@ -50,13 +55,18 @@ class FirstRunConfigurationTest(unittest.TestCase):
                         "omnicrawl.config.bootstrap.resolve_models_write_path",
                         return_value=models_path,
                     ):
-                        result = initialize_user_configuration(
-                            prompt=lambda _message: "secret-key",
-                        )
+                        with patch(
+                            "omnicrawl.config.bootstrap.resolve_subagents_write_path",
+                            return_value=subagents_path,
+                        ):
+                            result = initialize_user_configuration(
+                                prompt=lambda _message: "secret-key",
+                            )
 
             migrate.assert_called_once_with()
             self.assertTrue(result.config_path.is_file())
             self.assertTrue(result.models_path.is_file())
+            self.assertTrue(result.subagents_path.is_file())
 
     def test_initialize_creates_templates_and_saves_api_key(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -72,7 +82,7 @@ class FirstRunConfigurationTest(unittest.TestCase):
             self.assertTrue(result.config_path.is_file())
             self.assertTrue(result.models_path.is_file())
 
-            config = yaml.safe_load(result.config_path.read_text(encoding="utf-8"))
+            config = tomllib.loads(result.config_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 config["llm"]["profiles"]["openai-main"]["api_key"],
                 "secret-key",
@@ -87,14 +97,14 @@ class FirstRunConfigurationTest(unittest.TestCase):
 
             self.assertFalse(result.api_key_configured)
             self.assertTrue(result.api_key_prompted)
-            config = yaml.safe_load(result.config_path.read_text(encoding="utf-8"))
+            config = tomllib.loads(result.config_path.read_text(encoding="utf-8"))
             self.assertNotIn("api_key", config["llm"]["profiles"]["openai-main"])
 
     def test_existing_config_and_key_are_not_overwritten(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                yaml.safe_dump(
+                dump_toml_text(
                     {
                         "version": 2,
                         "llm": {
@@ -108,7 +118,6 @@ class FirstRunConfigurationTest(unittest.TestCase):
                             "active_model": {"source": "custom", "key": "default-chat"},
                         },
                     },
-                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -120,7 +129,7 @@ class FirstRunConfigurationTest(unittest.TestCase):
 
             self.assertFalse(result.config_created)
             self.assertTrue(result.api_key_configured)
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            config = tomllib.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(config["llm"]["profiles"]["openai-main"]["api_key"], "existing-key")
 
     def test_first_run_uses_channel_setup_and_reloads_saved_key(self) -> None:
@@ -156,7 +165,7 @@ class FirstRunConfigurationTest(unittest.TestCase):
             self.assertEqual(calls, [(result.config_path, result.models_path)])
             self.assertTrue(result.api_key_prompted)
             self.assertTrue(result.api_key_configured)
-            config = yaml.safe_load(result.config_path.read_text(encoding="utf-8"))
+            config = tomllib.loads(result.config_path.read_text(encoding="utf-8"))
             self.assertEqual(config["llm"]["active_model"]["key"], "anthropic-main")
 
     def test_plugin_check_is_non_blocking_when_node_is_missing(self) -> None:

@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from .runtime import RuntimeConfigError, get_section, load_config_data
+from .runtime import (
+    RuntimeConfigError,
+    get_section,
+    load_config_data,
+    resolve_subagents_path,
+    resolve_subagents_write_path,
+    save_config_data,
+)
 
 
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "是", "启用"}
@@ -57,6 +64,10 @@ class SubAgentConfig:
 
     Phase 3 开放默认关闭的 Fork / worktree / standard 写 Agent；
     verify 仍需单独显式启用。高权限能力默认关闭，需配置显式打开。
+
+    ``model_overrides`` 按子代理角色名（AgentDefinition.name）单独指定模型；
+    取值与任务级 model 一致：models.toml key/alias、profile/model_id 或裸
+    model_id，空字符串或 ``inherit`` 表示沿用父模型。
     """
 
     enabled: bool = False
@@ -74,13 +85,26 @@ class SubAgentConfig:
     verify_command_timeout_seconds: int = 120
     task_retention_minutes: int = 60
     result_summary_chars: int = 6000
+    model_overrides: Mapping[str, str] = field(default_factory=dict)
 
 
-def load_subagent_config(config_path: str | Path | None = None) -> SubAgentConfig:
-    """读取 ``subagents`` 段并执行当前阶段的安全收紧规则。"""
+def load_subagent_config(
+    subagents_path: str | Path | None = None,
+) -> SubAgentConfig:
+    """读取独立 ``subagents.toml`` 的 ``subagents`` 段并执行安全收紧规则。
+
+    子代理设置已从 ``config.toml`` 完全迁移到独立的 ``subagents.toml``，
+    不再回退读取 ``config.toml`` 的 ``[subagents]`` 段；未显式指定路径时
+    使用 ``resolve_subagents_path()`` 定位默认位置的子代理设置文件。
+    """
 
     try:
-        section = get_section(load_config_data(config_path), "subagents")
+        target = (
+            Path(subagents_path).expanduser()
+            if subagents_path is not None
+            else resolve_subagents_path()
+        )
+        section = get_section(load_config_data(target), "subagents")
     except RuntimeConfigError as exc:
         raise SubAgentConfigError(str(exc)) from exc
 
@@ -151,6 +175,8 @@ def load_subagent_config(config_path: str | Path | None = None) -> SubAgentConfi
             env_verify_timeout,
         )
 
+    model_overrides = _parse_model_overrides(section)
+
     return SubAgentConfig(
         enabled=enabled,
         max_depth=max_depth,
@@ -169,7 +195,37 @@ def load_subagent_config(config_path: str | Path | None = None) -> SubAgentConfi
         verify_command_timeout_seconds=verify_command_timeout_seconds,
         task_retention_minutes=task_retention_minutes,
         result_summary_chars=result_summary_chars,
+        model_overrides=model_overrides,
     )
+
+
+def _parse_model_overrides(section: Mapping[str, Any]) -> Mapping[str, str]:
+    """解析 ``[subagents.models.<角色>]`` 段，按角色名返回模型选择。
+
+    每个子段只允许 ``model`` 字段；值为空或 ``inherit`` 时等价于不覆盖，
+    解析结果中直接省略，避免与任务级 ``inherit`` 语义混淆。
+    """
+
+    raw_models = section.get("models")
+    if raw_models in (None, ""):
+        return {}
+    if not isinstance(raw_models, Mapping):
+        raise SubAgentConfigError("配置项 subagents.models 必须是对象。")
+
+    overrides: dict[str, str] = {}
+    for role_name, raw_entry in raw_models.items():
+        role = str(role_name).strip().casefold()
+        if not role:
+            continue
+        if not isinstance(raw_entry, Mapping):
+            raise SubAgentConfigError(
+                f"配置项 subagents.models.{role_name} 必须是对象。"
+            )
+        model = str(raw_entry.get("model") or "").strip()
+        if not model or model.casefold() == "inherit":
+            continue
+        overrides[role] = model
+    return overrides
 
 
 def _bool_field(section: Mapping[str, Any], name: str, default: bool) -> bool:

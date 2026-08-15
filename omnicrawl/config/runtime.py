@@ -1,4 +1,4 @@
-"""严格使用 YAML 的运行配置仓库，支持 UTF-8 读取与原子写回。"""
+"""严格使用 TOML 的运行配置仓库，支持 UTF-8 读取与原子写回。"""
 
 from __future__ import annotations
 
@@ -11,13 +11,15 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-DEFAULT_CONFIG_FILENAME = "config.yaml"
-DEFAULT_MODELS_FILENAME = "models.yaml"
+DEFAULT_CONFIG_FILENAME = "config.toml"
+DEFAULT_MODELS_FILENAME = "models.toml"
+DEFAULT_SUBAGENTS_FILENAME = "subagents.toml"
 GLOBAL_AGENTS_FILENAME = "AGENTS.md"
 USER_CONFIG_DIRNAME = ".OmniCrawl"
 CONFIG_PATH_ENV = "AI_CONFIG_FILE"
 MODELS_PATH_ENV = "AI_MODELS_FILE"
-_YAML_SUFFIXES = {".yaml", ".yml"}
+SUBAGENTS_PATH_ENV = "AI_SUBAGENTS_FILE"
+_TOML_SUFFIXES = {".toml"}
 
 
 class RuntimeConfigError(RuntimeError):
@@ -127,8 +129,8 @@ def default_config_path() -> Path:
     return user_config_dir() / DEFAULT_CONFIG_FILENAME
 
 
-def default_yaml_config_path() -> Path:
-    """兼容既有调用名；默认配置本身就是 YAML。"""
+def default_toml_config_path() -> Path:
+    """兼容既有调用名；默认配置本身就是 TOML。"""
 
     return default_config_path()
 
@@ -137,6 +139,12 @@ def default_models_path() -> Path:
     """返回用户默认模型目录配置路径。"""
 
     return user_config_dir() / DEFAULT_MODELS_FILENAME
+
+
+def default_subagents_path() -> Path:
+    """返回用户默认子代理设置配置路径。"""
+
+    return user_config_dir() / DEFAULT_SUBAGENTS_FILENAME
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
@@ -151,7 +159,7 @@ def resolve_config_path(config_path: str | Path | None = None) -> Path:
             if raw_env
             else _resolve_default_path(DEFAULT_CONFIG_FILENAME)
         )
-    _validate_yaml_path(path, source="运行配置")
+    _validate_toml_path(path, source="运行配置")
     return path
 
 
@@ -167,7 +175,23 @@ def resolve_models_path(models_path: str | Path | None = None) -> Path:
             if raw_env
             else _resolve_default_path(DEFAULT_MODELS_FILENAME)
         )
-    _validate_yaml_path(path, source="模型配置")
+    _validate_toml_path(path, source="模型配置")
+    return path
+
+
+def resolve_subagents_path(subagents_path: str | Path | None = None) -> Path:
+    """按显式路径、环境变量、工作区、用户目录和开发源码回退解析。"""
+
+    if subagents_path is not None:
+        path = Path(subagents_path).expanduser()
+    else:
+        raw_env = os.getenv(SUBAGENTS_PATH_ENV, "").strip()
+        path = (
+            Path(raw_env).expanduser()
+            if raw_env
+            else _resolve_default_path(DEFAULT_SUBAGENTS_FILENAME)
+        )
+    _validate_toml_path(path, source="子代理设置")
     return path
 
 
@@ -203,7 +227,7 @@ def resolve_config_write_path(config_path: str | Path | None = None) -> Path:
     else:
         raw_env = os.getenv(CONFIG_PATH_ENV, "").strip()
         path = Path(raw_env).expanduser() if raw_env else user_config_dir() / DEFAULT_CONFIG_FILENAME
-    _validate_yaml_path(path, source="运行配置")
+    _validate_toml_path(path, source="运行配置")
     return path
 
 
@@ -215,7 +239,23 @@ def resolve_models_write_path(models_path: str | Path | None = None) -> Path:
     else:
         raw_env = os.getenv(MODELS_PATH_ENV, "").strip()
         path = Path(raw_env).expanduser() if raw_env else user_config_dir() / DEFAULT_MODELS_FILENAME
-    _validate_yaml_path(path, source="模型配置")
+    _validate_toml_path(path, source="模型配置")
+    return path
+
+
+def resolve_subagents_write_path(subagents_path: str | Path | None = None) -> Path:
+    """解析子代理设置写入路径；未显式指定时始终写入用户目录。"""
+
+    if subagents_path is not None:
+        path = Path(subagents_path).expanduser()
+    else:
+        raw_env = os.getenv(SUBAGENTS_PATH_ENV, "").strip()
+        path = (
+            Path(raw_env).expanduser()
+            if raw_env
+            else user_config_dir() / DEFAULT_SUBAGENTS_FILENAME
+        )
+    _validate_toml_path(path, source="子代理设置")
     return path
 
 
@@ -231,7 +271,7 @@ def _is_development_environment() -> bool:
 
 
 def load_config_data(config_path: str | Path | None = None) -> dict[str, Any]:
-    """读取 YAML 运行配置；不存在时返回空对象，不再读取或迁移 JSON。"""
+    """读取 TOML 运行配置；不存在时返回空对象，不再读取或迁移 JSON。"""
 
     path = resolve_config_path(config_path)
     if path.exists():
@@ -243,20 +283,20 @@ def load_config_data(config_path: str | Path | None = None) -> dict[str, Any]:
         legacy_path = path.with_suffix(".json")
         if legacy_path.exists():
             raise RuntimeConfigError(
-                "检测到不再支持的 config.json，且 config.yaml 不存在。"
-                "请根据 config.example.yaml 手工创建 config.yaml；程序不会读取或自动迁移 JSON。"
+                "检测到不再支持的 config.json，且 config.toml 不存在。"
+                "请根据 config.example.toml 手工创建 config.toml；程序不会读取或自动迁移 JSON。"
             )
     return {}
 
 
 def save_config_data(data: Mapping[str, Any], config_path: str | Path | None = None) -> Path:
-    """把运行配置以 YAML 原子写回；JSON 和未知扩展名会被明确拒绝。"""
+    """把运行配置以 TOML 原子写回；JSON 和未知扩展名会被明确拒绝。"""
 
     if not isinstance(data, Mapping):
         raise RuntimeConfigError("配置数据必须是对象。")
 
     path = resolve_config_write_path(config_path)
-    _atomic_write_text(path, _dump_yaml(dict(data)))
+    _atomic_write_text(path, _dump_toml(dict(data)))
     return path
 
 
@@ -271,33 +311,38 @@ def get_section(data: Mapping[str, Any], key: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _validate_yaml_path(path: Path, *, source: str) -> None:
-    if path.suffix.lower() not in _YAML_SUFFIXES:
+def _validate_toml_path(path: Path, *, source: str) -> None:
+    if path.suffix.lower() not in _TOML_SUFFIXES:
         raise RuntimeConfigError(
-            f"{source}仅支持 .yaml 或 .yml 文件：{path}。JSON 配置已停止支持。"
+            f"{source}仅支持 .toml 文件：{path}。JSON 配置已停止支持。"
         )
 
 
 def _load_mapping_file(path: Path) -> dict[str, Any]:
-    _validate_yaml_path(path, source="配置文件")
+    _validate_toml_path(path, source="配置文件")
     try:
         text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise RuntimeConfigError(f"读取配置文件失败：{path}，{exc}") from exc
-    return _load_yaml(text, path)
+    return _load_toml(text, path)
 
 
-def _load_yaml(text: str, path: Path) -> dict[str, Any]:
+def _load_toml(text: str, path: Path) -> dict[str, Any]:
     if not text.strip():
         return {}
     try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeConfigError("缺少 PyYAML 依赖，请先执行：pip install PyYAML") from exc
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError as exc:
+            raise RuntimeConfigError(
+                "缺少 TOML 解析依赖（Python 3.11 以下需 tomli），请先执行：pip install tomli"
+            ) from exc
     try:
-        data = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise RuntimeConfigError(f"配置文件 YAML 解析失败：{path}，{exc}") from exc
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeConfigError(f"配置文件 TOML 解析失败：{path}，{exc}") from exc
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -305,32 +350,24 @@ def _load_yaml(text: str, path: Path) -> dict[str, Any]:
     return data
 
 
-def _dump_yaml(data: Mapping[str, Any]) -> str:
+def _dump_toml(data: Mapping[str, Any]) -> str:
     try:
-        import yaml
+        import tomli_w
     except ImportError as exc:
-        raise RuntimeConfigError("缺少 PyYAML 依赖，请先执行：pip install PyYAML") from exc
-
-    class _Dumper(yaml.SafeDumper):
-        pass
-
-    def _str_representer(dumper: yaml.SafeDumper, value: str) -> Any:
-        if "\n" in value:
-            return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|")
-        return dumper.represent_scalar("tag:yaml.org,2002:str", value)
-
-    _Dumper.add_representer(str, _str_representer)
-    return yaml.dump(
-        dict(data),
-        Dumper=_Dumper,
-        allow_unicode=True,
-        default_flow_style=False,
-        sort_keys=False,
-    )
+        raise RuntimeConfigError(
+            "缺少 TOML 写入依赖（tomli-w），请先执行：pip install tomli-w"
+        ) from exc
+    return tomli_w.dumps(_strip_none(dict(data)))
 
 
-# 与 session_locking 保持同量级：Windows 目标文件短暂占用时 os.replace 可能 WinError 5。
-# config 层不依赖 state，因此在此内联同等短重试，避免循环导入。
+def _strip_none(data: Any) -> Any:
+    """TOML 不支持 null：递归跳过 None 键、过滤列表中的 None。"""
+
+    if isinstance(data, dict):
+        return {k: _strip_none(v) for k, v in data.items() if v is not None}
+    if isinstance(data, list):
+        return [_strip_none(v) for v in data if v is not None]
+    return data
 _ATOMIC_REPLACE_MAX_ATTEMPTS = 8
 _ATOMIC_REPLACE_RETRY_SECONDS = 0.05
 
@@ -392,7 +429,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def load_raw_file(path: Path) -> dict[str, Any]:
-    """供 model_store 等 YAML 配置模块复用的底层加载。"""
+    """供 model_store 等配置模块复用的底层加载。"""
 
     return _load_mapping_file(path)
 
@@ -401,5 +438,11 @@ def atomic_write_text(path: Path, text: str) -> None:
     _atomic_write_text(path, text)
 
 
+def dump_toml_text(data: Mapping[str, Any]) -> str:
+    return _dump_toml(data)
+
+
 def dump_yaml_text(data: Mapping[str, Any]) -> str:
-    return _dump_yaml(data)
+    """兼容旧调用名；实际输出 TOML 文本。"""
+
+    return _dump_toml(data)

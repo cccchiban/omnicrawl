@@ -12,24 +12,18 @@ env/
 .env
 .env.*
 config.json
+config.toml
 config.yaml
+models.toml
 models.yaml
 *.migrated.bak
 
-.codex/
-.codex-ref/
-.claude/
-.agents/
 designs/
-.agent_tmp/
-.agent_sessions/
-.pi-subagents/
-.pi/
-node_modules/
-memory/
-.oclmemory/
+.omnicrawl/
 logs/
-nul
+tests/
 
 CLAUDE.md
 AGENTS.md
+
+subagents.toml

@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -17,6 +18,7 @@ from ..documentation import (
 )
 from ..llm.stream_registry import current_stream_scope, registered_resource
 from .search_index import ProjectSearchIndex, is_forbidden_content_search_root
+from .temp import DEFAULT_AGENT_TEMP_DIRECTORY
 
 
 MAX_FILE_READ_CHARS = 200_000
@@ -24,6 +26,15 @@ MAX_SEARCH_RESULTS = 200
 MAX_LIST_ENTRIES = 500
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 360
 MAX_COMMAND_TIMEOUT_SECONDS = 360
+
+# 命令输出受控头尾采样（Host 侧）：bash/powershell 等命令工具的超长输出由 Host
+# 统一保留首尾并提示完整输出保存位置，避免测试/构建日志淹没模型上下文，
+# 也消除模型为节省 token 而自行裁剪输出的动机。
+COMMAND_OUTPUT_HEAD_CHARS = 2_000
+COMMAND_OUTPUT_TAIL_CHARS = 6_000
+COMMAND_OUTPUT_FILES_SUBDIR = "files"
+COMMAND_OUTPUT_FILE_PREFIX = "command_output_"
+COMMAND_OUTPUT_FILE_SUFFIX = ".log"
 
 PROTECTED_NAMES = {
     ".git",
@@ -34,6 +45,8 @@ PROTECTED_NAMES = {
     ".codex-ref",
     ".env",
     "config.json",
+    "config.toml",
+    "models.toml",
     "config.yaml",
     "models.yaml",
 }
@@ -56,6 +69,7 @@ INDEX_EXCLUDED_NAMES = {
     ".pi-subagents",
     ".agent_tmp",
     "logs",
+    ".omnicrawl",
     "designs",
 }
 
@@ -906,13 +920,27 @@ class WorkspaceTools:
             f"{display_kind}：{invocation.label}",
         ]
         if stdout.strip():
-            output_parts.append(f"stdout:\n{stdout.strip()}")
+            output_parts.append(f"stdout:\n{self._sampled_output(stdout.strip())}")
         if stderr.strip():
-            output_parts.append(f"stderr:\n{stderr.strip()}")
+            output_parts.append(f"stderr:\n{self._sampled_output(stderr.strip())}")
         return WorkspaceCommandResult(
             ok=process.returncode == 0,
             output="\n\n".join(output_parts),
         )
+
+    def _sampled_output(self, text: str) -> str:
+        """对单段命令输出做受控头尾采样，超长时把完整输出写入 Agent 临时目录。"""
+        save_path = (
+            self.workspace_root
+            / DEFAULT_AGENT_TEMP_DIRECTORY
+            / COMMAND_OUTPUT_FILES_SUBDIR
+            / (
+                f"{COMMAND_OUTPUT_FILE_PREFIX}"
+                f"{uuid.uuid4().hex[:8]}"
+                f"{COMMAND_OUTPUT_FILE_SUFFIX}"
+            )
+        )
+        return _sample_command_output(text, save_path=save_path)
 
     def command_invocation(self, command: str, *, shell: str) -> WorkspaceCommandInvocation:
         """把工具要求的 Shell 转换为可执行的 subprocess 调用。
@@ -1072,6 +1100,59 @@ class WorkspaceTools:
         if not numbered:
             numbered.append("文件为空，或指定范围没有内容。")
         return "\n".join(([header] if header else []) + numbered)
+
+
+def _sample_command_output(
+    text: str,
+    *,
+    head_chars: int = COMMAND_OUTPUT_HEAD_CHARS,
+    tail_chars: int = COMMAND_OUTPUT_TAIL_CHARS,
+    save_path: Path | None = None,
+) -> str:
+    """对命令输出做受控头尾采样，超长时保留首尾并记录完整输出位置。
+
+    未超过 head_chars + tail_chars 时原样返回；超过时按行对齐保留首部与尾部
+    （至少各一行，不切断多字节字符），中间以提示行代替，避免超大输出淹没模型
+    上下文。save_path 非空时把完整输出写入该文件并在提示中给出路径；写入失败
+    静默降级为只截断，不影响命令结果。空文本直接返回。
+    """
+    if not text or len(text) <= head_chars + tail_chars:
+        return text
+
+    lines = text.splitlines(keepends=True)
+    head_lines: list[str] = []
+    head_length = 0
+    for line in lines:
+        if head_lines and head_length + len(line) > head_chars:
+            break
+        head_lines.append(line)
+        head_length += len(line)
+
+    tail_lines: list[str] = []
+    tail_length = 0
+    for line in reversed(lines):
+        if tail_lines and tail_length + len(line) > tail_chars:
+            break
+        tail_lines.append(line)
+        tail_length += len(line)
+    tail_lines.reverse()
+
+    if len(head_lines) + len(tail_lines) >= len(lines):
+        return text
+
+    omitted_lines = len(lines) - len(head_lines) - len(tail_lines)
+    hint = (
+        f"\n… 系统已截断：共 {len(lines)} 行，仅保留首部 {len(head_lines)} 行"
+        f"与尾部 {len(tail_lines)} 行（省略 {omitted_lines} 行）。"
+    )
+    if save_path is not None:
+        try:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_text(text, encoding="utf-8")
+            hint += f" 完整输出已保存至：{save_path}"
+        except OSError:
+            pass
+    return "".join(head_lines) + hint + "\n" + "".join(tail_lines)
 
 
 def _compile_glob(pattern: str) -> re.Pattern[str] | None:

@@ -39,19 +39,19 @@ class MemoryScopeTest(unittest.TestCase):
 
             result = migrate_legacy_memory(
                 workspace / "memory",
-                workspace / ".oclmemory",
+                workspace / ".omnicrawl" / ".oclmemory",
             )
 
             self.assertTrue(result.migrated)
             self.assertFalse((workspace / "memory").exists())
-            self.assertTrue((workspace / ".oclmemory" / "index.json").is_file())
-            matches = MemoryStore(workspace / ".oclmemory").search("main.py")
+            self.assertTrue((workspace / ".omnicrawl" / ".oclmemory" / "index.json").is_file())
+            matches = MemoryStore(workspace / ".omnicrawl" / ".oclmemory").search("main.py")
             self.assertTrue(matches)
 
     def test_legacy_memory_is_imported_and_backed_up_when_target_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
-            MemoryStore(workspace / ".oclmemory").write(
+            MemoryStore(workspace / ".omnicrawl" / ".oclmemory").write(
                 [
                     MemoryWriteRequest(
                         content="新项目约束。",
@@ -72,14 +72,14 @@ class MemoryScopeTest(unittest.TestCase):
 
             result = migrate_legacy_memory(
                 workspace / "memory",
-                workspace / ".oclmemory",
+                workspace / ".omnicrawl" / ".oclmemory",
             )
 
             self.assertTrue(result.migrated)
             self.assertEqual(result.imported_count, 1)
             self.assertIsNotNone(result.backup_path)
             self.assertTrue(result.backup_path.is_dir())
-            target = MemoryStore(workspace / ".oclmemory")
+            target = MemoryStore(workspace / ".omnicrawl" / ".oclmemory")
             self.assertTrue(target.search("新项目约束"))
             self.assertTrue(target.search("旧项目决策"))
 
@@ -92,14 +92,14 @@ class MemoryScopeTest(unittest.TestCase):
             agent = object.__new__(LocalToolAgent)
             agent.workspace_root = workspace
             agent.config = SimpleNamespace(
-                memory_directory=".oclmemory",
+                memory_directory=".omnicrawl/.oclmemory",
                 memory_enabled=True,
             )
             agent._session_state = SimpleNamespace(session_id="session-one")
             agent._memory_user_data_root = lambda: home / ".omnicrawl"
 
             project, session_one, user = agent._create_memory_stores()
-            self.assertEqual(project.root, (workspace / ".oclmemory").resolve())
+            self.assertEqual(project.root, (workspace / ".omnicrawl" / ".oclmemory").resolve())
             self.assertEqual(
                 session_one.root,
                 (home / ".omnicrawl" / "Session_memory" / "session-one").resolve(),

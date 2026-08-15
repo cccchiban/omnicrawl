@@ -22,17 +22,19 @@ Host -> role=tool 结果
 
 `read_image` 是 Host 侧的只读图片工具，支持 PNG、JPEG、WebP 和 GIF。`path` 可以是当前工作区相对路径或本机绝对路径；不支持 HTTP/HTTPS URL。工具会校验图片文件头，完整读取文件并生成 `ToolImageAttachment`。当当前主模型声明 `vision=true` 时，图片以内联 Base64 观察消息发送给主模型；当主模型不支持视觉且设置中的视觉代理已启用时，Host 会按配置顺序把图片发送给独立视觉模型，视觉模型只返回文本分析，再以文本观察回填给主 Agent；多个视觉模型按顺序故障转移，全部失败时返回明确错误。视觉代理未启用时，非视觉主模型只收到不含 Base64 的元数据结果。按照当前配置，该工具不设置文件大小或图片尺寸上限，因此超大图片可能导致内存占用、Base64 膨胀和模型请求超时。
 
-`windows_screenshot` 使用同一套图片代理路径。视觉模型配置复用现有 `llm.profiles` 和 `models.yaml`，写入顶层 `vision.enabled` 与有序 `vision.models` 引用，不在视觉配置中重复保存 API Key。
+`windows_screenshot` 使用同一套图片代理路径。视觉模型配置复用现有 `llm.profiles` 和 `models.toml`，写入顶层 `vision.enabled` 与有序 `vision.models` 引用，不在视觉配置中重复保存 API Key。
 
 图片 Base64 只存在于当前 Agent 工具循环和视觉模型请求，不写入 Session 事件、长期历史或普通工具结果；工具结果和 UI 只保留路径、MIME 类型、字节数及文本分析。该工具仍沿用 Host 的读取审批策略。
 
 `search_tools` 对高匹配度结果返回紧凑 Schema，只保留参数填写所需的字段，例如 `type`、`properties`、`required`、`enum` 和边界约束。长描述、默认值和示例不会进入搜索结果。
 
-搜索响应采用无缩进 JSON，并仅保留模型下一步调用需要的信息：
+模型通道的搜索响应采用无缩进 JSON，仅保留模型下一步调用需要的信息：
 
 ```json
 {"tools":[{"name":"read","description":"读取工作区文本文件。","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}
 ```
+
+终端展示与会话转录使用同一 payload 的分节 TOML 版本（工具结果 `full_output`），便于人眼扫描候选工具、参数必填项与审批标记；与上方 JSON 内容等价，超长时按整段 `[[tools]]` 数组表裁剪，剩余文本仍保持 TOML 语法完整。模型通道始终使用无缩进 JSON，不受展示格式影响。
 
 顶层不重复回显查询、数量、成功状态和协议版本；候选数量可由 `tools` 数组直接获得。只有结果被限制时才返回顶层 `"truncated":true`，只有真实工具需要审批时才在对应候选返回 `"requires_confirmation":true`。工具说明会折叠空白并限制为 160 字，参数契约不做进一步省略，避免因信息不足造成错误调用和额外重试。
 

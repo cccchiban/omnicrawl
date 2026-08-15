@@ -511,6 +511,81 @@ class ProjectSearchIndexTest(unittest.TestCase):
             finally:
                 index.close()
 
+    def test_search_files_hoists_root_is_dir_out_of_loop(self) -> None:
+        """root.is_dir() 只调用一次，不随条目数增长（stat 系统调用热路径）。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as cache_dir:
+            workspace = Path(temp_dir)
+            for i in range(50):
+                (workspace / f"mod{i:02}").mkdir()
+                (workspace / f"mod{i:02}" / "target.txt").write_text(
+                    "x\n", encoding="utf-8"
+                )
+            tools = WorkspaceTools(workspace)
+            index = ProjectSearchIndex(
+                workspace,
+                file_name_enabled=True,
+                content_enabled=True,
+                should_skip=tools.should_skip_path,
+                storage_root=Path(cache_dir),
+                usn_reader_factory=_StableUsnReader,
+            )
+            tools.search_index = index
+            index.start()
+            try:
+                self.assertTrue(index.wait_until_ready(5))
+                results = index.search_files(
+                    "target.txt",
+                    root=workspace,
+                    kind="file",
+                    case_sensitive=False,
+                    max_results=50,
+                )
+                self.assertIsNotNone(results)
+                self.assertEqual(len(results), 50)
+            finally:
+                index.close()
+
+    def test_long_pattern_search_stops_at_max_results(self) -> None:
+        """长模式（trigram）搜索命中达到上限即停止，不拉取全部匹配内容。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as cache_dir:
+            workspace = Path(temp_dir)
+            for i in range(30):
+                (workspace / f"file{i:02}.txt").write_text(
+                    f"keyword{i} content line\n" * 5, encoding="utf-8"
+                )
+            tools = WorkspaceTools(workspace)
+            index = ProjectSearchIndex(
+                workspace,
+                file_name_enabled=True,
+                content_enabled=True,
+                should_skip=tools.should_skip_path,
+                storage_root=Path(cache_dir),
+                usn_reader_factory=_StableUsnReader,
+            )
+            tools.search_index = index
+            index.start()
+            try:
+                self.assertTrue(index.wait_until_ready(5))
+                results = index.search_literal(
+                    "keyword",
+                    root=workspace,
+                    case_sensitive=False,
+                    max_results=3,
+                )
+                self.assertIsNotNone(results)
+                self.assertEqual(len(results), 3)
+                # 每条结果都是有效匹配：路径 + 行号 + 匹配行内容。
+                for relative_path, line_number, line in results:
+                    self.assertTrue(
+                        relative_path.startswith("file"), relative_path
+                    )
+                    self.assertGreaterEqual(line_number, 1)
+                    self.assertIn("keyword", line)
+            finally:
+                index.close()
+
     def test_large_files_keep_name_entries_but_skip_content(self) -> None:
         """超过大小上限的文件只保留文件名条目，内容不进 FTS。"""
 

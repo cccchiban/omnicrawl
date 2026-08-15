@@ -1,7 +1,8 @@
 """工具调用的用户界面显示标签。
 
 工具的内部名称用于模型路由和唯一标识，不应直接作为主要 UI 文案。
-本模块只负责将内部名称转换为简洁、稳定的显示标签。
+本模块只负责将内部名称转换为简洁、稳定的显示标签；web_search 与
+fetcher 按用户要求直接显示内部工具名，便于与工具配置面板对应。
 """
 
 from __future__ import annotations
@@ -23,8 +24,8 @@ _TOOL_DISPLAY_NAMES = {
     "read": "读取文件",
     "read_image": "读取图片",
     "grep": "搜索文本",
-    "web_search": "网页搜索",
-    "fetcher": "网页抓取",
+    "web_search": "web_search",
+    "fetcher": "fetcher",
     "image_gen": "图像生成",
     "replace_text": "替换文本",
     "write_file": "写入文件",

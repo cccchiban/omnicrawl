@@ -127,6 +127,61 @@ class GitSnapshotStoreTest(unittest.TestCase):
 
             self.assertEqual(target.read_bytes(), b"before\r\n")
 
+    def test_capture_reuses_stable_index_file(self) -> None:
+        """跨轮捕获复用固定 index（保留 stat 缓存），不随捕获轮次增长。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "workspace"
+            root.mkdir()
+            (root / "a.txt").write_text("a\n", encoding="utf-8")
+            store = GitSnapshotStore(Path(temp_dir) / "shadow.git")
+            roots = {"workspace": SnapshotRoot(root)}
+            store.capture(roots)
+            index_dir = Path(temp_dir) / "shadow.git" / "omnicrawl-indexes"
+            first = sorted(index_dir.glob("*.index"))
+            self.assertEqual(len(first), 1)
+            self.assertEqual(first[0].name, "workspace.index")
+
+            (root / "a.txt").write_text("b\n", encoding="utf-8")
+            (root / "new.txt").write_text("new\n", encoding="utf-8")
+            store.capture(roots)
+            second = sorted(index_dir.glob("*.index"))
+            # 复用同一 index 文件，而不是每轮新建一个。
+            self.assertEqual(second, first)
+
+    def test_capture_recovers_from_corrupt_index(self) -> None:
+        """固定 index 损坏时删除重建一次，捕获不中断。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "workspace"
+            root.mkdir()
+            (root / "a.txt").write_text("a\n", encoding="utf-8")
+            store = GitSnapshotStore(Path(temp_dir) / "shadow.git")
+            roots = {"workspace": SnapshotRoot(root)}
+            store.capture(roots)
+            index_path = (
+                Path(temp_dir)
+                / "shadow.git"
+                / "omnicrawl-indexes"
+                / "workspace.index"
+            )
+            index_path.write_bytes(b"not a git index at all")
+
+            tree = store.capture(roots)["workspace"]
+            self.assertTrue(tree.root_existed)
+            self.assertEqual(len(tree.tree_id), 40)
+
+    def test_turn_snapshot_roots_excludes_generic_dirs(self) -> None:
+        """工作区快照始终排除通用巨型依赖/构建目录。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent, _ = self._build_agent(Path(temp_dir))
+            roots = agent._turn_snapshot_roots()
+            workspace_excluded = roots["workspace"].excluded
+            for name in ("node_modules", ".venv", "build", "dist", "__pycache__"):
+                self.assertIn(name, workspace_excluded)
+            self.assertIn(".git", workspace_excluded)
+
     def test_conflict_rejects_all_roots_without_partial_restore(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -181,7 +236,7 @@ class GitSnapshotStoreTest(unittest.TestCase):
             workspace_file.write_text("after\n", encoding="utf-8")
             created_file = agent.workspace_root / "created.txt"
             created_file.write_text("created\n", encoding="utf-8")
-            temp_file = agent.workspace_root / ".agent_tmp" / "files" / "draft.txt"
+            temp_file = agent.workspace_root / ".omnicrawl" / ".agent_tmp" / "files" / "draft.txt"
             temp_file.parent.mkdir(parents=True)
             temp_file.write_text("temporary\n", encoding="utf-8")
             session_artifact = (
@@ -423,7 +478,7 @@ class GitSnapshotStoreTest(unittest.TestCase):
         agent.config = SimpleNamespace(max_history_turns=6)
         agent._session_store = session_store
         agent._session_state = state
-        agent._project_memory_store = MemoryStore(workspace / ".oclmemory")
+        agent._project_memory_store = MemoryStore(workspace / ".omnicrawl" / ".oclmemory")
         agent._session_memory_store = MemoryStore(
             base / "Session_memory" / state.session_id
         )

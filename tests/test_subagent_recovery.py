@@ -375,7 +375,7 @@ class AgentSessionRecoveryIntegrationTest(unittest.TestCase):
                 ),
                 workspace_root=workspace,
                 session_enabled=True,
-                session_directory=".agent_sessions",
+                session_directory=str(workspace / ".agent_sessions"),
                 resume_session_id=state.session_id,
                 skills_enabled=False,
                 memory_enabled=False,

@@ -6,9 +6,9 @@ OpenAI 兼容接口地址（官方 API 或中转站），支持 gpt-image-1 系�
 （gpt-image-2 / gpt-image-1.5 / gpt-image-1 / gpt-image-1-mini）的
 ``size`` / ``quality`` / ``output_format`` 参数。
 
-接口参数来自 config.yaml 的 ``image_gen`` 段（见 config/image_gen.py）；
+接口参数来自 config.toml 的 ``image_gen`` 段（见 config/image_gen.py）；
 调用时可用参数覆盖 size / quality / output_format / n。生成的图片默认保存到
-工作区 ``.agent_tmp/images/`` 目录，也可通过 ``path`` 指定保存位置。
+工作区 ``.omnicrawl/.agent_tmp/images/`` 目录，也可通过 ``path`` 指定保存位置。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from .config.image_gen import (
     load_image_gen_configuration,
 )
 
-DEFAULT_OUTPUT_DIR = Path(".agent_tmp") / "images"
+DEFAULT_OUTPUT_DIR = Path(".omnicrawl") / ".agent_tmp" / "images"
 _DEFAULT_OUTPUT_FORMAT = "png"
 
 

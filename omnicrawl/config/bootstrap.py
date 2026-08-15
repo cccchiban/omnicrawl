@@ -15,11 +15,13 @@ from .model_store import ModelStore, ModelStoreError, load_model_store
 from .runtime import (
     DEFAULT_CONFIG_FILENAME,
     DEFAULT_MODELS_FILENAME,
+    DEFAULT_SUBAGENTS_FILENAME,
     RuntimeConfigError,
     load_config_data,
     migrate_legacy_user_config,
     resolve_config_write_path,
     resolve_models_write_path,
+    resolve_subagents_write_path,
     save_config_data,
     user_config_dir as runtime_user_config_dir,
 )
@@ -41,8 +43,10 @@ class StartupSetup:
     config_dir: Path
     config_path: Path
     models_path: Path
+    subagents_path: Path
     config_created: bool
     models_created: bool
+    subagents_created: bool
     api_key_prompted: bool
     api_key_configured: bool
     checks: tuple[StartupCheck, ...]
@@ -50,7 +54,12 @@ class StartupSetup:
 
     @property
     def first_run(self) -> bool:
-        return self.config_created or self.models_created or self.api_key_prompted
+        return (
+            self.config_created
+            or self.models_created
+            or self.subagents_created
+            or self.api_key_prompted
+        )
 
 
 def user_config_dir(
@@ -82,17 +91,21 @@ def initialize_user_configuration(
             migration_error = str(exc)
         config_path = resolve_config_write_path()
         models_path = resolve_models_write_path()
+        subagents_path = resolve_subagents_write_path()
         resolved_dir = config_path.parent
     else:
         resolved_dir = Path(config_dir).expanduser().resolve()
         config_path = resolved_dir / DEFAULT_CONFIG_FILENAME
         models_path = resolved_dir / DEFAULT_MODELS_FILENAME
+        subagents_path = resolved_dir / DEFAULT_SUBAGENTS_FILENAME
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     models_path.parent.mkdir(parents=True, exist_ok=True)
+    subagents_path.parent.mkdir(parents=True, exist_ok=True)
 
-    config_created = _ensure_template(config_path, "config.example.yaml")
-    models_created = _ensure_template(models_path, "models.example.yaml")
+    config_created = _ensure_template(config_path, "config.example.toml")
+    models_created = _ensure_template(models_path, "models.example.toml")
+    subagents_created = _ensure_template(subagents_path, "subagents.example.toml")
 
     errors: list[str] = []
     if migration_error:
@@ -149,8 +162,10 @@ def initialize_user_configuration(
         config_dir=resolved_dir,
         config_path=config_path,
         models_path=models_path,
+        subagents_path=subagents_path,
         config_created=config_created,
         models_created=models_created,
+        subagents_created=subagents_created,
         api_key_prompted=api_key_prompted,
         api_key_configured=api_key_configured,
         checks=checks,
@@ -165,12 +180,14 @@ def format_startup_report(setup: StartupSetup) -> tuple[str, ...]:
         return ()
 
     lines: list[str] = []
-    if setup.config_created or setup.models_created:
+    if setup.config_created or setup.models_created or setup.subagents_created:
         lines.append(f"已准备用户配置目录：{setup.config_dir}")
     if setup.config_created:
         lines.append(f"已生成运行配置：{setup.config_path}")
     if setup.models_created:
         lines.append(f"已生成模型配置：{setup.models_path}")
+    if setup.subagents_created:
+        lines.append(f"已生成子代理设置：{setup.subagents_path}")
 
     for error in setup.errors:
         lines.append(f"[错误] {error}")
@@ -299,7 +316,7 @@ def _check_model_config(
     if errors:
         return StartupCheck("模型配置", "warning", "配置文件存在错误，请修复后重试。")
     if not model_store.models:
-        return StartupCheck("模型配置", "warning", "models.yaml 中没有可用模型。")
+        return StartupCheck("模型配置", "warning", "models.toml 中没有可用模型。")
 
     llm = config_data.get("llm")
     active = llm.get("active_model") if isinstance(llm, dict) else None

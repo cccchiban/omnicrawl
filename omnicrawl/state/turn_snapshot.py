@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping
@@ -97,7 +96,7 @@ class GitSnapshotStore:
             normalized_name = str(name).strip()
             if not normalized_name or normalized_name in snapshots:
                 raise SnapshotError(f"快照根名称无效或重复：{name}")
-            snapshots[normalized_name] = self._capture_root(root)
+            snapshots[normalized_name] = self._capture_root(normalized_name, root)
         return snapshots
 
     def transition(
@@ -176,67 +175,90 @@ class GitSnapshotStore:
             )
             raise SnapshotError(f"应用快照失败：{exc}{detail}") from exc
 
-    def _capture_root(self, root: SnapshotRoot) -> GitTreeSnapshot:
+    def _capture_root(self, name: str, root: SnapshotRoot) -> GitTreeSnapshot:
         path = root.path
         if not path.exists():
             return GitTreeSnapshot(self._empty_tree_id, False)
         if not path.is_dir():
             raise SnapshotError(f"快照根不是目录：{path}")
 
-        index_path = self.git_dir / "omnicrawl-indexes" / f"{uuid.uuid4().hex}.index"
-        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_dir = self.git_dir / "omnicrawl-indexes"
+        index_dir.mkdir(parents=True, exist_ok=True)
+        # 跨轮复用固定 index：首次 read-tree --empty 清空，后续直接增量 add，
+        # 保留 stat 与 untracked 缓存，避免对未变化文件反复读盘哈希——大型
+        # 项目每轮快照的主要成本是重新哈希全部文件，而非增量扫描。
+        index_path = index_dir / f"{name}.index"
         env = os.environ.copy()
         env["GIT_INDEX_FILE"] = str(index_path)
-        try:
-            self._git(
-                [
-                    "-c",
-                    "core.autocrlf=false",
-                    "--work-tree",
-                    str(path),
-                    "read-tree",
-                    "--empty",
-                ],
-                env=env,
-            )
-            pathspecs = list(root.included) or ["."]
-            exclusions = tuple(dict.fromkeys((".git", *root.excluded)))
-            if os.name == "nt":
-                # `-f` 会绕过 .gitignore；Git for Windows 不能把 NUL 设备写入索引。
-                exclusions = (*exclusions, "NUL")
-            for excluded in exclusions:
-                pathspec_magic = (
-                    "exclude,icase"
-                    if os.name == "nt" and excluded.casefold() == "nul"
-                    else "exclude"
-                )
-                pathspecs.append(f":({pathspec_magic}){excluded}")
-                pathspecs.append(f":({pathspec_magic}){excluded}/**")
-            self._git(
-                [
-                    "-c",
-                    "core.autocrlf=false",
-                    "--work-tree",
-                    str(path),
-                    "add",
-                    "-A",
-                    "-f",
-                    "--",
-                    *pathspecs,
-                ],
-                env=env,
-                cwd=path,
-            )
-            tree_id = self._git_stdout(
-                ["-c", "core.autocrlf=false", "--work-tree", str(path), "write-tree"],
-                env=env,
-            ).strip()
-            return GitTreeSnapshot(tree_id=tree_id, root_existed=True)
-        finally:
+        # index 损坏或与工作树不一致时，删除重建一次并退化为全量捕获。
+        for attempt in (1, 2):
             try:
-                index_path.unlink()
-            except FileNotFoundError:
-                pass
+                return self._capture_root_into(index_path, path, root, env)
+            except SnapshotError:
+                if attempt == 2 or not index_path.exists():
+                    raise
+                try:
+                    index_path.unlink()
+                except OSError as exc:
+                    raise SnapshotError(f"无法删除损坏的快照 index：{exc}") from exc
+        raise SnapshotError("快照 index 重试失败")  # 防御分支，实际不可达
+
+    def _capture_root_into(
+        self,
+        index_path: Path,
+        path: Path,
+        root: SnapshotRoot,
+        env: dict[str, str],
+    ) -> GitTreeSnapshot:
+        """把单个根目录捕获进给定 index 的当前状态。"""
+
+        if not index_path.exists():
+            self._git(
+                ["-c", "core.indexVersion=4", "read-tree", "--empty"],
+                env=env,
+            )
+        pathspecs = list(root.included) or ["."]
+        exclusions = tuple(dict.fromkeys((".git", *root.excluded)))
+        if os.name == "nt":
+            # `-f` 会绕过 .gitignore；Git for Windows 不能把 NUL 设备写入索引。
+            exclusions = (*exclusions, "NUL")
+        for excluded in exclusions:
+            pathspec_magic = (
+                "exclude,icase"
+                if os.name == "nt" and excluded.casefold() == "nul"
+                else "exclude"
+            )
+            pathspecs.append(f":({pathspec_magic}){excluded}")
+            pathspecs.append(f":({pathspec_magic}){excluded}/**")
+        # `-f` 保留：快照需要捕获被忽略的受控运行态（.agent_tmp、config.toml、
+        # 会话 artifact 等），undo 才能完整回退；巨型依赖/构建目录由上层
+        # excluded 名单排除，避免遍历 node_modules 等。
+        self._git(
+            [
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.indexVersion=4",
+                "-c",
+                "core.untrackedCache=true",
+                "-c",
+                "advice.addIgnoredFile=false",
+                "--work-tree",
+                str(path),
+                "add",
+                "-A",
+                "-f",
+                "--",
+                *pathspecs,
+            ],
+            env=env,
+            cwd=path,
+        )
+        tree_id = self._git_stdout(
+            ["-c", "core.autocrlf=false", "--work-tree", str(path), "write-tree"],
+            env=env,
+        ).strip()
+        return GitTreeSnapshot(tree_id=tree_id, root_existed=True)
 
     def _tree_patch(self, source_tree: str, target_tree: str) -> bytes:
         if source_tree == target_tree:

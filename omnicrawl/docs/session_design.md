@@ -60,7 +60,7 @@
 | 新对话 | `/new` 调用 `agent.reset_conversation()` | 清空 `_history`，保留工具、记忆、Skill 和配置。 |
 | 轮次内工具链 | `run_stream()` 的 `working_messages` | 当前轮工具调用和工具结果会进入本轮消息链，直到模型给出最终回复。 |
 | 项目规范注入 | `_project_instructions_messages()` | 每次请求前重新注入项目规范，但不写入 `_history`，避免历史重复膨胀。 |
-| API 会话导出 | `export_current_session_markdown()` | 客户端把当前会话导出到 `.agent_sessions/exports/`。 |
+| API 会话导出 | `export_current_session_markdown()` | 客户端把当前会话导出到 `~/.omnicrawl/.agent_sessions/exports/`。 |
 | 三类记忆 | `project_memory_*` / `session_memory_*` / `user_memory_*` | 分别面向项目技术信息、当前会话压缩状态和用户长期偏好。 |
 
 ### 3.2 当时的主要缺口（现已基本完成）
@@ -114,9 +114,10 @@ UI 层
 ### 4.2 推荐目录结构
 
 ```text
-.agent_sessions/
+~/.omnicrawl/.agent_sessions/
 ├── index.json
 ├── history.jsonl
+├── projects.json
 ├── sessions/
 │   └── 20260616-201530-a1b2c3.jsonl
 ├── summaries/
@@ -125,17 +126,21 @@ UI 层
     └── chat_export_20260616_201530.md
 ```
 
+> 会话目录统一位于用户数据根目录 `~/.omnicrawl/` 下，不随工作区变化。
+> 会话不再绑定工作区：同一会话内可以多次切换工作区，转录继续追加，上下文不丢失。
+
 目录说明：
 
 | 路径 | 用途 |
 |------|------|
-| `.agent_sessions/index.json` | 会话索引，记录会话 ID、标题、工作区、创建时间、更新时间、消息数量。 |
-| `.agent_sessions/history.jsonl` | 用户提示历史，只保存用户提交内容、时间、项目、会话 ID。 |
-| `.agent_sessions/sessions/*.jsonl` | 完整会话转录，每行一个事件或消息。 |
-| `.agent_sessions/summaries/*.md` | 会话级摘要，用于恢复预热和长会话压缩。 |
-| `.agent_sessions/exports/` | 用户主动导出的长期文件，区别于 `.agent_tmp/` 的临时导出。 |
+| `~/.omnicrawl/.agent_sessions/index.json` | 会话索引，记录会话 ID、标题、创建时工作区、创建时间、更新时间、消息数量。 |
+| `~/.omnicrawl/.agent_sessions/history.jsonl` | 用户提示历史，只保存用户提交内容、时间、项目、会话 ID。 |
+| `~/.omnicrawl/.agent_sessions/projects.json` | 项目列表（与项目侧栏共享）。 |
+| `~/.omnicrawl/.agent_sessions/sessions/*.jsonl` | 完整会话转录，每行一个事件或消息。 |
+| `~/.omnicrawl/.agent_sessions/summaries/*.md` | 会话级摘要，用于恢复预热和长会话压缩。 |
+| `~/.omnicrawl/.agent_sessions/exports/` | 用户主动导出的长期文件，区别于 `.omnicrawl/.agent_tmp/` 的临时导出。 |
 
-是否纳入 Git 需要按项目定位决定。默认建议加入 `.gitignore`，因为其中可能包含用户输入、代码片段、工具输出和本地路径。
+会话目录位于用户数据根下，默认不会进入任何项目仓库；无需在工作区 `.gitignore` 中重复排除。
 
 ## 5. 会话生命周期
 
@@ -267,7 +272,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 |----------|----------|
 | 模型观察 | 受 `max_tool_output_chars` 限制；超限使用头尾预览并明确标记，仅限制模型上下文，不改变执行状态。 |
 | UI 展示 | 默认折叠标题保持紧凑；展开详情使用工具结果的完整脱敏输出。 |
-| Session 转录 | 8KB 以内内联；更大输出写入 `.agent_sessions/artifacts/`，JSONL 保存摘要、哈希、大小和路径。artifact 不再按 128KB 截断，`artifact_truncated` 仅作为兼容字段保留且当前始终为 `false`。 |
+| Session 转录 | 8KB 以内内联；更大输出写入 `~/.omnicrawl/.agent_sessions/artifacts/`，JSONL 保存摘要、哈希、大小和路径。artifact 不再按 128KB 截断，`artifact_truncated` 仅作为兼容字段保留且当前始终为 `false`。 |
 
 恢复时默认加载模型摘要；只有用户要求复查完整工具输出时，再读取 artifact。Shell 测试/构建命令不得在主命令中使用 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出裁剪器；报告命令必须通过独立的 `diagnostic_command` 执行。
 
@@ -408,7 +413,7 @@ compact_summary
 | 用户级记忆 | 用户 | 稳定习惯、偏好和用户纠错 | 由 `user_memory_*` 按需检索。 |
 | 提示历史 | 跨会话 | 用户提交过的提示 | 不默认进入，只用于检索复用。 |
 
-存储位置分别为当前工作区 `.oclmemory/`、`~/.omnicrawl/Session_memory/<session_id>/` 和 `~/.omnicrawl/User_memory/`。会话压缩只写当前会话级记忆；新会话只绑定新的 Session 目录。删除 Session 时会清理对应会话级记忆，项目级和用户级记忆不受影响。
+存储位置分别为当前工作区 `.omnicrawl/.oclmemory/`、`~/.omnicrawl/Session_memory/<session_id>/` 和 `~/.omnicrawl/User_memory/`。会话压缩只写当前会话级记忆；新会话只绑定新的 Session 目录。删除 Session 时会清理对应会话级记忆，项目级和用户级记忆不受影响。
 
 ## 11. UI 设计要求
 
@@ -425,7 +430,7 @@ compact_summary
 | `/compact` | 手动压缩当前会话。 |
 | `/export` | 导出当前会话到 Markdown。 |
 
-`/undo` 仍通过仅追加的 `turn_undone` 事件记录被回退轮次的事件 ID，但提交该事件前会先执行副作用恢复。每轮开始和结束时，Host 使用当前 Session artifact 中的独立 bare Git 对象库，对工作区、项目记忆、当前会话记忆、用户记忆，以及本轮提示历史和 Session 工具产物分别生成 tree 快照；影子对象库不会执行用户仓库的 `commit`、`stash`、`reset` 或修改其 index。回退顺序固定为：定位最近轮次、校验快照和副作用账本、确认当前四个根目录仍与轮次结束状态一致、预检全部反向补丁、恢复文件和记忆，最后追加 `turn_undone` 并重建模型上下文。任一范围发生后续修改时整轮拒绝，不做部分恢复。
+`/undo` 仍通过仅追加的 `turn_undone` 事件记录被回退轮次的事件 ID，但提交该事件前会先执行副作用恢复。每轮开始和结束时，Host 使用当前 Session artifact 中的独立 bare Git 对象库，对工作区、项目记忆、当前会话记忆、用户记忆，以及本轮提示历史和 Session 工具产物分别生成 tree 快照；影子对象库不会执行用户仓库的 `commit`、`stash`、`reset` 或修改其 index。跨轮复用的影子 index 保留 stat/untracked 缓存，避免对未变化文件反复读盘哈希；快照始终排除通用巨型依赖/构建目录（`node_modules`、`.venv`、`build`、`dist`、`__pycache__` 等），这些目录不纳入回退范围，其余被忽略的受控运行态（`.agent_tmp`、`config.toml` 等）仍被捕获。回退顺序固定为：定位最近轮次、校验快照和副作用账本、确认当前四个根目录仍与轮次结束状态一致、预检全部反向补丁、恢复文件和记忆，最后追加 `turn_undone` 并重建模型上下文。任一范围发生后续修改时整轮拒绝，不做部分恢复。
 
 正常轮次会同时失效用户消息、工具事件、助手回复、该轮压缩摘要和 `turn_snapshot`；取消或异常中断的轮次会回退未配对用户消息及其中断事件。旧轮次若没有快照但记录了文件/记忆写入或上下文压缩，`/undo` 会拒绝覆盖；旧的纯对话和只读工具轮次仍兼容逻辑回退。Shell、MCP、桌面控制、SubAgent 执行等无法证明副作用只位于受控根目录的操作会写入不可逆账本，该轮不得使用事务式 `/undo`。Git 快照不能撤销数据库、远程服务、网络请求、工作区外文件或其他外部系统状态。
 
@@ -452,9 +457,10 @@ compact_summary
 | API Key、Token、密码进入转录 | 写入前做敏感模式提示；必要时支持用户删除或脱敏。 |
 | 工具输出过大 | 分级存储和摘要引用，避免 JSONL 膨胀。 |
 | 并发写入损坏 | 使用原子追加或写入锁；至少保证单进程顺序写。 |
-| 会话文件进入 Git | 默认 `.gitignore` 忽略 `.agent_sessions/`。 |
+| 会话文件进入 Git | 会话目录位于 `~/.omnicrawl/`，不在任何项目仓库内，天然不进 Git。 |
 | 恢复旧会话覆盖当前指令 | 恢复后仍以用户最新输入为最高优先级。 |
-| 路径越界 | SessionStore 只允许访问工作区内的 `.agent_sessions/`。 |
+| 路径越界 | SessionStore 只允许访问自身根目录 `~/.omnicrawl/.agent_sessions/`。 |
+| 跨工作区切换 | 会话已解除工作区绑定：切换工作区保留当前会话与上下文，转录记录 `workspace_switched` 事件。 |
 
 ## 13. 推荐落地顺序
 
@@ -470,7 +476,7 @@ compact_summary
 第一期最小可用版本只需要：
 
 ```text
-.agent_sessions/
+~/.omnicrawl/.agent_sessions/
 ├── index.json
 └── sessions/
     └── <session_id>.jsonl
@@ -531,8 +537,8 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 
 | 出口 | 路径 | 用途 |
 |------|------|------|
-| 临时导出 | `.agent_tmp/files/` | 用户临时查看或复制。 |
-| 正式导出 | `.agent_sessions/exports/` | 长期保存、交付或归档。 |
+| 临时导出 | `.omnicrawl/.agent_tmp/files/` | 用户临时查看或复制。 |
+| 正式导出 | `~/.omnicrawl/.agent_sessions/exports/` | 长期保存、交付或归档。 |
 
 无论哪种导出，都不应作为恢复的唯一数据源；恢复必须以 JSONL 转录为准。
 
@@ -553,7 +559,7 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 
 | 问题 | 建议决策 |
 |------|----------|
-| `.agent_sessions/` 是否进入 Git | 默认不进入 Git；如教学演示需要，可只提交脱敏样例。 |
+| `~/.omnicrawl/.agent_sessions/` 是否进入 Git | 位于用户数据根目录，天然不进 Git。 |
 | 是否保存流式 delta | 第一期不保存，只保存最终助手消息；调试模式再开启 delta。 |
 | 是否支持分支会话 | 第一期只做线性会话；后续通过 `parent_id` 支持分支。 |
 | 是否自动生成会话标题 | 可先用第一条用户消息截断生成，后续再让模型生成标题。 |

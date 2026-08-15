@@ -19,7 +19,7 @@ class ContextCompactionConfig:
 
     ``enabled`` 默认关闭。开启后，完整回合结束时由模型摘要 service 接管自动
     压缩；普通 ``/compact`` 仍保持本地确定性，``/compact --model`` 才显式
-    产生摘要模型调用。``summary_profile`` 接受 models.yaml key/alias、裸模型 ID
+    产生摘要模型调用。``summary_profile`` 接受 models.toml key/alias、裸模型 ID
     或 ``profile/model_id``，跨供应商仍需单独允许。
     """
 
@@ -75,7 +75,7 @@ class ContextCompactionConfig:
 def load_context_compaction_config(
     config_path: str | Path | None = None,
 ) -> ContextCompactionConfig:
-    """从 ``config.yaml`` 读取并严格校验 ``context_compaction`` 段。"""
+    """从 ``config.toml`` 读取并严格校验 ``context_compaction`` 段。"""
 
     try:
         section = get_section(load_config_data(config_path), "context_compaction")

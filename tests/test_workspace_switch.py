@@ -105,7 +105,7 @@ class WorkspaceSwitchTest(unittest.TestCase):
                 orig_workspace,
                 temp_workspace=AgentTempWorkspaceConfig(
                     cleanup_enabled=False,
-                    directory=".agent_tmp",
+                    directory=".omnicrawl/.agent_tmp",
                 ),
             )
             with patch("openai.OpenAI", return_value=SimpleNamespace()):
@@ -114,12 +114,12 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     agent.switch_workspace(target_workspace)
                     temp_dirs = list(target_workspace.iterdir())
                     self.assertTrue(
-                        any(d.name == ".agent_tmp" for d in temp_dirs if d.is_dir())
+                        any(d.name == ".omnicrawl" for d in temp_dirs if d.is_dir()) and (target_workspace / ".omnicrawl" / ".agent_tmp").is_dir()
                     )
                 finally:
                     agent.close()
 
-    def test_switch_workspace_clears_history(self) -> None:
+    def test_switch_workspace_keeps_history(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             orig_workspace = Path(temp_dir) / "project_a"
             target_workspace = Path(temp_dir) / "project_b"
@@ -134,9 +134,14 @@ class WorkspaceSwitchTest(unittest.TestCase):
                 ]
                 try:
                     agent.switch_workspace(target_workspace)
-                    self.assertEqual(agent._history, [])
-                    self.assertIsNone(agent._pending_user_text)
-                    self.assertEqual(agent._active_skills, [])
+                    # 会话已解除工作区绑定：切换工作区保留对话上下文。
+                    self.assertEqual(
+                        agent._history,
+                        [
+                            {"role": "user", "content": "hello"},
+                            {"role": "assistant", "content": "hi"},
+                        ],
+                    )
                 finally:
                     agent.close()
 
@@ -195,7 +200,7 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     toolbox = screenshot_tool.run.__self__
                     self.assertEqual(
                         toolbox._screenshot_directory,
-                        (target_workspace / ".agent_tmp" / "images").resolve(),
+                        (target_workspace / ".omnicrawl/.agent_tmp" / "images").resolve(),
                     )
                 finally:
                     agent.close()
@@ -438,7 +443,8 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     agent.switch_workspace(target_workspace)
                     new_session_id = agent.current_session_id
                     self.assertTrue(bool(new_session_id))
-                    self.assertNotEqual(new_session_id, old_session_id)
+                    # 会话已解除工作区绑定：切换工作区保持同一会话。
+                    self.assertEqual(new_session_id, old_session_id)
                 finally:
                     agent.close()
 
@@ -458,8 +464,8 @@ class WorkspaceSwitchTest(unittest.TestCase):
                     agent.switch_workspace(target_workspace)
                     self.assertIsNotNone(agent._memory_store)
                     self.assertEqual(
-                        agent._memory_store.root.resolve().parent,
-                        target_workspace.resolve(),
+                        agent._memory_store.root.resolve(),
+                        (target_workspace / ".omnicrawl" / ".oclmemory").resolve(),
                     )
                 finally:
                     agent.close()

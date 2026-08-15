@@ -564,7 +564,7 @@ def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
     try:
         path = save_approval_mode(mode)
     except RuntimeConfigError as exc:
-        return f"审批模式已临时切换为 {approval_mode_label(mode)}，但写入 config.yaml 失败：{exc}"
+        return f"审批模式已临时切换为 {approval_mode_label(mode)}，但写入 config.toml 失败：{exc}"
     return f"审批模式已切换为 {approval_mode_label(mode)}，并已同步到 {path}。"
 
 
@@ -595,7 +595,7 @@ def handle_reasoning_command(agent: LocalToolAgent, command: str) -> str | None:
     try:
         path = save_reasoning_effort(normalized_effort)
     except LLMError as exc:
-        return f"推理强度已临时切换为 {normalized_effort}，但写入 config.yaml 失败：{exc}"
+        return f"推理强度已临时切换为 {normalized_effort}，但写入 config.toml 失败：{exc}"
     env_message = _reasoning_env_override_message()
     return f"推理强度已切换为 {normalized_effort}，并已同步到 {path}{env_message}"
 

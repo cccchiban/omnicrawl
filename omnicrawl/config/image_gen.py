@@ -1,6 +1,6 @@
 """图像生成（OpenAI 兼容 Image API）配置的读取、校验与写回。
 
-配置段示例（config.yaml）：
+配置段示例（config.toml）：
 
 .. code-block:: yaml
 
@@ -18,7 +18,7 @@
 
 说明：
 - ``base_url`` 支持任何 OpenAI 兼容接口地址（官方或中转站），默认官方地址。
-- ``api_key`` 直接填写时写入本地 config.yaml（本地文件，不提交到仓库）；
+- ``api_key`` 直接填写时写入本地 config.toml（本地文件，不提交到仓库）；
   留空时运行时按 ``api_key_env``（默认 ``OPENAI_API_KEY``）读取环境变量。
 - ``size`` 支持 ``auto`` 或 ``宽x高``（如 1024x1024、1536x1024），最大边长 3840、16 的倍数。
 - ``quality`` 支持 low / medium / high / auto。

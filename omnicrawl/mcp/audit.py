@@ -14,7 +14,7 @@ from typing import Any
 from .security import redact_sensitive_text, redact_sensitive_values
 
 
-DEFAULT_MCP_AUDIT_LOG_PATH = "logs/mcp-audit.jsonl"
+DEFAULT_MCP_AUDIT_LOG_PATH = ".omnicrawl/logs/mcp-audit.jsonl"
 
 
 @dataclass(frozen=True)

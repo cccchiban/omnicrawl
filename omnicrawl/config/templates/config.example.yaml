@@ -48,14 +48,14 @@ llm:
         enabled: true
       default_context_window_tokens: 1000000
 
-# 视觉模型代理：模型引用复用 llm.profiles / models.yaml，不在这里存 API Key。
+# 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
 # models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。
 vision:
   enabled: false
   models: []
 
 # 图像生成（OpenAI 兼容 Image API）：接口地址、Key、模型与默认参数在
-# TUI /settings → 图像生成 中配置；api_key 写入本地 config.yaml（不提交仓库），
+# TUI /settings → 图像生成 中配置；api_key 写入本地 config.toml（不提交仓库），
 # 留空时回退环境变量 OPENAI_API_KEY。
 image_gen:
   enabled: false
@@ -116,29 +116,31 @@ api:
 
 agent_temp:
   enabled: true
-  directory: ".agent_tmp"
+  directory: ".omnicrawl/.agent_tmp"
   cleanup_enabled: true
   cleanup_interval_hours: 24
 
 plugins:
   enabled: false
 
-subagents:
-  enabled: false
-  max_depth: 1
-  max_concurrency: 2
-  max_tasks_per_batch: 4
-  default_timeout_seconds: 3600
-  model_request_concurrency: 2
-  allow_background: false
-  allow_fork: false
-  allow_worktree: false
-  allow_standard_agent: false
-  allow_shared_workspace_writes: false
-  enable_verify_agent: false
-  verify_command_timeout_seconds: 120
-  task_retention_minutes: 60
-  result_summary_chars: 6000
+# SubAgent 设置已完全迁移到独立文件 subagents.toml（模板见 subagents.example.toml），
+# 支持为每个子代理单独指定模型；本段不再从 config 读取，请直接编辑 subagents.toml。
+# subagents:
+#   enabled: false
+#   max_depth: 1
+#   max_concurrency: 2
+#   max_tasks_per_batch: 4
+#   default_timeout_seconds: 3600
+#   model_request_concurrency: 2
+#   allow_background: false
+#   allow_fork: false
+#   allow_worktree: false
+#   allow_standard_agent: false
+#   allow_shared_workspace_writes: false
+#   enable_verify_agent: false
+#   verify_command_timeout_seconds: 120
+#   task_retention_minutes: 60
+#   result_summary_chars: 6000
 
 mcp:
   enabled: false

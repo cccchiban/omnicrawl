@@ -29,6 +29,7 @@ class CommandAgent(Protocol):
     """全屏斜杠命令实际依赖的最小 Agent 协议。"""
 
     workspace_root: object
+    current_session_id: str
 
     def reset_conversation(self) -> None:
         """清空当前对话并开启新会话。"""
@@ -53,6 +54,7 @@ class CommandOutcome:
     ``command`` 只在 ``execution == "slow"`` 时存在。调用方需要在线程 worker
     执行它，才能保持模型发现、MCP 连接和工作区重建不阻塞 Textual 主事件循环。
     ``open_settings`` 表示全屏 TUI 应打开中文设置面板。
+    ``clear_conversation`` 表示 UI 应先清空对话视图再显示命令消息。
     """
 
     handled: bool
@@ -63,6 +65,7 @@ class CommandOutcome:
     exit_requested: bool = False
     workspace_switch_requested: bool = False
     open_settings: bool = False
+    clear_conversation: bool = False
 
     def __post_init__(self) -> None:
         """防止调用方拿到互相矛盾的命令描述。"""
@@ -124,11 +127,17 @@ class CommandDispatcher:
         if stripped in self._EXIT_WORDS:
             return CommandOutcome(handled=True, exit_requested=True)
         if stripped == "/new":
+            old_session_id = self._agent.current_session_id
             self._agent.reset_conversation()
+            if old_session_id:
+                message = f"已新开会话，旧会话：{old_session_id}"
+            else:
+                message = "已新开会话。"
             return CommandOutcome(
                 handled=True,
-                message="已开启新对话。",
+                message=message,
                 refresh_context=True,
+                clear_conversation=True,
             )
         if stripped == "/skills":
             return CommandOutcome(handled=True, message=self._format_skills(self._agent))

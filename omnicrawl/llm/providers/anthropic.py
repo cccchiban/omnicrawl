@@ -316,7 +316,7 @@ class AnthropicMessagesAdapter:
                 return DiscoveryResult(
                     profile_id=profile.id,
                     status="unsupported",
-                    message="当前 Anthropic SDK/账号不支持模型列表发现，请使用 models.yaml 自定义模型。",
+                    message="当前 Anthropic SDK/账号不支持模型列表发现，请使用 models.toml 自定义模型。",
                 )
             response = list_fn()
             items = list(getattr(response, "data", None) or response)

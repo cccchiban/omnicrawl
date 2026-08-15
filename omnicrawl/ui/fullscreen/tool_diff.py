@@ -32,6 +32,12 @@ FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
 # 豁免“原始输出 + 五行折叠”规则的工具：write_file 与 replace_text 保留
 # 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
 FULL_BODY_TOOLS = frozenset({"write_file", "replace_text"})
+# search_tools 的返回内容（候选工具清单）对用户没有展示价值，正文完全
+# 隐藏：不显示返回内容，也不显示任何“已隐藏”提示行，只保留标题行。
+HIDDEN_BODY_TOOLS = frozenset({"search_tools"})
+# 网页抓取（fetcher）的结果只展示元信息（URL/状态/标题），隐藏页面正文：
+# 页面正文体积大、对排障价值低，折叠为一行灰色提示，避免刷屏。
+FETCHER_CONTENT_HINT = "（网页正文内容已隐藏）"
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
 MAX_PREVIEW_CHARS_PER_LINE = 160
@@ -335,6 +341,43 @@ def tool_disclosure_title(
     return rendered
 
 
+def fetcher_body(result_text: str) -> Text:
+    """fetcher 结果正文：保留汇总/URL/状态/标题，隐藏网页正文内容。
+
+    抓取到的页面正文体积大、对排障价值低，只展示元信息（URL、状态、
+    标题），页面正文折叠为一行灰色提示（含省略行数），避免刷屏。
+    失败条目（"失败: ..."）原样保留，便于排障。
+    """
+
+    lines = result_text.splitlines()
+    kept: list[str] = []
+    skipping_content = False
+    hidden_lines = 0
+    for line in lines:
+        if skipping_content:
+            # 内容块结束后（下一个条目、失败条目或结尾）恢复保留。
+            if re.match(r"^\d+\.\s", line) or line.startswith("   失败: "):
+                skipping_content = False
+            else:
+                hidden_lines += 1
+                continue
+        if line.startswith("   内容: "):
+            skipping_content = True
+            hidden_lines += 1
+            continue
+        kept.append(line)
+
+    rendered = Text()
+    if kept:
+        rendered.append("\n".join(kept), style=TOOL_TEXT)
+    if hidden_lines:
+        rendered.append(
+            f"\n{FETCHER_CONTENT_HINT}（已省略 {hidden_lines} 行）",
+            style=TEXT_MUTED,
+        )
+    return rendered
+
+
 def tool_disclosure_body(
     *,
     tool_name: str,
@@ -346,11 +389,18 @@ def tool_disclosure_body(
     除 write_file 与 replace_text 外的所有工具统一直接展示工具返回的
     原始输出（灰色），不再包装“工具/参数/结果”元信息；write_file 与
     replace_text 保留文件变更预览正文（diff/rewrite 摘要），不受五行
-    折叠限制。
+    折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；search_tools
+    的候选工具清单不展示给终端用户，正文完全隐藏（连提示行也没有）。
     """
 
-    if _tool_operation(tool_name) in FULL_BODY_TOOLS:
+    operation = _tool_operation(tool_name)
+    if operation in FULL_BODY_TOOLS:
         return file_change_body(tool_name, arguments, result_text)
+    if operation == "fetcher":
+        return fetcher_body(result_text)
+    if operation in HIDDEN_BODY_TOOLS:
+        # 候选工具清单不展示给终端用户：正文为空，连提示行也不保留。
+        return Text()
 
     rendered = Text()
     if result_text:
@@ -583,6 +633,8 @@ def plain_tool_title(
 __all__ = [
     "FILE_CHANGE_TOOLS",
     "FULL_BODY_TOOLS",
+    "FETCHER_CONTENT_HINT",
+    "fetcher_body",
     "FileChangeView",
     "describe_file_change",
     "file_change_body",

@@ -347,6 +347,35 @@ _BROAD_WORKSPACE_EXCLUDED = frozenset(
 )
 
 
+# 快照始终排除的通用巨型依赖/构建目录（相对工作区根的目录名）。
+# 这些目录体量巨大（node_modules、目标产物等）且不属于 undo 关心的代码改动，
+# 每次快照遍历它们会带来与文件数成正比的开销；主目录/盘根场景还会额外叠加
+# _BROAD_WORKSPACE_EXCLUDED 中的用户目录。
+_SNAPSHOT_EXCLUDED_DIRS = frozenset(
+    {
+        ".cargo",
+        ".codex",
+        ".conda",
+        ".config",
+        ".cursor",
+        ".gradle",
+        ".agents",
+        ".cache",
+        ".virtualenvs",
+        ".venv",
+        "node_modules",
+        "build",
+        "dist",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "target",
+        ".next",
+    }
+)
+
+
 def _read_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
     """读取整数环境变量，并把配置错误转成 Agent 可捕获的中文错误。"""
 
@@ -430,7 +459,9 @@ class AgentConfig:
     memory_enabled: bool = True
     file_name_index_enabled: bool = False
     content_index_enabled: bool = False
-    memory_directory: str = ".oclmemory"
+    # 是否渲染思考块（含背景色）：关闭只隐藏显示，思考内容仍照常产生与接收。
+    show_thinking: bool = True
+    memory_directory: str = ".omnicrawl/.oclmemory"
     session_enabled: bool = True
     session_directory: str = ".agent_sessions"
     resume_session_id: str = ""
@@ -496,6 +527,8 @@ class AgentConfig:
             raise AgentError("file_name_index_enabled 必须是布尔值。")
         if not isinstance(self.content_index_enabled, bool):
             raise AgentError("content_index_enabled 必须是布尔值。")
+        if not isinstance(self.show_thinking, bool):
+            raise AgentError("show_thinking 必须是布尔值。")
         if not isinstance(self.session_directory, str) or not self.session_directory.strip():
             raise AgentError("session_directory 必须是非空字符串。")
         if not isinstance(self.resume_session_id, str):
@@ -599,7 +632,7 @@ class LocalToolAgent:
         self._skill_manager: SkillManager | None = None
 
         if not self.config.llm.api_key.strip():
-            raise AgentError("缺少 API Key，请在 config.yaml 的 llm 配置中填写，或设置 OPENAI_API_KEY。")
+            raise AgentError("缺少 API Key，请在 config.toml 的 llm 配置中填写，或设置 OPENAI_API_KEY。")
 
         self._search_index = ProjectSearchIndex(
             self.workspace_root,
@@ -1094,9 +1127,9 @@ class LocalToolAgent:
     def switch_workspace(self, new_path):
         """在运行中切换到新的工作区目录。
 
-        切换工作区会完整重建 Agent 的子系统（工作区工具、临时目录、会话、
-        项目列表、记忆），并清空当前对话上下文。原工作区会被记录到退出事件
-        中，以便从 UI 项目列表恢复。
+        切换工作区会完整重建 Agent 的子系统（工作区工具、临时目录、项目列表、
+        记忆），并清空当前对话上下文。会话已全局化（不绑定工作区），切换时
+        保持同一会话。原工作区会被记录到退出事件中，以便从 UI 项目列表恢复。
 
         参数：
             new_path: 新工作区的绝对或相对路径。
@@ -1172,7 +1205,9 @@ class LocalToolAgent:
             raise
 
         # 2. 收尾旧工作区资源（此时新子系统已就绪）。
-        self._teardown_workspace_resources(discard_empty_session=True)
+        # 会话已全局化且切换保持同一会话，不能在此丢弃/清空当前会话；
+        # 只关闭临时目录、搜索索引、Monitor 与 MCP 等旧工作区资源。
+        self._teardown_workspace_resources(discard_empty_session=False)
 
         # 3. 原子替换到新工作区状态。
         self.workspace_root = new_root
@@ -1208,10 +1243,8 @@ class LocalToolAgent:
         if "skill_manager" in prepared:
             self._skill_manager = prepared["skill_manager"]
 
-        # 4. 清空对话上下文
-        self._history.clear()
-        self._pending_user_text = None
-        self._active_skills = []
+        # 4. 保留对话上下文：会话已全局化且切换保持同一会话，
+        #    上下文不因切换而丢失（见 session_design.md）。
 
         # 5. 先建立不含插件定义的新工作区 Coordinator。即使后续插件 Worker
         #    重建失败，也不会遗留已暂停的旧 Coordinator 或跨工作区定义。
@@ -1238,6 +1271,12 @@ class LocalToolAgent:
             "workspace.switch.after",
             {"workspace": str(new_root)},
         )
+        # 转录记录跨工作区切换事件（会话未启用时静默跳过）。
+        if getattr(self, "_session_state", None) is not None:
+            self._append_session_event(
+                "workspace_switched",
+                {"from": str(old_root), "to": str(new_root)},
+            )
         return new_root
 
     def _prepare_workspace_switch(self, new_root: Path) -> dict[str, Any]:
@@ -1285,13 +1324,23 @@ class LocalToolAgent:
             self._session_state = None
             self._project_store = None
             if self.config.session_enabled:
-                session_store = self._create_session_store()
-                self._session_store = session_store
-                session_state = self._start_session()
-                project_store = self._create_project_store()
+                # 会话已全局化（~/.omnicrawl/.agent_sessions，不绑定工作区）：
+                # 切换工作区保持同一会话，直接沿用当前 SessionStore/SessionState/
+                # ProjectStore，而不是新建会话；项目/用户级记忆仍由 memory 分支
+                # 按新工作区重建，会话级记忆按复用的 session id 正确绑定。
+                session_store = previous_session_store
+                session_state = previous_session_state
+                project_store = previous_project_store
+                if session_store is None:
+                    # 防御兜底：session_enabled 时初始化已创建，此处仅防异常路径。
+                    session_store = self._create_session_store()
+                    self._session_store = session_store
+                if session_state is None:
+                    session_state = self._start_session()
                 prepared["session_store"] = session_store
                 prepared["session_state"] = session_state
                 prepared["project_store"] = project_store
+                self._session_store = session_store
                 self._session_state = session_state
                 self._project_store = project_store
 
@@ -1555,7 +1604,7 @@ class LocalToolAgent:
         return self.config.approval_mode
 
     def set_approval_mode(self, mode: str) -> None:
-        """运行时切换审批模式；持久化由调用方负责写入 config.yaml。"""
+        """运行时切换审批模式；持久化由调用方负责写入 config.toml。"""
 
         self.config.approval_mode = normalize_approval_mode(mode)
 
@@ -1563,7 +1612,7 @@ class LocalToolAgent:
     def current_model(self) -> str:
         """当前会话用于展示/切换的模型标识。
 
-        自定义模型优先返回 models.yaml key；否则返回真实 model_id。
+        自定义模型优先返回 models.toml key；否则返回真实 model_id。
         实际请求使用 config.llm.model。
         """
 
@@ -1582,7 +1631,7 @@ class LocalToolAgent:
 
         支持：
         - 裸 model_id（兼容旧行为）
-        - models.yaml key / alias
+        - models.toml key / alias
         - profile/model_id
         """
 
@@ -1746,6 +1795,18 @@ class LocalToolAgent:
         """运行时切换内容索引；受限根目录仍不会建立项目级内容索引。"""
 
         self._set_search_index_enabled(content_enabled=enabled)
+
+    def set_show_thinking(self, enabled: bool) -> bool:
+        """运行时切换思考块显示；持久化由设置面板负责。
+
+        关闭只隐藏对话区的思考块渲染（含背景色），思考内容仍照常产生
+        并进入推理链路，与模型侧 thinking 开关互不影响。
+        """
+
+        if not isinstance(enabled, bool):
+            raise AgentError("思考显示开关必须是布尔值。")
+        self.config.show_thinking = enabled
+        return enabled
 
     def _set_search_index_enabled(
         self,
@@ -2006,7 +2067,9 @@ class LocalToolAgent:
     def _create_memory_stores(self) -> tuple[MemoryStore, MemoryStore | None, MemoryStore]:
         """创建项目级、当前会话级和用户级记忆存储。"""
 
-        raw_directory = str(getattr(self.config, "memory_directory", ".oclmemory")).strip()
+        raw_directory = str(
+            getattr(self.config, "memory_directory", ".omnicrawl/.oclmemory")
+        ).strip()
         candidate = Path(raw_directory)
         if not candidate.is_absolute():
             candidate = self.workspace_root / candidate
@@ -2433,21 +2496,31 @@ class LocalToolAgent:
         definition: AgentDefinition,
         task_model: str,
     ) -> SubAgentModelSnapshot | None:
-        """按 task > 定义 > 父模型优先级解析并复制独立模型运行视图。"""
+        """按 task > subagents.toml 角色配置 > 定义 > 父模型优先级解析并复制独立模型运行视图。"""
 
         parent_llm = getattr(self.config, "llm", None)
         requested = str(task_model or "").strip()
         definition_model = str(definition.model or "inherit").strip()
+        subagent_config = getattr(self.config, "subagents", None)
+        configured_model = str(
+            (getattr(subagent_config, "model_overrides", None) or {}).get(
+                definition.name, ""
+            )
+        ).strip()
         # task 字段存在时优先级最高；显式 ``model=inherit`` 的含义是要求
         # 使用父模型，而不是回退到角色定义中的模型覆盖。函数调用模型也常会为
         # 可选字段生成裸 ``default`` 占位值；该值不是可安全发送的网关模型 ID，
         # 因此在任务级 API 中与 ``inherit`` 保持相同语义。
+        # subagents.toml 中的 ``[subagents.models.<角色>]`` 是项目级集中覆盖，
+        # 优先级高于单个 Markdown 定义里的 model 字段，低于任务级显式指定。
         if requested:
             selection = (
                 "inherit"
                 if requested.casefold() in {"inherit", "default"}
                 else requested
             )
+        elif configured_model and configured_model.casefold() != "inherit":
+            selection = configured_model
         elif definition_model and definition_model.casefold() != "inherit":
             selection = definition_model
         else:
@@ -4256,7 +4329,7 @@ class LocalToolAgent:
 
     def _agent_temp_dir_display(self) -> str:
         temp_workspace = getattr(self, "_temp_workspace", None)
-        return temp_workspace.display_path if temp_workspace is not None else ".agent_tmp"
+        return temp_workspace.display_path if temp_workspace is not None else ".omnicrawl/.agent_tmp"
 
     def _load_system_prompt_template(self) -> str:
         """读取独立系统提示词模板，避免把长规范硬编码在 Python 代码里。"""
@@ -4676,7 +4749,9 @@ class LocalToolAgent:
         temp_config = getattr(config, "temp_workspace", None)
         screenshot_directory = None
         if bool(getattr(temp_config, "enabled", False)):
-            directory = str(getattr(temp_config, "directory", ".agent_tmp") or ".agent_tmp")
+            directory = str(
+                getattr(temp_config, "directory", ".omnicrawl/.agent_tmp") or ".omnicrawl/.agent_tmp"
+            )
             screenshot_directory = workspace_root / directory / "images"
         return WindowsDesktopTools(
             screenshot_directory=screenshot_directory,
@@ -4723,7 +4798,9 @@ class LocalToolAgent:
 
         roots: dict[str, SnapshotRoot] = {}
         workspace = self.workspace_root.resolve()
-        excluded = {".git"}
+        # 始终排除通用巨型依赖/构建目录，避免每次快照遍历 node_modules 等；
+        # 会话与记忆目录由下面的循环追加排除。
+        excluded = {".git", *_SNAPSHOT_EXCLUDED_DIRS}
         # 防御：即使工作区被显式指向用户主目录/盘根（如 AI_WORKSPACE_ROOT），
         # 也排除 Windows 用户目录下体量巨大的目录，避免 git add 遍历卡死。
         try:

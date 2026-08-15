@@ -24,6 +24,7 @@ from ...config.settings import (
     SettingsConfigError,
     save_context_window_tokens,
     save_feature_enabled,
+    save_show_thinking,
     save_subagent_setting,
 )
 from ...config.subagents import (
@@ -78,6 +79,7 @@ _FEATURES = (
     ("file_name_index", "文件名快速索引", "file_name_index"),
     ("content_index", "内容关键词索引", "content_index"),
 )
+_COLUMN_SLOTS = 16  # 每栏设置行数：左栏现有项，右栏 16 个空位。
 
 
 class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
@@ -115,6 +117,19 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     }
     #settings-list {
         height: 1fr;
+    }
+    #settings-body {
+        height: 100%;
+        layout: horizontal;
+    }
+    .settings-column {
+        width: 1fr;
+        height: 100%;
+    }
+    #settings-divider {
+        width: 1;
+        height: 100%;
+        color: $terminal-border-strong;
     }
     .settings-row {
         height: 2;
@@ -165,6 +180,15 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             + tuple(item[0] for item in _FEATURES)
         )
 
+    @property
+    def _all_keys(self) -> tuple[str, ...]:
+        """全部可设置键：左栏现有项 + 右栏真实设置项（普通模式含思考显示）。
+
+        选中索引与行渲染基于该元组遍历；右栏其余位置仍为空位占位行。
+        """
+
+        return self._row_keys + (() if self._advanced else ("show_thinking",))
+
     def compose(self) -> ComposeResult:
         with Container(id="settings-dialog"):
             yield Static(
@@ -172,15 +196,18 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
                 id="settings-title",
             )
             with VerticalScroll(id="settings-list"):
-                values = self._current_row_values()
-                labels = self._row_labels()
-                for key in self._row_keys:
-                    marker = "› " if key == self._row_keys[self._selected] else "  "
-                    yield Static(
-                        f"{marker}{labels[key]}：{values[key]}",
-                        id=f"settings-row-{key}",
-                        classes="settings-row compact" if not self._advanced else "settings-row",
-                    )
+                with Container(id="settings-body"):
+                    with VerticalScroll(id="settings-list-left", classes="settings-column"):
+                        for key in self._left_keys():
+                            yield self._row_widget(key)
+                        for index in range(_COLUMN_SLOTS - len(self._row_keys)):
+                            yield self._empty_row_widget(index, "left")
+                    yield Static("│", id="settings-divider")
+                    with VerticalScroll(id="settings-list-right", classes="settings-column"):
+                        for key in self._right_keys():
+                            yield self._row_widget(key)
+                        for index in range(_COLUMN_SLOTS - len(self._right_keys())):
+                            yield self._empty_row_widget(index, "right")
             yield Static(self._status, id="settings-status")
             yield Static("↑↓ 选择  ←→ 修改  Enter/空格确认  Esc 返回", id="settings-help")
 
@@ -193,12 +220,12 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
 
     def action_move_up(self) -> None:
         if not self._busy:
-            self._selected = (self._selected - 1) % len(self._row_keys)
+            self._selected = (self._selected - 1) % len(self._all_keys)
             self._render_rows()
 
     def action_move_down(self) -> None:
         if not self._busy:
-            self._selected = (self._selected + 1) % len(self._row_keys)
+            self._selected = (self._selected + 1) % len(self._all_keys)
             self._render_rows()
 
     def action_previous_value(self) -> None:
@@ -213,7 +240,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     def _change_selected(self, direction: int) -> None:
         if self._busy:
             return
-        key = self._row_keys[self._selected]
+        key = self._all_keys[self._selected]
         if not self._advanced and key in {"model", "channels", "vision", "image_gen"}:
             self.dismiss(SettingsAction(key))
             return
@@ -286,6 +313,9 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             config = getattr(self._agent, "config", None)
             image_gen = getattr(config, "image_gen", None)
             return bool(getattr(image_gen, "enabled", False))
+        if key == "show_thinking":
+            config = getattr(self._agent, "config", None)
+            return bool(getattr(config, "show_thinking", True))
         return False
 
     def _subagent_config_value(self, key: str) -> int | float:
@@ -321,16 +351,47 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             return
         values = self._current_row_values()
         labels = self._row_labels()
-        for key in self._row_keys:
+        for key in self._all_keys:
             text = f"{labels[key]}：{values[key]}"
-            marker = "› " if key == self._row_keys[self._selected] else "  "
+            marker = "› " if key == self._all_keys[self._selected] else "  "
             row = self.query_one(f"#settings-row-{key}", Static)
             row.update(marker + text)
-            selected = key == self._row_keys[self._selected]
+            selected = key == self._all_keys[self._selected]
             row.set_class(selected, "selected")
             if selected:
                 row.scroll_visible(animate=False)
         self.query_one("#settings-status", Static).update(self._status)
+
+    def _left_keys(self) -> tuple[str, ...]:
+        """左栏设置项：现有全部设置项（普通模式 16 项 / 高级模式 6 项）。"""
+        return self._row_keys
+
+    def _right_keys(self) -> tuple[str, ...]:
+        """右栏真实设置项：普通模式含“思考显示”，其余位置保留为空位。
+
+        后续在右侧添加设置项时，只需把对应 key 追加到此元组。
+        """
+
+        return () if self._advanced else ("show_thinking",)
+
+    def _row_widget(self, key: str) -> Static:
+        """生成单个设置行控件，含选中标记与当前状态值。"""
+        values = self._current_row_values()
+        labels = self._row_labels()
+        marker = "› " if key == self._all_keys[self._selected] else "  "
+        return Static(
+            f"{marker}{labels[key]}：{values[key]}",
+            id=f"settings-row-{key}",
+            classes="settings-row compact" if not self._advanced else "settings-row",
+        )
+
+    def _empty_row_widget(self, index: int, column: str) -> Static:
+        """生成空位设置行：右栏 16 个占位行，或左栏不足 16 行时的补位行。"""
+        return Static(
+            "",
+            id=f"settings-slot-{column}-{index}",
+            classes="settings-row compact" if not self._advanced else "settings-row",
+        )
 
     def _current_row_values(self) -> dict[str, str]:
         if self._advanced:
@@ -348,6 +409,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))),
             "tools": "进入",
             "subagents_advanced": "进入",
+            "show_thinking": "已开启" if self._feature_enabled("show_thinking") else "已关闭",
         }
         for key, _label, _section in _FEATURES:
             values[key] = "进入" if key == "mcp" else ("已开启" if self._feature_enabled(key) else "已关闭")
@@ -369,6 +431,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "approval": "工具审批",
             "tools": "工具开关",
             "subagents_advanced": "子任务高级设置",
+            "show_thinking": "思考显示",
             **_SUBAGENT_ADVANCED_LABELS,
             **{key: label for key, label, _section in _FEATURES},
         }
@@ -414,6 +477,16 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             screen._agent.set_approval_mode(previous)
             raise
         return f"审批模式已设为 {approval_mode_label(mode)}，已保存到 {path}。"
+    elif key == "show_thinking":
+        enabled = bool(value)
+        previous = screen._feature_enabled("show_thinking")
+        screen._agent.set_show_thinking(enabled)
+        try:
+            path = save_show_thinking(enabled)
+        except Exception:
+            screen._agent.set_show_thinking(previous)
+            raise
+        return f"思考显示已{'开启' if enabled else '关闭'}，已保存到 {path}。"
     elif screen._advanced:
         normalized = validate_subagent_advanced_setting(key, value)
         previous = screen._subagent_config_value(key)

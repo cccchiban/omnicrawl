@@ -276,10 +276,16 @@ class RenderingMixin:
             return
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
-        if self._reasoning_message is None:
+        show_thinking = bool(
+            getattr(getattr(self.agent, "config", None), "show_thinking", True)
+        )
+        # 思考显示关闭时仍正常累计文本状态与 token 统计，只是不创建/挂载
+        # 思考块组件（含背景色都不渲染）；推理链路本身不受影响。
+        if show_thinking and self._reasoning_message is None:
             self._reasoning_message = ReasoningDisclosure()
             conversation.mount(self._reasoning_message)
-        self._reasoning_message.append_delta(delta)
+        if self._reasoning_message is not None:
+            self._reasoning_message.append_delta(delta)
         self._record_generation_delta(delta)
         self._set_runtime_status("正在思考", "working")
         self._scroll_conversation_if_following(conversation, follow_latest)

@@ -376,8 +376,6 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         self._last_render_at: float | None = None
         self._render_timer = None  # 挂起的合并刷新定时器（textual Timer）
         self._render_pending = False
-        # 挂载前写入会进入 deferred 队列，首次布局完成后自动渲染。
-        self.write(Text("思考过程", style="bold"), scroll_end=False)
 
     def on_resize(self, event: Resize) -> None:
         """首次布局完成后重新计入 deferred 写入和未完成尾行。"""
@@ -509,19 +507,26 @@ class ReasoningDisclosure(RichLog, can_focus=False):
 class ToolDisclosure(Static):
     """工具调用记录；所有工具默认展开，正文始终可见。
 
-    除 write_file 与 replace_text 外，所有工具的展开正文只显示前五行
-    （原始输出），超出部分以灰色提示行截断并折叠，避免大段工具输出
-    刷屏；write_file 与 replace_text 保留完整文件变更预览。鼠标交互
-    已全面禁用，展开/折叠不再提供切换入口。
+    除 write_file、replace_text 与 search_tools 外，所有工具的展开正文
+    做头尾采样：不超过五行时原样显示，超出时剥离前导空行后保留首尾
+    各两行有效行，中间以灰色提示行折叠（提示携带有效总行数），避免
+    大段工具输出刷屏，同时让测试汇总、错误栈尾部等关键信息直接可见；
+    write_file 与 replace_text 保留完整文件变更预览，search_tools 的
+    候选工具清单不展示给终端用户（正文完全隐藏，只保留标题行）。鼠标
+    交互已全面禁用，展开/折叠不再提供切换入口。
     """
 
     can_focus = False
 
     # 工具展开正文的行数上限（不含标题行）。
     MAX_EXPANDED_BODY_LINES = 5
-    # 正文被截断时替换尾部内容的提示行。
-    TRUNCATION_HINT = "…（内容过长，仅显示前五行）"
-    # 豁免五行限制的工具：write_file 与 replace_text 保持完整正文展示。
+    # 正文被截断时首部与尾部各保留的有效行数。
+    HEAD_BODY_LINES = 2
+    TAIL_BODY_LINES = 2
+    # 正文被截断时替换中间内容的提示行模板（{total} 为有效总行数）。
+    TRUNCATION_HINT = "…（共 {total} 行，仅显示首尾各 2 行）"
+    # 豁免五行限制的工具：write_file 与 replace_text 保持完整正文展示；
+    # search_tools 已由 tool_disclosure_body 直接隐藏（正文为空），无需豁免。
     UNLIMITED_TOOL_NAMES = frozenset({"write_file", "replace_text"})
 
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
@@ -583,18 +588,29 @@ class ToolDisclosure(Static):
         self.update(rendered)
 
     def _truncate_body_lines(self, body: Text) -> Text:
-        """把展开正文截断为前五行，并追加一行灰色折叠提示。
+        """把展开正文做头尾采样，并追加一行灰色折叠提示。
 
-        超出上限的行直接丢弃，提示行使用灰色弱化样式，让用户知道
-        还有更多输出已被折叠而不是被刷屏。
+        剥离前导空行后按有效（非空）行计数：不超过上限时原样返回；
+        超出时保留首尾各两行有效行，中间以灰色提示行折叠，提示行携带
+        有效总行数，让用户知道还有多少输出被折叠且尾部关键信息可见。
         """
 
         parts = body.split("\n")
         if len(parts) <= self.MAX_EXPANDED_BODY_LINES:
             return body
+        # 空行不计入有效行；前导空行自然被排除在采样之外。
+        effective = [part for part in parts if part.plain.strip()]
+        if len(effective) <= self.MAX_EXPANDED_BODY_LINES:
+            return body
         truncated = Text()
-        for part in parts[: self.MAX_EXPANDED_BODY_LINES]:
+        for part in effective[: self.HEAD_BODY_LINES]:
             truncated.append_text(part)
             truncated.append("\n")
-        truncated.append(self.TRUNCATION_HINT, style=TOOL_TEXT)
+        truncated.append(
+            self.TRUNCATION_HINT.format(total=len(effective)),
+            style=TOOL_TEXT,
+        )
+        for part in effective[-self.TAIL_BODY_LINES :]:
+            truncated.append("\n")
+            truncated.append_text(part)
         return truncated

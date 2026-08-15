@@ -1,6 +1,6 @@
 """ESC 取消后会话上下文继承问题的 Red-Green-Verify 回归测试。
 
-覆盖 .agent_tmp/files/esc-context-loss-issue.md 记录的三个根因：
+覆盖 .omnicrawl/.agent_tmp/files/esc-context-loss-issue.md 记录的三个根因：
 
 1. 模型流被主动关闭后正常耗尽，取消信号被空响应重试吞掉；
 2. 通用异常收尾不把未完成回合加入内存历史（CANCELLED 错误语义缺失）；

@@ -8,7 +8,7 @@
 pip install -r requirements.txt
 ```
 
-推荐在 `config.yaml` 中配置 API 段：
+推荐在 `config.toml` 中配置 API 段：
 
 ```yaml
 api:
@@ -20,7 +20,7 @@ api:
   confirmation_timeout_seconds: 300
 ```
 
-也可用 JSON 等价写法。完整多模型配置见 `config.example.yaml` 与 `models.example.yaml`。
+也可用 JSON 等价写法。完整多模型配置见 `config.example.toml` 与 `models.example.toml`。
 
 令牌也可通过环境变量提供，且优先于配置文件：
 

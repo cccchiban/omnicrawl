@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from omnicrawl.config.runtime import dump_toml_text
+
 import json
 import os
 import sys
@@ -201,9 +203,9 @@ class VerifyProfileCoordinatorTest(unittest.TestCase):
 class VerifyConfigTest(unittest.TestCase):
     def test_verify_config_is_default_off_and_environment_can_only_tighten(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.yaml"
+            path = Path(temp_dir) / "subagents.toml"
             path.write_text(
-                json.dumps(
+                dump_toml_text(
                     {
                         "subagents": {
                             "enabled": True,
@@ -232,9 +234,9 @@ class VerifyConfigTest(unittest.TestCase):
 
     def test_environment_cannot_enable_or_widen_verify_capability(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "config.yaml"
+            path = Path(temp_dir) / "subagents.toml"
             path.write_text(
-                json.dumps(
+                dump_toml_text(
                     {
                         "subagents": {
                             "enable_verify_agent": False,

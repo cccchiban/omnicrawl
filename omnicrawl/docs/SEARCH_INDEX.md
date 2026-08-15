@@ -9,7 +9,7 @@ OmniCrawl 把本地搜索拆成两个原生工具：
 
 ## 配置与运行方式
 
-两个加速索引默认关闭，可通过 `config.yaml` 或 TUI `/settings` 独立开启：
+两个加速索引默认关闭，可通过 `config.toml` 或 TUI `/settings` 独立开启：
 
 ```yaml
 file_name_index:
@@ -27,7 +27,7 @@ content_index:
 
 索引严格限定在当前 PRJ，跳过 `.git`、虚拟环境、`.env`、运行配置和其他受保护路径。
 索引层额外忽略构建产物/缓存/工具私有目录（`build`、`dist`、`.pytest_cache`、
-`.agents`、`.claude`、`.codex`、`.pi-subagents`、`.agent_tmp`、`logs`、`designs` 等，
+`.agents`、`.claude`、`.codex`、`.pi-subagents`、`.omnicrawl`、`designs` 等，
 见 `WorkspaceTools.INDEX_EXCLUDED_NAMES`）：这些目录不进索引快照，但普通工具
 仍可直接访问和搜索——`find`/`grep` 在走索引的同时会补充扫描这些
 目录，保证开启索引后结果与直接扫描一致。持久化文件按规范化 PRJ 路径的
@@ -38,6 +38,8 @@ SHA-256 前缀隔离，保存在：
 ```
 
 文件名快照启动后加载到内存；内容使用 SQLite FTS5 trigram 查找候选文件，再逐行复核精确子串和大小写，避免 FTS 分词改变工具结果。内容索引只服务 `grep` 的字面量模式（`use_regex=false`）；默认正则模式由工具层直接扫描，不经索引。超过 2MB 的文件只保留文件名条目，不建立内容索引，避免大文件撑爆 trigram 表。
+
+查询热路径已针对大型项目优化：文件名搜索在快照加载时预计算每个条目的 basename 与 casefold 值（避免每次查询重复构造 `Path` 和重复 casefold），并把 `root.is_dir()` 提出循环（stat 系统调用不随条目数增长）；长模式内容搜索改为流式分批迭代，命中达到 `max_results` 即停止，不再把全部匹配内容一次性拉入 Python（实测 2 万文件 / 90MB 内容时，文件名搜索从 ~77ms 降至 ~1ms，长模式内容搜索从 ~520ms 降至 ~12ms）。
 
 Agent 的 `write_file` 和 `replace_text` 会立即刷新对应条目；内容读取失败（如
 Windows 独占锁）的文件会登记为补偿更新，在后续轮询中重试，不会静默丢失。

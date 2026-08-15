@@ -1,4 +1,4 @@
-"""models.yaml 读取、校验与写回。"""
+"""models.toml 读取、校验与写回。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from ..llm.registry import ModelDescriptor
 from .runtime import (
     RuntimeConfigError,
     atomic_write_text,
-    dump_yaml_text,
+    dump_toml_text,
     load_raw_file,
     resolve_models_path,
     resolve_models_write_path,
@@ -30,7 +30,7 @@ _MODEL_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class ModelStoreError(RuntimeError):
-    """models.yaml 校验或读写失败。"""
+    """models.toml 校验或读写失败。"""
 
 
 @dataclass(frozen=True)
@@ -113,16 +113,16 @@ def load_model_store(models_path: str | Path | None = None) -> ModelStore:
 
 def parse_model_store(data: Mapping[str, Any], *, path: Path | None = None) -> ModelStore:
     if not isinstance(data, Mapping):
-        raise ModelStoreError("models.yaml 顶层必须是对象。")
+        raise ModelStoreError("models.toml 顶层必须是对象。")
     version = data.get("version", 1)
     if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-        raise ModelStoreError("models.yaml 的 version 必须是正整数。")
+        raise ModelStoreError("models.toml 的 version 必须是正整数。")
 
     raw_models = data.get("models", {})
     if raw_models in (None, ""):
         raw_models = {}
     if not isinstance(raw_models, dict):
-        raise ModelStoreError("models.yaml 的 models 必须是对象。")
+        raise ModelStoreError("models.toml 的 models 必须是对象。")
 
     records: list[CustomModelRecord] = []
     alias_owners: dict[str, str] = {}
@@ -133,13 +133,13 @@ def parse_model_store(data: Mapping[str, Any], *, path: Path | None = None) -> M
             for forbidden in ("api_key", "token", "cookie", "authorization"):
                 if forbidden in raw:
                     raise ModelStoreError(
-                        f"models.yaml 模型 {key} 不允许包含凭据字段 {forbidden}。"
+                        f"models.toml 模型 {key} 不允许包含凭据字段 {forbidden}。"
                     )
         for alias in record.aliases:
             owner = alias_owners.get(alias)
             if owner and owner != record.key:
                 raise ModelStoreError(
-                    f"models.yaml 别名冲突：{alias} 同时属于 {owner} 与 {record.key}。"
+                    f"models.toml 别名冲突：{alias} 同时属于 {owner} 与 {record.key}。"
                 )
             alias_owners[alias] = record.key
         records.append(record)
@@ -190,7 +190,7 @@ def save_model_store(store: ModelStore, models_path: str | Path | None = None) -
         if record.sort_order:
             item["sort_order"] = record.sort_order
         payload["models"][record.key] = item
-    atomic_write_text(path, dump_yaml_text(payload))
+    atomic_write_text(path, dump_toml_text(payload))
     return path
 
 

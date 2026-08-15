@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from omnicrawl.agent.core import LocalToolAgent
 from omnicrawl.agent.host_tools import (
+    _bounded_toml_result,
     HostToolCatalog,
     INVOKE_TOOL_NAME,
     SEARCH_TOOLS_NAME,
@@ -490,6 +491,79 @@ class HostToolCatalogTest(unittest.TestCase):
         self.assertFalse(isinstance(prepared, ToolResult))
         assert not isinstance(prepared, ToolResult)
         self.assertEqual(prepared.arguments, {})
+
+    def test_search_full_output_uses_readable_toml(self) -> None:
+        """展示通道 full_output 为分节 TOML，模型通道 output 保持紧凑 JSON。"""
+
+        catalog = HostToolCatalog({"learning_create_cards": self._tool()})
+
+        result = catalog.search({"query": "create flashcards", "limit": 4})
+
+        self.assertTrue(result.ok)
+        # 模型通道：仍是紧凑 JSON，与旧行为一致。
+        payload = json.loads(result.output)
+        self.assertEqual(payload["tools"][0]["name"], "learning_create_cards")
+        # 展示通道：TOML 分节，包含工具数组表与参数表头。
+        display = result.full_output
+        self.assertTrue(display.startswith("[[tools]]"))
+        self.assertIn("[tools.parameters]", display)
+        self.assertIn("[tools.parameters.properties.notes]", display)
+        self.assertIn("name = \"learning_create_cards\"", display)
+        self.assertIn("requires_confirmation = true", display)
+        self.assertNotEqual(display, result.output)
+
+    def test_search_full_output_truncation_keeps_toml_valid(self) -> None:
+        """展示通道超限时按整段删除 [[tools]]，剩余 TOML 结构完整。"""
+
+        catalog = HostToolCatalog(
+            {
+                f"read_{index}": self._simple_tool(
+                    f"read_{index}",
+                    "读取文件并返回内容。",
+                    properties={
+                        "path": {"type": "string", "minLength": 1},
+                        "mode": {"type": "string", "enum": ["a", "b", "c"]},
+                    },
+                )
+                for index in range(6)
+            }
+        )
+
+        result = catalog.search({"query": "read", "limit": 6})
+        display = result.full_output
+
+        # 6 个简单工具远低于展示上限，全量输出且每段结构完整。
+        segments = display.split("[[tools]]")[1:]
+        self.assertEqual(len(segments), 6)
+        for segment in segments:
+            self.assertIn("name = ", segment)
+            self.assertIn("[tools.parameters]", segment)
+        self.assertNotIn("truncated = true", display)
+
+        # 收紧上限验证裁剪：整段删除、剩余 TOML 语法完整、带 truncated 标记。
+        payload = {
+            "tools": [
+                {
+                    "name": f"read_{index}",
+                    "description": "读取文件并返回内容。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "minLength": 1},
+                            "mode": {"type": "string", "enum": ["a", "b", "c"]},
+                        },
+                        "required": ["path"],
+                    },
+                }
+                for index in range(6)
+            ]
+        }
+        tight = _bounded_toml_result(payload, max_chars=200)
+        self.assertIn("truncated = true", tight)
+        tight_segments = tight.split("[[tools]]")[1:]
+        self.assertEqual(len(tight_segments), 1)
+        self.assertIn("name = \"read_0\"", tight_segments[0])
+        self.assertIn("[tools.parameters]", tight_segments[0])
 
 
 class HostToolDispatchTest(unittest.TestCase):

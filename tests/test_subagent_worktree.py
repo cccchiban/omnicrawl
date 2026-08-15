@@ -1,5 +1,6 @@
 """Phase 3 worktree / standard SubAgent regression."""
 from __future__ import annotations
+from omnicrawl.config.runtime import dump_toml_text
 import json, subprocess, tempfile, unittest
 from pathlib import Path
 from omnicrawl.agent.subagents.approval import SubAgentApprovalOrigin, subagent_approval_risk_summary
@@ -72,9 +73,9 @@ class ConfigFlagsTests(unittest.TestCase):
         self.assertFalse(c.allow_worktree); self.assertFalse(c.allow_standard_agent); self.assertFalse(c.allow_shared_workspace_writes)
     def test_load_config_allows_worktree_flags(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path=Path(tmp)/"config.yaml"
+            path=Path(tmp)/"subagents.toml"
             payload={"subagents":{"enabled":True,"allow_worktree":True,"allow_standard_agent":True,"allow_shared_workspace_writes":True}}
-            path.write_text(json.dumps(payload), encoding="utf-8")
+            path.write_text(dump_toml_text(payload), encoding="utf-8")
             c=load_subagent_config(path)
             self.assertTrue(c.allow_worktree); self.assertTrue(c.allow_standard_agent); self.assertTrue(c.allow_shared_workspace_writes)
 

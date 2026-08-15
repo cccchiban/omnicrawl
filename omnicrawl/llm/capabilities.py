@@ -71,7 +71,7 @@ _BOOL_FIELDS = frozenset(
 
 
 def capabilities_from_mapping(raw: Mapping[str, Any] | None) -> ModelCapabilities:
-    """从 models.yaml / 发现结果中解析能力；未知字段忽略，缺失字段为 None。"""
+    """从 models.toml / 发现结果中解析能力；未知字段忽略，缺失字段为 None。"""
 
     if not isinstance(raw, Mapping):
         return ModelCapabilities()
@@ -107,7 +107,7 @@ def merge_capabilities(
     """按优先级合并能力层（后者覆盖前者中“已声明”的字段）。
 
     设计优先级：
-    models.yaml 用户显式配置 > Provider 自动发现 > Adapter 保守默认值。
+    models.toml 用户显式配置 > Provider 自动发现 > Adapter 保守默认值。
     调用时按从低到高传入即可。
 
     - bool / Optional：仅当层值不是 None 时覆盖（可显式写 False）。

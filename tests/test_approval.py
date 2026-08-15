@@ -5,7 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import yaml
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+from omnicrawl.config.runtime import dump_toml_text
 from unittest.mock import patch
 
 from omnicrawl.agent import LocalToolAgent, ToolDefinition, ToolCall
@@ -25,36 +29,36 @@ from omnicrawl.slash_commands import handle_approval_command, handle_reasoning_c
 class ApprovalConfigTest(unittest.TestCase):
     def test_load_approval_mode_defaults_to_manual(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
 
             self.assertEqual(load_approval_mode(config_path), APPROVAL_MODE_MANUAL)
 
     def test_load_approval_mode_supports_aliases_and_legacy_flags(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                json.dumps({"approval": {"mode": "auto-review"}}),
+                dump_toml_text({"approval": {"mode": "auto-review"}}),
                 encoding="utf-8",
             )
 
             self.assertEqual(load_approval_mode(config_path), APPROVAL_MODE_REVIEW)
 
             config_path.write_text(
-                json.dumps({"approval": {"auto_approve": True}}),
+                dump_toml_text({"approval": {"auto_approve": True}}),
                 encoding="utf-8",
             )
             self.assertEqual(load_approval_mode(config_path), APPROVAL_MODE_AUTO)
 
     def test_save_approval_mode_preserves_existing_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                json.dumps({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
+                dump_toml_text({"llm": {"model": "demo"}, "agent_temp": {"enabled": True}}),
                 encoding="utf-8",
             )
 
             save_approval_mode(APPROVAL_MODE_REVIEW, config_path)
-            data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            data = tomllib.loads(config_path.read_text(encoding="utf-8"))
 
             self.assertEqual(data["approval"]["mode"], APPROVAL_MODE_REVIEW)
             self.assertEqual(data["llm"]["model"], "demo")
@@ -76,7 +80,7 @@ class ApprovalCommandTest(unittest.TestCase):
         agent = FakeAgent()
         with patch(
             "omnicrawl.slash_commands.save_approval_mode",
-            return_value=Path("config.yaml"),
+            return_value=Path("config.toml"),
         ) as save_mode:
             message = handle_approval_command(agent, "/approval:auto")
 
@@ -95,7 +99,7 @@ class ApprovalCommandTest(unittest.TestCase):
         agent = FakeAgent()
         with patch(
             "omnicrawl.slash_commands.save_reasoning_effort",
-            return_value=Path("config.yaml"),
+            return_value=Path("config.toml"),
         ) as save_effort:
             message = handle_reasoning_command(agent, "/reasoning high")
 

@@ -83,8 +83,8 @@ class TestConfiguration:
         assert conf.resolve_api_key() == "env-key"
 
     def test_load_and_save_roundtrip(self, tmp_path):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text("memory:\n  enabled: true\n", encoding="utf-8")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nenabled = true\n", encoding="utf-8")
         conf = ImageGenConfiguration(
             enabled=True,
             base_url="https://api.example.com/v1",
@@ -106,29 +106,32 @@ class TestConfiguration:
         assert data["memory"]["enabled"] is True
 
     def test_load_missing_section_returns_disabled_defaults(self, tmp_path):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text("memory:\n  enabled: true\n", encoding="utf-8")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nenabled = true\n", encoding="utf-8")
         conf = load_image_gen_configuration(config_path)
         assert conf.enabled is False
         assert conf.model == "gpt-image-2"
 
     def test_load_invalid_section_raises(self, tmp_path):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text("image_gen:\n  quality: ultra\n", encoding="utf-8")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[image_gen]\nquality = \"ultra\"\n", encoding="utf-8")
         with pytest.raises(ImageGenConfigError):
             load_image_gen_configuration(config_path)
 
     def test_load_invalid_numeric_raises(self, tmp_path):
-        config_path = tmp_path / "config.yaml"
-        config_path.write_text("image_gen:\n  n: many\n", encoding="utf-8")
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[image_gen]\nn = \"many\"\n", encoding="utf-8")
         with pytest.raises(ImageGenConfigError):
             load_image_gen_configuration(config_path)
 
 
 def load_config_data_raw(config_path: Path):
-    import yaml
+    try:
+        import tomllib
+    except ImportError:  # Python < 3.11
+        import tomli as tomllib
 
-    return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return tomllib.loads(config_path.read_text(encoding="utf-8")) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +170,7 @@ def make_generator(
     images=None,
     **overrides,
 ):
-    config_path = tmp_path / "config.yaml"
+    config_path = tmp_path / "config.toml"
     conf = ImageGenConfiguration(enabled=enabled, api_key=api_key, model=model, **overrides)
     save_image_gen_configuration(conf, config_path)
     return (
@@ -397,9 +400,9 @@ class TestRegistration:
     def test_agent_config_loads_image_gen(self, tmp_path):
         from omnicrawl.agent.core import AgentConfig
 
-        config_path = tmp_path / "config.yaml"
+        config_path = tmp_path / "config.toml"
         config_path.write_text(
-            "image_gen:\n  enabled: true\n  model: gpt-image-1\n  n: 2\n", encoding="utf-8"
+            "[image_gen]\nenabled = true\nmodel = \"gpt-image-1\"\nn = 2\n", encoding="utf-8"
         )
         # AgentConfig.image_gen 是独立 default_factory 字段（读本机用户配置，值不可假设）；
         # 这里只验证字段类型正确且支持整体替换。

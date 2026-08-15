@@ -316,7 +316,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
             agent._skill_manager = _SkillManager()
             agent._active_skills = []
             agent._load_agents_instructions = lambda: "项目协作规范"
-            agent._agent_temp_dir_display = lambda: ".agent_tmp"
+            agent._agent_temp_dir_display = lambda: ".omnicrawl/.agent_tmp"
             child_tools = {
                 "read": ToolDefinition(
                     name="read",
@@ -582,7 +582,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
                     default_timeout_seconds=30,
                 ),
             )
-            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+            agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
             agent._cancel_check = lambda: None
             agent._subagent_model_request_semaphore = threading.BoundedSemaphore(1)
             active = 0
@@ -650,7 +650,7 @@ class SubAgentToolIntegrationTest(unittest.TestCase):
             agent._pending_user_text = "父任务"
             agent._active_skills = ["parent-skill"]
             agent._active_runtime_snapshot = parent_snapshot
-            agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+            agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
             agent._cancel_check = lambda: None
             session_events = []
             hook_names = []
@@ -886,7 +886,7 @@ class SubAgentProviderRuntimeContractTest(unittest.TestCase):
         agent._llm_client = lambda: None
         agent._runtime_manager_for_protocol = lambda: manager
         agent._build_extra_body = lambda: {}
-        agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+        agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
         agent._cancel_check = None
         # 工具往返测试仍需要走 Host 的 Plugin guard 链，但不加载真实插件。
         agent._dispatch_plugin_hook = lambda _hook, payload, **_kwargs: dict(payload)

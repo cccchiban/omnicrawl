@@ -210,7 +210,7 @@ class GeminiGenerateContentAdapter:
                 return DiscoveryResult(
                     profile_id=profile.id,
                     status="unsupported",
-                    message="当前 Google Gen AI SDK 不支持模型列表发现，请使用 models.yaml 自定义模型。",
+                    message="当前 Google Gen AI SDK 不支持模型列表发现，请使用 models.toml 自定义模型。",
                 )
             response = list_fn()
             items = list(response) if response is not None else []

@@ -22,6 +22,8 @@ from .types import ToolCall, ToolDefinition, ToolResult
 SEARCH_TOOLS_NAME = "search_tools"
 INVOKE_TOOL_NAME = "invoke_tool"
 PROVIDER_TOOL_NAMES = (SEARCH_TOOLS_NAME, INVOKE_TOOL_NAME)
+# search_tools 展示通道（终端/转录）使用分节 TOML，行数开销比紧凑 JSON 大，上限独立放宽。
+_SEARCH_DISPLAY_MAX_CHARS = 12000
 
 # 英文查询中的虚词：命中这些词不能代表工具能力，分词阶段直接丢弃。
 _EN_STOP_WORDS = frozenset(
@@ -193,7 +195,13 @@ class HostToolCatalog:
         payload: dict[str, Any] = {"tools": entries}
         if len(ranked) > len(selected):
             payload["truncated"] = True
-        return _bounded_json_result(payload, max_chars=5200)
+        # 模型通道保持紧凑 JSON（模型解析最稳、token 最省）；展示/转录通道
+        # 用分节 TOML，人眼扫描"有哪些工具、参数必填项"更直观。
+        model_text = _bounded_json_result(payload, max_chars=5200).output
+        display_text = _bounded_toml_result(
+            payload, max_chars=_SEARCH_DISPLAY_MAX_CHARS
+        )
+        return ToolResult(ok=True, output=model_text, full_output=display_text)
 
     def prepare_invocation(
         self,
@@ -639,6 +647,95 @@ def _bounded_json_result(payload: dict[str, Any], *, max_chars: int) -> ToolResu
             separators=(",", ":"),
         )
     return ToolResult(ok=True, output=text, full_output=text)
+
+
+def _toml_key(key: str) -> str:
+    """TOML 键名：ASCII 裸键直接输出，其余键用带引号的基本字符串。"""
+
+    if key and not key[0].isdigit() and all(
+        ("a" <= ch <= "z")
+        or ("A" <= ch <= "Z")
+        or ("0" <= ch <= "9")
+        or ch in "_-"
+        for ch in key
+    ):
+        return key
+    return json.dumps(key, ensure_ascii=False)
+
+
+def _toml_value(value: Any) -> str:
+    """受限 TOML 值序列化：支持 str/int/bool/float/list/Mapping，不处理复杂对象。"""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    if isinstance(value, Mapping):
+        body = ", ".join(
+            f"{_toml_key(str(key))} = {_toml_value(item)}"
+            for key, item in value.items()
+        )
+        return "{" + body + "}"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _toml_table_lines(mapping: Mapping[str, Any], *, prefix: str) -> list[str]:
+    """把 dict 展开为 TOML 表行：标量键直接赋值，子 dict 用 [路径] 表头。"""
+
+    lines: list[str] = []
+    tables: list[tuple[str, Mapping[str, Any]]] = []
+    # TOML 规定：一旦声明子表，后续键都归属该子表。因此必须先输出当前表
+    # 的标量键，再输出子表，否则键会被解析到错误的表。
+    for key, value in mapping.items():
+        full_key = _toml_key(str(key))
+        if isinstance(value, Mapping):
+            tables.append((f"{prefix}.{full_key}", value))
+        else:
+            lines.append(f"{full_key} = {_toml_value(value)}")
+    for full_path, value in tables:
+        lines.append(f"[{full_path}]")
+        lines.extend(_toml_table_lines(value, prefix=full_path))
+    return lines
+
+
+def _toml_dump(doc: Mapping[str, Any]) -> str:
+    """把 search 结果 payload 序列化为分节 TOML：工具用 [[tools]] 数组表分段。"""
+
+    lines: list[str] = []
+    for key, value in doc.items():
+        if key == "tools" and isinstance(value, list):
+            for entry in value:
+                lines.append("[[tools]]")
+                if isinstance(entry, Mapping):
+                    lines.extend(_toml_table_lines(entry, prefix="tools"))
+        else:
+            lines.append(f"{_toml_key(str(key))} = {_toml_value(value)}")
+    return "\n".join(lines)
+
+
+def _bounded_toml_result(payload: dict[str, Any], *, max_chars: int) -> str:
+    """TOML 序列化，超限时从尾部整段删除 [[tools]]，剩余文本始终语法完整。"""
+
+    work = dict(payload)
+    tools = work.get("tools")
+    if isinstance(tools, list):
+        work["tools"] = list(tools)
+    text = _toml_dump(work)
+    while (
+        len(text) > max_chars
+        and isinstance(work.get("tools"), list)
+        and len(work["tools"]) > 1
+    ):
+        work["tools"].pop()
+        work["truncated"] = True
+        text = _toml_dump(work)
+    return text
 
 
 def _error_result(

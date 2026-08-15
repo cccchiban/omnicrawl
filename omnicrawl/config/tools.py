@@ -1,7 +1,7 @@
 """内置工具开关配置：逐工具控制 Agent 可见的工具集合。
 
 默认除 ``powershell`` 关闭外，其余内置工具全部启用；用户可在
-config.yaml 的 ``tools`` 段覆盖任意工具开关。开关只影响 Agent
+config.toml 的 ``tools`` 段覆盖任意工具开关。开关只影响 Agent
 工具表的注册（模型不可见即不可调用），不影响审批等其他配置。
 """
 
@@ -65,8 +65,8 @@ TOOL_SWITCH_LABELS: dict[str, str] = {
     "read": "读取文件内容",
     "read_image": "读取图片",
     "grep": "在文件中搜索文本（grep）",
-    "web_search": "网页搜索（Bing/DuckDuckGo/雅虎）",
-    "fetcher": "网页抓取（浏览器指纹）",
+    "web_search": "web_search（Bing/DuckDuckGo/雅虎）",
+    "fetcher": "fetcher（浏览器指纹）",
     "image_gen": "图像生成（Image API）",
     "replace_text": "替换文件中的文本",
     "write_file": "写入文件",

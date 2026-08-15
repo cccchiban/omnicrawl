@@ -241,14 +241,14 @@ class TestRegistration:
         from omnicrawl.config.tools import TOOL_SWITCH_KEYS, TOOL_SWITCH_LABELS
 
         assert "web_search" in TOOL_SWITCH_KEYS
-        assert TOOL_SWITCH_LABELS["web_search"].startswith("网页搜索")
+        assert TOOL_SWITCH_LABELS["web_search"].startswith("web_search")
 
 
     def test_tool_labels_include_web_search(self):
         from omnicrawl.ui.tool_labels import tool_display
 
         display = tool_display("web_search")
-        assert display.name == "网页搜索"
+        assert display.name == "web_search"
         assert display.icon == "W"
 
 

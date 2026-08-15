@@ -134,7 +134,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 "max",
                 "人工确认",
                 "D:/workspace",
-                ".agent_tmp，每 24 小时自动清理",
+                ".omnicrawl/.agent_tmp，每 24 小时自动清理",
                 current_version="0.1.1",
             ),
         )
@@ -166,7 +166,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("D:/workspace", context.plain)
             self.assertNotIn("demo-model", context.plain)
             self.assertNotIn("THK MAX", context.plain)
-            self.assertNotIn(".agent_tmp", context.plain)
+            self.assertNotIn(".omnicrawl/.agent_tmp", context.plain)
             # 模型、推理强度、审批模式、排队数与 MCP 数量在第二行右段，
             # 前置 ⁕ 分隔符（衔接遥测 t/s），以 QUE 段收束。
             status = status_widget.content
@@ -261,7 +261,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 "max",
                 "人工确认",
                 "D:/workspace",
-                ".agent_tmp",
+                ".omnicrawl/.agent_tmp",
                 current_version="0.1.1",
             ),
         )
@@ -300,7 +300,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         submitted: list[str] = []
         app._submit = submitted.append  # type: ignore[method-assign]
@@ -362,7 +362,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         self.assertIs(app.driver_class, OmniCrawlWindowsDriver)
 
@@ -696,7 +696,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         submitted: list[str] = []
         app._submit = submitted.append  # type: ignore[method-assign]
@@ -734,7 +734,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         submitted: list[str] = []
         app._submit = submitted.append  # type: ignore[method-assign]
@@ -785,7 +785,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(80, 24)) as pilot:
@@ -881,7 +881,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -908,7 +908,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -938,7 +938,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -991,7 +991,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1077,7 +1077,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1121,7 +1121,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1269,7 +1269,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1312,7 +1312,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1348,7 +1348,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         copied: list[str] = []
         app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
@@ -1386,7 +1386,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         copied: list[str] = []
         app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
@@ -1441,7 +1441,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1452,7 +1452,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
             reasoning = app.query_one(ReasoningDisclosure)
             reply = app.query_one(AssistantMessage)
-            for widget, row in ((reasoning, 2), (reply, 1)):
+            for widget, row in ((reasoning, 1), (reply, 1)):
                 app.screen.clear_selection()
                 await pilot.mouse_down(widget, offset=(3, row))
                 await pilot._post_mouse_events(
@@ -1510,7 +1510,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         agent = FakeAgent()
         app = OmniCrawlApp(
             agent,
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1581,7 +1581,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1639,7 +1639,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         agent = FakeAgent()
         app = OmniCrawlApp(
             agent,
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1705,7 +1705,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         agent = FakeAgent()
         app = OmniCrawlApp(
             agent,
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -1779,7 +1779,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         call = SimpleNamespace(name="bash", arguments={"command": "pytest"})
         result = SimpleNamespace(ok=True, output="0123456789ABCDEFGHIJ")
@@ -1807,7 +1807,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         first_payload = {
             "batch_id": "batch-a1b2c3d4e5f6",
@@ -2021,7 +2021,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -2029,10 +2029,15 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertEqual(app.screen.query_one("#settings-title").content, "运行设置")
             rows = list(app.screen.query(".settings-row"))
-            self.assertEqual(len(rows), 16)
+            self.assertEqual(len(rows), 32)
             self.assertTrue(
-                all(str(row.content).strip() for row in rows),
-                [repr(str(row.content)) for row in rows],
+                all(str(row.content).strip() for row in rows[:16]),
+                [repr(str(row.content)) for row in rows[:16]],
+            )
+            self.assertIn("思考显示：已开启", str(rows[16].content))
+            self.assertTrue(
+                all(not str(row.content).strip() for row in rows[17:]),
+                [repr(str(row.content)) for row in rows[17:]],
             )
             self.assertIn("模型：demo-model", str(rows[0].content))
             self.assertIn("模型渠道：管理", str(rows[1].content))
@@ -2147,7 +2152,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -2304,7 +2309,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -2376,13 +2381,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         app = SettingsApp()
         with patch(
             "omnicrawl.ui.fullscreen.settings.save_reasoning_effort",
-            return_value="config.yaml",
+            return_value="config.toml",
         ), patch(
             "omnicrawl.ui.fullscreen.settings.save_approval_mode",
-            return_value="config.yaml",
+            return_value="config.toml",
         ), patch(
             "omnicrawl.ui.fullscreen.settings.save_feature_enabled",
-            return_value="config.yaml",
+            return_value="config.toml",
         ) as save_feature:
             async with app.run_test(size=(100, 32)) as pilot:
                 await pilot.pause()
@@ -2783,7 +2788,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -2824,7 +2829,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -2863,7 +2868,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -2909,7 +2914,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "fallback", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "fallback", ".omnicrawl/.agent_tmp"),
         )
 
         context = app._context_summary_text()
@@ -2950,7 +2955,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(50, 20)) as pilot:
@@ -3001,7 +3006,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         submitted: list[str] = []
         app._submit = submitted.append  # type: ignore[method-assign]
@@ -3079,7 +3084,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -3116,7 +3121,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         decision: list[bool] = []
 
@@ -3160,7 +3165,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
         tool_result = SimpleNamespace(ok=True, output="读取完成")
@@ -3214,7 +3219,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -3286,7 +3291,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
@@ -3343,7 +3348,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -3396,7 +3401,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         agent = FakeAgent()
         app = OmniCrawlApp(
             agent,
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -3456,7 +3461,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -3481,7 +3486,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -3489,8 +3494,8 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             await pilot.pause(0.1)
             widget = app.query_one(ReasoningDisclosure)
 
-            self.assertLessEqual(widget.size.height, 3)
-            self.assertEqual(widget.virtual_size.height, 2)
+            self.assertLessEqual(widget.size.height, 2)
+            self.assertEqual(widget.virtual_size.height, 1)
             self.assertIn(
                 "仅一行思考",
                 "".join(
@@ -3504,14 +3509,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 app._append_delta(delta)
                 await pilot.pause()
 
-            self.assertLessEqual(widget.size.height, 3)
-            self.assertEqual(widget.virtual_size.height, 2)
+            self.assertLessEqual(widget.size.height, 2)
+            self.assertEqual(widget.virtual_size.height, 1)
             rendered = "".join(
                 segment.text
                 for line_number in range(widget.size.height)
                 for segment in widget.render_line(line_number)
             )
-            self.assertIn("思考过程", rendered)
             self.assertIn("仅一行思考", rendered)
 
     async def test_reasoning_burst_is_coalesced_and_complete_after_flush(self) -> None:
@@ -3529,7 +3533,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -3600,7 +3604,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -3637,7 +3641,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         async with app.run_test(size=(100, 32)) as pilot:
             app._append_message(
@@ -3675,7 +3679,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         async with app.run_test(size=(100, 32)) as pilot:
             app._append_message(
@@ -3714,7 +3718,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         approved: list[bool | None] = []
 
@@ -3772,7 +3776,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                 reasoning_effort="max",
                 approval_label="人工确认",
                 workspace_label="D:/workspace",
-                temp_label=".agent_tmp",
+                temp_label=".omnicrawl/.agent_tmp",
             ),
         )
 
@@ -3828,7 +3832,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
@@ -3874,7 +3878,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -3920,7 +3924,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -3953,7 +3957,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         first = SimpleNamespace(name="read", arguments={}, id="call_1")
         second = SimpleNamespace(name="grep", arguments={}, id="call_2")
@@ -3988,7 +3992,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
@@ -4026,7 +4030,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(
             name="write_file",
@@ -4069,7 +4073,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(
             name="replace_text",
@@ -4116,7 +4120,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(name="read", arguments={"path": "README.md"})
 
@@ -4165,7 +4169,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4190,7 +4194,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4240,7 +4244,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
         agent = FakeAgent()
         app = OmniCrawlApp(
             agent,
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4281,7 +4285,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4306,7 +4310,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4320,8 +4324,50 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             patched_handler.assert_called_once_with(app.agent, "/approval:auto")
             self.assertIn("已通过 patch 切换审批", app.conversation_text)
 
+    async def test_new_command_clears_conversation_view(self) -> None:
+        """/new 自动清空 TUI 对话区域，仅保留新会话状态提示。"""
+
+        from textual.containers import VerticalScroll
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+
+            def __init__(self) -> None:
+                self.reset_calls = 0
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+            def reset_conversation(self) -> None:
+                self.reset_calls += 1
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
+        )
+
+        async with app.run_test(size=(120, 40)) as pilot:
+            for index in range(5):
+                app._append_message("status", f"历史记录 {index}")
+            await pilot.pause()
+            conversation = app.query_one("#conversation", VerticalScroll)
+            self.assertGreater(len(conversation.children), 0)
+
+            self.assertTrue(app._handle_command("/new"))
+            await pilot.pause()
+
+            self.assertEqual(app.agent.reset_calls, 1)
+            self.assertIn("已新开会话，旧会话：session-demo", app.conversation_text)
+            self.assertNotIn("历史记录", app.conversation_text)
+            # 清空视图后仅保留新会话提示一条消息
+            self.assertEqual(len(conversation.children), 1)
+
     async def test_tools_expand_by_default_and_limit_body_to_five_lines(self) -> None:
-        """除 write_file 外所有工具默认展开，展开正文最多五行并带折叠提示。"""
+        """除 write_file 外所有工具默认展开，展开正文超五行时做头尾采样。"""
 
         from textual.app import App, ComposeResult
 
@@ -4351,11 +4397,13 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
                     record.finish(ok=True, output=app._output, finished_at=2.0)
                     await pilot.pause()
                     rendered = record.render().plain
-                    for expected in ("第一行", "第二行", "第三行", "第四行", "第五行"):
+                    # 头尾采样：保留首尾各两行，中间折叠并带有效总行数提示。
+                    for expected in ("第一行", "第二行", "第六行", "第七行"):
                         self.assertIn(expected, rendered)
-                    self.assertNotIn("第六行", rendered)
-                    self.assertNotIn("第七行", rendered)
-                    self.assertIn("仅显示前五行", rendered)
+                    self.assertNotIn("第三行", rendered)
+                    self.assertNotIn("第四行", rendered)
+                    self.assertNotIn("第五行", rendered)
+                    self.assertIn("共 7 行", rendered)
 
 
     async def test_tools_with_short_output_are_not_truncated(self) -> None:
@@ -4377,11 +4425,11 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             rendered = record.render().plain
             self.assertIn("只有两行", rendered)
             self.assertIn("完成", rendered)
-            self.assertNotIn("仅显示前五行", rendered)
+            self.assertNotIn("仅显示首尾", rendered)
 
 
     async def test_write_file_keeps_full_body_when_expanded(self) -> None:
-        """write_file 是唯一豁免工具：默认展开且不受五行限制。"""
+        """write_file 豁免：默认展开且不受五行限制。"""
 
         from textual.app import App, ComposeResult
 
@@ -4404,7 +4452,41 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             rendered = record.render().plain
             self.assertIn("第六行", rendered)
             self.assertIn("第七行", rendered)
-            self.assertNotIn("仅显示前五行", rendered)
+            self.assertNotIn("仅显示首尾", rendered)
+
+    async def test_search_tools_hides_body_when_expanded(self) -> None:
+        """search_tools 正文完全隐藏：候选清单与隐藏提示都不显示。"""
+
+        from textual.app import App, ComposeResult
+
+        from omnicrawl.ui.fullscreen.widgets import ToolDisclosure
+
+        class ToolHarness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ToolDisclosure("search_tools", {"query": "文件"}, started_at=1.0)
+
+        app = ToolHarness()
+        async with app.run_test(size=(100, 24)) as pilot:
+            record = app.query_one(ToolDisclosure)
+            record.finish(
+                ok=True,
+                output=(
+                    "[[tools]]\nname = \"read\"\n"
+                    "[[tools]]\nname = \"grep\"\n"
+                    "[[tools]]\nname = \"list\"\n"
+                    "[[tools]]\nname = \"find\"\n"
+                    "[[tools]]\nname = \"bash\"\n"
+                    "[[tools]]\nname = \"powershell\"\n"
+                ),
+                finished_at=2.0,
+            )
+            await pilot.pause()
+            rendered = record.render().plain
+            # 正文完全隐藏：候选清单内容与任何“已隐藏”提示均不可见。
+            self.assertNotIn("name = \"bash\"", rendered)
+            self.assertNotIn("name = \"powershell\"", rendered)
+            self.assertNotIn("已隐藏", rendered)
+            self.assertNotIn("仅显示首尾", rendered)
 
 
     async def test_model_picker_esc_returns_to_settings_panel_without_cancel_tip(self) -> None:
@@ -4435,7 +4517,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -4488,7 +4570,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -4540,7 +4622,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         # #command-menu 是唯一使用 solid ansi_blue 的样式块（细线）。
         self.assertIn("#command-menu", app.CSS)
@@ -4681,7 +4763,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4717,7 +4799,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 20)) as pilot:
@@ -4767,7 +4849,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 20)) as pilot:
@@ -4844,7 +4926,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 20)) as pilot:
@@ -4891,7 +4973,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
 
         async with app.run_test(size=(100, 32)) as pilot:
@@ -4944,8 +5026,40 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(messages[-1].styles.margin.bottom, 0)
 
 
+    async def test_reasoning_not_rendered_when_show_thinking_disabled(self) -> None:
+        """思考显示关闭后：不渲染思考块（含背景色），但内容照常接收与统计。"""
+
+        from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ReasoningDisclosure
+
+        class FakeAgent:
+            current_model = "demo-model"
+            current_session_id = "session-demo"
+            skill_manager = None
+            config = SimpleNamespace(show_thinking=False)
+
+            def set_confirm_handler(self, _handler) -> None:
+                pass
+
+        app = OmniCrawlApp(
+            FakeAgent(),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
+        )
+
+        async with app.run_test(size=(100, 32)) as pilot:
+            app._append_message("user", "检查配置。")
+            app._append_reasoning_delta("先检查配置。")
+            app._append_reasoning_delta("再检查结果。")
+            await pilot.pause()
+            # 思考块组件及其背景色都不出现：仅隐藏显示，不代表没有思考内容。
+            self.assertEqual(len(app.query(ReasoningDisclosure)), 0)
+            self.assertIsNone(app._reasoning_message)
+            # 思考增量照常计入统计，状态指示照常进入“正在思考”。
+            self.assertGreater(app._generation_total_tokens, 0)
+            self.assertEqual(app._runtime_status_state, "working")
+
+
     async def test_tool_result_large_output_limited_to_five_lines_when_expanded(self) -> None:
-        """shell 工具的大输出在展开记录中只显示前五行，并带截断提示。"""
+        """shell 工具的大输出在展开记录中做头尾采样，尾部关键行可见。"""
 
         from omnicrawl.ui.fullscreen import FullscreenStartup, OmniCrawlApp, ToolDisclosure
 
@@ -4959,7 +5073,7 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
 
         app = OmniCrawlApp(
             FakeAgent(),
-            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".agent_tmp"),
+            FullscreenStartup(True, "max", "人工确认", "D:/workspace", ".omnicrawl/.agent_tmp"),
         )
         tool_call = SimpleNamespace(name="powershell", arguments={"command": "Write-Output long"})
         result = SimpleNamespace(ok=True, output="\n".join(f"输出行{index}" for index in range(1, 9)))
@@ -4973,9 +5087,9 @@ class FullscreenTUITest(unittest.IsolatedAsyncioTestCase):
             # 鼠标交互已禁用：shell 工具始终展开，无需点击即可看到正文。
             self.assertFalse(record.has_class("collapsed"))
             rendered = str(record.content)
-            for index in range(1, 6):
+            # 头尾采样：首部输出行 1-2 与尾部输出行 7-8 可见，中间折叠。
+            for index in (1, 2, 7, 8):
                 self.assertIn(f"输出行{index}", rendered)
-            self.assertNotIn("输出行6", rendered)
-            self.assertNotIn("输出行7", rendered)
-            self.assertNotIn("输出行8", rendered)
-            self.assertIn("仅显示前五行", rendered)
+            for index in (3, 4, 5, 6):
+                self.assertNotIn(f"输出行{index}", rendered)
+            self.assertIn("共 8 行", rendered)

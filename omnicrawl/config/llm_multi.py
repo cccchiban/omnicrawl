@@ -23,7 +23,7 @@ def is_multi_model_section(section: Mapping[str, Any]) -> bool:
 
 
 def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
-    """从 llm.profiles + active_model + models.yaml 构建当前 LLMConfig 视图。"""
+    """从 llm.profiles + active_model + models.toml 构建当前 LLMConfig 视图。"""
 
     defaults = (
         llm_section.get("defaults")
@@ -100,7 +100,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
         if record is None:
             raise LLMError(
                 f"active_model 引用了不存在的自定义模型 key：{catalog_key}。"
-                "请检查 models.yaml，或重新选择模型。"
+                "请检查 models.toml，或重新选择模型。"
             )
         catalog_key = record.key
         profile_id = record.profile
@@ -347,7 +347,7 @@ def apply_model_selection(config: LLMConfig, selection: str) -> LLMConfig:
     """把 selection 解析为新的运行时 LLMConfig 视图。
 
     支持：
-    - 自定义 models.yaml key / alias
+    - 自定义 models.toml key / alias
     - profile/model_id
     - 裸 model_id（保留当前 profile/protocol/凭据）
     """
@@ -356,7 +356,7 @@ def apply_model_selection(config: LLMConfig, selection: str) -> LLMConfig:
     if not token:
         raise LLMError("模型选择不能为空。")
 
-    # 先尝试自定义 key/alias。models.yaml 损坏必须显式失败，不可静默降级。
+    # 先尝试自定义 key/alias。models.toml 损坏必须显式失败，不可静默降级。
     try:
         store = load_model_store()
         record = store.resolve_alias(token)

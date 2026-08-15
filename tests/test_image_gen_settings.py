@@ -24,19 +24,9 @@ class _HostApp(App):
 
 
 def _config_path(temp_dir: str) -> Path:
-    path = Path(temp_dir) / "config.yaml"
+    path = Path(temp_dir) / "config.toml"
     path.write_text(
-        "image_gen:\n"
-        "  enabled: false\n"
-        "  base_url: \"https://api.openai.com/v1\"\n"
-        "  api_key: \"\"\n"
-        "  api_key_env: \"OPENAI_API_KEY\"\n"
-        "  model: \"gpt-image-2\"\n"
-        "  size: \"auto\"\n"
-        "  quality: \"auto\"\n"
-        "  output_format: \"png\"\n"
-        "  n: 1\n"
-        "  timeout_seconds: 120\n",
+        "[image_gen]\nenabled = false\nbase_url = \"https://api.openai.com/v1\"\napi_key = \"\"\napi_key_env = \"OPENAI_API_KEY\"\nmodel = \"gpt-image-2\"\nsize = \"auto\"\nquality = \"auto\"\noutput_format = \"png\"\nn = 1\ntimeout_seconds = 120\n",
         encoding="utf-8",
     )
     return path

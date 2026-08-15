@@ -812,9 +812,9 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
                 return super().copy_to_clipboard(text)
         super().copy_to_clipboard(text)
 
-    def action_clear_conversation(self) -> None:
-        if self.is_generating:
-            return
+    def _clear_conversation_view(self) -> None:
+        """移除对话区域的可见消息并复位流式渲染状态（不追加提示）。"""
+
         self.query_one("#conversation", VerticalScroll).remove_children()
         self.conversation_text = ""
         self._stream_message = None
@@ -825,6 +825,11 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._subagent_trees.clear()
         self._reasoning_message = None
         self._runtime_status_message = None
+
+    def action_clear_conversation(self) -> None:
+        if self.is_generating:
+            return
+        self._clear_conversation_view()
         self._append_message("status", "已清空当前视图，不影响会话历史。")
 
     def cancel_pending_turn(self) -> None:
@@ -988,6 +993,8 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
                 ),
             )
             return True
+        if outcome.clear_conversation:
+            self._clear_conversation_view()
         if outcome.message:
             self._append_message("status", outcome.message)
         if outcome.refresh_context:

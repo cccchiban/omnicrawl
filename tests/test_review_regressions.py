@@ -318,14 +318,14 @@ class ReviewRegressionTests(unittest.TestCase):
 
     def test_multi_model_config_rejects_protocol_provider_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            models = Path(temp_dir) / "models.yaml"
+            models = Path(temp_dir) / "models.toml"
             models.write_text(
-                """version: 1
-models:
-  bad:
-    profile: openai-main
-    model_id: gemini-demo
-    protocol: gemini_generate_content
+                """version = 1
+
+[models.bad]
+profile = "openai-main"
+model_id = "gemini-demo"
+protocol = "gemini_generate_content"
 """,
                 encoding="utf-8",
             )
@@ -662,9 +662,9 @@ models:
         agent._runtime_manager = None
         with mock.patch(
             "omnicrawl.agent.core.apply_model_selection",
-            side_effect=ConfigLLMError("models.yaml 损坏"),
+            side_effect=ConfigLLMError("models.toml 损坏"),
         ):
-            with self.assertRaisesRegex(AgentError, "models.yaml 损坏"):
+            with self.assertRaisesRegex(AgentError, "models.toml 损坏"):
                 LocalToolAgent.set_model(agent, "broken-key")
 
     def test_apply_model_selection_rejects_unknown_profile_when_profiles_exist(self) -> None:

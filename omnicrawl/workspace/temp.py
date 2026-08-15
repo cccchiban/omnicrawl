@@ -11,7 +11,7 @@ from typing import Any, Callable
 from ..config.runtime import RuntimeConfigError, get_section, load_config_data
 
 
-DEFAULT_AGENT_TEMP_DIRECTORY = ".agent_tmp"
+DEFAULT_AGENT_TEMP_DIRECTORY = ".omnicrawl/.agent_tmp"
 DEFAULT_AGENT_TEMP_CLEANUP_INTERVAL_HOURS = 24
 DEFAULT_AGENT_TEMP_SUBDIRECTORIES = ("files", "images", "code", "videos", "scripts")
 LAST_CLEANUP_FILENAME = ".last_cleanup"
@@ -273,7 +273,7 @@ class AgentTempWorkspace:
 def load_agent_temp_workspace_config(
     config_path: str | Path | None = None,
 ) -> AgentTempWorkspaceConfig:
-    """从 config.yaml 的 agent_temp 段读取临时工作区配置。"""
+    """从 config.toml 的 agent_temp 段读取临时工作区配置。"""
 
     try:
         data = load_config_data(config_path)

@@ -162,6 +162,61 @@ class FullscreenToolDiffTest(unittest.TestCase):
         )
         self.assertIn("F  omnicrawl  |  目标: agent", title)
 
+    def test_fetcher_title_uses_tool_name_and_body_shows_meta_only(self) -> None:
+        """fetcher 标题显示工具名；正文保留汇总/URL/状态/标题，隐藏页面正文。"""
+
+        title = plain_tool_title(
+            tool_name="fetcher",
+            arguments={"urls": "https://example.com"},
+            status="成功",
+            duration_seconds=1.24,
+        )
+        self.assertIn("fetcher", title)
+        self.assertIn("✓ 成功  1.2s", title)
+
+        body = tool_disclosure_body(
+            tool_name="fetcher",
+            arguments={"urls": "https://example.com"},
+            result_text=(
+                "网页抓取完成（1 个 URL，用时 0.50s）\n"
+                "1. https://example.com\n"
+                "   状态: 200｜最终地址: https://example.com\n"
+                "   标题: Example Domain\n"
+                "   内容: 这是一个示例页面正文……"
+            ),
+        ).plain
+        self.assertIn("网页抓取完成", body)
+        self.assertIn("https://example.com", body)
+        self.assertIn("状态: 200", body)
+        self.assertIn("Example Domain", body)
+        self.assertNotIn("这是一个示例页面正文", body)
+        self.assertIn("（网页正文内容已隐藏）", body)
+
+    def test_fetcher_body_skips_multiline_content_and_keeps_next_entry(self) -> None:
+        """多行页面正文整块隐藏；后续条目的 URL/状态/失败信息原样保留。"""
+
+        body = tool_disclosure_body(
+            tool_name="fetcher",
+            arguments={"urls": "https://a.example,https://b.example"},
+            result_text=(
+                "网页抓取完成（2 个 URL，用时 0.80s）\n"
+                "1. https://a.example\n"
+                "   状态: 200｜最终地址: https://a.example\n"
+                "   标题: 页面 A\n"
+                "   内容: 第一段正文\n"
+                "   第二段正文\n"
+                "2. https://b.example\n"
+                "   失败: 连接超时"
+            ),
+        ).plain
+        self.assertIn("https://a.example", body)
+        self.assertIn("页面 A", body)
+        self.assertNotIn("第一段正文", body)
+        self.assertNotIn("第二段正文", body)
+        self.assertIn("https://b.example", body)
+        self.assertIn("失败: 连接超时", body)
+        self.assertIn("已省略 2 行", body)
+
     def test_loading_index_status_uses_thinking_spinner_frames(self) -> None:
         """加载/构建期间显示与状态指示器同款的十帧旋转动画 + “加载索引”。"""
 

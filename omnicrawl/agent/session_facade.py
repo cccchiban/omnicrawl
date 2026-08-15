@@ -47,16 +47,18 @@ class AgentSessionFacade:
         return self._owner.workspace_root
 
     def create_session_store(self) -> SessionStore:
-        """创建会话存储，并限制在当前工作区内。"""
+        """创建全局会话存储，统一位于用户数据根目录，不绑定工作区。
+
+        相对路径相对于 ``~/.omnicrawl`` 解析（默认 ``.agent_sessions``
+        即 ``~/.omnicrawl/.agent_sessions``）；绝对路径直接使用。
+        会话目录不再位于工作区内，因此切换工作区时无需重建会话存储。
+        """
 
         raw_directory = self._owner.config.session_directory.strip()
-        candidate = Path(raw_directory)
+        candidate = Path(raw_directory).expanduser()
         if not candidate.is_absolute():
-            candidate = self.workspace_root / candidate
-        resolved = candidate.resolve()
-        if not _is_relative_to(resolved, self.workspace_root):
-            raise self._error_type(f"会话目录必须位于工作区内：{raw_directory}")
-        store = SessionStore(resolved)
+            candidate = self._owner._memory_user_data_root() / candidate
+        store = SessionStore(candidate.resolve())
         try:
             store.ensure()
         except SessionStoreError as exc:
@@ -113,13 +115,14 @@ class AgentSessionFacade:
         *,
         project_path: str | Path | None = None,
     ) -> list[SessionIndexEntry]:
-        """列出指定项目或当前工作区最近会话。"""
+        """列出全部会话（不再绑定当前工作区）；可按项目路径过滤。"""
 
         store = self.require_session_store()
         try:
-            if project_path is not None:
-                return store.list_sessions(project_path=project_path, limit=limit)
-            return store.list_sessions(workspace_root=self.workspace_root, limit=limit)
+            return store.list_sessions(
+                project_path=project_path,
+                limit=limit,
+            )
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
 
@@ -206,12 +209,11 @@ class AgentSessionFacade:
             raise self._error_type(str(exc)) from exc
 
     def list_archived_sessions(self, limit: int = 10) -> list[SessionIndexEntry]:
-        """列出当前工作区已归档会话。"""
+        """列出全部已归档会话（不再绑定当前工作区）。"""
 
         store = self.require_session_store()
         try:
             return store.list_sessions(
-                workspace_root=self.workspace_root,
                 limit=limit,
                 archived_only=True,
             )
@@ -231,9 +233,7 @@ class AgentSessionFacade:
 
         store = self.require_session_store()
         try:
-            state = store.load_session(session_id)
-            if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
-                raise self._error_type(f"不能读取其他工作区的会话：{state.workspace_root}")
+            store.load_session(session_id)
             return store.read_session_events_with_diagnostics(session_id)
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
@@ -420,13 +420,12 @@ class AgentSessionFacade:
         limit: int = 20,
         current_session_only: bool = False,
     ) -> list[PromptHistoryEntry]:
-        """查询当前工作区的用户提示历史，供输入复用和 `/history` 展示。"""
+        """查询全部用户提示历史（不再绑定当前工作区），供输入复用和 `/history` 展示。"""
 
         store = self.require_session_store()
         session_id = self.current_session_id() if current_session_only else None
         try:
             return store.search_prompt_history(
-                workspace_root=self.workspace_root,
                 session_id=session_id,
                 query=query,
                 limit=limit,
@@ -441,18 +440,19 @@ class AgentSessionFacade:
         return [entry.display for entry in reversed(entries)]
 
     def resume_session(self, session_id: str) -> SessionState:
-        """恢复指定会话，并用转录消息重建 `_history`。"""
+        """恢复指定会话，并用转录消息重建 `_history`。
+
+        会话已解除工作区绑定：任意工作区下均可恢复任何会话。
+        """
 
         store = self.require_session_store()
         try:
             state = store.load_session(session_id)
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
-        if Path(state.workspace_root).resolve() != self.workspace_root.resolve():
-            raise self._error_type(f"不能恢复其他工作区的会话：{state.workspace_root}")
 
-        # 先证明目标会话有效，再取消当前会话子任务；无效 ID 或跨工作区恢复
-        # 不应打断仍合法运行的后台任务。取消完成后才清理启动占位会话。
+        # 先证明目标会话有效，再取消当前会话子任务；无效 ID 不应打断仍合法
+        # 运行的后台任务。取消完成后才清理启动占位会话。
         cancel_subagents = getattr(
             self._owner,
             "_cancel_subagents_for_session_transition",

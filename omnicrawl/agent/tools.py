@@ -476,7 +476,7 @@ def build_agent_tools(
                             "接口地址、API Key、模型与默认参数在 TUI 设置面板（/settings → 图像生成）"
                             "中配置，调用时可用 size（auto 或 宽x高，如 1024x1024）、quality"
                             "（low/medium/high/auto）、output_format（png/jpeg/webp）、n（一次生成"
-                            "张数 1~10）覆盖默认值；图片默认保存到工作区 .agent_tmp/images/，"
+                            "张数 1~10）覆盖默认值；图片默认保存到工作区 .omnicrawl/.agent_tmp/images/，"
                             "path 可指定保存目录或文件名。"
                         ),
                         argument_schema=(
@@ -505,7 +505,7 @@ def build_agent_tools(
                     "应优先写入 Agent 临时目录。"
                 ),
                 argument_schema=(
-                    '{"path": ".agent_tmp/files/notes.md", "content": "...", '
+                    '{"path": ".omnicrawl/.agent_tmp/files/notes.md", "content": "...", '
                     '"mode": "overwrite"}'
                 ),
                 requires_confirmation=True,

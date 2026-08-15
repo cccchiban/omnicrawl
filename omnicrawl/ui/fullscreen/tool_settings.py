@@ -1,7 +1,7 @@
 """全屏 TUI 的二级工具开关设置面板。
 
 逐工具切换内置工具在 Agent 工具表中的注册状态：默认除 ``powershell``
-关闭外其余全部启用；切换后立即重建 Agent 工具表并写回 config.yaml。
+关闭外其余全部启用；切换后立即重建 Agent 工具表并写回 config.toml。
 """
 
 from __future__ import annotations

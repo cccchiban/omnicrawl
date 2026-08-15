@@ -7,7 +7,11 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-import yaml
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+from omnicrawl.config.runtime import dump_toml_text
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -29,7 +33,7 @@ from omnicrawl.slash_commands import build_slash_commands, format_mcp_status
 class MCPConfigTest(unittest.TestCase):
     def test_load_mcp_config_defaults_to_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
 
             config = load_mcp_config(config_path)
 
@@ -39,9 +43,9 @@ class MCPConfigTest(unittest.TestCase):
 
     def test_load_mcp_config_validates_stdio_server(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                yaml.safe_dump(
+                dump_toml_text(
                     {
                         "mcp": {
                             "enabled": True,
@@ -58,8 +62,6 @@ class MCPConfigTest(unittest.TestCase):
                             },
                         }
                     },
-                    allow_unicode=True,
-                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -75,9 +77,9 @@ class MCPConfigTest(unittest.TestCase):
 
     def test_load_mcp_config_accepts_hyphenated_streamable_http_alias(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                yaml.safe_dump(
+                dump_toml_text(
                     {
                         "mcp": {
                             "enabled": True,
@@ -90,8 +92,6 @@ class MCPConfigTest(unittest.TestCase):
                             },
                         }
                     },
-                    allow_unicode=True,
-                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -102,9 +102,9 @@ class MCPConfigTest(unittest.TestCase):
 
     def test_load_mcp_config_reads_http_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                yaml.safe_dump(
+                dump_toml_text(
                     {
                         "mcp": {
                             "enabled": True,
@@ -120,8 +120,6 @@ class MCPConfigTest(unittest.TestCase):
                             },
                         }
                     },
-                    allow_unicode=True,
-                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -138,9 +136,9 @@ class MCPConfigTest(unittest.TestCase):
 
     def test_load_mcp_config_rejects_invalid_name_and_missing_command(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            config_path = Path(temp_dir) / "config.yaml"
+            config_path = Path(temp_dir) / "config.toml"
             config_path.write_text(
-                yaml.safe_dump(
+                dump_toml_text(
                     {
                         "mcp": {
                             "enabled": True,
@@ -153,8 +151,6 @@ class MCPConfigTest(unittest.TestCase):
                             },
                         }
                     },
-                    allow_unicode=True,
-                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -163,7 +159,7 @@ class MCPConfigTest(unittest.TestCase):
                 load_mcp_config(config_path)
 
             config_path.write_text(
-                yaml.safe_dump(
+                dump_toml_text(
                     {
                         "mcp": {
                             "enabled": True,
@@ -175,8 +171,6 @@ class MCPConfigTest(unittest.TestCase):
                             },
                         }
                     },
-                    allow_unicode=True,
-                    sort_keys=False,
                 ),
                 encoding="utf-8",
             )
@@ -495,7 +489,7 @@ class MCPManagerTest(unittest.TestCase):
                 error_code=None,
                 output="api_key=output-secret; Authorization: Bearer abcdefghijklmnop",
             )
-            event = json.loads((workspace / "logs" / "mcp-audit.jsonl").read_text(encoding="utf-8"))
+            event = json.loads((workspace / ".omnicrawl" / "logs" / "mcp-audit.jsonl").read_text(encoding="utf-8"))
 
         self.assertNotIn("output-secret", event["output_preview"])
         self.assertNotIn("abcdefghijklmnop", event["output_preview"])
@@ -521,7 +515,7 @@ class MCPManagerTest(unittest.TestCase):
                 error_code=None,
                 output="ok",
             )
-            event = json.loads((workspace / "logs" / "mcp-audit.jsonl").read_text(encoding="utf-8"))
+            event = json.loads((workspace / ".omnicrawl" / "logs" / "mcp-audit.jsonl").read_text(encoding="utf-8"))
 
         self.assertNotIn("header-secret", event["arguments_redacted"]["headers"]["X-API-Key"])
         self.assertEqual(event["arguments_redacted"]["headers"]["X-API-Key"], "***")
@@ -548,7 +542,7 @@ class MCPManagerTest(unittest.TestCase):
 
             result = manager.call_tool("demo.echo", {"text": "too-long", "api_key": "secret"})
 
-            audit_path = workspace / "logs" / "mcp-audit.jsonl"
+            audit_path = workspace / ".omnicrawl" / "logs" / "mcp-audit.jsonl"
             audit_event = json.loads(audit_path.read_text(encoding="utf-8").splitlines()[-1])
 
         self.assertFalse(result.ok)
@@ -670,7 +664,7 @@ class MCPAgentCommandTest(unittest.TestCase):
         agent._memory_store = None
         agent._skill_manager = None
         agent._active_skills = []
-        agent._temp_workspace = SimpleNamespace(display_path=".agent_tmp")
+        agent._temp_workspace = SimpleNamespace(display_path=".omnicrawl/.agent_tmp")
         agent._mcp_manager = manager
         agent._system_prompt_template = LocalToolAgent._load_system_prompt_template(agent)
 

@@ -324,6 +324,106 @@ class ExplicitShellCommandTest(unittest.TestCase):
                     shell="bash",
                 )
 
+    def test_command_long_output_is_head_tail_sampled_and_saved(self) -> None:
+        """回归：超长命令输出由 Host 头尾采样，完整输出保存到临时目录。"""
+
+        class CompletedProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                lines = [f"line-{index:04d}" for index in range(1, 3001)]
+                errors = [f"err-{index:04d}" for index in range(1, 3001)]
+                return "\n".join(lines), "\n".join(errors)
+
+        process = CompletedProcess()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            tools = WorkspaceTools(workspace)
+            with (
+                patch.object(
+                    tools,
+                    "command_invocation",
+                    return_value=WorkspaceCommandInvocation(args=["shell"], label="Bash"),
+                ),
+                patch("omnicrawl.workspace.tools.subprocess.Popen", return_value=process),
+                patch(
+                    "omnicrawl.workspace.monitor._assign_process_to_kill_on_close_job",
+                    return_value=None,
+                ),
+            ):
+                result = tools.run_shell_command({"command": "command"}, shell="bash")
+
+            self.assertTrue(result.ok)
+            self.assertIn("line-0001", result.output)
+            self.assertIn("line-3000", result.output)
+            self.assertIn("err-3000", result.output)
+            self.assertIn("系统已截断", result.output)
+            self.assertIn("完整输出已保存至", result.output)
+            self.assertNotIn("line-1500", result.output)
+            self.assertNotIn("err-1500", result.output)
+
+            saved_dir = workspace / ".omnicrawl" / ".agent_tmp" / "files"
+            saved_files = sorted(saved_dir.glob("command_output_*.log"))
+            self.assertEqual(len(saved_files), 2)
+            contents = "\n".join(file.read_text(encoding="utf-8") for file in saved_files)
+            self.assertIn("line-1500", contents)
+            self.assertIn("err-1500", contents)
+
+    def test_command_short_output_is_not_sampled(self) -> None:
+        """回归：短输出原样返回，不截断、不写临时文件。"""
+
+        class CompletedProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "short output", ""
+
+        process = CompletedProcess()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir)
+            tools = WorkspaceTools(workspace)
+            with (
+                patch.object(
+                    tools,
+                    "command_invocation",
+                    return_value=WorkspaceCommandInvocation(args=["shell"], label="Bash"),
+                ),
+                patch("omnicrawl.workspace.tools.subprocess.Popen", return_value=process),
+                patch(
+                    "omnicrawl.workspace.monitor._assign_process_to_kill_on_close_job",
+                    return_value=None,
+                ),
+            ):
+                result = tools.run_shell_command({"command": "command"}, shell="bash")
+
+            self.assertTrue(result.ok)
+            self.assertIn("short output", result.output)
+            self.assertNotIn("系统已截断", result.output)
+            self.assertFalse(
+                list(
+                    (workspace / ".omnicrawl" / ".agent_tmp" / "files").glob(
+                        "command_output_*.log"
+                    )
+                )
+            )
+
+    def test_sample_command_output_save_failure_degrades_gracefully(self) -> None:
+        """回归：完整输出写入失败时只截断，不影响命令结果。"""
+
+        from omnicrawl.workspace.tools import _sample_command_output
+
+        text = "\n".join(f"row-{index:04d}" for index in range(1, 3001))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            save_path = Path(temp_dir) / "target"  # 已存在的目录，write_text 会失败
+            save_path.mkdir()
+            sampled = _sample_command_output(text, save_path=save_path)
+
+        self.assertIn("系统已截断", sampled)
+        self.assertIn("row-0001", sampled)
+        self.assertIn("row-3000", sampled)
+        self.assertNotIn("row-1500", sampled)
+        self.assertNotIn("完整输出已保存", sampled)
+
     def test_explicit_shell_timeout_terminates_started_process_tree(self) -> None:
         class TimedOutProcess:
             def communicate(self, timeout=None):

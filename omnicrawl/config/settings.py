@@ -62,11 +62,24 @@ def load_feature_enabled(
     *,
     default: bool,
     config_path: str | Path | None = None,
+    subagents_path: str | Path | None = None,
 ) -> bool:
-    """读取 ``<section>.enabled``，缺省时保持既有默认行为。"""
+    """读取 ``<section>.enabled``，缺省时保持既有默认行为。
+
+    ``subagents`` 段已从 ``config.toml`` 迁移到独立 ``subagents.toml``：
+    该段开关从子代理设置文件读取，不再回退读取 ``config.toml``。
+    """
 
     try:
-        section = get_section(load_config_data(config_path), section_name)
+        if section_name == "subagents":
+            from .runtime import resolve_subagents_path
+
+            section = get_section(
+                load_config_data(resolve_subagents_path(subagents_path)),
+                section_name,
+            )
+        else:
+            section = get_section(load_config_data(config_path), section_name)
     except RuntimeConfigError as exc:
         raise SettingsConfigError(str(exc)) from exc
     value = section.get("enabled", default)
@@ -98,7 +111,7 @@ def save_context_window_tokens(
             store = load_model_store(models_path)
             current = store.by_key().get(key)
             if current is None:
-                raise SettingsConfigError(f"models.yaml 中不存在当前模型：{key}。")
+                raise SettingsConfigError(f"models.toml 中不存在当前模型：{key}。")
             updated = replace(
                 current,
                 context_window_tokens=tokens,
@@ -135,17 +148,25 @@ def save_context_window_tokens(
 def save_subagent_setting(
     name: str,
     value: Any,
-    config_path: str | Path | None = None,
+    subagents_path: str | Path | None = None,
 ) -> Path:
-    """保留 ``subagents`` 其他配置，只更新面板允许的资源参数。"""
+    """保留 ``subagents`` 其他配置，只更新面板允许的资源参数。
+
+    子代理设置已从 ``config.toml`` 完全迁移到独立的 ``subagents.toml``；
+    只写回子代理设置文件，不再回退写回 ``config.toml`` 的 ``[subagents]`` 段。
+    目标文件不存在时会自动创建。
+    """
 
     try:
         normalized = validate_subagent_advanced_setting(name, value)
-        data: dict[str, Any] = load_config_data(config_path)
+        from .runtime import resolve_subagents_write_path
+
+        target = resolve_subagents_write_path(subagents_path)
+        data: dict[str, Any] = load_config_data(target)
         section = get_section(data, "subagents")
         section[name] = normalized
         data["subagents"] = section
-        return save_config_data(data, config_path)
+        return save_config_data(data, target)
     except RuntimeConfigError as exc:
         raise SettingsConfigError(str(exc)) from exc
 
@@ -154,12 +175,26 @@ def save_feature_enabled(
     section_name: str,
     enabled: bool,
     config_path: str | Path | None = None,
+    subagents_path: str | Path | None = None,
 ) -> Path:
-    """保留功能段其余字段，只更新 ``enabled`` 并原子写回。"""
+    """保留功能段其余字段，只更新 ``enabled`` 并原子写回。
+
+    ``subagents`` 段已从 ``config.toml`` 完全迁移到独立的 ``subagents.toml``：
+    直接写回子代理设置文件（不存在时自动创建），不再回退写回 ``config.toml``。
+    """
 
     if not isinstance(enabled, bool):
         raise SettingsConfigError(f"配置项 {section_name}.enabled 必须是布尔值。")
     try:
+        if section_name == "subagents":
+            from .runtime import resolve_subagents_write_path
+
+            target = resolve_subagents_write_path(subagents_path)
+            data: dict[str, Any] = load_config_data(target)
+            section = get_section(data, "subagents")
+            section["enabled"] = enabled
+            data["subagents"] = section
+            return save_config_data(data, target)
         data: dict[str, Any] = load_config_data(config_path)
         section = get_section(data, section_name)
         section["enabled"] = enabled
@@ -169,11 +204,48 @@ def save_feature_enabled(
         raise SettingsConfigError(str(exc)) from exc
 
 
+def load_show_thinking(config_path: str | Path | None = None) -> bool:
+    """读取 ``ui.show_thinking``，缺省时默认开启。
+
+    该开关只控制对话区是否渲染思考块（含背景色）；模型仍照常产生并
+    接收思考内容，不显示不影响推理链路本身。
+    """
+
+    try:
+        section = get_section(load_config_data(config_path), "ui")
+    except RuntimeConfigError as exc:
+        raise SettingsConfigError(str(exc)) from exc
+    value = section.get("show_thinking", True)
+    if not isinstance(value, bool):
+        raise SettingsConfigError("配置项 ui.show_thinking 必须是布尔值。")
+    return value
+
+
+def save_show_thinking(
+    enabled: bool,
+    config_path: str | Path | None = None,
+) -> Path:
+    """保留 ``ui`` 段其余字段，只更新 ``show_thinking`` 并原子写回。"""
+
+    if not isinstance(enabled, bool):
+        raise SettingsConfigError("配置项 ui.show_thinking 必须是布尔值。")
+    try:
+        data: dict[str, Any] = load_config_data(config_path)
+        section = get_section(data, "ui")
+        section["show_thinking"] = enabled
+        data["ui"] = section
+        return save_config_data(data, config_path)
+    except RuntimeConfigError as exc:
+        raise SettingsConfigError(str(exc)) from exc
+
+
 __all__ = [
     "SettingsConfigError",
     "load_feature_enabled",
+    "load_show_thinking",
     "save_context_window_tokens",
     "save_feature_enabled",
     "save_mcp_config",
+    "save_show_thinking",
     "save_subagent_setting",
 ]

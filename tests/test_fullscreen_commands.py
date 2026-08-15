@@ -19,6 +19,7 @@ class CommandDispatcherTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.reset_calls = 0
                 self.workspace_calls: list[str] = []
+                self.current_session_id = "20260813-144021-c613cb"
 
             def reset_conversation(self) -> None:
                 self.reset_calls += 1
@@ -38,14 +39,29 @@ class CommandDispatcherTests(unittest.TestCase):
         self.assertIsNone(outcome.message)
 
     def test_new_chat_is_immediate_and_requests_context_refresh(self) -> None:
-        """新会话不需要 worker，但 UI 应刷新会话相关顶部摘要。"""
+        """新会话不需要 worker，但 UI 应刷新会话相关顶部摘要并清空对话视图。"""
 
         outcome = CommandDispatcher(self.agent).dispatch("/new")
 
         self.assertTrue(outcome.handled)
-        self.assertEqual(outcome.message, "已开启新对话。")
+        self.assertEqual(
+            outcome.message, "已新开会话，旧会话：20260813-144021-c613cb"
+        )
         self.assertEqual(outcome.execution, "immediate")
         self.assertTrue(outcome.refresh_context)
+        self.assertTrue(outcome.clear_conversation)
+        self.assertEqual(self.agent.reset_calls, 1)
+
+    def test_new_chat_without_session_id_degrades_message(self) -> None:
+        """会话系统关闭（ID 为空）时，提示降级为不带旧会话 ID。"""
+
+        self.agent.current_session_id = ""
+
+        outcome = CommandDispatcher(self.agent).dispatch("/new")
+
+        self.assertTrue(outcome.handled)
+        self.assertEqual(outcome.message, "已新开会话。")
+        self.assertTrue(outcome.clear_conversation)
         self.assertEqual(self.agent.reset_calls, 1)
 
     def test_quit_command_requests_tui_exit_without_agent_side_effect(self) -> None:

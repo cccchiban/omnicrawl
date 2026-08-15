@@ -13,7 +13,7 @@
 - Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复；MCP 能力进入 Host 工具目录后，通过固定的 `search_tools` / `invoke_tool` Provider 面向模型。
 - Client：`omnicrawl/mcp/client.py`，负责连接 Server、发现 Tool/Resource/Prompt、调用和降级。
 - Local Server：`omnicrawl/mcp/server.py`，通过 `stdio` 暴露当前项目的安全工具和上下文。
-- 配置入口：`config.yaml` 的 `mcp` 段，示例见 `config.example.yaml`。
+- 配置入口：`config.toml` 的 `mcp` 段，示例见 `config.example.toml`。
 - 状态入口：运行时输入 `/mcp` 查看 Server、Tool、Resource、Prompt 和诊断。
 
 默认边界：
@@ -22,7 +22,7 @@
 - 当前可用传输是本地 `stdio` 和远程 `streamable_http`；远程传输使用 MCP Streamable HTTP 的 JSON/SSE 响应和会话 ID。
 - 外部网络能力默认不暴露，除非配置策略明确允许。
 - 高风险 MCP Tool 必须继续走 Host 侧审批或审查，不能只信任 Server 声明。
-- 审计日志默认写入 `logs/mcp-audit.jsonl`，该目录不提交到仓库。
+- 审计日志默认写入 `.omnicrawl/logs/mcp-audit.jsonl`，该目录不提交到仓库。
 
 ---
 
@@ -45,7 +45,7 @@
 先读：
 
 1. 本文档第 3 节。
-2. `config.example.yaml` 的 `mcp` 段。
+2. `config.example.toml` 的 `mcp` 段。
 
 如遇到配置校验失败，再读：
 
@@ -91,7 +91,7 @@
 先读：
 
 1. `/mcp` 输出。
-2. `logs/mcp-audit.jsonl` 中对应 `audit_id`。
+2. `.omnicrawl/logs/mcp-audit.jsonl` 中对应 `audit_id`。
 3. 本文档第 7 节。
 
 如还不能定位，再读：
@@ -141,7 +141,7 @@
 - `headers` 仅用于 `streamable_http`，会原样附加到每个 HTTP 请求，可声明 `Authorization`、`X-API-Key` 等认证头；不会注入 `stdio` 子进程。
 - `timeout_seconds` 范围是 1 到 360 秒。
 - `risk_level=trusted` 只表示来源可信，不代表跳过审批。
-- 不要把真实密钥写进 `config.example.yaml` 或源码；真实密钥只能存在本地 `config.yaml` 或环境变量。
+- 不要把真实密钥写进 `config.example.toml` 或源码；真实密钥只能存在本地 `config.toml` 或环境变量。
 - HTTP 认证示例：
 
 ```yaml
@@ -177,7 +177,7 @@ mcp:
 2. `MCP 全局设置`：管理总开关、外部网络 Tool 策略、写入/命令确认、审计日志、默认超时和 Tool 输出上限。
 3. `MCP Server`：按 Server 启用/禁用、添加、编辑和删除；编辑器支持 `stdio` / `streamable_http`、命令/参数、URL、HTTP 请求头、超时、风险等级和连接测试。
 
-设置默认保存到用户配置目录 `~/.OmniCrawl/config.yaml`，显式配置路径或环境变量仍会生效；保存后事务式重建当前 Agent 的 MCP Manager。stdio 环境变量和 HTTP 请求头只显示已配置数量；编辑时留空保持原值，输入 `KEY=VALUE;KEY2=VALUE` 才替换，凭据不会回显。HTTP 请求头只附加到远程 Streamable HTTP 请求，协议保留头由 Client 自动维护。
+设置默认保存到用户配置目录 `~/.OmniCrawl/config.toml`，显式配置路径或环境变量仍会生效；保存后事务式重建当前 Agent 的 MCP Manager。stdio 环境变量和 HTTP 请求头只显示已配置数量；编辑时留空保持原值，输入 `KEY=VALUE;KEY2=VALUE` 才替换，凭据不会回显。HTTP 请求头只附加到远程 Streamable HTTP 请求，协议保留头由 Client 自动维护。
 
 ## 5. MCP 调用规范
 
@@ -221,7 +221,7 @@ Prompt 用于稳定任务模板，常见 Prompt：
 
 Host 侧永远是最终安全边界：
 
-- 受保护路径：`.git`、`.env`、`config.yaml`、`models.yaml`、历史 `config.json`、虚拟环境、缓存目录。
+- 受保护路径：`.git`、`.env`、`config.toml`、`models.toml`、历史 `config.json`、虚拟环境、缓存目录。
 - 普通文件工具只能访问工作区内路径。
 - 外部 MCP Server 默认不暴露能力，除非策略允许。
 - 命令执行必须设置超时，输出会截断。
@@ -252,7 +252,7 @@ MCP Tool 调用会记录审计事件：
 审计位置：
 
 ```text
-logs/mcp-audit.jsonl
+.omnicrawl/logs/mcp-audit.jsonl
 ```
 
 排查时优先用工具结果中的 `audit_id` 关联审计日志。审计日志只保存脱敏参数和输出预览，不保存 MCP 配置中的完整请求头、密钥、大文件正文或模型隐藏推理内容。
@@ -263,7 +263,7 @@ logs/mcp-audit.jsonl
 
 | 现象 | 优先检查 |
 |------|----------|
-| `/mcp` 显示 MCP 已关闭 | `config.yaml` 的 `mcp.enabled` 或 `MCP_ENABLED` |
+| `/mcp` 显示 MCP 已关闭 | `config.toml` 的 `mcp.enabled` 或 `MCP_ENABLED` |
 | Server 为 degraded | `/mcp` 诊断、Server URL、HTTP 状态码、超时、工作区环境 |
 | Tool 不出现在列表 | Server 是否启用、能力发现是否成功、外部能力是否被策略拦截 |
 | Tool 返回 `SCHEMA_INVALID` | 参数是否缺必填字段、类型是否匹配、字符串是否超长 |
