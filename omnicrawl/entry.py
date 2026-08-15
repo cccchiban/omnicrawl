@@ -27,6 +27,7 @@ from omnicrawl.project_context import (
 )
 from omnicrawl.runtime_config import RuntimeConfigError, load_config_data
 from omnicrawl.config.settings import load_feature_enabled, load_show_thinking
+from omnicrawl.config.router import load_router_mode
 from omnicrawl.config.subagents import load_subagent_config
 from omnicrawl.temp_workspace import (
     AgentTempWorkspaceError,
@@ -166,6 +167,8 @@ def _prepare_startup(
                 and not should_disable_broad_workspace_indexes(project_context)
             ),
             show_thinking=load_show_thinking(),
+            router_enabled=load_feature_enabled("router", default=False),
+            router_mode=load_router_mode(),
             temp_workspace=temp_workspace_config,
             subagents=subagent_config,
             resume_session_id=resume_session_id,

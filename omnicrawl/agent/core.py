@@ -58,6 +58,7 @@ from .context_compaction import (
     SessionEvidenceRecallService,
     SourceEvent,
     TokenUsageSample,
+    estimate_json_tokens,
 )
 from .history import compact_history
 from .image_tools import read_image_file
@@ -96,6 +97,7 @@ from .prompt_context import (
     build_skill_context_message,
     build_system_prompt,
 )
+from .router_runtime import RouterRuntime
 from .session_facade import AgentSessionFacade
 from .subagents.coordinator import (
     SubAgentCoordinator,
@@ -466,6 +468,10 @@ class AgentConfig:
     vision: VisionConfiguration = field(default_factory=load_vision_configuration)
     image_gen: ImageGenConfiguration = field(default_factory=load_image_gen_configuration)
     approval_mode: str = field(default_factory=load_approval_mode)
+    # 任务思维模式路由器（dsh-routing-suite 移植）：默认关闭；
+    # 开启后首轮 system prompt / 工具面按任务分类注入，首次工具调用后晋升完整面。
+    router_enabled: bool = False
+    router_mode: str = "standard"
     # 内置工具开关：默认除 powershell 外全部启用；配置 tools 段可覆盖。
     disabled_tools: frozenset[str] = field(default_factory=load_disabled_tools)
     workspace_detection_summary: str = ""
@@ -550,6 +556,10 @@ class AgentConfig:
             raise AgentError("disabled_tools 必须是字符串集合。")
         if not all(isinstance(name, str) and name for name in self.disabled_tools):
             raise AgentError("disabled_tools 的元素必须是非空字符串。")
+        if not isinstance(self.router_enabled, bool):
+            raise AgentError("router_enabled 必须是布尔值。")
+        if self.router_mode not in ("standard", "spec"):
+            raise AgentError("router_mode 必须是 standard 或 spec。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
 
 
@@ -574,6 +584,9 @@ class LocalToolAgent:
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
         self._pending_user_text: str | None = None
+        self._router_runtime = RouterRuntime(
+            router_mode=getattr(self.config, "router_mode", "standard")
+        )
         self._active_skills: list[SkillMatchResult] = []
         # 审查请求与主对话共享上下文：按线程保存最近一次模型请求的消息快照，
         # 供自动审查复用相同 system prompt 与消息前缀（命中会话缓存并理解用户意图）。
@@ -1073,8 +1086,12 @@ class LocalToolAgent:
                 raise AgentError("模型摘要失败，且当前会话无法建立确定性压缩边界。")
             return summary + "\n\n（模型摘要失败，已使用本地确定性降级。）"
         self._append_session_event("compact_summary", dict(outcome.compact_payload))
+        before_tokens = estimate_json_tokens(self._history)
         self._history = list(outcome.history_projection or ())
         self._write_compaction_memories(outcome.compact_payload)
+        after_tokens = estimate_json_tokens(self._history)
+        notice = self._format_compaction_notice(before_tokens, after_tokens)
+        self._last_compaction_notice = notice or ""
         return str(outcome.compact_payload["content"])
 
     def resume_session(self, session_id: str) -> SessionState:
@@ -1932,6 +1949,19 @@ class LocalToolAgent:
             # Agent 定义来源变化后同步刷新 subagent_type 枚举，避免模型继续
             # 使用旧插件状态下的角色 Schema。
             self._tools = self._build_tools()
+
+    def set_router_enabled(self, enabled: bool) -> None:
+        """事务式切换任务思维路由；重建工具目录以注册/移除 ``dev_router_*`` 工具。"""
+
+        if not isinstance(enabled, bool):
+            raise AgentError("任务路由开关必须是布尔值。")
+        previous_enabled = self.config.router_enabled
+        self.config.router_enabled = enabled
+        try:
+            self._tools = self._build_tools()
+        except Exception:
+            self.config.router_enabled = previous_enabled
+            raise
 
     def set_subagent_advanced_setting(self, name: str, value: int | float) -> None:
         """即时更新面板开放的 SubAgent 资源参数，不改变权限边界。"""
@@ -3004,12 +3034,23 @@ class LocalToolAgent:
             self._append_prompt_history(text)
             self._append_session_event("user_message", {"content": text})
             user_message_persisted = True
+            if getattr(getattr(self, "config", None), "router_enabled", False):
+                self._router_runtime.capture_user_text(
+                    self._session_facade().current_session_id(), text
+                )
             context_messages = self._context_messages(turn_id=turn_id)
             working_messages = [
                 *context_messages,
                 *self._history,
                 {"role": "user", "content": text},
             ]
+            if getattr(getattr(self, "config", None), "router_enabled", False):
+                guide = self._router_runtime.guide_for(
+                    text,
+                    session_id=self._session_facade().current_session_id(),
+                )
+                if guide:
+                    working_messages.append({"role": "user", "content": guide})
             # Fork 只能继承“本轮起点”这一份公开协议消息。之后 AgentLoopRunner
             # 会原地追加 assistant tool-call 与 tool-result；不能让后续状态、未
             # 配对的工具调用或父模型输出进入已创建子任务的上下文。功能关闭时不
@@ -3127,16 +3168,19 @@ class LocalToolAgent:
                 self._run_context_compaction_after_turn(
                     context_messages=context_messages,
                     usage=turn_usage,
+                    status=status,
                 )
             else:
                 self._turn_context_compaction_context_messages = context_messages
                 self._turn_context_compaction_usage = turn_usage
+                self._turn_context_compaction_status = status
                 try:
                     # 保持既有三参数调用形态，兼容宿主扩展和最小测试替身。
                     self._append_history(text, final_reply, loop_result.reasoning)
                 finally:
                     self.__dict__.pop("_turn_context_compaction_context_messages", None)
                     self.__dict__.pop("_turn_context_compaction_usage", None)
+                    self.__dict__.pop("_turn_context_compaction_status", None)
             self._pending_user_text = None
             self._dispatch_plugin_hook(
                 "turn.end",
@@ -3298,7 +3342,10 @@ class LocalToolAgent:
             if visible_tools is not None
             else self._provider_tools_for(active_tools)
         )
-        catalog = HostToolCatalog(active_tools)
+        catalog = HostToolCatalog(
+            active_tools,
+            visible_tools=self._router_visible_tools(),
+        )
         normalized_calls: list[tuple[int, ToolCall, ToolDefinition | None, ToolResult | None]] = []
         for offset, raw_tool_call in enumerate(raw_tool_calls):
             check_cancelled()
@@ -3350,6 +3397,12 @@ class LocalToolAgent:
                         "tool_call_id": tool_call.id,
                         "function_name": tool_call.function_name,
                     },
+                )
+
+            if getattr(self.config, "router_enabled", False):
+                # 首次工具调用后晋升：放开完整工具面（首轮锚定）。
+                self._router_runtime.mark_promoted(
+                    self._session_facade().current_session_id()
                 )
 
             if tool is not None and denied_result is None:
@@ -3807,9 +3860,38 @@ class LocalToolAgent:
     def _provider_tools(self) -> dict[str, ToolDefinition]:
         """返回固定 Provider 工具面，真实工具只保留在 Host 目录。"""
 
-        return build_provider_tools(
-            HostToolCatalog(getattr(self, "_tools", {}))
+        return build_provider_tools(self._host_tool_catalog())
+
+    def _host_tool_catalog(self) -> HostToolCatalog:
+        """构造带任务路由首轮可见性过滤的 Host 工具目录。"""
+
+        return HostToolCatalog(
+            getattr(self, "_tools", {}),
+            visible_tools=self._router_visible_tools(),
         )
+
+    def _router_visible_tools(self) -> set[str] | None:
+        """任务路由开启且未晋升时返回首轮核心工具子集；否则 None（全部）。"""
+
+        if not getattr(self.config, "router_enabled", False):
+            return None
+        session_id = self._session_facade().current_session_id()
+        if not session_id:
+            return None
+        return self._router_runtime.visible_tools(
+            session_id,
+            events=self._router_session_events(session_id),
+        )
+
+    def _router_session_events(self, session_id: str) -> list[Any]:
+        """读取会话持久事件供路由模式推导（resume-safe）；不可用时返回空。"""
+
+        try:
+            if session_id and getattr(self, "_session_store", None) is not None:
+                return list(self._session_facade().load_session_events(session_id))
+        except Exception:
+            pass
+        return []
 
     @staticmethod
     def _provider_tools_for(
@@ -4224,7 +4306,7 @@ class LocalToolAgent:
         disabled_tools = frozenset(
             getattr(getattr(self, "config", None), "disabled_tools", ())
         )
-        return build_agent_tools(
+        tools = build_agent_tools(
             mcp_manager=self._mcp_manager,
             memory_enabled=getattr(
                 self,
@@ -4296,6 +4378,160 @@ class LocalToolAgent:
             ),
             disabled_tools=disabled_tools,
         )
+        if getattr(getattr(self, "config", None), "router_enabled", False):
+            # 自优化工具：路由状态查看 / 手动 override / 模式隔离子代理。
+            tools.update(self._router_dev_tools())
+        return tools
+
+    def _router_dev_tools(self) -> dict[str, ToolDefinition]:
+        """任务路由自优化工具（dsh-router-standard 的 dev_router_* 移植）。"""
+
+        runtime = self._router_runtime
+
+        def _session_id() -> str:
+            return self._session_facade().current_session_id()
+
+        def _status(_arguments: dict[str, Any]) -> ToolResult:
+            session_id = _session_id()
+            if not session_id:
+                return ToolResult(ok=True, output="no agent session")
+            return ToolResult(
+                ok=True,
+                output=runtime.status_text(
+                    session_id,
+                    model_id=getattr(self.config.llm, "model", ""),
+                    events=self._router_session_events(session_id),
+                ),
+            )
+
+        def _set_mode(arguments: dict[str, Any]) -> ToolResult:
+            session_id = _session_id()
+            if not session_id:
+                return ToolResult(ok=True, output="no agent session")
+            return ToolResult(
+                ok=True,
+                output=runtime.set_mode(session_id, arguments.get("mode")),
+            )
+
+        def _mode_subagent(arguments: dict[str, Any]) -> ToolResult:
+            return ToolResult(ok=True, output=self._router_mode_subagent(arguments))
+
+        return {
+            "dev_router_status": ToolDefinition(
+                name="dev_router_status",
+                description=(
+                    "显示当前会话的思维模式路由状态：mode、band、persona、首轮核心工具、"
+                    "测试抑制、override 与晋升状态。"
+                ),
+                argument_schema=(
+                    '{"type": "object", "properties": {}, "required": [], '
+                    '"additionalProperties": false}'
+                ),
+                requires_confirmation=False,
+                run=_status,
+            ),
+            "dev_router_mode": ToolDefinition(
+                name="dev_router_mode",
+                description=(
+                    "设置当前会话的思维模式：spec（计划优先）/ weak（内部路由）/ "
+                    "mixed（transition 陷阱，仅显式选择）/ react（执行者）。"
+                    "接受带名、0-100 或 0.0-1.0；auto 清除 override。下一次请求生效。"
+                ),
+                argument_schema=(
+                    '{"type": "object", "properties": {"mode": {"type": "string", '
+                    '"minLength": 1, "description": "spec / weak / mixed / react，'
+                    '或 0-100、0.0-1.0、auto"}}, "required": ["mode"], '
+                    '"additionalProperties": false}'
+                ),
+                requires_confirmation=False,
+                run=_set_mode,
+            ),
+            "dev_mode_subagent": ToolDefinition(
+                name="dev_mode_subagent",
+                description=(
+                    "在隔离的新上下文（独立 system prompt）中以不同思维模式运行一个任务，"
+                    "不污染当前会话轨迹。返回模式子代理的回答文本（截断到 3000 字符）。"
+                ),
+                argument_schema=(
+                    '{"type": "object", "properties": {"mode": {"type": "string", '
+                    '"minLength": 1, "description": "spec / weak / react / balanced '
+                    '（或 0-100）"}, "task": {"type": "string", "minLength": 1, '
+                    '"description": "交给模式隔离子代理的任务"}, "max_tokens": '
+                    '{"type": "integer", "minimum": 1, "maximum": 32768, '
+                    '"description": "输出上限（默认 1024）"}}, "required": ["mode", '
+                    '"task"], "additionalProperties": false}'
+                ),
+                requires_confirmation=False,
+                run=_mode_subagent,
+            ),
+        }
+
+    def _router_mode_subagent(self, arguments: dict[str, Any]) -> str:
+        """模式隔离子代理：独立 system prompt 的全新 LLM 调用（P6 隔离）。"""
+
+        from .router import band_for, parse_mode, persona_for
+
+        parsed = parse_mode(arguments.get("mode"))
+        if parsed is None or parsed == "auto":
+            mode_token = arguments.get("mode")
+            return (
+                f'invalid mode "{mode_token}": use spec/weak/react/balanced, '
+                "0-100, or 0.0-1.0"
+            )
+        task = str(arguments.get("task") or "").strip()
+        if not task:
+            return "invalid task: empty task text"
+        model_id = getattr(self.config.llm, "model", "")
+        persona = persona_for(parsed, model_id)
+        try:
+            max_tokens = int(arguments.get("max_tokens") or 1024)
+        except (TypeError, ValueError):
+            max_tokens = 1024
+        max_tokens = max(1, min(32768, max_tokens))
+        try:
+            protocol = AgentLLMProtocol(
+                client=self._llm_client(),
+                model=model_id,
+                request_timeout_seconds=getattr(
+                    self.config, "request_timeout_seconds", 180
+                ),
+                request_retry_count=1,
+                workspace_root=self.workspace_root,
+                system_prompt_provider=lambda: persona,
+                prompt_cache_identity_provider=lambda: {
+                    "router": "mode-subagent",
+                    "persona": persona,
+                    "model": model_id,
+                },
+                tools_provider=lambda: [],
+                extra_body_provider=self._build_extra_body,
+                tool_name_from_function_name=lambda function_name: function_name,
+                function_name_for_tool=lambda tool_name: tool_name,
+            )
+            chunks: list[str] = []
+            reasoning_chars = 0
+
+            def _on_reasoning(delta: str) -> None:
+                nonlocal reasoning_chars
+                reasoning_chars += len(delta or "")
+
+            protocol.request_reply(
+                messages=[{"role": "user", "content": task}],
+                on_delta=lambda delta: chunks.append(delta or ""),
+                on_token_usage=lambda *_args: None,
+                on_protocol_wait=lambda: None,
+                on_retry_status=lambda _status_text: None,
+                on_reasoning_delta=_on_reasoning,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"subagent error: {exc}"
+        text = "".join(chunks).strip()
+        head = text[:3000]
+        suffix = "\n…(truncated)" if len(text) > 3000 else ""
+        return (
+            f"[mode-subagent {band_for(parsed)} | reasoning {reasoning_chars} chars]\n"
+            f"{head}{suffix}"
+        )
 
     def _build_mcp_tools(self) -> list[ToolDefinition]:
         return build_mcp_tools(
@@ -4306,9 +4542,24 @@ class LocalToolAgent:
         )
 
     def _system_prompt(self) -> str:
-        """返回静态 system prompt；动态上下文由 `_context_messages` 提供。"""
+        """返回静态 system prompt；动态上下文由 `_context_messages` 提供。
 
-        return build_system_prompt(self._system_prompt_template)
+        任务路由开启时，由 RouterRuntime 按会话模式注入 persona（standard 模式
+        RL 句置顶；spec 模式分类 persona 置顶，均保留原始模板的安全/协作协议）。
+        """
+
+        template = build_system_prompt(self._system_prompt_template)
+        config = getattr(self, "config", None)
+        if config is not None and getattr(config, "router_enabled", False):
+            session_id = self._session_facade().current_session_id()
+            if session_id:
+                return self._router_runtime.apply_system_prompt(
+                    template,
+                    session_id=session_id,
+                    model_id=getattr(getattr(config, "llm", None), "model", ""),
+                    events=self._router_session_events(session_id),
+                )
+        return template
 
     def _render_system_prompt_template(self, tool_lines: str) -> str:
         """兼容旧测试入口；新链路不再向 system prompt 注入动态工具清单。"""
@@ -5500,6 +5751,7 @@ class LocalToolAgent:
             )
             return None
         self._append_session_event("compact_summary", dict(outcome.compact_payload))
+        before_tokens = estimate_json_tokens(self._history)
         self._history = list(outcome.history_projection)
         self._write_compaction_memories(outcome.compact_payload)
         self._append_session_event(
@@ -5517,7 +5769,14 @@ class LocalToolAgent:
         self._history.append(
             {"role": "user", "content": _CONTEXT_OVERFLOW_RECOVERY_PROMPT}
         )
-        status("检测到上下文超限，已压缩当前任务上下文并自动继续。")
+        after_tokens = estimate_json_tokens(self._history)
+        notice = self._format_compaction_notice(before_tokens, after_tokens)
+        self._last_compaction_notice = notice or ""
+        status(
+            f"{notice}（检测到上下文超限，已压缩当前任务上下文并自动继续。）"
+            if notice
+            else "检测到上下文超限，已压缩当前任务上下文并自动继续。"
+        )
         return list(self._history)
 
     def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
@@ -5530,8 +5789,9 @@ class LocalToolAgent:
             ]
         )
         config = getattr(self.config, "context_compaction", None)
+        status = getattr(self, "_turn_context_compaction_status", None)
         if config is None or not config.enabled:
-            self._compact_history(force=False)
+            self._compact_history(force=False, status=status)
             return
         self._run_context_compaction_after_turn(
             context_messages=getattr(
@@ -5544,6 +5804,7 @@ class LocalToolAgent:
                 "_turn_context_compaction_usage",
                 TokenUsageSample(),
             ),
+            status=status,
         )
 
     def _run_context_compaction_after_turn(
@@ -5551,6 +5812,7 @@ class LocalToolAgent:
         *,
         context_messages: Sequence[Mapping[str, Any]],
         usage: TokenUsageSample,
+        status: Callable[[str], None] | None = None,
     ) -> None:
         config = self.config.context_compaction
         service = self._context_compaction_service()
@@ -5595,15 +5857,33 @@ class LocalToolAgent:
                 "compact_summary",
                 dict(outcome.compact_payload),
             )
+            before_tokens = outcome.measurement_payload.get("estimated_next_input_tokens")
+            after_tokens = outcome.measurement_payload.get("simulated_compacted_input_tokens")
+            if before_tokens is None:
+                before_tokens = estimate_json_tokens(self._history)
             self._history = list(outcome.history_projection or ())
             self._write_compaction_memories(outcome.compact_payload)
+            if after_tokens is None:
+                after_tokens = estimate_json_tokens(self._history)
+            notice = self._format_compaction_notice(before_tokens, after_tokens)
+            self._last_compaction_notice = notice or ""
+            if notice and status is not None:
+                status(notice)
             return
         if outcome.fallback_required:
             self._append_session_event(
                 "context_compaction_failed",
                 {"mode": "automatic_model", "reason": outcome.diagnostic},
             )
-            fallback = self._compact_history(force=True)
+            fallback = self._compact_history(
+                force=True,
+                status=status,
+                before_tokens=(
+                    outcome.measurement_payload.get("estimated_next_input_tokens")
+                    if isinstance(outcome.measurement_payload, Mapping)
+                    else None
+                ),
+            )
             if not fallback:
                 LOGGER.warning("模型摘要失败后无法建立确定性压缩边界：%s", outcome.diagnostic)
 
@@ -5640,13 +5920,42 @@ class LocalToolAgent:
             for event in store.read_session_events(state.session_id)
         )
 
-    def _compact_history(self, *, force: bool = False) -> str:
+    @staticmethod
+    def _format_compaction_notice(
+        before_tokens: int | None,
+        after_tokens: int | None,
+    ) -> str | None:
+        """生成“压缩完成，xxk~xxk”的灰色提示文本；数据缺失时返回 None。"""
+        try:
+            before = int(before_tokens) if before_tokens is not None else 0
+            after = int(after_tokens) if after_tokens is not None else 0
+        except (TypeError, ValueError):
+            return None
+        if before <= 0 or after <= 0:
+            return None
+        before_k = max(1, round(before / 1000))
+        after_k = max(1, round(after / 1000))
+        return f"压缩完成，{before_k}k~{after_k}k"
+
+    def _compact_history(
+        self,
+        *,
+        force: bool = False,
+        status: Callable[[str], None] | None = None,
+        before_tokens: int | None = None,
+    ) -> str:
         """把早期历史压缩成单条摘要消息，避免长会话被硬裁剪。
 
         当前实现不调用模型，而是把被压缩的早期 user/assistant 轮次按顺序提炼成短摘要。
         这样摘要可预测、测试稳定，也不会在会话很长时额外消耗模型上下文或失败重试次数。
         """
 
+        try:
+            before = int(before_tokens) if before_tokens is not None else 0
+        except (TypeError, ValueError):
+            before = 0
+        if before <= 0:
+            before = estimate_json_tokens(self._history)
         result = compact_history(
             self._history,
             max_history_turns=self.config.max_history_turns,
@@ -5667,6 +5976,11 @@ class LocalToolAgent:
         summary_message = {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{result.summary}"}
         self._history = [summary_message, *result.recent_messages]
         self._write_compaction_memories({"content": result.summary})
+        after = estimate_json_tokens(self._history)
+        notice = self._format_compaction_notice(before, after)
+        self._last_compaction_notice = notice or ""
+        if notice and status is not None:
+            status(notice)
         return result.summary
 
     def _write_compaction_memories(self, compact_payload: Mapping[str, Any]) -> None:

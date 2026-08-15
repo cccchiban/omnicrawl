@@ -76,10 +76,11 @@ _FEATURES = (
     ("plugins", "插件功能", "plugins"),
     ("subagents", "子任务功能", "subagents"),
     ("context_compaction", "上下文压缩", "context_compaction"),
+    ("router", "任务思维路由", "router"),
     ("file_name_index", "文件名快速索引", "file_name_index"),
     ("content_index", "内容关键词索引", "content_index"),
 )
-_COLUMN_SLOTS = 16  # 每栏设置行数：左栏现有项，右栏 16 个空位。
+_COLUMN_SLOTS = 16  # 每栏设置行数：左栏固定 16 项，右栏真实设置项 + 空位。
 
 
 class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
@@ -177,17 +178,19 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
                 "tools",
                 "subagents_advanced",
             )
-            + tuple(item[0] for item in _FEATURES)
+            + tuple(item[0] for item in _FEATURES if item[0] != "router")
         )
 
     @property
     def _all_keys(self) -> tuple[str, ...]:
-        """全部可设置键：左栏现有项 + 右栏真实设置项（普通模式含思考显示）。
+        """全部可设置键：左栏 + 右栏真实设置项（普通模式含思考显示与任务思维路由）。
 
         选中索引与行渲染基于该元组遍历；右栏其余位置仍为空位占位行。
         """
 
-        return self._row_keys + (() if self._advanced else ("show_thinking",))
+        if self._advanced:
+            return self._row_keys
+        return self._left_keys() + self._right_keys()
 
     def compose(self) -> ComposeResult:
         with Container(id="settings-dialog"):
@@ -200,7 +203,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
                     with VerticalScroll(id="settings-list-left", classes="settings-column"):
                         for key in self._left_keys():
                             yield self._row_widget(key)
-                        for index in range(_COLUMN_SLOTS - len(self._row_keys)):
+                        for index in range(_COLUMN_SLOTS - len(self._left_keys())):
                             yield self._empty_row_widget(index, "left")
                     yield Static("│", id="settings-divider")
                     with VerticalScroll(id="settings-list-right", classes="settings-column"):
@@ -296,9 +299,15 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             return bool(getattr(getattr(self._agent, "_mcp_manager", None), "enabled", False))
         if key == "plugins":
             return bool(getattr(getattr(self._agent, "_plugin_manager", None), "enabled", False))
-        if key in {"subagents", "context_compaction"}:
+        if key == "subagents":
+            config = getattr(self._agent, "config", None)
+            return bool(getattr(getattr(config, "subagents", None), "enabled", False))
+        if key == "context_compaction":
             config = getattr(self._agent, "config", None)
             return bool(getattr(getattr(config, key, None), "enabled", False))
+        if key == "router":
+            config = getattr(self._agent, "config", None)
+            return bool(getattr(config, "router_enabled", False))
         if key == "file_name_index":
             config = getattr(self._agent, "config", None)
             return bool(getattr(config, "file_name_index_enabled", False))
@@ -363,16 +372,17 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self.query_one("#settings-status", Static).update(self._status)
 
     def _left_keys(self) -> tuple[str, ...]:
-        """左栏设置项：现有全部设置项（普通模式 16 项 / 高级模式 6 项）。"""
+        """左栏设置项：普通模式 16 项 / 高级模式 6 项。"""
+
         return self._row_keys
 
     def _right_keys(self) -> tuple[str, ...]:
-        """右栏真实设置项：普通模式含“思考显示”，其余位置保留为空位。
+        """右栏真实设置项：普通模式含“思考显示”与“任务思维路由”。
 
         后续在右侧添加设置项时，只需把对应 key 追加到此元组。
         """
 
-        return () if self._advanced else ("show_thinking",)
+        return () if self._advanced else ("show_thinking", "router")
 
     def _row_widget(self, key: str) -> Static:
         """生成单个设置行控件，含选中标记与当前状态值。"""
@@ -507,6 +517,7 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             "plugins": "set_plugin_enabled",
             "subagents": "set_subagents_enabled",
             "context_compaction": "set_context_compaction_enabled",
+            "router": "set_router_enabled",
             "file_name_index": "set_file_name_index_enabled",
             "content_index": "set_content_index_enabled",
         }[key]

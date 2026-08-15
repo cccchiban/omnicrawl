@@ -60,6 +60,13 @@ mode = "manual"
 [memory]
 enabled = true
 
+# 任务思维模式路由器（dsh-routing-suite 移植），默认关闭。
+# mode = "standard" 表示 RL 接口还原（首轮 RL 训练句 + 核心工具面，首次工具调用后晋升）；
+# mode = "spec" 表示深度思考优先（分类 persona 置顶，保留完整 system prompt）。
+[router]
+enabled = false
+mode = "standard"
+
 # 内置工具开关：默认除 powershell 关闭外，其余全部启用。
 # 只在需要禁用某个工具时取消注释并设为 false。
 # [tools]

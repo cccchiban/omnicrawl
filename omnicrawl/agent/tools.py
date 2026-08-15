@@ -337,7 +337,7 @@ def build_agent_tools(
         [
             ToolDefinition(
                 name="list",
-                description="列出工作区内的文件和目录，可选择递归。",
+                description="列出指定路径下的文件和目录（相对路径基于工作区），可选择递归。",
                 argument_schema='{"path": ".", "recursive": false}',
                 requires_confirmation=True,
                 run=list,
@@ -347,7 +347,7 @@ def build_agent_tools(
                     ToolDefinition(
                         name="find",
                         description=(
-                            "仅按文件名、目录名或相对路径查找工作区条目，不读取文件内容。"
+                            "仅按文件名、目录名或相对路径查找本地条目（相对路径基于工作区），不读取文件内容。"
                         ),
                         argument_schema=(
                             '{"pattern":"agent","path":".","kind":"all|file|directory",'
@@ -363,7 +363,7 @@ def build_agent_tools(
             ToolDefinition(
                 name="read",
                 description=(
-                    "读取工作区 UTF-8 文本文件或 omnicrawl://docs/<文件名> 内置文档。"
+                    "读取本地 UTF-8 文本文件或 omnicrawl://docs/<文件名> 内置文档。"
                     "可按 start_line/max_lines 读取行范围，按 function_name 定位函数或方法，"
                     "或按 text 定位首次文字片段及上下文。"
                 ),
@@ -407,7 +407,7 @@ def build_agent_tools(
             ToolDefinition(
                 name="grep",
                 description=(
-                    "在工作区 UTF-8 文本文件中执行 grep 风格搜索：pattern 默认按正则表达式"
+                    "在本地 UTF-8 文本文件中执行 grep 风格搜索：pattern 默认按正则表达式"
                     "解释（use_regex=false 时按精确子串），支持大小写开关、匹配行上下文、"
                     "每文件计数、仅列出匹配文件，以及 include/exclude 文件名过滤。"
                 ),

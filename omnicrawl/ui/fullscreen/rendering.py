@@ -75,8 +75,12 @@ class RenderingMixin:
 
 
     def _handle_status(self, message: str) -> None:
-        if message:
-            self._set_runtime_status("等待", "waiting")
+        if not message:
+            return
+        if message.startswith("压缩完成"):
+            self._append_message("status", message)
+            return
+        self._set_runtime_status("等待", "waiting")
 
 
     def _handle_subagent_event(self, event_name: str, payload: dict[str, Any]) -> None:

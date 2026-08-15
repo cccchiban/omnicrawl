@@ -491,13 +491,17 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
             summary = agent.compact_conversation()
         except AgentError as exc:
             return f"会话压缩失败：{exc}"
-        return f"已压缩当前会话，后续恢复将从摘要边界继续。\n{summary}"
+        notice = getattr(agent, "_last_compaction_notice", "") or ""
+        prefix = f"{notice}\n" if notice else ""
+        return f"{prefix}已压缩当前会话，后续恢复将从摘要边界继续。\n{summary}"
     if normalized == "/compact --model":
         try:
             summary = agent.compact_conversation_model()
         except AgentError as exc:
             return f"模型会话压缩失败：{exc}"
-        return f"已使用结构化摘要模型压缩当前会话，完整转录仍保留。\n{summary}"
+        notice = getattr(agent, "_last_compaction_notice", "") or ""
+        prefix = f"{notice}\n" if notice else ""
+        return f"{prefix}已使用结构化摘要模型压缩当前会话，完整转录仍保留。\n{summary}"
     if normalized.startswith("/compact "):
         return "用法：/compact 或 /compact --model。"
     if normalized == "/rename" or normalized.startswith("/rename "):

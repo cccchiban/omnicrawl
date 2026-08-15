@@ -240,7 +240,7 @@ class WorkspaceTools:
         )
 
         indexed = None
-        if self.search_index is not None:
+        if self.search_index is not None and self._index_covers_path(root):
             indexed = self.search_index.search_files(
                 pattern,
                 root=root,
@@ -355,7 +355,11 @@ class WorkspaceTools:
 
         # 默认输出匹配行：字面量模式优先走索引加速，正则模式直接扫描。
         truncated = False
-        if not use_regex and self.search_index is not None:
+        if (
+            not use_regex
+            and self.search_index is not None
+            and self._index_covers_path(root)
+        ):
             indexed = self.search_index.search_literal(
                 pattern,
                 root=root,
@@ -1007,16 +1011,19 @@ class WorkspaceTools:
 
         candidate = Path(raw_path)
         if not candidate.is_absolute():
+            # 相对路径仍以工作区为基准解析；绝对路径可指向工作区外的本机路径。
             candidate = self.workspace_root / candidate
         resolved = candidate.resolve()
-        if not _is_relative_to(resolved, self.workspace_root):
-            raise WorkspaceToolError(f"拒绝访问工作区外路径：{raw_path}")
         if self.is_protected_path(resolved):
             raise WorkspaceToolError(f"拒绝访问受保护路径：{self.relative_path(resolved)}")
         extra_message = self._extra_protection_message(resolved) if self._extra_protection_message else None
         if extra_message:
             raise WorkspaceToolError(extra_message)
         return resolved
+
+    def _index_covers_path(self, path: Path) -> bool:
+        """搜索索引快照只覆盖工作区；工作区外 root 必须回退直接扫描。"""
+        return _is_relative_to(Path(path).resolve(), self.workspace_root)
 
     def read_text(self, path: Path) -> str:
         try:
