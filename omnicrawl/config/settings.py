@@ -33,7 +33,6 @@ def _serialize_mcp_config(config: Any) -> dict[str, Any]:
     return {
         "enabled": config.enabled,
         "default_timeout_seconds": config.default_timeout_seconds,
-        "max_tool_output_chars": config.max_tool_output_chars,
         "servers": servers,
         "policy": {
             "require_confirmation_for_write": config.policy.require_confirmation_for_write,

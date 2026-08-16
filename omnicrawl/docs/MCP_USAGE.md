@@ -111,7 +111,6 @@
   "mcp": {
     "enabled": true,
     "default_timeout_seconds": 30,
-    "max_tool_output_chars": 6000,
     "servers": {
       "local_project": {
         "enabled": true,
@@ -164,7 +163,6 @@ mcp:
 
 - `MCP_ENABLED`：临时覆盖 MCP 全局开关。
 - `MCP_DEFAULT_TIMEOUT_SECONDS`：临时覆盖默认超时。
-- `MCP_MAX_TOOL_OUTPUT_CHARS`：临时覆盖输出截断上限。
 - `MCP_WORKSPACE_ROOT`：Local MCP Server 的工作区根目录，由 Client 启动时自动传入。
 
 ---

@@ -21,10 +21,18 @@ class ContextCompactionConfig:
     压缩；普通 ``/compact`` 仍保持本地确定性，``/compact --model`` 才显式
     产生摘要模型调用。``summary_profile`` 接受 models.toml key/alias、裸模型 ID
     或 ``profile/model_id``，跨供应商仍需单独允许。
+
+    ``target_summary_tokens`` 为 0 时表示不设摘要预算上限：摘要以完整性优先，
+    不再被 token 预算卡住或校验拒绝（建议同时保持较大的触发阈值，避免过早压缩）。
+
+    ``archive_compacted_events`` 开启时，被压缩窗口的原始事件会归档到
+    ``.agent_sessions/archive/compacted/<session>/``，形成摘要之外的二级存储；
+    ``auto_memory_recall`` 开启时，压缩完成后自动检索长期记忆并把命中结果注入
+    后续上下文，帮助恢复“之前做过什么”。
     """
 
     enabled: bool = False
-    trigger_context_tokens: int = 70_000
+    trigger_context_tokens: int = 100_000
     next_user_reserve_tokens: int = 4_096
     minimum_turns_between_model_compactions: int = 4
     emergency_context_ratio: float = 0.85
@@ -34,6 +42,8 @@ class ContextCompactionConfig:
     recent_context_ratio: float = 0.25
     target_summary_tokens: int = 6_000
     preserve_exact_evidence: bool = True
+    archive_compacted_events: bool = True
+    auto_memory_recall: bool = True
     allow_cross_provider: bool = False
     failure_fallback: str = "deterministic"
 
@@ -47,7 +57,11 @@ class ContextCompactionConfig:
             "recent_turns",
             "target_summary_tokens",
         ):
-            _require_positive_int(name, getattr(self, name))
+            # target_summary_tokens 允许 0（0 = 无摘要预算上限），其余必须为正整数。
+            if name == "target_summary_tokens":
+                _require_non_negative_int(name, getattr(self, name))
+            else:
+                _require_positive_int(name, getattr(self, name))
         _require_ratio("emergency_context_ratio", self.emergency_context_ratio, upper=1.0)
         _require_ratio("recent_context_ratio", self.recent_context_ratio, upper=1.0)
         if not isinstance(self.summary_profile, str):
@@ -61,6 +75,14 @@ class ContextCompactionConfig:
         if not isinstance(self.preserve_exact_evidence, bool):
             raise ContextCompactionConfigError(
                 "context_compaction.preserve_exact_evidence 必须是布尔值。"
+            )
+        if not isinstance(self.archive_compacted_events, bool):
+            raise ContextCompactionConfigError(
+                "context_compaction.archive_compacted_events 必须是布尔值。"
+            )
+        if not isinstance(self.auto_memory_recall, bool):
+            raise ContextCompactionConfigError(
+                "context_compaction.auto_memory_recall 必须是布尔值。"
             )
         if not isinstance(self.allow_cross_provider, bool):
             raise ContextCompactionConfigError(
@@ -94,6 +116,13 @@ def _require_positive_int(name: str, value: Any) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ContextCompactionConfigError(
             f"context_compaction.{name} 必须是正整数。"
+        )
+
+
+def _require_non_negative_int(name: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ContextCompactionConfigError(
+            f"context_compaction.{name} 必须是非负整数（0 表示无预算限制）。"
         )
 
 

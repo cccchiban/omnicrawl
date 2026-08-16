@@ -178,8 +178,15 @@ class OpenAIResponseLLM:
             self._history = self._history[-max_messages:]
 
     @staticmethod
-    def _extract_text(response: Any) -> str:
-        """兼容 SDK 对象与字典两种 Responses API 返回形态。"""
+    def _extract_text(response: Any, *, include_reasoning: bool = False) -> str:
+        """兼容 SDK 对象与字典两种 Responses API 返回形态。
+
+        ``include_reasoning=True`` 时，在常规输出文本为空的情况下，从
+        reasoning item 的 summary 提取文本作为兜底。部分网关在思考模式下只
+        返回 reasoning item（content 为 encrypted_content，summary 为明文摘要），
+        常规提取会得到空串；默认 False 保持纯输出语义，避免 ask/ask_stream
+        把思考内容当作正式回复写入历史。
+        """
 
         output_text = getattr(response, "output_text", None)
         if isinstance(output_text, str) and output_text.strip():
@@ -203,7 +210,45 @@ class OpenAIResponseLLM:
                 if isinstance(text, str) and text.strip():
                     texts.append(text.strip())
 
-        return "\n".join(texts).strip()
+        joined = "\n".join(texts).strip()
+        if joined or not include_reasoning:
+            return joined
+        # 兜底：reasoning item 的 summary 明文摘要（encrypted_text 无法解密）。
+        for item in data.get("output") or []:
+            if not isinstance(item, dict) or item.get("type") != "reasoning":
+                continue
+            for summary in item.get("summary") or []:
+                if not isinstance(summary, dict):
+                    continue
+                text = summary.get("summary_text") or summary.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+            for content in item.get("content") or []:
+                if not isinstance(content, dict):
+                    continue
+                text = content.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+        return ""
+
+    @staticmethod
+    def _has_reasoning_output(response: Any) -> bool:
+        """判断响应是否只含 reasoning item（无任何可见输出文本）。
+
+        供审查路径诊断“思考模式未返回文本”场景：区分真·空响应与
+        思考-only 响应，让拒绝原因可操作。
+        """
+
+        if hasattr(response, "model_dump"):
+            data = response.model_dump()
+        elif isinstance(response, dict):
+            data = response
+        else:
+            data = {}
+        return any(
+            isinstance(item, dict) and item.get("type") == "reasoning"
+            for item in data.get("output") or []
+        )
 
     @staticmethod
     def extract_stream_text(event: Any) -> Iterable[str]:

@@ -82,12 +82,12 @@ enabled = false
 [content_index]
 enabled = false
 
-# 模型辅助压缩默认关闭。开启后在完整回合结束时测量预算，达到 70K 才调用
-# 摘要模型；普通 /compact 始终保持本地确定性，/compact --model 为显式模型入口。
+# 模型辅助压缩开启：完整回合结束时测量预算，达到阈值（默认 100K）即调用
+# 摘要模型；普通 /compact 保持本地确定性，/compact --model 为显式模型入口。
 # 开启后还会注册 recall_session_evidence，只按当前有效摘要的事件 ID 恢复证据。
 [context_compaction]
-enabled = false
-trigger_context_tokens = 70000
+enabled = true
+trigger_context_tokens = 100000
 next_user_reserve_tokens = 4096
 minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85
@@ -96,8 +96,15 @@ summary_profile = ""
 reasoning_effort = "low"
 recent_turns = 6
 recent_context_ratio = 0.25
-target_summary_tokens = 6000
+# target_summary_tokens 为 0 表示不设摘要预算上限：摘要以完整性优先，
+# 不被 token 预算卡住或校验拒绝。
+target_summary_tokens = 0
 preserve_exact_evidence = true
+# 开启后，被压缩窗口的原始事件归档到 .agent_sessions/archive/compacted/<session>/，
+# 形成摘要之外的二级存储，后续可精确恢复任意被压缩事件。
+archive_compacted_events = true
+# 开启后，压缩完成自动检索长期记忆并把命中结果注入后续上下文，帮助恢复"之前做过什么"。
+auto_memory_recall = true
 allow_cross_provider = false
 failure_fallback = "deterministic"
 
@@ -144,7 +151,8 @@ enabled = false
 [mcp]
 enabled = false
 default_timeout_seconds = 30
-max_tool_output_chars = 6000
+# 工具输出预算为固定硬编码（单工具 50K 字符、每回合聚合 200K 字符）：
+# 超限输出自动落盘到会话 artifact，模型上下文只保留头尾预览与文件路径。
 servers = {}
 # 远程 Streamable HTTP Server 可在这里声明认证请求头：
 # [mcp.servers.remote_service]
@@ -161,3 +169,21 @@ require_confirmation_for_write = true
 require_confirmation_for_command = true
 allow_external_network_tools = false
 audit_log_enabled = true
+
+# Telegram 远程接入（可选）：让用户通过 Telegram Bot 远程操作 OmniCrawl。
+# 运行方式：python -m omnicrawl.connectors.telegram
+# 环境变量优先级更高：TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_USER_IDS /
+# TELEGRAM_CONFIRM_TIMEOUT。
+[telegram]
+# 由 @BotFather 创建 Bot 后获取，替换为实际 Token，勿提交真实 Token 到仓库。
+bot_token = "替换为你的 Telegram Bot Token"
+# 允许远程操作的用户 ID 列表（安全白名单，必填；向 @userinfobot 可查自己的 ID）。
+allowed_user_ids = [123456789]
+# 敏感工具（bash/powershell）确认超时秒数，超时自动拒绝。
+confirmation_timeout_seconds = 300
+
+# 工作区运行同步（可选）：TUI /workspace 切换与 Telegram /workspace 切换
+# 都会写回此字段，供另一端在任务开始前重读跟随，实现跨进程工作区同步。
+# 通常无需手工维护：AI_WORKSPACE_ROOT 环境变量仍优先于启动目录检测。
+# [workspace]
+# root = "D:/path/to/your/workspace"

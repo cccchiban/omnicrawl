@@ -38,12 +38,20 @@ class ContextAssembler:
 def render_summary_markdown(structured: Mapping[str, Any]) -> str:
     lines = ["## 结构化工作摘要"]
     _append_plain(lines, "当前目标", structured.get("objective", []))
+    _append_referenced(lines, "关键技术概念", structured.get("key_concepts", []))
     _append_referenced(lines, "约束", structured.get("constraints", []))
     _append_referenced(lines, "已确认决策", structured.get("decisions", []))
     _append_referenced(lines, "已完成与验证", structured.get("completed", []))
     _append_plain(lines, "当前状态", structured.get("current_state", []))
     _append_referenced(lines, "未完成事项与风险", structured.get("open_issues", []))
+    _append_referenced(lines, "可能的下一步", structured.get("next_steps", []))
     _append_referenced(lines, "文件、命令与产物", structured.get("artifacts", []))
+    _append_file_items(lines, "已读文件", structured.get("read_files", []))
+    _append_file_items(lines, "修改文件", structured.get("modified_files", []))
+    _append_referenced(lines, "失败尝试", structured.get("failed_attempts", []))
+    _append_referenced(lines, "问题解决过程", structured.get("problem_solving_process", []))
+    _append_referenced(lines, "已排除方案", structured.get("excluded_approaches", []))
+    _append_referenced(lines, "用户消息原文", structured.get("user_messages", []))
     _append_referenced(lines, "精确证据", structured.get("exact_evidence", []))
     return "\n".join(lines)
 
@@ -89,6 +97,31 @@ def event_to_model_message(event: SourceEvent) -> dict[str, Any] | None:
             "content": f"工具执行结果：{tool} {status}\n{str(output).strip()}".strip(),
         }
     return None
+
+
+def _append_file_items(lines: list[str], title: str, items: Any) -> None:
+    lines.append(f"### {title}")
+    values = items if isinstance(items, list) else []
+    if not values:
+        lines.append("- 无")
+        return
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        description = str(item.get("description") or "").strip()
+        refs = item.get("source_event_ids", [])
+        ref_text = (
+            ", ".join(str(ref) for ref in refs) if isinstance(refs, list) else ""
+        )
+        line = f"- {path}"
+        if description:
+            line += f"：{description}"
+        if ref_text:
+            line += f"（来源：{ref_text}）"
+        lines.append(line)
 
 
 def _append_plain(lines: list[str], title: str, items: Any) -> None:

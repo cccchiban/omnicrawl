@@ -72,7 +72,6 @@ class MCPConfig:
 
     enabled: bool = False
     default_timeout_seconds: int = 30
-    max_tool_output_chars: int = 6000
     servers: dict[str, MCPServerConfig] = field(default_factory=dict)
     policy: MCPPolicyConfig = field(default_factory=MCPPolicyConfig)
 
@@ -114,28 +113,12 @@ def load_mcp_config(config_path: str | Path | None = None) -> MCPConfig:
         max_value=MAX_COMMAND_TIMEOUT_SECONDS,
     )
 
-    max_tool_output_chars = _read_int_field(
-        section,
-        "max_tool_output_chars",
-        default=6000,
-        min_value=100,
-        max_value=200_000,
-        config_key="mcp.max_tool_output_chars",
-    )
-    max_tool_output_chars = _read_int_env(
-        "MCP_MAX_TOOL_OUTPUT_CHARS",
-        max_tool_output_chars,
-        min_value=100,
-        max_value=200_000,
-    )
-
     policy = _load_policy_config(get_section(section, "policy"))
     servers = _load_server_configs(section, default_timeout_seconds=default_timeout)
 
     return MCPConfig(
         enabled=enabled,
         default_timeout_seconds=default_timeout,
-        max_tool_output_chars=max_tool_output_chars,
         servers=servers,
         policy=policy,
     )

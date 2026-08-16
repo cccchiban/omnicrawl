@@ -243,6 +243,7 @@ class ContextCompactionService:
                 target_summary_tokens=target_summary_tokens,
                 previous_summary=batch.previous_summary,
                 preserve_exact_evidence=preserve_exact_evidence,
+                completeness_events=batch.events,
             )
             if validation.valid:
                 break
@@ -266,11 +267,14 @@ class ContextCompactionService:
         compacted_count = sum(
             event_to_model_message(event) is not None for event in batch.events
         )
+        coverage = self._coverage_metrics(batch, structured, retired_token_estimate)
         compact_payload = {
             "schema_version": 2,
             "content": content,
             "structured": structured,
             "covered_event_ids": list(batch.covered_event_ids),
+            "compacted_event_ids": [event.event_id for event in batch.events],
+            "coverage": coverage,
             "retired_token_estimate": retired_token_estimate,
             "summary_input_tokens": generation.usage.input_tokens,
             "summary_output_tokens": generation.usage.output_tokens,
@@ -297,6 +301,79 @@ class ContextCompactionService:
             compact_payload=compact_payload,
             history_projection=projection,
         )
+
+    @staticmethod
+    def _coverage_metrics(
+        batch: CompactionBatch,
+        structured: Mapping[str, Any],
+        retired_token_estimate: int,
+    ) -> dict[str, Any]:
+        """计算本次压缩的覆盖度指标：本批事件有多少被摘要显式引用。
+
+        coverage_ratio 反映“该记的没记”风险：引用越少，后续恢复越依赖
+        归档/证据工具。字段计数用于确认完整性校验确实产出了条目。
+        """
+
+        compacted_ids = [event.event_id for event in batch.events]
+        compacted_id_set = set(compacted_ids)
+        covered_set = set(batch.covered_event_ids)
+
+        referenced: set[str] = set()
+
+        def visit(value: Any) -> None:
+            if isinstance(value, Mapping):
+                refs = value.get("source_event_ids", [])
+                if isinstance(refs, list):
+                    referenced.update(
+                        event_id
+                        for event_id in refs
+                        if isinstance(event_id, str) and event_id in compacted_id_set
+                    )
+                for nested in value.values():
+                    visit(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    visit(nested)
+
+        visit(structured)
+        compacted_count = len(compacted_ids)
+        referenced_count = len(referenced)
+        return {
+            "compacted_event_count": compacted_count,
+            "covered_event_count": sum(
+                1 for event_id in compacted_ids if event_id in covered_set
+            ),
+            "referenced_event_count": referenced_count,
+            "coverage_ratio": round(
+                referenced_count / compacted_count, 4
+            )
+            if compacted_count
+            else 0.0,
+            "retired_token_estimate": retired_token_estimate,
+            "field_counts": {
+                field: len(
+                    structured.get(field, [])
+                    if isinstance(structured.get(field, []), list)
+                    else []
+                )
+                for field in (
+                    "constraints",
+                    "decisions",
+                    "completed",
+                    "open_issues",
+                    "artifacts",
+                    "read_files",
+                    "modified_files",
+                    "failed_attempts",
+                    "excluded_approaches",
+                    "key_concepts",
+                    "problem_solving_process",
+                    "user_messages",
+                    "next_steps",
+                    "exact_evidence",
+                )
+            },
+        }
 
 
 # 第一阶段公开名保持兼容；实现已经扩展为完整 service。

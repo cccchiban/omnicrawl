@@ -115,7 +115,13 @@ class ContextBudgetManager:
             + next_user_reserve_tokens
         )
         compactable_tokens = existing_summary_tokens + cold_history_tokens
-        simulated_summary_tokens = min(compactable_tokens, target_summary_tokens)
+        # target_summary_tokens <= 0 表示无摘要预算上限：模拟阶段无法预估实际摘要
+        # 大小，保守按“不承诺节省”处理（potential_retired_tokens=0），避免
+        # simulated_compacted_input_tokens 给出过分乐观的压缩后预算。
+        if target_summary_tokens <= 0:
+            simulated_summary_tokens = compactable_tokens
+        else:
+            simulated_summary_tokens = min(compactable_tokens, target_summary_tokens)
         potential_retired_tokens = max(0, compactable_tokens - simulated_summary_tokens)
         cache_hit_ratio = (
             min(usage.cached_input_tokens, usage.input_tokens) / usage.input_tokens

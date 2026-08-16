@@ -7,7 +7,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 
 # 进程内锁以规范化后的会话根目录为粒度共享；跨进程互斥由 session_locking
@@ -147,6 +147,7 @@ class SessionStore:
         self.summaries_dir = self.root / "summaries"
         self.exports_dir = self.root / "exports"
         self.archive_dir = self.root / "archive"
+        self.compacted_dir = self.archive_dir / "compacted"
         self.durable = durable or DurableWritePolicy()
         self._write_lock = _lock_for_root(self.root)
         self.prompt_history = PromptHistoryStore(
@@ -161,6 +162,7 @@ class SessionStore:
         self.summaries_dir.mkdir(parents=True, exist_ok=True)
         self.exports_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
+        self.compacted_dir.mkdir(parents=True, exist_ok=True)
         if not self.index_path.exists():
             self._save_entries([])
         self.prompt_history.ensure()
@@ -658,6 +660,98 @@ class SessionStore:
         self.ensure()
         _entries, diagnostics = self.prompt_history.read_entries_with_diagnostics()
         return list(diagnostics)
+
+    def archive_compacted_events(
+        self,
+        session_id: str,
+        events: Sequence[Mapping[str, Any]],
+        *,
+        archive_id: str = "",
+    ) -> str:
+        """把被压缩窗口的原始事件写入二级归档，返回 archive_id。
+
+        归档目录为 ``archive/compacted/<session_id>/<archive_id>.jsonl``，
+        与整会话归档（``archive/<session_id>.jsonl``）隔离。每条事件一行
+        JSON；调用方负责传入与 Session 事件同构的 dict（含 event_id/type/
+        payload/created_at 等）。归档失败不阻塞压缩主流程，由调用方按
+        warning 处理。
+        """
+
+        with self._exclusive_write():
+            self.ensure()
+            normalized_id = _normalize_session_id(session_id)
+            self._entry_by_id(normalized_id)  # 不存在时抛错，校验会话归属
+            if archive_id:
+                if not isinstance(archive_id, str) or not archive_id.strip():
+                    raise SessionStoreError("archive_id 必须是非空字符串。")
+                if any(ch in archive_id for ch in ("/", "\\", "\0")):
+                    raise SessionStoreError("archive_id 不能包含路径分隔符。")
+                safe_archive_id = archive_id.strip()
+            else:
+                safe_archive_id = f"compact-{_utc_now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+            session_dir = (self.compacted_dir / normalized_id).resolve()
+            if not _is_relative_to(session_dir, self.compacted_dir.resolve()):
+                raise SessionStoreError(f"会话归档目录越界：{normalized_id}")
+            session_dir.mkdir(parents=True, exist_ok=True)
+            path = (session_dir / f"{safe_archive_id}.jsonl").resolve()
+            if not _is_relative_to(path, session_dir):
+                raise SessionStoreError("归档路径越界。")
+            lines = [
+                json.dumps(dict(event), ensure_ascii=False, separators=(",", ":"))
+                for event in events
+                if isinstance(event, Mapping)
+            ]
+            try:
+                _append_text_line(path, "\n".join(lines), fsync=self.durable.fsync)
+            except OSError as exc:
+                raise SessionStoreError(f"写入压缩事件归档失败：{path}，{exc}") from exc
+        return safe_archive_id
+
+    def read_compacted_events(self, session_id: str) -> list[dict[str, Any]]:
+        """读取该会话全部压缩归档事件，按 archive_id 字典序合并。
+
+        返回的事件 dict 与 SessionEvent.to_dict() 同构，可转回 SourceEvent
+        供精确证据恢复使用；不含归档则返回空列表。
+        """
+
+        self.ensure()
+        normalized_id = _normalize_session_id(session_id)
+        session_dir = (self.compacted_dir / normalized_id).resolve()
+        if not _is_relative_to(session_dir, self.compacted_dir.resolve()):
+            raise SessionStoreError(f"会话归档目录越界：{normalized_id}")
+        if not session_dir.is_dir():
+            return []
+        events: list[dict[str, Any]] = []
+        for archive_path in sorted(session_dir.glob("*.jsonl")):
+            try:
+                for line in archive_path.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed, dict):
+                        events.append(parsed)
+            except OSError:
+                continue
+        return events
+
+    def write_tool_result_artifact(self, session_id: str, output: str) -> str:
+        """把完整工具输出写入当前会话 artifact，返回相对路径。
+
+        供批次输出预算机制使用：超限工具的完整内容先落盘，模型上下文只
+        保留头尾预览与文件路径（模型可用 read_file 按路径读取）。
+        """
+
+        with self._exclusive_write():
+            self.ensure()
+            normalized_id = _normalize_session_id(session_id)
+            self._entry_by_id(normalized_id)
+            return self.artifacts.write_tool_result_artifact(
+                session_id=normalized_id,
+                output=output,
+            )
 
     def read_artifact_text(self, session_id: str, artifact_path: str) -> str:
         """读取 `.agent_sessions/artifacts/` 下的文本 artifact。

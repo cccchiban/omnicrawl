@@ -1,3 +1,4 @@
+requests>=2.28.0
 openai>=1.68.0
 pywin32>=306; platform_system == "Windows"
 markdown>=3.4.0

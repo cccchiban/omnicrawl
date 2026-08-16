@@ -13,7 +13,7 @@ from ..config.runtime import RuntimeConfigError, get_section, load_config_data
 
 DEFAULT_AGENT_TEMP_DIRECTORY = ".omnicrawl/.agent_tmp"
 DEFAULT_AGENT_TEMP_CLEANUP_INTERVAL_HOURS = 24
-DEFAULT_AGENT_TEMP_SUBDIRECTORIES = ("files", "images", "code", "videos", "scripts")
+DEFAULT_AGENT_TEMP_SUBDIRECTORIES = ("files", "images", "code", "videos", "scripts", "audio")
 LAST_CLEANUP_FILENAME = ".last_cleanup"
 PRESERVED_ROOT_NAMES = {".gitignore", "README.md", LAST_CLEANUP_FILENAME}
 
@@ -358,7 +358,8 @@ def _temp_workspace_readme() -> str:
         "- `images/`：截图、生成图片和图像处理中间文件。\n"
         "- `code/`：一次性验证代码、草稿代码和临时样例。\n"
         "- `videos/`：临时视频、录屏和转码中间文件。\n"
-        "- `scripts/`：只为当前任务服务的临时脚本。\n\n"
+        "- `scripts/`：只为当前任务服务的临时脚本。\n"
+        "- `audio/`：临时音频、语音和转码中间文件。\n\n"
         "长期需要保留的交付物不要放在这里。Agent 会通过 `.last_cleanup` 的时间戳"
         "按约 24 小时间隔清理临时内容，并在清理后重建上述分类子目录。\n"
     )

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -217,6 +218,17 @@ LOGGER = logging.getLogger(__name__)
 # 必须限时返回错误结果，否则长会话回合会无限等待、无任何提示。
 DEFAULT_TOOL_TIMEOUT_SECONDS = 600
 MAX_TOOL_TIMEOUT_SECONDS = 3600
+
+# 工具输出预算（固定硬编码，不开放配置）：
+# - 单个工具输出超过 TOOL_OUTPUT_INLINE_LIMIT_CHARS（50K 字符）时，完整内容
+#   写入 session artifact 文件，模型上下文只保留头尾预览与文件路径，模型可
+#   用 read_file 按路径读取完整内容。
+# - 同一模型回合内所有未落盘工具输出总和超过 TOOL_OUTPUT_BATCH_BUDGET_CHARS
+#   （200K 字符）时，从最大的输出开始依次落盘，直到总量回到预算以内。
+TOOL_OUTPUT_INLINE_LIMIT_CHARS = 50_000
+TOOL_OUTPUT_BATCH_BUDGET_CHARS = 200_000
+# 超限输出的模型可见预览长度：头尾各 2000 字符，中间省略。
+TOOL_OUTPUT_ARCHIVED_PREVIEW_CHARS = 4_000
 
 # 生命周期回收只等待合作式取消。超时后宁可拒绝关闭/切换，也不能在子线程
 # 仍持有 Runtime、Session、MCP 或工作区工具引用时拆除共享资源。
@@ -440,7 +452,6 @@ class AgentConfig:
     llm: LLMConfig = field(default_factory=load_llm_config)
     workspace_root: Path = field(default_factory=lambda: Path.cwd())
     max_history_turns: int = 6
-    max_tool_output_chars: int = 6000
     request_retry_count: int = field(
         default_factory=lambda: _read_int_env("AGENT_REQUEST_RETRY_COUNT", 5, min_value=1, max_value=10)
     )
@@ -1085,14 +1096,19 @@ class LocalToolAgent:
             if not summary:
                 raise AgentError("模型摘要失败，且当前会话无法建立确定性压缩边界。")
             return summary + "\n\n（模型摘要失败，已使用本地确定性降级。）"
-        self._append_session_event("compact_summary", dict(outcome.compact_payload))
+        compact_payload = dict(outcome.compact_payload)
+        archive_id = self._archive_compacted_events(compact_payload)
+        if archive_id:
+            compact_payload["archive_id"] = archive_id
+        self._append_session_event("compact_summary", compact_payload)
         before_tokens = estimate_json_tokens(self._history)
         self._history = list(outcome.history_projection or ())
-        self._write_compaction_memories(outcome.compact_payload)
+        self._write_compaction_memories(compact_payload)
+        self._auto_recall_compaction_memory(compact_payload)
         after_tokens = estimate_json_tokens(self._history)
         notice = self._format_compaction_notice(before_tokens, after_tokens)
         self._last_compaction_notice = notice or ""
-        return str(outcome.compact_payload["content"])
+        return str(compact_payload["content"])
 
     def resume_session(self, session_id: str) -> SessionState:
         """恢复指定会话，并用转录消息重建 `_history`。"""
@@ -3484,6 +3500,9 @@ class LocalToolAgent:
         flush_parallel()
 
         check_cancelled()
+        # 批次输出预算：单工具 >50K 或回合聚合 >200K 的输出落盘，模型上下文
+        # 只保留头尾预览与文件路径（模型可用 read_file 读取完整内容）。
+        results = self._apply_batch_output_budget(results)
         observations: list[AgentLoopObservation] = []
         for (_call_step, tool_call, _tool, _denied), tool_result in zip(
             normalized_calls,
@@ -4101,11 +4120,7 @@ class LocalToolAgent:
         if isinstance(after_payload.get("displayText"), str):
             display_text = after_payload["displayText"]
 
-        model_output = (
-            result.output
-            if tool.model_output_is_bounded
-            else self._truncate_tool_output(result.output)
-        )
+        model_output = result.output
         return ToolResult(
             ok=result.ok,
             output=model_output,
@@ -4279,14 +4294,20 @@ class LocalToolAgent:
                 model=self.config.llm.model,
                 instructions=instructions,
                 input=input_messages,
-                extra_body={"thinking": {"type": "disabled"}},
+                # 与主对话 Runtime 一致使用标准 Responses 思考参数：旧 chat 风格
+                # 字段 thinking/reasoning_effort 在 Responses 网关不被识别，会让
+                # 审查模型按默认思考强度运行并只返回 reasoning item，导致下文
+                # 提取不到审查结论。none 档位实测能真正关闭思考。
+                extra_body={"reasoning": {"effort": "none"}},
                 timeout=min(self.config.request_timeout_seconds, 60),
             )
         except Exception as exc:
             return False, f"自动审查请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
 
         try:
-            review_text = OpenAIResponseLLM._extract_text(response)
+            review_text = OpenAIResponseLLM._extract_text(
+                response, include_reasoning=True
+            )
             approved, reason = self._parse_tool_review_response(review_text)
         except Exception as exc:
             # 网关可能返回非标准 Responses 结构（如 reasoning item 的 content 为
@@ -4295,7 +4316,21 @@ class LocalToolAgent:
             return False, f"自动审查响应解析失败：{OpenAIResponseLLM.format_request_error(exc)}"
         if approved:
             return True, ""
-        return False, f"自动审查拒绝执行：{reason or '模型未给出批准结论。'}"
+        if not review_text:
+            # 区分“真·空响应”与“思考-only 响应”，让拒绝原因可操作：
+            # 前者通常表示请求/网关异常，后者表示思考控制未生效。
+            if OpenAIResponseLLM._has_reasoning_output(response):
+                detail = "审查模型进入思考模式且未返回可解析文本"
+            else:
+                detail = "审查模型未返回任何文本"
+            return False, f"自动审查拒绝执行：{detail}。"
+        # review_text 非空但未批准：附模型原始返回（截断）便于区分“明确拒绝”
+        # 与“输出格式不符合约定”，避免只看报错无法判断是模型决策还是格式问题。
+        snippet = review_text if len(review_text) <= 120 else review_text[:120] + "…"
+        return False, (
+            f"自动审查拒绝执行：{reason or '模型未给出批准结论。'}"
+            f"（审查模型返回：{snippet}）"
+        )
 
     @staticmethod
     def _parse_tool_review_response(review_text: str) -> tuple[bool, str]:
@@ -5482,14 +5517,111 @@ class LocalToolAgent:
 
         self._session_facade().append_prompt_history(text)
 
-    def _truncate_tool_output(self, output: str) -> str:
-        maximum = max(1, int(self.config.max_tool_output_chars))
-        if len(output) <= maximum:
-            return output
-        return (
-            f"{preview_text(output, maximum)}\n"
-            "... 工具输出已截断。"
+    def _apply_batch_output_budget(
+        self,
+        results: Sequence[ToolResult | None],
+    ) -> list[ToolResult | None]:
+        """按单工具阈值与批次聚合预算裁剪模型可见的工具输出。
+
+        单个工具输出超过 50K 字符，或同一模型回合内未落盘输出总和超过 200K
+        字符时，把完整输出写入 session artifact，模型上下文只保留头尾预览与
+        文件路径（模型可用 read_file 按路径读取完整内容）。落盘失败时退化为
+        纯预览提示，不阻断工具执行。
+        """
+
+        if not results:
+            return list(results)
+        sizes: dict[int, int] = {}
+        for index, result in enumerate(results):
+            if result is not None and result.output:
+                sizes[index] = len(result.output)
+        if not sizes:
+            return list(results)
+
+        # 1) 单工具超限：直接落盘，完整内容不进入模型上下文。
+        to_archive: set[int] = set()
+        for index, size in sizes.items():
+            if size > TOOL_OUTPUT_INLINE_LIMIT_CHARS:
+                to_archive.add(index)
+
+        # 2) 批次聚合预算：剩余未落盘输出按大小降序，从最大者开始落盘，
+        #    直到未落盘总量回到 200K 预算以内。
+        remaining = sorted(
+            (
+                (index, size)
+                for index, size in sizes.items()
+                if index not in to_archive
+            ),
+            key=lambda item: item[1],
+            reverse=True,
         )
+        total = sum(size for _index, size in remaining)
+        for index, size in remaining:
+            if total <= TOOL_OUTPUT_BATCH_BUDGET_CHARS:
+                break
+            to_archive.add(index)
+            total -= size
+
+        if not to_archive:
+            return list(results)
+
+        archive_paths = self._archive_batch_tool_outputs(
+            [(index, results[index]) for index in sorted(to_archive)]
+        )
+        new_results = list(results)
+        for index in sorted(to_archive):
+            result = new_results[index]
+            assert result is not None
+            new_results[index] = ToolResult(
+                ok=result.ok,
+                output=self._format_archived_output_preview(
+                    result.output,
+                    archive_paths.get(index, ""),
+                ),
+                full_output=result.full_output or result.output,
+                ui_artifact=result.ui_artifact,
+                model_images=result.model_images,
+            )
+        return new_results
+
+    def _archive_batch_tool_outputs(
+        self,
+        items: Sequence[tuple[int, ToolResult | None]],
+    ) -> dict[int, str]:
+        """把超限工具输出写入 session artifact，返回索引到绝对路径的映射。
+
+        会话系统未启用或写入失败时返回空路径，由调用方降级为纯预览提示。
+        """
+
+        store = None
+        session_id = ""
+        try:
+            store = self._session_facade().require_session_store()
+            session_id = self.current_session_id
+        except Exception:
+            store = None
+        paths: dict[int, str] = {}
+        if store is None or not session_id:
+            return paths
+        for index, result in items:
+            if result is None or not result.output:
+                continue
+            try:
+                relative = store.write_tool_result_artifact(session_id, result.output)
+                paths[index] = str((store.root / relative).resolve())
+            except Exception:
+                paths[index] = ""
+        return paths
+
+    @staticmethod
+    def _format_archived_output_preview(output: str, path: str) -> str:
+        """超限输出的模型可见文本：头尾预览 + 大小与落盘路径提示。"""
+
+        size_kb = max(1, math.ceil(len(output) / 1000))
+        preview = preview_text(output, TOOL_OUTPUT_ARCHIVED_PREVIEW_CHARS)
+        if path:
+            return f"{preview}\n输出太大（{size_kb}KB），完整内容已保存到：{path}"
+        return f"{preview}\n输出太大（{size_kb}KB），完整内容未能保存到磁盘。"
 
     @staticmethod
     def _tool_result_message(tool_call: ToolCall, result: ToolResult) -> dict[str, Any]:
@@ -5546,7 +5678,6 @@ class LocalToolAgent:
             base_llm=base_llm,
             configuration=configuration,
             workspace_root=self.workspace_root,
-            max_output_chars=self.config.max_tool_output_chars,
         )
         try:
             analysis = proxy.analyze(
@@ -5750,16 +5881,22 @@ class LocalToolAgent:
                 {"reason": diagnostic},
             )
             return None
-        self._append_session_event("compact_summary", dict(outcome.compact_payload))
+        compact_payload = dict(outcome.compact_payload)
+        archive_id = self._archive_compacted_events(compact_payload)
+        if archive_id:
+            compact_payload["archive_id"] = archive_id
+        self._append_session_event("compact_summary", compact_payload)
         before_tokens = estimate_json_tokens(self._history)
         self._history = list(outcome.history_projection)
-        self._write_compaction_memories(outcome.compact_payload)
+        self._write_compaction_memories(compact_payload)
+        self._auto_recall_compaction_memory(compact_payload)
         self._append_session_event(
             "context_overflow_recovery",
             {
                 "mode": "model_summary",
                 "decision_reason": "context_overflow_recovery",
-                "single_large_turn": bool(outcome.compact_payload.get("single_large_turn")),
+                "single_large_turn": bool(compact_payload.get("single_large_turn")),
+                "archive_id": archive_id,
             },
         )
         self._append_session_event(
@@ -5847,24 +5984,37 @@ class LocalToolAgent:
             LOGGER.warning("上下文压缩自动流程失败，已跳过本回合。", exc_info=True)
             return
 
-        if outcome.measurement_payload:
-            self._append_session_event(
-                "context_compaction_measurement",
-                dict(outcome.measurement_payload),
-            )
+        measurement = dict(outcome.measurement_payload)
+        compact_payload = None
         if outcome.compact_payload is not None:
+            compact_payload = dict(outcome.compact_payload)
+            # 归档被压缩窗口的原始事件（第二级存储），并把 archive_id 回写事件。
+            archive_id = self._archive_compacted_events(compact_payload)
+            if archive_id:
+                compact_payload["archive_id"] = archive_id
+                measurement["archive_id"] = archive_id
+                measurement["archived_event_count"] = len(
+                    compact_payload.get("compacted_event_ids", [])
+                )
+            coverage = compact_payload.get("coverage")
+            if isinstance(coverage, Mapping):
+                measurement["coverage"] = dict(coverage)
+        if measurement:
+            self._append_session_event("context_compaction_measurement", measurement)
+        if compact_payload is not None:
             self._append_session_event(
                 "compact_summary",
-                dict(outcome.compact_payload),
+                compact_payload,
             )
             before_tokens = outcome.measurement_payload.get("estimated_next_input_tokens")
-            after_tokens = outcome.measurement_payload.get("simulated_compacted_input_tokens")
             if before_tokens is None:
                 before_tokens = estimate_json_tokens(self._history)
             self._history = list(outcome.history_projection or ())
-            self._write_compaction_memories(outcome.compact_payload)
-            if after_tokens is None:
-                after_tokens = estimate_json_tokens(self._history)
+            self._write_compaction_memories(compact_payload)
+            self._auto_recall_compaction_memory(compact_payload)
+            # after 一律用替换后的真实 history 计算：无预算上限模式下
+            # simulated_compacted_input_tokens 不承诺节省，直接用模拟值会误导显示。
+            after_tokens = estimate_json_tokens(self._history)
             notice = self._format_compaction_notice(before_tokens, after_tokens)
             self._last_compaction_notice = notice or ""
             if notice and status is not None:
@@ -6001,13 +6151,21 @@ class LocalToolAgent:
             project_sections = [
                 ("项目目标", structured.get("objective")),
                 ("项目约束", structured.get("constraints")),
+                ("关键技术概念", structured.get("key_concepts")),
                 ("关键决策", structured.get("decisions")),
                 ("当前状态", structured.get("current_state")),
                 ("文件与产物", structured.get("artifacts")),
+                ("已读文件", structured.get("read_files")),
+                ("修改文件", structured.get("modified_files")),
             ]
             task_sections = [
                 ("完成状态", structured.get("completed")),
+                ("失败尝试", structured.get("failed_attempts")),
+                ("问题解决过程", structured.get("problem_solving_process")),
+                ("已排除方案", structured.get("excluded_approaches")),
                 ("后续事项", structured.get("open_issues")),
+                ("可能的下一步", structured.get("next_steps")),
+                ("用户消息原文", structured.get("user_messages")),
             ]
         else:
             summary = str(compact_payload.get("content") or "").strip()
@@ -6038,7 +6196,8 @@ class LocalToolAgent:
                 items: list[str] = []
                 for raw_item in raw_items:
                     if isinstance(raw_item, Mapping):
-                        text = str(raw_item.get("text") or "").strip()
+                        # 文件类条目优先取 path，其余取 text。
+                        text = str(raw_item.get("path") or raw_item.get("text") or "").strip()
                     else:
                         text = str(raw_item or "").strip()
                     if text:
@@ -6085,6 +6244,104 @@ class LocalToolAgent:
                 "会话压缩结果写入长期记忆失败，已保留压缩结果。",
                 exc_info=True,
             )
+
+    def _archive_compacted_events(self, compact_payload: Mapping[str, Any]) -> str:
+        """把本次被压缩窗口的原始事件归档到二级存储；失败仅告警。
+
+        归档目录由 SessionStore 管理（``archive/compacted/<session>/``），
+        使摘要之外的任意被压缩事件都可按需精确恢复。返回 archive_id；
+        未启用、无会话或无可归档事件时返回空字符串。
+        """
+
+        store = getattr(self, "_session_store", None)
+        state = getattr(self, "_session_state", None)
+        config = getattr(getattr(self, "config", None), "context_compaction", None)
+        if store is None or state is None:
+            return ""
+        if config is not None and not config.archive_compacted_events:
+            return ""
+        compacted_ids = compact_payload.get("compacted_event_ids")
+        if not isinstance(compacted_ids, list) or not compacted_ids:
+            return ""
+        wanted = set(compacted_ids)
+        try:
+            raw_events = [
+                event.to_dict()
+                for event in store.read_session_events(state.session_id)
+                if event.event_id in wanted
+            ]
+            if not raw_events:
+                return ""
+            return store.archive_compacted_events(state.session_id, raw_events)
+        except Exception:
+            LOGGER.warning("压缩事件归档失败，已保留压缩结果。", exc_info=True)
+            return ""
+
+    def _auto_recall_compaction_memory(self, compact_payload: Mapping[str, Any]) -> None:
+        """压缩完成后自动检索长期记忆，把命中结果注入投影并记录事件。
+
+        用摘要目标/当前状态文本检索会话级记忆（缺省回退项目级），把命中
+        摘要作为 assistant 消息紧跟压缩摘要注入，让模型恢复时立即看到
+        “之前做过什么”；命中为空或检索失败时静默跳过。
+        """
+
+        config = getattr(getattr(self, "config", None), "context_compaction", None)
+        if config is not None and not config.auto_memory_recall:
+            return
+        store = getattr(self, "_session_memory_store", None)
+        if store is None:
+            store = getattr(
+                self,
+                "_project_memory_store",
+                getattr(self, "_memory_store", None),
+            )
+        if store is None or not isinstance(compact_payload.get("structured"), Mapping):
+            return
+        structured = compact_payload["structured"]
+        parts: list[str] = []
+        for values in (structured.get("objective"), structured.get("current_state")):
+            if isinstance(values, list):
+                parts.extend(str(item).strip() for item in values if str(item).strip())
+        if not parts:
+            return
+        query = " ".join(parts)[:200]
+        try:
+            results = store.search(query, max_results=3)
+        except Exception:
+            LOGGER.warning("压缩后自动记忆检索失败，已跳过。", exc_info=True)
+            return
+        if not results:
+            return
+        hits = [
+            {
+                "id": result.id,
+                "storage_directory": result.storage_directory,
+                "summary": str(result.summary or "")[:200],
+            }
+            for result in results
+        ]
+        try:
+            self._append_session_event(
+                "compaction_memory_recall",
+                {"query": query, "hits": hits},
+            )
+        except Exception:
+            LOGGER.warning("压缩后记忆检索事件记录失败，已跳过。", exc_info=True)
+        lines = ["记忆检索（压缩后自动补强）："]
+        for index, result in enumerate(results, start=1):
+            summary = str(result.summary or "").strip()
+            if summary:
+                lines.append(f"{index}. {summary}")
+        recall_text = "\n".join(lines).strip()
+        if not recall_text or len(self._history) < 1:
+            return
+        if len(recall_text) > 1_200:
+            recall_text = recall_text[:1_200] + "\n..."
+        self._history = [
+            self._history[0],
+            {"role": "assistant", "content": recall_text},
+            *self._history[1:],
+        ]
 
     @staticmethod
     def _confirm_in_terminal(tool_name: str, arguments: dict[str, Any]) -> bool:

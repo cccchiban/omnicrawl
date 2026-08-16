@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol
 
@@ -20,6 +21,8 @@ from ...commands.slash import (
     handle_session_command,
     handle_subagent_task_command,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 CommandExecution = Literal["immediate", "slow"]
@@ -246,6 +249,14 @@ class CommandDispatcher:
 
         def switch_workspace() -> str:
             self._agent.switch_workspace(workspace)
+            # 跨进程同步：把新工作区写回 config.toml，远程入口
+            # （Telegram Bot）在任务开始前重读并跟随；失败不阻断切换。
+            try:
+                from ...config.workspace import save_workspace_root
+
+                save_workspace_root(workspace)
+            except Exception as exc:  # noqa: BLE001 - 持久化失败不阻断切换
+                _LOGGER.warning("工作区持久化到 config.toml 失败：%s", exc)
             return f"已切换工作区：{self._agent.workspace_root}"
 
         return CommandOutcome(

@@ -42,7 +42,7 @@ class MCPSettingsScreen(ModalScreen[Optional[MCPSettingsAction]]):
     #mcp-settings-help { height: 1; color: $terminal-text-muted; margin-top: 1; }
     """)
 
-    _ROWS = ("enabled", "network", "write", "command", "audit", "timeout", "output", "servers")
+    _ROWS = ("enabled", "network", "write", "command", "audit", "timeout", "servers")
 
     def __init__(self, agent: Any) -> None:
         super().__init__()
@@ -94,12 +94,12 @@ class MCPSettingsScreen(ModalScreen[Optional[MCPSettingsAction]]):
         if key == "servers":
             self.dismiss(MCPSettingsAction("servers"))
             return
-        if key in {"timeout", "output"}:
-            options = (10, 30, 60, 120, 300) if key == "timeout" else (2000, 6000, 12000, 30000, 60000)
-            current = self._config.default_timeout_seconds if key == "timeout" else self._config.max_tool_output_chars
+        if key == "timeout":
+            options = (10, 30, 60, 120, 300)
+            current = self._config.default_timeout_seconds
             index = min(range(len(options)), key=lambda i: abs(options[i] - current))
             value = options[(index + direction) % len(options)]
-            self._config = replace(self._config, **({"default_timeout_seconds": value} if key == "timeout" else {"max_tool_output_chars": value}))
+            self._config = replace(self._config, default_timeout_seconds=value)
         elif key == "network":
             self._config = replace(self._config, policy=replace(self._config.policy, allow_external_network_tools=not self._config.policy.allow_external_network_tools))
         elif key == "write":
@@ -134,7 +134,6 @@ class MCPSettingsScreen(ModalScreen[Optional[MCPSettingsAction]]):
             "command": "需要确认" if policy.require_confirmation_for_command else "免确认",
             "audit": "已开启" if policy.audit_log_enabled else "已关闭",
             "timeout": f"{self._config.default_timeout_seconds} 秒",
-            "output": f"{self._config.max_tool_output_chars} 字符",
             "servers": f"管理（{len(self._config.servers)} 个）",
         }
 

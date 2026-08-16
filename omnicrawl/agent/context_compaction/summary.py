@@ -224,7 +224,12 @@ class ModelSummaryCompactor:
     ) -> ModelSummaryResult:
         base_payload = {
             "operation": operation,
-            "target_summary_tokens": target_summary_tokens,
+            # 0 表示无摘要预算上限：向模型传 null + budget_limited=false，
+            # 由 summary_prompt.md 规则 9 引导完整性优先。
+            "target_summary_tokens": (
+                target_summary_tokens if target_summary_tokens > 0 else None
+            ),
+            "budget_limited": target_summary_tokens > 0,
             "chunk_index": chunk_index,
             "chunk_count": chunk_count,
             "previous_summary": previous_summary,

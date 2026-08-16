@@ -268,7 +268,7 @@ class MCPClientManager:
             ok=ok,
             server_name=meta.server_name,
             tool_name=meta.tool_name,
-            output=_truncate_output(output, self.config.max_tool_output_chars),
+            output=output,
             full_output=output,
             error_code=error_code,
             retryable=retryable,
@@ -346,7 +346,7 @@ class MCPClientManager:
             ok=ok,
             server_name=meta.server_name,
             uri=meta.uri,
-            output=_truncate_output(output, self.config.max_tool_output_chars),
+            output=output,
             full_output=output,
             error_code=error_code,
             retryable=retryable,
@@ -399,7 +399,7 @@ class MCPClientManager:
             ok=ok,
             server_name=meta.server_name,
             prompt_name=meta.prompt_name,
-            output=_truncate_output(output, self.config.max_tool_output_chars),
+            output=output,
             full_output=output,
             error_code=error_code,
             retryable=retryable,
@@ -1108,8 +1108,3 @@ def _stringify_prompt_payload(payload: dict[str, Any]) -> str:
             return "\n".join(parts)
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
-
-def _truncate_output(output: str, max_chars: int) -> str:
-    if len(output) <= max_chars:
-        return output
-    return output[:max_chars] + "\n... MCP 工具输出已截断。"

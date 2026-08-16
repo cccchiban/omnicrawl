@@ -266,4 +266,15 @@ def parse_tool_review_response(review_text: str) -> tuple[bool, str]:
 
     reason_value = data.get("reason", "")
     reason = reason_value.strip() if isinstance(reason_value, str) else ""
-    return data.get("approve") is True, reason
+    approve_value = data.get("approve")
+    if approve_value is True:
+        return True, reason
+    if approve_value is False:
+        # 模型明确拒绝：reason 为空时给默认理由，与“格式不完整”区分开，
+        # 避免调用方把“模型拒绝”误报为“模型未给出结论”。
+        return False, reason or "模型拒绝执行。"
+    # approve 缺失或非布尔（如字符串 "true"）：格式不完整，同样按拒绝处理，
+    # 但明确告知是格式问题而非模型决策；模型给出的 reason 仅作附加参考，
+    # 不能因 reason 非空而掩盖格式问题。
+    hint = "模型未给出明确的批准结论（approve 字段缺失或非布尔）。"
+    return False, hint if not reason else f"{hint} 模型 reason：{reason}"

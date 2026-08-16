@@ -106,7 +106,7 @@ enabled = false
 
 [context_compaction]
 enabled = false
-trigger_context_tokens = 70000
+trigger_context_tokens = 100000
 next_user_reserve_tokens = 4096
 minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85
@@ -114,7 +114,7 @@ summary_profile = ""
 reasoning_effort = "low"
 recent_turns = 6
 recent_context_ratio = 0.25
-target_summary_tokens = 6000
+target_summary_tokens = 0
 preserve_exact_evidence = true
 allow_cross_provider = false
 failure_fallback = "deterministic"
@@ -161,7 +161,8 @@ enabled = false
 [mcp]
 enabled = false
 default_timeout_seconds = 30
-max_tool_output_chars = 6000
+# 工具输出预算为固定硬编码（单工具 50K 字符、每回合聚合 200K 字符）：
+# 超限输出自动落盘到会话 artifact，模型上下文只保留头尾预览与文件路径。
 servers = {}
 # 远程 Streamable HTTP Server 可在这里声明认证请求头：
 # [mcp.servers.remote_service]

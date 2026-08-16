@@ -92,6 +92,21 @@ class SessionArtifactStore:
             return self._prepare_tool_result_payload(session_id, safe_payload)
         return safe_payload
 
+    def write_tool_result_artifact(self, session_id: str, output: str) -> str:
+        """公开入口：把完整工具输出写入 artifact 文件，返回相对路径。
+
+        用于批次输出预算机制：超限工具的完整内容先落盘，模型上下文只保留
+        头尾预览与文件路径，模型可用 read_file 按路径读取完整内容。
+        """
+
+        output_hash = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        return self._write_tool_result_artifact(
+            session_id=session_id,
+            output=output,
+            output_hash=output_hash,
+            truncated=False,
+        )
+
     def prepare_subagent_result(
         self,
         *,
