@@ -1,4 +1,28 @@
-"""基于独立 Git 对象库的单轮文件树快照与原子恢复。"""
+"""基于 git diff 的工作区轮次快照与原子恢复。
+
+旧实现为每个会话维护一个独立 bare Git 对象库（``shadow.git``），把工作区、
+三类记忆与会话文件按 tree 整体捕获。代价是快照成本与工作区大小成正比：
+被 .gitignore 忽略的大二进制文件（RAR/ZIP/DLL/视频等）会被 ``git add -f``
+强制入库且永不回收，单会话可累积数百 MB，每轮同步阻塞模型请求。
+
+新实现只依赖用户仓库自身的 Git 状态，不创建任何对象库：
+
+- 轮次起点/终点各执行一次 ``git diff HEAD --binary``，把"未提交的已跟踪修改"
+  落盘为补丁；同时用 ``git ls-files --others --exclude-standard`` 记录
+  未跟踪文件清单（被忽略的 config.toml、.omnicrawl 等不属于"被 Git 记录
+  的更改"，不纳入回退范围）。
+- ``/undo`` 时先校验当前状态仍等于轮次终点（冲突检查），再
+  ``git checkout --force HEAD -- .`` 复位到 HEAD，``git apply`` 轮次起点
+  补丁，最后删除本轮新增的未跟踪文件。
+- 记忆目录不再参与快照（/undo 放弃记忆回退）；非 Git 工作区禁用事务式
+  undo，沿用旧降级逻辑。
+
+已知限制：
+
+- 轮次中被删除的未跟踪文件没有内容副本，无法恢复（只提示）。
+- 被 .gitignore 忽略的受控运行态（config.toml、.agent_tmp 等）不回退。
+- 旧版 shadow.git 快照事件（version 1）无法解析，/undo 会明确拒绝。
+"""
 
 from __future__ import annotations
 
@@ -6,11 +30,10 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Mapping
 
 
 class SnapshotError(RuntimeError):
-    """影子快照创建或恢复失败。"""
+    """快照创建或恢复失败。"""
 
 
 class SnapshotConflictError(SnapshotError):
@@ -18,358 +41,180 @@ class SnapshotConflictError(SnapshotError):
 
 
 @dataclass(frozen=True)
-class SnapshotRoot:
-    """一个受影子 Git 管理的根目录及其运行态排除项。"""
+class WorktreeSnapshot:
+    """工作区在某一时刻的状态：HEAD 之上的未提交修改 + 未跟踪文件清单。
 
-    path: Path
-    excluded: tuple[str, ...] = ()
-    included: tuple[str, ...] = ()
+    ``patch`` 是 ``git diff HEAD --binary`` 的输出，已包含暂存区与工作区
+    修改的合并视图；``untracked`` 是 ``git ls-files --others
+    --exclude-standard`` 的文件列表（POSIX 相对路径）。``has_head`` 为假
+    表示工作区不是有 HEAD 的 Git 仓库，无法快照。
+    """
 
-    def __post_init__(self) -> None:
-        def normalize(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
-            normalized: list[str] = []
-            for raw_value in values:
-                value = str(raw_value).replace("\\", "/").strip("/")
-                candidate = PurePosixPath(value)
-                if not value or candidate.is_absolute() or ".." in candidate.parts:
-                    raise SnapshotError(f"快照{label}路径无效：{raw_value}")
-                normalized.append(candidate.as_posix())
-            return tuple(dict.fromkeys(normalized))
-
-        object.__setattr__(self, "path", Path(self.path).resolve())
-        object.__setattr__(
-            self,
-            "excluded",
-            normalize(self.excluded, label="排除"),
-        )
-        object.__setattr__(
-            self,
-            "included",
-            normalize(self.included, label="包含"),
-        )
+    patch: bytes
+    untracked: tuple[str, ...]
+    has_head: bool
 
 
-@dataclass(frozen=True)
-class GitTreeSnapshot:
-    """单个根目录在某一时刻的 Git tree。"""
+class WorktreeSnapshotStore:
+    """用 git diff 捕获/恢复单个 Git 工作区，不触碰用户仓库的引用与历史。
 
-    tree_id: str
-    root_existed: bool
-
-    def to_payload(self) -> dict[str, object]:
-        return {"tree_id": self.tree_id, "root_existed": self.root_existed}
-
-    @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> GitTreeSnapshot:
-        tree_id = str(payload.get("tree_id") or "").strip()
-        if len(tree_id) != 40 or any(
-            character not in "0123456789abcdef" for character in tree_id
-        ):
-            raise SnapshotError("快照 tree_id 格式无效。")
-        root_existed = payload.get("root_existed")
-        if not isinstance(root_existed, bool):
-            raise SnapshotError("快照 root_existed 必须是布尔值。")
-        return cls(tree_id=tree_id, root_existed=root_existed)
-
-
-SnapshotSet = dict[str, GitTreeSnapshot]
-
-
-class GitSnapshotStore:
-    """用外置 bare Git 仓库保存多个文件树，不接触用户仓库状态。"""
+    与旧 shadow.git 机制的关键差异：这里只读执行 ``diff``/``ls-files``，
+    写操作只有恢复时的 ``checkout --force HEAD`` 与 ``apply``，不会创建
+    对象、修改 index 或影响用户分支。
+    """
 
     # 单条 Git 子命令的最长等待时间。快照只是轮次 undo 的前置，绝不允许
-    # 工作区遍历（例如误把用户主目录当根）把整轮对话卡死；超时按失败处理，
-    # 由上层（_begin_turn_snapshot）降级为“本轮禁用 undo”。
+    # 工作区遍历把整轮对话卡死；超时按失败处理，由上层降级为"本轮禁用
+    # undo"。
     GIT_COMMAND_TIMEOUT_SECONDS = 120
 
-    def __init__(self, git_dir: Path) -> None:
-        self.git_dir = Path(git_dir).resolve()
-        self._ensure_repository()
-        self._empty_tree_id = self._git_stdout(["mktree"], input_bytes=b"").strip()
+    def capture(self, workspace: Path) -> WorktreeSnapshot:
+        """捕获工作区当前状态；非 Git 仓库返回 has_head=False 的空快照。"""
 
-    def capture(self, roots: Mapping[str, SnapshotRoot]) -> SnapshotSet:
-        """捕获全部根目录；tree 对象由 bare 仓库统一去重保存。"""
-
-        snapshots: SnapshotSet = {}
-        for name, root in roots.items():
-            normalized_name = str(name).strip()
-            if not normalized_name or normalized_name in snapshots:
-                raise SnapshotError(f"快照根名称无效或重复：{name}")
-            snapshots[normalized_name] = self._capture_root(normalized_name, root)
-        return snapshots
-
-    def transition(
-        self,
-        *,
-        roots: Mapping[str, SnapshotRoot],
-        expected: Mapping[str, GitTreeSnapshot],
-        target: Mapping[str, GitTreeSnapshot],
-    ) -> None:
-        """当前状态完全匹配 expected 时，将所有根切换到 target。
-
-        冲突检查和全部 ``git apply --check`` 均在首次内容写入前完成。实际应用
-        阶段若某个根失败，会按相反顺序把已完成的根恢复到 expected。
-        """
-
-        root_names = tuple(roots)
-        if set(root_names) != set(expected) or set(root_names) != set(target):
-            raise SnapshotError("快照根集合不一致，无法恢复。")
-
-        current = self.capture(roots)
-        conflicts = [name for name in root_names if current[name] != expected[name]]
-        if conflicts:
-            names = "、".join(conflicts)
-            raise SnapshotConflictError(f"以下范围在轮次结束后又被修改：{names}")
-
-        patches = {
-            name: self._tree_patch(expected[name].tree_id, target[name].tree_id)
-            for name in root_names
-        }
-        created_roots: list[Path] = []
-        try:
-            for name in root_names:
-                if not patches[name]:
-                    continue
-                root_path = roots[name].path
-                if not root_path.exists():
-                    root_path.mkdir(parents=True, exist_ok=False)
-                    created_roots.append(root_path)
-                self._apply_patch(root_path, patches[name], check_only=True)
-        except Exception:
-            for root_path in reversed(created_roots):
-                self._remove_if_empty(root_path)
-            raise
-
-        applied: list[str] = []
-        try:
-            for name in root_names:
-                patch = patches[name]
-                if patch:
-                    self._apply_patch(roots[name].path, patch, check_only=False)
-                applied.append(name)
-            for name in root_names:
-                if not target[name].root_existed:
-                    self._remove_if_empty(roots[name].path)
-        except Exception as exc:
-            rollback_errors: list[str] = []
-            for name in reversed(applied):
-                reverse_patch = self._tree_patch(
-                    target[name].tree_id,
-                    expected[name].tree_id,
-                )
-                if not reverse_patch:
-                    continue
-                try:
-                    root_path = roots[name].path
-                    root_path.mkdir(parents=True, exist_ok=True)
-                    self._apply_patch(root_path, reverse_patch, check_only=False)
-                except Exception as rollback_exc:  # pragma: no cover - 极端文件系统故障
-                    rollback_errors.append(f"{name}: {rollback_exc}")
-            for root_path in reversed(created_roots):
-                self._remove_if_empty(root_path)
-            detail = (
-                f"；反向恢复失败：{'；'.join(rollback_errors)}"
-                if rollback_errors
-                else ""
-            )
-            raise SnapshotError(f"应用快照失败：{exc}{detail}") from exc
-
-    def _capture_root(self, name: str, root: SnapshotRoot) -> GitTreeSnapshot:
-        path = root.path
-        if not path.exists():
-            return GitTreeSnapshot(self._empty_tree_id, False)
-        if not path.is_dir():
-            raise SnapshotError(f"快照根不是目录：{path}")
-
-        index_dir = self.git_dir / "omnicrawl-indexes"
-        index_dir.mkdir(parents=True, exist_ok=True)
-        # 跨轮复用固定 index：首次 read-tree --empty 清空，后续直接增量 add，
-        # 保留 stat 与 untracked 缓存，避免对未变化文件反复读盘哈希——大型
-        # 项目每轮快照的主要成本是重新哈希全部文件，而非增量扫描。
-        index_path = index_dir / f"{name}.index"
-        env = os.environ.copy()
-        env["GIT_INDEX_FILE"] = str(index_path)
-        # index 损坏或与工作树不一致时，删除重建一次并退化为全量捕获。
-        for attempt in (1, 2):
-            try:
-                return self._capture_root_into(index_path, path, root, env)
-            except SnapshotError:
-                if attempt == 2 or not index_path.exists():
-                    raise
-                try:
-                    index_path.unlink()
-                except OSError as exc:
-                    raise SnapshotError(f"无法删除损坏的快照 index：{exc}") from exc
-        raise SnapshotError("快照 index 重试失败")  # 防御分支，实际不可达
-
-    def _capture_root_into(
-        self,
-        index_path: Path,
-        path: Path,
-        root: SnapshotRoot,
-        env: dict[str, str],
-    ) -> GitTreeSnapshot:
-        """把单个根目录捕获进给定 index 的当前状态。"""
-
-        if not index_path.exists():
-            self._git(
-                ["-c", "core.indexVersion=4", "read-tree", "--empty"],
-                env=env,
-            )
-        pathspecs = list(root.included) or ["."]
-        exclusions = tuple(dict.fromkeys((".git", *root.excluded)))
-        if os.name == "nt":
-            # `-f` 会绕过 .gitignore；Git for Windows 不能把 NUL 设备写入索引。
-            exclusions = (*exclusions, "NUL")
-        for excluded in exclusions:
-            pathspec_magic = (
-                "exclude,icase"
-                if os.name == "nt" and excluded.casefold() == "nul"
-                else "exclude"
-            )
-            pathspecs.append(f":({pathspec_magic}){excluded}")
-            pathspecs.append(f":({pathspec_magic}){excluded}/**")
-        # `-f` 保留：快照需要捕获被忽略的受控运行态（.agent_tmp、config.toml、
-        # 会话 artifact 等），undo 才能完整回退；巨型依赖/构建目录由上层
-        # excluded 名单排除，避免遍历 node_modules 等。
-        self._git(
+        workspace = Path(workspace).resolve()
+        if not workspace.is_dir():
+            return WorktreeSnapshot(b"", (), False)
+        if not self._has_head(workspace):
+            return WorktreeSnapshot(b"", (), False)
+        # quotepath=false：非 ASCII 路径输出原生 UTF-8，diff/apply 两侧一致。
+        # 注意不能强制 core.autocrlf：Windows 默认 autocrlf=true 下工作区
+        # 是 CRLF、HEAD 是 LF，若强制 autocrlf=false，行尾差异会被误判为
+        # 修改，导致空修改也生成补丁、apply 时报 patch does not apply。
+        patch = self._git_bytes(
             [
                 "-c",
-                "core.autocrlf=false",
-                "-c",
-                "core.indexVersion=4",
-                "-c",
-                "core.untrackedCache=true",
-                "-c",
-                "advice.addIgnoredFile=false",
-                "--work-tree",
-                str(path),
-                "add",
-                "-A",
-                "-f",
-                "--",
-                *pathspecs,
-            ],
-            env=env,
-            cwd=path,
-        )
-        tree_id = self._git_stdout(
-            ["-c", "core.autocrlf=false", "--work-tree", str(path), "write-tree"],
-            env=env,
-        ).strip()
-        return GitTreeSnapshot(tree_id=tree_id, root_existed=True)
-
-    def _tree_patch(self, source_tree: str, target_tree: str) -> bytes:
-        if source_tree == target_tree:
-            return b""
-        return self._git_bytes(
-            [
-                "-c",
-                "core.autocrlf=false",
+                "core.quotepath=false",
                 "diff",
                 "--binary",
                 "--full-index",
-                source_tree,
-                target_tree,
+                "HEAD",
                 "--",
-            ]
+            ],
+            cwd=workspace,
         )
+        untracked = self._git_stdout(
+            ["ls-files", "--others", "--exclude-standard"],
+            cwd=workspace,
+        )
+        lines = tuple(
+            line for line in untracked.splitlines() if line.strip()
+        )
+        return WorktreeSnapshot(patch, lines, True)
 
-    def _apply_patch(self, root: Path, patch: bytes, *, check_only: bool) -> None:
-        arguments = [
-            "-c",
-            "core.autocrlf=false",
-            "--work-tree",
-            str(root),
-            "apply",
-            "--binary",
-            "--whitespace=nowarn",
-        ]
-        if check_only:
-            arguments.append("--check")
-        arguments.append("-")
-        self._git(arguments, input_bytes=patch, cwd=root)
+    def transition(
+        self,
+        workspace: Path,
+        *,
+        expected: WorktreeSnapshot,
+        target: WorktreeSnapshot,
+    ) -> list[str]:
+        """当前状态完全匹配 expected 时，把工作区切换到 target。
 
-    def _ensure_repository(self) -> None:
-        if (self.git_dir / "HEAD").is_file() and (self.git_dir / "objects").is_dir():
-            return
-        self.git_dir.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            result = subprocess.run(
-                ["git", "init", "--bare", "--quiet", str(self.git_dir)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=self.GIT_COMMAND_TIMEOUT_SECONDS,
+        冲突检查和补丁应用在首次内容写入前完成；返回"无法恢复"的提示列表
+        （轮次中被删除、且没有内容副本的未跟踪文件路径）。
+        """
+
+        workspace = Path(workspace).resolve()
+        if not expected.has_head or not target.has_head:
+            raise SnapshotError("工作区不是 Git 仓库，无法回退。")
+
+        current = self.capture(workspace)
+        if not current.has_head:
+            raise SnapshotConflictError("工作区不再是 Git 仓库，拒绝回退。")
+        if current.patch != expected.patch or set(current.untracked) != set(
+            expected.untracked
+        ):
+            raise SnapshotConflictError("工作区在轮次结束后又被修改，拒绝回退。")
+
+        # 复位到 HEAD 干净状态。用 reset --hard 而非 checkout --force：
+        # 前者会同步清掉 index 中 HEAD 不存在的已暂存文件（它们会在
+        # apply 轮次起点补丁时被重新创建，内容一致，仅丢失暂存标记）。
+        self._git(["reset", "--hard", "HEAD"], cwd=workspace)
+        if target.patch:
+            self._git(
+                [
+                    "-c",
+                    "core.quotepath=false",
+                    "apply",
+                    "--binary",
+                    "--whitespace=nowarn",
+                    "-",
+                ],
+                input_bytes=target.patch,
+                cwd=workspace,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise SnapshotError(
-                f"初始化影子 Git 仓库超时（>{self.GIT_COMMAND_TIMEOUT_SECONDS}s）：{exc}"
-            ) from exc
-        except OSError as exc:
-            raise SnapshotError(f"无法启动 Git：{exc}") from exc
-        if result.returncode != 0:
-            raise SnapshotError(self._command_error("初始化影子 Git 仓库", result))
+
+        created = sorted(set(expected.untracked) - set(target.untracked))
+        for relative in created:
+            path = self._workspace_path(workspace, relative)
+            try:
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+            except OSError as exc:
+                raise SnapshotError(
+                    f"无法删除未跟踪文件 {relative}：{exc}"
+                ) from exc
+
+        # 轮次中被删除的未跟踪文件没有内容副本，仅提示无法恢复。
+        return sorted(set(target.untracked) - set(expected.untracked))
+
+    def _has_head(self, workspace: Path) -> bool:
+        try:
+            self._git_stdout(
+                ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                cwd=workspace,
+            )
+            return True
+        except SnapshotError:
+            return False
+
+    @staticmethod
+    def _workspace_path(workspace: Path, relative: str) -> Path:
+        """把 ls-files 输出的 POSIX 相对路径安全解析为工作区内的绝对路径。"""
+
+        candidate = PurePosixPath(relative)
+        if not relative or candidate.is_absolute() or ".." in candidate.parts:
+            raise SnapshotError(f"未跟踪文件路径无效：{relative}")
+        return workspace.joinpath(*candidate.parts)
 
     def _git(
         self,
         arguments: list[str],
         *,
         input_bytes: bytes | None = None,
-        env: dict[str, str] | None = None,
         cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         try:
             result = subprocess.run(
-                ["git", "--git-dir", str(self.git_dir), *arguments],
+                ["git", *arguments],
                 input=input_bytes,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=env,
                 cwd=cwd,
                 timeout=self.GIT_COMMAND_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:
-            # subprocess.run 超时后已 kill 子进程；这里转为 SnapshotError，
-            # 让上层降级而不是让对话永久挂起。
             raise SnapshotError(
-                f"影子 Git 命令超时（>{self.GIT_COMMAND_TIMEOUT_SECONDS}s）：{arguments}"
+                f"Git 命令超时（>{self.GIT_COMMAND_TIMEOUT_SECONDS}s）：{arguments}"
             ) from exc
         except OSError as exc:
             raise SnapshotError(f"无法启动 Git：{exc}") from exc
         if result.returncode != 0:
-            raise SnapshotError(self._command_error("影子 Git 命令失败", result))
+            raise SnapshotError(self._command_error(arguments, result))
         return result
 
-    def _git_stdout(
-        self,
-        arguments: list[str],
-        *,
-        input_bytes: bytes | None = None,
-        env: dict[str, str] | None = None,
-    ) -> str:
-        return self._git(arguments, input_bytes=input_bytes, env=env).stdout.decode(
+    def _git_stdout(self, arguments: list[str], *, cwd: Path | None = None) -> str:
+        return self._git(arguments, cwd=cwd).stdout.decode(
             "utf-8", errors="replace"
         )
 
-    def _git_bytes(self, arguments: list[str]) -> bytes:
-        return self._git(arguments).stdout
+    def _git_bytes(self, arguments: list[str], *, cwd: Path | None = None) -> bytes:
+        return self._git(arguments, cwd=cwd).stdout
 
     @staticmethod
     def _command_error(
-        prefix: str,
+        arguments: list[str],
         result: subprocess.CompletedProcess[bytes],
     ) -> str:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
-        return f"{prefix}：{detail or f'退出码 {result.returncode}'}"
-
-    @staticmethod
-    def _remove_if_empty(path: Path) -> None:
-        if not path.is_dir():
-            return
-        try:
-            next(path.iterdir())
-        except StopIteration:
-            path.rmdir()
-        except OSError:
-            return
+        return f"Git 命令失败（{arguments[0]}）：{detail or f'退出码 {result.returncode}'}"

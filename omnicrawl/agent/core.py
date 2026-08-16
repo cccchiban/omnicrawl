@@ -16,7 +16,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .approval_policy import (
@@ -185,10 +185,10 @@ from ..session import (
     SessionUndoPlan,
 )
 from ..state.turn_snapshot import (
-    GitSnapshotStore,
-    GitTreeSnapshot,
+    SnapshotConflictError,
     SnapshotError,
-    SnapshotRoot,
+    WorktreeSnapshot,
+    WorktreeSnapshotStore,
 )
 from ..state.session_artifacts import (
     preview_text,
@@ -283,12 +283,12 @@ class AgentError(RuntimeError):
 
 @dataclass
 class _ActiveTurnSnapshot:
-    """当前模型轮次的影子快照与副作用账本。"""
+    """当前模型轮次的工作区 diff 快照与副作用账本。"""
 
     snapshot_id: str
-    store: GitSnapshotStore
-    roots: dict[str, SnapshotRoot]
-    before: dict[str, GitTreeSnapshot]
+    store: WorktreeSnapshotStore
+    workspace: Path
+    before: WorktreeSnapshot
     executed_tools: list[str] = field(default_factory=list)
     irreversible_tools: list[str] = field(default_factory=list)
     completed: bool = False
@@ -302,6 +302,7 @@ _READ_ONLY_UNDO_TOOLS = frozenset(
         "read_image",
         "grep",
         "recall_session_evidence",
+        "dev_router_status",
         "memory_search",
         "memory_read",
         "memory_expand_related",
@@ -320,6 +321,13 @@ _REVERSIBLE_UNDO_TOOLS = frozenset(
     {
         "replace_text",
         "write_file",
+    }
+)
+
+# 记忆写操作不再纳入事务式回退范围（/undo 放弃记忆回退，见 1B 决策），
+# 因此与只读工具一样不阻止 /undo——工作区照常回退，记忆保持轮次后的写入。
+_MEMORY_UNDO_EXEMPT_TOOLS = frozenset(
+    {
         "memory_write",
         "project_memory_write",
         "session_memory_write",
@@ -327,58 +335,13 @@ _REVERSIBLE_UNDO_TOOLS = frozenset(
     }
 )
 
-
-# 工作区被误指为 Windows 用户主目录/盘根时，快照默认排除的巨型目录。
-# 路径名全部为相对工作区根的目录名（不区分大小写由 Git 处理）。
-_BROAD_WORKSPACE_EXCLUDED = frozenset(
+# 任务路由自优化工具不写入工作区文件，/undo 无需回退它们：
+# - dev_router_mode：只改进程内会话 override（未持久化到工作区）；
+# - dev_mode_subagent：独立 LLM 调用，不修改任何本地状态。
+_ROUTER_UNDO_EXEMPT_TOOLS = frozenset(
     {
-        ".cargo",
-        ".codex",
-        ".conda",
-        ".config",
-        ".cursor",
-        ".gradle",
-        ".agents",
-        ".cache",
-        "AppData",
-        "Documents",
-        "Downloads",
-        "Desktop",
-        "Pictures",
-        "Videos",
-        "Music",
-        ".virtualenvs",
-        ".venv",
-        "node_modules",
-    }
-)
-
-
-# 快照始终排除的通用巨型依赖/构建目录（相对工作区根的目录名）。
-# 这些目录体量巨大（node_modules、目标产物等）且不属于 undo 关心的代码改动，
-# 每次快照遍历它们会带来与文件数成正比的开销；主目录/盘根场景还会额外叠加
-# _BROAD_WORKSPACE_EXCLUDED 中的用户目录。
-_SNAPSHOT_EXCLUDED_DIRS = frozenset(
-    {
-        ".cargo",
-        ".codex",
-        ".conda",
-        ".config",
-        ".cursor",
-        ".gradle",
-        ".agents",
-        ".cache",
-        ".virtualenvs",
-        ".venv",
-        "node_modules",
-        "build",
-        "dist",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        "target",
-        ".next",
+        "dev_router_mode",
+        "dev_mode_subagent",
     }
 )
 
@@ -1115,6 +1078,16 @@ class LocalToolAgent:
 
         state = self._session_facade().resume_session(session_id)
         self._bind_current_session_memory_store()
+        # 路由状态是进程内 per-session 数据：resume 后从持久事件恢复晋升与
+        # override，否则已晋升会话会重新收窄工具面、override 丢失。
+        if getattr(self.config, "router_enabled", False):
+            try:
+                self._router_runtime.restore_from_events(
+                    session_id,
+                    self._router_session_events(session_id),
+                )
+            except Exception:  # noqa: BLE001 - 路由恢复失败只影响首轮裁剪
+                LOGGER.warning("恢复会话路由状态失败：%s", exc_info=True)
         return state
 
     def _cancel_subagents_for_session_transition(self, reason: str) -> None:
@@ -3417,9 +3390,13 @@ class LocalToolAgent:
 
             if getattr(self.config, "router_enabled", False):
                 # 首次工具调用后晋升：放开完整工具面（首轮锚定）。
-                self._router_runtime.mark_promoted(
-                    self._session_facade().current_session_id()
-                )
+                # 晋升状态持久化为 router_promoted 事件，resume 时由
+                # RouterRuntime.restore_from_events 恢复，避免已晋升会话在
+                # 新进程里重新收窄工具面。首次晋升才写入，事件不膨胀。
+                session_id = self._session_facade().current_session_id()
+                if not self._router_runtime.is_promoted(session_id):
+                    self._router_runtime.mark_promoted(session_id)
+                    self._append_session_event("router_promoted", {})
 
             if tool is not None and denied_result is None:
                 if persist_session_events:
@@ -4443,10 +4420,17 @@ class LocalToolAgent:
             session_id = _session_id()
             if not session_id:
                 return ToolResult(ok=True, output="no agent session")
-            return ToolResult(
-                ok=True,
-                output=runtime.set_mode(session_id, arguments.get("mode")),
-            )
+            mode_token = arguments.get("mode")
+            message = runtime.set_mode(session_id, mode_token)
+            # override 持久化为 router_override 事件（含 auto 清除），resume 时
+            # 由 RouterRuntime.restore_from_events 恢复，override 不随进程丢失。
+            try:
+                self._append_session_event(
+                    "router_override", {"mode": str(mode_token or "")}
+                )
+            except Exception:  # noqa: BLE001 - 状态工具写入失败不阻断主流程
+                pass
+            return ToolResult(ok=True, output=message)
 
         def _mode_subagent(arguments: dict[str, Any]) -> ToolResult:
             return ToolResult(ok=True, output=self._router_mode_subagent(arguments))
@@ -5068,91 +5052,34 @@ class LocalToolAgent:
             resolved = path
         return resolved == self._memory_store.root or self._is_relative_to(resolved, self._memory_store.root)
 
-    def _turn_snapshot_roots(self) -> dict[str, SnapshotRoot]:
-        """构造工作区与三类记忆根；工作区排除独立管理的运行态目录。"""
-
-        roots: dict[str, SnapshotRoot] = {}
-        workspace = self.workspace_root.resolve()
-        # 始终排除通用巨型依赖/构建目录，避免每次快照遍历 node_modules 等；
-        # 会话与记忆目录由下面的循环追加排除。
-        excluded = {".git", *_SNAPSHOT_EXCLUDED_DIRS}
-        # 防御：即使工作区被显式指向用户主目录/盘根（如 AI_WORKSPACE_ROOT），
-        # 也排除 Windows 用户目录下体量巨大的目录，避免 git add 遍历卡死。
-        try:
-            if workspace == Path.home().resolve() or workspace.parent == workspace:
-                excluded.update(_BROAD_WORKSPACE_EXCLUDED)
-        except OSError:
-            pass
-        for candidate in (
-            getattr(getattr(self, "_session_store", None), "root", None),
-            getattr(getattr(self, "_project_memory_store", None), "root", None),
-            getattr(getattr(self, "_session_memory_store", None), "root", None),
-            getattr(getattr(self, "_user_memory_store", None), "root", None),
-        ):
-            if not isinstance(candidate, Path):
-                continue
-            try:
-                excluded.add(candidate.resolve().relative_to(workspace).as_posix())
-            except (OSError, ValueError):
-                continue
-        roots["workspace"] = SnapshotRoot(workspace, tuple(sorted(excluded)))
-
-        session_store = getattr(self, "_session_store", None)
-        session_state = getattr(self, "_session_state", None)
-        if isinstance(session_store, SessionStore) and session_state is not None:
-            session_root = session_store.root.resolve()
-            artifact_relative = (
-                session_store.artifacts_dir
-                / session_state.session_id
-            ).resolve().relative_to(session_root).as_posix()
-            roots["session_runtime"] = SnapshotRoot(
-                session_root,
-                excluded=(f"{artifact_relative}/undo",),
-                included=(
-                    session_store.history_path.resolve()
-                    .relative_to(session_root)
-                    .as_posix(),
-                    artifact_relative,
-                ),
-            )
-
-        for name, attribute in (
-            ("project_memory", "_project_memory_store"),
-            ("session_memory", "_session_memory_store"),
-            ("user_memory", "_user_memory_store"),
-        ):
-            store = getattr(self, attribute, None)
-            root = getattr(store, "root", None)
-            if isinstance(root, Path):
-                roots[name] = SnapshotRoot(root)
-        return roots
-
     def _begin_turn_snapshot(self) -> _ActiveTurnSnapshot | None:
-        """在模型执行前捕获轮次起点；会话未启用时保持旧行为。"""
+        """在模型执行前捕获工作区起点（git diff HEAD）；会话未启用时保持旧行为。"""
 
         session_store = getattr(self, "_session_store", None)
         session_state = getattr(self, "_session_state", None)
         if not isinstance(session_store, SessionStore) or session_state is None:
             return None
-        git_dir = (
-            session_store.artifacts_dir
-            / session_state.session_id
-            / "undo"
-            / "shadow.git"
-        )
         try:
-            store = GitSnapshotStore(git_dir)
-            roots = self._turn_snapshot_roots()
+            store = WorktreeSnapshotStore()
+            before = store.capture(self.workspace_root)
+            if not before.has_head:
+                # 工作区不是有 HEAD 的 Git 仓库：diff 补丁无从谈起。本轮
+                # 禁用事务式 undo（纯对话/只读轮次仍可逻辑回退，写文件
+                # 轮次会被 _restore_turn_side_effects 明确拒绝）。
+                LOGGER.warning(
+                    "工作区不是 Git 仓库，本轮禁用事务式 undo（%s）",
+                    self.workspace_root,
+                )
+                return None
             return _ActiveTurnSnapshot(
                 snapshot_id=uuid.uuid4().hex,
                 store=store,
-                roots=roots,
-                before=store.capture(roots),
+                workspace=self.workspace_root.resolve(),
+                before=before,
             )
         except SnapshotError as exc:
-            # 快照失败仅禁用本轮 undo，不中止回合：工作区过大或 Git 环境
-            # 异常时若直接抛错，整轮对话会在模型请求前就失败（曾因工作区
-            # 被误判为主目录而卡死在 git add 上）。降级后本轮失去 undo，
+            # 快照失败仅禁用本轮 undo，不中止回合：Git 环境异常时若直接
+            # 抛错，整轮对话会在模型请求前就失败。降级后本轮失去 undo，
             # 但对话与工具执行不受影响。
             LOGGER.warning("无法创建本轮 Git 快照，本轮禁用事务式 undo：%s", exc)
             return None
@@ -5174,7 +5101,12 @@ class LocalToolAgent:
 
     @staticmethod
     def _tool_is_undo_safe(name: str, arguments: Mapping[str, Any]) -> bool:
-        if name in _READ_ONLY_UNDO_TOOLS or name in _REVERSIBLE_UNDO_TOOLS:
+        if (
+            name in _READ_ONLY_UNDO_TOOLS
+            or name in _REVERSIBLE_UNDO_TOOLS
+            or name in _MEMORY_UNDO_EXEMPT_TOOLS
+            or name in _ROUTER_UNDO_EXEMPT_TOOLS
+        ):
             return True
         if name == "subagent":
             return str(arguments.get("action") or "run").strip() in {
@@ -5193,31 +5125,62 @@ class LocalToolAgent:
         return False
 
     def _complete_turn_snapshot(self, snapshot: _ActiveTurnSnapshot | None) -> None:
-        """捕获轮次终点并把可恢复元数据作为 Session 事件持久化。"""
+        """捕获轮次终点并持久化 undo 补丁，作为 Session 事件记录。"""
 
         if snapshot is None or snapshot.completed:
             return
+        session_store = getattr(self, "_session_store", None)
+        session_state = getattr(self, "_session_state", None)
+        if not isinstance(session_store, SessionStore) or session_state is None:
+            raise AgentError("Session 未启用，无法持久化轮次快照。")
         try:
-            after = snapshot.store.capture(snapshot.roots)
-        except SnapshotError as exc:
-            raise AgentError(f"本轮结束 Git 快照失败，副作用无法安全回退：{exc}") from exc
+            after = snapshot.store.capture(snapshot.workspace)
+            undo_dir = (
+                session_store.artifacts_dir / session_state.session_id / "undo"
+            )
+            undo_dir.mkdir(parents=True, exist_ok=True)
+            self._write_snapshot_file(undo_dir / "begin.patch", snapshot.before.patch)
+            self._write_snapshot_untracked(
+                undo_dir / "begin.untracked.txt", snapshot.before.untracked
+            )
+            self._write_snapshot_file(undo_dir / "end.patch", after.patch)
+            self._write_snapshot_untracked(
+                undo_dir / "end.untracked.txt", after.untracked
+            )
+        except (SnapshotError, OSError) as exc:
+            raise AgentError(
+                f"本轮结束 Git 快照失败，副作用无法安全回退：{exc}"
+            ) from exc
         self._append_session_event(
             "turn_snapshot",
             {
-                "version": 1,
+                "version": 2,
                 "snapshot_id": snapshot.snapshot_id,
-                "roots": {
-                    name: {
-                        "before": snapshot.before[name].to_payload(),
-                        "after": after[name].to_payload(),
-                    }
-                    for name in snapshot.roots
-                },
+                "workspace": str(snapshot.workspace),
+                "begin_patch": "undo/begin.patch",
+                "begin_untracked": "undo/begin.untracked.txt",
+                "end_patch": "undo/end.patch",
+                "end_untracked": "undo/end.untracked.txt",
                 "executed_tools": list(snapshot.executed_tools),
                 "irreversible_tools": list(dict.fromkeys(snapshot.irreversible_tools)),
             },
         )
         snapshot.completed = True
+
+    @staticmethod
+    def _write_snapshot_file(path: Path, content: bytes) -> None:
+        """原子写入补丁文件，避免中途崩溃留下半截 undo 状态。"""
+
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_bytes(content)
+        temporary.replace(path)
+
+    @staticmethod
+    def _write_snapshot_untracked(path: Path, untracked: tuple[str, ...]) -> None:
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text("\n".join(untracked), encoding="utf-8")
+        temporary.replace(path)
+
 
     def _restore_turn_side_effects(
         self,
@@ -5261,6 +5224,11 @@ class LocalToolAgent:
             raise AgentError("当前轮次包含多个 Git 快照事件，无法安全回退。")
 
         payload = snapshot_events[0].payload
+        if payload.get("version") != 2:
+            raise AgentError(
+                "该轮次使用旧版影子对象库快照（version 1），已随 git diff "
+                "重构移除，无法自动回退；请手工还原文件后重试。"
+            )
         irreversible = payload.get("irreversible_tools", [])
         if not isinstance(irreversible, list):
             raise AgentError("轮次快照的不可逆工具账本格式无效。")
@@ -5271,43 +5239,97 @@ class LocalToolAgent:
                 + "、".join(dict.fromkeys(blocker_names))
             )
 
-        roots_payload = payload.get("roots")
-        if not isinstance(roots_payload, dict):
-            raise AgentError("轮次快照缺少 roots。")
-        roots = self._turn_snapshot_roots()
-        if set(roots_payload) != set(roots):
-            raise AgentError("当前工作区或记忆作用域与轮次快照不一致，已拒绝回退。")
+        # 快照与工作区绑定：会话跨工作区恢复时，禁止把补丁应用到别的目录。
+        recorded_workspace = str(payload.get("workspace") or "").strip()
+        current_workspace = self.workspace_root.resolve()
+        if recorded_workspace:
+            try:
+                same_workspace = Path(recorded_workspace).resolve() == current_workspace
+            except OSError:
+                same_workspace = False
+            if not same_workspace:
+                raise AgentError(
+                    "该轮次的工作区与当前工作区不一致，已拒绝回退。"
+                )
 
-        before: dict[str, GitTreeSnapshot] = {}
-        after: dict[str, GitTreeSnapshot] = {}
         try:
-            for name, value in roots_payload.items():
-                if not isinstance(value, dict):
-                    raise SnapshotError(f"快照根 {name} 格式无效。")
-                before_payload = value.get("before")
-                after_payload = value.get("after")
-                if not isinstance(before_payload, dict) or not isinstance(
-                    after_payload, dict
-                ):
-                    raise SnapshotError(f"快照根 {name} 缺少 before/after。")
-                before[name] = GitTreeSnapshot.from_payload(before_payload)
-                after[name] = GitTreeSnapshot.from_payload(after_payload)
             session_store = self._session_facade().require_session_store()
-            git_dir = (
-                session_store.artifacts_dir
-                / plan.session_id
-                / "undo"
-                / "shadow.git"
+            artifact_root = session_store.artifacts_dir.resolve()
+            before = self._load_workspace_snapshot(
+                artifact_root, plan.session_id, payload, "begin"
             )
-            snapshot_store = GitSnapshotStore(git_dir)
-            snapshot_store.transition(roots=roots, expected=after, target=before)
+            after = self._load_workspace_snapshot(
+                artifact_root, plan.session_id, payload, "end"
+            )
+        except SnapshotError as exc:
+            raise AgentError(f"副作用回退失败：{exc}") from exc
+
+        snapshot_store = WorktreeSnapshotStore()
+        try:
+            unrestorable = snapshot_store.transition(
+                current_workspace, expected=after, target=before
+            )
         except SnapshotError as exc:
             raise AgentError(f"副作用回退冲突或失败：{exc}") from exc
+        if unrestorable:
+            LOGGER.warning(
+                "本轮被删除的未跟踪文件无内容副本，无法恢复：%s",
+                "、".join(unrestorable),
+            )
 
         def rollback() -> None:
-            snapshot_store.transition(roots=roots, expected=before, target=after)
+            snapshot_store.transition(
+                current_workspace, expected=before, target=after
+            )
 
         return rollback
+
+    def _load_workspace_snapshot(
+        self,
+        artifact_root: Path,
+        session_id: str,
+        payload: Mapping[str, Any],
+        prefix: str,
+    ) -> WorktreeSnapshot:
+        """从 turn_snapshot 事件读取补丁与未跟踪清单文件。
+
+        payload 中存的是相对 artifacts 根的 POSIX 路径（如
+        ``undo/begin.patch``）；读取前校验其解析结果仍位于
+        ``artifacts/<session_id>`` 内，防止被篡改的事件用 ``..`` 越界。
+        """
+
+        patch_relative = str(payload.get(f"{prefix}_patch") or "").strip()
+        untracked_relative = str(payload.get(f"{prefix}_untracked") or "").strip()
+        if not patch_relative or not untracked_relative:
+            raise SnapshotError(f"轮次快照缺少 {prefix} 补丁文件引用。")
+        session_artifacts = (artifact_root / session_id).resolve()
+        patch_path = self._resolve_artifact_path(session_artifacts, patch_relative)
+        untracked_path = self._resolve_artifact_path(
+            session_artifacts, untracked_relative
+        )
+        try:
+            patch = patch_path.read_bytes()
+            untracked = tuple(
+                line
+                for line in untracked_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            )
+        except OSError as exc:
+            raise SnapshotError(f"读取轮次快照文件失败：{exc}") from exc
+        return WorktreeSnapshot(patch, untracked, True)
+
+    @staticmethod
+    def _resolve_artifact_path(root: Path, relative: str) -> Path:
+        """把事件中的相对路径解析为 root 内的绝对路径（防目录穿越）。"""
+
+        value = relative.replace("\\", "/").strip("/")
+        candidate = PurePosixPath(value)
+        if not value or candidate.is_absolute() or ".." in candidate.parts:
+            raise SnapshotError(f"快照文件路径无效：{relative}")
+        path = (root / candidate.as_posix()).resolve()
+        if not LocalToolAgent._is_relative_to(path, root):
+            raise SnapshotError(f"快照文件越出会话目录：{relative}")
+        return path
 
     def _refresh_workspace_after_undo(self) -> None:
         """文件树恢复后核对搜索索引，避免查询到已回退内容。

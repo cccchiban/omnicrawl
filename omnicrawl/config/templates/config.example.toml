@@ -84,6 +84,8 @@ enabled = true
 # 任务思维模式路由器（dsh-routing-suite 移植），默认关闭。
 # mode = "standard" 表示 RL 接口还原（首轮 RL 训练句 + 核心工具面，首次工具调用后晋升）；
 # mode = "spec" 表示深度思考优先（分类 persona 置顶，保留完整 system prompt）。
+# 晋升与 dev_router_mode 设置的 override 会持久化为会话事件（router_promoted /
+# router_override），恢复会话时自动还原，不随进程退出丢失。
 [router]
 enabled = false
 mode = "standard"

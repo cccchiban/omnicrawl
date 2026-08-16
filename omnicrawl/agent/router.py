@@ -152,7 +152,10 @@ def core_for(mode: Any) -> list[str]:
     if band == "transition":
         return ["read", "edit", "write", "glob", "grep"]
     if band == "weak":
-        return ["str_replace_editor"]
+        # weak（内部路由）面：RL-shape 的 str_replace_editor 之外必须补充只读
+        # 工具，否则“先读证据再动手”的核心协议在弱分类下无法执行（模型只能
+        # 写文件或跑 shell 才能读代码）。
+        return ["read", "edit", "glob", "grep", "str_replace_editor"]
     return ["read", "write", "edit"]
 
 

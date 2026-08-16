@@ -482,7 +482,7 @@ def handle_session_command(agent: LocalToolAgent, command: str) -> str | None:
         except AgentError as exc:
             return f"会话回退失败：{exc}"
         return (
-            "已回退最近一轮（事务式）：会话转录、模型上下文、工作区文件与三类记忆已同步恢复。"
+            "已回退最近一轮（事务式）：会话转录、模型上下文与工作区中 Git 记录的更改已同步恢复。"
         )
     if normalized.startswith("/undo "):
         return "用法：/undo。"
@@ -657,7 +657,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/task": "查看或取消一个后台 SubAgent 任务。",
         "/resume": "恢复指定会话 ID。",
         "/history": "查看或筛选提示历史。",
-        "/undo": "原子回退最近一轮对话、工作区文件和三类记忆；冲突或不可逆操作时拒绝。",
+        "/undo": "原子回退最近一轮对话与工作区中被 Git 记录的更改；冲突或不可逆操作时拒绝。",
         "/compact": "使用本地确定性规则压缩当前会话上下文。",
         "/compact --model": "使用结构化摘要模型压缩当前会话上下文。",
         "/rename": "重命名当前会话。",

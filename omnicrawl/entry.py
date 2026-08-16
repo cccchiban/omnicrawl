@@ -221,10 +221,12 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         return 2
 
     # 主目录/盘根等过宽启动目录回退时使用 Agent 程序目录（而非 cwd），
-    # 否则用户在主目录直接启动会把整个主目录当工作区，导致 Git 快照
-    # 遍历 AppData/.cargo/.codex 等巨量文件而卡死（见 turn_snapshot 卡死 bug）。
-    # 包安装后本文件位于 site-packages/omnicrawl/，parent.parent 即程序根；
-    # 工作区检测仍从启动目录向上找项目标记，不影响从项目内启动的路径。
+    # 否则用户在主目录直接启动会把整个主目录当工作区（历史上 git add
+    # 全量快照会遍历 AppData/.cargo/.codex 等巨量文件而卡死，见旧版
+    # turn_snapshot 卡死 bug；现改为 git diff 机制后仍应避免以盘根为
+    # 工作区）。包安装后本文件位于 site-packages/omnicrawl/，parent.parent
+    # 即程序根；工作区检测仍从启动目录向上找项目标记，不影响从项目内
+    # 启动的路径。
     app_root = Path(__file__).resolve().parent.parent
 
     # 显示约 5 秒启动画面（fastfetch 式：左侧黄色 Logo + 右侧系统信息 + 底部 XP 滚动条），
