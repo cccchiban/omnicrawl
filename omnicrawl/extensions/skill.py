@@ -169,9 +169,11 @@ class SkillManager:
                     self._scan_directory(Path(env_val).expanduser().resolve(), scope)
             elif scope == "user":
                 user_skills = home_dir / ".omnicrawl" / "skills"
+                self._ensure_scope_dir(user_skills)
                 self._scan_directory(user_skills, scope)
             elif scope == "project":
                 project_skills = work_dir / ".omnicrawl" / "skills"
+                self._ensure_scope_dir(project_skills)
                 self._scan_directory(project_skills, scope)
 
         for raw_path in (extra_paths or []):
@@ -198,6 +200,19 @@ class SkillManager:
                     message="Skill 路径不是目录或 .md 文件",
                     path=str(resolved),
                 ))
+
+    @staticmethod
+    def _ensure_scope_dir(dir_path: Path) -> None:
+        """确保作用域目录存在；创建失败时保持原有静默降级行为。
+
+        个人级与项目级 skills 目录在 discover 时自动创建，避免用户按文档
+        放置 SKILL.md 前需要手工 mkdir。企业级目录由环境变量显式指定，
+        不自动创建。
+        """
+        try:
+            dir_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
     def _scan_directory(self, dir_path: Path, scope: str) -> None:
         """递归扫描目录下的 SKILL.md 和根级 .md 文件。

@@ -29,6 +29,8 @@ Skill 是一组面向特定任务的专用指令。它不会替代工具权限�
 
 同名 Skill 按当前实现由后加载作用域覆盖前面作用域：项目级优先于个人级，个人级优先于企业级。额外路径 `skill_paths` 的优先级最高。
 
+个人级 `~/.omnicrawl/skills/` 与项目级 `.omnicrawl/skills/` 目录会在 OmniCrawl 启动（`discover`）时自动创建，无需手工 `mkdir`。企业级目录由环境变量显式指定，不自动创建。
+
 推荐目录结构：
 
 ```text
