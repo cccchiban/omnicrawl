@@ -81,6 +81,26 @@ _FEATURES = (
     ("content_index", "内容关键词索引", "content_index"),
 )
 _COLUMN_SLOTS = 16  # 每栏设置行数：左栏固定 16 项，右栏真实设置项 + 空位。
+# 普通模式左栏 16 项：先主设置，再“管理”入口，最后是开关项。
+# 右栏固定为 show_thinking/router 两项，合计 18 项，超过左栏 16 项的部分放入右列。
+_SETTING_ORDER = (
+    "model",
+    "context",
+    "reasoning",
+    "approval",
+    "channels",
+    "tools",
+    "subagents_advanced",
+    "mcp",
+    "vision",
+    "image_gen",
+    "memory",
+    "plugins",
+    "subagents",
+    "context_compaction",
+    "file_name_index",
+    "content_index",
+)
 
 
 class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
@@ -109,6 +129,9 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         padding: 1 2;
         border: solid $terminal-border-strong;
         background: $terminal-surface;
+    }
+    #settings-dialog.advanced {
+        width: 62;
     }
     #settings-title {
         height: 1;
@@ -167,18 +190,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self._row_keys = (
             tuple(SUBAGENT_ADVANCED_SETTING_KEYS)
             if advanced
-            else (
-                "model",
-                "channels",
-                "vision",
-                "image_gen",
-                "reasoning",
-                "context",
-                "approval",
-                "tools",
-                "subagents_advanced",
-            )
-            + tuple(item[0] for item in _FEATURES if item[0] != "router")
+            else _SETTING_ORDER
         )
 
     @property
@@ -193,24 +205,33 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         return self._left_keys() + self._right_keys()
 
     def compose(self) -> ComposeResult:
-        with Container(id="settings-dialog"):
+        with Container(
+            id="settings-dialog",
+            classes="advanced" if self._advanced else "standard",
+        ):
             yield Static(
                 "子任务高级设置" if self._advanced else "运行设置",
                 id="settings-title",
             )
-            with VerticalScroll(id="settings-list"):
-                with Container(id="settings-body"):
-                    with VerticalScroll(id="settings-list-left", classes="settings-column"):
-                        for key in self._left_keys():
-                            yield self._row_widget(key)
-                        for index in range(_COLUMN_SLOTS - len(self._left_keys())):
-                            yield self._empty_row_widget(index, "left")
-                    yield Static("│", id="settings-divider")
-                    with VerticalScroll(id="settings-list-right", classes="settings-column"):
-                        for key in self._right_keys():
-                            yield self._row_widget(key)
-                        for index in range(_COLUMN_SLOTS - len(self._right_keys())):
-                            yield self._empty_row_widget(index, "right")
+            if self._advanced:
+                # 子任务高级设置采用单列列表，参照“工具开关”页面的紧凑排布。
+                with VerticalScroll(id="settings-list"):
+                    for key in self._row_keys:
+                        yield self._row_widget(key)
+            else:
+                with VerticalScroll(id="settings-list"):
+                    with Container(id="settings-body"):
+                        with VerticalScroll(id="settings-list-left", classes="settings-column"):
+                            for key in self._left_keys():
+                                yield self._row_widget(key)
+                            for index in range(_COLUMN_SLOTS - len(self._left_keys())):
+                                yield self._empty_row_widget(index, "left")
+                        yield Static("│", id="settings-divider")
+                        with VerticalScroll(id="settings-list-right", classes="settings-column"):
+                            for key in self._right_keys():
+                                yield self._row_widget(key)
+                            for index in range(_COLUMN_SLOTS - len(self._right_keys())):
+                                yield self._empty_row_widget(index, "right")
             yield Static(self._status, id="settings-status")
             yield Static("↑↓ 选择  ←→ 修改  Enter/空格确认  Esc 返回", id="settings-help")
 
@@ -273,7 +294,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             self._apply_setting(key, _CONTEXT_WINDOW_OPTIONS_K[(index + direction) % len(_CONTEXT_WINDOW_OPTIONS_K)] * 1000)
             return
         if not self._advanced and key == "approval":
-            current = str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))
+            current = str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))
             try:
                 index = _APPROVAL_OPTIONS.index(current)
             except ValueError:
@@ -372,14 +393,15 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self.query_one("#settings-status", Static).update(self._status)
 
     def _left_keys(self) -> tuple[str, ...]:
-        """左栏设置项：普通模式 16 项 / 高级模式 6 项。"""
+        """普通模式左栏设置项（固定 16 项）；高级模式单列时由 _all_keys 直接返回。"""
 
         return self._row_keys
 
     def _right_keys(self) -> tuple[str, ...]:
-        """右栏真实设置项：普通模式含“思考显示”与“任务思维路由”。
+        """普通模式右栏真实设置项：超过左栏 16 项的部分。
 
-        后续在右侧添加设置项时，只需把对应 key 追加到此元组。
+        当前为“思考显示”与“任务思维路由”；后续新增设置项时，
+        保持 _SETTING_ORDER 为左栏 16 项、右栏追加新 key 即可。
         """
 
         return () if self._advanced else ("show_thinking", "router")
@@ -392,7 +414,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         return Static(
             f"{marker}{labels[key]}：{values[key]}",
             id=f"settings-row-{key}",
-            classes="settings-row compact" if not self._advanced else "settings-row",
+            classes="settings-row compact",
         )
 
     def _empty_row_widget(self, index: int, column: str) -> Static:
@@ -400,7 +422,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         return Static(
             "",
             id=f"settings-slot-{column}-{index}",
-            classes="settings-row compact" if not self._advanced else "settings-row",
+            classes="settings-row compact",
         )
 
     def _current_row_values(self) -> dict[str, str]:
@@ -414,15 +436,15 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "channels": "管理",
             "vision": "已开启" if self._feature_enabled("vision") else "已关闭",
             "image_gen": "已开启" if self._feature_enabled("image_gen") else "已关闭",
-            "reasoning": _REASONING_LABELS.get(str(getattr(self._agent, "reasoning_effort", "none") or "none"), "默认"),
+            "reasoning": str(getattr(self._agent, "reasoning_effort", "none") or "none"),
             "context": f"{int(getattr(self._agent, 'context_window_tokens', 128_000)) // 1000}K",
-            "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_MANUAL))),
-            "tools": "进入",
-            "subagents_advanced": "进入",
+            "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))),
+            "tools": "管理",
+            "subagents_advanced": "管理",
             "show_thinking": "已开启" if self._feature_enabled("show_thinking") else "已关闭",
         }
         for key, _label, _section in _FEATURES:
-            values[key] = "进入" if key == "mcp" else ("已开启" if self._feature_enabled(key) else "已关闭")
+            values[key] = "管理" if key == "mcp" else ("已开启" if self._feature_enabled(key) else "已关闭")
         return values
 
     @staticmethod
@@ -478,7 +500,7 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             raise
         return f"上下文长度已设为 {tokens // 1000}K，已保存到 {path}。"
     elif key == "approval":
-        previous = str(getattr(screen._agent, "approval_mode", APPROVAL_MODE_MANUAL))
+        previous = str(getattr(screen._agent, "approval_mode", APPROVAL_MODE_REVIEW))
         mode = str(value)
         screen._agent.set_approval_mode(mode)
         try:

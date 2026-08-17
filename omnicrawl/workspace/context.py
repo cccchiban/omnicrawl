@@ -106,6 +106,10 @@ def find_project_root(start_path: Path) -> tuple[Path, str] | None:
     """从给定路径向上寻找最近的项目根标记。"""
 
     current = _directory_for_detection(start_path.expanduser().resolve())
+    # 启动目录完全为空时不再向上跳级：空目录通常是用户新建项目的起点，
+    # 若上级恰好有 .git 等标记，跳级会让工作区误归属到上级项目。
+    if _is_empty_directory(current):
+        return None
     for candidate in (current, *current.parents):
         if _is_too_broad_workspace(candidate):
             break
@@ -177,6 +181,18 @@ def _resolve_existing_directory(raw_path: str, source_name: str) -> Path:
 
 def _directory_for_detection(path: Path) -> Path:
     return path if path.is_dir() else path.parent
+
+
+def _is_empty_directory(path: Path) -> bool:
+    """判断目录是否完全为空（不含任何条目）。
+
+    仅在目录可读取时给出确定结论；读取失败按非空处理，继续常规检测。
+    """
+    try:
+        with os.scandir(path) as entries:
+            return next(entries, None) is None
+    except OSError:
+        return False
 
 
 def _first_existing_marker(directory: Path) -> str | None:

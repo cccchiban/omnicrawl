@@ -76,6 +76,23 @@ class _Entry:
     path_folded: str = ""
 
 
+def _dedupe_entries(entries: list[_Entry]) -> list[_Entry]:
+    """按相对路径去重，保留首次出现的条目。
+
+    正常路径下符号链接已在扫描阶段跳过，但 resolve 归一化、平台路径
+    大小写或扫描竞态仍可能产生重复相对路径；重复写入会触发
+    entries.path 唯一约束，导致整次索引重建失败。
+    """
+    seen: set[str] = set()
+    unique: list[_Entry] = []
+    for entry in entries:
+        if entry.path in seen:
+            continue
+        seen.add(entry.path)
+        unique.append(entry)
+    return unique
+
+
 class ProjectSearchIndex:
     """维护持久化快照，并把文件名快照加载为进程内查询表。
 
@@ -479,6 +496,9 @@ class ProjectSearchIndex:
         entries = self._scan_entries()
         if self._stop_event.is_set():
             return
+        # 防御层：即使扫描阶段遗漏了重复相对路径，也确保写入唯一约束
+        # 的 entries 表前完成去重，避免重建整体失败。
+        entries = _dedupe_entries(entries)
         files = [entry for entry in entries if not entry.is_dir]
         self._set_status(
             file_processed=len(entries),
@@ -649,7 +669,10 @@ class ProjectSearchIndex:
             dirnames[:] = kept_directories
             for name in sorted(filenames, key=str.casefold):
                 path = current / name
-                if self._skip(path):
+                # 与目录条目一致地跳过文件符号链接：resolve 会把链接路径
+                # 归一化到目标路径，若目标本身也在索引范围内，会导致同一
+                # 相对路径出现两条记录，触发 entries.path 唯一约束失败。
+                if path.is_symlink() or self._skip(path):
                     continue
                 entry = self._entry_for_path(path, is_dir=False, parent_stat=parent_stat)
                 if entry is not None:

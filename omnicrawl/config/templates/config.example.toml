@@ -71,7 +71,7 @@ n = 1
 timeout_seconds = 120
 
 [approval]
-mode = "manual"
+mode = "review"
 
 # 对话区思考块显示：关闭后思考内容仍照常产生并进入推理链路，只是不在
 # 对话区渲染思考块（含背景色）。可在 TUI /settings 中切换。

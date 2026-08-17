@@ -3976,7 +3976,7 @@ class LocalToolAgent:
                 )
             return result
 
-        approval_mode = getattr(self.config, "approval_mode", "manual")
+        approval_mode = getattr(self.config, "approval_mode", APPROVAL_MODE_REVIEW)
         requires_confirmation = tool.requires_confirmation
 
         # tool.approval.before：只能拒绝，不能代表用户批准。

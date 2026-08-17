@@ -57,7 +57,7 @@ def approval_mode_label(mode: str) -> str:
 
 
 def load_approval_mode(config_path: str | Path | None = None) -> str:
-    """从 config.toml 读取工具审批模式，默认保持人工确认。"""
+    """从 config.toml 读取工具审批模式，默认自动审查。"""
 
     try:
         data = load_config_data(config_path)
@@ -71,7 +71,7 @@ def load_approval_mode(config_path: str | Path | None = None) -> str:
         return APPROVAL_MODE_REVIEW
     if approval_section.get("auto_approve") is True:
         return APPROVAL_MODE_AUTO
-    return APPROVAL_MODE_MANUAL
+    return APPROVAL_MODE_REVIEW
 
 
 def save_approval_mode(mode: str, config_path: str | Path | None = None) -> Path:
