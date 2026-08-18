@@ -49,11 +49,12 @@ RL_PERSONA = "You are a helpful software engineer assistant."
 _ROUTER_FIRST_TURN_GUIDANCE = (
     "\n\nTask routing is active on this first turn: search_tools returns only a "
     "core tool subset (read / replace_text / find / grep / shell). After you "
-    "successfully call any available tool, the full tool surface unlocks. If a "
-    "tool is missing from search results, call an available core tool first, "
-    "then search again. After the surface unlocks, dev_router_status inspects "
-    "routing state and dev_router_mode overrides the session mode "
-    "(spec / weak / mixed / react)."
+    "successfully call any available tool, the full tool surface unlocks; "
+    "matched tools are loaded into the conversation and can then be called "
+    "natively by their real names. If a tool is missing from search results, "
+    "call an available core tool first, then search again. After the surface "
+    "unlocks, dev_router_status inspects routing state and dev_router_mode "
+    "overrides the session mode (spec / weak / mixed / react)."
 )
 
 

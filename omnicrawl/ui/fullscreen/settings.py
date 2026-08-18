@@ -22,6 +22,7 @@ from ...approval import (
 )
 from ...config.settings import (
     SettingsConfigError,
+    save_context_compaction_trigger_percent,
     save_context_window_tokens,
     save_feature_enabled,
     save_show_thinking,
@@ -54,6 +55,8 @@ _REASONING_LABELS = {
 }
 _APPROVAL_OPTIONS = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW)
 _CONTEXT_WINDOW_OPTIONS_K = (32, 64, 128, 256, 512, 1024, 2048)
+# 上下文压缩阈值按当前上下文窗口的百分比设置，5% 为一个单位递进。
+_CONTEXT_COMPACTION_PERCENT_OPTIONS = tuple(range(5, 100, 5))
 _SUBAGENT_ADVANCED_LABELS = {
     "max_concurrency": "最大并发数",
     "max_tasks_per_batch": "每批最大任务数",
@@ -78,8 +81,8 @@ _FEATURES = (
     ("context_compaction", "上下文压缩", "context_compaction"),
     ("router", "任务思维路由", "router"),
 )
-_COLUMN_SLOTS = 16  # 每栏设置行数：左栏 14 项 + 2 空位，右栏真实设置项 + 空位。
-# 普通模式左栏：先主设置，再“管理”入口，最后是开关项。
+_COLUMN_SLOTS = 16  # 每栏设置行数：左栏 15 项 + 1 空位，右栏真实设置项 + 空位。
+# 普通模式左栏：先主设置，再“管理”入口，最后是开关项与压缩阈值项。
 # 右栏固定为 show_thinking/router 两项，合计 16 项，右栏其余位置为空位。
 _SETTING_ORDER = (
     "model",
@@ -96,6 +99,7 @@ _SETTING_ORDER = (
     "plugins",
     "subagents",
     "context_compaction",
+    "context_compaction_threshold",
 )
 
 
@@ -297,6 +301,21 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
                 index = 0
             self._apply_setting(key, _APPROVAL_OPTIONS[(index + direction) % len(_APPROVAL_OPTIONS)])
             return
+        if not self._advanced and key == "context_compaction_threshold":
+            current = self._context_compaction_percent()
+            options = _CONTEXT_COMPACTION_PERCENT_OPTIONS
+            try:
+                index = options.index(current)
+            except ValueError:
+                index = min(
+                    range(len(options)),
+                    key=lambda item: abs(options[item] - current),
+                )
+            self._apply_setting(
+                key,
+                options[(index + direction) % len(options)],
+            )
+            return
         if self._advanced:
             options = _SUBAGENT_ADVANCED_OPTIONS[key]
             current = self._subagent_config_value(key)
@@ -341,6 +360,24 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     def _subagent_config_value(self, key: str) -> int | float:
         config = getattr(getattr(self._agent, "config", None), "subagents", None)
         return getattr(config, key, 0)
+
+    def _context_compaction_percent(self) -> int:
+        """把当前触发阈值换算成最近的 5% 档位百分比。
+
+        换算公式：``上下文 × 百分比 = trigger_context_tokens``；
+        缺少阈值或上下文窗口信息时回退默认 75%。
+        """
+
+        config = getattr(getattr(self._agent, "config", None), "context_compaction", None)
+        tokens = getattr(config, "trigger_context_tokens", None)
+        context_window = int(getattr(self._agent, "context_window_tokens", 128_000))
+        if not tokens or context_window <= 0:
+            return 75
+        percent = tokens * 100 / context_window
+        return min(
+            _CONTEXT_COMPACTION_PERCENT_OPTIONS,
+            key=lambda option: abs(option - percent),
+        )
 
     @staticmethod
     def _subagent_advanced_keys() -> tuple[str, ...]:
@@ -430,6 +467,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))),
             "tools": "管理",
             "subagents_advanced": "管理",
+            "context_compaction_threshold": f"{self._context_compaction_percent()}%",
             "show_thinking": "已开启" if self._feature_enabled("show_thinking") else "已关闭",
         }
         for key, _label, _section in _FEATURES:
@@ -452,6 +490,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "approval": "工具审批",
             "tools": "工具开关",
             "subagents_advanced": "子任务高级设置",
+            "context_compaction_threshold": "上下文压缩阈值（%）",
             "show_thinking": "思考显示",
             **_SUBAGENT_ADVANCED_LABELS,
             **{key: label for key, label, _section in _FEATURES},
@@ -477,6 +516,13 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
     elif key == "context":
         previous = int(getattr(screen._agent, "context_window_tokens", 128_000))
         tokens = int(value)
+        # 修改上下文长度时，压缩阈值按当前百分比自动跟随重算。
+        percent = screen._context_compaction_percent()
+        previous_trigger = getattr(
+            getattr(getattr(screen._agent, "config", None), "context_compaction", None),
+            "trigger_context_tokens",
+            None,
+        )
         screen._agent.set_context_window_tokens(tokens)
         try:
             path = save_context_window_tokens(
@@ -484,10 +530,38 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
                 model_source=str(getattr(getattr(screen._agent, "config", None), "llm", None) and getattr(screen._agent.config.llm, "model_source", "legacy") or "legacy"),
                 catalog_key=str(getattr(getattr(screen._agent, "config", None), "llm", None) and getattr(screen._agent.config.llm, "catalog_key", "") or ""),
             )
+            screen._agent.set_context_compaction_trigger_percent(percent)
+            save_context_compaction_trigger_percent(
+                percent,
+                context_window_tokens=tokens,
+            )
         except Exception:
             screen._agent.set_context_window_tokens(previous)
+            if previous_trigger is not None:
+                screen._agent.set_context_compaction_trigger_tokens(previous_trigger)
             raise
-        return f"上下文长度已设为 {tokens // 1000}K，已保存到 {path}。"
+        threshold_tokens = tokens * percent // 100
+        return (
+            f"上下文长度已设为 {tokens // 1000}K，已保存到 {path}；"
+            f"压缩阈值已同步为 {percent}%（{threshold_tokens} Token）。"
+        )
+    elif key == "context_compaction_threshold":
+        percent = int(value)
+        previous = screen._context_compaction_percent()
+        context_window = int(getattr(screen._agent, "context_window_tokens", 128_000))
+        screen._agent.set_context_compaction_trigger_percent(percent)
+        try:
+            path = save_context_compaction_trigger_percent(
+                percent,
+                context_window_tokens=context_window,
+            )
+        except Exception:
+            screen._agent.set_context_compaction_trigger_percent(previous)
+            raise
+        tokens = context_window * percent // 100
+        return (
+            f"上下文压缩阈值已设为 {percent}%（{tokens} Token），已保存到 {path}。"
+        )
     elif key == "approval":
         previous = str(getattr(screen._agent, "approval_mode", APPROVAL_MODE_REVIEW))
         mode = str(value)

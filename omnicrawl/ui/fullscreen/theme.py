@@ -47,6 +47,12 @@ TOOL_FOCUS_BACKGROUND = "rgba(0, 140, 80, 0.38)"
 # Textual CSS 用 ansi_bright_black，见下方 variables）。
 TOOL_TEXT = "bright_black"
 
+# 思考区域不再包裹围栏代码块，但视觉上沿用代码块同款灰色背景
+# （RichMarkdown 默认 monokai 主题背景 #272822）与灰色前景。字体面由
+# 终端自身提供（例如 Maple Mono），TUI 无法逐控件切换字体，只负责颜色。
+REASONING_BACKGROUND = "#272822"
+REASONING_TEXT = "bright_black"
+
 _CSS_GREEN = "ansi_green"
 _CSS_BLUE = "ansi_blue"
 _CSS_AMBER = "ansi_yellow"
@@ -81,6 +87,8 @@ TERMINAL_THEME = Theme(
         "terminal-tool-background": TOOL_BACKGROUND,
         "terminal-tool-focus-background": TOOL_FOCUS_BACKGROUND,
         "terminal-tool-text": "ansi_bright_black",
+        "terminal-reasoning-background": REASONING_BACKGROUND,
+        "terminal-reasoning-text": "ansi_bright_black",
         "terminal-overlay": TRANSPARENT,
         "terminal-text": TERMINAL_FOREGROUND,
         "terminal-text-secondary": TERMINAL_FOREGROUND,

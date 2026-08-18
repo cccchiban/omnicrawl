@@ -74,7 +74,7 @@ timeout_seconds = 120
 mode = "review"
 
 # 对话区思考块显示：关闭后思考内容仍照常产生并进入推理链路，只是不在
-# 对话区渲染思考块（含围栏包裹）。可在 TUI /settings 中切换。
+# 对话区渲染思考块（Markdown 渲染）。可在 TUI /settings 中切换。
 [ui]
 show_thinking = true
 
@@ -100,6 +100,8 @@ mode = "standard"
 
 [context_compaction]
 enabled = false
+# 触发阈值（Token）也可在运行设置面板按当前模型上下文窗口的百分比设置（5% 步进）：
+# trigger_context_tokens = 上下文窗口 × 百分比。
 trigger_context_tokens = 100000
 next_user_reserve_tokens = 4096
 minimum_turns_between_model_compactions = 4

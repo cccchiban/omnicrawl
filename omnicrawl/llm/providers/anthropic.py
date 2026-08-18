@@ -28,6 +28,7 @@ from ..protocol import (
     ToolCallStarted,
     ToolResultBlock,
     UsageUpdated,
+    tools_from_conversation_messages,
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
 from ..stream_registry import registered_stream_events, stream_owner_for
@@ -96,14 +97,17 @@ class AnthropicMessagesRuntime:
         }
         if request.system_prompt.strip():
             kwargs["system"] = request.system_prompt
-        if request.tools:
+        # Anthropic 没有“消息内 tools”概念：把 system 消息携带的动态声明
+        # 与顶层全局工具合并为请求级 tools，语义退化为全局可见。
+        all_tools = (*request.tools, *tools_from_conversation_messages(request.messages))
+        if all_tools:
             kwargs["tools"] = [
                 {
                     "name": tool.name,
                     "description": tool.description,
                     "input_schema": tool.parameters or {"type": "object", "properties": {}},
                 }
-                for tool in request.tools
+                for tool in all_tools
             ]
         if options.temperature is not None:
             kwargs["temperature"] = options.temperature
@@ -421,6 +425,9 @@ def _to_anthropic_messages(
             pending_tool_results = []
 
     for message in messages:
+        if message.role == "system" and message.tools:
+            # 动态工具声明已合并进请求级 tools，不再作为对话内容下发。
+            continue
         if message.role == "tool":
             for block in message.blocks:
                 if isinstance(block, ToolResultBlock):

@@ -357,6 +357,8 @@ def _to_openai_messages(
     result: list[dict[str, Any]] = []
     if system_prompt.strip():
         result.append({"role": "system", "content": system_prompt})
+    # 动态工具声明跨多条 system 消息按工具名去重，避免重复函数声明。
+    seen_dynamic_tools: set[str] = set()
     for message in messages:
         if message.role == "tool":
             for block in message.blocks:
@@ -393,6 +395,22 @@ def _to_openai_messages(
             if tool_calls:
                 payload["tool_calls"] = tool_calls
             result.append(payload)
+            continue
+        if message.role == "system" and message.tools:
+            # 动态加载工具协议：声明通过 system 消息的 tools 字段下发，
+            # 该消息不能再带 content 字段，否则网关返回 400。
+            fresh_tools = [
+                tool for tool in message.tools if tool.name not in seen_dynamic_tools
+            ]
+            if not fresh_tools:
+                continue
+            seen_dynamic_tools.update(tool.name for tool in fresh_tools)
+            result.append(
+                {
+                    "role": "system",
+                    "tools": tool_specs_to_openai_functions(tuple(fresh_tools)),
+                }
+            )
             continue
         # user / system。视觉图片只由 Host 生成的 user 观察消息携带。
         content: list[dict[str, Any]] = []

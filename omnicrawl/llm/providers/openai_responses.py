@@ -30,6 +30,7 @@ from ..protocol import (
     ToolCallStarted,
     ToolResultBlock,
     UsageUpdated,
+    tools_from_conversation_messages,
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
 from ..stream_registry import registered_stream_events, stream_owner_for
@@ -387,8 +388,11 @@ class OpenAIResponsesAdapter:
 
 
 def _tools_for_responses(request: ModelTurnRequest) -> list[dict[str, Any]]:
+    # Responses 没有“消息内 tools”概念：把 system 消息携带的动态声明
+    # 与顶层全局工具合并为请求级 tools，语义退化为全局可见。
+    all_tools = (*request.tools, *tools_from_conversation_messages(request.messages))
     tools: list[dict[str, Any]] = []
-    for tool in request.tools:
+    for tool in all_tools:
         tools.append(
             {
                 "type": "function",
@@ -405,6 +409,9 @@ def messages_to_responses_input(
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for message in messages:
+        if message.role == "system" and message.tools:
+            # 动态工具声明已合并进请求级 tools，不再作为输入 item 下发。
+            continue
         if message.role == "tool":
             for block in message.blocks:
                 if isinstance(block, ToolResultBlock):

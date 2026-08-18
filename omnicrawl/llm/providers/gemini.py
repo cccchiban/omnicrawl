@@ -27,6 +27,7 @@ from ..protocol import (
     ToolCallStarted,
     ToolResultBlock,
     UsageUpdated,
+    tools_from_conversation_messages,
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
 from ..stream_registry import registered_stream_events, stream_owner_for
@@ -318,7 +319,10 @@ def _build_generate_config(
         config["max_output_tokens"] = options.max_output_tokens
     if options.temperature is not None:
         config["temperature"] = options.temperature
-    if request.tools:
+    # Gemini 没有“消息内 tools”概念：把 system 消息携带的动态声明
+    # 与顶层全局工具合并为请求级 tools，语义退化为全局可见。
+    all_tools = (*request.tools, *tools_from_conversation_messages(request.messages))
+    if all_tools:
         # 显式禁用自动函数执行：只声明 schema，不绑定 Python callable。
         config["tools"] = [
             {
@@ -328,7 +332,7 @@ def _build_generate_config(
                         "description": tool.description,
                         "parameters": tool.parameters or {"type": "object", "properties": {}},
                     }
-                    for tool in request.tools
+                    for tool in all_tools
                 ]
             }
         ]
@@ -349,6 +353,9 @@ def _to_gemini_contents(
     contents: list[dict[str, Any]] = []
     call_names: dict[str, str] = {}
     for message in messages:
+        if message.role == "system" and message.tools:
+            # 动态工具声明已合并进请求级 tools，不再作为对话内容下发。
+            continue
         if message.role == "tool":
             parts = []
             for block in message.blocks:

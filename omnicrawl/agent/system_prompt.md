@@ -40,9 +40,9 @@ Memory Usage Protocol:
 
 Tool Calling Protocol:
 - When a tool is needed, use native tool_calls; never hand-write JSON, function names, `<tool>`, `<final>`, or any other custom protocol tags in the body text.
-- The Provider registers exactly two fixed tools: first use `search_tools` to search the currently available tools, then use `invoke_tool` to execute the real tool according to the contract in the search results. Real tool names and schemas are maintained by the Host; do not guess them.
-- `search_tools` returns compact argument contracts for candidate tools; when calling a real tool, `invoke_tool.tool_name` MUST use the name from the search results, and `invoke_tool.arguments` MUST strictly conform to the corresponding contract.
-- You may request one or more tools at a time; tool results come back as `role=tool` messages, and then you continue deciding the next step. Do not assume within the same batch that `search_tools` results are already usable by another `invoke_tool`; discover first, then execute.
+- The Provider registers `search_tools` as the only top-level tool. First call `search_tools` to find the real tool you need; the Host automatically appends the full declaration of matched tools to the conversation as a system message with a `tools` field.
+- After the declaration is loaded, call the real tool natively by its exact name with arguments conforming to its full schema. Do not call `invoke_tool` and do not guess or invent tool names that were not returned by `search_tools`.
+- You may request one or more tools at a time; tool results come back as `role=tool` messages, and then you continue deciding the next step. Do not assume within the same batch that a tool is already loaded just because you searched for it; the declaration arrives after the `search_tools` result, so load first, then call in a later turn.
 - On argument validation failure, read the `issues` and `contract` in the structured error, fix them, and retry; for unknown tools, search again first instead of repeatedly guessing names.
 - First use the lowest-cost reads or searches to locate key implementations; once evidence is sufficient to support a modification, verification, or answer, immediately move to the next stage and wrap up in time; do not keep expanding the exploration scope.
 - Do not repeat the same reads, searches, or verification commands unless the relevant files, configuration, environment, or runtime state have changed; normally run the same regression test only once as the pre-fix baseline and once as the post-fix verification.

@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from rich.console import Console, ConsoleOptions
 from rich.markdown import Markdown as RichMarkdown
 from rich.segment import Segment
 from rich.style import Style
@@ -20,9 +21,8 @@ from textual.strip import Strip
 from textual.widgets import Button, RichLog, Static
 
 from .latex import latex_to_text
-from .theme import terminal_css
+from .theme import REASONING_BACKGROUND, REASONING_TEXT, terminal_css
 from .tool_diff import tool_disclosure_body, tool_disclosure_title
-from .theme import TOOL_TEXT
 
 
 _SUBAGENT_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -337,16 +337,37 @@ class SubAgentProgressTree(Static):
         return f"{minutes:02d}:{seconds:02d}"
 
 
+class _UniformGrayMarkdown:
+    """保留 RichMarkdown 结构，但把全部前景/背景统一为思考区灰阶样式。
+
+    思考区域移除围栏包裹后仍按 Markdown 解析（标题、列表、行内代码等），
+    这里在渲染完成后把所有 segment 强制改为灰色前景与代码块同款灰色背景，
+    使整块思考内容在视觉上保持“灰色 Maple Mono 等宽字体 + 灰色底”的观感。
+    """
+
+    def __init__(self, markdown: str) -> None:
+        self.markdown = markdown
+        self._style = Style(color=REASONING_TEXT, bgcolor=REASONING_BACKGROUND)
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> Any:
+        for segment in console.render(RichMarkdown(self.markdown), options):
+            yield Segment(
+                segment.text,
+                (segment.style or Style()) + self._style,
+                segment.control,
+            )
+
+
 class ReasoningDisclosure(RichLog, can_focus=False):
     """始终展开、不抢占输入焦点的单次模型思考记录（无折叠功能）。
 
-    思考内容以 Markdown 围栏代码块渲染（与 AI 回复的代码块一致），
-    定界行 `` ``` `` 由 RichMarkdown 解析，不会以字面文本漏出；
-    右侧由消息区样式预留一列空白，围栏不贴屏幕右边缘。鼠标复制
-    思考内容时复制的是渲染后的代码块正文。
+    思考内容按普通 Markdown 渲染（不再包裹围栏代码块），但视觉上统一
+    使用代码块同款灰色背景与灰色前景；Maple Mono 等宽字体由终端自身
+    提供，TUI 不逐控件切换字体。鼠标复制思考内容时复制的是渲染后的
+    Markdown 正文。
 
     流式性能设计（与主回复同一套节流策略）：
-    - append_delta 只累积原始思考文本（不含围栏行）；
+    - append_delta 只累积原始思考文本；
     - 渲染按 STREAM_RENDER_INTERVAL_SECONDS 合并刷新，突发分片不会
       逐片全量重绘，与 AssistantMessage 保持一致。
     """
@@ -363,7 +384,6 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     """
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
-    FENCE_MARK = "```"
 
     def __init__(self) -> None:
         super().__init__(
@@ -372,7 +392,7 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             wrap=True,
             auto_scroll=False,
         )
-        self.reasoning_text = ""  # 完整累积文本（模型原始思考，不含围栏）
+        self.reasoning_text = ""  # 完整累积文本（模型原始思考）
         self._last_render_at: float | None = None
         self._render_timer = None  # 挂起的合并刷新定时器（textual Timer）
         self._render_pending = False
@@ -391,7 +411,7 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         self._schedule_render()
 
     def flush_tail(self) -> None:
-        """推理阶段结束时取消挂起刷新并渲染最终围栏代码块。
+        """推理阶段结束时取消挂起刷新并渲染最终 Markdown。
 
         思考块关闭（首个回复分片、工具调用、回合结束）时调用；同时
         取消可能挂起的定时刷新，避免失效的延时渲染。
@@ -430,10 +450,10 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         self._render_markdown()
 
     def _render_markdown(self) -> None:
-        """用带围栏的完整 Markdown 重绘思考内容（与 AI 回复代码块一致）。
+        """用完整 Markdown 重绘思考内容（不再包裹围栏代码块）。
 
-        流式阶段临时补闭 fence、flush_tail 时正式闭合：任意时刻都按
-        代码块渲染，`` ``` `` 定界行不会以字面文本漏出。
+        流式阶段与 flush_tail 渲染同一份原始 Markdown，不会出现
+        `` ``` `` 定界行；最终统一为灰色前景与代码块同款灰色背景。
         """
 
         self._last_render_at = time.monotonic()
@@ -441,9 +461,7 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             return
         self.clear()
         self.write(
-            RichMarkdown(
-                f"{self.FENCE_MARK}\n{self.reasoning_text}\n{self.FENCE_MARK}"
-            ),
+            _UniformGrayMarkdown(latex_to_text(self.reasoning_text)),
             scroll_end=False,
         )
         self.refresh()

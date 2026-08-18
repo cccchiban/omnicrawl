@@ -1,8 +1,9 @@
 """Provider 固定工具与 Host 侧动态工具目录。
 
-Provider 只注册 ``search_tools`` 和 ``invoke_tool``。真实 ToolDefinition、参数
-Schema、执行器和审批策略仍由 Host 持有；本模块只负责发现、分发前校验以及把
-Host 目录转换成固定的 Provider 工具面。
+Provider 顶层只注册 ``search_tools``；搜索命中后 Host 把真实工具完整声明以
+system 消息的 ``tools`` 字段追加到对话，模型随后原生调用。真实 ToolDefinition、
+参数 Schema、执行器和审批策略仍由 Host 持有；本模块只负责发现、完整声明、
+分发前校验以及把 Host 目录转换成固定的 Provider 工具面。
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ from .tools import TOOL_NAME_ALIASES, normalize_tool_call, normalize_tool_name
 from .types import ToolCall, ToolDefinition, ToolResult
 
 SEARCH_TOOLS_NAME = "search_tools"
-INVOKE_TOOL_NAME = "invoke_tool"
-PROVIDER_TOOL_NAMES = (SEARCH_TOOLS_NAME, INVOKE_TOOL_NAME)
+INVOKE_TOOL_NAME = "invoke_tool"  # 保留为兼容旧调用/测试；不再注册到 Provider 工具面。
+PROVIDER_TOOL_NAMES = (SEARCH_TOOLS_NAME,)
 # search_tools 展示通道（终端/转录）使用分节 TOML，行数开销比紧凑 JSON 大，上限独立放宽。
 _SEARCH_DISPLAY_MAX_CHARS = 12000
 
@@ -195,19 +196,11 @@ class HostToolCatalog:
         raw_limit = arguments.get("limit", 4)
         limit = _bounded_int(raw_limit, default=4, minimum=1, maximum=6)
         query_text = query.strip()
-        ranked: list[tuple[int, str, ToolDefinition]] = []
-        for name, tool in self._tools.items():
-            if not self._is_visible(name):
-                continue
-            score = self._match_score(query_text, tool)
-            if score > 0:
-                ranked.append((score, name, tool))
-        ranked.sort(key=lambda item: (-item[0], item[1]))
-        selected = ranked[:limit]
+        all_matches, selected = self._ranked(query_text, limit)
         entries: list[dict[str, Any]] = []
-        for _score, name, tool in selected:
+        for tool in selected:
             entry: dict[str, Any] = {
-                "name": name,
+                "name": tool.name,
                 "description": _short_text(tool.description, 160),
                 "parameters": compact_tool_schema(tool),
             }
@@ -216,7 +209,7 @@ class HostToolCatalog:
             entries.append(entry)
 
         payload: dict[str, Any] = {"tools": entries}
-        if len(ranked) > len(selected):
+        if len(all_matches) > len(selected):
             payload["truncated"] = True
         # 模型通道保持紧凑 JSON（模型解析最稳、token 最省）；展示/转录通道
         # 用分节 TOML，人眼扫描"有哪些工具、参数必填项"更直观。
@@ -225,6 +218,43 @@ class HostToolCatalog:
             payload, max_chars=_SEARCH_DISPLAY_MAX_CHARS
         )
         return ToolResult(ok=True, output=model_text, full_output=display_text)
+
+    def declarations_for_search(
+        self,
+        arguments: Mapping[str, Any] | Any,
+    ) -> list[dict[str, Any]]:
+        """返回与 search 同一命中集合的完整工具声明，供 Host 动态加载。
+
+        搜索失败（query 非法）时返回空列表，调用方不追加任何声明。
+        """
+
+        if not isinstance(arguments, Mapping):
+            return []
+        query = arguments.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return []
+        raw_limit = arguments.get("limit", 4)
+        limit = _bounded_int(raw_limit, default=4, minimum=1, maximum=6)
+        _all_matches, selected = self._ranked(query.strip(), limit)
+        return build_tool_declarations(selected)
+
+    def _ranked(
+        self,
+        query_text: str,
+        limit: int,
+    ) -> tuple[list[ToolDefinition], list[ToolDefinition]]:
+        """返回 (全部命中, 截断后的选中集合)，供 search 与动态加载共用。"""
+
+        ranked: list[tuple[int, str, ToolDefinition]] = []
+        for name, tool in self._tools.items():
+            if not self._is_visible(name):
+                continue
+            score = self._match_score(query_text, tool)
+            if score > 0:
+                ranked.append((score, name, tool))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        all_matches = [tool for _score, _name, tool in ranked]
+        return all_matches, all_matches[:limit]
 
     def prepare_invocation(
         self,
@@ -381,31 +411,47 @@ class HostToolCatalog:
         return score
 
 
+def build_tool_declaration(tool: ToolDefinition) -> dict[str, Any]:
+    """构造动态加载用的完整 OpenAI 风格工具声明。
+
+    与顶层 ``tools`` 声明格式完全一致，使用真实工具名（而不是 Provider 侧的
+    哈希函数名），让模型在工具被加载后直接原生调用 ``read`` 这类 Host 工具名。
+    """
+
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool_parameters_schema(tool),
+        },
+    }
+
+
+def build_tool_declarations(tools: Iterable[ToolDefinition]) -> list[dict[str, Any]]:
+    """批量构造动态加载声明；调用方负责按已加载集合去重。"""
+
+    return [build_tool_declaration(tool) for tool in tools]
+
+
 def build_provider_tools(catalog: HostToolCatalog) -> dict[str, ToolDefinition]:
-    """构建固定的 Provider 工具面，真实工具不会出现在返回值中。"""
+    """构建固定的 Provider 工具面，真实工具不会出现在返回值中。
+
+    动态加载工具：顶层只保留 ``search_tools``。搜索命中后 Host 会把命中
+    工具的完整声明以 system 消息的 ``tools`` 字段追加到对话末尾，模型随后
+    原生调用这些真实工具，不再经过 ``invoke_tool`` 黑盒。
+    """
 
     return {
         SEARCH_TOOLS_NAME: ToolDefinition(
             name=SEARCH_TOOLS_NAME,
             description=(
-                "搜索当前 Agent 可用的工具目录。请先用 search_tools 找到目标工具，"
-                "再根据返回的紧凑参数契约调用 invoke_tool。"
+                "搜索当前 Agent 可用的工具目录。搜索命中后，Host 会自动把命中工具的完整声明"
+                "以 system 消息的 tools 字段追加到对话末尾；之后直接按真实工具名原生调用。"
             ),
             argument_schema=_SEARCH_TOOLS_SCHEMA,
             requires_confirmation=False,
             run=catalog.search,
-            model_output_is_bounded=True,
-        ),
-        INVOKE_TOOL_NAME: ToolDefinition(
-            name=INVOKE_TOOL_NAME,
-            description=(
-                "执行工具目录中的工具。请先用 search_tools 找到目标工具，再用 invoke_tool 严格按返回的"
-                "契约填写 tool_name 和 arguments；参数错误会返回结构化诊断供修正重试。"
-            ),
-            argument_schema=_INVOKE_TOOL_SCHEMA,
-            # 真实工具解析后才决定是否需要审批，外层元工具不能代表批准。
-            requires_confirmation=False,
-            run=catalog.dispatcher_required,
             model_output_is_bounded=True,
         ),
     }
@@ -802,6 +848,8 @@ __all__ = [
     "PROVIDER_TOOL_NAMES",
     "SEARCH_TOOLS_NAME",
     "build_provider_tools",
+    "build_tool_declaration",
+    "build_tool_declarations",
     "compact_tool_schema",
     "public_invoke_arguments",
     "tool_validation_error_result",

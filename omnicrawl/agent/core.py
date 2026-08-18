@@ -425,7 +425,7 @@ class AgentConfig:
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
     memory_enabled: bool = True
-    # 是否渲染思考块（Markdown 围栏代码块渲染）：关闭只隐藏显示，思考内容仍照常产生与接收。
+    # 是否渲染思考块（Markdown 渲染）：关闭只隐藏显示，思考内容仍照常产生与接收。
     show_thinking: bool = True
     memory_directory: str = ".omnicrawl/.oclmemory"
     session_enabled: bool = True
@@ -534,8 +534,10 @@ class LocalToolAgent:
     """能在本地项目内读文件、检索、按确认执行写入/命令的简化 Agent Harness。
 
     参考 pi 的核心思想：Agent 不是一次问答，而是"模型 -> 工具 -> 观察 -> 下一轮模型"的循环。
-    Provider 只看到固定的 ``search_tools`` 和 ``invoke_tool``；真实 ToolDefinition、
-    Schema、审批策略和执行器由 Host 侧目录维护。Host 执行后仍以 role=tool 消息回传结果。
+    Provider 顶层只注册 ``search_tools``；搜索命中后 Host 把真实工具完整声明以 system
+    消息的 ``tools`` 字段追加到对话末尾，模型随后原生调用这些真实工具名。真实
+    ToolDefinition、Schema、审批策略和执行器由 Host 侧目录维护，执行后以 role=tool
+    消息回传结果。
     """
 
     def __init__(
@@ -550,6 +552,9 @@ class LocalToolAgent:
         self.workspace_root = self.config.workspace_root.resolve()
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
+        # 动态加载：已注入的工具声明以 system 消息持久保留在 Agent 侧，
+        # 跨用户回合原样追加到对话末尾（追加不插入，保持前缀缓存稳定）。
+        self._loaded_tool_declarations: list[dict[str, Any]] = []
         self._pending_user_text: str | None = None
         self._router_runtime = RouterRuntime(
             router_mode=getattr(self.config, "router_mode", "standard")
@@ -1701,6 +1706,50 @@ class LocalToolAgent:
                 self._context_compaction_service_instance = previous_service
             raise
 
+    def set_context_compaction_trigger_percent(self, percent: int) -> None:
+        """按当前模型上下文窗口的百分比设置自动压缩触发阈值。
+
+        换算公式：``trigger_context_tokens = context_window_tokens * percent // 100``。
+        只更新运行态并重建压缩服务实例；持久化由设置面板负责。
+        """
+
+        if (
+            isinstance(percent, bool)
+            or not isinstance(percent, int)
+            or not 0 < percent < 100
+        ):
+            raise AgentError("上下文压缩阈值百分比必须是 1 到 99 的整数。")
+        current = self.config.context_compaction
+        context_window = int(
+            getattr(self.config.llm, "context_window_tokens", 128_000)
+        )
+        tokens = context_window * percent // 100
+        if tokens == current.trigger_context_tokens:
+            return
+        next_config = replace(current, trigger_context_tokens=tokens)
+        _validate_context_compaction_window(next_config, self.config.llm)
+        self.config.context_compaction = next_config
+        # 阈值变化会改变压缩时机，旧 service 实例若已缓存参数应失效重建。
+        self.__dict__.pop("_context_compaction_service_instance", None)
+
+    def set_context_compaction_trigger_tokens(self, tokens: int) -> None:
+        """运行时直接设置自动压缩触发阈值（Token）；持久化由设置面板负责。
+
+        用于上下文窗口联动重算或失败回滚时精确恢复阈值；
+        只更新运行态并重建压缩服务实例。
+        """
+
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            raise AgentError("上下文压缩阈值必须是正整数 Token。")
+        current = self.config.context_compaction
+        if tokens == current.trigger_context_tokens:
+            return
+        next_config = replace(current, trigger_context_tokens=tokens)
+        _validate_context_compaction_window(next_config, self.config.llm)
+        self.config.context_compaction = next_config
+        # 阈值变化会改变压缩时机，旧 service 实例若已缓存参数应失效重建。
+        self.__dict__.pop("_context_compaction_service_instance", None)
+
     def set_tool_enabled(self, name: str, enabled: bool) -> None:
         """运行时切换内置工具开关并重建工具表；持久化由设置面板负责。
 
@@ -1735,7 +1784,7 @@ class LocalToolAgent:
     def set_show_thinking(self, enabled: bool) -> bool:
         """运行时切换思考块显示；持久化由设置面板负责。
 
-        关闭只隐藏对话区的思考块渲染（Markdown 围栏代码块渲染），思考内容仍照常产生
+        关闭只隐藏对话区的思考块渲染（Markdown 渲染），思考内容仍照常产生
         并进入推理链路，与模型侧 thinking 开关互不影响。
         """
 
@@ -2672,6 +2721,7 @@ class LocalToolAgent:
                             HostToolCatalog(child_tools)
                         ),
                         persist_session_events=False,
+                        persist_dynamic_tools=False,
                     ),
                     limits=AgentLoopLimits(
                         timeout_seconds=self.config.subagents.default_timeout_seconds,
@@ -2941,6 +2991,8 @@ class LocalToolAgent:
                 )
                 if guide:
                     working_messages.append({"role": "user", "content": guide})
+            # 动态加载：已注入的工具声明作为 system 消息追加到本轮消息末尾。
+            working_messages.extend(self._dynamic_tool_messages())
             # Fork 只能继承“本轮起点”这一份公开协议消息。之后 AgentLoopRunner
             # 会原地追加 assistant tool-call 与 tool-result；不能让后续状态、未
             # 配对的工具调用或父模型输出进入已创建子任务的上下文。功能关闭时不
@@ -3035,6 +3087,7 @@ class LocalToolAgent:
                 # 失败请求尚未产生任何可见文本或工具副作用；从新的摘要投影重建
                 # Runner，避免把未完成的原始用户消息再次附加到模型上下文。
                 working_messages = [*context_messages, *recovered_messages]
+                working_messages.extend(self._dynamic_tool_messages())
                 if (
                     isinstance(subagent_config, SubAgentConfig)
                     and subagent_config.enabled
@@ -3206,6 +3259,9 @@ class LocalToolAgent:
         persist_session_events: bool = True,
         record_tool_execution: Callable[[ToolCall], None] | None = None,
         tool_timeout_seconds: int | None = None,
+        # SubAgent 共享同一 Agent 实例，动态工具声明只回填到其独立 messages；
+        # 只有主 Agent 回合才持久化到跨回合的 `_loaded_tool_declarations`。
+        persist_dynamic_tools: bool = True,
     ) -> list[AgentLoopObservation]:
         """规范化、审批并执行一次模型回复中的完整工具批次。
 
@@ -3239,34 +3295,41 @@ class LocalToolAgent:
         normalized_calls: list[tuple[int, ToolCall, ToolDefinition | None, ToolResult | None]] = []
         for offset, raw_tool_call in enumerate(raw_tool_calls):
             check_cancelled()
-            if raw_tool_call.name in provider_tools:
+            if raw_tool_call.name == INVOKE_TOOL_NAME:
+                # invoke_tool 已从 Provider 工具面移除（由动态加载工具替代），但保留
+                # Host 分发路径兼容旧测试与直接构造的内部调用。
+                prepared = catalog.prepare_invocation(raw_tool_call.arguments)
+                if isinstance(prepared, ToolResult):
+                    tool_call = ToolCall(
+                        name=INVOKE_TOOL_NAME,
+                        arguments=dict(raw_tool_call.arguments),
+                        id=raw_tool_call.id,
+                        function_name=raw_tool_call.function_name,
+                    )
+                    tool = None
+                    denied_result = prepared
+                else:
+                    tool_call = ToolCall(
+                        name=prepared.tool_name,
+                        arguments=prepared.arguments,
+                        id=raw_tool_call.id,
+                        function_name=raw_tool_call.function_name,
+                    )
+                    tool = prepared.tool
+                    denied_result = None
+            elif raw_tool_call.name in provider_tools:
                 provider_call = normalize_tool_call(raw_tool_call, provider_tools)
                 if provider_call.name == SEARCH_TOOLS_NAME:
                     tool_call = provider_call
                     tool = provider_tools[SEARCH_TOOLS_NAME]
                     denied_result = None
-                elif provider_call.name == INVOKE_TOOL_NAME:
-                    prepared = catalog.prepare_invocation(provider_call.arguments)
-                    if isinstance(prepared, ToolResult):
-                        tool_call = provider_call
-                        tool = None
-                        denied_result = prepared
-                    else:
-                        tool_call = ToolCall(
-                            name=prepared.tool_name,
-                            arguments=prepared.arguments,
-                            id=provider_call.id,
-                            function_name=provider_call.function_name,
-                        )
-                        tool = prepared.tool
-                        denied_result = None
                 else:
                     tool_call = provider_call
                     tool = provider_tools.get(provider_call.name)
                     denied_result = None
             else:
-                # 保留 Host/子 Agent 测试夹具和旧内部调用方的直接 ToolCall 兼容；
-                # 生产模型只能从固定 Provider 工具面得到 search/invoke 两个名字。
+                # 保留 Host/子 Agent 测试夹具、旧内部调用方以及动态加载后模型
+                # 原生调用的真实工具名直接分发；生产 Provider 顶层只注册 search_tools。
                 tool_call = normalize_tool_call(raw_tool_call, active_tools)
                 tool = active_tools.get(tool_call.name)
                 denied_result = None
@@ -3395,6 +3458,16 @@ class LocalToolAgent:
                 check_cancelled=check_cancelled,
                 on_token_usage=on_token_usage,
             )
+            if tool_call.name == SEARCH_TOOLS_NAME and tool_result.ok:
+                # 动态加载：命中工具以完整声明追加到对话末尾，模型下一轮
+                # 即可直接原生调用真实工具名，不再经过 invoke_tool。
+                dynamic_followups = self._load_dynamic_tool_declarations(
+                    tool_call.arguments,
+                    catalog,
+                    persist=persist_dynamic_tools,
+                )
+                if dynamic_followups:
+                    followup_messages = (*followup_messages, *dynamic_followups)
             report_tool_result(tool_call, prepared_result)
             if persist_session_events:
                 self._append_session_event(
@@ -3489,6 +3562,54 @@ class LocalToolAgent:
         """
 
         return build_project_instructions_messages(self._load_agents_instructions())
+
+    def _dynamic_tool_messages(self) -> list[dict[str, Any]]:
+        """返回已加载的动态工具声明消息（浅拷贝，避免调用方原地污染）。
+
+        按缓存友好原则追加不插入：声明始终放在当前回合消息末尾，不修改
+        已稳定的前缀；下一回合仍原样保留，便于持续命中前缀缓存。
+        """
+
+        loaded = getattr(self, "_loaded_tool_declarations", None) or ()
+        return [dict(message) for message in loaded]
+
+    def _load_dynamic_tool_declarations(
+        self,
+        arguments: Mapping[str, Any],
+        catalog: HostToolCatalog,
+        *,
+        persist: bool,
+    ) -> list[dict[str, Any]]:
+        """根据 search_tools 命中集合生成动态加载声明消息。
+
+        主 Agent（``persist=True``）把新声明追加到跨回合列表并返回消息；
+        SubAgent（``persist=False``）只返回消息回填到其独立 messages，不污染
+        父 Agent 的持久声明。声明使用真实工具名，模型随后可直接原生调用。
+        """
+
+        declarations = catalog.declarations_for_search(arguments)
+        if not declarations:
+            return []
+        if not persist:
+            return [{"role": "system", "tools": declarations}]
+        loaded = getattr(self, "_loaded_tool_declarations", None)
+        if loaded is None:
+            loaded = []
+            self._loaded_tool_declarations = loaded
+        loaded_names = {
+            str(tool["function"]["name"])
+            for message in loaded
+            for tool in message.get("tools", [])
+        }
+        fresh = [
+            declaration
+            for declaration in declarations
+            if str(declaration["function"]["name"]) not in loaded_names
+        ]
+        if not fresh:
+            return []
+        loaded.append({"role": "system", "tools": fresh})
+        return [{"role": "system", "tools": fresh}]
 
     def _context_messages(self, *, turn_id: str | None = None) -> list[dict[str, str]]:
         """构造 system 之外的稳定/动态上下文消息。"""
@@ -4172,6 +4293,9 @@ class LocalToolAgent:
                 model=self.config.llm.model,
                 instructions=instructions,
                 input=input_messages,
+                # 审查请求只输出文本结论：禁用工具调用，避免审查模型输出
+                # 工具调用块（tool_calls）而破坏严格 JSON 约定。
+                tools=[],
                 # 与主对话 Runtime 一致使用标准 Responses 思考参数：旧 chat 风格
                 # 字段 thinking/reasoning_effort 在 Responses 网关不被识别，会让
                 # 审查模型按默认思考强度运行并只返回 reasoning item，导致下文

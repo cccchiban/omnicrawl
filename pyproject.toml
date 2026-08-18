@@ -1,11 +1,10 @@
 [build-system]
-# 兼容本机 Anaconda 旧 pip/setuptools（当前常见 58.x）；有新环境仍可正常用 PEP 517。
 requires = ["setuptools>=58", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnicrawl-agent"
-version = "0.1.20"
+version = "0.1.21"
 description = "Local OmniCrawl agent with TUI, tools, MCP and NPM Hook plugins"
 readme = "README.md"
 requires-python = ">=3.9"

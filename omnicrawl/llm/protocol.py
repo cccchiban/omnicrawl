@@ -97,6 +97,7 @@ class ConversationMessage:
     role: str  # user | assistant | tool | system
     blocks: tuple[MessageBlock, ...] = ()
     reasoning: str = ""  # 思考模式思维链；回传历史时须原样携带
+    tools: tuple[ToolSpec, ...] = ()  # system 消息可携带动态加载的工具声明
 
     @property
     def text(self) -> str:
@@ -362,6 +363,15 @@ def conversation_from_openai_messages(
             )
             continue
 
+        tools: tuple[ToolSpec, ...] = ()
+        raw_tools = message.get("tools")
+        if role == "system" and isinstance(raw_tools, list):
+            tools = tuple(
+                spec
+                for item in raw_tools
+                if (spec := _tool_spec_from_openai_item(item)) is not None
+            )
+
         blocks: list[MessageBlock] = []
         content = message.get("content")
         if isinstance(content, str) and content:
@@ -402,9 +412,53 @@ def conversation_from_openai_messages(
                     # 思考模式网关要求历史 assistant 消息回传 reasoning_content，
                     # 转换时保留以免二次请求被拒（HTTP 400）。
                     reasoning=reasoning if isinstance(reasoning, str) else "",
+                    tools=tools,
                 )
             )
     return tuple(converted)
+
+
+def _tool_spec_from_openai_item(item: Any) -> ToolSpec | None:
+    """把 Chat Completions 风格 tools 数组项转成统一 ToolSpec。"""
+
+    if not isinstance(item, dict):
+        return None
+    function = item.get("function") if isinstance(item.get("function"), dict) else item
+    if not isinstance(function, dict):
+        return None
+    name = str(function.get("name") or "").strip()
+    if not name:
+        return None
+    parameters = function.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {"type": "object", "properties": {}}
+    return ToolSpec(
+        name=name,
+        description=str(function.get("description") or ""),
+        parameters=dict(parameters),
+    )
+
+
+def tools_from_conversation_messages(
+    messages: Iterable[ConversationMessage],
+) -> tuple[ToolSpec, ...]:
+    """收集 system 消息中携带的动态工具声明，供不支持消息内 tools 的 Provider 合并。
+
+    按工具名去重：同一工具在多次搜索加载中重复出现时只合并一次，避免请求级
+    tools 出现重复函数声明。
+    """
+
+    seen: set[str] = set()
+    result: list[ToolSpec] = []
+    for message in messages:
+        if message.role != "system" or not message.tools:
+            continue
+        for tool in message.tools:
+            if tool.name in seen:
+                continue
+            seen.add(tool.name)
+            result.append(tool)
+    return tuple(result)
 
 
 _DATA_IMAGE_URL_PATTERN = re.compile(

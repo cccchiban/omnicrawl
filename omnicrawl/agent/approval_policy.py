@@ -17,6 +17,7 @@ TOOL_REVIEW_SYSTEM_PROMPT = (
     "自动审查模式下，Host 会把通过 bash 和 powershell 工具执行的命令交给你审查；其他工具调用由 Host 自动放行。"
     "你只判断这一次命令执行是否可以自动批准，不执行命令，也不补写方案。"
     "请用严格 JSON 回复：{\"approve\": true/false, \"reason\": \"一句中文理由\"}。"
+    "只输出该 JSON 对象本身，不要输出 XML、工具调用标记、Markdown 代码块或任何解释。"
     "命令目标清晰、影响范围明确、且不会破坏系统时可以批准。"
     "当命令明显越界访问、读取密钥、破坏系统、删除或覆盖大量文件、修改真实生产数据、"
     "执行无法判断影响的危险命令，或参数不足以判断时，必须拒绝。"
@@ -247,23 +248,81 @@ def description_has_delete_intent(text: str) -> bool:
     return bool(_DELETE_DESCRIPTION_START_PATTERN.search(normalized_text))
 
 
-def parse_tool_review_response(review_text: str) -> tuple[bool, str]:
-    """解析审查模型 JSON；不可解析时按拒绝处理。"""
+def _iter_json_object_candidates(text: str):
+    """按栈扫描文本，按出现顺序产出顶层 JSON 对象候选。
 
-    text = review_text.strip()
-    if not text:
-        return False, "审查模型返回为空。"
+    审查模型可能把结论包装在 XML 工具调用标记或解释文字中，也可能在
+    reason 里包含花括号；因此不能用简单正则 ``\{.*\}`` 贪婪截取，而要
+    逐字符跟踪字符串/转义状态，保证候选边界正确。
+    """
+    start = -1
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    yield text[start : index + 1]
+                    start = -1
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    payload = match.group(0) if match else text
-    try:
-        data = json.loads(payload)
-    except json.JSONDecodeError:
-        return False, f"审查模型返回不是 JSON：{text}"
 
+def _normalize_review_markup(text: str) -> str:
+    """恢复审查模型输出中的 XML/JSON 转义，供工具调用包装兜底扫描。
+
+    审查模型有时把结论包装成工具调用 XML，并把 JSON 参数当作转义字符串
+    输出（``\\"`` 或 ``&quot;``）。该函数只用于“整体 JSON 与原始文本扫描
+    都失败”后的兜底，避免破坏正常 JSON 回复中的合法转义内容。
+    """
+    return (
+        text.replace("&quot;", '"')
+        .replace("&#34;", '"')
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace('\\"', '"')
+    )
+
+
+def _extract_conclusion_from_candidates(
+    text: str,
+) -> tuple[tuple[bool, str] | None, list[str]]:
+    """扫描 JSON 对象候选，返回最后一个有效结论与全部候选。"""
+    valid_conclusion: tuple[bool, str] | None = None
+    candidates: list[str] = []
+    for candidate in _iter_json_object_candidates(text):
+        candidates.append(candidate)
+        try:
+            candidate_data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        conclusion = _review_conclusion(candidate_data)
+        if conclusion is not None:
+            valid_conclusion = conclusion
+    return valid_conclusion, candidates
+
+
+def _review_conclusion(data: object) -> tuple[bool, str] | None:
+    """从审查 JSON 对象提取 (approve, reason)；字段不完整时返回 None。"""
     if not isinstance(data, dict):
-        return False, "审查模型返回不是 JSON 对象。"
-
+        return None
     reason_value = data.get("reason", "")
     reason = reason_value.strip() if isinstance(reason_value, str) else ""
     approve_value = data.get("approve")
@@ -273,8 +332,61 @@ def parse_tool_review_response(review_text: str) -> tuple[bool, str]:
         # 模型明确拒绝：reason 为空时给默认理由，与“格式不完整”区分开，
         # 避免调用方把“模型拒绝”误报为“模型未给出结论”。
         return False, reason or "模型拒绝执行。"
-    # approve 缺失或非布尔（如字符串 "true"）：格式不完整，同样按拒绝处理，
-    # 但明确告知是格式问题而非模型决策；模型给出的 reason 仅作附加参考，
-    # 不能因 reason 非空而掩盖格式问题。
-    hint = "模型未给出明确的批准结论（approve 字段缺失或非布尔）。"
-    return False, hint if not reason else f"{hint} 模型 reason：{reason}"
+    return None
+
+
+def parse_tool_review_response(review_text: str) -> tuple[bool, str]:
+    """解析审查模型 JSON；不可解析时按拒绝处理。
+
+    解析顺序：
+    1. 整段文本本身就是合法 JSON（最常见）；
+    2. 按栈扫描原始文本中的顶层 JSON 对象候选，取最后一个能给出布尔
+       ``approve`` 结论的对象。取最后一个是因为审查模型有时会先回显
+       系统提示中的 JSON 模板，最终结论通常位于末尾；
+    3. 仍找不到时，对 XML/JSON 转义（``\\"``、``&quot;``）后的文本再扫描，
+       兼容审查模型把结论包装成工具调用 XML 参数的情况。
+    """
+
+    text = review_text.strip()
+    if not text:
+        return False, "审查模型返回为空。"
+
+    # 1) 整段 JSON：严格路径，保持既有行为。
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict):
+        conclusion = _review_conclusion(data)
+        if conclusion is not None:
+            return conclusion
+        # approve 缺失或非布尔（如字符串 "true"）：格式不完整，同样按拒绝处理，
+        # 但明确告知是格式问题而非模型决策；模型给出的 reason 仅作附加参考，
+        # 不能因 reason 非空而掩盖格式问题。
+        reason_value = data.get("reason", "")
+        reason = reason_value.strip() if isinstance(reason_value, str) else ""
+        hint = "模型未给出明确的批准结论（approve 字段缺失或非布尔）。"
+        return False, hint if not reason else f"{hint} 模型 reason：{reason}"
+
+    # 2) 原始文本扫描。
+    valid_conclusion, candidates = _extract_conclusion_from_candidates(text)
+    if valid_conclusion is None:
+        # 3) 兼容 XML/JSON 转义的工具调用包装。
+        valid_conclusion, normalized_candidates = _extract_conclusion_from_candidates(
+            _normalize_review_markup(text)
+        )
+        candidates.extend(normalized_candidates)
+        # 4) 极端兜底：去掉所有反斜杠后再扫（JSON 参数转义）。
+        valid_conclusion, stripped_candidates = _extract_conclusion_from_candidates(
+            text.replace("\\", "")
+        )
+        candidates.extend(stripped_candidates)
+
+    if valid_conclusion is not None:
+        return valid_conclusion
+
+    if candidates:
+        # 有 JSON 候选但没有一个带布尔 approve：按格式不完整处理。
+        hint = "模型未给出明确的批准结论（approve 字段缺失或非布尔）。"
+        return False, f"{hint} 审查模型返回：{text}"
+    return False, f"审查模型返回不是 JSON：{text}"

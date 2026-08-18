@@ -10,7 +10,7 @@
 
 本项目的 MCP 支持由 Host 侧 Agent、MCP Client Manager 和可选 Local MCP Server 组成：
 
-- Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复；MCP 能力进入 Host 工具目录后，通过固定的 `search_tools` / `invoke_tool` Provider 面向模型。
+- Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复；MCP 能力进入 Host 工具目录后，通过 `search_tools` 搜索、并以 system 消息动态加载完整工具声明供模型原生调用。
 - Client：`omnicrawl/mcp/client.py`，负责连接 Server、发现 Tool/Resource/Prompt、调用和降级。
 - Local Server：`omnicrawl/mcp/server.py`，通过 `stdio` 暴露当前项目的安全工具和上下文。
 - 配置入口：`config.toml` 的 `mcp` 段，示例见 `config.example.toml`。

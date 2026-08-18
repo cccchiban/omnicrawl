@@ -144,6 +144,43 @@ def save_context_window_tokens(
         raise SettingsConfigError(str(exc)) from exc
 
 
+def save_context_compaction_trigger_percent(
+    percent: int,
+    *,
+    context_window_tokens: int,
+    config_path: str | Path | None = None,
+) -> Path:
+    """按当前上下文窗口的百分比换算触发阈值并写回 ``config.toml``。
+
+    换算公式：``trigger_context_tokens = context_window_tokens * percent // 100``。
+    只更新 ``context_compaction.trigger_context_tokens``，保留该段其余字段。
+    """
+
+    if (
+        isinstance(percent, bool)
+        or not isinstance(percent, int)
+        or not 0 < percent < 100
+    ):
+        raise SettingsConfigError("上下文压缩阈值百分比必须是 1 到 99 的整数。")
+    if (
+        isinstance(context_window_tokens, bool)
+        or not isinstance(context_window_tokens, int)
+        or context_window_tokens <= 0
+    ):
+        raise SettingsConfigError("上下文长度必须是正整数 Token。")
+    tokens = context_window_tokens * percent // 100
+    if tokens <= 0:
+        raise SettingsConfigError("换算后的上下文压缩阈值必须为正整数 Token。")
+    try:
+        data = load_config_data(config_path)
+        section = get_section(data, "context_compaction")
+        section["trigger_context_tokens"] = tokens
+        data["context_compaction"] = section
+        return save_config_data(data, config_path)
+    except RuntimeConfigError as exc:
+        raise SettingsConfigError(str(exc)) from exc
+
+
 def save_subagent_setting(
     name: str,
     value: Any,
@@ -206,7 +243,7 @@ def save_feature_enabled(
 def load_show_thinking(config_path: str | Path | None = None) -> bool:
     """读取 ``ui.show_thinking``，缺省时默认开启。
 
-    该开关只控制对话区是否渲染思考块（Markdown 围栏代码块渲染）；模型仍照常产生并
+    该开关只控制对话区是否渲染思考块（Markdown 渲染）；模型仍照常产生并
     接收思考内容，不显示不影响推理链路本身。
     """
 
@@ -242,6 +279,7 @@ __all__ = [
     "SettingsConfigError",
     "load_feature_enabled",
     "load_show_thinking",
+    "save_context_compaction_trigger_percent",
     "save_context_window_tokens",
     "save_feature_enabled",
     "save_mcp_config",

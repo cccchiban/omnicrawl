@@ -1,22 +1,47 @@
 # OmniCrawl 工具调用协议
 
-OmniCrawl 的 Provider 工具面固定为两个元工具：
+OmniCrawl 采用 Provider 原生支持的「动态加载工具」方案：
 
-- `search_tools`：搜索当前 Agent 可见的 Host 工具目录。
-- `invoke_tool`：按工具名和参数调用 Host 目录中的真实工具。
+- Provider 顶层 `tools` 只注册一个 `search_tools` 元工具。
+- 搜索命中后，Host 把命中工具的**完整声明**（name、description、parameters，格式与顶层 `tools` 完全一致）以一条 `role=system`、携带 `tools` 字段的消息追加到对话末尾。
+- 模型在后续生成中直接**原生调用**这些真实工具名；Host 按真实工具目录再次校验参数、走审批并执行。
 
-真实工具的 Python 执行器、完整 Schema、审批策略、MCP 连接和工作区权限不再逐个注册给 Provider，也不再把完整工具目录注入模型上下文。
+真实工具的 Python 执行器、完整 Schema、审批策略、MCP 连接和工作区权限仍由 Host 持有，不再逐个注册给 Provider。
 
 ## 调用流程
 
 ```text
 模型 -> search_tools(query)
 Host -> 候选工具摘要 + 紧凑参数 Schema
-模型 -> invoke_tool(tool_name, arguments)
+Host -> 把命中工具的完整声明以 system 消息的 tools 字段追加到对话末尾
+模型 -> 直接原生调用真实工具（例如 read / bash）
 Host -> 解析真实工具 -> Schema 校验 -> 插件钩子 -> 审批 -> 执行
 Host -> role=tool 结果
 模型 -> 继续调用或输出最终答案
 ```
+
+## 动态加载语义
+
+- 携带 `tools` 的 system 消息与普通消息地位相同：它出现在 `messages` 的哪个位置，工具就从哪个位置开始对模型可见。
+- 动态加载的工具与顶层 `search_tools` 并存，模型可以同时看到两类工具。
+- 注入的声明必须是完整定义（name、description、parameters），不能只传工具名。
+- 该 system 消息不再带 `content` 字段，避免网关返回 400。
+
+缓存原则：
+
+| 操作 | 对前缀缓存的影响 |
+| --- | --- |
+| 在 messages 末尾追加工具声明 | 不影响已有前缀缓存 |
+| 后续请求原样保留已注入的工具声明 | 前缀保持稳定，有利于持续命中缓存 |
+| 删除、修改对话中间的消息，或在中间插入新声明 | 变更位置之后的缓存可能无法命中 |
+| 在顶层 tools 字段声明全局工具 | 不影响缓存命中 |
+
+因此 Host 只做「追加，不插入；注入了就别删」：新命中工具通过 tool result 之后的 system 消息追加，跨用户回合原样保留。
+
+## Provider 兼容
+
+- OpenAI Chat Completions 及兼容网关：原生支持消息内 `tools`，动态声明按位置下发，语义最完整。
+- OpenAI Responses / Anthropic / Gemini：协议本身没有“消息内 tools”概念，Host 会把 system 消息携带的动态声明合并进请求级 `tools`（语义退化为全局可见），并跳过声明消息本身。
 
 ## `read_image`
 
@@ -40,7 +65,7 @@ Host -> role=tool 结果
 
 ## Host 侧边界
 
-`invoke_tool` 的外层 Schema 只保证 `tool_name` 是字符串、`arguments` 是对象。真实参数必须由 Host 使用工具目录中的 Schema 再次校验。模型遵循契约不是安全边界。
+动态加载的工具仍必须由 Host 使用工具目录中的完整 Schema 二次校验。模型遵循声明不是安全边界。
 
 校验失败返回结构化错误：
 
@@ -51,22 +76,25 @@ Host -> role=tool 结果
 
 参数错误包含 `issues` 和紧凑 `contract`，模型可以据此修正后重试。未知工具只返回有限候选建议，不暴露完整 Host 目录。
 
-审批发生在解析真实工具之后，因此确认页显示真实工具名和经过脱敏的真实参数，而不是只显示 `invoke_tool`。搜索操作不需要审批；真实工具仍遵循原有的人工、自动或审查模式。
+审批发生在解析真实工具之后，因此确认页显示真实工具名和经过脱敏的真实参数。搜索操作不需要审批；真实工具仍遵循原有的人工、自动或审查模式。
+
+## `invoke_tool` 兼容说明
+
+`invoke_tool` 已从 Provider 工具面移除，不再出现在顶层 `tools` 中。Host 分发器仍保留其解析路径，供旧测试和直接构造的内部调用使用；生产模型应使用动态加载后的原生调用。
 
 ## 兼容范围
 
 - 内置文件、命令、后台任务、记忆、Windows 桌面和 SubAgent 工具保留在 Host 目录。
 - MCP Tool、Resource 和 Prompt 继续由 MCP Manager 发现并写入 Host 目录。
-- 主 Agent 和 SubAgent 都只向其 Provider 暴露 `search_tools` 与 `invoke_tool`。
+- 主 Agent 和 SubAgent 都只向其 Provider 暴露 `search_tools`；动态加载后的真实工具声明以 system 消息下发。
 - AgentLoop 的批次审批、并发只读调用、写入/删除串行屏障、模型上下文有界输出摘要（头尾预览）、完整 `full_output` UI 展示、视觉图片回填、视觉模型故障转移和 Session 事件保持不变。
 - 旧的内部测试夹具仍可直接构造真实 `ToolCall`，但生产 Provider 不会注册真实工具名。
 
 命令工具的主命令必须保留完整测试/构建输出和真实退出码。Bash 启动时默认启用 `pipefail`；测试或构建命令中如果使用 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出裁剪命令，Host 会在执行前拒绝，并提示改用独立的 `diagnostic_command`。
 
-- `omnicrawl/agent/host_tools.py`：Host 目录、工具搜索、紧凑 Schema、参数校验和固定 Provider 工具。
-- `omnicrawl/agent/tools.py`：真实内置工具和 MCP 工具定义。
-- `omnicrawl/agent/core.py`：Provider 工具面、统一分发、审批和执行。
+- `omnicrawl/agent/host_tools.py`：Host 目录、工具搜索、紧凑 Schema、完整声明构建和参数校验。
+- `omnicrawl/agent/core.py`：动态加载回填、Provider 工具面、统一分发、审批和执行。
+- `omnicrawl/agent/prompt_context.py`：只注入 search_tools 的上下文说明。
 - `omnicrawl/agent/vision_proxy.py`：独立视觉 Runtime、图片请求构造、文本分析和故障转移。
 - `omnicrawl/config/vision.py`：视觉代理开关与模型引用配置。
 - `omnicrawl/agent/execution.py`：模型回合与工具观察循环。
-- `omnicrawl/agent/prompt_context.py`：只注入两个固定工具的上下文说明。

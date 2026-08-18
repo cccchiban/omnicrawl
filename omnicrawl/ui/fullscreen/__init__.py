@@ -275,7 +275,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     .tool-message { color: $terminal-tool-text; padding-left: 2; background: $terminal-tool-background; }
     .tool-message:focus { color: $terminal-tool-text; background: $terminal-tool-focus-background; }
     .error-message { color: $terminal-red; }
-    .reasoning-message { color: $terminal-text; padding-left: 2; padding-right: 1; }
+    .reasoning-message { color: $terminal-reasoning-text; padding: 0 1; background: $terminal-reasoning-background; }
     #composer-wrap { height: 2; min-height: 2; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
     #command-menu {
         display: none;

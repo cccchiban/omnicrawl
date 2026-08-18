@@ -77,6 +77,8 @@ mode = "standard"
 # 模型辅助压缩开启：完整回合结束时测量预算，达到阈值（默认 100K）即调用
 # 摘要模型；普通 /compact 保持本地确定性，/compact --model 为显式模型入口。
 # 开启后还会注册 recall_session_evidence，只按当前有效摘要的事件 ID 恢复证据。
+# 阈值也可在运行设置面板按当前模型上下文窗口的百分比设置（5% 步进）：
+# trigger_context_tokens = 上下文窗口 × 百分比。
 [context_compaction]
 enabled = true
 trigger_context_tokens = 100000
