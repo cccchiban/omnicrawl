@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnicrawl-agent"
-version = "0.1.19"
+version = "0.1.20"
 description = "Local OmniCrawl agent with TUI, tools, MCP and NPM Hook plugins"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -52,4 +52,5 @@ omnicrawl = [
     "config/templates/models.example.toml",
     "config/templates/subagents.example.toml",
     "connectors/*.md",
+    "bin/*",
 ]

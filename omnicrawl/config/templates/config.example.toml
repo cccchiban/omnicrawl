@@ -74,7 +74,7 @@ timeout_seconds = 120
 mode = "review"
 
 # 对话区思考块显示：关闭后思考内容仍照常产生并进入推理链路，只是不在
-# 对话区渲染思考块（含背景色）。可在 TUI /settings 中切换。
+# 对话区渲染思考块（含围栏包裹）。可在 TUI /settings 中切换。
 [ui]
 show_thinking = true
 
@@ -97,14 +97,6 @@ mode = "standard"
 # bash = true
 # read_image = true
 # windows_screenshot = true
-
-# 两类搜索索引均默认关闭；可在 TUI /settings 中独立启用。
-# 快照按 PRJ 隔离保存到 ~/.OmniCrawl/search-index/，不会写入项目目录。
-[file_name_index]
-enabled = false
-
-[content_index]
-enabled = false
 
 [context_compaction]
 enabled = false

@@ -12,11 +12,6 @@ from .theme import (
     TEXT_PRIMARY,
 )
 
-# 索引加载动画的帧序列：与对话区状态指示器（⠧ 正在思考…）同款十帧
-# Braille 旋转动画，配合 STATUS_SPINNER_INTERVAL_SECONDS 刷新。
-SEARCH_INDEX_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-
-
 def compact_token_count(value: int) -> str:
     """使用 K/M 缩写压缩 Token 数，同时保留小数量的精确值。"""
 
@@ -117,31 +112,6 @@ def pending_queue_text(pending_count: int) -> Text:
     rendered.append(str(pending_count), style=f"{TEXT_PRIMARY} bold")
     return rendered
 
-
-def search_index_status_text(status: object, animation_frame: int = 0) -> Text:
-    """生成第一行行尾的后台索引状态：旋转动画 + “加载索引”。
-
-    加载/构建期间显示与状态指示器（⠧ 正在思考…）同款的十帧 Braille
-    旋转动画，文本固定为 “加载索引”；索引就绪或空闲时返回空文本
-    （组件随之隐藏）；错误时显示简短提示。
-    """
-
-    file_state = str(getattr(status, "file_state", "disabled"))
-    content_state = str(getattr(status, "content_state", "disabled"))
-
-    if (
-        file_state in {"loading", "building"}
-        or content_state in {"loading", "building"}
-    ):
-        frame = SEARCH_INDEX_SPINNER_FRAMES[
-            int(animation_frame) % len(SEARCH_INDEX_SPINNER_FRAMES)
-        ]
-        return Text(f"{frame} 加载索引", style=TEXT_MUTED)
-    if file_state == "error" or content_state == "error":
-        return Text("索引不可用", style=TEXT_MUTED)
-    return Text()
-
-
 def gradient_text(text: str) -> Text:
     """保留既有调用接口，以终端 ANSI 主强调色渲染品牌文字。"""
 
@@ -182,8 +152,7 @@ def context_summary_text(
     """渲染第一行左段：项目绝对路径（灰色，行首直接开始）。
 
     直接显示完整路径不做 basename 截断，用灰色弱化视觉；超长路径由
-    compact_hud_value 截断（保留首尾）。尾部 1 空格与行尾 #index-status
-    组件衔接（该组件自带 “⁕ ” 前置分隔符，空闲隐藏时第一行只有路径）。
+    compact_hud_value 截断（保留首尾）。尾部 1 空格保持字段间距。
     """
 
     rendered = Text()

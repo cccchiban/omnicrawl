@@ -17,7 +17,7 @@ from ..documentation import (
     resolve_bundled_doc_uri,
 )
 from ..llm.stream_registry import current_stream_scope, registered_resource
-from .search_index import ProjectSearchIndex, is_forbidden_content_search_root
+from .ripgrep import RipgrepError, batch_paths, resolve_ripgrep_binary, run_ripgrep
 from .temp import DEFAULT_AGENT_TEMP_DIRECTORY
 
 
@@ -51,27 +51,18 @@ PROTECTED_NAMES = {
     "models.yaml",
 }
 
-# 仅索引层忽略的目录名：这些目录仍然可以被普通工具读取和搜索（直接扫描），
-# 但不进入后台索引快照。它们要么是构建产物/缓存（频繁变化、无检索价值），
-# 要么是其他 AI 工具的工作目录（含会话转录等私有数据，索引会泄露隐私并
-# 导致快照持续失效）。不要把它们加入 PROTECTED_NAMES，否则 Agent 将完全
-# 无法访问这些目录。
-INDEX_EXCLUDED_NAMES = {
-    "build",
-    "dist",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".coverage",
-    ".agents",
-    ".claude",
-    ".codex",
-    ".pi-subagents",
-    ".agent_tmp",
-    "logs",
-    ".omnicrawl",
-    "designs",
-}
+
+
+def is_forbidden_content_search_root(path: Path) -> bool:
+    """用户主目录或文件系统根目录本身不允许内容关键词搜索。"""
+
+    resolved = Path(path).expanduser().resolve()
+    try:
+        home = Path.home().resolve()
+    except OSError:
+        home = Path.home()
+    return resolved == home or resolved.parent == resolved
+
 
 
 class WorkspaceToolError(RuntimeError):
@@ -111,8 +102,8 @@ class WorkspaceTools:
         command_timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
         max_file_read_chars: int | None = None,
         extra_protection_message: Callable[[Path], str | None] | None = None,
-        search_index: ProjectSearchIndex | None = None,
         resource_owner: object | None = None,
+        ripgrep_binary: Path | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.command_timeout_seconds = max(
@@ -121,8 +112,8 @@ class WorkspaceTools:
         )
         self.max_file_read_chars = max_file_read_chars
         self._extra_protection_message = extra_protection_message
-        self.search_index = search_index
         self._resource_owner = resource_owner
+        self._ripgrep_binary_override = ripgrep_binary
 
     def list_files(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or "."))
@@ -239,50 +230,24 @@ class WorkspaceTools:
             maximum=MAX_SEARCH_RESULTS,
         )
 
-        indexed = None
-        if self.search_index is not None and self._index_covers_path(root):
-            indexed = self.search_index.search_files(
-                pattern,
-                root=root,
-                kind=kind,
-                case_sensitive=case_sensitive,
-                max_results=max_results,
-            )
-        if indexed is None:
-            indexed = self._scan_file_names(
-                pattern,
-                root=root,
-                kind=kind,
-                case_sensitive=case_sensitive,
-                max_results=max_results,
-            )
-        else:
-            # 索引快照不包含 INDEX_EXCLUDED_NAMES 目录（构建产物/缓存/工具私有
-            # 目录），开启索引后需要补充扫描这些目录，保证结果与直接扫描一致。
-            extra = self._scan_index_excluded(
-                pattern,
-                root=root,
-                kind=kind,
-                case_sensitive=case_sensitive,
-                max_results=max_results,
-            )
-            if extra:
-                merged = dict(indexed)
-                merged.update(extra)
-                indexed = sorted(
-                    merged.items(), key=lambda item: item[0].casefold()
-                )[:max_results]
+        indexed = self._scan_file_names(
+            pattern,
+            root=root,
+            kind=kind,
+            case_sensitive=case_sensitive,
+            max_results=max_results,
+        )
         lines = [f"{path}{'/' if is_dir else ''}" for path, is_dir in indexed]
         suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
         return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
 
     def grep(self, arguments: dict[str, Any]) -> str:
-        """在 UTF-8 文本文件中执行 grep 风格搜索。
+        """在 UTF-8 文本文件中执行 grep 风格搜索（由打包的 ripgrep 二进制执行）。
 
-        pattern 默认按正则表达式解释；use_regex=false 时按精确子串匹配，
-        此时索引层（FTS trigram）可用作加速。支持输出匹配行上下文
-        （context_lines）、每文件匹配计数（count）、仅列出匹配文件
-        （files_with_matches），以及 include/exclude 文件名 glob 过滤。
+        pattern 默认按正则表达式解释；use_regex=false 时按精确子串匹配。
+        支持输出匹配行上下文（context_lines）、每文件匹配计数（count）、
+        仅列出匹配文件（files_with_matches），以及 include/exclude 文件名
+        glob 过滤。
         """
 
         pattern = str(arguments.get("pattern") or "")
@@ -292,16 +257,14 @@ class WorkspaceTools:
         use_regex = bool(arguments.get("use_regex", True))
         case_sensitive = bool(arguments.get("case_sensitive", False))
         if use_regex:
+            # 保留 Python 正则预编译，仅用于给出与旧实现一致的中文错误提示；
+            # 实际匹配交由 ripgrep 执行。
             try:
-                regex = re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
+                re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
             except re.error as exc:
                 raise WorkspaceToolError(
                     f"无效的正则表达式：{exc}。可设置 use_regex=false 按精确子串匹配。"
                 ) from exc
-            needle = None
-        else:
-            regex = None
-            needle = pattern if case_sensitive else pattern.casefold()
 
         root = self.safe_path(str(arguments.get("path") or "."))
         if is_forbidden_content_search_root(root):
@@ -331,12 +294,11 @@ class WorkspaceTools:
         include_re = _compile_glob(_read_optional_text(arguments, "include"))
         exclude_re = _compile_glob(_read_optional_text(arguments, "exclude"))
 
-        # 计数与仅列文件模式直接扫描：计数需要全量匹配行，索引只返回截断列表。
         if count_only:
             return self._grep_count_files(
                 root,
-                regex=regex,
-                needle=needle,
+                pattern=pattern,
+                use_regex=use_regex,
                 case_sensitive=case_sensitive,
                 include_re=include_re,
                 exclude_re=exclude_re,
@@ -345,63 +307,23 @@ class WorkspaceTools:
         if files_only:
             return self._grep_list_files(
                 root,
-                regex=regex,
-                needle=needle,
+                pattern=pattern,
+                use_regex=use_regex,
                 case_sensitive=case_sensitive,
                 include_re=include_re,
                 exclude_re=exclude_re,
                 max_results=max_results,
             )
 
-        # 默认输出匹配行：字面量模式优先走索引加速，正则模式直接扫描。
-        truncated = False
-        if (
-            not use_regex
-            and self.search_index is not None
-            and self._index_covers_path(root)
-        ):
-            indexed = self.search_index.search_literal(
-                pattern,
-                root=root,
-                case_sensitive=case_sensitive,
-                max_results=max_results,
-            )
-            if indexed is not None:
-                # 与 find_files 相同：补充扫描索引排除目录，保持结果一致。
-                extra = self._scan_index_excluded_literal(
-                    pattern,
-                    root=root,
-                    case_sensitive=case_sensitive,
-                    max_results=max_results,
-                    include_re=include_re,
-                    exclude_re=exclude_re,
-                )
-                merged = sorted(
-                    set(indexed) | set(extra),
-                    key=lambda match: str(match[0]).casefold(),
-                )[:max_results]
-                match_lines = list(merged)
-                truncated = len(merged) >= max_results
-            else:
-                match_lines, truncated = self._scan_grep(
-                    root,
-                    regex=regex,
-                    needle=needle,
-                    case_sensitive=case_sensitive,
-                    include_re=include_re,
-                    exclude_re=exclude_re,
-                    max_results=max_results,
-                )
-        else:
-            match_lines, truncated = self._scan_grep(
-                root,
-                regex=regex,
-                needle=needle,
-                case_sensitive=case_sensitive,
-                include_re=include_re,
-                exclude_re=exclude_re,
-                max_results=max_results,
-            )
+        match_lines, truncated = self._scan_grep(
+            root,
+            pattern=pattern,
+            use_regex=use_regex,
+            case_sensitive=case_sensitive,
+            include_re=include_re,
+            exclude_re=exclude_re,
+            max_results=max_results,
+        )
         output = self._format_grep_matches(match_lines, context_lines=context_lines)
         if truncated:
             output += "\n... 已达到 max_results。"
@@ -411,8 +333,8 @@ class WorkspaceTools:
         self,
         root: Path,
         *,
-        regex: re.Pattern[str] | None,
-        needle: str | None,
+        pattern: str,
+        use_regex: bool,
         case_sensitive: bool,
         include_re: re.Pattern[str] | None,
         exclude_re: re.Pattern[str] | None,
@@ -420,33 +342,34 @@ class WorkspaceTools:
     ) -> str:
         """输出每个文件的匹配行数（grep -c 语义）。"""
 
-        files = [root] if root.is_file() else self.iter_search_files(root)
-        counts: list[str] = []
+        files = self._iter_grep_files(
+            root, include_re=include_re, exclude_re=exclude_re
+        )
+        counts: list[tuple[str, str]] = []
         truncated = False
-        for file_path in files:
-            if self.should_skip_path(file_path):
+        for stdout, returncode in self._run_ripgrep_over_files(
+            files,
+            pattern=pattern,
+            use_regex=use_regex,
+            case_sensitive=case_sensitive,
+            extra_args=["--count", "--with-filename"],
+        ):
+            if returncode == 1:
                 continue
-            if include_re is not None and not include_re.match(file_path.name):
-                continue
-            if exclude_re is not None and exclude_re.match(file_path.name):
-                continue
-            try:
-                lines = self.read_text(file_path).splitlines()
-            except WorkspaceToolError:
-                continue
-            if regex is not None:
-                count = sum(1 for line in lines if regex.search(line))
-            else:
-                candidates = (
-                    lines if case_sensitive else (line.casefold() for line in lines)
-                )
-                count = sum(1 for line in candidates if needle in line)
-            if count:
-                counts.append(f"{self.relative_path(file_path)}: {count}")
+            for line in stdout.splitlines():
+                path_text, separator, count_text = line.rpartition(":")
+                if not separator or not count_text.isdigit():
+                    continue
+                counts.append((self.relative_path(Path(path_text)), count_text))
                 if len(counts) >= max_results:
                     truncated = True
                     break
-        result = "\n".join(counts) or "未找到匹配结果。"
+            if truncated:
+                break
+        counts.sort(key=lambda item: item[0].casefold())
+        result = "\n".join(
+            f"{path}: {count}" for path, count in counts
+        ) or "未找到匹配结果。"
         if truncated:
             result += "\n... 已达到 max_results。"
         return result
@@ -455,8 +378,8 @@ class WorkspaceTools:
         self,
         root: Path,
         *,
-        regex: re.Pattern[str] | None,
-        needle: str | None,
+        pattern: str,
+        use_regex: bool,
         case_sensitive: bool,
         include_re: re.Pattern[str] | None,
         exclude_re: re.Pattern[str] | None,
@@ -464,32 +387,30 @@ class WorkspaceTools:
     ) -> str:
         """只输出包含匹配的文件路径（grep -l 语义）。"""
 
-        files = [root] if root.is_file() else self.iter_search_files(root)
+        files = self._iter_grep_files(
+            root, include_re=include_re, exclude_re=exclude_re
+        )
         matched: list[str] = []
         truncated = False
-        for file_path in files:
-            if self.should_skip_path(file_path):
+        for stdout, returncode in self._run_ripgrep_over_files(
+            files,
+            pattern=pattern,
+            use_regex=use_regex,
+            case_sensitive=case_sensitive,
+            extra_args=["--files-with-matches", "-m", "1"],
+        ):
+            if returncode == 1:
                 continue
-            if include_re is not None and not include_re.match(file_path.name):
-                continue
-            if exclude_re is not None and exclude_re.match(file_path.name):
-                continue
-            try:
-                lines = self.read_text(file_path).splitlines()
-            except WorkspaceToolError:
-                continue
-            if regex is not None:
-                found = any(regex.search(line) for line in lines)
-            else:
-                found = any(
-                    needle in (line if case_sensitive else line.casefold())
-                    for line in lines
-                )
-            if found:
-                matched.append(self.relative_path(file_path))
+            for line in stdout.splitlines():
+                if not line:
+                    continue
+                matched.append(self.relative_path(Path(line)))
                 if len(matched) >= max_results:
                     truncated = True
                     break
+            if truncated:
+                break
+        matched.sort(key=lambda item: item.casefold())
         result = "\n".join(matched) or "未找到匹配结果。"
         if truncated:
             result += "\n... 已达到 max_results。"
@@ -499,18 +420,53 @@ class WorkspaceTools:
         self,
         root: Path,
         *,
-        regex: re.Pattern[str] | None,
-        needle: str | None,
+        pattern: str,
+        use_regex: bool,
         case_sensitive: bool,
         include_re: re.Pattern[str] | None,
         exclude_re: re.Pattern[str] | None,
         max_results: int,
     ) -> tuple[list[tuple[str, int, str]], bool]:
-        """直接扫描收集匹配行；返回（匹配行列表，是否达到 max_results）。"""
+        """调用 ripgrep 收集匹配行；返回（匹配行列表，是否达到 max_results）。"""
 
-        files = [root] if root.is_file() else self.iter_search_files(root)
+        files = self._iter_grep_files(
+            root, include_re=include_re, exclude_re=exclude_re
+        )
         match_lines: list[tuple[str, int, str]] = []
         truncated = False
+        for stdout, returncode in self._run_ripgrep_over_files(
+            files,
+            pattern=pattern,
+            use_regex=use_regex,
+            case_sensitive=case_sensitive,
+            extra_args=["--no-heading", "--with-filename", "--line-number"],
+            per_file_limit=max_results,
+        ):
+            if returncode == 1:
+                continue
+            for raw_line in stdout.splitlines():
+                parsed = self._parse_ripgrep_match_line(raw_line)
+                if parsed is None:
+                    continue
+                match_lines.append(parsed)
+                if len(match_lines) >= max_results:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        match_lines.sort(key=lambda item: (item[0].casefold(), item[1]))
+        return match_lines, truncated
+
+    def _iter_grep_files(
+        self,
+        root: Path,
+        *,
+        include_re: re.Pattern[str] | None,
+        exclude_re: re.Pattern[str] | None,
+    ) -> list[Path]:
+        """收集待搜索文件并应用与旧实现一致的安全过滤和 include/exclude。"""
+        files = [root] if root.is_file() else self.iter_search_files(root)
+        selected: list[Path] = []
         for file_path in files:
             if self.should_skip_path(file_path):
                 continue
@@ -518,25 +474,66 @@ class WorkspaceTools:
                 continue
             if exclude_re is not None and exclude_re.match(file_path.name):
                 continue
+            selected.append(file_path)
+        return selected
+
+    def _ripgrep_binary(self) -> Path:
+        """返回可用的 ripgrep 二进制；优先随包分发，其次 PATH。"""
+        if self._ripgrep_binary_override is not None:
+            binary = Path(self._ripgrep_binary_override)
+            if not binary.is_file():
+                raise WorkspaceToolError(f"ripgrep 二进制不存在：{binary}")
+            return binary
+        binary = resolve_ripgrep_binary()
+        if binary is None:
+            raise WorkspaceToolError(
+                "未找到 ripgrep 二进制：omnicrawl/bin 未随包分发 rg，"
+                "PATH 中也没有 rg。"
+            )
+        return binary
+
+    def _run_ripgrep_over_files(
+        self,
+        files: list[Path],
+        *,
+        pattern: str,
+        use_regex: bool,
+        case_sensitive: bool,
+        extra_args: list[str],
+        per_file_limit: int | None = None,
+    ):
+        """分批把文件列表交给 ripgrep，逐个批次产出 (stdout, returncode)。"""
+        binary = self._ripgrep_binary()
+        base_args = list(extra_args)
+        if not use_regex:
+            base_args.append("--fixed-strings")
+        if not case_sensitive:
+            base_args.append("--ignore-case")
+        if per_file_limit is not None:
+            base_args.extend(["--max-count", str(per_file_limit)])
+        for batch in batch_paths(files):
             try:
-                lines = self.read_text(file_path).splitlines()
-            except WorkspaceToolError:
-                continue
-            relative = self.relative_path(file_path)
-            for line_no, line in enumerate(lines, start=1):
-                if regex is not None:
-                    hit = bool(regex.search(line))
-                else:
-                    candidate = line if case_sensitive else line.casefold()
-                    hit = needle in candidate
-                if hit:
-                    match_lines.append((relative, line_no, line))
-                    if len(match_lines) >= max_results:
-                        truncated = True
-                        break
-            if truncated:
-                break
-        return match_lines, truncated
+                yield run_ripgrep(
+                    binary,
+                    [*base_args, "--", pattern, *batch],
+                    cwd=self.workspace_root,
+                    timeout=self.command_timeout_seconds,
+                )
+            except RipgrepError as exc:
+                raise WorkspaceToolError(str(exc)) from exc
+
+    def _parse_ripgrep_match_line(
+        self, raw_line: str
+    ) -> tuple[str, int, str] | None:
+        """解析 ripgrep 的 ``path:line:text`` 输出行。"""
+        match = _RIPGREP_MATCH_LINE_RE.match(raw_line)
+        if match is None:
+            return None
+        return (
+            self.relative_path(Path(match.group("path"))),
+            int(match.group("line")),
+            match.group("text"),
+        )
 
     def _format_grep_matches(
         self,
@@ -620,8 +617,7 @@ class WorkspaceTools:
             dirnames[:] = [
                 dirname
                 for dirname in sorted(dirnames, key=lambda value: value.lower())
-                # 目录 symlink/junction 一律跳过，与索引快照的 _scan_entries
-                # 行为保持一致，避免开启/关闭索引时 find_files 结果集不同。
+                # 目录 symlink/junction 一律跳过，与 iter_search_files 行为保持一致。
                 if not self.should_skip_path(current_dir / dirname)
                 and not (current_dir / dirname).is_symlink()
             ]
@@ -633,96 +629,6 @@ class WorkspaceTools:
             )
         return entries
 
-
-    def _index_excluded_roots(self, root: Path) -> list[Path]:
-        """root 下（含 root 自身，若它命中排除名单）的索引排除目录。
-
-        索引快照跳过 INDEX_EXCLUDED_NAMES 目录后，工具层必须补充扫描这些
-        目录，否则开启索引会丢失这些目录内的匹配结果。排除目录整棵子树
-        都不进索引，因此无需继续下钻。
-        """
-
-        if root.is_file():
-            return [root] if self.is_index_excluded_path(root) else []
-        if self.is_index_excluded_path(root):
-            return [root]
-        roots: list[Path] = []
-        for dirpath, dirnames, _filenames in os.walk(root):
-            current_dir = Path(dirpath)
-            for name in sorted(dirnames, key=lambda value: value.lower()):
-                candidate = current_dir / name
-                if self.is_index_excluded_path(candidate):
-                    roots.append(candidate)
-            dirnames[:] = [
-                name for name in dirnames
-                if not self.is_index_excluded_path(current_dir / name)
-            ]
-        return roots
-
-    def _scan_index_excluded(
-        self,
-        pattern: str,
-        *,
-        root: Path,
-        kind: str,
-        case_sensitive: bool,
-        max_results: int,
-    ) -> list[tuple[str, bool]]:
-        """补充扫描索引排除目录中的文件名匹配，与 find_files 合并。"""
-
-        results: list[tuple[str, bool]] = []
-        for extra_root in self._index_excluded_roots(root):
-            results.extend(
-                self._scan_file_names(
-                    pattern,
-                    root=extra_root,
-                    kind=kind,
-                    case_sensitive=case_sensitive,
-                    max_results=max_results,
-                )
-            )
-        return results
-
-    def _scan_index_excluded_literal(
-        self,
-        pattern: str,
-        *,
-        root: Path,
-        case_sensitive: bool,
-        max_results: int,
-        include_re: re.Pattern[str] | None = None,
-        exclude_re: re.Pattern[str] | None = None,
-    ) -> list[tuple[str, int, str]]:
-        """补充扫描索引排除目录中的字面量匹配，与 grep 的索引结果合并。"""
-
-        needle = pattern if case_sensitive else pattern.casefold()
-        results: list[tuple[str, int, str]] = []
-        for extra_root in self._index_excluded_roots(root):
-            files = (
-                [extra_root]
-                if extra_root.is_file()
-                else self.iter_search_files(extra_root)
-            )
-            for file_path in files:
-                if self.should_skip_path(file_path):
-                    continue
-                if include_re is not None and not include_re.match(file_path.name):
-                    continue
-                if exclude_re is not None and exclude_re.match(file_path.name):
-                    continue
-                try:
-                    lines = self.read_text(file_path).splitlines()
-                except WorkspaceToolError:
-                    continue
-                for line_no, line in enumerate(lines, start=1):
-                    candidate = line if case_sensitive else line.casefold()
-                    if needle in candidate:
-                        results.append(
-                            (self.relative_path(file_path), line_no, line)
-                        )
-                        if len(results) >= max_results:
-                            return results
-        return results
 
     def replace_text(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or ""))
@@ -741,8 +647,6 @@ class WorkspaceTools:
 
         replace_count = occurrences if count <= 0 else min(count, occurrences)
         path.write_text(original.replace(old_text, new_text, replace_count), encoding="utf-8")
-        if self.search_index is not None:
-            self.search_index.refresh_path(path)
         return f"已修改 {self.relative_path(path)}，替换 {replace_count} 处。"
 
     def write_file(self, arguments: dict[str, Any]) -> str:
@@ -760,8 +664,6 @@ class WorkspaceTools:
         else:
             path.write_text(content, encoding="utf-8")
             action = "写入"
-        if self.search_index is not None:
-            self.search_index.refresh_path(path)
         return f"已{action} {self.relative_path(path)}，字符数：{len(content)}。"
 
     def run_shell_command(
@@ -1021,10 +923,6 @@ class WorkspaceTools:
             raise WorkspaceToolError(extra_message)
         return resolved
 
-    def _index_covers_path(self, path: Path) -> bool:
-        """搜索索引快照只覆盖工作区；工作区外 root 必须回退直接扫描。"""
-        return _is_relative_to(Path(path).resolve(), self.workspace_root)
-
     def read_text(self, path: Path) -> str:
         try:
             text = path.read_text(encoding="utf-8")
@@ -1059,20 +957,6 @@ class WorkspaceTools:
         if self._extra_protection_message is None:
             return False
         return bool(self._extra_protection_message(path))
-
-    def should_index_skip(self, path: Path) -> bool:
-        """索引层专属跳过规则：保护路径 + 索引忽略目录。
-
-        与 :meth:`should_skip_path` 的区别是额外排除 INDEX_EXCLUDED_NAMES
-        中的构建产物/缓存/工具私有目录；这些目录只是不进索引快照，
-        直接扫描时仍然可以被 find_files/grep 命中。
-        """
-
-        return self.should_skip_path(path) or self.is_index_excluded_path(path)
-
-    @staticmethod
-    def is_index_excluded_path(path: Path) -> bool:
-        return any(part in INDEX_EXCLUDED_NAMES for part in path.parts)
 
     @staticmethod
     def is_protected_path(path: Path) -> bool:
@@ -1160,6 +1044,11 @@ def _sample_command_output(
         except OSError:
             pass
     return "".join(head_lines) + hint + "\n" + "".join(tail_lines)
+
+
+_RIPGREP_MATCH_LINE_RE = re.compile(
+    r"^(?P<path>.+?):(?P<line>\d+):(?P<text>.*)$"
+)
 
 
 def _compile_glob(pattern: str) -> re.Pattern[str] | None:
@@ -1389,11 +1278,3 @@ def _find_powershell_executable() -> Path | None:
         if executable:
             return Path(executable)
     return None
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False

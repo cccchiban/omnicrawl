@@ -74,14 +74,6 @@ mode = "standard"
 # bash = true
 # windows_screenshot = true
 
-# 两类搜索索引均默认关闭；可在 TUI /settings 中独立启用。
-# 快照按 PRJ 隔离保存到 ~/.OmniCrawl/search-index/，不会写入项目目录。
-[file_name_index]
-enabled = false
-
-[content_index]
-enabled = false
-
 # 模型辅助压缩开启：完整回合结束时测量预算，达到阈值（默认 100K）即调用
 # 摘要模型；普通 /compact 保持本地确定性，/compact --model 为显式模型入口。
 # 开启后还会注册 recall_session_evidence，只按当前有效摘要的事件 ID 恢复证据。

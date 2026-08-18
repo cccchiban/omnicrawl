@@ -209,7 +209,6 @@ from ..workspace_tools import (
     WorkspaceTools,
 )
 from ..workspace.monitor import BackgroundMonitorManager, MonitorPollResult, MonitorTaskSnapshot
-from ..workspace.search_index import ProjectSearchIndex, SearchIndexStatus
 
 
 LOGGER = logging.getLogger(__name__)
@@ -426,9 +425,7 @@ class AgentConfig:
     skills_enabled: bool = True
     skill_paths: list[str] = field(default_factory=list)
     memory_enabled: bool = True
-    file_name_index_enabled: bool = False
-    content_index_enabled: bool = False
-    # 是否渲染思考块（含背景色）：关闭只隐藏显示，思考内容仍照常产生与接收。
+    # 是否渲染思考块（Markdown 围栏代码块渲染）：关闭只隐藏显示，思考内容仍照常产生与接收。
     show_thinking: bool = True
     memory_directory: str = ".omnicrawl/.oclmemory"
     session_enabled: bool = True
@@ -496,10 +493,6 @@ class AgentConfig:
         )
         if not isinstance(self.memory_directory, str) or not self.memory_directory.strip():
             raise AgentError("memory_directory 必须是非空字符串。")
-        if not isinstance(self.file_name_index_enabled, bool):
-            raise AgentError("file_name_index_enabled 必须是布尔值。")
-        if not isinstance(self.content_index_enabled, bool):
-            raise AgentError("content_index_enabled 必须是布尔值。")
         if not isinstance(self.show_thinking, bool):
             raise AgentError("show_thinking 必须是布尔值。")
         if not isinstance(self.session_directory, str) or not self.session_directory.strip():
@@ -616,15 +609,6 @@ class LocalToolAgent:
 
         if not self.config.llm.api_key.strip():
             raise AgentError("缺少 API Key，请在 config.toml 的 llm 配置中填写，或设置 OPENAI_API_KEY。")
-
-        self._search_index = ProjectSearchIndex(
-            self.workspace_root,
-            file_name_enabled=self.config.file_name_index_enabled,
-            content_enabled=self.config.content_index_enabled,
-            should_skip=self._workspace_tools.should_index_skip,
-        )
-        self._workspace_tools.search_index = self._search_index
-        self._search_index.start()
 
         self._client: Any | None = None
         self._mcp_manager = self._create_mcp_manager()
@@ -1199,7 +1183,7 @@ class LocalToolAgent:
 
         # 2. 收尾旧工作区资源（此时新子系统已就绪）。
         # 会话已全局化且切换保持同一会话，不能在此丢弃/清空当前会话；
-        # 只关闭临时目录、搜索索引、Monitor 与 MCP 等旧工作区资源。
+        # 只关闭临时目录、Monitor 与 MCP 等旧工作区资源。
         self._teardown_workspace_resources(discard_empty_session=False)
 
         # 3. 原子替换到新工作区状态。
@@ -1214,15 +1198,6 @@ class LocalToolAgent:
             command_timeout_seconds=self.config.command_timeout_seconds,
             extra_protection_message=self._workspace_extra_protection_message,
         )
-        self._search_index = ProjectSearchIndex(
-            new_root,
-            file_name_enabled=self.config.file_name_index_enabled,
-            content_enabled=self.config.content_index_enabled,
-            should_skip=self._workspace_tools.should_index_skip,
-        )
-        self._workspace_tools.search_index = self._search_index
-        self._search_index.start()
-
         self._temp_workspace = prepared["temp_workspace"]
         self._session_store = prepared["session_store"]
         self._session_state = prepared["session_state"]
@@ -1455,14 +1430,6 @@ class LocalToolAgent:
                 pass
             self.__dict__.pop("_temp_workspace", None)
 
-        old_search_index = getattr(self, "_search_index", None)
-        if old_search_index is not None:
-            try:
-                old_search_index.close()
-            except Exception:
-                pass
-            self.__dict__.pop("_search_index", None)
-
         old_monitor_manager = getattr(self, "_monitor_manager", None)
         if old_monitor_manager is not None:
             try:
@@ -1525,12 +1492,6 @@ class LocalToolAgent:
         if monitor_manager is not None:
             try:
                 monitor_manager.close()
-            except Exception as exc:
-                close_errors.append(exc)
-        search_index = getattr(self, "_search_index", None)
-        if search_index is not None:
-            try:
-                search_index.close()
             except Exception as exc:
                 close_errors.append(exc)
         temp_workspace = getattr(self, "_temp_workspace", None)
@@ -1771,28 +1732,10 @@ class LocalToolAgent:
             self._tools = previous_tools
             raise
 
-    def search_index_status(self) -> SearchIndexStatus:
-        """返回文件名/内容索引的线程安全状态快照，供 TUI 只读展示。"""
-
-        manager = getattr(self, "_search_index", None)
-        if manager is None:
-            return SearchIndexStatus()
-        return manager.status()
-
-    def set_file_name_index_enabled(self, enabled: bool) -> None:
-        """运行时切换文件名索引；工具本身始终保留直接扫描降级。"""
-
-        self._set_search_index_enabled(file_name_enabled=enabled)
-
-    def set_content_index_enabled(self, enabled: bool) -> None:
-        """运行时切换内容索引；受限根目录仍不会建立项目级内容索引。"""
-
-        self._set_search_index_enabled(content_enabled=enabled)
-
     def set_show_thinking(self, enabled: bool) -> bool:
         """运行时切换思考块显示；持久化由设置面板负责。
 
-        关闭只隐藏对话区的思考块渲染（含背景色），思考内容仍照常产生
+        关闭只隐藏对话区的思考块渲染（Markdown 围栏代码块渲染），思考内容仍照常产生
         并进入推理链路，与模型侧 thinking 开关互不影响。
         """
 
@@ -1800,48 +1743,6 @@ class LocalToolAgent:
             raise AgentError("思考显示开关必须是布尔值。")
         self.config.show_thinking = enabled
         return enabled
-
-    def _set_search_index_enabled(
-        self,
-        *,
-        file_name_enabled: bool | None = None,
-        content_enabled: bool | None = None,
-    ) -> None:
-        if file_name_enabled is not None and not isinstance(file_name_enabled, bool):
-            raise AgentError("文件名索引开关必须是布尔值。")
-        if content_enabled is not None and not isinstance(content_enabled, bool):
-            raise AgentError("内容索引开关必须是布尔值。")
-        next_file_name = (
-            self.config.file_name_index_enabled
-            if file_name_enabled is None
-            else file_name_enabled
-        )
-        next_content = (
-            self.config.content_index_enabled
-            if content_enabled is None
-            else content_enabled
-        )
-        if (
-            next_file_name == self.config.file_name_index_enabled
-            and next_content == self.config.content_index_enabled
-        ):
-            return
-
-        toolbox = self._workspace_toolbox()
-        candidate = ProjectSearchIndex(
-            self.workspace_root,
-            file_name_enabled=next_file_name,
-            content_enabled=next_content,
-            should_skip=toolbox.should_index_skip,
-        )
-        previous = getattr(self, "_search_index", None)
-        if previous is not None:
-            previous.close()
-        self._search_index = candidate
-        toolbox.search_index = candidate
-        self.config.file_name_index_enabled = next_file_name
-        self.config.content_index_enabled = next_content
-        candidate.start()
 
     def set_memory_enabled(self, enabled: bool) -> None:
         """切换 Memory 工具，并在新存储准备成功后替换旧运行态。"""
@@ -4988,7 +4889,6 @@ class LocalToolAgent:
             self.workspace_root,
             command_timeout_seconds=command_timeout,
             extra_protection_message=self._workspace_extra_protection_message,
-            search_index=getattr(self, "_search_index", None),
         )
         self._workspace_tools = toolbox
         return toolbox
@@ -5330,50 +5230,6 @@ class LocalToolAgent:
         if not LocalToolAgent._is_relative_to(path, root):
             raise SnapshotError(f"快照文件越出会话目录：{relative}")
         return path
-
-    def _refresh_workspace_after_undo(self) -> None:
-        """文件树恢复后核对搜索索引，避免查询到已回退内容。
-
-        不再销毁索引全量重建：请求后台线程做增量核对（USN 模式应用增量
-        记录，fallback 模式按 mtime 只重读变化的文件），索引实例与数据库
-        快照保留，搜索服务不中断。仅当核对请求失败（索引线程已退出等）
-        时才降级为原全量重建逻辑。
-        """
-
-        current = getattr(self, "_search_index", None)
-        if current is None:
-            return
-        try:
-            current.request_rebuild()
-        except Exception as exc:  # noqa: BLE001 - 索引失败不能推翻已提交的 undo
-            LOGGER.warning("undo 后触发搜索索引核对失败，降级重建：%s", exc)
-        else:
-            return
-        rebuilt: ProjectSearchIndex | None = None
-        try:
-            current.close()
-            rebuilt = ProjectSearchIndex(
-                self.workspace_root,
-                file_name_enabled=bool(
-                    getattr(self.config, "file_name_index_enabled", False)
-                ),
-                content_enabled=bool(
-                    getattr(self.config, "content_index_enabled", False)
-                ),
-                should_skip=self._workspace_tools.should_index_skip,
-            )
-            rebuilt.start()
-            self._search_index = rebuilt
-            self._workspace_tools.search_index = rebuilt
-        except Exception as exc:  # noqa: BLE001 - 索引失败不能推翻已提交的 undo
-            LOGGER.warning("undo 后重建项目搜索索引失败：%s", exc)
-            if rebuilt is not None:
-                try:
-                    rebuilt.close()
-                except Exception:  # noqa: BLE001 - 已处于降级清理路径
-                    pass
-            self._search_index = None
-            self._workspace_tools.search_index = None
 
     def _is_session_path(self, path: Path) -> bool:
         """普通文件工具不直接访问会话目录，避免模型误写转录文件。"""

@@ -340,14 +340,15 @@ class SubAgentProgressTree(Static):
 class ReasoningDisclosure(RichLog, can_focus=False):
     """始终展开、不抢占输入焦点的单次模型思考记录（无折叠功能）。
 
-    流式性能设计（与主回复流同一套合并节流策略）：
-    - 完整行增量提交：append_delta 按换行切分，已完成的行直接写入
-      RichLog 只追加新行；历史行不重解析、不重绘（惰性渲染），避免
-      旧实现"每个分片都全量重解析整段文本"的 O(N·L) 开销；
-    - 未完成行（tail）合并刷新：最多每 STREAM_RENDER_INTERVAL_SECONDS
-      渲染一次，分片突发时合并到一次刷新；
-    - 渲染用纯 Text 而非 RichMarkdown：思考内容无需 Markdown 解析，
-      进一步消除逐分片全量解析瓶颈。
+    思考内容以 Markdown 围栏代码块渲染（与 AI 回复的代码块一致），
+    定界行 `` ``` `` 由 RichMarkdown 解析，不会以字面文本漏出；
+    右侧由消息区样式预留一列空白，围栏不贴屏幕右边缘。鼠标复制
+    思考内容时复制的是渲染后的代码块正文。
+
+    流式性能设计（与主回复同一套节流策略）：
+    - append_delta 只累积原始思考文本（不含围栏行）；
+    - 渲染按 STREAM_RENDER_INTERVAL_SECONDS 合并刷新，突发分片不会
+      逐片全量重绘，与 AssistantMessage 保持一致。
     """
 
     DEFAULT_CSS = """
@@ -362,6 +363,7 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     """
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
+    FENCE_MARK = "```"
 
     def __init__(self) -> None:
         super().__init__(
@@ -370,34 +372,26 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             wrap=True,
             auto_scroll=False,
         )
-        self.reasoning_text = ""  # 完整累积文本（测试断言依据）
-        self._tail = ""  # 尚未以换行结束的未完成行，按节流合并渲染
-        self._tail_lines: list[Strip] = []  # 未完成行按当前宽度换行后的行集
+        self.reasoning_text = ""  # 完整累积文本（模型原始思考，不含围栏）
         self._last_render_at: float | None = None
         self._render_timer = None  # 挂起的合并刷新定时器（textual Timer）
         self._render_pending = False
 
-    def on_resize(self, event: Resize) -> None:
-        """首次布局完成后重新计入 deferred 写入和未完成尾行。"""
+    def on_mount(self) -> None:
+        """挂载后重走渲染管线，保证构造期（app 未绑定）的样式正确。"""
 
-        super().on_resize(event)
-        if self._tail or self._tail_lines:
-            # 重新测量尾行宽度；同时恢复 RichLog.write 对 virtual_size 的覆盖。
-            self._render_tail()
+        super().on_mount()
+        if self.reasoning_text:
+            self._render_markdown()
 
     def append_delta(self, delta: str) -> None:
         if not delta:
             return
         self.reasoning_text += delta
-        self._tail += delta
-        while "\n" in self._tail:
-            line, self._tail = self._tail.split("\n", 1)
-            self.write(Text(line), scroll_end=False)
-        if self._tail:
-            self._schedule_tail_render()
+        self._schedule_render()
 
     def flush_tail(self) -> None:
-        """推理阶段结束时同步补齐未完成行，保证展示内容完整。
+        """推理阶段结束时取消挂起刷新并渲染最终围栏代码块。
 
         思考块关闭（首个回复分片、工具调用、回合结束）时调用；同时
         取消可能挂起的定时刷新，避免失效的延时渲染。
@@ -407,14 +401,11 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             self._render_timer.stop()
             self._render_timer = None
         self._render_pending = False
-        if self._tail:
-            self._render_tail()
-        elif self._tail_lines:
-            self._tail_lines = []
-            self._sync_virtual_size()
-            self.refresh()
+        if not self.reasoning_text:
+            return
+        self._render_markdown()
 
-    def _schedule_tail_render(self) -> None:
+    def _schedule_render(self) -> None:
         """前缘节流：空闲时立即渲染，忙碌时合并到 50ms 后的延时刷新。"""
 
         now = time.monotonic()
@@ -422,67 +413,49 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             self._last_render_at is None
             or now - self._last_render_at >= self.STREAM_RENDER_INTERVAL_SECONDS
         ):
-            self._render_tail()
+            self._render_markdown()
         elif not self._render_pending:
             self._render_pending = True
             self._render_timer = self.set_timer(
                 self.STREAM_RENDER_INTERVAL_SECONDS,
-                self._render_tail_now,
+                self._render_markdown_now,
             )
 
-    def _render_tail_now(self) -> None:
+    def _render_markdown_now(self) -> None:
         self._render_timer = None
         self._render_pending = False
         if self.parent is None:
             # 思考块已被移除（如流中断回滚），不再渲染。
             return
-        self._render_tail()
+        self._render_markdown()
 
-    def _render_tail(self) -> None:
+    def _render_markdown(self) -> None:
+        """用带围栏的完整 Markdown 重绘思考内容（与 AI 回复代码块一致）。
+
+        流式阶段临时补闭 fence、flush_tail 时正式闭合：任意时刻都按
+        代码块渲染，`` ``` `` 定界行不会以字面文本漏出。
+        """
+
         self._last_render_at = time.monotonic()
-        width = self.scrollable_content_region.width
-        if width <= 0:
-            width = self.min_width  # 尚未完成布局时按最小宽度占位，布局后自动修正
-        if self._tail:
-            wrapped = Text(self._tail).wrap(self.app.console, width, overflow="fold")
-            self._tail_lines = [self._to_strip(line) for line in wrapped]
-        else:
-            self._tail_lines = []
-        self._sync_virtual_size()
-        self.refresh()
-
-    def _to_strip(self, text: Text) -> Strip:
-        """把 Text 转成与 RichLog 已提交行一致的 Strip，供 _render_line 裁剪。"""
-
-        return Strip(
-            list(text.render(self.app.console)),
-            cell_length=text.cell_len,
+        if not self.reasoning_text:
+            return
+        self.clear()
+        self.write(
+            RichMarkdown(
+                f"{self.FENCE_MARK}\n{self.reasoning_text}\n{self.FENCE_MARK}"
+            ),
+            scroll_end=False,
         )
-
-    def _sync_virtual_size(self) -> None:
-        """让容器按"已完成行 + 未完成行"计算自然高度，否则 tail 行不可见。"""
-
-        height = len(self.lines) + (len(self._tail_lines) if self._tail_lines else 0)
-        self.virtual_size = Size(self._widest_line_width, max(1, height))
+        self.refresh()
 
     def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
         """渲染行补充文本坐标，供 Screen 命中鼠标拖选位置。
 
         RichLog 继承版本的行不带 offset meta，导致 compositor 无法把
         鼠标坐标映射到文本位置（思考内容此前因此不可复制）。
-        已提交行与未完成尾行分支统一补 offsets。
         """
 
-        if y < len(self.lines):
-            strip = super()._render_line(y, scroll_x, width)
-        else:
-            tail_index = y - len(self.lines)
-            if 0 <= tail_index < len(self._tail_lines):
-                strip = self._tail_lines[tail_index].crop_extend(
-                    0, width, self.rich_style
-                )
-            else:
-                strip = Strip.blank(width, self.rich_style)
+        strip = super()._render_line(y, scroll_x, width)
         strip = _apply_selection_style(
             strip,
             self.text_selection,
@@ -492,16 +465,10 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         return strip.apply_offsets(scroll_x, y)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """从已提交行 + 未完成尾行提取纯文本，供鼠标复制使用。
+        """从 RichLog 渲染行提取纯文本，供鼠标复制使用。"""
 
-        RichLog 继承版本依赖 _render() 返回 Text/Content，而思考块
-        _render() 返回 Panel 包装的 RichVisual，提取必然返回 None；
-        这里与 AssistantMessage 一致，基于行文本自行拼装。
-        """
-
-        lines = [line.text.rstrip() for line in self.lines]
-        lines.extend(line.text.rstrip() for line in self._tail_lines)
-        return selection.extract("\n".join(lines)), "\n"
+        text = "\n".join(line.text.rstrip() for line in self.lines)
+        return selection.extract(text), "\n"
 
 
 class ToolDisclosure(Static):

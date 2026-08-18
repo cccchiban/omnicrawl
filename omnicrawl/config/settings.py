@@ -206,7 +206,7 @@ def save_feature_enabled(
 def load_show_thinking(config_path: str | Path | None = None) -> bool:
     """读取 ``ui.show_thinking``，缺省时默认开启。
 
-    该开关只控制对话区是否渲染思考块（含背景色）；模型仍照常产生并
+    该开关只控制对话区是否渲染思考块（Markdown 围栏代码块渲染）；模型仍照常产生并
     接收思考内容，不显示不影响推理链路本身。
     """
 

@@ -6,8 +6,8 @@
 Uptime、Shell、Screen、Terminal、Python、CPU、GPU、Memory、Swap、Disk），
 画面底部为黄色滑块滚动条。
 
-在 TUI 接管终端前显示约 5 秒，期间后台线程并行执行启动准备
-（加载 git、索引等），避免纯等待浪费启动时间。
+在 TUI 接管终端前显示约 3 秒，期间后台线程并行执行启动准备
+（加载 git 等），避免纯等待浪费启动时间。
 
 系统信息采集全部使用标准库（Windows / macOS / Linux 均可运行），每项失败时
 显示 "N/A"，绝不因环境差异导致启动画面崩溃。
@@ -55,7 +55,7 @@ LOGO_LINES = [
     '                          :jpo**#*##obv_',
 ]
 
-DEFAULT_DURATION = 5.0
+DEFAULT_DURATION = 3.0
 
 # Logo 左侧留白列数与 Logo / 系统信息之间的列间距
 _LOGO_MARGIN = 2
@@ -130,12 +130,12 @@ def run_startup_splash(
     duration: float = DEFAULT_DURATION,
     stream: TextIO | None = None,
 ) -> Any:
-    """显示 5 秒启动画面，同时后台执行 ``prepare``（加载 git、索引等）。
+    """显示 3 秒启动画面，同时后台执行 ``prepare``（加载 git 等）。
 
     Args:
         prepare: 启动准备回调，在 splash 显示期间于后台线程执行；
             返回值会透传给调用方，异常会在 splash 结束后重新抛出。
-        duration: splash 最短显示秒数，默认 5 秒；若 prepare 耗时超过
+        duration: splash 最短显示秒数，默认 3 秒；若 prepare 耗时超过
             duration，则继续显示滚动条直到 prepare 完成。
         stream: 输出流，默认 ``sys.stdout``；非交互流（如测试管道）时
             直接同步执行 ``prepare`` 并返回，不显示动画。

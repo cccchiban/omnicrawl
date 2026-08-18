@@ -335,9 +335,6 @@ class AgentSessionFacade:
         )
         self._owner._pending_user_text = None
         self._owner._active_skills = []
-        refresh_workspace = getattr(self._owner, "_refresh_workspace_after_undo", None)
-        if rollback_side_effects is not None and callable(refresh_workspace):
-            refresh_workspace()
         return restored
 
     def rename_current_session(self, title: str) -> SessionState:

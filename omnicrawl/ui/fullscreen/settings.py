@@ -77,12 +77,10 @@ _FEATURES = (
     ("subagents", "子任务功能", "subagents"),
     ("context_compaction", "上下文压缩", "context_compaction"),
     ("router", "任务思维路由", "router"),
-    ("file_name_index", "文件名快速索引", "file_name_index"),
-    ("content_index", "内容关键词索引", "content_index"),
 )
-_COLUMN_SLOTS = 16  # 每栏设置行数：左栏固定 16 项，右栏真实设置项 + 空位。
-# 普通模式左栏 16 项：先主设置，再“管理”入口，最后是开关项。
-# 右栏固定为 show_thinking/router 两项，合计 18 项，超过左栏 16 项的部分放入右列。
+_COLUMN_SLOTS = 16  # 每栏设置行数：左栏 14 项 + 2 空位，右栏真实设置项 + 空位。
+# 普通模式左栏：先主设置，再“管理”入口，最后是开关项。
+# 右栏固定为 show_thinking/router 两项，合计 16 项，右栏其余位置为空位。
 _SETTING_ORDER = (
     "model",
     "context",
@@ -98,8 +96,6 @@ _SETTING_ORDER = (
     "plugins",
     "subagents",
     "context_compaction",
-    "file_name_index",
-    "content_index",
 )
 
 
@@ -329,12 +325,6 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if key == "router":
             config = getattr(self._agent, "config", None)
             return bool(getattr(config, "router_enabled", False))
-        if key == "file_name_index":
-            config = getattr(self._agent, "config", None)
-            return bool(getattr(config, "file_name_index_enabled", False))
-        if key == "content_index":
-            config = getattr(self._agent, "config", None)
-            return bool(getattr(config, "content_index_enabled", False))
         if key == "vision":
             config = getattr(self._agent, "config", None)
             vision = getattr(config, "vision", None)
@@ -393,15 +383,14 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         self.query_one("#settings-status", Static).update(self._status)
 
     def _left_keys(self) -> tuple[str, ...]:
-        """普通模式左栏设置项（固定 16 项）；高级模式单列时由 _all_keys 直接返回。"""
+        """普通模式左栏设置项；高级模式单列时由 _all_keys 直接返回。"""
 
         return self._row_keys
 
     def _right_keys(self) -> tuple[str, ...]:
-        """普通模式右栏真实设置项：超过左栏 16 项的部分。
+        """普通模式右栏真实设置项：当前为“思考显示”与“任务思维路由”。
 
-        当前为“思考显示”与“任务思维路由”；后续新增设置项时，
-        保持 _SETTING_ORDER 为左栏 16 项、右栏追加新 key 即可。
+        后续新增设置项时，保持 _SETTING_ORDER 为左栏项、右栏追加新 key 即可。
         """
 
         return () if self._advanced else ("show_thinking", "router")
@@ -540,8 +529,6 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             "subagents": "set_subagents_enabled",
             "context_compaction": "set_context_compaction_enabled",
             "router": "set_router_enabled",
-            "file_name_index": "set_file_name_index_enabled",
-            "content_index": "set_content_index_enabled",
         }[key]
         setter = getattr(screen._agent, setter_name)
         try:

@@ -16,3 +16,6 @@
 *.css text eol=lf
 *.html text eol=lf
 *.xml text eol=lf
+
+# 随包分发的 ripgrep 二进制
+*.exe binary

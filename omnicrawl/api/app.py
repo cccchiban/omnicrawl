@@ -22,7 +22,6 @@ from ..config.router import load_router_mode
 from ..config.subagents import load_subagent_config
 from ..workspace.context import (
     detect_project_context,
-    should_disable_broad_workspace_indexes,
 )
 from ..workspace.temp import load_agent_temp_workspace_config
 from .deps import data, error_response
@@ -105,14 +104,6 @@ def create_default_agent() -> LocalToolAgent:
                 llm=load_llm_config(),
                 workspace_root=project_context.workspace_root,
                 workspace_detection_summary=project_context.detection_summary,
-                file_name_index_enabled=(
-                    load_feature_enabled("file_name_index", default=False)
-                    and not should_disable_broad_workspace_indexes(project_context)
-                ),
-                content_index_enabled=(
-                    load_feature_enabled("content_index", default=False)
-                    and not should_disable_broad_workspace_indexes(project_context)
-                ),
                 router_enabled=load_feature_enabled("router", default=False),
                 router_mode=load_router_mode(),
                 temp_workspace=load_agent_temp_workspace_config(),

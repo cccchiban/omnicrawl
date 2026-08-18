@@ -28,12 +28,10 @@ from ...config.runtime import resolve_config_path, resolve_models_path
 from ...llm.stream_registry import stream_scope
 from ...version_check import current_version
 from .hud import (
-    SEARCH_INDEX_SPINNER_FRAMES,
     compact_token_count,
     context_summary_text,
     gradient_text,
     pending_queue_text,
-    search_index_status_text,
     status_summary_text,
     token_telemetry_text,
 )
@@ -202,7 +200,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     Screen { background: $terminal-canvas; color: $terminal-text; }
     #shell { height: 1fr; background: $terminal-background; }
     /* 顶部两行紧凑靠左：内容按实际宽度紧排，剩余空间留白在行尾；
-       弹性占位把版本号/索引状态推到整行尾部，行首与字段间用 │ 分隔。 */
+       弹性占位把版本号推到整行尾部，行首与字段间用 │ 分隔。 */
     #topbar { height: 1; padding: 0 1; background: $terminal-surface; align: left middle; }
     #context-summary {
         width: auto;
@@ -222,7 +220,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         text-overflow: ellipsis;
         text-wrap: nowrap;
     }
-    /* 第二行左侧展示 Token 明细，右侧在后台建索引时显示进度。 */
+    /* 第二行展示 Token 明细。 */
     #telemetry-row {
         height: 2;
         padding: 0 1;
@@ -235,15 +233,6 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         max-width: 100%;
         height: 1;
         padding: 0;
-        color: $terminal-text-muted;
-        content-align: left middle;
-        text-overflow: ellipsis;
-    }
-    #index-status {
-        width: auto;
-        min-width: 0;
-        max-width: 100%;
-        height: 1;
         color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
@@ -286,8 +275,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     .tool-message { color: $terminal-tool-text; padding-left: 2; background: $terminal-tool-background; }
     .tool-message:focus { color: $terminal-tool-text; background: $terminal-tool-focus-background; }
     .error-message { color: $terminal-red; }
-    .reasoning-message { color: $terminal-text; padding-left: 2; background: $terminal-reasoning-background; }
-    .reasoning-message:focus { color: $terminal-text; background: $terminal-reasoning-focus-background; border-left: thick $terminal-blue; text-style: bold; }
+    .reasoning-message { color: $terminal-text; padding-left: 2; padding-right: 1; }
     #composer-wrap { height: 2; min-height: 2; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
     #command-menu {
         display: none;
@@ -428,7 +416,6 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._status_spinner_index = 0
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
-        self._search_index_frame = 0
         self._interaction_watchdog_signature: tuple[object, ...] | None = None
         self._interaction_watchdog_stable_ticks = 0
         self._paste_sequence = 0
@@ -438,7 +425,6 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         with Vertical(id="shell"):
             with Horizontal(id="topbar"):
                 yield Static(self._context_summary_text(), id="context-summary")
-                yield Static(self._search_index_status_text(), id="index-status")
             with Horizontal(id="telemetry-row"):
                 yield Static(self._token_telemetry_text(), id="token-telemetry")
                 yield Static(self._status_summary_text(), id="status-summary")
@@ -483,10 +469,6 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._resize_composer_to_text()
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
         self.set_interval(
-            self.STATUS_SPINNER_INTERVAL_SECONDS,
-            self._tick_search_index_status,
-        )
-        self.set_interval(
             self.TOKEN_RATE_REFRESH_INTERVAL_SECONDS,
             self._refresh_token_rate,
         )
@@ -503,44 +485,6 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
             self._preload_mcp_tools()
         else:
             self._set_runtime_status("完成", "complete")
-
-    def _tick_search_index_status(self) -> None:
-        """加载索引时推进与状态指示器同款的旋转动画帧，并刷新 HUD。"""
-
-        self._search_index_frame = (self._search_index_frame + 1) % len(
-            SEARCH_INDEX_SPINNER_FRAMES
-        )
-        self._render_search_index_status()
-
-    def _search_index_status_text(self) -> Text:
-        getter = getattr(self.agent, "search_index_status", None)
-        status = getter() if callable(getter) else None
-        return search_index_status_text(status, self._search_index_frame)
-
-    def _render_search_index_status(self) -> None:
-        """轮询只读状态快照，不让后台索引线程直接接触 Textual 组件。
-
-        空闲时索引状态为空文本，隐藏整个组件；非空闲时前置 "⁕ " 分隔
-        符（与第二行字段段衔接），隐藏时不会留下悬空分隔符。
-        """
-
-        widgets = self.query("#index-status")
-        if widgets:
-            widget = widgets.first(Static)
-            rendered = self._search_index_status_text()
-            if rendered:
-                # 前置分隔符属于组件内容，随组件一起隐藏/显示。
-                rendered = Text.assemble(
-                    ("⁕ ", BORDER_MUTED),
-                    rendered,
-                )
-            current = widget.content
-            if isinstance(current, Text) and current == rendered:
-                # 内容未变时仍需同步隐藏状态（首次渲染两者都为空）。
-                widget.display = bool(rendered)
-                return
-            widget.update(rendered)
-            widget.display = bool(rendered)
 
     @work(thread=True, exclusive=True, group="mcp-preload", exit_on_error=False)
     def _preload_mcp_tools(self) -> None:
@@ -1102,7 +1046,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         )
 
     def _context_summary_text(self) -> Text:
-        """渲染第一行左段：项目名；行尾由 #index-status 衔接。"""
+        """渲染第一行左段：项目路径。"""
 
         return context_summary_text(
             workspace=str(

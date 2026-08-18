@@ -23,7 +23,6 @@ from omnicrawl.project_context import (
     ProjectContextError,
     detect_project_context,
     project_context_status_label,
-    should_disable_broad_workspace_indexes,
 )
 from omnicrawl.runtime_config import RuntimeConfigError, load_config_data
 from omnicrawl.config.settings import load_feature_enabled, load_show_thinking
@@ -39,9 +38,9 @@ from omnicrawl.ui.splash import run_startup_splash
 from omnicrawl.ui.windows_launcher import configure_console_encoding
 
 
-# 启动画面最短展示秒数：TUI 比历史版本晚进入 5 秒，期间后台并行完成
-# LLM 配置、git 项目检测、插件启动、Agent 与索引初始化等全部准备。
-SPLASH_DURATION_SECONDS = 5.0
+# 启动画面最短展示秒数：TUI 比历史版本晚进入 3 秒，期间后台并行完成
+# LLM 配置、git 项目检测、插件启动、Agent 初始化等全部准备。
+SPLASH_DURATION_SECONDS = 3.0
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -158,14 +157,6 @@ def _prepare_startup(
             workspace_detection_summary=project_context.detection_summary,
             approval_mode=approval_mode,
             memory_enabled=load_feature_enabled("memory", default=True),
-            file_name_index_enabled=(
-                load_feature_enabled("file_name_index", default=False)
-                and not should_disable_broad_workspace_indexes(project_context)
-            ),
-            content_index_enabled=(
-                load_feature_enabled("content_index", default=False)
-                and not should_disable_broad_workspace_indexes(project_context)
-            ),
             show_thinking=load_show_thinking(),
             router_enabled=load_feature_enabled("router", default=False),
             router_mode=load_router_mode(),
@@ -229,8 +220,8 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     # 启动的路径。
     app_root = Path(__file__).resolve().parent.parent
 
-    # 显示约 5 秒启动画面（fastfetch 式：左侧黄色 Logo + 右侧系统信息 + 底部 XP 滚动条），
-    # 同时后台并行完成全部准备：git 检测、插件启动、Agent 与索引加载。
+    # 显示约 3 秒启动画面（fastfetch 式：左侧黄色 Logo + 右侧系统信息 + 底部 XP 滚动条），
+    # 同时后台并行完成全部准备：git 检测、插件启动、Agent 初始化加载。
     # 非交互终端（测试、管道）下 splash 直接同步执行准备，行为不变。
     try:
         prepared = run_startup_splash(

@@ -38,11 +38,9 @@ ACCENT_PURPLE = "magenta"
 # 使用 RGBA 颜色表达透明度，避免 ANSI 颜色名后附百分比在不同 Textual
 # 解析路径中被当作实色处理。终端支持真彩色时会与底色混合，ANSI 降级时
 # 仍保留对应的颜色语义。
-REASONING_BACKGROUND = "rgba(0, 160, 210, 0.24)"
-REASONING_FOCUS_BACKGROUND = "rgba(0, 102, 204, 0.40)"
 USER_BACKGROUND = "rgba(170, 80, 210, 0.26)"
 # 工具调用与输出统一使用低不透明度的 RGBA 绿色，叠加终端背景后呈现
-# 淡绿色块，风格与思考块背景一致；聚焦使用更高对比度的独立背景。
+# 淡绿色块；聚焦使用更高对比度的独立背景。
 TOOL_BACKGROUND = "rgba(0, 170, 90, 0.22)"
 TOOL_FOCUS_BACKGROUND = "rgba(0, 140, 80, 0.38)"
 # 工具输出正文与折叠提示统一使用灰色（Rich 文本用 bright_black，
@@ -79,10 +77,6 @@ TERMINAL_THEME = Theme(
         "terminal-surface": TRANSPARENT,
         "terminal-panel": TRANSPARENT,
         "terminal-hover": TRANSPARENT,
-        # 思考块使用低不透明度的 RGBA 蓝色，叠加终端背景后呈现淡蓝色；
-        # 聚焦使用更高对比度的独立背景，确保文字始终清晰。
-        "terminal-reasoning-background": REASONING_BACKGROUND,
-        "terminal-reasoning-focus-background": REASONING_FOCUS_BACKGROUND,
         "terminal-user-background": USER_BACKGROUND,
         "terminal-tool-background": TOOL_BACKGROUND,
         "terminal-tool-focus-background": TOOL_FOCUS_BACKGROUND,
