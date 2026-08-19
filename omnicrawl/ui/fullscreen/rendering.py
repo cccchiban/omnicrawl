@@ -22,9 +22,11 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static, TextArea
 
 from ...agent.tools import public_tool_arguments
+from .theme import TOOL_TEXT
 from .widgets import (
     AssistantMessage,
     ReasoningDisclosure,
+    SubAgentConversation,
     SubAgentProgressTree,
     ToolDisclosure,
 )
@@ -80,6 +82,11 @@ class RenderingMixin:
         if message.startswith("压缩完成"):
             self._append_message("status", message)
             return
+        if message.startswith("正在重试"):
+            # 重试仍处于等待模型回复阶段：用 working 状态显示
+            # “⠸ 正在重试(第N次)”，与“正在思考”同帧节奏，不落入静态等待。
+            self._set_runtime_status(message, "working")
+            return
         self._set_runtime_status("等待", "waiting")
 
 
@@ -96,6 +103,11 @@ class RenderingMixin:
             "subagent.task.cancelled": "cancelled",
             "subagent.task.approval_cancelled": "cancelled",
         }
+        # /review 等派生评审流程：子代理对话面板（│ 包裹）替代进度树。
+        if getattr(self, "_conversation_stream_active", False):
+            self._handle_subagent_conversation_event(event_name, payload)
+            return
+
         status = status_by_event.get(event_name)
         if status is None:
             return
@@ -123,6 +135,122 @@ class RenderingMixin:
             follow_latest,
             defer_until_refresh=True,
         )
+
+
+    def _handle_subagent_conversation_event(
+        self,
+        event_name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """把子代理对话/工具事件渲染到 │ 包裹的会话面板。"""
+
+        task_id = str(payload.get("task_id") or "task")
+        batch_id = str(payload.get("batch_id") or f"batch-{task_id}")
+        agent_type = str(payload.get("agent_type") or "subagent")
+        conversation = self.query_one("#conversation", VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
+        panel = self._subagent_conversations.get(batch_id)
+        if panel is None or panel.parent is None:
+            panel = SubAgentConversation(batch_id, agent_type)
+            self._subagent_conversations[batch_id] = panel
+            conversation.mount(panel)
+
+        if event_name == "subagent.tool.started":
+            panel.append(
+                "⌁ " + self._subagent_tool_brief(
+                    str(payload.get("tool") or ""),
+                    payload.get("arguments"),
+                )
+            )
+        elif event_name == "subagent.tool.completed":
+            ok = bool(payload.get("ok"))
+            duration = payload.get("duration_seconds")
+            suffix = (
+                f" · {float(duration):.2f}s"
+                if isinstance(duration, (int, float))
+                else ""
+            )
+            panel.append(
+                f"● {'成功' if ok else '失败'}{suffix}",
+                "green" if ok else "red",
+            )
+            output = str(payload.get("output") or "")
+            for line in self._sample_output_lines(output):
+                panel.append(line, "dim")
+        elif event_name == "subagent.turn.text":
+            for line in str(payload.get("text") or "").splitlines():
+                if line.strip():
+                    panel.append(line)
+        elif event_name in {
+            "subagent.task.completed",
+            "subagent.task.failed",
+            "subagent.task.cancelled",
+            "subagent.task.approval_cancelled",
+        }:
+            if event_name == "subagent.task.completed":
+                panel.finish("✓ 子代理评审完成")
+            elif event_name == "subagent.task.cancelled" or event_name == "subagent.task.approval_cancelled":
+                panel.finish("– 子代理评审已取消")
+            else:
+                failure_line = "× 子代理评审失败"
+                error = payload.get("error")
+                if isinstance(error, dict):
+                    reason = str(error.get("message") or "").strip()
+                    code = str(error.get("code") or "").strip()
+                    diagnostic = error.get("diagnostic")
+                    category = ""
+                    if isinstance(diagnostic, dict):
+                        category = str(diagnostic.get("category") or "").strip()
+                    labels = [part for part in (code, category) if part]
+                    if reason:
+                        failure_line += f"：{reason}"
+                    if labels:
+                        failure_line += "（" + "，".join(labels) + "）"
+                panel.finish(failure_line)
+            self._set_runtime_status("完成", "complete")
+
+        if self._runtime_status_message is not None:
+            self._render_status_indicator(follow_latest=follow_latest)
+        self._scroll_conversation_if_following(
+            conversation,
+            follow_latest,
+            defer_until_refresh=True,
+        )
+
+    @staticmethod
+    def _subagent_tool_brief(tool_name: str, arguments: Any) -> str:
+        """把工具调用压缩为一行摘要：git 显示 action+参数，其余显示首个路径字段。"""
+
+        parts: list[str] = []
+        if tool_name == "git" and isinstance(arguments, dict):
+            action = arguments.get("action")
+            if action:
+                parts.append(str(action))
+            raw_args = arguments.get("args")
+            if isinstance(raw_args, list):
+                parts.extend(str(item) for item in raw_args)
+        elif isinstance(arguments, dict):
+            for key in ("path", "paths", "pattern", "query", "text", "scope"):
+                value = arguments.get(key)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+                    break
+                if isinstance(value, list) and value:
+                    parts.append(str(value[0]))
+                    break
+        brief = " ".join(parts).strip()
+        if len(brief) > 60:
+            brief = brief[:57] + "..."
+        return f"{tool_name} · {brief}" if brief else tool_name
+
+    @staticmethod
+    def _sample_output_lines(output: str, *, max_lines: int = 5) -> list[str]:
+        """工具输出采样：最多五行，超出时保留首尾各两行。"""
+
+        lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+        if len(lines) <= max_lines:
+            return lines
+        return lines[:2] + ["…"] + lines[-2:]
 
 
     def _handle_tool_start(self, step: int, tool_call: Any) -> None:
@@ -396,18 +524,29 @@ class RenderingMixin:
             self._stream_markdown += text
             self._stream_message.update(self._stream_markdown)
         else:
-            prefixes = {
-                "user": "$ ",
-                "assistant": "◇ ",
-                "status": "· ",
-                "tool": "⌁ ",
-                "error": "△ ",
-            }
-            prefixed_text = f"{prefixes.get(kind, '· ')}{text}"
-            if kind == "assistant":
-                widget = AssistantMessage(prefixed_text)
+            if kind == "user":
+                # 用户消息：去掉 $ 前缀，改为顶部灰色斜体 user： 标签行
+                # （与正文同左缘对齐）；正文为显式白色（.user-message
+                # color: $terminal-white），青色细竖条由 border-left 提供。
+                # 注意 Text 构造器的 style 会成为后续 append 的默认样式，
+                # 因此从空 Text 开始逐段追加，保证正文不继承标签的斜体。
+                labeled = Text()
+                labeled.append("user：", style=f"{TOOL_TEXT} italic")
+                labeled.append("\n")
+                labeled.append(text)
+                widget = Static(labeled, classes="message user-message")
             else:
-                widget = Static(Text(prefixed_text), classes=f"message {kind}-message")
+                prefixes = {
+                    "assistant": "◇ ",
+                    "status": "· ",
+                    "tool": "⌁ ",
+                    "error": "△ ",
+                }
+                prefixed_text = f"{prefixes.get(kind, '· ')}{text}"
+                if kind == "assistant":
+                    widget = AssistantMessage(prefixed_text)
+                else:
+                    widget = Static(Text(prefixed_text), classes=f"message {kind}-message")
             if merge_with_previous:
                 self._stream_message = widget
                 self._stream_markdown = text
@@ -428,6 +567,8 @@ class RenderingMixin:
         self._render_stream_markdown()
         was_cancelled = self._cancel_requested.is_set()
         self.is_generating = False
+        # 派生评审流程结束：退出子代理对话流模式，后续子代理事件恢复进度树。
+        self._conversation_stream_active = False
         if self._reasoning_message is not None:
             # 推理后直接结束回合（无回复/无工具）时，同样补齐未完成行。
             self._reasoning_message.flush_tail()

@@ -244,7 +244,8 @@ class WorkspaceTools:
     def grep(self, arguments: dict[str, Any]) -> str:
         """在 UTF-8 文本文件中执行 grep 风格搜索（由打包的 ripgrep 二进制执行）。
 
-        pattern 默认按正则表达式解释；use_regex=false 时按精确子串匹配。
+        pattern 默认按正则表达式解释，可使用 ``|`` 连接多个候选目标，
+        例如 ``messages|context|tool_calls``；use_regex=false 时按精确子串匹配。
         支持输出匹配行上下文（context_lines）、每文件匹配计数（count）、
         仅列出匹配文件（files_with_matches），以及 include/exclude 文件名
         glob 过滤。
@@ -603,7 +604,21 @@ class WorkspaceTools:
                 continue
             if kind == "directory" and not is_dir:
                 continue
-            if needle not in candidate and needle not in name:
+            if _has_glob_magic(pattern):
+                # 保留旧的“无通配符时按子串查找”兼容行为；出现 glob
+                # 元字符后按文件名或相对路径进行匹配，尤其使 ``*`` 表示
+                # 匹配所有文件名，而不是把星号当作普通字符。
+                glob_pattern = pattern if case_sensitive else pattern.casefold()
+                relative_for_glob = (
+                    relative if case_sensitive else relative.casefold()
+                ).replace("\\", "/")
+                glob_pattern = glob_pattern.replace("\\", "/")
+                if not (
+                    fnmatch.fnmatchcase(name, glob_pattern)
+                    or fnmatch.fnmatchcase(relative_for_glob, glob_pattern)
+                ):
+                    continue
+            elif needle not in candidate and needle not in name:
                 continue
             results.append((relative, is_dir))
             if len(results) >= max_results:
@@ -1049,6 +1064,11 @@ def _sample_command_output(
 _RIPGREP_MATCH_LINE_RE = re.compile(
     r"^(?P<path>.+?):(?P<line>\d+):(?P<text>.*)$"
 )
+
+
+def _has_glob_magic(pattern: str) -> bool:
+    """判断搜索目标是否包含 glob 通配符。"""
+    return any(character in pattern for character in "*?[")
 
 
 def _compile_glob(pattern: str) -> re.Pattern[str] | None:

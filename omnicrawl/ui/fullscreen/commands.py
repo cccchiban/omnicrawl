@@ -18,6 +18,7 @@ from ...commands.slash import (
     format_skills_list,
     handle_approval_command,
     handle_reasoning_command,
+    handle_review_command,
     handle_session_command,
     handle_subagent_task_command,
 )
@@ -49,6 +50,16 @@ class CommandAgent(Protocol):
     def cancel_subagent_task(self, task_id: str) -> dict[str, Any]:
         """请求取消当前会话中的后台 SubAgent 任务。"""
 
+    def run_subagent_task(
+        self,
+        *,
+        agent_type: str,
+        description: str,
+        prompt: str,
+        on_subagent_event: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> str:
+        """同步运行一个 SubAgent 任务并返回最终文本结果。"""
+
 
 @dataclass(frozen=True)
 class CommandOutcome:
@@ -69,6 +80,11 @@ class CommandOutcome:
     workspace_switch_requested: bool = False
     open_settings: bool = False
     clear_conversation: bool = False
+    # 慢命令运行时 HUD 状态行的文本（如 "正在评审"）；None 时沿用默认等待态。
+    working_status: str | None = None
+    # 慢命令期间把子代理事件渲染为 │ 包裹的对话面板（替代进度树），
+    # 用于 /review 等派生评审流程。
+    stream_subagent_conversation: bool = False
 
     def __post_init__(self) -> None:
         """防止调用方拿到互相矛盾的命令描述。"""
@@ -107,6 +123,7 @@ class CommandDispatcher:
         ),
         handle_approval: Callable[[CommandAgent, str], str | None] = handle_approval_command,
         handle_reasoning: Callable[[CommandAgent, str], str | None] = handle_reasoning_command,
+        handle_review: Callable[[CommandAgent, str], str | None] = handle_review_command,
     ) -> None:
         self._agent = agent
         self._format_skills = format_skills
@@ -117,6 +134,7 @@ class CommandDispatcher:
         self._handle_subagent_task = handle_subagent_task
         self._handle_approval = handle_approval
         self._handle_reasoning = handle_reasoning
+        self._handle_review = handle_review
 
     def dispatch(self, text: str) -> CommandOutcome:
         """识别一条输入；普通自然语言返回 ``handled=False``。
@@ -182,6 +200,18 @@ class CommandDispatcher:
         subagent_task_message = self._handle_subagent_task(self._agent, text)
         if subagent_task_message is not None:
             return CommandOutcome(handled=True, message=subagent_task_message)
+
+        # /review 派生评审子 Agent，需要慢命令 worker 中执行模型循环。不显示
+        # 静态占位提示；子代理对话（工具调用/结果）实时渲染到 │ 包裹的会话面板。
+        if stripped == "/review" or stripped.startswith("/review "):
+            return CommandOutcome(
+                handled=True,
+                message=None,
+                working_status="正在评审",
+                stream_subagent_conversation=True,
+                execution="slow",
+                command=lambda text=text: self._handle_review(self._agent, text),
+            )
 
         normalized = stripped.lower()
         approval_message = self._handle_approval(self._agent, text)

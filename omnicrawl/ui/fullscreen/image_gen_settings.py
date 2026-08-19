@@ -63,13 +63,13 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
         height: 42;
         max-height: 95%;
         padding: 1 2;
-        border: solid $terminal-border-strong;
+        border: round $terminal-border-strong;
         background: $terminal-surface;
     }
     #image-gen-title {
         height: 1;
         margin-bottom: 1;
-        color: $terminal-green;
+        color: $terminal-white;
         text-style: bold;
     }
     #image-gen-form {
@@ -85,7 +85,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
     }
     #image-gen-status {
         height: 2;
-        color: $terminal-blue;
+        color: $terminal-white;
     }
     #image-gen-actions {
         height: 3;

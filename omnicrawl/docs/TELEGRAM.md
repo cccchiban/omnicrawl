@@ -102,7 +102,8 @@ python -m omnicrawl.connectors.telegram
 `/sessions`、`/archives`、`/archive`、`/history`、`/undo`、`/compact`、
 `/rename`、`/resume <id>`、`/resume latest`（直接恢复最近活动会话）、
 `/tasks`、`/task cancel`、`/approval`、`/reasoning`、`/skills`、
-`/memory:clean`、`/mcp`、`/plugins` 等。
+`/memory:clean`、`/mcp`、`/plugins`、`/review`（派生评审子 Agent：完整 git
+权限 + 自动批准收集 diff，按结构化 JSON 输出审查结果）等。
 
 **远程安全边界**：`/approval:auto`、`/approval:review`、`/auto-approve:on`、
 `/auto-review:on` 会被拒绝（会放宽 bash 工具执行）；仅允许 `/approval` 查看与

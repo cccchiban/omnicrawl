@@ -32,10 +32,16 @@ FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
 # 豁免“原始输出 + 五行折叠”规则的工具：write_file 与 replace_text 保留
 # 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
 FULL_BODY_TOOLS = frozenset({"write_file", "replace_text"})
-# 正文对用户没有展示价值、完全隐藏的工具：search_tools（候选工具清单）与
-# read（文件内容只读，标题已含路径与行号摘要）。不显示返回内容，也不显示
-# 任何“已隐藏”提示行，只保留标题行。
-HIDDEN_BODY_TOOLS = frozenset({"search_tools", "read"})
+# 正文对用户没有展示价值、完全隐藏的工具：read（文件内容只读，标题已
+# 含路径与行号摘要）；写入类记忆工具（写入结果只是空记录列表，对用户
+# 无意义）。不显示返回内容，也不显示任何“已隐藏”提示行，只保留标题行。
+HIDDEN_BODY_TOOLS = frozenset({
+    "read",
+    "memory_write",
+    "project_memory_write",
+    "session_memory_write",
+    "user_memory_write",
+})
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
 MAX_PREVIEW_CHARS_PER_LINE = 160
@@ -88,17 +94,6 @@ def _list_result_summary(result_text: str) -> str | None:
     truncated = any(line.startswith("...") for line in lines)
     visible_count = sum(not line.startswith("...") for line in lines)
     return f"{visible_count}{'+' if truncated else ''} 项"
-
-
-def _generic_tool_name(operation: str, display_name: str) -> str:
-    """返回普通工具标题中的短名称，命令工具只保留其单字母标识。"""
-
-    short_names = {
-        "bash": "",
-        "powershell": "",
-        "subagent": "SubAgent",
-    }
-    return short_names.get(operation, display_name.removeprefix("执行 "))
 
 
 def _tool_title_context(tool_name: str, arguments: Any, result_text: str) -> str:
@@ -172,20 +167,21 @@ def _status_color(status: str) -> str:
     }.get(status, TEXT_MUTED)
 
 
-def _append_status(
+def _append_tail(
     rendered: Text,
     *,
     status: str,
     status_display: Any,
     duration_seconds: float,
 ) -> None:
-    """向标题追加状态和耗时，并保持与文件变更标题相同的间距。"""
+    """向标题追加「· 状态 · 耗时」暗色尾段（方案6：状态只由行首色点表达）。"""
 
+    rendered.append(" · ", style=COLOR_META)
     rendered.append(
         f"{status_display.icon} {status_display.label}",
-        style=_status_color(status),
+        style=TEXT_MUTED,
     )
-    rendered.append("  ", style=COLOR_META)
+    rendered.append(" · ", style=COLOR_META)
     rendered.append(format_duration(duration_seconds), style=TEXT_MUTED)
 
 
@@ -213,58 +209,53 @@ def _tool_operation(tool_name: str) -> str:
 def _workspace_tool_title(
     *,
     operation: str,
-    display_icon: str,
+    display_name: str,
     arguments: Any,
     result_text: str,
     status: str,
     status_display: Any,
     duration_seconds: float,
 ) -> Text | None:
-    """生成读取/搜索/目录列表工具与文件变更一致的单行摘要。"""
+    """生成读取/搜索/目录列表工具的单行摘要（方案6：色点 + 原名 + 暗色上下文）。"""
 
     args = arguments if isinstance(arguments, dict) else {}
     rendered = Text()
+    rendered.append("● ", style=_status_color(status))
     if operation == "list":
         path = _compact_title_value(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
-        rendered.append("L  ", style=COLOR_TITLE)
-        rendered.append(path, style=TEXT_PRIMARY)
-        rendered.append("  |  ", style=COLOR_GUTTER)
+        rendered.append(display_name, style=TEXT_PRIMARY)
+        rendered.append(f" {path}", style=TEXT_MUTED)
         summary = _list_result_summary(result_text)
         if summary is not None:
-            rendered.append(summary, style=COLOR_META)
+            rendered.append(f" · {summary}", style=TEXT_MUTED)
         else:
-            rendered.append("目录", style=TEXT_SECONDARY)
+            rendered.append(" · 目录", style=TEXT_MUTED)
     elif operation == "read":
         path = _compact_title_value(
             args.get("path") or "(未指定文件)",
             max_chars=MAX_PATH_CHARS,
         )
-        rendered.append(f"{display_icon}  ", style=COLOR_TITLE)
-        rendered.append(path, style=TEXT_PRIMARY)
+        rendered.append(display_name, style=TEXT_PRIMARY)
+        rendered.append(f" {path}", style=TEXT_MUTED)
         line_range = _read_result_line_range(result_text)
         if line_range is not None:
-            rendered.append("  |  ", style=COLOR_GUTTER)
-            rendered.append(f"第 {line_range[0]}-{line_range[1]} 行", style=COLOR_META)
+            rendered.append(f" · 第 {line_range[0]}-{line_range[1]} 行", style=TEXT_MUTED)
     elif operation == "read_image":
         path = _compact_title_value(
             args.get("path") or "(未指定图片)",
             max_chars=MAX_PATH_CHARS,
         )
-        rendered.append(f"{display_icon}  ", style=COLOR_TITLE)
-        rendered.append(path, style=TEXT_PRIMARY)
-        rendered.append("  |  图片", style=COLOR_META)
+        rendered.append(display_name, style=TEXT_PRIMARY)
+        rendered.append(f" {path} · 图片", style=TEXT_MUTED)
     elif operation in {"find", "grep"}:
         path = _compact_title_value(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
         pattern = _compact_title_value(args.get("pattern"), max_chars=36)
-        rendered.append(f"{display_icon}  ", style=COLOR_TITLE)
-        rendered.append(path, style=TEXT_PRIMARY)
-        rendered.append("  |  目标: ", style=COLOR_META)
-        rendered.append(pattern, style=TEXT_SECONDARY)
+        rendered.append(display_name, style=TEXT_PRIMARY)
+        rendered.append(f" {path} · 目标: {pattern}", style=TEXT_MUTED)
     else:
         return None
 
-    rendered.append("  ", style=COLOR_META)
-    _append_status(
+    _append_tail(
         rendered,
         status=status,
         status_display=status_display,
@@ -293,7 +284,7 @@ def tool_disclosure_title(
     operation = _tool_operation(tool_name)
     workspace_title = _workspace_tool_title(
         operation=operation,
-        display_icon=display.icon,
+        display_name=display.name,
         arguments=arguments,
         result_text=result_text,
         status=status,
@@ -306,17 +297,12 @@ def tool_disclosure_title(
     context = _tool_title_context(tool_name, arguments, result_text)
     if not is_file_change_tool(tool_name):
         rendered = Text()
-        rendered.append(display.icon, style=COLOR_TITLE)
-        rendered.append("  ", style=COLOR_META)
-        short_name = _generic_tool_name(operation, display.name)
-        if short_name:
-            rendered.append(short_name, style=TEXT_PRIMARY)
+        rendered.append("● ", style=_status_color(status))
+        rendered.append(display.name, style=TEXT_PRIMARY)
         if context:
-            if short_name:
-                rendered.append("  |  ", style=COLOR_GUTTER)
-            rendered.append(context, style=TEXT_SECONDARY)
-        rendered.append("  ", style=COLOR_META)
-        _append_status(
+            rendered.append(" ", style=COLOR_META)
+            rendered.append(context, style=TEXT_MUTED)
+        _append_tail(
             rendered,
             status=status,
             status_display=status_display,
@@ -326,13 +312,12 @@ def tool_disclosure_title(
 
     change = describe_file_change(tool_name, arguments)
     rendered = Text()
-    rendered.append(change.status_code, style=change.status_color)
-    rendered.append("  ", style=COLOR_META)
-    rendered.append(change.path_display, style=TEXT_PRIMARY)
-    rendered.append("  |  ", style=COLOR_GUTTER)
+    rendered.append("● ", style=_status_color(status))
+    rendered.append(display.name, style=TEXT_PRIMARY)
+    rendered.append(f" {change.path_display}", style=TEXT_MUTED)
+    rendered.append(" · ", style=COLOR_META)
     _append_stats(rendered, change.stats_label)
-    rendered.append("  ", style=COLOR_META)
-    _append_status(
+    _append_tail(
         rendered,
         status=status,
         status_display=status_display,
@@ -381,8 +366,8 @@ def tool_disclosure_body(
     除 write_file 与 replace_text 外的所有工具统一直接展示工具返回的
     原始输出（灰色），不再包装“工具/参数/结果”元信息；write_file 与
     replace_text 保留文件变更预览正文（diff/rewrite 摘要），不受五行
-    折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；search_tools
-    与 read 的正文完全不展示给终端用户（正文为空，不保留任何提示行）。
+    折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；read 与写入类
+    记忆工具的正文完全不展示给终端用户（正文为空，不保留任何提示行）。
     """
 
     operation = _tool_operation(tool_name)
@@ -391,7 +376,7 @@ def tool_disclosure_body(
     if operation == "fetcher":
         return fetcher_body(result_text)
     if operation in HIDDEN_BODY_TOOLS:
-        # search_tools/read 正文不展示给终端用户：正文为空，不保留任何提示行。
+        # read 正文不展示给终端用户：正文为空，不保留任何提示行。
         return Text()
 
     rendered = Text()

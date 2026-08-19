@@ -111,11 +111,11 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         height: 28;
         max-height: 90%;
         padding: 1 2;
-        border: solid white;
+        border: round white;
         background: $terminal-surface;
     }
     #model-picker-title {
-        color: $terminal-green;
+        color: $terminal-white;
         text-style: bold;
         height: 1;
         margin-bottom: 1;
@@ -139,12 +139,12 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
     .model-column {
         width: 1fr;
         height: 1fr;
-        border: solid $terminal-border;
+        border: round $terminal-border;
         padding: 0 1;
         background: $terminal-background;
     }
     .model-column.active-column {
-        border: solid $terminal-green;
+        border: round $terminal-green;
     }
     .model-column-title {
         color: $terminal-text-secondary;
@@ -164,12 +164,12 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
     }
     #model-picker-help {
         height: 1;
-        color: $terminal-text-muted;
+        color: $terminal-white;
         margin-top: 1;
     }
     #model-picker-status {
         height: 1;
-        color: $terminal-blue;
+        color: $terminal-white;
         margin-top: 0;
     }
     """)

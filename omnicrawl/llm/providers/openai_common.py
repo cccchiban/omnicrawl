@@ -177,9 +177,37 @@ def is_unsupported_prompt_cache_error(exc: Exception) -> bool:
     )
 
 
+# 与 errors.map_openai_exception 的消息正则保持同一提取口径：
+# SDK/网关异常可能把状态码放在 exc.status_code、exc.response.status_code
+# 或仅出现在消息文本中（如 "Error code: 400 - Bad Request"）。
+_HTTP_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
+
+
+def _http_status_code_of(exc: Exception) -> int | None:
+    """从 SDK/网关异常中提取 HTTP 状态码（与 errors 模块口径一致）。"""
+
+    for value in (
+        getattr(exc, "status_code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        if isinstance(value, int) and 400 <= value <= 599:
+            return value
+    match = _HTTP_STATUS_CODE_RE.search(str(exc))
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 def is_retryable_model_request_error(exc: Exception) -> bool:
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int) and status_code in {408, 409, 429, 500, 502, 503, 504}:
+    """识别请求建立阶段可直接重试的模型服务错误。
+
+    400 也视为可重试：部分上游网关用 400 表达临时性拒绝（例如不认
+    prompt_cache_key 参数、参数协商或并发抖动），重试可恢复；真正的
+    请求缺陷会在重试耗尽后随最终错误一并暴露。
+    """
+
+    status_code = _http_status_code_of(exc)
+    if status_code is not None and status_code in {400, 408, 409, 429, 500, 502, 503, 504}:
         return True
     message = str(exc).lower()
     return any(

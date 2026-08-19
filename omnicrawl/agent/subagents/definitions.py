@@ -23,12 +23,16 @@ _ALLOWED_FIELDS = {
     "isolation",
     "skills",
     "mcpServers",
+    # 结构化 git 工具的暴露档位：readonly（只读包装，默认）或 full（完整
+    # 子命令 + 自动批准，供评审等需要完整 git 上下文的角色使用）。
+    "gitMode",
 }
 _ALLOWED_PERMISSION_MODES = {
     "delegated-read-only",
     "explicit-command-allowlist",
     "standard",
 }
+_ALLOWED_GIT_MODES = {"readonly", "full"}
 _ALLOWED_ISOLATIONS = {"shared", "worktree"}
 _MAX_DEFINITION_FILE_BYTES = 256 * 1024
 _MAX_SYSTEM_PROMPT_CHARS = 64_000
@@ -55,6 +59,8 @@ class AgentDefinition:
     isolation: str = "shared"
     skills: tuple[str, ...] = ()
     mcp_servers: tuple[str, ...] = ()
+    # 结构化 git 工具档位：readonly（只读包装）或 full（完整子命令 + 自动批准）。
+    git_mode: str = "readonly"
     source_path: Path | None = None
     source: str = "builtin"
 
@@ -281,6 +287,11 @@ def parse_agent_definition(path: Path, *, source: str) -> AgentDefinition:
     isolation = _optional_string(raw, "isolation", "shared", file_path, max_length=32)
     if isolation not in _ALLOWED_ISOLATIONS:
         raise AgentDefinitionError(f"Agent 定义 isolation 不受支持：{isolation}（{file_path}）")
+    git_mode = _optional_string(raw, "gitMode", "readonly", file_path, max_length=32)
+    if git_mode not in _ALLOWED_GIT_MODES:
+        raise AgentDefinitionError(
+            f"Agent 定义 gitMode 不受支持：{git_mode}（{file_path}）"
+        )
 
     return AgentDefinition(
         name=name,
@@ -294,6 +305,7 @@ def parse_agent_definition(path: Path, *, source: str) -> AgentDefinition:
         isolation=isolation,
         skills=_string_tuple(raw, "skills", file_path),
         mcp_servers=_string_tuple(raw, "mcpServers", file_path),
+        git_mode=git_mode,
         source_path=file_path.resolve(),
         source=source,
     )

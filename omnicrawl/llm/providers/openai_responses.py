@@ -56,6 +56,9 @@ class OpenAIResponsesRuntime:
     descriptor: ModelDescriptor
     _owns_client: bool = True
     _closed: bool = False
+    # 已确认当前网关/模型组合不支持工具调用历史 item（HTTP 400）。置位后
+    # 后续请求直接展平工具历史为纯文本，避免每轮先发一次必然 400 的请求。
+    _tool_history_unsupported: bool = False
 
     def stream_turn(
         self,
@@ -83,6 +86,18 @@ class OpenAIResponsesRuntime:
 
         tools = _tools_for_responses(request)
         input_items = messages_to_responses_input(request.messages)
+        # 已确认当前网关/模型不支持工具调用历史 item：直接展平，避免每轮先发
+        # 一次必然 400 的请求（见下方策略 3 说明）。
+        if self._tool_history_unsupported and _has_tool_history_items(input_items):
+            input_items = _flatten_tool_history_to_text(input_items)
+        # 带 tools 时部分兼容网关（如 axo.chibanban.de 的 deepseek 系列后端）要求
+        # input 必须以 user 消息结尾：模型刚调用完工具、历史以 function_call_output
+        # 结尾时直接发请求会被 HTTP 400 拒绝（错误体回显 {"model": ...} 极具误导
+        # 性，与模型名无关）。自动追加一条空 user 消息，不注入额外指令；这是
+        # OpenAI 官方工具循环的标准续接格式，任何模型均接受，且不改变工具历史
+        # 的结构化语义。
+        if tools and _needs_user_trailer(input_items):
+            input_items = [*input_items, _EMPTY_USER_TRAILER]
         kwargs: dict[str, Any] = {
             "model": self.identity.model_id,
             "instructions": request.system_prompt,
@@ -105,37 +120,47 @@ class OpenAIResponsesRuntime:
         if prompt_cache_key:
             kwargs["prompt_cache_key"] = prompt_cache_key
         prompt_cache_warning = False
+        tool_history_warning = False
 
         try:
             stream = self.client.responses.create(**kwargs)
         except Exception as exc:
-            if "prompt_cache_key" in kwargs and is_unsupported_prompt_cache_error(exc):
+            # 依次尝试可自动修复的请求问题；全部失败才抛出最终错误。
+            last_error: Exception | None = exc
+            # 策略 1：网关不认 prompt_cache_key → 移除该参数后重试一次。
+            if "prompt_cache_key" in kwargs and is_unsupported_prompt_cache_error(last_error):
                 kwargs.pop("prompt_cache_key", None)
                 try:
                     stream = self.client.responses.create(**kwargs)
                     prompt_cache_warning = True
+                    last_error = None
                 except Exception as retry_exc:
-                    retryable = is_retryable_model_request_error(retry_exc)
-                    raise ModelError(
-                        code=(
-                            ModelErrorCode.CONNECTION_FAILED
-                            if retryable
-                            else ModelErrorCode.INVALID_REQUEST
-                        ),
-                        message=f"Responses 请求失败：{format_openai_error(retry_exc)}",
-                        retryable=retryable,
-                    ) from retry_exc
-            else:
-                retryable = is_retryable_model_request_error(exc)
+                    last_error = retry_exc
+            # 策略 3：网关不支持工具调用历史 item。部分兼容网关对个别模型在
+            # Responses 协议下不接受 function_call / function_call_output 输入
+            # item（即使已追加 user 结尾仍返回 HTTP 400，错误体回显
+            # {"model": ...} 极具误导性）。此时把工具历史展平为纯文本后重试
+            # 一次，并记忆该组合以便后续直接适配。
+            if last_error is not None and _is_tool_history_rejection(last_error, input_items):
+                kwargs["input"] = _flatten_tool_history_to_text(input_items)
+                try:
+                    stream = self.client.responses.create(**kwargs)
+                    self._tool_history_unsupported = True
+                    tool_history_warning = True
+                    last_error = None
+                except Exception as retry_exc:
+                    last_error = retry_exc
+            if last_error is not None:
+                retryable = is_retryable_model_request_error(last_error)
                 raise ModelError(
                     code=(
                         ModelErrorCode.CONNECTION_FAILED
                         if retryable
                         else ModelErrorCode.INVALID_REQUEST
                     ),
-                    message=f"Responses 请求失败：{format_openai_error(exc)}",
+                    message=f"Responses 请求失败：{format_openai_error(last_error)}",
                     retryable=retryable,
-                ) from exc
+                ) from last_error
 
         # 累积 function_call 参数分片，并记录已完成 call_id，避免 SDK 在
         # output_item.done 与 response.completed.output 重复报告同一调用。
@@ -260,6 +285,11 @@ class OpenAIResponsesRuntime:
             yield ProviderWarning(
                 code="prompt_cache_unsupported",
                 message="当前网关不支持 prompt_cache_key，已自动移除后重试。",
+            )
+        if tool_history_warning:
+            yield ProviderWarning(
+                code="tool_history_flattened",
+                message="当前网关不支持工具调用历史 item（HTTP 400），已自动转为纯文本后重试；后续请求将直接使用该适配。",
             )
 
         # 收尾未完成的 function call。收到过 arguments delta 但 name 从未
@@ -402,6 +432,123 @@ def _tools_for_responses(request: ModelTurnRequest) -> list[dict[str, Any]]:
             }
         )
     return tools
+
+
+# 带 tools 时部分兼容网关强制要求 input 以 user 消息结尾；工具调用后 Agent
+# 立即发下一轮请求（历史以 function_call_output 结尾）会被 HTTP 400 拒绝。
+# 追加的空 user 消息必须使用 input_text 数组（空字符串亦可，但空 content 数组
+# 会被网关拒绝），内容为空以不注入额外指令。
+_EMPTY_USER_TRAILER: dict[str, Any] = {
+    "role": "user",
+    "content": [{"type": "input_text", "text": ""}],
+}
+
+
+def _needs_user_trailer(items: list[dict[str, Any]]) -> bool:
+    """判断 input 是否缺少结尾 user 消息（非空且最后一条不是 user）。"""
+
+    return bool(items) and items[-1].get("role") != "user"
+
+
+def _status_code_of(exc: Exception) -> int | None:
+    """从 SDK/网关异常中提取 HTTP 状态码（兼容 exc.status_code 与 exc.response.status_code）。"""
+
+    for value in (
+        getattr(exc, "status_code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        if isinstance(value, int) and 400 <= value <= 599:
+            return value
+    return None
+
+
+def _has_tool_history_items(items: list[dict[str, Any]]) -> bool:
+    """判断 Responses input items 中是否包含工具调用历史（function_call / function_call_output）。"""
+
+    return any(
+        item.get("type") in {"function_call", "function_call_output"}
+        for item in items
+    )
+
+
+def _is_tool_history_rejection(exc: Exception, items: list[dict[str, Any]]) -> bool:
+    """识别“网关不支持工具调用历史”类 400 错误。
+
+    部分兼容网关（如 axo.chibanban.de）对 deepseek 等模型在 Responses 协议下
+    不支持 function_call / function_call_output 输入 item，直接返回 HTTP 400，
+    且错误体把 {"model": ...} 回显为错误消息（极具误导性，实际与模型名无关）。
+    判定口径：请求确含工具历史 + 状态码 400，避免误伤参数错误等其他 400。
+    """
+
+    if not _has_tool_history_items(items):
+        return False
+    return _status_code_of(exc) == 400
+
+
+def _text_message(role: str, text: str, block_type: str) -> dict[str, Any]:
+    """构造单文本块的纯文本消息（展平工具历史时使用）。"""
+
+    return {"role": role, "content": [{"type": block_type, "text": text}]}
+
+
+def _append_message_text(message: dict[str, Any], text: str, block_type: str) -> None:
+    """把文本追加到既有消息的 content（同类文本块尾部），避免产生多条连续消息。"""
+
+    content = message.get("content")
+    if (
+        isinstance(content, list)
+        and content
+        and isinstance(content[0], dict)
+        and content[0].get("type") == block_type
+    ):
+        content[0]["text"] = f"{content[0].get('text', '')}\n{text}"
+    else:
+        message["content"] = [{"type": block_type, "text": text}]
+
+
+def _flatten_tool_history_to_text(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把工具调用历史展平为纯文本，保持消息顺序与上下文语义。
+
+    兼容网关不支持 function_call / function_call_output item 时降级为文本，
+    避免丢失上下文（工具名、参数、结果仍可见）：
+      function_call        -> 追加到前一条 assistant 文本 "[工具调用: name(args)]"
+      function_call_output -> 追加到前一条 user 文本 "[工具结果: output]"
+    reasoning 与普通消息原样保留。注意：本函数只改历史格式，不改请求级
+    tools 声明，因此模型仍能继续调用工具。
+    """
+
+    flat: list[dict[str, Any]] = []
+    for item in items:
+        itype = item.get("type")
+        if itype == "function_call":
+            text = "[工具调用: {}({})]".format(
+                item.get("name", ""),
+                item.get("arguments", ""),
+            )
+            # 反向查找最近的 assistant 文本：该工具调用属于它的输出轮次
+            # （中间可能隔着 reasoning item，不能只看 flat[-1]）。
+            target: dict[str, Any] | None = None
+            for msg in reversed(flat):
+                if msg.get("role") == "assistant":
+                    target = msg
+                    break
+            if target is not None:
+                _append_message_text(target, text, "output_text")
+            else:
+                flat.append(_text_message("assistant", text, "output_text"))
+        elif itype == "function_call_output":
+            # 独立 user 消息，保证顺序严格正确（工具结果紧跟工具调用之后，
+            # 不并入可能在前的普通 user 指令，避免破坏语义）。
+            flat.append(
+                _text_message(
+                    "user",
+                    "[工具结果: {}]".format(item.get("output", "")),
+                    "input_text",
+                )
+            )
+        else:
+            flat.append(item)
+    return flat
 
 
 def messages_to_responses_input(

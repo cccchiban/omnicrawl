@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
@@ -20,12 +21,17 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .approval_policy import (
+    GIT_TIER_HIGH,
+    GIT_TIER_READONLY,
     TOOL_REVIEW_SYSTEM_PROMPT,
     arguments_have_delete_intent,
+    classify_shell_command,
     command_has_delete_intent,
     description_has_delete_intent,
+    git_action_tier,
     is_delete_behavior_tool_call,
     is_git_mutation_tool_call,
+    is_git_tool_call,
     is_shell_command_tool_call,
     parse_tool_review_response,
     text_has_delete_intent,
@@ -34,7 +40,6 @@ from .approval_policy import (
 from .host_tools import (
     HostToolCatalog,
     INVOKE_TOOL_NAME,
-    SEARCH_TOOLS_NAME,
     build_provider_tools,
     public_invoke_arguments,
     tool_validation_error_result,
@@ -71,6 +76,7 @@ from .llm_protocol import (
     build_extra_body,
     chat_completion_tools,
     function_name_for_tool,
+    resolve_tool_name_from_hashed_function_name,
     tool_name_from_function_name,
 )
 from .memory_tools import (
@@ -91,6 +97,15 @@ from .memory_tools import (
     user_memory_search_result,
     user_memory_write_result,
 )
+from .knowledge_tools import (
+    kb_append_result,
+    kb_list_result,
+    kb_read_result,
+    kb_search_result,
+    kb_write_result,
+)
+from .git_tools import git_result
+from ..knowledge import KnowledgeBase, KnowledgeBaseError
 from .prompt_context import (
     build_context_messages,
     build_project_instructions_messages,
@@ -131,6 +146,7 @@ from ..approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_REVIEW,
     load_approval_mode,
+    load_approval_review_model,
     normalize_approval_mode,
 )
 from ..config.context_compaction import (
@@ -439,6 +455,10 @@ class AgentConfig:
     vision: VisionConfiguration = field(default_factory=load_vision_configuration)
     image_gen: ImageGenConfiguration = field(default_factory=load_image_gen_configuration)
     approval_mode: str = field(default_factory=load_approval_mode)
+    # 自动审查使用的独立模型（approval.review_model）：为空时沿用主对话模型。
+    # 审查请求与主对话隔离后，独立模型不影响主对话成本，且让审查决策
+    # 不受主模型被提示词注入影响。
+    approval_review_model: str = field(default_factory=load_approval_review_model)
     # 任务思维模式路由器（dsh-routing-suite 移植）：默认关闭；
     # 开启后首轮 system prompt / 工具面按任务分类注入，首次工具调用后晋升完整面。
     router_enabled: bool = False
@@ -528,16 +548,18 @@ class AgentConfig:
         if self.router_mode not in ("standard", "spec"):
             raise AgentError("router_mode 必须是 standard 或 spec。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
+        if not isinstance(self.approval_review_model, str):
+            raise AgentError("approval_review_model 必须是字符串。")
+        self.approval_review_model = self.approval_review_model.strip()
 
 
 class LocalToolAgent:
     """能在本地项目内读文件、检索、按确认执行写入/命令的简化 Agent Harness。
 
     参考 pi 的核心思想：Agent 不是一次问答，而是"模型 -> 工具 -> 观察 -> 下一轮模型"的循环。
-    Provider 顶层只注册 ``search_tools``；搜索命中后 Host 把真实工具完整声明以 system
-    消息的 ``tools`` 字段追加到对话末尾，模型随后原生调用这些真实工具名。真实
-    ToolDefinition、Schema、审批策略和执行器由 Host 侧目录维护，执行后以 role=tool
-    消息回传结果。
+    Provider 顶层注册当前 Agent 的所有可见工具（压缩描述与紧凑 Schema），模型直接原生
+    调用真实工具名；Host 按完整目录二次校验参数、走审批并执行，执行后以 role=tool
+    消息按 call_id 回传结果。
     """
 
     def __init__(
@@ -552,16 +574,13 @@ class LocalToolAgent:
         self.workspace_root = self.config.workspace_root.resolve()
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
-        # 动态加载：已注入的工具声明以 system 消息持久保留在 Agent 侧，
-        # 跨用户回合原样追加到对话末尾（追加不插入，保持前缀缓存稳定）。
-        self._loaded_tool_declarations: list[dict[str, Any]] = []
         self._pending_user_text: str | None = None
         self._router_runtime = RouterRuntime(
             router_mode=getattr(self.config, "router_mode", "standard")
         )
         self._active_skills: list[SkillMatchResult] = []
-        # 审查请求与主对话共享上下文：按线程保存最近一次模型请求的消息快照，
-        # 供自动审查复用相同 system prompt 与消息前缀（命中会话缓存并理解用户意图）。
+        # 审查请求与主对话隔离，仅按线程保存最近一次模型请求的消息快照，
+        # 供自动审查提取最近用户消息摘要（理解意图）。
         self._review_context_local = threading.local()
         self._closed = False
         self._closing = False
@@ -604,6 +623,8 @@ class LocalToolAgent:
             command_timeout_seconds=self.config.command_timeout_seconds,
             extra_protection_message=self._workspace_extra_protection_message,
         )
+        # 跨项目工作知识库独立于工作区，惰性创建；仅在实际调用 kb_* 工具时初始化。
+        self._knowledge_base: KnowledgeBase | None = None
         # 仅 Windows 注册桌面工具；非 Windows 不向模型暴露注定失败的工具定义。
         self._windows_desktop_tools: WindowsDesktopTools | None = (
             self._create_windows_desktop_tools()
@@ -622,6 +643,9 @@ class LocalToolAgent:
         self._subagent_worktree_sessions: dict[str, WorktreeSession] = {}
         self._subagent_worktree_lock = threading.Lock()
         self._workspace_root_local = threading.local()
+        # 子任务线程内的审批模式覆盖（如 gitMode=full 的评审角色强制自动批准）：
+        # 只作用于当前 worker 线程，不影响父 Agent 或其他子任务。
+        self._approval_mode_local = threading.local()
         # Coordinator worker 会并发上报事件；在同一锁内完成 Session 持久化和
         # 公开回调，确保两个消费者看到相同的安全 payload 与全局事件顺序。
         self._subagent_event_lock = threading.RLock()
@@ -2148,10 +2172,176 @@ class LocalToolAgent:
         self._subagent_coordinator = coordinator
 
     def _tool_subagent(self, arguments: dict[str, Any]) -> ToolResult:
+        """父模型通过 subagent 工具调用受限子代理。
+
+        ``review`` 角色（评审子代理）返回**渲染后的完整评审报告**（而非原始
+        JSON + 截断摘要），并让父模型在同一工具结果里直接看到报告，以便继续
+        处理（如修复发现的问题、提交并推送变更）。其他角色保持原行为。
+        """
+
         coordinator = getattr(self, "_subagent_coordinator", None)
         if coordinator is None:
             return ToolResult(ok=False, output="SubAgent 功能未启用。")
-        return coordinator.run(arguments)
+        tasks = arguments.get("tasks") if isinstance(arguments, dict) else None
+        wants_review = bool(
+            tasks
+            and any(
+                isinstance(task, dict)
+                and str(task.get("subagent_type") or "").strip().casefold()
+                == "review"
+                for task in tasks
+            )
+        )
+        if not wants_review:
+            return coordinator.run(arguments)
+        try:
+            result = coordinator.run(arguments, keep_full_text=True)
+        except BaseException:
+            raise
+        if not result.ok:
+            return result
+        try:
+            payload = json.loads(result.output)
+        except (TypeError, ValueError):
+            return result
+        results = payload.get("results") or ()
+        if not results:
+            return result
+        task = results[0]
+        if task.get("status") != "completed":
+            return result
+        full_text = task.get("full_text")
+        if not isinstance(full_text, str) or not full_text.strip():
+            return result
+        # 渲染成父模型可直接阅读的报告；渲染失败时回退完整原文。
+        from ..commands.slash import format_review_report
+
+        rendered = format_review_report(full_text)
+        return ToolResult(
+            ok=True,
+            output=rendered,
+            full_output=rendered,
+        )
+
+    def run_subagent_task(
+        self,
+        *,
+        agent_type: str,
+        description: str,
+        prompt: str,
+        on_subagent_event: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> str:
+        """同步运行一个 SubAgent 任务并返回其最终文本结果。
+
+        供斜杠命令等主线程入口使用：主线程只负责转发任务并接收/渲染结果，
+        实际的模型循环、git 收集与工具执行全部由子 Agent 完成。
+        任务失败时抛 :class:`AgentError`，带子任务的安全错误信息。
+
+        ``on_subagent_event`` 可选：在任务执行期间把 Coordinator 生命周期事件
+        （subagent.task.started/completed 等）转发给调用方，供 UI 显示审查进度。
+        回调在任务结束、异常抛出或调用方取消时都会恢复为之前的监听器。
+        """
+
+        coordinator = getattr(self, "_subagent_coordinator", None)
+        if coordinator is None:
+            raise AgentError("SubAgent 功能未启用，无法执行该任务。")
+        definition = coordinator.registry.get(agent_type)
+        if definition is None:
+            available = ", ".join(coordinator.available_agent_types()) or "无"
+            raise AgentError(
+                f"未找到 SubAgent 定义：{agent_type}。当前可用：{available}。"
+            )
+
+        previous_callback = getattr(self, "_subagent_event_callback", None)
+        previous_stream = bool(getattr(self, "_stream_subagent_conversation", False))
+        if on_subagent_event is not None:
+            self._subagent_event_callback = on_subagent_event
+        # 只有通过本入口派生（如 /review）的任务才流式上报对话/工具事件；
+        # 父 Agent 回合内派生的 SubAgent 保持原有进度树行为。
+        self._stream_subagent_conversation = on_subagent_event is not None
+        try:
+            result = coordinator.run(
+                {
+                    "action": "run",
+                    "tasks": [
+                        {
+                            "description": description,
+                            "prompt": prompt,
+                            "subagent_type": agent_type,
+                        }
+                    ],
+                    "fail_fast": False,
+                },
+                # 主线程入口（如 /review）需要完整结果：评审 JSON 可能超过
+                # result_summary_chars 截断阈值，截断会破坏结构化输出。
+                keep_full_text=True,
+            )
+        finally:
+            self._stream_subagent_conversation = previous_stream
+            self._subagent_event_callback = previous_callback
+        try:
+            payload = json.loads(result.output)
+        except (TypeError, ValueError):
+            raise AgentError("子任务返回结果无法解析。") from None
+        if not result.ok or payload.get("status") != "completed":
+            raise AgentError(self._describe_subagent_run_failure(payload))
+        results = payload.get("results") or []
+        if not results:
+            raise AgentError("子任务未返回结果。")
+        task = results[0]
+        if task.get("status") != "completed":
+            raise AgentError(self._describe_subagent_run_failure(payload, task=task))
+        # 优先使用未截断全文（keep_full_text），否则回退截断摘要。
+        full_text = task.get("full_text")
+        if isinstance(full_text, str) and full_text.strip():
+            return full_text
+        return str(task.get("summary") or "")
+
+    @staticmethod
+    def _describe_subagent_run_failure(
+        payload: dict[str, Any],
+        *,
+        task: Mapping[str, Any] | None = None,
+    ) -> str:
+        """把子任务失败投影为有信息量、脱敏的安全错误消息。
+
+        真实失败原因（message + error code + diagnostic category）位于
+        per-task 结果的 ``error`` 字段；顶层 ``error`` 只在整批前校验失败时
+        存在。两者都缺失时回退通用文案，避免向用户暴露未经处理的异常。
+        """
+
+        def _detail(error: Mapping[str, Any]) -> str:
+            message = str(error.get("message") or "").strip()
+            code = str(error.get("code") or "").strip()
+            diagnostic = error.get("diagnostic")
+            category = ""
+            detail = ""
+            if isinstance(diagnostic, dict):
+                category = str(diagnostic.get("category") or "").strip()
+                detail = str(diagnostic.get("detail") or "").strip()
+            parts: list[str] = []
+            if detail and detail != message:
+                parts.append(detail)
+            elif message:
+                parts.append(message)
+            labels = [part for part in (code, category) if part]
+            if labels:
+                parts.append("（" + "，".join(labels) + "）")
+            return "".join(parts)
+
+        candidates: list[Mapping[str, Any]] = []
+        if task is not None:
+            candidates.append(task.get("error") or {})
+        else:
+            for item in payload.get("results") or ():
+                if isinstance(item, dict) and item.get("status") != "completed":
+                    candidates.append(item.get("error") or {})
+            candidates.append(payload.get("error") or {})
+        for error in candidates:
+            detail = _detail(error)
+            if detail:
+                return detail
+        return "子任务执行失败。"
 
     def _subagent_verify_tools(self) -> Mapping[str, ToolDefinition]:
         """构造仅供 verify profile 使用的固定检查工具表。
@@ -2297,6 +2487,29 @@ class LocalToolAgent:
                         type(exc).__name__,
                     )
 
+    def _emit_subagent_live_event(
+        self,
+        event_name: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """只向实时回调转发子代理对话/工具事件，不写入 Session。
+
+        /review 等入口在 ``run_subagent_task`` 期间挂接的临时回调用于实时展示
+        子代理会话；这些事件不进 Session 持久化，避免大段 diff/工具输出污染
+        会话记录。观察者失败只记日志，不能破坏子代理执行。
+        """
+
+        callback = getattr(self, "_subagent_event_callback", None)
+        if callback is None:
+            return
+        try:
+            callback(event_name, dict(payload))
+        except Exception as exc:  # noqa: BLE001 - observer 不能破坏任务状态机
+            LOGGER.warning(
+                "SubAgent conversation event observer failed: %s",
+                type(exc).__name__,
+            )
+
     @staticmethod
     def _freeze_fork_context_messages(
         messages: Sequence[Mapping[str, Any]],
@@ -2413,33 +2626,25 @@ class LocalToolAgent:
         definition: AgentDefinition,
         task_model: str,
     ) -> SubAgentModelSnapshot | None:
-        """按 task > subagents.toml 角色配置 > 定义 > 父模型优先级解析并复制独立模型运行视图。"""
+        """按 subagents.toml 角色配置 > 父模型两级解析并复制独立模型运行视图。
+
+        父代理不再能通过任务字段指定子代理模型：``task_model`` 参数保留仅为
+        兼容既有注入点，实际始终为空。模型来源只有 subagents.toml 的
+        ``[subagents.models.<角色>]`` 项目级配置；未配置或显式 ``inherit``
+        时沿用父模型。定义文件里的 model 字段不参与选择。
+        """
 
         parent_llm = getattr(self.config, "llm", None)
-        requested = str(task_model or "").strip()
-        definition_model = str(definition.model or "inherit").strip()
         subagent_config = getattr(self.config, "subagents", None)
         configured_model = str(
             (getattr(subagent_config, "model_overrides", None) or {}).get(
                 definition.name, ""
             )
         ).strip()
-        # task 字段存在时优先级最高；显式 ``model=inherit`` 的含义是要求
-        # 使用父模型，而不是回退到角色定义中的模型覆盖。函数调用模型也常会为
-        # 可选字段生成裸 ``default`` 占位值；该值不是可安全发送的网关模型 ID，
-        # 因此在任务级 API 中与 ``inherit`` 保持相同语义。
-        # subagents.toml 中的 ``[subagents.models.<角色>]`` 是项目级集中覆盖，
-        # 优先级高于单个 Markdown 定义里的 model 字段，低于任务级显式指定。
-        if requested:
-            selection = (
-                "inherit"
-                if requested.casefold() in {"inherit", "default"}
-                else requested
-            )
-        elif configured_model and configured_model.casefold() != "inherit":
+        # subagents.toml 中的 ``[subagents.models.<角色>]`` 是唯一的模型来源；
+        # 未配置或显式 ``inherit`` 时沿用父模型。
+        if configured_model and configured_model.casefold() != "inherit":
             selection = configured_model
-        elif definition_model and definition_model.casefold() != "inherit":
-            selection = definition_model
         else:
             selection = "inherit"
 
@@ -2652,17 +2857,28 @@ class LocalToolAgent:
             self._clear_workspace_root_override()
             raise
 
+        # 仅在 /review 等入口（run_subagent_task 挂接了实时回调）时流式上报
+        # 子代理对话事件；任务身份由 Coordinator 写入 execution_context。
+        stream_conversation = bool(
+            getattr(self, "_stream_subagent_conversation", False)
+        )
+        task_identity = (
+            str(getattr(execution_context, "task_id", "") or ""),
+            str(getattr(execution_context, "batch_id", "") or ""),
+        )
+
         def request_child_reply(working_messages: list[dict[str, Any]]) -> AgentModelReply:
             """在独立任务并发之外，再限制 Provider 模型请求的同时在途数量。"""
 
-            # 子代理线程保存各自回合上下文，供该线程内的自动审查复用。
+            # 子代理线程保存各自回合上下文，供该线程内的自动审查提取
+            # 最近用户消息摘要（审查已不再复用完整对话历史）。
             review_local = getattr(self, "_review_context_local", None)
             if review_local is not None:
                 review_local.messages = list(working_messages)
 
             semaphore = getattr(self, "_subagent_model_request_semaphore", None)
             if semaphore is None:
-                return protocol.request_reply(
+                reply = protocol.request_reply(
                     working_messages,
                     lambda _text: None,
                     record_usage,
@@ -2673,31 +2889,103 @@ class LocalToolAgent:
                     runtime_snapshot,
                     lambda: None,
                 )
-            # 不能无期限阻塞在并发槽位上；等待期间持续检查父回合取消，
-            # 确保尚未发起 Provider 请求的任务也能及时退出。
-            while not semaphore.acquire(timeout=0.1):
-                if cancel_check is not None:
-                    cancel_check()
-            try:
-                return protocol.request_reply(
-                    working_messages,
-                    lambda _text: None,
-                    record_usage,
-                    lambda: None,
-                    lambda _message: None,
-                    cancel_check,
-                    None,
-                    runtime_snapshot,
-                    lambda: None,
+            else:
+                # 不能无期限阻塞在并发槽位上；等待期间持续检查父回合取消，
+                # 确保尚未发起 Provider 请求的任务也能及时退出。
+                while not semaphore.acquire(timeout=0.1):
+                    if cancel_check is not None:
+                        cancel_check()
+                try:
+                    reply = protocol.request_reply(
+                        working_messages,
+                        lambda _text: None,
+                        record_usage,
+                        lambda: None,
+                        lambda _message: None,
+                        cancel_check,
+                        None,
+                        runtime_snapshot,
+                        lambda: None,
+                    )
+                finally:
+                    semaphore.release()
+            # 只把带工具调用的过程性文本转发到子代理会话面板（最终评审 JSON
+            # 由主线程渲染为报告，不重复展示在面板里）。
+            if stream_conversation and reply.content and reply.tool_calls:
+                self._emit_subagent_live_event(
+                    "subagent.turn.text",
+                    {
+                        "task_id": task_identity[0],
+                        "batch_id": task_identity[1],
+                        "agent_type": definition.name,
+                        "text": str(reply.content),
+                    },
                 )
-            finally:
-                semaphore.release()
+            return reply
 
         plugin_dispatch = execution_context.plugin_dispatch
         if plugin_dispatch is None:
             # 兼容旧测试/调用方未注入 plugin_dispatch 的路径。
             plugin_dispatch = PluginDispatchContext(handlers=(), source="none")
 
+        def emit_conversation_event(event_name: str, payload: dict[str, Any]) -> None:
+            if not stream_conversation:
+                return
+            self._emit_subagent_live_event(
+                event_name,
+                {
+                    "task_id": task_identity[0],
+                    "batch_id": task_identity[1],
+                    "agent_type": definition.name,
+                    **payload,
+                },
+            )
+
+        tool_start_times: dict[Any, float] = {}
+
+        def report_tool_start(_step: int, call: Any) -> None:
+            key = str(getattr(call, "id", "") or "") or id(call)
+            tool_start_times[key] = time.perf_counter()
+            raw_arguments = getattr(call, "arguments", None)
+            if not isinstance(raw_arguments, dict):
+                raw_arguments = {}
+            emit_conversation_event(
+                "subagent.tool.started",
+                {
+                    "tool": str(getattr(call, "name", "") or ""),
+                    "arguments": public_tool_arguments(
+                        str(getattr(call, "name", "") or ""),
+                        raw_arguments,
+                    ),
+                },
+            )
+
+        def report_tool_result(call: Any, result: Any) -> None:
+            key = str(getattr(call, "id", "") or "") or id(call)
+            started_at = tool_start_times.pop(key, None)
+            emit_conversation_event(
+                "subagent.tool.completed",
+                {
+                    "tool": str(getattr(call, "name", "") or ""),
+                    "ok": bool(getattr(result, "ok", False)),
+                    "output": str(
+                        getattr(result, "full_output", "") or getattr(result, "output", "") or ""
+                    ),
+                    "duration_seconds": (
+                        max(0.0, time.perf_counter() - started_at)
+                        if started_at is not None
+                        else None
+                    ),
+                },
+            )
+
+        # gitMode=full 的角色（如 review）在本 worker 线程内强制自动批准：完整
+        # git 子命令权限不经过主对话 manual/review 审批，避免收集 diff 时被逐条
+        # 打断。覆盖由 try/finally 保证在任务结束后恢复，线程之间互不影响。
+        approval_override = False
+        if getattr(definition, "git_mode", "readonly") == "full":
+            self._approval_mode_local.mode = APPROVAL_MODE_AUTO
+            approval_override = True
         try:
             with activate_plugin_dispatch_context(plugin_dispatch):
                 loop_result = AgentLoopRunner().run(
@@ -2706,8 +2994,8 @@ class LocalToolAgent:
                     execute_tool_batch=lambda calls, first_step: self._execute_tool_batch(
                         calls,
                         first_step,
-                        report_tool_start=lambda _step, _call: None,
-                        report_tool_result=lambda _call, _result: None,
+                        report_tool_start=report_tool_start,
+                        report_tool_result=report_tool_result,
                         check_cancelled=cancel_check or (lambda: None),
                         status=lambda _message: None,
                         active_runtime_snapshot=runtime_snapshot,
@@ -2717,11 +3005,7 @@ class LocalToolAgent:
                             else getattr(self.config, "llm", None)
                         ),
                         tools=child_tools,
-                        visible_tools=build_provider_tools(
-                            HostToolCatalog(child_tools)
-                        ),
                         persist_session_events=False,
-                        persist_dynamic_tools=False,
                     ),
                     limits=AgentLoopLimits(
                         timeout_seconds=self.config.subagents.default_timeout_seconds,
@@ -2747,6 +3031,8 @@ class LocalToolAgent:
                     artifacts=worktree_artifacts,
                 )
         finally:
+            if approval_override:
+                self._approval_mode_local.mode = None
             release_runtime()
 
     def _subagent_llm_protocol(
@@ -2792,10 +3078,23 @@ class LocalToolAgent:
                     "高风险写/命令操作必须等待 Host 审批；"
                 )
         else:
+            # 只读子角色默认给只读包装的 git；gitMode=full 时授予完整子命令并
+            # 自动批准，能力规则相应改为自律约束：仍只能用于收集 diff 等只读任务。
+            if getattr(definition, "git_mode", "readonly") == "full":
+                git_rules = (
+                    "结构化 git 工具已授予完整子命令权限且调用自动批准；"
+                    "但任务只允许用只读子命令（status/diff/log/show 等）收集上下文，"
+                    "不得执行 commit/push/reset --hard/clean 等写入性 Git 操作；"
+                )
+            else:
+                git_rules = (
+                    "结构化 git 工具仅放行只读档动作（status/diff/log/show 等），"
+                )
             capability_rules = (
                 "不得使用 write_file、replace_text、任何 *_memory_write 或创建其他 SubAgent；"
                 "可以继承 Host 提供的 MCP、Skill、浏览器、桌面与其他外部能力；"
                 "bash、powershell、monitor 仅可执行通过 Host 只读命令策略的命令，"
+                f"{git_rules}"
                 "不得以重定向、脚本解释器、Git 变更或其他方式修改本地工作区文件；"
             )
 
@@ -2839,9 +3138,10 @@ class LocalToolAgent:
             client=None if selected_runtime_manager is not None else self._llm_client(),
             model=model_config.model,
             request_timeout_seconds=request_timeout,
-            # 子任务失败后由 Coordinator 返回结构化错误并交还主 Agent；
-            # 不在独立模型请求内部自动放大重试成本。
-            request_retry_count=1,
+            # 子代理对可重试错误（CONNECTION_FAILED/限流/空响应等）自动重试 3 次，
+            # 避免一过性网络抖动直接中断子任务；重试仍失败才由 Coordinator
+            # 返回结构化错误交还主 Agent，不会无限放大请求成本。
+            request_retry_count=3,
             workspace_root=self.workspace_root,
             system_prompt_provider=lambda: system_prompt,
             prompt_cache_identity_provider=lambda: {
@@ -2991,8 +3291,6 @@ class LocalToolAgent:
                 )
                 if guide:
                     working_messages.append({"role": "user", "content": guide})
-            # 动态加载：已注入的工具声明作为 system 消息追加到本轮消息末尾。
-            working_messages.extend(self._dynamic_tool_messages())
             # Fork 只能继承“本轮起点”这一份公开协议消息。之后 AgentLoopRunner
             # 会原地追加 assistant tool-call 与 tool-result；不能让后续状态、未
             # 配对的工具调用或父模型输出进入已创建子任务的上下文。功能关闭时不
@@ -3087,7 +3385,6 @@ class LocalToolAgent:
                 # 失败请求尚未产生任何可见文本或工具副作用；从新的摘要投影重建
                 # Runner，避免把未完成的原始用户消息再次附加到模型上下文。
                 working_messages = [*context_messages, *recovered_messages]
-                working_messages.extend(self._dynamic_tool_messages())
                 if (
                     isinstance(subagent_config, SubAgentConfig)
                     and subagent_config.enabled
@@ -3252,16 +3549,12 @@ class LocalToolAgent:
         check_cancelled: Callable[[], None],
         status: Callable[[str], None],
         tools: Mapping[str, ToolDefinition] | None = None,
-        visible_tools: Mapping[str, ToolDefinition] | None = None,
         active_runtime_snapshot: Any | None = None,
         vision_base_llm: LLMConfig | None = None,
         on_token_usage: Callable[[int, int, int], None] | None = None,
         persist_session_events: bool = True,
         record_tool_execution: Callable[[ToolCall], None] | None = None,
         tool_timeout_seconds: int | None = None,
-        # SubAgent 共享同一 Agent 实例，动态工具声明只回填到其独立 messages；
-        # 只有主 Agent 回合才持久化到跨回合的 `_loaded_tool_declarations`。
-        persist_dynamic_tools: bool = True,
     ) -> list[AgentLoopObservation]:
         """规范化、审批并执行一次模型回复中的完整工具批次。
 
@@ -3283,11 +3576,6 @@ class LocalToolAgent:
 
         active_tools = self._tools if tools is None else tools
         active_tools = dict(active_tools)
-        provider_tools = (
-            dict(visible_tools)
-            if visible_tools is not None
-            else self._provider_tools_for(active_tools)
-        )
         catalog = HostToolCatalog(
             active_tools,
             visible_tools=self._router_visible_tools(),
@@ -3296,8 +3584,8 @@ class LocalToolAgent:
         for offset, raw_tool_call in enumerate(raw_tool_calls):
             check_cancelled()
             if raw_tool_call.name == INVOKE_TOOL_NAME:
-                # invoke_tool 已从 Provider 工具面移除（由动态加载工具替代），但保留
-                # Host 分发路径兼容旧测试与直接构造的内部调用。
+                # invoke_tool 已从 Provider 工具面移除（顶层注册真实工具名），
+                # 但保留 Host 分发路径兼容旧测试与直接构造的内部调用。
                 prepared = catalog.prepare_invocation(raw_tool_call.arguments)
                 if isinstance(prepared, ToolResult):
                     tool_call = ToolCall(
@@ -3317,19 +3605,9 @@ class LocalToolAgent:
                     )
                     tool = prepared.tool
                     denied_result = None
-            elif raw_tool_call.name in provider_tools:
-                provider_call = normalize_tool_call(raw_tool_call, provider_tools)
-                if provider_call.name == SEARCH_TOOLS_NAME:
-                    tool_call = provider_call
-                    tool = provider_tools[SEARCH_TOOLS_NAME]
-                    denied_result = None
-                else:
-                    tool_call = provider_call
-                    tool = provider_tools.get(provider_call.name)
-                    denied_result = None
             else:
-                # 保留 Host/子 Agent 测试夹具、旧内部调用方以及动态加载后模型
-                # 原生调用的真实工具名直接分发；生产 Provider 顶层只注册 search_tools。
+                # 顶层注册所有工具：模型回传的真实工具名按 Host 完整目录直接
+                # 分发，不再区分 Provider 工具面与 Host 目录（同一套名字）。
                 tool_call = normalize_tool_call(raw_tool_call, active_tools)
                 tool = active_tools.get(tool_call.name)
                 denied_result = None
@@ -3380,11 +3658,9 @@ class LocalToolAgent:
             if denied_result is not None:
                 return denied_result
             if tool is None:
-                return ToolResult(
-                    ok=False,
-                    output=(
-                        f"未知工具：{tool_call.name}。请先使用 search_tools 搜索当前可用工具。"
-                    ),
+                return _unknown_tool_result(
+                    tool_call.name,
+                    active_tools,
                 )
             if record_tool_execution is not None:
                 record_tool_execution(tool_call)
@@ -3458,16 +3734,6 @@ class LocalToolAgent:
                 check_cancelled=check_cancelled,
                 on_token_usage=on_token_usage,
             )
-            if tool_call.name == SEARCH_TOOLS_NAME and tool_result.ok:
-                # 动态加载：命中工具以完整声明追加到对话末尾，模型下一轮
-                # 即可直接原生调用真实工具名，不再经过 invoke_tool。
-                dynamic_followups = self._load_dynamic_tool_declarations(
-                    tool_call.arguments,
-                    catalog,
-                    persist=persist_dynamic_tools,
-                )
-                if dynamic_followups:
-                    followup_messages = (*followup_messages, *dynamic_followups)
             report_tool_result(tool_call, prepared_result)
             if persist_session_events:
                 self._append_session_event(
@@ -3562,54 +3828,6 @@ class LocalToolAgent:
         """
 
         return build_project_instructions_messages(self._load_agents_instructions())
-
-    def _dynamic_tool_messages(self) -> list[dict[str, Any]]:
-        """返回已加载的动态工具声明消息（浅拷贝，避免调用方原地污染）。
-
-        按缓存友好原则追加不插入：声明始终放在当前回合消息末尾，不修改
-        已稳定的前缀；下一回合仍原样保留，便于持续命中前缀缓存。
-        """
-
-        loaded = getattr(self, "_loaded_tool_declarations", None) or ()
-        return [dict(message) for message in loaded]
-
-    def _load_dynamic_tool_declarations(
-        self,
-        arguments: Mapping[str, Any],
-        catalog: HostToolCatalog,
-        *,
-        persist: bool,
-    ) -> list[dict[str, Any]]:
-        """根据 search_tools 命中集合生成动态加载声明消息。
-
-        主 Agent（``persist=True``）把新声明追加到跨回合列表并返回消息；
-        SubAgent（``persist=False``）只返回消息回填到其独立 messages，不污染
-        父 Agent 的持久声明。声明使用真实工具名，模型随后可直接原生调用。
-        """
-
-        declarations = catalog.declarations_for_search(arguments)
-        if not declarations:
-            return []
-        if not persist:
-            return [{"role": "system", "tools": declarations}]
-        loaded = getattr(self, "_loaded_tool_declarations", None)
-        if loaded is None:
-            loaded = []
-            self._loaded_tool_declarations = loaded
-        loaded_names = {
-            str(tool["function"]["name"])
-            for message in loaded
-            for tool in message.get("tools", [])
-        }
-        fresh = [
-            declaration
-            for declaration in declarations
-            if str(declaration["function"]["name"]) not in loaded_names
-        ]
-        if not fresh:
-            return []
-        loaded.append({"role": "system", "tools": fresh})
-        return [{"role": "system", "tools": fresh}]
 
     def _context_messages(self, *, turn_id: str | None = None) -> list[dict[str, str]]:
         """构造 system 之外的稳定/动态上下文消息。"""
@@ -3714,9 +3932,9 @@ class LocalToolAgent:
         if isinstance(request_payload.get("messages"), list):
             messages = request_payload["messages"]  # type: ignore[assignment]
 
-        # 自动审查复用主对话上下文：保存与实际发送完全一致的消息快照（含插件
-        # 改写），使审查请求能与主对话共享 system prompt 与消息前缀，命中会话
-        # 缓存并让审查模型理解用户意图。按线程隔离，子代理审查使用各自上下文。
+        # 自动审查保留消息快照：仅用于提取最近一条用户消息摘要，供审查者
+        # 理解任务意图（不再复用完整上下文，避免污染）。按线程隔离，子代理
+        # 审查使用各自上下文。
         review_local = getattr(self, "_review_context_local", None)
         if review_local is not None:
             review_local.messages = list(messages)
@@ -3876,7 +4094,7 @@ class LocalToolAgent:
         return build_extra_body(self.config.llm)
 
     def _provider_tools(self) -> dict[str, ToolDefinition]:
-        """返回固定 Provider 工具面，真实工具只保留在 Host 目录。"""
+        """返回 Provider 顶层工具面：所有可见工具的压缩声明。"""
 
         return build_provider_tools(self._host_tool_catalog())
 
@@ -3910,12 +4128,6 @@ class LocalToolAgent:
         except Exception:
             pass
         return []
-
-    @staticmethod
-    def _provider_tools_for(
-        tools: Mapping[str, ToolDefinition],
-    ) -> dict[str, ToolDefinition]:
-        return build_provider_tools(HostToolCatalog(tools))
 
     def _chat_completion_tools(self) -> list[dict[str, Any]]:
         return chat_completion_tools(
@@ -3998,7 +4210,7 @@ class LocalToolAgent:
                 )
             return result
 
-        approval_mode = getattr(self.config, "approval_mode", APPROVAL_MODE_REVIEW)
+        approval_mode = self._effective_approval_mode()
         requires_confirmation = tool.requires_confirmation
 
         # tool.approval.before：只能拒绝，不能代表用户批准。
@@ -4154,6 +4366,19 @@ class LocalToolAgent:
             or is_git_mutation_tool_call(tool, arguments)
         )
 
+    def _effective_approval_mode(self) -> str:
+        """返回当前线程实际生效的审批模式。
+
+        子任务 worker 可在线程内覆盖为 AUTO（如 gitMode=full 的评审角色强制
+        自动批准），使完整 git 权限在收集 diff 时不被主对话的 manual/review
+        模式逐条打断；覆盖只对当前线程可见，不改变父 Agent 的全局模式。
+        """
+
+        override = getattr(getattr(self, "_approval_mode_local", None), "mode", None)
+        if override:
+            return override
+        return getattr(self.config, "approval_mode", APPROVAL_MODE_REVIEW)
+
     def _approve_tool_call(
         self,
         tool: ToolDefinition,
@@ -4161,13 +4386,40 @@ class LocalToolAgent:
     ) -> tuple[bool, str]:
         """根据审批模式处理工具许可，返回 (是否批准, 拒绝原因)。"""
 
-        mode = self.config.approval_mode
+        mode = self._effective_approval_mode()
         if mode == APPROVAL_MODE_AUTO:
             return True, ""
-        if mode == APPROVAL_MODE_REVIEW:
-            if not is_shell_command_tool_call(tool, arguments):
+        if is_git_tool_call(tool):
+            # 结构化 git 工具按 action 风险分级：只读档直接放行；本地变更档
+            # review 模式放行（与文件写入同档）、manual 模式人工确认；高风险档
+            # review 模式进入模型审查、manual 模式人工确认。
+            tier = git_action_tier(arguments)
+            if tier == GIT_TIER_READONLY:
                 return True, ""
-            return self._review_tool_call(tool, arguments)
+            if mode == APPROVAL_MODE_REVIEW:
+                if tier == GIT_TIER_HIGH:
+                    return self._review_tool_call(tool, arguments)
+                return True, ""
+            return (
+                self._confirm(
+                    tool.name,
+                    public_tool_arguments(tool.name, arguments),
+                ),
+                f"用户取消执行：{tool.name}。",
+            )
+        if mode == APPROVAL_MODE_REVIEW:
+            # 3A 静态规则前置分流：shell 命令先按内容分类——只有删除类与
+            # 下载并执行不明脚本类才进入模型审查，其余命令（含访问项目目录外
+            # 文件）直接放行；非 shell 工具的删除/清空类调用（含 MCP）也进入
+            # 模型审查。这样审查资源只用于真正需要守住的破坏性操作。
+            if is_shell_command_tool_call(tool, arguments):
+                command = str(arguments.get("command") or "")
+                if classify_shell_command(command) == "review":
+                    return self._review_tool_call(tool, arguments)
+                return True, ""
+            if is_delete_behavior_tool_call(tool, arguments):
+                return self._review_tool_call(tool, arguments)
+            return True, ""
         # manual 模式只对 bash/powershell 人工确认，其余工具自动放行。
         if not is_shell_command_tool_call(tool, arguments):
             return True, ""
@@ -4215,82 +4467,57 @@ class LocalToolAgent:
         tool: ToolDefinition,
         arguments: dict[str, Any],
     ) -> tuple[bool, str]:
-        """用同一模型的非思考模式审查工具调用是否可自动批准。
+        """用最小上下文审查工具调用是否可自动批准，与主对话完全隔离。
 
-        审查请求复用主对话上下文（相同 system prompt + 相同消息前缀），既命中
-        会话缓存降低输入成本，也让审查模型能看到用户意图与项目上下文；审查指令
-        作为最后一条 user 消息追加。子代理线程保存的是各自回合的消息快照。
+        审查请求不再复用主对话 system prompt 与完整消息历史，杜绝四类上下文
+        污染：身份继承（审查模型被当作主代理）、行为示范（历史中的工具调用/
+        Markdown/XML 诱导模仿）、注入通道（用户原文与工具输出全文进审查上下文）、
+        注意力稀释（全量历史逐次重发）。
+
+        现在的审查请求 = 固定审查者身份（instructions）+ 待审查工具调用 JSON +
+        最近一条用户消息截断摘要（仅供理解意图，prompt 已声明可能含注入，只作
+        参考）。审查前缀固定不变，仍可命中输入前缀缓存降低审查成本。
+        子代理线程的审查使用各自线程保存的消息快照提取用户摘要。
         """
 
-        review_payload = {
-            "tool": tool.name,
-            "description": tool.description,
-            "arguments": arguments,
-            "workspace_root": str(self.workspace_root),
-        }
         context_messages = getattr(
             getattr(self, "_review_context_local", None),
             "messages",
             None,
         )
-        if context_messages:
-            # 与主对话相同的输入前缀 + 审查指令，指令中携带审查者身份与约束。
-            review_instruction = (
-                TOOL_REVIEW_SYSTEM_PROMPT
-                + "\n\n待审查的工具调用：\n"
-                + json.dumps(review_payload, ensure_ascii=False, indent=2)
-            )
-            try:
-                # 主对话发送前会经 conversation_from_openai_messages →
-                # messages_to_responses_input 转换为 Responses API 的 input 格式
-                # （tool→function_call_output、tool_calls→function_call、
-                # reasoning_content→reasoning item、图片→input_image）。审查必须
-                # 复用同一转换管线，否则把 Chat 风格消息（含 role=tool、
-                # tool_calls、reasoning_content 等字段）直接塞给 Responses API
-                # 会被网关以 HTTP 400 拒绝（reasoning_content 是 chat completions
-                # 专用字段，携带会导致网关 decode 失败）。
-                from ..llm.protocol import conversation_from_openai_messages
-                from ..llm.providers.openai_responses import (
-                    messages_to_responses_input,
-                )
-
-                converted_prefix = messages_to_responses_input(
-                    conversation_from_openai_messages(list(context_messages))
-                )
-                input_messages = [
-                    *converted_prefix,
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": review_instruction}
-                        ],
-                    },
-                ]
-            except Exception:
-                # 转换失败（如异常消息结构）时退回仅审查指令，保证审查可用。
-                input_messages = [
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            review_payload, ensure_ascii=False, indent=2
-                        ),
-                    }
-                ]
-                instructions = TOOL_REVIEW_SYSTEM_PROMPT
-            else:
-                instructions = self._system_prompt()
-        else:
-            # 无上下文（如纯单元测试直接调用）：退回仅审查指令的原始行为。
-            input_messages = [
-                {
-                    "role": "user",
-                    "content": json.dumps(review_payload, ensure_ascii=False, indent=2),
-                }
-            ]
-            instructions = TOOL_REVIEW_SYSTEM_PROMPT
+        user_summary = self._extract_user_intent_summary(context_messages)
+        review_payload = {
+            "tool": tool.name,
+            "description": tool.description,
+            "arguments": arguments,
+            "workspace_root": str(self.workspace_root),
+            # 最近一条用户消息的截断摘要（2B）：帮助审查者理解任务意图，
+            # 同时不暴露完整对话历史；可能含提示词注入，提示词已声明仅作参考。
+            "user_intent_summary": user_summary,
+        }
+        review_instruction = (
+            "待审查的工具调用（JSON）：\n"
+            + json.dumps(review_payload, ensure_ascii=False, indent=2)
+        )
+        input_messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": review_instruction}
+                ],
+            }
+        ]
+        # 独立审查者身份提示词，不继承主对话 system prompt。
+        instructions = TOOL_REVIEW_SYSTEM_PROMPT
+        # 独立审查模型（1A）：approval.review_model 非空时使用，否则沿用主模型。
+        review_model = (
+            getattr(getattr(self, "config", None), "approval_review_model", "")
+            or ""
+        ).strip()
+        model = review_model or self.config.llm.model
         try:
             response = self._llm_client().responses.create(
-                model=self.config.llm.model,
+                model=model,
                 instructions=instructions,
                 input=input_messages,
                 # 审查请求只输出文本结论：禁用工具调用，避免审查模型输出
@@ -4334,6 +4561,44 @@ class LocalToolAgent:
             f"（审查模型返回：{snippet}）"
         )
 
+    # 审查上下文允许提取的用户消息摘要最大长度（字符）。
+    _REVIEW_USER_SUMMARY_MAX_CHARS = 600
+
+    @classmethod
+    def _extract_user_intent_summary(
+        cls,
+        messages: Sequence[Any] | None,
+        max_chars: int = _REVIEW_USER_SUMMARY_MAX_CHARS,
+    ) -> str:
+        """从消息快照提取最近一条非空用户消息文本（截断），供审查理解任务意图。
+
+        只提取纯文本内容，忽略工具调用块与图片块，避免把工具输出或注入载荷
+        大段带进审查上下文；无快照时返回空串，审查仍可用。
+        """
+
+        for message in reversed(messages or ()):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts: list[str] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    part_text = part.get("text")
+                    if isinstance(part_text, str) and part_text:
+                        parts.append(part_text)
+                text = "".join(parts)
+            else:
+                continue
+            text = (text or "").strip()
+            if not text:
+                continue
+            return text[:max_chars]
+        return ""
+
     @staticmethod
     def _parse_tool_review_response(review_text: str) -> tuple[bool, str]:
         return parse_tool_review_response(review_text)
@@ -4363,6 +4628,7 @@ class LocalToolAgent:
             bash=self._tool_bash,
             powershell=self._tool_powershell,
             monitor=self._tool_monitor,
+            git=self._tool_git,
             memory_search=self._tool_memory_search,
             memory_read=self._tool_memory_read,
             memory_expand_related=self._tool_memory_expand_related,
@@ -4379,6 +4645,11 @@ class LocalToolAgent:
             user_memory_read=self._tool_user_memory_read,
             user_memory_expand_related=self._tool_user_memory_expand_related,
             user_memory_write=self._tool_user_memory_write,
+            kb_search=self._tool_kb_search,
+            kb_read=self._tool_kb_read,
+            kb_write=self._tool_kb_write,
+            kb_append=self._tool_kb_append,
+            kb_list=self._tool_kb_list,
             mcp_call=self._tool_mcp_call,
             mcp_read_resource=self._tool_mcp_read_resource,
             mcp_get_prompt=self._tool_mcp_get_prompt,
@@ -4715,6 +4986,11 @@ class LocalToolAgent:
     def _tool_monitor(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_command_tool_result(self._monitor_toolbox().run, arguments)
 
+    def _tool_git(self, arguments: dict[str, Any]) -> ToolResult:
+        """结构化 git 操作：argv 直调不经 shell，风险分级见 approval_policy。"""
+
+        return git_result(self.workspace_root, arguments)
+
     def _tool_recall_session_evidence(self, arguments: dict[str, Any]) -> ToolResult:
         """恢复当前有效摘要授权的事件，不接受 Session ID 或 artifact 路径。"""
 
@@ -4817,6 +5093,28 @@ class LocalToolAgent:
 
     def _tool_user_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
         return user_memory_write_result(self._require_memory_store("user"), arguments)
+
+    def _knowledge_base(self) -> KnowledgeBase:
+        """返回跨项目工作知识库实例（惰性创建）。"""
+
+        if self._knowledge_base is None:
+            self._knowledge_base = KnowledgeBase()
+        return self._knowledge_base
+
+    def _tool_kb_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_search_result(self._knowledge_base(), arguments)
+
+    def _tool_kb_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_read_result(self._knowledge_base(), arguments)
+
+    def _tool_kb_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_write_result(self._knowledge_base(), arguments)
+
+    def _tool_kb_append(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_append_result(self._knowledge_base(), arguments)
+
+    def _tool_kb_list(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_list_result(self._knowledge_base(), arguments)
 
     def _require_memory_store(self, scope: str = "project") -> MemoryStore:
         stores = {
@@ -5946,6 +6244,26 @@ class LocalToolAgent:
             status=status,
         )
 
+    def remember_review_report(self, report: str) -> None:
+        """把评审报告注入父模型上下文，使下一轮模型请求能看到报告并继续处理。
+
+        /review 斜杠命令在模型循环之外执行，报告默认只作界面状态消息展示；
+        调用本方法后报告以 assistant 消息追加到进程内历史并写入会话事件，
+        下一轮 working_messages 即包含完整报告，父模型可基于它修复问题、
+        提交并推送变更等。空报告不注入。
+        """
+
+        text = str(report or "").strip()
+        if not text:
+            return
+        self._history.append(
+            {"role": "assistant", "content": f"[评审报告]\n{text}"}
+        )
+        self._append_session_event(
+            "assistant_message",
+            {"content": f"[评审报告]\n{text}"},
+        )
+
     def _run_context_compaction_after_turn(
         self,
         *,
@@ -6361,6 +6679,30 @@ class LocalToolAgent:
             return True
         except ValueError:
             return False
+
+
+def _unknown_tool_result(
+    requested_name: str,
+    active_tools: Mapping[str, ToolDefinition],
+) -> ToolResult:
+    """构造“未知工具”错误结果，并在可识别时给出纠正提示。
+
+    模型回显旧式哈希函数名时可能截断可读段（如 tool_search_e960b0242f 而非
+    tool_search_tools_e960b0242f），此时按 digest 反查命中真实工具，错误信息
+    直接提示正确名称，帮助模型下一轮使用准确名称调用。
+    """
+    candidates = tuple(active_tools)
+    resolved = resolve_tool_name_from_hashed_function_name(requested_name, candidates)
+    if resolved is not None and resolved != requested_name:
+        output = (
+            f"未知工具：{requested_name}。该名称疑似 {resolved} 的哈希函数名变体，"
+            f"正确名称为 {resolved}。请直接调用 {resolved}。"
+        )
+    else:
+        output = (
+            f"未知工具：{requested_name}。请从已注册的工具名中选择正确的名称重试。"
+        )
+    return ToolResult(ok=False, output=output)
 
 
 def _tool_timeout_result(timeout_seconds: int) -> ToolResult:

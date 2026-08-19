@@ -13,7 +13,11 @@ import shlex
 from dataclasses import replace
 from typing import Any
 
-from ..approval_policy import command_has_git_mutation_intent
+from ..approval_policy import (
+    GIT_TIER_READONLY,
+    command_has_git_mutation_intent,
+    git_action_tier,
+)
 from ..types import ToolDefinition, ToolResult
 
 
@@ -155,6 +159,29 @@ def wrap_read_only_command_tool(tool: ToolDefinition) -> ToolDefinition:
         reason = read_only_command_denial_reason(tool.name, arguments)
         if reason:
             return ToolResult(ok=False, output=f"[read-only] 命令已拒绝：{reason}")
+        return tool.run(arguments)
+
+    return replace(tool, requires_confirmation=False, run=guarded)
+
+
+def wrap_read_only_git_tool(tool: ToolDefinition) -> ToolDefinition:
+    """Wrap the structured git tool so only read-only git actions can run.
+
+    ``git_action_tier`` 是审批侧的分级规则：只读档（diff/log/show/status 等）
+    直接放行；本地变更与高风险档（add/commit/push/reset --hard 等）一律拒绝，
+    确保只读子代理用结构化 git 工具收集 diff 时不可能改写工作区。
+    """
+
+    if tool.name != "git":
+        return tool
+
+    def guarded(arguments: dict[str, Any]) -> ToolResult:
+        if not isinstance(arguments, dict):
+            return ToolResult(ok=False, output="[read-only] git 参数必须是对象。")
+        tier = git_action_tier(arguments)
+        if tier != GIT_TIER_READONLY:
+            action = str(arguments.get("action") or "未知")
+            return ToolResult(ok=False, output=f"[read-only] git {action} 不属于只读操作。")
         return tool.run(arguments)
 
     return replace(tool, requires_confirmation=False, run=guarded)
@@ -371,4 +398,5 @@ __all__ = [
     "READ_ONLY_COMMAND_TOOL_NAMES",
     "read_only_command_denial_reason",
     "wrap_read_only_command_tool",
+    "wrap_read_only_git_tool",
 ]

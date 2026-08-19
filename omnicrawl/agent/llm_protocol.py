@@ -10,7 +10,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from .types import AgentModelReply, ToolCall, ToolDefinition
 from ..llm import OpenAIResponseLLM, VALID_REASONING_EFFORTS
@@ -138,6 +138,9 @@ class AgentLLMProtocol:
                         # 信号被空响应重试循环吞掉。
                         if cancel_check is not None:
                             cancel_check()
+                        # 重试期间只在状态行显示进度，不暴露失败详情；
+                        # 详情等所有重试结束后随最终错误一起提示。
+                        on_retry_status(f"正在重试(第{attempt}次)")
                         continue
                     if cancel_check is not None:
                         cancel_check()
@@ -148,10 +151,8 @@ class AgentLLMProtocol:
                     last_retryable_error = exc
                     if attempt < self.request_retry_count and on_stream_rollback is not None:
                         on_stream_rollback()
-                        on_retry_status(
-                            f"模型流在输出后中断，正在撤销已显示内容并重试 "
-                            f"{attempt + 1}/{self.request_retry_count}：{exc}"
-                        )
+                        # 流中断回滚后重试：状态行只显示第几次重试。
+                        on_retry_status(f"正在重试(第{attempt}次)")
                         if cancel_check is not None:
                             cancel_check()
                         continue
@@ -159,9 +160,9 @@ class AgentLLMProtocol:
                 except RetryableAgentRequestError as exc:
                     last_retryable_error = exc
                     if attempt < self.request_retry_count:
-                        on_retry_status(
-                            f"模型请求中断，正在重试 {attempt + 1}/{self.request_retry_count}：{exc}"
-                        )
+                        # 重试期间只在状态行显示第几次重试，失败详情留在
+                        # 所有重试结束后的最终错误中一并提示。
+                        on_retry_status(f"正在重试(第{attempt}次)")
                         if cancel_check is not None:
                             cancel_check()
                         continue
@@ -580,11 +581,37 @@ def is_unsupported_prompt_cache_error(exc: Exception) -> bool:
     )
 
 
-def is_retryable_model_request_error(exc: Exception) -> bool:
-    """识别请求建立阶段可直接重试的临时模型服务错误。"""
+# 与 errors.map_openai_exception 的消息正则保持同一提取口径：
+# SDK/网关异常可能把状态码放在 exc.status_code、exc.response.status_code
+# 或仅出现在消息文本中（如 "Error code: 400 - Bad Request"）。
+_HTTP_STATUS_CODE_RE = re.compile(r"\b([45]\d{2})\b")
 
-    status_code = getattr(exc, "status_code", None)
-    if isinstance(status_code, int) and status_code in {408, 409, 500, 502, 503, 504}:
+
+def _http_status_code_of(exc: Exception) -> int | None:
+    """从 SDK/网关异常中提取 HTTP 状态码（与 errors 模块口径一致）。"""
+
+    for value in (
+        getattr(exc, "status_code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        if isinstance(value, int) and 400 <= value <= 599:
+            return value
+    match = _HTTP_STATUS_CODE_RE.search(str(exc))
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def is_retryable_model_request_error(exc: Exception) -> bool:
+    """识别请求建立阶段可直接重试的模型服务错误。
+
+    400 也视为可重试：部分上游网关用 400 表达临时性拒绝（例如不认
+    prompt_cache_key 参数、参数协商或并发抖动），重试可恢复；真正的
+    请求缺陷会在重试耗尽后随最终错误一并暴露。
+    """
+
+    status_code = _http_status_code_of(exc)
+    if status_code is not None and status_code in {400, 408, 409, 429, 500, 502, 503, 504}:
         return True
 
     message = str(exc).lower()
@@ -886,7 +913,10 @@ def assistant_tool_call_message(
                 "id": tool_call.id,
                 "type": "function",
                 "function": {
-                    "name": tool_call.function_name or function_name_for_tool(tool_call.name),
+                    "name": _assistant_tool_call_name(
+                        tool_call,
+                        function_name_for_tool=function_name_for_tool,
+                    ),
                     "arguments": json.dumps(tool_call.arguments, ensure_ascii=False),
                 },
             }
@@ -895,18 +925,127 @@ def assistant_tool_call_message(
     return message
 
 
+def _assistant_tool_call_name(
+    tool_call: ToolCall,
+    *,
+    function_name_for_tool: Callable[[str], str],
+) -> str:
+    """生成历史消息中的函数名：与模型当前看到的 tools 声明保持一致。
+
+    默认保留模型原始回显名（动态加载工具按真实工具名注册，例如 MCP 的
+    ``server.tool``，不能哈希化）。仅当回显名是旧式哈希函数名的变体时
+    （如 ``tool_search_e960b0242f`` 而非 ``search_tools``），才按 digest
+    反查并把历史消息规范化为当前注册名，避免截断哈希名污染会话历史。
+    """
+
+    raw = tool_call.function_name or ""
+    if raw and resolve_tool_name_from_hashed_function_name(raw, [tool_call.name]):
+        return function_name_for_tool(tool_call.name) or raw
+    return raw or function_name_for_tool(tool_call.name)
+
+
+def compact_tool_description(value: str) -> str:
+    """折叠工具说明中的空白（多行拼接的换行与缩进归并为单空格）。
+
+    顶层 ``tools`` 注册所有工具后，每次请求都会携带全部声明；空白折叠
+    保证多行拼接的描述在 JSON 载荷中紧凑呈现，但不再限制长度，完整
+    描述原样发送给 Provider。
+    """
+
+    return " ".join(str(value or "").split())
+
+
+def compact_tool_schema(tool: ToolDefinition) -> dict[str, Any]:
+    """删除长描述和默认值，只保留模型填写参数所需的 Schema 信息。
+
+    顶层注册场景下 Schema 随每次请求全量发送，默认值/示例描述会被截断
+    浪费；压缩后只保留类型、必填项、枚举与边界约束。Host 分发前仍用
+    工具目录完整 Schema 二次校验，压缩声明不是安全边界。
+    """
+
+    try:
+        schema = tool_parameters_schema(tool)
+    except Exception:
+        schema = {"type": "object", "properties": {}}
+    return _compact_schema_node(schema, depth=0)
+
+
+def _compact_schema_node(value: Any, *, depth: int) -> Any:
+    if depth > 6:
+        return {"type": "object"}
+    if isinstance(value, Mapping):
+        allowed = {
+            "type",
+            "properties",
+            "required",
+            "additionalProperties",
+            "items",
+            "enum",
+            "const",
+            "oneOf",
+            "anyOf",
+            "allOf",
+            "minLength",
+            "maxLength",
+            "minimum",
+            "maximum",
+            "minItems",
+            "maxItems",
+            "minProperties",
+            "maxProperties",
+            "pattern",
+        }
+        compacted: dict[str, Any] = {}
+        for key, child in value.items():
+            if key not in allowed:
+                continue
+            if key == "enum":
+                # enum 卸载压缩：取值集合是语义契约，浅拷贝后逐项原样保留，
+                # 不递归、不截断、不改写。历史教训：通用列表截断 [:20] 曾把
+                # git action 52 个枚举砍成 20 个，导致 status/log 等合法取值
+                # 被误判为 invalid_arguments。枚举本身短小，全量发送的 token
+                # 增量可忽略。
+                compacted[str(key)] = (
+                    list(child) if isinstance(child, list) else child
+                )
+            elif key == "properties" and isinstance(child, Mapping):
+                compacted["properties"] = {
+                    str(property_name): _compact_schema_node(
+                        property_schema,
+                        depth=depth + 1,
+                    )
+                    for property_name, property_schema in child.items()
+                }
+            else:
+                compacted[str(key)] = _compact_schema_node(child, depth=depth + 1)
+        return compacted
+    if isinstance(value, list):
+        # 不再对列表做任何长度截断：schema 中的列表字段（enum/required/
+        # items/oneOf/anyOf/allOf）要么是语义契约要么是单元素描述，截断
+        # 任何一项都可能改变契约语义（如 enum 被砍掉合法取值）。
+        return [_compact_schema_node(item, depth=depth + 1) for item in value]
+    return value
+
+
 def chat_completion_tools(
     tools: Iterable[ToolDefinition],
     *,
     function_name_for_tool: Callable[[str], str],
 ) -> list[dict[str, Any]]:
+    """把 Host 工具声明转成 Chat Completions ``tools`` 数组。
+
+    顶层注册所有工具：每个工具都带完整字段（name、description、parameters），
+    但 description 折叠空白后原样发送、parameters 使用压缩 Schema，避免
+    长描述和默认值/示例在每次请求中重复发送。
+    """
+
     return [
         {
             "type": "function",
             "function": {
                 "name": function_name_for_tool(tool.name),
-                "description": tool.description,
-                "parameters": tool_parameters_schema(tool),
+                "description": compact_tool_description(tool.description),
+                "parameters": compact_tool_schema(tool),
             },
         }
         for tool in tools
@@ -914,10 +1053,48 @@ def chat_completion_tools(
 
 
 def function_name_for_tool(tool_name: str) -> str:
+    """把 Host 工具名映射为注册给 Provider 的函数名。
+
+    方案 A（去哈希化）：对本身符合函数名规范的名称（字母/数字/下划线/连字符，
+    长度 <=64）直接返回原名，让模型看到的函数名就是真实工具名（search_tools
+    就是 search_tools），避免长哈希名被模型回显时截断/改写导致反查失败。
+    仅对含非法字符的名称（如 MCP 的 "server.tool"）做归一化，并追加短哈希
+    兜底保证网关侧合法且不与其他工具名冲突。
+    """
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tool_name):
+        return tool_name
     readable = re.sub(r"[^A-Za-z0-9_]+", "_", tool_name).strip("_").lower()
     readable = readable or "tool"
     digest = hashlib.sha1(tool_name.encode("utf-8")).hexdigest()[:10]
     return f"tool_{readable[:40]}_{digest}"
+
+
+# 哈希函数名形态：tool_<可读段>_<sha1 前 10 位>。可读段最长 40 字符，
+# digest 恒为 10 位十六进制。用于从模型回传的（可能被截断/改写的）哈希
+# 函数名中按 digest 反查真实工具名。
+_HASHED_FUNCTION_NAME_RE = re.compile(r"^tool_[a-z0-9_]{1,40}_([0-9a-f]{10})$")
+
+
+def resolve_tool_name_from_hashed_function_name(
+    function_name: str,
+    tool_names: Iterable[str],
+) -> str | None:
+    """从形如 ``tool_<可读段>_<digest>`` 的函数名中按 digest 反查真实工具名。
+
+    模型回显哈希函数名时可能截断可读段（例如把 ``tool_search_tools_e960b0242f``
+    回显成 ``tool_search_e960b0242f``），但 digest 段（SHA-1 前 10 位）通常保留，
+    据此反查可容忍这类改写。返回 None 表示不是哈希函数名或未命中任何工具。
+    """
+
+    match = _HASHED_FUNCTION_NAME_RE.fullmatch(function_name)
+    if not match:
+        return None
+    digest = match.group(1)
+    for tool_name in tool_names:
+        if hashlib.sha1(tool_name.encode("utf-8")).hexdigest()[:10] == digest:
+            return tool_name
+    return None
 
 
 def tool_name_from_function_name(
@@ -929,6 +1106,11 @@ def tool_name_from_function_name(
     for tool_name in tool_names:
         if function_name_for_tool_callback(tool_name) == function_name:
             return tool_name
+    # 方案 D 兜底：精确匹配失败后，尝试按哈希函数名的 digest 段宽容反查，
+    # 容忍模型回显被截断/改写的旧式哈希函数名（如 tool_search_e960b0242f）。
+    resolved = resolve_tool_name_from_hashed_function_name(function_name, tool_names)
+    if resolved is not None:
+        return resolved
     return function_name
 
 

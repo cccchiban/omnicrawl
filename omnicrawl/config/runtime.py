@@ -148,7 +148,7 @@ def default_subagents_path() -> Path:
 
 
 def resolve_config_path(config_path: str | Path | None = None) -> Path:
-    """按显式路径、环境变量、工作区、用户目录和开发源码回退解析。"""
+    """显式路径或对应环境变量优先；否则始终使用用户目录配置。"""
 
     if config_path is not None:
         path = Path(config_path).expanduser()
@@ -164,7 +164,7 @@ def resolve_config_path(config_path: str | Path | None = None) -> Path:
 
 
 def resolve_models_path(models_path: str | Path | None = None) -> Path:
-    """按显式路径、环境变量、工作区、用户目录和开发源码回退解析。"""
+    """显式路径或对应环境变量优先；否则始终使用用户目录配置。"""
 
     if models_path is not None:
         path = Path(models_path).expanduser()
@@ -180,7 +180,7 @@ def resolve_models_path(models_path: str | Path | None = None) -> Path:
 
 
 def resolve_subagents_path(subagents_path: str | Path | None = None) -> Path:
-    """按显式路径、环境变量、工作区、用户目录和开发源码回退解析。"""
+    """显式路径或对应环境变量优先；否则始终使用用户目录配置。"""
 
     if subagents_path is not None:
         path = Path(subagents_path).expanduser()
@@ -196,27 +196,9 @@ def resolve_subagents_path(subagents_path: str | Path | None = None) -> Path:
 
 
 def _resolve_default_path(filename: str) -> Path:
-    """按用户目录、工作区、源码回退顺序查找默认配置。"""
+    """默认配置只使用用户目录 ``~/.OmniCrawl``，不回退工作区或源码目录。"""
 
-    user_path = user_config_dir() / filename
-    if user_path.is_file():
-        return user_path
-
-    for legacy_dir in legacy_user_config_dirs():
-        legacy_path = legacy_dir / filename
-        if legacy_path.is_file():
-            return legacy_path
-
-    if _is_development_environment():
-        working_directory_path = Path.cwd() / filename
-        if working_directory_path.is_file():
-            return working_directory_path
-
-        source_path = project_root() / filename
-        if source_path.is_file():
-            return source_path
-
-    return user_path
+    return user_config_dir() / filename
 
 
 def resolve_config_write_path(config_path: str | Path | None = None) -> Path:
@@ -260,7 +242,7 @@ def resolve_subagents_write_path(subagents_path: str | Path | None = None) -> Pa
 
 
 def _is_development_environment() -> bool:
-    """仅在源码项目中启用源码配置回退，避免 Wheel 误读安装目录文件。"""
+    """历史兼容函数：已不再参与默认配置路径解析，仅保留供旧调用与测试引用。"""
 
     root = project_root()
     return (

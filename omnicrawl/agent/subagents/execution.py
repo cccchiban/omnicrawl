@@ -68,6 +68,9 @@ class SubAgentExecutionContext:
     worktree_session: Any | None = None
     workspace_root: str = ""
     isolation: str = "shared"
+    # 任务身份由 Coordinator 在准备任务时写入，供 worker 线程上报事件分组。
+    task_id: str = ""
+    batch_id: str = ""
 
 
 __all__ = [

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+import re
+import subprocess
+from pathlib import Path
+from typing import Any, Callable
 
 from ..config.approval import (
     APPROVAL_MODE_AUTO,
@@ -558,6 +561,243 @@ def handle_approval_command(agent: LocalToolAgent, command: str) -> str | None:
     return f"审批模式已切换为 {approval_mode_label(mode)}，并已同步到 {path}。"
 
 
+_REVIEW_TASK_DESCRIPTION = "评审当前代码变更"
+_REVIEW_DEFAULT_SCOPE = "工作区未提交改动（git diff）"
+
+
+def _check_review_preconditions(workspace_root: Path, scope: str) -> str | None:
+    """评审前置检查：返回错误消息（应阻止评审），可评审时返回 None。
+
+    覆盖两类“无意义评审”：工作区不是 git 仓库、工作区没有可评审的改动
+    （无提交 + 无未提交改动）。不做精确范围校验——非法范围由子 Agent 的
+    git 工具在收集 diff 时给出明确错误。
+    """
+
+    root = Path(workspace_root).resolve()
+
+    def run_git(args: list[str]) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(
+                ["git", "-c", "color.ui=never", "--no-pager", *args],
+                cwd=str(root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+        except FileNotFoundError:
+            return None
+        except subprocess.TimeoutExpired:
+            return None
+
+    is_worktree = run_git(["rev-parse", "--is-inside-work-tree"])
+    if is_worktree is None:
+        return "未找到 git 可执行文件，请确认 Git 已安装。"
+    if is_worktree.returncode != 0 or is_worktree.stdout.decode("utf-8", "replace").strip() != "true":
+        return "当前工作区不是 git 仓库，无法评审。"
+
+    if scope:
+        # 指定范围评审：至少需要仓库存在提交。
+        head = run_git(["rev-parse", "--verify", "HEAD"])
+        if head is None:
+            return "未找到 git 可执行文件，请确认 Git 已安装。"
+        if head.returncode != 0:
+            return "当前仓库还没有任何提交，无法按指定范围评审。"
+        return None
+
+    # 默认范围（工作区未提交改动）：存在未提交改动或未跟踪文件才值得评审。
+    status = run_git(["status", "--porcelain"])
+    if status is None:
+        return "未找到 git 可执行文件，请确认 Git 已安装。"
+    if status.returncode != 0:
+        return "无法读取 git 工作区状态，无法评审。"
+    if not status.stdout.strip():
+        return "工作区没有未提交改动，无需评审。"
+    return None
+
+
+def _build_review_task_prompt(scope: str) -> str:
+    """构造评审子 Agent 的任务 prompt：只描述评审范围，评审标准由定义注入。"""
+
+    if scope:
+        scope_text = (
+            f"评审范围由 /review 参数指定：`{scope}`。"
+            "请先使用 git 工具确认当前分支与提交历史，再用 `git diff <范围>` 收集改动。"
+        )
+    else:
+        scope_text = (
+            f"评审范围：{_REVIEW_DEFAULT_SCOPE}。"
+            "请先用 git status 查看变更文件，再用 `git diff`（含 `git diff --cached`）收集改动。"
+        )
+    return (
+        f"请评审当前工作区的代码变更。\n{scope_text}\n\n"
+        "执行步骤：\n"
+        "1. 用 git 工具收集 diff（status/diff/log/show 等只读子命令）；\n"
+        "2. 必要时用 read / grep 阅读受影响的文件与上下文；\n"
+        "3. 严格按系统提示中的评审标准独立评审。\n\n"
+        "输出要求：只输出系统提示中 OUTPUT FORMAT 规定的 JSON 审查结果本身，"
+        "不要输出 Markdown 代码块、XML 或任何额外解释。"
+    )
+
+
+def _extract_review_json(text: str) -> dict[str, Any] | None:
+    """从子 Agent 输出中提取评审 JSON 对象；带围栏/前后缀时宽容解析。"""
+
+    stripped = text.strip()
+    if not stripped:
+        return None
+    candidates: list[str] = []
+    # 1) 整体直接解析
+    candidates.append(stripped)
+    # 2) 去掉 ```json ... ``` 围栏
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
+    if fenced:
+        candidates.append(fenced.group(1))
+    # 3) 取第一个 { 到最后一个 } 的子串
+    first = stripped.find("{")
+    last = stripped.rfind("}")
+    if first != -1 and last > first:
+        candidates.append(stripped[first:last + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _format_priority_tag(priority: Any) -> str:
+    """把 JSON 中的 priority 数值映射为 [P0]-[P3] 标签。"""
+
+    if priority is None:
+        return ""
+    try:
+        value = int(priority)
+    except (TypeError, ValueError):
+        return ""
+    if value < 0 or value > 3:
+        return ""
+    return f"[P{value}] "
+
+
+def format_review_report(review_text: str) -> str:
+    """把评审子 Agent 返回的 JSON 渲染为可读报告；解析失败时原样展示。"""
+
+    data = _extract_review_json(review_text)
+    if data is None:
+        return review_text.strip() or "（评审子 Agent 未返回内容。）"
+
+    correctness = str(data.get("overall_correctness") or "")
+    explanation = str(data.get("overall_explanation") or "").strip()
+    confidence = data.get("overall_confidence_score")
+
+    correctness_norm = correctness.casefold()
+    if "incorrect" in correctness_norm:
+        verdict = "patch is incorrect ❌"
+    elif "correct" in correctness_norm:
+        verdict = "patch is correct ✅"
+    else:
+        verdict = "无法判定 ⚠️（overall_correctness 缺失或值无效）"
+    confidence_text = (
+        f"（置信度 {confidence:g}）"
+        if isinstance(confidence, (int, float))
+        else ""
+    )
+    lines = ["## 代码评审结果", "", f"**总体结论**：{verdict}{confidence_text}"]
+    if explanation:
+        lines.extend(["", explanation])
+
+    findings = data.get("findings")
+    if not isinstance(findings, list):
+        lines.extend(["", "⚠️ 评审结果缺少有效的 findings 列表，无法展示问题明细。"])
+        return "\n".join(lines)
+    if not findings:
+        lines.extend(["", "未发现问题。"])
+        return "\n".join(lines)
+
+    lines.extend(["", f"**发现问题 {len(findings)} 项**：", ""])
+    for index, finding in enumerate(findings, start=1):
+        if not isinstance(finding, dict):
+            continue
+        title = str(finding.get("title") or f"问题 {index}")
+        tag = _format_priority_tag(finding.get("priority"))
+        finding_confidence = finding.get("confidence_score")
+        confidence_suffix = (
+            f"（置信度 {finding_confidence:g}）"
+            if isinstance(finding_confidence, (int, float))
+            else ""
+        )
+        lines.append(f"{index}. **{tag}{title}**{confidence_suffix}")
+        location = finding.get("code_location")
+        if isinstance(location, dict):
+            path = str(location.get("absolute_file_path") or "")
+            line_range = location.get("line_range")
+            start = None
+            end = None
+            if isinstance(line_range, dict):
+                start = line_range.get("start")
+                end = line_range.get("end")
+            if path:
+                if isinstance(start, int) and isinstance(end, int):
+                    lines.append(f"   - 位置：`{path}` 行 {start}-{end}")
+                else:
+                    lines.append(f"   - 位置：`{path}`")
+        body = str(finding.get("body") or "").strip()
+        if body:
+            indented = "\n".join(f"  {line}" for line in body.splitlines())
+            lines.extend(["", indented])
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def handle_review_command(
+    agent: LocalToolAgent,
+    command: str,
+    on_subagent_event: Callable[[str, dict[str, Any]], None] | None = None,
+) -> str | None:
+    """处理 /review 命令；返回 None 表示不是评审命令。
+
+    主线程只负责转发：把评审范围交给 review 子 Agent，子 Agent 用 git 工具
+    收集 diff 并按结构化 JSON 输出审查结果；主线程随后把 JSON 渲染为可读报告。
+    ``on_subagent_event`` 可选，透传给 :meth:`run_subagent_task` 供 UI 显示
+    审查进度（子 Agent 生命周期事件）。
+    """
+
+    text = command.strip()
+    normalized = text.casefold()
+    if normalized != "/review" and not normalized.startswith("/review "):
+        return None
+
+    parts = text.split(None, 1)
+    scope = parts[1].strip() if len(parts) > 1 else ""
+
+    workspace_root = getattr(agent, "workspace_root", None)
+    if workspace_root is not None:
+        precheck_error = _check_review_preconditions(workspace_root, scope)
+        if precheck_error:
+            return precheck_error
+
+    try:
+        report = agent.run_subagent_task(
+            agent_type="review",
+            description=_REVIEW_TASK_DESCRIPTION,
+            prompt=_build_review_task_prompt(scope),
+            on_subagent_event=on_subagent_event,
+        )
+    except AgentError as exc:
+        return f"评审失败：{exc}"
+    rendered = format_review_report(report)
+    # 报告进父模型上下文：下一轮模型请求能看到报告并继续处理（如修复、提交）。
+    remember = getattr(agent, "remember_review_report", None)
+    if callable(remember):
+        try:
+            remember(rendered)
+        except Exception:  # noqa: BLE001 - 注入失败不影响报告展示
+            pass
+    return rendered
+
+
 def handle_reasoning_command(agent: LocalToolAgent, command: str) -> str | None:
     """处理推理强度查看与切换命令；返回 None 表示不是推理强度命令。"""
 
@@ -604,6 +844,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/quit",
         "/workspace",
         "/settings",
+        "/review",
         "/reasoning",
         "/skills",
         "/memory:clean",
@@ -645,6 +886,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
     builtin_descriptions = {
         "/workspace": "切换当前 Agent 的工作区目录。",
         "/new": "开启一个空白会话。",
+        "/review": "派生评审子 Agent（完整 git 权限 + 自动批准）收集 diff 并按结构化 JSON 输出审查结果；可选 git 范围参数（如 /review HEAD~3）。",
         "/quit": "退出当前 TUI，不关闭宿主窗口。",
         "/settings": "打开中文设置面板，修改运行时开关并立即保存。",
         "/reasoning": "查看或切换推理强度。",
@@ -678,6 +920,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/history",
         "/rename",
         "/workspace",
+        "/review",
     }
 
     options: list[dict[str, str]] = []

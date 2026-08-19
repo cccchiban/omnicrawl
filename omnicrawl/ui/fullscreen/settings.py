@@ -53,7 +53,7 @@ _REASONING_LABELS = {
     "xhigh": "超高",
     "max": "最大",
 }
-_APPROVAL_OPTIONS = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW)
+_APPROVAL_OPTIONS = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_REVIEW, APPROVAL_MODE_AUTO)
 _CONTEXT_WINDOW_OPTIONS_K = (32, 64, 128, 256, 512, 1024, 2048)
 # 上下文压缩阈值按当前上下文窗口的百分比设置，5% 为一个单位递进。
 _CONTEXT_COMPACTION_PERCENT_OPTIONS = tuple(range(5, 100, 5))
@@ -127,7 +127,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         height: 29;
         max-height: 90%;
         padding: 1 2;
-        border: solid $terminal-border-strong;
+        border: round $terminal-border-strong;
         background: $terminal-surface;
     }
     #settings-dialog.advanced {
@@ -136,7 +136,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     #settings-title {
         height: 1;
         margin-bottom: 1;
-        color: $terminal-green;
+        color: $terminal-white;
         text-style: bold;
     }
     #settings-list {
@@ -161,8 +161,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         color: $terminal-text-secondary;
     }
     .settings-row.selected {
-        color: $terminal-text;
-        background: $terminal-blue-soft;
+        color: $terminal-amber;
         text-style: bold;
     }
     .settings-row.compact {
@@ -170,12 +169,12 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
     }
     #settings-status {
         height: 2;
-        color: $terminal-blue;
+        color: $terminal-white;
         margin-top: 1;
     }
     #settings-help {
         height: 1;
-        color: $terminal-text-muted;
+        color: $terminal-white;
         margin-top: 1;
     }
     """)

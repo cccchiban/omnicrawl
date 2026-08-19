@@ -44,17 +44,17 @@ SHELL_TOOLS = ("bash", "powershell")
 RL_PERSONA = "You are a helpful software engineer assistant."
 
 # 首轮工具面受限说明（未晋升时追加到 system prompt 末尾）。
-# 让模型知道：首轮 search_tools 只会返回核心工具子集；调用任一可用工具后
-# 晋升，全部工具解锁；dev_router_status 可查看路由状态。
+# 让模型知道：首轮 Provider 顶层只注册核心工具子集；调用任一可用工具后
+# 晋升，全部工具注册并解锁；dev_router_status 可查看路由状态。
 _ROUTER_FIRST_TURN_GUIDANCE = (
-    "\n\nTask routing is active on this first turn: search_tools returns only a "
-    "core tool subset (read / replace_text / find / grep / shell). After you "
-    "successfully call any available tool, the full tool surface unlocks; "
-    "matched tools are loaded into the conversation and can then be called "
-    "natively by their real names. If a tool is missing from search results, "
-    "call an available core tool first, then search again. After the surface "
-    "unlocks, dev_router_status inspects routing state and dev_router_mode "
-    "overrides the session mode (spec / weak / mixed / react)."
+    "\n\nTask routing is active on this first turn: only a core tool subset "
+    "(read / replace_text / find / grep / shell) is registered at the Provider "
+    "top level. After you successfully call any available tool, the full tool "
+    "surface unlocks and all remaining tools are registered and callable "
+    "natively by their real names. If a needed tool is not yet registered, call "
+    "an available core tool first to unlock the full surface, then retry. After "
+    "the surface unlocks, dev_router_status inspects routing state and "
+    "dev_router_mode overrides the session mode (spec / weak / mixed / react)."
 )
 
 
@@ -171,8 +171,8 @@ class RouterRuntime:
           协议必须保留；DSH minimal 的 46 字符纯净面在本 harness 上会丢失这些
           硬约束，因此采用保守增强而不是完全替换）。
         - spec：分类 persona 置顶，其余模板原样保留。
-        - 首轮工具面受限说明在 persona 之后追加，让模型知道首轮只能通过
-          search_tools 找到核心子集、调用任一可用工具后晋升放开全部工具。
+        - 首轮工具面受限说明在 persona 之后追加，让模型知道首轮顶层只注册
+          核心工具子集、调用任一可用工具后晋升放开全部工具。
         """
 
         base = (template or "").strip()

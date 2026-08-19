@@ -58,13 +58,13 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
         height: 38;
         max-height: 94%;
         padding: 1 2;
-        border: solid $terminal-blue;
+        border: round $terminal-white;
         background: $terminal-surface;
     }
     #channel-editor-title {
         height: 1;
         margin-bottom: 1;
-        color: $terminal-green;
+        color: $terminal-white;
         text-style: bold;
     }
     #channel-editor-form {
@@ -84,7 +84,7 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
     }
     #channel-editor-status {
         height: 2;
-        color: $terminal-amber;
+        color: $terminal-white;
     }
     """ + terminal_select_css())
 
@@ -265,18 +265,18 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         height: 32;
         max-height: 92%;
         padding: 1 2;
-        border: solid $terminal-border-strong;
+        border: round $terminal-border-strong;
         background: $terminal-surface;
     }
     #channel-manager-title {
         height: 1;
         margin-bottom: 1;
-        color: $terminal-green;
+        color: $terminal-white;
         text-style: bold;
     }
     #channel-manager-list {
         height: 1fr;
-        border: solid $terminal-border;
+        border: round $terminal-border;
         background: $terminal-background;
         padding: 0 1;
     }
@@ -286,18 +286,17 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         color: $terminal-text-secondary;
     }
     .channel-row.selected {
-        color: $terminal-text;
-        background: $terminal-blue-soft;
+        color: $terminal-amber;
         text-style: bold;
     }
     #channel-manager-status {
         height: 2;
         margin-top: 1;
-        color: $terminal-blue;
+        color: $terminal-white;
     }
     #channel-manager-help {
         height: 2;
-        color: $terminal-text-muted;
+        color: $terminal-white;
     }
     """)
 

@@ -1,9 +1,9 @@
-"""Provider 固定工具与 Host 侧动态工具目录。
+"""Provider 工具面与 Host 侧工具目录。
 
-Provider 顶层只注册 ``search_tools``；搜索命中后 Host 把真实工具完整声明以
-system 消息的 ``tools`` 字段追加到对话，模型随后原生调用。真实 ToolDefinition、
-参数 Schema、执行器和审批策略仍由 Host 持有；本模块只负责发现、完整声明、
-分发前校验以及把 Host 目录转换成固定的 Provider 工具面。
+Provider 顶层注册当前 Agent 的所有可见工具（压缩描述与紧凑 Schema），模型
+直接原生调用真实工具名。真实 ToolDefinition、参数 Schema、执行器和审批策略
+仍由 Host 持有；本模块负责目录快照、工具搜索（内部能力）、声明构建、分发
+前校验以及把 Host 目录转换成 Provider 工具面。
 """
 
 from __future__ import annotations
@@ -16,14 +16,16 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import Any, Mapping, Sequence
 
-from .llm_protocol import tool_parameters_schema
+from .llm_protocol import (
+    compact_tool_description,
+    compact_tool_schema,
+    tool_parameters_schema,
+)
 from .tools import TOOL_NAME_ALIASES, normalize_tool_call, normalize_tool_name
 from .types import ToolCall, ToolDefinition, ToolResult
 
-SEARCH_TOOLS_NAME = "search_tools"
 INVOKE_TOOL_NAME = "invoke_tool"  # 保留为兼容旧调用/测试；不再注册到 Provider 工具面。
-PROVIDER_TOOL_NAMES = (SEARCH_TOOLS_NAME,)
-# search_tools 展示通道（终端/转录）使用分节 TOML，行数开销比紧凑 JSON 大，上限独立放宽。
+# 工具搜索展示通道（终端/转录）使用分节 TOML，行数开销比紧凑 JSON 大，上限独立放宽。
 _SEARCH_DISPLAY_MAX_CHARS = 12000
 
 # 英文查询中的虚词：命中这些词不能代表工具能力，分词阶段直接丢弃。
@@ -94,48 +96,6 @@ def _schema_property_names(schema_json: str) -> frozenset[str]:
         return frozenset()
     return frozenset(str(key) for key in properties)
 
-_SEARCH_TOOLS_SCHEMA = json.dumps(
-    {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "minLength": 1,
-                "description": "工具名称、能力或任务目标。",
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 6,
-                "default": 4,
-            },
-        },
-        "required": ["query"],
-        "additionalProperties": False,
-    },
-    ensure_ascii=False,
-)
-_INVOKE_TOOL_SCHEMA = json.dumps(
-    {
-        "type": "object",
-        "properties": {
-            "tool_name": {
-                "type": "string",
-                "minLength": 1,
-                "description": "search_tools 返回的真实工具名。",
-            },
-            "arguments": {
-                "type": "object",
-                "additionalProperties": True,
-                "description": "严格按照 search_tools 返回的工具契约填写。",
-            },
-        },
-        "required": ["tool_name", "arguments"],
-        "additionalProperties": False,
-    },
-    ensure_ascii=False,
-)
-
 
 @dataclass(frozen=True)
 class PreparedToolInvocation:
@@ -189,7 +149,7 @@ class HostToolCatalog:
         if not isinstance(query, str) or not query.strip():
             return _error_result(
                 "invalid_arguments",
-                "search_tools.query 必须是非空字符串。",
+                "query 必须是非空字符串。",
                 retryable=True,
             )
 
@@ -201,7 +161,7 @@ class HostToolCatalog:
         for tool in selected:
             entry: dict[str, Any] = {
                 "name": tool.name,
-                "description": _short_text(tool.description, 160),
+                "description": compact_tool_description(tool.description),
                 "parameters": compact_tool_schema(tool),
             }
             if tool.requires_confirmation:
@@ -223,9 +183,10 @@ class HostToolCatalog:
         self,
         arguments: Mapping[str, Any] | Any,
     ) -> list[dict[str, Any]]:
-        """返回与 search 同一命中集合的完整工具声明，供 Host 动态加载。
+        """返回与 search 同一命中集合的完整工具声明。
 
-        搜索失败（query 非法）时返回空列表，调用方不追加任何声明。
+        供内部兼容路径与测试使用；生产 Agent 已改为顶层注册所有工具，不再
+        依赖搜索后动态注入。
         """
 
         if not isinstance(arguments, Mapping):
@@ -243,7 +204,7 @@ class HostToolCatalog:
         query_text: str,
         limit: int,
     ) -> tuple[list[ToolDefinition], list[ToolDefinition]]:
-        """返回 (全部命中, 截断后的选中集合)，供 search 与动态加载共用。"""
+        """返回 (全部命中, 截断后的选中集合)，供 search 与声明构建共用。"""
 
         ranked: list[tuple[int, str, ToolDefinition]] = []
         for name, tool in self._tools.items():
@@ -412,59 +373,56 @@ class HostToolCatalog:
 
 
 def build_tool_declaration(tool: ToolDefinition) -> dict[str, Any]:
-    """构造动态加载用的完整 OpenAI 风格工具声明。
+    """构造动态加载兼容用的 OpenAI 风格工具声明。
 
-    与顶层 ``tools`` 声明格式完全一致，使用真实工具名（而不是 Provider 侧的
-    哈希函数名），让模型在工具被加载后直接原生调用 ``read`` 这类 Host 工具名。
+    保留供内部兼容路径与测试使用；生产 Agent 顶层已注册全部工具，无需动态
+    注入。描述与参数契约采用与搜索候选一致的紧凑版本（描述折叠空白、
+    Schema 删除长描述和默认值），避免长描述和示例值重复注入上下文。
+    Host 分发前仍用工具目录的完整 Schema 二次校验，压缩声明不是安全边界。
     """
 
     return {
         "type": "function",
         "function": {
             "name": tool.name,
-            "description": tool.description,
-            "parameters": tool_parameters_schema(tool),
+            "description": compact_tool_description(tool.description),
+            "parameters": compact_tool_schema(tool),
         },
     }
 
 
 def build_tool_declarations(tools: Iterable[ToolDefinition]) -> list[dict[str, Any]]:
-    """批量构造动态加载声明；调用方负责按已加载集合去重。"""
+    """批量构造声明；调用方负责按已加载集合去重。"""
 
     return [build_tool_declaration(tool) for tool in tools]
 
 
 def build_provider_tools(catalog: HostToolCatalog) -> dict[str, ToolDefinition]:
-    """构建固定的 Provider 工具面，真实工具不会出现在返回值中。
+    """构建 Provider 顶层工具面：注册目录中所有可见工具。
 
-    动态加载工具：顶层只保留 ``search_tools``。搜索命中后 Host 会把命中
-    工具的完整声明以 system 消息的 ``tools`` 字段追加到对话末尾，模型随后
-    原生调用这些真实工具，不再经过 ``invoke_tool`` 黑盒。
+    不再注册 ``search_tools`` 元工具：所有工具直接以真实工具名注册到顶层
+    ``tools``，模型原生调用，Host 按完整目录再次校验参数、走审批并执行。
+    描述折叠空白后原样发送、Schema 使用紧凑版本，控制每次请求携带的
+    声明体积。执行器 ``run`` 原样保留，分发时直接可用。
     """
 
-    return {
-        SEARCH_TOOLS_NAME: ToolDefinition(
-            name=SEARCH_TOOLS_NAME,
-            description=(
-                "搜索当前 Agent 可用的工具目录。搜索命中后，Host 会自动把命中工具的完整声明"
-                "以 system 消息的 tools 字段追加到对话末尾；之后直接按真实工具名原生调用。"
+    provider: dict[str, ToolDefinition] = {}
+    for name, tool in catalog.tools.items():
+        if not catalog._is_visible(name):
+            continue
+        provider[name] = ToolDefinition(
+            name=tool.name,
+            description=compact_tool_description(tool.description),
+            argument_schema=json.dumps(
+                compact_tool_schema(tool),
+                ensure_ascii=False,
+                separators=(",", ":"),
             ),
-            argument_schema=_SEARCH_TOOLS_SCHEMA,
-            requires_confirmation=False,
-            run=catalog.search,
-            model_output_is_bounded=True,
-        ),
-    }
-
-
-def compact_tool_schema(tool: ToolDefinition) -> dict[str, Any]:
-    """删除长描述和默认值，只保留模型填写参数所需的 Schema 信息。"""
-
-    try:
-        schema = tool_parameters_schema(tool)
-    except Exception:
-        schema = {"type": "object", "properties": {}}
-    return _compact_schema_node(schema, depth=0)
+            requires_confirmation=tool.requires_confirmation,
+            run=tool.run,
+            model_output_is_bounded=tool.model_output_is_bounded,
+        )
+    return provider
 
 
 def validate_tool_arguments(
@@ -512,48 +470,6 @@ def public_invoke_arguments(arguments: Mapping[str, Any] | Any) -> dict[str, Any
     else:
         result["arguments_valid"] = False
     return result
-
-
-def _compact_schema_node(value: Any, *, depth: int) -> Any:
-    if depth > 6:
-        return {"type": "object"}
-    if isinstance(value, Mapping):
-        allowed = {
-            "type",
-            "properties",
-            "required",
-            "additionalProperties",
-            "items",
-            "enum",
-            "const",
-            "oneOf",
-            "anyOf",
-            "allOf",
-            "minLength",
-            "maxLength",
-            "minimum",
-            "maximum",
-            "minItems",
-            "maxItems",
-            "minProperties",
-            "maxProperties",
-            "pattern",
-        }
-        return {
-            str(key): (
-                {
-                    str(property_name): _compact_schema_node(property_schema, depth=depth + 1)
-                    for property_name, property_schema in child.items()
-                }
-                if key == "properties" and isinstance(child, Mapping)
-                else _compact_schema_node(child, depth=depth + 1)
-            )
-            for key, child in value.items()
-            if key in allowed
-        }
-    if isinstance(value, list):
-        return [_compact_schema_node(item, depth=depth + 1) for item in value[:20]]
-    return value
 
 
 def _validate_schema_node(
@@ -680,17 +596,6 @@ def _validate_number_bound(
             issues.append({"path": path, "message": f"{message_prefix} {bound}。"})
         elif key == "maximum" and comparable > bound:
             issues.append({"path": path, "message": f"{message_prefix} {bound}。"})
-
-
-def _short_text(value: str, limit: int) -> str:
-    """折叠说明中的空白，并把省略号计入长度上限。"""
-
-    text = " ".join(str(value or "").split())
-    if len(text) <= limit:
-        return text
-    if limit <= 1:
-        return "…"[:limit]
-    return text[: limit - 1].rstrip() + "…"
 
 
 def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
@@ -845,8 +750,6 @@ __all__ = [
     "HostToolCatalog",
     "INVOKE_TOOL_NAME",
     "PreparedToolInvocation",
-    "PROVIDER_TOOL_NAMES",
-    "SEARCH_TOOLS_NAME",
     "build_provider_tools",
     "build_tool_declaration",
     "build_tool_declarations",

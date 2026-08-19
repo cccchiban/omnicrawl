@@ -54,7 +54,11 @@ enabled = false
 models = []
 
 [approval]
-mode = "manual"
+mode = "review"
+# 自动审查使用的独立模型（可选）：留空时沿用 [llm] active_model。
+# 审查请求与主对话完全隔离（不携带主对话上下文），独立模型不影响主对话成本，
+# 且主模型被提示词注入时也不影响审查独立性；建议指定更便宜/更严格的模型。
+review_model = ""
 
 # TUI /settings 可即时修改并写回这些功能总开关。
 [memory]

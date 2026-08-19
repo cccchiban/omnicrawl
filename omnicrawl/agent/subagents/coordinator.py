@@ -23,6 +23,7 @@ from .execution import SubAgentExecutionContext
 from .read_only_commands import (
     READ_ONLY_COMMAND_TOOL_NAMES,
     wrap_read_only_command_tool,
+    wrap_read_only_git_tool,
 )
 from .tasks import SubAgentTaskManager, SubAgentTaskSpec
 from .verify import VERIFY_COMMAND_TOOL_NAME
@@ -45,6 +46,19 @@ def _failure_root_exception(exc: BaseException) -> BaseException:
             break
         current = cause
     return current
+
+
+def _safe_error_detail(exc: BaseException) -> str:
+    """提取脱敏、有界的根因文本，供诊断展示而不泄露原始异常内容。
+
+    ModelError 的 message 是经过安全投影的稳定文案（不含原始异常文本）；
+    ``str(exc)`` 则可能包含 API Key、内部堆栈等敏感信息，不能直接使用。
+    因此仅当根因是 ModelError 时才取其脱敏 message，否则返回空串。
+    """
+
+    if isinstance(exc, ModelError):
+        return redact_sensitive_text(str(exc.message or "").strip())[:400]
+    return ""
 
 
 def _build_failure_diagnostics(
@@ -70,6 +84,9 @@ def _build_failure_diagnostics(
             diagnostic["provider"] = redact_sensitive_text(root.provider)
         if root.status_code is not None:
             diagnostic["status_code"] = int(root.status_code)
+        detail = _safe_error_detail(root)
+        if detail:
+            diagnostic["detail"] = detail
     elif isinstance(root, LLMError):
         diagnostic["category"] = "CONFIGURATION_ERROR"
     elif isinstance(root, Exception):
@@ -82,6 +99,9 @@ def _build_failure_diagnostics(
             diagnostic["provider"] = redact_sensitive_text(mapped.provider)
         if mapped.code.value != "UNKNOWN" and mapped.status_code is not None:
             diagnostic["status_code"] = int(mapped.status_code)
+        detail = _safe_error_detail(mapped)
+        if detail:
+            diagnostic["detail"] = detail
     if model:
         safe_selection = redact_sensitive_text(model)
         diagnostic["model"] = safe_selection
@@ -125,6 +145,11 @@ READ_ONLY_BLOCKED_TOOL_NAMES = frozenset(
         "session_memory_write",
         "user_memory_write",
         "subagent",
+        # 结构化 git 工具默认对只读子代理不可见；只读 git 查询仍可
+        # 通过被只读命令包装的 bash 完成（git 只读子命令白名单）。
+        # 定义在 tools 中显式声明 git 时（如 review），由 _read_only_tools
+        # 注入只读包装版本（仅放行只读档动作），不放开本地变更/高风险档。
+        "git",
     }
 )
 # verify profile 只能在既有只读能力上追加一个固定检查入口；绝不能把原始
@@ -133,7 +158,9 @@ VERIFY_TOOL_NAMES = READ_ONLY_TOOL_NAMES | frozenset({VERIFY_COMMAND_TOOL_NAME})
 # standard 写 Agent 允许的工具集合：只读 + 受限写入/命令；仍由 Host risk 策略逐次审批。
 STANDARD_WRITE_TOOL_NAMES = frozenset({"write_file", "replace_text", "bash", "powershell"})
 STANDARD_TOOL_NAMES = READ_ONLY_TOOL_NAMES | STANDARD_WRITE_TOOL_NAMES
-_TASK_FIELDS = {"description", "prompt", "subagent_type", "context", "model"}
+# 父代理不能再通过任务字段指定子代理模型：模型来源只有 subagents.toml
+# 角色配置，未配置时沿用父模型（由 Host 的 _freeze_subagent_model_snapshot 决定）。
+_TASK_FIELDS = {"description", "prompt", "subagent_type", "context"}
 _TOP_LEVEL_FIELDS = {
     "action",
     "tasks",
@@ -484,7 +511,15 @@ class SubAgentCoordinator:
         )
         return result
 
-    def run(self, arguments: dict) -> ToolResult:
+    def run(self, arguments: dict, *, keep_full_text: bool = False) -> ToolResult:
+        """执行一批 SubAgent 任务；``keep_full_text`` 时完成结果携带未截断全文。
+
+        ``keep_full_text`` 只影响本次调用返回的 per-task result 字典（新增
+        ``full_text`` 字段），不写入事件、Session 或后台任务存储；供主线程
+        ``run_subagent_task`` 等入口消费完整结果（如评审 JSON），父模型工具路径
+        与 spawn 路径不受影响（默认 False）。
+        """
+
         if not self.config.enabled:
             return self._top_level_error(
                 "SUBAGENT_DISABLED",
@@ -555,6 +590,7 @@ class SubAgentCoordinator:
                     batch=batch,
                     cancel_check=cancel_check,
                     max_concurrency=max_concurrency,
+                    keep_full_text=keep_full_text,
                 )
             else:
                 results = self._run_all(
@@ -562,6 +598,7 @@ class SubAgentCoordinator:
                     batch=batch,
                     cancel_check=cancel_check,
                     max_concurrency=max_concurrency,
+                    keep_full_text=keep_full_text,
                 )
 
             statuses = [item["status"] for item in results]
@@ -903,15 +940,15 @@ class SubAgentCoordinator:
                 return self._top_level_error("AGENT_DEFINITION_INVALID", unsupported)
 
             context = task.get("context", "fresh")
-            model = task.get("model", "")
             try:
                 # Fork 上下文和模型均必须在排队前冻结。特别是后台任务不能等到
                 # worker 启动后再读取父历史或当前模型，否则 /model、下一回合或
-                # 工作区状态变化会导致同一 task_id 使用不同输入。
+                # 工作区状态变化会导致同一 task_id 使用不同输入。模型选择完全由
+                # Host 决定（subagents.toml 角色配置 > 父模型），父代理不可指定。
                 execution_context = self._prepare_execution(
                     definition,
                     context,
-                    model,
+                    "",
                 )
             except Exception as exc:  # noqa: BLE001 - Host 准备错误需收敛为安全公开结果
                 LOGGER.warning(
@@ -922,10 +959,17 @@ class SubAgentCoordinator:
                     "SUBAGENT_MODEL_ERROR",
                     "子任务模型或 Fork 上下文无法准备。",
                 )
+            task_id = f"task-{uuid.uuid4().hex[:12]}"
+            # 把任务身份写入执行上下文，供 worker 线程上报对话/工具事件时分组。
+            execution_context = replace(
+                execution_context,
+                task_id=task_id,
+                batch_id=batch_id,
+            )
             prepared.append(
                 _PreparedTask(
                     batch_id=batch_id,
-                    task_id=f"task-{uuid.uuid4().hex[:12]}",
+                    task_id=task_id,
                     description=description,
                     prompt=prompt,
                     agent_type=agent_type,
@@ -943,6 +987,7 @@ class SubAgentCoordinator:
         batch: _ActiveBatch,
         cancel_check: Callable[[], None],
         max_concurrency: int,
+        keep_full_text: bool = False,
     ) -> list[dict]:
         results: list[dict | None] = [None] * len(tasks)
         executor = ThreadPoolExecutor(
@@ -958,6 +1003,7 @@ class SubAgentCoordinator:
                     self._execute_prepared_task,
                     task,
                     cancel_check,
+                    keep_full_text=keep_full_text,
                 )
                 self._track_future(batch, future, index)
                 pending.add(future)
@@ -988,6 +1034,7 @@ class SubAgentCoordinator:
         batch: _ActiveBatch,
         cancel_check: Callable[[], None],
         max_concurrency: int,
+        keep_full_text: bool = False,
     ) -> list[dict]:
         results: list[dict | None] = [None] * len(tasks)
         next_index = 0
@@ -1008,6 +1055,7 @@ class SubAgentCoordinator:
                     self._execute_prepared_task,
                     tasks[index],
                     cancel_check,
+                    keep_full_text=keep_full_text,
                 )
                 self._track_future(batch, future, index)
                 running[future] = index
@@ -1092,6 +1140,7 @@ class SubAgentCoordinator:
         cancel_check: Callable[[], None],
         *,
         emit_events: bool = True,
+        keep_full_text: bool = False,
     ) -> dict:
         try:
             cancel_check()
@@ -1196,6 +1245,9 @@ class SubAgentCoordinator:
             },
             "error": None,
         }
+        if keep_full_text:
+            # 仅本次调用返回未截断全文（脱敏后），供主线程入口消费完整结果。
+            result["full_text"] = redact_sensitive_text(execution.final_text.strip())
         if emit_events:
             self._emit_terminal_event(task, result)
         return result
@@ -1455,7 +1507,6 @@ class SubAgentCoordinator:
             prompt = task.get("prompt")
             agent_type = task.get("subagent_type")
             context = task.get("context", "fresh")
-            model = task.get("model", "")
             if not isinstance(description, str) or not description.strip():
                 return (
                     "AGENT_DEFINITION_INVALID",
@@ -1488,15 +1539,6 @@ class SubAgentCoordinator:
                 return (
                     "SUBAGENT_PERMISSION_DENIED",
                     "Fork SubAgent 默认关闭，请在配置中显式设置 allow_fork=true。",
-                )
-            if (
-                not isinstance(model, str)
-                or ("model" in task and not model.strip())
-                or (isinstance(model, str) and len(model.strip()) > 200)
-            ):
-                return (
-                    "AGENT_DEFINITION_INVALID",
-                    f"tasks[{index}].model 必须是 1 到 200 字符的字符串。",
                 )
         return None
 
@@ -1578,6 +1620,16 @@ class SubAgentCoordinator:
             filtered[name] = replace(filtered[name], requires_confirmation=False)
         for name in READ_ONLY_COMMAND_TOOL_NAMES.intersection(filtered):
             filtered[name] = wrap_read_only_command_tool(filtered[name])
+        # 定义显式声明 git 工具时（如 review）按 gitMode 注入：readonly（默认）
+        # 注入只读包装——只放行只读档动作（diff/log/show/status 等），本地变更/
+        # 高风险档一律拒绝；full 注入父 Host 的原始 git 工具（完整子命令权限），
+        # 其工具调用由 Host 在执行子任务时强制自动批准（见 core.py）。
+        if "git" in definition.tools and "git" in parent_tools:
+            git_tool = parent_tools["git"]
+            if getattr(definition, "git_mode", "readonly") == "full":
+                filtered["git"] = git_tool
+            else:
+                filtered["git"] = wrap_read_only_git_tool(git_tool)
         return filtered
 
     def _verify_tools(self, definition: AgentDefinition) -> dict[str, ToolDefinition]:

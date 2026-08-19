@@ -45,6 +45,7 @@ from ...commands.slash import (
     format_tool_confirmation,
     handle_approval_command,
     handle_reasoning_command,
+    handle_review_command,
     handle_session_command,
     handle_subagent_task_command,
 )
@@ -58,6 +59,7 @@ from .vision_settings import VisionSettingsResult, VisionSettingsScreen
 from .image_gen_settings import ImageGenSettingsResult, ImageGenSettingsScreen
 from .monitor import MonitorStateAdapter, format_monitor_display_batch
 from .theme import (
+    ACCENT_AMBER,
     ACCENT_BLUE,
     BORDER_MUTED,
     TERMINAL_THEME,
@@ -198,10 +200,20 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     SUB_TITLE = "Developer Workspace"
     CSS = terminal_css("""
     Screen { background: $terminal-canvas; color: $terminal-text; }
+    /* 全局细滚动条：所有可滚动容器（对话区、各设置页列表、编辑器表单等）
+       的滚动条宽度统一为 1 格，颜色统一为白色（菜单滚动条默认继承主题
+       secondary 蓝色，在此覆盖为白色；#conversation 的 ID 规则优先级更高，
+       保留其原有默认前景色与绿色 hover）。 */
+    * {
+        scrollbar-size: 1 1;
+        scrollbar-color: $terminal-white;
+        scrollbar-color-hover: $terminal-white;
+    }
     #shell { height: 1fr; background: $terminal-background; }
     /* 顶部两行紧凑靠左：内容按实际宽度紧排，剩余空间留白在行尾；
-       弹性占位把版本号推到整行尾部，行首与字段间用 │ 分隔。 */
-    #topbar { height: 1; padding: 0 1; background: $terminal-surface; align: left middle; }
+       弹性占位把版本号推到整行尾部，行首与字段间用 │ 分隔。
+       底部 HUD 整体左移对齐输入框左边框（左 margin 同为 2）。 */
+    #topbar { height: 1; margin: 0; padding: 0 1 0 0; background: $terminal-surface; align: left middle; }
     #context-summary {
         width: auto;
         min-width: 0;
@@ -220,12 +232,14 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         text-overflow: ellipsis;
         text-wrap: nowrap;
     }
-    /* 第二行展示 Token 明细。 */
+    /* 第二行展示 Token 明细。底部不再画横线分隔，行高 1 使内容直接
+        贴齐屏幕底缘（原第 2 行用于承载底边框，删线后留空会形成
+        1 行视觉空隙）；左侧与输入框左边框对齐（左 margin 同为 2）。 */
     #telemetry-row {
-        height: 2;
-        padding: 0 1;
+        height: 1;
+        margin: 0;
+        padding: 0 1 0 0;
         background: $terminal-panel;
-        border-bottom: solid $terminal-border;
     }
     #token-telemetry {
         width: auto;
@@ -268,15 +282,47 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         border-right: none;
     }
     #conversation > .message:last-child { margin-bottom: 0; }
-    .user-message { color: $terminal-text; background: $terminal-user-background; }
+    /* 用户消息：无背景色，左侧青色细竖条强调；正文显式白色，
+       user： 标签行保持灰色斜体。 */
+    .user-message { color: $terminal-white; border-left: solid $terminal-cyan; }
     .assistant-message { color: $terminal-text; }
     .status-message { color: $terminal-text-muted; }
     .subagent-tree-message { color: $terminal-text; padding-left: 2; }
-    .tool-message { color: $terminal-tool-text; padding-left: 2; background: $terminal-tool-background; }
+    /* 方案6：状态色点 + 缩进，最克制。工具卡不再使用边框/背景色块，
+       状态由标题行首的状态色点（●）表达；正文缩进由 ToolDisclosure
+       渲染时完成（BODY_INDENT）。工具背景透明，不再需要 .message 的
+       blank 上下边框空行撑高：无输出正文的工具只占标题一行，避免两个
+       无输出工具之间出现大段空白；行间距由 margin-bottom 正常提供。 */
+    .tool-message {
+        color: $terminal-tool-text;
+        padding: 0 1;
+        background: $terminal-tool-background;
+        border-top: none;
+        border-bottom: none;
+    }
     .tool-message:focus { color: $terminal-tool-text; background: $terminal-tool-focus-background; }
     .error-message { color: $terminal-red; }
-    .reasoning-message { color: $terminal-reasoning-text; padding: 0 1; background: $terminal-reasoning-background; }
-    #composer-wrap { height: 2; min-height: 2; background: $terminal-surface; border-top: solid $terminal-border-strong; padding: 0 1; }
+    /* 思考块：暗背景 + 灰前景 + 斜体（方案A）。终端字体无法逐控件切换，
+       斜体是最接近“换字体”的观感；CJK 字符在多数终端不渲染斜体，
+       主要作用于英文/代码部分。 */
+    .reasoning-message {
+        color: $terminal-reasoning-text;
+        padding: 0 1;
+        background: $terminal-reasoning-background;
+        text-style: italic;
+    }
+    /* 输入区用白色圆角框独立成卡：顶部 HUD 已移到下方，靠边框与下方
+        HUD 内容分隔开；圆角边框 + 左右 margin 让输入框成为悬浮卡片。 */
+    #composer-wrap {
+        height: 3;
+        min-height: 3;
+        /* 上侧留 1 行与对话区分隔，左右贴齐屏幕边缘（0 margin），
+           下侧贴紧底部 HUD（0 margin）。 */
+        margin: 1 0 0 0;
+        padding: 0 2;
+        background: $terminal-surface;
+        border: round $terminal-white;
+    }
     #command-menu {
         display: none;
         height: auto;
@@ -286,7 +332,21 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         color: $terminal-text-secondary;
         text-wrap: nowrap;
         text-overflow: ellipsis;
-        border-left: solid $terminal-blue;
+        border-left: solid $terminal-white;
+    }
+    /* 生成期间排队的用户消息预览条：位于命令菜单之下、输入框之上，
+       黄色左边条与命令菜单的白色区分；默认隐藏，有排队时由
+       _render_pending_queue 动态显示并按摘要行数撑开高度。 */
+    #pending-queue {
+        display: none;
+        height: auto;
+        max-height: 5;
+        padding: 0 1;
+        background: $terminal-surface;
+        color: $terminal-text-secondary;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+        border-left: solid $terminal-amber;
     }
     #composer {
         height: 1;
@@ -322,7 +382,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     # 顶部 t/s 遥测的刷新间隔（累计统计值变化后最多延迟一个周期显示）。
     TOKEN_RATE_REFRESH_INTERVAL_SECONDS = 0.5
     MONITOR_POLL_INTERVAL_SECONDS = 0.5
-    STATUS_SPINNER_INTERVAL_SECONDS = 0.16
+    STATUS_SPINNER_INTERVAL_SECONDS = 0.08
     STATUS_SPINNER_FRAMES = (
         "⠋",
         "⠙",
@@ -339,9 +399,15 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     STALE_INTERACTION_TICKS = 6
     MOUSE_WHEEL_SCROLL_LINES = 5.0
     COMMAND_MENU_VISIBLE_OPTIONS = 8
+    # 排队预览条最多同时展示的摘要行数（不含“⏳ N 条消息排队”标题行
+    # 与“… 还有 N 条”折叠行）。
+    QUEUE_PREVIEW_MAX_ROWS = 3
+    # 每条排队消息首行摘要的最大字符数，超出用省略号截断。
+    QUEUE_PREVIEW_SUMMARY_LIMIT = 40
     COMPOSER_MIN_ROWS = 1
     COMPOSER_MAX_ROWS = 5
-    COMPOSER_BORDER_ROWS = 1
+    # composer-wrap 上下两侧各 1 行圆角边框，总计入 2 行。
+    COMPOSER_BORDER_ROWS = 2
 
     def __init__(self, agent: LocalToolAgent, startup: FullscreenStartup) -> None:
         super().__init__(
@@ -385,6 +451,15 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
                 command_agent,
                 command,
             ),
+            handle_review=lambda command_agent, command: handle_review_command(
+                command_agent,
+                command,
+                on_subagent_event=lambda event_name, payload: self.call_from_thread(
+                    self._handle_subagent_event,
+                    event_name,
+                    payload,
+                ),
+            ),
         )
         self._stream_message: AssistantMessage | None = None
         self._stream_markdown = ""
@@ -392,6 +467,10 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._stream_start_text_len: int | None = None
         self._tool_messages: dict[str, ToolDisclosure] = {}
         self._subagent_trees: dict[str, SubAgentProgressTree] = {}
+        # /review 等派生评审流程：子代理对话面板（│ 包裹 + 左右缩进）与
+        # 活动开关。活动期间子代理事件渲染到对话面板而非进度树。
+        self._subagent_conversations: dict[str, Any] = {}
+        self._conversation_stream_active = False
         self._reasoning_message: ReasoningDisclosure | None = None
         # UI 私有的 Monitor cursor、暂停状态和失败隔离均由无 Textual 的适配器
         # 持有；本应用只安排定时刷新并渲染它返回的结构化事件批次。
@@ -423,14 +502,10 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
-            with Horizontal(id="topbar"):
-                yield Static(self._context_summary_text(), id="context-summary")
-            with Horizontal(id="telemetry-row"):
-                yield Static(self._token_telemetry_text(), id="token-telemetry")
-                yield Static(self._status_summary_text(), id="status-summary")
             yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
                 yield Static("", id="command-menu")
+                yield Static("", id="pending-queue")
                 yield Composer(
                     submit_handler=self._submit_composer_text,
                     command_key_handler=self._handle_composer_command_key,
@@ -442,6 +517,12 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
                     show_line_numbers=False,
                     highlight_cursor_line=False,
                 )
+            # 顶部 HUD 内容整体移到输入框下方：内容本身不修改，仅调整位置。
+            with Horizontal(id="topbar"):
+                yield Static(self._context_summary_text(), id="context-summary")
+            with Horizontal(id="telemetry-row"):
+                yield Static(self._token_telemetry_text(), id="token-telemetry")
+                yield Static(self._status_summary_text(), id="status-summary")
 
     def action_scroll_conversation_up(self) -> None:
         """在固定输入框获得焦点时向上滚动一行消息。"""
@@ -567,7 +648,10 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         composer.styles.height = composer_rows
         menu_rows = min(len(self._command_matches), self.COMMAND_MENU_VISIBLE_OPTIONS)
         self.query_one("#composer-wrap").styles.height = (
-            self.COMPOSER_BORDER_ROWS + composer_rows + menu_rows
+            self.COMPOSER_BORDER_ROWS
+            + composer_rows
+            + menu_rows
+            + self._pending_queue_rows()
         )
 
     def _handle_composer_command_key(self, event: events.Key) -> bool:
@@ -611,7 +695,6 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
                 return
             self._pending_inputs.append(text)
             self._refresh_pending_queue_count()
-            self._append_message("status", f"消息已排队（{len(self._pending_inputs)}）")
             return
         self._submit(text)
 
@@ -653,7 +736,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         for offset, option in enumerate(visible_matches):
             index = visible_start + offset
             marker = "›" if index == self._command_selection else " "
-            style = f"bold {ACCENT_BLUE}" if index == self._command_selection else TEXT_SECONDARY
+            style = f"bold {ACCENT_AMBER}" if index == self._command_selection else TEXT_SECONDARY
             lines.append(f"{marker} {option['command']}", style=style)
             description = " ".join(option.get("description", "").split())
             if description:
@@ -878,19 +961,27 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
 
     def _start_slow_command(
         self,
-        status: str,
+        status: str | None,
         command: Callable[[], str | None],
         *,
         refresh_context: bool = False,
         on_success: Callable[[], None] | None = None,
         on_finish: Callable[[], None] | None = None,
+        working_status: str | None = None,
+        stream_subagent_conversation: bool = False,
     ) -> None:
-        """锁定输入并安排慢命令，避免在 Textual 主事件循环执行 I/O。"""
+        """锁定输入并安排慢命令，避免在 Textual 主事件循环执行 I/O。
+
+        ``status`` 为空时不追加静态提示（进度由事件实时渲染，如 /review 的
+        评审进度树）；``working_status`` 覆盖 HUD 状态行文本。
+        """
 
         self.is_generating = True
         self._cancel_requested.clear()
-        self._append_message("status", status)
-        self._set_runtime_status("等待", "waiting")
+        if status:
+            self._append_message("status", status)
+        self._set_runtime_status(working_status or "等待", "waiting")
+        self._conversation_stream_active = stream_subagent_conversation
         self._run_slow_command(
             command,
             refresh_context=refresh_context,
@@ -926,9 +1017,11 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
                 # 后台 I/O 成功才清除游标，否则新工作区可能跳过首批 Monitor 事件。
                 self._monitor_state.suspend_for_workspace_switch()
             self._start_slow_command(
-                outcome.message or "正在执行命令",
+                outcome.message,
                 outcome.command,
                 refresh_context=outcome.refresh_context,
+                working_status=outcome.working_status,
+                stream_subagent_conversation=outcome.stream_subagent_conversation,
                 on_finish=(
                     self._monitor_state.resume_polling
                     if outcome.workspace_switch_requested
@@ -986,9 +1079,59 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         return pending_queue_text(len(self._pending_inputs))
 
     def _refresh_pending_queue_count(self) -> None:
-        """同步上下文行中的 FIFO 排队消息计数。"""
+        """同步 HUD 排队计数与输入区上方的排队预览条。"""
 
         self._refresh_context_summary()
+        self._render_pending_queue()
+
+    def _pending_queue_rows(self) -> int:
+        """排队预览条当前应占用的行数（无排队时为 0）。
+
+        行数 = 1 行标题 + 每条摘要一行（最多 QUEUE_PREVIEW_MAX_ROWS）
+        + 超出部分折叠提示行（仅当队列超过最大展示行数时）。
+        """
+
+        if not self._pending_inputs:
+            return 0
+        rows = 1 + min(len(self._pending_inputs), self.QUEUE_PREVIEW_MAX_ROWS)
+        if len(self._pending_inputs) > self.QUEUE_PREVIEW_MAX_ROWS:
+            rows += 1
+        return rows
+
+    def _render_pending_queue(self) -> None:
+        """在 composer 上方渲染 FIFO 排队消息预览条；空队列时隐藏。
+
+        标题行显示排队总数，随后按 FIFO 顺序展示每条消息的首行摘要
+        （超出 QUEUE_PREVIEW_MAX_ROWS 的部分折叠为一行计数），并在每次
+        队列变化（排队、逐条发送、清空）后同步高度。
+        """
+
+        queue = self.query_one("#pending-queue", Static)
+        if not self._pending_inputs:
+            queue.display = False
+            queue.update("")
+            return
+        lines = Text(no_wrap=True, overflow="ellipsis")
+        lines.append(
+            f"⏳ {len(self._pending_inputs)} 条消息排队",
+            style=f"bold {ACCENT_AMBER}",
+        )
+        for index, text in enumerate(
+            list(self._pending_inputs)[: self.QUEUE_PREVIEW_MAX_ROWS], start=1
+        ):
+            first_line = text.splitlines()[0] if text else ""
+            summary = " ".join(first_line.split())[: self.QUEUE_PREVIEW_SUMMARY_LIMIT]
+            lines.append("\n")
+            lines.append(f"  {index}. {summary}", style=TEXT_SECONDARY)
+        if len(self._pending_inputs) > self.QUEUE_PREVIEW_MAX_ROWS:
+            lines.append("\n")
+            lines.append(
+                f"  … 还有 {len(self._pending_inputs) - self.QUEUE_PREVIEW_MAX_ROWS} 条",
+                style=TEXT_MUTED,
+            )
+        queue.update(lines)
+        queue.display = True
+        self._resize_composer_to_text()
 
     def _token_telemetry_text(self) -> Text:
         """生成第二行遥测：项目名、CTX 占用、IN/OUT/CA 与 tok/s。"""

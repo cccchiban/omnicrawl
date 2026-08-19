@@ -1,71 +1,55 @@
 # OmniCrawl 工具调用协议
 
-OmniCrawl 采用 Provider 原生支持的「动态加载工具」方案：
+OmniCrawl 采用 Provider 原生支持的「顶层注册所有工具」方案：
 
-- Provider 顶层 `tools` 只注册一个 `search_tools` 元工具。
-- 搜索命中后，Host 把命中工具的**完整声明**（name、description、parameters，格式与顶层 `tools` 完全一致）以一条 `role=system`、携带 `tools` 字段的消息追加到对话末尾。
-- 模型在后续生成中直接**原生调用**这些真实工具名；Host 按真实工具目录再次校验参数、走审批并执行。
+- Provider 顶层 `tools` 注册当前 Agent 的**所有可见工具**（真实工具名 + 压缩描述 + 紧凑 Schema）。
+- 模型在生成中直接**原生调用**这些真实工具名（返回正式 `tool_calls`）；Host 读取 `name`、`arguments`、`call_id`，按真实工具目录二次校验参数、走审批并执行，最后按 `call_id` 回传 `role=tool` 结果。
+- 不再使用 `search_tools` 元工具，也没有动态声明注入：工具从对话第一轮就对模型完全可见。
 
-真实工具的 Python 执行器、完整 Schema、审批策略、MCP 连接和工作区权限仍由 Host 持有，不再逐个注册给 Provider。
+真实工具的 Python 执行器、完整 Schema、审批策略、MCP 连接和工作区权限仍由 Host 持有。
 
 ## 调用流程
 
 ```text
-模型 -> search_tools(query)
-Host -> 候选工具摘要 + 紧凑参数 Schema
-Host -> 把命中工具的完整声明以 system 消息的 tools 字段追加到对话末尾
+Provider -> 顶层 tools = [read, bash, grep, ...]（全部可见工具，压缩声明）
 模型 -> 直接原生调用真实工具（例如 read / bash）
-Host -> 解析真实工具 -> Schema 校验 -> 插件钩子 -> 审批 -> 执行
-Host -> role=tool 结果
+Host -> 读取 name / arguments / call_id -> 完整 Schema 校验 -> 插件钩子 -> 审批 -> 执行
+Host -> role=tool 结果（tool_call_id 回填模型发起的 call_id）
 模型 -> 继续调用或输出最终答案
 ```
 
-## 动态加载语义
+## 声明压缩
 
-- 携带 `tools` 的 system 消息与普通消息地位相同：它出现在 `messages` 的哪个位置，工具就从哪个位置开始对模型可见。
-- 动态加载的工具与顶层 `search_tools` 并存，模型可以同时看到两类工具。
-- 注入的声明必须是完整定义（name、description、parameters），不能只传工具名。
-- 该 system 消息不再带 `content` 字段，避免网关返回 400。
+顶层注册所有工具后，每次请求都会携带全部声明，因此描述与 Schema 必须在**注册时**压缩：
 
-缓存原则：
+- `description`：折叠空白（多行拼接归并为单空格），完整描述原样发送，不做长度截断。
+- `parameters`：紧凑 Schema，只保留 `type`、`properties`、`required`、`enum` 和边界约束；删除长描述与默认值/示例。
+- 压缩在 `build_provider_tools` / `chat_completion_tools` 两个入口同时生效（主 Agent、SubAgent、独立 Profile 共用同一套工具面）。
 
-| 操作 | 对前缀缓存的影响 |
-| --- | --- |
-| 在 messages 末尾追加工具声明 | 不影响已有前缀缓存 |
-| 后续请求原样保留已注入的工具声明 | 前缀保持稳定，有利于持续命中缓存 |
-| 删除、修改对话中间的消息，或在中间插入新声明 | 变更位置之后的缓存可能无法命中 |
-| 在顶层 tools 字段声明全局工具 | 不影响缓存命中 |
+Host 分发前仍用工具目录的**完整 Schema** 二次校验。模型遵循压缩声明不是安全边界；参数错误时错误结果携带 `issues` 和紧凑 `contract`，模型据此修正重试。
 
-因此 Host 只做「追加，不插入；注入了就别删」：新命中工具通过 tool result 之后的 system 消息追加，跨用户回合原样保留。
+## 函数名规范（去哈希化）
+
+顶层 `tools` 注册的函数名与真实工具名一致（例如 `read` 就是 `read`），不再追加 SHA-1 哈希后缀。模型看到的名字短、可读、可直接回显。
+
+- 对符合函数名规范（字母/数字/下划线/连字符，长度 ≤64）的工具名直接使用原名。
+- 仅对含非法字符的工具名（如 MCP 的 `server.tool`）做归一化并追加短哈希兜底，保证网关侧合法且不与其他工具冲突。
+
+Host 侧同时保留对旧式哈希函数名的宽容反查：模型若回显被截断的哈希名（如 `tool_search_e960b0242f`），Host 按 digest 段（SHA-1 前 10 位）反查真实工具并正常分发；无法识别时，错误信息会提示疑似正确名称，帮助模型下一轮纠正。
+
+## 可见性与任务路由
+
+- 默认（任务路由关闭）：顶层注册全部工具。
+- 任务路由开启且未晋升：顶层只注册核心工具子集（`read` / `replace_text` / `find` / `grep` / shell），首轮引导说明会告知模型；调用任一可用工具后晋升，其余工具全部注册并解锁。晋升状态持久化为 `router_promoted` 事件，resume 时恢复。
 
 ## Provider 兼容
 
-- OpenAI Chat Completions 及兼容网关：原生支持消息内 `tools`，动态声明按位置下发，语义最完整。
-- OpenAI Responses / Anthropic / Gemini：协议本身没有“消息内 tools”概念，Host 会把 system 消息携带的动态声明合并进请求级 `tools`（语义退化为全局可见），并跳过声明消息本身。
-
-## `read_image`
-
-`read_image` 是 Host 侧的只读图片工具，支持 PNG、JPEG、WebP 和 GIF。`path` 可以是当前工作区相对路径或本机绝对路径；不支持 HTTP/HTTPS URL。工具会校验图片文件头，完整读取文件并生成 `ToolImageAttachment`。当当前主模型声明 `vision=true` 时，图片以内联 Base64 观察消息发送给主模型；当主模型不支持视觉且设置中的视觉代理已启用时，Host 会按配置顺序把图片发送给独立视觉模型，视觉模型只返回文本分析，再以文本观察回填给主 Agent；多个视觉模型按顺序故障转移，全部失败时返回明确错误。视觉代理未启用时，非视觉主模型只收到不含 Base64 的元数据结果。按照当前配置，该工具不设置文件大小或图片尺寸上限，因此超大图片可能导致内存占用、Base64 膨胀和模型请求超时。
-
-`windows_screenshot` 使用同一套图片代理路径。视觉模型配置复用现有 `llm.profiles` 和 `models.toml`，写入顶层 `vision.enabled` 与有序 `vision.models` 引用，不在视觉配置中重复保存 API Key。
-
-图片 Base64 只存在于当前 Agent 工具循环和视觉模型请求，不写入 Session 事件、长期历史或普通工具结果；工具结果和 UI 只保留路径、MIME 类型、字节数及文本分析。该工具仍沿用 Host 的读取审批策略。
-
-`search_tools` 对高匹配度结果返回紧凑 Schema，只保留参数填写所需的字段，例如 `type`、`properties`、`required`、`enum` 和边界约束。长描述、默认值和示例不会进入搜索结果。
-
-模型通道的搜索响应采用无缩进 JSON，仅保留模型下一步调用需要的信息：
-
-```json
-{"tools":[{"name":"read","description":"读取工作区文本文件。","parameters":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}}]}
-```
-
-终端展示与会话转录使用同一 payload 的分节 TOML 版本（工具结果 `full_output`），便于人眼扫描候选工具、参数必填项与审批标记；与上方 JSON 内容等价，超长时按整段 `[[tools]]` 数组表裁剪，剩余文本仍保持 TOML 语法完整。模型通道始终使用无缩进 JSON，不受展示格式影响。
-
-顶层不重复回显查询、数量、成功状态和协议版本；候选数量可由 `tools` 数组直接获得。只有结果被限制时才返回顶层 `"truncated":true`，只有真实工具需要审批时才在对应候选返回 `"requires_confirmation":true`。工具说明会折叠空白并限制为 160 字，参数契约不做进一步省略，避免因信息不足造成错误调用和额外重试。
+- OpenAI Chat Completions / Responses、Anthropic、Gemini 等协议均支持顶层 `tools`，无消息内 `tools` 的兼容问题。
+- 工具声明使用统一格式（`type=function` + `function.name/description/parameters`），由各 Provider Runtime 适配层转换。
 
 ## Host 侧边界
 
-动态加载的工具仍必须由 Host 使用工具目录中的完整 Schema 二次校验。模型遵循声明不是安全边界。
+分发顺序：读取 `tool_calls` → 按名称解析（含哈希名宽容反查）→ 完整 Schema 校验 → 插件钩子 → 审批 → 执行 → 按 `call_id` 回传。
 
 校验失败返回结构化错误：
 
@@ -74,27 +58,45 @@ Host -> role=tool 结果
 - `approval_denied`：用户或审批策略拒绝执行。
 - `execution_failed`：真实工具执行失败。
 
-参数错误包含 `issues` 和紧凑 `contract`，模型可以据此修正后重试。未知工具只返回有限候选建议，不暴露完整 Host 目录。
-
-审批发生在解析真实工具之后，因此确认页显示真实工具名和经过脱敏的真实参数。搜索操作不需要审批；真实工具仍遵循原有的人工、自动或审查模式。
+审批发生在解析真实工具之后，因此确认页显示真实工具名和经过脱敏的真实参数。
 
 ## `invoke_tool` 兼容说明
 
-`invoke_tool` 已从 Provider 工具面移除，不再出现在顶层 `tools` 中。Host 分发器仍保留其解析路径，供旧测试和直接构造的内部调用使用；生产模型应使用动态加载后的原生调用。
+`invoke_tool` 已从 Provider 工具面移除。Host 分发器仍保留其解析路径，供旧测试和直接构造的内部调用使用；生产模型应直接原生调用真实工具名。
 
 ## 兼容范围
 
-- 内置文件、命令、后台任务、记忆、Windows 桌面和 SubAgent 工具保留在 Host 目录。
-- MCP Tool、Resource 和 Prompt 继续由 MCP Manager 发现并写入 Host 目录。
-- 主 Agent 和 SubAgent 都只向其 Provider 暴露 `search_tools`；动态加载后的真实工具声明以 system 消息下发。
+- 内置文件、命令、后台任务、记忆、知识库、Windows 桌面和 SubAgent 工具保留在 Host 目录，顶层全部注册。
+- MCP Tool、Resource 和 Prompt 继续由 MCP Manager 发现并写入 Host 目录，同样顶层注册。
 - AgentLoop 的批次审批、并发只读调用、写入/删除串行屏障、模型上下文有界输出摘要（头尾预览）、完整 `full_output` UI 展示、视觉图片回填、视觉模型故障转移和 Session 事件保持不变。
-- 旧的内部测试夹具仍可直接构造真实 `ToolCall`，但生产 Provider 不会注册真实工具名。
+- `HostToolCatalog` 的工具搜索、声明构建与 `invoke_tool` 解析保留为内部能力，不再暴露给 Provider。
 
 命令工具的主命令必须保留完整测试/构建输出和真实退出码。Bash 启动时默认启用 `pipefail`；测试或构建命令中如果使用 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出裁剪命令，Host 会在执行前拒绝，并提示改用独立的 `diagnostic_command`。
 
-- `omnicrawl/agent/host_tools.py`：Host 目录、工具搜索、紧凑 Schema、完整声明构建和参数校验。
-- `omnicrawl/agent/core.py`：动态加载回填、Provider 工具面、统一分发、审批和执行。
-- `omnicrawl/agent/prompt_context.py`：只注入 search_tools 的上下文说明。
+## 结构化 git 工具
+
+`git` 工具在工作区执行结构化 git 操作，参数不再走 shell 字符串，而是：
+
+- `action`：git 子命令（枚举：status/diff/log/show/add/commit/branch/checkout/stash/push/pull/reset/...）。
+- `args`：子命令标志与位置参数（`--short`、`--oneline`、`-n 20`、分支名、stash 子动词等）。
+- `message`：commit（或 annotated tag）的提交信息。
+- `paths`：工作区内相对路径，自动以 `--` 追加在命令末尾。
+
+执行器以 `git <action> <args> ...` 的 argv 形式直接启动子进程（不经 shell、无管道、无重定向），`cwd` 固定为工作区，并设置 `GIT_PAGER=cat`、`GIT_TERMINAL_PROMPT=0`、`GIT_EDITOR=true`；输出做首尾采样有界化。
+
+审批按 action 风险分级：
+
+- **只读**（status/diff/log/show/ls-files/rev-parse/...）：直接放行。
+- **本地变更**（add/commit/branch/stash/restore/...）：review 模式直接放行（与文件写入同档），manual 模式人工确认。
+- **高风险**（push/rebase/merge/pull/clean、reset --hard、checkout/switch -f、branch -D、tag -d/-f、stash drop/clear 等）：review 模式进入模型审查，manual 模式人工确认。
+
+执行前 Host 还会拒绝：`--git-dir`/`--work-tree`/`--no-verify` 等逃逸类参数、`config --global/--system/--file`、`archive -o/--output`、`clone`/`init` 目标目录越界、commit 缺少 `message` 且无 `--no-edit`，以及 `paths` 越出工作区。
+
+SubAgent 只读 profile 不暴露 `git` 工具；只读 git 查询通过被只读命令包装的 `bash` 完成。
+
+- `omnicrawl/agent/host_tools.py`：Host 目录、可见性过滤、声明构建、`build_provider_tools` 和参数校验。
+- `omnicrawl/agent/core.py`：Provider 工具面、统一分发、审批和执行。
+- `omnicrawl/agent/prompt_context.py`：只注入工具能力说明的上下文消息。
 - `omnicrawl/agent/vision_proxy.py`：独立视觉 Runtime、图片请求构造、文本分析和故障转移。
 - `omnicrawl/config/vision.py`：视觉代理开关与模型引用配置。
 - `omnicrawl/agent/execution.py`：模型回合与工具观察循环。

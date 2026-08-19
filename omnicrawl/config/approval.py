@@ -83,3 +83,24 @@ def save_approval_mode(mode: str, config_path: str | Path | None = None) -> Path
     approval_section["mode"] = normalized_mode
     data["approval"] = approval_section
     return save_config_data(data, config_path)
+
+
+def load_approval_review_model(config_path: str | Path | None = None) -> str:
+    """读取自动审查使用的独立模型，空串表示沿用主对话模型。
+
+    审查与主对话隔离后，审查请求携带的上下文远小于主对话；配置独立模型
+    可以让审查使用更便宜/更严格的模型，且主模型被注入也不影响审查独立性。
+    """
+
+    try:
+        data = load_config_data(config_path)
+        approval_section = get_section(data, "approval")
+    except RuntimeConfigError:
+        raise
+
+    value = approval_section.get("review_model")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise RuntimeConfigError("配置项 approval.review_model 必须是字符串。")
+    return value.strip()

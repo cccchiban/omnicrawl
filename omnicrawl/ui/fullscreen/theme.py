@@ -39,10 +39,9 @@ ACCENT_PURPLE = "magenta"
 # 解析路径中被当作实色处理。终端支持真彩色时会与底色混合，ANSI 降级时
 # 仍保留对应的颜色语义。
 USER_BACKGROUND = "rgba(170, 80, 210, 0.26)"
-# 工具调用与输出统一使用低不透明度的 RGBA 绿色，叠加终端背景后呈现
-# 淡绿色块；聚焦使用更高对比度的独立背景。
-TOOL_BACKGROUND = "rgba(0, 170, 90, 0.22)"
-TOOL_FOCUS_BACKGROUND = "rgba(0, 140, 80, 0.38)"
+# 工具调用与输出不再使用背景色，保持终端原生透明背景，不叠加色块。
+TOOL_BACKGROUND = TRANSPARENT
+TOOL_FOCUS_BACKGROUND = TRANSPARENT
 # 工具输出正文与折叠提示统一使用灰色（Rich 文本用 bright_black，
 # Textual CSS 用 ansi_bright_black，见下方 variables）。
 TOOL_TEXT = "bright_black"
@@ -107,6 +106,12 @@ TERMINAL_THEME = Theme(
         "terminal-amber-soft": ACCENT_AMBER_SOFT,
         "terminal-red": _CSS_RED,
         "terminal-purple": _CSS_PURPLE,
+        # 用户消息左侧细竖条强调色（青色）。
+        "terminal-cyan": "ansi_cyan",
+        # 工具调用进行中（tool-running）的边框使用白色：进行中的动作是
+        # 全 TUI 最醒目的阶段，白色与成功/失败语义色区分开，同时不引入
+        # 新的色相（终端原生透明背景下白色边框清晰可见）。
+        "terminal-white": "ansi_white",
         "button-color-foreground": TERMINAL_FOREGROUND,
         "block-cursor-background": TERMINAL_FOREGROUND,
         "block-cursor-foreground": TERMINAL_BACKGROUND,
@@ -149,14 +154,14 @@ def terminal_select_css(selector: str = ".choice-select") -> str:
         pointer: pointer;
     }}
     {selector} > SelectCurrent:hover {{
-        border: solid $terminal-blue;
+        border: solid $terminal-white;
         background: $terminal-hover;
     }}
     {selector} > SelectCurrent:focus,
     {selector}:focus > SelectCurrent,
     {selector}:focus-within > SelectCurrent,
     {selector}.-expanded > SelectCurrent {{
-        border: tall $terminal-blue;
+        border: tall $terminal-white;
         background: $terminal-background;
     }}
     {selector} > SelectCurrent Static#label,
@@ -166,12 +171,12 @@ def terminal_select_css(selector: str = ".choice-select") -> str:
     {selector} > SelectOverlay {{
         max-height: 12;
         padding: 0;
-        border: solid $terminal-blue;
+        border: solid $terminal-white;
         background: $terminal-background;
         color: $terminal-text;
     }}
     {selector} > SelectOverlay:focus {{
-        border: tall $terminal-blue;
+        border: tall $terminal-white;
     }}
     {selector} > SelectOverlay > .option-list--option {{
         height: 2;
@@ -179,7 +184,7 @@ def terminal_select_css(selector: str = ".choice-select") -> str:
     }}
     {selector} > SelectOverlay > .option-list--option-hover,
     {selector} > SelectOverlay > .option-list--option-highlighted {{
-        background: $terminal-blue;
+        background: $terminal-amber;
         color: $terminal-text;
         text-style: bold;
     }}

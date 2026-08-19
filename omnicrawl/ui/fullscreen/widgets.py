@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -91,9 +92,18 @@ class _SubAgentProgressItem:
 
 
 class ConfirmationScreen(ModalScreen[bool]):
-    """受限工具的全屏模态确认框。"""
+    """受限工具的全屏模态确认框。
 
-    BINDINGS = [("escape", "cancel_confirmation", "取消")]
+    挂载后默认聚焦「允许执行」，直接回车即可运行；←/→ 在
+    「允许执行」「拒绝」两个按钮间切换焦点（箭头方向与按钮位置一致），
+    Enter/Space 触发当前焦点按钮，Esc 取消，无需依赖鼠标点击。
+    """
+
+    BINDINGS = [
+        ("escape", "cancel_confirmation", "取消"),
+        ("left", "focus_approve", "选择允许"),
+        ("right", "focus_reject", "选择拒绝"),
+    ]
 
     CSS = terminal_css("""
     ConfirmationScreen { align: center middle; background: $terminal-overlay; }
@@ -102,15 +112,17 @@ class ConfirmationScreen(ModalScreen[bool]):
         max-width: 92%;
         max-height: 22;
         padding: 1 2;
-        border: solid $terminal-blue;
+        border: solid $terminal-white;
         background: $terminal-surface;
     }
     #confirmation-title { color: $terminal-green; text-style: bold; margin-bottom: 1; }
     #confirmation-body { color: $terminal-text; height: auto; max-height: 13; overflow-y: auto; }
+    #confirmation-hint { color: ansi_bright_black; margin-top: 1; }
     #confirmation-actions { height: 3; align: right middle; margin-top: 1; }
-    #confirmation-actions Button { margin-left: 1; min-width: 12; background: $terminal-surface; }
+    #confirmation-actions Button { min-width: 12; background: $terminal-surface; }
+    #confirmation-actions #reject { margin-left: 1; }
     #approve { background: $terminal-surface; color: $terminal-green; }
-    #approve:focus { border: tall $terminal-blue; }
+    #approve:focus { border: tall $terminal-white; }
     #reject { background: $terminal-panel; color: $terminal-text-secondary; }
     #reject:focus { border: tall $terminal-border-strong; }
     """)
@@ -123,12 +135,28 @@ class ConfirmationScreen(ModalScreen[bool]):
         with Container(id="confirmation-dialog"):
             yield Static("需要确认", id="confirmation-title")
             yield Static(self._prompt, id="confirmation-body")
+            yield Static("←/→ 选择操作 · Enter 确认 · Esc 取消", id="confirmation-hint")
             with Horizontal(id="confirmation-actions"):
-                yield Button("拒绝", id="reject", variant="default")
                 yield Button("允许执行", id="approve", variant="success")
+                yield Button("拒绝", id="reject", variant="default")
+
+    def on_mount(self) -> None:
+        """挂载后预聚焦「允许执行」，回车即可直接运行。"""
+
+        self.query_one("#approve", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "approve")
+
+    def action_focus_approve(self) -> None:
+        """把键盘焦点移到「允许执行」按钮（当前为左键位）。"""
+
+        self.query_one("#approve", Button).focus()
+
+    def action_focus_reject(self) -> None:
+        """把键盘焦点移到「拒绝」按钮（当前为右键位）。"""
+
+        self.query_one("#reject", Button).focus()
 
     def action_cancel_confirmation(self) -> None:
         """将确认页内的取消请求交给应用回合控制器统一处理。"""
@@ -337,6 +365,117 @@ class SubAgentProgressTree(Static):
         return f"{minutes:02d}:{seconds:02d}"
 
 
+class SubAgentConversation(Static):
+    """左侧 │ 竖线 + 底部 ╰ 圆角转角包裹的子代理会话面板。
+
+    /review 等派生评审流程把子代理对话实时渲染在这里：每一行以 ``│ ``
+    前缀，末尾以 ``╰`` 圆角转角收口；相对父代理消息左右各缩进两格
+    （margin 0 2），从视觉上把子代理会话嵌套在父对话内部。内容过长时按
+    显示宽度手动换行（CJK 双宽），每一行（含续行）都带 ``│ `` 前缀，
+    保证左侧竖线从上到下连续，不被折行内容覆盖。
+    """
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    SubAgentConversation {
+        margin: 0 2;
+        padding: 0 1;
+        height: auto;
+        background: transparent;
+        overflow-x: hidden;
+    }
+    """
+
+    def __init__(self, batch_id: str, agent_type: str) -> None:
+        super().__init__(classes="message subagent-conversation")
+        self.batch_id = batch_id
+        self.agent_type = agent_type
+        self._rows: list[tuple[str, str]] = []
+        self._finished = False
+        self._rows.append(
+            (f"◇ {agent_type or 'subagent'} 子代理对话", "bold")
+        )
+        self._refresh_display()
+
+    @property
+    def is_active(self) -> bool:
+        return not self._finished
+
+    def append(self, text: str, style: str = "") -> None:
+        """追加一行内容；终态面板忽略后续行。"""
+
+        if self._finished:
+            return
+        self._rows.append((text, style))
+        self._refresh_display()
+
+    def finish(self, status: str) -> None:
+        """收口面板：追加终态状态行并落 ╰ 圆角转角，不再接受新行。"""
+
+        if self._finished:
+            return
+        self._finished = True
+        self._rows.append((status, "green" if "完成" in status or "成功" in status else "red"))
+        self._refresh_display()
+
+    def render_text(self, width: int = 60) -> Text:
+        """构建当前面板的 Rich 文本，供 Textual 渲染和测试复核。"""
+
+        rendered = Text()
+        for text, style in self._rows:
+            for line in _wrap_subagent_line(text, width):
+                rendered.append("│ ", style="dim")
+                rendered.append(line, style=style or None)
+                rendered.append("\n")
+        rendered.append("╰", style="dim")
+        return rendered
+
+    def _refresh_display(self) -> None:
+        self.update(_SubAgentConversationRenderable(self._rows))
+
+
+def _wrap_subagent_line(text: str, width: int) -> list[str]:
+    """按显示宽度换行：保留原始空白，CJK 字符占 2 列。"""
+
+    content_width = max(4, int(width) - 2)  # 预留 "│ " 两列
+    wrapped: list[str] = []
+    for raw in str(text).splitlines() or [""]:
+        current = ""
+        current_width = 0
+        for char in raw:
+            char_width = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+            if current_width + char_width > content_width and current:
+                wrapped.append(current)
+                current = char
+                current_width = char_width
+            else:
+                current += char
+                current_width += char_width
+        wrapped.append(current)
+    return wrapped or [""]
+
+
+class _SubAgentConversationRenderable:
+    """按实际可用宽度手动换行并给每一行补 │ 前缀的渲染内容。"""
+
+    __slots__ = ("_rows",)
+
+    def __init__(self, rows: list[tuple[str, str]]) -> None:
+        self._rows = rows
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions):
+        width = max(6, int(options.max_width or 80))
+        rows = list(self._rows)
+        for text, style in rows:
+            # rich 15 中 Style("bold") 这类位置参数构造不可用，统一走 parse。
+            style_obj = Style.parse(style) if style else None
+            for line in _wrap_subagent_line(text, width):
+                yield Segment("│ ", style=Style(dim=True))
+                yield Segment(f"{line}\n", style=style_obj)
+        yield Segment("╰", style=Style(dim=True))
+
+
 class _UniformGrayMarkdown:
     """保留 RichMarkdown 结构，但把全部前景/背景统一为思考区灰阶样式。
 
@@ -489,31 +628,59 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         return selection.extract(text), "\n"
 
 
+def _indent_body_lines(body: Text, prefix: str) -> Text:
+    """给正文每一行加统一缩进（方案6：正文相对标题缩进）。"""
+
+    parts = body.split("\n")
+    rendered = Text()
+    for index, part in enumerate(parts):
+        if index:
+            rendered.append("\n")
+        if part.plain.strip():
+            rendered.append(prefix)
+        rendered.append_text(part)
+    return rendered
+
+
 class ToolDisclosure(Static):
     """工具调用记录；所有工具默认展开，正文始终可见。
 
-    除 write_file、replace_text 与 search_tools 外，所有工具的展开正文
-    做头尾采样：不超过五行时原样显示，超出时剥离前导空行后保留首尾
-    各两行有效行，中间直接折叠（不显示任何截断提示行），避免大段工具
-    输出刷屏，同时让测试汇总、错误栈尾部等关键信息直接可见；write_file
-    与 replace_text 保留完整文件变更预览，search_tools 与 read 的正文
-    不展示给终端用户（只保留标题行，且没有任何“已隐藏”提示）。鼠标
-    交互已全面禁用，展开/折叠不再提供切换入口。
+    除 write_file、replace_text 外，所有工具的展开正文做头尾采样：
+    不超过五行时原样显示，超出时剥离前导空行后保留首尾各两行有效行，
+    中间直接折叠（不显示任何截断提示行），避免大段工具输出刷屏，同时
+    让测试汇总、错误栈尾部等关键信息直接可见；write_file 与 replace_text
+    保留完整文件变更预览，read 与写入类记忆工具的正文不展示给终端用户
+    （只保留标题行，且没有任何“已隐藏”提示）。鼠标交互已全面禁用，展开/
+    折叠不再提供切换入口。
     """
 
     can_focus = False
+
+    # 状态 → 语义 class（方案6：状态色点 + 缩进，无边框）。class 不再驱动
+    # 任何边框/背景样式，仅保留状态标签语义；颜色由标题行首 ● 点在
+    # tool_disclosure_title 内按状态绘制。
+    STATUS_CLASS = {
+        "调用中": "tool-running",
+        "成功": "tool-ok",
+        "失败": "tool-fail",
+        "等待确认": "tool-pending",
+        "已取消": "tool-cancelled",
+    }
 
     # 工具展开正文的行数上限（不含标题行）。
     MAX_EXPANDED_BODY_LINES = 5
     # 正文被截断时首部与尾部各保留的有效行数。
     HEAD_BODY_LINES = 2
     TAIL_BODY_LINES = 2
+    # 方案6：正文相对标题的缩进宽度（4 空格）。
+    BODY_INDENT = "    "
     # 豁免五行限制的工具：write_file 与 replace_text 保持完整正文展示；
-    # search_tools 已由 tool_disclosure_body 直接隐藏（正文为空），无需豁免。
+    # read 与写入类记忆工具已由 tool_disclosure_body 直接隐藏（正文为
+    # 空），无需豁免。
     UNLIMITED_TOOL_NAMES = frozenset({"write_file", "replace_text"})
 
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
-        super().__init__(classes="message tool-message")
+        super().__init__(classes="message tool-message tool-running")
         self.tool_name = tool_name
         self.arguments = arguments
         self.started_at = started_at
@@ -528,7 +695,15 @@ class ToolDisclosure(Static):
         self.status = "成功" if ok else "失败"
         self.duration_seconds = max(0.0, finished_at - self.started_at)
         self.result_text = output
+        self._apply_status_class()
         self._refresh_display()
+
+    def _apply_status_class(self) -> None:
+        """按当前状态切换边框语义色 class（tool-running/ok/fail/pending/cancelled）。"""
+
+        target = self.STATUS_CLASS.get(self.status)
+        for name in self.STATUS_CLASS.values():
+            self.set_class(name == target, name)
 
     def refresh_elapsed(self, now: float | None = None) -> None:
         """调用期间实时刷新已耗时；终态记录不再重绘。
@@ -567,7 +742,7 @@ class ToolDisclosure(Static):
         rendered.append_text(title)
         if body.plain:
             rendered.append("\n")
-            rendered.append_text(body)
+            rendered.append_text(_indent_body_lines(body, self.BODY_INDENT))
         self.update(rendered)
 
     def _truncate_body_lines(self, body: Text) -> Text:

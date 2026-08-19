@@ -24,7 +24,9 @@ result_summary_chars = 6000
 
 # 单独设置每个子代理使用的模型；key 必须与 Agent 定义名一致（如 explore/plan/verify）。
 # model 支持：models.toml key/alias、profile/model_id 或裸 model_id；
-# 缺省或写 inherit 表示沿用父模型（与任务级 model=inherit 语义一致）。
+# 缺省或写 inherit 表示沿用父模型。这是子代理模型的唯一配置来源（第一优先级）；
+# 父代理不能再通过 subagent 工具的 task.model 指定子代理模型，定义文件里的
+# model 字段也不参与选择。
 [subagents.models.explore]
 # model = "default-chat"
 

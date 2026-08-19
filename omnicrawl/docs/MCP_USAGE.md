@@ -10,7 +10,7 @@
 
 本项目的 MCP 支持由 Host 侧 Agent、MCP Client Manager 和可选 Local MCP Server 组成：
 
-- Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复；MCP 能力进入 Host 工具目录后，通过 `search_tools` 搜索、并以 system 消息动态加载完整工具声明供模型原生调用。
+- Host：`LocalToolAgent`，负责模型循环、审批、工具路由、审计和最终回复；MCP 能力进入 Host 工具目录后注册到 Provider 顶层 `tools`，模型直接原生调用真实工具名。
 - Client：`omnicrawl/mcp/client.py`，负责连接 Server、发现 Tool/Resource/Prompt、调用和降级。
 - Local Server：`omnicrawl/mcp/server.py`，通过 `stdio` 暴露当前项目的安全工具和上下文。
 - 配置入口：`config.toml` 的 `mcp` 段，示例见 `config.example.toml`。
@@ -223,7 +223,7 @@ Host 侧永远是最终安全边界：
 - 普通文件工具默认以工作区为基准解析相对路径；本机绝对路径不再被工作区边界拦截，但受保护路径仍被拒绝。
 - 外部 MCP Server 默认不暴露能力，除非策略允许。
 - 命令执行必须设置超时，输出会截断。
-- `manual` 模式下，写入、替换、命令、删除倾向工具默认需要确认；`review`（自动审查）模式下，通过 bash/powershell 执行的命令会进入自动审查。
+- `manual` 模式下，写入、替换、命令、删除倾向工具默认需要确认；`review`（自动审查）模式下，通过 bash/powershell 执行的命令先做静态分类——只有删除类与“下载并执行不明脚本”类命令才进入模型自动审查，其余命令直接放行；MCP 的删除/清空类工具调用同样进入自动审查。审查请求与主对话完全隔离，只携带待审查调用与最近一条用户消息摘要，不再复用主对话上下文，避免审查模型被历史内容污染；可通过 `[approval] review_model` 指定独立审查模型。
 
 AI 调用 MCP 时必须遵守：
 
@@ -288,7 +288,7 @@ python -m compileall omnicrawl
 - 受保护路径会被拒绝。
 - Resource 可按 URI 读取。
 - Prompt 可按名称获取。
-- `manual` 模式下写入和命令类工具仍需要 Host 审批；`review`（自动审查）模式下，通过 bash/powershell 执行的命令会进入 Host 自动审查。
+- `manual` 模式下写入和命令类工具仍需要 Host 审批；`review`（自动审查）模式下，bash/powershell 命令先经静态分流，仅删除类与下载执行不明脚本类进入 Host 自动审查，MCP 删除/清空类工具调用同样进入自动审查。
 - `/mcp` 能显示 Server、Tool、Resource、Prompt 和诊断。
 
 涉及安全策略时，重点验证：

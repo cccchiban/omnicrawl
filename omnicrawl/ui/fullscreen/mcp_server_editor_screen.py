@@ -31,11 +31,11 @@ class MCPServerEditorScreen(ModalScreen[Optional[MCPServerConfig]]):
     BINDINGS = [("escape", "cancel", "取消"), Binding("ctrl+s", "save", "保存", priority=True)]
     CSS = terminal_css("""
     MCPServerEditorScreen { align: center middle; background: $terminal-overlay; }
-    #mcp-editor-dialog { width: 88; max-width: 96%; height: 39; max-height: 95%; padding: 1 2; border: solid $terminal-blue; background: $terminal-surface; }
-    #mcp-editor-title { height: 1; margin-bottom: 1; color: $terminal-green; text-style: bold; }
+    #mcp-editor-dialog { width: 88; max-width: 96%; height: 39; max-height: 95%; padding: 1 2; border: round $terminal-white; background: $terminal-surface; }
+    #mcp-editor-title { height: 1; margin-bottom: 1; color: $terminal-white; text-style: bold; }
     #mcp-editor-form { height: 1fr; }
     .mcp-editor-control { height: 3; margin-bottom: 1; }
-    #mcp-editor-status { height: 2; color: $terminal-amber; }
+    #mcp-editor-status { height: 2; color: $terminal-white; }
     #mcp-editor-actions { height: 3; align-horizontal: right; }
     """ + terminal_select_css())
 

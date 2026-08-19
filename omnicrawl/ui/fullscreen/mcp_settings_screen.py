@@ -33,13 +33,13 @@ class MCPSettingsScreen(ModalScreen[Optional[MCPSettingsAction]]):
 
     CSS = terminal_css("""
     MCPSettingsScreen { align: center middle; background: $terminal-overlay; }
-    #mcp-settings-dialog { width: 82; max-width: 95%; height: 27; max-height: 92%; padding: 1 2; border: solid $terminal-border-strong; background: $terminal-surface; }
-    #mcp-settings-title { height: 1; margin-bottom: 1; color: $terminal-green; text-style: bold; }
+    #mcp-settings-dialog { width: 82; max-width: 95%; height: 27; max-height: 92%; padding: 1 2; border: round $terminal-border-strong; background: $terminal-surface; }
+    #mcp-settings-title { height: 1; margin-bottom: 1; color: $terminal-white; text-style: bold; }
     #mcp-settings-list { height: 1fr; }
     .mcp-settings-row { height: 2; padding: 0 1; color: $terminal-text-secondary; }
-    .mcp-settings-row.selected { color: $terminal-text; background: $terminal-blue-soft; text-style: bold; }
-    #mcp-settings-status { height: 2; color: $terminal-blue; margin-top: 1; }
-    #mcp-settings-help { height: 1; color: $terminal-text-muted; margin-top: 1; }
+    .mcp-settings-row.selected { color: $terminal-amber; text-style: bold; }
+    #mcp-settings-status { height: 2; color: $terminal-white; margin-top: 1; }
+    #mcp-settings-help { height: 1; color: $terminal-white; margin-top: 1; }
     """)
 
     _ROWS = ("enabled", "network", "write", "command", "audit", "timeout", "servers")

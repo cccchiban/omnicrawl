@@ -33,13 +33,13 @@ class MCPServerListScreen(ModalScreen[Optional[MCPSettingsAction]]):
     ]
     CSS = terminal_css("""
     MCPServerListScreen { align: center middle; background: $terminal-overlay; }
-    #mcp-servers-dialog { width: 86; max-width: 95%; height: 28; max-height: 92%; padding: 1 2; border: solid $terminal-border-strong; background: $terminal-surface; }
-    #mcp-servers-title { height: 1; margin-bottom: 1; color: $terminal-green; text-style: bold; }
+    #mcp-servers-dialog { width: 86; max-width: 95%; height: 28; max-height: 92%; padding: 1 2; border: round $terminal-border-strong; background: $terminal-surface; }
+    #mcp-servers-title { height: 1; margin-bottom: 1; color: $terminal-white; text-style: bold; }
     #mcp-servers-list { height: 1fr; }
     .mcp-server-row { height: 2; padding: 0 1; color: $terminal-text-secondary; }
-    .mcp-server-row.selected { color: $terminal-text; background: $terminal-blue-soft; text-style: bold; }
-    #mcp-servers-status { height: 2; color: $terminal-blue; margin-top: 1; }
-    #mcp-servers-help { height: 1; color: $terminal-text-muted; margin-top: 1; }
+    .mcp-server-row.selected { color: $terminal-amber; text-style: bold; }
+    #mcp-servers-status { height: 2; color: $terminal-white; margin-top: 1; }
+    #mcp-servers-help { height: 1; color: $terminal-white; margin-top: 1; }
     """)
 
     def __init__(self, agent: Any) -> None:

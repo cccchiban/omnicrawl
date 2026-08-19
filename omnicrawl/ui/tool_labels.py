@@ -1,8 +1,7 @@
 """工具调用的用户界面显示标签。
 
-工具的内部名称用于模型路由和唯一标识，不应直接作为主要 UI 文案。
-本模块只负责将内部名称转换为简洁、稳定的显示标签；web_search 与
-fetcher 按用户要求直接显示内部工具名，便于与工具配置面板对应。
+工具卡标题直接显示工具原名（英文，与模型路由/工具配置面板一致），
+不再翻译成中文文案；本模块只负责把内部名称映射为图标等装饰信息。
 """
 
 from __future__ import annotations
@@ -18,44 +17,6 @@ class ToolDisplay:
     icon: str
 
 
-_TOOL_DISPLAY_NAMES = {
-    "list": "列出文件",
-    "find": "查找文件",
-    "read": "读取文件",
-    "read_image": "读取图片",
-    "grep": "搜索文本",
-    "web_search": "web_search",
-    "fetcher": "fetcher",
-    "image_gen": "图像生成",
-    "replace_text": "替换文本",
-    "write_file": "写入文件",
-    "bash": "执行 Bash",
-    "powershell": "执行 PowerShell",
-    "monitor": "监控任务",
-    "windows_window": "管理窗口",
-    "windows_control": "操作控件",
-    "windows_input": "输入操作",
-    "windows_clipboard": "操作剪贴板",
-    "windows_screenshot": "截取屏幕",
-    "subagent": "运行子代理",
-    "memory_search": "搜索记忆",
-    "memory_read": "读取记忆",
-    "memory_expand_related": "扩展关联记忆",
-    "memory_write": "写入记忆",
-    "project_memory_search": "搜索项目记忆",
-    "project_memory_read": "读取项目记忆",
-    "project_memory_expand_related": "扩展项目记忆",
-    "project_memory_write": "写入项目记忆",
-    "session_memory_search": "搜索会话记忆",
-    "session_memory_read": "读取会话记忆",
-    "session_memory_expand_related": "扩展会话记忆",
-    "session_memory_write": "写入会话记忆",
-    "user_memory_search": "搜索用户记忆",
-    "user_memory_read": "读取用户记忆",
-    "user_memory_expand_related": "扩展用户记忆",
-    "user_memory_write": "写入用户记忆",
-}
-
 _TOOL_DISPLAY_ICONS = {
     "list": "L",
     "find": "F",
@@ -70,6 +31,7 @@ _TOOL_DISPLAY_ICONS = {
     "bash": "B",
     "powershell": "P",
     "monitor": "◌",
+    "git": "G",
     "windows_window": "▥",
     "windows_control": "⚙",
     "windows_input": "⌨",
@@ -94,16 +56,6 @@ _TOOL_DISPLAY_ICONS = {
     "user_memory_write": "◎",
 }
 
-_MCP_OPERATION_NAMES = {
-    "list": "列出文件",
-    "read": "读取文件",
-    "grep": "搜索文本",
-    "replace_text": "替换文本",
-    "write_file": "写入文件",
-    "bash": "执行 Bash",
-    "powershell": "执行 PowerShell",
-}
-
 _MCP_OPERATION_ICONS = {
     "list": "L",
     "read": "R",
@@ -112,6 +64,7 @@ _MCP_OPERATION_ICONS = {
     "write_file": "✚",
     "bash": "B",
     "powershell": "P",
+    "git": "G",
 }
 
 
@@ -124,30 +77,26 @@ class ToolStatus:
 
 
 def tool_display(tool_name: str) -> ToolDisplay:
-    """将内部工具名转换为简洁的显示名和图标。
+    """将内部工具名转换为显示名和图标。
 
-    MCP 工具通常以 ``server.namespace.operation`` 命名，因此只对已知
-    operation 做友好化；无法识别的工具保留完整原名，便于诊断。
+    显示名固定为工具原名（英文，与模型路由/工具配置面板一致）：工具卡
+    标题直接展示模型实际调用的工具标识；MCP 工具保留完整命名空间原名
+    （server.operation），便于与 MCP 配置对应。图标保留既有映射，仅作
+    语义装饰。
     """
 
     name = str(tool_name or "")
-    if name in _TOOL_DISPLAY_NAMES:
-        return ToolDisplay(
-            name=_TOOL_DISPLAY_NAMES[name],
-            icon=_TOOL_DISPLAY_ICONS[name],
-        )
+    if name in _TOOL_DISPLAY_ICONS:
+        return ToolDisplay(name=name, icon=_TOOL_DISPLAY_ICONS[name])
 
     operation = name.rsplit(".", 1)[-1]
-    if operation in _MCP_OPERATION_NAMES and "." in name:
-        return ToolDisplay(
-            name=_MCP_OPERATION_NAMES[operation],
-            icon=_MCP_OPERATION_ICONS[operation],
-        )
+    if "." in name and operation in _MCP_OPERATION_ICONS:
+        return ToolDisplay(name=name, icon=_MCP_OPERATION_ICONS[operation])
 
     if name.startswith("mcp_read_resource__"):
-        return ToolDisplay(name="读取资源", icon="▤")
+        return ToolDisplay(name=name, icon="▤")
     if name.startswith("mcp_get_prompt__"):
-        return ToolDisplay(name="获取提示词", icon="◇")
+        return ToolDisplay(name=name, icon="◇")
     return ToolDisplay(name=name or "未知工具", icon="⌁")
 
 

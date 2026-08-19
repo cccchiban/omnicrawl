@@ -57,13 +57,13 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
         height: 30;
         max-height: 92%;
         padding: 1 2;
-        border: solid $terminal-border-strong;
+        border: round $terminal-border-strong;
         background: $terminal-surface;
     }
     #vision-settings-title {
         height: 1;
         margin-bottom: 1;
-        color: $terminal-green;
+        color: $terminal-white;
         text-style: bold;
     }
     #vision-settings-enabled {
@@ -75,7 +75,7 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
     #vision-settings-list {
         height: 1fr;
         margin-top: 1;
-        border: solid $terminal-border;
+        border: round $terminal-border;
         background: $terminal-background;
         padding: 0 1;
     }
@@ -85,18 +85,17 @@ class VisionSettingsScreen(ModalScreen[Optional[VisionSettingsResult]]):
         color: $terminal-text-secondary;
     }
     .vision-model-row.selected {
-        color: $terminal-text;
-        background: $terminal-blue-soft;
+        color: $terminal-amber;
         text-style: bold;
     }
     #vision-settings-status {
         height: 2;
         margin-top: 1;
-        color: $terminal-blue;
+        color: $terminal-white;
     }
     #vision-settings-help {
         height: 2;
-        color: $terminal-text-muted;
+        color: $terminal-white;
     }
     """)
 

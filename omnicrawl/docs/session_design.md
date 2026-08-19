@@ -432,6 +432,7 @@ compact_summary
 | `/undo` | 原子回退最近一轮对话与工作区中被 Git 记录的更改；取消或异常中断时同样回退未完成轮次。 |
 | `/rename <title>` | 为当前会话设置标题。 |
 | `/compact` | 手动压缩当前会话。 |
+| `/review [git范围]` | 派生评审子 Agent：注入评审标准作为系统指令，子 Agent 以完整 git 权限（自动批准）收集 diff 并按结构化 JSON 输出审查结果；TUI 实时显示子代理对话（左右缩进两格、左侧 │ 竖线全程连续、底部 ╰ 圆角转角包裹的会话面板，含 git 工具调用与结果，长内容自动换行不覆盖竖线），主线程只转发与渲染。评审报告以 assistant 消息注入父模型上下文（下一轮模型请求可见），父模型可基于报告继续修复、提交并推送变更；父模型也可通过 `subagent` 工具（`subagent_type: review`）自主启动评审，工具结果即渲染后的完整报告。 |
 | `/export` | 导出当前会话到 Markdown。 |
 
 `/undo` 仍通过仅追加的 `turn_undone` 事件记录被回退轮次的事件 ID，但提交该事件前会先执行副作用恢复。每轮开始和结束时，Host 各执行一次 `git diff HEAD --binary` 生成工作区未提交修改的补丁，并用 `git ls-files --others --exclude-standard` 记录未跟踪文件清单，补丁落盘到 Session artifact 的 `undo/` 目录（不再创建影子 Git 对象库，成本与工作区大小解耦——被 .gitignore 忽略的 RAR/ZIP/DLL 等大文件不会进快照，除非它们被 Git 跟踪且发生修改）。回退时先校验当前工作区仍等于轮次结束状态（冲突则整轮拒绝），再 `git reset --hard HEAD` 复位、`git apply` 轮次起点补丁恢复未提交修改，最后删除本轮新增的未跟踪文件。三类记忆、提示历史与 Session 工具产物不再参与回退（/undo 放弃记忆回退）；非 Git 工作区禁用事务式 undo。

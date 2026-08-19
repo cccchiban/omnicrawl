@@ -9,6 +9,7 @@ import json
 import re
 from typing import Any, Callable, Sequence
 
+from .approval_policy import GIT_SUPPORTED_ACTIONS
 from .context_compaction.evidence import RECALL_SESSION_EVIDENCE_TOOL_NAME
 from .types import ToolCall, ToolDefinition, ToolResult
 from ..mcp import MCPClientManager, MCPToolMeta
@@ -290,6 +291,7 @@ def build_agent_tools(
     bash: ToolRunner,
     powershell: ToolRunner,
     monitor: ToolRunner,
+    git: ToolRunner | None = None,
     memory_search: ToolRunner,
     memory_read: ToolRunner,
     memory_expand_related: ToolRunner,
@@ -319,6 +321,11 @@ def build_agent_tools(
     user_memory_read: ToolRunner | None = None,
     user_memory_expand_related: ToolRunner | None = None,
     user_memory_write: ToolRunner | None = None,
+    kb_search: ToolRunner | None = None,
+    kb_read: ToolRunner | None = None,
+    kb_write: ToolRunner | None = None,
+    kb_append: ToolRunner | None = None,
+    kb_list: ToolRunner | None = None,
     disabled_tools: frozenset[str] = frozenset(),
 ) -> dict[str, ToolDefinition]:
     """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。
@@ -326,6 +333,12 @@ def build_agent_tools(
     ``disabled_tools`` 中的工具名（含 MCP 动态工具）不会出现在结果表中；
     模型不可见即不可调用，与审批模式无关。
     """
+
+    kb_runners = (kb_search, kb_read, kb_write, kb_append, kb_list)
+    if any(runner is not None for runner in kb_runners) and not all(
+        runner is not None for runner in kb_runners
+    ):
+        raise ValueError("知识库工具必须作为完整工具组注册。")
 
     tools = build_mcp_tools(
         mcp_manager=mcp_manager,
@@ -347,7 +360,8 @@ def build_agent_tools(
                     ToolDefinition(
                         name="find",
                         description=(
-                            "仅按文件名、目录名或相对路径查找本地条目（相对路径基于工作区），不读取文件内容。"
+                            "仅按文件名、目录名或相对路径查找本地条目（相对路径基于工作区），不读取文件内容；"
+                            "pattern 支持 glob 通配符（如 * 匹配所有文件名）。"
                         ),
                         argument_schema=(
                             '{"pattern":"agent","path":".","kind":"all|file|directory",'
@@ -408,7 +422,8 @@ def build_agent_tools(
                 name="grep",
                 description=(
                     "在本地 UTF-8 文本文件中执行 grep 风格搜索：pattern 默认按正则表达式"
-                    "解释（use_regex=false 时按精确子串），支持大小写开关、匹配行上下文、"
+                    "解释，可用 | 连接多个候选目标（如 messages|context|tool_calls）；"
+                    "use_regex=false 时按精确子串，支持大小写开关、匹配行上下文、"
                     "每文件计数、仅列出匹配文件，以及 include/exclude 文件名过滤。"
                 ),
                 argument_schema=(
@@ -425,11 +440,9 @@ def build_agent_tools(
                     ToolDefinition(
                         name="web_search",
                         description=(
-                            "使用 Bing、DuckDuckGo 或雅虎搜索公开网页，返回标题、链接与摘要。"
-                            "请求自带桌面 Chrome 浏览器环境模拟（UA、Sec-Fetch-* 等请求头与跟随重定向），"
-                            "降低被搜索引擎拦截的概率；检测到验证码或异常流量拦截时返回明确错误，"
-                            "不会绕过验证码。engine 可选 bing/duckduckgo/yahoo，默认 bing；"
-                            "language 为可选的语言区域提示，max_results 默认 5。"
+                            "搜索公开网页（Bing/DuckDuckGo/雅虎），返回标题、链接与摘要。"
+                            "自带桌面 Chrome 环境模拟（UA、Sec-Fetch-* 请求头、跟随重定向）降低拦截；"
+                            "遇验证码返回明确错误、不绕过。engine 默认 bing，language 可选，max_results 默认 5。"
                         ),
                         argument_schema=(
                             '{"query": "关键词", "engine": "bing|duckduckgo|yahoo", '
@@ -447,12 +460,10 @@ def build_agent_tools(
                     ToolDefinition(
                         name="fetcher",
                         description=(
-                            "从 URL 抓取网页内容：使用 curl_cffi 模拟 Chrome/Firefox/Safari/Edge 的"
-                            "浏览器指纹（TLS/JA3 与 HTTP/2）和桌面浏览器请求头；支持并行抓取多个"
-                            "URL；insecure=true 时不校验 TLS 证书（用于内网自签名证书站点）；跟随"
-                            "HTTP 重定向与 meta refresh 页面跳转；默认返回提取后的正文文本"
-                            "（max_chars 限长），max_html=true 返回原始 HTML。每个 URL 报告状态码"
-                            "与最终跳转地址。只抓取用户提供的 URL，不执行 JavaScript，不绕过验证码。"
+                            "抓取 URL 网页内容：模拟 Chrome/Firefox/Safari/Edge 浏览器指纹与桌面请求头，"
+                            "支持并行多 URL；insecure=true 跳过 TLS 校验（内网证书）；跟随重定向；"
+                            "默认返回正文（max_chars 限长），max_html=true 返回原始 HTML。"
+                            "不执行 JS、不绕过验证码。"
                         ),
                         argument_schema=(
                             '{"urls": "https://a.example,https://b.example", "insecure": false, '
@@ -471,13 +482,9 @@ def build_agent_tools(
                     ToolDefinition(
                         name="image_gen",
                         description=(
-                            "生成或编辑图片（OpenAI 兼容 Image API）。生成：根据 prompt 文本"
-                            "创建图片；编辑：传入本地图片路径 image 与 prompt，按描述修改已有图片。"
-                            "接口地址、API Key、模型与默认参数在 TUI 设置面板（/settings → 图像生成）"
-                            "中配置，调用时可用 size（auto 或 宽x高，如 1024x1024）、quality"
-                            "（low/medium/high/auto）、output_format（png/jpeg/webp）、n（一次生成"
-                            "张数 1~10）覆盖默认值；图片默认保存到工作区 .omnicrawl/.agent_tmp/images/，"
-                            "path 可指定保存目录或文件名。"
+                            "生成或编辑图片（OpenAI 兼容 Image API）：prompt 文生图，或传本地图片路径 image 加 prompt 编辑。"
+                            "接口/Key/模型在 /settings 配置；size/quality/output_format/n 可覆盖；"
+                            "图片默认存 .omnicrawl/.agent_tmp/images/。"
                         ),
                         argument_schema=(
                             '{"prompt": "图像描述", "image": "编辑时传入的本地图片路径", '
@@ -514,10 +521,9 @@ def build_agent_tools(
             ToolDefinition(
                 name="bash",
                 description=(
-                    "使用 Git Bash 执行完整的主命令并保留真实退出码。测试或构建命令不得在主命令中"
-                    "使用 tail/head/grep/rg 裁剪输出；需要查看末尾日志时，把裁剪操作放入独立的 "
-                    "diagnostic_command。Bash 管道默认启用 pipefail，不能让后续命令掩盖上游失败。"
-                    "只接受 POSIX Shell 语法，不得使用 PowerShell 语法。"
+                    "使用 Git Bash 执行主命令并保留真实退出码。测试/构建命令不得用 tail/head/grep/rg 裁剪输出，"
+                    "查看日志应放独立 diagnostic_command。Bash 管道启用 pipefail，不得掩盖上游失败。"
+                    "只接受 POSIX Shell 语法。"
                 ),
                 argument_schema=json.dumps(
                     {
@@ -588,6 +594,255 @@ def build_agent_tools(
                 requires_confirmation=True,
                 run=monitor,
             ),
+            *(
+                [
+                    ToolDefinition(
+                        name="git",
+                        description=(
+                            "在工作区执行结构化 git 操作（不经 shell）。action 为 git 子命令，"
+                            "args 是其参数（标志、引用名、分支名等），paths 是工作区内相对路径，"
+                            "message 是提交信息。readonly 动作（status/diff/log/show/ls-files 等）"
+                            "自动放行；本地变更（add/commit/branch/stash/restore 等）按模式确认；"
+                            "push/rebase/merge/pull/clean/reset --hard 等高危动作需额外审查。"
+                            "commit 必须提供 message；禁止 --git-dir/--work-tree/--no-verify"
+                            "及全局/系统配置写入。git 操作应使用本工具，不要用 bash 拼命令。"
+                        ),
+                        argument_schema=json.dumps(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "action": {
+                                        "type": "string",
+                                        # 参数名 list 是工具 runner，用解包代替 list() 避免遮蔽。
+                                        "enum": [*GIT_SUPPORTED_ACTIONS],
+                                        "description": "git 子命令（见描述）。",
+                                    },
+                                    "args": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": (
+                                            "子命令参数：标志（--short/--oneline/-n 20）与"
+                                            "位置参数（分支名、引用名等）；stash 的"
+                                            "list/push/pop/drop 等子动词也放在这里。"
+                                        ),
+                                    },
+                                    "message": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": "commit（或 annotated tag）提交信息。",
+                                    },
+                                    "paths": {
+                                        "type": "array",
+                                        "items": {"type": "string", "minLength": 1},
+                                        "description": "工作区内相对路径，追加在命令末尾。",
+                                    },
+                                },
+                                "required": ["action"],
+                                "additionalProperties": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        requires_confirmation=True,
+                        run=git,
+                        model_output_is_bounded=True,
+                    )
+                ]
+                if git is not None
+                else []
+            ),
+            *(
+                [
+                    ToolDefinition(
+                        name="kb_search",
+                        description=(
+                            "搜索跨项目工作知识库（~/.OmniCrawl/knowledge/）中的笔记摘要。"
+                            "知识库存放工作记录、其他项目资料、会议纪要、决策与研究笔记，"
+                            "独立于当前项目。支持按 project、tags、type、status 过滤；"
+                            "先搜索摘要，再按需 kb_read 全文。"
+                        ),
+                        argument_schema=json.dumps(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "query": {"type": "string", "minLength": 1},
+                                    "project": {"type": "string"},
+                                    "tags": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "note",
+                                            "meeting",
+                                            "decision",
+                                            "log",
+                                            "research",
+                                            "reference",
+                                        ],
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["draft", "done", "archived"],
+                                    },
+                                    "max_results": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 50,
+                                        "default": 10,
+                                    },
+                                },
+                                "required": ["query"],
+                                "additionalProperties": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        requires_confirmation=False,
+                        run=kb_search,
+                    ),
+                    ToolDefinition(
+                        name="kb_read",
+                        description=(
+                            "读取工作知识库笔记全文。path 为知识库内相对路径，"
+                            "例如 projects/客户A/2026-06-18-会议纪要.md；省略 .md 后缀会自动补全。"
+                        ),
+                        argument_schema=json.dumps(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "minLength": 1},
+                                    "max_chars": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 200000,
+                                        "default": 50000,
+                                    },
+                                },
+                                "required": ["path"],
+                                "additionalProperties": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        requires_confirmation=False,
+                        run=kb_read,
+                    ),
+                    ToolDefinition(
+                        name="kb_write",
+                        description=(
+                            "新建或更新知识库笔记（~/.OmniCrawl/knowledge/），自动维护 YAML frontmatter 与 INDEX.md。"
+                            "mode=create 仅新建、overwrite 覆盖正文并合并已有字段、append 追加正文。"
+                        ),
+                        argument_schema=json.dumps(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "minLength": 1},
+                                    "content": {"type": "string"},
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": ["create", "overwrite", "append"],
+                                        "default": "overwrite",
+                                    },
+                                    "title": {"type": "string"},
+                                    "project": {"type": "string"},
+                                    "tags": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "note",
+                                            "meeting",
+                                            "decision",
+                                            "log",
+                                            "research",
+                                            "reference",
+                                        ],
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["draft", "done", "archived"],
+                                    },
+                                },
+                                "required": ["path", "content"],
+                                "additionalProperties": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        requires_confirmation=False,
+                        run=kb_write,
+                    ),
+                    ToolDefinition(
+                        name="kb_append",
+                        description=(
+                            "向已有工作知识库笔记追加正文，自动更新 updated 与 INDEX.md；"
+                            "不修改 frontmatter 的其他字段。"
+                        ),
+                        argument_schema=json.dumps(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string", "minLength": 1},
+                                    "content": {"type": "string"},
+                                },
+                                "required": ["path", "content"],
+                                "additionalProperties": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        requires_confirmation=False,
+                        run=kb_append,
+                    ),
+                    ToolDefinition(
+                        name="kb_list",
+                        description=(
+                            "列出工作知识库目录或按 project、tags、type、status 筛选笔记；"
+                            "返回每篇笔记的路径与 frontmatter 元数据。"
+                        ),
+                        argument_schema=json.dumps(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "project": {"type": "string"},
+                                    "tags": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                    "type": {
+                                        "type": "string",
+                                        "enum": [
+                                            "note",
+                                            "meeting",
+                                            "decision",
+                                            "log",
+                                            "research",
+                                            "reference",
+                                        ],
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["draft", "done", "archived"],
+                                    },
+                                    "max_results": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 200,
+                                        "default": 100,
+                                    },
+                                },
+                                "additionalProperties": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        requires_confirmation=False,
+                        run=kb_list,
+                    ),
+                ]
+                if kb_search is not None
+                else []
+            ),
         ]
     )
     if evidence_recall is not None:
@@ -653,9 +908,9 @@ def build_agent_tools(
                 ToolDefinition(
                     name="windows_control",
                     description=(
-                        "仅限 Windows：使用 Windows UI Automation 在指定 window_handle 内列出控件，"
-                        "或按 name、automation_id、class_name、control_type 精确执行 invoke、set_value、"
-                        "select、toggle、focus。非 list 操作必须提供定位条件；多个匹配项需先 list 或传 index。"
+                        "仅限 Windows：UI Automation 在 window_handle 内列出控件，或按 "
+                        "name/automation_id/class_name/control_type 定位后 "
+                        "invoke/set_value/select/toggle/focus。非 list 须定位；多匹配 list/index。"
                     ),
                     argument_schema=(
                         '{"action":"list|invoke|set_value|select|toggle|focus",'
@@ -697,9 +952,9 @@ def build_agent_tools(
                 ToolDefinition(
                     name="windows_screenshot",
                     description=(
-                        "仅限 Windows：使用 Win32 GDI 截取整个虚拟桌面、指定区域或指定窗口。"
-                        "截图保存到 Agent 临时图片目录；若当前模型声明 vision 能力，图片会在下一轮直接提供给模型。"
-                        "window 目标先用 windows_window.list 获取 window_handle；最小化、越出虚拟桌面或受保护内容可能无法截取。"
+                        "仅限 Windows：Win32 GDI 截取虚拟桌面、指定区域或窗口，保存到临时图片目录；"
+                        "模型声明 vision 时下一轮直接提供给模型。窗口目标先用 windows_window.list 获取 "
+                        "window_handle；最小化/越界/受保护内容可能截取失败。"
                     ),
                     argument_schema=(
                         '{"target":"desktop|region|window","window_handle":"0x...",'
@@ -724,12 +979,9 @@ def build_agent_tools(
             ToolDefinition(
                 name="subagent",
                 description=(
-                    "统一管理进程内受限 SubAgent：run 同步执行，spawn 后台执行，"
-                    "list/get 查询，cancel 取消；apply_worktree/discard_worktree/list_worktrees "
-                    "由父 Agent 显式处理 worktree 结果。默认角色只能只读；显式开启 allow_fork 后可继承"
-                    "已脱敏的父公开上下文；模型覆盖仅能通过 Host 安全解析。显式启用的 verify "
-                    "仅能运行 Host 固定检查。standard/worktree 写能力仅在配置开关打开后可用，"
-                    "且写回主工作区必须由父 Agent apply，禁止静默覆盖脏主树。"
+                    "管理受限 SubAgent：run/spawn/list/get/cancel；worktree 由父 Agent 显式 apply/discard。"
+                    "默认只读；allow_fork 继承脱敏父上下文；模型覆盖仅 Host 解析；verify 仅 Host 固定检查；"
+                    "写能力需配置开启，写回主工作区须父 Agent 处理。"
                 ),
                 argument_schema=json.dumps(
                     {
@@ -783,15 +1035,6 @@ def build_agent_tools(
                                         "context": {
                                             "type": "string",
                                             "enum": ["fresh", "fork"],
-                                        },
-                                        "model": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                            "maxLength": 200,
-                                            "description": (
-                                                "可选模型覆盖。继承当前父模型时应省略；"
-                                                "裸值 default 与 inherit 均按继承处理。"
-                                            ),
                                         },
                                     },
                                     "required": [

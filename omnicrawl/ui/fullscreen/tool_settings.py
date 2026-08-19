@@ -40,13 +40,13 @@ class ToolSettingsScreen(ModalScreen[None]):
 
     CSS = terminal_css("""
     ToolSettingsScreen { align: center middle; background: $terminal-overlay; }
-    #tool-settings-dialog { width: 62; max-width: 94%; height: 29; max-height: 92%; padding: 1 2; border: solid $terminal-border-strong; background: $terminal-surface; }
-    #tool-settings-title { height: 1; margin-bottom: 1; color: $terminal-green; text-style: bold; }
+    #tool-settings-dialog { width: 62; max-width: 94%; height: 29; max-height: 92%; padding: 1 2; border: round $terminal-border-strong; background: $terminal-surface; }
+    #tool-settings-title { height: 1; margin-bottom: 1; color: $terminal-white; text-style: bold; }
     #tool-settings-list { height: 1fr; }
     .tool-settings-row { height: 1; padding: 0 1; color: $terminal-text-secondary; }
-    .tool-settings-row.selected { color: $terminal-text; background: $terminal-blue-soft; text-style: bold; }
-    #tool-settings-status { height: 2; color: $terminal-blue; margin-top: 1; }
-    #tool-settings-help { height: 1; color: $terminal-text-muted; margin-top: 1; }
+    .tool-settings-row.selected { color: $terminal-amber; text-style: bold; }
+    #tool-settings-status { height: 2; color: $terminal-white; margin-top: 1; }
+    #tool-settings-help { height: 1; color: $terminal-white; margin-top: 1; }
     """)
 
     def __init__(self, agent: Any) -> None:
