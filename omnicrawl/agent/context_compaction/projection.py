@@ -12,27 +12,47 @@ COMPACT_SUMMARY_PREFIX = "会话压缩摘要：\n"
 
 
 class ContextAssembler:
-    """构建摘要在前、最近原文在后的稳定模型上下文。"""
+    """构建摘要在前、最近原文和最终回复锚点在后的稳定模型上下文。"""
 
     def assemble(
         self,
         structured: Mapping[str, Any],
         recent_events: Sequence[SourceEvent],
+        *,
+        final_reply_event: SourceEvent | None = None,
     ) -> tuple[dict[str, Any], ...]:
         summary = render_summary_markdown(structured)
         messages = [
             {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{summary}"}
         ]
+        anchor_id = final_reply_event.event_id if final_reply_event is not None else None
         messages.extend(
             message
             for event in recent_events
-            if (message := event_to_model_message(event)) is not None
+            if event.event_id != anchor_id
+            and (message := event_to_model_message(event)) is not None
         )
+        if final_reply_event is not None:
+            final_reply = event_to_model_message(final_reply_event)
+            if final_reply is not None:
+                messages.append(final_reply)
         return tuple(messages)
 
     @staticmethod
     def recent_message_count(events: Sequence[SourceEvent]) -> int:
         return sum(event_to_model_message(event) is not None for event in events)
+
+
+def latest_final_reply_event(events: Sequence[SourceEvent]) -> SourceEvent | None:
+    """返回压缩触发前最近一条非空的完整助手最终回复。"""
+
+    for event in reversed(events):
+        if event.type != "assistant_message":
+            continue
+        content = event.payload.get("content")
+        if isinstance(content, str) and content.strip():
+            return event
+    return None
 
 
 def render_summary_markdown(structured: Mapping[str, Any]) -> str:

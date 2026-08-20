@@ -12,7 +12,12 @@ from .models import (
     TokenUsageSample,
 )
 from .policy import ContextBudgetManager, estimate_json_tokens
-from .projection import ContextAssembler, event_to_model_message, render_summary_markdown
+from .projection import (
+    ContextAssembler,
+    event_to_model_message,
+    latest_final_reply_event,
+    render_summary_markdown,
+)
 from .summary import ModelSummaryCompactor, SummaryGenerationError
 from .validation import SummaryValidator
 
@@ -262,8 +267,16 @@ class ContextCompactionService:
         assert validation.normalized is not None
         structured = validation.normalized
         content = render_summary_markdown(structured)
-        projection = self._assembler.assemble(structured, batch.recent_events)
-        recent_count = self._assembler.recent_message_count(batch.recent_events)
+        final_reply_event = latest_final_reply_event(source_events)
+        projection = self._assembler.assemble(
+            structured,
+            batch.recent_events,
+            final_reply_event=final_reply_event,
+        )
+        recent_count = len(projection) - 1
+        remaining_event_ids = [event.event_id for event in batch.recent_events]
+        if final_reply_event is not None and final_reply_event.event_id not in remaining_event_ids:
+            remaining_event_ids.append(final_reply_event.event_id)
         compacted_count = sum(
             event_to_model_message(event) is not None for event in batch.events
         )
@@ -294,7 +307,10 @@ class ContextCompactionService:
             "decision_reason": decision_reason,
             "compacted_message_count": compacted_count,
             "remaining_message_count": recent_count,
-            "remaining_event_ids": [event.event_id for event in batch.recent_events],
+            "remaining_event_ids": remaining_event_ids,
+            "final_reply_event_id": (
+                final_reply_event.event_id if final_reply_event is not None else ""
+            ),
         }
         return ContextCompactionOutcome(
             measurement_payload=measurement_payload,

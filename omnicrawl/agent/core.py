@@ -5175,27 +5175,31 @@ class LocalToolAgent:
     def _tool_user_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
         return user_memory_write_result(self._require_memory_store("user"), arguments)
 
-    def _knowledge_base(self) -> KnowledgeBase:
-        """返回跨项目工作知识库实例（惰性创建）。"""
+    def _get_knowledge_base(self) -> KnowledgeBase:
+        """返回跨项目工作知识库实例（惰性创建）。
+
+        方法名刻意避开 ``self._knowledge_base`` 实例属性（缓存），否则
+        实例属性会遮蔽同名方法，导致 ``self._knowledge_base()`` 变成调用 None。
+        """
 
         if self._knowledge_base is None:
             self._knowledge_base = KnowledgeBase()
         return self._knowledge_base
 
     def _tool_kb_search(self, arguments: dict[str, Any]) -> ToolResult:
-        return kb_search_result(self._knowledge_base(), arguments)
+        return kb_search_result(self._get_knowledge_base(), arguments)
 
     def _tool_kb_read(self, arguments: dict[str, Any]) -> ToolResult:
-        return kb_read_result(self._knowledge_base(), arguments)
+        return kb_read_result(self._get_knowledge_base(), arguments)
 
     def _tool_kb_write(self, arguments: dict[str, Any]) -> ToolResult:
-        return kb_write_result(self._knowledge_base(), arguments)
+        return kb_write_result(self._get_knowledge_base(), arguments)
 
     def _tool_kb_append(self, arguments: dict[str, Any]) -> ToolResult:
-        return kb_append_result(self._knowledge_base(), arguments)
+        return kb_append_result(self._get_knowledge_base(), arguments)
 
     def _tool_kb_list(self, arguments: dict[str, Any]) -> ToolResult:
-        return kb_list_result(self._knowledge_base(), arguments)
+        return kb_list_result(self._get_knowledge_base(), arguments)
 
     def _require_memory_store(self, scope: str = "project") -> MemoryStore:
         stores = {

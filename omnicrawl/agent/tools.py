@@ -383,6 +383,7 @@ def build_agent_tools(
                     "读取本地 UTF-8 文本文件或 omnicrawl://docs/<文件名> 内置文档。"
                     "可按 start_line/max_lines 读取行范围，按 function_name 定位函数或方法，"
                     "或按 text 定位首次文字片段及上下文。"
+                    "不指定 max_lines 时，不超过 500 行的文件默认读取全部内容。"
                 ),
                 argument_schema=(
                     '{"path":"main.py","start_line":1,"max_lines":200,'
@@ -1167,7 +1168,10 @@ def build_agent_tools(
                     [
                         ToolDefinition(
                             name=f"{prefix}_memory_search",
-                            description=f"搜索{label}记忆摘要。{purpose}。",
+                            description=(
+                                f"搜索{label}记忆摘要。{purpose}。"
+                                "不确定记忆目录时省略 candidate_directories 即搜索全部目录。"
+                            ),
                             argument_schema=(
                                 '{"query":"要检索的主题","reason":"为什么当前需要该作用域记忆",'
                                 '"candidate_directories":["project-context/general"],"max_results":5}'

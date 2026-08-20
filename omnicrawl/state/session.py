@@ -604,20 +604,38 @@ class SessionStore:
         raw_events = list(read_result.events)
         events = _active_session_events(raw_events)
         messages: list[dict[str, str]] = []
+        message_entries: list[tuple[str, dict[str, str]]] = []
         for event in events:
             if event.type == "compact_summary":
-                # 压缩事件通过追加写落在被压缩历史之后，因此恢复时不能简单丢弃
-                # 它之前的所有消息；需要保留压缩发生时仍留在窗口里的最近消息。
+                # 压缩事件通过追加写落在被压缩历史之后。新版摘要携带精确的
+                # remaining_event_ids，优先按事件 ID 恢复，避免最终回复锚点来自
+                # 被压缩窗口时被“按数量取末尾”误选；旧摘要继续使用数量兼容恢复。
                 summary_message = _event_to_model_message(event)
-                remaining_count = _read_payload_non_negative_int(
-                    event.payload.get("remaining_message_count", 0)
+                remaining_ids = event.payload.get("remaining_event_ids")
+                if isinstance(remaining_ids, list) and all(
+                    isinstance(item, str) and item for item in remaining_ids
+                ):
+                    wanted = set(remaining_ids)
+                    recent_entries = [
+                        entry for entry in message_entries if entry[0] in wanted
+                    ]
+                else:
+                    remaining_count = _read_payload_non_negative_int(
+                        event.payload.get("remaining_message_count", 0)
+                    )
+                    recent_entries = message_entries[-remaining_count:] if remaining_count else []
+                messages = ([summary_message] if summary_message is not None else []) + [
+                    message for _event_id, message in recent_entries
+                ]
+                message_entries = (
+                    ([(event.event_id, summary_message)] if summary_message is not None else [])
+                    + recent_entries
                 )
-                recent_messages = messages[-remaining_count:] if remaining_count else []
-                messages = ([summary_message] if summary_message is not None else []) + recent_messages
                 continue
             message = _event_to_model_message(event)
             if message is not None:
                 messages.append(message)
+                message_entries.append((event.event_id, message))
         last_event_type = raw_events[-1].type if raw_events else entry.last_event_type
         return SessionState(
             session_id=entry.session_id,

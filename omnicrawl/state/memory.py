@@ -726,7 +726,12 @@ def _dedupe_directories(directories: list[str]) -> list[str]:
     for directory in directories:
         if not isinstance(directory, str) or not directory.strip():
             continue
-        normalized = _normalize_directory(directory)
+        try:
+            normalized = _normalize_directory(directory)
+        except MemoryStoreError:
+            # 无效目录条目（如 "."、".."）视为不限定目录，跳过而非致命。
+            # 模型不知道有哪些记忆目录时，常以 "." 表达"全库搜索"。
+            continue
         if normalized in seen:
             continue
         seen.add(normalized)

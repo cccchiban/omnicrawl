@@ -33,14 +33,32 @@ FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
 # 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
 FULL_BODY_TOOLS = frozenset({"write_file", "replace_text"})
 # 正文对用户没有展示价值、完全隐藏的工具：read（文件内容只读，标题已
-# 含路径与行号摘要）；写入类记忆工具（写入结果只是空记录列表，对用户
-# 无意义）。不显示返回内容，也不显示任何“已隐藏”提示行，只保留标题行。
+# 含路径与行号摘要）；全部记忆工具与知识库工具（搜索/读取/展开/写入
+# 结果只供模型消费，对用户无意义）。不显示返回内容，也不显示任何
+# “已隐藏”提示行，只保留标题行。
 HIDDEN_BODY_TOOLS = frozenset({
     "read",
+    "memory_search",
+    "memory_read",
+    "memory_expand_related",
     "memory_write",
+    "project_memory_search",
+    "project_memory_read",
+    "project_memory_expand_related",
     "project_memory_write",
+    "session_memory_search",
+    "session_memory_read",
+    "session_memory_expand_related",
     "session_memory_write",
+    "user_memory_search",
+    "user_memory_read",
+    "user_memory_expand_related",
     "user_memory_write",
+    "kb_search",
+    "kb_read",
+    "kb_write",
+    "kb_append",
+    "kb_list",
 })
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
@@ -366,7 +384,7 @@ def tool_disclosure_body(
     除 write_file 与 replace_text 外的所有工具统一直接展示工具返回的
     原始输出（灰色），不再包装“工具/参数/结果”元信息；write_file 与
     replace_text 保留文件变更预览正文（diff/rewrite 摘要），不受五行
-    折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；read 与写入类
+    折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；read 与全部
     记忆工具的正文完全不展示给终端用户（正文为空，不保留任何提示行）。
     """
 

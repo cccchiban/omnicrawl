@@ -201,6 +201,13 @@ class WorkspaceTools:
             )
 
         start_line = _read_limited_int(arguments, "start_line", default=1, minimum=1, maximum=100_000)
+        # 未显式指定 max_lines 时：不超过 500 行的小文件默认读取全部内容；
+        # 超过 500 行仍按 500 行上限截断（可用 start_line 继续向后读）。
+        raw_max_lines = arguments.get("max_lines")
+        if raw_max_lines is None or (
+            isinstance(raw_max_lines, str) and not raw_max_lines.strip()
+        ):
+            max_lines = min(len(lines), 500)
         return self._format_read_lines(
             lines,
             start_line=start_line,
