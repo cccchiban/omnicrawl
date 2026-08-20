@@ -17,8 +17,9 @@
   任务失败/取消时已流式输出的部分会保留（追加中断标记），不覆盖丢失。
 - 跨进程同步：TUI 中切换的推理强度（/reasoning）与工作区（/workspace）
   都会写回 config.toml；本模块每次任务开始前重读并应用到当前 Agent，
-  保证 TUI ↔ tg bot 的推理强度与工作区一致。tg bot 的 /workspace 切换
-  同样持久化，TUI 重启后生效。
+  保证 TUI ↔ tg bot 的推理强度、审批模式与工作区一致。tg bot 的 /workspace 与 /approval 切换
+  同样持久化，TUI/Telegram 重启后生效。审批默认自动审查（review），
+  Telegram 远程不支持完全自动（auto），仅限本地 TUI 配置。
 - 文件接收：图片/文档/视频/语音/音频等文件消息会下载并按类型分类存入
   工作区 .agent_tmp 的 images/videos/scripts/code/files/audio 子目录，
   随后把“已收到文件：位于 xxx”作为任务文本交给 Agent 处理；
@@ -624,8 +625,8 @@ class TelegramAgentBot:
         返回回复文本；返回 None 表示不是本模块支持的 harness 命令。
         复用 omnicrawl.commands.slash 的实现，保证与 TUI 行为一致且不重复维护。
 
-        安全边界：远程不允许把审批模式切换为自动/审查（会放开 bash 等工具
-        的执行确认）；只允许查看当前模式与切回手动确认。
+        远程审批仅支持 manual/review 两档，禁止 auto（安全边界）；
+        完全自动仅限本地 TUI 配置，远程默认自动审查（review）。
         """
 
         from omnicrawl.agent import AgentError
@@ -641,6 +642,7 @@ class TelegramAgentBot:
         )
         from omnicrawl.config.approval import (
             APPROVAL_MODE_MANUAL,
+            APPROVAL_MODE_REVIEW,
             approval_mode_label,
             save_approval_mode,
         )
@@ -675,32 +677,37 @@ class TelegramAgentBot:
             if reply is not None:
                 return reply
 
-        # 审批模式：只读与收紧，不允许远程放开。
+        # 审批模式：远程仅允许 manual/review，禁止 auto（安全边界）。
+        # 完全自动仅限本地 TUI，远程默认自动审查（review）。
         if normalized == "/approval":
             return (
                 f"当前工具审批模式：{approval_mode_label(agent.approval_mode)}。\n"
-                "远程仅允许切换为手动确认（/approval:manual）；\n"
-                "自动/审查模式请在本地 TUI 中设置。"
+                "可用切换：/approval:manual（手动确认）\n"
+                "          /approval:review（自动审查，默认）\n"
+                "远程不支持 /approval:auto（完全自动仅限本地 TUI）"
             )
-        if normalized == "/approval:manual":
-            agent.set_approval_mode(APPROVAL_MODE_MANUAL)
+        # 远程显式拒绝完全自动
+        if normalized in ("/approval:auto", "/auto-approve:on"):
+            return (
+                "❌ 远程不支持完全自动批准（/approval:auto）。\n"
+                "完全自动仅限本地 TUI 配置；远程仅支持 /approval:manual / /approval:review，"
+                f"当前仍为 {approval_mode_label(agent.approval_mode)}。"
+            )
+        approval_remote_map = {
+            "/approval:manual": APPROVAL_MODE_MANUAL,
+            "/auto-approve:off": APPROVAL_MODE_MANUAL,
+            "/approval:review": APPROVAL_MODE_REVIEW,
+            "/auto-review:on": APPROVAL_MODE_REVIEW,
+        }
+        if normalized in approval_remote_map:
+            mode = approval_remote_map[normalized]
+            agent.set_approval_mode(mode)
             try:
-                path = save_approval_mode(APPROVAL_MODE_MANUAL)
+                path = save_approval_mode(mode)
                 saved = f"并已同步到 {path}"
             except Exception as exc:  # noqa: BLE001
                 saved = f"但写入 config.toml 失败：{exc}"
-            return f"审批模式已切换为手动确认，{saved}。"
-        if normalized in {
-            "/approval:auto",
-            "/approval:review",
-            "/auto-approve:on",
-            "/auto-approve:off",
-            "/auto-review:on",
-        }:
-            return (
-                "❌ 远程不允许切换审批模式为自动/审查（会放开 bash 等工具执行确认）。\n"
-                "如需调整请在本地 TUI 中执行对应命令。"
-            )
+            return f"审批模式已切换为 {approval_mode_label(mode)}，{saved}。"
         return None
 
     def _resume_latest_session(self, agent: Any) -> str:
@@ -767,8 +774,9 @@ class TelegramAgentBot:
             "  /memory:clean  清理过期记忆\n"
             "  /reasoning [级别]  推理强度\n"
             "  /approval  查看审批模式\n"
-            "  /approval:manual  切回手动确认\n\n"
-            "敏感操作（bash/powershell 等）会请求确认，超时自动拒绝。"
+            "  /approval:manual|review（远程不支持 auto）  切换审批模式\n\n"
+            "敏感操作（bash/powershell 等）在手动/审查模式下会请求确认，超时自动拒绝；\n"
+            "完全自动（auto）仅限本地 TUI，远程默认自动审查（review）。"
         )
 
     def _status_text(self) -> str:
@@ -1121,9 +1129,11 @@ class TelegramAgentBot:
     def _sync_runtime_config(self) -> None:
         """任务开始前把 TUI 侧持久化的运行配置同步到本进程 Agent。
 
-        推理强度（config.toml [llm] reasoning_effort）与工作区
+        推理强度（config.toml [llm] reasoning_effort）、审批模式
+        （config.toml [approval] mode，默认 review）与工作区
         （config.toml [workspace] root）都由 TUI 切换时写回；这里重读并
-        应用到当前 Agent，实现 TUI ↔ tg bot 跨进程同步。
+        应用到当前 Agent，实现 TUI ↔ tg bot 跨进程同步。Telegram 远程
+        仅支持 manual/review，禁止 auto。
 
         注意：工作区不同时调用 switch_workspace 会**重建 Agent 子系统并
         清空当前对话上下文**（与 TUI /workspace 行为一致），因此每次任务
@@ -1181,6 +1191,37 @@ class TelegramAgentBot:
                     LOGGER.info("已同步工作区：%s", disk_root)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("同步工作区失败：%s", exc)
+
+        # 审批模式同步：本地 TUI（支持 manual/review/auto）或 Telegram
+        #（仅 manual/review，禁止 auto）任何一端切换后都写回 config.toml；
+        # Telegram 每次任务前重读并应用，保证跨进程一致，且重启后保持上次设置；
+        # 默认自动审查（review）。若磁盘上为 auto（来自 TUI），Telegram 侧按 review
+        # 生效，不自动放行高危操作。
+        try:
+            from omnicrawl.config.approval import (
+                APPROVAL_MODE_AUTO,
+                APPROVAL_MODE_REVIEW,
+                load_approval_mode,
+            )
+
+            disk_mode = load_approval_mode()
+            # Telegram 安全边界：远程始终禁止完全自动；磁盘上为 auto（来自本地 TUI）
+            # 时，在 Telegram 进程内降级为 review 应用，保证高危操作不自动放行。
+            effective_mode = APPROVAL_MODE_REVIEW if disk_mode == APPROVAL_MODE_AUTO else disk_mode
+            current_mode = str(getattr(agent, "approval_mode", "") or "")
+            if effective_mode and effective_mode != current_mode:
+                agent.set_approval_mode(effective_mode)
+                if effective_mode != disk_mode:
+                    LOGGER.info(
+                        "已同步审批模式（远程降级）：%s -> %s（磁盘为 %s，已按 review 生效）",
+                        current_mode or "(空)",
+                        effective_mode,
+                        disk_mode,
+                    )
+                else:
+                    LOGGER.info("已同步审批模式：%s -> %s", current_mode or "(空)", effective_mode)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("同步审批模式失败：%s", exc)
 
 
 def load_telegram_config() -> dict[str, Any]:

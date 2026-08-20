@@ -18,9 +18,9 @@ OmniCrawl Agent——发送任务文本、审批敏感工具调用、查看状�
   - TUI 启动/关闭**不会**自动启动/关闭 tg 客户端；
   - 未配置 token 时执行 `python -m omnicrawl.connectors.telegram` 只会打印中文提示并
     以退出码 1 结束，**不会报错崩溃**，也不影响 TUI 启动。
-- 跨进程同步：推理强度（`/reasoning`）与工作区（`/workspace`）通过 `config.toml`
+- 跨进程同步：推理强度（`/reasoning`）、审批模式（`/approval`，默认 `review` 自动审查）与工作区（`/workspace`）通过 `config.toml`
   持久化；tg 客户端每次任务开始前重读配置并应用到当前 Agent，TUI 侧重启或下次
-  读取时同样生效。
+  读取时同样生效。Telegram 远程仅支持 `manual`/`review`，禁止 `auto`（完全自动仅限本地 TUI）；若磁盘上为 `auto`，Telegram 侧按 `review` 降级生效。
 
 ## 配置步骤（AI 引导用户完成）
 
@@ -105,9 +105,7 @@ python -m omnicrawl.connectors.telegram
 `/memory:clean`、`/mcp`、`/plugins`、`/review`（派生评审子 Agent：完整 git
 权限 + 自动批准收集 diff，按结构化 JSON 输出审查结果）等。
 
-**远程安全边界**：`/approval:auto`、`/approval:review`、`/auto-approve:on`、
-`/auto-review:on` 会被拒绝（会放宽 bash 工具执行）；仅允许 `/approval` 查看与
-`/approval:manual`。未知 `/` 命令返回提示且不启动任务。
+Telegram 远程：`/approval` 查看当前模式，`/approval:manual|review`（含 `/auto-approve:off`、`/auto-review:on`）可远程切换并持久化到 `config.toml`，跨进程同步生效；`/approval:auto`（含 `/auto-approve:on`）在远程被拒绝并提示“仅限本地 TUI”。未知 `/` 命令返回提示且不启动任务。默认审批为 `review`（自动审查）。
 
 ### 文件接收
 
@@ -125,10 +123,10 @@ Agent 处理；消息 `caption` 作为补充说明一并附带（例如发截图
 - **Token 是真正的风险面**：持有 Token 者可绕过 Bot 程序直接调用 Telegram API，
   白名单形同虚设。Token 只能放环境变量或本地 config.toml，`.gitignore` 排除，
   绝不提交仓库；怀疑泄露时用 BotFather `/revoke` 作废重发。
-- **工具确认**：敏感工具（bash/powershell）请求确认时，通过 `/approve`、`/reject`
+- **工具确认**：`manual`/`review` 模式下敏感工具（bash/powershell）请求确认时，通过 `/approve`、`/reject`
   交互，**仅限发起任务的白名单用户本人**可审批（群聊中他人无权代批）；
-  超时自动拒绝，`/cancel` 取消任务时同步释放挂起的确认，
-  保证无人值守时不自动放行危险命令、确认不悬挂到超时。
+  超时自动拒绝，`/cancel` 取消任务时同步释放挂起的确认。
+  `auto`（完全自动）仅限本地 TUI 配置，Telegram 远程不支持——远程默认 `review`，且若磁盘上为 `auto` 会在 Telegram 侧按 `review` 降级生效，不自动放行。
 - **脱敏**：所有回传用户的错误信息经 `redact_sensitive_text` 脱敏，不泄露路径/密钥。
 - **并发警告**：不要同时用 TUI 和 tg 客户端驱动**同一个会话**（并发写 JSONL 会损坏
   会话转录）。会话存档共享于 `~/.omnicrawl/.agent_sessions`，跨端切换用

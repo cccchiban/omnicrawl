@@ -274,12 +274,8 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         margin: 0 0 1 0;
         padding: 0 1;
         background: transparent;
-        /* 上下各一行与消息背景同色的空行：blank 边框用背景色填充，
-           使带背景的消息块上下自然延伸为连续色块，不与相邻消息粘连。 */
-        border-top: blank;
-        border-bottom: blank;
-        border-left: none;
-        border-right: none;
+        /* 消息间仅保留一行间隔：由 margin-bottom 1 提供，不再用 blank 边框额外撑高。 */
+        border: none;
     }
     #conversation > .message:last-child { margin-bottom: 0; }
     /* 用户消息：无背景色，左侧青色细竖条强调；正文显式白色，
