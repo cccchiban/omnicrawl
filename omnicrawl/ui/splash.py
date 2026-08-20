@@ -55,7 +55,8 @@ LOGO_LINES = [
     '                          :jpo**#*##obv_',
 ]
 
-DEFAULT_DURATION = 3.0
+# 0 表示不设置人为最短时长；启动页仅等待 prepare 完成。
+DEFAULT_DURATION = 0.0
 
 # Logo 左侧留白列数与 Logo / 系统信息之间的列间距
 _LOGO_MARGIN = 2
@@ -130,13 +131,13 @@ def run_startup_splash(
     duration: float = DEFAULT_DURATION,
     stream: TextIO | None = None,
 ) -> Any:
-    """显示 3 秒启动画面，同时后台执行 ``prepare``（加载 git 等）。
+    """显示启动画面，同时后台执行 ``prepare``（加载所有启动依赖）。
 
     Args:
         prepare: 启动准备回调，在 splash 显示期间于后台线程执行；
             返回值会透传给调用方，异常会在 splash 结束后重新抛出。
-        duration: splash 最短显示秒数，默认 3 秒；若 prepare 耗时超过
-            duration，则继续显示滚动条直到 prepare 完成。
+        duration: 可选的最短显示秒数；为 0 时不设置人为等待，默认直到
+            prepare 完成就结束；若 prepare 耗时更长，则持续显示滚动条。
         stream: 输出流，默认 ``sys.stdout``；非交互流（如测试管道）时
             直接同步执行 ``prepare`` 并返回，不显示动画。
 
@@ -182,7 +183,8 @@ def _render_splash(
 ) -> None:
     """绘制 fastfetch 式启动画面：左侧 Logo + 右侧系统信息 + 底部 XP 滚动条。
 
-    持续到时长满且准备完成；任何异常都不允许影响启动主流程。
+    仅在显式设置最短时长时等待到时长满足，并且始终等待准备完成；任何异常
+    都不允许影响启动主流程。
     """
 
     width, height = shutil.get_terminal_size(fallback=(80, 24))

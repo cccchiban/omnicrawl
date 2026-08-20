@@ -38,9 +38,10 @@ from omnicrawl.ui.splash import run_startup_splash
 from omnicrawl.ui.windows_launcher import configure_console_encoding
 
 
-# 启动画面最短展示秒数：TUI 比历史版本晚进入 3 秒，期间后台并行完成
-# LLM 配置、git 项目检测、插件启动、Agent 初始化等全部准备。
-SPLASH_DURATION_SECONDS = 3.0
+# 启动画面不再人为固定展示时长；实际启动路径传入 0，完全由所有准备项
+#（包括 MCP 能力发现）是否完成决定何时进入可发送的 TUI。
+# 保留这个常量名兼容外部启动包装器；run_startup_splash 仍支持显式最短时长。
+SPLASH_DURATION_SECONDS = 0.0
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -168,6 +169,17 @@ def _prepare_startup(
         on_workspace_switched=_on_workspace_switched,
         on_plugin_settings_changed=_on_plugin_settings_changed,
     )
+    startup_messages: list[str] = []
+    try:
+        # MCP 原先在 TUI 首屏之后后台发现，导致用户先看到主界面但暂时不能
+        # 输入。把这一步纳入 splash 的 prepare，使 splash 结束即代表可以发送。
+        agent.preload_mcp_tools()
+    except AgentError as exc:
+        # MCP 是增量能力：发现失败不应阻止内置工具可用；把失败延迟到主界面
+        # 展示，同时仍视为该加载项已结束，避免启动页永久等待。
+        startup_messages.append(f"MCP 能力加载失败：{exc}")
+    except Exception as exc:  # noqa: BLE001
+        startup_messages.append(f"MCP 能力加载异常：{exc}")
     if plugin_runtime is not None:
         agent.add_close_callback(plugin_runtime.close)
         plugin_runtime.notify_app_started()
@@ -182,6 +194,7 @@ def _prepare_startup(
         "run_fullscreen_tui": run_fullscreen_tui,
         "plugin_runtime": plugin_runtime,
         "plugin_lines": plugin_lines,
+        "startup_messages": tuple(startup_messages),
     }
 
 
@@ -220,8 +233,8 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     # 启动的路径。
     app_root = Path(__file__).resolve().parent.parent
 
-    # 显示约 3 秒启动画面（fastfetch 式：左侧黄色 Logo + 右侧系统信息 + 底部 XP 滚动条），
-    # 同时后台并行完成全部准备：git 检测、插件启动、Agent 初始化加载。
+    # 显示启动画面（fastfetch 式：左侧黄色 Logo + 右侧系统信息 + 底部 XP 滚动条），
+    # 后台并行完成全部准备；启动页没有固定时长，直到准备完成且 TUI 可以直接发送。
     # 非交互终端（测试、管道）下 splash 直接同步执行准备，行为不变。
     try:
         prepared = run_startup_splash(
@@ -263,6 +276,8 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 workspace_label=project_context_status_label(prepared["project_context"]),
                 temp_label=agent_temp_status_label(prepared["temp_workspace_config"]),
                 version_check_enabled=True,
+                startup_ready=True,
+                startup_messages=prepared.get("startup_messages", ()),
             ),
         )
         # 真实全屏入口返回 Textual 退出码；测试替身和旧扩展可能仍返回 None

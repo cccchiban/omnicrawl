@@ -15,13 +15,14 @@ P2 重构从 ``ui/fullscreen/__init__.py`` 的 ``OmniCrawlApp`` 拆出的独立�
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Any
 
 from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Static, TextArea
 
-from ...agent.tools import public_tool_arguments
+from ...agent.tools import TODO_TOOL_NAME, public_tool_arguments
 from .theme import TOOL_TEXT
 from .widgets import (
     AssistantMessage,
@@ -74,6 +75,212 @@ class RenderingMixin:
                         else None
                     )
                 )
+
+
+    @staticmethod
+    def _replay_event_value(event: Any, key: str, default: Any = None) -> Any:
+        """从 SessionEvent 或测试替身中读取统一字段。"""
+
+        if isinstance(event, dict):
+            return event.get(key, default)
+        return getattr(event, key, default)
+
+    def _replay_event_timestamp(self, event: Any, fallback: float) -> float:
+        """把持久化事件时间转换为工具卡可用的单调无关时间戳。"""
+
+        value = self._replay_event_value(event, "created_at")
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                pass
+        return fallback
+
+    def _replay_tool_output(self, payload: dict[str, Any]) -> str:
+        """优先读取工具结果 artifact，使历史工具正文与实时页面一致。"""
+
+        artifact_path = payload.get("artifact_path")
+        reader = getattr(self.agent, "read_session_artifact_text", None)
+        session_id = getattr(self.agent, "current_session_id", "")
+        if isinstance(artifact_path, str) and artifact_path.strip() and callable(reader):
+            try:
+                artifact = reader(str(session_id), artifact_path)
+            except Exception:
+                artifact = ""
+            if isinstance(artifact, str) and artifact:
+                return artifact
+
+        for key in ("full_output", "output", "model_output", "output_preview"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        # 与实时 `_handle_tool_result` 保持一致：非隐藏工具的空结果也有
+        # 一行“无输出”正文，避免恢复页比实时页少一行。
+        return "无输出"
+
+    def _replay_session_events(self, events: list[Any]) -> None:
+        """按持久化事件重建历史页面，而不是把模型消息投影逐条塞进 TUI。
+
+        模型上下文投影会把工具请求/结果转换为 assistant 文本；那条投影适合
+        继续请求模型，却会丢失实时页面中的工具卡、结果状态和 SubAgent 进度
+        树。因此恢复展示必须消费事件流，并复用实时渲染组件的同一套入口。
+        """
+
+        self._clear_conversation_view()
+        pending_by_id: dict[str, ToolDisclosure] = {}
+        pending_by_tool: dict[str, list[ToolDisclosure]] = {}
+        denied_by_id: dict[str, str] = {}
+        replay_now = time.time()
+
+        subagent_event_names = {
+            "subagent_task_queued": "subagent.task.queued",
+            "subagent_task_started": "subagent.task.started",
+            "subagent_task_running": "subagent.task.running",
+            "subagent_task_waiting_approval": "subagent.task.waiting_approval",
+            "subagent_task_completed": "subagent.task.completed",
+            "subagent_task_failed": "subagent.task.failed",
+            "subagent_task_cancelled": "subagent.task.cancelled",
+            "subagent_task_approval_cancelled": "subagent.task.approval_cancelled",
+        }
+
+        def remove_pending(widget: ToolDisclosure) -> None:
+            for call_id, candidate in list(pending_by_id.items()):
+                if candidate is widget:
+                    pending_by_id.pop(call_id, None)
+            for tool_name, candidates in list(pending_by_tool.items()):
+                pending_by_tool[tool_name] = [
+                    candidate for candidate in candidates if candidate is not widget
+                ]
+                if not pending_by_tool[tool_name]:
+                    pending_by_tool.pop(tool_name, None)
+
+        def find_pending(payload: dict[str, Any]) -> ToolDisclosure | None:
+            call_id = str(payload.get("tool_call_id") or "").strip()
+            if call_id and call_id in pending_by_id:
+                return pending_by_id[call_id]
+            tool_name = str(payload.get("tool") or "").strip()
+            candidates = pending_by_tool.get(tool_name, [])
+            return candidates[0] if candidates else None
+
+        for index, event in enumerate(events):
+            event_type = str(self._replay_event_value(event, "type", "") or "")
+            payload = self._replay_event_value(event, "payload", {})
+            if not isinstance(payload, dict):
+                payload = {}
+            event_time = self._replay_event_timestamp(event, replay_now + index)
+
+            if event_type == "user_message":
+                content = payload.get("content")
+                if isinstance(content, str) and content.strip():
+                    self._append_message("user", content)
+                continue
+
+            if event_type == "assistant_message":
+                content = payload.get("content")
+                if isinstance(content, str) and content.strip():
+                    self._append_message("assistant", content)
+                continue
+
+            if event_type == "tool_call_requested":
+                tool_name = str(payload.get("tool") or "").strip()
+                if not tool_name:
+                    continue
+                arguments = payload.get("arguments")
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                if tool_name == TODO_TOOL_NAME:
+                    # Todo 工具是展示层状态更新，不在会话区生成工具卡；
+                    # 恢复时使用最后一次提交的清单重建输入框上方计划区。
+                    self._handle_todo_update({"todos": arguments.get("todos", [])})
+                    continue
+                widget = ToolDisclosure(tool_name, arguments, event_time)
+                conversation = self.query_one("#conversation", VerticalScroll)
+                conversation.mount(widget)
+                self.conversation_text += f"{tool_name}\n"
+                call_id = str(payload.get("tool_call_id") or "").strip()
+                if call_id:
+                    pending_by_id[call_id] = widget
+                pending_by_tool.setdefault(tool_name, []).append(widget)
+                continue
+
+            if event_type == "tool_call_denied":
+                tool_name = str(payload.get("tool") or "").strip()
+                reason = str(payload.get("reason") or "工具调用未获批准。")
+                call_id = str(payload.get("tool_call_id") or "").strip()
+                if call_id:
+                    denied_by_id[call_id] = reason
+                elif tool_name:
+                    # 没有 call id 的旧事件按工具名延后匹配，避免在随后
+                    # 的 tool_result 到达前把实时页面错误地提前封口。
+                    denied_by_id[f"tool:{tool_name}"] = reason
+                continue
+
+            if event_type == "tool_result":
+                if str(payload.get("tool") or "").strip() == TODO_TOOL_NAME:
+                    continue
+                widget = find_pending(payload)
+                if widget is None:
+                    tool_name = str(payload.get("tool") or "未知工具")
+                    widget = ToolDisclosure(tool_name, {}, event_time)
+                    self.query_one("#conversation", VerticalScroll).mount(widget)
+                output = self._replay_tool_output(payload)
+                widget.finish(
+                    ok=bool(payload.get("ok", False)),
+                    output=output,
+                    finished_at=max(event_time, widget.started_at),
+                )
+                remove_pending(widget)
+                continue
+
+            replay_subagent_type = subagent_event_names.get(event_type)
+            if replay_subagent_type is not None:
+                self._handle_subagent_event(replay_subagent_type, payload)
+                continue
+
+            if event_type == "turn_cancelled":
+                summary = payload.get("summary")
+                if not isinstance(summary, str) or not summary.strip():
+                    summary = "（上一回合被取消，未生成最终回复）"
+                self._append_message("assistant", summary)
+                continue
+
+            if event_type == "session_interrupted":
+                self._append_message("status", "上一回合在会话恢复前中断。")
+                continue
+
+            if event_type == "compact_summary":
+                content = payload.get("content")
+                if isinstance(content, str) and content.strip():
+                    self._append_message("assistant", f"会话压缩摘要：\n{content}")
+
+        for widget in list(pending_by_id.values()) + [
+            widget
+            for candidates in pending_by_tool.values()
+            for widget in candidates
+            if widget not in pending_by_id.values()
+        ]:
+            call_id = next(
+                (
+                    value
+                    for value, candidate in pending_by_id.items()
+                    if candidate is widget
+                ),
+                "",
+            )
+            reason = denied_by_id.get(call_id) or denied_by_id.get(
+                f"tool:{widget.tool_name}",
+                "工具调用在会话结束前未收到结果。",
+            )
+            widget.finish(
+                ok=False,
+                output=reason,
+                finished_at=max(replay_now, widget.started_at),
+            )
+            remove_pending(widget)
 
 
     def _handle_status(self, message: str) -> None:
@@ -265,6 +472,9 @@ class RenderingMixin:
         self._stream_markdown = ""
         self._stream_start_text_len = None
         self._reasoning_message = None
+        if str(getattr(tool_call, "name", "")) == TODO_TOOL_NAME:
+            self._set_runtime_status("正在更新计划", "working")
+            return
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
         tool_message = ToolDisclosure(
@@ -284,6 +494,10 @@ class RenderingMixin:
 
 
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
+        if str(getattr(tool_call, "name", "")) == TODO_TOOL_NAME:
+            self._tool_messages.pop(self._tool_call_key(tool_call), None)
+            self._set_runtime_status("正在思考", "working")
+            return
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
         output = str(getattr(result, "full_output", "") or result.output or "无输出")

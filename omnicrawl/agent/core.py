@@ -53,6 +53,7 @@ from .tools import (
     mcp_tool_result,
     normalize_tool_call,
     public_tool_arguments,
+    TODO_TOOL_NAME,
     workspace_command_tool_result,
     workspace_tool_result,
 )
@@ -902,6 +903,33 @@ class LocalToolAgent:
         """当前会话 ID；会话系统关闭时返回空字符串。"""
 
         return self._session_facade().current_session_id()
+
+    def current_session_messages(self) -> list[dict[str, str]]:
+        """返回当前会话投影后的模型上下文消息，供非事件型客户端读取。
+
+        与 `resume_session` 重建的 `_history` 同源（来自 JSONL 转录投影），
+        但保留完整会话内容而不受 `max_history_turns` 窗口裁剪；会话系统
+        关闭或尚未创建会话时返回空列表。TUI 需要保留工具卡和子任务树时，
+        应优先使用 `current_session_events()`。
+        """
+
+        state = getattr(self, "_session_state", None)
+        if state is None:
+            return []
+        return list(state.messages)
+
+    def current_session_events(self) -> list[SessionEvent]:
+        """返回当前会话的有效事件流，供 UI 按原始事件恢复展示层。
+
+        `SessionState.messages` 是面向模型的投影，会把工具请求/结果压成
+        assistant 文本，无法据此恢复工具卡、耗时和 SubAgent 进度树；事件流
+        才是 TUI 历史页面的权威渲染输入。没有启用会话系统时返回空列表。
+        """
+
+        state = getattr(self, "_session_state", None)
+        if state is None or getattr(self, "_session_store", None) is None:
+            return []
+        return self.load_session_events(state.session_id)
 
     def list_sessions(
         self,
@@ -3182,6 +3210,7 @@ class LocalToolAgent:
         cancel_check: Callable[[], None] | None = None,
         on_reasoning_delta: Callable[[str], None] | None = None,
         on_subagent_event: Callable[[str, dict[str, Any]], None] | None = None,
+        on_todo_update: Callable[[dict[str, Any]], None] | None = None,
         on_stream_rollback: Callable[[], None] | None = None,
     ) -> str:
         """执行一轮 Agent 任务，并把最终回答交给 on_delta 输出。
@@ -3233,11 +3262,13 @@ class LocalToolAgent:
         previous_cancel_check = getattr(self, "_cancel_check", None)
         previous_reasoning_callback = getattr(self, "_reasoning_delta_callback", None)
         previous_subagent_callback = getattr(self, "_subagent_event_callback", None)
+        previous_todo_callback = getattr(self, "_todo_update_callback", None)
         had_previous_fork_snapshot = "_active_fork_context_messages" in self.__dict__
         previous_fork_snapshot = self.__dict__.get("_active_fork_context_messages")
         self._cancel_check = cancel_check
         self._reasoning_delta_callback = on_reasoning_delta
         self._subagent_event_callback = on_subagent_event
+        self._todo_update_callback = on_todo_update
         self._ensure_mcp_tools_ready(status)
         text = self._apply_skill_command(text, status)
         pending_text = getattr(self, "_pending_user_text", None)
@@ -3538,6 +3569,7 @@ class LocalToolAgent:
             self._cancel_check = previous_cancel_check
             self._reasoning_delta_callback = previous_reasoning_callback
             self._subagent_event_callback = previous_subagent_callback
+            self._todo_update_callback = previous_todo_callback
 
     def _execute_tool_batch(
         self,
@@ -4354,6 +4386,7 @@ class LocalToolAgent:
                 "replace_text",
                 "write_file",
                 "subagent",
+                TODO_TOOL_NAME,
                 VERIFY_COMMAND_TOOL_NAME,
                 # 同一模型回复中的桌面调用必须保持顺序，例如先激活窗口再输入文本。
                 "windows_window",
@@ -4675,6 +4708,7 @@ class LocalToolAgent:
                 if getattr(self, "_subagent_coordinator", None) is not None
                 else ()
             ),
+            update_todos=self._tool_update_todos,
             windows_window=(windows_desktop.run_window if windows_desktop is not None else None),
             windows_control=(windows_desktop.run_control if windows_desktop is not None else None),
             windows_input=(windows_desktop.run_input if windows_desktop is not None else None),
@@ -4901,6 +4935,53 @@ class LocalToolAgent:
             return build_system_prompt(template)
         except ValueError as exc:
             raise AgentError(str(exc)) from exc
+
+    def _tool_update_todos(self, arguments: dict[str, Any]) -> ToolResult:
+        """接收模型的执行清单，并把安全投影转发给 UI。"""
+
+        raw_todos = arguments.get("todos")
+        if not isinstance(raw_todos, list):
+            return ToolResult(ok=False, output="todos 必须是数组。")
+        todos: list[dict[str, Any]] = []
+        for index, raw_item in enumerate(raw_todos[:20], start=1):
+            if not isinstance(raw_item, dict):
+                continue
+            step = str(
+                raw_item.get("step")
+                or raw_item.get("description")
+                or raw_item.get("title")
+                or ""
+            ).strip()
+            if not step:
+                continue
+            status = str(raw_item.get("status") or "").strip().casefold()
+            completed = bool(raw_item.get("completed")) or status in {
+                "completed",
+                "done",
+                "complete",
+            }
+            item_id = str(raw_item.get("id") or index).strip()[:80]
+            todos.append(
+                {
+                    "id": item_id or str(index),
+                    "step": step[:240],
+                    "completed": completed,
+                }
+            )
+        payload = {"todos": todos}
+        callback = getattr(self, "_todo_update_callback", None)
+        if callable(callback):
+            try:
+                callback(payload)
+            except Exception:  # noqa: BLE001 - UI observer 不得破坏 Agent 回合
+                LOGGER.warning("Todo UI observer failed", exc_info=True)
+        return ToolResult(
+            ok=True,
+            output=json.dumps(
+                {"updated": len(todos), "todos": todos},
+                ensure_ascii=False,
+            ),
+        )
 
     def _tool_list(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().list_files, arguments)

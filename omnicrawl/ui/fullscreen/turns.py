@@ -46,6 +46,7 @@ class AgentTurnCallbacks:
     on_retry_status: Callable[[str], None]
     on_reasoning_delta: Callable[[str], None]
     on_subagent_event: Callable[[str, dict[str, Any]], None]
+    on_todo_update: Callable[[dict[str, Any]], None] | None = None
     on_stream_rollback: Callable[[], None] | None = None
 
 
@@ -87,21 +88,25 @@ class AgentTurnController:
         """执行一轮流式请求，并完整转发现有 Agent 回调协议。"""
 
         with self.scope():
+            callback_kwargs: dict[str, Any] = {
+                "on_status": callbacks.on_status,
+                "on_tool_start": callbacks.on_tool_start,
+                "on_tool_result": callbacks.on_tool_result,
+                "on_token_usage": callbacks.on_token_usage,
+                "on_protocol_wait": callbacks.on_protocol_wait,
+                "on_retry_status": callbacks.on_retry_status,
+                "cancel_check": self.raise_if_cancelled,
+                "on_reasoning_delta": callbacks.on_reasoning_delta,
+                "on_subagent_event": callbacks.on_subagent_event,
+                "on_stream_rollback": callbacks.on_stream_rollback,
+            }
+            if callbacks.on_todo_update is not None:
+                callback_kwargs["on_todo_update"] = callbacks.on_todo_update
             return self._agent.run_stream(
                 text,
                 callbacks.on_delta,
-                on_status=callbacks.on_status,
-                on_tool_start=callbacks.on_tool_start,
-                on_tool_result=callbacks.on_tool_result,
-                on_token_usage=callbacks.on_token_usage,
-                on_protocol_wait=callbacks.on_protocol_wait,
-                on_retry_status=callbacks.on_retry_status,
-                cancel_check=self.raise_if_cancelled,
-                on_reasoning_delta=callbacks.on_reasoning_delta,
-                on_subagent_event=callbacks.on_subagent_event,
-                on_stream_rollback=callbacks.on_stream_rollback,
+                **callback_kwargs,
             )
-
     def cancel(self) -> int:
         """设置取消信号并主动关闭当前回合的模型流与外部资源。"""
 

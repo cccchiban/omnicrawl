@@ -38,6 +38,7 @@ _TOOL_DISPLAY_ICONS = {
     "windows_clipboard": "▣",
     "windows_screenshot": "▧",
     "subagent": "◇",
+    "update_todos": "☑",
     "memory_search": "◎",
     "memory_read": "◎",
     "memory_expand_related": "◎",

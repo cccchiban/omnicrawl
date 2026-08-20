@@ -365,6 +365,65 @@ class SubAgentProgressTree(Static):
         return f"{minutes:02d}:{seconds:02d}"
 
 
+class TodoPlan(Static):
+    """显示 Agent 自动维护的紧凑执行清单。"""
+
+    can_focus = False
+
+    def __init__(self) -> None:
+        super().__init__(classes="todo-plan", id="todo-plan")
+        self._items: list[tuple[str, bool]] = []
+        self._refresh_display()
+
+    @property
+    def items(self) -> tuple[tuple[str, bool], ...]:
+        """返回当前清单的只读投影，便于布局和测试使用。"""
+
+        return tuple(self._items)
+
+    @property
+    def row_count(self) -> int:
+        """计划区占用的紧凑行数；每个步骤恰好一行。"""
+
+        return len(self._items)
+
+    def update_items(self, items: Any) -> None:
+        """替换计划内容，过滤空步骤并限制单步长度。"""
+
+        normalized: list[tuple[str, bool]] = []
+        if isinstance(items, (list, tuple)):
+            for item in items[:20]:
+                if not isinstance(item, dict):
+                    continue
+                text = str(
+                    item.get("step")
+                    or item.get("description")
+                    or item.get("title")
+                    or ""
+                ).strip()
+                if not text:
+                    continue
+                completed = bool(item.get("completed")) or str(
+                    item.get("status") or ""
+                ).casefold() in {"completed", "done", "complete"}
+                normalized.append((" ".join(text.split())[:240], completed))
+        self._items = normalized
+        self._refresh_display()
+
+    def render_text(self) -> Text:
+        rendered = Text(no_wrap=True, overflow="ellipsis")
+        for index, (step, completed) in enumerate(self._items):
+            if index:
+                rendered.append("\n")
+            rendered.append("▣" if completed else "▢", style="green" if completed else "dim")
+            rendered.append(" " + step)
+        return rendered
+
+    def _refresh_display(self) -> None:
+        self.display = bool(self._items)
+        self.update(self.render_text())
+
+
 class SubAgentConversation(Static):
     """左侧 │ 竖线 + 底部 ╰ 圆角转角包裹的子代理会话面板。
 

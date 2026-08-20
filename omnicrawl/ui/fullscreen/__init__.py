@@ -85,6 +85,7 @@ from .widgets import (
     ConfirmationScreen,
     ReasoningDisclosure,
     SubAgentProgressTree,
+    TodoPlan,
     ToolDisclosure,
 )
 
@@ -118,6 +119,10 @@ class FullscreenStartup:
     temp_label: str
     current_version: str = current_version()
     version_check_enabled: bool = False
+    # 真实入口在 Splash 阶段已完成所有准备；直接启动 App 的测试/扩展则
+    # 保留旧行为，在 on_mount 中异步预热 MCP 并锁定输入。
+    startup_ready: bool = False
+    startup_messages: tuple[str, ...] = ()
 
 
 class Composer(TextArea):
@@ -137,6 +142,14 @@ class Composer(TextArea):
         self._command_key_handler = command_key_handler
         self._copy_or_clear_handler = copy_or_clear_handler
         self._paste_handler = paste_handler
+        # 已发送消息的历史浏览状态（bash 式上下键回看）。
+        self._history: list[str] = []
+        # -1 表示编辑器显示的是用户自己的草稿；>= 0 表示正在浏览第 N 条历史。
+        self._history_index = -1
+        # 进入历史浏览前编辑器里的内容，浏览结束按一次下键时恢复。
+        self._history_draft = ""
+        # 程序化替换文本期间置位，供应用层跳过命令菜单刷新。
+        self._history_navigating = False
 
     def _insert_paste_text(self, text: str) -> None:
         replacement = self._paste_handler(text)
@@ -154,6 +167,64 @@ class Composer(TextArea):
         if self.read_only:
             return
         self._insert_paste_text(self.app.clipboard)
+
+    def history_record(self, text: str) -> None:
+        """记录一条已发送消息供上下键回看；与最近一条重复时不重复入列。
+
+        提交即退出浏览态：无论是否新入列，下一条上键都从最新一条开始。
+        """
+
+        if text and (not self._history or self._history[-1] != text):
+            self._history.append(text)
+        self._history_index = -1
+        self._history_draft = ""
+
+    def is_browsing_history(self) -> bool:
+        """是否处于历史浏览（含程序化替换文本的瞬间）。"""
+
+        return self._history_index >= 0 or self._history_navigating
+
+    def navigate_history(self, direction: int) -> bool:
+        """按上下键浏览已发送消息；返回 True 表示按键已被历史浏览消费。
+
+        ``direction`` 为 -1（上键，向更早翻）或 +1（下键，向更新翻）。
+        进入浏览前先把编辑器当前内容保存为草稿；下键翻到最新一条之后再
+        按一次即恢复草稿并退出浏览，与 bash readline 行为一致。没有历史
+        记录、或下键处于非浏览态时返回 False，让调用方回退到会话滚动。
+        """
+
+        if not self._history:
+            return False
+        if direction < 0:
+            if self._history_index < 0:
+                self._history_draft = self.text
+                self._history_index = len(self._history) - 1
+            elif self._history_index > 0:
+                self._history_index -= 1
+            else:
+                return True
+        else:
+            if self._history_index < 0:
+                return False
+            if self._history_index >= len(self._history) - 1:
+                # 已翻到最新一条：恢复进入浏览前的草稿并结束浏览。
+                self._history_index = -1
+                self._replace_history_text(self._history_draft)
+                return True
+            self._history_index += 1
+        self._replace_history_text(self._history[self._history_index])
+        return True
+
+    def _replace_history_text(self, text: str) -> None:
+        """替换编辑器文本并把光标移到末尾；期间抑制命令菜单刷新。"""
+
+        self._history_navigating = True
+        try:
+            self.text = text
+            lines = text.split("\n")
+            self.cursor_location = (len(lines) - 1, len(lines[-1]))
+        finally:
+            self._history_navigating = False
 
     def on_key(self, event: events.Key) -> None:
         if event.key == "escape":
@@ -180,11 +251,14 @@ class Composer(TextArea):
             event.prevent_default()
             event.stop()
         elif event.key in {"up", "down"}:
-            scroll_action = getattr(
-                self.app,
-                f"action_scroll_conversation_{event.key}",
-            )
-            scroll_action()
+            direction = -1 if event.key == "up" else 1
+            if not self.navigate_history(direction):
+                # 没有可回看的历史时，保留原有的会话滚动行为。
+                scroll_action = getattr(
+                    self.app,
+                    f"action_scroll_conversation_{event.key}",
+                )
+                scroll_action()
             event.prevent_default()
             event.stop()
         elif event.key == "enter":
@@ -306,6 +380,20 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         padding: 0 1;
         background: $terminal-reasoning-background;
         text-style: italic;
+    }
+    /* Agent 自动计划区位于输入框上方。它是 composer-wrap 的内容，
+       因此高度增加时会直接挤占会话区，而不是覆盖会话消息；每行不留
+       额外上下间距，完成图标的绿色由 TodoPlan 的 Rich Text 提供。 */
+    #todo-plan {
+        display: none;
+        height: auto;
+        min-height: 0;
+        max-height: 20;
+        padding: 0 1;
+        background: $terminal-surface;
+        color: $terminal-text-secondary;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
     /* 输入区用白色圆角框独立成卡：顶部 HUD 已移到下方，靠边框与下方
         HUD 内容分隔开；圆角边框 + 左右 margin 让输入框成为悬浮卡片。 */
@@ -495,11 +583,15 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._interaction_watchdog_stable_ticks = 0
         self._paste_sequence = 0
         self._compact_pastes: dict[str, str] = {}
+        # 当前回合的自动计划只存在展示层；任务完成后仍保留完成勾选，
+        # 下一条用户任务开始时由 Agent 的新计划替换或清空。
+        self._todo_plan_items: list[dict[str, Any]] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
             yield VerticalScroll(id="conversation", can_focus=False)
             with Vertical(id="composer-wrap"):
+                yield TodoPlan()
                 yield Static("", id="command-menu")
                 yield Static("", id="pending-queue")
                 yield Composer(
@@ -556,12 +648,21 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
 
-        if callable(getattr(self.agent, "preload_mcp_tools", None)):
-            # MCP 预加载属于内部初始化：继续锁定输入，但不显示瞬时等待消息。
+        if not self.startup.startup_ready and callable(
+            getattr(self.agent, "preload_mcp_tools", None)
+        ):
+            # 直接启动 App 的兼容路径：真实入口已在 Splash 阶段完成 MCP
+            # 预热，因此不会在可见主界面后再锁住输入。
             self.is_generating = True
             self._preload_mcp_tools()
         else:
             self._set_runtime_status("完成", "complete")
+        # 启动参数 --resume 已在 Agent 初始化时恢复会话：按原始事件重建
+        # 对话组件，避免用户看到空白会话页或被压成纯文本。
+        self._replay_session_conversation()
+        for message in self.startup.startup_messages:
+            if str(message).strip():
+                self._append_message("error", str(message))
 
     @work(thread=True, exclusive=True, group="mcp-preload", exit_on_error=False)
     def _preload_mcp_tools(self) -> None:
@@ -607,7 +708,10 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         if event.text_area.id == "composer":
             self._prune_compact_paste_placeholders(event.text_area.text)
-            self._refresh_command_menu(event.text_area.text)
+            # 历史浏览引起的文本替换不应触发斜杠命令菜单：否则回看以
+            # "/" 开头的内容时菜单会抢走上下键，打断连续浏览。
+            if not self.query_one("#composer", Composer).is_browsing_history():
+                self._refresh_command_menu(event.text_area.text)
             self._resize_composer_to_text()
 
     def on_resize(self, _event: events.Resize) -> None:
@@ -648,7 +752,34 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
             + composer_rows
             + menu_rows
             + self._pending_queue_rows()
+            + self._todo_plan_rows()
         )
+
+    def _todo_plan_rows(self) -> int:
+        """返回计划区当前占用的紧凑行数。"""
+
+        try:
+            return self.query_one("#todo-plan", TodoPlan).row_count
+        except Exception:
+            return len(self._todo_plan_items)
+
+    def _handle_todo_update(self, payload: dict[str, Any]) -> None:
+        """在输入框上方替换 Agent 的自动计划，并让其占用布局高度。"""
+
+        items = payload.get("todos") if isinstance(payload, dict) else []
+        self._todo_plan_items = list(items) if isinstance(items, list) else []
+        plan = self.query_one("#todo-plan", TodoPlan)
+        plan.update_items(self._todo_plan_items)
+        self._resize_composer_to_text()
+
+    def _clear_todo_plan(self) -> None:
+        self._todo_plan_items = []
+        try:
+            plan = self.query_one("#todo-plan", TodoPlan)
+        except Exception:
+            return
+        plan.update_items([])
+        self._resize_composer_to_text()
 
     def _handle_composer_command_key(self, event: events.Key) -> bool:
         """菜单打开时消费选择键；Enter/Tab 只补全，不提交命令。"""
@@ -845,8 +976,49 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
         self._stream_start_text_len = None
         self._tool_messages.clear()
         self._subagent_trees.clear()
+        self._subagent_conversations.clear()
         self._reasoning_message = None
         self._runtime_status_message = None
+        self._clear_todo_plan()
+
+    def _replay_session_conversation(self) -> None:
+        """按会话事件恢复与实时页面一致的 TUI 组件（`--resume` 或 `/resume`）。
+
+        `SessionState.messages` 是给模型用的投影，工具请求和结果在那里会变成
+        assistant 文本；历史页面必须改用原始事件流，才能恢复工具卡、结果状态
+        和 SubAgent 进度树。旧 Agent/测试替身没有事件接口时才回退到消息投影。
+        读取失败或会话为空时静默跳过，不阻断界面启动与命令反馈。
+        """
+
+        events_getter = getattr(self.agent, "current_session_events", None)
+        if callable(events_getter):
+            try:
+                events = list(events_getter() or [])
+            except Exception:
+                events = []
+            if events:
+                self._replay_session_events(events)
+                return
+
+        getter = getattr(self.agent, "current_session_messages", None)
+        if not callable(getter):
+            return
+        try:
+            messages = getter()
+        except Exception:
+            return
+        visible = [
+            message
+            for message in messages
+            if isinstance(message, dict)
+            and str(message.get("role", "")) in {"user", "assistant"}
+            and str(message.get("content") or "").strip()
+        ]
+        if not visible:
+            return
+        self._clear_conversation_view()
+        for message in visible:
+            self._append_message(str(message["role"]), str(message["content"]))
 
     def action_clear_conversation(self) -> None:
         if self.is_generating:
@@ -865,8 +1037,11 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     def _submit(self, text: str) -> None:
         if self._handle_command(text):
             return
+        # 记录为可回看的发送历史（斜杠命令不记录），供输入框上下键浏览。
+        self.query_one("#composer", Composer).history_record(text)
         self.is_generating = True
         self._cancel_requested.clear()
+        self._clear_todo_plan()
         self._append_message("user", text)
         self._set_runtime_status("正在思考", "working")
         # 回合开始前快照累计统计；模型流中断自动重试触发回滚时据此恢复。
@@ -911,6 +1086,10 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
             on_subagent_event=lambda event_name, payload: self.call_from_thread(
                 self._handle_subagent_event,
                 event_name,
+                payload,
+            ),
+            on_todo_update=lambda payload: self.call_from_thread(
+                self._handle_todo_update,
                 payload,
             ),
         )
@@ -993,6 +1172,7 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
     def _handle_command(self, text: str) -> bool:
         """执行分派结果；Textual 生命周期始终保留在应用层。"""
 
+        previous_session_id = self.agent.current_session_id
         outcome = self._command_dispatcher.dispatch(text)
         if not outcome.handled:
             return False
@@ -1025,6 +1205,10 @@ class OmniCrawlApp(TerminalHandlingMixin, RenderingMixin, App[None]):
                 ),
             )
             return True
+        # 会话切换（/resume 成功）后重放新会话的历史消息，再显示命令反馈；
+        # 顺序不能颠倒，否则重放内的清空会抹掉刚追加的状态消息。
+        if self.agent.current_session_id != previous_session_id:
+            self._replay_session_conversation()
         if outcome.clear_conversation:
             self._clear_conversation_view()
         if outcome.message:

@@ -21,6 +21,8 @@ from ..workspace_tools import (
 )
 
 
+TODO_TOOL_NAME = "update_todos"
+
 TOOL_NAME_ALIASES = {
     "bashcommand": "bash",
     "monitorcommand": "monitor",
@@ -304,6 +306,7 @@ def build_agent_tools(
     evidence_recall: ToolRunner | None = None,
     subagent: ToolRunner | None = None,
     subagent_types: Sequence[str] = (),
+    update_todos: ToolRunner | None = None,
     windows_window: ToolRunner | None = None,
     windows_control: ToolRunner | None = None,
     windows_input: ToolRunner | None = None,
@@ -845,6 +848,43 @@ def build_agent_tools(
             ),
         ]
     )
+    if update_todos is not None:
+        tools.append(
+            ToolDefinition(
+                name=TODO_TOOL_NAME,
+                description=(
+                    "维护当前任务的紧凑执行清单。处理多步骤项目任务时，先用本工具提交完整步骤列表，"
+                    "每完成一步就再次提交同一列表并将对应 completed 设为 true；不要把计划正文写进回复。"
+                    "todos 为空表示清除当前计划。"
+                ),
+                argument_schema=json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "todos": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string", "maxLength": 80},
+                                        "step": {"type": "string", "minLength": 1, "maxLength": 240},
+                                        "completed": {"type": "boolean"},
+                                    },
+                                    "required": ["step", "completed"],
+                                    "additionalProperties": False,
+                                },
+                            }
+                        },
+                        "required": ["todos"],
+                        "additionalProperties": False,
+                    },
+                    ensure_ascii=False,
+                ),
+                requires_confirmation=False,
+                run=update_todos,
+            )
+        )
     if evidence_recall is not None:
         tools.append(
             ToolDefinition(
