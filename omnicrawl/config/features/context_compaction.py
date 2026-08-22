@@ -33,6 +33,9 @@ class ContextCompactionConfig:
 
     enabled: bool = False
     trigger_context_tokens: int = 100_000
+    # 保存用户选择的百分比，使上下文窗口变化时能在运行态实时重算阈值。
+    # None 表示兼容旧配置：只使用固定 Token 阈值。
+    trigger_context_percent: int | None = None
     next_user_reserve_tokens: int = 4_096
     minimum_turns_between_model_compactions: int = 4
     emergency_context_ratio: float = 0.85
@@ -62,6 +65,11 @@ class ContextCompactionConfig:
                 _require_non_negative_int(name, getattr(self, name))
             else:
                 _require_positive_int(name, getattr(self, name))
+        if self.trigger_context_percent is not None:
+            _require_positive_int(
+                "trigger_context_percent",
+                self.trigger_context_percent,
+            )
         _require_ratio("emergency_context_ratio", self.emergency_context_ratio, upper=1.0)
         _require_ratio("recent_context_ratio", self.recent_context_ratio, upper=1.0)
         if not isinstance(self.summary_profile, str):

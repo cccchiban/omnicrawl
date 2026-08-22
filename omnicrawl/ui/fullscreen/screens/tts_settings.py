@@ -1,7 +1,8 @@
 """TTS（MOSS-TTS-Nano ONNX CPU）的设置界面。
 
 支持：启用开关、自动播放开关、内置音色选择、模型目录、CPU 线程数，
-以及一键下载 ONNX 模型（约 763MB，后台执行并实时显示进度）。
+以及一键下载 ONNX 模型（约 763MB，后台执行并实时显示进度）。打开设置时会检查
+onnxruntime-gpu；仅在用户点击按钮后下载并自动安装该 Python 包，不处理显卡驱动。
 """
 
 from __future__ import annotations
@@ -62,6 +63,11 @@ _FALLBACK_VOICES = (
     "Arisa",
 )
 _THREAD_COUNTS = (1, 2, 4, 8)
+_DEVICE_OPTIONS = (
+    ("自动（优先 CUDA，不可用时回退 CPU）", "auto"),
+    ("CPU", "cpu"),
+    ("CUDA（不可用时报错）", "cuda"),
+)
 
 
 @dataclass(frozen=True)
@@ -112,9 +118,12 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
         height: 3;
         margin-bottom: 1;
     }
-    #tts-status {
+    .tts-status {
         height: 2;
         color: $terminal-white;
+    }
+    .tts-download-button {
+        margin-bottom: 1;
     }
     #tts-actions {
         height: 3;
@@ -136,11 +145,20 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
         self._configuration = load_tts_configuration(self._config_path)
         self._previous_configuration = self._configuration
         self._downloading = False
+        self._gpu_busy = False
+        # onnxruntime 可能已在当前进程加载；安装新 wheel 后必须完整重启，
+        # 才能让 tts_synthesize 使用新的 CUDA/cuDNN DLL。
+        self._gpu_restart_required = False
+
+    def on_mount(self) -> None:
+        """打开 TTS 设置时自动检查一次 GPU 运行时。"""
+
+        self._start_gpu_check()
 
     def compose(self) -> ComposeResult:
         c = self._configuration
         with Container(id="tts-dialog"):
-            yield Static("TTS 语音合成（MOSS-TTS-Nano · 本地 CPU 推理）", id="tts-title")
+            yield Static("TTS 语音合成（MOSS-TTS-Nano · ONNX 推理）", id="tts-title")
             with VerticalScroll(id="tts-form"):
                 yield Static("启用 TTS（注册 tts_synthesize 工具）", classes="tts-field-label")
                 yield Select(
@@ -173,6 +191,14 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
                     id="tts-model-dir",
                     classes="tts-control",
                 )
+                yield Static("推理设备 device", classes="tts-field-label")
+                yield Select(
+                    list(_DEVICE_OPTIONS),
+                    value=c.device,
+                    allow_blank=False,
+                    id="tts-device",
+                    classes="tts-control choice-select",
+                )
                 yield Static("CPU 推理线程数 thread_count", classes="tts-field-label")
                 yield Select(
                     [(str(item), item) for item in _THREAD_COUNTS],
@@ -181,11 +207,19 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
                     id="tts-thread-count",
                     classes="tts-control choice-select",
                 )
-                yield Static(self._model_status(), id="tts-status")
+                yield Static(self._model_status(), id="tts-status", classes="tts-status")
                 yield Button(
                     "下载 ONNX 模型（约 763MB）" if not self._models_ready()
                     else "重新下载 ONNX 模型",
                     id="tts-download",
+                    classes="tts-download-button",
+                    variant="primary",
+                )
+                yield Static("GPU 运行时：正在检查…", id="tts-gpu-status", classes="tts-status")
+                yield Button(
+                    "下载并安装 onnxruntime-gpu",
+                    id="tts-gpu-download",
+                    classes="tts-download-button",
                     variant="primary",
                 )
             with Horizontal(id="tts-actions"):
@@ -233,14 +267,16 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
             self.action_cancel()
         elif event.button.id == "tts-download":
             self._start_download()
+        elif event.button.id == "tts-gpu-download":
+            self._start_gpu_install()
 
     def action_cancel(self) -> None:
-        if not self._downloading:
+        if not self._downloading and not self._gpu_busy:
             self.dismiss(None)
 
     def action_save(self) -> None:
-        if self._downloading:
-            self._set_status("模型下载中，请等待完成后再保存。")
+        if self._downloading or self._gpu_busy:
+            self._set_status("TTS 依赖安装或模型下载中，请等待完成后再保存。")
             return
         try:
             configuration = TTSConfiguration(
@@ -249,6 +285,7 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
                 voice=str(self.query_one("#tts-voice", Select).value),
                 auto_play=bool(self.query_one("#tts-auto-play", Select).value),
                 thread_count=int(self.query_one("#tts-thread-count", Select).value),
+                device=str(self.query_one("#tts-device", Select).value),
                 output_dir=self._configuration.output_dir,
             )
             path = save_tts_configuration(configuration, self._config_path)
@@ -326,6 +363,111 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
 
     def _set_status(self, status: str) -> None:
         self.query_one("#tts-status", Static).update(status)
+
+    def _set_gpu_status(self, status: str) -> None:
+        self.query_one("#tts-gpu-status", Static).update(status)
+
+    def _set_gpu_busy(self, busy: bool) -> None:
+        self._gpu_busy = busy
+        if self.is_mounted:
+            self.query_one("#tts-gpu-download", Button).disabled = busy
+
+    @staticmethod
+    def _format_gpu_status(status: Any) -> str:
+        package_version = getattr(status, "package_version", None)
+        providers = tuple(getattr(status, "available_providers", ()) or ())
+        probe_error = str(getattr(status, "probe_error", "") or "")
+        if bool(getattr(status, "ready", False)):
+            return f"GPU 运行时：CUDA 可用（onnxruntime-gpu {package_version}）✓"
+        session_providers = tuple(getattr(status, "session_providers", ()) or ())
+        session_error = str(getattr(status, "session_error", "") or "")
+        if package_version:
+            if session_error:
+                message = (
+                    f"GPU 运行时：已安装 onnxruntime-gpu {package_version}，"
+                    "但 CUDA 会话创建失败。"
+                )
+            elif session_providers and "CUDAExecutionProvider" not in session_providers:
+                message = (
+                    f"GPU 运行时：已安装 onnxruntime-gpu {package_version}，"
+                    "但实际会话回退到了 CPU。"
+                )
+            else:
+                message = (
+                    f"GPU 运行时：已安装 onnxruntime-gpu {package_version}，"
+                    "当前未提供 CUDAExecutionProvider。"
+                )
+        else:
+            message = "GPU 运行时：未安装 onnxruntime-gpu。"
+        if providers:
+            message += f" 可用 provider：{', '.join(providers)}。"
+        if session_providers:
+            message += f" 实际会话 provider：{', '.join(session_providers)}。"
+        if session_error:
+            message += f" 会话检查错误：{session_error}"
+        if probe_error:
+            message += f" 检查错误：{probe_error}"
+        diagnostic = str(getattr(status, "diagnostic", "") or "")
+        if diagnostic and diagnostic not in message:
+            # 保留子进程 stdout/stderr，尤其是 Windows DLL 加载错误 126，
+            # 避免再次退化成没有上下文的 JSON 解析错误。
+            message += f" 详细诊断：{diagnostic[-1200:]}"
+        return message
+
+    @work(thread=True, exclusive=True, group="tts-gpu", exit_on_error=False)
+    def _start_gpu_check(self) -> None:
+        self.app.call_from_thread(self._set_gpu_busy, True)
+        try:
+            from ....tts.gpu import check_gpu_runtime
+
+            status = check_gpu_runtime(self._configuration.resolved_model_dir())
+            self.app.call_from_thread(self._gpu_check_finished, status, None)
+        except Exception as exc:  # noqa: BLE001 - 设置页只显示检查失败
+            self.app.call_from_thread(self._gpu_check_finished, None, str(exc))
+
+    def _gpu_check_finished(self, status: Any | None, error: str | None) -> None:
+        self._set_gpu_busy(False)
+        if error:
+            self._set_gpu_status(f"GPU 运行时检查失败：{error}")
+            return
+        self._set_gpu_status(self._format_gpu_status(status))
+        button = self.query_one("#tts-gpu-download", Button)
+        button.label = (
+            "重新安装 onnxruntime-gpu"
+            if bool(getattr(status, "installed", False))
+            else "下载并安装 onnxruntime-gpu"
+        )
+
+    @work(thread=True, exclusive=True, group="tts-gpu", exit_on_error=False)
+    def _start_gpu_install(self) -> None:
+        if self._gpu_busy:
+            return
+        self.app.call_from_thread(self._set_gpu_busy, True)
+        self.app.call_from_thread(
+            self._set_gpu_status,
+            "正在下载并安装 onnxruntime-gpu；不会处理显卡驱动…",
+        )
+        try:
+            from ....tts.gpu import install_gpu_runtime
+
+            status = install_gpu_runtime(self._configuration.resolved_model_dir())
+            self.app.call_from_thread(self._gpu_install_finished, status, None)
+        except Exception as exc:  # noqa: BLE001 - 安装失败显示 pip 错误
+            self.app.call_from_thread(self._gpu_install_finished, None, str(exc))
+
+    def _gpu_install_finished(self, status: Any | None, error: str | None) -> None:
+        self._set_gpu_busy(False)
+        if error:
+            self._set_gpu_status(f"onnxruntime-gpu 安装失败：{error}")
+            return
+        self._gpu_restart_required = True
+        formatted = self._format_gpu_status(status)
+        if status is not None and not bool(getattr(status, "ready", False)):
+            formatted += " 请确认 NVIDIA 驱动、CUDA/cuDNN 与该版本兼容。"
+        self._set_gpu_status(
+            formatted
+            + " 安装已完成；请完全退出并重启 OmniCrawl 后再调用 tts_synthesize。"
+        )
 
 
 __all__ = ["TTSSettingsResult", "TTSSettingsScreen"]

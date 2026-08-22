@@ -26,6 +26,7 @@ from ..conversation.view import ConversationViewMixin
 from ..input.composer import Composer
 from ..input.editing import InputMixin
 from ..input.menu import CommandMenuMixin
+from ..input.sessions_menu import SessionsMenuMixin
 from ..rendering.pipeline import RenderingMixin
 from ..rendering.welcome_logo import welcome_logo_text
 from ..rendering.widgets import (
@@ -56,6 +57,7 @@ class OmniCrawlApp(
     RenderingMixin,
     InputMixin,
     CommandMenuMixin,
+    SessionsMenuMixin,
     TurnExecutionMixin,
     SettingsNavigationMixin,
     StatusMixin,
@@ -66,11 +68,11 @@ class OmniCrawlApp(
 
     TITLE = "OmniCrawl"
     SUB_TITLE = "Developer Workspace"
-    CSS = terminal_css("""
+    CSS = terminal_css("""\
     Screen { background: $terminal-canvas; color: $terminal-text; }
     /* 全局细滚动条：所有可滚动容器（对话区、各设置页列表、编辑器表单等）
        的滚动条宽度统一为 1 格，颜色统一为白色（菜单滚动条默认继承主题
-       secondary 蓝色，在此覆盖为白色；#conversation 的 ID 规则优先级更高，
+       secondary 蓝色，在这里覆盖为白色；#conversation 的 ID 规则优先级更高，
        保留其原有默认前景色与绿色 hover）。 */
     * {
         scrollbar-size: 1 1;
@@ -167,7 +169,7 @@ class OmniCrawlApp(
     .tool-message:focus { color: $terminal-tool-text; background: $terminal-tool-focus-background; }
     .error-message { color: $terminal-red; }
     /* 思考块：暗背景 + 灰前景 + 斜体（方案A）。终端字体无法逐控件切换，
-       斜体是最接近“换字体”的观感；CJK 字符在多数终端不渲染斜体，
+       斜体是最接近"换字体"的观感；CJK 字符在多数终端不渲染斜体，
        主要作用于英文/代码部分。 */
     .reasoning-message {
         color: $terminal-reasoning-text;
@@ -210,6 +212,26 @@ class OmniCrawlApp(
     }
     /* 输入区用白色圆角框独立成卡：顶部 HUD 已移到下方，靠边框与下方
         HUD 内容分隔开；圆角边框 + 左右 margin 让输入框成为悬浮卡片。 */
+    /* AI 提问且提供可选答案时显示；问题正文在对话区，答案在输入框上方。
+       没有选项时不占布局空间，用户可直接在输入框发送补充信息。 */
+    #confirmation-options {
+        display: none;
+        height: auto;
+        min-height: 0;
+        padding: 0 1;
+        color: $terminal-amber;
+        background: $terminal-surface;
+    }
+    #confirmation-options ConfirmationOption {
+        display: block;
+        height: 1;
+        min-height: 1;
+        padding: 0;
+        border: none;
+        color: $terminal-amber;
+        background: $terminal-surface;
+    }
+    #confirmation-options ConfirmationOption:focus { color: $terminal-white; }
     #composer-wrap {
         height: 3;
         min-height: 3;
@@ -221,6 +243,19 @@ class OmniCrawlApp(
         border: round $terminal-white;
     }
     #command-menu {
+        display: none;
+        height: auto;
+        max-height: 8;
+        padding: 0 1;
+        background: $terminal-surface;
+        color: $terminal-text-secondary;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+        border-left: solid $terminal-white;
+    }
+    /* 会话列表预选菜单：位于命令菜单之下、输入框之上，样式与命令菜单
+       保持一致（白色左边条 + 暗色背景），让用户感知这是同一层级的交互。 */
+    #sessions-menu {
         display: none;
         height: auto;
         max-height: 8;
@@ -273,7 +308,7 @@ class OmniCrawlApp(
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
     # 统计平均生成速率（t/s）的待机判定阈值：相邻输出增量间隔超过该值
-    # 视为“待机”（工具执行、模型停顿、回合间隙），不计入输出时长；
+    # 视为"待机"（工具执行、模型停顿、回合间隙），不计入输出时长；
     # 间隔内的时长才累计为输出时间，避免空闲等待稀释平均速率。
     GENERATION_STANDBY_GAP_SECONDS = 2.0
     # 顶部 t/s 遥测的刷新间隔（累计统计值变化后最多延迟一个周期显示）。
@@ -296,8 +331,8 @@ class OmniCrawlApp(
     STALE_INTERACTION_TICKS = 6
     MOUSE_WHEEL_SCROLL_LINES = 5.0
     COMMAND_MENU_VISIBLE_OPTIONS = 8
-    # 排队预览条最多同时展示的摘要行数（不含“⏳ N 条消息排队”标题行
-    # 与“… 还有 N 条”折叠行）。
+    # 排队预览条最多同时展示的摘要行数（不含"⏳ N 条消息排队"标题行
+    # 与"… 还有 N 条"折叠行）。
     QUEUE_PREVIEW_MAX_ROWS = 3
     # 每条排队消息首行摘要的最大字符数，超出用省略号截断。
     QUEUE_PREVIEW_SUMMARY_LIMIT = 40
@@ -400,6 +435,9 @@ class OmniCrawlApp(
         self._status_spinner_index = 0
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
+        # 会话列表预选菜单状态（SessionsMenuMixin 使用）。
+        self._session_menu_items: list[Any] = []
+        self._session_menu_selection = 0
         self._interaction_watchdog_signature: tuple[object, ...] | None = None
         self._interaction_watchdog_stable_ticks = 0
         self._paste_sequence = 0
@@ -407,6 +445,8 @@ class OmniCrawlApp(
         # 当前回合的自动计划只存在展示层；任务完成后仍保留完成勾选，
         # 下一条用户任务开始时由 Agent 的新计划替换或清空。
         self._todo_plan_items: list[dict[str, Any]] = []
+        self._confirmation_required = False
+        self._confirmation_options: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
@@ -414,11 +454,15 @@ class OmniCrawlApp(
                 yield Static(welcome_logo_text(), id="welcome-logo")
             with Vertical(id="composer-wrap"):
                 yield TodoPlan()
+                with Vertical(id="confirmation-options"):
+                    pass
                 yield Static("", id="command-menu")
+                yield Static("", id="sessions-menu")
                 yield Static("", id="pending-queue")
                 yield Composer(
                     submit_handler=self._submit_composer_text,
                     command_key_handler=self._handle_composer_command_key,
+                    sessions_menu_key_handler=self._handle_sessions_menu_key,
                     copy_or_clear_handler=self.action_copy_or_clear_composer,
                     paste_handler=self._compact_paste_if_needed,
                     placeholder="› 输入消息或 / 命令",
@@ -456,6 +500,18 @@ class OmniCrawlApp(
 
     def on_mount(self) -> None:
         self.agent.set_confirm_handler(self._confirm_tool)
+        # Agent 回合在线程中结束；通过 call_from_thread 安全更新 Textual 控件。
+        set_confirmation_handler = getattr(
+            self.agent,
+            "set_user_confirmation_handler",
+            None,
+        )
+        if callable(set_confirmation_handler):
+            set_confirmation_handler(
+                lambda required: self.call_from_thread(
+                    self._set_confirmation_required, required
+                )
+            )
         self.query_one("#composer", TextArea).focus()
         self._resize_composer_to_text()
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)

@@ -13,7 +13,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 from .toolkit.windows_desktop import WindowsDesktopTools
 from ..knowledge import KnowledgeBase, KnowledgeBaseError
-from .routing.router_runtime import RouterRuntime
 from .subagents.coordinator import (
     SubAgentCoordinator,
     SubAgentExecutionResult,
@@ -102,7 +101,6 @@ from .controllers.shared import (
     _READ_ONLY_UNDO_TOOLS,
     _REVERSIBLE_UNDO_TOOLS,
     _MEMORY_UNDO_EXEMPT_TOOLS,
-    _ROUTER_UNDO_EXEMPT_TOOLS,
     _read_int_env,
     _validate_int_range,
     _validate_context_compaction_window,
@@ -170,10 +168,6 @@ class AgentConfig:
     # 审查请求与主对话隔离后，独立模型不影响主对话成本，且让审查决策
     # 不受主模型被提示词注入影响。
     approval_review_model: str = field(default_factory=load_approval_review_model)
-    # 任务思维模式路由器（dsh-routing-suite 移植）：默认关闭；
-    # 开启后首轮 system prompt / 工具面按任务分类注入，首次工具调用后晋升完整面。
-    router_enabled: bool = False
-    router_mode: str = "standard"
     # 内置工具开关：默认除 powershell 外全部启用；配置 tools 段可覆盖。
     disabled_tools: frozenset[str] = field(default_factory=load_disabled_tools)
     workspace_detection_summary: str = ""
@@ -245,6 +239,32 @@ class AgentConfig:
             raise AgentError("image_gen 必须是 ImageGenConfiguration。")
         if not isinstance(self.tts, TTSConfiguration):
             raise AgentError("tts 必须是 TTSConfiguration。")
+        # 百分比是配置关系而不是一次性 UI 计算结果：启动时按当前模型窗口
+        # 重新换算，避免模型/窗口变化后仍沿用旧 Token 阈值。
+        context_window_tokens = max(
+            1,
+            int(getattr(self.llm, "context_window_tokens", 128_000)),
+        )
+        compaction_percent = self.context_compaction.trigger_context_percent
+        if compaction_percent is None:
+            compaction_percent = round(
+                self.context_compaction.trigger_context_tokens
+                * 100
+                / context_window_tokens
+            )
+            if compaction_percent > 0:
+                self.context_compaction = replace(
+                    self.context_compaction,
+                    trigger_context_percent=compaction_percent,
+                )
+        if compaction_percent is not None:
+            self.context_compaction = replace(
+                self.context_compaction,
+                trigger_context_tokens=max(
+                    1,
+                    context_window_tokens * compaction_percent // 100,
+                ),
+            )
         _validate_context_compaction_window(self.context_compaction, self.llm)
         if not isinstance(self.workspace_detection_summary, str):
             raise AgentError("workspace_detection_summary 必须是字符串。")
@@ -256,10 +276,6 @@ class AgentConfig:
             raise AgentError("disabled_tools 必须是字符串集合。")
         if not all(isinstance(name, str) and name for name in self.disabled_tools):
             raise AgentError("disabled_tools 的元素必须是非空字符串。")
-        if not isinstance(self.router_enabled, bool):
-            raise AgentError("router_enabled 必须是布尔值。")
-        if self.router_mode not in ("standard", "spec"):
-            raise AgentError("router_mode 必须是 standard 或 spec。")
         self.approval_mode = normalize_approval_mode(self.approval_mode)
         if not isinstance(self.approval_review_model, str):
             raise AgentError("approval_review_model 必须是字符串。")
@@ -303,9 +319,6 @@ class LocalToolAgent(
         self._confirm = confirm or self._confirm_in_terminal
         self._history: list[dict[str, str]] = []
         self._pending_user_text: str | None = None
-        self._router_runtime = RouterRuntime(
-            router_mode=getattr(self.config, "router_mode", "standard")
-        )
         self._active_skills: list[SkillMatchResult] = []
         # 审查请求与主对话隔离，仅按线程保存最近一次模型请求的消息快照，
         # 供自动审查提取最近用户消息摘要（理解意图）。

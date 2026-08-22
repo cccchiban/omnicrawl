@@ -79,11 +79,11 @@ _FEATURES = (
     ("plugins", "插件功能", "plugins"),
     ("subagents", "子任务功能", "subagents"),
     ("context_compaction", "上下文压缩", "context_compaction"),
-    ("router", "任务思维路由", "router"),
+
 )
 _COLUMN_SLOTS = 16  # 每栏设置行数：左栏 15 项 + 1 空位，右栏真实设置项 + 空位。
 # 普通模式左栏：先主设置，再“管理”入口，最后是开关项与压缩阈值项。
-# 右栏固定为 show_thinking/router 两项，合计 16 项，右栏其余位置为空位。
+# 右栏固定为 show_thinking 一项，右栏其余位置为空位。
 _SETTING_ORDER = (
     "model",
     "context",
@@ -195,7 +195,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
 
     @property
     def _all_keys(self) -> tuple[str, ...]:
-        """全部可设置键：左栏 + 右栏真实设置项（普通模式含思考显示与任务思维路由）。
+        """全部可设置键：左栏 + 右栏真实设置项。
 
         选中索引与行渲染基于该元组遍历；右栏其余位置仍为空位占位行。
         """
@@ -425,12 +425,12 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         return self._row_keys
 
     def _right_keys(self) -> tuple[str, ...]:
-        """普通模式右栏真实设置项：当前为“思考显示”与“任务思维路由”。
+        """普通模式右栏真实设置项：当前为“思考显示”。
 
         后续新增设置项时，保持 _SETTING_ORDER 为左栏项、右栏追加新 key 即可。
         """
 
-        return () if self._advanced else ("show_thinking", "router")
+        return () if self._advanced else ("show_thinking",)
 
     def _row_widget(self, key: str) -> Static:
         """生成单个设置行控件，含选中标记与当前状态值。"""
@@ -604,7 +604,6 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             "plugins": "set_plugin_enabled",
             "subagents": "set_subagents_enabled",
             "context_compaction": "set_context_compaction_enabled",
-            "router": "set_router_enabled",
         }[key]
         setter = getattr(screen._agent, setter_name)
         try:

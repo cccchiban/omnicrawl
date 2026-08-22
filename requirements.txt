@@ -13,7 +13,7 @@ curl_cffi>=0.6.0
 beautifulsoup4>=4.10.0
 tomli>=2.0; python_version < "3.11"
 tomli-w>=1.0
-# TTS（omnicrawl.tts）：MOSS-TTS-Nano ONNX CPU 推理（推理无需 PyTorch）
+# TTS（omnicrawl.tts）：MOSS-TTS-Nano ONNX 推理（推理无需 PyTorch）；CUDA 由设置页自动安装 onnxruntime-gpu 及其 Python CUDA/cuDNN 运行时依赖
 # 模型首次使用自动下载到 ~/.omnicrawl/tts/models（约 763MB，可用 OMNICRAWL_TTS_MODEL_DIR 覆盖）
 numpy>=1.24
 onnxruntime>=1.19.2

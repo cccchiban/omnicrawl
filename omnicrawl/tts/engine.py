@@ -1,6 +1,6 @@
-"""MOSS-TTS-Nano ONNX CPU 语音合成引擎。
+"""MOSS-TTS-Nano ONNX 语音合成引擎。
 
-无 PyTorch 依赖：ONNX Runtime 推理 + sentencepiece 分词 + 纯 Python 音频/文本处理。
+无 PyTorch 依赖：ONNX Runtime CPU/CUDA 推理 + sentencepiece 分词 + 纯 Python 音频/文本处理。
 高层流程（对齐官方 `OnnxTtsRuntime`）：
   文本归一化 → 解析音色（内置音色 / 参考音频语音克隆）→ 按 token 预算分块 →
   逐块自回归生成音频帧 → codec 解码成波形 → 拼接写出 WAV。
@@ -194,7 +194,11 @@ class TtsEngine:
             max_new_frames=config.max_new_frames,
             do_sample=config.do_sample,
             sample_mode=config.sample_mode,
-            execution_provider=config.execution_provider,
+            execution_provider=(
+                config.execution_provider
+                if config.device == "auto" and config.execution_provider != EXECUTION_PROVIDER_CPU
+                else (config.device or config.execution_provider)
+            ),
         )
         self.model_dir = resolved_model_dir
         self.manifest = self._runtime.manifest

@@ -27,7 +27,7 @@ def resolve_model_dir(model_dir: str | Path | None) -> Path:
 
 @dataclass
 class TTSConfig:
-    """MOSS-TTS-Nano（ONNX CPU）推理配置。
+    """MOSS-TTS-Nano ONNX 推理配置。
 
     字段默认值与官方 `infer_onnx.py` 一致；`model_dir` 为 None 时使用
     `~/.omnicrawl/tts/models`（或 OMNICRAWL_TTS_MODEL_DIR）。
@@ -36,7 +36,9 @@ class TTSConfig:
     model_dir: str | Path | None = None
     # ONNX Runtime 线程数（intra-op）。
     thread_count: int = 4
-    # 执行后端：cpu / cuda（cuda 需要 onnxruntime-gpu）。
+    # 设备：auto 自动优先 CUDA、不可用时回退 CPU；显式 cuda 不回退。
+    device: str | None = "auto"
+    # 兼容旧 API 的 ONNX Runtime provider 参数；device 设置后优先使用 device。
     execution_provider: str = "cpu"
     # 采样模式：greedy / fixed / full。
     sample_mode: str = "fixed"

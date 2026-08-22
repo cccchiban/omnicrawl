@@ -53,7 +53,7 @@ enabled = true
 enabled = false
 models = []
 
-# TTS 语音合成（MOSS-TTS-Nano ONNX CPU 推理，无需 GPU/PyTorch）：
+# TTS 语音合成（MOSS-TTS-Nano ONNX 推理，无需 PyTorch）：
 # 首次启用时在 TUI /settings → TTS 中下载模型（约 763MB）并选择音色。
 [tts]
 enabled = false
@@ -65,6 +65,8 @@ voice = "Junhao"
 auto_play = true
 # onnxruntime CPU 推理线程数（1/2/4/8）。
 thread_count = 4
+# 推理设备：auto 优先 CUDA，不可用时回退 CPU；cuda 不可用时直接报错。
+device = "auto"
 # codec 流式解码（低首字节延迟，默认关闭）。
 streaming = false
 # 生成音频默认保存目录。
@@ -81,13 +83,6 @@ review_model = ""
 [memory]
 enabled = true
 
-# 任务思维模式路由器（dsh-routing-suite 移植），默认关闭。
-# mode = "standard" 表示 RL 接口还原（首轮 RL 训练句 + 核心工具面，首次工具调用后晋升）；
-# mode = "spec" 表示深度思考优先（分类 persona 置顶，保留完整 system prompt）。
-[router]
-enabled = false
-mode = "standard"
-
 # 内置工具开关：默认除 powershell 关闭外，其余全部启用。
 # 只在需要禁用某个工具时取消注释并设为 false。
 # [tools]
@@ -100,9 +95,11 @@ mode = "standard"
 # 开启后还会注册 recall_session_evidence，只按当前有效摘要的事件 ID 恢复证据。
 # 阈值也可在运行设置面板按当前模型上下文窗口的百分比设置（5% 步进）：
 # trigger_context_tokens = 上下文窗口 × 百分比。
+# 通过设置面板修改百分比后会保存该关系，并在上下文窗口变化时实时重算。
 [context_compaction]
 enabled = true
 trigger_context_tokens = 100000
+# trigger_context_percent = 80  # 可选；设置后随上下文窗口实时联动
 next_user_reserve_tokens = 4096
 minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85

@@ -134,7 +134,6 @@ _READ_ONLY_UNDO_TOOLS = frozenset(
         "read_image",
         "grep",
         "recall_session_evidence",
-        "dev_router_status",
         "memory_search",
         "memory_read",
         "memory_expand_related",
@@ -165,14 +164,6 @@ _MEMORY_UNDO_EXEMPT_TOOLS = frozenset(
         "project_memory_write",
         "session_memory_write",
         "user_memory_write",
-    }
-)
-
-
-_ROUTER_UNDO_EXEMPT_TOOLS = frozenset(
-    {
-        "dev_router_mode",
-        "dev_mode_subagent",
     }
 )
 
@@ -210,32 +201,17 @@ def _validate_context_compaction_window(
     *,
     context_window_tokens: int | None = None,
 ) -> None:
-    """确保自动压缩能在下一次主模型请求达到窗口上限前触发。"""
+    """保留兼容入口，但不再用摘要预算反向限制模型上下文窗口。
 
-    if config is None or not config.enabled:
-        return
-    context_window = (
-        llm.context_window_tokens
-        if context_window_tokens is None
-        else context_window_tokens
-    )
-    # 压缩请求只需为摘要输出预留空间：取“摘要预算（0=无预算时按 8K 默认）”
-    # 与“模型实际输出能力”的较小值。不能把模型最大输出预算（max_output_tokens，
-    # 大输出模型可接近整个窗口，如 deepseek 系列约 90%）全量计入——否则
-    # 触发阈值必须小于窗口的 ~10%，压缩几乎无法配置。
-    summary_budget = max(config.target_summary_tokens or 8_192, 8_192)
-    max_output = int(getattr(llm, "max_output_tokens", 0) or 8_192)
-    output_reserve = min(summary_budget, max_output)
-    required_window = (
-        config.trigger_context_tokens
-        + config.next_user_reserve_tokens
-        + output_reserve
-    )
-    if context_window <= required_window:
-        raise AgentError(
-            "启用 context_compaction 时，活动模型上下文窗口必须大于 "
-            f"{required_window} Token，当前为 {context_window}。"
-        )
+    ``context_window_tokens`` 是 Provider 的真实容量设置，压缩阈值、摘要预算和
+    用户预留量都是独立运行参数；把它们相加做启动/设置校验会导致合法的百分比
+    调整在窗口变小时被旧阈值卡住。Provider 仍会对超过其真实窗口的请求返回错误，
+    这不是 Host 可以安全取消的限制。
+    """
+
+    # 参数仍保留给旧扩展和测试替身；LLMConfig/ContextCompactionConfig 各自负责
+    # 基本类型校验，跨字段不再施加额外硬上限。
+    del config, llm, context_window_tokens
 
 
 def _unknown_tool_result(

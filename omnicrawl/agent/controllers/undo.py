@@ -29,7 +29,6 @@ from .shared import (
     _MEMORY_UNDO_EXEMPT_TOOLS,
     _READ_ONLY_UNDO_TOOLS,
     _REVERSIBLE_UNDO_TOOLS,
-    _ROUTER_UNDO_EXEMPT_TOOLS,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -91,7 +90,6 @@ class UndoMixin:
             name in _READ_ONLY_UNDO_TOOLS
             or name in _REVERSIBLE_UNDO_TOOLS
             or name in _MEMORY_UNDO_EXEMPT_TOOLS
-            or name in _ROUTER_UNDO_EXEMPT_TOOLS
         ):
             return True
         if name == "subagent":

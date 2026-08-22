@@ -33,6 +33,7 @@ class Composer(TextArea):
         *,
         submit_handler: Callable[[], None],
         command_key_handler: Callable[[events.Key], bool],
+        sessions_menu_key_handler: Callable[[events.Key], bool],
         copy_or_clear_handler: Callable[[], None],
         paste_handler: Callable[[str], str | None],
         **kwargs: Any,
@@ -40,6 +41,7 @@ class Composer(TextArea):
         super().__init__(**kwargs)
         self._submit_handler = submit_handler
         self._command_key_handler = command_key_handler
+        self._sessions_menu_key_handler = sessions_menu_key_handler
         self._copy_or_clear_handler = copy_or_clear_handler
         self._paste_handler = paste_handler
         # 已发送消息的历史浏览状态（bash 式上下键回看）。
@@ -127,6 +129,22 @@ class Composer(TextArea):
             self._history_navigating = False
 
     def on_key(self, event: events.Key) -> None:
+        # 提问选项是单选导航状态：即使焦点尚未从输入框切换到第一行，
+        # 上下键和回车也必须由选项状态机消费，不能被历史记录/会话滚动抢走。
+        app = self.app
+        if getattr(app, "_confirmation_required", False) and not getattr(
+            app, "_confirmation_custom_mode", False
+        ):
+            if event.key in {"up", "down"}:
+                app._move_confirmation_selection(-1 if event.key == "up" else 1)
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key == "enter":
+                app._confirm_confirmation_selection()
+                event.prevent_default()
+                event.stop()
+                return
         if event.key == "escape":
             self.app.action_cancel_or_focus()
             event.prevent_default()
@@ -145,6 +163,9 @@ class Composer(TextArea):
             event.stop()
         elif is_newline_key:
             self.insert("\n")
+            event.prevent_default()
+            event.stop()
+        elif self._sessions_menu_key_handler(event):
             event.prevent_default()
             event.stop()
         elif self._command_key_handler(event):

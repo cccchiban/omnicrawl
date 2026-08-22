@@ -166,11 +166,21 @@ class OpenAIResponsesRuntime:
         # output_item.done 与 response.completed.output 重复报告同一调用。
         call_buffers: dict[str, dict[str, str]] = {}
         emitted_call_ids: set[str] = set()
+        started_call_ids: set[str] = set()
+        # 兼容网关把 output item 的 id（item_id）与真正回传工具结果所需的
+        # call_id 分开传递：参数 delta 可能同时携带二者，后续 done 事件却只
+        # 携带 item_id。始终以 call_id 作为上层工具循环的稳定标识。
+        call_id_aliases: dict[str, str] = {}
         finish_reason = "stop"
         # 是否已收到 response.completed 完成事件：网关可能以“优雅关闭连接
         # （EOF）”包装断流，SDK 层迭代看似“正常耗尽”却从未到达完成事件，
         # 仅靠 finish_reason 无法区分正常完成与截断，需要显式跟踪该信号。
         stream_completed_seen = False
+        # 兼容部分中转站：普通文本已经产生增量后，可能直接以 EOF 结束，
+        # 丢弃 response.completed（甚至连 output_text.done 也一起丢弃）。
+        # 只要没有未完成的工具调用，可将该文本流视为完整回复；工具流仍
+        # 必须等待结构化收尾，避免半截参数被误执行。
+        output_text_delta_seen = False
         try:
             for event in registered_stream_events(
                 stream,
@@ -195,19 +205,43 @@ class OpenAIResponsesRuntime:
                     delta = event.get("delta")
 
                 if event_type == "response.output_text.delta" and isinstance(delta, str):
+                    output_text_delta_seen = True
                     yield TextDelta(text=delta)
                 elif event_type in {
                     "response.reasoning_text.delta",
                     "response.reasoning_summary_text.delta",
                 } and isinstance(delta, str):
                     yield ReasoningDelta(text=delta)
+                elif event_type == "response.output_item.added":
+                    # 部分兼容网关只在 output_item.added 事件里携带函数名，
+                    # 之后直接给参数 delta 并在 response.completed 前结束流；
+                    # 若忽略该事件，完整工具调用会被误判为“名称截断”。
+                    item = getattr(event, "item", None)
+                    if item is None and isinstance(event, dict):
+                        item = event.get("item")
+                    yield from _capture_function_call_added(
+                        item,
+                        call_buffers,
+                        started_call_ids,
+                        call_id_aliases,
+                    )
                 elif event_type == "response.function_call_arguments.delta":
-                    call_id = str(
+                    item_id = str(
                         getattr(event, "item_id", None)
-                        or getattr(event, "call_id", None)
                         or (event.get("item_id") if isinstance(event, dict) else "")
+                        or ""
+                    )
+                    provider_call_id = str(
+                        getattr(event, "call_id", None)
                         or (event.get("call_id") if isinstance(event, dict) else "")
                         or ""
+                    )
+                    call_id = _canonical_call_id(
+                        item_id,
+                        provider_call_id,
+                        call_buffers,
+                        call_id_aliases,
+                        started_call_ids,
                     )
                     if call_id and isinstance(delta, str):
                         buf = call_buffers.setdefault(call_id, {"name": "", "arguments": ""})
@@ -217,12 +251,78 @@ class OpenAIResponsesRuntime:
                             )
                             if name:
                                 buf["name"] = str(name)
-                                yield ToolCallStarted(call_id=call_id, name=buf["name"])
+                        if buf["name"] and call_id not in started_call_ids:
+                            started_call_ids.add(call_id)
+                            yield ToolCallStarted(call_id=call_id, name=buf["name"])
                         buf["arguments"] += delta
-                elif event_type in {
-                    "response.output_item.done",
-                    "response.function_call_arguments.done",
-                }:
+                elif event_type == "response.function_call_arguments.done":
+                    # 标准 Responses 事件在该事件顶层携带 name + 最终 arguments
+                    # （SDK 类型 ResponseFunctionCallArgumentsDoneEvent），并且它
+                    # 没有 item 字段；旧实现只看 event.item 会丢掉名称，导致兼容
+                    # 网关把完整工具调用误判为“名称截断”。
+                    item = getattr(event, "item", None)
+                    if item is None and isinstance(event, dict):
+                        item = event.get("item")
+                    if item is not None:
+                        yield from _emit_function_call_item(
+                            item,
+                            call_buffers,
+                            emitted_call_ids,
+                            started_call_ids,
+                            call_id_aliases,
+                        )
+                    else:
+                        done_item_id = str(
+                            getattr(event, "item_id", None)
+                            or (event.get("item_id") if isinstance(event, dict) else "")
+                            or ""
+                        )
+                        done_provider_call_id = str(
+                            getattr(event, "call_id", None)
+                            or (event.get("call_id") if isinstance(event, dict) else "")
+                            or ""
+                        )
+                        done_id = _canonical_call_id(
+                            done_item_id,
+                            done_provider_call_id,
+                            call_buffers,
+                            call_id_aliases,
+                            started_call_ids,
+                        )
+                        done_name = str(
+                            getattr(event, "name", None)
+                            or (event.get("name") if isinstance(event, dict) else "")
+                            or ""
+                        ).strip()
+                        done_args = str(
+                            getattr(event, "arguments", None)
+                            or (event.get("arguments") if isinstance(event, dict) else "")
+                            or ""
+                        )
+                        if done_id:
+                            buf = call_buffers.setdefault(done_id, {"name": "", "arguments": ""})
+                            if done_name:
+                                if not buf["name"] and done_id not in started_call_ids:
+                                    started_call_ids.add(done_id)
+                                    yield ToolCallStarted(call_id=done_id, name=done_name)
+                                buf["name"] = done_name
+                            if done_args:
+                                buf["arguments"] = done_args
+                            final_name = done_name or buf.get("name", "")
+                            if final_name and done_id not in emitted_call_ids:
+                                final_args = done_args or buf.get("arguments", "")
+                                if _arguments_json_complete(final_args):
+                                    yield ToolCallCompleted(
+                                        call_id=done_id,
+                                        name=final_name,
+                                        arguments=parse_tool_arguments(final_args),
+                                    )
+                                    emitted_call_ids.add(done_id)
+                                    # arguments.done 已明确宣告该调用完整；移除
+                                    # 缓冲区，允许兼容网关在随后 EOF 丢失
+                                    # response.completed 时仍把调用交给上层执行。
+                                    call_buffers.pop(done_id, None)
+                elif event_type == "response.output_item.done":
                     item = getattr(event, "item", None)
                     if item is None and isinstance(event, dict):
                         item = event.get("item")
@@ -230,6 +330,8 @@ class OpenAIResponsesRuntime:
                         item,
                         call_buffers,
                         emitted_call_ids,
+                        started_call_ids,
+                        call_id_aliases,
                     )
                 elif event_type == "response.completed":
                     stream_completed_seen = True
@@ -249,6 +351,8 @@ class OpenAIResponsesRuntime:
                                 item,
                                 call_buffers,
                                 emitted_call_ids,
+                                started_call_ids,
+                                call_id_aliases,
                             )
         except Exception as exc:
             if cancel_check is not None:
@@ -268,11 +372,20 @@ class OpenAIResponsesRuntime:
         if cancel_check is not None:
             cancel_check()
 
-        # 网关可能以“优雅关闭连接（EOF）”包装断流：SDK 层迭代正常耗尽，
-        # 但响应从未走到 response.completed。此时必须按流中断处理，绝不能
-        # 静默当正常完成（否则半截回复会直接结束回合且不提示用户），交由
-        # 上层回滚已输出的半截文字并自动重试。
-        if not stream_completed_seen:
+        # 兼容部分 Responses 中转站：普通文本或完整工具调用流已经产生
+        # 可验证的内容后，网关会直接以 EOF 结束并丢弃 response.completed。
+        # 没有结构化工具调用时，已收到的文本就是该类网关唯一可用的完成
+        # 信号；工具调用则要求至少有一个已完整解析的调用，且不能残留未
+        # 完成的缓冲区，防止半截参数被当成真实调用。
+        complete_buffered_calls = bool(call_buffers) and all(
+            bool(buf.get("name")) and _arguments_json_complete(buf.get("arguments", ""))
+            for buf in call_buffers.values()
+        )
+        eof_has_complete_output = (
+            (not call_buffers and (output_text_delta_seen or bool(emitted_call_ids)))
+            or complete_buffered_calls
+        )
+        if not stream_completed_seen and not eof_has_complete_output:
             raise ModelError(
                 code=ModelErrorCode.STREAM_INTERRUPTED,
                 message="Responses 流在收到 response.completed 前提前耗尽，疑似连接被网关截断。",
@@ -303,6 +416,12 @@ class OpenAIResponsesRuntime:
                 raise ModelError(
                     code=ModelErrorCode.STREAM_INTERRUPTED,
                     message="Responses 流在工具调用名称完整到达前结束，疑似连接被网关截断。",
+                    retryable=True,
+                )
+            if not _arguments_json_complete(buf.get("arguments", "")):
+                raise ModelError(
+                    code=ModelErrorCode.STREAM_INTERRUPTED,
+                    message="Responses 流在工具调用参数完整到达前结束，疑似连接被网关截断。",
                     retryable=True,
                 )
             yield ToolCallCompleted(
@@ -632,10 +751,98 @@ def messages_to_responses_input(
     return items
 
 
+def _canonical_call_id(
+    item_id: str,
+    provider_call_id: str,
+    call_buffers: dict[str, dict[str, str]],
+    call_id_aliases: dict[str, str],
+    started_call_ids: set[str],
+) -> str:
+    """统一 Responses 流中 item_id 与 provider call_id 的别名。
+
+    某些 OpenAI 兼容网关在 ``output_item.added`` 使用输出项 id，随后在
+    参数 delta 同时给出 ``item_id`` 和真正用于 ``function_call_output`` 的
+    ``call_id``。工具循环必须保留后者，但已收集的名称/参数缓冲又位于前者。
+    """
+
+    item_id = str(item_id or "")
+    provider_call_id = str(provider_call_id or "")
+    if item_id and provider_call_id and item_id != provider_call_id:
+        call_id_aliases[item_id] = provider_call_id
+        existing = call_buffers.pop(item_id, None)
+        if existing is not None:
+            current = call_buffers.setdefault(
+                provider_call_id, {"name": "", "arguments": ""}
+            )
+            if not current.get("name"):
+                current["name"] = existing.get("name", "")
+            if not current.get("arguments"):
+                current["arguments"] = existing.get("arguments", "")
+        if item_id in started_call_ids:
+            started_call_ids.discard(item_id)
+            started_call_ids.add(provider_call_id)
+        return provider_call_id
+    candidate = provider_call_id or item_id
+    return call_id_aliases.get(candidate, candidate)
+
+
+def _capture_function_call_added(
+    item: Any,
+    call_buffers: dict[str, dict[str, str]],
+    started_call_ids: set[str],
+    call_id_aliases: dict[str, str],
+) -> Iterator[ModelStreamEvent]:
+    """从 response.output_item.added 事件提取 function_call 的名称。
+
+    部分兼容网关只在 added 事件里携带函数名，后续参数 delta 不再附带；
+    若一直等到 output_item.done/response.completed 才取名称，这类网关的
+    完整工具调用会被误判为“名称截断”。
+    """
+    if item is None:
+        return
+    data = item if isinstance(item, dict) else None
+    if data is None and hasattr(item, "model_dump"):
+        data = item.model_dump()
+    if not isinstance(data, dict) or data.get("type") != "function_call":
+        return
+    call_id = str(data.get("id") or data.get("call_id") or "")
+    name = str(data.get("name") or "").strip()
+    if not call_id or not name:
+        return
+    buf = call_buffers.setdefault(call_id, {"name": "", "arguments": ""})
+    if not buf["name"]:
+        buf["name"] = name
+    arguments = str(data.get("arguments") or "")
+    if arguments and not buf["arguments"]:
+        buf["arguments"] = arguments
+    if call_id not in started_call_ids:
+        started_call_ids.add(call_id)
+        yield ToolCallStarted(call_id=call_id, name=buf["name"])
+
+
+def _arguments_json_complete(raw_arguments: Any) -> bool:
+    """工具调用参数是否为完整可解析的 JSON。
+
+    空字符串视为完整（模型可不带参数）；非空字符串必须能被 json.loads
+    解析，否则说明参数流在半途被网关截断（半截 JSON），不能当正常调用
+    收尾，否则会被 parse_tool_arguments 静默降级为 {} 并以空参数误执行。
+    """
+
+    if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+        return True
+    try:
+        json.loads(raw_arguments)
+        return True
+    except json.JSONDecodeError:
+        return False
+
+
 def _emit_function_call_item(
     item: Any,
     call_buffers: dict[str, dict[str, str]],
     emitted_call_ids: set[str],
+    started_call_ids: set[str],
+    call_id_aliases: dict[str, str],
 ) -> Iterator[ModelStreamEvent]:
     if item is None:
         return
@@ -655,12 +862,19 @@ def _emit_function_call_item(
     if item_type != "function_call":
         return
 
-    call_id = str(
+    raw_call_id = str(
         getattr(item, "call_id", None)
         or getattr(item, "id", None)
         or (item.get("call_id") if isinstance(item, dict) else "")
         or (item.get("id") if isinstance(item, dict) else "")
         or ""
+    )
+    call_id = _canonical_call_id(
+        raw_call_id,
+        "",
+        call_buffers,
+        call_id_aliases,
+        started_call_ids,
     )
     name = str(
         getattr(item, "name", None)
@@ -676,7 +890,8 @@ def _emit_function_call_item(
         return
     if call_id in call_buffers:
         call_buffers.pop(call_id, None)
-    else:
+    if call_id not in started_call_ids:
+        started_call_ids.add(call_id)
         yield ToolCallStarted(call_id=call_id, name=name)
     yield ToolCallCompleted(
         call_id=call_id,

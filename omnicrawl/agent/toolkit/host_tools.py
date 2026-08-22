@@ -117,27 +117,13 @@ class HostToolCatalog:
     def __init__(
         self,
         tools: Mapping[str, ToolDefinition],
-        *,
-        visible_tools: set[str] | None = None,
     ) -> None:
         """目录快照；``visible_tools`` 非 None 时只对该子集开放搜索/调用。
 
-        完整目录仍保留在 ``_tools`` 供参数 Schema 校验与执行器查找使用；
-        可见性过滤只作用于模型侧的搜索与调用入口（任务路由首轮裁剪）。
+        完整目录保留在 ``_tools``，供模型侧搜索、参数 Schema 校验与执行器查找使用。
         """
 
         self._tools = dict(tools)
-        self._visible_tools = (
-            frozenset(visible_tools) if visible_tools is not None else None
-        )
-
-    @property
-    def visible_tools(self) -> frozenset[str] | None:
-        return self._visible_tools
-
-    def _is_visible(self, tool_name: str) -> bool:
-        return self._visible_tools is None or tool_name in self._visible_tools
-
     @property
     def tools(self) -> Mapping[str, ToolDefinition]:
         return self._tools
@@ -208,8 +194,6 @@ class HostToolCatalog:
 
         ranked: list[tuple[int, str, ToolDefinition]] = []
         for name, tool in self._tools.items():
-            if not self._is_visible(name):
-                continue
             score = self._match_score(query_text, tool)
             if score > 0:
                 ranked.append((score, name, tool))
@@ -258,15 +242,6 @@ class HostToolCatalog:
                 tool_name=requested_name,
                 retryable=True,
                 extra={"suggestions": suggestions},
-            )
-
-        if not self._is_visible(tool_name):
-            return _error_result(
-                "router_first_turn_restricted",
-                f"工具 {tool_name} 当前不可用：任务路由首轮只开放核心工具面，"
-                "请先调用已开放工具完成首轮探索/写入后重试。",
-                tool_name=tool_name,
-                retryable=True,
             )
 
         normalized_call = normalize_tool_call(
@@ -408,8 +383,6 @@ def build_provider_tools(catalog: HostToolCatalog) -> dict[str, ToolDefinition]:
 
     provider: dict[str, ToolDefinition] = {}
     for name, tool in catalog.tools.items():
-        if not catalog._is_visible(name):
-            continue
         provider[name] = ToolDefinition(
             name=tool.name,
             description=compact_tool_description(tool.description),

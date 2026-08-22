@@ -20,7 +20,7 @@ from .engine import TtsEngine
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="omnicrawl.tts", description="MOSS-TTS-Nano ONNX CPU 语音合成")
+    parser = argparse.ArgumentParser(prog="omnicrawl.tts", description="MOSS-TTS-Nano ONNX 语音合成")
     parser.add_argument("--text", help="要合成的文本。")
     parser.add_argument("--text-file", help="UTF-8 文本文件路径（与 --text 二选一）。")
     parser.add_argument("--voice", default=None, help="内置音色名（未提供参考音频时使用）。")
@@ -34,7 +34,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", default=None, help="输出 WAV 路径。")
     parser.add_argument("--model-dir", default=None, help="模型目录；缺省时自动下载到默认目录。")
     parser.add_argument("--output-dir", default="generated_audio", help="输出目录（未指定 --output 时）。")
-    parser.add_argument("--cpu-threads", type=int, default=4, help="onnxruntime intra-op 线程数。")
+    parser.add_argument("--cpu-threads", type=int, default=4, help="onnxruntime CPU intra-op 线程数。")
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+        help="推理设备：auto 优先 CUDA、不可用时回退 CPU；cuda 不可用时直接报错。",
+    )
     parser.add_argument("--sample-mode", choices=("greedy", "fixed", "full"), default="fixed")
     parser.add_argument("--do-sample", type=int, choices=[0, 1], default=1, help="是否采样（0 时强制 greedy）。")
     parser.add_argument("--streaming", action="store_true", help="使用 codec 流式解码。")
@@ -59,6 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = TTSConfig(
         model_dir=args.model_dir,
         thread_count=args.cpu_threads,
+        device=args.device,
         sample_mode=args.sample_mode,
         do_sample=bool(args.do_sample),
         max_new_frames=args.max_new_frames,

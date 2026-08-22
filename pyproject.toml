@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnicrawl-agent"
-version = "0.1.26"
+version = "0.1.27"
 description = "Local OmniCrawl agent with TUI, tools, MCP and NPM Hook plugins"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -30,8 +30,19 @@ dependencies = [
 
 [project.optional-dependencies]
 windows = ["pywin32>=306"]
-# TTS（omnicrawl.tts）：MOSS-TTS-Nano ONNX CPU 推理，pip install -e .[tts]
+# TTS（omnicrawl.tts）：MOSS-TTS-Nano ONNX 推理，pip install -e .[tts]
 tts = ["onnxruntime>=1.19.2", "sentencepiece>=0.1.99"]
+# CUDA 版：先卸载 onnxruntime；设置页会按当前 Python 安装兼容的 CUDA/cuDNN wheel。
+tts-cuda = [
+    "onnxruntime-gpu<1.21.0",
+    "nvidia-cuda-nvrtc-cu12<12.7",
+    "nvidia-cuda-runtime-cu12<12.7",
+    "nvidia-cublas-cu12<12.7",
+    "nvidia-cufft-cu12<12.7",
+    "nvidia-curand-cu12<10.3",
+    "nvidia-cudnn-cu12<9.7",
+    "sentencepiece>=0.1.99",
+]
 
 [project.scripts]
 # ocl 是面向用户的短命令；保留 omnicrawl 兼容已有脚本。

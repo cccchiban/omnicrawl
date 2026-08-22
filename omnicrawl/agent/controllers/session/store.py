@@ -214,16 +214,6 @@ class SessionStoreMixin:
 
         state = self._session_facade().resume_session(session_id)
         self._bind_current_session_memory_store()
-        # 路由状态是进程内 per-session 数据：resume 后从持久事件恢复晋升与
-        # override，否则已晋升会话会重新收窄工具面、override 丢失。
-        if getattr(self.config, "router_enabled", False):
-            try:
-                self._router_runtime.restore_from_events(
-                    session_id,
-                    self._router_session_events(session_id),
-                )
-            except Exception:  # noqa: BLE001 - 路由恢复失败只影响首轮裁剪
-                LOGGER.warning("恢复会话路由状态失败：%s", exc_info=True)
         return state
 
     def _cancel_subagents_for_session_transition(self, reason: str) -> None:

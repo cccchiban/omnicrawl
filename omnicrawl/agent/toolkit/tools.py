@@ -515,10 +515,10 @@ def build_agent_tools(
                         name="tts_synthesize",
                         description=(
                             "把文本合成为语音（MOSS-TTS-Nano，本地 ONNX CPU 推理，无需联网）。"
-                            "text 必填；音色固定使用设置中的配置（/settings → TTS），"
+                            "text 必填；音色和推理设备固定使用设置中的配置（/settings → TTS），"
                             "模型不可指定音色；prompt_audio 为参考音频路径时可语音克隆；"
                             "path 可指定 WAV 保存位置（默认 .omnicrawl/.agent_tmp/tts/）。"
-                            "输出 48kHz 立体声 WAV，生成后默认自动播放。"
+                            "输出 48kHz 立体声 WAV，推理设备由 /settings → TTS 的 device 配置决定。"
                         ),
                         argument_schema=(
                             '{"text": "要朗读的文本", '

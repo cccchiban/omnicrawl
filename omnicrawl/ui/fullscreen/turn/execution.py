@@ -184,6 +184,12 @@ class TurnExecutionMixin:
     def _handle_command(self, text: str) -> bool:
         """执行分派结果；Textual 生命周期始终保留在应用层。"""
 
+        # /sessions 特殊处理：不追加到对话区，改为在输入框上方显示
+        # 可导航的会话预选菜单，用户选择后直接填入 /resume 命令。
+        if text.strip() == "/sessions":
+            self._show_sessions_menu()
+            return True
+
         previous_session_id = self.agent.current_session_id
         outcome = self._command_dispatcher.dispatch(text)
         if not outcome.handled:

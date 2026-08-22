@@ -1,6 +1,6 @@
-"""MOSS-TTS-Nano ONNX CPU 推理核心（移植自 MOSS-TTS-Nano 仓库 ort_cpu_runtime.py）。
+"""MOSS-TTS-Nano ONNX 推理核心（移植自 MOSS-TTS-Nano 仓库 ort_cpu_runtime.py）。
 
-仅依赖 numpy + onnxruntime，推理不涉及 PyTorch。本文件基于 Apache-2.0 许可的
+仅依赖 numpy + onnxruntime（CUDA 时使用 onnxruntime-gpu），推理不涉及 PyTorch。本文件基于 Apache-2.0 许可的
 OpenMOSS/MOSS-TTS-Nano 源码移植，按 Python 3.9 兼容性移除了 ``zip(strict=True)``。
 
 原项目：https://github.com/OpenMOSS/MOSS-TTS-Nano
@@ -9,7 +9,10 @@ OpenMOSS/MOSS-TTS-Nano 源码移植，按 Python 3.9 兼容性移除了 ``zip(st
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
+import site
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,11 +21,54 @@ from typing import Any, Callable
 import numpy as np
 import onnxruntime as ort
 
+LOGGER = logging.getLogger(__name__)
+
 SAMPLE_MODE_GREEDY = "greedy"
 SAMPLE_MODE_FIXED = "fixed"
 SAMPLE_MODE_FULL = "full"
+DEVICE_AUTO = "auto"
 EXECUTION_PROVIDER_CPU = "cpu"
 EXECUTION_PROVIDER_CUDA = "cuda"
+
+# Python 3.9 的 onnxruntime-gpu 没有 preload_dlls()，需要把 NVIDIA Python
+# wheel 的 bin 目录加入 DLL 搜索路径，否则 provider 会静默回退到 CPU。
+_CUDA_DLL_RELATIVE_DIRS = (
+    "nvidia/cuda_nvrtc/bin",
+    "nvidia/cuda_runtime/bin",
+    "nvidia/cublas/bin",
+    "nvidia/cufft/bin",
+    "nvidia/curand/bin",
+    "nvidia/cudnn/bin",
+)
+_CUDA_DLL_HANDLES: list[Any] = []
+
+
+def _configure_python_cuda_dlls() -> tuple[str, ...]:
+    """配置 Python CUDA/cuDNN wheel 的 DLL 搜索目录并保持句柄存活。"""
+
+    try:
+        roots = list(site.getsitepackages())
+        user_site = site.getusersitepackages()
+        if user_site:
+            roots.append(user_site)
+    except (AttributeError, OSError):
+        roots = []
+    added: list[str] = []
+    for root in roots:
+        for relative in _CUDA_DLL_RELATIVE_DIRS:
+            directory = Path(root) / relative
+            if not directory.is_dir():
+                continue
+            directory_text = str(directory)
+            if directory_text in added:
+                continue
+            added.append(directory_text)
+            os.environ["PATH"] = directory_text + os.pathsep + os.environ.get("PATH", "")
+            add_dll_directory = getattr(os, "add_dll_directory", None)
+            if callable(add_dll_directory):
+                _CUDA_DLL_HANDLES.append(add_dll_directory(directory_text))
+    return tuple(added)
+
 
 MANIFEST_CANDIDATE_RELATIVE_PATHS = (
     "browser_poc_manifest.json",
@@ -40,26 +86,43 @@ def _argmax(values: np.ndarray) -> int:
 
 
 def _normalize_execution_provider(raw_execution_provider: str | None) -> str:
-    normalized = str(raw_execution_provider or EXECUTION_PROVIDER_CPU).strip().lower()
-    if normalized in {EXECUTION_PROVIDER_CPU, "CPUExecutionProvider".lower()}:
+    """标准化设备名；``auto`` 保留到运行时探测阶段。"""
+
+    normalized = str(raw_execution_provider or DEVICE_AUTO).strip().lower()
+    if normalized in {DEVICE_AUTO, EXECUTION_PROVIDER_CPU, EXECUTION_PROVIDER_CUDA}:
+        return normalized
+    if normalized == "CPUExecutionProvider".lower():
         return EXECUTION_PROVIDER_CPU
-    if normalized in {EXECUTION_PROVIDER_CUDA, "gpu", "CUDAExecutionProvider".lower()}:
+    if normalized in {"gpu", "CUDAExecutionProvider".lower()}:
         return EXECUTION_PROVIDER_CUDA
-    raise ValueError("execution_provider must be one of: cpu, cuda")
+    raise ValueError("device/execution_provider must be one of: auto, cpu, cuda")
+
+
+def _cuda_provider_available() -> bool:
+    return "CUDAExecutionProvider" in set(ort.get_available_providers())
+
+
+def _resolve_requested_provider(device: str) -> str:
+    normalized = _normalize_execution_provider(device)
+    if normalized != DEVICE_AUTO:
+        return normalized
+    return EXECUTION_PROVIDER_CUDA if _cuda_provider_available() else EXECUTION_PROVIDER_CPU
 
 
 def _resolve_ort_providers(execution_provider: str) -> list[Any]:
     normalized = _normalize_execution_provider(execution_provider)
+    if normalized == DEVICE_AUTO:
+        normalized = _resolve_requested_provider(normalized)
     if normalized == EXECUTION_PROVIDER_CPU:
         return ["CPUExecutionProvider"]
-    available_providers = set(ort.get_available_providers())
-    if "CUDAExecutionProvider" not in available_providers:
+    if not _cuda_provider_available():
         available = ", ".join(ort.get_available_providers()) or "none"
         raise RuntimeError(
             "CUDAExecutionProvider was requested, but this onnxruntime build does not expose it. "
             "Install onnxruntime-gpu that matches your CUDA/cuDNN runtime. "
             f"Available providers: {available}"
         )
+    _configure_python_cuda_dlls()
     preload_dlls = getattr(ort, "preload_dlls", None)
     if callable(preload_dlls):
         preload_dlls()
@@ -329,8 +392,19 @@ class OrtCpuRuntime:
     ) -> None:
         self.model_dir = Path(model_dir).expanduser().resolve()
         self.thread_count = max(1, int(thread_count))
-        self.execution_provider = _normalize_execution_provider(execution_provider)
-        self.ort_providers = _resolve_ort_providers(self.execution_provider)
+        self.requested_device = _normalize_execution_provider(execution_provider)
+        self.execution_provider = _resolve_requested_provider(self.requested_device)
+        try:
+            self.ort_providers = _resolve_ort_providers(self.execution_provider)
+        except Exception:
+            if self.requested_device != DEVICE_AUTO or self.execution_provider != EXECUTION_PROVIDER_CUDA:
+                raise
+            LOGGER.warning(
+                "CUDA provider 准备失败，device=auto 将回退 CPU。",
+                exc_info=True,
+            )
+            self.execution_provider = EXECUTION_PROVIDER_CPU
+            self.ort_providers = ["CPUExecutionProvider"]
         self.manifest_path = self._resolve_manifest_path(self.model_dir)
         self.manifest_dir = self.manifest_path.parent
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
@@ -351,7 +425,18 @@ class OrtCpuRuntime:
         self.tts_meta = json.loads(self.tts_meta_path.read_text(encoding="utf-8"))
         self.codec_meta = json.loads(self.codec_meta_path.read_text(encoding="utf-8"))
         self.rng = np.random.default_rng(1234)
-        self.sessions = self._create_sessions()
+        try:
+            self.sessions = self._create_sessions()
+        except Exception:
+            if self.requested_device != DEVICE_AUTO or self.execution_provider != EXECUTION_PROVIDER_CUDA:
+                raise
+            LOGGER.warning(
+                "CUDA 推理初始化失败，device=auto 将回退 CPU。",
+                exc_info=True,
+            )
+            self.execution_provider = EXECUTION_PROVIDER_CPU
+            self.ort_providers = ["CPUExecutionProvider"]
+            self.sessions = self._create_sessions()
         self.codec_streaming_session = CodecStreamingDecodeSession(
             codec_meta=self.codec_meta,
             session=self.sessions["codec_decode_step"],
@@ -839,6 +924,7 @@ __all__ = [
     "SAMPLE_MODE_FIXED",
     "SAMPLE_MODE_FULL",
     "SAMPLE_MODE_GREEDY",
+    "DEVICE_AUTO",
     "_normalize_execution_provider",
     "_normalize_sample_mode",
     "_resolve_stream_decode_frame_budget",

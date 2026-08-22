@@ -156,25 +156,20 @@ def save_context_compaction_trigger_percent(
     只更新 ``context_compaction.trigger_context_tokens``，保留该段其余字段。
     """
 
-    if (
-        isinstance(percent, bool)
-        or not isinstance(percent, int)
-        or not 0 < percent < 100
-    ):
-        raise SettingsConfigError("上下文压缩阈值百分比必须是 1 到 99 的整数。")
+    if isinstance(percent, bool) or not isinstance(percent, int) or percent <= 0:
+        raise SettingsConfigError("上下文压缩阈值百分比必须是正整数。")
     if (
         isinstance(context_window_tokens, bool)
         or not isinstance(context_window_tokens, int)
         or context_window_tokens <= 0
     ):
         raise SettingsConfigError("上下文长度必须是正整数 Token。")
-    tokens = context_window_tokens * percent // 100
-    if tokens <= 0:
-        raise SettingsConfigError("换算后的上下文压缩阈值必须为正整数 Token。")
+    tokens = max(1, context_window_tokens * percent // 100)
     try:
         data = load_config_data(config_path)
         section = get_section(data, "context_compaction")
         section["trigger_context_tokens"] = tokens
+        section["trigger_context_percent"] = percent
         data["context_compaction"] = section
         return save_config_data(data, config_path)
     except RuntimeConfigError as exc:

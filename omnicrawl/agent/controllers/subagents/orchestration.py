@@ -936,6 +936,7 @@ class SubAgentOrchestrationMixin:
             )
 
         tool_start_times: dict[Any, float] = {}
+        tool_result_cache: dict[str, ToolResult] = {}
 
         def report_tool_start(_step: int, call: Any) -> None:
             key = str(getattr(call, "id", "") or "") or id(call)
@@ -1003,6 +1004,7 @@ class SubAgentOrchestrationMixin:
                             else getattr(self.config, "llm", None)
                         ),
                         tools=child_tools,
+                        execution_cache=tool_result_cache,
                         persist_session_events=False,
                     ),
                     limits=AgentLoopLimits(

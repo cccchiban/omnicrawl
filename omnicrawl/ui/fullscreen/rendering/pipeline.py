@@ -14,6 +14,7 @@ P2 重构从 ``ui/fullscreen/__init__.py`` 的 ``OmniCrawlApp`` 拆出的独立�
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -676,6 +677,36 @@ class RenderingMixin:
         """合并短时间内的流式分片，避免逐片重解析完整 Markdown。"""
 
         self._stream_render_pending = False
+        # 选项块和确认标记是模型与 UI 间的内部协议，不应显示给用户。
+        visible_markdown = re.sub(
+            r"\[选项\]\s*.*?\s*\[/选项\]",
+            "",
+            self._stream_markdown,
+            flags=re.DOTALL,
+        )
+        # 兼容模型漏写 [选项] 包裹标签、但已输出确认标记的情况；这类
+        # 连续 Markdown 列表会在回合收尾时由 Agent 解析为复选框，流式层
+        # 也必须同步隐藏，否则同一答案会同时出现在对话区和预选区。
+        if "[需要用户确认]" in visible_markdown:
+            lines = visible_markdown.splitlines()
+            list_pattern = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
+            runs: list[tuple[int, int]] = []
+            run_start: int | None = None
+            for index, line in enumerate(lines + [""]):
+                if list_pattern.match(line):
+                    if run_start is None:
+                        run_start = index
+                    continue
+                if run_start is not None:
+                    runs.append((run_start, index))
+                    run_start = None
+            if runs:
+                start, end = runs[-1]
+                del lines[start:end]
+                visible_markdown = "\n".join(lines)
+        visible_markdown = visible_markdown.replace("[需要用户确认]", "").rstrip()
+        if visible_markdown != self._stream_markdown and self._stream_message is not None:
+            self._stream_message.update(visible_markdown)
         if self._stream_message is not None:
             conversations = self.query("#conversation")
             if not conversations or self._stream_message.parent is None:
@@ -683,7 +714,7 @@ class RenderingMixin:
                 return
             conversation = conversations.first(VerticalScroll)
             follow_latest = self._is_conversation_at_end(conversation)
-            self._stream_message.update(self._stream_markdown)
+            self._stream_message.update(visible_markdown)
             self._scroll_conversation_if_following(
                 conversation,
                 follow_latest,

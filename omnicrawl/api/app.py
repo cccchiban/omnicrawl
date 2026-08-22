@@ -18,7 +18,6 @@ from ..state.session_artifacts import redact_sensitive_text
 from ..config.models.llm import load_llm_config
 from ..config.core.runtime import get_section, load_config_data
 from ..config.core.settings import load_feature_enabled
-from ..config.features.router import load_router_mode
 from ..config.features.subagents import load_subagent_config
 from ..workspace.context import (
     detect_project_context,
@@ -104,8 +103,6 @@ def create_default_agent() -> LocalToolAgent:
                 llm=load_llm_config(),
                 workspace_root=project_context.workspace_root,
                 workspace_detection_summary=project_context.detection_summary,
-                router_enabled=load_feature_enabled("router", default=False),
-                router_mode=load_router_mode(),
                 temp_workspace=load_agent_temp_workspace_config(),
                 subagents=load_subagent_config(),
             ),

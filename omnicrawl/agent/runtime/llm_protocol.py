@@ -605,13 +605,12 @@ def _http_status_code_of(exc: Exception) -> int | None:
 def is_retryable_model_request_error(exc: Exception) -> bool:
     """识别请求建立阶段可直接重试的模型服务错误。
 
-    400 也视为可重试：部分上游网关用 400 表达临时性拒绝（例如不认
-    prompt_cache_key 参数、参数协商或并发抖动），重试可恢复；真正的
-    请求缺陷会在重试耗尽后随最终错误一并暴露。
+    400 不再视为通用可重试错误：它通常表示确定性的参数/协议问题，
+    重试同一个请求只会放大问题；prompt_cache_key 的兼容重试由调用方单独处理。
     """
 
     status_code = _http_status_code_of(exc)
-    if status_code is not None and status_code in {400, 408, 409, 429, 500, 502, 503, 504}:
+    if status_code is not None and status_code in {408, 409, 429, 500, 502, 503, 504}:
         return True
 
     message = str(exc).lower()

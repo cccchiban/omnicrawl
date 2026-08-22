@@ -230,10 +230,10 @@ def _http_status_error(status_code: int, *, provider: str) -> ModelError:
         return ModelError(
             code=ModelErrorCode.INVALID_REQUEST,
             message="模型服务拒绝了请求参数（HTTP 400）。请检查模型名称、思考配置、消息格式或网关兼容性。",
-            # 400 也进入重试：部分兼容网关用 400 表达临时性拒绝（如不认
-            # prompt_cache_key、参数协商/并发抖动），重试可恢复；真正的请求
-            # 缺陷会在重试耗尽后随最终错误一并暴露。
-            retryable=True,
+            # 400 通常是确定性的参数/协议错误；若把它当作可重试错误，
+            # 同一个无效请求会被默认策略连续发送多次。prompt_cache_key
+            # 的兼容重试由调用方单独处理，不依赖这里的通用重试标记。
+            retryable=False,
             status_code=status_code,
             provider=provider,
         )

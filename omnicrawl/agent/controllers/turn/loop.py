@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
@@ -89,7 +90,6 @@ from ..shared import (
     _CONTEXT_OVERFLOW_RECOVERY_PROMPT,
     _CONTINUE_LAST_TASK_TEXTS,
     _RATE_LIMIT_ERROR_MARKERS,
-    _execute_call_with_timeout,
     _tool_timeout_result,
     _unknown_tool_result,
 )
@@ -108,6 +108,121 @@ _TTS_SPEAK_INSTRUCTION = (
     "若模型未就绪或合成失败，直接在回复中说明原因，不要反复重试。\n"
     "</tts_instruction>"
 )
+
+# 需要用户参与决策时，模型必须先以结构化标记结束本轮回复。UI 据此显示
+# 问题正文和按问题分组的单选答案；用户逐题确认后，下一轮才会继续。
+_USER_CONFIRMATION_INSTRUCTION = (
+    '<user_confirmation_instruction source="host-ui" trust="host">\n'
+    "当你需要向用户提问、确认缺失细节、或让用户在方案之间做选择时，"
+    "先只输出清晰的问题正文；每个问题后紧接着输出一个严格的选项块，"
+    "每个选项单独一行并以 '- ' 开头，格式为 [选项]\\n- 选项一\\n- 选项二\\n[/选项]；"
+    "可以连续输出多个问题和选项块，界面会按顺序逐个询问；每个问题只能选择一个答案。"
+    "不要把问题重复放进选项块。界面会自动在每组最后追加‘我有自己的想法’，"
+    "用户选中后可在输入框输入自定义回答。最后单独输出 [需要用户确认]，然后停止执行。"
+    "用户也可以直接在输入框输入当前问题的回答。"
+    "其他普通说明、计划和可直接执行的任务不要输出该标记。\n"
+    "</user_confirmation_instruction>"
+)
+_USER_CONFIRMATION_MARKER = "[需要用户确认]"
+_USER_CONFIRMATION_OPTIONS_START = "[选项]"
+_USER_CONFIRMATION_OPTIONS_END = "[/选项]"
+_USER_CONFIRMATION_CUSTOM_OPTION = "我有自己的想法"
+
+
+def _extract_user_confirmation_questions(
+    text: str,
+) -> tuple[str, list[list[str]], bool]:
+    """提取用户可见问题及按问题分组的单选选项。"""
+
+    needs_confirmation = _USER_CONFIRMATION_MARKER in text
+    if not needs_confirmation:
+        return text.rstrip(), [], False
+
+    def parse_options(raw: str) -> list[str]:
+        result: list[str] = []
+        for line in raw.splitlines():
+            item = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", line).strip()
+            if item and item not in result:
+                result.append(item)
+        if _USER_CONFIRMATION_CUSTOM_OPTION not in result:
+            result.append(_USER_CONFIRMATION_CUSTOM_OPTION)
+        return result
+
+    matches = list(
+        re.finditer(
+            re.escape(_USER_CONFIRMATION_OPTIONS_START)
+            + r"\s*(.*?)\s*"
+            + re.escape(_USER_CONFIRMATION_OPTIONS_END),
+            text,
+            flags=re.DOTALL,
+        )
+    )
+    if matches:
+        visible_parts: list[str] = []
+        questions: list[list[str]] = []
+        last_end = 0
+        for match in matches:
+            question = text[last_end : match.start()].replace(
+                _USER_CONFIRMATION_MARKER, ""
+            ).strip()
+            if question:
+                visible_parts.append(question)
+            questions.append(parse_options(match.group(1)))
+            last_end = match.end()
+        tail = text[last_end:].replace(_USER_CONFIRMATION_MARKER, "").strip()
+        if tail:
+            visible_parts.append(tail)
+        return "\n\n".join(visible_parts).rstrip(), questions, True
+
+    # 兼容模型漏写 [选项] 标签但仍输出 Markdown 列表。每个连续列表段
+    # 作为一个问题的选项段，因此多个问题仍按出现顺序处理。
+    lines = text.splitlines()
+    list_pattern = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
+    runs: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for index, line in enumerate(lines + [""]):
+        if list_pattern.match(line):
+            if run_start is None:
+                run_start = index
+            continue
+        if run_start is not None:
+            runs.append((run_start, index))
+            run_start = None
+    if runs:
+        visible_lines = lines[:]
+        questions = []
+        for start, end in reversed(runs):
+            questions.insert(0, parse_options("\n".join(lines[start:end])))
+            del visible_lines[start:end]
+        visible = "\n".join(visible_lines).replace(_USER_CONFIRMATION_MARKER, "").rstrip()
+        return visible, questions, True
+
+    visible = text.replace(_USER_CONFIRMATION_MARKER, "").rstrip()
+    return visible, [[_USER_CONFIRMATION_CUSTOM_OPTION]], True
+
+
+def _extract_user_confirmation(text: str) -> tuple[str, list[str], bool]:
+    """提取确认标记和选项，兼容旧调用方返回扁平选项列表。
+
+    旧解析 API 不暴露 UI 自动追加的自定义回答项；全新的分组 API 和 UI
+    回调仍会保留“我有自己的想法”。
+    """
+
+    visible, groups, needs_confirmation = _extract_user_confirmation_questions(text)
+    options = [
+        option
+        for group in groups
+        for option in group
+        if option != _USER_CONFIRMATION_CUSTOM_OPTION
+    ]
+    return visible, options, needs_confirmation
+
+
+def _strip_user_confirmation_marker(text: str) -> str:
+    """移除仅供 UI 判断的确认标记和选项块，不把协议内容写入会话历史。"""
+
+    visible, _options, _needs_confirmation = _extract_user_confirmation(text)
+    return visible
 
 
 class TurnLoopMixin:
@@ -221,23 +336,12 @@ class TurnLoopMixin:
             self._append_prompt_history(text)
             self._append_session_event("user_message", {"content": text})
             user_message_persisted = True
-            if getattr(getattr(self, "config", None), "router_enabled", False):
-                self._router_runtime.capture_user_text(
-                    self._session_facade().current_session_id(), text
-                )
             context_messages = self._context_messages(turn_id=turn_id)
             working_messages = [
                 *context_messages,
                 *self._history,
                 {"role": "user", "content": text},
             ]
-            if getattr(getattr(self, "config", None), "router_enabled", False):
-                guide = self._router_runtime.guide_for(
-                    text,
-                    session_id=self._session_facade().current_session_id(),
-                )
-                if guide:
-                    working_messages.append({"role": "user", "content": guide})
             # Fork 只能继承“本轮起点”这一份公开协议消息。之后 AgentLoopRunner
             # 会原地追加 assistant tool-call 与 tool-result；不能让后续状态、未
             # 配对的工具调用或父模型输出进入已创建子任务的上下文。功能关闭时不
@@ -255,6 +359,7 @@ class TurnLoopMixin:
             # TTS 指令仅供本轮首次模型请求使用；首次请求结束后由
             # request_main_reply 清除，后续工具观察请求不重复注入。
             self._active_tts_instruction = self._tts_speak_instruction()
+            self._active_user_confirmation_instruction = _USER_CONFIRMATION_INSTRUCTION
 
             # 完整构造的 Agent 才持有带 profile_id 的 LLMConfig；部分内部单测
             # 使用最小对象并替换模型请求方法，此时跳过 Runtime 快照。
@@ -291,9 +396,10 @@ class TurnLoopMixin:
                         on_stream_rollback=on_stream_rollback,
                     )
                 finally:
-                    # system prompt 只在本轮首次模型请求中携带 TTS 指令；
-                    # 工具结果回填后的后续请求保持 TTS 工具可用，但不重复注入指令。
+                    # 首次模型请求的辅助指令只使用一次；工具结果回填后的后续请求
+                    # 保持工具可用，但不重复注入同一段指令。
                     self.__dict__.pop("_active_tts_instruction", None)
+                    self.__dict__.pop("_active_user_confirmation_instruction", None)
 
             def execute_main_tool_batch(
                 calls: Sequence[ToolCall],
@@ -356,9 +462,20 @@ class TurnLoopMixin:
                     cancel_check=check_cancelled,
                 )
             final_reply = loop_result.final_text
+            final_reply, confirmation_groups, needs_user_confirmation = (
+                _extract_user_confirmation_questions(final_reply)
+            )
             if final_reply and not loop_result.content_streamed:
                 on_delta(final_reply)
             self._append_session_event("assistant_message", {"content": final_reply})
+            confirmation_callback = getattr(self, "_user_confirmation_callback", None)
+            if callable(confirmation_callback):
+                try:
+                    confirmation_callback(
+                        confirmation_groups if needs_user_confirmation else None
+                    )
+                except Exception:  # noqa: BLE001 - UI 状态更新不得破坏回合收尾
+                    LOGGER.warning("user confirmation UI observer failed", exc_info=True)
             if context_overflow_recovered:
                 self._history.append(self._assistant_message(final_reply, loop_result.reasoning))
                 self._run_context_compaction_after_turn(
@@ -509,19 +626,21 @@ class TurnLoopMixin:
         active_runtime_snapshot: Any | None = None,
         vision_base_llm: LLMConfig | None = None,
         on_token_usage: Callable[[int, int, int], None] | None = None,
+        execution_cache: dict[str, ToolResult] | None = None,
         persist_session_events: bool = True,
         record_tool_execution: Callable[[ToolCall], None] | None = None,
         tool_timeout_seconds: int | None = None,
     ) -> list[AgentLoopObservation]:
         """规范化、审批并执行一次模型回复中的完整工具批次。
 
-        所有调用先按模型顺序完成规范化和审批，之后才允许任何工具开始执行。
-        非屏障调用可并行；写入和显式删除调用会先等待前一并行组，再独占执行。
-        最终 observation 始终按模型调用顺序回填，与实际完成先后无关。
+        所有调用先按模型顺序完成规范化和审批，之后一次性并发执行；不再以
+        工具类型建立串行屏障。最终 observation 仍按模型调用顺序回填，与实际
+        完成先后无关；UI 完成事件则在各工具真实结束时立即发送。
 
         ``tool_timeout_seconds`` 缺省时读 ``AgentConfig.tool_timeout_seconds``
-        （默认 600 秒）：挂起工具在限时后返回错误结果，不再无限等待。超时
-        后工具线程仍在后台运行（无法安全强杀），其结果被丢弃。
+        （默认 600 秒）：批次使用统一的绝对截止时间，挂起工具在限时后返回错误
+        结果，不再无限等待。超时后工具线程仍在后台运行（无法安全强杀），其结果
+        被丢弃。
         """
 
         if tool_timeout_seconds is None:
@@ -533,10 +652,7 @@ class TurnLoopMixin:
 
         active_tools = self._tools if tools is None else tools
         active_tools = dict(active_tools)
-        catalog = HostToolCatalog(
-            active_tools,
-            visible_tools=self._router_visible_tools(),
-        )
+        catalog = HostToolCatalog(active_tools)
         normalized_calls: list[tuple[int, ToolCall, ToolDefinition | None, ToolResult | None]] = []
         for offset, raw_tool_call in enumerate(raw_tool_calls):
             check_cancelled()
@@ -587,16 +703,6 @@ class TurnLoopMixin:
                     },
                 )
 
-            if getattr(self.config, "router_enabled", False):
-                # 首次工具调用后晋升：放开完整工具面（首轮锚定）。
-                # 晋升状态持久化为 router_promoted 事件，resume 时由
-                # RouterRuntime.restore_from_events 恢复，避免已晋升会话在
-                # 新进程里重新收窄工具面。首次晋升才写入，事件不膨胀。
-                session_id = self._session_facade().current_session_id()
-                if not self._router_runtime.is_promoted(session_id):
-                    self._router_runtime.mark_promoted(session_id)
-                    self._append_session_event("router_promoted", {})
-
             if tool is not None and denied_result is None:
                 if persist_session_events:
                     denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
@@ -613,6 +719,9 @@ class TurnLoopMixin:
         # finished_at 同源），供 UI 展示各自耗时与完成先后；与模型回填顺序
         # 无关，绝不影响模型看到的调用顺序。
         completed_at: dict[int, float] = {}
+        completion_lock = threading.Lock()
+        timed_out: set[int] = set()
+        reported: set[int] = set()
 
         def execute_call(index: int) -> ToolResult:
             _call_step, tool_call, tool, denied_result = normalized_calls[index]
@@ -623,73 +732,97 @@ class TurnLoopMixin:
                     tool_call.name,
                     active_tools,
                 )
+            cache_key = ""
+            if execution_cache is not None:
+                cache_key = json.dumps(
+                    {"tool": tool_call.name, "arguments": tool_call.arguments},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                cached = execution_cache.get(cache_key)
+                if cached is not None:
+                    return cached
             if record_tool_execution is not None:
                 record_tool_execution(tool_call)
-            return self._execute_approved_tool(tool, tool_call.arguments)
+            result = self._execute_approved_tool(tool, tool_call.arguments)
+            if execution_cache is not None and cache_key:
+                execution_cache[cache_key] = result
+            return result
 
-        parallel_indexes: list[int] = []
+        def report_completed_result(index: int, result: ToolResult) -> None:
+            """工具线程完成时立即通知 UI，不等待同批次的慢工具。"""
 
-        def flush_parallel() -> None:
-            if not parallel_indexes:
-                return
-            for index in parallel_indexes:
-                call_step, tool_call, _tool, _denied = normalized_calls[index]
-                report_tool_start(call_step, tool_call)
-            executor = ThreadPoolExecutor(max_workers=len(parallel_indexes))
+            finished_at = time.perf_counter()
+            with completion_lock:
+                completed_at[index] = finished_at
+                if index in timed_out or index in reported:
+                    return
+                reported.add(index)
+            _step, tool_call, _tool, _denied = normalized_calls[index]
+            # 回调可能把事件投递到 UI 线程，也可能由 SubAgent 直接消费；
+            # 两种调用方都必须在真实完成时刻收到结果，而不是等模型顺序回填。
             try:
-                turn_context = copy_context()
-
-                def execute_call_timed(index: int) -> ToolResult:
-                    """执行并记录该工具的真实完成时刻（与回填顺序无关）。"""
-
-                    result = execute_call(index)
-                    completed_at[index] = time.perf_counter()
-                    return result
-
-                futures = {
-                    index: executor.submit(
-                        turn_context.copy().run,
-                        execute_call_timed,
-                        index,
-                    )
-                    for index in parallel_indexes
-                }
-                # 按模型调用顺序等待并回填，而不是按任务完成顺序回填：
-                # 保证模型看到的工具结果顺序与它发出的调用顺序一致。
-                for index in parallel_indexes:
-                    try:
-                        results[index] = futures[index].result(
-                            timeout=tool_timeout_seconds
-                        )
-                    except FutureTimeoutError:
-                        # 限时内未完成：返回结构化超时结果，让模型看到并继续。
-                        results[index] = _tool_timeout_result(tool_timeout_seconds)
-                        # 超时工具没有真实完成时刻，记录超时发生的时刻，
-                        # 让 UI 能显示“至少等待了 timeout 秒”。
-                        completed_at[index] = time.perf_counter()
-            finally:
-                # 超时线程仍在后台运行：不等待其结束，避免回合被拖到工具自然
-                # 完成（with 块退出会 shutdown(wait=True)，这里显式不等待）。
-                executor.shutdown(wait=False)
-            parallel_indexes.clear()
-
-        for index, (_call_step, tool_call, tool, denied_result) in enumerate(normalized_calls):
-            if denied_result is not None or tool is None:
-                results[index] = execute_call(index)
-                completed_at[index] = time.perf_counter()
-            elif self._tool_call_requires_serial_execution(tool, tool_call.arguments):
-                flush_parallel()
-                call_step, current_call, _tool, _denied = normalized_calls[index]
-                report_tool_start(call_step, current_call)
-                results[index] = _execute_call_with_timeout(
-                    execute_call,
-                    index,
-                    tool_timeout_seconds,
+                report_tool_result(
+                    tool_call,
+                    replace(result, completed_at=finished_at),
                 )
-                completed_at[index] = time.perf_counter()
-            else:
-                parallel_indexes.append(index)
-        flush_parallel()
+            except Exception:  # noqa: BLE001 - 展示回调不得改变工具结果
+                LOGGER.warning("工具完成事件回调失败", exc_info=True)
+
+        # 所有已通过规范化/审批的调用一次性提交到线程池。工具结果给模型仍按
+        # 调用顺序回填，但 UI 完成事件由各自 worker 立即发送，彻底解除“慢工具
+        # 阻塞快工具计时/显示”的隐式串行屏障。
+        for call_step, tool_call, _tool, _denied in normalized_calls:
+            report_tool_start(call_step, tool_call)
+        executor = ThreadPoolExecutor(max_workers=max(1, len(normalized_calls)))
+        futures: dict[int, Any] = {}
+        submitted_at = time.perf_counter()
+        try:
+            turn_context = copy_context()
+
+            def execute_call_timed(index: int) -> ToolResult:
+                result = execute_call(index)
+                report_completed_result(index, result)
+                return result
+
+            futures = {
+                index: executor.submit(
+                    turn_context.copy().run,
+                    execute_call_timed,
+                    index,
+                )
+                for index in range(len(normalized_calls))
+            }
+            # 只按模型调用顺序等待和回填；等待窗口使用同一批次的绝对截止时间，
+            # 避免多个慢工具把“每个工具 timeout”错误地累加成批次 timeout。
+            for index in range(len(normalized_calls)):
+                deadline = submitted_at + tool_timeout_seconds
+                remaining = max(0.0, deadline - time.perf_counter())
+                try:
+                    results[index] = futures[index].result(timeout=remaining)
+                except FutureTimeoutError:
+                    timeout_result = _tool_timeout_result(tool_timeout_seconds)
+                    timeout_at = time.perf_counter()
+                    with completion_lock:
+                        timed_out.add(index)
+                        completed_at[index] = timeout_at
+                        should_report = index not in reported
+                        reported.add(index)
+                    results[index] = timeout_result
+                    if should_report:
+                        _step, tool_call, _tool, _denied = normalized_calls[index]
+                        try:
+                            report_tool_result(
+                                tool_call,
+                                replace(timeout_result, completed_at=timeout_at),
+                            )
+                        except Exception:  # noqa: BLE001 - 展示回调不得改变超时结果
+                            LOGGER.warning("工具超时事件回调失败", exc_info=True)
+        finally:
+            # 超时线程无法安全强杀；不等待它自然退出，避免已经返回的回合
+            # 再次被后台工具拖住。worker 完成后也不会重复发送完成事件。
+            executor.shutdown(wait=False)
 
         check_cancelled()
         # 批次输出预算：单工具 >50K 或回合聚合 >200K 的输出落盘，模型上下文
@@ -708,13 +841,14 @@ class TurnLoopMixin:
                 check_cancelled=check_cancelled,
                 on_token_usage=on_token_usage,
             )
-            # 附加真实完成时刻供 UI 展示各自耗时与完成先后；不回填进模型上下文。
+            # 工具线程完成时已经向 UI 发出过一次结果事件；这里仅把经过
+            # 输出预算/视觉处理的结果写回模型与 Session，避免慢工具回填时
+            # 再次触发 UI 结果事件，把已完成工具的时钟重新推进。
             if index in completed_at:
                 prepared_result = replace(
                     prepared_result,
                     completed_at=completed_at[index],
                 )
-            report_tool_result(tool_call, prepared_result)
             if persist_session_events:
                 self._append_session_event(
                     "tool_result",
@@ -1113,35 +1247,9 @@ class TurnLoopMixin:
         return build_provider_tools(self._host_tool_catalog())
 
     def _host_tool_catalog(self) -> HostToolCatalog:
-        """构造带任务路由首轮可见性过滤的 Host 工具目录。"""
+        """构造当前 Agent 的完整 Host 工具目录。"""
 
-        return HostToolCatalog(
-            getattr(self, "_tools", {}),
-            visible_tools=self._router_visible_tools(),
-        )
-
-    def _router_visible_tools(self) -> set[str] | None:
-        """任务路由开启且未晋升时返回首轮核心工具子集；否则 None（全部）。"""
-
-        if not getattr(self.config, "router_enabled", False):
-            return None
-        session_id = self._session_facade().current_session_id()
-        if not session_id:
-            return None
-        return self._router_runtime.visible_tools(
-            session_id,
-            events=self._router_session_events(session_id),
-        )
-
-    def _router_session_events(self, session_id: str) -> list[Any]:
-        """读取会话持久事件供路由模式推导（resume-safe）；不可用时返回空。"""
-
-        try:
-            if session_id and getattr(self, "_session_store", None) is not None:
-                return list(self._session_facade().load_session_events(session_id))
-        except Exception:
-            pass
-        return []
+        return HostToolCatalog(getattr(self, "_tools", {}))
 
     def _chat_completion_tools(self) -> list[dict[str, Any]]:
         return chat_completion_tools(

@@ -274,7 +274,11 @@ class ToolImplementationsMixin:
         config = getattr(getattr(self, "config", None), "tts", None)
         cached = getattr(self, "_tts_engine", None)
         cached_sig = getattr(self, "_tts_engine_sig", None)
-        sig = (str(config.resolved_model_dir()), int(config.thread_count)) if config is not None else None
+        sig = (
+            (str(config.resolved_model_dir()), int(config.thread_count), str(getattr(config, "device", "auto")))
+            if config is not None
+            else None
+        )
         if cached is not None and cached_sig == sig:
             return cached
         if cached is not None:
@@ -290,6 +294,7 @@ class ToolImplementationsMixin:
             TTSConfig(
                 model_dir=config.model_dir or None,
                 thread_count=config.thread_count,
+                device=getattr(config, "device", "auto"),
                 output_dir=resolved_output_dir,
             )
         )

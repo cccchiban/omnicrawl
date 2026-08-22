@@ -1,4 +1,4 @@
-"""运行时配置 setter：模型、审批、压缩、工具开关、记忆/MCP/插件/路由。
+"""运行时配置 setter：模型、审批、压缩、工具开关、记忆/MCP/插件。
 
 全部为 ``LocalToolAgent.config`` 的运行时修改入口，持久化由调用方负责；
 重建工具表或压缩服务实例的失败都走事务式回滚。"""
@@ -55,7 +55,7 @@ from ..shared import (
 
 
 class SessionSettingsMixin:
-    """运行时配置 setter：模型、审批、压缩、工具开关、记忆/MCP/插件/路由。"""
+    """运行时配置 setter：模型、审批、压缩、工具开关、记忆/MCP/插件。"""
 
     @property
     def approval_mode(self) -> str:
@@ -154,19 +154,28 @@ class SessionSettingsMixin:
         return normalized
 
     def set_context_window_tokens(self, tokens: int) -> int:
-        """运行时切换上下文窗口；持久化由设置面板负责。"""
+        """运行时切换上下文窗口，并实时联动百分比压缩阈值。"""
 
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise AgentError("上下文长度必须是正整数 Token。")
-        _validate_context_compaction_window(
-            getattr(self.config, "context_compaction", None),
-            self.config.llm,
-            context_window_tokens=tokens,
-        )
+        compaction = getattr(self.config, "context_compaction", None)
+        compaction_percent = getattr(compaction, "trigger_context_percent", None)
+        if compaction is not None and compaction_percent is not None:
+            compaction = replace(
+                compaction,
+                trigger_context_tokens=max(
+                    1,
+                    tokens * compaction_percent // 100,
+                ),
+            )
+        _validate_context_compaction_window(compaction, self.config.llm, context_window_tokens=tokens)
         manager = getattr(self, "_runtime_manager", None)
         if manager is not None:
             manager.set_context_window_tokens(tokens)
         self.config.llm.context_window_tokens = tokens
+        if compaction is not None:
+            self.config.context_compaction = compaction
+        self.__dict__.pop("_context_compaction_service_instance", None)
         return tokens
 
     def set_vision_configuration(self, configuration: VisionConfiguration) -> None:
@@ -244,20 +253,23 @@ class SessionSettingsMixin:
         只更新运行态并重建压缩服务实例；持久化由设置面板负责。
         """
 
-        if (
-            isinstance(percent, bool)
-            or not isinstance(percent, int)
-            or not 0 < percent < 100
-        ):
-            raise AgentError("上下文压缩阈值百分比必须是 1 到 99 的整数。")
+        if isinstance(percent, bool) or not isinstance(percent, int) or percent <= 0:
+            raise AgentError("上下文压缩阈值百分比必须是正整数。")
         current = self.config.context_compaction
         context_window = int(
             getattr(self.config.llm, "context_window_tokens", 128_000)
         )
-        tokens = context_window * percent // 100
-        if tokens == current.trigger_context_tokens:
+        tokens = max(1, context_window * percent // 100)
+        if (
+            tokens == current.trigger_context_tokens
+            and current.trigger_context_percent == percent
+        ):
             return
-        next_config = replace(current, trigger_context_tokens=tokens)
+        next_config = replace(
+            current,
+            trigger_context_tokens=tokens,
+            trigger_context_percent=percent,
+        )
         _validate_context_compaction_window(next_config, self.config.llm)
         self.config.context_compaction = next_config
         # 阈值变化会改变压缩时机，旧 service 实例若已缓存参数应失效重建。
@@ -273,9 +285,16 @@ class SessionSettingsMixin:
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise AgentError("上下文压缩阈值必须是正整数 Token。")
         current = self.config.context_compaction
-        if tokens == current.trigger_context_tokens:
+        if (
+            tokens == current.trigger_context_tokens
+            and current.trigger_context_percent is None
+        ):
             return
-        next_config = replace(current, trigger_context_tokens=tokens)
+        next_config = replace(
+            current,
+            trigger_context_tokens=tokens,
+            trigger_context_percent=None,
+        )
         _validate_context_compaction_window(next_config, self.config.llm)
         self.config.context_compaction = next_config
         # 阈值变化会改变压缩时机，旧 service 实例若已缓存参数应失效重建。
@@ -420,19 +439,6 @@ class SessionSettingsMixin:
             # 使用旧插件状态下的角色 Schema。
             self._tools = self._build_tools()
 
-    def set_router_enabled(self, enabled: bool) -> None:
-        """事务式切换任务思维路由；重建工具目录以注册/移除 ``dev_router_*`` 工具。"""
-
-        if not isinstance(enabled, bool):
-            raise AgentError("任务路由开关必须是布尔值。")
-        previous_enabled = self.config.router_enabled
-        self.config.router_enabled = enabled
-        try:
-            self._tools = self._build_tools()
-        except Exception:
-            self.config.router_enabled = previous_enabled
-            raise
-
     def set_subagent_advanced_setting(self, name: str, value: int | float) -> None:
         """即时更新面板开放的 SubAgent 资源参数，不改变权限边界。"""
 
@@ -499,6 +505,17 @@ class SessionSettingsMixin:
         """替换确认交互，便于全屏 TUI 和行内 UI 使用不同展示方式。"""
 
         self._confirm = confirm
+
+    def set_user_confirmation_handler(
+        self,
+        handler: Callable[[list[str] | list[list[str]] | None], None] | None,
+    ) -> None:
+        """注册模型向用户提问/请求决策时的 UI 状态观察器。
+
+        回调参数是模型提供的可选答案列表；空列表表示本轮不需要用户选择。
+        """
+
+        self._user_confirmation_callback = handler
 
     def set_subagent_event_handler(
         self,
