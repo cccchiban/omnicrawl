@@ -88,8 +88,8 @@ class ToolApprovalMixin:
         """在启动批量执行前按调用顺序审批；返回值非空表示拒绝结果。
 
         子代理与父 Agent 共用同一审批模式：auto 全部放行；review 模式下
-        bash/powershell 由主代理模型携带上下文自动审查，其余工具自动放行；
-        manual 模式下 bash/powershell 人工确认，其余工具自动放行。
+        bash/powershell 的危险命令和高风险 Git 操作由独立审查模型综合判断，
+        其余工具自动放行；manual 模式下 bash/powershell 人工确认，其余工具自动放行。
         """
 
         # tool.call.before：可改参数或拒绝；修改后仍走后续 schema/审批。
@@ -309,8 +309,8 @@ class ToolApprovalMixin:
             return True, ""
         if is_git_tool_call(tool):
             # 结构化 git 工具按 action 风险分级：只读档直接放行；本地变更档
-            # review 模式放行（与文件写入同档）、manual 模式人工确认；高风险档
-            # review 模式进入模型审查、manual 模式人工确认。
+            # review 模式放行（与文件写入同档）、manual 模式人工确认；所有高风险档
+            # review 模式统一交给模型按任务目标/影响范围综合审查，manual 模式人工确认。
             tier = git_action_tier(arguments)
             if tier == GIT_TIER_READONLY:
                 return True, ""

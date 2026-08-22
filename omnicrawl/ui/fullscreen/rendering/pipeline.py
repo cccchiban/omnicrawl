@@ -914,7 +914,9 @@ class RenderingMixin:
             self._runtime_status_message = status
             conversation.mount(status)
         spinner_frame = self.STATUS_SPINNER_FRAMES[self._status_spinner_index]
-        status.update(f"{spinner_frame} {self._runtime_status_text}")
+        # 所有活动中的回合状态都支持 Esc 取消；在状态行尾固定显示提示，
+        # 让“正在思考/回复/调用”等同类状态的中断入口清晰可见。
+        status.update(f"{spinner_frame} {self._runtime_status_text} [ ▣ESC ]")
         if (
             status.parent is conversation
             and conversation.children
