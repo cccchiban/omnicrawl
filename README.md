@@ -19,7 +19,7 @@ OmniCrawl 是一款本地运行的个人 AI 编程助手（终端工作台），
 
 - Python `>=3.9`
 - 安装完整功能建议本机具备 Node.js 20+（仅插件功能需要，缺失不影响无插件模式启动）
-- `grep` 工具由 ripgrep 二进制执行：Windows 版随 wheel 打包（`omnicrawl/bin/rg.exe`）；macOS/Linux 请自行安装 ripgrep 并确保 `rg` 在 PATH 中
+- `grep` 工具由 ripgrep 二进制执行：Windows/Linux/macOS 的 x86_64 与 arm64 版本均随 wheel 打包（`omnicrawl/bin/`，与项目内 rg 同版本）；未内置的平台请自行安装 ripgrep 并确保 `rg` 在 PATH 中
 
 ## 安装
 
@@ -74,7 +74,7 @@ python -m omnicrawl.api
 omnicrawl/
 ├── agent/         # Agent 循环、SubAgent、上下文压缩与技能
 ├── api/           # 本地 HTTP/SSE 服务
-├── config/        # 配置加载、模型渠道与工具开关
+├── config/        # 配置加载（core/ 基础仓库、models/ 模型渠道、features/ 功能开关）
 ├── llm/           # 多协议模型运行时
 ├── ui/            # 终端 TUI（Textual）
 ├── workspace/     # 工作区工具与 ripgrep 封装

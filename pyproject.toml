@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnicrawl-agent"
-version = "0.1.25"
+version = "0.1.26"
 description = "Local OmniCrawl agent with TUI, tools, MCP and NPM Hook plugins"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -30,6 +30,8 @@ dependencies = [
 
 [project.optional-dependencies]
 windows = ["pywin32>=306"]
+# TTS（omnicrawl.tts）：MOSS-TTS-Nano ONNX CPU 推理，pip install -e .[tts]
+tts = ["onnxruntime>=1.19.2", "sentencepiece>=0.1.99"]
 
 [project.scripts]
 # ocl 是面向用户的短命令；保留 omnicrawl 兼容已有脚本。

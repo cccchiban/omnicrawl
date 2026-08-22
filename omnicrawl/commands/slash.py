@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config.approval import (
+from ..config.features.approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_MANUAL,
     APPROVAL_MODE_REVIEW,
@@ -15,9 +15,9 @@ from ..config.approval import (
     save_approval_mode,
 )
 from ..agent import AgentError, LocalToolAgent
-from ..agent.tools import public_tool_arguments
-from ..config.llm import LLMError, save_reasoning_effort
-from ..config.runtime import RuntimeConfigError
+from ..agent.toolkit.tools import public_tool_arguments
+from ..config.models.llm import LLMError, save_reasoning_effort
+from ..config.core.runtime import RuntimeConfigError
 
 
 # ── 工具确认展示 ──────────────────────────────────────────────

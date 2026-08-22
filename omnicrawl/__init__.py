@@ -6,11 +6,11 @@ import importlib
 import sys
 
 _COMPAT_MODULES = {
-    "approval": ".config.approval",
-    # llm 已升级为真实包 omnicrawl.llm，并再导出 config.llm 的公共配置 API。
+    "approval": ".config.features.approval",
+    # llm 已升级为真实包 omnicrawl.llm，并再导出 config.models.llm 的公共配置 API。
     # 不再把 sys.modules["omnicrawl.llm"] 指向 config.llm，避免遮蔽多模型运行时。
-    "model_catalog": ".config.model_catalog",
-    "runtime_config": ".config.runtime",
+    "model_catalog": ".config.models.model_catalog",
+    "runtime_config": ".config.core.runtime",
     "workspace_tools": ".workspace.tools",
     "project_context": ".workspace.context",
     "temp_workspace": ".workspace.temp",

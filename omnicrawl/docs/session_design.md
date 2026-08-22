@@ -505,6 +505,8 @@ class SessionStore:
 
 ### 14.1 对 `LocalToolAgent` 的最小改造
 
+> 实施状态：该改造已落地。`LocalToolAgent` 已按领域拆分为组合门面 + 16 个领域 Mixin（见第 18 节）：`__init__` 保留在 `omnicrawl/agent/core.py`；会话创建/恢复由 `SessionStoreMixin._create_session_store` / `_start_or_resume_session`（`omnicrawl/agent/controllers/session/store.py`）实现；`run_stream()` 位于 `TurnLoopMixin`（`omnicrawl/agent/controllers/turn/loop.py`），在关键节点写入会话事件。以下为当时的实施建议，保留用于追溯。
+
 建议先在 `LocalToolAgent` 中注入 `SessionManager`：
 
 ```text
@@ -575,3 +577,57 @@ JSONL -> 规范化消息 -> 最近窗口/摘要 -> self._history
 当前项目已经具备可用的多轮对话循环，但会话上下文仍停留在进程内短历史阶段。下一步应优先补齐 `session_id`、JSONL 转录、会话索引和恢复入口，让 Agent 从“当前进程内连续对话”升级为“可恢复的长期工作会话”。
 
 建议实施时保持小步演进：先让会话可保存、可列出、可恢复，再引入历史检索、摘要压缩和 GUI 会话列表。这样既能保留现有 `LocalToolAgent.run_stream()` 的稳定路径，也能逐步补上长任务协作所需的状态管理能力。
+
+## 18. `LocalToolAgent` 内部结构（controllers 拆分）
+
+> 本节记录 2026-08 的代码结构现状：`LocalToolAgent` 已由单一上帝类拆分为组合门面 + 领域 Mixin。对外 API（方法名、签名、`run_stream()`/`_history` 等访问路径）与行为均不变，本文档前文涉及 `LocalToolAgent` 的引用仍然成立。
+
+### 18.1 门面与组合
+
+- `omnicrawl/agent/core.py`（约 390 行）：`AgentConfig` 配置模型、`LocalToolAgent.__init__` 与 16 个领域 Mixin 的组合继承。
+- `omnicrawl/agent/controllers/`：按类别分目录存放领域实现（session / memory / workspace / subagents / tools / turn / plugins / undo）。
+
+```text
+LocalToolAgent(
+    SessionControlMixin,        # 会话控制面 API、生命周期
+    SessionStoreMixin,          # 会话/项目/归档存储
+    SessionSettingsMixin,       # 配置 setter
+    MemoryStoresMixin,          # 记忆存储工厂
+    WorkspaceSwitchingMixin,    # 工作区切换
+    WorkspaceToolboxMixin,      # toolbox 访问器
+    SubAgentOrchestrationMixin, # 父侧 SubAgent 编排
+    SubAgentWorktreeMixin,      # worktree 会话控制面
+    TurnLoopMixin,              # run_stream 主循环、统一分发与执行
+    TurnCompactionMixin,        # 上下文溢出恢复、压缩后处理
+    ToolApprovalMixin,          # 工具审批/审查
+    ToolBuildingMixin,          # 工具表构建、system prompt 加载
+    ToolImplementationsMixin,   # _tool_* 实现
+    ToolOutputMixin,            # 工具输出预算/落盘/格式化
+    PluginHooksMixin,           # 插件 Hook 分发
+    UndoMixin,                  # /undo 回合快照与回滚
+)
+```
+
+### 18.2 文件与职责映射
+
+| 类别 | 文件 | 职责 |
+|------|------|------|
+| 共享 | `controllers/shared.py` | `AgentError`、常量、`_ActiveTurnSnapshot`、模块级辅助 |
+| 会话 | `controllers/session/control.py` | 控制面 API、生命周期 |
+| 会话 | `controllers/session/store.py` | 会话/项目/归档存储、`_create_session_store` / `_start_or_resume_session` |
+| 会话 | `controllers/session/settings.py` | 配置 setter |
+| 记忆 | `controllers/memory/stores.py` | 记忆存储工厂 |
+| 工作区 | `controllers/workspace/switching.py` | 工作区切换 |
+| 工作区 | `controllers/workspace/toolbox.py` | toolbox 访问器 |
+| 子代理 | `controllers/subagents/orchestration.py` | 父侧编排、任务执行、事件注入 |
+| 子代理 | `controllers/subagents/worktrees.py` | worktree 会话控制面 |
+| 轮次 | `controllers/turn/loop.py` | `run_stream()` 主循环、工具批执行、统一分发 |
+| 轮次 | `controllers/turn/compaction.py` | 上下文压缩、溢出恢复 |
+| 工具 | `controllers/tools/approval.py` | 工具审批/审查 |
+| 工具 | `controllers/tools/building.py` | 工具表构建、system prompt 加载 |
+| 工具 | `controllers/tools/implementations.py` | `_tool_*` 实现 |
+| 工具 | `controllers/tools/output.py` | 工具输出预算/落盘/结果格式化 |
+| 插件 | `controllers/plugins.py` | 插件 Hook 分发 |
+| 撤销 | `controllers/undo.py` | `/undo` 回合快照与回滚 |
+
+上述路径相对 `omnicrawl/agent/`。`core.py` 保留对外门面，所有方法仍可在 `LocalToolAgent` 实例上直接访问；需要改动某个领域实现时，直接定位对应文件即可。

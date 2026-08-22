@@ -12,10 +12,10 @@ from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
 
-from ..execution import AgentLoopBudgetExceeded
+from ..runtime.execution import AgentLoopBudgetExceeded
 from ..types import ToolDefinition, ToolResult
-from ...config.llm import LLMError
-from ...config.subagents import SubAgentConfig
+from ...config.models.llm import LLMError
+from ...config.features.subagents import SubAgentConfig
 from ...llm.errors import ModelError, map_openai_exception
 from ...state.session_artifacts import redact_sensitive_text
 from .definitions import AgentDefinition, AgentDefinitionRegistry

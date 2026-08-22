@@ -70,6 +70,17 @@ output_format = "png"
 n = 1
 timeout_seconds = 120
 
+# TTS 语音合成（MOSS-TTS-Nano ONNX CPU 推理，无需 GPU/PyTorch）：
+# 首次启用时在 TUI /settings → TTS 中下载模型（约 763MB）并选择音色。
+[tts]
+enabled = false
+model_dir = ""
+voice = "Junhao"
+auto_play = true
+thread_count = 4
+streaming = false
+output_dir = ".omnicrawl/.agent_tmp/tts"
+
 [approval]
 mode = "review"
 # 自动审查使用的独立模型（可选）：留空时沿用 [llm] model。

@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-from .config.image_gen import (
+from .config.features.image_gen import (
     ImageGenConfiguration,
     load_image_gen_configuration,
 )

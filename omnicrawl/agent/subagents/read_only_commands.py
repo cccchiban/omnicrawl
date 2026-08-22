@@ -13,7 +13,7 @@ import shlex
 from dataclasses import replace
 from typing import Any
 
-from ..approval_policy import (
+from ..toolkit.approval_policy import (
     GIT_TIER_READONLY,
     command_has_git_mutation_intent,
     git_action_tier,

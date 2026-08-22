@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config.runtime import RuntimeConfigError, get_section, load_config_data
+from ..config.core.runtime import RuntimeConfigError, get_section, load_config_data
 
 
 DEFAULT_AGENT_TEMP_DIRECTORY = ".omnicrawl/.agent_tmp"

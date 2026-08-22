@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from ..config.runtime import RuntimeConfigError, get_section, load_config_data
+from ..config.core.runtime import RuntimeConfigError, get_section, load_config_data
 from ..workspace.tools import MAX_COMMAND_TIMEOUT_SECONDS
 
 

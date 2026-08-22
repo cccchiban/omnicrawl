@@ -14,7 +14,7 @@ from typing import Any, Sequence
 
 from omnicrawl.agent import AgentConfig, AgentError, LocalToolAgent
 from omnicrawl.approval import approval_mode_label, load_approval_mode
-from omnicrawl.config.bootstrap import (
+from omnicrawl.config.core.bootstrap import (
     format_startup_report,
     initialize_user_configuration,
 )
@@ -25,9 +25,9 @@ from omnicrawl.project_context import (
     project_context_status_label,
 )
 from omnicrawl.runtime_config import RuntimeConfigError, load_config_data
-from omnicrawl.config.settings import load_feature_enabled, load_show_thinking
-from omnicrawl.config.router import load_router_mode
-from omnicrawl.config.subagents import load_subagent_config
+from omnicrawl.config.core.settings import load_feature_enabled, load_show_thinking
+from omnicrawl.config.features.router import load_router_mode
+from omnicrawl.config.features.subagents import load_subagent_config
 from omnicrawl.temp_workspace import (
     AgentTempWorkspaceError,
     agent_temp_status_label,
@@ -74,7 +74,7 @@ def _run_channel_setup_wizard(config_path: Path, models_path: Path) -> bool:
     """按需加载首次启动渠道向导，避免插件 CLI 提前加载 Textual。"""
 
     try:
-        from omnicrawl.ui.fullscreen.channel_manager import run_channel_setup
+        from omnicrawl.ui.fullscreen.screens.channel_manager import run_channel_setup
     except ModuleNotFoundError as exc:
         dependency = exc.name or "textual"
         raise UIStartupError(

@@ -1,12 +1,12 @@
 """统一多模型运行时：Provider 无关协议、Runtime Manager 与适配器入口。
 
 兼容既有 `from omnicrawl.llm import LLMConfig / OpenAIResponseLLM` 导入路径，
-真正的配置读写仍位于 `omnicrawl.config.llm`。
+真正的配置读写仍位于 `omnicrawl.config.models.llm`。
 """
 
 from __future__ import annotations
 
-from ..config.llm import (
+from ..config.models.llm import (
     DEFAULT_REASONING_EFFORT,
     DEFAULT_THINKING_TYPE,
     KNOWN_AVAILABLE_MODELS,
@@ -18,7 +18,7 @@ from ..config.llm import (
     save_context_window_tokens,
     save_reasoning_effort,
 )
-from ..config.llm_client import OpenAIResponseLLM
+from ..config.models.llm_client import OpenAIResponseLLM
 from .capabilities import ModelCapabilities, merge_capabilities
 from .errors import ModelError, ModelErrorCode, map_openai_exception
 from .protocol import (

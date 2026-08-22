@@ -13,7 +13,7 @@ from typing import Callable
 
 import httpx
 
-from .config.runtime import user_config_dir
+from .config.core.runtime import user_config_dir
 from .extensions.plugin_models import OMNICRAWL_VERSION
 
 

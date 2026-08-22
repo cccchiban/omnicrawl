@@ -6,9 +6,9 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
-from ...config.approval import normalize_approval_mode, save_approval_mode
-from ...config.llm import ActiveModelRef, save_active_model_ref, save_reasoning_effort
-from ...config.model_catalog import (
+from ...config.features.approval import normalize_approval_mode, save_approval_mode
+from ...config.models.llm import ActiveModelRef, save_active_model_ref, save_reasoning_effort
+from ...config.models.model_catalog import (
     ModelCatalogError,
     build_catalog,
     clear_discovery_cache,

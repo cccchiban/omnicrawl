@@ -4,7 +4,7 @@
 """
 
 from .core import AgentConfig, AgentError, LocalToolAgent
-from .llm_protocol import AgentLLMProtocol
+from .runtime.llm_protocol import AgentLLMProtocol
 from .types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
 
 __all__ = [

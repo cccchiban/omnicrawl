@@ -94,9 +94,13 @@ Host 侧同时保留对旧式哈希函数名的宽容反查：模型若回显被
 
 SubAgent 只读 profile 不暴露 `git` 工具；只读 git 查询通过被只读命令包装的 `bash` 完成。
 
-- `omnicrawl/agent/host_tools.py`：Host 目录、可见性过滤、声明构建、`build_provider_tools` 和参数校验。
-- `omnicrawl/agent/core.py`：Provider 工具面、统一分发、审批和执行。
-- `omnicrawl/agent/prompt_context.py`：只注入工具能力说明的上下文消息。
-- `omnicrawl/agent/vision_proxy.py`：独立视觉 Runtime、图片请求构造、文本分析和故障转移。
+- `omnicrawl/agent/toolkit/host_tools.py`：Host 目录、可见性过滤、声明构建、`build_provider_tools` 和参数校验。
+- `omnicrawl/agent/core.py`：`LocalToolAgent` 组合门面（`AgentConfig` + `__init__` + 16 个领域 Mixin 继承），对外 API 不变。
+- `omnicrawl/agent/controllers/tools/building.py`：工具表构建、`_build_tools` / `_load_system_prompt_template`，Provider 顶层工具面。
+- `omnicrawl/agent/controllers/tools/approval.py`：工具审批与自动审查（`_approve_tool_for_batch` 等）。
+- `omnicrawl/agent/controllers/turn/loop.py`：`run_stream()` 主循环、工具批执行与统一分发（`_execute_tool_batch`）。
+- `omnicrawl/agent/controllers/tools/output.py`：工具输出预算、落盘与结果格式化。
+- `omnicrawl/agent/context/prompt_context.py`：只注入工具能力说明的上下文消息。
+- `omnicrawl/agent/runtime/vision_proxy.py`：独立视觉 Runtime、图片请求构造、文本分析和故障转移。
 - `omnicrawl/config/vision.py`：视觉代理开关与模型引用配置。
-- `omnicrawl/agent/execution.py`：模型回合与工具观察循环。
+- `omnicrawl/agent/runtime/execution.py`：模型回合与工具观察循环。

@@ -640,7 +640,7 @@ class TelegramAgentBot:
             handle_session_command,
             handle_subagent_task_command,
         )
-        from omnicrawl.config.approval import (
+        from omnicrawl.config.features.approval import (
             APPROVAL_MODE_MANUAL,
             APPROVAL_MODE_REVIEW,
             approval_mode_label,
@@ -1118,7 +1118,7 @@ class TelegramAgentBot:
             return
         note = ""
         try:
-            from omnicrawl.config.workspace import save_workspace_root
+            from omnicrawl.config.core.workspace import save_workspace_root
 
             saved = save_workspace_root(path)
             note = f"（已持久化到 {saved}）"
@@ -1148,7 +1148,7 @@ class TelegramAgentBot:
 
         # 配置 mtime 短路：仅当配置文件被修改过才重新读取与应用。
         try:
-            from omnicrawl.config.runtime import resolve_config_path
+            from omnicrawl.config.core.runtime import resolve_config_path
 
             cfg_path = resolve_config_path()
             try:
@@ -1163,7 +1163,7 @@ class TelegramAgentBot:
 
         # 推理强度同步：TUI /reasoning 与设置面板都调用 save_reasoning_effort。
         try:
-            from omnicrawl.config.llm import load_llm_config
+            from omnicrawl.config.models.llm import load_llm_config
 
             disk_effort = (load_llm_config().reasoning_effort or "").strip()
             current_effort = str(getattr(agent, "reasoning_effort", "") or "").strip()
@@ -1179,7 +1179,7 @@ class TelegramAgentBot:
 
         # 工作区同步：TUI /workspace 切换后写回 [workspace] root。
         try:
-            from omnicrawl.config.workspace import load_workspace_root
+            from omnicrawl.config.core.workspace import load_workspace_root
 
             disk_root = load_workspace_root()
             if disk_root:
@@ -1198,7 +1198,7 @@ class TelegramAgentBot:
         # 默认自动审查（review）。若磁盘上为 auto（来自 TUI），Telegram 侧按 review
         # 生效，不自动放行高危操作。
         try:
-            from omnicrawl.config.approval import (
+            from omnicrawl.config.features.approval import (
                 APPROVAL_MODE_AUTO,
                 APPROVAL_MODE_REVIEW,
                 load_approval_mode,
@@ -1236,7 +1236,7 @@ def load_telegram_config() -> dict[str, Any]:
 
     section: dict[str, Any] = {}
     try:
-        from omnicrawl.config.runtime import get_section, load_config_data
+        from omnicrawl.config.core.runtime import get_section, load_config_data
 
         section = get_section(load_config_data(), "telegram")
     except Exception:  # noqa: BLE001 - 配置文件缺失时退化为纯环境变量

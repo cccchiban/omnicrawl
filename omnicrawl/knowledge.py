@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-from .config.runtime import user_config_dir
+from .config.core.runtime import user_config_dir
 
 
 DEFAULT_KNOWLEDGE_DIRNAME = "knowledge"

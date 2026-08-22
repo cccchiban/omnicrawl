@@ -34,7 +34,7 @@ Git 操作：
 - 只读操作（status/diff/log/show/ls-files/rev-parse/...）无需确认即可执行。本地变更操作（add/commit/branch/stash/restore/...）按审批模式确认。高风险操作（push、rebase、merge、pull、clean、reset --hard、强制 checkout/switch、branch -D、tag -d/-f、stash drop/clear）需要额外审查；绝不能随意执行或声称其安全。
 - 工具会拒绝 `--git-dir`/`--work-tree`/`--no-verify` 以及全局/系统配置写入；`commit` 必须显式提供 `message`（或使用 `--no-edit`）；路径不能逃出工作区。
 
-omnicrawl文档（共 8 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
+omnicrawl文档（共 9 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
 - MCP 配置、调用或故障排查：优先使用 MCP 能力；读取 `omnicrawl://docs/MCP_USAGE.md`；实现细节位于 `omnicrawl/mcp/` 和 `tests/test_mcp.py`。
 - Skill 安装、编写或渐进式披露：读取 `omnicrawl://docs/SKILL_INSTALLATION.md`；实现细节位于 `omnicrawl/extensions/skill.py`。
 - 本地 HTTP/SSE API 接入（启动、鉴权、接口清单、事件流）：读取 `omnicrawl://docs/API.md`；实现位于 `omnicrawl/api/`。
@@ -43,3 +43,4 @@ omnicrawl文档（共 8 篇，均以 `omnicrawl://docs/<文件名>` 读取，按
 - Telegram 远程接入（创建 Bot、配置、启动验证）：读取 `omnicrawl://docs/TELEGRAM.md`；实现位于 `omnicrawl/connectors/telegram.py`。
 - 终端 UI 设计（视觉/交互约定、HUD、稳定性策略、设置面板）：读取 `omnicrawl://docs/TERMINAL_UI.md`；实现位于 `omnicrawl/ui/fullscreen/`。
 - 工具调用协议（顶层注册、声明压缩、函数名规范、任务路由、Host 分发边界）：读取 `omnicrawl://docs/TOOL_CALLING.md`。
+- TTS 语音合成（MOSS-TTS-Nano ONNX CPU：配置、tts_synthesize 工具、CLI、语音克隆、模型下载）：读取 `omnicrawl://docs/TTS.md`；实现位于 `omnicrawl/tts/` 和 `omnicrawl/config/features/tts.py`。

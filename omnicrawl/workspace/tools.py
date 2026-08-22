@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import json
 import os
 import re
 import shutil
@@ -17,7 +18,7 @@ from ..documentation import (
     resolve_bundled_doc_uri,
 )
 from ..llm.stream_registry import current_stream_scope, registered_resource
-from .ripgrep import RipgrepError, batch_paths, resolve_ripgrep_binary, run_ripgrep
+from .ripgrep import RipgrepError, resolve_ripgrep_binary, run_ripgrep
 from .temp import DEFAULT_AGENT_TEMP_DIRECTORY
 
 
@@ -26,6 +27,21 @@ MAX_SEARCH_RESULTS = 200
 MAX_LIST_ENTRIES = 500
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 360
 MAX_COMMAND_TIMEOUT_SECONDS = 360
+
+# read 工具的行窗口上限：单次调用最多返回的行数、单行最多保留的字符数。
+# 超长行截断而不是吞掉，保证大文件/超长行不放大模型上下文，同时给出
+# 续读提示（footer）让模型用 start_line 继续向后读。
+READ_MAX_LINES = 500
+READ_MAX_LINE_LENGTH = 2_000
+
+# grep 匹配行预览上限：单条匹配行最多保留的字符数，超长截断并标记
+# （对齐 deepseek-harness 的 grepMaxLineBytes），避免 minified 代码等超长行
+# 直接撑爆模型上下文。
+GREP_MAX_LINE_LENGTH = 2_000
+
+# 搜索结果解析安全上限：超过后连"完整结果"落盘也会截断。防止病态大结果
+# （如匹配大量文件的宽泛正则）把 rg stdout 全量解析进内存。
+SEARCH_PARSE_LINE_CAP = 100_000
 
 # 命令输出受控头尾采样（Host 侧）：bash/powershell 等命令工具的超长输出由 Host
 # 统一保留首尾并提示完整输出保存位置，避免测试/构建日志淹没模型上下文，
@@ -50,6 +66,23 @@ PROTECTED_NAMES = {
     "config.yaml",
     "models.yaml",
 }
+
+# 保护路径转成 ripgrep glob 排除：任意层级的同名目录/文件都不进入搜索，
+# 语义与 is_protected_path 的任意路径段匹配一致（含 .env.* 前缀变体）。
+# rg 对匹配的目录会剪枝其下内容，因此无需显式追加 /**。
+PROTECTED_PATH_GLOBS = tuple(
+    f"!**/{name}" for name in sorted(PROTECTED_NAMES)
+) + ("!**/.env.*",)
+
+# 仅从搜索中额外排除的目录：agent 自身临时目录（命令输出、搜索结果落盘）。
+# 项目 .gitignore 通常已忽略它，但非 git 工作区里 rg 不会自动跳过，落盘
+# 文件会被后续 grep/find 搜到（自污染，且同一 pattern 越搜越多）。只加进
+# 搜索 glob 剪枝、不进 PROTECTED_NAMES——否则 read 工具会拒绝读取落盘文件，
+# 破坏"读完整结果"的恢复路径。
+SEARCH_EXCLUDED_DIRS = (".omnicrawl",)
+PROTECTED_PATH_GLOBS = PROTECTED_PATH_GLOBS + tuple(
+    f"!**/{name}" for name in SEARCH_EXCLUDED_DIRS
+)
 
 
 
@@ -136,6 +169,26 @@ class WorkspaceTools:
         return "\n".join(entries) or "目录为空。"
 
     def read_file(self, arguments: dict[str, Any]) -> str:
+        """读取本地 UTF-8 文本文件（或 omnicrawl://docs 内置文档）。
+
+        普通读取按 start_line/max_lines 返回行窗口；大文件与超长行按流式处理，
+        不把整个文件读入内存。返回文本包含行号与续读 footer。
+        """
+
+        text, _artifact = self.read_file_result(arguments)
+        return text
+
+    def read_file_result(
+        self,
+        arguments: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        """读取文件并返回 (模型可见文本, UI 结构化 artifact)。
+
+        artifact 携带 {type: "read", path, start_line, lines, total_lines, lang}，
+        供 TUI/API 渲染行号视图；模型文本仍走带行号与续读 footer 的格式。
+        函数/片段定位需要完整文本，保持整读路径；普通行窗口走流式读取。
+        """
+
         raw_path = str(arguments.get("path") or "").strip()
         if raw_path.startswith(BUNDLED_DOC_URI_PREFIX):
             try:
@@ -148,72 +201,196 @@ class WorkspaceTools:
         text_snippet = _read_optional_text(arguments, "text")
         if function_name and text_snippet:
             raise WorkspaceToolError("function_name 和 text 不能同时指定。")
-        max_lines = _read_limited_int(arguments, "max_lines", default=200, minimum=1, maximum=500)
+        max_lines = _read_limited_int(
+            arguments,
+            "max_lines",
+            default=READ_MAX_LINES,
+            minimum=1,
+            maximum=READ_MAX_LINES,
+        )
         if not path.is_file():
             raise WorkspaceToolError(f"不是文件：{self.relative_path(path)}")
 
-        text = self.read_text(path)
-        lines = text.splitlines()
-        if function_name:
-            function_range = _find_function_range(path, text, function_name)
-            if function_range is None:
-                raise WorkspaceToolError(
-                    f"未找到函数或方法：{function_name}（文件：{self.relative_path(path)}）。"
+        if function_name or text_snippet:
+            # 定位类读取需要完整文本（AST/片段搜索），保持整读路径。
+            text = self.read_text(path)
+            lines = text.splitlines()
+            if function_name:
+                function_range = _find_function_range(path, text, function_name)
+                if function_range is None:
+                    raise WorkspaceToolError(
+                        f"未找到函数或方法：{function_name}（文件：{self.relative_path(path)}）。"
+                    )
+                start_line, end_line, resolved_name = function_range
+                output = self._format_read_lines(
+                    lines,
+                    start_line=start_line,
+                    end_line=end_line,
+                    max_lines=max_lines,
+                    header=f"定位：函数 {resolved_name}（第 {start_line}-{end_line} 行）",
+                    truncation_hint="函数内容超过 max_lines，可提高 max_lines 继续读取。",
                 )
-            start_line, end_line, resolved_name = function_range
-            return self._format_read_lines(
-                lines,
-                start_line=start_line,
-                end_line=end_line,
-                max_lines=max_lines,
-                header=f"定位：函数 {resolved_name}（第 {start_line}-{end_line} 行）",
-                truncation_hint="函数内容超过 max_lines，可提高 max_lines 继续读取。",
-            )
-
-        if text_snippet:
-            occurrence_offset = text.find(text_snippet)
-            if occurrence_offset < 0:
-                raise WorkspaceToolError(
-                    f"未找到指定文字片段（文件：{self.relative_path(path)}）。"
+            else:
+                occurrence_offset = text.find(text_snippet)
+                if occurrence_offset < 0:
+                    raise WorkspaceToolError(
+                        f"未找到指定文字片段（文件：{self.relative_path(path)}）。"
+                    )
+                context_lines = _read_limited_int(
+                    arguments,
+                    "context_lines",
+                    default=20,
+                    minimum=0,
+                    maximum=200,
                 )
-            context_lines = _read_limited_int(
-                arguments,
-                "context_lines",
-                default=20,
-                minimum=0,
-                maximum=200,
-            )
-            anchor_start_line = text.count("\n", 0, occurrence_offset) + 1
-            anchor_last_offset = occurrence_offset + len(text_snippet) - 1
-            anchor_end_line = text.count("\n", 0, anchor_last_offset) + 1
-            start_line = max(1, anchor_start_line - context_lines)
-            end_line = min(len(lines), anchor_end_line + context_lines)
-            return self._format_read_lines(
-                lines,
-                start_line=start_line,
-                end_line=end_line,
-                max_lines=max_lines,
-                header=(
-                    f"定位：文字片段首次匹配（第 {anchor_start_line}-{anchor_end_line} 行，"
-                    f"上下文 {context_lines} 行）"
-                ),
-                truncation_hint="文字片段上下文超过 max_lines，可提高 max_lines 继续读取。",
-            )
+                anchor_start_line = text.count("\n", 0, occurrence_offset) + 1
+                anchor_last_offset = occurrence_offset + len(text_snippet) - 1
+                anchor_end_line = text.count("\n", 0, anchor_last_offset) + 1
+                start_line = max(1, anchor_start_line - context_lines)
+                end_line = min(len(lines), anchor_end_line + context_lines)
+                output = self._format_read_lines(
+                    lines,
+                    start_line=start_line,
+                    end_line=end_line,
+                    max_lines=max_lines,
+                    header=(
+                        f"定位：文字片段首次匹配（第 {anchor_start_line}-{anchor_end_line} 行，"
+                        f"上下文 {context_lines} 行）"
+                    ),
+                    truncation_hint="文字片段上下文超过 max_lines，可提高 max_lines 继续读取。",
+                )
+            return output, {"type": "read", "path": self.relative_path(path)}
 
-        start_line = _read_limited_int(arguments, "start_line", default=1, minimum=1, maximum=100_000)
-        # 未显式指定 max_lines 时：不超过 500 行的小文件默认读取全部内容；
-        # 超过 500 行仍按 500 行上限截断（可用 start_line 继续向后读）。
+        start_line = _read_limited_int(
+            arguments,
+            "start_line",
+            default=1,
+            minimum=1,
+            maximum=100_000,
+        )
         raw_max_lines = arguments.get("max_lines")
         if raw_max_lines is None or (
             isinstance(raw_max_lines, str) and not raw_max_lines.strip()
         ):
-            max_lines = min(len(lines), 500)
-        return self._format_read_lines(
-            lines,
+            # 未显式指定 max_lines 时按 READ_MAX_LINES 默认上限读取。
+            max_lines = READ_MAX_LINES
+        return self._read_file_window(
+            path,
             start_line=start_line,
-            end_line=len(lines),
             max_lines=max_lines,
-            truncation_hint="已截断，可提高 start_line 继续读取。",
+        )
+
+    def _read_file_window(
+        self,
+        path: Path,
+        *,
+        start_line: int,
+        max_lines: int,
+    ) -> tuple[str, dict[str, Any]]:
+        """流式读取文件行窗口，返回（文本, artifact）。
+
+        逐行迭代而不是整文件读入内存：大文件只保留目标窗口行，超长行按
+        READ_MAX_LINE_LENGTH 截断。footer 给出实际返回行号与续读提示，让模型
+        知道文件还有更多内容以及从哪里继续。
+        """
+
+        display_path = self.relative_path(path)
+        selected: list[tuple[int, str]] = []
+        total_lines = 0
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                for line_no, raw_line in enumerate(file, start=1):
+                    total_lines = line_no
+                    if line_no < start_line:
+                        continue
+                    if len(selected) >= max_lines:
+                        continue
+                    line = raw_line.rstrip("\r\n")
+                    if len(line) > READ_MAX_LINE_LENGTH:
+                        line = (
+                            f"{line[:READ_MAX_LINE_LENGTH]}... "
+                            f"(line truncated to {READ_MAX_LINE_LENGTH} chars)"
+                        )
+                    selected.append((line_no, line))
+        except UnicodeDecodeError as exc:
+            raise WorkspaceToolError(
+                f"文件不是 UTF-8 文本或包含二进制内容：{display_path}"
+            ) from exc
+        except OSError as exc:
+            raise WorkspaceToolError(
+                f"读取文件失败：{display_path}，{exc}"
+            ) from exc
+
+        # 起始行超出文件末尾时直接报错，而不是返回无意义的空窗口/footer。
+        if start_line > total_lines and total_lines > 0:
+            raise self._read_window_out_of_range_error(
+                display_path,
+                start_line,
+                total_lines,
+            )
+        if total_lines == 0 and start_line > 1:
+            raise self._read_window_out_of_range_error(
+                display_path,
+                start_line,
+                0,
+            )
+
+        end_line = selected[-1][0] if selected else start_line - 1
+        truncated = end_line < total_lines
+        footer = self._format_read_footer(
+            start_line=start_line,
+            end_line=end_line,
+            total_lines=total_lines,
+            truncated=truncated,
+        )
+        numbered = [f"{line_no}: {line}" for line_no, line in selected]
+        if not numbered:
+            numbered.append("文件为空，或指定范围没有内容。")
+        text = "\n".join(numbered)
+        if footer:
+            text += f"\n{footer}"
+        artifact: dict[str, Any] = {
+            "type": "read",
+            "path": display_path,
+            "start_line": start_line,
+            "lines": [
+                {"number": line_no, "text": line}
+                for line_no, line in selected
+            ],
+            "total_lines": total_lines,
+            "truncated": truncated,
+        }
+        lang = _lang_from_path(path)
+        if lang is not None:
+            artifact["lang"] = lang
+        return text, artifact
+
+    @staticmethod
+    def _format_read_footer(
+        *,
+        start_line: int,
+        end_line: int,
+        total_lines: int,
+        truncated: bool,
+    ) -> str:
+        """生成 read 输出末尾的续读 footer（Showing lines X-Y of Z 风格）。"""
+
+        if not truncated:
+            return f"(End of file - total {total_lines} lines)"
+        next_line = end_line + 1
+        return (
+            f"(Showing lines {start_line}-{end_line} of {total_lines}. "
+            f"Use start_line={next_line} to continue.)"
+        )
+
+    @staticmethod
+    def _read_window_out_of_range_error(
+        display_path: str,
+        start_line: int,
+        total_lines: int,
+    ) -> WorkspaceToolError:
+        return WorkspaceToolError(
+            f"start_line {start_line} 超出文件范围：{display_path}（共 {total_lines} 行）。"
         )
 
     def find_files(self, arguments: dict[str, Any]) -> str:
@@ -242,11 +419,13 @@ class WorkspaceTools:
             root=root,
             kind=kind,
             case_sensitive=case_sensitive,
-            max_results=max_results,
         )
-        lines = [f"{path}{'/' if is_dir else ''}" for path, is_dir in indexed]
-        suffix = "\n... 已达到 max_results。" if len(indexed) >= max_results else ""
-        return "\n".join(lines) + suffix if lines else "未找到匹配结果。"
+        return self._render_search_result(
+            [f"{path}{'/' if is_dir else ''}" for path, is_dir in indexed],
+            max_results=max_results,
+            prefix="find_results",
+            label="条",
+        )
 
     def grep(self, arguments: dict[str, Any]) -> str:
         """在 UTF-8 文本文件中执行 grep 风格搜索（由打包的 ripgrep 二进制执行）。
@@ -299,8 +478,10 @@ class WorkspaceTools:
         )
         count_only = bool(arguments.get("count", False))
         files_only = bool(arguments.get("files_with_matches", False))
-        include_re = _compile_glob(_read_optional_text(arguments, "include"))
-        exclude_re = _compile_glob(_read_optional_text(arguments, "exclude"))
+        include_glob = _read_optional_text(arguments, "include")
+        exclude_glob = _read_optional_text(arguments, "exclude")
+        include_re = _compile_glob(include_glob)
+        exclude_re = _compile_glob(exclude_glob)
 
         if count_only:
             return self._grep_count_files(
@@ -308,6 +489,8 @@ class WorkspaceTools:
                 pattern=pattern,
                 use_regex=use_regex,
                 case_sensitive=case_sensitive,
+                include_glob=include_glob,
+                exclude_glob=exclude_glob,
                 include_re=include_re,
                 exclude_re=exclude_re,
                 max_results=max_results,
@@ -318,24 +501,57 @@ class WorkspaceTools:
                 pattern=pattern,
                 use_regex=use_regex,
                 case_sensitive=case_sensitive,
+                include_glob=include_glob,
+                exclude_glob=exclude_glob,
                 include_re=include_re,
                 exclude_re=exclude_re,
                 max_results=max_results,
             )
 
-        match_lines, truncated = self._scan_grep(
+        match_lines, parse_capped = self._scan_grep(
             root,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
+            include_glob=include_glob,
+            exclude_glob=exclude_glob,
             include_re=include_re,
             exclude_re=exclude_re,
-            max_results=max_results,
         )
-        output = self._format_grep_matches(match_lines, context_lines=context_lines)
-        if truncated:
-            output += "\n... 已达到 max_results。"
-        return output
+        if parse_capped:
+            # 结果过大（超过 SEARCH_PARSE_LINE_CAP），完整落盘也只能保存前
+            # SEARCH_PARSE_LINE_CAP 条；footer 明确提示截断而非假装完整。
+            inline = self._format_grep_matches(
+                match_lines[:max_results],
+                context_lines=context_lines,
+            )
+            spill_lines = [
+                self._format_match_line(relative, line_no, text)
+                for relative, line_no, text in match_lines
+            ]
+            return inline + self._truncation_footer(
+                spill_lines,
+                max_results=max_results,
+                prefix="grep_matches",
+                label="条匹配",
+                partial=True,
+            )
+        if len(match_lines) > max_results:
+            inline = self._format_grep_matches(
+                match_lines[:max_results],
+                context_lines=context_lines,
+            )
+            spill_lines = [
+                self._format_match_line(relative, line_no, text)
+                for relative, line_no, text in match_lines
+            ]
+            return inline + self._truncation_footer(
+                spill_lines,
+                max_results=max_results,
+                prefix="grep_matches",
+                label="条匹配",
+            )
+        return self._format_grep_matches(match_lines, context_lines=context_lines)
 
     def _grep_count_files(
         self,
@@ -344,43 +560,42 @@ class WorkspaceTools:
         pattern: str,
         use_regex: bool,
         case_sensitive: bool,
+        include_glob: str | None,
+        exclude_glob: str | None,
         include_re: re.Pattern[str] | None,
         exclude_re: re.Pattern[str] | None,
         max_results: int,
     ) -> str:
         """输出每个文件的匹配行数（grep -c 语义）。"""
 
-        files = self._iter_grep_files(
-            root, include_re=include_re, exclude_re=exclude_re
-        )
-        counts: list[tuple[str, str]] = []
-        truncated = False
-        for stdout, returncode in self._run_ripgrep_over_files(
-            files,
+        stdout, returncode = self._run_ripgrep_over_root(
+            root,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
+            include_glob=include_glob,
+            exclude_glob=exclude_glob,
             extra_args=["--count", "--with-filename"],
-        ):
-            if returncode == 1:
-                continue
+        )
+        counts: list[tuple[str, str]] = []
+        if returncode != 1:
             for line in stdout.splitlines():
                 path_text, separator, count_text = line.rpartition(":")
                 if not separator or not count_text.isdigit():
                     continue
-                counts.append((self.relative_path(Path(path_text)), count_text))
-                if len(counts) >= max_results:
-                    truncated = True
+                path = self._search_path_from_output(path_text)
+                if not self._passes_grep_filters(path, include_re, exclude_re):
+                    continue
+                counts.append((self.relative_path(path), count_text))
+                if len(counts) >= SEARCH_PARSE_LINE_CAP:
                     break
-            if truncated:
-                break
         counts.sort(key=lambda item: item[0].casefold())
-        result = "\n".join(
-            f"{path}: {count}" for path, count in counts
-        ) or "未找到匹配结果。"
-        if truncated:
-            result += "\n... 已达到 max_results。"
-        return result
+        return self._render_search_result(
+            [f"{path}: {count}" for path, count in counts],
+            max_results=max_results,
+            prefix="grep_counts",
+            label="个文件",
+        )
 
     def _grep_list_files(
         self,
@@ -389,40 +604,41 @@ class WorkspaceTools:
         pattern: str,
         use_regex: bool,
         case_sensitive: bool,
+        include_glob: str | None,
+        exclude_glob: str | None,
         include_re: re.Pattern[str] | None,
         exclude_re: re.Pattern[str] | None,
         max_results: int,
     ) -> str:
         """只输出包含匹配的文件路径（grep -l 语义）。"""
 
-        files = self._iter_grep_files(
-            root, include_re=include_re, exclude_re=exclude_re
-        )
-        matched: list[str] = []
-        truncated = False
-        for stdout, returncode in self._run_ripgrep_over_files(
-            files,
+        stdout, returncode = self._run_ripgrep_over_root(
+            root,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
+            include_glob=include_glob,
+            exclude_glob=exclude_glob,
             extra_args=["--files-with-matches", "-m", "1"],
-        ):
-            if returncode == 1:
-                continue
+        )
+        matched: list[str] = []
+        if returncode != 1:
             for line in stdout.splitlines():
                 if not line:
                     continue
-                matched.append(self.relative_path(Path(line)))
-                if len(matched) >= max_results:
-                    truncated = True
+                path = self._search_path_from_output(line)
+                if not self._passes_grep_filters(path, include_re, exclude_re):
+                    continue
+                matched.append(self.relative_path(path))
+                if len(matched) >= SEARCH_PARSE_LINE_CAP:
                     break
-            if truncated:
-                break
         matched.sort(key=lambda item: item.casefold())
-        result = "\n".join(matched) or "未找到匹配结果。"
-        if truncated:
-            result += "\n... 已达到 max_results。"
-        return result
+        return self._render_search_result(
+            matched,
+            max_results=max_results,
+            prefix="grep_files",
+            label="个文件",
+        )
 
     def _scan_grep(
         self,
@@ -431,59 +647,274 @@ class WorkspaceTools:
         pattern: str,
         use_regex: bool,
         case_sensitive: bool,
+        include_glob: str | None,
+        exclude_glob: str | None,
         include_re: re.Pattern[str] | None,
         exclude_re: re.Pattern[str] | None,
-        max_results: int,
     ) -> tuple[list[tuple[str, int, str]], bool]:
-        """调用 ripgrep 收集匹配行；返回（匹配行列表，是否达到 max_results）。"""
+        """调用 ripgrep --json 收集匹配行；返回（匹配行列表，是否超过解析上限）。
 
-        files = self._iter_grep_files(
-            root, include_re=include_re, exclude_re=exclude_re
-        )
-        match_lines: list[tuple[str, int, str]] = []
-        truncated = False
-        for stdout, returncode in self._run_ripgrep_over_files(
-            files,
+        ``--json`` 输出是 NDJSON，match 记录的路径/行号/行文本都是结构化字段，
+        不存在文本格式 ``path:line:text`` 的冒号歧义（Windows 盘符、路径内冒号
+        不再误切）；非 UTF-8 行给出占位文本而不是丢弃匹配。
+        """
+
+        stdout, returncode = self._run_ripgrep_over_root(
+            root,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
-            extra_args=["--no-heading", "--with-filename", "--line-number"],
-            per_file_limit=max_results,
-        ):
-            if returncode == 1:
-                continue
+            include_glob=include_glob,
+            exclude_glob=exclude_glob,
+            extra_args=["--json", "--line-number"],
+        )
+        match_lines: list[tuple[str, int, str]] = []
+        parse_capped = False
+        if returncode != 1:
             for raw_line in stdout.splitlines():
-                parsed = self._parse_ripgrep_match_line(raw_line)
+                if not raw_line:
+                    continue
+                parsed = self._parse_ripgrep_json_record(raw_line)
                 if parsed is None:
                     continue
-                match_lines.append(parsed)
-                if len(match_lines) >= max_results:
-                    truncated = True
+                relative, line_no, text = parsed
+                if not self._passes_grep_filters(
+                    self._search_path_from_output(relative),
+                    include_re,
+                    exclude_re,
+                ):
+                    continue
+                match_lines.append((relative, line_no, text))
+                if len(match_lines) >= SEARCH_PARSE_LINE_CAP:
+                    parse_capped = True
                     break
-            if truncated:
-                break
         match_lines.sort(key=lambda item: (item[0].casefold(), item[1]))
-        return match_lines, truncated
+        return match_lines, parse_capped
 
-    def _iter_grep_files(
+    @staticmethod
+    def _format_match_line(relative: str, line_no: int, text: str) -> str:
+        """格式化单条匹配行为 ``path:line: text``。"""
+
+        return f"{relative}:{line_no}: {text}"
+
+    @staticmethod
+    def _cap_match_line(text: str) -> str:
+        """对单条匹配行/上下文行做长度上限截断（保留前 N 字符并标记）。"""
+
+        if len(text) <= GREP_MAX_LINE_LENGTH:
+            return text
+        return text[:GREP_MAX_LINE_LENGTH] + " (line truncated)"
+
+    def _parse_ripgrep_json_record(
+        self, raw_line: str
+    ) -> tuple[str, int, str] | None:
+        """解析一条 ``rg --json`` NDJSON 行；非 match 记录返回 None。
+
+        match 记录的 path/line_number/lines.text 都是结构化字段，不存在
+        文本格式 ``path:line:text`` 的冒号歧义。非 UTF-8 行 rg 只给 base64
+        ``bytes`` 字段，返回占位文本而不是丢弃该匹配。
+        """
+
+        try:
+            record = json.loads(raw_line)
+        except ValueError:
+            return None
+        if not isinstance(record, dict) or record.get("type") != "match":
+            return None
+        data = record.get("data")
+        if not isinstance(data, dict):
+            return None
+        path_obj = data.get("path")
+        path_text = path_obj.get("text") if isinstance(path_obj, dict) else None
+        line_number = data.get("line_number")
+        lines_obj = data.get("lines")
+        text = lines_obj.get("text") if isinstance(lines_obj, dict) else None
+        if not isinstance(path_text, str) or not isinstance(line_number, int):
+            return None
+        if not isinstance(text, str):
+            return (
+                self.relative_path(Path(path_text)),
+                line_number,
+                "(line is not valid UTF-8)",
+            )
+        return (
+            self.relative_path(Path(path_text)),
+            line_number,
+            self._cap_match_line(text.rstrip("\r\n")),
+        )
+
+    def _save_search_results(self, content: str, *, prefix: str) -> str | None:
+        """把完整搜索结果写入 Agent 临时目录；返回保存路径，失败返回 None。
+
+        与命令输出落盘同一目录（.omnicrawl/.agent_tmp/files/），模型可用
+        read 工具按返回路径读取完整结果。
+        """
+
+        save_path = (
+            self.workspace_root
+            / DEFAULT_AGENT_TEMP_DIRECTORY
+            / COMMAND_OUTPUT_FILES_SUBDIR
+            / f"{prefix}_{uuid.uuid4().hex[:8]}.txt"
+        )
+        try:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_text(content, encoding="utf-8")
+            return str(save_path)
+        except OSError:
+            return None
+
+    def _truncation_footer(
+        self,
+        body_lines: list[str],
+        *,
+        max_results: int,
+        prefix: str,
+        label: str = "条",
+        partial: bool = False,
+    ) -> str:
+        """构造超限 footer：完整结果落盘并给出恢复路径（deepseek 风格）。
+
+        partial=True 表示结果本身也超过了解析上限，落盘内容同样不完整。
+        """
+
+        total = len(body_lines)
+        saved = self._save_search_results(
+            "\n".join(body_lines), prefix=prefix
+        )
+        if partial:
+            hint = (
+                f"完整结果过大，已保存前 {total} 条至：{saved}"
+                if saved
+                else "结果过大且完整结果未保存，请缩小 pattern/path/include 范围。"
+            )
+        else:
+            hint = (
+                f"完整结果已保存至：{saved}"
+                if saved
+                else "完整结果未保存，请缩小 pattern/path/include 范围。"
+            )
+        return f"\n... 已达到 max_results（{max_results}），共 {total} {label}。{hint}"
+
+    def _render_search_result(
+        self,
+        all_items: list[str],
+        *,
+        max_results: int,
+        prefix: str,
+        empty_text: str = "未找到匹配结果。",
+        label: str = "条",
+    ) -> str:
+        """渲染搜索结果：不超限原样返回，超限保留前 max_results 条并落盘完整结果。"""
+
+        if not all_items:
+            return empty_text
+        if len(all_items) <= max_results:
+            return "\n".join(all_items)
+        inline = "\n".join(all_items[:max_results])
+        return inline + self._truncation_footer(
+            all_items,
+            max_results=max_results,
+            prefix=prefix,
+            label=label,
+        )
+
+    def _search_path_from_output(self, raw_path: str) -> Path:
+        """把 rg 输出里的路径解析回文件系统路径。
+
+        rg 以 workspace_root 为 cwd 搜索，输出的路径可能是相对的（目录搜索）
+        或绝对的（显式传入绝对路径）；两种都转成可继续做安全过滤的 Path。
+        """
+
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = self.workspace_root / path
+        return path
+
+    def _passes_grep_filters(
+        self,
+        path: Path,
+        include_re: re.Pattern[str] | None,
+        exclude_re: re.Pattern[str] | None,
+    ) -> bool:
+        """对 rg 返回的匹配文件应用与旧实现一致的安全过滤和 include/exclude。
+
+        rg 的 --glob 已对纯 basename 模式预剪枝（提高性能）；这里保留 Python
+        侧过滤作为兜底，保证保护路径回调（_extra_protection_message）与含
+        路径分隔符的 glob（rg 匹配相对路径、旧实现只匹配文件名）的行为与旧
+        实现完全一致。
+        """
+
+        if self.should_skip_path(path):
+            return False
+        if include_re is not None and not include_re.match(path.name):
+            return False
+        if exclude_re is not None and exclude_re.match(path.name):
+            return False
+        return True
+
+    def _run_ripgrep_over_root(
         self,
         root: Path,
         *,
-        include_re: re.Pattern[str] | None,
-        exclude_re: re.Pattern[str] | None,
-    ) -> list[Path]:
-        """收集待搜索文件并应用与旧实现一致的安全过滤和 include/exclude。"""
-        files = [root] if root.is_file() else self.iter_search_files(root)
-        selected: list[Path] = []
-        for file_path in files:
-            if self.should_skip_path(file_path):
-                continue
-            if include_re is not None and not include_re.match(file_path.name):
-                continue
-            if exclude_re is not None and exclude_re.match(file_path.name):
-                continue
-            selected.append(file_path)
-        return selected
+        pattern: str,
+        use_regex: bool,
+        case_sensitive: bool,
+        extra_args: list[str],
+        include_glob: str | None,
+        exclude_glob: str | None,
+    ) -> tuple[str, int]:
+        """让 ripgrep 直接遍历目录搜索（单次调用，返回 (stdout, returncode)）。
+
+        相比旧实现（Python os.walk 全量枚举文件后分批喂给 rg），直接把目录
+        交给 rg 遍历可以：
+        - 原生读取 .gitignore / .ignore，自动跳过 node_modules、dist、构建产物
+          等被忽略目录（旧实现会全量枚举这些目录，实测多枚举 20+ 倍文件）；
+        - 用 rg 的并行 I/O 与内存映射加速匹配，不再受 Python 单线程遍历限制；
+        - 保护路径（PROTECTED_PATH_GLOBS）与 include/exclude 转成 --glob 在
+          rg 侧剪枝，进一步减少要扫描的文件数。
+
+        include/exclude 的 glob 语义与旧实现一致（匹配文件名，大小写不敏感）：
+        rg 的 -g 参数无 / 时匹配任意层级的 basename，因此把用户 glob 原样传入
+        即可。保护路径 glob 与 include 一样是 basename 语义，对目录会剪枝其
+        全部内容。
+        """
+
+        binary = self._ripgrep_binary()
+        args = list(extra_args)
+        if not use_regex:
+            args.append("--fixed-strings")
+        if not case_sensitive:
+            args.append("--ignore-case")
+        # 旧实现（os.walk）会搜索隐藏文件/目录；rg 默认跳过，这里显式开启以
+        # 保持行为一致（.git 等 VCS 目录 rg 永不搜索，即使 --hidden）。
+        args.append("--hidden")
+        # 非 git 目录也读 .gitignore/.ignore：让 node_modules、构建产物等被
+        # 忽略目录在任意工作区都自动跳过，不再依赖是否初始化了 git 仓库。
+        args.append("--no-require-git")
+        # 保护路径 glob（! 前缀为排除）放在 include/exclude 之前：rg 按出现
+        # 顺序应用 glob，先排除保护路径再应用用户过滤，与旧实现过滤顺序一致。
+        for glob_pattern in PROTECTED_PATH_GLOBS:
+            args.extend(["--glob", glob_pattern])
+        # 只有纯 basename 模式（不含 /）才能转成 rg --glob：rg 的 glob 匹配
+        # 相对路径，旧实现只匹配文件名，含路径分隔符的模式语义不同，留给
+        # Python 侧 _passes_grep_filters 兜底过滤，保证结果与旧实现一致。
+        if include_glob and _glob_is_basename_only(include_glob):
+            args.extend(["--glob", include_glob])
+        if exclude_glob and _glob_is_basename_only(exclude_glob):
+            args.extend(["--glob", f"!{exclude_glob}"])
+        if (include_glob and _glob_is_basename_only(include_glob)) or (
+            exclude_glob and _glob_is_basename_only(exclude_glob)
+        ):
+            args.append("--glob-case-insensitive")
+        try:
+            return run_ripgrep(
+                binary,
+                [*args, "--", pattern, str(root)],
+                cwd=self.workspace_root,
+                timeout=self.command_timeout_seconds,
+            )
+        except RipgrepError as exc:
+            raise WorkspaceToolError(str(exc)) from exc
 
     def _ripgrep_binary(self) -> Path:
         """返回可用的 ripgrep 二进制；优先随包分发，其次 PATH。"""
@@ -495,53 +926,10 @@ class WorkspaceTools:
         binary = resolve_ripgrep_binary()
         if binary is None:
             raise WorkspaceToolError(
-                "未找到 ripgrep 二进制：omnicrawl/bin 未随包分发 rg，"
+                "未找到 ripgrep 二进制：omnicrawl/bin 未随包分发当前平台的 rg，"
                 "PATH 中也没有 rg。"
             )
         return binary
-
-    def _run_ripgrep_over_files(
-        self,
-        files: list[Path],
-        *,
-        pattern: str,
-        use_regex: bool,
-        case_sensitive: bool,
-        extra_args: list[str],
-        per_file_limit: int | None = None,
-    ):
-        """分批把文件列表交给 ripgrep，逐个批次产出 (stdout, returncode)。"""
-        binary = self._ripgrep_binary()
-        base_args = list(extra_args)
-        if not use_regex:
-            base_args.append("--fixed-strings")
-        if not case_sensitive:
-            base_args.append("--ignore-case")
-        if per_file_limit is not None:
-            base_args.extend(["--max-count", str(per_file_limit)])
-        for batch in batch_paths(files):
-            try:
-                yield run_ripgrep(
-                    binary,
-                    [*base_args, "--", pattern, *batch],
-                    cwd=self.workspace_root,
-                    timeout=self.command_timeout_seconds,
-                )
-            except RipgrepError as exc:
-                raise WorkspaceToolError(str(exc)) from exc
-
-    def _parse_ripgrep_match_line(
-        self, raw_line: str
-    ) -> tuple[str, int, str] | None:
-        """解析 ripgrep 的 ``path:line:text`` 输出行。"""
-        match = _RIPGREP_MATCH_LINE_RE.match(raw_line)
-        if match is None:
-            return None
-        return (
-            self.relative_path(Path(match.group("path"))),
-            int(match.group("line")),
-            match.group("text"),
-        )
 
     def _format_grep_matches(
         self,
@@ -557,6 +945,13 @@ class WorkspaceTools:
 
         if not match_lines:
             return "未找到匹配结果。"
+        # context_lines=0 时直接用 rg 报告的行文本（已做单行截断），不再
+        # 重新读取文件，避免大文件二次 I/O 且保证文本与 rg 输出一致。
+        if context_lines <= 0:
+            return "\n".join(
+                self._format_match_line(relative, line_no, text)
+                for relative, line_no, text in match_lines
+            )
         by_file: dict[str, list[int]] = {}
         file_order: list[str] = []
         for relative, line_no, _line in match_lines:
@@ -582,10 +977,11 @@ class WorkspaceTools:
                     if current in covered:
                         continue
                     covered.add(current)
+                    line_text = self._cap_match_line(file_lines[index])
                     if current == line_no:
-                        out.append(f"{relative}:{current}: {file_lines[index]}")
+                        out.append(f"{relative}:{current}: {line_text}")
                     else:
-                        out.append(f"{relative}-{current}- {file_lines[index]}")
+                        out.append(f"{relative}-{current}- {line_text}")
         return "\n".join(out)
 
     def _scan_file_names(
@@ -595,18 +991,18 @@ class WorkspaceTools:
         root: Path,
         kind: str,
         case_sensitive: bool,
-        max_results: int,
     ) -> list[tuple[str, bool]]:
+        """按名称/相对路径过滤候选条目，返回全部匹配（截断由调用方处理）。"""
+
         needle = pattern if case_sensitive else pattern.casefold()
-        candidates = [root] if root.is_file() else self._iter_search_entries(root)
+        candidates = self._list_search_entries(root, include_dirs=kind != "file")
         results: list[tuple[str, bool]] = []
-        for entry in candidates:
-            if self.should_skip_path(entry):
+        for entry_path, is_dir in candidates:
+            if self.should_skip_path(entry_path):
                 continue
-            relative = self.relative_path(entry)
+            relative = self.relative_path(entry_path)
             candidate = relative if case_sensitive else relative.casefold()
-            name = entry.name if case_sensitive else entry.name.casefold()
-            is_dir = entry.is_dir()
+            name = entry_path.name if case_sensitive else entry_path.name.casefold()
             if kind == "file" and is_dir:
                 continue
             if kind == "directory" and not is_dir:
@@ -628,26 +1024,61 @@ class WorkspaceTools:
             elif needle not in candidate and needle not in name:
                 continue
             results.append((relative, is_dir))
-            if len(results) >= max_results:
-                break
         return results
 
-    def _iter_search_entries(self, root: Path) -> list[Path]:
-        entries: list[Path] = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            current_dir = Path(dirpath)
-            dirnames[:] = [
-                dirname
-                for dirname in sorted(dirnames, key=lambda value: value.lower())
-                # 目录 symlink/junction 一律跳过，与 iter_search_files 行为保持一致。
-                if not self.should_skip_path(current_dir / dirname)
-                and not (current_dir / dirname).is_symlink()
-            ]
-            entries.extend(current_dir / dirname for dirname in dirnames)
+    def _list_search_entries(
+        self,
+        root: Path,
+        *,
+        include_dirs: bool,
+    ) -> list[tuple[Path, bool]]:
+        """用 ``rg --files`` 枚举搜索候选（原生读 .gitignore，保护路径剪枝）。
+
+        相比旧实现（os.walk 全量遍历、不读 .gitignore，node_modules/dist 等
+        被忽略目录全部展开），把遍历交给 rg：跳过被忽略目录、并行 I/O。
+        rg 只列文件；需要目录时由文件路径的祖先推导（空目录不再返回，与
+        deepseek glob 工具"只返回文件"的语义一致，但保留 kind 过滤能力）。
+        """
+
+        if root.is_file():
+            return [(root, False)]
+        binary = self._ripgrep_binary()
+        args = ["--files", "--hidden", "--no-require-git"]
+        for glob_pattern in PROTECTED_PATH_GLOBS:
+            args.extend(["--glob", glob_pattern])
+        try:
+            stdout, returncode = run_ripgrep(
+                binary,
+                [*args, "--", str(root)],
+                cwd=self.workspace_root,
+                timeout=self.command_timeout_seconds,
+            )
+        except RipgrepError as exc:
+            raise WorkspaceToolError(str(exc)) from exc
+        if returncode == 1:
+            return []
+        files: list[Path] = []
+        dirs: set[Path] = set()
+        for line in stdout.splitlines():
+            if not line:
+                continue
+            path = self._search_path_from_output(line)
+            if not path.is_file():
+                continue
+            files.append(path)
+            if include_dirs:
+                parent = path.parent
+                while parent != root and parent.is_relative_to(root):
+                    dirs.add(parent)
+                    parent = parent.parent
+            if len(files) >= SEARCH_PARSE_LINE_CAP:
+                break
+        files.sort(key=lambda value: str(value).lower())
+        entries = [(path, False) for path in files]
+        if include_dirs:
             entries.extend(
-                current_dir / filename
-                for filename in sorted(filenames, key=lambda value: value.lower())
-                if not self.should_skip_path(current_dir / filename)
+                (path, True)
+                for path in sorted(dirs, key=lambda value: str(value).lower())
             )
         return entries
 
@@ -963,7 +1394,7 @@ class WorkspaceTools:
             dirnames[:] = [
                 dirname
                 for dirname in sorted(dirnames, key=lambda value: value.lower())
-                # 与 _iter_search_entries 保持一致：目录 symlink/junction 不遍历。
+                # 目录 symlink/junction 一律不遍历（与 find 的 rg --files 枚举一致）。
                 if not self.should_skip_path(current_dir / dirname)
                 and not (current_dir / dirname).is_symlink()
             ]
@@ -1068,11 +1499,6 @@ def _sample_command_output(
     return "".join(head_lines) + hint + "\n" + "".join(tail_lines)
 
 
-_RIPGREP_MATCH_LINE_RE = re.compile(
-    r"^(?P<path>.+?):(?P<line>\d+):(?P<text>.*)$"
-)
-
-
 def _has_glob_magic(pattern: str) -> bool:
     """判断搜索目标是否包含 glob 通配符。"""
     return any(character in pattern for character in "*?[")
@@ -1084,6 +1510,39 @@ def _compile_glob(pattern: str) -> re.Pattern[str] | None:
     if not pattern:
         return None
     return re.compile(fnmatch.translate(pattern), re.IGNORECASE)
+
+
+def _glob_is_basename_only(pattern: str) -> bool:
+    """判断 include/exclude glob 是否只匹配文件名（不含路径分隔符）。
+
+    旧实现用 fnmatch 匹配 Path.name（basename）；rg 的 -g 无 / 时也匹配
+    basename，语义一致，可以转成 --glob 预剪枝。含 / 或 \\ 的模式匹配的是
+    相对路径，与旧实现语义不同，只能留给 Python 侧过滤。
+    """
+
+    return "/" not in pattern and "\\" not in pattern
+
+
+_LANG_BY_EXTENSION: dict[str, str] = {
+    "py": "python", "pyw": "python",
+    "js": "javascript", "jsx": "javascript", "mjs": "javascript", "cjs": "javascript",
+    "ts": "typescript", "tsx": "typescript", "mts": "typescript", "cts": "typescript",
+    "json": "json", "jsonc": "json", "toml": "toml", "yaml": "yaml", "yml": "yaml",
+    "md": "markdown", "markdown": "markdown",
+    "go": "go", "rs": "rust", "java": "java", "kt": "kotlin", "rb": "ruby",
+    "c": "c", "h": "c", "cc": "cpp", "cpp": "cpp", "hpp": "cpp",
+    "cs": "csharp", "swift": "swift", "php": "php", "sql": "sql",
+    "sh": "bash", "bash": "bash", "zsh": "bash", "ps1": "powershell",
+    "html": "html", "htm": "html", "css": "css", "scss": "scss", "less": "less",
+    "xml": "xml", "lua": "lua",
+}
+
+
+def _lang_from_path(path: Path) -> str | None:
+    """从文件扩展名推导语法高亮语言提示；未知扩展名返回 None。"""
+
+    suffix = path.suffix.lstrip(".").lower()
+    return _LANG_BY_EXTENSION.get(suffix)
 
 
 def test_output_filtering_command_warning(command: str, *, shell: str) -> str:

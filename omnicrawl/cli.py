@@ -20,7 +20,7 @@ from .extensions.plugin_install import (
 )
 from .extensions.plugin_models import PluginError, PluginInstallError, parse_plugins_config
 from .extensions.plugin_registry import project_registry_path, user_registry_path
-from .config.runtime import load_config_data, save_config_data, get_section, RuntimeConfigError
+from .config.core.runtime import load_config_data, save_config_data, get_section, RuntimeConfigError
 
 
 EXIT_OK = 0

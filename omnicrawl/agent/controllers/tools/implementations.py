@@ -1,0 +1,472 @@
+"""具体 ``_tool_*`` 实现：内置工具与记忆/KB/MCP 工具的薄包装。"""
+from __future__ import annotations
+
+import logging
+import json
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Mapping, Sequence
+from ...toolkit.tools import (
+    build_agent_tools,
+    build_mcp_tools,
+    mcp_prompt_result,
+    mcp_resource_result,
+    mcp_tool_result,
+    normalize_tool_call,
+    public_tool_arguments,
+    TODO_TOOL_NAME,
+    workspace_command_tool_result,
+    workspace_tool_result,
+)
+from ...context_compaction import (
+    ContextCompactionService,
+    ModelSummaryCompactor,
+    RuntimeSummaryModelAdapter,
+    SessionEvidenceRecallService,
+    SourceEvent,
+    TokenUsageSample,
+    estimate_json_tokens,
+)
+from ...toolkit.image_tools import read_image_file
+from ....workspace.tools import WorkspaceToolError
+from ...toolkit.memory_tools import (
+    memory_expand_related_result,
+    memory_read_result,
+    memory_search_result,
+    memory_write_result,
+    project_memory_expand_related_result,
+    project_memory_read_result,
+    project_memory_search_result,
+    project_memory_write_result,
+    session_memory_expand_related_result,
+    session_memory_read_result,
+    session_memory_search_result,
+    session_memory_write_result,
+    user_memory_expand_related_result,
+    user_memory_read_result,
+    user_memory_search_result,
+    user_memory_write_result,
+)
+from ...toolkit.knowledge_tools import (
+    kb_append_result,
+    kb_list_result,
+    kb_read_result,
+    kb_search_result,
+    kb_write_result,
+)
+from ...toolkit.git_tools import git_result
+from ...types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
+from ....config.core.runtime import global_agents_path, resolve_config_path
+from ....memory import (
+    MemoryStore,
+    MemoryStoreError,
+    MemoryWriteRequest,
+    migrate_legacy_memory,
+)
+from ....mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
+
+from ..shared import (
+    AgentError,
+)
+
+LOGGER = logging.getLogger(__name__)
+
+
+class ToolImplementationsMixin:
+    """具体 ``_tool_*`` 实现：内置工具与记忆/KB/MCP 工具的薄包装。"""
+
+    def _tool_update_todos(self, arguments: dict[str, Any]) -> ToolResult:
+        """接收模型的执行清单，并把安全投影转发给 UI。"""
+
+        raw_todos = arguments.get("todos")
+        if not isinstance(raw_todos, list):
+            return ToolResult(ok=False, output="todos 必须是数组。")
+        todos: list[dict[str, Any]] = []
+        for index, raw_item in enumerate(raw_todos[:20], start=1):
+            if not isinstance(raw_item, dict):
+                continue
+            step = str(
+                raw_item.get("step")
+                or raw_item.get("description")
+                or raw_item.get("title")
+                or ""
+            ).strip()
+            if not step:
+                continue
+            status = str(raw_item.get("status") or "").strip().casefold()
+            completed = bool(raw_item.get("completed")) or status in {
+                "completed",
+                "done",
+                "complete",
+            }
+            item_id = str(raw_item.get("id") or index).strip()[:80]
+            todos.append(
+                {
+                    "id": item_id or str(index),
+                    "step": step[:240],
+                    "completed": completed,
+                }
+            )
+        payload = {"todos": todos}
+        callback = getattr(self, "_todo_update_callback", None)
+        if callable(callback):
+            try:
+                callback(payload)
+            except Exception:  # noqa: BLE001 - UI observer 不得破坏 Agent 回合
+                LOGGER.warning("Todo UI observer failed", exc_info=True)
+        return ToolResult(
+            ok=True,
+            output=json.dumps(
+                {"updated": len(todos), "todos": todos},
+                ensure_ascii=False,
+            ),
+        )
+
+    def _tool_list(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().list_files, arguments)
+
+    def _tool_find(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().find_files, arguments)
+
+    def _tool_read(self, arguments: dict[str, Any]) -> ToolResult:
+        """读取文本文件：模型可见输出带行号与续读 footer，ui_artifact 携带
+        结构化行窗口（行号/语言/总数）供 UI 渲染。"""
+
+        try:
+            text, artifact = self._workspace_toolbox().read_file_result(arguments)
+            return ToolResult(
+                ok=True,
+                output=text,
+                ui_artifact=artifact,
+            )
+        except WorkspaceToolError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+    def _tool_read_image(self, arguments: dict[str, Any]) -> ToolResult:
+        return read_image_file(
+            arguments,
+            workspace_root=Path(self._workspace_toolbox().workspace_root),
+        )
+
+    def _tool_grep(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().grep, arguments)
+
+    def _tool_web_search(self, arguments: dict[str, Any]) -> ToolResult:
+        """使用 Bing/DuckDuckGo/雅虎搜索公开网页（见 omnicrawl/web_search.py）。"""
+
+        try:
+            from omnicrawl.web_search import WebSearch
+
+            return ToolResult(ok=True, output=WebSearch().search(arguments))
+        except RuntimeError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+    def _tool_fetcher(self, arguments: dict[str, Any]) -> ToolResult:
+        """模拟浏览器指纹抓取网页（见 omnicrawl/fetcher.py）。"""
+
+        try:
+            from omnicrawl.fetcher import Fetcher
+
+            return ToolResult(ok=True, output=Fetcher().fetch(arguments))
+        except RuntimeError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+    def _tool_image_gen(self, arguments: dict[str, Any]) -> ToolResult:
+        """生成/编辑图片（见 omnicrawl/image_gen.py，配置见 config/image_gen.py）。"""
+
+        try:
+            from omnicrawl.image_gen import ImageGenerator
+
+            configuration = getattr(getattr(self, "config", None), "image_gen", None)
+            if configuration is not None:
+                generator = ImageGenerator(configuration=configuration)
+            else:
+                generator = ImageGenerator(config_path=resolve_config_path())
+            return ToolResult(ok=True, output=generator.run(arguments))
+        except RuntimeError as exc:
+            return ToolResult(ok=False, output=str(exc))
+
+    def _tool_tts_synthesize(self, arguments: dict[str, Any]) -> ToolResult:
+        """把文本合成为语音（见 omnicrawl/tts，配置见 config/features/tts.py）。
+
+        引擎按 model_dir/thread_count 缓存复用；合成完成后按配置自动播放。
+        """
+
+        def _error_result(message: str) -> ToolResult:
+            """失败结果统一为 JSON，明确 ok=false，让模型不再重复调用。"""
+            return ToolResult(
+                ok=False,
+                output=json.dumps({"ok": False, "error": message}, ensure_ascii=False),
+            )
+
+        try:
+            from omnicrawl.tts import TtsEngine, TTSConfig
+        except ModuleNotFoundError as exc:
+            dependency = str(getattr(exc, "name", "") or "") or "可选依赖"
+            return _error_result(
+                f"TTS 依赖缺失（{dependency}）：语音合成不可用。"
+                "请执行 pip install -r requirements.txt 安装 TTS 依赖后重试。"
+            )
+
+        config = getattr(getattr(self, "config", None), "tts", None)
+        if config is None or not getattr(config, "enabled", False):
+            return _error_result(
+                "TTS 未启用：请在 TUI 设置面板（/settings → TTS）中启用并等待模型就绪。"
+            )
+        text = str(arguments.get("text") or "").strip()
+        if not text:
+            return _error_result("text 不能为空。")
+        # 音色固定使用设置中的配置（/settings → TTS），不接受模型传入：模型可能
+        # 猜一个不存在的音色名（如 default），导致合成失败。
+        voice = str(getattr(config, "voice", "Junhao") or "Junhao").strip()
+        prompt_audio = arguments.get("prompt_audio") or None
+        output_path = arguments.get("path") or None
+        if output_path is None:
+            # 无 path 时写入配置的 output_dir（相对工作区），时间戳命名避免覆盖。
+            from datetime import datetime
+
+            output_dir = Path(
+                getattr(config, "output_dir", ".omnicrawl/.agent_tmp/tts") or ".omnicrawl/.agent_tmp/tts"
+            )
+            if not output_dir.is_absolute():
+                output_dir = Path(self.workspace_root) / output_dir
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = output_dir / f"tts_{stamp}.wav"
+
+        try:
+            engine = self._get_tts_engine()
+            if prompt_audio:
+                voice_arg = None
+            else:
+                voice_arg = voice
+            result = engine.synthesize(
+                text,
+                voice=voice_arg,
+                prompt_audio_path=prompt_audio,
+                output_path=output_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - 统一包装为工具错误
+            return _error_result(str(exc))
+
+        # 生成后默认自动播放（配置可控，播放失败不影响结果）。
+        if getattr(config, "auto_play", True):
+            try:
+                from omnicrawl.tts.player import play_wav
+
+                play_wav(result.audio_path)
+            except Exception:  # noqa: BLE001
+                pass
+
+        summary = {
+            "ok": True,
+            "audio_path": str(result.audio_path),
+            "sample_rate": result.sample_rate,
+            "duration_seconds": round(result.duration_seconds, 2),
+            "voice": voice if voice_arg else (str(prompt_audio) if prompt_audio else ""),
+            "text_chunks": len(result.text_chunks),
+        }
+        return ToolResult(ok=True, output=json.dumps(summary, ensure_ascii=False))
+
+    def _get_tts_engine(self):
+        """按当前 TTS 配置惰性构建并缓存引擎；配置变化时自动重建。"""
+
+        from omnicrawl.tts import TTSConfig, TtsEngine
+
+        config = getattr(getattr(self, "config", None), "tts", None)
+        cached = getattr(self, "_tts_engine", None)
+        cached_sig = getattr(self, "_tts_engine_sig", None)
+        sig = (str(config.resolved_model_dir()), int(config.thread_count)) if config is not None else None
+        if cached is not None and cached_sig == sig:
+            return cached
+        if cached is not None:
+            try:
+                cached.close()
+            except Exception:  # noqa: BLE001
+                pass
+        output_dir = getattr(config, "output_dir", ".omnicrawl/.agent_tmp/tts") or ".omnicrawl/.agent_tmp/tts"
+        resolved_output_dir = Path(output_dir)
+        if not resolved_output_dir.is_absolute():
+            resolved_output_dir = Path(self.workspace_root) / resolved_output_dir
+        engine = TtsEngine(
+            TTSConfig(
+                model_dir=config.model_dir or None,
+                thread_count=config.thread_count,
+                output_dir=resolved_output_dir,
+            )
+        )
+        self._tts_engine = engine
+        self._tts_engine_sig = sig
+        return engine
+
+    def _tool_replace_text(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().replace_text, arguments)
+
+    def _tool_write_file(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().write_file, arguments)
+
+    def _tool_bash(self, arguments: dict[str, Any]) -> ToolResult:
+        """用显式 Bash 解释器执行命令，不能被模型参数覆盖解释器。"""
+
+        return workspace_command_tool_result(
+            lambda command_arguments: self._workspace_toolbox().run_shell_command(
+                command_arguments,
+                shell="bash",
+            ),
+            arguments,
+        )
+
+    def _tool_powershell(self, arguments: dict[str, Any]) -> ToolResult:
+        """用显式 PowerShell 解释器执行命令，不能被模型参数覆盖解释器。"""
+
+        return workspace_command_tool_result(
+            lambda command_arguments: self._workspace_toolbox().run_shell_command(
+                command_arguments,
+                shell="powershell",
+            ),
+            arguments,
+        )
+
+    def _tool_monitor(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_command_tool_result(self._monitor_toolbox().run, arguments)
+
+    def _tool_git(self, arguments: dict[str, Any]) -> ToolResult:
+        """结构化 git 操作：argv 直调不经 shell，风险分级见 approval_policy。"""
+
+        return git_result(self.workspace_root, arguments)
+
+    def _tool_recall_session_evidence(self, arguments: dict[str, Any]) -> ToolResult:
+        """恢复当前有效摘要授权的事件，不接受 Session ID 或 artifact 路径。"""
+
+        store = getattr(self, "_session_store", None)
+        state = getattr(self, "_session_state", None)
+        if store is None or state is None:
+            output = {
+                "schema_version": 1,
+                "ok": False,
+                "items": [],
+                "diagnostics": [
+                    {
+                        "code": "session_unavailable",
+                        "message": "当前没有可读取的活动 Session。",
+                    }
+                ],
+                "truncated": False,
+            }
+            return ToolResult(ok=False, output=json.dumps(output, ensure_ascii=False))
+
+        service = getattr(self, "_session_evidence_recall_service", None)
+        if not isinstance(service, SessionEvidenceRecallService):
+            service = SessionEvidenceRecallService()
+            self._session_evidence_recall_service = service
+        try:
+            events = tuple(
+                SourceEvent(event.event_id, event.type, dict(event.payload))
+                for event in store.read_session_events(state.session_id)
+            )
+            result = service.recall(
+                events=events,
+                event_ids=arguments.get("event_ids"),
+                artifact_reader=lambda artifact_path: store.read_artifact_text(
+                    state.session_id,
+                    artifact_path,
+                ),
+            )
+        except Exception:
+            result = {
+                "schema_version": 1,
+                "ok": False,
+                "items": [],
+                "diagnostics": [
+                    {
+                        "code": "evidence_unavailable",
+                        "message": "当前 Session 证据暂时不可读取。",
+                    }
+                ],
+                "truncated": False,
+            }
+        return ToolResult(
+            ok=bool(result.get("ok", False)),
+            output=json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+        )
+
+    def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return memory_search_result(self._require_memory_store("project"), arguments)
+
+    def _tool_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return memory_read_result(self._require_memory_store("project"), arguments)
+
+    def _tool_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        return memory_expand_related_result(self._require_memory_store("project"), arguments)
+
+    def _tool_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return memory_write_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_search_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_read_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_expand_related_result(self._require_memory_store("project"), arguments)
+
+    def _tool_project_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return project_memory_write_result(self._require_memory_store("project"), arguments)
+
+    def _tool_session_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_search_result(self._require_memory_store("session"), arguments)
+
+    def _tool_session_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_read_result(self._require_memory_store("session"), arguments)
+
+    def _tool_session_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_expand_related_result(self._require_memory_store("session"), arguments)
+
+    def _tool_session_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return session_memory_write_result(self._require_memory_store("session"), arguments)
+
+    def _tool_user_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_search_result(self._require_memory_store("user"), arguments)
+
+    def _tool_user_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_read_result(self._require_memory_store("user"), arguments)
+
+    def _tool_user_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_expand_related_result(self._require_memory_store("user"), arguments)
+
+    def _tool_user_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return user_memory_write_result(self._require_memory_store("user"), arguments)
+
+    def _tool_kb_search(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_search_result(self._get_knowledge_base(), arguments)
+
+    def _tool_kb_read(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_read_result(self._get_knowledge_base(), arguments)
+
+    def _tool_kb_write(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_write_result(self._get_knowledge_base(), arguments)
+
+    def _tool_kb_append(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_append_result(self._get_knowledge_base(), arguments)
+
+    def _tool_kb_list(self, arguments: dict[str, Any]) -> ToolResult:
+        return kb_list_result(self._get_knowledge_base(), arguments)
+
+    def _require_memory_store(self, scope: str = "project") -> MemoryStore:
+        stores = {
+            "project": getattr(self, "_project_memory_store", getattr(self, "_memory_store", None)),
+            "session": getattr(self, "_session_memory_store", None),
+            "user": getattr(self, "_user_memory_store", None),
+        }
+        store = stores.get(scope)
+        if store is None:
+            raise AgentError(f"{scope} 级记忆系统未启用。")
+        return store
+
+    def _tool_mcp_call(self, meta: MCPToolMeta, arguments: dict[str, Any]) -> ToolResult:
+        return mcp_tool_result(self._mcp_manager, meta, arguments)
+
+    def _tool_mcp_read_resource(self, logical_uri: str) -> ToolResult:
+        return mcp_resource_result(self._mcp_manager, logical_uri)
+
+    def _tool_mcp_get_prompt(self, logical_name: str, arguments: dict[str, Any]) -> ToolResult:
+        return mcp_prompt_result(self._mcp_manager, logical_name, arguments)

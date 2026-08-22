@@ -26,6 +26,7 @@ _TOOL_DISPLAY_ICONS = {
     "web_search": "W",
     "fetcher": "⇣",
     "image_gen": "✦",
+    "tts_synthesize": "♪",
     "replace_text": "✎",
     "write_file": "✚",
     "bash": "B",

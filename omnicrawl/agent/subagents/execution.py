@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ...config.llm import LLMConfig
+from ...config.models.llm import LLMConfig
 from ...llm.registry import ModelDescriptor, ProviderProfile
 
 if TYPE_CHECKING:

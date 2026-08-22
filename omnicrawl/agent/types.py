@@ -42,6 +42,9 @@ class ToolResult:
     full_output: str = ""
     ui_artifact: dict[str, Any] = field(default_factory=dict)
     model_images: tuple[ToolImageAttachment, ...] = ()
+    # 仅 UI 展示用的真实完成时刻（time.perf_counter 时钟）；模型上下文
+    # 与 Session 事件不使用该字段，并行工具按各自完成时刻显示耗时。
+    completed_at: float | None = None
 
 
 @dataclass(frozen=True)

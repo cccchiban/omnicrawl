@@ -8,9 +8,9 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..llm_protocol import AgentLLMProtocol, build_extra_body
-from ...config.llm import LLMConfig, LLMError
-from ...config.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
+from ..runtime.llm_protocol import AgentLLMProtocol, build_extra_body
+from ...config.models.llm import LLMConfig, LLMError
+from ...config.models.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
 from ...llm.runtime import ModelRuntimeManager
 from .models import (
     CompactionBatch,
