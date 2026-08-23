@@ -90,14 +90,6 @@ class OpenAIResponsesRuntime:
         # 一次必然 400 的请求（见下方策略 3 说明）。
         if self._tool_history_unsupported and _has_tool_history_items(input_items):
             input_items = _flatten_tool_history_to_text(input_items)
-        # 带 tools 时部分兼容网关（如 axo.chibanban.de 的 deepseek 系列后端）要求
-        # input 必须以 user 消息结尾：模型刚调用完工具、历史以 function_call_output
-        # 结尾时直接发请求会被 HTTP 400 拒绝（错误体回显 {"model": ...} 极具误导
-        # 性，与模型名无关）。自动追加一条空 user 消息，不注入额外指令；这是
-        # OpenAI 官方工具循环的标准续接格式，任何模型均接受，且不改变工具历史
-        # 的结构化语义。
-        if tools and _needs_user_trailer(input_items):
-            input_items = [*input_items, _EMPTY_USER_TRAILER]
         kwargs: dict[str, Any] = {
             "model": self.identity.model_id,
             "instructions": request.system_prompt,
@@ -551,22 +543,6 @@ def _tools_for_responses(request: ModelTurnRequest) -> list[dict[str, Any]]:
             }
         )
     return tools
-
-
-# 带 tools 时部分兼容网关强制要求 input 以 user 消息结尾；工具调用后 Agent
-# 立即发下一轮请求（历史以 function_call_output 结尾）会被 HTTP 400 拒绝。
-# 追加的空 user 消息必须使用 input_text 数组（空字符串亦可，但空 content 数组
-# 会被网关拒绝），内容为空以不注入额外指令。
-_EMPTY_USER_TRAILER: dict[str, Any] = {
-    "role": "user",
-    "content": [{"type": "input_text", "text": ""}],
-}
-
-
-def _needs_user_trailer(items: list[dict[str, Any]]) -> bool:
-    """判断 input 是否缺少结尾 user 消息（非空且最后一条不是 user）。"""
-
-    return bool(items) and items[-1].get("role") != "user"
 
 
 def _status_code_of(exc: Exception) -> int | None:
