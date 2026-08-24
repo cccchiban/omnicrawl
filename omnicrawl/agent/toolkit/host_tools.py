@@ -394,6 +394,7 @@ def build_provider_tools(catalog: HostToolCatalog) -> dict[str, ToolDefinition]:
             requires_confirmation=tool.requires_confirmation,
             run=tool.run,
             model_output_is_bounded=tool.model_output_is_bounded,
+            run_in_subprocess=tool.run_in_subprocess,
         )
     return provider
 

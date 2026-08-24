@@ -24,7 +24,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Static, TextArea
 
 from ....agent.toolkit.tools import TODO_TOOL_NAME, public_tool_arguments
-from ..terminal.theme import TOOL_TEXT
+from ..terminal.theme import TEXT_MUTED, TOOL_TEXT
 from .widgets import (
     AssistantMessage,
     ReasoningDisclosure,
@@ -916,7 +916,9 @@ class RenderingMixin:
         spinner_frame = self.STATUS_SPINNER_FRAMES[self._status_spinner_index]
         # 所有活动中的回合状态都支持 Esc 取消；在状态行尾固定显示提示，
         # 让“正在思考/回复/调用”等同类状态的中断入口清晰可见。
-        status.update(f"{spinner_frame} {self._runtime_status_text} [ ▣ESC ]")
+        status_text = Text(f"{spinner_frame} {self._runtime_status_text} ")
+        status_text.append("[ ESC ]", style=TEXT_MUTED)
+        status.update(status_text)
         if (
             status.parent is conversation
             and conversation.children

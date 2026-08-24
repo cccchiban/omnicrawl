@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import glob
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,12 +21,28 @@ from ..documentation import (
     resolve_bundled_doc_uri,
 )
 from ..llm.stream_registry import current_stream_scope, registered_resource
-from .ripgrep import RipgrepError, resolve_ripgrep_binary, run_ripgrep
+from ..state.session_locking import ProcessFileLock, atomic_write_text
+from ..state.session_models import SessionStoreError
+from .ripgrep import (
+    RipgrepError,
+    batch_paths,
+    resolve_ripgrep_binary,
+    run_ripgrep,
+)
 from .temp import DEFAULT_AGENT_TEMP_DIRECTORY
 
 
 MAX_FILE_READ_CHARS = 200_000
+# replace_text 的目标级锁默认等待时间；锁仅保护同一文件的“读取、匹配、原子写入”事务。
+REPLACE_TEXT_LOCK_TIMEOUT_SECONDS = 30.0
+REPLACE_TEXT_LOCK_POLL_SECONDS = 0.05
+# 与项目其他原子写路径一致，底层 atomic_write_text 会在 Windows 目标文件
+# 短暂占用时进行有限退避重试。
+REPLACE_TEXT_LOCK_FILE_SUFFIX = ".omnicrawl.replace.lock"
 MAX_SEARCH_RESULTS = 200
+
+_REPLACE_TEXT_LOCKS: dict[Path, ProcessFileLock] = {}
+_REPLACE_TEXT_LOCKS_GUARD = threading.Lock()
 MAX_LIST_ENTRIES = 500
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 360
 MAX_COMMAND_TIMEOUT_SECONDS = 360
@@ -99,7 +118,43 @@ def is_forbidden_content_search_root(path: Path) -> bool:
 
 
 class WorkspaceToolError(RuntimeError):
-    """工作区工具参数校验或执行失败。"""
+    """工作区工具参数校验或执行失败。
+
+    ``code`` 为机器可识别的稳定错误标识；默认错误保持原有纯文本行为，只有
+    需要区分失败原因的工具（例如 replace_text）显式提供错误码。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.retryable = retryable
+
+    def formatted_message(self) -> str:
+        if self.code:
+            retry_hint = "；可重试" if self.retryable else ""
+            return f"错误码：{self.code}{retry_hint}；{self.message}"
+        return self.message
+
+    def __str__(self) -> str:
+        # 直接调用 WorkspaceTools 的旧异常文本保持不变；Agent 适配层通过
+        # formatted_message 和 error_code 同时提供人类/机器可读信息。
+        return self.message
+
+
+@dataclass(frozen=True)
+class _FileVersion:
+    """replace_text 事务中用于检测外部变化的文件版本。"""
+
+    size: int
+    mtime_ns: int
+    digest: str
 
 
 @dataclass(frozen=True)
@@ -118,6 +173,78 @@ class WorkspaceCommandInvocation:
 
     args: list[str]
     label: str
+
+
+def _replace_text_lock_for(path: Path) -> ProcessFileLock:
+    """返回同一目标文件共享的跨线程/跨进程编辑锁。"""
+
+    resolved = path.resolve()
+    with _REPLACE_TEXT_LOCKS_GUARD:
+        lock = _REPLACE_TEXT_LOCKS.get(resolved)
+        if lock is None:
+            lock = ProcessFileLock(
+                Path(f"{resolved}{REPLACE_TEXT_LOCK_FILE_SUFFIX}"),
+                timeout_seconds=REPLACE_TEXT_LOCK_TIMEOUT_SECONDS,
+                poll_seconds=REPLACE_TEXT_LOCK_POLL_SECONDS,
+            )
+            _REPLACE_TEXT_LOCKS[resolved] = lock
+        return lock
+
+
+def _read_utf8_bytes_for_replace(path: Path, display_path: str) -> bytes:
+    """读取替换事务使用的 UTF-8 原始字节，避免 stat 与实际内容脱节。"""
+
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise WorkspaceToolError(
+            f"读取文件失败：{display_path}，{exc}",
+            code="FS_READ_FAILED",
+            retryable=True,
+        ) from exc
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorkspaceToolError(
+            f"文件不是 UTF-8 文本或包含二进制内容：{display_path}",
+            code="FS_INVALID_TEXT",
+        ) from exc
+    return data
+
+
+def _file_version(path: Path, data: bytes) -> _FileVersion:
+    """以大小、纳秒 mtime 和内容摘要组成稳定版本指纹。"""
+
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise WorkspaceToolError(
+            f"读取文件状态失败：{path}，{exc}",
+            code="FS_STAT_FAILED",
+            retryable=True,
+        ) from exc
+    return _FileVersion(
+        size=len(data),
+        mtime_ns=getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000)),
+        digest=hashlib.sha256(data).hexdigest(),
+    )
+
+
+def _normalize_line_endings(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _detect_line_endings(text: str) -> str:
+    """返回原文行尾风格；混合文件按首次出现的风格恢复。"""
+
+    match = re.search(r"\r\n|\r|\n", text)
+    return match.group(0) if match else "\n"
+
+
+def _restore_line_endings(text: str, line_ending: str) -> str:
+    if line_ending == "\n":
+        return text
+    return text.replace("\n", line_ending)
 
 
 class WorkspaceTools:
@@ -453,14 +580,16 @@ class WorkspaceTools:
                     f"无效的正则表达式：{exc}。可设置 use_regex=false 按精确子串匹配。"
                 ) from exc
 
-        root = self.safe_path(str(arguments.get("path") or "."))
-        if is_forbidden_content_search_root(root):
-            raise WorkspaceToolError(
-                "用户主目录或文件系统根目录本身不支持内容关键词搜索；"
-                "请把 path 指向其下的具体项目子目录。"
-            )
-        if not root.exists():
-            raise WorkspaceToolError(f"路径不存在：{self.relative_path(root)}")
+        raw_path = str(arguments.get("path") or ".").strip()
+        roots = self._resolve_grep_roots(raw_path)
+        for root in roots:
+            if is_forbidden_content_search_root(root):
+                raise WorkspaceToolError(
+                    "用户主目录或文件系统根目录本身不支持内容关键词搜索；"
+                    "请把 path 指向其下的具体项目子目录。"
+                )
+            if not root.exists():
+                raise WorkspaceToolError(f"路径不存在：{self.relative_path(root)}")
 
         max_results = _read_limited_int(
             arguments,
@@ -485,7 +614,7 @@ class WorkspaceTools:
 
         if count_only:
             return self._grep_count_files(
-                root,
+                roots,
                 pattern=pattern,
                 use_regex=use_regex,
                 case_sensitive=case_sensitive,
@@ -497,7 +626,7 @@ class WorkspaceTools:
             )
         if files_only:
             return self._grep_list_files(
-                root,
+                roots,
                 pattern=pattern,
                 use_regex=use_regex,
                 case_sensitive=case_sensitive,
@@ -509,7 +638,7 @@ class WorkspaceTools:
             )
 
         match_lines, parse_capped = self._scan_grep(
-            root,
+            roots,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
@@ -555,7 +684,7 @@ class WorkspaceTools:
 
     def _grep_count_files(
         self,
-        root: Path,
+        roots: list[Path],
         *,
         pattern: str,
         use_regex: bool,
@@ -568,8 +697,8 @@ class WorkspaceTools:
     ) -> str:
         """输出每个文件的匹配行数（grep -c 语义）。"""
 
-        stdout, returncode = self._run_ripgrep_over_root(
-            root,
+        stdout, returncode = self._run_ripgrep_over_roots(
+            roots,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
@@ -599,7 +728,7 @@ class WorkspaceTools:
 
     def _grep_list_files(
         self,
-        root: Path,
+        roots: list[Path],
         *,
         pattern: str,
         use_regex: bool,
@@ -612,8 +741,8 @@ class WorkspaceTools:
     ) -> str:
         """只输出包含匹配的文件路径（grep -l 语义）。"""
 
-        stdout, returncode = self._run_ripgrep_over_root(
-            root,
+        stdout, returncode = self._run_ripgrep_over_roots(
+            roots,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
@@ -642,7 +771,7 @@ class WorkspaceTools:
 
     def _scan_grep(
         self,
-        root: Path,
+        roots: list[Path],
         *,
         pattern: str,
         use_regex: bool,
@@ -659,8 +788,8 @@ class WorkspaceTools:
         不再误切）；非 UTF-8 行给出占位文本而不是丢弃匹配。
         """
 
-        stdout, returncode = self._run_ripgrep_over_root(
-            root,
+        stdout, returncode = self._run_ripgrep_over_roots(
+            roots,
             pattern=pattern,
             use_regex=use_regex,
             case_sensitive=case_sensitive,
@@ -818,6 +947,39 @@ class WorkspaceTools:
             label=label,
         )
 
+    def _resolve_grep_roots(self, raw_path: str) -> list[Path]:
+        """解析 grep 的 path，支持文件/目录以及绝对或相对 glob。
+
+        glob 必须在 ``safe_path`` 之前展开：带 ``*`` 的 Windows 路径不是一个
+        可直接 ``Path.exists()`` 判断的路径，且 ``Path.resolve()`` 会把通配符
+        当作普通文件名。展开后的每个文件或目录再逐一经过 safe_path，继续沿用
+        受保护路径和额外保护回调的安全边界。
+        """
+
+        candidate = Path(raw_path)
+        if not candidate.is_absolute():
+            candidate = self.workspace_root / candidate
+        if not glob.has_magic(str(candidate)):
+            return [self.safe_path(str(candidate))]
+
+        matches = glob.glob(str(candidate), recursive=True)
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for match in sorted(matches, key=str.casefold):
+            matched_path = Path(match).resolve()
+            # glob 可能覆盖 .git/.env 等受保护条目；与目录搜索一致，
+            # 将其排除而不是让单个受保护匹配阻断其他文件搜索。
+            if self.should_skip_path(matched_path):
+                continue
+            path = self.safe_path(match)
+            if path in seen:
+                continue
+            seen.add(path)
+            roots.append(path)
+        if not roots:
+            raise WorkspaceToolError(f"路径不存在或 glob 未匹配：{raw_path}")
+        return roots
+
     def _search_path_from_output(self, raw_path: str) -> Path:
         """把 rg 输出里的路径解析回文件系统路径。
 
@@ -852,9 +1014,9 @@ class WorkspaceTools:
             return False
         return True
 
-    def _run_ripgrep_over_root(
+    def _run_ripgrep_over_roots(
         self,
-        root: Path,
+        roots: list[Path],
         *,
         pattern: str,
         use_regex: bool,
@@ -906,15 +1068,21 @@ class WorkspaceTools:
             exclude_glob and _glob_is_basename_only(exclude_glob)
         ):
             args.append("--glob-case-insensitive")
-        try:
-            return run_ripgrep(
-                binary,
-                [*args, "--", pattern, str(root)],
-                cwd=self.workspace_root,
-                timeout=self.command_timeout_seconds,
-            )
-        except RipgrepError as exc:
-            raise WorkspaceToolError(str(exc)) from exc
+        combined_stdout: list[str] = []
+        matched = False
+        for path_batch in batch_paths(roots):
+            try:
+                stdout, returncode = run_ripgrep(
+                    binary,
+                    [*args, "--", pattern, *path_batch],
+                    cwd=self.workspace_root,
+                    timeout=self.command_timeout_seconds,
+                )
+            except RipgrepError as exc:
+                raise WorkspaceToolError(str(exc)) from exc
+            combined_stdout.append(stdout)
+            matched = matched or returncode == 0
+        return "".join(combined_stdout), 0 if matched else 1
 
     def _ripgrep_binary(self) -> Path:
         """返回可用的 ripgrep 二进制；优先随包分发，其次 PATH。"""
@@ -1084,6 +1252,13 @@ class WorkspaceTools:
 
 
     def replace_text(self, arguments: dict[str, Any]) -> str:
+        """按字面替换文本，并以单文件事务保护读取、匹配和写回。
+
+        ``count`` 保持历史语义：默认替换 1 处，0 替换全部，正数替换至多
+        指定数量。编辑内部把换行统一为 LF，写回时恢复文件原有的 CRLF/LF
+        风格；版本指纹在原子发布前再次校验，避免覆盖锁外部进程的修改。
+        """
+
         path = self.safe_path(str(arguments.get("path") or ""))
         old_text = str(arguments.get("old_text") or "")
         new_text = str(arguments.get("new_text") or "")
@@ -1093,14 +1268,68 @@ class WorkspaceTools:
         if not old_text:
             raise WorkspaceToolError("old_text 不能为空。")
 
-        original = self.read_text(path)
-        occurrences = original.count(old_text)
-        if occurrences == 0:
-            raise WorkspaceToolError("未找到 old_text，文件未修改。")
+        lock = _replace_text_lock_for(path)
+        try:
+            with lock:
+                original_bytes = _read_utf8_bytes_for_replace(path, self.relative_path(path))
+                version = _file_version(path, original_bytes)
+                original = original_bytes.decode("utf-8")
+                original_line_endings = _detect_line_endings(original)
+                normalized_original = _normalize_line_endings(original)
+                normalized_old = _normalize_line_endings(old_text)
+                normalized_new = _normalize_line_endings(new_text)
+                occurrences = normalized_original.count(normalized_old)
+                if occurrences == 0:
+                    raise WorkspaceToolError(
+                        "未找到 old_text，文件未修改。",
+                        code="FS_EDIT_NOT_FOUND",
+                    )
 
-        replace_count = occurrences if count <= 0 else min(count, occurrences)
-        path.write_text(original.replace(old_text, new_text, replace_count), encoding="utf-8")
+                replace_count = occurrences if count == 0 else min(count, occurrences)
+                edited = normalized_original.replace(
+                    normalized_old,
+                    normalized_new,
+                    replace_count,
+                )
+                output = _restore_line_endings(edited, original_line_endings)
+
+                latest_bytes = _read_utf8_bytes_for_replace(path, self.relative_path(path))
+                if _file_version(path, latest_bytes) != version:
+                    raise WorkspaceToolError(
+                        "文件在替换期间发生变化，未写入；请重新读取后重试。",
+                        code="FS_STALE_VERSION",
+                        retryable=True,
+                    )
+                try:
+                    atomic_write_text(
+                        path,
+                        output,
+                        fsync=True,
+                        prefix=f".{path.name}.",
+                        suffix=".replace.tmp",
+                    )
+                except SessionStoreError as exc:
+                    raise WorkspaceToolError(
+                        f"原子写入失败：{self.relative_path(path)}，{exc}",
+                        code="FS_ATOMIC_WRITE_FAILED",
+                        retryable=True,
+                    ) from exc
+        except WorkspaceToolError:
+            raise
+        except SessionStoreError as exc:
+            raise WorkspaceToolError(
+                f"获取文件编辑锁失败：{self.relative_path(path)}，{exc}",
+                code="FS_LOCK_TIMEOUT",
+                retryable=True,
+            ) from exc
+        except OSError as exc:
+            raise WorkspaceToolError(
+                f"替换文件失败：{self.relative_path(path)}，{exc}",
+                code="FS_EDIT_FAILED",
+                retryable=True,
+            ) from exc
         return f"已修改 {self.relative_path(path)}，替换 {replace_count} 处。"
+
 
     def write_file(self, arguments: dict[str, Any]) -> str:
         path = self.safe_path(str(arguments.get("path") or ""))
@@ -1255,10 +1484,13 @@ class WorkspaceTools:
         job_handle = _assign_process_to_kill_on_close_job(process)
 
         def terminate_process() -> None:
+            nonlocal job_handle
             BackgroundMonitorManager._terminate_process_tree(
                 process,
                 job_handle=job_handle,
+                wait=False,
             )
+            job_handle = None
 
         resource_owner = current_stream_scope()
         with registered_resource(

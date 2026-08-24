@@ -96,6 +96,8 @@ class ToolOutputMixin:
                 full_output=result.full_output or result.output,
                 ui_artifact=result.ui_artifact,
                 model_images=result.model_images,
+                error_code=result.error_code,
+                retryable=result.retryable,
             )
         return new_results
 

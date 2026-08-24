@@ -434,6 +434,8 @@ def build_agent_tools(
                     "解释，可用 | 连接多个候选目标（如 messages|context|tool_calls）；"
                     "use_regex=false 时按精确子串，支持大小写开关、匹配行上下文、"
                     "每文件计数、仅列出匹配文件，以及 include/exclude 文件名过滤。"
+                    "path 支持绝对/相对路径和 glob（如 Windows 的 "
+                    "D:\\MyProject\\工程程序\\DNS监控\\public\\*.js），会搜索所有匹配文件。"
                     "超长匹配行自动截断到 2000 字符并标记 (line truncated)；"
                     "结果超过 max_results 时保留前 N 条并保存完整结果，footer 给出保存路径供继续读取。"
                 ),
@@ -1336,7 +1338,12 @@ def workspace_tool_result(
     try:
         return ToolResult(ok=True, output=operation(arguments))
     except WorkspaceToolError as exc:
-        return ToolResult(ok=False, output=str(exc))
+        return ToolResult(
+            ok=False,
+            output=exc.formatted_message(),
+            error_code=exc.code,
+            retryable=exc.retryable,
+        )
 
 
 def workspace_command_tool_result(
@@ -1348,8 +1355,18 @@ def workspace_command_tool_result(
     try:
         result = operation(arguments)
     except WorkspaceToolError as exc:
-        return ToolResult(ok=False, output=str(exc))
-    return ToolResult(ok=result.ok, output=result.output)
+        return ToolResult(
+            ok=False,
+            output=exc.formatted_message(),
+            error_code=exc.code,
+            retryable=exc.retryable,
+        )
+    return ToolResult(
+        ok=result.ok,
+        output=result.output,
+        error_code=getattr(result, "error_code", None),
+        retryable=getattr(result, "retryable", False),
+    )
 
 
 def normalize_tool_call(

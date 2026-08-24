@@ -8,7 +8,6 @@ Monitor 不把后台进程脱离 Agent 管理：所有任务都由当前 Agent �
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -16,6 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, TextIO
 
+from ..llm.stream_registry import current_stream_scope, register_resource, unregister_resource
 from .process_control import (
     assign_process_to_kill_on_close_job as _assign_process_to_kill_on_close_job,
     close_windows_handle as _close_windows_handle,
@@ -91,6 +91,7 @@ class ManagedMonitor:
     dropped_events: int = 0
     reader_threads: list[threading.Thread] = field(default_factory=list)
     waiter_thread: threading.Thread | None = None
+    resource_owner: object | None = None
 
 
 class BackgroundMonitorManager:
@@ -262,15 +263,26 @@ class BackgroundMonitorManager:
             shell=shell,
             process=process,
             job_handle=job_handle,
+            resource_owner=current_stream_scope(),
         )
         with self._lock:
             self._pending_starts -= 1
             if self._closed:
                 # 进程在 close 与 Popen 之间启动时必须立即回收，不能变成孤儿。
-                self._terminate_process_tree(process, job_handle=job_handle)
+                self._terminate_process_tree(process, job_handle=job_handle, wait=True)
                 raise WorkspaceMonitorError("Agent 已关闭，后台任务已终止。")
             self._monitors[monitor_id] = task
             self._record_event_locked(task, "system", f"已启动，shell={shell}。")
+            if task.resource_owner is not None:
+                register_resource(
+                    process,
+                    owner=task.resource_owner,
+                    close_callback=lambda task=task: self._stop_task(
+                        task.monitor_id,
+                        reason="当前回合已取消，后台任务已强制终止。",
+                        wait=False,
+                    ),
+                )
 
         self._start_readers(task)
         waiter = threading.Thread(
@@ -431,7 +443,7 @@ class BackgroundMonitorManager:
             task.job_handle = None
         _close_windows_handle(job_handle)
 
-    def _stop_task(self, monitor_id: str, *, reason: str) -> None:
+    def _stop_task(self, monitor_id: str, *, reason: str, wait: bool = True) -> None:
         with self._lock:
             task = self._monitors.get(monitor_id)
             if task is None:
@@ -444,7 +456,10 @@ class BackgroundMonitorManager:
             job_handle = task.job_handle
             task.job_handle = None
 
-        self._terminate_process_tree(process, job_handle=job_handle)
+        self._terminate_process_tree(process, job_handle=job_handle, wait=wait)
+        if not wait:
+            unregister_resource(process)
+            return
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -453,68 +468,18 @@ class BackgroundMonitorManager:
         waiter = task.waiter_thread
         if waiter is not None:
             waiter.join(timeout=5)
+        unregister_resource(process)
 
     @staticmethod
     def _terminate_process_tree(
         process: subprocess.Popen[str],
         *,
         job_handle: int | None,
+        wait: bool = True,
     ) -> None:
-        if process.poll() is not None:
-            _close_windows_handle(job_handle)
-            return
+        from .process_control import terminate_process_tree
 
-        if os.name == "nt":
-            if job_handle is not None:
-                _close_windows_handle(job_handle)
-            else:
-                try:
-                    completed = subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        timeout=5,
-                    )
-                    if completed.returncode != 0:
-                        process.terminate()
-                except (OSError, subprocess.TimeoutExpired):
-                    process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-            return
-
-        try:
-            process_group = os.getpgid(process.pid)
-            os.killpg(process_group, signal.SIGTERM)
-        except (OSError, ProcessLookupError):
-            process_group = None
-            process.terminate()
-
-        deadline = time.monotonic() + 2
-        while process_group is not None and time.monotonic() < deadline:
-            try:
-                os.killpg(process_group, 0)
-            except (OSError, ProcessLookupError):
-                process_group = None
-                break
-            time.sleep(0.05)
-
-        if process_group is not None:
-            try:
-                os.killpg(process_group, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                pass
-        if process.poll() is None:
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+        terminate_process_tree(process, job_handle=job_handle, wait=wait)
 
     def _record_event(self, task: ManagedMonitor, stream: str, text: str) -> None:
         with self._lock:

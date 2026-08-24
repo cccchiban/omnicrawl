@@ -45,6 +45,9 @@ class ToolResult:
     # 仅 UI 展示用的真实完成时刻（time.perf_counter 时钟）；模型上下文
     # 与 Session 事件不使用该字段，并行工具按各自完成时刻显示耗时。
     completed_at: float | None = None
+    # 工具失败时的机器可识别错误码及是否建议重试；普通工具保持 None/False。
+    error_code: str | None = None
+    retryable: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,3 +72,6 @@ class ToolDefinition:
     run: Callable[[dict[str, Any]], ToolResult]
     # 仅供 Host 内建、已自行执行模型 Token 预算的工具使用；模型参数不能设置。
     model_output_is_bounded: bool = False
+    # 默认将普通同步 runner 放入独立子进程；测试替身或持有进程内状态的 Host
+    # 工具可显式关闭，生产普通工具不应依赖父进程可变状态。
+    run_in_subprocess: bool = True

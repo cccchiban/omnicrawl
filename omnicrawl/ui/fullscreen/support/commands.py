@@ -69,6 +69,8 @@ class CommandOutcome:
     执行它，才能保持模型发现、MCP 连接和工作区重建不阻塞 Textual 主事件循环。
     ``open_settings`` 表示全屏 TUI 应打开中文设置面板。
     ``clear_conversation`` 表示 UI 应先清空对话视图再显示命令消息。
+    ``replay_conversation`` 表示命令更新了当前会话后，UI 应从最新事件流重建
+    对话视图；这与只刷新 HUD 的 ``refresh_context`` 不同。
     """
 
     handled: bool
@@ -80,6 +82,7 @@ class CommandOutcome:
     workspace_switch_requested: bool = False
     open_settings: bool = False
     clear_conversation: bool = False
+    replay_conversation: bool = False
     # 慢命令运行时 HUD 状态行的文本（如 "正在评审"）；None 时沿用默认等待态。
     working_status: str | None = None
     # 慢命令期间把子代理事件渲染为 │ 包裹的对话面板（替代进度树），
@@ -191,10 +194,16 @@ class CommandDispatcher:
 
         session_message = self._handle_session(self._agent, text)
         if session_message is not None:
+            normalized_session_command = stripped.casefold()
+            undo_succeeded = (
+                normalized_session_command == "/undo"
+                and not session_message.startswith("会话回退失败：")
+            )
             return CommandOutcome(
                 handled=True,
                 message=session_message,
                 refresh_context=True,
+                replay_conversation=undo_succeeded,
             )
 
         subagent_task_message = self._handle_subagent_task(self._agent, text)

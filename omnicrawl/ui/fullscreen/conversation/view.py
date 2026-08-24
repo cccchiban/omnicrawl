@@ -70,8 +70,11 @@ class ConversationViewMixin:
             try:
                 events = list(events_getter() or [])
             except Exception:
-                events = []
-            if events:
+                # 只有事件接口读取失败时才降级到消息投影；正常的空事件流
+                # 也是权威结果，必须清空当前 TUI（例如 /undo 撤回会话中
+                # 唯一一轮后），不能因为 ``if events`` 而保留旧消息。
+                events = None
+            if events is not None:
                 self._replay_session_events(events)
                 return
 

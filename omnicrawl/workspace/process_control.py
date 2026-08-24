@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import signal
 import subprocess
 from ctypes import wintypes
 
@@ -109,6 +110,61 @@ def close_windows_handle(handle: int | None) -> None:
         return
 
 
+def terminate_process_tree(
+    process: subprocess.Popen[object],
+    *,
+    job_handle: int | None,
+    wait: bool = True,
+) -> None:
+    """强制终止进程及其子进程树。
+
+    ``wait=False`` 专供当前回合 ESC 的关闭回调：Job Object/进程组的终止请求
+    发出后立即返回，不把 UI 取消路径变成另一个阻塞工具。正常 timeout/stop/close
+    路径保留 ``wait=True``，以便调用方得到稳定的终态。
+    """
+
+    if process.poll() is not None:
+        close_windows_handle(job_handle)
+        return
+
+    if os.name == "nt":
+        if job_handle is not None:
+            # Kill-on-close 会递归终止 Job 中的所有后代进程。
+            close_windows_handle(job_handle)
+        else:
+            try:
+                completed = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=5 if wait else 1,
+                )
+                if completed.returncode != 0:
+                    process.terminate()
+            except (OSError, subprocess.TimeoutExpired):
+                process.terminate()
+        if not wait:
+            return
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        return
+
+    try:
+        process_group = os.getpgid(process.pid)
+        os.killpg(process_group, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        process_group = None
+        process.kill()
+
+    if wait and process.poll() is None:
+        process.wait(timeout=5)
+
+
 # 兼容 Monitor/WorkspaceTools 既有私有函数名与 monkeypatch 点。
 _assign_process_to_kill_on_close_job = assign_process_to_kill_on_close_job
 _close_windows_handle = close_windows_handle
@@ -119,4 +175,5 @@ __all__ = [
     "JOB_OBJECT_LIMIT_KILL_ON_CLOSE",
     "assign_process_to_kill_on_close_job",
     "close_windows_handle",
+    "terminate_process_tree",
 ]

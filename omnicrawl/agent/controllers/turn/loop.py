@@ -80,6 +80,13 @@ from ....llm import (
     normalize_reasoning_effort,
 )
 from ....skill import SkillManager, SkillMatchResult
+from ...tool_process import (
+    ToolProcessCancelled,
+    ToolProcessError,
+    ToolProcessTimeout,
+    can_serialize_tool_runner,
+    run_tool_in_subprocess,
+)
 
 from ..shared import (
     AGENTS_INSTRUCTIONS_FILE,
@@ -723,6 +730,29 @@ class TurnLoopMixin:
         timed_out: set[int] = set()
         reported: set[int] = set()
 
+        def _run_in_process(
+            runner: Callable[[dict[str, Any]], ToolResult],
+            arguments: dict[str, Any],
+        ) -> ToolResult:
+            return runner(arguments)
+
+        def _run_in_subprocess(
+            runner: Callable[[dict[str, Any]], ToolResult],
+            arguments: dict[str, Any],
+        ) -> ToolResult:
+            try:
+                return run_tool_in_subprocess(
+                    runner,
+                    arguments,
+                    timeout_seconds=tool_timeout_seconds,
+                )
+            except ToolProcessCancelled as exc:
+                raise KeyboardInterrupt(str(exc)) from exc
+            except ToolProcessTimeout as exc:
+                return ToolResult(ok=False, output=str(exc), retryable=True)
+            except ToolProcessError as exc:
+                return ToolResult(ok=False, output=str(exc))
+
         def execute_call(index: int) -> ToolResult:
             _call_step, tool_call, tool, denied_result = normalized_calls[index]
             if denied_result is not None:
@@ -745,7 +775,24 @@ class TurnLoopMixin:
                     return cached
             if record_tool_execution is not None:
                 record_tool_execution(tool_call)
-            result = self._execute_approved_tool(tool, tool_call.arguments)
+            # 普通工具 callable 位于独立 Python 子进程；ESC 关闭当前 owner 的资源时
+            # 可直接杀死整个子进程树，而不是仅设置线程取消标志。审批/插件钩子仍在
+            # 父进程执行，只有已批准的同步 runner 进入隔离进程。
+            if (
+                can_serialize_tool_runner(tool.run)
+                and tool.run_in_subprocess
+                and tool.name not in {"bash", "powershell", "monitor"}
+            ):
+                # 审批与插件 hook 仍在父进程；只有已批准的实际 runner 进入子进程。
+                result = self._execute_approved_tool(
+                    tool,
+                    tool_call.arguments,
+                    runner=_run_in_subprocess,
+                )
+            else:
+                # Agent 内部绑定方法可能持有锁、线程池或客户端，不能安全复制；这类
+                # 状态型 Host 工具保持原有进程内路径。普通顶层函数/闭包进入隔离进程。
+                result = self._execute_approved_tool(tool, tool_call.arguments)
             if execution_cache is not None and cache_key:
                 execution_cache[cache_key] = result
             return result

@@ -211,6 +211,9 @@ class ToolApprovalMixin:
         arguments: dict[str, Any],
         *,
         on_start: Callable[[], None] | None = None,
+        runner: Callable[
+            [Callable[[dict[str, Any]], ToolResult], dict[str, Any]], ToolResult
+        ] | None = None,
     ) -> ToolResult:
         """执行已完成审批的工具，供同批任务安全并发调用。"""
 
@@ -224,7 +227,7 @@ class ToolApprovalMixin:
         try:
             if on_start is not None:
                 on_start()
-            result = tool.run(arguments)
+            result = runner(tool.run, arguments) if runner is not None else tool.run(arguments)
         except Exception as exc:
             if self._is_turn_cancel_exception(exc):
                 # 取消属于父 turn 控制流，不能降级成普通 ToolResult 让模型继续执行。
@@ -255,6 +258,8 @@ class ToolApprovalMixin:
             full_output=display_text,
             ui_artifact=result.ui_artifact,
             model_images=result.model_images,
+            error_code=result.error_code,
+            retryable=result.retryable,
         )
 
     @classmethod

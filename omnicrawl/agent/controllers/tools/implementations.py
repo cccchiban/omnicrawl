@@ -139,7 +139,12 @@ class ToolImplementationsMixin:
                 ui_artifact=artifact,
             )
         except WorkspaceToolError as exc:
-            return ToolResult(ok=False, output=str(exc))
+            return ToolResult(
+                ok=False,
+                output=exc.formatted_message(),
+                error_code=exc.code,
+                retryable=exc.retryable,
+            )
 
     def _tool_read_image(self, arguments: dict[str, Any]) -> ToolResult:
         return read_image_file(

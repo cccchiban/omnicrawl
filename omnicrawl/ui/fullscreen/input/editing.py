@@ -44,7 +44,11 @@ class ConfirmationOption(Static):
         self.update(Text(f"{marker}{self.index + 1}.{self.label_text}", style=style))
 
     def on_key(self, event: events.Key) -> None:
-        if event.key in {"up", "down"}:
+        if event.key in {"left", "right"}:
+            self._owner._move_confirmation_group(-1 if event.key == "left" else 1)
+            event.prevent_default()
+            event.stop()
+        elif event.key in {"up", "down"}:
             self._owner._move_confirmation_selection(-1 if event.key == "up" else 1)
             event.prevent_default()
             event.stop()
@@ -192,7 +196,11 @@ class InputMixin:
         self._confirmation_selection = 0
         # 初次显示时全部为空框；焦点只表示当前键盘位置，不等于已选中。
         self._confirmation_has_selection = False
-        self._confirmation_answers = []
+        # 每个问题独立保存已确认答案、当前选项位置和自定义回答。左右切题
+        # 时只切换视图，不丢失已确认内容；回到该题后可继续修改再回车确认。
+        self._confirmation_answers: list[str | None] = [None] * len(groups)
+        self._confirmation_selections: list[int | None] = [None] * len(groups)
+        self._confirmation_custom_answers: list[str | None] = [None] * len(groups)
         self._confirmation_custom_mode = False
         self._confirmation_options = groups[0] if groups else []
         # 选项出现时锁定输入框；只有选中“我有自己的想法”后才重新开放。
@@ -279,7 +287,12 @@ class InputMixin:
         if not rows or not 0 <= index < len(rows):
             return
         self._confirmation_selection = index
+        self._confirmation_selections[self._confirmation_group_index] = index
         self._confirmation_has_selection = True
+        # 已确认过的题目再次导航时，新的选项即为对该答案的修改；尚未
+        # 确认的题目只保存导航位置，仍由回车触发正式确认。
+        if self._confirmation_answers[self._confirmation_group_index] is not None:
+            self._confirmation_answers[self._confirmation_group_index] = self._confirmation_options[index]
         for row_index, row in enumerate(rows):
             row.set_selected(row_index == index)
         rows[index].focus()
@@ -293,6 +306,61 @@ class InputMixin:
         current = min(max(self._confirmation_selection + offset, 0), len(rows) - 1)
         self._select_confirmation_option(current)
 
+    def _save_confirmation_group_state(self) -> None:
+        """保存当前题目的导航草稿，供左右切题后恢复。"""
+        group_index = self._confirmation_group_index
+        if self._confirmation_custom_mode:
+            composer = self.query_one("#composer", TextArea)
+            self._confirmation_custom_answers[group_index] = composer.text
+        else:
+            self._confirmation_selections[group_index] = (
+                self._confirmation_selection
+                if self._confirmation_has_selection
+                else None
+            )
+
+    def _load_confirmation_group(self, group_index: int) -> None:
+        """切换到问题并恢复其选项选择或自定义回答草稿。"""
+        self._confirmation_group_index = group_index
+        self._confirmation_options = self._confirmation_groups[group_index]
+        saved_custom = self._confirmation_custom_answers[group_index]
+        saved_answer = self._confirmation_answers[group_index]
+        saved_selection = self._confirmation_selections[group_index]
+        # 已确认的自定义答案和左右切题时保存的自定义草稿都进入编辑模式。
+        self._confirmation_custom_mode = saved_custom is not None
+        self._confirmation_selection = saved_selection if saved_selection is not None else 0
+        self._confirmation_has_selection = saved_selection is not None
+        composer = self.query_one("#composer", TextArea)
+        if self._confirmation_custom_mode:
+            composer.read_only = False
+            composer.text = saved_custom or ""
+            self.query_one("#confirmation-options", Vertical).display = False
+            composer.focus()
+        else:
+            composer.read_only = True
+            composer.clear()
+            # 如果答案来自旧状态但尚未记录选项位置，按当前选项文字恢复选择。
+            if saved_selection is None and saved_answer in self._confirmation_options:
+                self._confirmation_selection = self._confirmation_options.index(saved_answer)
+                self._confirmation_selections[group_index] = self._confirmation_selection
+                self._confirmation_has_selection = True
+            self._show_current_confirmation_rows()
+        self._resize_composer_to_text()
+
+    def _move_confirmation_group(self, offset: int) -> None:
+        """按左右键切换问题；不提交答案，只保留当前题编辑状态。"""
+        if not self._confirmation_required or not self._confirmation_groups:
+            return
+        self._save_confirmation_group_state()
+        next_index = min(
+            max(self._confirmation_group_index + offset, 0),
+            len(self._confirmation_groups) - 1,
+        )
+        if next_index == self._confirmation_group_index:
+            self._load_confirmation_group(next_index)
+            return
+        self._load_confirmation_group(next_index)
+
     def _confirm_confirmation_selection(self) -> None:
         if not self._confirmation_required or self._confirmation_custom_mode:
             return
@@ -305,6 +373,9 @@ class InputMixin:
             # 只有进入自定义回答模式才重新开放输入框；选项阶段始终只读。
             composer = self.query_one("#composer", TextArea)
             composer.read_only = False
+            composer.text = self._confirmation_custom_answers[
+                self._confirmation_group_index
+            ] or ""
             self.query_one("#confirmation-options", Vertical).display = False
             composer.focus()
             self._resize_composer_to_text()
@@ -312,19 +383,22 @@ class InputMixin:
         self._accept_confirmation_answer(selected)
 
     def _accept_confirmation_answer(self, answer: str) -> None:
-        self._confirmation_answers.append(answer)
-        next_index = self._confirmation_group_index + 1
+        group_index = self._confirmation_group_index
+        self._confirmation_answers[group_index] = answer
+        if self._confirmation_custom_mode:
+            self._confirmation_custom_answers[group_index] = answer
+        else:
+            self._confirmation_custom_answers[group_index] = None
+        next_index = group_index + 1
         if next_index < len(self._confirmation_groups):
-            self._confirmation_group_index = next_index
-            self._confirmation_options = self._confirmation_groups[next_index]
-            self._confirmation_selection = 0
-            self._confirmation_has_selection = False
-            self._confirmation_custom_mode = False
             # 自定义回答提交后进入下一题，输入框再次锁定，只允许选择该题选项。
-            self.query_one("#composer", TextArea).read_only = True
-            # 复用已有行，避免 remove_children 的异步卸载在第二个问题出现时
-            # 先留下大块空白，也避免上下键仍命中上一组的旧控件。
-            self._show_current_confirmation_rows()
+            self._load_confirmation_group(next_index)
+            return
+        if any(answer is None for answer in self._confirmation_answers):
+            # 左右键允许跳题；若跳过了尚未回答的问题，完成当前题后回到
+            # 第一处空缺，而不是把不完整的答案发送给模型。
+            first_unanswered = self._confirmation_answers.index(None)
+            self._load_confirmation_group(first_unanswered)
             return
         answer_text = "\n".join(
             f"第 {index + 1} 个问题：{value}"

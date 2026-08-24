@@ -132,19 +132,23 @@ class Composer(TextArea):
         # 提问选项是单选导航状态：即使焦点尚未从输入框切换到第一行，
         # 上下键和回车也必须由选项状态机消费，不能被历史记录/会话滚动抢走。
         app = self.app
-        if getattr(app, "_confirmation_required", False) and not getattr(
-            app, "_confirmation_custom_mode", False
-        ):
-            if event.key in {"up", "down"}:
-                app._move_confirmation_selection(-1 if event.key == "up" else 1)
+        if getattr(app, "_confirmation_required", False):
+            if event.key in {"left", "right"}:
+                app._move_confirmation_group(-1 if event.key == "left" else 1)
                 event.prevent_default()
                 event.stop()
                 return
-            if event.key == "enter":
-                app._confirm_confirmation_selection()
-                event.prevent_default()
-                event.stop()
-                return
+            if not getattr(app, "_confirmation_custom_mode", False):
+                if event.key in {"up", "down"}:
+                    app._move_confirmation_selection(-1 if event.key == "up" else 1)
+                    event.prevent_default()
+                    event.stop()
+                    return
+                if event.key == "enter":
+                    app._confirm_confirmation_selection()
+                    event.prevent_default()
+                    event.stop()
+                    return
         if event.key == "escape":
             self.app.action_cancel_or_focus()
             event.prevent_default()

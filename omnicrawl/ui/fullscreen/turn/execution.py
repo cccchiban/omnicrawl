@@ -229,6 +229,11 @@ class TurnExecutionMixin:
             self._replay_session_conversation()
         if outcome.clear_conversation:
             self._clear_conversation_view()
+        if outcome.replay_conversation:
+            # /undo 已在 Agent/Session 层追加 turn_undone 并重建模型历史；
+            # 从最新有效事件流重放，确保已撤回的用户消息、助手回复、工具卡和
+            # 工具输出同时从当前 TUI 消失，而不是只追加一条成功提示。
+            self._replay_session_conversation()
         if outcome.message:
             self._append_message("status", outcome.message)
         if outcome.refresh_context:
