@@ -461,6 +461,12 @@ class SubAgentConversation(Static):
     def is_active(self) -> bool:
         return not self._finished
 
+    @property
+    def logical_text(self) -> str:
+        """返回面板原始逻辑行，不包含按终端宽度产生的软折行。"""
+
+        return "\n".join(text for text, _style in self._rows)
+
     def append(self, text: str, style: str = "") -> None:
         """追加一行内容；终态面板忽略后续行。"""
 
@@ -704,10 +710,10 @@ def _indent_body_lines(body: Text, prefix: str) -> Text:
 class ToolDisclosure(Static):
     """工具调用记录；所有工具默认展开，正文始终可见。
 
-    除 write_file、replace_text 外，所有工具的展开正文做头尾采样：
+    除 write_file、Edit_file 外，所有工具的展开正文做头尾采样：
     不超过五行时原样显示，超出时剥离前导空行后保留首尾各两行有效行，
     中间直接折叠（不显示任何截断提示行），避免大段工具输出刷屏，同时
-    让测试汇总、错误栈尾部等关键信息直接可见；write_file 与 replace_text
+    让测试汇总、错误栈尾部等关键信息直接可见；write_file 与 Edit_file
     保留完整文件变更预览，read 与写入类记忆工具的正文不展示给终端用户
     （只保留标题行，且没有任何“已隐藏”提示）。鼠标交互已全面禁用，展开/
     折叠不再提供切换入口。
@@ -733,10 +739,10 @@ class ToolDisclosure(Static):
     TAIL_BODY_LINES = 2
     # 方案6：正文相对标题的缩进宽度（4 空格）。
     BODY_INDENT = "    "
-    # 豁免五行限制的工具：write_file 与 replace_text 保持完整正文展示；
+    # 豁免五行限制的工具：write_file 与 Edit_file 保持完整正文展示；
     # read 与写入类记忆工具已由 tool_disclosure_body 直接隐藏（正文为
     # 空），无需豁免。
-    UNLIMITED_TOOL_NAMES = frozenset({"write_file", "replace_text"})
+    UNLIMITED_TOOL_NAMES = frozenset({"write_file", "Edit_file"})
 
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
         super().__init__(classes="message tool-message tool-running")
@@ -746,7 +752,7 @@ class ToolDisclosure(Static):
         self.status = "调用中"
         self.duration_seconds = 0.0
         self.result_text = ""
-        # 除 write_file 与 replace_text 外的所有工具正文受五行上限约束。
+        # 除 write_file 与 Edit_file 外的所有工具正文受五行上限约束。
         self._limit_body_lines = tool_name not in self.UNLIMITED_TOOL_NAMES
         self._refresh_display()
 

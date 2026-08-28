@@ -28,10 +28,10 @@ from ..terminal.theme import (
 )
 
 
-FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
-# 豁免“原始输出 + 五行折叠”规则的工具：write_file 与 replace_text 保留
+FILE_CHANGE_TOOLS = frozenset({"write_file", "Edit_file"})
+# 豁免“原始输出 + 五行折叠”规则的工具：write_file 与 Edit_file 保留
 # 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
-FULL_BODY_TOOLS = frozenset({"write_file", "replace_text"})
+FULL_BODY_TOOLS = frozenset({"write_file", "Edit_file"})
 # 正文对用户没有展示价值、完全隐藏的工具：read（文件内容只读，标题已
 # 含路径与行号摘要）；全部记忆工具与知识库工具（搜索/读取/展开/写入
 # 结果只供模型消费，对用户无意义）。不显示返回内容，也不显示任何
@@ -381,9 +381,9 @@ def tool_disclosure_body(
 ) -> Text:
     """生成展开后的正文（不含标题行）。
 
-    除 write_file 与 replace_text 外的所有工具统一直接展示工具返回的
+    除 write_file 与 Edit_file 外的所有工具统一直接展示工具返回的
     原始输出（灰色），不再包装“工具/参数/结果”元信息；write_file 与
-    replace_text 保留文件变更预览正文（diff/rewrite 摘要），不受五行
+    Edit_file 保留文件变更预览正文（diff/rewrite 摘要），不受五行
     折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；read 与全部
     记忆工具的正文完全不展示给终端用户（正文为空，不保留任何提示行）。
     """
@@ -427,7 +427,7 @@ def describe_file_change(tool_name: str, arguments: Any) -> FileChangeView:
     args = arguments if isinstance(arguments, dict) else {}
     path = str(args.get("path") or "").strip() or "(unknown path)"
 
-    if tool_name == "replace_text":
+    if tool_name == "Edit_file":
         old_text = str(args.get("old_text") or "")
         new_text = str(args.get("new_text") or "")
         body, added, removed = gutter_diff_text(old_text, new_text)

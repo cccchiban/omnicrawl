@@ -90,16 +90,15 @@ enabled = true
 # bash = true
 # windows_screenshot = true
 
-# 模型辅助压缩开启：完整回合结束时测量预算，达到阈值（默认 100K）即调用
-# 摘要模型；普通 /compact 保持本地确定性，/compact --model 为显式模型入口。
-# 开启后还会注册 recall_session_evidence，只按当前有效摘要的事件 ID 恢复证据。
+# 上下文压缩是 Agent 的基础能力：完整回合结束时测量预算，达到阈值即调用摘要模型；
+# 普通 /compact 保持本地确定性，/compact --model 为显式模型入口。
+# 还会注册 recall_session_evidence，只按当前有效摘要的事件 ID 恢复证据。
 # 阈值也可在运行设置面板按当前模型上下文窗口的百分比设置（5% 步进）：
 # trigger_context_tokens = 上下文窗口 × 百分比。
 # 通过设置面板修改百分比后会保存该关系，并在上下文窗口变化时实时重算。
 [context_compaction]
-enabled = true
 trigger_context_tokens = 100000
-# trigger_context_percent = 80  # 可选；设置后随上下文窗口实时联动
+trigger_context_percent = 80
 next_user_reserve_tokens = 4096
 minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85

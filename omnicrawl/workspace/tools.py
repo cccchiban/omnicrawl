@@ -33,16 +33,16 @@ from .temp import DEFAULT_AGENT_TEMP_DIRECTORY
 
 
 MAX_FILE_READ_CHARS = 200_000
-# replace_text 的目标级锁默认等待时间；锁仅保护同一文件的“读取、匹配、原子写入”事务。
-REPLACE_TEXT_LOCK_TIMEOUT_SECONDS = 30.0
-REPLACE_TEXT_LOCK_POLL_SECONDS = 0.05
+# Edit_file 的目标级锁默认等待时间；锁仅保护同一文件的“读取、匹配、原子写入”事务。
+EDIT_FILE_LOCK_TIMEOUT_SECONDS = 30.0
+EDIT_FILE_LOCK_POLL_SECONDS = 0.05
 # 与项目其他原子写路径一致，底层 atomic_write_text 会在 Windows 目标文件
 # 短暂占用时进行有限退避重试。
-REPLACE_TEXT_LOCK_FILE_SUFFIX = ".omnicrawl.replace.lock"
+EDIT_FILE_LOCK_FILE_SUFFIX = ".omnicrawl.edit.lock"
 MAX_SEARCH_RESULTS = 200
 
-_REPLACE_TEXT_LOCKS: dict[Path, ProcessFileLock] = {}
-_REPLACE_TEXT_LOCKS_GUARD = threading.Lock()
+_EDIT_FILE_LOCKS: dict[Path, ProcessFileLock] = {}
+_EDIT_FILE_LOCKS_GUARD = threading.Lock()
 MAX_LIST_ENTRIES = 500
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 360
 MAX_COMMAND_TIMEOUT_SECONDS = 360
@@ -52,6 +52,7 @@ MAX_COMMAND_TIMEOUT_SECONDS = 360
 # 续读提示（footer）让模型用 start_line 继续向后读。
 READ_MAX_LINES = 500
 READ_MAX_LINE_LENGTH = 2_000
+EDIT_CONTEXT_LINES = 2
 
 # grep 匹配行预览上限：单条匹配行最多保留的字符数，超长截断并标记
 # （对齐 deepseek-harness 的 grepMaxLineBytes），避免 minified 代码等超长行
@@ -121,7 +122,7 @@ class WorkspaceToolError(RuntimeError):
     """工作区工具参数校验或执行失败。
 
     ``code`` 为机器可识别的稳定错误标识；默认错误保持原有纯文本行为，只有
-    需要区分失败原因的工具（例如 replace_text）显式提供错误码。
+    需要区分失败原因的工具（例如 Edit_file）显式提供错误码。
     """
 
     def __init__(
@@ -150,7 +151,7 @@ class WorkspaceToolError(RuntimeError):
 
 @dataclass(frozen=True)
 class _FileVersion:
-    """replace_text 事务中用于检测外部变化的文件版本。"""
+    """Edit_file 事务中用于检测外部变化的文件版本。"""
 
     size: int
     mtime_ns: int
@@ -175,23 +176,23 @@ class WorkspaceCommandInvocation:
     label: str
 
 
-def _replace_text_lock_for(path: Path) -> ProcessFileLock:
+def _edit_file_lock_for(path: Path) -> ProcessFileLock:
     """返回同一目标文件共享的跨线程/跨进程编辑锁。"""
 
     resolved = path.resolve()
-    with _REPLACE_TEXT_LOCKS_GUARD:
-        lock = _REPLACE_TEXT_LOCKS.get(resolved)
+    with _EDIT_FILE_LOCKS_GUARD:
+        lock = _EDIT_FILE_LOCKS.get(resolved)
         if lock is None:
             lock = ProcessFileLock(
-                Path(f"{resolved}{REPLACE_TEXT_LOCK_FILE_SUFFIX}"),
-                timeout_seconds=REPLACE_TEXT_LOCK_TIMEOUT_SECONDS,
-                poll_seconds=REPLACE_TEXT_LOCK_POLL_SECONDS,
+                Path(f"{resolved}{EDIT_FILE_LOCK_FILE_SUFFIX}"),
+                timeout_seconds=EDIT_FILE_LOCK_TIMEOUT_SECONDS,
+                poll_seconds=EDIT_FILE_LOCK_POLL_SECONDS,
             )
-            _REPLACE_TEXT_LOCKS[resolved] = lock
+            _EDIT_FILE_LOCKS[resolved] = lock
         return lock
 
 
-def _read_utf8_bytes_for_replace(path: Path, display_path: str) -> bytes:
+def _read_utf8_bytes_for_edit(path: Path, display_path: str) -> bytes:
     """读取替换事务使用的 UTF-8 原始字节，避免 stat 与实际内容脱节。"""
 
     try:
@@ -245,6 +246,34 @@ def _restore_line_endings(text: str, line_ending: str) -> str:
     if line_ending == "\n":
         return text
     return text.replace("\n", line_ending)
+
+
+def _format_edit_context(
+    text: str,
+    *,
+    replacement_start_line: int,
+    replacement_end_line: int,
+    context_lines: int = EDIT_CONTEXT_LINES,
+) -> tuple[int, int, str]:
+    """返回编辑后首个替换位置附近的带行号文本。"""
+
+    lines = text.splitlines()
+    if not lines:
+        return 0, 0, "文件修改后为空。"
+
+    first_line = max(1, replacement_start_line - context_lines)
+    last_line = min(len(lines), replacement_end_line + context_lines)
+
+    numbered: list[str] = []
+    for line_number in range(first_line, last_line + 1):
+        line = lines[line_number - 1]
+        if len(line) > READ_MAX_LINE_LENGTH:
+            line = (
+                f"{line[:READ_MAX_LINE_LENGTH]}... "
+                f"(line truncated to {READ_MAX_LINE_LENGTH} chars)"
+            )
+        numbered.append(f"{line_number}: {line}")
+    return first_line, last_line, "\n".join(numbered)
 
 
 class WorkspaceTools:
@@ -1241,37 +1270,50 @@ class WorkspaceTools:
                     parent = parent.parent
             if len(files) >= SEARCH_PARSE_LINE_CAP:
                 break
-        files.sort(key=lambda value: str(value).lower())
         entries = [(path, False) for path in files]
         if include_dirs:
-            entries.extend(
-                (path, True)
-                for path in sorted(dirs, key=lambda value: str(value).lower())
+            entries.extend((path, True) for path in dirs)
+        entries.sort(
+            key=lambda item: (
+                -self._search_entry_mtime(item[0]),
+                str(item[0]).casefold(),
             )
+        )
         return entries
 
+    @staticmethod
+    def _search_entry_mtime(path: Path) -> int:
+        """返回搜索条目的修改时间；条目并发消失或不可访问时置于末尾。"""
 
-    def replace_text(self, arguments: dict[str, Any]) -> str:
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+
+    def edit_file(self, arguments: dict[str, Any]) -> str:
         """按字面替换文本，并以单文件事务保护读取、匹配和写回。
 
-        ``count`` 保持历史语义：默认替换 1 处，0 替换全部，正数替换至多
-        指定数量。编辑内部把换行统一为 LF，写回时恢复文件原有的 CRLF/LF
-        风格；版本指纹在原子发布前再次校验，避免覆盖锁外部进程的修改。
+        省略 ``count`` 时要求 ``old_text`` 恰好匹配 1 处；显式提供 ``count``
+        时保持历史语义：0 替换全部，正数替换至多指定数量。编辑内部把换行统一
+        为 LF，写回时恢复文件原有的 CRLF/LF 风格；版本指纹在原子发布前再次校验，
+        避免覆盖锁外部进程的修改。
         """
 
         path = self.safe_path(str(arguments.get("path") or ""))
         old_text = str(arguments.get("old_text") or "")
         new_text = str(arguments.get("new_text") or "")
+        count_provided = "count" in arguments
         count = _read_limited_int(arguments, "count", default=1, minimum=0, maximum=10_000)
         if not path.is_file():
             raise WorkspaceToolError(f"不是文件：{self.relative_path(path)}")
         if not old_text:
             raise WorkspaceToolError("old_text 不能为空。")
 
-        lock = _replace_text_lock_for(path)
+        lock = _edit_file_lock_for(path)
         try:
             with lock:
-                original_bytes = _read_utf8_bytes_for_replace(path, self.relative_path(path))
+                original_bytes = _read_utf8_bytes_for_edit(path, self.relative_path(path))
                 version = _file_version(path, original_bytes)
                 original = original_bytes.decode("utf-8")
                 original_line_endings = _detect_line_endings(original)
@@ -1281,8 +1323,13 @@ class WorkspaceTools:
                 occurrences = normalized_original.count(normalized_old)
                 if occurrences == 0:
                     raise WorkspaceToolError(
-                        "未找到 old_text，文件未修改。",
+                        "未找到 old_text（匹配到 0 处），文件未修改；请重新读取文件并补充准确上下文。",
                         code="FS_EDIT_NOT_FOUND",
+                    )
+                if not count_provided and occurrences != 1:
+                    raise WorkspaceToolError(
+                        f"匹配到 {occurrences} 处 old_text，文件未修改；请提供 count 或补充上下文使其唯一。",
+                        code="FS_EDIT_AMBIGUOUS",
                     )
 
                 replace_count = occurrences if count == 0 else min(count, occurrences)
@@ -1293,7 +1340,7 @@ class WorkspaceTools:
                 )
                 output = _restore_line_endings(edited, original_line_endings)
 
-                latest_bytes = _read_utf8_bytes_for_replace(path, self.relative_path(path))
+                latest_bytes = _read_utf8_bytes_for_edit(path, self.relative_path(path))
                 if _file_version(path, latest_bytes) != version:
                     raise WorkspaceToolError(
                         "文件在替换期间发生变化，未写入；请重新读取后重试。",
@@ -1328,7 +1375,20 @@ class WorkspaceTools:
                 code="FS_EDIT_FAILED",
                 retryable=True,
             ) from exc
-        return f"已修改 {self.relative_path(path)}，替换 {replace_count} 处。"
+        first_match_offset = normalized_original.find(normalized_old)
+        first_match_line = normalized_original.count("\n", 0, first_match_offset) + 1
+        replacement_prefix = normalized_original[:first_match_offset] + normalized_new
+        first_match_end_line = replacement_prefix.count("\n") + 1
+        context_start, context_end, context = _format_edit_context(
+            output,
+            replacement_start_line=first_match_line,
+            replacement_end_line=first_match_end_line,
+        )
+        return (
+            f"已修改 {self.relative_path(path)}，替换 {replace_count} 处。\n"
+            f"首个替换位置上下文（第 {context_start}-{context_end} 行，前后各 {EDIT_CONTEXT_LINES} 行）：\n"
+            f"{context}"
+        )
 
 
     def write_file(self, arguments: dict[str, Any]) -> str:

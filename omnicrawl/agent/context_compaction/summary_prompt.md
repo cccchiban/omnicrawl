@@ -16,7 +16,7 @@
 9. 当输入中的 target_summary_tokens 为 null 或 0（budget_limited=false）时，表示本次摘要无预算上限：
    优先完整性而不是控制长度。不要为了省 token 省略路径、命令、数字、报错、决策理由、
    未完成事项或已尝试的方案；宁可摘要偏长，也不丢失恢复后续工作所必需的关键信息。
-10. modified_files 必须覆盖被压缩窗口内所有成功写入/修改的文件（write_file/replace_text），
+10. modified_files 必须覆盖被压缩窗口内所有成功写入/修改的文件（write_file/Edit_file），
     path 用真实路径，description 说明改了什么。
 11. failed_attempts 必须覆盖被压缩窗口内所有失败的工具调用（工具执行失败/被拒绝/报错），
     说明试过什么、为什么失败，避免后续重复劳动。

@@ -28,7 +28,6 @@ TOOL_NAME_ALIASES = {
     "monitorcommand": "monitor",
     "powershellcommand": "powershell",
     "readimage": "read_image",
-    "replacetext": "replace_text",
     "writefile": "write_file",
 }
 ARGUMENT_NAME_ALIASES = {
@@ -289,7 +288,7 @@ def build_agent_tools(
     fetcher: ToolRunner | None = None,
     image_gen: ToolRunner | None = None,
     tts: ToolRunner | None = None,
-    replace_text: ToolRunner,
+    edit_file: ToolRunner,
     write_file: ToolRunner,
     bash: ToolRunner,
     powershell: ToolRunner,
@@ -354,7 +353,7 @@ def build_agent_tools(
         [
             ToolDefinition(
                 name="list",
-                description="列出指定路径下的文件和目录（相对路径基于工作区），可选择递归。",
+                description='是什么：列出工作区指定路径下的文件和目录。怎么做：需要了解目录结构时使用；只需文件内容时不用，单文件路径会直接返回路径。怎样做：成功按行返回相对路径，目录末尾带 /；空目录返回‘目录为空’，超限追加截断提示；失败返回文本错误。建议：先非递归定位，再按需递归；结果超限时缩小范围。',
                 argument_schema='{"path": ".", "recursive": false}',
                 requires_confirmation=True,
                 run=list,
@@ -363,12 +362,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="find",
-                        description=(
-                            "仅按文件名、目录名或相对路径查找本地条目（相对路径基于工作区），不读取文件内容；"
-                            "pattern 支持 glob 通配符（如 * 匹配所有文件名）。"
-                            "搜索自动读取 .gitignore 跳过 node_modules 等被忽略目录；"
-                            "结果超过 max_results 时保留前 N 条并保存完整列表，footer 给出保存路径供继续读取。"
-                        ),
+                        description='是什么：按名称或相对路径查找工作区文件和目录，不读取内容。怎么做：不知道目标路径、需要 glob 模式或筛选 kind 时使用；已知精确路径或要搜内容时不用。怎样做：成功按行返回路径，目录末尾带 /；无结果返回‘未找到匹配结果’；超限保留前 max_results 并给出完整结果路径；失败返回文本错误。建议：先用具体 path/pattern 缩小范围，再用 read 读取内容；不要用 find 替代 grep。',
                         argument_schema=(
                             '{"pattern":"agent","path":".","kind":"all|file|directory",'
                             '"case_sensitive":false,"max_results":50}'
@@ -382,14 +376,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="read",
-                description=(
-                    "读取本地 UTF-8 文本文件或 omnicrawl://docs/<文件名> 内置文档。"
-                    "可按 start_line/max_lines 读取行范围，按 function_name 定位函数或方法，"
-                    "或按 text 定位首次文字片段及上下文。"
-                    "输出带行号与 footer：若文件还有更多内容，footer 会给出"
-                    "(Showing lines X-Y of Z. Use start_line=Y+1 to continue.)，"
-                    "用返回的 start_line 继续向后读取。"
-                ),
+                description='是什么：读取工作区或内置文档中的 UTF-8 文本，并支持按行、函数或片段定位。怎么做：需要查看内容、实现或上下文时使用；只想按名称定位时不用；function_name 与 text 不可同时传。怎样做：普通读取返回‘行号: 内容’及 End of file 或 Showing lines X-Y of Z footer；函数/片段定位返回定位标题和带行号内容，超限追加续读提示；超长行标记截断，失败返回文本错误。建议：先读小范围，按普通读取的 footer 用 start_line 续读；用 function_name/text 缩小上下文，降低无关输出。',
                 argument_schema=(
                     '{"path":"main.py","start_line":1,"max_lines":200,'
                     '"function_name":"Class.method","text":"目标片段","context_lines":20}'
@@ -401,10 +388,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="read_image",
-                        description=(
-                            "读取本机 PNG、JPEG、WebP 或 GIF 图片。path 可使用工作区相对路径或本机绝对路径；"
-                            "图片内容会在 vision 模型可用时以内联方式提供给模型，不支持 URL。"
-                        ),
+                        description='是什么：读取本机 PNG、JPEG、WebP 或 GIF 图片并提供视觉附件。怎么做：需要分析图片内容时使用；只需文件名或图片 URL 时不用；path 可使用工作区相对路径或本机绝对路径，不支持 URL。怎样做：成功返回 JSON：path、media_type、bytes、detail、vision_attachment；同时附加图片；失败返回文本错误。建议：先确定图片路径，再按模型能力选择 detail；超大图片会增加内存占用和请求延迟。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
@@ -429,16 +413,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="grep",
-                description=(
-                    "在本地 UTF-8 文本文件中执行 grep 风格搜索：pattern 默认按正则表达式"
-                    "解释，可用 | 连接多个候选目标（如 messages|context|tool_calls）；"
-                    "use_regex=false 时按精确子串，支持大小写开关、匹配行上下文、"
-                    "每文件计数、仅列出匹配文件，以及 include/exclude 文件名过滤。"
-                    "path 支持绝对/相对路径和 glob（如 Windows 的 "
-                    "D:\\MyProject\\工程程序\\DNS监控\\public\\*.js），会搜索所有匹配文件。"
-                    "超长匹配行自动截断到 2000 字符并标记 (line truncated)；"
-                    "结果超过 max_results 时保留前 N 条并保存完整结果，footer 给出保存路径供继续读取。"
-                ),
+                description='是什么：在工作区文本中按正则或精确子串搜索内容。怎么做：需要查找代码、配置或引用位置时使用；只按文件名查找时用 find；path 不要指向用户目录或文件系统根。怎样做：普通模式返回 path:line: text；count 返回文件计数，files_with_matches 只返回路径；长行标记截断，超限给出完整结果路径；失败返回文本错误。建议：优先限定 path、include 和 pattern；用 context_lines 查看邻近代码，宽泛正则会增加输出和耗时。',
                 argument_schema=(
                     '{"pattern": "class Agent", "path": ".", "use_regex": true, '
                     '"case_sensitive": false, "context_lines": 0, "count": false, '
@@ -452,11 +427,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="web_search",
-                        description=(
-                            "搜索公开网页（Bing/DuckDuckGo/雅虎），返回标题、链接与摘要。"
-                            "自带桌面 Chrome 环境模拟（UA、Sec-Fetch-* 请求头、跟随重定向）降低拦截；"
-                            "遇验证码返回明确错误、不绕过。engine 默认 bing，language 可选，max_results 默认 5。"
-                        ),
+                        description='是什么：在 Bing、DuckDuckGo 或雅虎搜索公开网页。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。建议：用具体关键词和合适 engine/language；搜索结果是线索，需用 fetcher 获取正文并核实来源。',
                         argument_schema=(
                             '{"query": "关键词", "engine": "bing|duckduckgo|yahoo", '
                             '"max_results": 5, "language": "zh-CN"}'
@@ -472,12 +443,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="fetcher",
-                        description=(
-                            "抓取 URL 网页内容：模拟 Chrome/Firefox/Safari/Edge 浏览器指纹与桌面请求头，"
-                            "支持并行多 URL；insecure=true 跳过 TLS 校验（内网证书）；跟随重定向；"
-                            "默认返回正文（max_chars 限长），max_html=true 返回原始 HTML。"
-                            "不执行 JS、不绕过验证码。"
-                        ),
+                        description='是什么：使用浏览器指纹抓取用户指定的一个或多个 URL，并提取正文或返回 HTML。怎么做：已有明确 URL 且需要页面内容时使用；需要发现 URL 时用 web_search；不执行 JS、不绕过验证码。怎样做：每个 URL 返回 url、状态、最终地址、可选标题和内容；失败条目返回 url 与 error；结果按输入顺序，内容受 max_chars 限制。建议：默认正文最省上下文；仅在需要源码时用 max_html；insecure 只用于可信内网自签名证书，避免削弱 TLS 校验。',
                         argument_schema=(
                             '{"urls": "https://a.example,https://b.example", "insecure": false, '
                             '"parallel": true, "timeout": 15, "max_chars": 8000, '
@@ -494,11 +460,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="image_gen",
-                        description=(
-                            "生成或编辑图片（OpenAI 兼容 Image API）：prompt 文生图，或传本地图片路径 image 加 prompt 编辑。"
-                            "接口/Key/模型在 /settings 配置；size/quality/output_format/n 可覆盖；"
-                            "图片默认存 .omnicrawl/.agent_tmp/images/。"
-                        ),
+                        description='是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置，参数会影响耗时、成本和画质。',
                         argument_schema=(
                             '{"prompt": "图像描述", "image": "编辑时传入的本地图片路径", '
                             '"n": 1, "size": "auto", "quality": "auto", '
@@ -515,13 +477,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="tts_synthesize",
-                        description=(
-                            "把文本合成为语音（MOSS-TTS-Nano，本地 ONNX CPU 推理，无需联网）。"
-                            "text 必填；音色和推理设备固定使用设置中的配置（/settings → TTS），"
-                            "模型不可指定音色；prompt_audio 为参考音频路径时可语音克隆；"
-                            "path 可指定 WAV 保存位置（默认 .omnicrawl/.agent_tmp/tts/）。"
-                            "输出 48kHz 立体声 WAV，推理设备由 /settings → TTS 的 device 配置决定。"
-                        ),
+                        description='是什么：把文本合成为 WAV 语音，支持设置中的内置音色或参考音频克隆。怎么做：需要生成语音文件时使用；只需文字分析或朗读建议时不用；先在 /settings → TTS 启用并准备模型。怎样做：成功返回 JSON：ok、audio_path、sample_rate、duration_seconds、voice、text_chunks；失败返回 JSON：ok=false、error。建议：text 传最终朗读稿，长文本可自动分块；prompt_audio 会改变音色来源，path 决定文件位置，配置可控制自动播放。',
                         argument_schema=(
                             '{"text": "要朗读的文本", '
                             '"prompt_audio": "参考音频路径（可选，语音克隆）", '
@@ -535,18 +491,15 @@ def build_agent_tools(
                 else []
             ),
             ToolDefinition(
-                name="replace_text",
-                description="在单个文件中替换指定文本，适合小范围代码修改。",
+                name="Edit_file",
+                description='是什么：在单个 UTF-8 文本文件中按字面替换 old_text。怎么做：需要小范围、明确目标的编辑时使用；不适合大范围重写或不确定匹配内容时使用；old_text 必须非空。怎样做：成功返回‘已修改 path，替换 N 处’，只展示首个替换位置前后各 2 行（文件边界除外）的修改后内容，格式为‘行号: 内容’；省略 count 时必须恰好匹配 1 处，匹配 0 处或多处均返回错误码、原因和调整建议且不写入；显式 count=1 替换第 1 处，count=0 替换全部。建议：先 read 确认原文并保留足够上下文；多处匹配时提供 count 或补充上下文使其唯一，错误码可指导重试。',
                 argument_schema='{"path": "main.py", "old_text": "...", "new_text": "...", "count": 1}',
                 requires_confirmation=True,
-                run=replace_text,
+                run=edit_file,
             ),
             ToolDefinition(
                 name="write_file",
-                description=(
-                    "写入或追加 UTF-8 文本文件；一次性脚本、中间文件和临时交付物"
-                    "应优先写入 Agent 临时目录。"
-                ),
+                description='是什么：以 overwrite 或 append 模式写入 UTF-8 文本文件。怎么做：需要创建、覆盖或追加文本文件时使用；只修改局部内容时用 Edit_file；临时文件优先放 .omnicrawl/.agent_tmp。怎样做：成功返回‘已写入/追加 path，字符数：N’；失败返回文本错误；overwrite 会替换原内容，append 保留原内容。建议：覆盖前先 read 核对目标；明确使用 mode，path 使用工作区相对路径以减少误写范围。',
                 argument_schema=(
                     '{"path": ".omnicrawl/.agent_tmp/files/notes.md", "content": "...", '
                     '"mode": "overwrite"}'
@@ -556,11 +509,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="bash",
-                description=(
-                    "使用 Git Bash 执行主命令并保留真实退出码。测试/构建命令不得用 tail/head/grep/rg 裁剪输出，"
-                    "查看日志应放独立 diagnostic_command。Bash 管道启用 pipefail，不得掩盖上游失败。"
-                    "只接受 POSIX Shell 语法。"
-                ),
+                description='是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令不可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：主命令保留完整验证过程，日志筛选放 diagnostic_command；pipefail 保证管道上游失败不被掩盖。',
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -587,11 +536,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="powershell",
-                description=(
-                    "使用 PowerShell 执行完整的主命令并保留真实退出码。测试或构建命令不得在主命令中"
-                    "使用 Select-Object、Select-String 等裁剪输出；需要查看诊断日志时使用独立的 "
-                    "diagnostic_command。只接受 PowerShell 语法，不得使用 Bash 语法。"
-                ),
+                description='是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令不可用 Select-Object/Select-String 裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；诊断筛选放独立 diagnostic_command，避免把验证结果截断。',
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -618,10 +563,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="monitor",
-                description=(
-                    "在后台启动受 Agent 管理的命令，或按任务 ID 轮询增量日志、查看任务列表、"
-                    "停止任务。启动后立即返回 monitor_id；Agent 关闭或切换工作区时会自动终止任务。"
-                ),
+                description='是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。',
                 argument_schema=(
                     '{"action":"start","command":"python -m http.server",'
                     '"shell":"powershell","monitor_id":"monitor-...","cursor":0,'
@@ -634,15 +576,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="git",
-                        description=(
-                            "在工作区执行结构化 git 操作（不经 shell）。action 为 git 子命令，"
-                            "args 是其参数（标志、引用名、分支名等），paths 是工作区内相对路径，"
-                            "message 是提交信息。readonly 动作（status/diff/log/show/ls-files 等）"
-                            "自动放行；本地变更（add/commit/branch/stash/restore 等）按模式确认；"
-                            "push/rebase/merge/pull/clean/reset --hard 等高危动作需额外审查。"
-                            "commit 必须提供 message；禁止 --git-dir/--work-tree/--no-verify"
-                            "及全局/系统配置写入。git 操作应使用本工具，不要用 bash 拼命令。"
-                        ),
+                        description='是什么：在当前工作区直接执行受约束的结构化 Git 子命令。怎么做：需要查看状态、差异、日志或提交变更时使用；不要用 bash 拼 Git；push、merge、reset --hard、clean 等高危动作需额外审查。怎样做：成功返回有界的 Git stdout 文本；失败返回错误文本和退出原因；不返回固定 JSON；paths 必须在工作区内。建议：优先 status/diff 确认范围，再执行变更；commit 提供 message；禁止 --git-dir、--work-tree、--no-verify 及全局/系统配置参数。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
@@ -690,12 +624,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="kb_search",
-                        description=(
-                            "搜索跨项目工作知识库（~/.OmniCrawl/knowledge/）中的笔记摘要。"
-                            "知识库存放工作记录、其他项目资料、会议纪要、决策与研究笔记，"
-                            "独立于当前项目。支持按 project、tags、type、status 过滤；"
-                            "先搜索摘要，再按需 kb_read 全文。"
-                        ),
+                        description='是什么：搜索独立于当前项目的工作知识库笔记摘要。怎么做：需要跨项目查找工作记录、决策或研究线索时使用；只查当前项目代码或完整笔记时不用，先搜摘要再 kb_read。怎样做：成功返回 JSON 数组，每项含 path、title、project、type、status、tags、snippet、score；空结果为 []，失败返回文本错误。建议：用 project/tags/type/status 缩小范围；摘要只用于筛选，命中后用 kb_read 读取全文，避免无关内容污染上下文。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
@@ -738,10 +667,7 @@ def build_agent_tools(
                     ),
                     ToolDefinition(
                         name="kb_read",
-                        description=(
-                            "读取工作知识库笔记全文。path 为知识库内相对路径，"
-                            "例如 projects/客户A/2026-06-18-会议纪要.md；省略 .md 后缀会自动补全。"
-                        ),
+                        description='是什么：读取工作知识库中的一篇 Markdown 笔记全文。怎么做：kb_search 命中后需要完整正文时使用；只需定位笔记时不用；path 必须是知识库内相对路径，可省略 .md。怎样做：成功返回原始 Markdown 文本；超过 max_chars 时追加‘已截断’提示；不存在、越界或非 UTF-8 时返回文本错误。建议：先 kb_search 再 kb_read，并按需要设置 max_chars；不要把知识库路径当作工作区路径使用。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
@@ -764,10 +690,7 @@ def build_agent_tools(
                     ),
                     ToolDefinition(
                         name="kb_write",
-                        description=(
-                            "新建或更新知识库笔记（~/.OmniCrawl/knowledge/），自动维护 YAML frontmatter 与 INDEX.md。"
-                            "mode=create 仅新建、overwrite 覆盖正文并合并已有字段、append 追加正文。"
-                        ),
+                        description='是什么：新建或更新知识库 Markdown 笔记，并维护 frontmatter 与索引。怎么做：需要长期保存已确认的工作记录时使用；临时内容或项目代码不要写入知识库；create 仅新建，overwrite 覆盖正文，append 追加正文。怎样做：成功返回 JSON：note（path、title、created、updated、project、type、status、tags）和 mode；失败返回文本错误。建议：正文短而可独立理解，补充 project/tags/type/status 便于检索；overwrite 前先 kb_read，避免覆盖有价值内容。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
@@ -811,10 +734,7 @@ def build_agent_tools(
                     ),
                     ToolDefinition(
                         name="kb_append",
-                        description=(
-                            "向已有工作知识库笔记追加正文，自动更新 updated 与 INDEX.md；"
-                            "不修改 frontmatter 的其他字段。"
-                        ),
+                        description='是什么：向已有知识库笔记追加正文。怎么做：需要补充同一笔记的新信息时使用；新建笔记用 kb_write；不需要修改 frontmatter 时使用。怎样做：成功返回 JSON：note 元数据和 mode=append；失败返回文本错误；只更新 updated，不改其他 frontmatter 字段。建议：追加独立、简短且已确认的内容；追加前先 kb_read 确认目标，避免把不同主题混入同一笔记。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
@@ -832,10 +752,7 @@ def build_agent_tools(
                     ),
                     ToolDefinition(
                         name="kb_list",
-                        description=(
-                            "列出工作知识库目录或按 project、tags、type、status 筛选笔记；"
-                            "返回每篇笔记的路径与 frontmatter 元数据。"
-                        ),
+                        description='是什么：列出知识库笔记或按元数据筛选笔记。怎么做：需要浏览目录、核对元数据或批量定位笔记时使用；只需按关键词搜索时用 kb_search；不返回正文。怎样做：成功返回 JSON 数组，每项含 path、title、created、updated、project、type、status、tags；无结果为 []，失败返回文本错误。建议：优先用 project/tags/type/status/path 过滤并控制 max_results；找到目标后用 kb_read 获取正文。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
@@ -886,10 +803,11 @@ def build_agent_tools(
             ToolDefinition(
                 name=TODO_TOOL_NAME,
                 description=(
-                    "维护当前任务的紧凑执行清单。处理多步骤项目任务时，先用本工具提交完整步骤列表，"
-                    "每完成一步就再次提交同一列表并将对应 completed 设为 true；不要把计划正文写进回复。"
-                    "todos 为空表示清除当前计划。"
-                ),
+                     "是什么：维护当前任务的紧凑执行清单。"
+                     "怎么做：多步骤任务开始和每步完成时使用；单步任务或无需展示进度时不用；todos 为空表示清除计划。"
+                     "怎样做：成功返回 JSON：updated 和 todos 数组，每项含 id、step、completed；最多保留 20 项，非法项会被忽略；参数错误返回文本错误。"
+                     "建议：首次提交完整列表，之后只更新 completed；step 短而可验证，避免把计划正文重复写入回复。"
+                 ),
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -923,10 +841,11 @@ def build_agent_tools(
             ToolDefinition(
                 name=RECALL_SESSION_EVIDENCE_TOOL_NAME,
                 description=(
-                    "按结构化会话摘要中显示的来源事件 ID，恢复当前 Session 的精确证据。"
-                    "仅允许读取当前有效摘要引用的事件；单次最多 8 个 ID、合计约 4000 Token。"
-                    "缺失、未授权或不可读内容会返回结构化诊断，不会恢复整个冷历史。"
-                ),
+                     "是什么：按当前有效摘要授权的事件 ID 恢复本会话的精确证据。"
+                     "怎么做：摘要缺少细节且已知 source event ID 时使用；没有有效摘要、只想浏览历史或不知道 ID 时不用；不接受 Session ID 或任意 artifact 路径。"
+                     "怎样做：成功或部分成功返回 JSON：schema_version、ok、summary_event_id、requested_count、items、diagnostics、truncated、budget、estimated_tokens；未授权/缺失返回诊断项。"
+                     "建议：先从摘要读取已引用 ID，单次少量恢复；结果可能按 token 预算截断，按 diagnostics 和 truncated 决定是否分批重试。"
+                 ),
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -966,10 +885,7 @@ def build_agent_tools(
             [
                 ToolDefinition(
                     name="windows_window",
-                    description=(
-                        "仅限 Windows：枚举可见顶层窗口、读取窗口标题/类名/进程/几何位置，"
-                        "或激活指定窗口。先用 list 获取 window_handle；activate 不会绕过 Windows 的前台焦点保护。"
-                    ),
+                    description='是什么：在 Windows 枚举、读取或激活顶层窗口。怎么做：需要发现窗口或确认窗口状态时使用；非 Windows、只需控件定位或不应改变前台窗口时不用；activate 不绕过焦点保护。怎样做：list 返回 JSON：action、matched_count、truncated、windows；get/activate 返回 action、window（含 handle、title、class_name、process_id、状态和 bounds）；失败返回文本错误。建议：先 list 取得稳定的 window_handle，再 get 或 activate；用标题/类名过滤减少误选，激活失败应由用户手动切换。',
                     argument_schema=(
                         '{"action":"list|get|activate","window_handle":"0x...",'
                         '"title_contains":"可选标题片段","class_name_contains":"可选类名片段",'
@@ -980,11 +896,7 @@ def build_agent_tools(
                 ),
                 ToolDefinition(
                     name="windows_control",
-                    description=(
-                        "仅限 Windows：UI Automation 在 window_handle 内列出控件，或按 "
-                        "name/automation_id/class_name/control_type 定位后 "
-                        "invoke/set_value/select/toggle/focus。非 list 须定位；多匹配 list/index。"
-                    ),
+                    description='是什么：在 Windows 窗口内发现 UI Automation 控件并执行语义化操作。怎么做：需要操作按钮、输入框或选择控件时使用；非 Windows 或只需鼠标坐标时不用；非 list 必须提供定位条件，多匹配需 index。怎样做：list 返回 JSON：action、matched_count、truncated、controls；其他动作返回 action、index、target；失败返回文本错误，不返回控件外的任意脚本结果。建议：先 list 再用 name/automation_id/control_type 精确定位，优先语义定位而非坐标；set_value 仅用于字符串值。',
                     argument_schema=(
                         '{"action":"list|invoke|set_value|select|toggle|focus",'
                         '"window_handle":"0x...","name":"精确名称","automation_id":"自动化ID",'
@@ -996,10 +908,7 @@ def build_agent_tools(
                 ),
                 ToolDefinition(
                     name="windows_input",
-                    description=(
-                        "仅限 Windows：通过 SendInput 移动/点击鼠标、滚轮、按键、组合键或输入 Unicode 文本。"
-                        "click/move 必须提供虚拟桌面坐标；type_text 不会回显输入内容。"
-                    ),
+                    description='是什么：在 Windows 发送受限的鼠标、滚轮、按键、组合键或 Unicode 文本输入。怎么做：目标应用明确且需要真实输入时使用；能用 UI Automation 时优先不用坐标输入；click/move 必须有虚拟桌面坐标。怎样做：成功返回 JSON，按动作包含 action、坐标、按键、clicks、keys 或 text_length；type_text 不回显文本；失败返回文本错误。建议：先确认前台窗口和坐标，再执行最小动作；敏感文本不回显但仍会进入目标应用，输入后不要重复发送。',
                     argument_schema=(
                         '{"action":"move|click|scroll|key|hotkey|type_text",'
                         '"x":100,"y":200,"button":"left|right|middle","clicks":1,'
@@ -1011,10 +920,7 @@ def build_agent_tools(
                 ),
                 ToolDefinition(
                     name="windows_clipboard",
-                    description=(
-                        "仅限 Windows：读取、写入或清空 Unicode 文本剪贴板。"
-                        "read_text 可用 max_chars 限制返回长度；写入文本不会进入确认页或会话参数记录。"
-                    ),
+                    description='是什么：读取、写入或清空 Windows Unicode 文本剪贴板。怎么做：需要在应用间传递文本时使用；只需控件内设置值时优先用 windows_control；read_text 之外不要假设有二进制剪贴板支持。怎样做：read_text 返回 JSON：action、text、total_chars、truncated；write_text 返回 action、text_length；clear 仅返回 action；失败返回文本错误。建议：读取时设置合理 max_chars；写入内容不会回显到结果或会话参数，但会改变用户剪贴板，执行前确认目标。',
                     argument_schema=(
                         '{"action":"read_text|write_text|clear","text":"仅 write_text",'
                         '"max_chars":8000}'
@@ -1024,11 +930,7 @@ def build_agent_tools(
                 ),
                 ToolDefinition(
                     name="windows_screenshot",
-                    description=(
-                        "仅限 Windows：Win32 GDI 截取虚拟桌面、指定区域或窗口，保存到临时图片目录；"
-                        "模型声明 vision 时下一轮直接提供给模型。窗口目标先用 windows_window.list 获取 "
-                        "window_handle；最小化/越界/受保护内容可能截取失败。"
-                    ),
+                    description='是什么：用 Windows GDI 截取整个桌面、区域或指定窗口，并提供 PNG 视觉附件。怎么做：需要观察桌面或窗口画面时使用；只需窗口元数据时用 windows_window；window 截图先取得 handle，最小化、越界或受保护内容可能失败。怎样做：成功返回 JSON：target、path、source_bounds、image（media_type、width、height、bytes、scaled），并附加 PNG；失败返回文本错误。建议：优先截取最小必要区域并设置合理 max_dimension；截图会保存到临时目录且可能含敏感画面，提供给模型前确认范围。',
                     argument_schema=(
                         '{"target":"desktop|region|window","window_handle":"0x...",'
                         '"x":0,"y":0,"width":1280,"height":720,"max_dimension":2048}'
@@ -1051,11 +953,7 @@ def build_agent_tools(
         tools.append(
             ToolDefinition(
                 name="subagent",
-                description=(
-                    "管理受限 SubAgent：run/spawn/list/get/cancel；worktree 由父 Agent 显式 apply/discard。"
-                    "默认只读；allow_fork 继承脱敏父上下文；模型覆盖仅 Host 解析；verify 仅 Host 固定检查；"
-                    "写能力需配置开启，写回主工作区须父 Agent 处理。"
-                ),
+                description='是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。',
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -1201,9 +1099,11 @@ def build_agent_tools(
                         ToolDefinition(
                             name=f"{prefix}_memory_search",
                             description=(
-                                f"搜索{label}记忆摘要。{purpose}。"
-                                "不确定记忆目录时省略 candidate_directories 即搜索全部目录。"
-                            ),
+                                 f"是什么：搜索{label}记忆摘要。"
+                                 f"怎么做：需要恢复{purpose}时使用；只需完整正文时不用，先搜索再按 id 读取；不确定目录可省略 candidate_directories。"
+                                 "怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；空结果为 []，失败返回文本错误。"
+                                 "建议：query 写具体主题并提供 reason；用 candidate_directories 缩小范围，命中后再调用对应 memory_read，减少上下文。"
+                             ),
                             argument_schema=(
                                 '{"query":"要检索的主题","reason":"为什么当前需要该作用域记忆",'
                                 '"candidate_directories":["project-context/general"],"max_results":5}'
@@ -1213,14 +1113,24 @@ def build_agent_tools(
                         ),
                         ToolDefinition(
                             name=f"{prefix}_memory_read",
-                            description=f"按 id 读取{label}记忆全文，并加深实际读取的记忆。",
+                            description=(
+                                 f"是什么：读取{label}记忆的完整正文并加深实际读取项。"
+                                 f"怎么做：已通过对应 memory_search 命中且需要细节时使用；只有模糊主题时不用；memory_ids 必须来自同一作用域。"
+                                 "怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；缺失 ID 不出现在数组中，失败返回文本错误。"
+                                 "建议：只读取与当前决策相关的 ID，避免一次加载过多正文；读取后再决定是否 expand_related。"
+                             ),
                             argument_schema='{"memory_ids":["20260603-164500"]}',
                             requires_confirmation=False,
                             run=read_runner,
                         ),
                         ToolDefinition(
                             name=f"{prefix}_memory_expand_related",
-                            description=f"沿关联目录扩展{label}记忆摘要，默认只展开一层。",
+                            description=(
+                                 f"是什么：沿关联目录扩展{label}记忆的候选摘要。"
+                                 f"怎么做：初次搜索未覆盖相关背景、且已有 memory_ids 时使用；没有已知 ID 或需要全文时不用。"
+                                 "怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；按 max_depth/max_results 限制，失败返回文本错误。"
+                                 "建议：默认一层、少量结果即可；先 expand_related 找候选，再按需 memory_read，扩展过深会增加噪声。"
+                             ),
                             argument_schema=(
                                 '{"memory_ids":["20260603-164500"],'
                                 '"max_depth":1,"max_results":5}'
@@ -1230,7 +1140,12 @@ def build_agent_tools(
                         ),
                         ToolDefinition(
                             name=f"{prefix}_memory_write",
-                            description=f"写入或合并{label}记忆。仅允许写入：{purpose}。",
+                            description=(
+                                 f"是什么：写入或合并{label}长期记忆。"
+                                 f"怎么做：只有信息已确认且具有长期复用价值时使用；临时进度、完整对话、凭据或不属于{purpose}的内容不用写。"
+                                 "怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；memories 为空或字段类型错误时返回文本错误。"
+                                 "建议：content 短小、准确、可独立理解，补充 related_directories；批量写入前去重，避免污染后续检索。"
+                             ),
                             argument_schema=MEMORY_WRITE_ARGUMENT_SCHEMA,
                             requires_confirmation=False,
                             run=write_runner,
@@ -1243,7 +1158,7 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="memory_search",
-                        description="按当前任务检索候选长期记忆摘要，不返回完整正文。",
+                        description='是什么：按当前任务检索候选长期记忆摘要。怎么做：需要查找项目背景或用户偏好时使用；不需要长期上下文时不用，且不直接返回正文。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；失败返回文本错误。建议：先 search 再 memory_read，query 具体并说明 reason；只读取真正相关的 ID，减少上下文噪声。',
                         argument_schema=(
                             '{"query":"用户偏好或项目主题","reason":"为什么当前需要查记忆",'
                             '"candidate_directories":["project-context/general"],"max_results":5}'
@@ -1253,21 +1168,21 @@ def build_agent_tools(
                     ),
                     ToolDefinition(
                         name="memory_read",
-                        description="按记忆 id 读取完整长期记忆内容，并对实际读取的记忆加深回忆。",
+                        description='是什么：按记忆 ID 读取完整长期记忆内容并加深回忆。怎么做：已有候选 ID 且需要细节时使用；只有主题没有 ID 时先 memory_search。怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；缺失项不返回，失败返回文本错误。建议：限制 memory_ids 数量并按需读取，避免把无关正文带入当前决策。',
                         argument_schema='{"memory_ids":["20260603-164500"]}',
                         requires_confirmation=False,
                         run=memory_read,
                     ),
                     ToolDefinition(
                         name="memory_expand_related",
-                        description="沿已读记忆的关联目录扩展候选摘要，默认只展开一层关系。",
+                        description='是什么：沿已读记忆的关联目录扩展候选摘要。怎么做：已有记忆 ID 但需要查找相关背景时使用；没有已读 ID 或需要完整正文时不用。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；失败返回文本错误。建议：默认一层、小批量扩展；命中后再 memory_read，深度或数量过大会增加噪声。',
                         argument_schema='{"memory_ids":["20260603-164500"],"max_depth":1,"max_results":5}',
                         requires_confirmation=False,
                         run=memory_expand_related,
                     ),
                     ToolDefinition(
                         name="memory_write",
-                        description="写入或合并具有长期价值的记忆，内容应短而准确。",
+                        description='是什么：写入或合并具有长期复用价值的长期记忆。怎么做：只保存已确认的稳定事实、偏好或决策时使用；临时进度、凭据和未经验证结论不用写。怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；参数无效时返回文本错误。建议：content 短而可独立理解，先检查是否已有重复记忆；相关目录有助于后续检索。',
                         argument_schema=MEMORY_WRITE_ARGUMENT_SCHEMA,
                         requires_confirmation=False,
                         run=memory_write,

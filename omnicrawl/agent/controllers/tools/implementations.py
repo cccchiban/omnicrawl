@@ -307,8 +307,8 @@ class ToolImplementationsMixin:
         self._tts_engine_sig = sig
         return engine
 
-    def _tool_replace_text(self, arguments: dict[str, Any]) -> ToolResult:
-        return workspace_tool_result(self._workspace_toolbox().replace_text, arguments)
+    def _tool_edit_file(self, arguments: dict[str, Any]) -> ToolResult:
+        return workspace_tool_result(self._workspace_toolbox().edit_file, arguments)
 
     def _tool_write_file(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().write_file, arguments)

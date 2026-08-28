@@ -22,7 +22,10 @@ from textual.widgets import Static, TextArea
 
 from ....agent import LocalToolAgent
 from .._compat import resolve_facade
-from ..conversation.view import ConversationViewMixin
+from ..conversation.view import (
+    CONVERSATION_DISPLAY_MAX_LOGICAL_LINES as _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES,
+    ConversationViewMixin,
+)
 from ..input.composer import Composer
 from ..input.editing import InputMixin
 from ..input.menu import CommandMenuMixin
@@ -212,8 +215,37 @@ class OmniCrawlApp(
     }
     /* 输入区用白色圆角框独立成卡：顶部 HUD 已移到下方，靠边框与下方
         HUD 内容分隔开；圆角边框 + 左右 margin 让输入框成为悬浮卡片。 */
-    /* AI 提问且提供可选答案时显示；问题正文在对话区，答案在输入框上方。
-       没有选项时不占布局空间，用户可直接在输入框发送补充信息。 */
+    /* AI 提问面板位于输入框上方：问题与选项保持同一组视觉层级，避免
+       问题留在会话区、选项漂浮在输入区造成内容割裂。面板只显示当前题，
+       使用白色边框和黄色强调，当前题号放在标题中。 */
+    #confirmation-panel {
+        display: none;
+        height: auto;
+        min-height: 0;
+        padding: 0 1;
+        color: $terminal-text;
+        background: $terminal-surface;
+        border: round $terminal-white;
+    }
+    #confirmation-panel > Static {
+        width: 100%;
+    }
+    #confirmation-header {
+        height: 1;
+        min-height: 1;
+        padding: 0 1;
+        color: $terminal-amber;
+        text-style: bold;
+    }
+    #confirmation-question {
+        height: auto;
+        min-height: 1;
+        padding: 0 1;
+        color: $terminal-white;
+        text-style: bold;
+        text-wrap: wrap;
+        text-overflow: ellipsis;
+    }
     #confirmation-options {
         display: none;
         height: auto;
@@ -307,6 +339,9 @@ class OmniCrawlApp(
     ]
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
+    # 对话区只渲染最近的逻辑文本行；被隐藏的旧消息组件保留在 DOM 中，
+    # 以便 /undo 后重新计算窗口并恢复显示。
+    CONVERSATION_DISPLAY_MAX_LOGICAL_LINES = _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES
     # 统计平均生成速率（t/s）的待机判定阈值：相邻输出增量间隔超过该值
     # 视为"待机"（工具执行、模型停顿、回合间隙），不计入输出时长；
     # 间隔内的时长才累计为输出时间，避免空闲等待稀释平均速率。
@@ -354,6 +389,9 @@ class OmniCrawlApp(
         self.startup = startup
         self.is_generating = False
         self.conversation_text = ""
+        self._conversation_visibility_dirty = True
+        self._conversation_visibility_refresh_pending = False
+        self._conversation_visible_logical_lines = 0
         self._pending_inputs: deque[str] = deque()
         self._cancel_requested = threading.Event()
         # Agent 回合协议和取消令牌由非 Textual 控制器持有；本应用仅适配其
@@ -446,6 +484,8 @@ class OmniCrawlApp(
         # 下一条用户任务开始时由 Agent 的新计划替换或清空。
         self._todo_plan_items: list[dict[str, Any]] = []
         self._confirmation_required = False
+        self._confirmation_groups: list[list[str]] = []
+        self._confirmation_questions: list[str] = []
         self._confirmation_options: list[str] = []
 
     def compose(self) -> ComposeResult:
@@ -454,8 +494,11 @@ class OmniCrawlApp(
                 yield Static(welcome_logo_text(), id="welcome-logo")
             with Vertical(id="composer-wrap"):
                 yield TodoPlan()
-                with Vertical(id="confirmation-options"):
-                    pass
+                with Vertical(id="confirmation-panel"):
+                    yield Static("", id="confirmation-header")
+                    yield Static("", id="confirmation-question")
+                    with Vertical(id="confirmation-options"):
+                        pass
                 yield Static("", id="command-menu")
                 yield Static("", id="sessions-menu")
                 yield Static("", id="pending-queue")

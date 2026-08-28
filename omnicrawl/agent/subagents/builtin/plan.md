@@ -3,7 +3,7 @@ name: plan
 description: 结合项目与外部证据制定只读的软件架构、实施步骤、风险与验证计划
 disallowedTools:
   - subagent
-  - replace_text
+  - Edit_file
   - write_file
   - memory_write
 model: inherit

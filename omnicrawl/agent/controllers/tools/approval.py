@@ -273,7 +273,7 @@ class ToolApprovalMixin:
         return (
             tool.name
             in {
-                "replace_text",
+                "Edit_file",
                 "write_file",
                 "subagent",
                 TODO_TOOL_NAME,

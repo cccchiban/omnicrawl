@@ -10,7 +10,7 @@ tools:
   - git
 disallowedTools:
   - subagent
-  - replace_text
+  - Edit_file
   - write_file
   - memory_write
   - bash

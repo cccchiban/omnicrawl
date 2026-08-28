@@ -107,12 +107,11 @@ enabled = true
 # windows_screenshot = true
 
 [context_compaction]
-enabled = false
-# 触发阈值（Token）也可在运行设置面板按当前模型上下文窗口的百分比设置（5% 步进）：
-# trigger_context_tokens = 上下文窗口 × 百分比。
+# 上下文压缩是 Agent 的基础能力。触发阈值（Token）也可在运行设置面板按当前
+# 模型上下文窗口的百分比设置（5% 步进）：trigger_context_tokens = 上下文窗口 × 百分比。
 # 设置面板修改百分比后会保存该关系，并在上下文窗口变化时实时重算。
 trigger_context_tokens = 100000
-# trigger_context_percent = 80  # 可选；设置后随上下文窗口实时联动
+trigger_context_percent = 80
 next_user_reserve_tokens = 4096
 minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85

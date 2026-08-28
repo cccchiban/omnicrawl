@@ -23,6 +23,7 @@ from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Static, TextArea
 
+from ....agent.controllers.turn.loop import _extract_user_confirmation_details
 from ....agent.toolkit.tools import TODO_TOOL_NAME, public_tool_arguments
 from ..terminal.theme import TEXT_MUTED, TOOL_TEXT
 from .widgets import (
@@ -181,9 +182,12 @@ class RenderingMixin:
                 continue
 
             if event_type == "assistant_message":
-                content = payload.get("content")
+                content = payload.get("session_content", payload.get("content"))
                 if isinstance(content, str) and content.strip():
                     self._append_message("assistant", content)
+                confirmation_request = payload.get("user_confirmation")
+                if isinstance(confirmation_request, list) and confirmation_request:
+                    self._set_confirmation_required(confirmation_request)
                 continue
 
             if event_type == "tool_call_requested":
@@ -201,6 +205,7 @@ class RenderingMixin:
                 widget = ToolDisclosure(tool_name, arguments, event_time)
                 conversation = self.query_one("#conversation", VerticalScroll)
                 conversation.mount(widget)
+                self._register_conversation_widget(widget, tool_name)
                 self.conversation_text += f"{tool_name}\n"
                 call_id = str(payload.get("tool_call_id") or "").strip()
                 if call_id:
@@ -228,12 +233,14 @@ class RenderingMixin:
                     tool_name = str(payload.get("tool") or "未知工具")
                     widget = ToolDisclosure(tool_name, {}, event_time)
                     self.query_one("#conversation", VerticalScroll).mount(widget)
+                    self._register_conversation_widget(widget, tool_name)
                 output = self._replay_tool_output(payload)
                 widget.finish(
                     ok=bool(payload.get("ok", False)),
                     output=output,
                     finished_at=max(event_time, widget.started_at),
                 )
+                self._register_conversation_widget(widget)
                 remove_pending(widget)
                 continue
 
@@ -283,6 +290,9 @@ class RenderingMixin:
             )
             remove_pending(widget)
 
+        self._conversation_visibility_batching = False
+        self._request_conversation_visibility_refresh()
+
 
     def _handle_status(self, message: str) -> None:
         if not message:
@@ -329,12 +339,14 @@ class RenderingMixin:
             tree = SubAgentProgressTree(batch_id)
             self._subagent_trees[batch_id] = tree
             conversation.mount(tree)
+            self._register_conversation_widget(tree, "◇ 子任务进度")
         tree.update_task(
             task_id=task_id,
             agent_type=str(payload.get("agent_type") or "subagent"),
             description=str(payload.get("description") or task_id),
             status=status,
         )
+        self._register_conversation_widget(tree, tree.render_text().plain)
         # 运行状态始终保持为消息流末项；树新增或增高后需恢复这一顺序。
         if self._runtime_status_message is not None:
             self._render_status_indicator(follow_latest=follow_latest)
@@ -362,6 +374,7 @@ class RenderingMixin:
             panel = SubAgentConversation(batch_id, agent_type)
             self._subagent_conversations[batch_id] = panel
             conversation.mount(panel)
+            self._register_conversation_widget(panel, panel.logical_text)
 
         if event_name == "subagent.tool.started":
             panel.append(
@@ -417,6 +430,8 @@ class RenderingMixin:
                 panel.finish(failure_line)
             self._set_runtime_status("完成", "complete")
 
+        self._set_conversation_widget_line_count(panel, panel.logical_text)
+        self._request_conversation_visibility_refresh()
         if self._runtime_status_message is not None:
             self._render_status_indicator(follow_latest=follow_latest)
         self._scroll_conversation_if_following(
@@ -486,6 +501,7 @@ class RenderingMixin:
         )
         self._tool_messages[self._tool_call_key(tool_call)] = tool_message
         conversation.mount(tool_message)
+        self._register_conversation_widget(tool_message, str(tool_call.name))
         self.conversation_text += f"{tool_call.name}\n"
         self._set_runtime_status(
             "正在调用",
@@ -513,6 +529,7 @@ class RenderingMixin:
                 time.perf_counter(),
             )
             self.query_one("#conversation", VerticalScroll).mount(tool_message)
+            self._register_conversation_widget(tool_message, str(tool_call.name))
         # 优先用 Agent 层记录的真实完成时刻（快工具提前完成、整批等待慢工具
         # 时也能显示各自真实耗时）；缺省时退回到当前时刻。
         completed_at = getattr(result, "completed_at", None)
@@ -521,6 +538,7 @@ class RenderingMixin:
             output=output,
             finished_at=completed_at if completed_at is not None else time.perf_counter(),
         )
+        self._register_conversation_widget(tool_message)
         self.conversation_text += f"结果  {tool_message.status}\n{output}\n"
         self._scroll_conversation_if_following(conversation, follow_latest)
         self._set_runtime_status("正在思考", "working")
@@ -638,6 +656,11 @@ class RenderingMixin:
             conversation.mount(self._reasoning_message)
         if self._reasoning_message is not None:
             self._reasoning_message.append_delta(delta)
+            self._set_conversation_widget_line_count(
+                self._reasoning_message,
+                self._reasoning_message.reasoning_text,
+            )
+            self._request_conversation_visibility_refresh()
         self._record_generation_delta(delta)
         self._set_runtime_status("正在思考", "working")
         self._scroll_conversation_if_following(conversation, follow_latest)
@@ -650,6 +673,11 @@ class RenderingMixin:
         if self._reasoning_message is not None:
             # 思考阶段结束，同步补齐未完成行，保证推理内容展示完整。
             self._reasoning_message.flush_tail()
+            self._set_conversation_widget_line_count(
+                self._reasoning_message,
+                self._reasoning_message.reasoning_text,
+            )
+            self._request_conversation_visibility_refresh()
         self._reasoning_message = None
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
@@ -659,7 +687,10 @@ class RenderingMixin:
             self._stream_message = AssistantMessage(self._stream_markdown)
             self._stream_markdown = "◇ "
             conversation.mount(self._stream_message)
+            self._register_conversation_widget(self._stream_message, "")
         self._stream_markdown += delta
+        self._set_conversation_widget_line_count(self._stream_message, self._stream_markdown)
+        self._request_conversation_visibility_refresh()
         self.conversation_text += f"{delta}\n"
         self._record_generation_delta(delta)
         if not self._stream_render_pending:
@@ -705,8 +736,19 @@ class RenderingMixin:
                 del lines[start:end]
                 visible_markdown = "\n".join(lines)
         visible_markdown = visible_markdown.replace("[需要用户确认]", "").rstrip()
+        if "[需要用户确认]" in self._stream_markdown:
+            _model_visible, _questions, _groups, _required, session_text = (
+                _extract_user_confirmation_details(self._stream_markdown)
+            )
+            visible_markdown = session_text
         if visible_markdown != self._stream_markdown and self._stream_message is not None:
             self._stream_message.update(visible_markdown)
+        if self._stream_message is not None:
+            self._set_conversation_widget_line_count(
+                self._stream_message,
+                visible_markdown,
+            )
+            self._request_conversation_visibility_refresh()
         if self._stream_message is not None:
             conversations = self.query("#conversation")
             if not conversations or self._stream_message.parent is None:
@@ -738,6 +780,8 @@ class RenderingMixin:
             self._stream_message = None
         self._stream_markdown = ""
         self._stream_render_pending = False
+        self._mark_conversation_visibility_dirty()
+        self._request_conversation_visibility_refresh()
         if self._stream_start_text_len is not None:
             self.conversation_text = self.conversation_text[: self._stream_start_text_len]
             self._stream_start_text_len = None
@@ -775,6 +819,8 @@ class RenderingMixin:
         if merge_with_previous and self._stream_message is not None:
             self._stream_markdown += text
             self._stream_message.update(self._stream_markdown)
+            self._set_conversation_widget_line_count(self._stream_message, self._stream_markdown)
+            self._request_conversation_visibility_refresh()
         else:
             if kind == "user":
                 # 用户消息：去掉 $ 前缀，改为顶部灰色斜体 user： 标签行
@@ -807,6 +853,7 @@ class RenderingMixin:
                 self._stream_markdown = ""
                 self._stream_start_text_len = None
             conversation.mount(widget)
+            self._register_conversation_widget(widget, text)
             if track_tool:
                 self._tool_messages[f"legacy:{id(widget)}"] = widget
         self.conversation_text += f"{text}\n"

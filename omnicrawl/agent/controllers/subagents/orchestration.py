@@ -1091,7 +1091,7 @@ class SubAgentOrchestrationMixin:
                     "结构化 git 工具仅放行只读档动作（status/diff/log/show 等），"
                 )
             capability_rules = (
-                "不得使用 write_file、replace_text、任何 *_memory_write 或创建其他 SubAgent；"
+                "不得使用 write_file、Edit_file、任何 *_memory_write 或创建其他 SubAgent；"
                 "可以继承 Host 提供的 MCP、Skill、浏览器、桌面与其他外部能力；"
                 "bash、powershell、monitor 仅可执行通过 Host 只读命令策略的命令，"
                 f"{git_rules}"

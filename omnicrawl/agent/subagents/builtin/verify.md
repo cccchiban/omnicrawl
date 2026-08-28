@@ -13,7 +13,7 @@ tools:
   - verify_command
 disallowedTools:
   - subagent
-  - replace_text
+  - Edit_file
   - write_file
   - bash
   - powershell

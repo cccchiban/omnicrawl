@@ -150,47 +150,93 @@ class InputMixin:
             return len(self._todo_plan_items)
 
     def _confirmation_rows(self) -> int:
-        """返回当前问题选项占用的行数。"""
+        """返回当前问题面板占用的行数（含题号、问题和面板边框）。"""
 
         try:
-            options = self.query_one("#confirmation-options", Vertical)
-            if not options.display:
+            panel = self.query_one("#confirmation-panel", Vertical)
+            if not panel.display:
                 return 0
-            return sum(
-                1 for row in options.query(ConfirmationOption) if row.display
+            header = self.query_one("#confirmation-header", Static)
+            question = self.query_one("#confirmation-question", Static)
+            options = self.query_one("#confirmation-options", Vertical)
+            option_rows = (
+                sum(1 for row in options.query(ConfirmationOption) if row.display)
+                if options.display
+                else 0
+            )
+            question_rows = max(1, getattr(question.virtual_size, "height", 1))
+            # 面板上下边框 2 行，题号 1 行，问题至少 1 行，之后才是选项。
+            return (
+                2
+                + max(1, getattr(header.virtual_size, "height", 1))
+                + question_rows
+                + option_rows
             )
         except Exception:
-            return len(getattr(self, "_confirmation_options", []))
+            return 4 + len(getattr(self, "_confirmation_options", []))
 
     def _set_confirmation_required(
         self,
-        options: list[str] | tuple[str, ...] | list[list[str]] | bool | None,
+        options: list[dict[str, Any]]
+        | list[str]
+        | tuple[str, ...]
+        | list[list[str]]
+        | bool
+        | None,
     ) -> None:
-        """显示按问题分组的单选答案，并从第一个问题开始等待选择。"""
+        """显示当前问题及其单选答案，并从第一个问题开始等待选择。
 
+        新协议使用 ``{"question": ..., "options": [...]}`` 保存问题与选项
+        的配对；同时兼容旧版只传选项列表的调用方，旧调用方的问题正文为空。
+        """
+
+        questions: list[str] = []
+        groups: list[list[str]] = []
         if options is True:
-            groups: list[list[str]] = [[_CONFIRMATION_CUSTOM_OPTION]]
-            required = True
+            questions = [""]
+            groups = [[_CONFIRMATION_CUSTOM_OPTION]]
         elif options is False or options is None:
-            groups = []
-            required = False
+            pass
+        elif options and all(isinstance(item, dict) for item in options):
+            for item in options:
+                question = str(item.get("question", "") or "").strip()
+                raw_options = item.get("options", [])
+                if not isinstance(raw_options, (list, tuple)):
+                    raw_options = []
+                group = [
+                    str(option).strip()
+                    for option in raw_options
+                    if str(option).strip()
+                ]
+                if not group:
+                    group = [_CONFIRMATION_CUSTOM_OPTION]
+                elif _CONFIRMATION_CUSTOM_OPTION not in group:
+                    group.append(_CONFIRMATION_CUSTOM_OPTION)
+                questions.append(question)
+                groups.append(group)
         elif options and all(isinstance(item, (list, tuple)) for item in options):
             groups = [
                 [str(option).strip() for option in group if str(option).strip()]
                 for group in options
             ]
             groups = [group for group in groups if group]
+            questions = [""] * len(groups)
             for group in groups:
                 if _CONFIRMATION_CUSTOM_OPTION not in group:
                     group.append(_CONFIRMATION_CUSTOM_OPTION)
-            required = bool(groups)
-        else:
+        elif options:
             groups = [[str(item).strip() for item in options if str(item).strip()]]
+            questions = [""] if groups[0] else []
             if groups[0] and _CONFIRMATION_CUSTOM_OPTION not in groups[0]:
                 groups[0].append(_CONFIRMATION_CUSTOM_OPTION)
-            required = bool(groups[0])
 
+        required = bool(groups)
         self._confirmation_required = required
+        self._confirmation_questions = questions[: len(groups)]
+        if len(self._confirmation_questions) < len(groups):
+            self._confirmation_questions.extend(
+                [""] * (len(groups) - len(self._confirmation_questions))
+            )
         self._confirmation_groups = groups
         self._confirmation_group_index = 0
         self._confirmation_selection = 0
@@ -203,11 +249,33 @@ class InputMixin:
         self._confirmation_custom_answers: list[str | None] = [None] * len(groups)
         self._confirmation_custom_mode = False
         self._confirmation_options = groups[0] if groups else []
+        panel = self.query_one("#confirmation-panel")
+        panel.display = required
+        if required:
+            panel.add_class("active")
+        else:
+            panel.remove_class("active")
         # 选项出现时锁定输入框；只有选中“我有自己的想法”后才重新开放。
         composer = self.query_one("#composer", TextArea)
         # 选项阶段只允许导航；清除提问状态后恢复普通输入。
         composer.read_only = required
         self._replace_confirmation_rows()
+
+    def _update_confirmation_question(self) -> None:
+        """在输入区面板中渲染当前题号与问题正文。"""
+
+        question = ""
+        if self._confirmation_questions:
+            question = self._confirmation_questions[self._confirmation_group_index]
+        question = question or "请回答以下问题"
+        header = Text(
+            f"当前问题 {self._confirmation_group_index + 1}/{len(self._confirmation_groups)}",
+            style="bold ansi_yellow",
+        )
+        self.query_one("#confirmation-header", Static).update(header)
+        self.query_one("#confirmation-question", Static).update(
+            Text(question, style="bold ansi_white")
+        )
 
     def _confirmation_rows_container(self) -> Vertical:
         return self.query_one("#confirmation-options", Vertical)
@@ -254,8 +322,16 @@ class InputMixin:
             for row in rows:
                 row.display = False
             container.display = False
+            panel = self.query_one("#confirmation-panel")
+            panel.display = False
+            panel.remove_class("active")
             self._resize_composer_to_text()
             return
+
+        panel = self.query_one("#confirmation-panel")
+        panel.display = True
+        panel.add_class("active")
+        self._update_confirmation_question()
 
         for index, row in enumerate(rows):
             if index < required_count:
@@ -334,8 +410,14 @@ class InputMixin:
         if self._confirmation_custom_mode:
             composer.read_only = False
             composer.text = saved_custom or ""
+            panel = self.query_one("#confirmation-panel")
+            panel.display = True
+            panel.add_class("active")
             self.query_one("#confirmation-options", Vertical).display = False
+            self._update_confirmation_question()
+            self._resize_composer_to_text()
             composer.focus()
+            return
         else:
             composer.read_only = True
             composer.clear()
@@ -376,9 +458,13 @@ class InputMixin:
             composer.text = self._confirmation_custom_answers[
                 self._confirmation_group_index
             ] or ""
+            panel = self.query_one("#confirmation-panel")
+            panel.display = True
+            panel.remove_class("active")
             self.query_one("#confirmation-options", Vertical).display = False
-            composer.focus()
+            self._update_confirmation_question()
             self._resize_composer_to_text()
+            composer.focus()
             return
         self._accept_confirmation_answer(selected)
 
@@ -401,7 +487,8 @@ class InputMixin:
             self._load_confirmation_group(first_unanswered)
             return
         answer_text = "\n".join(
-            f"第 {index + 1} 个问题：{value}"
+            f"问题：{self._confirmation_questions[index] or f'第 {index + 1} 个问题'}\n"
+            f"答案：{value}"
             for index, value in enumerate(self._confirmation_answers)
         )
         self._set_confirmation_required(None)

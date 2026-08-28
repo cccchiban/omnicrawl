@@ -28,7 +28,7 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "read": "读取文件内容",
     "read_image": "读取图片",
     "grep": "在文件中搜索文本",
-    "replace_text": "替换文件中的文本",
+    "Edit_file": "替换文件中的文本",
     "write_file": "写入文件",
     "bash": "执行 Bash 命令",
     "powershell": "执行 PowerShell 命令",
@@ -99,7 +99,7 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
             return detail
         return ""
 
-    if tool_name == "replace_text":
+    if tool_name == "Edit_file":
         path = arguments.get("path", "")
         old = arguments.get("old_text", "")
         new = arguments.get("new_text", "")

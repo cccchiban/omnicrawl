@@ -17,9 +17,9 @@ class ContextCompactionConfigError(RuntimeConfigError):
 class ContextCompactionConfig:
     """上下文压缩配置。
 
-    ``enabled`` 默认关闭。开启后，完整回合结束时由模型摘要 service 接管自动
-    压缩；普通 ``/compact`` 仍保持本地确定性，``/compact --model`` 才显式
-    产生摘要模型调用。``summary_profile`` 接受 models.toml key/alias、裸模型 ID
+    上下文压缩始终作为 Agent 基础能力运行。完整回合结束时由模型摘要 service
+    接管自动压缩；普通 ``/compact`` 仍保持本地确定性，``/compact --model``
+    显式产生摘要模型调用。``summary_profile`` 接受 models.toml key/alias、裸模型 ID
     或 ``profile/model_id``，跨供应商仍需单独允许。
 
     ``target_summary_tokens`` 为 0 时表示不设摘要预算上限：摘要以完整性优先，
@@ -31,11 +31,10 @@ class ContextCompactionConfig:
     后续上下文，帮助恢复“之前做过什么”。
     """
 
-    enabled: bool = False
-    trigger_context_tokens: int = 100_000
     # 保存用户选择的百分比，使上下文窗口变化时能在运行态实时重算阈值。
-    # None 表示兼容旧配置：只使用固定 Token 阈值。
-    trigger_context_percent: int | None = None
+    # None 表示显式使用固定 Token 阈值；默认按上下文窗口的 80% 计算。
+    trigger_context_percent: int | None = 80
+    trigger_context_tokens: int = 100_000
     next_user_reserve_tokens: int = 4_096
     minimum_turns_between_model_compactions: int = 4
     emergency_context_ratio: float = 0.85
@@ -51,8 +50,6 @@ class ContextCompactionConfig:
     failure_fallback: str = "deterministic"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.enabled, bool):
-            raise ContextCompactionConfigError("context_compaction.enabled 必须是布尔值。")
         for name in (
             "trigger_context_tokens",
             "next_user_reserve_tokens",

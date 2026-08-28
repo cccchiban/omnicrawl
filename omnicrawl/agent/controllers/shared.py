@@ -152,7 +152,7 @@ _READ_ONLY_UNDO_TOOLS = frozenset(
 
 _REVERSIBLE_UNDO_TOOLS = frozenset(
     {
-        "replace_text",
+        "Edit_file",
         "write_file",
     }
 )

@@ -15,8 +15,136 @@ from textual.widgets import Static
 from ..support.monitor import format_monitor_display_batch
 
 
+CONVERSATION_DISPLAY_MAX_LOGICAL_LINES = 5000
+
+
+def logical_text_line_count(text: object) -> int:
+    """计算对话正文的逻辑行数，不把终端宽度导致的软折行算入。"""
+
+    value = str(text or "")
+    return len(value.splitlines())
+
+
+def conversation_widget_line_count(widget: object) -> int:
+    """读取消息组件的逻辑行数；兼容旧组件与测试替身。"""
+
+    count = getattr(widget, "_conversation_logical_line_count", None)
+    if isinstance(count, int) and count > 0:
+        return count
+    content = getattr(widget, "content", None)
+    plain = getattr(content, "plain", None)
+    if isinstance(plain, str):
+        return logical_text_line_count(plain)
+    return 1
+
+
 class ConversationViewMixin:
     """原 ``OmniCrawlApp`` 的会话视图方法。"""
+
+    def _mark_conversation_visibility_dirty(self) -> None:
+        """标记消息数量或顺序变化，延后到安全时机重算显示窗口。"""
+
+        self._conversation_visibility_dirty = True
+
+    def _refresh_conversation_visibility(self) -> None:
+        """只保留最近 5000 个逻辑行的消息显示，旧组件仍留在 DOM 中。
+
+        这里按消息组件边界隐藏最早的一条或多条消息，而不是删除组件。
+        这样会话数据、工具卡状态和流式对象仍可继续更新；``/undo`` 重放
+        会话后，若被撤回的回合释放出空间，之前隐藏的旧消息会自动重新显示。
+        ``runtime-status-message`` 与欢迎 Logo 是界面装饰，不占用消息行预算。
+        """
+
+        if not getattr(self, "_conversation_visibility_dirty", True):
+            return
+        conversations = self.query("#conversation")
+        if not conversations:
+            self._conversation_visibility_refresh_pending = False
+            return
+        conversation = conversations.first(VerticalScroll)
+        max_lines = max(
+            1,
+            int(
+                getattr(
+                    self,
+                    "CONVERSATION_DISPLAY_MAX_LOGICAL_LINES",
+                    CONVERSATION_DISPLAY_MAX_LOGICAL_LINES,
+                )
+            ),
+        )
+        message_widgets = [
+            child
+            for child in conversation.children
+            if child.id != "welcome-logo"
+            and not child.has_class("runtime-status-message")
+        ]
+
+        # 可见窗口是消息序列的后缀。使用索引而不是集合，既不依赖 Widget
+        # 是否可哈希，也能让同一组件的显示状态在每次重算时保持稳定。
+        first_visible = len(message_widgets)
+        remaining = max_lines
+        for index in range(len(message_widgets) - 1, -1, -1):
+            line_count = conversation_widget_line_count(message_widgets[index])
+            if line_count > remaining:
+                break
+            first_visible = index
+            remaining -= line_count
+
+        visible_lines = 0
+        for index, child in enumerate(message_widgets):
+            should_display = index >= first_visible
+            child.display = should_display
+            if should_display:
+                visible_lines += conversation_widget_line_count(child)
+        self._conversation_visible_logical_lines = visible_lines
+        self._conversation_visibility_dirty = False
+
+    def _request_conversation_visibility_refresh(self) -> None:
+        """合并同一批事件的窗口重算，避免流式输出逐片扫描全部消息。"""
+
+        self._mark_conversation_visibility_dirty()
+        if getattr(self, "_conversation_visibility_refresh_pending", False):
+            return
+        self._conversation_visibility_refresh_pending = True
+        try:
+            self.call_after_refresh(self._run_conversation_visibility_refresh)
+        except Exception:
+            # 兼容组件尚未挂载的测试替身；正式挂载后下一次请求会重算。
+            self._conversation_visibility_refresh_pending = False
+
+    def _run_conversation_visibility_refresh(self) -> None:
+        self._conversation_visibility_refresh_pending = False
+        self._refresh_conversation_visibility()
+
+    def _set_conversation_widget_line_count(self, widget: object, text: object) -> None:
+        """给消息组件记录逻辑行数，避免从 RichLog 的软折行反推。"""
+
+        line_count = logical_text_line_count(text)
+        previous = getattr(widget, "_conversation_logical_line_count", None)
+        setattr(widget, "_conversation_logical_line_count", line_count)
+        if previous != line_count:
+            self._mark_conversation_visibility_dirty()
+
+    def _register_conversation_widget(
+        self,
+        widget: object,
+        logical_text: object | None = None,
+    ) -> None:
+        """登记一个已挂载消息并合并触发显示窗口重算。"""
+
+        if logical_text is None:
+            content = getattr(widget, "content", None)
+            logical_text = getattr(content, "plain", None)
+        self._set_conversation_widget_line_count(
+            widget,
+            "" if logical_text is None else logical_text,
+        )
+        self._request_conversation_visibility_refresh()
+
+    def _conversation_logical_line_count(self, widget: object) -> int:
+        """返回单个消息组件的逻辑行数，供渲染层更新后复核。"""
+
+        return conversation_widget_line_count(widget)
 
     def _hide_welcome_logo(self) -> None:
         """隐藏启动欢迎 Logo 区域，让位给首条会话内容；幂等且容忍缺位。"""
@@ -49,6 +177,9 @@ class ConversationViewMixin:
         self._stream_markdown = ""
         self._stream_render_pending = False
         self._stream_start_text_len = None
+        self._conversation_visibility_dirty = True
+        self._conversation_visibility_refresh_pending = False
+        self._conversation_visible_logical_lines = 0
         self._tool_messages.clear()
         self._subagent_trees.clear()
         self._subagent_conversations.clear()

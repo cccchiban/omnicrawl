@@ -37,7 +37,7 @@ _OPTIONAL_REFERENCED_FIELDS = frozenset(
 )
 # 写类工具：与 ui/fullscreen/tool_diff.py 的 FILE_CHANGE_TOOLS 保持一致，
 # 用于“该记的没记”完整性校验（被压缩窗口内成功写入的文件必须进摘要）。
-_FILE_CHANGE_TOOLS = frozenset({"write_file", "replace_text"})
+_FILE_CHANGE_TOOLS = frozenset({"write_file", "Edit_file"})
 _FILE_LIST_FIELDS = ("read_files", "modified_files")
 # 超过该长度的用户消息事件会被 summary 分块发送给摘要模型，模型拿不到完整
 # 原文，因此 user_messages 强校验对这些事件豁免（与 summary 切分阈值对齐）。

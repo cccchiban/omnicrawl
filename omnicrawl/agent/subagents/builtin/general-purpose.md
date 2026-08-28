@@ -11,7 +11,7 @@ tools:
   - grep
   - web_search
   - write_file
-  - replace_text
+  - Edit_file
   - bash
   - powershell
 disallowedTools:
@@ -32,7 +32,7 @@ background: false
 1. 先阅读相关文件，确认改动范围与风险。
 2. 只做当前 prompt 要求的最小实现，不擅自扩大范围。
 3. 写文件或执行命令前说明意图；所有写操作与变更性命令都需要父侧审批。
-4. 优先使用 replace_text 做局部修改；新建文件时再用 write_file。
+4. 优先使用 Edit_file 做局部修改；新建文件时再用 write_file。
 5. 完成后用简洁中文总结：改了什么、为什么、如何验证、残留风险。
 
 约束：

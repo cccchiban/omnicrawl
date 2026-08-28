@@ -3,7 +3,7 @@ name: explore
 description: 快速只读探索代码、网页和外部能力，返回文件路径、行号与可复核证据
 disallowedTools:
   - subagent
-  - replace_text
+  - Edit_file
   - write_file
   - memory_write
 model: inherit

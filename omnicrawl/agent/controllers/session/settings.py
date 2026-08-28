@@ -1,4 +1,4 @@
-"""运行时配置 setter：模型、审批、压缩、工具开关、记忆/MCP/插件。
+"""运行时配置 setter：模型、审批、压缩阈值、工具开关、记忆/MCP/插件。
 
 全部为 ``LocalToolAgent.config`` 的运行时修改入口，持久化由调用方负责；
 重建工具表或压缩服务实例的失败都走事务式回滚。"""
@@ -55,7 +55,7 @@ from ..shared import (
 
 
 class SessionSettingsMixin:
-    """运行时配置 setter：模型、审批、压缩、工具开关、记忆/MCP/插件。"""
+    """运行时配置 setter：模型、审批、压缩阈值、工具开关、记忆/MCP/插件。"""
 
     @property
     def approval_mode(self) -> str:
@@ -221,30 +221,6 @@ class SessionSettingsMixin:
         from dataclasses import replace
 
         self.set_tts_configuration(replace(current, enabled=enabled))
-
-    def set_context_compaction_enabled(self, enabled: bool) -> None:
-        """切换模型辅助压缩，并同步受摘要授权的证据恢复工具。"""
-
-        if not isinstance(enabled, bool):
-            raise AgentError("上下文压缩开关必须是布尔值。")
-        current = self.config.context_compaction
-        if current.enabled == enabled:
-            return
-        next_config = replace(current, enabled=enabled)
-        _validate_context_compaction_window(next_config, self.config.llm)
-
-        previous_tools = self._tools
-        previous_service = self.__dict__.get("_context_compaction_service_instance")
-        self.config.context_compaction = next_config
-        self.__dict__.pop("_context_compaction_service_instance", None)
-        try:
-            self._tools = self._build_tools()
-        except Exception:
-            self.config.context_compaction = current
-            self._tools = previous_tools
-            if previous_service is not None:
-                self._context_compaction_service_instance = previous_service
-            raise
 
     def set_context_compaction_trigger_percent(self, percent: int) -> None:
         """按当前模型上下文窗口的百分比设置自动压缩触发阈值。
@@ -508,11 +484,15 @@ class SessionSettingsMixin:
 
     def set_user_confirmation_handler(
         self,
-        handler: Callable[[list[str] | list[list[str]] | None], None] | None,
+        handler: Callable[
+            [list[dict[str, Any]] | list[str] | list[list[str]] | None],
+            None,
+        ]
+        | None,
     ) -> None:
         """注册模型向用户提问/请求决策时的 UI 状态观察器。
 
-        回调参数是模型提供的可选答案列表；空列表表示本轮不需要用户选择。
+        回调参数是按问题顺序分组的可选答案列表；空列表表示本轮不需要用户选择。
         """
 
         self._user_confirmation_callback = handler

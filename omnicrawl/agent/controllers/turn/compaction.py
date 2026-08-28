@@ -61,11 +61,9 @@ class TurnCompactionMixin:
         return summary
 
     def compact_conversation_model(self) -> str:
-        """显式使用结构化摘要模型压缩；关闭开关时拒绝产生隐式费用。"""
+        """显式使用结构化摘要模型压缩。"""
 
         config = self.config.context_compaction
-        if not config.enabled:
-            raise AgentError("模型压缩功能已关闭，请先启用 context_compaction.enabled。")
         source_events = self._context_compaction_source_events()
         service = self._context_compaction_service()
         outcome = service.manual_compact(

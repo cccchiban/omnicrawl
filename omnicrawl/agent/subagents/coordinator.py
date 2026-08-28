@@ -139,7 +139,7 @@ READ_ONLY_TOOL_NAMES = frozenset(
 READ_ONLY_BLOCKED_TOOL_NAMES = frozenset(
     {
         "write_file",
-        "replace_text",
+        "Edit_file",
         "memory_write",
         "project_memory_write",
         "session_memory_write",
@@ -156,7 +156,7 @@ READ_ONLY_BLOCKED_TOOL_NAMES = frozenset(
 # bash/powershell/monitor 或其他命令工具加入这里。
 VERIFY_TOOL_NAMES = READ_ONLY_TOOL_NAMES | frozenset({VERIFY_COMMAND_TOOL_NAME})
 # standard 写 Agent 允许的工具集合：只读 + 受限写入/命令；仍由 Host risk 策略逐次审批。
-STANDARD_WRITE_TOOL_NAMES = frozenset({"write_file", "replace_text", "bash", "powershell"})
+STANDARD_WRITE_TOOL_NAMES = frozenset({"write_file", "Edit_file", "bash", "powershell"})
 STANDARD_TOOL_NAMES = READ_ONLY_TOOL_NAMES | STANDARD_WRITE_TOOL_NAMES
 # 父代理不能再通过任务字段指定子代理模型：模型来源只有 subagents.toml
 # 角色配置，未配置时沿用父模型（由 Host 的 _freeze_subagent_model_snapshot 决定）。

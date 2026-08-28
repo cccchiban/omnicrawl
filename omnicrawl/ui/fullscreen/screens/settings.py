@@ -78,8 +78,6 @@ _FEATURES = (
     ("mcp", "MCP 工具", "mcp"),
     ("plugins", "插件功能", "plugins"),
     ("subagents", "子任务功能", "subagents"),
-    ("context_compaction", "上下文压缩", "context_compaction"),
-
 )
 _COLUMN_SLOTS = 16  # 每栏设置行数：左栏 15 项 + 1 空位，右栏真实设置项 + 空位。
 # 普通模式左栏：先主设置，再“管理”入口，最后是开关项与压缩阈值项。
@@ -99,7 +97,6 @@ _SETTING_ORDER = (
     "memory",
     "plugins",
     "subagents",
-    "context_compaction",
     "context_compaction_threshold",
 )
 
@@ -338,9 +335,6 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if key == "subagents":
             config = getattr(self._agent, "config", None)
             return bool(getattr(getattr(config, "subagents", None), "enabled", False))
-        if key == "context_compaction":
-            config = getattr(self._agent, "config", None)
-            return bool(getattr(getattr(config, key, None), "enabled", False))
         if key == "router":
             config = getattr(self._agent, "config", None)
             return bool(getattr(config, "router_enabled", False))
@@ -365,14 +359,14 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         """把当前触发阈值换算成最近的 5% 档位百分比。
 
         换算公式：``上下文 × 百分比 = trigger_context_tokens``；
-        缺少阈值或上下文窗口信息时回退默认 75%。
+        缺少阈值或上下文窗口信息时回退默认 80%。
         """
 
         config = getattr(getattr(self._agent, "config", None), "context_compaction", None)
         tokens = getattr(config, "trigger_context_tokens", None)
         context_window = int(getattr(self._agent, "context_window_tokens", 128_000))
         if not tokens or context_window <= 0:
-            return 75
+            return 80
         percent = tokens * 100 / context_window
         return min(
             _CONTEXT_COMPACTION_PERCENT_OPTIONS,
@@ -603,7 +597,6 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             "mcp": "set_mcp_enabled",
             "plugins": "set_plugin_enabled",
             "subagents": "set_subagents_enabled",
-            "context_compaction": "set_context_compaction_enabled",
         }[key]
         setter = getattr(screen._agent, setter_name)
         try:

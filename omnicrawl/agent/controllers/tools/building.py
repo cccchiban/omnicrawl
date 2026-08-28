@@ -64,7 +64,7 @@ class ToolBuildingMixin:
             fetcher=self._tool_fetcher,
             image_gen=self._tool_image_gen,
             tts=self._tool_tts_synthesize,
-            replace_text=self._tool_replace_text,
+            edit_file=self._tool_edit_file,
             write_file=self._tool_write_file,
             bash=self._tool_bash,
             powershell=self._tool_powershell,
@@ -97,13 +97,6 @@ class ToolBuildingMixin:
             evidence_recall=(
                 self._tool_recall_session_evidence
                 if getattr(self, "_session_store", None) is not None
-                and bool(
-                    getattr(
-                        getattr(self.config, "context_compaction", None),
-                        "enabled",
-                        False,
-                    )
-                )
                 else None
             ),
             subagent=(

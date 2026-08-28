@@ -126,7 +126,7 @@ _USER_CONFIRMATION_INSTRUCTION = (
     "可以连续输出多个问题和选项块，界面会按顺序逐个询问；每个问题只能选择一个答案。"
     "不要把问题重复放进选项块。界面会自动在每组最后追加‘我有自己的想法’，"
     "用户选中后可在输入框输入自定义回答。最后单独输出 [需要用户确认]，然后停止执行。"
-    "用户也可以直接在输入框输入当前问题的回答。"
+    "用户也可以直接在输入框输入当前问题的回答；界面会把每个问题与对应答案一起发送。"
     "其他普通说明、计划和可直接执行的任务不要输出该标记。\n"
     "</user_confirmation_instruction>"
 )
@@ -136,14 +136,19 @@ _USER_CONFIRMATION_OPTIONS_END = "[/选项]"
 _USER_CONFIRMATION_CUSTOM_OPTION = "我有自己的想法"
 
 
-def _extract_user_confirmation_questions(
+def _extract_user_confirmation_details(
     text: str,
-) -> tuple[str, list[list[str]], bool]:
-    """提取用户可见问题及按问题分组的单选选项。"""
+) -> tuple[str, list[str], list[list[str]], bool, str]:
+    """提取确认问题、选项，以及模型上下文与会话区各自需要的正文。
+
+    ``visible`` 会保留问题正文供模型上下文理解上一轮提问；最后一个返回值
+    是会话区仍应保留的普通补充文本。确认问题只交给输入区面板显示，避免
+    同一内容在会话区和输入区重复出现。
+    """
 
     needs_confirmation = _USER_CONFIRMATION_MARKER in text
     if not needs_confirmation:
-        return text.rstrip(), [], False
+        return text.rstrip(), [], [], False, text.rstrip()
 
     def parse_options(raw: str) -> list[str]:
         result: list[str] = []
@@ -166,23 +171,27 @@ def _extract_user_confirmation_questions(
     )
     if matches:
         visible_parts: list[str] = []
-        questions: list[list[str]] = []
+        question_texts: list[str] = []
+        option_groups: list[list[str]] = []
         last_end = 0
         for match in matches:
             question = text[last_end : match.start()].replace(
                 _USER_CONFIRMATION_MARKER, ""
             ).strip()
+            question_texts.append(question)
             if question:
                 visible_parts.append(question)
-            questions.append(parse_options(match.group(1)))
+            option_groups.append(parse_options(match.group(1)))
             last_end = match.end()
         tail = text[last_end:].replace(_USER_CONFIRMATION_MARKER, "").strip()
         if tail:
             visible_parts.append(tail)
-        return "\n\n".join(visible_parts).rstrip(), questions, True
+        visible = "\n\n".join(visible_parts).rstrip()
+        session_text = tail
+        return visible, question_texts, option_groups, True, session_text
 
     # 兼容模型漏写 [选项] 标签但仍输出 Markdown 列表。每个连续列表段
-    # 作为一个问题的选项段，因此多个问题仍按出现顺序处理。
+    # 作为一个问题的选项段；列表段前的文本就是与其对应的问题。
     lines = text.splitlines()
     list_pattern = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
     runs: list[tuple[int, int]] = []
@@ -197,15 +206,34 @@ def _extract_user_confirmation_questions(
             run_start = None
     if runs:
         visible_lines = lines[:]
-        questions = []
+        question_texts: list[str] = []
+        option_groups: list[list[str]] = []
+        previous_end = 0
+        for start, end in runs:
+            question = "\n".join(lines[previous_end:start]).replace(
+                _USER_CONFIRMATION_MARKER, ""
+            ).strip()
+            question_texts.append(question)
+            option_groups.append(parse_options("\n".join(lines[start:end])))
+            previous_end = end
         for start, end in reversed(runs):
-            questions.insert(0, parse_options("\n".join(lines[start:end])))
             del visible_lines[start:end]
         visible = "\n".join(visible_lines).replace(_USER_CONFIRMATION_MARKER, "").rstrip()
-        return visible, questions, True
+        return visible, question_texts, option_groups, True, ""
 
     visible = text.replace(_USER_CONFIRMATION_MARKER, "").rstrip()
-    return visible, [[_USER_CONFIRMATION_CUSTOM_OPTION]], True
+    return visible, [visible], [[_USER_CONFIRMATION_CUSTOM_OPTION]], True, ""
+
+
+def _extract_user_confirmation_questions(
+    text: str,
+) -> tuple[str, list[list[str]], bool]:
+    """提取用户可见问题及按问题分组的单选选项。"""
+
+    visible, _question_texts, option_groups, needs_confirmation, _session_text = (
+        _extract_user_confirmation_details(text)
+    )
+    return visible, option_groups, needs_confirmation
 
 
 def _extract_user_confirmation(text: str) -> tuple[str, list[str], bool]:
@@ -469,22 +497,52 @@ class TurnLoopMixin:
                     cancel_check=check_cancelled,
                 )
             final_reply = loop_result.final_text
-            final_reply, confirmation_groups, needs_user_confirmation = (
-                _extract_user_confirmation_questions(final_reply)
-            )
-            if final_reply and not loop_result.content_streamed:
+            (
+                final_reply,
+                confirmation_questions,
+                confirmation_groups,
+                needs_user_confirmation,
+                _session_reply,
+            ) = _extract_user_confirmation_details(final_reply)
+            if needs_user_confirmation and not loop_result.content_streamed:
+                # 非流式兼容路径：确认问题只进入输入区面板，不在会话区重复显示。
+                on_delta(_session_reply)
+            elif final_reply and not loop_result.content_streamed:
                 on_delta(final_reply)
-            self._append_session_event("assistant_message", {"content": final_reply})
+            assistant_event_payload: dict[str, Any] = {
+                "content": final_reply
+            }
+            if needs_user_confirmation:
+                assistant_event_payload["session_content"] = _session_reply
+            confirmation_request: list[dict[str, Any]] | None = None
+            if needs_user_confirmation:
+                confirmation_request = [
+                    {
+                        "question": question,
+                        "options": options,
+                    }
+                    for question, options in zip(
+                        confirmation_questions,
+                        confirmation_groups,
+                    )
+                ]
+                # 选项本身是 UI 协议，保留脱敏后的问题元数据，便于会话恢复
+                # 时重新显示输入区提问面板；模型上下文投影只读取 content。
+                assistant_event_payload["user_confirmation"] = confirmation_request
+            self._append_session_event("assistant_message", assistant_event_payload)
             confirmation_callback = getattr(self, "_user_confirmation_callback", None)
             if callable(confirmation_callback):
                 try:
-                    confirmation_callback(
-                        confirmation_groups if needs_user_confirmation else None
-                    )
+                    confirmation_callback(confirmation_request)
                 except Exception:  # noqa: BLE001 - UI 状态更新不得破坏回合收尾
                     LOGGER.warning("user confirmation UI observer failed", exc_info=True)
             if context_overflow_recovered:
-                self._history.append(self._assistant_message(final_reply, loop_result.reasoning))
+                self._history.append(
+                    self._assistant_message(
+                        final_reply,
+                        loop_result.reasoning,
+                    )
+                )
                 self._run_context_compaction_after_turn(
                     context_messages=context_messages,
                     usage=turn_usage,
@@ -496,7 +554,11 @@ class TurnLoopMixin:
                 self._turn_context_compaction_status = status
                 try:
                     # 保持既有三参数调用形态，兼容宿主扩展和最小测试替身。
-                    self._append_history(text, final_reply, loop_result.reasoning)
+                    self._append_history(
+                        text,
+                        final_reply,
+                        loop_result.reasoning,
+                    )
                 finally:
                     self.__dict__.pop("_turn_context_compaction_context_messages", None)
                     self.__dict__.pop("_turn_context_compaction_usage", None)
@@ -504,7 +566,10 @@ class TurnLoopMixin:
             self._pending_user_text = None
             self._dispatch_plugin_hook(
                 "turn.end",
-                {"userText": text, "assistantText": final_reply},
+                {
+                    "userText": text,
+                    "assistantText": final_reply,
+                },
                 turn_id=turn_id,
             )
             turn_snapshot_finalization_started = True
@@ -1371,8 +1436,7 @@ class TurnLoopMixin:
         """只识别未产生可见输出的明确上下文容量失败。"""
         if visible_output_seen:
             return False
-        config = getattr(self.config, "context_compaction", None)
-        if config is None or not config.enabled:
+        if getattr(self.config, "context_compaction", None) is None:
             return False
         candidates = (exc, *self._exception_causes(exc))
         # 先扫描完整异常链，避免外层包装错误的 token 文案掩盖内层限流原因。
@@ -1482,7 +1546,7 @@ class TurnLoopMixin:
         )
         config = getattr(self.config, "context_compaction", None)
         status = getattr(self, "_turn_context_compaction_status", None)
-        if config is None or not config.enabled:
+        if config is None:
             self._compact_history(force=False, status=status)
             return
         self._run_context_compaction_after_turn(
