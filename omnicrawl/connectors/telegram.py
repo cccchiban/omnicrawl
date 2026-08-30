@@ -42,6 +42,7 @@
     /cancel    取消当前任务
     /thinking  查看/切换思考内容显示（on|off，默认关闭）
     /workspace 查看/切换工作区（切换会持久化并同步到 TUI）
+    /plan      启用主 Agent 计划模式
     /approve   批准当前等待确认的工具调用
     /reject    拒绝当前等待确认的工具调用
     其他文本   作为任务发送给 OmniCrawl Agent 执行
@@ -635,6 +636,7 @@ class TelegramAgentBot:
             format_memory_clean_result,
             format_plugins_status,
             format_skills_list,
+            handle_mode_command,
             handle_reasoning_command,
             handle_review_command,
             handle_session_command,
@@ -649,6 +651,10 @@ class TelegramAgentBot:
 
         agent = self._ensure_agent()
         normalized = text.strip().casefold()
+
+        mode_reply = handle_mode_command(agent, text)
+        if mode_reply is not None:
+            return mode_reply
 
         # /resume latest：恢复最近活动的会话（跨端接力一步到位，
         # 免去先 /sessions 查 ID 再 /resume 的两步操作）。
@@ -754,7 +760,8 @@ class TelegramAgentBot:
             "  /status  查看 harness 状态\n"
             "  /session 查看当前会话 ID\n"
             "  /reset   开启新会话\n"
-            "  /workspace [路径]  查看/切换工作区（切换会同步到 TUI）\n\n"
+            "  /workspace [路径]  查看/切换工作区（切换会同步到 TUI）\n"
+            "  /plan  启用计划模式，后续任务先制定 Markdown 计划\n\n"
             "文件：\n"
             "  直接发送图片/文档/视频/语音/音频，自动存入 .agent_tmp\n"
             "  的 images/videos/audio/files/code/scripts 分类目录，\n"

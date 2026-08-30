@@ -78,7 +78,7 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 
 - 验收目标为 Windows Terminal、PowerShell 和 VS Code 集成终端。
 - 必须安装 `textual`；缺少依赖时执行 `pip install -r requirements.txt`。
-- 当前全屏版支持普通对话、流式 Markdown、工具记录、当前回合即时取消、`/quit` 斜杠命令和手动审批；窗口过窄时由 Textual 负责折行和滚动。
+- 当前全屏版支持普通对话、流式 Markdown、工具记录、当前回合即时取消、`/quit` 斜杠命令、`/plan` 主 Agent 计划模式和手动审批；窗口过窄时由 Textual 负责折行和滚动。
 - 旧纯 Python ANSI TUI 已随 0.1.11 删除；启动路径仅为 Textual 全屏工作台。
 
 ## 验证清单

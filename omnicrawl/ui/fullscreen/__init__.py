@@ -29,6 +29,7 @@ from ...commands.slash import (
     format_skills_list,
     format_tool_confirmation,
     handle_approval_command,
+    handle_mode_command,
     handle_reasoning_command,
     handle_review_command,
     handle_session_command,

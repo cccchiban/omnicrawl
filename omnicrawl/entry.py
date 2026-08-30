@@ -8,6 +8,7 @@ Windows 下「弹新 PowerShell 窗口」只由项目根 main.py 的 ``__main__`
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -36,6 +37,8 @@ from omnicrawl.ui import UIStartupError
 from omnicrawl.ui.splash import run_startup_splash
 from omnicrawl.ui.windows_launcher import configure_console_encoding
 
+
+LOGGER = logging.getLogger(__name__)
 
 # 启动画面不再人为固定展示时长；实际启动路径传入 0，完全由所有准备项
 #（包括 MCP 能力发现）是否完成决定何时进入可发送的 TUI。
@@ -105,7 +108,7 @@ def _prepare_startup(
         字典，包含 ``agent``、``config``、``approval_mode``、
         ``temp_workspace_config``、``subagent_config``、``project_context``、
         ``fullscreen_startup``、``run_fullscreen_tui``、``plugin_runtime``、
-        ``plugin_lines``。
+        ``plugin_lines``、``connector_manager``。
     """
 
     # 配置加载与项目检测的异常（LLMError 等）由 run_application 的 except
@@ -180,6 +183,16 @@ def _prepare_startup(
     if plugin_runtime is not None:
         agent.add_close_callback(plugin_runtime.close)
         plugin_runtime.notify_app_started()
+
+    # Telegram/飞书连接器与开屏动画并行拉起：动画结束即代表连接器子进程已
+    # 启动完成，进入 TUI 前不再有额外等待；启动失败只记录警告，不阻塞本地界面。
+    connector_manager = None
+    try:
+        from omnicrawl.connectors.autostart import start_configured_connectors
+
+        connector_manager = start_configured_connectors(project_context.workspace_root)
+    except Exception as exc:  # noqa: BLE001 - 远程接入失败不阻塞 TUI
+        LOGGER.warning("Telegram/飞书自动启动失败，TUI 将继续运行：%s", exc)
     return {
         "agent": agent,
         "config": config,
@@ -192,6 +205,7 @@ def _prepare_startup(
         "plugin_runtime": plugin_runtime,
         "plugin_lines": plugin_lines,
         "startup_messages": tuple(startup_messages),
+        "connector_manager": connector_manager,
     }
 
 
@@ -262,6 +276,10 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     for line in prepared["plugin_lines"]:
         print(line, file=sys.stderr)
 
+    # 连接器已在 Splash 阶段随动画并行拉起（见 _prepare_startup），失败只
+    # 记录警告不阻塞；监督器在 finally 中先于主 Agent 回收其远程子进程。
+    connector_manager = prepared.get("connector_manager")
+
     exit_code = 0
     try:
         tui_exit_code = prepared["run_fullscreen_tui"](
@@ -290,6 +308,10 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         # 配置阶段已失败但未 return 的兜底（理论不应到达）。
         exit_code = 1
     finally:
+        if connector_manager is not None:
+            # 连接器任务可能仍在使用各自的 Agent；必须先终止并等待子进程，
+            # 再关闭本地 Agent 与其 PluginRuntime。
+            connector_manager.close()
         if agent is not None:
             agent.close()
         elif plugin_runtime is not None:

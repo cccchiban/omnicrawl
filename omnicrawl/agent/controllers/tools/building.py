@@ -1,6 +1,7 @@
 """工具表构建与 system prompt 渲染：内置与 MCP 工具面。"""
 from __future__ import annotations
 
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 from ...toolkit.tools import (
@@ -38,6 +39,9 @@ from ..shared import (
     AgentError,
     SYSTEM_PROMPT_FILE,
 )
+
+
+_MODE_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class ToolBuildingMixin:
@@ -131,8 +135,37 @@ class ToolBuildingMixin:
             mcp_get_prompt=self._tool_mcp_get_prompt,
         )
 
+    @property
+    def active_mode(self) -> str:
+        """返回当前 Agent 的活动模式；未启用模式时为空字符串。"""
+
+        return str(getattr(self, "_active_mode_name", "") or "")
+
+    def activate_mode(self, mode: str) -> str:
+        """加载并启用包内模式模板，模式切换成功后才更新 Agent 状态。"""
+
+        if not isinstance(mode, str):
+            raise AgentError("模式名称必须是字符串。")
+        normalized = mode.strip().casefold()
+        if not _MODE_NAME_PATTERN.fullmatch(normalized):
+            raise AgentError("模式名称只能使用小写字母、数字和单连字符。")
+
+        prompt_path = Path(__file__).resolve().parents[3] / "templates" / f"{normalized}.md"
+        try:
+            prompt = prompt_path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise AgentError(f"模式模板 {normalized}.md 必须是 UTF-8 文本。") from exc
+        except OSError as exc:
+            raise AgentError(f"读取模式模板 {normalized}.md 失败：{exc}") from exc
+        if not prompt:
+            raise AgentError(f"模式模板 {normalized}.md 不能为空。")
+
+        self._active_mode_name = normalized
+        self._active_mode_prompt = prompt
+        return normalized
+
     def _system_prompt(self) -> str:
-        """返回静态 system prompt；动态上下文由 `_context_messages` 提供。"""
+        """返回基础 system prompt，并在末尾追加当前活动模式提示词。"""
 
         template = build_system_prompt(self._system_prompt_template)
         # TTS 指令由当前回合在首次模型请求前准备；工具结果后的后续请求
@@ -147,6 +180,14 @@ class ToolBuildingMixin:
         )
         if confirmation_instruction:
             template = f"{template}\n\n{confirmation_instruction}"
+        mode_prompt = str(getattr(self, "_active_mode_prompt", "") or "").strip()
+        if mode_prompt:
+            mode_name = self.active_mode or "active"
+            template = (
+                f'{template}\n\n<active_mode_prompt name="{mode_name}">\n'
+                f"{mode_prompt}\n"
+                "</active_mode_prompt>"
+            )
         return template
 
     def _render_system_prompt_template(self, tool_lines: str) -> str:

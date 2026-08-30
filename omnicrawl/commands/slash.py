@@ -836,6 +836,25 @@ def _reasoning_env_override_message() -> str:
     return " 注意：当前存在 REASONING_EFFORT 环境变量，重启后会优先使用环境变量。"
 
 
+_MODE_COMMANDS = {
+    "/plan": "plan",
+}
+
+
+def handle_mode_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理主 Agent 模式切换命令；返回 None 表示不是模式命令。"""
+
+    mode = _MODE_COMMANDS.get(command.strip().casefold())
+    if mode is None:
+        return None
+    try:
+        activated = agent.activate_mode(mode)
+    except AgentError as exc:
+        return f"模式启用失败：{exc}"
+    mode_labels = {"plan": "计划模式"}
+    return f"已启用{mode_labels.get(activated, activated)}。后续任务将遵循该模式提示词。"
+
+
 def build_slash_commands(agent: LocalToolAgent) -> list[str]:
     """构建所有可用的斜杠命令列表（含内置命令和动态 Skill 命令）。"""
 
@@ -844,6 +863,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/quit",
         "/workspace",
         "/settings",
+        "/plan",
         "/review",
         "/reasoning",
         "/skills",
@@ -889,6 +909,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/review": "派生评审子 Agent（完整 git 权限 + 自动批准）收集 diff 并按结构化 JSON 输出审查结果；可选 git 范围参数（如 /review HEAD~3）。",
         "/quit": "退出当前 TUI，不关闭宿主窗口。",
         "/settings": "打开中文设置面板，修改运行时开关并立即保存。",
+        "/plan": "启用主 Agent 计划模式，后续请求追加 templates/plan.md。",
         "/reasoning": "查看或切换推理强度。",
         "/skills": "查看当前已加载的 Skill。",
         "/memory:clean": "清理过期长期记忆。",

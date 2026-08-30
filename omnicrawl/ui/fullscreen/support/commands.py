@@ -17,6 +17,7 @@ from ....commands.slash import (
     format_plugins_status,
     format_skills_list,
     handle_approval_command,
+    handle_mode_command,
     handle_reasoning_command,
     handle_review_command,
     handle_session_command,
@@ -37,6 +38,9 @@ class CommandAgent(Protocol):
 
     def reset_conversation(self) -> None:
         """清空当前对话并开启新会话。"""
+
+    def activate_mode(self, mode: str) -> str:
+        """加载并启用主 Agent 模式模板。"""
 
     def switch_workspace(self, workspace: str) -> object:
         """切换 Agent 当前工作区。"""
@@ -125,6 +129,7 @@ class CommandDispatcher:
             handle_subagent_task_command
         ),
         handle_approval: Callable[[CommandAgent, str], str | None] = handle_approval_command,
+        handle_mode: Callable[[CommandAgent, str], str | None] = handle_mode_command,
         handle_reasoning: Callable[[CommandAgent, str], str | None] = handle_reasoning_command,
         handle_review: Callable[[CommandAgent, str], str | None] = handle_review_command,
     ) -> None:
@@ -136,6 +141,7 @@ class CommandDispatcher:
         self._handle_session = handle_session
         self._handle_subagent_task = handle_subagent_task
         self._handle_approval = handle_approval
+        self._handle_mode = handle_mode
         self._handle_reasoning = handle_reasoning
         self._handle_review = handle_review
 
@@ -183,6 +189,13 @@ class CommandDispatcher:
             return CommandOutcome(
                 handled=True,
                 message=self._format_plugins(self._agent),
+            )
+        mode_message = self._handle_mode(self._agent, text)
+        if mode_message is not None:
+            return CommandOutcome(
+                handled=True,
+                message=mode_message,
+                refresh_context=True,
             )
         if stripped == "/memory:clean":
             return CommandOutcome(

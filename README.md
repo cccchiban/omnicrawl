@@ -52,6 +52,11 @@ ocl
 
 首次启动会引导配置模型渠道（预置 OpenAI、Anthropic、Gemini，支持自定义 Base URL 与 API Key），配置保存在本机 `~/.OmniCrawl`。至少保存一个已启用且具备 Key 的默认渠道后，重新运行 `ocl` 即可进入工作台。
 
+如果本机配置了 Telegram（Bot Token + 授权用户 ID）或飞书（App ID + App Secret），
+启动 TUI 时会自动拉起对应的独立连接器子进程；未配置的平台不会启动，连接器故障不阻塞
+TUI，退出 TUI 时会自动回收连接器。设置 `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭
+该联动。配置方法与安全边界见 `omnicrawl/docs/TELEGRAM.md`、`omnicrawl/docs/FSAPP.md`。
+
 常用操作：
 
 - `Enter` 发送消息，`Shift+Enter` 换行；`Esc` 取消当前任务或聚焦输入框
@@ -78,6 +83,7 @@ omnicrawl/
 ├── llm/           # 多协议模型运行时
 ├── ui/            # 终端 TUI（Textual）
 ├── workspace/     # 工作区工具与 ripgrep 封装
+├── connectors/    # Telegram/飞书远程连接与自动启动监督器
 └── docs/          # 技术文档
 ```
 

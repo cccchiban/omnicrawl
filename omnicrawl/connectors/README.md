@@ -5,7 +5,22 @@
 | 文件/模块      | 用途                                   | 状态     |
 |---------------|----------------------------------------|----------|
 | `telegram.py` | Telegram Bot 远程操作 OmniCrawl Agent | ✅ 已实现 |
+| `fsapp.py`   | 飞书自建应用 WebSocket 远程接入         | ✅ 已实现 |
+| `autostart.py` | TUI 启动时自动管理 Telegram/飞书子进程 | ✅ 已实现 |
 | `wechat.py`   | 微信接入（计划，个人号/公众号待定）     | 待实现   |
+
+## 自动启动
+
+启动 TUI（`ocl`、`omnicrawl`、`python -m omnicrawl` 或 `python main.py`）时：
+
+- Telegram 同时配置 Bot Token 和 `allowed_user_ids` 后自动启动；
+- 飞书同时配置 App ID 和 App Secret 后自动启动；
+- 未配置的平台跳过；连接器启动失败只记录警告，不阻塞 TUI；
+- TUI 退出时自动终止已启动的连接器及其后代进程；
+- 设置 `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭自动联动，改为手工运行连接器。
+
+两个连接器均使用独立子进程，不把凭证写入命令行参数。自动启动只读取本地配置，不会
+在 TUI 主进程中建立 Telegram/飞书网络连接。
 
 ## telegram.py 使用说明
 
@@ -22,7 +37,7 @@
 支持命令：
 
 - 任务控制：`/status` `/session` `/reset` `/cancel` `/approve` `/reject` `/start`
-- 运行参数：`/workspace [路径]`（查看/切换工作区，切换会持久化并同步到 TUI）`/reasoning [级别]` `/thinking on|off`
+- 运行参数：`/workspace [路径]`（查看/切换工作区，切换会持久化并同步到 TUI）`/reasoning [级别]` `/thinking on|off` `/plan`（启用主 Agent 计划模式）
 - 输出显示：`/thinking on|off`（思考内容开关，默认关闭；开启后以独立 🧠 消息显示）
 - 会话管理：`/sessions` `/archives` `/archive` `/resume <id>` `/resume latest`（一步恢复最近活动会话）`/rename <标题>` `/undo` `/compact [--model]` `/history [关键词]`
 - 子系统状态：`/tasks` `/task <id>` `/task cancel <id>` `/mcp` `/plugins` `/skills` `/memory:clean` `/reasoning [级别]` `/approval` `/approval:manual`
@@ -50,6 +65,11 @@
 
 安全边界：远程**不允许**把审批模式切换为自动/审查（会放开 bash 等工具
 执行确认），只可查看与切回手动模式。
+
+## fsapp.py 使用说明
+
+飞书连接器使用 `lark-oapi` WebSocket 长连接，配置和扫码授权限制见
+`omnicrawl/docs/FSAPP.md`。独立运行：`python -m omnicrawl.connectors.fsapp`。
 
 ## 约定
 

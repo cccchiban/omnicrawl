@@ -11,6 +11,9 @@
   支持接收图片/文档/视频/语音等文件，自动分类存入 .agent_tmp 子目录后
   交给 Agent 处理。运行方式：``python -m omnicrawl.connectors.telegram``。
 
+- fsapp.py：飞书自建应用 WebSocket 长连接接入
+- autostart.py：TUI 启动时按配置自动管理 Telegram/飞书子进程
+
 规划中：
 - wechat.py：微信接入（个人号/公众号待定）
 

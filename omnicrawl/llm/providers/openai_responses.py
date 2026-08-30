@@ -86,16 +86,6 @@ class OpenAIResponsesRuntime:
 
         tools = _tools_for_responses(request)
         input_items = messages_to_responses_input(request.messages)
-        # Responses API 要求工具观察后继续生成时，输入末项保持为 user 角色；
-        # 工具历史转换后追加明确的收尾指令，避免兼容网关把空的下一轮误判为新对话。
-        if input_items and input_items[-1].get("type") == "function_call_output":
-            input_items.append(
-                _text_message(
-                    "user",
-                    "请基于以上工具结果给出最终总结，不要向用户发起新的开场问候。",
-                    "input_text",
-                )
-            )
         # 已确认当前网关/模型不支持工具调用历史 item：直接展平，避免每轮先发
         # 一次必然 400 的请求（见下方策略 3 说明）。
         if self._tool_history_unsupported and _has_tool_history_items(input_items):

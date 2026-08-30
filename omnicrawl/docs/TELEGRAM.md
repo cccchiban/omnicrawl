@@ -15,9 +15,12 @@ OmniCrawl Agent——发送任务文本、审批敏感工具调用、查看状�
 - 基于 Telegram Bot API 的 **getUpdates 长轮询**（无需公网 IP、无需 webhook、无需域名）。
 - 零新增依赖：仅使用 `requests` 调用 Telegram HTTP API。
 - tg 客户端是**独立进程**，与 TUI/API 完全解耦：
-  - TUI 启动/关闭**不会**自动启动/关闭 tg 客户端；
-  - 未配置 token 时执行 `python -m omnicrawl.connectors.telegram` 只会打印中文提示并
-    以退出码 1 结束，**不会报错崩溃**，也不影响 TUI 启动。
+  - TUI 启动时若 Telegram 配置同时包含 Bot Token 和授权用户 ID，会自动拉起该子进程；
+  - TUI 关闭时会自动终止该子进程及其后代；
+  - 未配置 token 或授权用户 ID 时不会自动启动；手工执行
+    `python -m omnicrawl.connectors.telegram` 仍只会打印中文提示并以退出码 1 结束。
+  - 自动启动失败只记录警告，不阻塞 TUI；设置
+    `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭 Telegram/飞书自动联动。
 - 跨进程同步：推理强度（`/reasoning`）、审批模式（`/approval`，默认 `review` 自动审查）与工作区（`/workspace`）通过 `config.toml`
   持久化；tg 客户端每次任务开始前重读配置并应用到当前 Agent，TUI 侧重启或下次
   读取时同样生效。Telegram 远程仅支持 `manual`/`review`，禁止 `auto`（完全自动仅限本地 TUI）；若磁盘上为 `auto`，Telegram 侧按 `review` 降级生效。
@@ -64,8 +67,17 @@ $env:TELEGRAM_CONFIRM_TIMEOUT = "300"
 
 ### 4. 启动
 
+启动 TUI（`ocl`、`omnicrawl`、`python -m omnicrawl` 或源码目录下的
+`python main.py`）时，满足配置条件会自动启动 Telegram 子进程。也可以继续手工独立启动：
+
 ```powershell
 python -m omnicrawl.connectors.telegram
+```
+
+如需排障或只运行 TUI，可在启动前关闭自动联动：
+
+```powershell
+$env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 ```
 
 启动成功的标志：日志输出 `Telegram Bot 已启动（polling），允许用户：[...]`。
@@ -100,7 +112,8 @@ python -m omnicrawl.connectors.telegram
 ### harness 管理命令（转发 TUI 同一套 slash.py 实现）
 
 `/sessions`、`/archives`、`/archive`、`/history`、`/undo`、`/compact`、
-`/rename`、`/resume <id>`、`/resume latest`（直接恢复最近活动会话）、
+`/rename`、`/resume <id>`、`/resume latest`（直接恢复最近活动会话）、`/plan`
+（启用主 Agent 计划模式，后续任务追加 `omnicrawl/templates/plan.md`）、
 `/tasks`、`/task cancel`、`/approval`、`/reasoning`、`/skills`、
 `/memory:clean`、`/mcp`、`/plugins`、`/review`（派生评审子 Agent：完整 git
 权限 + 自动批准收集 diff，按结构化 JSON 输出审查结果）等。
