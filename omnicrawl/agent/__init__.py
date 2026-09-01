@@ -5,11 +5,12 @@
 
 from .core import AgentConfig, AgentError, LocalToolAgent
 from .runtime.llm_protocol import AgentLLMProtocol
-from .types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
+from .types import AskUserRequest, AgentModelReply, ToolCall, ToolDefinition, ToolResult
 
 __all__ = [
     "AgentConfig",
     "AgentError",
+    "AskUserRequest",
     "AgentModelReply",
     "LocalToolAgent",
     "ToolCall",

@@ -39,7 +39,7 @@ WebSocket 长连接。
                                       ├─ 校验 sender.open_id 白名单
                                       ├─ 下载消息中的图片/文件到 .agent_tmp
                                       ├─ 调用 OmniCrawl LocalToolAgent.run_stream()
-                                      └─ 发送卡片、文本、文件和审批结果回飞书
+                                      └─ 发送卡片、文本、文件、提问和审批结果回飞书
 ```
 
 连接器使用：
@@ -48,6 +48,7 @@ WebSocket 长连接。
 - 接收方式：飞书事件订阅的 **WebSocket 长连接**，不需要公网 Webhook 地址；
 - 认证方式：飞书自建应用的 `app_id` + `app_secret`；
 - Agent：通过 `create_default_agent()` 创建 OmniCrawl 默认 Agent；
+- 提问：`ask_user` 的三种模式（`select`/`question`/`confirm`）都会携带 `options`，`select` 发送交互式卡片让用户从选项中单选，`question`/`confirm` 也以选项卡片呈现，同时允许用户直接回复文本作为自定义答案；
 - 任务并发：一个连接器进程内同一时间只执行一个 Agent 任务；
 - 文件目录：收到的资源保存到当前 Agent 工作区的 `.omnicrawl/.agent_tmp/` 分类目录。
 
@@ -266,6 +267,13 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 自动启动只检查本地配置，不会在主进程中创建飞书 Agent 或建立网络连接；缺少
 `lark-oapi`、网络错误或连接器退出只会记录警告，不会阻止 TUI 启动。
 
+**多进程单例**：每个连接器平台在同一用户下只允许一个活动实例。多个 TUI/API
+进程并存、或 TUI 自动启动与手工 `python -m` 同时运行时，后启动的一方会检测
+到已有实例并跳过（日志提示“已有实例在运行”），避免飞书 WebSocket 被重复
+建立、消息被多个实例重复处理。单例锁文件位于用户配置目录
+`~/.OmniCrawl/connector-飞书.lock`，记录持有进程 PID；进程崩溃残留时，下一个
+启动方会自动接管。
+
 成功建立长连接后，日志会出现类似：
 
 ```text
@@ -290,7 +298,8 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 
 5. 再发送一张图片或一个小文件，确认资源能保存到 `.omnicrawl/.agent_tmp/` 并交给
    Agent 处理。
-6. 在需要敏感工具确认时，使用：
+6. Agent 提问时，`select` 问题点击卡片选项，`question`/`confirm` 问题直接回复文本；回答只会交给当前提问，不会启动新任务。
+7. 在需要敏感工具确认时，使用：
 
    ```text
    /approve
@@ -310,7 +319,7 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 | `/status` | 查看工作区、会话和任务状态 |
 | `/session` | 查看当前会话 ID |
 | `/reset`、`/new` | 清空当前对话并开启新会话 |
-| `/cancel` | 请求取消当前任务 |
+| `/cancel` | 请求取消当前任务；等待提问时也可取消 |
 | `/approve` | 批准当前等待的敏感工具调用 |
 | `/reject` | 拒绝当前等待的敏感工具调用 |
 | `/thinking on\|off` | 开关思考内容展示 |
@@ -321,8 +330,12 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 | `/approval` | 查看审批模式 |
 | `/approval:manual` | 切换为手动确认 |
 | `/approval:review` | 切换为自动审查 |
-| `/reasoning [级别]` | 查看或设置推理强度 |
+| `/reasoning [级别]` | 查看或设置推理强度（下一次请求生效） |
+| `/model [选择]` | 查看或切换模型（选择支持 models.toml key、profile/model_id 或裸 model_id；下一次请求生效） |
 | `/tasks`、`/mcp`、`/plugins`、`/skills` | 查看对应子系统状态 |
+
+> **运行中切换**：`/model` 与 `/reasoning` 都可在任务进行中切换，当前回合
+> 继续使用旧配置，从修改后的下一次请求开始生效（不会中断正在执行的任务）。
 
 远程连接器不允许通过命令开启完全自动批准；敏感工具应保留人工确认或审查边界。
 

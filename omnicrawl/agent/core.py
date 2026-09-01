@@ -11,6 +11,7 @@ import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
+from .types import AskUserRequest
 from .toolkit.windows_desktop import WindowsDesktopTools
 from ..knowledge import KnowledgeBase, KnowledgeBaseError
 from .subagents.coordinator import (
@@ -38,6 +39,8 @@ from ..config.features.context_compaction import (
     ContextCompactionConfig,
     load_context_compaction_config,
 )
+from ..config.features.run_guard import RunGuardConfig, load_run_guard_config
+from ..config.features.agent_workspace import AgentWorkspaceConfig, load_agent_workspace_config
 from ..config.features.image_gen import (
     ImageGenConfiguration,
     load_image_gen_configuration,
@@ -160,6 +163,8 @@ class AgentConfig:
     context_compaction: ContextCompactionConfig = field(
         default_factory=load_context_compaction_config
     )
+    run_guard: RunGuardConfig = field(default_factory=load_run_guard_config)
+    agent_workspace: AgentWorkspaceConfig = field(default_factory=load_agent_workspace_config)
     vision: VisionConfiguration = field(default_factory=load_vision_configuration)
     image_gen: ImageGenConfiguration = field(default_factory=load_image_gen_configuration)
     tts: TTSConfiguration = field(default_factory=load_tts_configuration)
@@ -233,6 +238,8 @@ class AgentConfig:
             raise AgentError("subagents 必须是 SubAgentConfig。")
         if not isinstance(self.context_compaction, ContextCompactionConfig):
             raise AgentError("context_compaction 必须是 ContextCompactionConfig。")
+        if not isinstance(self.run_guard, RunGuardConfig):
+            raise AgentError("run_guard 必须是 RunGuardConfig。")
         if not isinstance(self.vision, VisionConfiguration):
             raise AgentError("vision 必须是 VisionConfiguration。")
         if not isinstance(self.image_gen, ImageGenConfiguration):
@@ -317,6 +324,7 @@ class LocalToolAgent(
         self.config = config or AgentConfig()
         self.workspace_root = self.config.workspace_root.resolve()
         self._confirm = confirm or self._confirm_in_terminal
+        self._ask_user_handler: Callable[[AskUserRequest], str | None] | None = None
         self._history: list[dict[str, str]] = []
         self._pending_user_text: str | None = None
         self._active_skills: list[SkillMatchResult] = []

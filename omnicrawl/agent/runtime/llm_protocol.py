@@ -15,6 +15,14 @@ from typing import Any, Callable, Iterable, Mapping
 from ..types import AgentModelReply, ToolCall, ToolDefinition
 from ...llm import OpenAIResponseLLM, VALID_REASONING_EFFORTS
 from ...llm.stream_registry import registered_stream_events, stream_owner_for
+from .run_guard import (
+    ConfiguredAutoRetryError,
+    GuardRetryState,
+    ReasoningGuardTriggered,
+    configured_retry_code,
+    wrap_reasoning_callback,
+    pause_requested,
+)
 
 
 class AgentProtocolError(RuntimeError):
@@ -87,6 +95,11 @@ class AgentLLMProtocol:
     function_name_for_tool: Callable[[str], str]
     runtime_manager: Any = None
     reasoning_effort_provider: Callable[[], str] | None = None
+    # 运行节奏配置由 Agent 注入；缺省保持旧协议测试/嵌入调用兼容。
+    reasoning_guard_config: Any = None
+    # 同一主回合内的 Guard/白名单错误共享该计数，避免每次工具观察
+    # 请求都重新获得完整护栏重试额度。
+    guard_retry_state: GuardRetryState | None = None
 
     def request_reply(
         self,
@@ -116,7 +129,19 @@ class AgentLLMProtocol:
             runtime_snapshot = owned_snapshot
         try:
             last_retryable_error: Exception | None = None
-            for attempt in range(1, self.request_retry_count + 1):
+            request_attempt = 0
+            guard_config = self.reasoning_guard_config
+            retry_state = self.guard_retry_state
+            if retry_state is None:
+                retry_state = GuardRetryState(
+                    max_retries=(
+                        int(getattr(guard_config, "max_guard_retries", 0))
+                        if guard_config is not None
+                        and bool(getattr(guard_config, "enabled", False))
+                        else 0
+                    )
+                )
+            while True:
                 # 开始请求前必须确认当前回合未被取消，避免在取消竞态中
                 # 发起新的模型请求或继续重试（ESC 取消后流被关闭的场景）。
                 if cancel_check is not None:
@@ -131,16 +156,52 @@ class AgentLLMProtocol:
                         on_reasoning_delta,
                         runtime_snapshot,
                     )
+                except ReasoningGuardTriggered as exc:
+                    last_retryable_error = exc
+                    if pause_requested():
+                        raise AgentProtocolError(
+                            "当前回合已暂停，已停止推理护栏自动重试。"
+                        ) from exc
+                    retry_number = retry_state.consume()
+                    if retry_number is None:
+                        raise AgentProtocolError(
+                            "推理护栏已达到本回合自动重试上限，已停止本次请求。\n"
+                            f"{exc.message}"
+                        ) from exc
+                    if on_stream_rollback is not None:
+                        on_stream_rollback()
+                    on_retry_status(
+                        f"推理护栏已触发，正在自动重试（第{retry_number}次）"
+                    )
+                    if cancel_check is not None:
+                        cancel_check()
+                    continue
+                except ConfiguredAutoRetryError as exc:
+                    last_retryable_error = exc
+                    if pause_requested():
+                        raise AgentProtocolError(
+                            "当前回合已暂停，已停止上游错误自动重试。"
+                        ) from exc
+                    retry_number = retry_state.consume()
+                    if retry_number is None:
+                        raise AgentProtocolError(
+                            f"上游错误 {exc.code} 已达到本回合自动重试上限，已停止本次请求。"
+                        ) from exc
+                    if on_stream_rollback is not None:
+                        on_stream_rollback()
+                    on_retry_status(
+                        f"请求失败（{exc.code}），正在自动重试（第{retry_number}次）"
+                    )
+                    if cancel_check is not None:
+                        cancel_check()
+                    continue
                 except EmptyAgentReply as exc:
                     last_retryable_error = exc
-                    if attempt < self.request_retry_count:
-                        # 空响应被识别后、重试前再次确认取消状态，防止取消
-                        # 信号被空响应重试循环吞掉。
+                    request_attempt += 1
+                    if request_attempt < self.request_retry_count:
                         if cancel_check is not None:
                             cancel_check()
-                        # 重试期间只在状态行显示进度，不暴露失败详情；
-                        # 详情等所有重试结束后随最终错误一起提示。
-                        on_retry_status(f"正在重试(第{attempt}次)")
+                        on_retry_status(f"正在重试(第{request_attempt}次)")
                         continue
                     if cancel_check is not None:
                         cancel_check()
@@ -149,20 +210,19 @@ class AgentLLMProtocol:
                     ) from exc
                 except StreamInterruptedAfterOutputError as exc:
                     last_retryable_error = exc
-                    if attempt < self.request_retry_count and on_stream_rollback is not None:
+                    request_attempt += 1
+                    if request_attempt < self.request_retry_count and on_stream_rollback is not None:
                         on_stream_rollback()
-                        # 流中断回滚后重试：状态行只显示第几次重试。
-                        on_retry_status(f"正在重试(第{attempt}次)")
+                        on_retry_status(f"正在重试(第{request_attempt}次)")
                         if cancel_check is not None:
                             cancel_check()
                         continue
                     raise AgentProtocolError(f"Agent 模型流中断：{exc}") from exc
                 except RetryableAgentRequestError as exc:
                     last_retryable_error = exc
-                    if attempt < self.request_retry_count:
-                        # 重试期间只在状态行显示第几次重试，失败详情留在
-                        # 所有重试结束后的最终错误中一并提示。
-                        on_retry_status(f"正在重试(第{attempt}次)")
+                    request_attempt += 1
+                    if request_attempt < self.request_retry_count:
+                        on_retry_status(f"正在重试(第{request_attempt}次)")
                         if cancel_check is not None:
                             cancel_check()
                         continue
@@ -196,6 +256,7 @@ class AgentLLMProtocol:
                 cancel_check,
                 on_reasoning_delta,
                 runtime_snapshot,
+                self.reasoning_guard_config,
             )
         return self._request_via_openai_client(
             messages,
@@ -204,6 +265,7 @@ class AgentLLMProtocol:
             on_protocol_wait,
             cancel_check,
             on_reasoning_delta,
+            self.reasoning_guard_config,
         )
 
     def _request_via_runtime(
@@ -215,6 +277,7 @@ class AgentLLMProtocol:
         cancel_check: Callable[[], None] | None,
         on_reasoning_delta: Callable[[str], None] | None,
         runtime_snapshot: Any = None,
+        reasoning_guard_config: Any = None,
     ) -> AgentModelReply:
         from ...llm.errors import ModelError, ModelErrorCode
         from ...llm.protocol import (
@@ -268,6 +331,10 @@ class AgentLLMProtocol:
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
             completed_calls: list[ToolCall] = []
+            guarded_reasoning_delta = wrap_reasoning_callback(
+                on_reasoning_delta,
+                reasoning_guard_config,
+            )
             has_streamed_visible = False
             protocol_wait_sent = False
             latest_usage: tuple[int, int, int] | None = None
@@ -280,10 +347,13 @@ class AgentLLMProtocol:
                         content_parts.append(event.text)
                         on_delta(event.text)
                         has_streamed_visible = True
-                    elif isinstance(event, ReasoningDelta) and event.text:
-                        reasoning_parts.append(event.text)
-                        if on_reasoning_delta is not None:
-                            on_reasoning_delta(event.text)
+                    elif isinstance(event, ReasoningDelta):
+                        if event.text:
+                            reasoning_parts.append(event.text)
+                        if guarded_reasoning_delta is not None:
+                            # 即使 Provider 给出空 reasoning 分片也交给护栏，
+                            # 以便 block 计数与真实流分片保持一致。
+                            guarded_reasoning_delta(event.text)
                     elif isinstance(event, ToolCallStarted):
                         if has_streamed_visible and not protocol_wait_sent:
                             on_protocol_wait()
@@ -312,7 +382,18 @@ class AgentLLMProtocol:
                         # （length/incomplete/max_tokens/content_filter），
                         # 必须读取并在循环后检查，避免半截回复静默结束回合。
                         finish_reason = event.finish_reason or "stop"
+            except ReasoningGuardTriggered:
+                # 护栏错误必须穿透协议层，由 request_reply 统一消耗本回合
+                # 共享重试额度；不能被包装成普通流中断后重复计数。
+                raise
             except ModelError as exc:
+                configured_code = configured_retry_code(exc, reasoning_guard_config)
+                if configured_code is not None:
+                    raise ConfiguredAutoRetryError(
+                        configured_code,
+                        str(exc),
+                        cause=exc,
+                    ) from exc
                 # 取消是用户主动行为：无论取消来自 Provider 内部检查还是
                 # 外层关闭流后的重新检查，都必须原样传播，不得包装成
                 # 可重试错误或普通协议错误，否则取消历史收尾会丢失。
@@ -332,6 +413,15 @@ class AgentLLMProtocol:
                     raise RetryableAgentRequestError(str(exc)) from exc
                 raise AgentProtocolError(str(exc)) from exc
             except Exception as exc:
+                if isinstance(exc, ReasoningGuardTriggered):
+                    raise
+                configured_code = configured_retry_code(exc, reasoning_guard_config)
+                if configured_code is not None:
+                    raise ConfiguredAutoRetryError(
+                        configured_code,
+                        str(exc),
+                        cause=exc,
+                    ) from exc
                 if cancel_check is not None:
                     try:
                         cancel_check()
@@ -366,8 +456,8 @@ class AgentLLMProtocol:
 
             content = "".join(content_parts)
             reasoning = "".join(reasoning_parts).strip()
-            if not content.strip() and not completed_calls:
-                raise EmptyAgentReply("Agent 返回内容为空，且未返回工具调用。")
+            if not content.strip() and not completed_calls and not reasoning:
+                raise EmptyAgentReply("Agent 返回内容为空，且未返回工具调用或推理。")
 
             message = assistant_tool_call_message(
                 {},
@@ -395,6 +485,7 @@ class AgentLLMProtocol:
         on_protocol_wait: Callable[[], None],
         cancel_check: Callable[[], None] | None,
         on_reasoning_delta: Callable[[str], None] | None,
+        reasoning_guard_config: Any = None,
     ) -> AgentModelReply:
         """旧路径：直接调用 OpenAI Chat Completions 流式接口。"""
 
@@ -428,11 +519,28 @@ class AgentLLMProtocol:
         try:
             stream = self.client.chat.completions.create(**request_kwargs)
         except Exception as exc:
+            configured_code = configured_retry_code(exc, reasoning_guard_config)
+            if configured_code is not None:
+                raise ConfiguredAutoRetryError(
+                    configured_code,
+                    str(exc),
+                    cause=exc,
+                ) from exc
             if "prompt_cache_key" in request_kwargs and is_unsupported_prompt_cache_error(exc):
                 request_kwargs.pop("prompt_cache_key", None)
                 try:
                     stream = self.client.chat.completions.create(**request_kwargs)
                 except Exception as retry_exc:
+                    configured_code = configured_retry_code(
+                        retry_exc,
+                        reasoning_guard_config,
+                    )
+                    if configured_code is not None:
+                        raise ConfiguredAutoRetryError(
+                            configured_code,
+                            str(retry_exc),
+                            cause=retry_exc,
+                        ) from retry_exc
                     raise AgentProtocolError(
                         f"Agent 请求失败：{OpenAIResponseLLM.format_request_error(retry_exc)}"
                     ) from retry_exc
@@ -445,6 +553,10 @@ class AgentLLMProtocol:
 
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        guarded_reasoning_delta = wrap_reasoning_callback(
+            on_reasoning_delta,
+            reasoning_guard_config,
+        )
         tool_call_delta_buffers: dict[int, dict[str, Any]] = {}
         latest_usage: tuple[int, int, int] | None = None
         has_streamed_visible = False
@@ -483,10 +595,11 @@ class AgentLLMProtocol:
                     has_streamed_visible = True
 
                 delta_reasoning = read_attr_or_key(delta, "reasoning_content")
-                if isinstance(delta_reasoning, str) and delta_reasoning:
-                    reasoning_parts.append(delta_reasoning)
-                    if on_reasoning_delta is not None:
-                        on_reasoning_delta(delta_reasoning)
+                if isinstance(delta_reasoning, str):
+                    if delta_reasoning:
+                        reasoning_parts.append(delta_reasoning)
+                    if guarded_reasoning_delta is not None:
+                        guarded_reasoning_delta(delta_reasoning)
 
                 tc_deltas = read_attr_or_key(delta, "tool_calls")
                 if isinstance(tc_deltas, list) and tc_deltas:
@@ -494,9 +607,18 @@ class AgentLLMProtocol:
                         on_protocol_wait()
                         protocol_wait_sent = True
                     accumulate_tool_call_deltas(tc_deltas, tool_call_delta_buffers)
+        except ReasoningGuardTriggered:
+            raise
         except Exception as exc:
             if cancellation_error is not None:
                 raise cancellation_error
+            configured_code = configured_retry_code(exc, reasoning_guard_config)
+            if configured_code is not None:
+                raise ConfiguredAutoRetryError(
+                    configured_code,
+                    str(exc),
+                    cause=exc,
+                ) from exc
             formatted = OpenAIResponseLLM.format_request_error(exc)
             if has_streamed_visible or tool_call_delta_buffers:
                 raise StreamInterruptedAfterOutputError(formatted) from exc
@@ -535,8 +657,8 @@ class AgentLLMProtocol:
             tool_name_from_function_name=self.tool_name_from_function_name,
         )
 
-        if not content.strip() and not tool_calls:
-            raise EmptyAgentReply("Agent 返回内容为空，且未返回工具调用。")
+        if not content.strip() and not tool_calls and not reasoning:
+            raise EmptyAgentReply("Agent 返回内容为空，且未返回工具调用或推理。")
 
         message = assistant_tool_call_message(
             {},

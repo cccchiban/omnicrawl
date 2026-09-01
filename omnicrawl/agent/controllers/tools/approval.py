@@ -277,6 +277,7 @@ class ToolApprovalMixin:
                 "write_file",
                 "subagent",
                 TODO_TOOL_NAME,
+                "ask_user",
                 VERIFY_COMMAND_TOOL_NAME,
                 # 同一模型回复中的桌面调用必须保持顺序，例如先激活窗口再输入文本。
                 "windows_window",

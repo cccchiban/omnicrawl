@@ -4,6 +4,9 @@
 - 1G4：旁注行号 diff
 - 2A：仅全屏工具卡，不改确认框/工具返回协议
 - 3A：write_file 覆盖且无旧内容时显示 rewrite +N lines，不编造假 diff
+- 4B：Edit_file 正文保留旁注行号 diff 预览，结果区只显示“替换 N 处”
+  摘要，不再整段展示工具返回的带行号上下文文本；旁注行号从工具返回
+  的上下文块解析出的文件真实行号开始，而非 snippet 内相对计数。
 """
 
 from __future__ import annotations
@@ -384,8 +387,10 @@ def tool_disclosure_body(
     除 write_file 与 Edit_file 外的所有工具统一直接展示工具返回的
     原始输出（灰色），不再包装“工具/参数/结果”元信息；write_file 与
     Edit_file 保留文件变更预览正文（diff/rewrite 摘要），不受五行
-    折叠限制；fetcher 只展示 URL/状态/标题，隐藏页面正文；read 与全部
-    记忆工具的正文完全不展示给终端用户（正文为空，不保留任何提示行）。
+    折叠限制；Edit_file 的结果区只保留“替换 N 处”摘要，不整段展示
+    带行号上下文文本；fetcher 只展示 URL/状态/标题，隐藏页面正文；
+    read 与全部记忆工具的正文完全不展示给终端用户（正文为空，不保留
+    任何提示行）。
     """
 
     operation = _tool_operation(tool_name)
@@ -423,14 +428,23 @@ class FileChangeView:
         self.body = body
 
 
-def describe_file_change(tool_name: str, arguments: Any) -> FileChangeView:
+def describe_file_change(
+    tool_name: str,
+    arguments: Any,
+    *,
+    start_line: int = 1,
+) -> FileChangeView:
     args = arguments if isinstance(arguments, dict) else {}
     path = str(args.get("path") or "").strip() or "(unknown path)"
 
     if tool_name == "Edit_file":
         old_text = str(args.get("old_text") or "")
         new_text = str(args.get("new_text") or "")
-        body, added, removed = gutter_diff_text(old_text, new_text)
+        body, added, removed = gutter_diff_text(
+            old_text,
+            new_text,
+            start_line=start_line,
+        )
         stats = format_line_stats(added=added, removed=removed)
         return FileChangeView(
             status_code="M",
@@ -465,16 +479,85 @@ def describe_file_change(tool_name: str, arguments: Any) -> FileChangeView:
     )
 
 
-def file_change_body(tool_name: str, arguments: Any, result_text: str) -> Text:
-    change = describe_file_change(tool_name, arguments)
+def _edit_result_summary(result_text: str) -> str:
+    """从 Edit_file 返回文本中提取“替换 N 处”摘要，丢弃带行号上下文。"""
+
+    if not result_text:
+        return ""
+    match = re.search(r"替换\s*\d+\s*处", result_text)
+    return match.group(0) if match else ""
+
+
+def _edit_start_line(result_text: str, new_text: str) -> int:
+    """从 Edit_file 返回文本的上下文块解析替换位置的真实起始文件行号。
+
+    上下文块格式为“N: 内容”的连续行，其中间部分即替换后的内容；
+    优先用 new_text 首行精确匹配，匹配失败时跳过前置上下文行数取
+    替换位置首行，最后回退到块首行。
+    """
+
+    if not result_text:
+        return 1
+    lines = result_text.splitlines()
+    context_lines = 2
+    block_start: int | None = None
+    for index, line in enumerate(lines):
+        if "首个替换位置上下文" in line:
+            block_start = index + 1
+            match = re.search(r"前后各\s*(\d+)\s*行", line)
+            if match:
+                context_lines = int(match.group(1))
+            break
+    if block_start is None:
+        return 1
+    numbered: list[tuple[int, str]] = []
+    for line in lines[block_start:]:
+        match = re.match(r"^\s*(\d+):\s*(.*)$", line)
+        if match:
+            numbered.append((int(match.group(1)), match.group(2).strip()))
+    if not numbered:
+        return 1
+    new_first = new_text.splitlines()[0].strip() if new_text.splitlines() else ""
+    if new_first:
+        for lineno, content in numbered:
+            if content == new_first:
+                return lineno
+    # 回退：跳过前置上下文行，取替换位置首行；否则取块首行。
+    if len(numbered) > context_lines:
+        return numbered[context_lines][0]
+    return numbered[0][0]
+
+
+def file_change_body(
+    tool_name: str,
+    arguments: Any,
+    result_text: str,
+    *,
+    include_result: bool = True,
+) -> Text:
+    args = arguments if isinstance(arguments, dict) else {}
+    start_line = 1
+    if tool_name == "Edit_file":
+        start_line = _edit_start_line(
+            result_text,
+            str(args.get("new_text") or ""),
+        )
+    change = describe_file_change(tool_name, arguments, start_line=start_line)
     rendered = Text()
     rendered.append("工具：", style=COLOR_META)
     rendered.append(str(tool_name), style=COLOR_CTX)
     rendered.append("\n")
     rendered.append_text(change.body)
-    if result_text.strip():
-        if rendered.plain and not rendered.plain.endswith("\n"):
-            rendered.append("\n")
+    if not include_result or not result_text.strip():
+        return rendered
+    if rendered.plain and not rendered.plain.endswith("\n"):
+        rendered.append("\n")
+    if tool_name == "Edit_file":
+        summary = _edit_result_summary(result_text)
+        if summary:
+            rendered.append("结果：", style=COLOR_META)
+            rendered.append(summary, style=COLOR_META)
+    else:
         rendered.append("结果：", style=COLOR_META)
         rendered.append(result_text.strip(), style=COLOR_META)
     return rendered
@@ -519,8 +602,17 @@ def preview_as_added_lines(content: str, *, header: str) -> Text:
     return rendered
 
 
-def gutter_diff_text(old_text: str, new_text: str) -> tuple[Text, int, int]:
-    """把 old/new 渲染成旁注行号 diff，并返回 (+added, -removed) 行统计。"""
+def gutter_diff_text(
+    old_text: str,
+    new_text: str,
+    *,
+    start_line: int = 1,
+) -> tuple[Text, int, int]:
+    """把 old/new 渲染成旁注行号 diff，并返回 (+added, -removed) 行统计。
+
+    ``start_line`` 为替换位置在文件中的真实起始行号（默认 1）；旁注
+    行号从该行号开始递增，而不是 snippet 内的相对计数。
+    """
 
     old_lines = old_text.splitlines()
     new_lines = new_text.splitlines()
@@ -531,8 +623,8 @@ def gutter_diff_text(old_text: str, new_text: str) -> tuple[Text, int, int]:
     added = 0
     removed = 0
     body_lines = 0
-    old_no = 1
-    new_no = 1
+    old_no = start_line
+    new_no = start_line
     truncated = False
 
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():

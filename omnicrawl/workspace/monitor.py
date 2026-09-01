@@ -25,7 +25,6 @@ from .tools import (
     WorkspaceCommandResult,
     WorkspaceToolError,
     WorkspaceTools,
-    test_output_filtering_command_warning,
 )
 
 
@@ -209,10 +208,6 @@ class BackgroundMonitorManager:
         shell = str(arguments.get("shell") or "powershell").strip().lower()
         if shell not in {"bash", "powershell"}:
             raise WorkspaceMonitorError("shell 仅支持 bash 或 powershell。")
-
-        warning = test_output_filtering_command_warning(command, shell=shell)
-        if warning:
-            raise WorkspaceMonitorError(warning)
 
         with self._lock:
             if self._closed:

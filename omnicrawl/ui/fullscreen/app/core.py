@@ -20,7 +20,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
-from ....agent import LocalToolAgent
+from ....agent import AskUserRequest, LocalToolAgent
 from .._compat import resolve_facade
 from ..conversation.view import (
     CONVERSATION_DISPLAY_MAX_LOGICAL_LINES as _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES,
@@ -215,10 +215,10 @@ class OmniCrawlApp(
     }
     /* 输入区用白色圆角框独立成卡：顶部 HUD 已移到下方，靠边框与下方
         HUD 内容分隔开；圆角边框 + 左右 margin 让输入框成为悬浮卡片。 */
-    /* AI 提问面板位于输入框上方：问题与选项保持同一组视觉层级，避免
-       问题留在会话区、选项漂浮在输入区造成内容割裂。面板只显示当前题，
-       使用白色边框和黄色强调，当前题号放在标题中。 */
-    #confirmation-panel {
+    /* Agent 的 ask_user 面板位于输入框上方：问题和单选项保持同一组
+       视觉层级，不写入会话区。所有 kind 都以选项呈现，question/confirm
+       同时保留自由文本输入兜底。 */
+    #ask-user-panel {
         display: none;
         height: auto;
         min-height: 0;
@@ -227,17 +227,17 @@ class OmniCrawlApp(
         background: $terminal-surface;
         border: round $terminal-white;
     }
-    #confirmation-panel > Static {
+    #ask-user-panel > Static {
         width: 100%;
     }
-    #confirmation-header {
+    #ask-user-header {
         height: 1;
         min-height: 1;
         padding: 0 1;
         color: $terminal-amber;
         text-style: bold;
     }
-    #confirmation-question {
+    #ask-user-question {
         height: auto;
         min-height: 1;
         padding: 0 1;
@@ -246,7 +246,7 @@ class OmniCrawlApp(
         text-wrap: wrap;
         text-overflow: ellipsis;
     }
-    #confirmation-options {
+    #ask-user-options {
         display: none;
         height: auto;
         min-height: 0;
@@ -254,7 +254,7 @@ class OmniCrawlApp(
         color: $terminal-amber;
         background: $terminal-surface;
     }
-    #confirmation-options ConfirmationOption {
+    #ask-user-options AskUserOption {
         display: block;
         height: 1;
         min-height: 1;
@@ -263,7 +263,7 @@ class OmniCrawlApp(
         color: $terminal-amber;
         background: $terminal-surface;
     }
-    #confirmation-options ConfirmationOption:focus { color: $terminal-white; }
+    #ask-user-options AskUserOption:focus { color: $terminal-white; }
     #composer-wrap {
         height: 3;
         min-height: 3;
@@ -312,6 +312,18 @@ class OmniCrawlApp(
         text-overflow: ellipsis;
         border-left: solid $terminal-amber;
     }
+    /* 选中即复制后的状态提示：位于输入框上方（排队条之下），显示 2 秒
+       后自动隐藏；绿色表示复制成功，内容超出预览上限时省略号截断。 */
+    #copy-status {
+        display: none;
+        height: 1;
+        min-height: 1;
+        padding: 0 1;
+        background: $terminal-surface;
+        color: $terminal-green;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
     #composer {
         height: 1;
         border: none;
@@ -339,6 +351,16 @@ class OmniCrawlApp(
     ]
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
+    # 流式停顿多久后做一次全量精确 Markdown 重绘（< 该间隔时仅增量渲染
+    # 已就绪的文本块，避免逐 50ms 全量重解析长消息）。
+    STREAM_SETTLE_SECONDS = 0.5
+    # 流式渲染块的最大长度：超过该长度且不含换行时强制落盘一次，
+    # 避免模型长时间输出单段文本时界面长时间无更新。
+    STREAM_CHUNK_LIMIT = 512
+    # 流式停顿后全量精确重绘的文本长度上限：超过该长度的消息在停顿时不
+    # 全量重绘（保留增量渲染结果），只在回合结束/工具边界等收口处重绘，
+    # 避免一次停顿触发数百毫秒的同步重解析。
+    STREAM_FULL_RENDER_LIMIT = 30_000
     # 对话区只渲染最近的逻辑文本行；被隐藏的旧消息组件保留在 DOM 中，
     # 以便 /undo 后重新计算窗口并恢复显示。
     CONVERSATION_DISPLAY_MAX_LOGICAL_LINES = _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES
@@ -444,6 +466,12 @@ class OmniCrawlApp(
         )
         self._stream_message: AssistantMessage | None = None
         self._stream_markdown = ""
+        # 尚未落盘的流式缓冲：按换行边界切成小块增量渲染，避免逐分片
+        # 全量重解析整条消息的 Markdown（长消息数百毫秒/次）。
+        self._stream_render_buffer = ""
+        self._stream_nl_count = 0
+        self._stream_ends_newline = True
+        self._stream_last_delta_at = 0.0
         self._stream_render_pending = False
         self._stream_start_text_len: int | None = None
         self._tool_messages: dict[str, ToolDisclosure] = {}
@@ -486,10 +514,11 @@ class OmniCrawlApp(
         # 当前回合的自动计划只存在展示层；任务完成后仍保留完成勾选，
         # 下一条用户任务开始时由 Agent 的新计划替换或清空。
         self._todo_plan_items: list[dict[str, Any]] = []
-        self._confirmation_required = False
-        self._confirmation_groups: list[list[str]] = []
-        self._confirmation_questions: list[str] = []
-        self._confirmation_options: list[str] = []
+        self._ask_user_request: AskUserRequest | None = None
+        self._ask_user_answer: str | None = None
+        self._ask_user_event = threading.Event()
+        self._ask_user_custom_mode = False
+        self._ask_user_selection = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
@@ -497,14 +526,15 @@ class OmniCrawlApp(
                 yield Static(welcome_logo_text(), id="welcome-logo")
             with Vertical(id="composer-wrap"):
                 yield TodoPlan()
-                with Vertical(id="confirmation-panel"):
-                    yield Static("", id="confirmation-header")
-                    yield Static("", id="confirmation-question")
-                    with Vertical(id="confirmation-options"):
+                with Vertical(id="ask-user-panel"):
+                    yield Static("", id="ask-user-header")
+                    yield Static("", id="ask-user-question")
+                    with Vertical(id="ask-user-options"):
                         pass
                 yield Static("", id="command-menu")
                 yield Static("", id="sessions-menu")
                 yield Static("", id="pending-queue")
+                yield Static("", id="copy-status")
                 yield Composer(
                     submit_handler=self._submit_composer_text,
                     command_key_handler=self._handle_composer_command_key,
@@ -547,17 +577,9 @@ class OmniCrawlApp(
     def on_mount(self) -> None:
         self.agent.set_confirm_handler(self._confirm_tool)
         # Agent 回合在线程中结束；通过 call_from_thread 安全更新 Textual 控件。
-        set_confirmation_handler = getattr(
-            self.agent,
-            "set_user_confirmation_handler",
-            None,
-        )
-        if callable(set_confirmation_handler):
-            set_confirmation_handler(
-                lambda required: self.call_from_thread(
-                    self._set_confirmation_required, required
-                )
-            )
+        set_ask_user_handler = getattr(self.agent, "set_ask_user_handler", None)
+        if callable(set_ask_user_handler):
+            set_ask_user_handler(self._ask_user)
         self.query_one("#composer", TextArea).focus()
         self._resize_composer_to_text()
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)

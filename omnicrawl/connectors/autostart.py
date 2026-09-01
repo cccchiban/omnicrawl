@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from omnicrawl.state.session_artifacts import redact_sensitive_text
+from omnicrawl.workspace.connector_singleton import ConnectorInstanceLock
 from omnicrawl.workspace.process_control import (
     assign_process_to_kill_on_close_job,
     close_windows_handle,
@@ -157,7 +158,22 @@ class ConnectorProcessManager:
                     )
 
     def _start_one(self, spec: ConnectorSpec) -> None:
-        """启动单个平台；锁住注册过程，避免 close 与 Popen 竞态。"""
+        """启动单个平台；锁住注册过程，避免 close 与 Popen 竞态。
+
+        启动前先获取该平台的跨进程单例锁：若已有其他进程在运行同一平台
+        的连接器（例如另一个 TUI 或手工启动的实例），直接跳过，避免同一
+        平台出现多个长连接子进程。
+        """
+
+        # 单例锁失败（已有实例或获取超时）按“该平台已在运行”处理，跳过
+        # 本次启动；这是多进程并存时的预期行为，不应作为异常上报。
+        instance_lock = ConnectorInstanceLock(spec.name)
+        if not instance_lock.try_acquire():
+            LOGGER.info(
+                "连接器 %s 已有实例在运行，跳过本次自动启动。",
+                spec.name,
+            )
+            return
 
         command = [sys.executable, "-m", spec.module]
         environment = _child_environment(self.workspace_root)
@@ -180,9 +196,12 @@ class ConnectorProcessManager:
 
         process: subprocess.Popen[Any] | None = None
         entry: _ManagedConnector | None = None
+        lock_held = True
         try:
             with self._lock:
                 if self._closed:
+                    # 监督器已进入关闭流程，不启动新进程；已持有的单例锁
+                    # 由下方 finally 统一释放，避免残留导致后续无法拉起。
                     return
                 process = self._popen(command, **popen_kwargs)
                 try:
@@ -230,9 +249,20 @@ class ConnectorProcessManager:
                         _safe_error_text(cleanup_exc),
                     )
             raise
+        finally:
+            # 无论启动成功、失败还是监督器已关闭，释放单例锁：下一个启动方
+            # 才有机会接管。注意“跳过启动”的分支在 try_acquire 失败时已直接
+            # return，不会走到这里，因此不会误释放他人持有的锁。
+            if lock_held:
+                instance_lock.release()
 
     def _watch_process(self, entry: _ManagedConnector) -> None:
-        """记录连接器意外退出并释放自然退出后的 Windows 句柄。"""
+        """记录连接器意外退出并释放自然退出后的 Windows 句柄。
+
+        注意：连接器子进程退出时单例锁已经被进程持有者（连接器自身或
+        监督器）释放，watcher 不需要也不能代释——连接器若未持有锁（例如
+        手工启动的实例），这里更没有资格删除锁文件。
+        """
 
         try:
             return_code = entry.process.wait()

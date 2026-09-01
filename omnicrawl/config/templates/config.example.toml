@@ -106,6 +106,29 @@ enabled = true
 # read_image = true
 # windows_screenshot = true
 
+# 运行节奏护栏：Reasoning 死循环保护、白名单临时错误恢复与有限自动续跑。
+# 自动续跑会增加模型请求次数和 Token 消耗；保存后从下一次回合生效。
+[run_guard]
+enabled = true
+
+[run_guard.guard]
+enabled = true
+window_chars = 2000
+substr_len = 32
+repeat_ratio = 0.7
+check_every = 50
+max_blocks = 10000
+max_chars = 500000
+max_guard_retries = 2
+# 白名单错误码：默认使用 provider-neutral 统一错误码（SERVICE_UNAVAILABLE 对应
+# HTTP 5xx/网关临时不可用）。如需对网关等上游业务错误码/错误文本做自动重试，
+# 可在此追加自定义字符串，例如 ["SERVICE_UNAVAILABLE", "PI_AI_ERROR"]。
+auto_retry_errors = ["SERVICE_UNAVAILABLE"]
+
+[run_guard.continue]
+enabled = true
+max_auto_followups = 3
+
 [context_compaction]
 # 上下文压缩是 Agent 的基础能力。触发阈值（Token）也可在运行设置面板按当前
 # 模型上下文窗口的百分比设置（5% 步进）：trigger_context_tokens = 上下文窗口 × 百分比。

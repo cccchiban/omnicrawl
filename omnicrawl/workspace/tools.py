@@ -64,8 +64,7 @@ GREP_MAX_LINE_LENGTH = 2_000
 SEARCH_PARSE_LINE_CAP = 100_000
 
 # 命令输出受控头尾采样（Host 侧）：bash/powershell 等命令工具的超长输出由 Host
-# 统一保留首尾并提示完整输出保存位置，避免测试/构建日志淹没模型上下文，
-# 也消除模型为节省 token 而自行裁剪输出的动机。
+# 统一保留首尾并提示完整输出保存位置，避免测试/构建日志淹没模型上下文。
 COMMAND_OUTPUT_HEAD_CHARS = 2_000
 COMMAND_OUTPUT_TAIL_CHARS = 6_000
 COMMAND_OUTPUT_FILES_SUBDIR = "files"
@@ -1433,9 +1432,6 @@ class WorkspaceTools:
         diagnostic_command = (
             diagnostic_value.strip() if isinstance(diagnostic_value, str) else ""
         )
-        command_warning = test_output_filtering_command_warning(command, shell=shell)
-        if command_warning:
-            raise WorkspaceToolError(command_warning)
 
         timeout = _read_limited_int(
             arguments,
@@ -1835,39 +1831,6 @@ def _lang_from_path(path: Path) -> str | None:
 
     suffix = path.suffix.lstrip(".").lower()
     return _LANG_BY_EXTENSION.get(suffix)
-
-
-def test_output_filtering_command_warning(command: str, *, shell: str) -> str:
-    """阻止测试/构建主命令用 head/tail 丢弃原始诊断输出。
-
-    `diagnostic_command` 是单独的诊断通道，主命令必须保留完整 stdout/stderr，
-    否则 pytest/unittest 的失败位置会在 Shell 层永久丢失。这里只拦截明确的
-    测试或构建命令与常见裁剪器组合，不影响普通业务命令中的合法管道。
-    """
-
-    normalized = re.sub(r"\s+", " ", command.strip()).casefold()
-    test_or_build = re.search(
-        r"(?:pytest|unittest(?:\s+discover)?|(?:npm|pnpm|yarn)\s+(?:test|run\s+test)|"
-        r"(?:cargo|go)\s+test|(?:mvn|gradle)\s+test|(?:cmake\s+--build))",
-        normalized,
-    )
-    if test_or_build is None:
-        return ""
-    filter_names = (
-        ("tail|head|grep|rg", "tail/head/grep/rg")
-        if shell == "bash"
-        else ("select-object|select-string|out-host", "Select-Object/Select-String/Out-Host")
-    )
-    filter_pattern = re.search(
-        rf"(?:^|\|\s*)(?:{filter_names[0]})(?:\s|$)",
-        normalized,
-    )
-    if filter_pattern is None:
-        return ""
-    return (
-        f"不要在主命令中使用 {filter_names[1]} 裁剪测试或构建输出；"
-        f"请让主命令完整执行，并将这些报告命令放到独立的 diagnostic_command。"
-    )
 
 
 def _read_limited_int(

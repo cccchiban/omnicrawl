@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 API_PREFIX = "/api/v1"
 TERMINAL_RUN_STATUSES = {"completed", "cancelled", "failed"}
-ACTIVE_RUN_STATUSES = {"pending", "running", "waiting_confirmation"}
+ACTIVE_RUN_STATUSES = {"pending", "running", "waiting_confirmation", "waiting_user"}
 
 
 class APIServiceError(RuntimeError):
@@ -77,6 +77,10 @@ class RunRequest(BaseModel):
 
 class ConfirmationDecision(BaseModel):
     approved: bool
+
+
+class UserQuestionAnswer(BaseModel):
+    answer: str = Field(min_length=1)
 
 
 class RenameRequest(BaseModel):
@@ -154,6 +158,17 @@ class PendingConfirmation:
 
 
 @dataclass
+class PendingUserQuestion:
+    question_id: str
+    kind: str
+    question: str
+    options: tuple[str, ...] = ()
+    created_at: float = field(default_factory=time.time)
+    answer: str | None = None
+    resolved: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass
 class RunState:
     run_id: str
     message: str
@@ -167,6 +182,7 @@ class RunState:
     error: str = ""
     cancel_requested: threading.Event = field(default_factory=threading.Event)
     confirmations: dict[str, PendingConfirmation] = field(default_factory=dict)
+    user_questions: dict[str, PendingUserQuestion] = field(default_factory=dict)
     condition: threading.Condition = field(default_factory=threading.Condition)
 
     def summary(self) -> dict[str, Any]:
@@ -189,8 +205,10 @@ __all__ = [
     "ApprovalChangeRequest",
     "ConfirmationDecision",
     "ExportRequest",
+    "UserQuestionAnswer",
     "ModelChangeRequest",
     "PendingConfirmation",
+    "PendingUserQuestion",
     "ProjectPathRequest",
     "ProjectPinRequest",
     "ProjectRenameRequest",

@@ -13,6 +13,8 @@ from __future__ import annotations
 from textual.widgets import Static
 
 from ....config.core.runtime import resolve_config_path, resolve_models_path
+from .run_guard_settings import RunGuardSettingsScreen
+from .agent_workspace_settings import AgentWorkspaceSettingsScreen
 from .._compat import resolve_facade
 from .channel_manager import ChannelManagerResult, ChannelManagerScreen
 from .image_gen_settings import ImageGenSettingsResult, ImageGenSettingsScreen
@@ -113,6 +115,48 @@ class SettingsNavigationMixin:
                         apply_configuration=apply_image_gen,
                     ),
                     receive_image_gen,
+                )
+            elif action is not None and action.name == "run_guard":
+                def apply_run_guard(configuration) -> None:
+                    self.agent.set_run_guard_configuration(configuration)
+
+                def receive_run_guard(configuration) -> None:
+                    if configuration is not None:
+                        state = "已启用" if configuration.enabled else "已停用"
+                        self._append_message(
+                            "status",
+                            f"运行节奏护栏{state}，配置将在下一次回合生效。",
+                        )
+                    self._open_settings()
+
+                self.push_screen(
+                    RunGuardSettingsScreen(
+                        resolve_config_path(),
+                        configuration=getattr(self.agent.config, "run_guard", None),
+                        apply_configuration=apply_run_guard,
+                    ),
+                    receive_run_guard,
+                )
+            elif action is not None and action.name == "agent_workspace":
+                def apply_agent_workspace(configuration) -> None:
+                    self.agent.set_agent_workspace_configuration(configuration)
+
+                def receive_agent_workspace(configuration) -> None:
+                    if configuration is not None:
+                        state = "已启用" if configuration.enabled else "已停用"
+                        self._append_message(
+                            "status",
+                            f"隔离工作区{state}，新会话启动时生效。",
+                        )
+                    self._open_settings()
+
+                self.push_screen(
+                    AgentWorkspaceSettingsScreen(
+                        resolve_config_path(),
+                        configuration=getattr(self.agent.config, "agent_workspace", None),
+                        apply_configuration=apply_agent_workspace,
+                    ),
+                    receive_agent_workspace,
                 )
             elif action is not None and action.name == "tts":
                 def apply_tts(configuration) -> None:

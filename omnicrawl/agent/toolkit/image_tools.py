@@ -37,15 +37,19 @@ def read_image_file(
 ) -> ToolResult:
     """读取本地图片并返回视觉模型附件。
 
-    ``path`` 可以是当前工作区相对路径，也可以是本机绝对路径。按照用户确认的
-    策略，这里不人为限制文件大小或像素尺寸；图片会完整读入内存并 Base64 编码，
-    因此调用方应意识到超大文件可能造成明显内存占用和模型请求延迟。
+    ``path`` 可以是当前工作区相对路径，也可以是本机绝对路径；``prompt`` 是
+    本次图片分析的显式提示词，由视觉结果路由与图片一起交给视觉模型。按照用户
+    确认的策略，这里不人为限制文件大小或像素尺寸；图片会完整读入内存并 Base64
+    编码，因此调用方应意识到超大文件可能造成明显内存占用和模型请求延迟。
     """
 
     try:
         raw_path = arguments.get("path")
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise ImageToolError("path 必须是非空的本地图片路径。")
+        prompt = arguments.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ImageToolError("prompt 必须是非空的图片分析提示词。")
         detail = _read_detail(arguments.get("detail", "auto"))
         path = _resolve_image_path(raw_path, workspace_root=workspace_root)
         image_bytes = path.read_bytes()

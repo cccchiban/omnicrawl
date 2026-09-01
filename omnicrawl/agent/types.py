@@ -20,6 +20,16 @@ class ToolCall:
 
 
 @dataclass(frozen=True)
+class AskUserRequest:
+    """Agent 通过 ``ask_user`` 工具发出的结构化用户输入请求。"""
+
+    question: str
+    kind: str = "question"
+    options: tuple[str, ...] = ()
+    request_id: str = ""
+
+
+@dataclass(frozen=True)
 class ToolImageAttachment:
     """仅在当前 Agent 工具循环中发送给视觉模型的图片。
 

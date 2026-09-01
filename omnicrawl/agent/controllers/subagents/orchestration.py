@@ -997,6 +997,7 @@ class SubAgentOrchestrationMixin:
                         report_tool_result=report_tool_result,
                         check_cancelled=cancel_check or (lambda: None),
                         status=lambda _message: None,
+                        prompt=prompt,
                         active_runtime_snapshot=runtime_snapshot,
                         vision_base_llm=(
                             model_snapshot.llm_config

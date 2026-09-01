@@ -86,6 +86,28 @@ class Composer(TextArea):
 
         return self._history_index >= 0 or self._history_navigating
 
+    def text_matches_browsed_entry(self) -> bool:
+        """当前文本是否仍是正在浏览的历史条目（程序化替换后的瞬时状态）。
+
+        浏览历史时，程序化替换文本与历史条目完全一致；用户一旦手动编辑
+        （输入/粘贴/删除）就会偏离，调用方据此判定浏览态已结束。
+        """
+
+        if 0 <= self._history_index < len(self._history):
+            return self.text == self._history[self._history_index]
+        return False
+
+    def exit_browse_mode(self) -> None:
+        """退出历史浏览态（用户开始手动编辑时调用）。
+
+        浏览态会抑制斜杠命令菜单刷新；用户手动编辑后必须复位，否则菜单
+        会一直不显示直到下一次提交。
+        """
+
+        self._history_index = -1
+        self._history_draft = ""
+        self._history_navigating = False
+
     def navigate_history(self, direction: int) -> bool:
         """按上下键浏览已发送消息；返回 True 表示按键已被历史浏览消费。
 
@@ -129,26 +151,24 @@ class Composer(TextArea):
             self._history_navigating = False
 
     def on_key(self, event: events.Key) -> None:
-        # 提问选项是单选导航状态：即使焦点尚未从输入框切换到第一行，
-        # 上下键和回车也必须由选项状态机消费，不能被历史记录/会话滚动抢走。
+        # ask_user 提问状态下，选项由单选行呈现：select 始终由选项状态机
+        # 消费上下键和回车；question/confirm 在输入框为空时同样导航/确认
+        # 选项，输入了自定义文本后回车则提交该文本。
         app = self.app
-        if getattr(app, "_confirmation_required", False):
-            if event.key in {"left", "right"}:
-                app._move_confirmation_group(-1 if event.key == "left" else 1)
+        request = getattr(app, "_ask_user_request", None)
+        if request is not None:
+            is_select = getattr(request, "kind", "") == "select"
+            composer_empty = not self.text.strip()
+            if event.key in {"up", "down"} and (is_select or composer_empty):
+                app._move_ask_user_selection(-1 if event.key == "up" else 1)
                 event.prevent_default()
                 event.stop()
                 return
-            if not getattr(app, "_confirmation_custom_mode", False):
-                if event.key in {"up", "down"}:
-                    app._move_confirmation_selection(-1 if event.key == "up" else 1)
-                    event.prevent_default()
-                    event.stop()
-                    return
-                if event.key == "enter":
-                    app._confirm_confirmation_selection()
-                    event.prevent_default()
-                    event.stop()
-                    return
+            if event.key == "enter" and (is_select or composer_empty):
+                app._submit_ask_user_selection()
+                event.prevent_default()
+                event.stop()
+                return
         if event.key == "escape":
             self.app.action_cancel_or_focus()
             event.prevent_default()

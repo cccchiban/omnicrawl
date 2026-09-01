@@ -73,13 +73,34 @@ def create_default_agent() -> LocalToolAgent:
 
     app_root = Path(__file__).resolve().parents[2]
     project_context = detect_project_context(app_root=app_root)
+
+    # 主 Agent 隔离工作区（与 TUI 一致）：多个进程并行时各自在独立 worktree
+    # / 目录中读写，互不写穿；创建失败仅告警并回退主工作区。
+    isolation_session = None
+    agent_workspace_root = project_context.workspace_root
+    try:
+        from ..config.features.agent_workspace import load_agent_workspace_config
+        from ..workspace.agent_isolation import (
+            prepare_isolated_workspace,
+            sweep_expired_isolation_sessions,
+        )
+
+        # 启动清扫：回收上次崩溃 / 被强杀（如连接器随 TUI 退出）遗留的过期隔离区。
+        sweep_expired_isolation_sessions()
+        agent_workspace_root, isolation_session = prepare_isolated_workspace(
+            main_workspace=project_context.workspace_root,
+            config=load_agent_workspace_config(),
+        )
+    except Exception as exc:  # noqa: BLE001 - 隔离失败不阻断 Agent 创建
+        LOGGER.warning("隔离工作区初始化失败，回退到主工作区：%s", exc)
+
     plugin_runtime = None
     try:
         from ..extensions.plugin_manager import PluginRuntime
 
         plugin_runtime = PluginRuntime.from_config_data(
             load_config_data(),
-            workspace_root=project_context.workspace_root,
+            workspace_root=agent_workspace_root,
         )
         plugin_runtime.start()
     except Exception as exc:  # noqa: BLE001
@@ -101,7 +122,7 @@ def create_default_agent() -> LocalToolAgent:
         agent = LocalToolAgent(
             AgentConfig(
                 llm=load_llm_config(),
-                workspace_root=project_context.workspace_root,
+                workspace_root=agent_workspace_root,
                 workspace_detection_summary=project_context.detection_summary,
                 temp_workspace=load_agent_temp_workspace_config(),
                 subagents=load_subagent_config(),
@@ -121,6 +142,10 @@ def create_default_agent() -> LocalToolAgent:
             plugin_runtime.notify_app_started()
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("API app.start.after 忽略故障：%s", exc)
+    if isolation_session is not None:
+        # 关闭 Agent 时自动把隔离区变更应用回主工作区并按策略清理
+        # （此前 API / Telegram / 飞书入口从不收尾，改动会滞留在隔离区）。
+        agent.attach_isolation_session(isolation_session)
     return agent
 
 

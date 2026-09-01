@@ -198,3 +198,18 @@ confirmation_timeout_seconds = 300
 # 通常无需手工维护：AI_WORKSPACE_ROOT 环境变量仍优先于启动目录检测。
 # [workspace]
 # root = "D:/path/to/your/workspace"
+
+# 主 Agent 隔离工作区（可选，默认开启）：TUI / API / 飞书连接器各自在
+# ~/.omnicrawl/agent-worktrees/<实例ID>/ 下的独立 worktree（或 local 目录）中
+# 读写，避免多个进程同时写同一工作区互相踩踏。
+# 运行中可经 TUI 设置 →「隔离工作区」修改；保存后从下一次启动生效。
+# [agent_workspace]
+# enabled = true
+# mode = "worktree"          # worktree（Git 工作树，推荐）| local（目录复制）
+# base_ref = "HEAD"          # 基线提交
+# detached = true            # Detached HEAD，不创建临时分支
+# sync_uncommitted = true    # 把主工作区未提交改动以补丁带入隔离区
+# apply_on_exit = true       # 退出时把隔离区变更应用回主工作区
+# cleanup_on_exit = "auto"   # auto（四层门禁过滤后自动清理）| keep | never
+# copy_dirs = [".env"]       # 复制 .gitignore 掉的目录/文件（如 node_modules）
+# env_scripts = ["npm install"]  # 创建后运行的环境脚本（bash，可选）

@@ -7,6 +7,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Sequence
+from ...types import AskUserRequest
 from ....approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_REVIEW,
@@ -18,6 +19,8 @@ from ....config.features.image_gen import (
     ImageGenConfiguration,
     load_image_gen_configuration,
 )
+from ....config.features.run_guard import RunGuardConfig
+from ....config.features.agent_workspace import AgentWorkspaceConfig
 from ....config.features.tts import (
     TTSConfiguration,
     load_tts_configuration,
@@ -56,6 +59,25 @@ from ..shared import (
 
 class SessionSettingsMixin:
     """运行时配置 setter：模型、审批、压缩阈值、工具开关、记忆/MCP/插件。"""
+
+    def set_run_guard_configuration(self, configuration: RunGuardConfig) -> None:
+        """即时替换运行护栏配置；持久化由设置页面负责。"""
+
+        if not isinstance(configuration, RunGuardConfig):
+            raise AgentError("运行护栏配置必须是 RunGuardConfig。")
+        self.config.run_guard = configuration
+
+    def set_agent_workspace_configuration(
+        self, configuration: AgentWorkspaceConfig
+    ) -> None:
+        """运行时替换主 Agent 隔离工作区配置；持久化由设置页面负责。
+
+        下一次启动（新进程 / 新 Agent）时按新模式重新创建隔离区。
+        """
+
+        if not isinstance(configuration, AgentWorkspaceConfig):
+            raise AgentError("隔离工作区配置必须是 AgentWorkspaceConfig。")
+        self.config.agent_workspace = configuration
 
     @property
     def approval_mode(self) -> str:
@@ -119,7 +141,14 @@ class SessionSettingsMixin:
             self._runtime_manager = manager
         try:
             profile, descriptor = llm_config_to_profile_and_descriptor(next_llm)
-            manager.switch(profile, descriptor, persist=persist)
+            manager.switch(
+                profile,
+                descriptor,
+                persist=persist,
+                # 允许回合进行中切换：当前回合继续用旧快照，下一次请求自动
+                # 使用新模型，即“从修改后的下一次请求开始生效”。
+                allow_during_turn=True,
+            )
         except Exception as exc:
             raise AgentError(f"模型运行时切换失败：{exc}") from exc
 
@@ -482,20 +511,17 @@ class SessionSettingsMixin:
 
         self._confirm = confirm
 
-    def set_user_confirmation_handler(
+    def set_ask_user_handler(
         self,
-        handler: Callable[
-            [list[dict[str, Any]] | list[str] | list[list[str]] | None],
-            None,
-        ]
-        | None,
+        handler: Callable[[AskUserRequest], str | None] | None,
     ) -> None:
-        """注册模型向用户提问/请求决策时的 UI 状态观察器。
+        """注册 ask_user 工具的提问回调；无回调时回退终端输入。
 
-        回调参数是按问题顺序分组的可选答案列表；空列表表示本轮不需要用户选择。
+        回调接收 (question, options)，返回用户回答字符串；返回 None 表示
+        用户未回答，工具将以失败结果返回。
         """
 
-        self._user_confirmation_callback = handler
+        self._ask_user_handler = handler
 
     def set_subagent_event_handler(
         self,

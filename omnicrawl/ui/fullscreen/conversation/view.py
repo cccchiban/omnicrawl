@@ -15,7 +15,7 @@ from textual.widgets import Static
 from ..support.monitor import format_monitor_display_batch
 
 
-CONVERSATION_DISPLAY_MAX_LOGICAL_LINES = 5000
+CONVERSATION_DISPLAY_MAX_LOGICAL_LINES = 2000
 
 
 def logical_text_line_count(text: object) -> int:
@@ -41,13 +41,61 @@ def conversation_widget_line_count(widget: object) -> int:
 class ConversationViewMixin:
     """原 ``OmniCrawlApp`` 的会话视图方法。"""
 
+    @property
+    def conversation_text(self) -> str:
+        """会话文本的惰性拼接视图（仅 /undo 回滚截断时物化）。
+
+        流式分片逐条追加到 ``_conversation_chunks``，避免 ``str +=`` 的
+        O(n²) 累积；只有读取（测试/调试）与回滚时才 join。
+        """
+
+        return "".join(self._conversation_chunks)
+
+    @conversation_text.setter
+    def conversation_text(self, value: str) -> None:
+        if value:
+            self._conversation_chunks = [value]
+        else:
+            self._conversation_chunks = []
+        self._conversation_text_len = len(value)
+
+    def _append_conversation_text(self, text: str) -> None:
+        """以 O(1) 追加一段会话文本并累计总长度。"""
+
+        self._conversation_chunks.append(text)
+        self._conversation_text_len += len(text)
+
+    def _truncate_conversation_text(self, target_len: int) -> None:
+        """把会话文本截断到指定长度（供流中断回滚）。"""
+
+        chunks = self._conversation_chunks
+        total = self._conversation_text_len
+        while chunks and total > target_len:
+            chunk = chunks.pop()
+            excess = total - target_len
+            if len(chunk) > excess:
+                chunks.append(chunk[: len(chunk) - excess])
+                total = target_len
+            else:
+                total -= len(chunk)
+        self._conversation_text_len = total
+
+    def _set_conversation_widget_lines(self, widget: object, line_count: int) -> None:
+        """给消息组件记录逻辑行数（增量计数版本，供流式路径使用）。"""
+
+        line_count = max(0, int(line_count))
+        previous = getattr(widget, "_conversation_logical_line_count", None)
+        setattr(widget, "_conversation_logical_line_count", line_count)
+        if previous != line_count:
+            self._mark_conversation_visibility_dirty()
+
     def _mark_conversation_visibility_dirty(self) -> None:
         """标记消息数量或顺序变化，延后到安全时机重算显示窗口。"""
 
         self._conversation_visibility_dirty = True
 
     def _refresh_conversation_visibility(self) -> None:
-        """只保留最近 5000 个逻辑行的消息显示，旧组件仍留在 DOM 中。
+        """只保留最近 2000 个逻辑行的消息显示，旧组件仍留在 DOM 中。
 
         这里按消息组件边界隐藏最早的一条或多条消息，而不是删除组件。
         这样会话数据、工具卡状态和流式对象仍可继续更新；``/undo`` 重放
@@ -93,7 +141,10 @@ class ConversationViewMixin:
         visible_lines = 0
         for index, child in enumerate(message_widgets):
             should_display = index >= first_visible
-            child.display = should_display
+            # 只在状态变化时写 display：流式高频重算中绝大多数组件
+            # 状态不变，避免反复触发 styles 更新与布局失效。
+            if child.display != should_display:
+                child.display = should_display
             if should_display:
                 visible_lines += conversation_widget_line_count(child)
         self._conversation_visible_logical_lines = visible_lines
@@ -119,11 +170,7 @@ class ConversationViewMixin:
     def _set_conversation_widget_line_count(self, widget: object, text: object) -> None:
         """给消息组件记录逻辑行数，避免从 RichLog 的软折行反推。"""
 
-        line_count = logical_text_line_count(text)
-        previous = getattr(widget, "_conversation_logical_line_count", None)
-        setattr(widget, "_conversation_logical_line_count", line_count)
-        if previous != line_count:
-            self._mark_conversation_visibility_dirty()
+        self._set_conversation_widget_lines(widget, logical_text_line_count(text))
 
     def _register_conversation_widget(
         self,
@@ -175,6 +222,10 @@ class ConversationViewMixin:
         self.conversation_text = ""
         self._stream_message = None
         self._stream_markdown = ""
+        self._stream_render_buffer = ""
+        self._stream_nl_count = 0
+        self._stream_ends_newline = True
+        self._stream_last_delta_at = 0.0
         self._stream_render_pending = False
         self._stream_start_text_len = None
         self._conversation_visibility_dirty = True

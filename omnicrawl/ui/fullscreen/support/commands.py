@@ -19,6 +19,7 @@ from ....commands.slash import (
     handle_approval_command,
     handle_mode_command,
     handle_reasoning_command,
+    handle_model_command,
     handle_review_command,
     handle_session_command,
     handle_subagent_task_command,
@@ -131,6 +132,7 @@ class CommandDispatcher:
         handle_approval: Callable[[CommandAgent, str], str | None] = handle_approval_command,
         handle_mode: Callable[[CommandAgent, str], str | None] = handle_mode_command,
         handle_reasoning: Callable[[CommandAgent, str], str | None] = handle_reasoning_command,
+        handle_model: Callable[[CommandAgent, str], str | None] = handle_model_command,
         handle_review: Callable[[CommandAgent, str], str | None] = handle_review_command,
     ) -> None:
         self._agent = agent
@@ -143,6 +145,7 @@ class CommandDispatcher:
         self._handle_approval = handle_approval
         self._handle_mode = handle_mode
         self._handle_reasoning = handle_reasoning
+        self._handle_model = handle_model
         self._handle_review = handle_review
 
     def dispatch(self, text: str) -> CommandOutcome:
@@ -249,6 +252,14 @@ class CommandDispatcher:
             return CommandOutcome(
                 handled=True,
                 message=reasoning_message,
+                refresh_context=True,
+            )
+
+        model_message = self._handle_model(self._agent, text)
+        if model_message is not None:
+            return CommandOutcome(
+                handled=True,
+                message=model_message,
                 refresh_context=True,
             )
         return CommandOutcome(handled=False)

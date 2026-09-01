@@ -48,7 +48,10 @@ class CommandMenuMixin:
         """根据当前斜杠前缀实时筛选统一命令源，并保留完整候选供上下键选择。"""
 
         query = value.strip().lower()
-        if not query.startswith("/") or any(char.isspace() for char in value):
+        # 空白检查针对去除前导空格后的文本：允许在 "/" 前误敲的空格，
+        # 但一旦命令后出现空格（参数或补全产生的尾随空格）即隐藏菜单。
+        stripped = value.lstrip()
+        if not query.startswith("/") or any(char.isspace() for char in stripped):
             self._hide_command_menu()
             return
         matches = [

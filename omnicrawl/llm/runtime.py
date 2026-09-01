@@ -113,6 +113,10 @@ class ModelRuntimeManager:
         """构建候选 runtime → 持久化 → 原子替换 active snapshot。
 
         任一步失败都保留旧模型；旧 runtime 在引用归零后 close。
+
+        ``allow_during_turn=True`` 时允许在回合进行中切换：当前回合仍持有
+        旧快照引用，不会被误 close；下一次 ``acquire_turn`` 自动拿到新快照，
+        即“从修改后的下一次请求开始生效”。
         """
 
         factory = runtime_factory or build_runtime

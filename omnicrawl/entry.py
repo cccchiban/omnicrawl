@@ -120,6 +120,27 @@ def _prepare_startup(
     project_context = detect_project_context(app_root=app_root)
     fullscreen_startup, run_fullscreen_tui = _load_fullscreen_ui()
 
+    # 主 Agent 隔离工作区：多个进程并行时各自在独立目录/ worktree 中读写，
+    # 互不写穿；创建失败仅告警并回退主工作区，不阻断启动。
+    isolation_session = None
+    try:
+        from omnicrawl.config.features.agent_workspace import load_agent_workspace_config
+        from omnicrawl.workspace.agent_isolation import (
+            prepare_isolated_workspace,
+            sweep_expired_isolation_sessions,
+        )
+
+        # 启动清扫：回收上次崩溃 / 被强杀（如连接器随 TUI 退出）遗留的过期隔离区。
+        sweep_expired_isolation_sessions()
+        agent_workspace_root, isolation_session = prepare_isolated_workspace(
+            main_workspace=project_context.workspace_root,
+            config=load_agent_workspace_config(),
+        )
+    except Exception as exc:  # noqa: BLE001 - 隔离失败不阻断 TUI
+        LOGGER.warning("隔离工作区初始化失败，回退到主工作区：%s", exc)
+        agent_workspace_root = project_context.workspace_root
+        isolation_session = None
+
     plugin_runtime = None
     plugin_lines: list[str] = []
     try:
@@ -156,7 +177,7 @@ def _prepare_startup(
     agent = LocalToolAgent(
         AgentConfig(
             llm=config,
-            workspace_root=project_context.workspace_root,
+            workspace_root=agent_workspace_root,
             workspace_detection_summary=project_context.detection_summary,
             approval_mode=approval_mode,
             memory_enabled=load_feature_enabled("memory", default=True),
@@ -169,6 +190,14 @@ def _prepare_startup(
         on_workspace_switched=_on_workspace_switched,
         on_plugin_settings_changed=_on_plugin_settings_changed,
     )
+
+    # 主 Agent 隔离工作区收尾挂载：agent.close() 时按配置把变更应用回主工作区
+    # 并清理（新进程 / 新 Agent 生效），TUI / API / 连接器共用同一收尾路径。
+    if isolation_session is not None:
+        agent.attach_isolation_session(
+            isolation_session,
+            on_finalized=lambda summary: print(f"[isolation] {summary}", file=sys.stderr),
+        )
     startup_messages: list[str] = []
     try:
         # MCP 原先在 TUI 首屏之后后台发现，导致用户先看到主界面但暂时不能
@@ -206,6 +235,7 @@ def _prepare_startup(
         "plugin_lines": plugin_lines,
         "startup_messages": tuple(startup_messages),
         "connector_manager": connector_manager,
+        "isolation_session": isolation_session,
     }
 
 
@@ -273,6 +303,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
 
     agent: LocalToolAgent | None = prepared["agent"]
     plugin_runtime = prepared["plugin_runtime"]
+    isolation_session = prepared.get("isolation_session")
     for line in prepared["plugin_lines"]:
         print(line, file=sys.stderr)
 
@@ -313,6 +344,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
             # 再关闭本地 Agent 与其 PluginRuntime。
             connector_manager.close()
         if agent is not None:
+            # 主 Agent 隔离工作区收尾（apply + 清理）已在 agent.close() 内完成。
             agent.close()
         elif plugin_runtime is not None:
             # Agent 尚未创建成功时没有关闭回调，只能由入口直接回收 Runtime。
@@ -320,4 +352,18 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 plugin_runtime.close()
             except Exception:
                 pass
+        # Agent 创建失败（agent is None）时隔离会话无人收尾，兜底应用并清理。
+        if isolation_session is not None and agent is None:
+            try:
+                from omnicrawl.workspace.agent_isolation import finalize_isolation_session
+
+                summary = finalize_isolation_session(
+                    isolation_session,
+                    apply_on_exit=True,
+                    cleanup_on_exit="auto",
+                )
+                if summary:
+                    print(f"[isolation] {summary}", file=sys.stderr)
+            except Exception as exc:  # noqa: BLE001 - 收尾失败不阻断退出
+                print(f"[isolation] 收尾失败：{exc}", file=sys.stderr)
     return exit_code

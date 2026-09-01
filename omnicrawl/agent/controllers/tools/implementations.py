@@ -14,6 +14,8 @@ from ...toolkit.tools import (
     normalize_tool_call,
     public_tool_arguments,
     TODO_TOOL_NAME,
+    ASK_USER_TOOL_NAME,
+    PAUSE_WORK_TOOL_NAME,
     workspace_command_tool_result,
     workspace_tool_result,
 )
@@ -54,7 +56,7 @@ from ...toolkit.knowledge_tools import (
     kb_write_result,
 )
 from ...toolkit.git_tools import git_result
-from ...types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
+from ...types import AskUserRequest, AgentModelReply, ToolCall, ToolDefinition, ToolResult
 from ....config.core.runtime import global_agents_path, resolve_config_path
 from ....memory import (
     MemoryStore,
@@ -63,6 +65,7 @@ from ....memory import (
     migrate_legacy_memory,
 )
 from ....mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
+from ...runtime.run_guard import mark_pause_requested
 
 from ..shared import (
     AgentError,
@@ -107,6 +110,10 @@ class ToolImplementationsMixin:
                 }
             )
         payload = {"todos": todos}
+        active_todos = getattr(self, "_active_todo_items", None)
+        if isinstance(active_todos, list):
+            active_todos.clear()
+            active_todos.extend(todos)
         callback = getattr(self, "_todo_update_callback", None)
         if callable(callback):
             try:
@@ -120,6 +127,104 @@ class ToolImplementationsMixin:
                 ensure_ascii=False,
             ),
         )
+
+    def _tool_pause_work(self, arguments: dict[str, Any]) -> ToolResult:
+        """主动停止当前回合的自动路径，保留任务供用户稍后继续。"""
+
+        _ = arguments
+        if not mark_pause_requested():
+            return ToolResult(ok=False, output="当前没有可暂停的 Agent 回合。")
+        return ToolResult(
+            ok=True,
+            output=json.dumps(
+                {
+                    "paused": True,
+                    "message": "当前回合已暂停；用户发送‘继续’后可恢复未完成任务。",
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    def _tool_ask_user(self, arguments: dict[str, Any]) -> ToolResult:
+        """向用户提出一个结构化问题并阻塞等待入口返回答案。"""
+
+        kind = str(arguments.get("kind") or "question").strip().casefold()
+        if kind not in {"question", "select", "confirm"}:
+            return ToolResult(
+                ok=False,
+                output="kind 必须是 question、select 或 confirm。",
+            )
+        question = arguments.get("question")
+        if not isinstance(question, str) or not question.strip():
+            return ToolResult(ok=False, output="question 不能为空。")
+        question = question.strip()
+        raw_options = arguments.get("options", [])
+        if not isinstance(raw_options, list):
+            return ToolResult(ok=False, output="options 必须是数组。")
+        options = tuple(
+            option.strip()
+            for option in raw_options
+            if isinstance(option, str) and option.strip()
+        )
+        if not options:
+            return ToolResult(ok=False, output="ask_user 必须提供至少一个非空 options 选项。")
+
+        request = AskUserRequest(
+            question=question,
+            kind=kind,
+            options=options,
+            request_id=str(arguments.get("request_id") or "").strip(),
+        )
+        handler = getattr(self, "_ask_user_handler", None)
+        try:
+            answer = handler(request) if callable(handler) else self._ask_user_in_terminal(request)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 提问失败按工具错误返回
+            if "cancel" in type(exc).__name__.casefold():
+                raise
+            LOGGER.warning("ask_user handler failed", exc_info=True)
+            return ToolResult(ok=False, output=f"向用户提问失败：{exc}")
+        if answer is None or not str(answer).strip():
+            return ToolResult(ok=False, output="用户未回答该问题。")
+        answer_text = str(answer).strip()
+        return ToolResult(
+            ok=True,
+            output=json.dumps(
+                {
+                    "kind": request.kind,
+                    "question": request.question,
+                    "options": list(request.options),
+                    "answer": answer_text,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    def _ask_user_in_terminal(self, request: AskUserRequest) -> str | None:
+        """无入口回调时回退到普通终端输入。"""
+
+        print(f"\nAgent 提问：{request.question}")
+        for index, option in enumerate(request.options, start=1):
+            print(f"  {index}. {option}")
+        if request.kind == "confirm":
+            answer = input("请输入选项序号，或直接输入 yes/no 或自定义回答：").strip()
+            if answer.isdigit() and 1 <= int(answer) <= len(request.options):
+                return request.options[int(answer) - 1]
+            if answer.casefold() in {"yes", "y", "是", "确认", "true", "1"}:
+                return "yes"
+            if answer.casefold() in {"no", "n", "否", "拒绝", "false", "0"}:
+                return "no"
+            return answer or None
+        if request.kind == "select":
+            answer = input("请输入选项序号：").strip()
+            if answer.isdigit() and 1 <= int(answer) <= len(request.options):
+                return request.options[int(answer) - 1]
+            return answer or None
+        answer = input("请输入选项序号或直接输入回答：").strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(request.options):
+            return request.options[int(answer) - 1]
+        return answer or None
 
     def _tool_list(self, arguments: dict[str, Any]) -> ToolResult:
         return workspace_tool_result(self._workspace_toolbox().list_files, arguments)

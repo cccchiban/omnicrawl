@@ -1,12 +1,15 @@
-"""SubAgent git worktree 隔离生命周期。
+"""SubAgent git worktree 隔离生命周期（沿用项目 Worktree 管理设计）。
 
-该模块只负责：
-1. 在父工作区所在 git 仓库中创建临时 worktree
-2. 收集 diff / 分支 / 变更文件等父 Agent 可审查的产物
-3. 清理 worktree 目录与本地分支
-4. 在父 Agent 显式请求时，把分支变更 apply 回主工作区
+与主 Agent 隔离区（``workspace/agent_isolation.py``）同一套管理：
+1. 创建：目录放在共享托管根 ``~/.omnicrawl/agent-worktrees/``（``sw-<task>``），
+   创建即持久化同格式元数据并登记共享注册表；目录已存在且纯文件系统校验
+   通过时直接复用，跳过 ``git worktree add``
+2. 进入退出：会话登记在共享注册表（启动清扫 in-use 保护）；apply/discard
+   后移除目录、分支、元数据并注销
+3. 自动清理：崩溃遗留由启动清扫四层门禁统一回收，退出时按 auto 策略
+   收尾；SubAgent 成果必须由父 Agent 显式审查后才 apply，清扫 / 退出
+   绝不自动写回主工作区
 
-是否应用结果由父 Agent 通过 ``apply_subagent_worktree`` 一类的显式动作决定。
 创建与 apply 前都会检查主工作区是否干净，避免在脏主树上静默覆盖用户未提交改动。
 """
 
@@ -16,9 +19,25 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from ...config.features.agent_workspace import AgentWorkspaceConfig
+from ...workspace.agent_isolation import (
+    DEFAULT_WORKTREES_ROOT,
+    IsolationSession,
+    _read_isolation_metadata,
+    _read_worktree_gitdir,
+    _remove_isolation_metadata,
+    _worktree_registered,
+    _write_isolation_metadata,
+    register_isolation_session,
+    resolve_worktree_head,
+    unregister_isolation_session,
+)
+from ...workspace.slug import is_safe_slug
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +59,7 @@ class WorktreeSession:
     worktree_path: Path
     branch_name: str
     base_ref: str
+    instance_id: str = ""        # 托管键（sw-<task> 的安全 slug 部分）
 
 
 @dataclass(frozen=True)
@@ -53,6 +73,14 @@ class WorktreeArtifacts:
     diff_stat: str
     diff_text: str
     has_changes: bool
+
+
+@dataclass(frozen=True)
+class WorktreeChangeSummary:
+    """worktree 相对基线的变更计数（退出 / 丢弃时的变更保护用）。"""
+
+    uncommitted: int = 0    # 未提交 / 未跟踪文件数
+    new_commits: int = 0    # 分支上相对 base_ref 的新提交数
 
 
 def is_git_repository(path: Path) -> bool:
@@ -107,13 +135,14 @@ def create_worktree_session(
     base_ref: str = "HEAD",
     worktree_parent: Path | None = None,
 ) -> WorktreeSession:
-    """为 task 创建独立 worktree 与本地分支。
+    """为 task 创建独立 worktree 与本地分支（沿用项目 Worktree 管理设计）。
 
-    约束：
-    - 父工作区必须在 git 仓库内
-    - 主工作区必须干净（无未提交变更）
-    - worktree 目录放在仓库外的临时父目录，避免污染源树
-    - 分支名带 task_id，便于父 Agent 审查和清理
+    - 目录放在共享托管根（默认 ``~/.omnicrawl/agent-worktrees/``），命名
+      ``sw-<task>``，与主 Agent 隔离区同根管理；
+    - 目录已存在且纯文件系统校验通过时直接复用，跳过 ``git worktree add``；
+    - 创建 / 复用后立即持久化元数据（``sw-<task>.json``）并登记共享注册表，
+      供启动清扫的 in-use 保护与退出收尾使用；
+    - 主工作区必须干净（无未提交变更）。
     """
 
     root = Path(workspace_root).expanduser().resolve()
@@ -121,50 +150,140 @@ def create_worktree_session(
         raise WorktreeError("当前工作区不是 git 仓库，无法启用 isolation=worktree。")
 
     repo_root = resolve_repo_root(root)
-    # 脏主树禁止创建：避免后续 apply 时与用户未提交改动互相覆盖。
-    require_clean_main_tree(repo_root)
     safe_task = _sanitize_branch_fragment(task_id) or uuid.uuid4().hex[:12]
+    # 目录名 / 托管键必须是安全 slug（清扫与元数据按 slug 校验）；分支名可放宽。
+    instance_key = safe_task if is_safe_slug(safe_task) else uuid.uuid4().hex[:12]
     branch_name = f"omnicrawl/subagent/{safe_task}"
     parent_dir = (
         Path(worktree_parent).expanduser().resolve()
         if worktree_parent is not None
-        else (repo_root.parent / ".omnicrawl-worktrees")
+        else DEFAULT_WORKTREES_ROOT
     )
     parent_dir.mkdir(parents=True, exist_ok=True)
-    worktree_path = parent_dir / f"wt-{safe_task}-{uuid.uuid4().hex[:8]}"
+    worktree_path = parent_dir / f"sw-{instance_key}"
 
-    # 先解析 base_ref，避免 git worktree 在错误 ref 上创建半成品目录。
-    resolved_base = _run_git(
-        ["rev-parse", "--verify", base_ref],
-        cwd=repo_root,
-        check=True,
-    ).stdout.strip()
-
-    try:
-        _run_git(
-            [
-                "worktree",
-                "add",
-                "-b",
-                branch_name,
-                str(worktree_path),
-                resolved_base,
-            ],
+    reused = _reuse_subagent_worktree(
+        worktree_path=worktree_path,
+        repo_root=repo_root,
+        task_id=task_id,
+        instance_key=instance_key,
+    )
+    if reused is not None:
+        session = reused
+    else:
+        # 脏主树禁止创建：避免后续 apply 时与用户未提交改动互相覆盖。
+        require_clean_main_tree(repo_root)
+        # 先解析 base_ref，避免 git worktree 在错误 ref 上创建半成品目录。
+        resolved_base = _run_git(
+            ["rev-parse", "--verify", base_ref],
             cwd=repo_root,
             check=True,
+        ).stdout.strip()
+        try:
+            _run_git(
+                [
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch_name,
+                    str(worktree_path),
+                    resolved_base,
+                ],
+                cwd=repo_root,
+                check=True,
+            )
+        except WorktreeError:
+            # 创建失败时尽量回收可能残留的目录，避免下次撞名。
+            if worktree_path.exists():
+                shutil.rmtree(worktree_path, ignore_errors=True)
+            raise
+        session = WorktreeSession(
+            task_id=task_id,
+            instance_id=instance_key,
+            repo_root=repo_root,
+            worktree_path=worktree_path.resolve(),
+            branch_name=branch_name,
+            base_ref=resolved_base,
         )
-    except WorktreeError:
-        # 创建失败时尽量回收可能残留的目录，避免下次撞名。
-        if worktree_path.exists():
-            shutil.rmtree(worktree_path, ignore_errors=True)
-        raise
 
+    # 创建 / 复用统一持久化元数据并登记共享注册表。
+    _persist_subagent_worktree_metadata(session, parent_dir)
+    register_isolation_session(_isolation_view(session))
+    return session
+
+
+def _reuse_subagent_worktree(
+    *,
+    worktree_path: Path,
+    repo_root: Path,
+    task_id: str,
+    instance_key: str,
+) -> WorktreeSession | None:
+    """目录已存在时纯文件系统校验并复用（与主 Agent 隔离区同款）。
+
+    fail-closed：任何一步不满足返回 None，由创建路径继续（``git worktree add``
+    会因目录已存在而失败，最终以 :class:`WorktreeError` 呈现给父 Agent）。
+    """
+
+    if not worktree_path.exists():
+        return None
+    gitdir = _read_worktree_gitdir(worktree_path)
+    if gitdir is None:
+        return None
+    try:
+        gitdir.relative_to((repo_root / ".git" / "worktrees").resolve())
+    except ValueError:
+        return None
+    if resolve_worktree_head(gitdir) is None:
+        return None
+    if not _worktree_registered(gitdir, worktree_path):
+        return None
+    meta = _read_isolation_metadata(worktree_path.parent, worktree_path.name)
+    if not meta or meta.get("mode") != "subagent":
+        return None
+    branch_name = str(meta.get("branch_name") or "")
+    base_ref = str(meta.get("base_ref") or "")
+    if not branch_name or not base_ref:
+        return None
     return WorktreeSession(
         task_id=task_id,
+        instance_id=instance_key,
         repo_root=repo_root,
-        worktree_path=worktree_path.resolve(),
+        worktree_path=worktree_path,
         branch_name=branch_name,
-        base_ref=resolved_base,
+        base_ref=base_ref,
+    )
+
+
+def _isolation_view(session: WorktreeSession) -> IsolationSession:
+    """把 SubAgent 会话投影为共享隔离会话（登记注册表 / 清扫 / 收尾用）。"""
+
+    return IsolationSession(
+        instance_id=session.instance_id,
+        mode="subagent",
+        repo_root=session.repo_root,
+        worktree_path=session.worktree_path,
+        base_ref=session.base_ref,
+        main_workspace=session.repo_root,
+        created_at=time.time(),
+        branch_name=session.branch_name,
+    )
+
+
+def _persist_subagent_worktree_metadata(
+    session: WorktreeSession,
+    parent_dir: Path,
+) -> None:
+    """持久化 SubAgent worktree 会话元数据（崩溃恢复 / 清扫 / 收尾用）。
+
+    与主 Agent 隔离区同格式；SubAgent 成果须父 Agent 审查，故
+    ``apply_on_exit`` 固定为 False，清理策略固定为 ``auto``（四层门禁）。
+    """
+
+    _write_isolation_metadata(
+        _isolation_view(session),
+        AgentWorkspaceConfig(apply_on_exit=False, cleanup_on_exit="auto"),
+        parent_dir,
     )
 
 
@@ -230,6 +349,43 @@ def collect_worktree_artifacts(session: WorktreeSession) -> WorktreeArtifacts:
     )
 
 
+def summarize_worktree_changes(session: WorktreeSession) -> WorktreeChangeSummary:
+    """统计 worktree 相对基线的变更（未提交文件数 + 新提交数）。
+
+    用于退出 / 丢弃时的变更保护：未提交改动或新提交都意味着有尚未 apply
+    回主工作区的成果，丢弃前必须显式 force。
+
+    - worktree 目录已不存在时视为无变更（没有可丢失的内容）；
+    - git 查询失败时抛 :class:`WorktreeError`（fail-closed，宁可拒绝丢弃也
+      不静默丢数据），调用方可用 force 绕过；
+    - base_ref 无法解析时按「存在新提交」保守处理。
+    """
+
+    if not session.worktree_path.exists():
+        return WorktreeChangeSummary()
+    status = _run_git(
+        ["status", "--porcelain"],
+        cwd=session.worktree_path,
+        check=True,
+    ).stdout
+    uncommitted = len([line for line in status.splitlines() if line.strip()])
+    base = (session.base_ref or "").strip() or "HEAD"
+    try:
+        count = _run_git(
+            ["rev-list", "--count", f"{base}..HEAD"],
+            cwd=session.worktree_path,
+            check=True,
+        ).stdout.strip()
+    except WorktreeError:
+        new_commits = 1
+    else:
+        new_commits = max(0, int(count or "0"))
+    return WorktreeChangeSummary(
+        uncommitted=uncommitted,
+        new_commits=new_commits,
+    )
+
+
 def apply_worktree_to_main(
     session: WorktreeSession,
     *,
@@ -276,7 +432,7 @@ def cleanup_worktree_session(
     *,
     remove_branch: bool = True,
 ) -> None:
-    """清理 worktree 目录，并可选删除本地分支。"""
+    """清理 worktree 目录与本地分支，并注销共享注册表、删除托管元数据。"""
 
     # 先尝试 git worktree remove；失败时回退到目录删除。
     # Windows 临时目录可能在测试 teardown 时已失效，所有 git 调用都降级吞掉。
@@ -301,6 +457,16 @@ def cleanup_worktree_session(
     except WorktreeError:
         if session.worktree_path.exists():
             shutil.rmtree(session.worktree_path, ignore_errors=True)
+
+    # 注销共享注册表并删除托管元数据（沿用主 Agent 隔离区收尾设计）。
+    if session.instance_id:
+        unregister_isolation_session(session.instance_id)
+    try:
+        _remove_isolation_metadata(session)
+    except OSError:
+        LOGGER.warning(
+            "删除 SubAgent worktree 元数据失败：%s", session.worktree_path
+        )
 
 
 def _sanitize_branch_fragment(value: str) -> str:

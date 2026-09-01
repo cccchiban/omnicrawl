@@ -62,7 +62,9 @@ from .session_projection import (
     TOOL_RESULT_CONTEXT_PREFIX,
     TURN_UNDONE_EVENT_TYPE,
     active_session_events as _active_session_events,
+    apply_run_guard_event as _apply_run_guard_event,
     event_to_model_message as _event_to_model_message,
+    recover_run_guard_state as _recover_run_guard_state,
     session_title_from_events as _session_title_from_events,
 )
 from .session_records import (
@@ -340,6 +342,8 @@ class SessionStore:
                     "turn_snapshot",
                     "turn_cancelled",
                     "session_interrupted",
+                    "run_guard_paused",
+                    "run_guard_continue_exhausted",
                 }
             )
             undo_kind = "complete"
@@ -637,6 +641,7 @@ class SessionStore:
                 messages.append(message)
                 message_entries.append((event.event_id, message))
         last_event_type = raw_events[-1].type if raw_events else entry.last_event_type
+        pending_user_text, todo_items = _recover_run_guard_state(events)
         return SessionState(
             session_id=entry.session_id,
             title=entry.title,
@@ -648,6 +653,8 @@ class SessionStore:
             last_event_type=last_event_type,
             event_count=len(raw_events),
             archived_at=entry.archived_at,
+            pending_user_text=pending_user_text,
+            todo_items=todo_items,
         )
 
     def read_session_events(self, session_id: str) -> list[SessionEvent]:

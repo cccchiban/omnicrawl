@@ -44,6 +44,12 @@ from ...context_compaction import (
     estimate_json_tokens,
 )
 from ...runtime.execution import AgentLoopLimits, AgentLoopObservation, AgentLoopRunner
+from ...runtime.run_guard import (
+    GuardRetryState,
+    activate_pause_event,
+    pause_requested,
+    reset_pause_event,
+)
 from ...runtime.llm_protocol import (
     AgentLLMProtocol,
     AgentProtocolError,
@@ -116,150 +122,6 @@ _TTS_SPEAK_INSTRUCTION = (
     "</tts_instruction>"
 )
 
-# 需要用户参与决策时，模型必须先以结构化标记结束本轮回复。UI 据此显示
-# 问题正文和按问题分组的单选答案；用户逐题确认后，下一轮才会继续。
-_USER_CONFIRMATION_INSTRUCTION = (
-    '<user_confirmation_instruction source="host-ui" trust="host">\n'
-    "当你需要向用户提问、确认缺失细节、或让用户在方案之间做选择时，"
-    "先只输出清晰的问题正文；每个问题后紧接着输出一个严格的选项块，"
-    "每个选项单独一行并以 '- ' 开头，格式为 [选项]\\n- 选项一\\n- 选项二\\n[/选项]；"
-    "可以连续输出多个问题和选项块，界面会按顺序逐个询问；每个问题只能选择一个答案。"
-    "不要把问题重复放进选项块。界面会自动在每组最后追加‘我有自己的想法’，"
-    "用户选中后可在输入框输入自定义回答。最后单独输出 [需要用户确认]，然后停止执行。"
-    "用户也可以直接在输入框输入当前问题的回答；界面会把每个问题与对应答案一起发送。"
-    "其他普通说明、计划和可直接执行的任务不要输出该标记。\n"
-    "</user_confirmation_instruction>"
-)
-_USER_CONFIRMATION_MARKER = "[需要用户确认]"
-_USER_CONFIRMATION_OPTIONS_START = "[选项]"
-_USER_CONFIRMATION_OPTIONS_END = "[/选项]"
-_USER_CONFIRMATION_CUSTOM_OPTION = "我有自己的想法"
-
-
-def _extract_user_confirmation_details(
-    text: str,
-) -> tuple[str, list[str], list[list[str]], bool, str]:
-    """提取确认问题、选项，以及模型上下文与会话区各自需要的正文。
-
-    ``visible`` 会保留问题正文供模型上下文理解上一轮提问；最后一个返回值
-    是会话区仍应保留的普通补充文本。确认问题只交给输入区面板显示，避免
-    同一内容在会话区和输入区重复出现。
-    """
-
-    needs_confirmation = _USER_CONFIRMATION_MARKER in text
-    if not needs_confirmation:
-        return text.rstrip(), [], [], False, text.rstrip()
-
-    def parse_options(raw: str) -> list[str]:
-        result: list[str] = []
-        for line in raw.splitlines():
-            item = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", line).strip()
-            if item and item not in result:
-                result.append(item)
-        if _USER_CONFIRMATION_CUSTOM_OPTION not in result:
-            result.append(_USER_CONFIRMATION_CUSTOM_OPTION)
-        return result
-
-    matches = list(
-        re.finditer(
-            re.escape(_USER_CONFIRMATION_OPTIONS_START)
-            + r"\s*(.*?)\s*"
-            + re.escape(_USER_CONFIRMATION_OPTIONS_END),
-            text,
-            flags=re.DOTALL,
-        )
-    )
-    if matches:
-        visible_parts: list[str] = []
-        question_texts: list[str] = []
-        option_groups: list[list[str]] = []
-        last_end = 0
-        for match in matches:
-            question = text[last_end : match.start()].replace(
-                _USER_CONFIRMATION_MARKER, ""
-            ).strip()
-            question_texts.append(question)
-            if question:
-                visible_parts.append(question)
-            option_groups.append(parse_options(match.group(1)))
-            last_end = match.end()
-        tail = text[last_end:].replace(_USER_CONFIRMATION_MARKER, "").strip()
-        if tail:
-            visible_parts.append(tail)
-        visible = "\n\n".join(visible_parts).rstrip()
-        session_text = tail
-        return visible, question_texts, option_groups, True, session_text
-
-    # 兼容模型漏写 [选项] 标签但仍输出 Markdown 列表。每个连续列表段
-    # 作为一个问题的选项段；列表段前的文本就是与其对应的问题。
-    lines = text.splitlines()
-    list_pattern = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
-    runs: list[tuple[int, int]] = []
-    run_start: int | None = None
-    for index, line in enumerate(lines + [""]):
-        if list_pattern.match(line):
-            if run_start is None:
-                run_start = index
-            continue
-        if run_start is not None:
-            runs.append((run_start, index))
-            run_start = None
-    if runs:
-        visible_lines = lines[:]
-        question_texts: list[str] = []
-        option_groups: list[list[str]] = []
-        previous_end = 0
-        for start, end in runs:
-            question = "\n".join(lines[previous_end:start]).replace(
-                _USER_CONFIRMATION_MARKER, ""
-            ).strip()
-            question_texts.append(question)
-            option_groups.append(parse_options("\n".join(lines[start:end])))
-            previous_end = end
-        for start, end in reversed(runs):
-            del visible_lines[start:end]
-        visible = "\n".join(visible_lines).replace(_USER_CONFIRMATION_MARKER, "").rstrip()
-        return visible, question_texts, option_groups, True, ""
-
-    visible = text.replace(_USER_CONFIRMATION_MARKER, "").rstrip()
-    return visible, [visible], [[_USER_CONFIRMATION_CUSTOM_OPTION]], True, ""
-
-
-def _extract_user_confirmation_questions(
-    text: str,
-) -> tuple[str, list[list[str]], bool]:
-    """提取用户可见问题及按问题分组的单选选项。"""
-
-    visible, _question_texts, option_groups, needs_confirmation, _session_text = (
-        _extract_user_confirmation_details(text)
-    )
-    return visible, option_groups, needs_confirmation
-
-
-def _extract_user_confirmation(text: str) -> tuple[str, list[str], bool]:
-    """提取确认标记和选项，兼容旧调用方返回扁平选项列表。
-
-    旧解析 API 不暴露 UI 自动追加的自定义回答项；全新的分组 API 和 UI
-    回调仍会保留“我有自己的想法”。
-    """
-
-    visible, groups, needs_confirmation = _extract_user_confirmation_questions(text)
-    options = [
-        option
-        for group in groups
-        for option in group
-        if option != _USER_CONFIRMATION_CUSTOM_OPTION
-    ]
-    return visible, options, needs_confirmation
-
-
-def _strip_user_confirmation_marker(text: str) -> str:
-    """移除仅供 UI 判断的确认标记和选项块，不把协议内容写入会话历史。"""
-
-    visible, _options, _needs_confirmation = _extract_user_confirmation(text)
-    return visible
-
-
 class TurnLoopMixin:
     """主模型循环：run_stream、工具批执行、LLM 请求与回合收尾。"""
 
@@ -300,6 +162,31 @@ class TurnLoopMixin:
         )
         turn_usage = TokenUsageSample()
         visible_output_seen = False
+        run_guard = getattr(self.config, "run_guard", None)
+        run_guard_enabled = bool(getattr(run_guard, "enabled", False))
+        run_guard_config = (
+            getattr(run_guard, "guard", None)
+            if run_guard_enabled and bool(getattr(run_guard, "guard", None))
+            and bool(getattr(getattr(run_guard, "guard", None), "enabled", False))
+            else None
+        )
+        continuation_config = (
+            getattr(run_guard, "continuation", None)
+            if run_guard_enabled
+            and bool(getattr(getattr(run_guard, "continuation", None), "enabled", False))
+            else None
+        )
+        guard_retry_state = GuardRetryState(
+            max_retries=(
+                int(getattr(run_guard_config, "max_guard_retries", 0))
+                if run_guard_config is not None
+                and bool(getattr(run_guard_config, "enabled", False))
+                else 0
+            )
+        )
+        pause_event = threading.Event()
+        pause_token = None
+        pause_event_enabled = False
         tool_execution_seen = False
         context_overflow_recovered = False
         active_turn_snapshot: _ActiveTurnSnapshot | None = None
@@ -325,6 +212,11 @@ class TurnLoopMixin:
             if cancel_check is not None:
                 cancel_check()
 
+        def should_stop_after_pause() -> bool:
+            """暂停工具只停止自动路径，不影响用户后续主动发送的新回合。"""
+
+            return pause_requested()
+
         previous_cancel_check = getattr(self, "_cancel_check", None)
         previous_reasoning_callback = getattr(self, "_reasoning_delta_callback", None)
         previous_subagent_callback = getattr(self, "_subagent_event_callback", None)
@@ -333,12 +225,33 @@ class TurnLoopMixin:
         previous_fork_snapshot = self.__dict__.get("_active_fork_context_messages")
         self._cancel_check = cancel_check
         self._reasoning_delta_callback = on_reasoning_delta
+        self._active_guard_retry_state = guard_retry_state
+        self._active_run_guard_config = run_guard_config
+        previous_todo_items = getattr(self, "_active_todo_items", ())
+        self._active_todo_items: list[dict[str, Any]] = []
         self._subagent_event_callback = on_subagent_event
         self._todo_update_callback = on_todo_update
         self._ensure_mcp_tools_ready(status)
         text = self._apply_skill_command(text, status)
+        continue_requested = self._is_continue_last_task_request(text)
         pending_text = getattr(self, "_pending_user_text", None)
+        if not pending_text:
+            pending_text = getattr(
+                getattr(self, "_session_state", None),
+                "pending_user_text",
+                None,
+            )
         text = self._resolve_continue_request(text)
+        if continue_requested:
+            session_todos = getattr(
+                getattr(self, "_session_state", None),
+                "todo_items",
+                (),
+            )
+            source_todos = session_todos or previous_todo_items
+            self._active_todo_items.extend(
+                dict(item) for item in source_todos if isinstance(item, dict)
+            )
 
         # turn.start 必须先于 PromptHistory / Session user_message，确保插件改写后的文本
         # 成为所有持久化与模型上下文使用的唯一权威版本。
@@ -361,15 +274,32 @@ class TurnLoopMixin:
         runtime_manager: ModelRuntimeManager | None = None
         runtime_snapshot = None
         user_message_persisted = False
+        pending_task_text = (
+            pending_text if continue_requested and pending_text else text
+        ).strip()
         try:
+            # 暂停事件激活与 finally 清理必须在同一个保护边界内：任何
+            # 后续异常（插件、turn.start、取消检查、上下文恢复失败等）
+            # 都会由 finally 重置暂停上下文，避免遗留到下一回合。
+            if run_guard_enabled:
+                pause_token = activate_pause_event(pause_event)
+                pause_event_enabled = True
             # 首个取消检查点放在 try 内：用户提交后立即 ESC 时，取消异常
             # 也能进入统一收尾（补写 user_message 并保留取消摘要），避免
             # 用户任务完全丢失在会话记录之外。
             check_cancelled()
             active_turn_snapshot = self._begin_turn_snapshot()
-            self._pending_user_text = pending_text or text
+            self._pending_user_text = pending_task_text
             self._append_prompt_history(text)
-            self._append_session_event("user_message", {"content": text})
+            user_event_payload: dict[str, Any] = {
+                "content": text,
+                "pending_user_text": pending_task_text,
+            }
+            if continue_requested and self._active_todo_items:
+                user_event_payload["todo_items"] = [
+                    dict(item) for item in self._active_todo_items
+                ]
+            self._append_session_event("user_message", user_event_payload)
             user_message_persisted = True
             context_messages = self._context_messages(turn_id=turn_id)
             working_messages = [
@@ -394,7 +324,6 @@ class TurnLoopMixin:
             # TTS 指令仅供本轮首次模型请求使用；首次请求结束后由
             # request_main_reply 清除，后续工具观察请求不重复注入。
             self._active_tts_instruction = self._tts_speak_instruction()
-            self._active_user_confirmation_instruction = _USER_CONFIRMATION_INSTRUCTION
 
             # 完整构造的 Agent 才持有带 profile_id 的 LLMConfig；部分内部单测
             # 使用最小对象并替换模型请求方法，此时跳过 Runtime 快照。
@@ -434,7 +363,6 @@ class TurnLoopMixin:
                     # 首次模型请求的辅助指令只使用一次；工具结果回填后的后续请求
                     # 保持工具可用，但不重复注入同一段指令。
                     self.__dict__.pop("_active_tts_instruction", None)
-                    self.__dict__.pop("_active_user_confirmation_instruction", None)
 
             def execute_main_tool_batch(
                 calls: Sequence[ToolCall],
@@ -449,6 +377,7 @@ class TurnLoopMixin:
                     report_tool_result=report_tool_result,
                     check_cancelled=check_cancelled,
                     status=status,
+                    prompt=text,
                     active_runtime_snapshot=runtime_snapshot,
                     vision_base_llm=getattr(self.config, "llm", None),
                     record_tool_execution=lambda tool_call: self._record_turn_tool_execution(
@@ -465,6 +394,7 @@ class TurnLoopMixin:
                     # 主 Agent 明确不设置循环预算；后续 SubAgent 可使用同一 Runner
                     # 传入 AgentLoopLimits，而不改变当前产品行为。
                     cancel_check=check_cancelled,
+                    stop_check=should_stop_after_pause,
                 )
             except Exception as exc:
                 if not self._can_recover_context_overflow(
@@ -495,52 +425,103 @@ class TurnLoopMixin:
                     request_reply=request_main_reply,
                     execute_tool_batch=execute_main_tool_batch,
                     cancel_check=check_cancelled,
+                    stop_check=should_stop_after_pause,
                 )
-            final_reply = loop_result.final_text
-            (
-                final_reply,
-                confirmation_questions,
-                confirmation_groups,
-                needs_user_confirmation,
-                _session_reply,
-            ) = _extract_user_confirmation_details(final_reply)
-            if needs_user_confirmation and not loop_result.content_streamed:
-                # 非流式兼容路径：确认问题只进入输入区面板，不在会话区重复显示。
-                on_delta(_session_reply)
-            elif final_reply and not loop_result.content_streamed:
-                on_delta(final_reply)
-            assistant_event_payload: dict[str, Any] = {
-                "content": final_reply
-            }
-            if needs_user_confirmation:
-                assistant_event_payload["session_content"] = _session_reply
-            confirmation_request: list[dict[str, Any]] | None = None
-            if needs_user_confirmation:
-                confirmation_request = [
+
+            # Continue 是回合内有限状态机：只有 Todo 仍有未完成项，或模型只
+            # 输出 reasoning 而没有文本/工具时才自动补发；真实文本、工具调用、
+            # 用户取消和 pause_work 都会终止自动路径。续跑请求异步发生在同一
+            # worker 内，不会重入 Session 事件追加线程。
+            continuation_count = 0
+            continuation_reason = ""
+            reply_text_parts: list[str] = []
+            reasoning_parts: list[str] = []
+            content_streamed_seen = False
+            while True:
+                if loop_result.final_text:
+                    reply_text_parts.append(loop_result.final_text)
+                if loop_result.reasoning:
+                    reasoning_parts.append(loop_result.reasoning)
+                content_streamed_seen = content_streamed_seen or loop_result.content_streamed
+                if loop_result.paused or pause_requested() or continuation_config is None:
+                    break
+                last_reply = loop_result.last_reply
+                reasoning_only = bool(
+                    last_reply is not None
+                    and last_reply.reasoning
+                    and not last_reply.content.strip()
+                    and not last_reply.tool_calls
+                )
+                incomplete_todo = bool(self._active_todo_items) and any(
+                    not bool(item.get("completed"))
+                    for item in self._active_todo_items
+                )
+                max_followups = int(
+                    getattr(continuation_config, "max_auto_followups", 0)
+                )
+                if continuation_count >= max_followups or not (reasoning_only or incomplete_todo):
+                    break
+                continuation_count += 1
+                continuation_reason = (
+                    "reasoning_only" if reasoning_only else "todo_incomplete"
+                )
+                self._append_session_event(
+                    "run_guard_continue",
                     {
-                        "question": question,
-                        "options": options,
+                        "followup": continuation_count,
+                        "reason": continuation_reason,
+                        "pending_user_text": pending_task_text,
+                    },
+                )
+                report_retry_status(
+                    f"任务仍未完成，正在自动继续（第{continuation_count}次）"
+                )
+                if last_reply is not None:
+                    working_messages.append(last_reply.message)
+                working_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "请继续执行上一任务，不要停在计划或推理阶段；"
+                            "完成未完成的 Todo，或给出可执行的最终结果。"
+                        ),
                     }
-                    for question, options in zip(
-                        confirmation_questions,
-                        confirmation_groups,
-                    )
-                ]
-                # 选项本身是 UI 协议，保留脱敏后的问题元数据，便于会话恢复
-                # 时重新显示输入区提问面板；模型上下文投影只读取 content。
-                assistant_event_payload["user_confirmation"] = confirmation_request
-            self._append_session_event("assistant_message", assistant_event_payload)
-            confirmation_callback = getattr(self, "_user_confirmation_callback", None)
-            if callable(confirmation_callback):
-                try:
-                    confirmation_callback(confirmation_request)
-                except Exception:  # noqa: BLE001 - UI 状态更新不得破坏回合收尾
-                    LOGGER.warning("user confirmation UI observer failed", exc_info=True)
+                )
+                loop_result = AgentLoopRunner().run(
+                    messages=working_messages,
+                    request_reply=request_main_reply,
+                    execute_tool_batch=execute_main_tool_batch,
+                    cancel_check=check_cancelled,
+                    stop_check=should_stop_after_pause,
+                )
+
+            final_reply = "\n\n".join(reply_text_parts).strip()
+            combined_reasoning = "\n".join(reasoning_parts).strip()
+            final_content_streamed = any(bool(part) for part in reply_text_parts) and content_streamed_seen
+            if final_reply and not final_content_streamed:
+                on_delta(final_reply)
+            if loop_result.paused:
+                # pause_work 是模型可见的主动暂停，不应写成错误或取消；保留
+                # pending_user_text，用户下一次发送“继续”时可恢复原任务。
+                self._append_session_event(
+                    "run_guard_paused",
+                    {
+                        "user_text": text,
+                        "pending_user_text": pending_task_text,
+                        "reason": "pause_work",
+                        "todo_items": [dict(item) for item in self._active_todo_items],
+                    },
+                )
+            else:
+                self._append_session_event(
+                    "assistant_message",
+                    {"content": final_reply},
+                )
             if context_overflow_recovered:
                 self._history.append(
                     self._assistant_message(
                         final_reply,
-                        loop_result.reasoning,
+                        combined_reasoning,
                     )
                 )
                 self._run_context_compaction_after_turn(
@@ -557,13 +538,49 @@ class TurnLoopMixin:
                     self._append_history(
                         text,
                         final_reply,
-                        loop_result.reasoning,
+                        combined_reasoning,
                     )
                 finally:
                     self.__dict__.pop("_turn_context_compaction_context_messages", None)
                     self.__dict__.pop("_turn_context_compaction_usage", None)
                     self.__dict__.pop("_turn_context_compaction_status", None)
-            self._pending_user_text = None
+            continuation_exhausted = False
+            if not loop_result.paused:
+                self._pending_user_text = None
+            # Continue 达到上限仍未完成时写入可恢复终态；事件保留待续文本，
+            # 但正常 assistant_message 仍可进入模型历史，用户可显式发送“继续”。
+            if not loop_result.paused and continuation_config is not None:
+                max_followups = int(
+                    getattr(continuation_config, "max_auto_followups", 0)
+                )
+                last_reply = loop_result.last_reply
+                last_reasoning_only = bool(
+                    last_reply is not None
+                    and last_reply.reasoning
+                    and not last_reply.content.strip()
+                    and not last_reply.tool_calls
+                )
+                last_todo_incomplete = bool(self._active_todo_items) and any(
+                    not bool(item.get("completed"))
+                    for item in self._active_todo_items
+                )
+                continuation_exhausted = bool(
+                    continuation_count >= max_followups
+                    and continuation_count > 0
+                    and (last_reasoning_only or last_todo_incomplete)
+                )
+            if continuation_exhausted:
+                self._append_session_event(
+                    "run_guard_continue_exhausted",
+                    {
+                        "followups": continuation_count,
+                        "pending_user_text": pending_task_text,
+                        "reason": continuation_reason or "todo_incomplete",
+                        "todo_items": [dict(item) for item in self._active_todo_items],
+                    },
+                )
+            if continuation_exhausted:
+                self._pending_user_text = pending_task_text
             self._dispatch_plugin_hook(
                 "turn.end",
                 {
@@ -590,13 +607,17 @@ class TurnLoopMixin:
                 # 提示历史与 user_message，保证 Session 恢复投影与内存
                 # 历史一致，后续提问仍能看到被取消的任务。
                 self._append_prompt_history(text)
-                self._append_session_event("user_message", {"content": text})
+                self._append_session_event(
+                    "user_message",
+                    {"content": text, "pending_user_text": text},
+                )
                 user_message_persisted = True
             self._append_session_event(
                 "turn_cancelled",
                 {
                     "user_text": text,
                     "reason": str(terminal_exc),
+                    "pending_user_text": pending_task_text,
                     "summary": self._cancelled_turn_summary(active_turn_snapshot),
                 },
             )
@@ -637,12 +658,16 @@ class TurnLoopMixin:
                 # 取消被 Provider/协议层包装成普通异常时，同样可能发生在
                 # 消息持久化之前；补写后取消回合才能被完整恢复。
                 self._append_prompt_history(text)
-                self._append_session_event("user_message", {"content": text})
+                self._append_session_event(
+                    "user_message",
+                    {"content": text, "pending_user_text": text},
+                )
                 user_message_persisted = True
             self._append_session_event(
                 event_type,
                 {
                     "user_text": text,
+                    "pending_user_text": pending_task_text,
                     "reason": str(terminal_exc),
                     **(
                         {"summary": self._cancelled_turn_summary(active_turn_snapshot)}
@@ -675,6 +700,11 @@ class TurnLoopMixin:
             if runtime_manager is not None and runtime_snapshot is not None:
                 runtime_manager.release_turn(runtime_snapshot)
             self.__dict__.pop("_active_runtime_snapshot", None)
+            self.__dict__.pop("_active_guard_retry_state", None)
+            self.__dict__.pop("_active_run_guard_config", None)
+            self.__dict__.pop("_active_todo_items", None)
+            if pause_event_enabled and pause_token is not None:
+                reset_pause_event(pause_token)
             if had_previous_fork_snapshot:
                 self._active_fork_context_messages = previous_fork_snapshot
             else:
@@ -694,6 +724,7 @@ class TurnLoopMixin:
         report_tool_result: Callable[[ToolCall, ToolResult], None],
         check_cancelled: Callable[[], None],
         status: Callable[[str], None],
+        prompt: str = "",
         tools: Mapping[str, ToolDefinition] | None = None,
         active_runtime_snapshot: Any | None = None,
         vision_base_llm: LLMConfig | None = None,
@@ -948,6 +979,7 @@ class TurnLoopMixin:
             prepared_result, followup_messages = self._prepare_tool_result_for_model(
                 tool_call,
                 tool_result,
+                prompt=prompt,
                 active_runtime_snapshot=active_runtime_snapshot,
                 vision_base_llm=vision_base_llm,
                 check_cancelled=check_cancelled,
@@ -1273,6 +1305,8 @@ class TurnLoopMixin:
             ),
             function_name_for_tool=function_name_for_tool,
             runtime_manager=self._runtime_manager_for_protocol(),
+            reasoning_guard_config=getattr(self, "_active_run_guard_config", None),
+            guard_retry_state=getattr(self, "_active_guard_retry_state", None),
             reasoning_effort_provider=lambda: getattr(
                 self.config.llm,
                 "reasoning_effort",

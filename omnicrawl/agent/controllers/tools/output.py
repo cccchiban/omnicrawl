@@ -158,6 +158,7 @@ class ToolOutputMixin:
         tool_call: ToolCall,
         result: ToolResult,
         *,
+        prompt: str,
         active_runtime_snapshot: Any | None = None,
         vision_base_llm: LLMConfig | None = None,
         check_cancelled: Callable[[], None] | None = None,
@@ -167,10 +168,26 @@ class ToolOutputMixin:
 
         if not result.ok or not result.model_images:
             return result, ()
+        vision_prompt = prompt
+        if tool_call.name == "read_image":
+            raw_prompt = tool_call.arguments.get("prompt")
+            if not isinstance(raw_prompt, str) or not raw_prompt.strip():
+                error_text = "read_image 缺少有效的 prompt，无法进行图片分析。"
+                return (
+                    ToolResult(
+                        ok=False,
+                        output=error_text,
+                        full_output=error_text,
+                        ui_artifact=result.ui_artifact,
+                    ),
+                    (),
+                )
+            vision_prompt = raw_prompt
         if self._model_supports_vision(active_runtime_snapshot):
             return result, self._tool_result_followup_messages(
                 tool_call,
                 result,
+                prompt=vision_prompt,
                 active_runtime_snapshot=active_runtime_snapshot,
             )
 
@@ -199,7 +216,7 @@ class ToolOutputMixin:
         try:
             analysis = proxy.analyze(
                 result.model_images,
-                source_tool=tool_call.name,
+                prompt=vision_prompt,
                 cancel_check=check_cancelled,
                 on_token_usage=on_token_usage,
             )
@@ -247,6 +264,7 @@ class ToolOutputMixin:
         tool_call: ToolCall,
         result: ToolResult,
         *,
+        prompt: str,
         active_runtime_snapshot: Any | None = None,
     ) -> tuple[dict[str, Any], ...]:
         """把图片作为临时 user 观察注入视觉主模型，且不进入 Session。"""
@@ -260,10 +278,7 @@ class ToolOutputMixin:
         content: list[dict[str, Any]] = [
             {
                 "type": "text",
-                "text": (
-                    f"以下图片由刚才的 {tool_call.name} 工具生成。"
-                    "请直接观察图片内容并继续完成用户任务。"
-                ),
+                "text": prompt,
             }
         ]
         for image in result.model_images:

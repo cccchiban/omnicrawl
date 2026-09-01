@@ -14,6 +14,7 @@ from ..models import (
     ConfirmationDecision,
     RunRequest,
     TERMINAL_RUN_STATUSES,
+    UserQuestionAnswer,
 )
 
 
@@ -85,4 +86,24 @@ def confirm_run(
     )
     return data(
         {"confirmation_id": confirmation.confirmation_id, "approved": payload.approved}
+    )
+
+
+@router.post("/runs/{run_id}/questions/{question_id}")
+def answer_user_question(
+    run_id: str,
+    question_id: str,
+    payload: UserQuestionAnswer,
+    request: Request,
+) -> dict[str, Any]:
+    question = service(request).decide_user_question(
+        run_id,
+        question_id,
+        payload.answer,
+    )
+    return data(
+        {
+            "question_id": question.question_id,
+            "answer": question.answer,
+        }
     )

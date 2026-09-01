@@ -14,7 +14,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
-from textual.events import Resize
+from textual.events import Click, Resize
 from textual.geometry import Size
 from textual.selection import Selection
 from textual.screen import ModalScreen
@@ -171,6 +171,11 @@ class AssistantMessage(RichLog, can_focus=False):
     LaTeX 公式统一由 ``latex_to_text`` 转为 Unicode 近似文本（行内
     ``$..$``、块级 ``$$..$$``/``\\[..\\]``、数学 fenced block 与整行
     裸公式均覆盖）。
+
+    流式性能设计：``update`` 会全量重解析整条消息的 Markdown，成本随
+    消息长度近似线性增长；因此流式阶段由 ``append_stream_chunk`` 按
+    换行边界切成小块增量渲染（成本与该块长度成正比），仅在做全量精确
+    重绘（流式停顿、收口、回合结束）时调用 ``update``。
     """
 
     DEFAULT_CSS = """
@@ -191,6 +196,9 @@ class AssistantMessage(RichLog, can_focus=False):
             auto_scroll=False,
         )
         self._last_markdown = ""  # 最近一次完整 Markdown，供挂载后重绘
+        # ``◇ `` 显示前缀是否已经写入过渲染内容（首次流式分片补前缀，
+        # 全量重绘后复位为已写入，避免重复前缀）。
+        self._prefix_written = False
         if markdown:
             self.update(markdown)
 
@@ -206,9 +214,12 @@ class AssistantMessage(RichLog, can_focus=False):
 
         全部 LaTeX 公式（行内/块级/裸公式）统一经 ``latex_to_text`` 转为
         Unicode 近似文本，不依赖任何可选图像渲染依赖。
+
+        该方法会替换当前全部行（含此前增量追加的内容），是全量精确渲染。
         """
 
         self._last_markdown = markdown
+        self._prefix_written = markdown.startswith("◇ ")
         self.clear()
         # ``◇ `` 是工作台给 AssistantMessage 加的显示前缀，不属于 Markdown
         # 内容。数学 fenced 必须从行首开始，因此解析前暂时剥离它；普通
@@ -222,6 +233,22 @@ class AssistantMessage(RichLog, can_focus=False):
             RichMarkdown(display_prefix + latex_to_text(render_markdown)),
             scroll_end=False,
         )
+
+    def append_stream_chunk(self, markdown: str) -> None:
+        """追加一段已就绪的流式内容，渲染成本与该段长度成正比。
+
+        流式输出由调用方按换行边界切成小块后逐块调用本方法，避免每 50ms
+        全量重解析整条消息的 Markdown（长消息会达到数百毫秒/次）。
+        分块之间的跨块 Markdown 结构（如跨块围栏、加粗）在流式期间可能
+        显示为近似结果，停顿/收口时的 ``update`` 全量重绘会修正为精确结果。
+        """
+
+        if not markdown:
+            return
+        if not self._prefix_written:
+            self._prefix_written = True
+            markdown = "◇ " + markdown
+        self.write(RichMarkdown(latex_to_text(markdown)), scroll_end=False)
 
     def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
         """给 RichLog 行补充文本坐标，并绘制 Textual 原生选择样式。"""
@@ -563,17 +590,25 @@ class _UniformGrayMarkdown:
 
 
 class ReasoningDisclosure(RichLog, can_focus=False):
-    """始终展开、不抢占输入焦点的单次模型思考记录（无折叠功能）。
+    """可折叠、不抢占输入焦点的单次模型思考记录。
 
     思考内容按普通 Markdown 渲染（不再包裹围栏代码块），但视觉上统一
     使用代码块同款灰色背景与灰色前景；Maple Mono 等宽字体由终端自身
     提供，TUI 不逐控件切换字体。鼠标复制思考内容时复制的是渲染后的
     Markdown 正文。
 
-    流式性能设计（与主回复同一套节流策略）：
-    - append_delta 只累积原始思考文本；
-    - 渲染按 STREAM_RENDER_INTERVAL_SECONDS 合并刷新，突发分片不会
-      逐片全量重绘，与 AssistantMessage 保持一致。
+    默认折叠：只展示最新的 ``COLLAPSED_HEIGHT`` 行思考内容，末尾附一行
+    灰色折叠提示；思考中流式更新时持续滚动到底部（始终看到最新五行）；
+    点击折叠区展开全部思考，再次点击回到折叠（双击保留 Textual 原生
+    「全选」手势）。折叠只改变组件显示高度与滚动位置，``reasoning_text``
+    始终累积完整内容，会话投影与复制不受影响。
+
+    流式性能设计（与主回复同一套策略）：
+    - append_delta 按换行边界把原始思考切成小块增量渲染，成本与块长
+      成正比，不再逐片全量重绘；
+    - 折叠态按增量行数轻量更新高度并锚定底部，不依赖全量重绘；
+    - 流式停顿 ``STREAM_SETTLE_SECONDS`` 后（或 flush_tail 收口时）做
+      一次全量精确重绘，统一灰色样式并补折叠提示行。
     """
 
     DEFAULT_CSS = """
@@ -588,6 +623,14 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     """
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
+    # 折叠态展示的最新思考行数（不含折叠提示行）。
+    COLLAPSED_HEIGHT = 5
+    COLLAPSE_HINT = "⋯ 点击展开全部思考内容"
+    # 流式渲染块的最大长度：超过该长度且不含换行时强制落盘一次，
+    # 避免模型长时间输出单段文本时界面长时间无更新。
+    STREAM_CHUNK_LIMIT = 512
+    # 流式停顿多久后做一次全量精确重绘。
+    STREAM_SETTLE_SECONDS = 0.5
 
     def __init__(self) -> None:
         super().__init__(
@@ -596,10 +639,27 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             wrap=True,
             auto_scroll=False,
         )
-        self.reasoning_text = ""  # 完整累积文本（模型原始思考）
+        self._chunks: list[str] = []  # 全部原始思考分片（惰性拼接）
+        self._nl_count = 0  # 全部分片中的换行总数
+        self._ends_newline = True  # 当前完整文本是否以换行结尾
+        self._render_buffer = ""  # 尚未落盘的流式缓冲（保留跨行完整性）
+        self._last_delta_at = 0.0
+        self._expanded = False  # 折叠态默认只显示最新五行；点击展开全部
         self._last_render_at: float | None = None
-        self._render_timer = None  # 挂起的合并刷新定时器（textual Timer）
+        self._render_timer = None  # 停顿检查定时器（textual Timer）
         self._render_pending = False
+
+    @property
+    def reasoning_text(self) -> str:
+        """完整累积文本（模型原始思考）。"""
+
+        return "".join(self._chunks)
+
+    @property
+    def _line_count(self) -> int:
+        """当前思考文本的逻辑行数（增量累计，避免逐片 splitlines）。"""
+
+        return self._nl_count + (0 if self._ends_newline else 1)
 
     def on_mount(self) -> None:
         """挂载后重走渲染管线，保证构造期（app 未绑定）的样式正确。"""
@@ -611,8 +671,52 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     def append_delta(self, delta: str) -> None:
         if not delta:
             return
-        self.reasoning_text += delta
-        self._schedule_render()
+        self._chunks.append(delta)
+        self._nl_count += delta.count("\n")
+        self._ends_newline = delta.endswith("\n")
+        self._render_buffer += delta
+        if "\n" in self._render_buffer or len(self._render_buffer) >= self.STREAM_CHUNK_LIMIT:
+            self._flush_stream_chunk()
+        self._last_delta_at = time.monotonic()
+        if self._render_timer is not None:
+            self._render_timer.stop()
+        # 停顿 SETTLE 秒后做一次全量精确重绘（统一灰色样式、补折叠提示
+        # 与高度修正）；持续流式时该定时器会被每个分片取消并重新安排。
+        self._render_timer = self.set_timer(
+            self.STREAM_SETTLE_SECONDS,
+            self._render_markdown_now,
+        )
+        self._render_pending = True
+        if not self._expanded:
+            # 折叠态不依赖全量重绘：按当前已渲染行数轻量更新高度并锚定
+            # 底部，使思考中流式更新始终落在最新五行（与 _render_markdown
+            # 折叠高度的计算口径一致，避免停顿重绘时高度跳变）。
+            self.styles.height = min(self.COLLAPSED_HEIGHT, max(1, len(self.lines)))
+            self.anchor()
+        self.refresh()
+
+    def _flush_stream_chunk(self) -> None:
+        """把已就绪的流式缓冲按块增量渲染（保留跨行完整性）。
+
+        缓冲只在遇到换行（或超过 STREAM_CHUNK_LIMIT）时落盘，且只落盘
+        到最后一个换行为止的完整行，未换行的尾部留在缓冲中等待后续分片，
+        避免同一行文本被切成多段分片渲染而错行。
+        """
+
+        if not self._render_buffer:
+            return
+        buffer = self._render_buffer
+        self._render_buffer = ""
+        if self.parent is None:
+            return
+        head, sep, tail = buffer.rpartition("\n")
+        if sep:
+            self._render_buffer = tail
+            chunk = head + sep
+        else:
+            chunk = buffer
+        if chunk:
+            self.write(_UniformGrayMarkdown(latex_to_text(chunk)), scroll_end=False)
 
     def flush_tail(self) -> None:
         """推理阶段结束时取消挂起刷新并渲染最终 Markdown。
@@ -629,22 +733,6 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             return
         self._render_markdown()
 
-    def _schedule_render(self) -> None:
-        """前缘节流：空闲时立即渲染，忙碌时合并到 50ms 后的延时刷新。"""
-
-        now = time.monotonic()
-        if (
-            self._last_render_at is None
-            or now - self._last_render_at >= self.STREAM_RENDER_INTERVAL_SECONDS
-        ):
-            self._render_markdown()
-        elif not self._render_pending:
-            self._render_pending = True
-            self._render_timer = self.set_timer(
-                self.STREAM_RENDER_INTERVAL_SECONDS,
-                self._render_markdown_now,
-            )
-
     def _render_markdown_now(self) -> None:
         self._render_timer = None
         self._render_pending = False
@@ -653,21 +741,53 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             return
         self._render_markdown()
 
+    def on_click(self, event: Click) -> None:
+        """点击折叠区展开全部思考，再次点击回到折叠。
+
+        双击（chain == 2）是 Textual 原生「全选」手势，不参与折叠切换，
+        避免连续两次单击把展开的思考又立刻折叠回去。
+        """
+
+        if event.chain != 1:
+            return
+        self._expanded = not self._expanded
+        if self.reasoning_text:
+            self._render_markdown()
+
     def _render_markdown(self) -> None:
         """用完整 Markdown 重绘思考内容（不再包裹围栏代码块）。
 
         流式阶段与 flush_tail 渲染同一份原始 Markdown，不会出现
         `` ``` `` 定界行；最终统一为灰色前景与代码块同款灰色背景。
+
+        折叠态在正文末尾追加一行灰色提示，并把组件高度固定为「最新五行
+        内容 + 提示行」后滚动到底部，使思考中流式更新始终落在最新五行；
+        展开态回退到 CSS 的 ``height: auto``，由消息区统一滚动展示全部。
         """
 
         self._last_render_at = time.monotonic()
         if not self.reasoning_text:
             return
+        # 全量重绘会替换全部行（含此前增量追加的内容），残留的流式缓冲
+        # 文本已包含在 reasoning_text 中，直接清空。
+        self._render_buffer = ""
         self.clear()
         self.write(
             _UniformGrayMarkdown(latex_to_text(self.reasoning_text)),
             scroll_end=False,
         )
+        if self._expanded:
+            self.anchor(False)
+            self.styles.height = None
+        else:
+            self.write(Text(self.COLLAPSE_HINT, style="dim"), scroll_end=False)
+            content_rows = max(1, len(self.lines) - 1)
+            self.styles.height = min(self.COLLAPSED_HEIGHT, content_rows) + 1
+            # 锚定底部：新高度要在下一次布局才生效，直接 scroll_end 会按旧
+            # 高度算出的 max_scroll_y 停在顶部；anchor 的语义是在每次重新
+            # 布局后持续跟随底部，流式重绘与高度变更都会自动滚到最新五行
+            # （与 _scroll_conversation_if_following 同机制）。
+            self.anchor()
         self.refresh()
 
     def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
@@ -714,9 +834,9 @@ class ToolDisclosure(Static):
     不超过五行时原样显示，超出时剥离前导空行后保留首尾各两行有效行，
     中间直接折叠（不显示任何截断提示行），避免大段工具输出刷屏，同时
     让测试汇总、错误栈尾部等关键信息直接可见；write_file 与 Edit_file
-    保留完整文件变更预览，read 与写入类记忆工具的正文不展示给终端用户
-    （只保留标题行，且没有任何“已隐藏”提示）。鼠标交互已全面禁用，展开/
-    折叠不再提供切换入口。
+    保留完整文件变更预览（Edit_file 的结果区只显示“替换 N 处”摘要），
+    read 与写入类记忆工具的正文不展示给终端用户（只保留标题行，且没有
+    任何“已隐藏”提示）。鼠标交互已全面禁用，展开/折叠不再提供切换入口。
     """
 
     can_focus = False

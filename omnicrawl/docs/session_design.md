@@ -274,7 +274,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 | UI 展示 | 默认折叠标题保持紧凑；展开详情使用工具结果的完整脱敏输出。 |
 | Session 转录 | 8KB 以内内联；更大输出写入 `~/.omnicrawl/.agent_sessions/artifacts/`，JSONL 保存摘要、哈希、大小和路径。artifact 不再按 128KB 截断，`artifact_truncated` 仅作为兼容字段保留且当前始终为 `false`。 |
 
-恢复时默认加载模型摘要；只有用户要求复查完整工具输出时，再读取 artifact。Shell 测试/构建命令不得在主命令中使用 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出裁剪器；报告命令必须通过独立的 `diagnostic_command` 执行。
+恢复时默认加载模型摘要；只有用户要求复查完整工具输出时，再读取 artifact。Shell 测试/构建命令允许在主命令中裁剪输出（`tail`、`head`、`grep`、`rg` 或 PowerShell 输出筛选）以便快速定位；裁剪不得掩盖真实退出码，完整输出仍会落盘供复查，报告命令也可通过独立的 `diagnostic_command` 执行。
 
 ## 7. 会话恢复
 

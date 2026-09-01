@@ -53,48 +53,71 @@ import os
 import re
 import threading
 import time
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from omnicrawl.state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 
-try:  # lark-oapi 是可选依赖；不影响主包的普通导入和测试。
-    import lark_oapi as lark
-    from lark_oapi.api.im.v1 import (
-        CreateFileRequest,
-        CreateFileRequestBody,
-        CreateImageRequest,
-        CreateImageRequestBody,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
-        GetMessageResourceRequest,
-        PatchMessageRequest,
-        PatchMessageRequestBody,
-    )
-except ImportError:  # pragma: no cover - 是否安装由部署环境决定
-    lark = None  # type: ignore[assignment]
+# lark-oapi 是可选依赖：通过模块级 __getattr__（PEP 562）惰性加载，未安装或
+# 未实际使用（如 --check、TUI 自动启动的配置探测）时不付出导入成本；首次
+# 访问时导入并缓存到模块命名空间，此后与普通导入无异。
+_LARK_REQUEST_NAMES = (
+    "CreateFileRequest",
+    "CreateFileRequestBody",
+    "CreateImageRequest",
+    "CreateImageRequestBody",
+    "CreateMessageRequest",
+    "CreateMessageRequestBody",
+    "GetMessageResourceRequest",
+    "PatchMessageRequest",
+    "PatchMessageRequestBody",
+)
 
-    CreateFileRequest = None  # type: ignore[assignment,misc]
-    CreateFileRequestBody = None  # type: ignore[assignment,misc]
-    CreateImageRequest = None  # type: ignore[assignment,misc]
-    CreateImageRequestBody = None  # type: ignore[assignment,misc]
-    CreateMessageRequest = None  # type: ignore[assignment,misc]
-    CreateMessageRequestBody = None  # type: ignore[assignment,misc]
-    GetMessageResourceRequest = None  # type: ignore[assignment,misc]
-    PatchMessageRequest = None  # type: ignore[assignment,misc]
-    PatchMessageRequestBody = None  # type: ignore[assignment,misc]
+
+def __getattr__(name: str) -> Any:
+    """惰性加载 lark-oapi 模块与其 IM 请求类（首次访问时导入并缓存）。"""
+
+    if name == "lark":
+        try:
+            import lark_oapi as lark_module
+        except ImportError as exc:
+            raise AttributeError(name) from exc
+        globals()["lark"] = lark_module
+        return lark_module
+    if name in _LARK_REQUEST_NAMES:
+        try:
+            from lark_oapi.api.im.v1 import (  # noqa: PLC0415 - 惰性导入
+                CreateFileRequest,
+                CreateFileRequestBody,
+                CreateImageRequest,
+                CreateImageRequestBody,
+                CreateMessageRequest,
+                CreateMessageRequestBody,
+                GetMessageResourceRequest,
+                PatchMessageRequest,
+                PatchMessageRequestBody,
+            )
+        except ImportError as exc:
+            raise AttributeError(name) from exc
+        loaded = {
+            "CreateFileRequest": CreateFileRequest,
+            "CreateFileRequestBody": CreateFileRequestBody,
+            "CreateImageRequest": CreateImageRequest,
+            "CreateImageRequestBody": CreateImageRequestBody,
+            "CreateMessageRequest": CreateMessageRequest,
+            "CreateMessageRequestBody": CreateMessageRequestBody,
+            "GetMessageResourceRequest": GetMessageResourceRequest,
+            "PatchMessageRequest": PatchMessageRequest,
+            "PatchMessageRequestBody": PatchMessageRequestBody,
+        }
+        globals().update(loaded)
+        return loaded[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 LOGGER = logging.getLogger(__name__)
-
-# 飞书普通文本和卡片内容都有平台侧大小限制。保守切分，避免把边界字节数
-# 交给 SDK 后才失败；卡片详情还会再使用更小的上限。
-MAX_TEXT_CHARS = 4000
-MAX_CARD_DETAIL_CHARS = 7000
-MAX_CARD_FINAL_CHARS = 7000
-MAX_TOOL_DETAIL_CHARS = 1600
-CONFIRM_ARGUMENTS_CHARS = 1800
 
 # 长连接断线后的指数退避范围。短暂网络抖动不会导致进程退出，认证/配置错误
 # 也会持续输出日志，便于管理员在飞书后台修正后自动恢复。
@@ -104,8 +127,7 @@ RECONNECT_MAX_SECONDS = 120.0
 # 下载飞书消息资源的文件名只用于展示和临时目录落盘，必须移除路径部分。
 _SAFE_FILENAME_FALLBACK = "feishu_file"
 
-# 与 GenericAgent 的文本协议保持兼容：若某个扩展仍返回这些展示标签，发给
-# 飞书用户前去掉标签本身，但不改变真正的回答正文。
+# 扩展可能返回内部展示片段；飞书只发送对用户可读的正文。
 _DISPLAY_TAG_PATTERN = re.compile(
     r"<(?:thinking|summary|tool_use|file_content)>.*?</(?:thinking|summary|tool_use|file_content)>",
     flags=re.DOTALL,
@@ -133,6 +155,41 @@ _FILE_TYPE_MAP = {
 
 _MESSAGE_RESOURCE_TYPES = frozenset({"image", "audio", "file", "media"})
 
+# 飞书单条文本消息的上限约 4000 字符，保守取 3000 以便分段后仍有余量；
+# 卡片正文同样受平台限制，超长回答先分段再发送。
+MAX_TEXT_CHARS = 3000
+
+# 常见工具调用的中文展示名；未知工具回退为原名，避免用户看到一堆英文名。
+_TOOL_NAME_LABELS = {
+    "read_file": "读取文件",
+    "write_file": "写入文件",
+    "edit_file": "编辑文件",
+    "list_dir": "列出目录",
+    "run_command": "运行命令",
+    "bash": "执行命令",
+    "web_search": "联网搜索",
+    "search_web": "联网搜索",
+    "ask_user": "询问用户",
+    "read_webpage": "读取网页",
+    "fetch_url": "抓取网页",
+    "upload_file": "上传文件",
+    "download_file": "下载文件",
+    "create_file": "创建文件",
+    "move_file": "移动文件",
+    "copy_file": "复制文件",
+    "delete_file": "删除文件",
+    "get_weather": "查询天气",
+    "get_time": "查询时间",
+    "get_calendar": "查询日历",
+    "send_email": "发送邮件",
+    "send_message": "发送消息",
+    "search_docs": "搜索文档",
+    "summarize": "总结内容",
+    "translate": "翻译",
+    "image_gen": "生成图片",
+    "image_edit": "编辑图片",
+}
+
 # WebSocket 重连后某些事件可能再次投递。进程内短期去重足够覆盖常见重连
 # 场景，同时不会把长期会话状态写入全局配置。
 _DEDUP_TTL_SECONDS = 10 * 60
@@ -145,6 +202,21 @@ class FeishuDependencyError(RuntimeError):
 
 class FeishuTaskCancelled(RuntimeError):
     """当前飞书任务被用户或连接器生命周期主动取消。"""
+
+
+@dataclass
+class _PendingUserQuestion:
+    """等待飞书用户回答的一个 ask_user 请求。"""
+
+    question_id: str
+    kind: str
+    question: str
+    options: tuple[str, ...]
+    receive_id: str
+    receive_id_type: str
+    sender_open_id: str
+    event: threading.Event = field(default_factory=threading.Event)
+    answer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -204,20 +276,19 @@ class _TaskCard:
         self.status = "🤔 思考中..."
         self.steps: list[tuple[str, str]] = []
         self.final: str | None = None
+        self.stream: str = ""
         self.message_id: str | None = None
         self.started = False
 
     def _step_panel(self, index: int, summary: str, detail: str) -> dict[str, Any]:
         detail = detail.strip() or "_(无输出)_"
-        if len(detail) > MAX_CARD_DETAIL_CHARS:
-            detail = detail[:MAX_CARD_DETAIL_CHARS] + f"\n\n…（已截断，原始长度 {len(detail)} 字符）"
         return {
             "tag": "collapsible_panel",
             "expanded": False,
             "header": {
                 "title": {
                     "tag": "plain_text",
-                    "content": f"步骤 {index} · {summary}"[:120],
+                    "content": f"步骤 {index} · {summary}",
                 }
             },
             "elements": [{"tag": "markdown", "content": detail}],
@@ -227,6 +298,15 @@ class _TaskCard:
         elements: list[dict[str, Any]] = [
             {"tag": "markdown", "content": f"**{self.status}**"},
         ]
+        # 流式节流期间展示“正在生成”节，实时反馈 Agent 增量，避免执行过程中
+        # 用户只能看到状态行而看不到任何文本。
+        if self.stream and self.final is None:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": f"⏳ 正在生成…\n\n{self.stream}",
+                }
+            )
         for index, (summary, detail) in enumerate(self.steps, start=1):
             elements.append(self._step_panel(index, summary, detail))
         if self.final:
@@ -261,7 +341,7 @@ class _TaskCard:
         status = str(status or "").strip()
         if not status or status == self.status:
             return True
-        self.status = status[:200]
+        self.status = status
         return self._push()
 
     def add_step(self, summary: str, detail: str = "") -> bool:
@@ -269,26 +349,81 @@ class _TaskCard:
         self.status = f"⏳ 工作中 · 步骤 {len(self.steps)}"
         return self._push()
 
+    def set_stream(self, text: str) -> bool:
+        """更新流式预览；final 定型后不再展示，避免与最终回答重复。"""
+
+        if self.final is not None:
+            return True
+        self.stream = str(text or "")
+        return self._push()
+
     def done(self, text: str) -> bool:
         self.status = "✅ 已完成"
-        display = _display_text(text)
-        self.final = display[:MAX_CARD_FINAL_CHARS]
-        if len(display) > MAX_CARD_FINAL_CHARS:
-            self.final += "\n\n…（完整回答将以普通消息继续发送）"
+        # 若流式预览已包含最终回答的绝大部分，final 直接使用同一文本；
+        # 但流式是节流快照、可能比最终结果短，因此仍以最终结果为准。
+        self.final = _display_text(text)
+        self.stream = ""
         return self._push()
 
     def fail(self, message: str) -> bool:
-        self.status = f"❌ {str(message or '任务失败')[:180]}"
+        self.status = f"❌ {str(message or '任务失败')}"
         self.final = None
+        self.stream = ""
         return self._push()
 
 
+class _ToolCallCard:
+    """单次工具调用的独立飞书卡片。
+
+    工具调用开始时发送一张“⏳ 执行中”卡片；结束时 patch 同一张卡片为
+    “✅ 成功”或“❌ 失败”，只展示工具名与状态，不展示输出内容。
+    任务卡片不再累积工具步骤，最终回答与工具过程解耦。
+    """
+
+    def __init__(self, bot: "FeishuBot", receive_id: str, receive_id_type: str) -> None:
+        self._bot = bot
+        self.receive_id = receive_id
+        self.receive_id_type = receive_id_type
+        self.message_id: str | None = None
+        self.name: str = "?"
+
+    def _payload(self, status: str) -> str:
+        return _card_json(
+            [
+                {"tag": "markdown", "content": status},
+            ]
+        )
+
+    def start(self, name: str) -> bool:
+        self.name = str(name or "?")
+        self.message_id = self._bot._send_raw(
+            self.receive_id,
+            self._payload(f"🛠 工具调用：**{self.name}**\n⏳ 执行中..."),
+            msg_type="interactive",
+            receive_id_type=self.receive_id_type,
+        )
+        return bool(self.message_id)
+
+    def finish(self, ok: bool) -> bool:
+        if not self.message_id:
+            return False
+        status = f"✅ 工具调用完成：**{self.name}**" if ok else f"❌ 工具调用失败：**{self.name}**"
+        return self._bot._patch_card(self.message_id, self._payload(status))
+
+    def abort(self) -> bool:
+        if not self.message_id:
+            return False
+        return self._bot._patch_card(self.message_id, self._payload(f"⏹ 工具调用已中断：**{self.name}**"))
+
+
 def _require_lark() -> Any:
-    if lark is None:
+    try:
+        lark_module = __getattr__("lark")
+    except AttributeError as exc:
         raise FeishuDependencyError(
             "缺少可选依赖 lark-oapi，请先执行：pip install lark-oapi"
-        )
-    return lark
+        ) from exc
+    return lark_module
 
 
 def _card_json(elements: list[dict[str, Any]]) -> str:
@@ -304,38 +439,73 @@ def _card_json(elements: list[dict[str, Any]]) -> str:
     )
 
 
-def _split_text(text: str, limit: int = MAX_TEXT_CHARS) -> list[str]:
-    """按换行优先切分飞书文本，单行过长时再硬切。"""
+def _question_card_json(question: _PendingUserQuestion) -> str:
+    """生成 ask_user 选项卡片；按钮值只携带不可变问题 ID 和答案。"""
+
+    elements: list[dict[str, Any]] = [
+        {"tag": "markdown", "content": f"**{question.question}**"},
+    ]
+    for answer in question.options:
+        elements.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": answer},
+                "type": "primary",
+                "value": {
+                    "type": "ask_user",
+                    "question_id": question.question_id,
+                    "answer": answer,
+                },
+            }
+        )
+    return _card_json(elements)
+
+
+def _split_text(text: str) -> list[str]:
+    """把文本整理为待发送片段：空文本返回空列表，超长文本按安全上限分段。
+
+    飞书单条文本消息有平台侧大小限制，长回答整段发送会被截断；这里在
+    ``MAX_TEXT_CHARS`` 上限内优先按段落/列表项边界切分，保留可读性。
+    """
 
     if not text:
         return []
-    if len(text) <= limit:
-        return [text]
+    cleaned = text.rstrip("\n") or text
+    if len(cleaned) <= MAX_TEXT_CHARS:
+        return [cleaned]
 
     parts: list[str] = []
     current = ""
-    for line in text.splitlines(keepends=True):
-        if len(current) + len(line) <= limit:
-            current += line
-            continue
+    for line in cleaned.split("\n"):
+        # 段落边界（空行）和列表项是天然的切分点，避免把一段话从中间切断。
+        boundary = line == "" or line.startswith(("-", "*", "#", ">"))
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > MAX_TEXT_CHARS or (boundary and current and len(current) >= MAX_TEXT_CHARS // 2):
+            if current:
+                parts.append(current)
+                current = ""
         if current:
-            parts.append(current.rstrip("\n") or current)
-            current = ""
-        while len(line) > limit:
-            parts.append(line[:limit])
-            line = line[limit:]
-        current = line
+            current = f"{current}\n{line}" if current else line
+        else:
+            current = line
     if current:
-        parts.append(current.rstrip("\n") or current)
-    return parts or [text[:limit]]
+        parts.append(current)
+    return parts
 
 
 def _display_text(text: Any) -> str:
-    """清理内部展示标签、脱敏敏感值，并给空响应提供可读兜底。"""
+    """清理内部展示标签、脱敏敏感值，并给空响应提供可读兜底。
+
+    折叠连续空行、去除每行行尾空格，让卡片正文更整洁；文本仍保留原始
+    换行结构（表格/代码块依赖它）。
+    """
 
     raw = str(text or "")
     cleaned = _DISPLAY_TAG_PATTERN.sub("", raw).strip()
     cleaned = redact_sensitive_text(cleaned)
+    # 折叠 3 个及以上连续空行为最多 2 个，并清理行尾空格（不影响代码块/表格）。
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     return cleaned or "（任务完成，无文本输出）"
 
 
@@ -349,6 +519,14 @@ def _parse_json(value: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    """读取 SDK 对象或字典事件的同名字段。"""
+
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
 
 
 def _text_value(value: Any) -> str:
@@ -499,10 +677,12 @@ class FeishuBot:
         self._ws_client: Any | None = None
         self._agent = agent
         self._agent_confirm_bound = False
+        self._agent_ask_user_bound = False
         self._stopped = threading.Event()
         self._lock = threading.RLock()
         self._active_task: _ActiveTask | None = None
         self._pending_confirmation: _PendingConfirmation | None = None
+        self._pending_user_question: _PendingUserQuestion | None = None
         self._seen_messages: dict[str, float] = {}
         self._show_thinking = False
 
@@ -511,7 +691,7 @@ class FeishuBot:
     # ------------------------------------------------------------------
 
     def _ensure_agent(self) -> Any:
-        """惰性创建 Agent，并把工具确认回调绑定到当前 Bot。"""
+        """惰性创建 Agent，并绑定工具审批和 ask_user 回调。"""
 
         with self._lock:
             if self._agent is None:
@@ -524,6 +704,12 @@ class FeishuBot:
                     raise RuntimeError("当前 Agent 不支持工具确认回调。")
                 setter(self._confirm_tool_call)
                 self._agent_confirm_bound = True
+            if not self._agent_ask_user_bound:
+                setter = getattr(self._agent, "set_ask_user_handler", None)
+                if not callable(setter):
+                    raise RuntimeError("当前 Agent 不支持 ask_user 回调。")
+                setter(self._ask_user)
+                self._agent_ask_user_bound = True
             return self._agent
 
     def close(self) -> None:
@@ -533,12 +719,16 @@ class FeishuBot:
         with self._lock:
             task = self._active_task
             pending = self._pending_confirmation
+            question = self._pending_user_question
             ws_client = self._ws_client
         if task is not None:
             task.cancel_event.set()
         if pending is not None:
             pending.decision = False
             pending.event.set()
+        if question is not None:
+            question.answer = None
+            question.event.set()
 
         for method_name in ("stop", "close"):
             method = getattr(ws_client, method_name, None)
@@ -560,6 +750,29 @@ class FeishuBot:
     # ------------------------------------------------------------------
     # 飞书消息 API
     # ------------------------------------------------------------------
+
+    def _prewarm_agent(self) -> None:
+        """后台线程预构建 Agent，避免阻塞 WebSocket 建连。
+
+        惰性路径（``_ensure_agent``）在每条消息处理前都会调用，因此预热失败
+        不会让机器人失联：首个消息会再次尝试构建，失败时按既有异常处理回传
+        错误卡片。预热线程只负责提前把常用的 Agent 准备就绪。
+        """
+
+        def _build() -> None:
+            try:
+                self._ensure_agent()
+            except Exception:  # noqa: BLE001 - 预热失败只记录，首个消息会重试
+                LOGGER.exception(
+                    "飞书连接器预构建 Agent 失败，将在收到首个消息时重试"
+                )
+
+        thread = threading.Thread(
+            target=_build,
+            name="omnicrawl-feishu-agent-prewarm",
+            daemon=True,
+        )
+        thread.start()
 
     def _create_client(self) -> Any:
         sdk = _require_lark()
@@ -610,16 +823,24 @@ class FeishuBot:
             LOGGER.exception("发送飞书消息异常（receive_id=%s）", receive_id)
         return None
 
-    def _send_text(self, receive_id: str, text: str, *, receive_id_type: str) -> None:
-        """按飞书文本上限分段发送普通文本。"""
+    def _send_text(self, receive_id: str, text: str, *, receive_id_type: str) -> bool:
+        """发送普通文本消息，并返回所有片段是否发送成功。"""
 
-        for part in _split_text(redact_sensitive_text(str(text or ""))):
-            self._send_raw(
-                receive_id,
-                json.dumps({"text": part}, ensure_ascii=False),
-                msg_type="text",
-                receive_id_type=receive_id_type,
-            )
+        parts = _split_text(redact_sensitive_text(str(text or "")))
+        if not parts:
+            return False
+        sent = True
+        for part in parts:
+            sent = (
+                self._send_raw(
+                    receive_id,
+                    json.dumps({"text": part}, ensure_ascii=False),
+                    msg_type="text",
+                    receive_id_type=receive_id_type,
+                )
+                is not None
+            ) and sent
+        return sent
 
     def _patch_card(self, message_id: str, card_payload: str) -> bool:
         if not message_id or self._client is None:
@@ -984,9 +1205,9 @@ class FeishuBot:
 
     @staticmethod
     def _sender_open_id(event: Any) -> str:
-        sender = getattr(event, "sender", None)
-        sender_id = getattr(sender, "sender_id", None)
-        return str(getattr(sender_id, "open_id", "") or "").strip()
+        sender = _field(event, "sender", None)
+        sender_id = _field(sender, "sender_id", None)
+        return str(_field(sender_id, "open_id", "") or "").strip()
 
     def _is_allowed(self, open_id: str) -> bool:
         return self.config.public_access or bool(open_id and open_id in self.config.allowed_user_ids)
@@ -995,11 +1216,11 @@ class FeishuBot:
         """飞书 ``im.message.receive_v1`` 事件回调。"""
 
         try:
-            event = getattr(data, "event", None)
-            message = getattr(event, "message", None)
+            event = _field(data, "event", None)
+            message = _field(event, "message", None)
             if message is None:
                 return
-            message_id = str(getattr(message, "message_id", "") or "")
+            message_id = str(_field(message, "message_id", "") or "")
             if not self._claim_message_once(message_id):
                 LOGGER.info("忽略重复飞书消息：%s", message_id)
                 return
@@ -1009,14 +1230,22 @@ class FeishuBot:
                 LOGGER.warning("忽略未授权飞书用户：%s", open_id or "(unknown)")
                 return
 
-            chat_id = str(getattr(message, "chat_id", "") or "").strip()
+            chat_id = str(_field(message, "chat_id", "") or "").strip()
             receive_id = chat_id or open_id
             receive_id_type = "chat_id" if chat_id else "open_id"
             user_text, _local_files = self._build_user_message(message)
+            if self._answer_pending_user_question(
+                receive_id,
+                receive_id_type,
+                open_id,
+                user_text,
+                message_type=str(getattr(message, "message_type", "") or ""),
+            ):
+                return
             if not user_text:
                 self._send_text(
                     receive_id,
-                    f"⚠️ 暂不支持处理此类飞书消息：{getattr(message, 'message_type', 'unknown')}",
+                    f"⚠️ 暂不支持处理此类飞书消息：{_field(message, 'message_type', 'unknown')}",
                     receive_id_type=receive_id_type,
                 )
                 return
@@ -1024,10 +1253,10 @@ class FeishuBot:
             LOGGER.info(
                 "收到飞书消息（user=%s, type=%s）：%s",
                 open_id or "(unknown)",
-                getattr(message, "message_type", "unknown"),
+                _field(message, "message_type", "unknown"),
                 user_text[:200],
             )
-            if str(getattr(message, "message_type", "") or "") == "text" and user_text.startswith("/"):
+            if str(_field(message, "message_type", "") or "") == "text" and user_text.startswith("/"):
                 self._spawn(
                     self._dispatch,
                     receive_id,
@@ -1142,6 +1371,7 @@ class FeishuBot:
             "  /approve         批准敏感工具调用\n"
             "  /reject          拒绝敏感工具调用\n"
             "  /thinking on|off  是否展示思考增量\n"
+            "  /model [选择]     查看或切换模型（下一次请求生效）\n"
             "  /workspace [路径] 查看或切换工作区\n"
             "  /plan            启用主 Agent 计划模式\n\n"
             "会话与系统命令：\n"
@@ -1166,6 +1396,7 @@ class FeishuBot:
             format_plugins_status,
             format_skills_list,
             handle_mode_command,
+            handle_model_command,
             handle_reasoning_command,
             handle_review_command,
             handle_session_command,
@@ -1204,6 +1435,7 @@ class FeishuBot:
             handle_session_command,
             handle_subagent_task_command,
             handle_reasoning_command,
+            handle_model_command,
             handle_review_command,
         ):
             reply = handler(agent, text)
@@ -1369,14 +1601,26 @@ class FeishuBot:
         reasoning: list[str] = []
         card = _TaskCard(self, task.receive_id, task.receive_id_type)
         card_available = card.start()
+        tool_cards: dict[str, _ToolCallCard] = {}
+        tool_order: list[str] = []
+        # 流式节流：不逐字 patch 卡片（飞书 API 频率限制），而是周期性快照。
+        _STREAM_PATCH_INTERVAL_SECONDS = 1.5
+        last_stream_patch = time.monotonic()
 
         def check_cancelled() -> None:
             if self._stopped.is_set() or task.cancel_event.is_set():
                 raise FeishuTaskCancelled("任务已被取消。")
 
         def on_delta(delta: str) -> None:
-            if delta:
-                deltas.append(delta)
+            nonlocal last_stream_patch
+            if not delta:
+                return
+            deltas.append(delta)
+            # 节流：至少间隔 STREAM_PATCH_INTERVAL 才 patch 一次，避免 API 频率限制。
+            now = time.monotonic()
+            if card_available and now - last_stream_patch >= _STREAM_PATCH_INTERVAL_SECONDS:
+                card.set_stream("".join(deltas))
+                last_stream_patch = now
 
         def on_reasoning(delta: str) -> None:
             if self._show_thinking and delta:
@@ -1385,26 +1629,31 @@ class FeishuBot:
         def on_status(message: str) -> None:
             if not card_available:
                 return
-            card.set_status(f"⏳ {str(message or '工作中')[:180]}")
+            card.set_status(f"⏳ {str(message or '工作中')}")
 
         def on_tool_start(step: int, tool_call: Any) -> None:
-            name = str(getattr(tool_call, "name", "?"))
-            arguments = getattr(tool_call, "arguments", {}) or {}
-            safe_arguments = redact_sensitive_values(arguments) if isinstance(arguments, dict) else arguments
-            detail = json.dumps(safe_arguments, ensure_ascii=False, indent=2)
-            card.add_step(
-                f"工具：{name}",
-                detail[:MAX_TOOL_DETAIL_CHARS],
+            name = _TOOL_NAME_LABELS.get(
+                str(getattr(tool_call, "name", "?")),
+                str(getattr(tool_call, "name", "?")),
             )
+            tool_id = str(getattr(tool_call, "id", "") or "")
+            key = tool_id or f"step-{step}"
+            if key not in tool_cards:
+                tool_cards[key] = _ToolCallCard(self, task.receive_id, task.receive_id_type)
+                tool_cards[key].start(name)
+                tool_order.append(key)
 
         def on_tool_result(tool_call: Any, tool_result: Any) -> None:
-            if bool(getattr(tool_result, "ok", True)):
+            tool_id = str(getattr(tool_call, "id", "") or "")
+            ok = bool(getattr(tool_result, "ok", True))
+            # 有 id 时按 id 精确配对；无 id 时按开始顺序回退匹配。
+            key = tool_id or (tool_order[0] if tool_order else "")
+            card = tool_cards.pop(key, None)
+            if card is None:
                 return
-            name = str(getattr(tool_call, "name", "?"))
-            output = redact_sensitive_text(
-                str(getattr(tool_result, "output", "") or "")
-            )[:MAX_TOOL_DETAIL_CHARS]
-            card.add_step(f"工具失败：{name}", output)
+            card.finish(ok)
+            if key in tool_order:
+                tool_order.remove(key)
 
         try:
             agent = self._ensure_agent()
@@ -1425,8 +1674,6 @@ class FeishuBot:
                 card.add_step("思考内容", "".join(reasoning))
             card_ok = card.done(reply)
             if not card_ok:
-                self._send_text(task.receive_id, reply, receive_id_type=task.receive_id_type)
-            elif len(reply) > MAX_CARD_FINAL_CHARS:
                 self._send_text(task.receive_id, reply, receive_id_type=task.receive_id_type)
             self._send_generated_files(
                 task.receive_id,
@@ -1452,17 +1699,27 @@ class FeishuBot:
                 card.fail("任务执行失败")
             self._send_text(task.receive_id, error, receive_id_type=task.receive_id_type)
         finally:
+            # 取消/异常中断时，尚未收到完成事件的工具卡片置为“已中断”，避免
+            # 永远停留在“执行中”状态。
+            for tool_card in tool_cards.values():
+                tool_card.abort()
+            tool_cards.clear()
+            tool_order.clear()
             with self._lock:
                 if self._active_task is task:
                     self._active_task = None
                 pending = self._pending_confirmation
                 if pending is not None and pending.receive_id == task.receive_id:
                     self._pending_confirmation = None
+                question = self._pending_user_question
+                if question is not None and question.receive_id == task.receive_id:
+                    self._pending_user_question = None
 
     def _request_cancel(self, receive_id: str, receive_id_type: str) -> None:
         with self._lock:
             task = self._active_task
             pending = self._pending_confirmation
+            question = self._pending_user_question
         if task is None or task.thread is None or not task.thread.is_alive():
             self._send_text(receive_id, "当前没有正在执行的任务。", receive_id_type=receive_id_type)
             return
@@ -1473,7 +1730,181 @@ class FeishuBot:
         if pending is not None and pending.receive_id == receive_id:
             pending.decision = False
             pending.event.set()
+        if question is not None and question.receive_id == receive_id:
+            question.answer = None
+            question.event.set()
         self._send_text(receive_id, "⏹ 已请求取消当前任务，请稍候……", receive_id_type=receive_id_type)
+
+    def _ask_user(self, request: Any) -> str | None:
+        """发送飞书提问并阻塞当前任务，直到文本或卡片回答到达。"""
+
+        with self._lock:
+            task = self._active_task
+            if task is None or task.cancel_event.is_set() or self._stopped.is_set():
+                return None
+            question = _PendingUserQuestion(
+                question_id=str(getattr(request, "request_id", "") or "").strip()
+                or f"question-{time.time_ns()}",
+                kind=str(getattr(request, "kind", "question") or "question"),
+                question=str(getattr(request, "question", "") or "").strip(),
+                options=tuple(
+                    str(item)
+                    for item in (getattr(request, "options", ()) or ())
+                ),
+                receive_id=task.receive_id,
+                receive_id_type=task.receive_id_type,
+                sender_open_id=task.sender_open_id,
+            )
+            self._pending_user_question = question
+
+        if question.options:
+            sent = self._send_raw(
+                question.receive_id,
+                _question_card_json(question),
+                msg_type="interactive",
+                receive_id_type=question.receive_id_type,
+            ) is not None
+        else:
+            prompt = f"❓ {question.question}\n请直接回复答案。"
+            if question.kind == "confirm":
+                prompt += "（例如：是/否，或 yes/no）"
+            sent = self._send_text(
+                question.receive_id,
+                prompt,
+                receive_id_type=question.receive_id_type,
+            )
+        if not sent:
+            with self._lock:
+                if self._pending_user_question is question:
+                    self._pending_user_question = None
+            return None
+
+        decided = question.event.wait(self.config.confirmation_timeout_seconds)
+        with self._lock:
+            if self._pending_user_question is question:
+                self._pending_user_question = None
+        if not decided:
+            self._send_text(
+                question.receive_id,
+                "⏰ 问题超时，已取消本次等待。",
+                receive_id_type=question.receive_id_type,
+            )
+            return None
+        return question.answer
+
+    def _answer_pending_user_question(
+        self,
+        receive_id: str,
+        receive_id_type: str,
+        sender_open_id: str,
+        text: str,
+        *,
+        message_type: str,
+    ) -> bool:
+        """把普通文本消息分派为当前 ask_user 的回答，避免启动新任务。"""
+
+        if message_type != "text":
+            return False
+        with self._lock:
+            question = self._pending_user_question
+            if question is None:
+                return False
+            if question.event.is_set():
+                return True
+            if (
+                question.receive_id != receive_id
+                or question.sender_open_id != sender_open_id
+            ):
+                return False
+            answer = str(text or "").strip()
+            if answer.casefold() == "/cancel":
+                question.answer = None
+                question.event.set()
+                cancel_task = True
+            else:
+                cancel_task = False
+            if cancel_task:
+                # 取消仍复用统一任务取消路径；本消息不能再被当作新任务。
+                self._active_task.cancel_event.set()
+                self._send_text(
+                    receive_id,
+                    "⏹ 已请求取消当前任务，请稍候……",
+                    receive_id_type=receive_id_type,
+                )
+                return True
+            if not answer:
+                self._send_text(
+                    receive_id,
+                    "请发送非空回答。",
+                    receive_id_type=receive_id_type,
+                )
+                return True
+            if question.kind == "select" and answer not in question.options:
+                self._send_text(
+                    receive_id,
+                    "请点击问题卡片中的选项按钮作答。",
+                    receive_id_type=receive_id_type,
+                )
+                return True
+            question.answer = answer
+            question.event.set()
+        self._send_text(receive_id, "✅ 已收到回答。", receive_id_type=receive_id_type)
+        return True
+
+    def _answer_user_question_action(self, data: Any) -> dict[str, Any]:
+        """处理飞书交互卡片回调；兼容 SDK 对象和 dict 测试替身。
+
+        返回符合 lark-oapi ``P2CardActionTriggerResponse`` 形状的 ACK 字典
+        （含 toast）。不能返回布尔值：WebSocket 模式下 SDK 会把 handler 返回值
+        序列化为 ACK data，布尔值不满足飞书卡片回调严格 schema，会被拒绝并
+        触发 200672 card_update_illegal_format，客户端弹出"请稍后重试"。
+        """
+
+        payload = _field(data, "event", data)
+        action = _field(payload, "action", {}) or {}
+        value = _field(action, "value", {}) or {}
+        if isinstance(value, str):
+            value = _parse_json(value)
+        if not isinstance(value, Mapping) or value.get("type") != "ask_user":
+            return {"toast": {"type": "info", "content": "已忽略该卡片操作。"}}
+        question_id = str(value.get("question_id") or "").strip()
+        answer = str(value.get("answer") or "").strip()
+        operator = _field(payload, "operator", None) or _field(payload, "user", None)
+        open_id = str(_field(operator, "open_id", "") or "").strip()
+        with self._lock:
+            question = self._pending_user_question
+            if question is None or question.question_id != question_id:
+                message = "该问题已处理或已失效。"
+                reply_to = None
+            elif question.event.is_set():
+                message = "该问题已处理或已失效。"
+                reply_to = None
+            elif question.sender_open_id != open_id:
+                message = "只有发起任务的用户可以回答该问题。"
+                reply_to = question
+            elif not answer or (
+                question.kind == "select" and answer not in question.options
+            ):
+                message = "无效的提问选项。"
+                reply_to = question
+            else:
+                question.answer = answer
+                question.event.set()
+                message = "✅ 已收到回答。"
+                reply_to = question
+        if reply_to is not None:
+            self._send_text(
+                reply_to.receive_id,
+                message,
+                receive_id_type=reply_to.receive_id_type,
+            )
+        answered = reply_to is not None and bool(question is not None and question.event.is_set())
+        return {
+            "toast": {
+                "type": "success" if answered else "info",
+                "content": message,
+            }
+        }
 
     def _confirm_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Agent 工具确认回调：阻塞当前任务线程，等待飞书命令唤醒。"""
@@ -1492,7 +1923,7 @@ class FeishuBot:
             self._pending_confirmation = pending
 
         safe_arguments = redact_sensitive_values(dict(arguments or {}))
-        detail = json.dumps(safe_arguments, ensure_ascii=False, indent=2)[:CONFIRM_ARGUMENTS_CHARS]
+        detail = json.dumps(safe_arguments, ensure_ascii=False, indent=2)
         prompt = (
             "⚠️ 需要确认执行敏感操作\n"
             f"工具：{pending.tool_name}\n"
@@ -1546,15 +1977,31 @@ class FeishuBot:
         """建立飞书 WebSocket 长连接，断线后指数退避重连。"""
 
         sdk = _require_lark()
-        self._ensure_agent()
         if self.config.public_access:
             LOGGER.warning("飞书 allowed_user_ids 为空或包含 *，当前为公开访问模式。")
 
-        handler = (
+        # Agent 构建（隔离工作区、子代理/Skill 发现、Session 等）与 WebSocket
+        # 建连并行：先让机器人尽快上线，Agent 由后台线程预热，首个消息通常
+        # 已就绪；预热失败只记日志，首个消息会再次构建并按既有路径回传错误。
+        self._prewarm_agent()
+
+        handler_builder = (
             sdk.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self.handle_message)
-            .build()
         )
+        card_handler_registered = False
+        for method_name in (
+            "register_p1_card_action_trigger",
+            "register_p2_card_action_trigger",
+        ):
+            register_card_handler = getattr(handler_builder, method_name, None)
+            if callable(register_card_handler):
+                handler_builder = register_card_handler(self._answer_user_question_action)
+                card_handler_registered = True
+                break
+        if not card_handler_registered:
+            LOGGER.warning("当前 lark-oapi 未提供卡片回调注册入口，select 提问不可用。")
+        handler = handler_builder.build()
         retry_delay = RECONNECT_INITIAL_SECONDS
         while not self._stopped.is_set():
             try:
@@ -1619,20 +2066,35 @@ def main(argv: list[str] | None = None) -> int:
             "或在 config.toml 的 [feishu] 段填写。"
         )
         return 1
-    if lark is None:
-        print("缺少飞书 SDK：请先执行 pip install lark-oapi。")
+    try:
+        _require_lark()
+    except FeishuDependencyError as exc:
+        print(f"缺少飞书 SDK：{exc}")
         return 1
 
-    bot = FeishuBot(config)
+    # 同一平台只允许一个活动连接器实例：多个 TUI/API 进程并存时，后启动的
+    # 连接器检测到已有实例（例如由某个 TUI 自动拉起）就优雅退出，避免飞书
+    # WebSocket 被重复建立。手工运行与自动启动共用同一把单例锁。
+    from omnicrawl.workspace.connector_singleton import ConnectorInstanceLock
+
+    # 拿不到锁说明已有其他实例在运行：不构造 Bot、不建长连接，直接退出。
+    instance_lock = ConnectorInstanceLock("飞书")
+    if not instance_lock.try_acquire():
+        print("已有飞书连接器实例在运行，本次启动被跳过。")
+        return 0
     try:
-        bot.run_forever()
-    except FeishuDependencyError as exc:
-        print(f"飞书连接器无法启动：{exc}")
-        return 1
-    except KeyboardInterrupt:
-        print("\n已停止飞书 Bot。")
+        bot = FeishuBot(config)
+        try:
+            bot.run_forever()
+        except FeishuDependencyError as exc:
+            print(f"飞书连接器无法启动：{exc}")
+            return 1
+        except KeyboardInterrupt:
+            print("\n已停止飞书 Bot。")
+        finally:
+            bot.close()
     finally:
-        bot.close()
+        instance_lock.release()
     return 0
 
 

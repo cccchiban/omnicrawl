@@ -14,7 +14,6 @@ P2 重构从 ``ui/fullscreen/__init__.py`` 的 ``OmniCrawlApp`` 拆出的独立�
 
 from __future__ import annotations
 
-import re
 import time
 from datetime import datetime
 from typing import Any
@@ -23,8 +22,11 @@ from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Static, TextArea
 
-from ....agent.controllers.turn.loop import _extract_user_confirmation_details
-from ....agent.toolkit.tools import TODO_TOOL_NAME, public_tool_arguments
+from ....agent.toolkit.tools import (
+    ASK_USER_TOOL_NAME,
+    TODO_TOOL_NAME,
+    public_tool_arguments,
+)
 from ..terminal.theme import TEXT_MUTED, TOOL_TEXT
 from .widgets import (
     AssistantMessage,
@@ -38,12 +40,63 @@ from .widgets import (
 class RenderingMixin:
     """原 ``OmniCrawlApp`` 的事件聚合与流式渲染方法。"""
 
+    @property
+    def _stream_markdown(self) -> str:
+        """当前流式消息的完整 Markdown（含 ``◇ `` 前缀，惰性拼接）。
+
+        流式分片先累积到 ``_stream_chunks``，仅在停顿/收口全量重绘时
+        join，避免 ``str +=`` 的 O(n²) 累积。
+        """
+
+        return "◇ " + "".join(self._stream_chunks)
+
+    @_stream_markdown.setter
+    def _stream_markdown(self, value: str) -> None:
+        if value:
+            if value.startswith("◇ "):
+                value = value[2:]
+            self._stream_chunks = [value]
+        else:
+            self._stream_chunks = []
+
     @staticmethod
     def _is_conversation_at_end(conversation: VerticalScroll) -> bool:
         """判断用户是否仍在消息流底部，避免后台更新抢回滚动位置。"""
 
         return conversation.is_vertical_scroll_end
 
+
+    def _stream_logical_lines(self) -> int:
+        """当前流式消息的逻辑行数（增量累计，避免逐分片 splitlines）。"""
+
+        return self._stream_nl_count + (0 if self._stream_ends_newline else 1)
+
+    def _stream_is_settled(self) -> bool:
+        """距最后一个流式分片是否已超过停顿阈值。"""
+
+        return (time.monotonic() - self._stream_last_delta_at) >= self.STREAM_SETTLE_SECONDS
+
+    def _flush_stream_buffer(self, message: AssistantMessage) -> None:
+        """把已就绪的流式缓冲按块增量渲染（保留跨行完整性）。
+
+        缓冲只在遇到换行（或超过 STREAM_CHUNK_LIMIT）时落盘，且只落盘到
+        最后一个换行为止的完整行，未换行的尾部留在缓冲中等待后续分片，
+        避免同一行文本被切成多段分片渲染而错行。行数/可见性与滚动由
+        调用方统一处理。
+        """
+
+        if not self._stream_render_buffer:
+            return
+        buffer = self._stream_render_buffer
+        self._stream_render_buffer = ""
+        head, sep, tail = buffer.rpartition("\n")
+        if sep:
+            self._stream_render_buffer = tail
+            chunk = head + sep
+        else:
+            chunk = buffer
+        if chunk:
+            message.append_stream_chunk(chunk)
 
     @staticmethod
     def _scroll_conversation_if_following(
@@ -59,7 +112,11 @@ class RenderingMixin:
                 # Textual 的锚定语义会在内容重新布局后持续跟随底部，并在用户
                 # 手动滚动时自动释放；这比跨刷新排队 scroll_end 更能避免流式
                 # 更新竞态。
-                conversation.anchor()
+                # 已锚定时不再重复调用 anchor()（其内部会立即 scroll_end，
+                # 触发整条会话同步布局）：流式/动画高频路径只需维持锚定状态，
+                # 布局期 compositor 会自动跟随底部。
+                if not conversation.is_anchored:
+                    conversation.anchor()
                 if defer_until_refresh:
                     conversation.call_after_refresh(conversation.scroll_end, animate=False)
             else:
@@ -185,9 +242,6 @@ class RenderingMixin:
                 content = payload.get("session_content", payload.get("content"))
                 if isinstance(content, str) and content.strip():
                     self._append_message("assistant", content)
-                confirmation_request = payload.get("user_confirmation")
-                if isinstance(confirmation_request, list) and confirmation_request:
-                    self._set_confirmation_required(confirmation_request)
                 continue
 
             if event_type == "tool_call_requested":
@@ -202,11 +256,15 @@ class RenderingMixin:
                     # 恢复时使用最后一次提交的清单重建输入框上方计划区。
                     self._handle_todo_update({"todos": arguments.get("todos", [])})
                     continue
+                if tool_name == ASK_USER_TOOL_NAME:
+                    # ask_user 的问题属于入口控制面板，不把控制参数当成
+                    # 普通会话消息或工具卡正文重放。
+                    continue
                 widget = ToolDisclosure(tool_name, arguments, event_time)
                 conversation = self.query_one("#conversation", VerticalScroll)
                 conversation.mount(widget)
                 self._register_conversation_widget(widget, tool_name)
-                self.conversation_text += f"{tool_name}\n"
+                self._append_conversation_text(f"{tool_name}\n")
                 call_id = str(payload.get("tool_call_id") or "").strip()
                 if call_id:
                     pending_by_id[call_id] = widget
@@ -226,7 +284,10 @@ class RenderingMixin:
                 continue
 
             if event_type == "tool_result":
-                if str(payload.get("tool") or "").strip() == TODO_TOOL_NAME:
+                if str(payload.get("tool") or "").strip() in {
+                    TODO_TOOL_NAME,
+                    ASK_USER_TOOL_NAME,
+                }:
                     continue
                 widget = find_pending(payload)
                 if widget is None:
@@ -479,7 +540,9 @@ class RenderingMixin:
     def _handle_tool_start(self, step: int, tool_call: Any) -> None:
         del step  # Agent 仍按步骤回调，但极简 HUD 不展示内部步骤编号。
         self._hide_welcome_logo()
-        self._render_stream_markdown()
+        # 工具调用是模型 pass 的明确边界：把此前流式分片全量收口为精确
+        # Markdown，再封口回复组件。
+        self._render_stream_markdown(force=True)
         # 工具调用是模型 pass 的明确边界。必须封口此前的回复组件，否则工具
         # 返回后的最终回答会继续写入旧组件，在视觉上倒插到工具记录之前。
         if self._reasoning_message is not None:
@@ -487,6 +550,10 @@ class RenderingMixin:
             self._reasoning_message.flush_tail()
         self._stream_message = None
         self._stream_markdown = ""
+        self._stream_render_buffer = ""
+        self._stream_nl_count = 0
+        self._stream_ends_newline = True
+        self._stream_last_delta_at = 0.0
         self._stream_start_text_len = None
         self._reasoning_message = None
         if str(getattr(tool_call, "name", "")) == TODO_TOOL_NAME:
@@ -502,7 +569,7 @@ class RenderingMixin:
         self._tool_messages[self._tool_call_key(tool_call)] = tool_message
         conversation.mount(tool_message)
         self._register_conversation_widget(tool_message, str(tool_call.name))
-        self.conversation_text += f"{tool_call.name}\n"
+        self._append_conversation_text(f"{tool_call.name}\n")
         self._set_runtime_status(
             "正在调用",
             "working",
@@ -512,7 +579,10 @@ class RenderingMixin:
 
 
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
-        if str(getattr(tool_call, "name", "")) == TODO_TOOL_NAME:
+        if str(getattr(tool_call, "name", "")) in {
+            TODO_TOOL_NAME,
+            ASK_USER_TOOL_NAME,
+        }:
             self._tool_messages.pop(self._tool_call_key(tool_call), None)
             self._set_runtime_status("正在思考", "working")
             return
@@ -539,7 +609,7 @@ class RenderingMixin:
             finished_at=completed_at if completed_at is not None else time.perf_counter(),
         )
         self._register_conversation_widget(tool_message)
-        self.conversation_text += f"结果  {tool_message.status}\n{output}\n"
+        self._append_conversation_text(f"结果  {tool_message.status}\n{output}\n")
         self._scroll_conversation_if_following(conversation, follow_latest)
         self._set_runtime_status("正在思考", "working")
 
@@ -656,14 +726,19 @@ class RenderingMixin:
             conversation.mount(self._reasoning_message)
         if self._reasoning_message is not None:
             self._reasoning_message.append_delta(delta)
-            self._set_conversation_widget_line_count(
+            # 行数由组件增量累计，避免逐分片对完整思考文本 splitlines。
+            self._set_conversation_widget_lines(
                 self._reasoning_message,
-                self._reasoning_message.reasoning_text,
+                self._reasoning_message._line_count,
             )
             self._request_conversation_visibility_refresh()
         self._record_generation_delta(delta)
         self._set_runtime_status("正在思考", "working")
-        self._scroll_conversation_if_following(conversation, follow_latest)
+        self._scroll_conversation_if_following(
+            conversation,
+            follow_latest,
+            defer_until_refresh=True,
+        )
 
 
     def _append_delta(self, delta: str) -> None:
@@ -673,9 +748,9 @@ class RenderingMixin:
         if self._reasoning_message is not None:
             # 思考阶段结束，同步补齐未完成行，保证推理内容展示完整。
             self._reasoning_message.flush_tail()
-            self._set_conversation_widget_line_count(
+            self._set_conversation_widget_lines(
                 self._reasoning_message,
-                self._reasoning_message.reasoning_text,
+                self._reasoning_message._line_count,
             )
             self._request_conversation_visibility_refresh()
         self._reasoning_message = None
@@ -683,15 +758,24 @@ class RenderingMixin:
         follow_latest = self._is_conversation_at_end(conversation)
         if self._stream_message is None:
             # 记录本轮流式输出起点，供模型流中断自动重试前回滚已显示内容。
-            self._stream_start_text_len = len(self.conversation_text)
-            self._stream_message = AssistantMessage(self._stream_markdown)
-            self._stream_markdown = "◇ "
+            self._stream_start_text_len = self._conversation_text_len
+            self._stream_message = AssistantMessage()
             conversation.mount(self._stream_message)
             self._register_conversation_widget(self._stream_message, "")
-        self._stream_markdown += delta
-        self._set_conversation_widget_line_count(self._stream_message, self._stream_markdown)
+        self._stream_chunks.append(delta)
+        self._stream_nl_count += delta.count("\n")
+        self._stream_ends_newline = delta.endswith("\n")
+        self._stream_last_delta_at = time.monotonic()
+        # 换行边界缓冲：只增量渲染已就绪的完整行，避免逐分片全量重解析
+        # 整条消息的 Markdown（长消息数百毫秒/次）。
+        self._stream_render_buffer += delta
+        if "\n" in self._stream_render_buffer or len(
+            self._stream_render_buffer
+        ) >= self.STREAM_CHUNK_LIMIT:
+            self._flush_stream_buffer(self._stream_message)
+        self._set_conversation_widget_lines(self._stream_message, self._stream_logical_lines())
         self._request_conversation_visibility_refresh()
-        self.conversation_text += f"{delta}\n"
+        self._append_conversation_text(f"{delta}\n")
         self._record_generation_delta(delta)
         if not self._stream_render_pending:
             self._stream_render_pending = True
@@ -701,67 +785,50 @@ class RenderingMixin:
             "working",
             follow_latest=follow_latest,
         )
-        self._scroll_conversation_if_following(conversation, follow_latest)
+        self._scroll_conversation_if_following(
+            conversation,
+            follow_latest,
+            defer_until_refresh=True,
+        )
 
 
-    def _render_stream_markdown(self) -> None:
-        """合并短时间内的流式分片，避免逐片重解析完整 Markdown。"""
+    def _render_stream_markdown(self, *, force: bool = False) -> None:
+        """合并短时间内的流式分片，避免逐片重解析完整 Markdown。
+
+        流式期间正文已由 ``_append_delta`` 按换行边界增量渲染；本方法只
+        在流式停顿（``STREAM_SETTLE_SECONDS``）或显式收口（``force``，
+        工具边界/回合结束）时做一次全量精确重绘，修正跨分块 Markdown 的
+        近似结果。超过 ``STREAM_FULL_RENDER_LIMIT`` 的长消息在停顿时不再
+        全量重绘（保留增量渲染结果），避免一次停顿触发数百毫秒的同步
+        重解析。
+        """
 
         self._stream_render_pending = False
-        # 选项块和确认标记是模型与 UI 间的内部协议，不应显示给用户。
-        visible_markdown = re.sub(
-            r"\[选项\]\s*.*?\s*\[/选项\]",
-            "",
-            self._stream_markdown,
-            flags=re.DOTALL,
+        message = self._stream_message
+        if message is None or message.parent is None:
+            return
+        conversations = self.query("#conversation")
+        if not conversations:
+            return
+        conversation = conversations.first(VerticalScroll)
+        follow_latest = self._is_conversation_at_end(conversation)
+        settled = force or self._stream_is_settled()
+        if settled:
+            markdown = self._stream_markdown
+            if force or len(markdown) <= self.STREAM_FULL_RENDER_LIMIT:
+                self._stream_render_buffer = ""
+                message.update(markdown)
+            elif self._stream_render_buffer:
+                # 长消息停顿：不做全量重绘，但要把残留的未换行缓冲落盘，
+                # 避免尾部文本停在不可见状态。
+                self._flush_stream_buffer(message)
+        self._set_conversation_widget_lines(message, self._stream_logical_lines())
+        self._request_conversation_visibility_refresh()
+        self._scroll_conversation_if_following(
+            conversation,
+            follow_latest,
+            defer_until_refresh=True,
         )
-        # 兼容模型漏写 [选项] 包裹标签、但已输出确认标记的情况；这类
-        # 连续 Markdown 列表会在回合收尾时由 Agent 解析为复选框，流式层
-        # 也必须同步隐藏，否则同一答案会同时出现在对话区和预选区。
-        if "[需要用户确认]" in visible_markdown:
-            lines = visible_markdown.splitlines()
-            list_pattern = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
-            runs: list[tuple[int, int]] = []
-            run_start: int | None = None
-            for index, line in enumerate(lines + [""]):
-                if list_pattern.match(line):
-                    if run_start is None:
-                        run_start = index
-                    continue
-                if run_start is not None:
-                    runs.append((run_start, index))
-                    run_start = None
-            if runs:
-                start, end = runs[-1]
-                del lines[start:end]
-                visible_markdown = "\n".join(lines)
-        visible_markdown = visible_markdown.replace("[需要用户确认]", "").rstrip()
-        if "[需要用户确认]" in self._stream_markdown:
-            _model_visible, _questions, _groups, _required, session_text = (
-                _extract_user_confirmation_details(self._stream_markdown)
-            )
-            visible_markdown = session_text
-        if visible_markdown != self._stream_markdown and self._stream_message is not None:
-            self._stream_message.update(visible_markdown)
-        if self._stream_message is not None:
-            self._set_conversation_widget_line_count(
-                self._stream_message,
-                visible_markdown,
-            )
-            self._request_conversation_visibility_refresh()
-        if self._stream_message is not None:
-            conversations = self.query("#conversation")
-            if not conversations or self._stream_message.parent is None:
-                self._stream_render_pending = False
-                return
-            conversation = conversations.first(VerticalScroll)
-            follow_latest = self._is_conversation_at_end(conversation)
-            self._stream_message.update(visible_markdown)
-            self._scroll_conversation_if_following(
-                conversation,
-                follow_latest,
-                defer_until_refresh=True,
-            )
 
 
     def _rollback_stream(self) -> None:
@@ -779,11 +846,15 @@ class RenderingMixin:
                 pass
             self._stream_message = None
         self._stream_markdown = ""
+        self._stream_render_buffer = ""
+        self._stream_nl_count = 0
+        self._stream_ends_newline = True
+        self._stream_last_delta_at = 0.0
         self._stream_render_pending = False
         self._mark_conversation_visibility_dirty()
         self._request_conversation_visibility_refresh()
         if self._stream_start_text_len is not None:
-            self.conversation_text = self.conversation_text[: self._stream_start_text_len]
+            self._truncate_conversation_text(self._stream_start_text_len)
             self._stream_start_text_len = None
         if self._reasoning_message is not None:
             try:
@@ -817,7 +888,11 @@ class RenderingMixin:
         follow_latest = self._is_conversation_at_end(conversation)
         follow_with_runtime_status = self._runtime_status_message is not None
         if merge_with_previous and self._stream_message is not None:
+            # 合并路径不常用：直接全量收口，保证内容与行数一致。
             self._stream_markdown += text
+            self._stream_render_buffer = ""
+            self._stream_nl_count = self._stream_markdown.count("\n")
+            self._stream_ends_newline = self._stream_markdown.endswith("\n")
             self._stream_message.update(self._stream_markdown)
             self._set_conversation_widget_line_count(self._stream_message, self._stream_markdown)
             self._request_conversation_visibility_refresh()
@@ -849,21 +924,30 @@ class RenderingMixin:
                 self._stream_message = widget
                 self._stream_markdown = text
             else:
+                # 若仍有未收口的流式消息（如流式期间插入状态消息），先全量
+                # 收口为精确 Markdown，避免其停留在分块渲染的近似状态。
+                if self._stream_message is not None:
+                    self._render_stream_markdown(force=True)
                 self._stream_message = None
                 self._stream_markdown = ""
+                self._stream_render_buffer = ""
+                self._stream_nl_count = 0
+                self._stream_ends_newline = True
+                self._stream_last_delta_at = 0.0
                 self._stream_start_text_len = None
             conversation.mount(widget)
             self._register_conversation_widget(widget, text)
             if track_tool:
                 self._tool_messages[f"legacy:{id(widget)}"] = widget
-        self.conversation_text += f"{text}\n"
+        self._append_conversation_text(f"{text}\n")
         if follow_with_runtime_status:
             self._render_status_indicator(follow_latest=follow_latest)
         self._scroll_conversation_if_following(conversation, follow_latest)
 
 
     def _finish_turn(self) -> None:
-        self._render_stream_markdown()
+        # 回合结束必须收口：把流式分块渲染的近似结果重绘为精确 Markdown。
+        self._render_stream_markdown(force=True)
         was_cancelled = self._cancel_requested.is_set()
         self.is_generating = False
         # 派生评审流程结束：退出子代理对话流模式，后续子代理事件恢复进度树。
@@ -972,5 +1056,9 @@ class RenderingMixin:
             and conversation.children[-1] is not status
         ):
             conversation.move_child(status, after=conversation.children[-1])
-        self._scroll_conversation_if_following(conversation, follow_latest)
+        self._scroll_conversation_if_following(
+            conversation,
+            follow_latest,
+            defer_until_refresh=True,
+        )
 

@@ -14,6 +14,7 @@ from ...subagents.worktree import (
     cleanup_worktree_session,
     collect_worktree_artifacts,
     create_worktree_session,
+    summarize_worktree_changes,
 )
 
 from ..shared import (
@@ -132,15 +133,45 @@ class SubAgentWorktreeMixin:
         except WorktreeError as exc:
             raise AgentError(f"应用 worktree 失败：{exc}") from exc
         if cleanup:
-            self.discard_subagent_worktree(key)
+            # 变更已应用到主工作区，清理时不再需要变更保护。
+            self.discard_subagent_worktree(key, force=True)
         return message
 
-    def discard_subagent_worktree(self, key: str, *, remove_branch: bool = True) -> str:
-        """丢弃 worktree 会话并清理目录/分支。"""
+    def discard_subagent_worktree(
+        self,
+        key: str,
+        *,
+        remove_branch: bool = True,
+        force: bool = False,
+    ) -> str:
+        """丢弃 worktree 会话并清理目录/分支。
+
+        ``force=False``（默认）启用变更保护：worktree 存在未提交改动或相对
+        基线的新提交时拒绝丢弃，避免静默丢失尚未 apply 回主工作区的成果；
+        调用方确认后传 ``force=True`` 强制清理。
+        """
 
         session = self._lookup_subagent_worktree_session(key)
         if session is None:
             raise AgentError(f"未找到 SubAgent worktree 会话：{key}")
+        if not force:
+            try:
+                summary = summarize_worktree_changes(session)
+            except WorktreeError as exc:
+                raise AgentError(
+                    f"worktree 变更检查失败（可传 force=true 强制丢弃）：{exc}"
+                ) from exc
+            if summary.uncommitted > 0 or summary.new_commits > 0:
+                details: list[str] = []
+                if summary.uncommitted > 0:
+                    details.append(f"{summary.uncommitted} 个未提交/未跟踪文件")
+                if summary.new_commits > 0:
+                    details.append(f"{summary.new_commits} 个新提交（尚未 apply 回主工作区）")
+                raise AgentError(
+                    "worktree 仍有未处理的变更，拒绝丢弃："
+                    + "、".join(details)
+                    + "；如需强制丢弃请设置 force=true。"
+                )
         try:
             cleanup_worktree_session(session, remove_branch=remove_branch)
         except WorktreeError as exc:

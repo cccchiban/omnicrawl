@@ -22,6 +22,8 @@ from ...workspace_tools import (
 
 
 TODO_TOOL_NAME = "update_todos"
+ASK_USER_TOOL_NAME = "ask_user"
+PAUSE_WORK_TOOL_NAME = "pause_work"
 
 TOOL_NAME_ALIASES = {
     "bashcommand": "bash",
@@ -307,6 +309,8 @@ def build_agent_tools(
     subagent: ToolRunner | None = None,
     subagent_types: Sequence[str] = (),
     update_todos: ToolRunner | None = None,
+    ask_user: ToolRunner | None = None,
+    pause_work: ToolRunner | None = None,
     windows_window: ToolRunner | None = None,
     windows_control: ToolRunner | None = None,
     windows_input: ToolRunner | None = None,
@@ -388,18 +392,23 @@ def build_agent_tools(
                 [
                     ToolDefinition(
                         name="read_image",
-                        description='是什么：读取本机 PNG、JPEG、WebP 或 GIF 图片并提供视觉附件。怎么做：需要分析图片内容时使用；只需文件名或图片 URL 时不用；path 可使用工作区相对路径或本机绝对路径，不支持 URL。怎样做：成功返回 JSON：path、media_type、bytes、detail、vision_attachment；同时附加图片；失败返回文本错误。建议：先确定图片路径，再按模型能力选择 detail；超大图片会增加内存占用和请求延迟。',
+                        description='是什么：读取本机 PNG、JPEG、WebP 或 GIF 图片，并将 prompt 与图片一起交给视觉模型分析。怎么做：需要分析图片内容时使用；只需文件名或图片 URL 时不用；path 可使用工作区相对路径或本机绝对路径，不支持 URL；prompt 必须明确说明需要识别的内容；detail 可按模型能力选择。怎样做：成功返回 JSON：path、media_type、bytes、detail、vision_attachment；同时附加图片；失败返回文本错误。建议：超大文件可能造成明显内存占用和模型请求延迟。',
                         argument_schema=json.dumps(
                             {
                                 "type": "object",
                                 "properties": {
                                     "path": {"type": "string", "minLength": 1},
+                                    "prompt": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": "需要视觉模型重点识别的内容。",
+                                    },
                                     "detail": {
                                         "type": "string",
                                         "enum": ["auto", "low", "high"],
                                     },
                                 },
-                                "required": ["path"],
+                                "required": ["path", "prompt"],
                                 "additionalProperties": False,
                             },
                             ensure_ascii=False,
@@ -492,7 +501,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="Edit_file",
-                description='是什么：在单个 UTF-8 文本文件中按字面替换 old_text。怎么做：需要小范围、明确目标的编辑时使用；不适合大范围重写或不确定匹配内容时使用；old_text 必须非空。怎样做：成功返回‘已修改 path，替换 N 处’，只展示首个替换位置前后各 2 行（文件边界除外）的修改后内容，格式为‘行号: 内容’；省略 count 时必须恰好匹配 1 处，匹配 0 处或多处均返回错误码、原因和调整建议且不写入；显式 count=1 替换第 1 处，count=0 替换全部。建议：先 read 确认原文并保留足够上下文；多处匹配时提供 count 或补充上下文使其唯一，错误码可指导重试。',
+                description='是什么：在单个 UTF-8 文本文件中按字面替换 old_text。怎么做：需要小范围、明确目标的编辑时使用；不适合大范围重写或不确定匹配内容时使用；old_text 必须非空。怎样做：成功返回‘已修改 path，替换 N 处’，并附首个替换位置前后各 2 行的带行号上下文（仅供模型核对；TUI 只显示‘替换 N 处’摘要与 diff 预览，且旁注行号为文件真实行号）；省略 count 时必须恰好匹配 1 处，匹配 0 处或多处均返回错误码、原因和调整建议且不写入；显式 count=1 替换第 1 处，count=0 替换全部。建议：先 read 确认原文并保留足够上下文；多处匹配时提供 count 或补充上下文使其唯一，错误码可指导重试。',
                 argument_schema='{"path": "main.py", "old_text": "...", "new_text": "...", "count": 1}',
                 requires_confirmation=True,
                 run=edit_file,
@@ -509,7 +518,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="bash",
-                description='是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令不可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：主命令保留完整验证过程，日志筛选放 diagnostic_command；pipefail 保证管道上游失败不被掩盖。',
+                description='是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。',
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -536,7 +545,7 @@ def build_agent_tools(
             ),
             ToolDefinition(
                 name="powershell",
-                description='是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令不可用 Select-Object/Select-String 裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；诊断筛选放独立 diagnostic_command，避免把验证结果截断。',
+                description='是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。',
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -836,6 +845,61 @@ def build_agent_tools(
                 run=update_todos,
             )
         )
+    if ask_user is not None:
+        tools.append(
+            ToolDefinition(
+                name=ASK_USER_TOOL_NAME,
+                description=(
+                    "是什么：通过工具向用户提出一个问题并等待回答（阻塞）。"
+                    "怎么做：question、select、confirm 三种 kind 都必须同时提供 question 和非空 options；"
+                    "kind=select 由用户从 options 中单选，question/confirm 默认也从 options 中选择，"
+                    "用户仍可输入自定义文本作为答案；每次调用只问一个问题。"
+                    "怎样做：成功返回 JSON：kind、question、options、answer。"
+                    "建议：需要用户补充信息、选择方案或确认操作时必须调用本工具，"
+                    "不要在普通回复中输出任何提问控制标记；多个问题应多次调用本工具。"
+                ),
+                argument_schema=json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["question", "select", "confirm"],
+                            },
+                            "question": {"type": "string", "minLength": 1},
+                            "options": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "string", "minLength": 1},
+                            },
+                        },
+                        "required": ["kind", "question", "options"],
+                        "additionalProperties": False,
+                    },
+                    ensure_ascii=False,
+                ),
+                requires_confirmation=False,
+                run=ask_user,
+            )
+        )
+    if pause_work is not None:
+        tools.append(
+            ToolDefinition(
+                name=PAUSE_WORK_TOOL_NAME,
+                description=(
+                    "是什么：主动暂停当前 Agent 的自动续跑和后续模型请求。"
+                    "怎么做：当任务需要用户检查、补充信息或稍后继续时调用；"
+                    "调用后当前工具批次完成，系统不会自动重试或继续。"
+                    "怎样做：无需参数，成功返回暂停状态；用户发送‘继续’即可恢复。"
+                ),
+                argument_schema=json.dumps(
+                    {"type": "object", "properties": {}, "additionalProperties": False},
+                    ensure_ascii=False,
+                ),
+                requires_confirmation=False,
+                run=pause_work,
+            )
+        )
     if evidence_recall is not None:
         tools.append(
             ToolDefinition(
@@ -953,7 +1017,7 @@ def build_agent_tools(
         tools.append(
             ToolDefinition(
                 name="subagent",
-                description='是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。',
+                description='是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。',
                 argument_schema=json.dumps(
                     {
                         "type": "object",
@@ -984,6 +1048,7 @@ def build_agent_tools(
                             },
                             "cleanup": {"type": "boolean"},
                             "remove_branch": {"type": "boolean"},
+                            "force": {"type": "boolean"},
                             "tasks": {
                                 "type": "array",
                                 "minItems": 1,

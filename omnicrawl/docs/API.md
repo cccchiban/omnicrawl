@@ -69,10 +69,10 @@ Authorization: Bearer <token>
 
 | HTTP | code | 说明 |
 |---|---|---|
-| 400 | `INVALID_MESSAGE`、`INVALID_EVENT_ID` | 请求语义不合法 |
+| 400 | `INVALID_MESSAGE`、`INVALID_EVENT_ID`、`INVALID_ANSWER` | 请求语义不合法 |
 | 401 | `UNAUTHORIZED` | Token 缺失或错误 |
-| 404 | `RUN_NOT_FOUND`、`CONFIRMATION_NOT_FOUND`、`SUBAGENT_CONFIRMATION_NOT_FOUND`、`ARTIFACT_NOT_FOUND`、`SUBAGENT_NOT_FOUND` | 资源不存在或不属于当前会话 |
-| 409 | `RUN_ACTIVE`、`CONFIRMATION_RESOLVED` | 当前状态不允许该操作 |
+| 404 | `RUN_NOT_FOUND`、`CONFIRMATION_NOT_FOUND`、`QUESTION_NOT_FOUND`、`SUBAGENT_CONFIRMATION_NOT_FOUND`、`ARTIFACT_NOT_FOUND`、`SUBAGENT_NOT_FOUND` | 资源不存在或不属于当前会话 |
+| 409 | `RUN_ACTIVE`、`CONFIRMATION_RESOLVED`、`QUESTION_RESOLVED` | 当前状态不允许该操作 |
 | 503 | `SUBAGENT_UNAVAILABLE` | SubAgent 功能未启用或当前不可用 |
 | 422 | `VALIDATION_ERROR` | 请求体或查询参数校验失败 |
 
@@ -89,6 +89,7 @@ Authorization: Bearer <token>
 | GET | `/api/v1/runs/{run_id}/events` | SSE 事件流 |
 | POST | `/api/v1/runs/{run_id}/cancel` | 请求取消任务 |
 | POST | `/api/v1/runs/{run_id}/confirmations/{id}` | 提交 `{ "approved": true }` |
+| POST | `/api/v1/runs/{run_id}/questions/{id}` | 回答 `ask_user` 提问，提交 `{ "answer": "..." }`；select 必须使用已声明选项 |
 | GET | `/api/v1/monitors` | 列出当前 Agent 受管的后台任务 |
 | GET | `/api/v1/monitors/{monitor_id}` | 查询一个后台任务状态 |
 | GET | `/api/v1/monitors/{monitor_id}/events` | 后台任务日志 SSE；支持 `cursor`、`Last-Event-ID`、`follow` 和 `max_events` |
@@ -244,6 +245,8 @@ while (true) {
 ```
 
 收到父 Run 内的 `confirmation.required` 后，使用其中的 `confirmation_id` 提交批准或拒绝。若超时未提交，默认拒绝该工具调用。由同步 SubAgent 风险工具触发的确认会额外携带可选 `subagent` 对象（`task_id`、`batch_id`、`agent_label`、任务描述）；旧客户端可忽略该字段。
+
+收到 `ask_user.required` 后，使用其中的 `question_id`、`kind`、`question` 和 `options` 展示提问，并向 `/api/v1/runs/{run_id}/questions/{question_id}` 提交 `{ "answer": "..." }`。所有 kind 的提问都带非空 `options`；`select` 只能提交 `options` 中的值，`question`/`confirm` 可提交选项值或自定义文本；取消或超时后问题不可再次回答。
 
 若后台 SubAgent 在父 Run 结束后才请求风险操作，客户端应订阅 `/api/v1/subagents/events` 中的 `subagent.confirmation.required`，或轮询 `/api/v1/subagents/confirmations`，再向 `/api/v1/subagents/confirmations/{confirmation_id}` 提交决议。该入口只接受创建任务时所属的当前会话；任务/批次/服务取消与超时均会拒绝请求，任何迟到批准返回 `CONFIRMATION_RESOLVED` 或 `SUBAGENT_CONFIRMATION_NOT_FOUND`，不会执行工具。
 

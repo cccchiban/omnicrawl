@@ -635,6 +635,7 @@ class SubAgentCoordinator:
             "strategy",
             "cleanup",
             "remove_branch",
+            "force",
         }
         unknown = set(arguments) - allowed
         if unknown:
@@ -704,8 +705,13 @@ class SubAgentCoordinator:
                 "当前 Host 未注入 discard_worktree 回调。",
             )
         remove_branch = bool(arguments.get("remove_branch", True))
+        force = bool(arguments.get("force", False))
         try:
-            message = self._discard_worktree(key, remove_branch=remove_branch)
+            message = self._discard_worktree(
+                key,
+                remove_branch=remove_branch,
+                force=force,
+            )
         except Exception as exc:  # noqa: BLE001
             return self._top_level_error(
                 "SUBAGENT_MODEL_ERROR",
@@ -717,6 +723,7 @@ class SubAgentCoordinator:
                 "action": "discard_worktree",
                 "key": key,
                 "remove_branch": remove_branch,
+                "force": force,
                 "message": str(message),
             },
         )

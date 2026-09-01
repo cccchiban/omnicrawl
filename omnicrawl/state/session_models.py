@@ -19,6 +19,7 @@ MODEL_CONTEXT_EVENT_TYPES = MESSAGE_EVENT_TYPES | {
     "tool_call_requested",
     "tool_call_denied",
     "tool_result",
+    "run_guard_paused",
 }
 EMPTY_SESSION_EVENT_TYPES = {"session_started", "session_closed"}
 SUBAGENT_EVENT_TYPES = {
@@ -205,6 +206,11 @@ class SessionState:
     last_event_type: str
     event_count: int
     archived_at: datetime | None = None
+    # 最近一轮没有正常 assistant_message 时，恢复入口用这两个字段继续任务。
+    # Todo 使用不可变 tuple，避免 SessionState 被 UI 或 Agent 原地修改后与磁盘
+    # 投影产生分叉；每个 item 仍是独立 dict，供兼容旧调用方读取。
+    pending_user_text: str = ""
+    todo_items: tuple[dict[str, Any], ...] = ()
 
 
 def normalize_session_id(raw_session_id: Any) -> str:

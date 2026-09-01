@@ -16,7 +16,8 @@ from ..config.features.approval import (
 )
 from ..agent import AgentError, LocalToolAgent
 from ..agent.toolkit.tools import public_tool_arguments
-from ..config.models.llm import LLMError, save_reasoning_effort
+from ..config.models.llm import LLMError, save_active_model_ref, save_reasoning_effort
+from ..config.models.model_catalog import save_llm_model
 from ..config.core.runtime import RuntimeConfigError
 
 
@@ -121,6 +122,9 @@ def _format_dangerous_tool_detail(tool_name: str, arguments: dict[str, Any]) -> 
         detail = f"文件：{path}" if isinstance(path, str) and path.strip() else ""
         if arguments.get("detail"):
             detail += f"，视觉细节：{arguments['detail']}"
+        prompt = arguments.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            detail += f"，分析提示词：{_truncate_for_display(prompt, 120)}"
         return _truncate_for_display(detail, 240)
 
     if tool_name == "windows_window":
@@ -836,6 +840,59 @@ def _reasoning_env_override_message() -> str:
     return " 注意：当前存在 REASONING_EFFORT 环境变量，重启后会优先使用环境变量。"
 
 
+def handle_model_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理模型查看与切换命令；返回 None 表示不是模型命令。
+
+    支持 /model 查看当前模型，/model <selection> 切换模型（selection 可为
+    models.toml key/alias、profile/model_id 或裸 model_id）。切换即时生效：
+    运行中的回合继续用旧模型，下一次请求自动使用新模型。
+    """
+
+    text = command.strip()
+    normalized = text.lower()
+    if normalized != "/model" and not normalized.startswith("/model "):
+        return None
+
+    parts = text.split(None, 1)
+    if len(parts) == 1:
+        current = getattr(agent, "current_model", "") or agent.config.llm.model
+        return f"当前模型：{current}\n用法：/model <key|profile/model_id|model_id>"
+
+    selection = parts[1].strip()
+    if not selection:
+        return "用法：/model <key|profile/model_id|model_id>"
+
+    def persist() -> None:
+        # 与 set_model 的 apply_model_selection 解析保持一致：优先持久化
+        # models.toml 引用，否则写回 llm.model。
+        try:
+            store = _load_model_store()
+            record = store.resolve_alias(selection)
+        except Exception:
+            record = None
+        if record is not None:
+            from ..config.models.llm import ActiveModelRef
+
+            save_active_model_ref(
+                ActiveModelRef(source="custom", key=record.key, model_id=record.model_id)
+            )
+        else:
+            save_llm_model(selection)
+
+    try:
+        agent.set_model(selection, persist=persist)
+    except AgentError as exc:
+        return f"模型切换失败：{exc}"
+    return f"模型已切换为：{agent.current_model}（从下一次请求开始生效）"
+
+
+def _load_model_store():
+    from ..config.models.model_catalog import load_model_store
+
+    return load_model_store()
+
+
+
 _MODE_COMMANDS = {
     "/plan": "plan",
 }
@@ -866,6 +923,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/plan",
         "/review",
         "/reasoning",
+        "/model",
         "/skills",
         "/memory:clean",
         "/mcp",
@@ -911,6 +969,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/settings": "打开中文设置面板，修改运行时开关并立即保存。",
         "/plan": "启用主 Agent 计划模式，后续请求追加 templates/plan.md。",
         "/reasoning": "查看或切换推理强度。",
+        "/model": "查看或切换当前模型（从下一次请求开始生效）。",
         "/skills": "查看当前已加载的 Skill。",
         "/memory:clean": "清理过期长期记忆。",
         "/mcp": "查看 MCP 开关、服务和工具状态。",
@@ -936,6 +995,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
     }
     argument_commands = {
         "/reasoning",
+        "/model",
         "/resume",
         "/task",
         "/history",

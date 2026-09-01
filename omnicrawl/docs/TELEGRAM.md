@@ -74,6 +74,10 @@ $env:TELEGRAM_CONFIRM_TIMEOUT = "300"
 python -m omnicrawl.connectors.telegram
 ```
 
+同一平台同一用户只允许一个活动连接器实例：多个 TUI/API 进程并存，或 TUI
+自动启动与手工启动同时存在时，后启动的一方会检测到已有实例并跳过，避免
+Telegram 轮询被重复启动。单例机制见 `connectors/README.md`。
+
 如需排障或只运行 TUI，可在启动前关闭自动联动：
 
 ```powershell

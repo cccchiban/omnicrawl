@@ -333,8 +333,9 @@ class AgentSessionFacade:
             restored.messages,
             max_history_turns=self._owner.config.max_history_turns,
         )
-        self._owner._pending_user_text = None
+        self._owner._pending_user_text = restored.pending_user_text or None
         self._owner._active_skills = []
+        self._owner._active_todo_items = [dict(item) for item in restored.todo_items]
         return restored
 
     def rename_current_session(self, title: str) -> SessionState:
@@ -357,6 +358,8 @@ class AgentSessionFacade:
             last_event_type=renamed_state.last_event_type,
             event_count=renamed_state.event_count,
             archived_at=renamed_state.archived_at,
+            pending_user_text=renamed_state.pending_user_text,
+            todo_items=renamed_state.todo_items,
         )
         return self._owner._session_state
 
@@ -469,7 +472,8 @@ class AgentSessionFacade:
             state.messages,
             max_history_turns=self._owner.config.max_history_turns,
         )
-        self._owner._pending_user_text = None
+        self._owner._pending_user_text = state.pending_user_text or None
+        self._owner._active_todo_items = [dict(item) for item in state.todo_items]
         self._owner._active_skills = []
         bind_memory = getattr(self._owner, "_bind_current_session_memory_store", None)
         if callable(bind_memory):
@@ -493,6 +497,14 @@ class AgentSessionFacade:
             return
         try:
             event = store.append_event(state.session_id, event_type, payload)
+            from ...state.session_projection import apply_run_guard_event
+
+            pending_user_text, todo_items = apply_run_guard_event(
+                state.pending_user_text,
+                state.todo_items,
+                event.type,
+                event.payload,
+            )
             self._owner._session_state = SessionState(
                 session_id=state.session_id,
                 title=state.title,
@@ -504,6 +516,8 @@ class AgentSessionFacade:
                 last_event_type=event.type,
                 event_count=state.event_count + 1,
                 archived_at=state.archived_at,
+                pending_user_text=pending_user_text,
+                todo_items=todo_items,
             )
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc

@@ -23,6 +23,7 @@ from .mcp_settings import (
 from .model_picker import ModelPickerResult, ModelPickerScreen
 from .navigation import SettingsNavigationMixin
 from .settings import SettingsAction, SettingsScreen
+from .run_guard_settings import RunGuardSettingsScreen
 from .tool_settings import ToolSettingsScreen
 from .tts_settings import TTSSettingsResult, TTSSettingsScreen
 from .vision_settings import VisionSettingsResult, VisionSettingsScreen
@@ -31,6 +32,7 @@ __all__ = [
     "SettingsNavigationMixin",
     "SettingsAction",
     "SettingsScreen",
+    "RunGuardSettingsScreen",
     "ModelPickerResult",
     "ModelPickerScreen",
     "ChannelEditorScreen",

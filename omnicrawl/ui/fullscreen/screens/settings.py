@@ -28,6 +28,7 @@ from ....config.core.settings import (
     save_show_thinking,
     save_subagent_setting,
 )
+from ....config.features.run_guard import load_run_guard_config, save_run_guard_config
 from ....config.features.subagents import (
     SUBAGENT_ADVANCED_SETTING_KEYS,
     SubAgentConfigError,
@@ -94,6 +95,8 @@ _SETTING_ORDER = (
     "vision",
     "image_gen",
     "tts",
+    "run_guard",
+    "agent_workspace",
     "memory",
     "plugins",
     "subagents",
@@ -262,7 +265,7 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if self._busy:
             return
         key = self._all_keys[self._selected]
-        if not self._advanced and key in {"model", "channels", "vision", "image_gen", "tts"}:
+        if not self._advanced and key in {"model", "channels", "vision", "image_gen", "tts", "run_guard", "agent_workspace"}:
             self.dismiss(SettingsAction(key))
             return
         if not self._advanced and key == "subagents_advanced":
@@ -457,6 +460,16 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "vision": "已开启" if self._feature_enabled("vision") else "已关闭",
             "image_gen": "已开启" if self._feature_enabled("image_gen") else "已关闭",
             "tts": "管理",
+            "run_guard": (
+                "已开启"
+                if bool(getattr(getattr(getattr(self._agent, "config", None), "run_guard", None), "enabled", False))
+                else "已关闭"
+            ),
+            "agent_workspace": (
+                "已开启"
+                if bool(getattr(getattr(getattr(self._agent, "config", None), "agent_workspace", None), "enabled", True))
+                else "已关闭"
+            ),
             "reasoning": str(getattr(self._agent, "reasoning_effort", "none") or "none"),
             "context": f"{int(getattr(self._agent, 'context_window_tokens', 128_000)) // 1000}K",
             "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))),
@@ -481,6 +494,8 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             "vision": "视觉",
             "image_gen": "图像生成",
             "tts": "TTS 语音合成",
+            "run_guard": "运行节奏护栏",
+            "agent_workspace": "隔离工作区",
             "reasoning": "推理强度",
             "context": "上下文长度（K）",
             "approval": "工具审批",

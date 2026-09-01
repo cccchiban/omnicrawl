@@ -49,6 +49,7 @@ class ToolBuildingMixin:
 
     def _build_tools(self) -> dict[str, ToolDefinition]:
         windows_desktop = self._windows_desktop_toolbox()
+        run_guard = getattr(getattr(self, "config", None), "run_guard", None)
         disabled_tools = frozenset(
             getattr(getattr(self, "config", None), "disabled_tools", ())
         )
@@ -114,6 +115,12 @@ class ToolBuildingMixin:
                 else ()
             ),
             update_todos=self._tool_update_todos,
+            ask_user=self._tool_ask_user,
+            pause_work=(
+                self._tool_pause_work
+                if bool(getattr(run_guard, "enabled", False))
+                else None
+            ),
             windows_window=(windows_desktop.run_window if windows_desktop is not None else None),
             windows_control=(windows_desktop.run_control if windows_desktop is not None else None),
             windows_input=(windows_desktop.run_input if windows_desktop is not None else None),
@@ -173,13 +180,6 @@ class ToolBuildingMixin:
         tts_instruction = getattr(self, "_active_tts_instruction", "")
         if tts_instruction:
             template = f"{template}\n\n{tts_instruction}"
-        confirmation_instruction = getattr(
-            self,
-            "_active_user_confirmation_instruction",
-            "",
-        )
-        if confirmation_instruction:
-            template = f"{template}\n\n{confirmation_instruction}"
         mode_prompt = str(getattr(self, "_active_mode_prompt", "") or "").strip()
         if mode_prompt:
             mode_name = self.active_mode or "active"

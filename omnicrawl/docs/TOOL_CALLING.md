@@ -73,7 +73,7 @@ Host 侧同时保留对旧式哈希函数名的宽容反查：模型若回显被
 - AgentLoop 的批次审批、所有工具并发执行、按每个工具真实完成时刻独立计时、模型上下文有界输出摘要（头尾预览）、完整 `full_output` UI 展示、视觉图片回填、视觉模型故障转移和 Session 事件保持不变；模型观察仍按原始调用顺序回填。
 - `HostToolCatalog` 的工具搜索、声明构建与 `invoke_tool` 解析保留为内部能力，不再暴露给 Provider。
 
-命令工具的主命令必须保留完整测试/构建输出和真实退出码。Bash 启动时默认启用 `pipefail`；测试或构建命令中如果使用 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出裁剪命令，Host 会在执行前拒绝，并提示改用独立的 `diagnostic_command`。
+命令工具的主命令允许裁剪测试/构建输出（如 `tail`、`head`、`grep`、`rg` 或 PowerShell 输出筛选），便于快速定位失败原因。Bash 启动时默认启用 `pipefail`，裁剪不得掩盖管道上游失败的真实退出码；需要完整输出时，Host 会保留首尾并给出完整日志路径，也可通过独立的 `diagnostic_command` 摘取诊断。
 
 ## 结构化 git 工具
 

@@ -14,13 +14,14 @@ from typing import Any, Callable
 
 from fastapi import status
 
-from ..agent import ToolCall, ToolResult
+from ..agent import AskUserRequest, ToolCall, ToolResult
 from ..agent.toolkit.tools import public_tool_arguments
 from ..state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 from .models import (
     ACTIVE_RUN_STATUSES,
     APIServiceError,
     PendingConfirmation,
+    PendingUserQuestion,
     RunCancelled,
     RunEvent,
     RunState,
@@ -74,6 +75,9 @@ class AgentAPIService:
         self._subagent_task_sources: dict[str, _SubAgentTaskSource] = {}
         self._subagent_event_streams: dict[str, _SubAgentEventStream] = {}
         self.agent.set_confirm_handler(self._confirm_tool_call)
+        set_ask_user_handler = getattr(self.agent, "set_ask_user_handler", None)
+        if callable(set_ask_user_handler):
+            set_ask_user_handler(self._ask_user)
         set_subagent_event_handler = getattr(
             self.agent,
             "set_subagent_event_handler",
@@ -145,8 +149,46 @@ class AgentAPIService:
                 if not confirmation.resolved.is_set():
                     confirmation.decision = False
                     confirmation.resolved.set()
+            for question in run.user_questions.values():
+                if not question.resolved.is_set():
+                    question.answer = None
+                    question.resolved.set()
             run.condition.notify_all()
         return run
+
+    def decide_user_question(
+        self,
+        run_id: str,
+        question_id: str,
+        answer: str,
+    ) -> PendingUserQuestion:
+        run = self.get_run(run_id)
+        answer_text = answer.strip()
+        if not answer_text:
+            raise APIServiceError("INVALID_ANSWER", "answer 不能为空。")
+        with run.condition:
+            question = run.user_questions.get(question_id)
+            if question is None:
+                raise APIServiceError(
+                    "QUESTION_NOT_FOUND",
+                    f"提问请求不存在：{question_id}",
+                    status_code=status.HTTP_404_NOT_FOUND,
+                )
+            if question.resolved.is_set():
+                raise APIServiceError(
+                    "QUESTION_RESOLVED",
+                    "该提问请求已经处理。",
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+            if question.kind == "select" and answer_text not in question.options:
+                raise APIServiceError(
+                    "INVALID_ANSWER",
+                    "answer 必须是 options 中的选项。",
+                )
+            question.answer = answer_text
+            question.resolved.set()
+            run.condition.notify_all()
+            return question
 
     def decide_confirmation(
         self,
@@ -313,6 +355,62 @@ class AgentAPIService:
                 self.agent.close()
             with run.condition:
                 run.condition.notify_all()
+
+    def _ask_user(self, request: AskUserRequest, *, run: RunState | None = None) -> str | None:
+        run = self.active_run if run is None else run
+        if run is None:
+            return None
+        question_id = secrets.token_hex(12)
+        question = PendingUserQuestion(
+            question_id=question_id,
+            kind=request.kind,
+            question=request.question,
+            options=request.options,
+        )
+        with run.condition:
+            if run.cancel_requested.is_set():
+                raise RunCancelled("用户取消生成。")
+            run.user_questions[question_id] = question
+            run.status = "waiting_user"
+        self._emit(
+            run,
+            "ask_user.required",
+            {
+                "question_id": question_id,
+                "kind": question.kind,
+                "question": question.question,
+                "options": list(question.options),
+                "timeout_seconds": self.confirmation_timeout_seconds,
+            },
+        )
+
+        deadline = time.monotonic() + self.confirmation_timeout_seconds
+        while not question.resolved.is_set():
+            if run.cancel_requested.is_set():
+                with run.condition:
+                    if not question.resolved.is_set():
+                        question.answer = None
+                        question.resolved.set()
+                        run.condition.notify_all()
+                raise RunCancelled("用户取消生成。")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with run.condition:
+                    if not question.resolved.is_set():
+                        question.answer = None
+                        question.resolved.set()
+                        run.condition.notify_all()
+                self._emit(
+                    run,
+                    "ask_user.expired",
+                    {"question_id": question.question_id},
+                )
+                break
+            question.resolved.wait(timeout=min(0.1, remaining))
+        if run.cancel_requested.is_set():
+            raise RunCancelled("用户取消生成。")
+        run.status = "running"
+        return question.answer
 
     def _confirm_tool_call(
         self,

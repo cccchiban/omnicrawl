@@ -16,8 +16,15 @@
 - Telegram 同时配置 Bot Token 和 `allowed_user_ids` 后自动启动；
 - 飞书同时配置 App ID 和 App Secret 后自动启动；
 - 未配置的平台跳过；连接器启动失败只记录警告，不阻塞 TUI；
+- 同一平台同一用户只允许一个活动实例：多个进程（多个 TUI、TUI + API、
+  或与手工 `python -m` 并存）同时启动时，后启动方检测到已有实例会自动
+  跳过，避免 Telegram/飞书出现重复长连接；
 - TUI 退出时自动终止已启动的连接器及其后代进程；
 - 设置 `OMNICRAWL_AUTO_START_CONNECTORS=0` 可关闭自动联动，改为手工运行连接器。
+
+单例实现位于 `omnicrawl/workspace/connector_singleton.py`：跨进程文件锁
+（Windows `msvcrt.locking` / POSIX `fcntl.flock`）+ 锁文件 PID 存活检测，
+崩溃残留的锁会被下一个启动方自动接管。
 
 两个连接器均使用独立子进程，不把凭证写入命令行参数。自动启动只读取本地配置，不会
 在 TUI 主进程中建立 Telegram/飞书网络连接。

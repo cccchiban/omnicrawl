@@ -232,6 +232,69 @@ class SessionControlMixin:
             return
         self._close_callbacks.append(callback)
 
+    def attach_isolation_session(
+        self,
+        session: Any,
+        *,
+        on_finalized: Callable[[str], None] | None = None,
+    ) -> None:
+        """把主 Agent 隔离工作区会话挂到 Agent 生命周期上，``close()`` 时自动收尾。
+
+        ``close()`` 会先按 ``config.agent_workspace`` 的 ``apply_on_exit`` /
+        ``cleanup_on_exit`` 把隔离区变更应用回主工作区并清理，保证 TUI / API /
+        连接器各入口共用同一收尾路径（此前只有 TUI 显式收尾）。``on_finalized``
+        接收收尾摘要文本，例如 TUI 用于打印到 stderr；回调异常被吞掉。
+        """
+
+        self._isolation_session = session
+        self._isolation_on_finalized = on_finalized
+
+    def _finalize_attached_isolation(self) -> None:
+        """收尾挂载的隔离工作区与 SubAgent worktree 会话；只执行一次。"""
+
+        session = getattr(self, "_isolation_session", None)
+        self._isolation_session = None
+        on_finalized = getattr(self, "_isolation_on_finalized", None)
+        self._isolation_on_finalized = None
+        summaries: list[str] = []
+        if session is not None:
+            try:
+                from ....workspace.agent_isolation import finalize_isolation_session
+
+                workspace_config = getattr(self.config, "agent_workspace", None)
+                summaries.append(
+                    finalize_isolation_session(
+                        session,
+                        apply_on_exit=bool(
+                            getattr(workspace_config, "apply_on_exit", True)
+                        ),
+                        cleanup_on_exit=str(
+                            getattr(workspace_config, "cleanup_on_exit", "auto") or "auto"
+                        ),
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - 隔离收尾失败不能阻断进程退出
+                summaries.append(f"隔离工作区收尾失败：{exc}")
+        # SubAgent worktree 会话按 auto 策略收尾：四层门禁通过的（无变更）
+        # 清理，有变更的一律保留（成果须父 Agent 显式审查，绝不自动 apply）。
+        sub_summary = ""
+        try:
+            from ....workspace.agent_isolation import finalize_subagent_worktrees
+
+            sub_summary = finalize_subagent_worktrees()
+            if sub_summary:
+                summaries.append(sub_summary)
+        except Exception as exc:  # noqa: BLE001 - 收尾失败不能阻断进程退出
+            summaries.append(f"SubAgent worktree 收尾失败：{exc}")
+        summary = "；".join(item for item in summaries if item)
+        if summary:
+            LOGGER.info("Isolation finalize: %s", summary)
+        if on_finalized is not None and (session is not None or sub_summary):
+            try:
+                on_finalized(summary)
+            except Exception:  # noqa: BLE001
+                pass
+
     def close(self) -> None:
         """取消子任务并在安全边界内关闭 Agent 持有的外部资源。"""
 
@@ -252,6 +315,9 @@ class SessionControlMixin:
                 return
         self._closed = True
         self._closing = False
+        # 主 Agent 隔离工作区收尾：按配置把变更应用回主工作区并按策略清理。
+        # 放在子任务全部排空之后，保证 apply 时不再有隔离区写入者。
+        self._finalize_attached_isolation()
         close_errors: list[Exception] = []
         try:
             self._dispatch_plugin_hook("session.close.before", {})

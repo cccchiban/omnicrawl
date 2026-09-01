@@ -62,7 +62,7 @@ class AgentLoopObservation:
 
 @dataclass(frozen=True)
 class AgentLoopResult:
-    """循环正常完成后的内部结果。"""
+    """循环完成后的内部结果。"""
 
     final_text: str
     reasoning: str
@@ -70,6 +70,8 @@ class AgentLoopResult:
     model_turns: int
     tool_calls: int
     messages: list[dict[str, Any]] = field(default_factory=list)
+    last_reply: AgentModelReply | None = None
+    paused: bool = False
 
 
 class AgentLoopRunner:
@@ -92,6 +94,7 @@ class AgentLoopRunner:
         ],
         limits: AgentLoopLimits | None = None,
         cancel_check: Callable[[], None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
     ) -> AgentLoopResult:
         active_limits = limits or AgentLoopLimits()
         started_at = time.monotonic()
@@ -133,6 +136,7 @@ class AgentLoopRunner:
                     model_turns=model_turns,
                     tool_calls=tool_calls,
                     messages=messages,
+                    last_reply=reply,
                 )
 
             next_tool_count = tool_calls + len(reply.tool_calls)
@@ -160,3 +164,13 @@ class AgentLoopRunner:
                 messages.extend(observation.followup_messages)
             tool_calls = next_tool_count
             check_boundary()
+            if stop_check is not None and stop_check():
+                return AgentLoopResult(
+                    final_text="",
+                    reasoning="\n".join(reasoning_parts),
+                    content_streamed=False,
+                    model_turns=model_turns,
+                    tool_calls=tool_calls,
+                    messages=messages,
+                    paused=True,
+                )
