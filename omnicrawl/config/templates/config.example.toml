@@ -160,6 +160,14 @@ directory = ".omnicrawl/.agent_tmp"
 cleanup_enabled = true
 cleanup_interval_hours = 24
 
+# 启动自动更新：每次启动时联网比对 PyPI 最新版（检测结果带 24 小时本地缓存，
+# 同一天不重复请求），本地版本落后时自动执行 pip 升级，完成后重新启动 TUI。
+# 仅对 pip 正常安装的环境生效（源码目录或 editable 安装直接跳过）；离线、升级
+# 失败或配置异常时按"继续使用当前版本"启动，不影响工具可用性。
+# 设置 OMNICRAWL_SKIP_AUTO_UPDATE=1 可彻底关闭。
+[update]
+enabled = true
+
 [plugins]
 enabled = false
 

@@ -321,6 +321,18 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     # 启动的路径。
     app_root = Path(__file__).resolve().parent.parent
 
+    # 启动自动更新：联网比对 PyPI 最新版，版本落后且为 pip 安装环境时先打印
+    # 说明并自动 pip 升级，成功后以子进程重新拉起 TUI 并返回其退出码；跳过、
+    # 无新版本或升级失败均返回 None 继续正常启动（失败策略：用当前版本启动）。
+    try:
+        from omnicrawl.updater import run_startup_update_if_due
+
+        update_exit_code = run_startup_update_if_due(raw_argv)
+        if update_exit_code is not None:
+            return update_exit_code
+    except Exception:  # noqa: BLE001 - 更新链路异常不能阻止 TUI 启动
+        LOGGER.warning("启动自动更新失败，继续正常启动。", exc_info=True)
+
     # 显示启动画面（左侧黄色 Logo + 右侧圆角日志框 + 底部 XP 滚动条），
     # 后台并行完成全部准备；准备阶段把 MCP/插件/Agent/连接器进度写入日志框。
     # 启动页没有固定时长，直到准备完成且 TUI 可以直接发送。
