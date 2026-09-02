@@ -32,6 +32,11 @@ from ..input.composer import Composer
 from ..input.editing import InputMixin
 from ..input.menu import CommandMenuMixin
 from ..input.sessions_menu import SessionsMenuMixin
+from ..rendering.logo_anim import (
+    LOGO_ANIM_FRAME_SECONDS,
+    LOGO_ANIM_SECONDS,
+    welcome_logo_frame,
+)
 from ..rendering.pipeline import RenderingMixin
 from ..rendering.welcome_logo import welcome_logo_text
 from ..rendering.widgets import (
@@ -526,6 +531,14 @@ class OmniCrawlApp(
         self._carousel_anim_interval: Any = None
         self._carousel_hold_timer: Any = None
         self._carousel_rand = random.Random()
+        # 欢迎 Logo 解密扫描入场动画：仅首次挂载播放一次；定时器/游标与
+        # 轮播同一模式，隐藏或清空会话时由 _stop_welcome_logo_animation
+        # 收口，避免残留回调。
+        self._logo_anim_interval: Any = None
+        self._logo_anim_frame = 0
+        self._logo_anim_total_frames = 0
+        self._logo_anim_started = False
+        self._logo_rand = random.Random()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
@@ -612,12 +625,72 @@ class OmniCrawlApp(
             self._preload_mcp_tools()
         else:
             self._set_runtime_status("完成", "complete")
+        # 欢迎 Logo 入场动画：挂载完成后启动，仅在空会话首屏播放一次。
+        self._start_welcome_logo_animation()
         # 启动参数 --resume 已在 Agent 初始化时恢复会话：按原始事件重建
         # 对话组件，避免用户看到空白会话页或被压成纯文本。
         self._replay_session_conversation()
         for message in self.startup.startup_messages:
             if str(message).strip():
                 self._append_message("error", str(message))
+
+    def _start_welcome_logo_animation(self) -> None:
+        """启动欢迎 Logo 解密扫描入场动画（仅首次挂载播放一次）。
+
+        已有会话重放会立刻隐藏 Logo（``_hide_welcome_logo`` 停表），
+        因此不会在非空会话页误播；恢复/清空会话后再次显示 Logo 时
+        保持静态，不再重播。
+        """
+
+        if self._logo_anim_started:
+            return
+        try:
+            self.query_one("#welcome-logo", Static)
+        except Exception:
+            return
+        self._logo_anim_started = True
+        self._logo_anim_frame = 0
+        self._logo_anim_total_frames = max(
+            1,
+            round(LOGO_ANIM_SECONDS / LOGO_ANIM_FRAME_SECONDS),
+        )
+        if self._logo_anim_interval is None:
+            self._logo_anim_interval = self.set_interval(
+                LOGO_ANIM_FRAME_SECONDS,
+                self._welcome_logo_animation_tick,
+            )
+        self._welcome_logo_animation_tick()
+
+    def _welcome_logo_animation_tick(self) -> None:
+        """推进一帧 Logo 解密扫描动画；播完落定静态白色 Logo 并停表。"""
+
+        self._logo_anim_frame += 1
+        if self._logo_anim_frame >= self._logo_anim_total_frames:
+            self._stop_welcome_logo_animation()
+            return
+        progress = self._logo_anim_frame / self._logo_anim_total_frames
+        frame = welcome_logo_frame(progress, rand_source=self._logo_rand)
+        try:
+            self.query_one("#welcome-logo", Static).update(frame)
+        except Exception:
+            pass
+
+    def _stop_welcome_logo_animation(self) -> None:
+        """停止 Logo 入场动画并落定静态文本；幂等（隐藏/清空时调用）。"""
+
+        interval = getattr(self, "_logo_anim_interval", None)
+        if interval is not None:
+            try:
+                interval.stop()
+            except Exception:
+                pass
+        self._logo_anim_interval = None
+        try:
+            # 隐藏路径已 display=False，这里统一落定静态白色 Logo，
+            # 避免清空会话重新显示时停在乱码中间帧。
+            self.query_one("#welcome-logo", Static).update(welcome_logo_text())
+        except Exception:
+            pass
 
     def on_resize(self, _event: events.Resize) -> None:
         """窗口变化时重算输入区软折行高度。"""

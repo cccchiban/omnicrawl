@@ -27,3 +27,6 @@ CLAUDE.md
 AGENTS.md
 
 subagents.toml
+
+# Editor lock files (auto-created by omnicrawl edit tooling)
+*.omnicrawl.edit.lock

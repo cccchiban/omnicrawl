@@ -4,7 +4,7 @@
 - ``RenderingMixin``（事件聚合/流式渲染管线）在 ``pipeline.py``；
 - 对话区组件（消息/思考块/工具卡/子代理树/计划区）在 ``widgets.py``；
 - 工具卡 diff 渲染在 ``tool_diff.py``，LaTeX 文本化在 ``latex.py``，
-  欢迎 Logo 在 ``welcome_logo.py``。
+  欢迎 Logo 在 ``welcome_logo.py``、其入场动画帧函数在 ``logo_anim.py``。
 """
 
 from .pipeline import RenderingMixin

@@ -196,6 +196,10 @@ class ConversationViewMixin:
     def _hide_welcome_logo(self) -> None:
         """隐藏启动欢迎 Logo 区域，让位给首条会话内容；幂等且容忍缺位。"""
 
+        # 首条消息即停掉入场动画，避免隐藏后仍有回调刷新不可见组件。
+        stop = getattr(self, "_stop_welcome_logo_animation", None)
+        if callable(stop):
+            stop()
         try:
             # 保持现有组件级语义，避免调用方/测试直接观察 Logo 时仍看到 display=True。
             self.query_one("#welcome-logo", Static).display = False
