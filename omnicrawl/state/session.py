@@ -157,8 +157,17 @@ class SessionStore:
             fsync=self.durable.fsync,
         )
         self.artifacts = SessionArtifactStore(self.root, self.artifacts_dir)
+        self._layout_ready = False
 
     def ensure(self) -> None:
+        """确保会话存储目录骨架与索引文件就绪。
+
+        目录布局一旦建立就不会在本进程内变化，因此热路径（每次事件追加）
+        重复调用时直接短路，避免每条事件都付出 7 次 mkdir 系统调用。
+        """
+
+        if self._layout_ready:
+            return
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.summaries_dir.mkdir(parents=True, exist_ok=True)
@@ -168,6 +177,7 @@ class SessionStore:
         if not self.index_path.exists():
             self._save_entries([])
         self.prompt_history.ensure()
+        self._layout_ready = True
 
     def start_session(
         self,
@@ -224,7 +234,10 @@ class SessionStore:
         with self._exclusive_write():
             self.ensure()
             normalized_id = _normalize_session_id(session_id)
-            entry = self._entry_by_id(normalized_id)
+            # 排他写锁已保证索引在本进程与跨进程都不会并发变化，读取一次
+            # 后复用，避免每条事件对 index.json 重复读取解析两次。
+            entries = self._load_entries()
+            entry = _find_index_entry(entries, normalized_id)
             safe_payload = self._prepare_event_payload(
                 session_id=normalized_id,
                 event_type=event_type,
@@ -245,7 +258,7 @@ class SessionStore:
             except SessionStoreError as exc:
                 raise SessionStoreError(f"写入会话转录失败：{path}，{exc}") from exc
 
-            self._update_entry_after_event(entry, event)
+            self._update_entry_after_event(entry, event, entries=entries)
             return event
 
     def prepare_undo_last_turn(self, session_id: str) -> SessionUndoPlan:
@@ -933,11 +946,7 @@ class SessionStore:
                 return session_id
 
     def _entry_by_id(self, session_id: str) -> SessionIndexEntry:
-        entries = self._load_entries()
-        for entry in entries:
-            if entry.session_id == session_id:
-                return entry
-        raise SessionStoreError(f"未找到会话：{session_id}")
+        return _find_index_entry(self._load_entries(), session_id)
 
     def _build_consistency_report_locked(self) -> SessionConsistencyReport:
         """在已持有写锁时构建一致性报告。"""
@@ -1034,8 +1043,15 @@ class SessionStore:
             truncated=truncated,
         )
 
-    def _update_entry_after_event(self, entry: SessionIndexEntry, event: SessionEvent) -> None:
-        entries = self._load_entries()
+    def _update_entry_after_event(
+        self,
+        entry: SessionIndexEntry,
+        event: SessionEvent,
+        *,
+        entries: list[SessionIndexEntry] | None = None,
+    ) -> None:
+        if entries is None:
+            entries = self._load_entries()
         updated_entries: list[SessionIndexEntry] = []
         found = False
         for item in entries:
@@ -1186,6 +1202,18 @@ class SessionStore:
             timeout_seconds=self.durable.lock_timeout_seconds,
             poll_seconds=self.durable.lock_poll_seconds,
         )
+
+
+def _find_index_entry(
+    entries: Sequence[SessionIndexEntry],
+    session_id: str,
+) -> SessionIndexEntry:
+    """在已解析的索引条目中按 session_id 查找；不存在时抛出存储错误。"""
+
+    for entry in entries:
+        if entry.session_id == session_id:
+            return entry
+    raise SessionStoreError(f"未找到会话：{session_id}")
 
 
 def _lock_for_root(root: Path) -> threading.RLock:

@@ -140,20 +140,28 @@ class _ReasoningGuard:
         self._window = combined
 
     def _trim_window(self) -> None:
-        while len(self._window) > self.window_chars:
-            # 当 window_chars 小于 substr_len 时，窗口会从“有完整子串”
-            # 退化到“完全没有完整子串”。窗口长度降到 substr_len 以下后，
-            # 统计表中剩余的条目也已经全部离开窗口，必须整体清空，不能只
-            # 依赖逐字符删除起点为 0 的子串。
-            if len(self._window) >= self.substr_len:
-                substring = self._window[: self.substr_len]
-                current = self._frequency.get(substring, 0)
-                if current <= 1:
-                    self._frequency.pop(substring, None)
-                else:
-                    self._frequency[substring] = current - 1
-                self._total_substrings = max(0, self._total_substrings - 1)
-            self._window = self._window[1:]
+        overflow = len(self._window) - self.window_chars
+        if overflow > 0:
+            if self.window_chars >= self.substr_len:
+                # 窗口未退化：被移除的每个起始字符对应的子串在裁剪前都完整
+                # 落在窗口内（window_chars >= substr_len 保证），可一次性
+                # 精确递减，与原先逐字符删除起点 0 的累计效果完全一致，
+                # 但避免了对整段窗口反复 [1:] 拷贝的 O(n²) 开销。
+                for offset in range(overflow):
+                    substring = self._window[offset : offset + self.substr_len]
+                    current = self._frequency.get(substring, 0)
+                    if current <= 1:
+                        self._frequency.pop(substring, None)
+                    else:
+                        self._frequency[substring] = current - 1
+                    self._total_substrings = max(0, self._total_substrings - 1)
+            else:
+                # 退化配置：window_chars 小于 substr_len 时窗口会从“有完整
+                # 子串”退化到“完全没有完整子串”，统计表中剩余的条目必然
+                # 全部离窗，整体清空即可（与原逐字符删除后统一清空一致）。
+                self._frequency.clear()
+                self._total_substrings = 0
+            self._window = self._window[overflow:]
         if len(self._window) < self.substr_len:
             self._frequency.clear()
             self._total_substrings = 0

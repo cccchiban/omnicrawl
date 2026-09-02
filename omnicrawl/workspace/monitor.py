@@ -12,8 +12,9 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, TextIO
+from typing import Any, Deque, TextIO
 
 from ..llm.stream_registry import current_stream_scope, register_resource, unregister_resource
 from .process_control import (
@@ -85,7 +86,9 @@ class ManagedMonitor:
     status: str = "running"
     exit_code: int | None = None
     stop_requested: bool = False
-    events: list[MonitorEvent] = field(default_factory=list)
+    # 有限环形缓冲：满了之后从头部淘汰，使用 deque 让逐条淘汰保持 O(1)，
+    # 避免 list.pop(0) 在高频输出（构建日志/服务器等）下反复整体移位。
+    events: Deque[MonitorEvent] = field(default_factory=deque)
     next_sequence: int = 1
     dropped_events: int = 0
     reader_threads: list[threading.Thread] = field(default_factory=list)
@@ -490,7 +493,7 @@ class BackgroundMonitorManager:
         task.next_sequence += 1
         task.events.append(event)
         if len(task.events) > MAX_BUFFERED_EVENTS:
-            task.events.pop(0)
+            task.events.popleft()
             task.dropped_events += 1
         self._condition.notify_all()
 
