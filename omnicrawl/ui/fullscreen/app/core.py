@@ -9,11 +9,13 @@ BINDINGS、常量、状态装配、compose/on_mount/on_resize、滚动动作）�
 
 from __future__ import annotations
 
+import random
 import sys
 import threading
 from collections import deque
 from typing import Any
 
+from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -86,35 +88,19 @@ class OmniCrawlApp(
     /* 顶部两行紧凑靠左：内容按实际宽度紧排，剩余空间留白在行尾；
        弹性占位把版本号推到整行尾部，行首与字段间用 │ 分隔。
        底部 HUD 整体左移对齐输入框左边框（左 margin 同为 2）。 */
-    #topbar { height: 1; margin: 0; padding: 0 1 0 0; background: $terminal-surface; align: left middle; }
-    #context-summary {
-        width: auto;
-        min-width: 0;
-        max-width: 1fr;
-        color: $terminal-text-muted;
-        content-align: left middle;
-        text-overflow: ellipsis;
-        text-wrap: nowrap;
-    }
-    #status-summary {
-        width: auto;
-        min-width: 0;
-        max-width: 100%;
-        color: $terminal-text-muted;
-        content-align: left middle;
-        text-overflow: ellipsis;
-        text-wrap: nowrap;
-    }
-    /* 第二行展示 Token 明细。底部不再画横线分隔，行高 1 使内容直接
-        贴齐屏幕底缘（原第 2 行用于承载底边框，删线后留空会形成
-        1 行视觉空隙）；左侧与输入框左边框对齐（左 margin 同为 2）。 */
-    #telemetry-row {
+    /* 底部单行轮播 HUD：原两行内容（工作区路径 / 遥测+模型状态）合并为
+       一行，按遥测 20s、工作区路径 10s 交替显示；切换时以解密扫描特效
+       过渡（旧文本被乱码从左到右侵蚀、新文本由乱码从左到右吐出）。
+       左侧与输入框左边框对齐（左 margin 同为 2），行高 1 使内容直接
+       贴齐屏幕底缘。 */
+    #bottom-carousel {
         height: 1;
         margin: 0;
         padding: 0 1 0 0;
         background: $terminal-panel;
+        align: left middle;
     }
-    #token-telemetry {
+    #carousel-display {
         width: auto;
         min-width: 0;
         max-width: 100%;
@@ -123,6 +109,7 @@ class OmniCrawlApp(
         color: $terminal-text-muted;
         content-align: left middle;
         text-overflow: ellipsis;
+        text-wrap: nowrap;
     }
     .message.runtime-status-message {
         color: $terminal-text-muted;
@@ -217,7 +204,9 @@ class OmniCrawlApp(
         HUD 内容分隔开；圆角边框 + 左右 margin 让输入框成为悬浮卡片。 */
     /* Agent 的 ask_user 面板位于输入框上方：问题和单选项保持同一组
        视觉层级，不写入会话区。所有 kind 都以选项呈现，question/confirm
-       同时保留自由文本输入兜底。 */
+       同时保留自由文本输入兜底；选项末尾统一追加「but I Think...」
+       自定义入口。面板高度按视口比例动态封顶，超出后面板内部滚动，
+       保证长问题/多选项不会把下方输入框挤出可视区域。 */
     #ask-user-panel {
         display: none;
         height: auto;
@@ -226,6 +215,8 @@ class OmniCrawlApp(
         color: $terminal-text;
         background: $terminal-surface;
         border: round $terminal-white;
+        /* 高度由代码按视口比例封顶（ASK_USER_PANEL_MAX_ROWS_FRACTION），
+           内容更高时面板内部滚动，下方输入框始终可见。 */
     }
     #ask-user-panel > Static {
         width: 100%;
@@ -254,16 +245,20 @@ class OmniCrawlApp(
         color: $terminal-amber;
         background: $terminal-surface;
     }
+    /* 单选行文本颜色由 AskUserOption 按状态绘制：普通白色「▢」，
+       选中/悬停黄色「▣」（bold ansi_yellow）。:focus 兜底色保持
+       黄色，与悬停高亮一致。 */
     #ask-user-options AskUserOption {
         display: block;
-        height: 1;
+        height: auto;
         min-height: 1;
         padding: 0;
         border: none;
         color: $terminal-amber;
         background: $terminal-surface;
+        text-wrap: wrap;
     }
-    #ask-user-options AskUserOption:focus { color: $terminal-white; }
+    #ask-user-options AskUserOption:focus { color: $terminal-amber; }
     #composer-wrap {
         height: 3;
         min-height: 3;
@@ -519,6 +514,18 @@ class OmniCrawlApp(
         self._ask_user_event = threading.Event()
         self._ask_user_custom_mode = False
         self._ask_user_selection = 0
+        # 底部单行轮播 HUD：遥测页停留 20s、工作区路径页停留 10s 交替；
+        # 切换时以解密扫描特效过渡，随机源固定实例便于测试复现。
+        self._carousel_page = "telemetry"
+        self._carousel_settled_text: Text | None = None
+        self._carousel_animating = False
+        self._carousel_anim_target: Text | None = None
+        self._carousel_anim_target_old: Text | None = None
+        self._carousel_anim_frame = 0
+        self._carousel_anim_total_frames = 0
+        self._carousel_anim_interval: Any = None
+        self._carousel_hold_timer: Any = None
+        self._carousel_rand = random.Random()
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):
@@ -526,7 +533,9 @@ class OmniCrawlApp(
                 yield Static(welcome_logo_text(), id="welcome-logo")
             with Vertical(id="composer-wrap"):
                 yield TodoPlan()
-                with Vertical(id="ask-user-panel"):
+                # ask_user 面板允许内部滚动：问题过长/选项过多时在面板内
+                # 滚动查看，而不是把输入框或 HUD 挤出屏幕。
+                with VerticalScroll(id="ask-user-panel"):
                     yield Static("", id="ask-user-header")
                     yield Static("", id="ask-user-question")
                     with Vertical(id="ask-user-options"):
@@ -547,12 +556,10 @@ class OmniCrawlApp(
                     show_line_numbers=False,
                     highlight_cursor_line=False,
                 )
-            # 顶部 HUD 内容整体移到输入框下方：内容本身不修改，仅调整位置。
-            with Horizontal(id="topbar"):
-                yield Static(self._context_summary_text(), id="context-summary")
-            with Horizontal(id="telemetry-row"):
-                yield Static(self._token_telemetry_text(), id="token-telemetry")
-                yield Static(self._status_summary_text(), id="status-summary")
+            # 底部单行轮播 HUD：原两行内容合并为一行，遥测（20s）与
+            # 工作区路径（10s）交替显示，切换时以解密扫描特效过渡。
+            with Horizontal(id="bottom-carousel"):
+                yield Static(self._carousel_display_text(), id="carousel-display")
 
     def action_scroll_conversation_up(self) -> None:
         """在固定输入框获得焦点时向上滚动一行消息。"""
@@ -593,6 +600,8 @@ class OmniCrawlApp(
         )
         if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
+        # 底部单行轮播 HUD：开始遥测/工作区两页交替（各停留 20s/10s）。
+        self._carousel_start()
 
         if not self.startup.startup_ready and callable(
             getattr(self.agent, "preload_mcp_tools", None)

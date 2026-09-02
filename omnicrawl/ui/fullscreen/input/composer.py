@@ -158,13 +158,19 @@ class Composer(TextArea):
         request = getattr(app, "_ask_user_request", None)
         if request is not None:
             is_select = getattr(request, "kind", "") == "select"
+            custom_mode = getattr(app, "_ask_user_custom_mode", False)
             composer_empty = not self.text.strip()
-            if event.key in {"up", "down"} and (is_select or composer_empty):
+            # select 的选项模式（未进入自定义输入）下按键始终由选项状态机
+            # 消费；其余情况（含「but I Think...」自定义输入模式）输入框为空
+            # 时上下键/回车导航选项，输入了内容则保持编辑器语义（移动光标/
+            # 提交文本）。
+            option_navigation = composer_empty or (is_select and not custom_mode)
+            if event.key in {"up", "down"} and option_navigation:
                 app._move_ask_user_selection(-1 if event.key == "up" else 1)
                 event.prevent_default()
                 event.stop()
                 return
-            if event.key == "enter" and (is_select or composer_empty):
+            if event.key == "enter" and option_navigation:
                 app._submit_ask_user_selection()
                 event.prevent_default()
                 event.stop()

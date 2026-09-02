@@ -97,12 +97,28 @@ def run_plugin_cli(argv: Sequence[str]) -> int | None:
     return run_plugin_command(args)
 
 
+def _log_startup(
+    sink: Any,
+    message: str,
+    level: str = "info",
+) -> None:
+    """向启动画面日志框写一行；无 sink（旧调用方/测试）时静默忽略。"""
+
+    if sink is not None:
+        sink.write_line(message, level=level)
+
+
 def _prepare_startup(
     *,
     app_root: Path,
     resume_session_id: str,
+    log_sink: Any = None,
 ) -> dict[str, Any]:
     """启动画面期间在后台执行的完整准备：配置、git 检测、插件、Agent（含索引）。
+
+    Args:
+        log_sink: 可选的 ``StartupLogSink``；提供时把各阶段的启动日志
+            （MCP / 插件 / Agent / 连接器等）写入启动画面日志框。
 
     Returns:
         字典，包含 ``agent``、``config``、``approval_mode``、
@@ -119,6 +135,7 @@ def _prepare_startup(
     subagent_config = load_subagent_config()
     project_context = detect_project_context(app_root=app_root)
     fullscreen_startup, run_fullscreen_tui = _load_fullscreen_ui()
+    _log_startup(log_sink, "配置与项目上下文加载完成")
 
     # 主 Agent 隔离工作区：多个进程并行时各自在独立目录/ worktree 中读写，
     # 互不写穿；创建失败仅告警并回退主工作区，不阻断启动。
@@ -138,6 +155,11 @@ def _prepare_startup(
         )
     except Exception as exc:  # noqa: BLE001 - 隔离失败不阻断 TUI
         LOGGER.warning("隔离工作区初始化失败，回退到主工作区：%s", exc)
+        _log_startup(
+            log_sink,
+            f"隔离工作区初始化失败，回退到主工作区：{exc}",
+            level="warning",
+        )
         agent_workspace_root = project_context.workspace_root
         isolation_session = None
 
@@ -152,8 +174,14 @@ def _prepare_startup(
         )
         for line in plugin_runtime.start():
             plugin_lines.append(line)
+        _log_startup(log_sink, "插件初始化完成")
     except Exception as exc:  # noqa: BLE001
         plugin_lines.append(f"[plugins] 初始化失败，继续无插件模式：{exc}")
+        _log_startup(
+            log_sink,
+            f"插件初始化失败，继续无插件模式：{exc}",
+            level="warning",
+        )
         plugin_runtime = None
 
     def _on_workspace_switched(new_root: Path):
@@ -198,17 +226,29 @@ def _prepare_startup(
             isolation_session,
             on_finalized=lambda summary: print(f"[isolation] {summary}", file=sys.stderr),
         )
+    _log_startup(log_sink, "Agent 初始化完成")
     startup_messages: list[str] = []
     try:
         # MCP 原先在 TUI 首屏之后后台发现，导致用户先看到主界面但暂时不能
         # 输入。把这一步纳入 splash 的 prepare，使 splash 结束即代表可以发送。
         agent.preload_mcp_tools()
+        _log_startup(log_sink, "MCP 初始化完成")
     except AgentError as exc:
         # MCP 是增量能力：发现失败不应阻止内置工具可用；把失败延迟到主界面
         # 展示，同时仍视为该加载项已结束，避免启动页永久等待。
         startup_messages.append(f"MCP 能力加载失败：{exc}")
+        _log_startup(
+            log_sink,
+            f"MCP 能力加载失败:{exc}",
+            level="warning",
+        )
     except Exception as exc:  # noqa: BLE001
         startup_messages.append(f"MCP 能力加载异常：{exc}")
+        _log_startup(
+            log_sink,
+            f"MCP 能力加载异常：{exc}",
+            level="error",
+        )
     if plugin_runtime is not None:
         agent.add_close_callback(plugin_runtime.close)
         plugin_runtime.notify_app_started()
@@ -220,8 +260,15 @@ def _prepare_startup(
         from omnicrawl.connectors.autostart import start_configured_connectors
 
         connector_manager = start_configured_connectors(project_context.workspace_root)
+        for connector_name in connector_manager.started_connectors:
+            _log_startup(log_sink, f"{connector_name}连接器启动成功")
     except Exception as exc:  # noqa: BLE001 - 远程接入失败不阻塞 TUI
         LOGGER.warning("Telegram/飞书自动启动失败，TUI 将继续运行：%s", exc)
+        _log_startup(
+            log_sink,
+            f"Telegram/飞书连接器自动启动失败，TUI 将继续运行：{exc}",
+            level="warning",
+        )
     return {
         "agent": agent,
         "config": config,
@@ -274,14 +321,16 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     # 启动的路径。
     app_root = Path(__file__).resolve().parent.parent
 
-    # 显示启动画面（fastfetch 式：左侧黄色 Logo + 右侧系统信息 + 底部 XP 滚动条），
-    # 后台并行完成全部准备；启动页没有固定时长，直到准备完成且 TUI 可以直接发送。
+    # 显示启动画面（左侧黄色 Logo + 右侧圆角日志框 + 底部 XP 滚动条），
+    # 后台并行完成全部准备；准备阶段把 MCP/插件/Agent/连接器进度写入日志框。
+    # 启动页没有固定时长，直到准备完成且 TUI 可以直接发送。
     # 非交互终端（测试、管道）下 splash 直接同步执行准备，行为不变。
     try:
         prepared = run_startup_splash(
-            lambda: _prepare_startup(
+            lambda log_sink: _prepare_startup(
                 app_root=app_root,
                 resume_session_id=args.resume,
+                log_sink=log_sink,
             ),
             duration=SPLASH_DURATION_SECONDS,
         )

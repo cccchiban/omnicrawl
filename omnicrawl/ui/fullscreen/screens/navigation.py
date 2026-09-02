@@ -10,8 +10,6 @@ P3 重构从 ``ui/fullscreen/__init__.py`` 拆出（2026-08-21）：
 
 from __future__ import annotations
 
-from textual.widgets import Static
-
 from ....config.core.runtime import resolve_config_path, resolve_models_path
 from .run_guard_settings import RunGuardSettingsScreen
 from .agent_workspace_settings import AgentWorkspaceSettingsScreen
@@ -210,9 +208,6 @@ class SettingsNavigationMixin:
                 self._output_tokens = 0
                 self._cached_input_tokens = 0
                 self._refresh_context_summary()
-                self.query_one("#token-telemetry", Static).update(
-                    self._token_telemetry_text()
-                )
             self._drain_pending_inputs()
             # 参考设置面板其他选项页面（渠道/工具/MCP/视觉/子代理）：
             # 关闭当前页后重新打开设置面板回到主菜单。

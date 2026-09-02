@@ -556,22 +556,25 @@ class RenderingMixin:
         self._stream_last_delta_at = 0.0
         self._stream_start_text_len = None
         self._reasoning_message = None
-        if str(getattr(tool_call, "name", "")) == TODO_TOOL_NAME:
+        tool_name = str(getattr(tool_call, "name", ""))
+        if tool_name == TODO_TOOL_NAME:
             self._set_runtime_status("正在更新计划", "working")
             return
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
         tool_message = ToolDisclosure(
-            str(tool_call.name),
+            tool_name,
             self._public_tool_arguments(tool_call),
             time.perf_counter(),
         )
         self._tool_messages[self._tool_call_key(tool_call)] = tool_message
         conversation.mount(tool_message)
-        self._register_conversation_widget(tool_message, str(tool_call.name))
-        self._append_conversation_text(f"{tool_call.name}\n")
+        self._register_conversation_widget(tool_message, tool_name)
+        self._append_conversation_text(f"{tool_name}\n")
+        # ask_user 提问期间底部状态同样显示「等待回复」，与工具卡上的
+        # 「↘ 等待回复...」一致；回答后由 _handle_tool_result 恢复。
         self._set_runtime_status(
-            "正在调用",
+            "等待回复" if tool_name == ASK_USER_TOOL_NAME else "正在调用",
             "working",
             follow_latest=follow_latest,
         )
@@ -579,11 +582,37 @@ class RenderingMixin:
 
 
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
-        if str(getattr(tool_call, "name", "")) in {
-            TODO_TOOL_NAME,
-            ASK_USER_TOOL_NAME,
-        }:
+        tool_name = str(getattr(tool_call, "name", ""))
+        if tool_name == TODO_TOOL_NAME:
             self._tool_messages.pop(self._tool_call_key(tool_call), None)
+            self._set_runtime_status("正在思考", "working")
+            return
+        if tool_name == ASK_USER_TOOL_NAME:
+            # 用户回答后：工具卡由「↘ 等待回复...」收口为「↗ 已收到回复」
+            # 并冻结实际等待耗时，随后退出实时计时集合。
+            key = self._tool_call_key(tool_call)
+            tool_message = self._tool_messages.pop(key, None)
+            if tool_message is None:
+                # 兼容缺失 start 事件的协议实现，同时保持既有交互。
+                tool_message = ToolDisclosure(
+                    tool_name,
+                    self._public_tool_arguments(tool_call),
+                    time.perf_counter(),
+                )
+                self.query_one("#conversation", VerticalScroll).mount(tool_message)
+                self._register_conversation_widget(tool_message, tool_name)
+            completed_at = getattr(result, "completed_at", None)
+            output = str(
+                getattr(result, "full_output", "") or result.output or "无输出"
+            )
+            tool_message.finish(
+                ok=bool(result.ok),
+                output=output,
+                finished_at=(
+                    completed_at if completed_at is not None else time.perf_counter()
+                ),
+            )
+            self._register_conversation_widget(tool_message)
             self._set_runtime_status("正在思考", "working")
             return
         conversation = self.query_one("#conversation", VerticalScroll)
@@ -638,7 +667,7 @@ class RenderingMixin:
         self._input_tokens = max(0, int(incoming))
         self._output_tokens = max(0, int(outgoing))
         self._cached_input_tokens = max(0, int(cached))
-        self.query_one("#token-telemetry", Static).update(self._token_telemetry_text())
+        self._carousel_refresh()
 
 
     @staticmethod
@@ -676,18 +705,13 @@ class RenderingMixin:
 
 
     def _update_token_telemetry(self) -> None:
-        """刷新顶部遥测行；widget 不在活动查询树中时静默跳过。
+        """刷新底部轮播 HUD 中的遥测页；widget 不在活动查询树中时静默跳过。
 
         定时器回调可能在模态屏打开或应用关闭过程中触发，此时主工作台
-        组件已不在活动 Screen 的 DOM 中，直接 query_one 会抛 NoMatches。
+        组件已不在活动 Screen 的 DOM 中，query_one 会抛 NoMatches。
         """
 
-        try:
-            self.query_one("#token-telemetry", Static).update(
-                self._token_telemetry_text()
-            )
-        except Exception:
-            pass
+        self._carousel_refresh()
 
 
     def _refresh_token_rate(self) -> None:

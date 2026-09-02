@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import random
+import unicodedata
+
 from rich.text import Text
 
 from ..terminal.theme import (
@@ -53,7 +56,7 @@ def token_telemetry_text(
 
     字段顺序固定为 上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s，段间用 ⁕ 分隔、内容
     紧排不补固定宽度；行首直接开始（无竖线/分隔符），行尾由
-    #status-summary 自带 “⁕ ” 前置分隔符衔接模型/状态段。CTX 段为
+    status_summary_text 自带 “⁕ ” 前置分隔符衔接模型/状态段。CTX 段为
     用量/总量 + 百分比（无进度条），输入/输出/缓存精简为 ↑/↓/† 三组，
     缓存率以 “CH0%” 显示在 ↑/↓/† 后：缓存率 = 缓存命中的输入 token
     （†）÷ 本次请求总输入 token（↑），CA 是 IN 的子集，因此缓存率
@@ -116,6 +119,109 @@ def gradient_text(text: str) -> Text:
     """保留既有调用接口，以终端 ANSI 主强调色渲染品牌文字。"""
 
     return Text(text, style=f"{ACCENT_GREEN} bold")
+
+
+# 底部轮播解密扫描特效：进度 0~EROSION_FRACTION 为乱码侵蚀旧文本，
+# 之后把乱码从左到右逐步"吐出"为清晰的新文本。
+EROSION_FRACTION = 0.45
+# 解密扫描波前右侧的乱码区中，每字符以该概率闪现真实目标字符，
+# 形成"解码中"的闪烁观感。
+SHIMMER_CHANCE = 0.16
+# 乱码字符集：随机符号 + 数字 + 大小写字母。
+GARBLE_CHARS = (
+    "#@%&*+=<>/\\?^$!~|0123456789"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+)
+
+
+def _is_wide_char(ch: str) -> bool:
+    """判断字符是否为终端双宽（CJK 全角/宽字符）。"""
+
+    return unicodedata.east_asian_width(ch) in ("W", "F")
+
+
+def _text_styles(text: Text) -> list[object]:
+    """返回每个 plain 字符位置的样式（span 覆盖优先，其余用文本基样式）。"""
+
+    plain = text.plain
+    styles: list[object] = [None] * len(plain)
+    for span in text.spans:
+        for index in range(max(0, span.start), min(len(plain), span.end)):
+            styles[index] = span.style
+    for index in range(len(plain)):
+        if styles[index] is None:
+            styles[index] = text.style
+    return styles
+
+
+def _garble_cells(
+    original: str,
+    style: object,
+    rand: random.Random,
+) -> list[tuple[str, object]]:
+    """生成替换乱码字符；双宽字符用两个单宽乱码保持终端宽度。"""
+
+    count = 2 if _is_wide_char(original) else 1
+    return [(rand.choice(GARBLE_CHARS), style) for _ in range(count)]
+
+
+def decrypt_frame(
+    old_text: Text,
+    new_text: Text,
+    progress: float,
+    *,
+    rand_source: random.Random | None = None,
+) -> Text:
+    """生成底部轮播切换时的"解密扫描特效"的一帧。
+
+    进度 ``0.0`` 完整显示旧文本、``1.0`` 完整显示新文本。前半段
+    （0 ~ ``EROSION_FRACTION``）乱码波从左到右侵蚀旧文本；后半段扫描
+    波从左到右把乱码逐步蜕变成清晰的新文本——波前左侧已解密、波前右侧
+    仍是闪烁乱码（偶发闪现真实字符）。``rand_source`` 传入固定随机源时
+    输出可复现，便于测试。
+    """
+
+    rand = rand_source if rand_source is not None else random
+    progress = min(1.0, max(0.0, float(progress)))
+    old_plain = old_text.plain
+    new_plain = new_text.plain
+    old_styles = _text_styles(old_text)
+    new_styles = _text_styles(new_text)
+    garble_style: object = TEXT_MUTED
+    cells: list[tuple[str, object]] = []
+    if progress < EROSION_FRACTION:
+        # 侵蚀阶段：乱码波从左到右吃掉旧文本，波前左侧已乱码、右侧完好。
+        front = 0
+        if progress > 0 and old_plain:
+            front = min(
+                len(old_plain),
+                int(len(old_plain) * progress / EROSION_FRACTION + 0.999),
+            )
+        for index, ch in enumerate(old_plain):
+            if index < front:
+                cells.extend(_garble_cells(ch, garble_style, rand))
+            else:
+                cells.append((ch, old_styles[index]))
+    else:
+        # 解密阶段：扫描波从左到右把乱码吐出为清晰新文本。
+        reveal = (progress - EROSION_FRACTION) / (1.0 - EROSION_FRACTION)
+        front = min(len(new_plain), int(len(new_plain) * reveal))
+        for index, ch in enumerate(new_plain):
+            if index < front:
+                cells.append((ch, new_styles[index]))
+            elif index == front:
+                cells.extend(_garble_cells(ch, garble_style, rand))
+            elif rand.random() < SHIMMER_CHANCE:
+                cells.append((ch, new_styles[index]))
+            else:
+                cells.extend(_garble_cells(ch, garble_style, rand))
+    rendered = Text()
+    for ch, style in cells:
+        if style is None:
+            rendered.append(ch)
+        else:
+            rendered.append(ch, style=style)
+    return rendered
 
 
 def compact_hud_value(value: str, max_chars: int) -> str:

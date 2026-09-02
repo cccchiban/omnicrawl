@@ -17,6 +17,7 @@ from typing import Any
 
 from rich.text import Text
 
+from ....agent.toolkit.tools import ASK_USER_TOOL_NAME
 from ...tool_labels import format_duration, format_tool_status, tool_display
 from ..terminal.theme import (
     ACCENT_AMBER,
@@ -285,6 +286,27 @@ def _workspace_tool_title(
     return rendered
 
 
+def _ask_user_tool_title(status: str, duration_seconds: float) -> Text | None:
+    """ask_user 工具卡标题：等待回复/已收到回复 + 耗时。
+
+    提问期间显示「↘ 等待回复...」并实时计时；用户回答后收口为
+    「↗ 已收到回复」并冻结实际耗时。取消等异常状态回退通用标题。
+    """
+
+    if status == "等待回复":
+        label, color = "↘ 等待回复...", ACCENT_BLUE
+    elif status == "已收到回复":
+        label, color = "↗ 已收到回复", ACCENT_GREEN
+    else:
+        return None
+    rendered = Text()
+    rendered.append("● ", style=color)
+    rendered.append(label, style=color)
+    rendered.append(" · ", style=COLOR_META)
+    rendered.append(format_duration(duration_seconds), style=TEXT_MUTED)
+    return rendered
+
+
 def is_file_change_tool(tool_name: str) -> bool:
     return str(tool_name or "") in FILE_CHANGE_TOOLS
 
@@ -302,6 +324,10 @@ def tool_disclosure_title(
 
     display = tool_display(tool_name)
     status_display = format_tool_status(status)
+    if tool_name == ASK_USER_TOOL_NAME:
+        ask_title = _ask_user_tool_title(status, duration_seconds)
+        if ask_title is not None:
+            return ask_title
     operation = _tool_operation(tool_name)
     workspace_title = _workspace_tool_title(
         operation=operation,

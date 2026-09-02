@@ -21,6 +21,7 @@ from textual.screen import ModalScreen
 from textual.strip import Strip
 from textual.widgets import Button, RichLog, Static
 
+from ....agent.toolkit.tools import ASK_USER_TOOL_NAME
 from .latex import latex_to_text
 from ..terminal.theme import REASONING_BACKGROUND, REASONING_TEXT, terminal_css
 from .tool_diff import tool_disclosure_body, tool_disclosure_title
@@ -843,13 +844,16 @@ class ToolDisclosure(Static):
 
     # 状态 → 语义 class（方案6：状态色点 + 缩进，无边框）。class 不再驱动
     # 任何边框/背景样式，仅保留状态标签语义；颜色由标题行首 ● 点在
-    # tool_disclosure_title 内按状态绘制。
+    # tool_disclosure_title 内按状态绘制。ask_user 使用专属状态：提问期间
+    # 「等待回复」（实时计时），用户回答后收口为「已收到回复」。
     STATUS_CLASS = {
         "调用中": "tool-running",
         "成功": "tool-ok",
         "失败": "tool-fail",
         "等待确认": "tool-pending",
         "已取消": "tool-cancelled",
+        "等待回复": "tool-running",
+        "已收到回复": "tool-ok",
     }
 
     # 工具展开正文的行数上限（不含标题行）。
@@ -869,7 +873,7 @@ class ToolDisclosure(Static):
         self.tool_name = tool_name
         self.arguments = arguments
         self.started_at = started_at
-        self.status = "调用中"
+        self.status = "等待回复" if tool_name == ASK_USER_TOOL_NAME else "调用中"
         self.duration_seconds = 0.0
         self.result_text = ""
         # 除 write_file 与 Edit_file 外的所有工具正文受五行上限约束。
@@ -877,7 +881,10 @@ class ToolDisclosure(Static):
         self._refresh_display()
 
     def finish(self, *, ok: bool, output: str, finished_at: float) -> None:
-        self.status = "成功" if ok else "失败"
+        if self.tool_name == ASK_USER_TOOL_NAME:
+            self.status = "已收到回复" if ok else "已取消"
+        else:
+            self.status = "成功" if ok else "失败"
         self.duration_seconds = max(0.0, finished_at - self.started_at)
         self.result_text = output
         self._apply_status_class()
@@ -893,11 +900,11 @@ class ToolDisclosure(Static):
     def refresh_elapsed(self, now: float | None = None) -> None:
         """调用期间实时刷新已耗时；终态记录不再重绘。
 
-        与 SubAgentTree.refresh_elapsed 同语义：只有「调用中」的工具行
-        参与 tick 刷新，完成后保留 finish() 记录的最终耗时。
+        与 SubAgentTree.refresh_elapsed 同语义：只有「调用中」「等待回复」
+        的工具行参与 tick 刷新，完成后保留 finish() 记录的最终耗时。
         """
 
-        if self.status != "调用中":
+        if self.status not in {"调用中", "等待回复"}:
             return
         self.duration_seconds = max(
             0.0,

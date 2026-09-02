@@ -14,7 +14,7 @@ from typing import Any
 
 from rich.text import Text
 from textual import events
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
 from ....agent import AskUserRequest
@@ -22,7 +22,11 @@ from ..rendering.widgets import TodoPlan
 
 
 class AskUserOption(Static):
-    """ask_user 的单选行；键盘导航和提交由所属 App 统一处理。"""
+    """ask_user 的单选行；键盘导航和提交由所属 App 统一处理。
+
+    普通选项以白色「▢」呈现；键盘选中或鼠标悬停后变为黄色「▣」，
+    表明该选项是当前候选项。
+    """
 
     can_focus = True
 
@@ -30,18 +34,43 @@ class AskUserOption(Static):
         self._owner = owner
         self.index = index
         self.label_text = label
+        self._selected = False
+        self._hovered = False
         super().__init__()
-        self.set_selected(False)
+        self._refresh_marker()
 
     def set_option(self, index: int, label: str, selected: bool) -> None:
         self.index = index
         self.label_text = label
-        self.set_selected(selected)
+        self._selected = selected
+        # 行被新请求复用时清除上一次的悬停残留。
+        self._hovered = False
+        self._refresh_marker()
 
     def set_selected(self, selected: bool) -> None:
-        marker = "▣" if selected else "▢"
-        style = "bold ansi_yellow" if selected else "ansi_yellow"
+        self._selected = selected
+        self._refresh_marker()
+
+    def set_hovered(self, hovered: bool) -> None:
+        if self._hovered == hovered:
+            return
+        self._hovered = hovered
+        self._refresh_marker()
+
+    def _refresh_marker(self) -> None:
+        # 键盘选中与鼠标悬停共用一个高亮视觉：黄色「▣」；否则白色「▢」。
+        highlighted = self._selected or self._hovered
+        marker = "▣" if highlighted else "▢"
+        style = "bold ansi_yellow" if highlighted else "ansi_white"
         self.update(Text(f"{marker}{self.index + 1}.{self.label_text}", style=style))
+
+    def on_enter(self, event: events.Enter) -> None:
+        # 鼠标移入：选项立即变为黄色「▣」，作为点击前提交的候选预览。
+        self.set_hovered(True)
+
+    def on_leave(self, event: events.Leave) -> None:
+        # 鼠标移出：还原为白色「▢」（键盘选中的选项保持高亮）。
+        self.set_hovered(False)
 
     def on_key(self, event: events.Key) -> None:
         if event.key in {"up", "down"}:
@@ -72,6 +101,19 @@ class InputMixin:
     COPY_STATUS_DISPLAY_SECONDS = 2.0
     # 「已复制「…」」内最多展示的预览字符数，超出用省略号截断。
     COPY_STATUS_PREVIEW_LIMIT = 24
+    # ask_user：问题与选项面板最多占用的视口行数比例与下限；内容更高时
+    # 面板内部滚动，避免长问题/多选项把下方输入框挤出可视区域。
+    ASK_USER_PANEL_MAX_ROWS_FRACTION = 0.4
+    ASK_USER_PANEL_MIN_ROWS = 6
+    # 所有 kind 的选项末尾统一追加的「自定义回答」入口：选中后解锁输入框，
+    # 输入自己的回答提交，而不是只能从列出的选项中选择。
+    ASK_USER_CUSTOM_OPTION_LABEL = "but I Think..."
+    ASK_USER_CUSTOM_HEADER = "✎ 输入自定义回答，回车提交"
+    ASK_USER_HEADERS = {
+        "question": "需要补充信息",
+        "select": "请选择一项",
+        "confirm": "请确认",
+    }
 
     def _compact_paste_if_needed(self, text: str) -> str | None:
         pasted_text = _normalize_pasted_text(text)
@@ -160,17 +202,39 @@ class InputMixin:
         except Exception:
             return len(self._todo_plan_items)
 
+    def _ask_user_panel_max_rows(self) -> int:
+        """ask_user 面板最多占用的行数：按视口高度比例计算，带下限。"""
+
+        return max(
+            self.ASK_USER_PANEL_MIN_ROWS,
+            int(self.size.height * self.ASK_USER_PANEL_MAX_ROWS_FRACTION),
+        )
+
+    def _ask_user_panel_content_rows(self) -> int:
+        """ask_user 面板的完整内容行数：标题 + 问题折行高度 + 各选项折行高度。"""
+
+        question = self.query_one("#ask-user-question", Static)
+        question_rows = max(1, getattr(question.virtual_size, "height", 1))
+        option_rows = sum(
+            max(1, getattr(row.virtual_size, "height", 1))
+            for row in self._ask_user_options()
+        )
+        return 3 + question_rows + option_rows
+
     def _ask_user_rows(self) -> int:
-        """返回 ask_user 面板占用的行数，供输入区布局使用。"""
+        """返回 ask_user 面板占用的行数，供输入区布局使用。
+
+        面板高度按视口比例封顶：内容更高时面板内部滚动，下方输入框始终可见。
+        """
 
         try:
-            panel = self.query_one("#ask-user-panel", Vertical)
+            panel = self.query_one("#ask-user-panel", VerticalScroll)
             if not panel.display:
                 return 0
-            question = self.query_one("#ask-user-question", Static)
-            options = self._ask_user_options()
-            question_rows = max(1, getattr(question.virtual_size, "height", 1))
-            return 3 + question_rows + len(options)
+            return min(
+                self._ask_user_panel_content_rows(),
+                self._ask_user_panel_max_rows(),
+            )
         except Exception:
             return 0
 
@@ -179,7 +243,8 @@ class InputMixin:
 
         self._ask_user_request = request
         self._ask_user_answer = None
-        panel = self.query_one("#ask-user-panel", Vertical)
+        self._ask_user_custom_mode = False
+        panel = self.query_one("#ask-user-panel", VerticalScroll)
         options = self.query_one("#ask-user-options", Vertical)
         composer = self.query_one("#composer", TextArea)
         rows = list(options.query(AskUserOption))
@@ -193,14 +258,21 @@ class InputMixin:
             self._resize_composer_to_text()
             return
         panel.display = True
-        header = {"question": "需要补充信息", "select": "请选择一项", "confirm": "请确认"}.get(request.kind, "需要回答")
-        self.query_one("#ask-user-header", Static).update(Text(header, style="bold ansi_yellow"))
-        self.query_one("#ask-user-question", Static).update(Text(request.question, style="bold ansi_white"))
+        header_text = self.ASK_USER_HEADERS.get(request.kind, "需要回答")
+        self.query_one("#ask-user-header", Static).update(
+            Text(header_text, style="bold ansi_yellow")
+        )
+        self.query_one("#ask-user-question", Static).update(
+            Text(request.question, style="bold ansi_white")
+        )
         self._ask_user_selection = 0
         # 所有 kind 都必须携带 options；select 只允许从选项中选择，
         # question/confirm 默认从选项中选择，同时保留自由文本输入兜底。
+        # 末尾统一追加「but I Think...」自定义入口：选中后解锁输入框，
+        # 输入任意回答提交，而不是只能从列出的选项中选择。
+        option_labels = list(request.options) + [self.ASK_USER_CUSTOM_OPTION_LABEL]
         options.display = True
-        for index, label in enumerate(request.options):
+        for index, label in enumerate(option_labels):
             if index < len(rows):
                 row = rows[index]
                 row.set_option(index, label, False)
@@ -208,7 +280,7 @@ class InputMixin:
                 row = AskUserOption(self, index, label)
                 options.mount(row)
             row.display = True
-        for row in rows[len(request.options) :]:
+        for row in rows[len(option_labels) :]:
             row.display = False
         if request.kind == "select":
             composer.read_only = True
@@ -217,6 +289,25 @@ class InputMixin:
             composer.read_only = False
             composer.clear()
             composer.focus()
+        panel.scroll_home(animate=False)
+        self._refresh_ask_user_panel_height()
+        self._resize_composer_to_text()
+        self.call_after_refresh(self._refresh_ask_user_panel_height)
+
+    def _refresh_ask_user_panel_height(self) -> None:
+        """按最新折行结果重算面板高度，并同步输入区整体高度。
+
+        问题/选项在布局后才有准确的折行虚拟高度，首次展示时的同步计算
+        是近似值；刷新后再校正一次，让面板内部滚动与整体布局保持一致。
+        """
+
+        panel = self.query_one("#ask-user-panel", VerticalScroll)
+        if not panel.display:
+            return
+        panel.styles.height = min(
+            self._ask_user_panel_content_rows(),
+            self._ask_user_panel_max_rows(),
+        )
         self._resize_composer_to_text()
 
     def _ask_user(self, request: AskUserRequest) -> str | None:
@@ -250,6 +341,49 @@ class InputMixin:
         for row_index, row in enumerate(rows):
             row.set_selected(row_index == index)
         rows[index].focus()
+        request = self._ask_user_request
+        if request is None:
+            return
+        if index >= len(request.options):
+            # 选中「but I Think...」：进入自由输入模式。
+            self._enter_ask_user_custom_mode()
+        else:
+            self._exit_ask_user_custom_mode()
+
+    def _enter_ask_user_custom_mode(self) -> None:
+        """「but I Think...」：解锁输入框进入自由输入，支持任意自定义回答。"""
+
+        request = self._ask_user_request
+        if request is None:
+            return
+        self._ask_user_custom_mode = True
+        composer = self.query_one("#composer", TextArea)
+        composer.read_only = False
+        if request.kind == "select":
+            # select 模式下输入框原本只读且无内容，进入自定义输入时解锁清空。
+            composer.clear()
+        composer.focus()
+        self.query_one("#ask-user-header", Static).update(
+            Text(self.ASK_USER_CUSTOM_HEADER, style="bold ansi_cyan")
+        )
+
+    def _exit_ask_user_custom_mode(self) -> None:
+        """离开自定义输入回到选项导航：select 恢复只读，头部恢复 kind 文案。"""
+
+        if not self._ask_user_custom_mode:
+            return
+        self._ask_user_custom_mode = False
+        request = self._ask_user_request
+        if request is None:
+            return
+        if request.kind == "select":
+            self.query_one("#composer", TextArea).read_only = True
+        self.query_one("#ask-user-header", Static).update(
+            Text(
+                self.ASK_USER_HEADERS.get(request.kind, "需要回答"),
+                style="bold ansi_yellow",
+            )
+        )
 
     def _move_ask_user_selection(self, offset: int) -> None:
         rows = self._ask_user_options()
@@ -263,13 +397,25 @@ class InputMixin:
         request = self._ask_user_request
         if request is None or not request.options:
             return
+        if self._ask_user_selection >= len(request.options):
+            # 选中的是「but I Think...」自定义入口：不直接提交选项，
+            # 切换为自由输入模式，由用户输入自己的回答。
+            self._enter_ask_user_custom_mode()
+            return
         index = min(self._ask_user_selection, len(request.options) - 1)
         self._ask_user_selection = index
         self._ask_user_answer = request.options[index]
         self._ask_user_event.set()
 
     def _submit_ask_user_text(self, text: str) -> bool:
-        if self._ask_user_request is None or self._ask_user_request.kind == "select":
+        if self._ask_user_request is None:
+            return False
+        # select 只有进入「but I Think...」自定义模式后才接受自由文本，
+        # 避免把任意输入误当成未声明的选项答案。
+        if (
+            self._ask_user_request.kind == "select"
+            and not self._ask_user_custom_mode
+        ):
             return False
         answer = text.strip()
         if not answer:
