@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional, Sequence
 from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -34,6 +35,63 @@ from ..terminal.theme import (
     TEXT_SECONDARY,
     terminal_css,
 )
+from .panes import SettingsPane
+
+# Pane 版样式（不含整屏 dialog 外壳；外壳由 SettingsScreen 右侧或薄壳提供）。
+_MODEL_PANE_CSS = """
+#model-picker-search {
+    height: 3;
+    border: none;
+    background: $terminal-panel;
+    color: $terminal-text;
+    margin-bottom: 1;
+}
+#model-picker-search:focus {
+    border-left: solid $terminal-green;
+}
+#model-picker-body {
+    height: 1fr;
+}
+#model-picker-columns {
+    height: 1fr;
+}
+.model-column {
+    width: 1fr;
+    height: 1fr;
+    border: round $terminal-border;
+    padding: 0 1;
+    background: $terminal-background;
+}
+.model-column.active-column {
+    border: round $terminal-green;
+}
+.model-column-title {
+    color: $terminal-text-secondary;
+    text-style: bold;
+    height: 1;
+    margin-bottom: 1;
+}
+.model-column-list {
+    height: 1fr;
+    color: $terminal-text;
+}
+#model-picker-diagnostics {
+    height: auto;
+    max-height: 3;
+    color: $terminal-amber;
+    margin-top: 1;
+}
+#model-picker-help {
+    height: 1;
+    color: $terminal-white;
+    margin-top: 1;
+}
+#model-picker-status {
+    height: 1;
+    color: $terminal-white;
+    margin-top: 0;
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -69,110 +127,26 @@ class _ModelList(Static):
     can_focus = True
 
 
-class _ModelPickerSearchInput(Input):
-    """搜索框方向键直接交还模型列表导航。"""
+class ModelPickerPane(SettingsPane):
+    """模型选择面板（可内嵌设置页右侧或整屏薄壳内）。
 
-    def on_key(self, event: events.Key) -> None:
-        if event.key not in {"up", "down"}:
-            return
-        screen = getattr(self, "screen", None)
-        focus_list = getattr(screen, "_focus_active_list", None)
-        move = getattr(screen, "action_move_up" if event.key == "up" else "action_move_down", None)
-        if callable(focus_list):
-            focus_list()
-        if callable(move):
-            move()
-        event.prevent_default()
-        event.stop()
-
-
-class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
-    """宽终端左右双列，窄终端上下分区。"""
+    双列展示：渠道选择 + 当前渠道模型。加载分两阶段（先本地渠道，再
+    网络发现模型）；切换模型成功后调用 commit(result)，由宿主决定
+    就地停留还是关闭弹层。请求返回上一级用 request_back()。
+    """
 
     BINDINGS = [
-        ("escape", "cancel", "取消"),
+        Binding("escape", "cancel", "返回", priority=True),
         ("r", "refresh", "刷新"),
         ("left", "column_left", "左列"),
         ("right", "column_right", "右列"),
-        ("up", "move_up", "上"),
-        ("down", "move_down", "下"),
+        Binding("up", "move_up", "上", priority=True),
+        Binding("down", "move_down", "下", priority=True),
         ("enter", "confirm", "切换"),
         ("slash", "focus_search", "搜索"),
     ]
 
-    CSS = terminal_css("""
-    ModelPickerScreen {
-        align: center middle;
-        background: $terminal-overlay;
-    }
-    #model-picker-dialog {
-        width: 110;
-        max-width: 96%;
-        height: 28;
-        max-height: 90%;
-        padding: 1 2;
-        border: round white;
-        background: $terminal-surface;
-    }
-    #model-picker-title {
-        color: $terminal-white;
-        text-style: bold;
-        height: 1;
-        margin-bottom: 1;
-    }
-    #model-picker-search {
-        height: 3;
-        border: none;
-        background: $terminal-panel;
-        color: $terminal-text;
-        margin-bottom: 1;
-    }
-    #model-picker-search:focus {
-        border-left: solid $terminal-green;
-    }
-    #model-picker-body {
-        height: 1fr;
-    }
-    #model-picker-columns {
-        height: 1fr;
-    }
-    .model-column {
-        width: 1fr;
-        height: 1fr;
-        border: round $terminal-border;
-        padding: 0 1;
-        background: $terminal-background;
-    }
-    .model-column.active-column {
-        border: round $terminal-green;
-    }
-    .model-column-title {
-        color: $terminal-text-secondary;
-        text-style: bold;
-        height: 1;
-        margin-bottom: 1;
-    }
-    .model-column-list {
-        height: 1fr;
-        color: $terminal-text;
-    }
-    #model-picker-diagnostics {
-        height: auto;
-        max-height: 3;
-        color: $terminal-amber;
-        margin-top: 1;
-    }
-    #model-picker-help {
-        height: 1;
-        color: $terminal-white;
-        margin-top: 1;
-    }
-    #model-picker-status {
-        height: 1;
-        color: $terminal-white;
-        margin-top: 0;
-    }
-    """)
+    DEFAULT_CSS = terminal_css(_MODEL_PANE_CSS)
 
     def __init__(
         self,
@@ -183,8 +157,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         switch_model: Callable[[str], None] | None = None,
         persist_selection: Callable[[CatalogModel], str] | None = None,
     ) -> None:
-        super().__init__()
-        self._agent = agent
+        super().__init__(agent=agent)
         self._refresh_on_open = refresh_on_open
         self._selection_only = selection_only
         self._switch_model = switch_model
@@ -202,40 +175,35 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self._refresh_pending = False
         self._status = "正在加载模型目录…"
 
-    def compose(self) -> ComposeResult:
-        with Container(id="model-picker-dialog"):
-            yield Static(
-                "选择视觉模型" if self._selection_only else "模型切换",
-                id="model-picker-title",
-            )
-            yield _ModelPickerSearchInput(
-                placeholder="搜索 key / 别名 / 模型 ID / provider / tag",
-                id="model-picker-search",
-            )
-            with Vertical(id="model-picker-body"):
-                with Horizontal(id="model-picker-columns"):
-                    with Vertical(classes="model-column active-column", id="column-channels"):
-                        yield Static("渠道选择", classes="model-column-title")
-                        yield _ModelList("", id="list-channels", classes="model-column-list")
-                    with Vertical(classes="model-column", id="column-models"):
-                        yield Static("模型", classes="model-column-title")
-                        yield _ModelList("", id="list-models", classes="model-column-list")
-                yield Static("", id="model-picker-diagnostics")
-            yield Static("", id="model-picker-status")
-            yield Static(
-                "↑↓ 选择  ←→ 切换列  Tab 搜索  Enter 选择  / 搜索  R 刷新  Esc 取消"
-                if self._selection_only
-                else "↑↓ 选择  ←→ 切换列  Tab 搜索  Enter 切换  / 搜索  R 刷新  Esc 取消",
-                id="model-picker-help",
-            )
+    def compose_pane(self) -> ComposeResult:
+        yield Input(
+            placeholder="搜索 key / 别名 / 模型 ID / provider / tag",
+            id="model-picker-search",
+        )
+        with Vertical(id="model-picker-body"):
+            with Horizontal(id="model-picker-columns"):
+                with Vertical(classes="model-column active-column", id="column-channels"):
+                    yield Static("渠道选择", classes="model-column-title")
+                    yield _ModelList("", id="list-channels", classes="model-column-list")
+                with Vertical(classes="model-column", id="column-models"):
+                    yield Static("模型", classes="model-column-title")
+                    yield _ModelList("", id="list-models", classes="model-column-list")
+            yield Static("", id="model-picker-diagnostics")
+        yield Static("", id="model-picker-status")
+        yield Static(
+            "↑↓ 选择  ←→ 切换列  Tab 搜索  Enter 选择  / 搜索  R 刷新  Esc 返回"
+            if self._selection_only
+            else "↑↓ 选择  ←→ 切换列  Tab 搜索  Enter 切换  / 搜索  R 刷新  Esc 返回",
+            id="model-picker-help",
+        )
 
     def on_mount(self) -> None:
-        # 模型切换是本界面的主操作，默认焦点必须落在列表上。搜索框仍可
-        # 通过“/”或鼠标进入；搜索后按上下键会自动返回列表导航。
-        # ModalScreen 会在 on_mount 之后执行默认自动聚焦，因此延后一帧才能
-        # 稳定覆盖到模型列表，而不是被第一个可聚焦的搜索框重新抢回。
-        self.call_after_refresh(self._focus_active_list)
+        # 由宿主（薄壳或设置页）决定何时激活本面板；挂载后只启动加载。
         self._load_catalog(refresh=self._refresh_on_open)
+
+    def activate(self) -> None:
+        """面板获得活动权：焦点落在当前活动列上。"""
+        self._focus_active_list()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "model-picker-search":
@@ -248,7 +216,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
     def action_cancel(self) -> None:
         if self._switching:
             return
-        self.dismiss(None)
+        self.request_back()
 
     def action_refresh(self) -> None:
         if self._loading or self._switching:
@@ -301,7 +269,8 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         self._switch_to(selected)
 
     def on_key(self, event: events.Key) -> None:
-        focused_id = getattr(self.focused, "id", "") if self.focused else ""
+        focused = getattr(self.screen, "focused", None)
+        focused_id = getattr(focused, "id", "") if focused is not None else ""
         if focused_id in {"list-channels", "list-models"} and event.key == "tab":
             # 两列模型列表都是可聚焦控件，Textual 默认 Tab 顺序会先从左列
             # 跳到右列，用户必须按两次才能进入搜索框。模型列表之间已经
@@ -313,7 +282,7 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
         if focused_id != "model-picker-search":
             return
         if event.key in {"up", "down"}:
-            # 真实终端中 Input 可能先消费方向键，因此在 Screen 事件层明确接管，
+            # 真实终端中 Input 可能先消费方向键，因此在事件层明确接管，
             # 同时把焦点移回列表，保证后续左右切列和 Enter 均稳定工作。
             event.prevent_default()
             event.stop()
@@ -550,9 +519,30 @@ class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
                 model_id=item.model_id,
                 message=message,
             )
-            self.app.call_from_thread(self.dismiss, result)
+            self.app.call_from_thread(self._switch_succeeded, result)
         except (AgentError, ModelCatalogError, Exception) as exc:
             self.app.call_from_thread(self._switch_failed, str(exc))
+
+    def _switch_succeeded(self, result: ModelPickerResult) -> None:
+        """切换成功（主线程）：复位进行中状态后提交结果给宿主。
+
+        薄壳模式由宿主 dismiss 关闭；设置页右侧内嵌模式宿主保留本面板，
+        因此必须在这里复位 ``_switching`` 并刷新状态行——否则“正在切换
+        …”与 Enter/Esc/刷新门卫会一直滞留，表现为切换永久卡住。
+        """
+
+        self._switching = False
+        if not self.is_mounted:
+            return
+        fallback = (
+            f"已切换为 {result.model}"
+            if not self._selection_only
+            else f"已选择 {result.model}"
+        )
+        self._status = result.message or fallback
+        self._render_status()
+        self.commit(result)
+
 
     def _switch_failed(self, message: str) -> None:
         self._switching = False
@@ -998,4 +988,143 @@ def render_column_text(
     return rendered
 
 
-__all__ = ["ModelPickerResult", "ModelPickerScreen"]
+class ModelPickerScreen(ModalScreen[Optional[ModelPickerResult]]):
+    """整屏薄壳：保留独立模型选择器协议（模态弹层）。
+
+    内部复用 :class:`ModelPickerPane`，通过 on_back/on_commit 桥接为
+    dismiss(None)/dismiss(result)，供导航层与既有调用继续使用。
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消", priority=True),
+        ("r", "refresh", "刷新"),
+        ("left", "column_left", "左列"),
+        ("right", "column_right", "右列"),
+        Binding("up", "move_up", "上", priority=True),
+        Binding("down", "move_down", "下", priority=True),
+        ("enter", "confirm", "切换"),
+        ("slash", "focus_search", "搜索"),
+    ]
+
+    CSS = terminal_css("""
+    ModelPickerScreen {
+        align: center middle;
+        background: $terminal-overlay;
+    }
+    #model-picker-dialog {
+        width: 110;
+        max-width: 96%;
+        height: 28;
+        max-height: 90%;
+        padding: 1 2;
+        border: round white;
+        background: $terminal-surface;
+    }
+    #model-picker-title {
+        color: $terminal-white;
+        text-style: bold;
+        height: 1;
+        margin-bottom: 1;
+    }
+    """ + _MODEL_PANE_CSS)
+
+    def __init__(
+        self,
+        agent: Any,
+        *,
+        refresh_on_open: bool = False,
+        selection_only: bool = False,
+        switch_model: Callable[[str], None] | None = None,
+        persist_selection: Callable[[CatalogModel], str] | None = None,
+    ) -> None:
+        super().__init__()
+        self._agent = agent
+        self._pane: Optional[ModelPickerPane] = None
+        self._selection_only = selection_only
+        self._refresh_on_open = refresh_on_open
+        self._switch_model = switch_model
+        self._persist_selection = persist_selection
+
+    # 转发给 pane 的状态，供既有测试/调用读取。
+    @property
+    def _index_channels(self) -> int:
+        return self._pane._index_channels if self._pane is not None else 0
+
+    @property
+    def _index_models(self) -> int:
+        return self._pane._index_models if self._pane is not None else 0
+
+    @property
+    def _active_column(self) -> int:
+        return self._pane._active_column if self._pane is not None else 0
+
+    @property
+    def _channels(self) -> list[_ChannelChoice]:
+        return list(self._pane._channels) if self._pane is not None else []
+
+    @property
+    def _status(self) -> str:
+        return self._pane._status if self._pane is not None else ""
+
+    def compose(self) -> ComposeResult:
+        with Container(id="model-picker-dialog"):
+            yield Static(
+                "选择视觉模型" if self._selection_only else "模型切换",
+                id="model-picker-title",
+            )
+            self._pane = ModelPickerPane(
+                self._agent,
+                refresh_on_open=self._refresh_on_open,
+                selection_only=self._selection_only,
+                switch_model=self._switch_model,
+                persist_selection=self._persist_selection,
+            )
+            self._pane.bind_pane_events(
+                on_back=lambda: self.dismiss(None),
+                on_commit=lambda result: self.dismiss(result),
+            )
+            yield self._pane
+
+    def on_mount(self) -> None:
+        if self._pane is not None:
+            # ModalScreen 自动聚焦可能抢到搜索框；列表才是主操作区。
+            self.call_after_refresh(self._pane.activate)
+
+    def action_cancel(self) -> None:
+        if self._pane is not None:
+            self._pane.action_cancel()
+
+    def action_refresh(self) -> None:
+        if self._pane is not None:
+            self._pane.action_refresh()
+
+    def action_column_left(self) -> None:
+        if self._pane is not None:
+            self._pane.action_column_left()
+
+    def action_column_right(self) -> None:
+        if self._pane is not None:
+            self._pane.action_column_right()
+
+    def action_move_up(self) -> None:
+        if self._pane is not None:
+            self._pane.action_move_up()
+
+    def action_move_down(self) -> None:
+        if self._pane is not None:
+            self._pane.action_move_down()
+
+    def action_confirm(self) -> None:
+        if self._pane is not None:
+            self._pane.action_confirm()
+
+    def action_focus_search(self) -> None:
+        if self._pane is not None:
+            self._pane.action_focus_search()
+
+
+__all__ = [
+    "ModelPickerResult",
+    "ModelPickerPane",
+    "ModelPickerScreen",
+]

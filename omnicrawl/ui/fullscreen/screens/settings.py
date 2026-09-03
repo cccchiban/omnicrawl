@@ -1,14 +1,27 @@
-"""全屏 TUI 的中文运行设置面板。"""
+"""全屏 TUI 的中文运行设置面板（全屏三区：顶部标题 + 左侧列表 + 右侧二级面板）。
+
+布局与交互：
+- 顶部：与窗口标题一致的“运行设置”标题，贴近左侧栏对齐；
+- 左侧：圆角框内从上到下排列所有设置项，只显示设置项名称，不显示状态；
+- 右侧：比左侧更宽的圆角框，实时展示左侧选中项的二级菜单内容：
+  - 简单开关/枚举项 → 单个下拉选项框（选择即应用保存）；
+  - 工具设置（审批模式 + MCP 策略/Server + 内置工具开关）→ 分节列表，
+    Enter/←→/空格 修改选中行并即时保存；
+  - 子任务设置（功能开关 + 高级参数）→ 同一分节列表；
+  - 模型 / 模型渠道 → 内嵌选择/管理面板（切换/保存后留在右侧）；
+  - 其余复杂设置项 → 对应 *SettingsPane 完整管理界面。
+- 键盘：左侧行获得焦点时 ↑↓ 移动并实时刷新右侧；Enter/→ 把焦点移入
+  右侧操作；右侧内 Esc 先回左侧，再 Esc 关闭整个设置面板。
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, VerticalScroll
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
@@ -20,6 +33,7 @@ from ....approval import (
     approval_mode_label,
     save_approval_mode,
 )
+from ....config.core.runtime import resolve_config_path, resolve_models_path
 from ....config.core.settings import (
     SettingsConfigError,
     save_context_compaction_trigger_percent,
@@ -28,19 +42,27 @@ from ....config.core.settings import (
     save_show_thinking,
     save_subagent_setting,
 )
-from ....config.features.run_guard import load_run_guard_config, save_run_guard_config
 from ....config.features.subagents import (
     SUBAGENT_ADVANCED_SETTING_KEYS,
     SubAgentConfigError,
     validate_subagent_advanced_setting,
 )
+from ....config.features.tools import (
+    TOOL_SWITCH_KEYS,
+    TOOL_SWITCH_LABELS,
+    ToolSwitchConfigError,
+    save_tool_switch,
+)
 from ....llm import LLMError, save_reasoning_effort
 from ..terminal.theme import terminal_css
+from .panes import SelectPane, SettingsPane
+
+SETTINGS_TITLE = "运行设置"
 
 
 @dataclass(frozen=True)
 class SettingsAction:
-    """设置面板关闭时返回的 UI 动作。"""
+    """设置面板关闭时返回的 UI 动作（导航层协议：name 标识要打开的整屏页）。"""
 
     name: str
 
@@ -55,9 +77,10 @@ _REASONING_LABELS = {
     "max": "最大",
 }
 _APPROVAL_OPTIONS = (APPROVAL_MODE_MANUAL, APPROVAL_MODE_REVIEW, APPROVAL_MODE_AUTO)
+_APPROVAL_LABELS = {mode: approval_mode_label(mode) for mode in _APPROVAL_OPTIONS}
 _CONTEXT_WINDOW_OPTIONS_K = (32, 64, 128, 256, 512, 1024, 2048)
-# 上下文压缩阈值按当前上下文窗口的百分比设置，5% 为一个单位递进。
 _CONTEXT_COMPACTION_PERCENT_OPTIONS = tuple(range(5, 100, 5))
+
 _SUBAGENT_ADVANCED_LABELS = {
     "max_concurrency": "最大并发数",
     "max_tasks_per_batch": "每批最大任务数",
@@ -74,24 +97,19 @@ _SUBAGENT_ADVANCED_OPTIONS: dict[str, tuple[int | float, ...]] = {
     "verify_command_timeout_seconds": (30, 60, 120, 180, 240, 360),
     "task_retention_minutes": (15, 30, 60, 120, 360, 1440, 10080),
 }
+
 _FEATURES = (
     ("memory", "记忆功能", "memory"),
-    ("mcp", "MCP 工具", "mcp"),
     ("plugins", "插件功能", "plugins"),
-    ("subagents", "子任务功能", "subagents"),
 )
-_COLUMN_SLOTS = 16  # 每栏设置行数：左栏 15 项 + 1 空位，右栏真实设置项 + 空位。
-# 普通模式左栏：先主设置，再“管理”入口，最后是开关项与压缩阈值项。
-# 右栏固定为 show_thinking 一项，右栏其余位置为空位。
+# 一级设置项（左侧列表，自上而下）。工具审批/MCP/工具开关合并为 tools，
+# 子任务功能/高级合并为 subagents。
 _SETTING_ORDER = (
     "model",
     "context",
     "reasoning",
-    "approval",
     "channels",
     "tools",
-    "subagents_advanced",
-    "mcp",
     "vision",
     "image_gen",
     "tts",
@@ -101,82 +119,86 @@ _SETTING_ORDER = (
     "plugins",
     "subagents",
     "context_compaction_threshold",
+    "show_thinking",
 )
 
 
-class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
-    """用方向键和 Enter 操作的紧凑中文设置面板。"""
+class SettingsScreen(ModalScreen[Any]):
+    """全屏三区设置面板。关闭时 dismiss(None)。"""
 
     BINDINGS = [
-        ("escape", "cancel", "取消"),
-        Binding("up", "move_up", "上一项", priority=True),
-        Binding("down", "move_down", "下一项", priority=True),
-        ("left", "previous_value", "上一个"),
-        ("right", "next_value", "下一个"),
-        ("enter", "confirm", "选择"),
-        ("space", "confirm", "切换"),
+        Binding("escape", "exit_settings", "退出设置", priority=True),
+        Binding("up", "move_up", "上一项"),
+        Binding("down", "move_down", "下一项"),
+        ("left", "back_to_list", "返回左侧"),
+        ("enter", "enter_active", "进入"),
+        ("right", "enter_active", "进入"),
     ]
 
     CSS = terminal_css("""
     SettingsScreen {
-        align: center middle;
-        background: $terminal-overlay;
+        background: $terminal-canvas;
     }
-    #settings-dialog {
-        width: 78;
-        max-width: 94%;
-        height: 29;
-        max-height: 90%;
-        padding: 1 2;
+    #settings-title {
+        height: 3;
+        align: left middle;
+        margin-left: 2;
+        color: $terminal-white;
+        text-style: bold;
+    }
+    #settings-main {
+        height: 1fr;
+        layout: horizontal;
+    }
+    #settings-left-col {
+        width: 30;
+        min-width: 24;
+        height: 100%;
+        padding: 0 1 0 2;
+    }
+    #settings-left-box {
+        height: 100%;
+        border: round $terminal-border-strong;
+        background: $terminal-surface;
+        padding: 1;
+    }
+    #settings-right-col {
+        width: 1fr;
+        height: 100%;
+        padding: 0 2 0 1;
+    }
+    #settings-right-box {
+        height: 100%;
         border: round $terminal-border-strong;
         background: $terminal-surface;
     }
-    #settings-dialog.advanced {
-        width: 62;
-    }
-    #settings-title {
+    #settings-right-title {
         height: 1;
-        margin-bottom: 1;
+        margin: 1 2 0 2;
         color: $terminal-white;
         text-style: bold;
     }
-    #settings-list {
+    #settings-right-area {
         height: 1fr;
     }
-    #settings-body {
-        height: 100%;
-        layout: horizontal;
-    }
-    .settings-column {
-        width: 1fr;
-        height: 100%;
-    }
-    #settings-divider {
-        width: 1;
-        height: 100%;
-        color: $terminal-border-strong;
-    }
     .settings-row {
-        height: 2;
+        height: 1;
         padding: 0 1;
         color: $terminal-text-secondary;
     }
-    .settings-row.selected {
+    .settings-row:focus {
         color: $terminal-amber;
         text-style: bold;
     }
-    .settings-row.compact {
-        height: 1;
-    }
-    #settings-status {
-        height: 2;
-        color: $terminal-white;
-        margin-top: 1;
+    #settings-guide {
+        height: 100%;
+        content-align: center middle;
+        color: $terminal-text-secondary;
     }
     #settings-help {
         height: 1;
-        color: $terminal-white;
-        margin-top: 1;
+        padding: 0 2;
+        color: $terminal-text-muted;
     }
     """)
 
@@ -184,149 +206,513 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         super().__init__()
         self._agent = agent
         self._advanced = advanced
-        self._selected = 0
-        self._busy = False
-        self._status = "选择设置项目后按 Enter 修改；模型会打开模型选择器。"
         self._row_keys = (
-            tuple(SUBAGENT_ADVANCED_SETTING_KEYS)
-            if advanced
-            else _SETTING_ORDER
+            tuple(SUBAGENT_ADVANCED_SETTING_KEYS) if advanced else _SETTING_ORDER
         )
+        self._rows: list[_SettingsRow] = []
+        self._pane: Optional[SettingsPane] = None
+        self._pane_key: Optional[str] = None
+        self._last_status = ""
+        self._mount_seq = 0
 
-    @property
-    def _all_keys(self) -> tuple[str, ...]:
-        """全部可设置键：左栏 + 右栏真实设置项。
-
-        选中索引与行渲染基于该元组遍历；右栏其余位置仍为空位占位行。
-        """
-
-        if self._advanced:
-            return self._row_keys
-        return self._left_keys() + self._right_keys()
+    # ---------- compose ----------
 
     def compose(self) -> ComposeResult:
-        with Container(
-            id="settings-dialog",
-            classes="advanced" if self._advanced else "standard",
-        ):
-            yield Static(
-                "子任务高级设置" if self._advanced else "运行设置",
-                id="settings-title",
-            )
-            if self._advanced:
-                # 子任务高级设置采用单列列表，参照“工具开关”页面的紧凑排布。
-                with VerticalScroll(id="settings-list"):
-                    for key in self._row_keys:
-                        yield self._row_widget(key)
-            else:
-                with VerticalScroll(id="settings-list"):
-                    with Container(id="settings-body"):
-                        with VerticalScroll(id="settings-list-left", classes="settings-column"):
-                            for key in self._left_keys():
-                                yield self._row_widget(key)
-                            for index in range(_COLUMN_SLOTS - len(self._left_keys())):
-                                yield self._empty_row_widget(index, "left")
-                        yield Static("│", id="settings-divider")
-                        with VerticalScroll(id="settings-list-right", classes="settings-column"):
-                            for key in self._right_keys():
-                                yield self._row_widget(key)
-                            for index in range(_COLUMN_SLOTS - len(self._right_keys())):
-                                yield self._empty_row_widget(index, "right")
-            yield Static(self._status, id="settings-status")
-            yield Static("↑↓ 选择  ←→ 修改  Enter/空格确认  Esc 返回", id="settings-help")
+        title = "子任务高级设置" if self._advanced else SETTINGS_TITLE
+        yield Static(title, id="settings-title")
+        with Container(id="settings-main"):
+            with Vertical(id="settings-left-col"):
+                with Container(id="settings-left-box"):
+                    with VerticalScroll(id="settings-left-list"):
+                        for key in self._row_keys:
+                            row = _SettingsRow(key, self._row_label(key))
+                            self._rows.append(row)
+                            yield row
+            with Vertical(id="settings-right-col"):
+                with Container(id="settings-right-box"):
+                    yield Static(self._right_title(), id="settings-right-title")
+                    yield Container(id="settings-right-area")
+        yield Static(self._help_text(), id="settings-help")
 
     def on_mount(self) -> None:
-        self.call_after_refresh(self._render_rows)
+        self.call_after_refresh(self._focus_row)
 
-    def action_cancel(self) -> None:
-        if not self._busy:
-            self.dismiss(None)
+    def _help_text(self) -> str:
+        if self._advanced:
+            return "↑↓ 选择参数  ←→/Enter 修改  Esc 返回"
+        return "↑↓ 选择设置项（右侧实时预览）  Enter/→ 进入右侧  ←/Esc 返回  Esc 在左侧退出"
+
+    # ---------- 标签 / 状态查询 ----------
+
+    @staticmethod
+    def _row_labels() -> dict[str, str]:
+        labels = {
+            "model": "模型",
+            "context": "上下文长度",
+            "reasoning": "推理强度",
+            "channels": "模型渠道",
+            "tools": "工具设置",
+            "vision": "视觉",
+            "image_gen": "图像生成",
+            "tts": "TTS 语音合成",
+            "run_guard": "持续运转",
+            "agent_workspace": "隔离工作区",
+            "memory": "记忆功能",
+            "plugins": "插件功能",
+            "subagents": "子任务设置",
+            "context_compaction_threshold": "上下文压缩阈值",
+            "show_thinking": "思考显示",
+        }
+        labels.update(_SUBAGENT_ADVANCED_LABELS)
+        return labels
+
+    def _row_label(self, key: str) -> str:
+        return self._row_labels().get(key, key)
+
+    def _right_title(self) -> str:
+        key = self._pane_key or (self._rows[0].key if self._rows else "")
+        return self._row_label(key)
+
+    # ---------- 键盘：移动 / 进入 / 返回 / 退出 ----------
 
     def action_move_up(self) -> None:
-        if not self._busy:
-            self._selected = (self._selected - 1) % len(self._all_keys)
-            self._render_rows()
+        self._move_selection(-1)
 
     def action_move_down(self) -> None:
-        if not self._busy:
-            self._selected = (self._selected + 1) % len(self._all_keys)
-            self._render_rows()
+        self._move_selection(1)
 
-    def action_previous_value(self) -> None:
-        self._change_selected(-1)
+    def _move_selection(self, delta: int) -> None:
+        if not self._rows:
+            return
+        focused = self.screen.focused
+        if not isinstance(focused, _SettingsRow):
+            self._focus_row()
+            return
+        index = self._rows.index(focused)
+        target = self._rows[(index + delta) % len(self._rows)]
+        target.focus()
+        target.scroll_visible(animate=False)
 
-    def action_next_value(self) -> None:
-        self._change_selected(1)
+    def _focus_row(self, key: Optional[str] = None) -> None:
+        if not self._rows:
+            return
+        target = self._rows[0]
+        if key is not None:
+            for row in self._rows:
+                if row.key == key:
+                    target = row
+                    break
+        target.focus()
+        target.scroll_visible(animate=False)
 
-    def action_confirm(self) -> None:
-        self._change_selected(1)
+    def action_enter_active(self) -> None:
+        """左侧当前行 Enter/→：焦点进入右侧面板。"""
+        if self._pane is not None and self._pane.is_attached:
+            self._pane.activate()
 
-    def _change_selected(self, direction: int) -> None:
-        if self._busy:
+    def action_back_to_list(self) -> None:
+        """右侧 → 左侧：聚焦左侧当前行。"""
+        self._focus_row(self._pane_key)
+
+    def action_exit_settings(self) -> None:
+        if isinstance(self.screen.focused, _SettingsRow):
+            self.dismiss(None)
             return
-        key = self._all_keys[self._selected]
-        if not self._advanced and key in {"model", "channels", "vision", "image_gen", "tts", "run_guard", "agent_workspace"}:
-            self.dismiss(SettingsAction(key))
+        # 焦点在右侧 pane：先回左侧列表。
+        self._focus_row(self._pane_key)
+
+    # ---------- 右侧面板管理 ----------
+
+    def _on_row_focused(self, row: "_SettingsRow") -> None:
+        """左侧行获得焦点：记录选中项，异步刷新右侧（预览）。"""
+        key = row.key
+        if key == self._pane_key and self._pane is not None and self._pane.is_attached:
             return
-        if not self._advanced and key == "subagents_advanced":
-            self.dismiss(SettingsAction("subagents_advanced"))
+        self._pane_key = key
+        self._refresh_right_area()
+
+    def _refresh_right_area(self) -> None:
+        """移除右侧旧内容并用唯一 id 挂载新内容。"""
+        if not self.is_mounted:
             return
-        if not self._advanced and key == "tools":
-            self.dismiss(SettingsAction("tools_settings"))
+        self._mount_seq += 1
+        area = self.query_one("#settings-right-area", Container)
+        # remove_children 是异步移除：旧节点延迟销毁，因此新节点必须用
+        # 递增唯一 id，避免与尚未销毁的旧 id 冲突。
+        area.remove_children()
+        key = self._pane_key or (self._rows[0].key if self._rows else "")
+        title = self.query_one("#settings-right-title", Static)
+        title.update(self._row_label(key))
+        self.call_after_refresh(self._mount_current_pane, key)
+
+    def _mount_current_pane(self, key: str) -> None:
+        """刷新回调中真正挂载右侧内容（此时旧节点已移除）。"""
+        if not self.is_mounted or key != self._pane_key:
             return
-        if not self._advanced and key == "mcp":
-            self.dismiss(SettingsAction("mcp_settings"))
-            return
-        if not self._advanced and key == "reasoning":
-            current = str(getattr(self._agent, "reasoning_effort", "none") or "none")
-            try:
-                index = _REASONING_OPTIONS.index(current)
-            except ValueError:
-                index = 0
-            self._apply_setting(key, _REASONING_OPTIONS[(index + direction) % len(_REASONING_OPTIONS)])
-            return
-        if not self._advanced and key == "context":
-            current_k = int(getattr(self._agent, "context_window_tokens", 128_000)) // 1000
-            try:
-                index = _CONTEXT_WINDOW_OPTIONS_K.index(current_k)
-            except ValueError:
-                index = min(range(len(_CONTEXT_WINDOW_OPTIONS_K)), key=lambda item: abs(_CONTEXT_WINDOW_OPTIONS_K[item] - current_k))
-            self._apply_setting(key, _CONTEXT_WINDOW_OPTIONS_K[(index + direction) % len(_CONTEXT_WINDOW_OPTIONS_K)] * 1000)
-            return
-        if not self._advanced and key == "approval":
-            current = str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))
-            try:
-                index = _APPROVAL_OPTIONS.index(current)
-            except ValueError:
-                index = 0
-            self._apply_setting(key, _APPROVAL_OPTIONS[(index + direction) % len(_APPROVAL_OPTIONS)])
-            return
-        if not self._advanced and key == "context_compaction_threshold":
-            current = self._context_compaction_percent()
-            options = _CONTEXT_COMPACTION_PERCENT_OPTIONS
-            try:
-                index = options.index(current)
-            except ValueError:
-                index = min(
-                    range(len(options)),
-                    key=lambda item: abs(options[item] - current),
+        area = self.query_one("#settings-right-area", Container)
+        pane = self._build_pane(key)
+        if pane is None:
+            self._pane = None
+            area.mount(
+                Static(
+                    "",
+                    id=f"settings-guide-{self._mount_seq}",
+                    classes="settings-guide",
                 )
-            self._apply_setting(
-                key,
-                options[(index + direction) % len(options)],
             )
             return
-        if self._advanced:
-            options = _SUBAGENT_ADVANCED_OPTIONS[key]
-            current = self._subagent_config_value(key)
-            try:
-                index = options.index(current)
-            except ValueError:
-                index = min(range(len(options)), key=lambda item: abs(float(options[item]) - float(current)))
-            self._apply_setting(key, options[(index + direction) % len(options)])
+        self._pane = pane
+        pane.bind_pane_events(
+            on_back=self.action_back_to_list,
+            on_commit=self._commit_pane,
+            on_navigate=self._navigate_pane,
+            on_modal=self._open_modal,
+        )
+        pane.id = f"settings-pane-{self._mount_seq}"
+        area.mount(pane)
+        # 预览：焦点留在左侧行，不自动进入右侧；pane 已挂载可接收按键。
+        self._pane.refresh_pane()
+
+    def _commit_pane(self, result: Any = None) -> None:
+        """面板保存完成：SelectPane 已就地刷新；模型/渠道提交后保留在
+        右侧（切换/保存后不打断浏览），其余表单类保存后返回左侧。"""
+        if isinstance(self._pane, SelectPane):
             return
-        current = self._feature_enabled(key)
-        self._apply_setting(key, not current)
+        if self._pane_key in ("model", "channels"):
+            return
+        if result is not None and isinstance(result, str):
+            self._last_status = result
+        self._focus_row(self._pane_key)
+
+    def _navigate_pane(self, target: str, payload: Any) -> None:
+        """面板请求切换到其它二级面板或弹层。
+
+        - mcp_servers：以整屏弹层打开原 MCPServerListScreen（保留完整
+          三级 Server 编辑协议），关闭后回左侧 MCP 行。
+        """
+        if target == "mcp_servers":
+            from .mcp_server_list_screen import MCPServerListScreen
+
+            self.app.push_screen(
+                MCPServerListScreen(self._agent),
+                lambda _result: self._focus_row("mcp"),
+            )
+
+    def _open_modal(self, factory: Any, on_result: Any) -> None:
+        self.app.push_screen(factory(), on_result)
+
+    # ---------- 构建右侧面板 ----------
+
+    def _build_pane(self, key: str) -> Optional[SettingsPane]:
+        """根据左侧项构造右侧 pane；引导项返回 None。"""
+        if self._advanced:
+            current = self._subagent_value(key)
+            options = _SUBAGENT_ADVANCED_OPTIONS[key]
+            return SelectPane(
+                [(f"{value:g}", value) for value in options],
+                current,
+                lambda value: self._apply_simple(key, value),
+                agent=self._agent,
+            )
+        if key == "model":
+            from .model_picker import ModelPickerPane
+
+            return ModelPickerPane(self._agent, refresh_on_open=True)
+        if key == "channels":
+            return self._build_channel_pane()
+        if key == "context":
+            current_k = int(getattr(self._agent, "context_window_tokens", 128_000)) // 1000
+            return SelectPane(
+                [(f"{k}K", k * 1000) for k in _CONTEXT_WINDOW_OPTIONS_K],
+                current_k * 1000,
+                lambda value: self._apply_simple(key, value),
+                agent=self._agent,
+            )
+        if key == "reasoning":
+            current = str(getattr(self._agent, "reasoning_effort", "none") or "none")
+            return SelectPane(
+                [(label, opt) for opt, label in _REASONING_LABELS.items()],
+                current,
+                lambda value: self._apply_simple(key, value),
+                agent=self._agent,
+            )
+        if key == "tools":
+            return self._build_tools_pane()
+        if key == "subagents":
+            return self._build_subagents_pane()
+        if key == "context_compaction_threshold":
+            current = self._context_compaction_percent()
+            return SelectPane(
+                [(f"{p}%", p) for p in _CONTEXT_COMPACTION_PERCENT_OPTIONS],
+                current,
+                lambda value: self._apply_simple(key, value),
+                agent=self._agent,
+            )
+        if key == "show_thinking":
+            return SelectPane(
+                [("开启", True), ("关闭", False)],
+                self._feature_enabled("show_thinking"),
+                lambda value: self._apply_simple(key, value),
+                agent=self._agent,
+            )
+        if key in {item[0] for item in _FEATURES}:
+            return SelectPane(
+                [("开启", True), ("关闭", False)],
+                self._feature_enabled(key),
+                lambda value: self._apply_simple(key, value),
+                agent=self._agent,
+            )
+        return self._build_complex_pane(key)
+
+    def _build_channel_pane(self) -> Any:
+        """构造渠道管理 pane，apply 后把默认渠道应用到 agent。"""
+
+        from .channel_manager import ChannelManagerPane
+
+        def apply_channels(configuration) -> None:
+            self._agent.set_model(configuration.default_key)
+
+        return ChannelManagerPane(
+            resolve_config_path(),
+            resolve_models_path(),
+            apply_configuration=apply_channels,
+            agent=self._agent,
+        )
+
+    def _build_tools_pane(self) -> "_ToolsPane":
+        """构造合并“工具设置”分节面板（审批模式 + MCP + 内置工具开关）。"""
+        return _ToolsPane(self._agent, self._apply_tools_row, self._navigate_pane)
+
+    def _build_subagents_pane(self) -> "_SubagentsPane":
+        """构造合并“子任务设置”分节面板（功能开关 + 高级参数）。"""
+        return _SubagentsPane(self._agent, applier=self._apply_subagents_row)
+
+    # ---------- 合并项行处理（_ToolsPane/_SubagentsPane 回调） ----------
+
+    def _apply_tools_row(self, row_key: str, direction: int = 1) -> str:
+        """处理工具设置分节面板中审批/MCP/工具开关行的修改。
+
+        row_key 取值：
+        - ``approval``           审批模式（按 direction 循环）
+        - ``mcp-enabled``        MCP 总开关（切换）
+        - ``mcp-network``        外部网络工具（切换）
+        - ``mcp-write``          写入操作确认（切换）
+        - ``mcp-command``        命令操作确认（切换）
+        - ``mcp-audit``          审计日志（切换）
+        - ``mcp-timeout``        默认超时秒数（按 direction 循环）
+        - ``tool:<工具名>``      内置工具开关（切换）
+        """
+        if row_key == "approval":
+            previous = str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))
+            try:
+                index = _APPROVAL_OPTIONS.index(previous)  # type: ignore[arg-type]
+            except ValueError:
+                index = 0
+            mode = _APPROVAL_OPTIONS[(index + direction) % len(_APPROVAL_OPTIONS)]
+            self._agent.set_approval_mode(mode)
+            try:
+                path = save_approval_mode(mode)
+            except Exception:
+                self._agent.set_approval_mode(previous)
+                raise
+            return f"审批模式已设为 {approval_mode_label(mode)}，已保存到 {path}。"
+        if row_key.startswith("tool:"):
+            tool_name = row_key[5:]
+            enabled = not self._tool_enabled(tool_name)
+            previous = self._tool_enabled(tool_name)
+            try:
+                self._agent.set_tool_enabled(tool_name, enabled)
+                try:
+                    path = save_tool_switch(tool_name, enabled)
+                except Exception:
+                    self._agent.set_tool_enabled(tool_name, previous)
+                    raise
+            except (AgentError, ToolSwitchConfigError, OSError) as exc:
+                return f"设置未完成：{exc}"
+            label = TOOL_SWITCH_LABELS.get(tool_name, tool_name)
+            return f"{label}已{'启用' if enabled else '关闭'}，已保存到 {path}。"
+        # MCP 行：开关切换；timeout 为档位循环。
+        from dataclasses import replace
+
+        from ....mcp.config import MCPConfig, load_mcp_config
+        from .mcp_settings import _apply_and_save, _current_config
+
+        config = _current_config(self._agent)
+        if not isinstance(config, MCPConfig):
+            config = load_mcp_config()
+        if row_key == "mcp-enabled":
+            candidate = replace(config, enabled=not config.enabled)
+        elif row_key == "mcp-network":
+            candidate = replace(
+                config,
+                policy=replace(
+                    config.policy,
+                    allow_external_network_tools=not config.policy.allow_external_network_tools,
+                ),
+            )
+        elif row_key == "mcp-write":
+            candidate = replace(
+                config,
+                policy=replace(
+                    config.policy,
+                    require_confirmation_for_write=not config.policy.require_confirmation_for_write,
+                ),
+            )
+        elif row_key == "mcp-command":
+            candidate = replace(
+                config,
+                policy=replace(
+                    config.policy,
+                    require_confirmation_for_command=not config.policy.require_confirmation_for_command,
+                ),
+            )
+        elif row_key == "mcp-audit":
+            candidate = replace(
+                config,
+                policy=replace(
+                    config.policy,
+                    audit_log_enabled=not config.policy.audit_log_enabled,
+                ),
+            )
+        elif row_key == "mcp-timeout":
+            options = (10, 30, 60, 120, 300)
+            current_value = getattr(config, "default_timeout_seconds", 60)
+            index = min(range(len(options)), key=lambda i: abs(options[i] - current_value))
+            new_value = options[(index + direction) % len(options)]
+            candidate = replace(config, default_timeout_seconds=new_value)
+        else:
+            return "设置未完成：未知的设置项。"
+        try:
+            path = _apply_and_save(self, candidate)
+        except Exception as exc:  # noqa: BLE001 - 写盘/校验失败统一转为状态文本
+            return f"设置未完成：{exc}"
+        return f"MCP 设置已保存：{path}"
+
+    def _apply_subagents_row(self, row_key: str, direction: int = 1) -> str:
+        """处理子任务设置分节面板中的行修改。
+
+        row_key 取值：
+        - ``enabled``              子任务功能总开关（切换）
+        - ``<advanced-key>``       高级参数（按 direction 循环）
+        """
+        if row_key == "enabled":
+            enabled = not self._feature_enabled("subagents")
+            previous = not enabled
+            try:
+                path = save_feature_enabled("subagents", enabled)
+                try:
+                    self._agent.set_subagents_enabled(enabled)
+                except Exception:
+                    save_feature_enabled("subagents", previous)
+                    raise
+            except (AgentError, SettingsConfigError, OSError) as exc:
+                return f"设置未完成：{exc}"
+            return f"子任务功能已{'开启' if enabled else '关闭'}，已保存到 {path}。"
+        # 高级参数行
+        key = row_key
+        options = _SUBAGENT_ADVANCED_OPTIONS[key]
+        current = self._subagent_value(key)
+        try:
+            index = options.index(current)  # type: ignore[arg-type]
+        except ValueError:
+            index = min(range(len(options)), key=lambda i: abs(float(options[i]) - float(current)))
+        value = options[(index + direction) % len(options)]
+        try:
+            normalized = validate_subagent_advanced_setting(key, value)
+            previous = self._subagent_value(key)
+            self._agent.set_subagent_advanced_setting(key, normalized)
+            try:
+                path = save_subagent_setting(key, normalized)
+            except Exception:
+                self._agent.set_subagent_advanced_setting(key, previous)
+                raise
+        except (AgentError, LLMError, SettingsConfigError, SubAgentConfigError, OSError) as exc:
+            return f"设置未完成：{exc}"
+        return f"{_SUBAGENT_ADVANCED_LABELS[key]}已设为 {normalized:g}，已保存到 {path}。"
+
+    def _tool_enabled(self, tool_name: str) -> bool:
+        config = getattr(self._agent, "config", None)
+        disabled = frozenset(getattr(config, "disabled_tools", ()))
+        return tool_name not in disabled
+
+    def _build_complex_pane(self, key: str) -> Optional[SettingsPane]:
+        """延迟构造复杂项面板，避免导入环。"""
+        if key == "tools":
+            from .tool_settings import ToolSettingsPane
+
+            return ToolSettingsPane(self._agent)
+        if key == "mcp":
+            from .mcp_settings_screen import MCPSettingsPane
+
+            return MCPSettingsPane(self._agent)
+        if key == "vision":
+            from .vision_settings import VisionSettingsPane
+
+            return VisionSettingsPane(
+                self._agent,
+                resolve_config_path(),
+                apply_configuration=getattr(self._agent, "set_vision_configuration", None),
+            )
+        if key == "image_gen":
+            from .image_gen_settings import ImageGenSettingsPane
+
+            return ImageGenSettingsPane(
+                resolve_config_path(),
+                agent=self._agent,
+                apply_configuration=getattr(self._agent, "set_image_gen_configuration", None),
+            )
+        if key == "tts":
+            from .tts_settings import TTSSettingsPane
+
+            return TTSSettingsPane(
+                resolve_config_path(),
+                agent=self._agent,
+                apply_configuration=getattr(self._agent, "set_tts_configuration", None),
+            )
+        if key == "run_guard":
+            from .run_guard_settings import RunGuardSettingsPane
+
+            return RunGuardSettingsPane(
+                resolve_config_path(),
+                agent=self._agent,
+                apply_configuration=getattr(self._agent, "set_run_guard_configuration", None),
+            )
+        if key == "agent_workspace":
+            from .agent_workspace_settings import AgentWorkspaceSettingsPane
+
+            return AgentWorkspaceSettingsPane(
+                resolve_config_path(),
+                agent=self._agent,
+                apply_configuration=getattr(self._agent, "set_agent_workspace_configuration", None),
+            )
+        return None
+
+    # ---------- 简单项保存（SelectPane applier） ----------
+
+    def _apply_simple(self, key: str, value: Any) -> str:
+        if self._advanced:
+            try:
+                normalized = validate_subagent_advanced_setting(key, value)
+                previous = self._subagent_value(key)
+                self._agent.set_subagent_advanced_setting(key, normalized)
+                try:
+                    path = save_subagent_setting(key, normalized)
+                except Exception:
+                    self._agent.set_subagent_advanced_setting(key, previous)
+                    raise
+                return f"{_SUBAGENT_ADVANCED_LABELS[key]}已设为 {normalized:g}，已保存到 {path}。"
+            except (AgentError, LLMError, SettingsConfigError, SubAgentConfigError, OSError) as exc:
+                return f"设置未完成：{exc}"
+            except Exception as exc:
+                return f"设置未完成：{exc}"
+        try:
+            return _apply_setting_value(self, key, value)
+        except (AgentError, LLMError, SettingsConfigError, OSError) as exc:
+            return f"设置未完成：{exc}"
+        except Exception as exc:
+            return f"设置未完成：{exc}"
+
+    # ---------- 查询（供保存函数使用） ----------
 
     def _feature_enabled(self, key: str) -> bool:
         if key == "memory":
@@ -338,33 +724,12 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
         if key == "subagents":
             config = getattr(self._agent, "config", None)
             return bool(getattr(getattr(config, "subagents", None), "enabled", False))
-        if key == "router":
-            config = getattr(self._agent, "config", None)
-            return bool(getattr(config, "router_enabled", False))
-        if key == "vision":
-            config = getattr(self._agent, "config", None)
-            vision = getattr(config, "vision", None)
-            return bool(getattr(vision, "enabled", False))
-        if key == "image_gen":
-            config = getattr(self._agent, "config", None)
-            image_gen = getattr(config, "image_gen", None)
-            return bool(getattr(image_gen, "enabled", False))
         if key == "show_thinking":
             config = getattr(self._agent, "config", None)
             return bool(getattr(config, "show_thinking", True))
         return False
 
-    def _subagent_config_value(self, key: str) -> int | float:
-        config = getattr(getattr(self._agent, "config", None), "subagents", None)
-        return getattr(config, key, 0)
-
     def _context_compaction_percent(self) -> int:
-        """把当前触发阈值换算成最近的 5% 档位百分比。
-
-        换算公式：``上下文 × 百分比 = trigger_context_tokens``；
-        缺少阈值或上下文窗口信息时回退默认 80%。
-        """
-
         config = getattr(getattr(self._agent, "config", None), "context_compaction", None)
         tokens = getattr(config, "trigger_context_tokens", None)
         context_window = int(getattr(self._agent, "context_window_tokens", 128_000))
@@ -376,144 +741,255 @@ class SettingsScreen(ModalScreen[Optional[SettingsAction]]):
             key=lambda option: abs(option - percent),
         )
 
-    @staticmethod
-    def _subagent_advanced_keys() -> tuple[str, ...]:
-        return SUBAGENT_ADVANCED_SETTING_KEYS
+    def _subagent_value(self, key: str) -> int | float:
+        config = getattr(getattr(self._agent, "config", None), "subagents", None)
+        return getattr(config, key, 0)
 
-    @staticmethod
-    def _subagent_advanced_labels() -> dict[str, str]:
-        return dict(_SUBAGENT_ADVANCED_LABELS)
 
-    @work(thread=True, exclusive=True, group="settings-apply", exit_on_error=False)
-    def _apply_setting(self, key: str, value: object) -> None:
-        self.app.call_from_thread(self._set_busy, True, "正在应用设置…")
-        try:
-            message = _apply_setting_value(self, key, value)
-        except (AgentError, LLMError, SettingsConfigError, SubAgentConfigError, OSError) as exc:
-            message = f"设置未完成：{exc}"
-        except Exception as exc:
-            message = f"设置未完成：{exc}"
-        self.app.call_from_thread(self._set_busy, False, message)
+class _GroupedRowsPane(SettingsPane):
+    """右侧“分节列表”面板基类：按分区平铺多行设置项，即时修改。
 
-    def _set_busy(self, busy: bool, status: str) -> None:
-        self._busy = busy
-        self._status = status
-        self._render_rows()
+    Enter/←→/空格 对选中行执行修改（切换或档位循环），Esc 返回左侧。
+    状态文本来自 applier；子类通过 ``row_value`` 提供每行当前值的展示。
+    """
 
-    def _render_rows(self) -> None:
+    BINDINGS = [
+        Binding("escape", "cancel", "返回", priority=True),
+        Binding("up", "move_up", "上一项", priority=True),
+        Binding("down", "move_down", "下一项", priority=True),
+        ("left", "change", "修改"),
+        ("right", "change", "修改"),
+        ("enter", "change", "修改"),
+        ("space", "change", "修改"),
+    ]
+
+    DEFAULT_CSS = terminal_css("""
+    #grouped-pane-list { height: 1fr; }
+    .grouped-pane-head { height: 1; padding: 0 1; color: $terminal-text-muted; text-style: bold; }
+    .grouped-pane-row { height: 1; padding: 0 1; color: $terminal-text-secondary; }
+    .grouped-pane-row.selected { color: $terminal-amber; text-style: bold; }
+    #grouped-pane-status { height: 2; color: $terminal-white; margin-top: 1; }
+    """)
+
+    #: 分节定义：(分节标题, ((row_key, 行标签), ...))；子类覆盖。
+    sections: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+
+    def __init__(
+        self,
+        agent: Any,
+        *,
+        applier: Any,
+    ) -> None:
+        super().__init__(agent=agent)
+        self._applier = applier
+        self._rows: list[str] = []
+        self._labels: dict[str, str] = {}
+        for _head, items in self.sections:
+            for key, label in items:
+                self._rows.append(key)
+                self._labels[key] = label
+        self._selected = 0
+        self._busy = False
+        self._status = ""
+
+    def compose_pane(self) -> ComposeResult:
+        with VerticalScroll(id="grouped-pane-list"):
+            index = 0
+            for head, items in self.sections:
+                if head:
+                    yield Static(head, classes="grouped-pane-head")
+                for _key, _label in items:
+                    yield Static(
+                        "",
+                        id=f"grouped-pane-row-{index}",
+                        classes="grouped-pane-row",
+                    )
+                    index += 1
+        yield Static(self._status, id="grouped-pane-status")
+
+    # ---------- 子类实现 ----------
+
+    def row_value(self, key: str) -> str:
+        """返回某行的当前值文本；子类实现。"""
+        raise NotImplementedError
+
+    def activate_row(self, key: str, direction: int) -> str:
+        """执行某行修改；默认交给 applier。返回状态文本。"""
+        return self._applier(key, direction)
+
+    # ---------- 渲染 ----------
+
+    def _row_text(self, index: int) -> str:
+        key = self._rows[index]
+        marker = "› " if index == self._selected else "  "
+        return f"{marker}{self._labels.get(key, key)}：{self.row_value(key)}"
+
+    def refresh_pane(self) -> None:
         if not self.is_mounted:
             return
-        values = self._current_row_values()
-        labels = self._row_labels()
-        for key in self._all_keys:
-            text = f"{labels[key]}：{values[key]}"
-            marker = "› " if key == self._all_keys[self._selected] else "  "
-            row = self.query_one(f"#settings-row-{key}", Static)
-            row.update(marker + text)
-            selected = key == self._all_keys[self._selected]
-            row.set_class(selected, "selected")
-            if selected:
+        for index, key in enumerate(self._rows):
+            row = self.query_one(f"#grouped-pane-row-{index}", Static)
+            row.update(self._row_text(index))
+            row.set_class(index == self._selected, "selected")
+            if index == self._selected:
                 row.scroll_visible(animate=False)
-        self.query_one("#settings-status", Static).update(self._status)
+        self.query_one("#grouped-pane-status", Static).update(self._status)
 
-    def _left_keys(self) -> tuple[str, ...]:
-        """普通模式左栏设置项；高级模式单列时由 _all_keys 直接返回。"""
+    # ---------- 键盘 ----------
 
-        return self._row_keys
+    def action_cancel(self) -> None:
+        if not self._busy:
+            self.request_back()
 
-    def _right_keys(self) -> tuple[str, ...]:
-        """普通模式右栏真实设置项：当前为“思考显示”。
+    def action_move_up(self) -> None:
+        if not self._busy:
+            self._selected = (self._selected - 1) % len(self._rows)
+            self.refresh_pane()
 
-        后续新增设置项时，保持 _SETTING_ORDER 为左栏项、右栏追加新 key 即可。
-        """
+    def action_move_down(self) -> None:
+        if not self._busy:
+            self._selected = (self._selected + 1) % len(self._rows)
+            self.refresh_pane()
 
-        return () if self._advanced else ("show_thinking",)
+    def action_change(self) -> None:
+        self._change(1)
 
-    def _row_widget(self, key: str) -> Static:
-        """生成单个设置行控件，含选中标记与当前状态值。"""
-        values = self._current_row_values()
-        labels = self._row_labels()
-        marker = "› " if key == self._all_keys[self._selected] else "  "
-        return Static(
-            f"{marker}{labels[key]}：{values[key]}",
-            id=f"settings-row-{key}",
-            classes="settings-row compact",
+    def _change(self, direction: int) -> None:
+        if self._busy:
+            return
+        key = self._rows[self._selected]
+        try:
+            status = self.activate_row(key, direction)
+        except Exception as exc:  # noqa: BLE001 - 保存/应用失败统一转为状态文本
+            status = f"设置未完成：{exc}"
+        self._status = status
+        self.refresh_pane()
+
+
+class _ToolsPane(_GroupedRowsPane):
+    """“工具设置”分节面板：审批模式 + MCP 策略/Server + 内置工具开关。"""
+
+    def __init__(self, agent: Any, applier: Any, navigator: Any) -> None:
+        self._navigator = navigator
+        super().__init__(agent, applier=applier)
+        self._registered = frozenset(
+            getattr(getattr(agent, "_tools", None), "keys", lambda: ())()
         )
 
-    def _empty_row_widget(self, index: int, column: str) -> Static:
-        """生成空位设置行：右栏 16 个占位行，或左栏不足 16 行时的补位行。"""
-        return Static(
-            "",
-            id=f"settings-slot-{column}-{index}",
-            classes="settings-row compact",
-        )
+    sections = (
+        (
+            "审批模式",
+            (("approval", "审批模式"),),
+        ),
+        (
+            "MCP 工具",
+            (
+                ("mcp-enabled", "MCP 总开关"),
+                ("mcp-network", "外部网络工具"),
+                ("mcp-write", "写入操作确认"),
+                ("mcp-command", "命令操作确认"),
+                ("mcp-audit", "审计日志"),
+                ("mcp-timeout", "默认超时"),
+                ("mcp-servers", "Server 管理"),
+            ),
+        ),
+        (
+            "内置工具开关",
+            tuple((f"tool:{name}", TOOL_SWITCH_LABELS.get(name, name)) for name in TOOL_SWITCH_KEYS),
+        ),
+    )
 
-    def _current_row_values(self) -> dict[str, str]:
-        if self._advanced:
-            return {
-                key: self._format_subagent_value(self._subagent_config_value(key))
-                for key in self._row_keys
-            }
+    def _mcp_config(self) -> Any:
+        from ....mcp.config import MCPConfig, load_mcp_config
+        from .mcp_settings import _current_config
+
+        config = _current_config(self._agent)
+        return config if isinstance(config, MCPConfig) else load_mcp_config()
+
+    def row_value(self, key: str) -> str:
+        if key == "approval":
+            return approval_mode_label(
+                str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))
+            )
+        if key.startswith("tool:"):
+            tool_name = key[5:]
+            config = getattr(self._agent, "config", None)
+            disabled = frozenset(getattr(config, "disabled_tools", ()))
+            enabled = tool_name not in disabled
+            state = "已启用" if enabled else "已关闭"
+            if tool_name not in self._registered:
+                return f"{state}（未注册）"
+            return state
+        config = self._mcp_config()
+        policy = config.policy
         values = {
-            "model": str(getattr(self._agent, "current_model", "未设置") or "未设置"),
-            "channels": "管理",
-            "vision": "已开启" if self._feature_enabled("vision") else "已关闭",
-            "image_gen": "已开启" if self._feature_enabled("image_gen") else "已关闭",
-            "tts": "管理",
-            "run_guard": (
-                "已开启"
-                if bool(getattr(getattr(getattr(self._agent, "config", None), "run_guard", None), "enabled", False))
-                else "已关闭"
-            ),
-            "agent_workspace": (
-                "已开启"
-                if bool(getattr(getattr(getattr(self._agent, "config", None), "agent_workspace", None), "enabled", True))
-                else "已关闭"
-            ),
-            "reasoning": str(getattr(self._agent, "reasoning_effort", "none") or "none"),
-            "context": f"{int(getattr(self._agent, 'context_window_tokens', 128_000)) // 1000}K",
-            "approval": approval_mode_label(str(getattr(self._agent, "approval_mode", APPROVAL_MODE_REVIEW))),
-            "tools": "管理",
-            "subagents_advanced": "管理",
-            "context_compaction_threshold": f"{self._context_compaction_percent()}%",
-            "show_thinking": "已开启" if self._feature_enabled("show_thinking") else "已关闭",
+            "mcp-enabled": "已开启" if config.enabled else "已关闭",
+            "mcp-network": "已允许" if policy.allow_external_network_tools else "已禁止",
+            "mcp-write": "需要确认" if policy.require_confirmation_for_write else "免确认",
+            "mcp-command": "需要确认" if policy.require_confirmation_for_command else "免确认",
+            "mcp-audit": "已开启" if policy.audit_log_enabled else "已关闭",
+            "mcp-timeout": f"{config.default_timeout_seconds} 秒",
+            "mcp-servers": f"管理（{len(config.servers)} 个）",
         }
-        for key, _label, _section in _FEATURES:
-            values[key] = "管理" if key == "mcp" else ("已开启" if self._feature_enabled(key) else "已关闭")
-        return values
+        return values.get(key, "")
 
-    @staticmethod
-    def _format_subagent_value(value: int | float) -> str:
-        return f"{value:g}"
+    def activate_row(self, key: str, direction: int) -> str:
+        if key == "mcp-servers":
+            if self._navigator is not None:
+                self._navigator("mcp_servers", None)
+            return ""
+        return super().activate_row(key, direction)
 
-    @staticmethod
-    def _row_labels() -> dict[str, str]:
-        return {
-            "model": "模型",
-            "channels": "模型渠道",
-            "vision": "视觉",
-            "image_gen": "图像生成",
-            "tts": "TTS 语音合成",
-            "run_guard": "运行节奏护栏",
-            "agent_workspace": "隔离工作区",
-            "reasoning": "推理强度",
-            "context": "上下文长度（K）",
-            "approval": "工具审批",
-            "tools": "工具开关",
-            "subagents_advanced": "子任务高级设置",
-            "context_compaction_threshold": "上下文压缩阈值（%）",
-            "show_thinking": "思考显示",
-            **_SUBAGENT_ADVANCED_LABELS,
-            **{key: label for key, label, _section in _FEATURES},
-        }
+
+class _SubagentsPane(_GroupedRowsPane):
+    """“子任务设置”分节面板：功能总开关 + 高级资源参数。"""
+
+    sections = (
+        (
+            "子任务功能",
+            (("enabled", "功能总开关"),),
+        ),
+        (
+            "高级参数",
+            tuple((key, _SUBAGENT_ADVANCED_LABELS[key]) for key in SUBAGENT_ADVANCED_SETTING_KEYS),
+        ),
+    )
+
+    def row_value(self, key: str) -> str:
+        if key == "enabled":
+            config = getattr(getattr(self._agent, "config", None), "subagents", None)
+            return "已开启" if bool(getattr(config, "enabled", False)) else "已关闭"
+        config = getattr(getattr(self._agent, "config", None), "subagents", None)
+        return f"{getattr(config, key, 0):g}"
+
+
+class _SettingsRow(Static, can_focus=True):
+    """左侧设置项行：可聚焦，焦点变化实时刷新右侧。"""
+
+    BINDINGS = [
+        Binding("up", "row_up", "上一项", priority=True),
+        Binding("down", "row_down", "下一项", priority=True),
+    ]
+
+    def __init__(self, key: str, label: str) -> None:
+        super().__init__(label, id=f"settings-row-{key}", classes="settings-row")
+        self.key = key
+
+    def on_focus(self) -> None:
+        if isinstance(self.screen, SettingsScreen):
+            self.screen._on_row_focused(self)
+
+    def action_row_up(self) -> None:
+        if isinstance(self.screen, SettingsScreen):
+            self.screen._move_selection(-1)
+
+    def action_row_down(self) -> None:
+        if isinstance(self.screen, SettingsScreen):
+            self.screen._move_selection(1)
 
 
 def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str:
-    """按 key 应用单个设置并返回提示消息；失败抛异常由 _apply_setting 统一处理。
-
-    P4 重构自 SettingsScreen._apply_setting 的 try 块；每个分支都遵循
-    "记录旧值 → 应用 → 写盘 → 失败回滚 → 提示消息" 的模式。
-    """
+    """按 key 应用单个设置并返回提示消息；失败抛异常由调用方统一处理。"""
 
     if key == "reasoning":
         previous = str(getattr(screen._agent, "reasoning_effort", "none") or "none")
@@ -527,7 +1003,6 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
     elif key == "context":
         previous = int(getattr(screen._agent, "context_window_tokens", 128_000))
         tokens = int(value)
-        # 修改上下文长度时，压缩阈值按当前百分比自动跟随重算。
         percent = screen._context_compaction_percent()
         previous_trigger = getattr(
             getattr(getattr(screen._agent, "config", None), "context_compaction", None),
@@ -538,14 +1013,19 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
         try:
             path = save_context_window_tokens(
                 tokens,
-                model_source=str(getattr(getattr(screen._agent, "config", None), "llm", None) and getattr(screen._agent.config.llm, "model_source", "legacy") or "legacy"),
-                catalog_key=str(getattr(getattr(screen._agent, "config", None), "llm", None) and getattr(screen._agent.config.llm, "catalog_key", "") or ""),
+                model_source=str(
+                    getattr(getattr(screen._agent, "config", None), "llm", None)
+                    and getattr(screen._agent.config.llm, "model_source", "legacy")
+                    or "legacy"
+                ),
+                catalog_key=str(
+                    getattr(getattr(screen._agent, "config", None), "llm", None)
+                    and getattr(screen._agent.config.llm, "catalog_key", "")
+                    or ""
+                ),
             )
             screen._agent.set_context_compaction_trigger_percent(percent)
-            save_context_compaction_trigger_percent(
-                percent,
-                context_window_tokens=tokens,
-            )
+            save_context_compaction_trigger_percent(percent, context_window_tokens=tokens)
         except Exception:
             screen._agent.set_context_window_tokens(previous)
             if previous_trigger is not None:
@@ -563,16 +1043,13 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
         screen._agent.set_context_compaction_trigger_percent(percent)
         try:
             path = save_context_compaction_trigger_percent(
-                percent,
-                context_window_tokens=context_window,
+                percent, context_window_tokens=context_window
             )
         except Exception:
             screen._agent.set_context_compaction_trigger_percent(previous)
             raise
         tokens = context_window * percent // 100
-        return (
-            f"上下文压缩阈值已设为 {percent}%（{tokens} Token），已保存到 {path}。"
-        )
+        return f"上下文压缩阈值已设为 {percent}%（{tokens} Token），已保存到 {path}。"
     elif key == "approval":
         previous = str(getattr(screen._agent, "approval_mode", APPROVAL_MODE_REVIEW))
         mode = str(value)
@@ -593,25 +1070,13 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             screen._agent.set_show_thinking(previous)
             raise
         return f"思考显示已{'开启' if enabled else '关闭'}，已保存到 {path}。"
-    elif screen._advanced:
-        normalized = validate_subagent_advanced_setting(key, value)
-        previous = screen._subagent_config_value(key)
-        screen._agent.set_subagent_advanced_setting(key, normalized)
-        try:
-            path = save_subagent_setting(key, normalized)
-        except Exception:
-            screen._agent.set_subagent_advanced_setting(key, previous)
-            raise
-        return f"{_SUBAGENT_ADVANCED_LABELS[key]}已设为 {normalized:g}，已保存到 {path}。"
     else:
         enabled = bool(value)
         previous = screen._feature_enabled(key)
         path = save_feature_enabled(key, enabled)
         setter_name = {
             "memory": "set_memory_enabled",
-            "mcp": "set_mcp_enabled",
             "plugins": "set_plugin_enabled",
-            "subagents": "set_subagents_enabled",
         }[key]
         setter = getattr(screen._agent, setter_name)
         try:

@@ -1,4 +1,4 @@
-"""全屏 TUI 的二级工具开关设置面板。
+"""全屏 TUI 的工具开关设置面板（可内嵌右侧的 Pane + 整屏薄壳）。
 
 逐工具切换内置工具在 Agent 工具表中的注册状态：默认除 ``powershell``
 关闭外其余全部启用；切换后立即重建 Agent 工具表并写回 config.toml。
@@ -23,35 +23,34 @@ from ....config.features.tools import (
     save_tool_switch,
 )
 from ..terminal.theme import terminal_css
+from .panes import SettingsPane
+
+_PANE_CSS = """
+#tool-pane-list { height: 1fr; }
+.tool-pane-row { height: 1; padding: 0 1; color: $terminal-text-secondary; }
+.tool-pane-row.selected { color: $terminal-amber; text-style: bold; }
+#tool-pane-status { height: 2; color: $terminal-white; margin-top: 1; }
+#tool-pane-help { height: 1; color: $terminal-white; }
+"""
 
 
-class ToolSettingsScreen(ModalScreen[None]):
-    """第二级：逐工具开关列表。Enter/空格/←/→ 切换，Esc 返回。"""
+class ToolSettingsPane(SettingsPane):
+    """工具开关二级面板：逐工具启用/关闭，改动即时保存。"""
 
     BINDINGS = [
-        ("escape", "cancel", "返回"),
+        Binding("escape", "cancel", "返回", priority=True),
         Binding("up", "move_up", "上一项", priority=True),
         Binding("down", "move_down", "下一项", priority=True),
-        ("left", "previous_value", "上一个"),
-        ("right", "next_value", "下一个"),
-        ("enter", "confirm", "切换"),
-        ("space", "confirm", "切换"),
+        ("left", "toggle_selected", "切换"),
+        ("right", "toggle_selected", "切换"),
+        ("enter", "toggle_selected", "切换"),
+        ("space", "toggle_selected", "切换"),
     ]
 
-    CSS = terminal_css("""
-    ToolSettingsScreen { align: center middle; background: $terminal-overlay; }
-    #tool-settings-dialog { width: 62; max-width: 94%; height: 29; max-height: 92%; padding: 1 2; border: round $terminal-border-strong; background: $terminal-surface; }
-    #tool-settings-title { height: 1; margin-bottom: 1; color: $terminal-white; text-style: bold; }
-    #tool-settings-list { height: 1fr; }
-    .tool-settings-row { height: 1; padding: 0 1; color: $terminal-text-secondary; }
-    .tool-settings-row.selected { color: $terminal-amber; text-style: bold; }
-    #tool-settings-status { height: 2; color: $terminal-white; margin-top: 1; }
-    #tool-settings-help { height: 1; color: $terminal-white; margin-top: 1; }
-    """)
+    DEFAULT_CSS = terminal_css(_PANE_CSS)
 
     def __init__(self, agent: Any) -> None:
-        super().__init__()
-        self._agent = agent
+        super().__init__(agent=agent)
         self._selected = 0
         self._busy = False
         self._status = "Enter/空格/←/→ 切换开关；Esc 返回。"
@@ -59,45 +58,45 @@ class ToolSettingsScreen(ModalScreen[None]):
         # 当前已注册到 Agent 工具表的工具名，用于标注条件注册工具。
         self._registered = frozenset(getattr(getattr(agent, "_tools", None), "keys", lambda: ())())
 
-    def compose(self) -> ComposeResult:
-        with Container(id="tool-settings-dialog"):
-            yield Static("工具开关", id="tool-settings-title")
-            with VerticalScroll(id="tool-settings-list"):
-                for index, key in enumerate(self._keys):
-                    # 首次挂载即渲染真实状态，避免高负载下延迟刷新尚未执行时显示空白行。
-                    marker = "› " if index == self._selected else "  "
-                    yield Static(
-                        marker + self._row_text(key),
-                        id=f"tool-settings-row-{key}",
-                        classes="tool-settings-row",
-                    )
-            yield Static(self._status, id="tool-settings-status")
-            yield Static("↑↓ 选择  ←→/Enter/空格 切换  Esc 返回", id="tool-settings-help")
+    def compose_pane(self) -> ComposeResult:
+        with VerticalScroll(id="tool-pane-list"):
+            for index, key in enumerate(self._keys):
+                marker = "› " if index == self._selected else "  "
+                yield Static(
+                    marker + self._row_text(key),
+                    id=f"tool-pane-row-{key}",
+                    classes="tool-pane-row",
+                )
+        yield Static(self._status, id="tool-pane-status")
+        yield Static("↑↓ 选择  ←→/Enter/空格 切换  Esc 返回", id="tool-pane-help")
 
-    def on_mount(self) -> None:
-        self.call_after_refresh(self._render_rows)
+    def refresh_pane(self) -> None:
+        if not self.is_mounted:
+            return
+        for index, key in enumerate(self._keys):
+            marker = "› " if index == self._selected else "  "
+            row = self.query_one(f"#tool-pane-row-{key}", Static)
+            row.update(marker + self._row_text(key))
+            row.set_class(index == self._selected, "selected")
+            if index == self._selected:
+                row.scroll_visible(animate=False)
+        self.query_one("#tool-pane-status", Static).update(self._status)
 
     def action_cancel(self) -> None:
         if not self._busy:
-            self.dismiss(None)
+            self.request_back()
 
     def action_move_up(self) -> None:
         if not self._busy:
             self._selected = (self._selected - 1) % len(self._keys)
-            self._render_rows()
+            self.refresh_pane()
 
     def action_move_down(self) -> None:
         if not self._busy:
             self._selected = (self._selected + 1) % len(self._keys)
-            self._render_rows()
+            self.refresh_pane()
 
-    def action_previous_value(self) -> None:
-        self._toggle_selected()
-
-    def action_next_value(self) -> None:
-        self._toggle_selected()
-
-    def action_confirm(self) -> None:
+    def action_toggle_selected(self) -> None:
         self._toggle_selected()
 
     def _tool_enabled(self, key: str) -> bool:
@@ -139,20 +138,33 @@ class ToolSettingsScreen(ModalScreen[None]):
     def _set_busy(self, busy: bool, status: str) -> None:
         self._busy = busy
         self._status = status
-        self._render_rows()
-
-    def _render_rows(self) -> None:
-        if not self.is_mounted:
-            return
-        for index, key in enumerate(self._keys):
-            marker = "› " if index == self._selected else "  "
-            row = self.query_one(f"#tool-settings-row-{key}", Static)
-            row.update(marker + self._row_text(key))
-            selected = index == self._selected
-            row.set_class(selected, "selected")
-            if selected:
-                row.scroll_visible(animate=False)
-        self.query_one("#tool-settings-status", Static).update(self._status)
+        self.refresh_pane()
 
 
-__all__ = ["ToolSettingsScreen"]
+class ToolSettingsScreen(ModalScreen[None]):
+    """第二级整屏薄壳：内嵌 ToolSettingsPane，Esc 返回（兼容旧入口/测试）。"""
+
+    CSS = terminal_css("""
+    ToolSettingsScreen { align: center middle; background: $terminal-overlay; }
+    #tool-settings-dialog { width: 62; max-width: 94%; height: 29; max-height: 92%; padding: 1 2; border: round $terminal-border-strong; background: $terminal-surface; }
+    #tool-settings-title { height: 1; margin-bottom: 1; color: $terminal-white; text-style: bold; }
+    """ + _PANE_CSS)
+
+    def __init__(self, agent: Any) -> None:
+        super().__init__()
+        self._agent = agent
+        self._pane: Optional[ToolSettingsPane] = None
+
+    def compose(self) -> ComposeResult:
+        with Container(id="tool-settings-dialog"):
+            yield Static("工具开关", id="tool-settings-title")
+            self._pane = ToolSettingsPane(self._agent)
+            self._pane.bind_pane_events(on_back=lambda: self.dismiss(None))
+            yield self._pane
+
+    def on_mount(self) -> None:
+        if self._pane is not None:
+            self._pane.focus()
+
+
+__all__ = ["ToolSettingsPane", "ToolSettingsScreen"]

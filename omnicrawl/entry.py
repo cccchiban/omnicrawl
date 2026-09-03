@@ -40,9 +40,9 @@ from omnicrawl.ui.windows_launcher import configure_console_encoding
 
 LOGGER = logging.getLogger(__name__)
 
-# 启动画面不再人为固定展示时长；实际启动路径传入 0，完全由所有准备项
-#（包括 MCP 能力发现）是否完成决定何时进入可发送的 TUI。
-# 保留这个常量名兼容外部启动包装器；run_startup_splash 仍支持显式最短时长。
+# 启动画面最短展示时长：0 表示不人为延长"准备耗时"，完全由所有准备项
+#（包括 MCP 能力发现）是否完成决定何时进入可发送的 TUI。保留这个常量名
+# 兼容外部启动包装器；run_startup_splash 仍支持显式最短时长。
 SPLASH_DURATION_SECONDS = 0.0
 
 
@@ -335,8 +335,13 @@ def run_application(argv: Sequence[str] | None = None) -> int:
 
     # 显示启动画面（左侧黄色 Logo + 右侧圆角日志框 + 底部 XP 滚动条），
     # 后台并行完成全部准备；准备阶段把 MCP/插件/Agent/连接器进度写入日志框。
-    # 启动页没有固定时长，直到准备完成且 TUI 可以直接发送。
+    # 启动页不设人为最短总时长（SPLASH_DURATION_SECONDS=0），但 prepare
+    # 完成后画面默认再停留 2 秒（run_startup_splash 的 hold_after_done），
+    # 便于查看日志框内刚写入的启动日志，随后进入可发送的 TUI。
     # 非交互终端（测试、管道）下 splash 直接同步执行准备，行为不变。
+    # splash 期间 run_startup_splash 会把 root logging 的 WARNING/ERROR
+    # 桥接进日志框：默认 root 无 handler 时这些警告会经 lastResort 直接落到
+    # stderr（画面外），而准备阶段的隔离区/插件/连接器警告正是启动日志。
     try:
         prepared = run_startup_splash(
             lambda log_sink: _prepare_startup(

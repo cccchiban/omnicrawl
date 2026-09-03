@@ -135,7 +135,7 @@ max_auto_followups = 3
 # 设置面板修改百分比后会保存该关系，并在上下文窗口变化时实时重算。
 trigger_context_tokens = 100000
 trigger_context_percent = 80
-next_user_reserve_tokens = 4096
+next_user_reserve_tokens = 10240
 minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85
 summary_profile = ""

@@ -598,18 +598,18 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     提供，TUI 不逐控件切换字体。鼠标复制思考内容时复制的是渲染后的
     Markdown 正文。
 
-    默认折叠：只展示最新的 ``COLLAPSED_HEIGHT`` 行思考内容，末尾附一行
-    灰色折叠提示；思考中流式更新时持续滚动到底部（始终看到最新五行）；
-    点击折叠区展开全部思考，再次点击回到折叠（双击保留 Textual 原生
-    「全选」手势）。折叠只改变组件显示高度与滚动位置，``reasoning_text``
-    始终累积完整内容，会话投影与复制不受影响。
+    默认折叠：只展示最新的 ``COLLAPSED_HEIGHT`` 行思考内容；思考中流式
+    更新时持续滚动到底部（始终看到最新五行）；点击折叠区展开全部思考，
+    再次点击回到折叠（双击保留 Textual 原生「全选」手势）。折叠只改变
+    组件显示高度与滚动位置，``reasoning_text`` 始终累积完整内容，会话
+    投影与复制不受影响。
 
     流式性能设计（与主回复同一套策略）：
     - append_delta 按换行边界把原始思考切成小块增量渲染，成本与块长
       成正比，不再逐片全量重绘；
     - 折叠态按增量行数轻量更新高度并锚定底部，不依赖全量重绘；
     - 流式停顿 ``STREAM_SETTLE_SECONDS`` 后（或 flush_tail 收口时）做
-      一次全量精确重绘，统一灰色样式并补折叠提示行。
+      一次全量精确重绘，统一灰色样式并修正折叠高度。
     """
 
     DEFAULT_CSS = """
@@ -624,9 +624,8 @@ class ReasoningDisclosure(RichLog, can_focus=False):
     """
 
     STREAM_RENDER_INTERVAL_SECONDS = 0.05
-    # 折叠态展示的最新思考行数（不含折叠提示行）。
+    # 折叠态展示的最新思考行数。
     COLLAPSED_HEIGHT = 5
-    COLLAPSE_HINT = "⋯ 点击展开全部思考内容"
     # 流式渲染块的最大长度：超过该长度且不含换行时强制落盘一次，
     # 避免模型长时间输出单段文本时界面长时间无更新。
     STREAM_CHUNK_LIMIT = 512
@@ -681,8 +680,8 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         self._last_delta_at = time.monotonic()
         if self._render_timer is not None:
             self._render_timer.stop()
-        # 停顿 SETTLE 秒后做一次全量精确重绘（统一灰色样式、补折叠提示
-        # 与高度修正）；持续流式时该定时器会被每个分片取消并重新安排。
+        # 停顿 SETTLE 秒后做一次全量精确重绘（统一灰色样式并修正折叠
+        # 高度）；持续流式时该定时器会被每个分片取消并重新安排。
         self._render_timer = self.set_timer(
             self.STREAM_SETTLE_SECONDS,
             self._render_markdown_now,
@@ -761,9 +760,9 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         流式阶段与 flush_tail 渲染同一份原始 Markdown，不会出现
         `` ``` `` 定界行；最终统一为灰色前景与代码块同款灰色背景。
 
-        折叠态在正文末尾追加一行灰色提示，并把组件高度固定为「最新五行
-        内容 + 提示行」后滚动到底部，使思考中流式更新始终落在最新五行；
-        展开态回退到 CSS 的 ``height: auto``，由消息区统一滚动展示全部。
+        折叠态把组件高度固定为「最新五行内容」后滚动到底部，使思考中
+        流式更新始终落在最新五行；展开态回退到 CSS 的 ``height: auto``，
+        由消息区统一滚动展示全部。
         """
 
         self._last_render_at = time.monotonic()
@@ -781,9 +780,8 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             self.anchor(False)
             self.styles.height = None
         else:
-            self.write(Text(self.COLLAPSE_HINT, style="dim"), scroll_end=False)
-            content_rows = max(1, len(self.lines) - 1)
-            self.styles.height = min(self.COLLAPSED_HEIGHT, content_rows) + 1
+            content_rows = max(1, len(self.lines))
+            self.styles.height = min(self.COLLAPSED_HEIGHT, content_rows)
             # 锚定底部：新高度要在下一次布局才生效，直接 scroll_end 会按旧
             # 高度算出的 max_scroll_y 停在顶部；anchor 的语义是在每次重新
             # 布局后持续跟随底部，流式重绘与高度变更都会自动滚到最新五行

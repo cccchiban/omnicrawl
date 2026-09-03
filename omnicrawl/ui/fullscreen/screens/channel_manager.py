@@ -1,12 +1,17 @@
-"""首次启动与运行设置共用的模型渠道管理界面。"""
+"""首次启动与运行设置共用的模型渠道管理界面。
+
+渠道管理主体以可内嵌 Pane（:class:`ChannelManagerPane`）实现，整屏
+:class:`ChannelManagerScreen` 是薄壳；渠道编辑表单
+（:class:`ChannelEditorScreen`）仍是模态弹层，可由两种宿主打开。
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, VerticalScroll
 from textual.screen import ModalScreen
@@ -28,6 +33,35 @@ from ....config.models.channels import (
     unique_channel_key,
 )
 from ..terminal.theme import terminal_css, terminal_select_css
+from .panes import SettingsPane
+
+# 渠道管理内容（Pane/薄壳共用，不含对话框外壳）。
+_CHANNEL_MANAGER_CSS = """
+#channel-manager-list {
+    height: 1fr;
+    border: round $terminal-border;
+    background: $terminal-background;
+    padding: 0 1;
+}
+.channel-row {
+    height: 2;
+    padding: 0 1;
+    color: $terminal-text-secondary;
+}
+.channel-row.selected {
+    color: $terminal-amber;
+    text-style: bold;
+}
+#channel-manager-status {
+    height: 2;
+    margin-top: 1;
+    color: $terminal-white;
+}
+#channel-manager-help {
+    height: 2;
+    color: $terminal-white;
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -239,11 +273,16 @@ class ChannelEditorScreen(ModalScreen[Optional[ChannelConfig]]):
         )
 
 
-class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
-    """方向键与勾选操作的渠道列表。"""
+class ChannelManagerPane(SettingsPane):
+    """模型渠道管理面板（可内嵌设置页右侧或整屏薄壳内）。
+
+    键盘：↑↓ 选择、空格启用/禁用、Enter 编辑、A 添加、D 删除、
+    F 设为默认、Ctrl+S 保存全部配置。保存成功后 commit(result)；
+    请求返回上一级用 request_back()；添加/编辑渠道经宿主弹层完成。
+    """
 
     BINDINGS = [
-        ("escape", "cancel", "返回"),
+        Binding("escape", "cancel", "返回", priority=True),
         Binding("up", "move_up", "上一项", priority=True),
         Binding("down", "move_down", "下一项", priority=True),
         Binding("space", "toggle", "启用/禁用", priority=True),
@@ -254,51 +293,7 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         Binding("ctrl+s", "save", "保存", priority=True),
     ]
 
-    CSS = terminal_css("""
-    ChannelManagerScreen {
-        align: center middle;
-        background: $terminal-overlay;
-    }
-    #channel-manager-dialog {
-        width: 100;
-        max-width: 96%;
-        height: 32;
-        max-height: 92%;
-        padding: 1 2;
-        border: round $terminal-border-strong;
-        background: $terminal-surface;
-    }
-    #channel-manager-title {
-        height: 1;
-        margin-bottom: 1;
-        color: $terminal-white;
-        text-style: bold;
-    }
-    #channel-manager-list {
-        height: 1fr;
-        border: round $terminal-border;
-        background: $terminal-background;
-        padding: 0 1;
-    }
-    .channel-row {
-        height: 2;
-        padding: 0 1;
-        color: $terminal-text-secondary;
-    }
-    .channel-row.selected {
-        color: $terminal-amber;
-        text-style: bold;
-    }
-    #channel-manager-status {
-        height: 2;
-        margin-top: 1;
-        color: $terminal-white;
-    }
-    #channel-manager-help {
-        height: 2;
-        color: $terminal-white;
-    }
-    """)
+    DEFAULT_CSS = terminal_css(_CHANNEL_MANAGER_CSS)
 
     def __init__(
         self,
@@ -307,8 +302,9 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         *,
         required: bool = False,
         apply_configuration: Callable[[ChannelConfiguration], None] | None = None,
+        agent: Any | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(agent=agent)
         self._config_path = Path(config_path)
         self._models_path = Path(models_path)
         self._required = required
@@ -332,36 +328,31 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         self._status = "空格勾选启用渠道；编辑后按 Ctrl+S 保存全部配置。"
         self._pending_delete_key = ""
 
-    def compose(self) -> ComposeResult:
-        with Container(id="channel-manager-dialog"):
-            yield Static(
-                "首次启动：配置模型渠道" if self._required else "模型渠道管理",
-                id="channel-manager-title",
-            )
-            with VerticalScroll(id="channel-manager-list"):
-                if self._channels:
-                    for index, channel in enumerate(self._channels):
-                        yield Static(
-                            self._row_text(channel, index),
-                            classes="channel-row selected" if index == 0 else "channel-row",
-                        )
-                else:
+    def compose_pane(self) -> ComposeResult:
+        with VerticalScroll(id="channel-manager-list"):
+            if self._channels:
+                for index, channel in enumerate(self._channels):
                     yield Static(
-                        "尚无渠道，按 A 添加第一个渠道。",
-                        id="channel-empty-row",
-                        classes="channel-row selected",
+                        self._row_text(channel, index),
+                        classes="channel-row selected" if index == 0 else "channel-row",
                     )
-            yield Static(self._status, id="channel-manager-status")
-            yield Static(
-                "↑↓ 选择  空格勾选  Enter 编辑  A 添加  D 删除  F 默认  Ctrl+S 保存  Esc 返回",
-                id="channel-manager-help",
-            )
+            else:
+                yield Static(
+                    "尚无渠道，按 A 添加第一个渠道。",
+                    id="channel-empty-row",
+                    classes="channel-row selected",
+                )
+        yield Static(self._status, id="channel-manager-status")
+        yield Static(
+            "↑↓ 选择  空格勾选  Enter 编辑  A 添加  D 删除  F 默认  Ctrl+S 保存  Esc 返回",
+            id="channel-manager-help",
+        )
 
     def action_cancel(self) -> None:
         if self._required:
             self._set_status("首次启动必须保存至少一个可用渠道；按 Ctrl+S 完成配置。")
             return
-        self.dismiss(None)
+        self.request_back()
 
     def action_move_up(self) -> None:
         if self._channels:
@@ -389,8 +380,11 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         self._render_rows()
 
     def action_add(self) -> None:
-        self.app.push_screen(
-            ChannelEditorScreen(None, existing_keys={item.key for item in self._channels}),
+        self.request_modal(
+            lambda: ChannelEditorScreen(
+                None,
+                existing_keys={item.key for item in self._channels},
+            ),
             self._receive_added,
         )
 
@@ -399,8 +393,11 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
             self.action_add()
             return
         current = self._channels[self._selected]
-        self.app.push_screen(
-            ChannelEditorScreen(current, existing_keys={item.key for item in self._channels}),
+        self.request_modal(
+            lambda: ChannelEditorScreen(
+                current,
+                existing_keys={item.key for item in self._channels},
+            ),
             self._receive_edited,
         )
 
@@ -464,7 +461,7 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         except (ChannelConfigError, OSError, RuntimeError) as exc:
             self._set_status(f"渠道配置保存失败：{exc}")
             return
-        self.dismiss(ChannelManagerResult(saved, config_path, models_path))
+        self.commit(ChannelManagerResult(saved, config_path, models_path))
 
     def _receive_added(self, channel: ChannelConfig | None) -> None:
         if channel is None:
@@ -519,11 +516,151 @@ class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
         if self.is_mounted:
             self.query_one("#channel-manager-status", Static).update(message)
 
+
+class ChannelManagerScreen(ModalScreen[Optional[ChannelManagerResult]]):
+    """整屏薄壳：保留独立模型渠道管理协议（模态弹层）。
+
+    内部复用 :class:`ChannelManagerPane`，通过 on_back/on_commit 桥接
+    为 dismiss(None)/dismiss(result)；``_channels`` 等状态转发到 pane，
+    供既有测试读取。添加/编辑渠道的 ChannelEditorScreen 由 pane 经
+    ``request_modal`` 弹层打开（本薄壳只负责桥接）。
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "返回", priority=True),
+        Binding("up", "move_up", "上一项", priority=True),
+        Binding("down", "move_down", "下一项", priority=True),
+        Binding("space", "toggle", "启用/禁用", priority=True),
+        ("a", "add", "添加"),
+        ("enter", "edit", "编辑"),
+        ("d", "delete", "删除"),
+        ("f", "make_default", "设为默认"),
+        Binding("ctrl+s", "save", "保存", priority=True),
+    ]
+
+    CSS = terminal_css("""
+    ChannelManagerScreen {
+        align: center middle;
+        background: $terminal-overlay;
+    }
+    #channel-manager-dialog {
+        width: 100;
+        max-width: 96%;
+        height: 32;
+        max-height: 92%;
+        padding: 1 2;
+        border: round $terminal-border-strong;
+        background: $terminal-surface;
+    }
+    #channel-manager-title {
+        height: 1;
+        margin-bottom: 1;
+        color: $terminal-white;
+        text-style: bold;
+    }
+    """ + _CHANNEL_MANAGER_CSS)
+
+    def __init__(
+        self,
+        config_path: Path,
+        models_path: Path,
+        *,
+        required: bool = False,
+        apply_configuration: Callable[[ChannelConfiguration], None] | None = None,
+    ) -> None:
+        super().__init__()
+        self._config_path = Path(config_path)
+        self._models_path = Path(models_path)
+        self._required = required
+        self._apply_configuration = apply_configuration
+        self._pane: Optional[ChannelManagerPane] = None
+
+    # 转发给 pane 的状态，供既有测试读取。
+    @property
+    def _channels(self) -> list[ChannelConfig]:
+        return list(self._pane._channels) if self._pane is not None else []
+
+    @property
+    def _default_key(self) -> str:
+        return self._pane._default_key if self._pane is not None else ""
+
+    @property
+    def _selected(self) -> int:
+        return self._pane._selected if self._pane is not None else 0
+
+    @property
+    def _status(self) -> str:
+        return self._pane._status if self._pane is not None else ""
+
+    def compose(self) -> ComposeResult:
+        with Container(id="channel-manager-dialog"):
+            yield Static(
+                "首次启动：配置模型渠道" if self._required else "模型渠道管理",
+                id="channel-manager-title",
+            )
+            self._pane = ChannelManagerPane(
+                self._config_path,
+                self._models_path,
+                required=self._required,
+                apply_configuration=self._apply_configuration,
+            )
+            self._pane.bind_pane_events(
+                on_back=lambda: self.dismiss(None),
+                on_commit=lambda result: self.dismiss(result),
+                on_modal=self._open_modal,
+            )
+            yield self._pane
+
+    def on_mount(self) -> None:
+        if self._pane is not None:
+            self._pane.focus()
+
+    def _open_modal(self, factory: Any, on_result: Any) -> None:
+        self.app.push_screen(factory(), on_result)
+
+    def action_cancel(self) -> None:
+        if self._pane is not None:
+            self._pane.action_cancel()
+
+    def action_move_up(self) -> None:
+        if self._pane is not None:
+            self._pane.action_move_up()
+
+    def action_move_down(self) -> None:
+        if self._pane is not None:
+            self._pane.action_move_down()
+
+    def action_toggle(self) -> None:
+        if self._pane is not None:
+            self._pane.action_toggle()
+
+    def action_add(self) -> None:
+        if self._pane is not None:
+            self._pane.action_add()
+
+    def action_edit(self) -> None:
+        if self._pane is not None:
+            self._pane.action_edit()
+
+    def action_delete(self) -> None:
+        if self._pane is not None:
+            self._pane.action_delete()
+
+    def action_make_default(self) -> None:
+        if self._pane is not None:
+            self._pane.action_make_default()
+
+    def action_save(self) -> None:
+        if self._pane is not None:
+            self._pane.action_save()
+
+
 from .channel_setup import ChannelSetupApp, run_channel_setup
 
 
 __all__ = [
     "ChannelEditorScreen",
+    "ChannelManagerPane",
     "ChannelManagerResult",
     "ChannelManagerScreen",
     "ChannelSetupApp",

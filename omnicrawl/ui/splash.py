@@ -15,6 +15,7 @@ Linux 均可运行。
 
 from __future__ import annotations
 
+import logging
 import shutil
 import sys
 import threading
@@ -59,6 +60,9 @@ LOGO_LINES = [
 # 0 表示不设置人为最短时长；启动页仅等待 prepare 完成。
 DEFAULT_DURATION = 0.0
 
+# prepare 完成后画面额外停留的秒数，便于用户查看日志框内的最新启动日志。
+DEFAULT_HOLD_AFTER_DONE = 2.0
+
 # Logo 左侧留白列数与 Logo / 日志框之间的列间距
 _LOGO_MARGIN = 2
 _BOX_GAP = 4
@@ -99,6 +103,30 @@ class StartupLogSink:
 
         with self._lock:
             return tuple(self._entries)
+
+
+class _StartupLogHandler(logging.Handler):
+    """把 Python logging 的 WARNING/ERROR 桥接进启动日志框。
+
+    启动画面期间 root logger 通常没有 handler（各模块的 LOGGER.warning /
+    error 会走 Python 的 lastResort 直接落到 stderr，显示在画面外）。本
+    handler 只转发 warning/error 两级，避免把框架调试信息刷进日志框；
+    行首标记由 splash 渲染层按 ``StartupLogSink.MARKERS`` 重新着色。
+    """
+
+    def __init__(self, sink: StartupLogSink) -> None:
+        super().__init__(level=logging.WARNING)
+        self._sink = sink
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = "error" if record.levelno >= logging.ERROR else "warning"
+            message = record.getMessage()
+            # 异常堆栈不逐行挤占日志框；保留首行描述即可，完整堆栈仍可
+            # 在记录器上通过 exc_info 追踪。
+            self._sink.write_line(message, level=level)
+        except Exception:  # noqa: BLE001 - 日志桥接失败不能影响启动主流程
+            self.handleError(record)
 
 
 def _logo_render_lines() -> list[str]:
@@ -166,9 +194,24 @@ def _is_tty(stream: TextIO | None) -> bool:
     return callable(isatty) and bool(isatty())
 
 
+def attach_startup_log_handler(sink: StartupLogSink) -> Callable[[], None]:
+    """把 WARNING/ERROR logging 桥接到启动日志框，返回卸载函数。
+
+    启动画面期间各模块（隔离工作区、插件、连接器等）通过 logging 输出的
+    警告默认会走 root 的 lastResort handler 直接落 stderr（画面外）。调用方
+    应在 splash 准备阶段开始时安装、在 splash 结束后移除；返回的卸载函数
+    可安全重复调用。
+    """
+    handler = _StartupLogHandler(sink)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    return lambda: root_logger.removeHandler(handler)
+
+
 def run_startup_splash(
     prepare: Callable[[StartupLogSink], Any],
     duration: float = DEFAULT_DURATION,
+    hold_after_done: float = DEFAULT_HOLD_AFTER_DONE,
     stream: TextIO | None = None,
 ) -> Any:
     """显示启动画面，同时后台执行 ``prepare``（加载所有启动依赖）。
@@ -179,8 +222,15 @@ def run_startup_splash(
             会透传给调用方，异常会在 splash 结束后重新抛出。
         duration: 可选的最短显示秒数；为 0 时不设置人为等待，默认直到
             prepare 完成就结束；若 prepare 耗时更长，则持续显示滚动条。
+        hold_after_done: prepare 完成后画面额外停留的秒数（此时日志框内
+            的启动日志保持可见，滚动条继续动画），便于用户在进入 TUI 前
+            查看最新日志；为 0 时完成即退出。prepare 异常时不额外停留，
+            立即结束画面让错误尽快呈现。
         stream: 输出流，默认 ``sys.stdout``；非交互流（如测试管道）时
             直接同步执行 ``prepare`` 并返回，不显示动画。
+
+    splash 显示期间会临时把 root logging 的 WARNING/ERROR 桥接进日志框
+    （见 :func:`attach_startup_log_handler`），prepare 返回或异常后自动移除。
 
     Returns:
         ``prepare()`` 的返回值。
@@ -194,7 +244,11 @@ def run_startup_splash(
 
     if not _is_tty(out):
         # 非交互环境（测试、管道、重定向）：同步执行，不渲染动画。
-        return _prepare()
+        detach_log_bridge = attach_startup_log_handler(sink)
+        try:
+            return _prepare()
+        finally:
+            detach_log_bridge()
 
     result: dict[str, Any] = {}
     error_box: dict[str, BaseException] = {}
@@ -205,18 +259,22 @@ def run_startup_splash(
         except BaseException as exc:  # noqa: BLE001
             error_box["error"] = exc
 
+    # 桥接必须早于后台线程启动，避免准备线程早期 warning 在安装前漏到 stderr。
+    detach_log_bridge = attach_startup_log_handler(sink)
     thread = threading.Thread(target=_worker, name="omnicrawl-splash-prepare", daemon=True)
     thread.start()
     try:
         _render_splash(
             out,
             duration,
+            hold_after_done,
             sink,
             is_done=lambda: "value" in result,
             has_error=lambda: bool(error_box),
         )
     finally:
-        thread.join(timeout=max(1.0, duration + 5.0))
+        detach_log_bridge()
+        thread.join(timeout=max(1.0, duration + hold_after_done + 5.0))
     if error_box:
         raise error_box["error"]
     return result.get("value")
@@ -225,15 +283,17 @@ def run_startup_splash(
 def _render_splash(
     out: TextIO,
     duration: float,
+    hold_after_done: float,
     sink: StartupLogSink,
     is_done: Callable[[], bool],
     has_error: Callable[[], bool],
 ) -> None:
     """绘制启动画面：左侧 Logo + 右侧圆角日志框 + 底部 XP 滚动条。
 
-    仅在显式设置最短时长时等待到时长满足，并且始终等待准备完成；任何异常
-    都不允许影响启动主流程。日志框只保留最新的 ``box_inner_rows`` 行，
-    内容变化时整窗重绘，避免重叠残留。
+    仅当准备完成且满足显示条件（最短时长 ``duration`` 已到、完成后停留
+    ``hold_after_done`` 已到）时结束；始终等待准备完成，准备异常立即结束
+    以便错误尽快呈现。日志框只保留最新的 ``box_inner_rows`` 行，内容变化
+    时整窗重绘，避免重叠残留。
     """
 
     width, height = shutil.get_terminal_size(fallback=(80, 24))
@@ -284,6 +344,7 @@ def _render_splash(
     bar_left = max(0, (width - bar_width) // 2)
 
     start = time.monotonic()
+    done_at: float | None = None
     frame = 0
     last_entries: tuple[tuple[str, str], ...] = ()
     while True:
@@ -291,8 +352,15 @@ def _render_splash(
             # 准备失败：立即结束画面，让调用方快速看到错误。
             break
         elapsed = time.monotonic() - start
-        if elapsed >= duration and is_done():
-            break
+        if is_done():
+            if done_at is None:
+                # 记录完成时刻（相对画面起点的秒数），进入"完成后停留"
+                # 阶段：日志框保持可见、滚动条继续动画。
+                done_at = elapsed
+            # 退出需同时满足：最短展示时长 duration（默认 0 恒真）与
+            # 完成后额外停留 hold_after_done（elapsed - done_at）。
+            if elapsed >= duration and elapsed - done_at >= hold_after_done:
+                break
         entries = sink.snapshot()
         if entries != last_entries:
             _draw_box_content(
@@ -446,7 +514,9 @@ def _draw_progress_bar(
 
 __all__ = [
     "DEFAULT_DURATION",
+    "DEFAULT_HOLD_AFTER_DONE",
     "LOGO_LINES",
     "StartupLogSink",
+    "attach_startup_log_handler",
     "run_startup_splash",
 ]

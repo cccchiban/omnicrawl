@@ -123,7 +123,7 @@ class SettingsNavigationMixin:
                         state = "已启用" if configuration.enabled else "已停用"
                         self._append_message(
                             "status",
-                            f"运行节奏护栏{state}，配置将在下一次回合生效。",
+                            f"持续运转{state}，配置将在下一次回合生效。",
                         )
                     self._open_settings()
 

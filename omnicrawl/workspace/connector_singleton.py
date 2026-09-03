@@ -12,7 +12,7 @@
   因此跨项目、跨工作区共享同一把锁；
 * 用操作系统级文件锁（Windows ``msvcrt.locking`` / POSIX ``fcntl.flock``）
   保证并发获取的原子性：同一时刻只有一个进程能持锁；
-* 锁文件内记录持有者 PID 与启动时间，用于“粘滞接管”：
+* 锁文件内记录持有者 PID，用于“粘滞接管”：
   - 文件锁竞争失败时，读取锁文件里的 PID，若该 PID 对应的进程已不存在
     （崩溃残留/异常退出），则认为锁已粘滞，删除锁文件后重试获取；
   - 用 ``pid_is_running`` 做跨平台进程存活检查，不依赖 psutil；
@@ -29,7 +29,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import threading
 import time
 from pathlib import Path
 
@@ -150,14 +149,17 @@ class ConnectorInstanceLock:
         with ConnectorInstanceLock("飞书"):
             ...  # 已持有平台单例，可安全拉起连接器子进程
 
-    持有期间向锁文件写入 ``pid=<pid>`` 便于排障与其他进程诊断；退出时
-    显式释放并删除锁文件。进程崩溃时锁文件残留，下一个启动方通过 PID
-    存活检查识别并接管（粘滞接管）。
+    文件内容（``pid=<pid>``）由底层 ``ProcessFileLock.acquire`` 在持锁的
+    同一句柄上写入，便于排障与其他进程诊断；退出时显式释放并删除锁文件。
+    进程崩溃时锁文件残留，下一个启动方通过 PID 存活检查识别并接管（粘滞
+    接管）。
 
     注意（Windows 行为）：持锁期间锁文件被 msvcrt 锁定，其他进程无法
     读取其内容；这使“粘滞接管”只能发生在锁文件存在但无人持锁（如崩溃
     残留、文件锁随进程消失）的场合，恰好构成安全边界——不会误删活动
-    实例的锁。
+    实例的锁。不得再用第二个句柄重写锁文件：Windows 强制字节锁会拒绝
+    其他句柄访问被锁区域（Permission denied），而底层句柄写入的 PID
+    已满足全部需求。
     """
 
     def __init__(self, name: str, lock_path: Path | None = None) -> None:
@@ -170,29 +172,7 @@ class ConnectorInstanceLock:
             poll_seconds=0.05,
         )
         self._owner = False
-        self._pid_line = f"pid={os.getpid()}\n"
-        self._write_lock = threading.Lock()
         self._finalized = False
-
-    def _write_owner(self) -> None:
-        """把当前进程 PID 写入锁文件（文件锁已持有）。
-
-        Windows 上 msvcrt 锁定会阻止其他进程读取锁文件，因此本文件在
-        Windows 下的内容仅供诊断；粘滞检测基于“文件锁竞争失败 + 文件可
-        读”的语义，见 try_acquire 注释。写入失败不阻断获取（不影响锁
-        的互斥语义），只记录警告。
-        """
-
-        with self._write_lock:
-            try:
-                with self.lock_path.open("w", encoding="utf-8") as file:
-                    file.write(self._pid_line)
-                    file.flush()
-                    os.fsync(file.fileno())
-            except OSError as exc:  # pragma: no cover - 极端磁盘错误
-                LOGGER.warning(
-                    "写入连接器单例锁信息失败（%s）：%s", self.lock_path, exc
-                )
 
     def try_acquire(self) -> bool:
         """尝试获取平台单例；被其他活动实例持有则返回 False。
@@ -200,7 +180,7 @@ class ConnectorInstanceLock:
         判定顺序（竞争失败时区分“另一实例持有”与“粘滞残留”）：
 
         1. 尝试获取文件锁；
-        2. 成功：写入 PID 并返回 True；
+        2. 成功：底层 ProcessFileLock 已写入 PID，返回 True；
         3. 失败：读取锁文件 PID（Windows 上锁被活动实例持有时不可读，
            读不到就按“已有实例”处理）；PID 存在则说明有活动实例，
            返回 False；PID 不存在则删除锁文件后重试（粘滞接管）。
@@ -218,7 +198,6 @@ class ConnectorInstanceLock:
                 pass
             else:
                 self._owner = True
-                self._write_owner()
                 return True
 
             # 文件锁竞争失败：尝试判断是否为粘滞残留。

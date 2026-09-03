@@ -35,7 +35,7 @@ class ContextCompactionConfig:
     # None 表示显式使用固定 Token 阈值；默认按上下文窗口的 80% 计算。
     trigger_context_percent: int | None = 80
     trigger_context_tokens: int = 100_000
-    next_user_reserve_tokens: int = 4_096
+    next_user_reserve_tokens: int = 10_240
     minimum_turns_between_model_compactions: int = 4
     emergency_context_ratio: float = 0.85
     summary_profile: str = ""

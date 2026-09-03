@@ -99,7 +99,7 @@ enabled = true
 [context_compaction]
 trigger_context_tokens = 100000
 trigger_context_percent = 80
-next_user_reserve_tokens = 4096
+next_user_reserve_tokens = 10240
 minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85
 # 空值复用当前模型；也可填写 models.toml key/alias、model_id 或 profile/model_id。

@@ -8,6 +8,7 @@
 
 from .channel_manager import (
     ChannelEditorScreen,
+    ChannelManagerPane,
     ChannelManagerResult,
     ChannelManagerScreen,
     ChannelSetupApp,
@@ -20,7 +21,7 @@ from .mcp_settings import (
     MCPSettingsAction,
     MCPSettingsScreen,
 )
-from .model_picker import ModelPickerResult, ModelPickerScreen
+from .model_picker import ModelPickerPane, ModelPickerResult, ModelPickerScreen
 from .navigation import SettingsNavigationMixin
 from .settings import SettingsAction, SettingsScreen
 from .run_guard_settings import RunGuardSettingsScreen
@@ -33,9 +34,11 @@ __all__ = [
     "SettingsAction",
     "SettingsScreen",
     "RunGuardSettingsScreen",
+    "ModelPickerPane",
     "ModelPickerResult",
     "ModelPickerScreen",
     "ChannelEditorScreen",
+    "ChannelManagerPane",
     "ChannelManagerResult",
     "ChannelManagerScreen",
     "ChannelSetupApp",
