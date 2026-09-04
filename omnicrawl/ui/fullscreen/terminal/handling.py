@@ -436,10 +436,15 @@ class OmniCrawlWindowsEventMonitor(
 
         if text in {"\r", "\n", "\r\n"}:
             return False
+        stripped = self._strip_stream_control_prefix(text)
+        # 剥离前导控制字符后为空（如长按退格积累的 \x08 流）时不能视为
+        # 粘贴前缀：空串是任意多行文本的前缀，会把编辑键无限挂起，直到
+        # 后续输入打破前缀匹配才一次性冲刷，表现为“先不动、松键后猛删”。
+        if not stripped:
+            return False
         clipboard = self._clipboard_reader()
         if not clipboard or ("\r" not in clipboard and "\n" not in clipboard):
             return False
-        stripped = self._strip_stream_control_prefix(text)
         normalized_stream = self._normalize_stream_text(stripped)
         normalized_clipboard = self._normalize_stream_text(clipboard)
         return (

@@ -370,8 +370,10 @@ class SettingsScreen(ModalScreen[Any]):
         )
         pane.id = f"settings-pane-{self._mount_seq}"
         area.mount(pane)
-        # 预览：焦点留在左侧行，不自动进入右侧；pane 已挂载可接收按键。
-        self._pane.refresh_pane()
+        # 初次渲染交给 SettingsPane.on_mount 的 call_after_refresh：
+        # mount 后子节点尚未 compose 完成，此处同步 refresh 会撞上
+        # “部分节点缺失”的窗口（如 #grouped-pane-status 尚不存在），
+        # 引发 NoMatches 使整个 TUI 崩溃。
 
     def _commit_pane(self, result: Any = None) -> None:
         """面板保存完成：SelectPane 已就地刷新；模型/渠道提交后保留在
