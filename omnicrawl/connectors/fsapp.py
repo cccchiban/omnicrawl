@@ -217,6 +217,7 @@ class _PendingUserQuestion:
     sender_open_id: str
     event: threading.Event = field(default_factory=threading.Event)
     answer: str | None = None
+    message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -459,6 +460,24 @@ def _question_card_json(question: _PendingUserQuestion) -> str:
             }
         )
     return _card_json(elements)
+
+
+def _question_resolved_card_json(question: _PendingUserQuestion, status: str) -> str:
+    """生成已终结的提问卡片：只保留状态行，移除所有可选按钮。
+
+    超时/已作答/取消后的选项按钮若继续留在聊天里，用户点击只会得到
+    “该问题已处理或已失效”的失败提示，观感上是“选项依然可点”。这里用
+    ``_patch_card`` 原地把卡片改写为只读状态，按钮不再出现。
+    """
+
+    return _card_json(
+        [
+            {
+                "tag": "markdown",
+                "content": redact_sensitive_text(f"**{question.question}**\n{status}"),
+            }
+        ]
+    )
 
 
 def _split_text(text: str) -> list[str]:
@@ -1758,12 +1777,16 @@ class FeishuBot:
             self._pending_user_question = question
 
         if question.options:
-            sent = self._send_raw(
+            message_id = self._send_raw(
                 question.receive_id,
                 _question_card_json(question),
                 msg_type="interactive",
                 receive_id_type=question.receive_id_type,
-            ) is not None
+            )
+            sent = message_id is not None
+            if sent:
+                with self._lock:
+                    question.message_id = message_id
         else:
             prompt = f"❓ {question.question}\n请直接回复答案。"
             if question.kind == "confirm":
@@ -1789,8 +1812,26 @@ class FeishuBot:
                 "⏰ 问题超时，已取消本次等待。",
                 receive_id_type=question.receive_id_type,
             )
+            self._settle_question_card(question, "⏰ 问题超时，等待已取消。")
             return None
+        if question.answer is None:
+            # 用户取消任务时 event 被唤醒但 answer 保持 None，卡片一并终结。
+            self._settle_question_card(question, "⏹ 任务已取消，问题已失效。")
+            return None
+        self._settle_question_card(question, f"✅ 已收到回答：{question.answer}")
         return question.answer
+
+    def _settle_question_card(self, question: _PendingUserQuestion, status: str) -> None:
+        """把提问卡片原地改写为只读终态，移除全部选项按钮。
+
+        回答到达、超时或任务取消后，卡片若仍保留可点按钮，会持续暗示
+        “还可以作答”；点击也只能得到“已失效”提示。patch 成功与否不影响
+        主流程（文本结果已经返回），失败只记日志。
+        """
+
+        if not question.options or not question.message_id:
+            return
+        self._patch_card(question.message_id, _question_resolved_card_json(question, status))
 
     def _answer_pending_user_question(
         self,
