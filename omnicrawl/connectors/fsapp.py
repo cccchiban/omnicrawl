@@ -2012,6 +2012,10 @@ class FeishuBot:
                     event_handler=handler,
                     log_level=sdk.LogLevel.INFO,
                 )
+                if not _install_ws_card_support(ws_client, handler):
+                    LOGGER.warning(
+                        "当前 lark-oapi 版本不支持 CARD 帧补丁，select 提问卡片按钮不可用。"
+                    )
                 with self._lock:
                     self._ws_client = ws_client
                 LOGGER.info(
@@ -2031,6 +2035,59 @@ class FeishuBot:
                 break
             retry_delay = min(retry_delay * 2, RECONNECT_MAX_SECONDS)
         LOGGER.info("飞书 Agent 已停止。")
+
+
+def _install_ws_card_support(ws_client: Any, handler: Any) -> bool:
+    """在 lark-oapi WebSocket 客户端实例上安装 CARD 数据帧处理补丁。
+
+    lark-oapi 1.7.3 的 ``ws/client.py::_handle_data_frame`` 对 ``MessageType.CARD``
+    帧直接 ``return``：既不分发给已注册的卡片回调（``p2.card.action.trigger``），
+    也不回 ACK。飞书 select 提问卡片按钮的点击因此永远不会到达 fsapp 的
+    ``_answer_user_question_action``。这里把 SDK 对 EVENT 帧的派发 + ACK 路径
+    复制给 CARD 帧，其余帧类型仍走 SDK 原始实现（不修改 site-packages，只
+    覆盖当前实例的同名异步方法）。返回是否安装成功。
+    """
+
+    original = getattr(type(ws_client), "_handle_data_frame", None)
+    do_dispatch = getattr(handler, "_do_without_validation", None)
+    if not callable(original) or not callable(do_dispatch):
+        return False
+    try:
+        import base64
+
+        from lark_oapi.core.json import JSON as sdk_json
+        from lark_oapi.ws.model import Response as ws_response
+    except Exception:  # pragma: no cover - SDK 内部结构变化时放弃补丁
+        return False
+
+    def _type_header(frame: Any) -> str | None:
+        for header in frame.headers:
+            if getattr(header, "key", None) == "type":
+                return str(getattr(header, "value", "") or "")
+        return None
+
+    async def _handle_data_frame(frame: Any) -> None:  # noqa: N807 - 实例级覆盖 SDK 方法
+        if _type_header(frame) != "card":
+            await original(ws_client, frame)
+            return
+        if not frame.payload:
+            return
+        resp = ws_response(code=200)
+        try:
+            result = do_dispatch(frame.payload)
+            if result is not None:
+                resp.data = base64.b64encode(sdk_json.marshal(result).encode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - 单帧失败不能杀死长连接
+            LOGGER.warning("处理飞书卡片回调失败：%s", exc)
+            resp = ws_response(code=500)
+        frame.payload = sdk_json.marshal(resp).encode("utf-8")
+        try:
+            await ws_client._write_message(frame.SerializeToString())
+        except Exception:  # noqa: BLE001 - ACK 失败只记录
+            LOGGER.warning("回传飞书卡片回调 ACK 失败", exc_info=True)
+
+    setattr(ws_client, "_handle_data_frame", _handle_data_frame)
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:

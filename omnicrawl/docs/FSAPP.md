@@ -267,6 +267,12 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 自动启动只检查本地配置，不会在主进程中创建飞书 Agent 或建立网络连接；缺少
 `lark-oapi`、网络错误或连接器退出只会记录警告，不会阻止 TUI 启动。
 
+**运行日志**：TUI 自动拉起的连接器子进程把 stdout/stderr 落盘到用户配置目录
+`~/.OmniCrawl/logs/飞书.log`（Telegram 为 `~/.OmniCrawl/logs/Telegram.log`），
+因此连接器不会污染全屏界面，排查“进程活着但收不到消息”等场景时可随时查看该
+文件中的白名单拦截、断线重连和卡片回调日志。手工 `python -m` 启动时日志仍输出
+到当前终端。
+
 **多进程单例**：每个连接器平台在同一用户下只允许一个活动实例。多个 TUI/API
 进程并存、或 TUI 自动启动与手工 `python -m` 同时运行时，后启动的一方会检测
 到已有实例并跳过（日志提示“已有实例在运行”），避免飞书 WebSocket 被重复
@@ -410,7 +416,16 @@ pip install lark-oapi
 检查应用的机器人发消息权限、应用发布状态和目标会话权限。文件/图片接收或回传失败
 时，还要检查消息资源读取、上传和发送相关权限。
 
-### 6. 为什么看不到二维码或扫码登录入口
+### 6. Agent 提问时点击 select 卡片按钮没反应
+
+`lark-oapi` 1.7.x 的 WebSocket 客户端会丢弃卡片回调（CARD）数据帧。`fsapp.py`
+启动时会对 SDK 客户端实例安装兼容补丁，把卡片回调分发给已注册的
+`p2.card.action.trigger` 处理器（即 Agent 提问按钮）。若运行日志出现
+“当前 lark-oapi 版本不支持 CARD 帧补丁”，说明 SDK 结构变化导致补丁未生效，
+此时可升级/降级 `lark-oapi` 到 1.7.3 附近版本，或直接回复文本作为答案
+（`select`/`question`/`confirm` 提问都接受文本回答）。
+
+### 7. 为什么看不到二维码或扫码登录入口
 
 这是当前设计的正常表现。`fsapp.py` 使用 App ID/App Secret 和应用级 WebSocket 长
 连接，没有二维码生成、OAuth 授权码交换或扫码登录状态机。若确实需要“每个用户扫码

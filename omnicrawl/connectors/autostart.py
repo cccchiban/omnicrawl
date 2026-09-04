@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from omnicrawl.config.core.runtime import user_config_dir
 from omnicrawl.state.session_artifacts import redact_sensitive_text
 from omnicrawl.workspace.connector_singleton import ConnectorInstanceLock
 from omnicrawl.workspace.process_control import (
@@ -44,6 +46,9 @@ _ENABLED_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
 # 子进程已被要求自行退出时，等待其 watcher 线程收尾的上限。
 WATCHER_JOIN_TIMEOUT_SECONDS = 5.0
 
+# 连接器子进程运行日志目录（用户配置目录下，跨工作区共享，便于统一排障）。
+CONNECTOR_LOG_DIRNAME = "logs"
+
 
 @dataclass(frozen=True)
 class ConnectorSpec:
@@ -60,6 +65,8 @@ class _ManagedConnector:
     spec: ConnectorSpec
     process: subprocess.Popen[Any]
     job_handle: int | None
+    log_path: Path | None = None
+    log_file: Any | None = None
     watcher: threading.Thread | None = None
 
 
@@ -81,9 +88,11 @@ class ConnectorProcessManager:
         workspace_root: Path,
         *,
         popen_factory: Callable[..., subprocess.Popen[Any]] = subprocess.Popen,
+        capture_logs: bool = False,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self._popen = popen_factory
+        self._capture_logs = capture_logs
         self._lock = threading.RLock()
         self._closed = False
         self._processes: list[_ManagedConnector] = []
@@ -94,6 +103,12 @@ class ConnectorProcessManager:
 
         with self._lock:
             return tuple(entry.spec.name for entry in self._processes)
+
+    @property
+    def capture_logs(self) -> bool:
+        """子进程 stdout/stderr 是否重定向到用户日志目录的开关。"""
+
+        return self._capture_logs
 
     def start(self) -> tuple[str, ...]:
         """探测配置并启动已配置的平台，返回成功启动的平台名称。"""
@@ -165,6 +180,11 @@ class ConnectorProcessManager:
         平台出现多个长连接子进程。
         """
 
+        with self._lock:
+            if self._closed:
+                # 监督器已进入关闭流程，不启动新进程。
+                return
+
         # 单例锁失败（已有实例或获取超时）按“该平台已在运行”处理，跳过
         # 本次启动；这是多进程并存时的预期行为，不应作为异常上报。
         instance_lock = ConnectorInstanceLock(spec.name)
@@ -181,11 +201,22 @@ class ConnectorProcessManager:
             "cwd": str(self.workspace_root),
             "env": environment,
             "stdin": subprocess.DEVNULL,
+        }
+        log_path: Path | None = None
+        log_file: Any | None = None
+        if self._capture_logs:
+            # 连接器子进程输出落盘到用户配置目录 logs/ 下，TUI 全屏界面保持
+            # 干净，同时排障时可读完整运行日志（白名单拦截、断线重连等）。
+            log_path = _connector_log_path(spec.name)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = open(log_path, "ab", buffering=0)
+            popen_kwargs["stdout"] = log_file
+            popen_kwargs["stderr"] = subprocess.STDOUT
+        else:
             # 连接器不直接向 Textual 终端写日志，避免破坏全屏界面；退出状态
             # 由 watcher 记录，详细日志仍可单独运行连接器查看。
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
-        }
+            popen_kwargs["stdout"] = subprocess.DEVNULL
+            popen_kwargs["stderr"] = subprocess.DEVNULL
         if os.name == "nt":
             # Windows 没有 Unix 的 session/process group 语义；Job Object
             # 负责递归回收，CREATE_NEW_PROCESS_GROUP 作为兼容性兜底。
@@ -196,25 +227,31 @@ class ConnectorProcessManager:
 
         process: subprocess.Popen[Any] | None = None
         entry: _ManagedConnector | None = None
-        lock_held = True
         try:
+            process = self._popen(command, **popen_kwargs)
+            try:
+                job_handle = assign_process_to_kill_on_close_job(process)
+            except Exception as exc:  # noqa: BLE001 - 回收增强失败不阻断启动
+                LOGGER.warning(
+                    "%s 连接器进程树保护初始化失败，将使用普通进程组回收：%s",
+                    spec.name,
+                    _safe_error_text(exc),
+                )
+                job_handle = None
+
             with self._lock:
                 if self._closed:
-                    # 监督器已进入关闭流程，不启动新进程；已持有的单例锁
-                    # 由下方 finally 统一释放，避免残留导致后续无法拉起。
+                    # 启动期间监督器已进入关闭流程：直接回收刚启动的进程，
+                    # 避免留下无监督的孤儿。
+                    terminate_process_tree(process, job_handle=job_handle, wait=True)
                     return
-                process = self._popen(command, **popen_kwargs)
-                try:
-                    job_handle = assign_process_to_kill_on_close_job(process)
-                except Exception as exc:  # noqa: BLE001 - 回收增强失败不阻断启动
-                    LOGGER.warning(
-                        "%s 连接器进程树保护初始化失败，将使用普通进程组回收：%s",
-                        spec.name,
-                        _safe_error_text(exc),
-                    )
-                    job_handle = None
-
-                entry = _ManagedConnector(spec, process, job_handle)
+                entry = _ManagedConnector(
+                    spec,
+                    process,
+                    job_handle,
+                    log_path=log_path,
+                    log_file=log_file,
+                )
                 self._processes.append(entry)
                 watcher = threading.Thread(
                     target=self._watch_process,
@@ -224,6 +261,7 @@ class ConnectorProcessManager:
                 )
                 entry.watcher = watcher
                 watcher.start()
+                log_file = None  # 所有权已移交 watcher/entry
         except (OSError, ValueError) as exc:
             LOGGER.warning(
                 "%s 连接器自动启动失败，TUI 将继续运行：%s",
@@ -240,6 +278,7 @@ class ConnectorProcessManager:
                         self._processes.remove(entry)
                         job_handle = entry.job_handle
                         entry.job_handle = None
+                        entry.log_file = None
                 try:
                     terminate_process_tree(process, job_handle=job_handle, wait=True)
                 except Exception as cleanup_exc:  # noqa: BLE001
@@ -250,11 +289,13 @@ class ConnectorProcessManager:
                     )
             raise
         finally:
-            # 无论启动成功、失败还是监督器已关闭，释放单例锁：下一个启动方
-            # 才有机会接管。注意“跳过启动”的分支在 try_acquire 失败时已直接
-            # return，不会走到这里，因此不会误释放他人持有的锁。
-            if lock_held:
-                instance_lock.release()
+            # 任何失败/提前返回路径下关闭尚未移交的日志句柄，避免泄漏。
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except Exception:  # noqa: BLE001 - 关闭失败不再上抛
+                    LOGGER.debug("关闭 %s 日志句柄失败", spec.name, exc_info=True)
+            instance_lock.release()
 
     def _watch_process(self, entry: _ManagedConnector) -> None:
         """记录连接器意外退出并释放自然退出后的 Windows 句柄。
@@ -279,6 +320,14 @@ class ConnectorProcessManager:
 
         job_handle = self._take_job_handle(entry)
         close_windows_handle(job_handle)
+        log_file = self._take_log_file(entry)
+        if log_file is not None:
+            # Popen 打开的日志句柄在 watcher 观察到子进程退出后关闭；日志
+            # 文件本身保留供排障阅读。
+            try:
+                log_file.close()
+            except Exception:  # noqa: BLE001 - 句柄关闭失败不影响主流程
+                LOGGER.debug("关闭 %s 日志句柄失败", entry.spec.name, exc_info=True)
         with self._lock:
             closing = self._closed
         if not closing and return_code != 0:
@@ -287,6 +336,12 @@ class ConnectorProcessManager:
                 entry.spec.name,
                 return_code,
             )
+
+    def _take_log_file(self, entry: _ManagedConnector) -> Any | None:
+        with self._lock:
+            handle = entry.log_file
+            entry.log_file = None
+            return handle
 
     def _take_job_handle(self, entry: _ManagedConnector) -> int | None:
         with self._lock:
@@ -300,9 +355,11 @@ def start_configured_connectors(workspace_root: Path) -> ConnectorProcessManager
 
     连接器的配置读取只访问本地 TOML 和环境变量，不会创建 Agent、建立网络
     连接或加载飞书 WebSocket。调用方必须在应用退出时调用返回对象的 ``close``。
+    生产入口默认把子进程 stdout/stderr 落盘到用户 ``logs/`` 目录，便于在
+    TUI 全屏之外排查连接器问题。
     """
 
-    manager = ConnectorProcessManager(workspace_root)
+    manager = ConnectorProcessManager(workspace_root, capture_logs=True)
     try:
         manager.start()
     except Exception:
@@ -311,6 +368,13 @@ def start_configured_connectors(workspace_root: Path) -> ConnectorProcessManager
         manager.close()
         raise
     return manager
+
+
+def _connector_log_path(platform_name: str) -> Path:
+    """返回连接器运行日志文件路径（用户配置目录 ``logs/<平台>.log``）。"""
+
+    safe = re.sub(r"[^\w.-]", "-", platform_name, flags=re.UNICODE).strip(".-") or "connector"
+    return user_config_dir() / CONNECTOR_LOG_DIRNAME / f"{safe}.log"
 
 
 def _configured_connectors() -> tuple[tuple[ConnectorSpec, bool], ...]:
