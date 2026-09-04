@@ -435,7 +435,7 @@ compact_summary
 | `/review [git范围]` | 派生评审子 Agent：注入评审标准作为系统指令，子 Agent 以完整 git 权限（自动批准）收集 diff 并按结构化 JSON 输出审查结果；TUI 实时显示子代理对话（左右缩进两格、左侧 │ 竖线全程连续、底部 ╰ 圆角转角包裹的会话面板，含 git 工具调用与结果，长内容自动换行不覆盖竖线），主线程只转发与渲染。评审报告以 assistant 消息注入父模型上下文（下一轮模型请求可见），父模型可基于报告继续修复、提交并推送变更；父模型也可通过 `subagent` 工具（`subagent_type: review`）自主启动评审，工具结果即渲染后的完整报告。 |
 | `/export` | 导出当前会话到 Markdown。 |
 
-`/undo` 仍通过仅追加的 `turn_undone` 事件记录被回退轮次的事件 ID，但提交该事件前会先执行副作用恢复。每轮开始和结束时，Host 各执行一次 `git diff HEAD --binary` 生成工作区未提交修改的补丁，并用 `git ls-files --others --exclude-standard` 记录未跟踪文件清单，补丁落盘到 Session artifact 的 `undo/` 目录（不再创建影子 Git 对象库，成本与工作区大小解耦——被 .gitignore 忽略的 RAR/ZIP/DLL 等大文件不会进快照，除非它们被 Git 跟踪且发生修改）。回退时先校验当前工作区仍等于轮次结束状态（冲突则整轮拒绝），再 `git reset --hard HEAD` 复位、`git apply` 轮次起点补丁恢复未提交修改，最后删除本轮新增的未跟踪文件。三类记忆、提示历史与 Session 工具产物不再参与回退（/undo 放弃记忆回退）；非 Git 工作区禁用事务式 undo。
+`/undo` 仍通过仅追加的 `turn_undone` 事件记录被回退轮次的事件 ID，但提交该事件前会先执行副作用恢复。快照采用惰性捕获：每轮开始只做一次带 60s TTL 缓存的 HEAD 探测；只有本轮实际执行了可回退写工具（Edit_file/write_file）时，才在首个写工具副作用发生前执行 `git diff HEAD --binary` 生成起点补丁，并用 `git ls-files --others --exclude-standard` 记录未跟踪文件清单；轮次结束时再捕获一次终点状态，补丁落盘到 Session artifact 的 `undo/` 目录（不再创建影子 Git 对象库，成本与工作区大小解耦——被 .gitignore 忽略的 RAR/ZIP/DLL 等大文件不会进快照，除非它们被 Git 跟踪且发生修改）。纯读/纯对话轮次全程不执行 diff、不落盘、不产生 `turn_snapshot` 事件，/undo 走“无快照且无副作用”的安全逻辑路径。回退时先校验当前工作区仍等于轮次结束状态（冲突则整轮拒绝），再 `git reset --hard HEAD` 复位、`git apply` 轮次起点补丁恢复未提交修改，最后删除本轮新增的未跟踪文件。三类记忆、提示历史与 Session 工具产物不再参与回退（/undo 放弃记忆回退）；非 Git 工作区禁用事务式 undo。
 
 正常轮次会同时失效用户消息、工具事件、助手回复、该轮压缩摘要和 `turn_snapshot`；取消或异常中断的轮次会回退未配对用户消息及其中断事件。旧轮次若没有快照但记录了文件/记忆写入或上下文压缩，`/undo` 会拒绝覆盖；旧的纯对话和只读工具轮次仍兼容逻辑回退。Shell、MCP、桌面控制、SubAgent 执行等无法证明副作用只位于受控根目录的操作会写入不可逆账本，该轮不得使用事务式 `/undo`。Git diff 快照不能撤销数据库、远程服务、网络请求、工作区外文件或其他外部系统状态；被删除的未跟踪文件没有内容副本，无法恢复。
 
