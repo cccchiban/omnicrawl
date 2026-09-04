@@ -204,11 +204,16 @@ class AssistantMessage(RichLog, can_focus=False):
             self.update(markdown)
 
     def on_mount(self) -> None:
-        """挂载后重走渲染管线，保证构造期（app 未绑定）的样式正确。"""
+        """挂载后重走渲染管线，保证构造期（app 未绑定）的样式正确。
+
+        重绘完成后构造期保存的全文副本不再需要，立即释放以降低长会话
+        内存驻留（每条约 24KB，且随会话长度线性累积）。
+        """
 
         super().on_mount()
         if self._last_markdown:
             self.update(self._last_markdown)
+        self._last_markdown = ""
 
     def update(self, markdown: str) -> None:
         """用完整 Markdown 重绘当前消息，同时保留 RichLog 的可选区能力。
@@ -219,7 +224,10 @@ class AssistantMessage(RichLog, can_focus=False):
         该方法会替换当前全部行（含此前增量追加的内容），是全量精确渲染。
         """
 
-        self._last_markdown = markdown
+        # 只有挂载前需要保留全文副本供 on_mount 重绘；挂载后 update 是即时
+        # 渲染，保留副本只会让长会话每条约 24KB 全文线性累积驻留内存。
+        if not self.is_mounted:
+            self._last_markdown = markdown
         self._prefix_written = markdown.startswith("◇ ")
         self.clear()
         # ``◇ `` 是工作台给 AssistantMessage 加的显示前缀，不属于 Markdown
@@ -887,6 +895,11 @@ class ToolDisclosure(Static):
         self.result_text = output
         self._apply_status_class()
         self._refresh_display()
+        # 终态已渲染进 Static 行，此后 refresh_elapsed 直接 return 不再重绘；
+        # 释放参数与结果原文，避免 read 全文/write_file 大 content/bash 大
+        # 输出随历史工具卡永久滞留（单卡可省数 KB~MB）。
+        self.arguments = None
+        self.result_text = ""
 
     def _apply_status_class(self) -> None:
         """按当前状态切换边框语义色 class（tool-running/ok/fail/pending/cancelled）。"""

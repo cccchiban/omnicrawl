@@ -1388,9 +1388,24 @@ class TurnLoopMixin:
         return build_extra_body(self.config.llm)
 
     def _provider_tools(self) -> dict[str, ToolDefinition]:
-        """返回 Provider 顶层工具面：所有可见工具的压缩声明。"""
+        """返回 Provider 顶层工具面：所有可见工具的压缩声明。
 
-        return build_provider_tools(self._host_tool_catalog())
+        工具面是 ``_tools`` 的纯派生快照：``_tools`` 只在构造/工具开关/MCP
+        发现/工作区切换时整体替换，因此缓存槽持旧引用、按 ``is`` 比较即可
+        自动失效，无需逐点清缓存。每次模型往返（含工具循环内每轮）都会
+        重建工具面，命中缓存能省掉 O(工具数) 的重复声明构建。
+        """
+
+        tools = getattr(self, "_tools", None)
+        cached = getattr(self, "_provider_tools_cache", None)
+        if cached is not None and cached[0] is tools:
+            return cached[1]
+        built = build_provider_tools(self._host_tool_catalog())
+        try:
+            self._provider_tools_cache = (tools, built)
+        except AttributeError:  # pragma: no cover - 极简测试对象无 __dict__
+            pass
+        return built
 
     def _host_tool_catalog(self) -> HostToolCatalog:
         """构造当前 Agent 的完整 Host 工具目录。"""
@@ -1398,10 +1413,19 @@ class TurnLoopMixin:
         return HostToolCatalog(getattr(self, "_tools", {}))
 
     def _chat_completion_tools(self) -> list[dict[str, Any]]:
-        return chat_completion_tools(
-            self._provider_tools().values(),
+        tools = self._provider_tools()
+        cached = getattr(self, "_chat_tools_cache", None)
+        if cached is not None and cached[0] is tools:
+            return cached[1]
+        built = chat_completion_tools(
+            tools.values(),
             function_name_for_tool=function_name_for_tool,
         )
+        try:
+            self._chat_tools_cache = (tools, built)
+        except AttributeError:  # pragma: no cover - 极简测试对象无 __dict__
+            pass
+        return built
 
     def _prompt_cache_identity(self) -> dict[str, str]:
         """返回只包含稳定上下文 hash 的 prompt cache 身份。"""
