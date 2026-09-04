@@ -66,4 +66,5 @@ omnicrawl = [
     "templates/*.md",
     "connectors/*.md",
     "bin/*",
+    "ui/fullscreen/status/*.txt",
 ]

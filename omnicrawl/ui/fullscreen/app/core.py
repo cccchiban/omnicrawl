@@ -94,8 +94,8 @@ class OmniCrawlApp(
        弹性占位把版本号推到整行尾部，行首与字段间用 │ 分隔。
        底部 HUD 整体左移对齐输入框左边框（左 margin 同为 2）。 */
     /* 底部单行轮播 HUD：原两行内容（工作区路径 / 遥测+模型状态）合并为
-       一行，按遥测 20s、工作区路径 10s 交替显示；切换时以解密扫描特效
-       过渡（旧文本被乱码从左到右侵蚀、新文本由乱码从左到右吐出）。
+       一行，现为遥测 → 工作区路径 → 留言三页各 10s 循环；切换时以解密
+       扫描特效过渡（旧文本被乱码从左到右侵蚀、新文本由乱码从左到右吐出）。
        左侧与输入框左边框对齐（左 margin 同为 2），行高 1 使内容直接
        贴齐屏幕底缘。 */
     #bottom-carousel {
@@ -519,7 +519,8 @@ class OmniCrawlApp(
         self._ask_user_event = threading.Event()
         self._ask_user_custom_mode = False
         self._ask_user_selection = 0
-        # 底部单行轮播 HUD：遥测页停留 20s、工作区路径页停留 10s 交替；
+        # 底部单行轮播 HUD：遥测页 10s → 工作区路径页 10s → 留言页 10s
+        # 循环；留言页每次切入从包内 carousel_messages.txt 随机取一条。
         # 切换时以解密扫描特效过渡，随机源固定实例便于测试复现。
         self._carousel_page = "telemetry"
         self._carousel_settled_text: Text | None = None
@@ -569,8 +570,8 @@ class OmniCrawlApp(
                     show_line_numbers=False,
                     highlight_cursor_line=False,
                 )
-            # 底部单行轮播 HUD：原两行内容合并为一行，遥测（20s）与
-            # 工作区路径（10s）交替显示，切换时以解密扫描特效过渡。
+            # 底部单行轮播 HUD：遥测 → 工作区路径 → 留言三页各 10s 循环，
+            # 切换时以解密扫描特效过渡。
             with Horizontal(id="bottom-carousel"):
                 yield Static(self._carousel_display_text(), id="carousel-display")
 
@@ -613,7 +614,7 @@ class OmniCrawlApp(
         )
         if self._monitor_state.can_schedule_refresh:
             self.set_interval(self.MONITOR_POLL_INTERVAL_SECONDS, self._refresh_monitor_events)
-        # 底部单行轮播 HUD：开始遥测/工作区两页交替（各停留 20s/10s）。
+        # 底部单行轮播 HUD：开始遥测/工作区/留言三页循环（各停留 10s）。
         self._carousel_start()
 
         if not self.startup.startup_ready and callable(

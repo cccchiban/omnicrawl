@@ -6,4 +6,5 @@ include omnicrawl/extensions/node_runner.mjs
 recursive-include omnicrawl/config/templates *.toml
 recursive-include omnicrawl/templates *.md
 recursive-include omnicrawl/connectors *.md
+recursive-include omnicrawl/ui/fullscreen/status *.txt
 recursive-include omnicrawl/bin *

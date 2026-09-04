@@ -17,6 +17,7 @@ from .hud import (
     context_summary_text,
     decrypt_frame,
     gradient_text,
+    load_carousel_message_lines,
     pending_queue_text,
     status_summary_text,
     token_telemetry_text,
@@ -27,30 +28,50 @@ from ..terminal.theme import ACCENT_AMBER, TEXT_MUTED, TEXT_SECONDARY
 class StatusMixin:
     """原 ``OmniCrawlApp`` 的 HUD 遥测与排队预览方法。"""
 
-    # 底部单行轮播 HUD：遥测页停留 20s、工作区路径页停留 10s，交替显示。
-    CAROUSEL_TELEMETRY_SECONDS = 20
+    # 底部单行轮播 HUD：遥测页 10s → 工作区路径页 10s → 留言页 10s 循环。
+    CAROUSEL_TELEMETRY_SECONDS = 10
     CAROUSEL_WORKSPACE_SECONDS = 10
+    CAROUSEL_MESSAGE_SECONDS = 10
+    # 留言页无内容时的兜底占位文本。
+    CAROUSEL_MESSAGE_FALLBACK = "🎲 留言本空空如也，去写一条吧～"
     # 切换时的解密扫描特效时长与帧间隔。
     CAROUSEL_ANIMATION_SECONDS = 1.5
     CAROUSEL_ANIMATION_FRAME_SECONDS = 0.05
 
     def _carousel_page_duration(self) -> float:
-        """当前页的停留时长：遥测 20s、工作区路径 10s。"""
+        """当前页的停留时长：遥测/工作区路径/留言各 10s。"""
 
+        if self._carousel_page == "telemetry":
+            return self.CAROUSEL_TELEMETRY_SECONDS
         if self._carousel_page == "workspace":
             return self.CAROUSEL_WORKSPACE_SECONDS
-        return self.CAROUSEL_TELEMETRY_SECONDS
+        return self.CAROUSEL_MESSAGE_SECONDS
 
     def _carousel_next_page(self) -> str:
-        """返回下一页类型：telemetry ↔ workspace 交替。"""
+        """返回下一页类型：telemetry → workspace → message 循环。"""
 
-        return "workspace" if self._carousel_page == "telemetry" else "telemetry"
+        return {
+            "telemetry": "workspace",
+            "workspace": "message",
+            "message": "telemetry",
+        }[self._carousel_page]
+
+    def _carousel_message_text(self) -> Text:
+        """从包内候选文件随机挑一条留言；空则显示占位文本。"""
+
+        lines = load_carousel_message_lines()
+        if not lines:
+            return Text(self.CAROUSEL_MESSAGE_FALLBACK, style=TEXT_MUTED)
+        line = self._carousel_rand.choice(lines)
+        return Text(f"💬 {line}", style=TEXT_MUTED)
 
     def _carousel_build_page_text(self, page: str) -> Text:
-        """按页类型装配完整内容：工作区路径页 / 遥测+模型状态页。"""
+        """按页类型装配完整内容：工作区路径页 / 遥测+模型状态页 / 留言页。"""
 
         if page == "workspace":
             return self._context_summary_text()
+        if page == "message":
+            return self._carousel_message_text()
         rendered = self._token_telemetry_text()
         rendered.append_text(self._status_summary_text())
         return rendered

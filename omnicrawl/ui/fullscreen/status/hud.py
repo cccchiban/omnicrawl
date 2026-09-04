@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import unicodedata
+from importlib import resources
 
 from rich.text import Text
 
@@ -14,6 +15,28 @@ from ..terminal.theme import (
     TEXT_MUTED,
     TEXT_PRIMARY,
 )
+
+# 底部轮播留言页的候选文本文件（与代码同目录，随 pip 分发）。
+CAROUSEL_MESSAGES_FILE = "carousel_messages.txt"
+
+
+def load_carousel_message_lines() -> list[str]:
+    """读取包内轮播候选文本（与代码同目录，可随 pip 分发、可被编辑）。
+
+    逐行去除首尾空白并丢弃空行；文件缺失/不可读时返回空列表，
+    由消息页展示占位文本兜底。
+    """
+
+    try:
+        resource = (
+            resources.files("omnicrawl.ui.fullscreen.status")
+            .joinpath(CAROUSEL_MESSAGES_FILE)
+        )
+        text = resource.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ModuleNotFoundError):
+        return []
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
 
 def compact_token_count(value: int) -> str:
     """使用 K/M 缩写压缩 Token 数，同时保留小数量的精确值。"""
