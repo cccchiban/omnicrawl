@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -68,13 +69,34 @@ class WorktreeSnapshotStore:
     # undo"。
     GIT_COMMAND_TIMEOUT_SECONDS = 120
 
+    # has_head 探测结果缓存：同一工作区在多轮间通常不会从 Git 变成非 Git，
+    # 避免每轮 begin 都支付一次 rev-parse 子进程启动成本。探测失败不缓存，
+    # 避免 Git 临时故障导致整进程误判为非 Git 工作区。
+    _HEAD_CACHE_TTL_SECONDS = 60.0
+    _head_cache: dict[Path, tuple[bool, float]] = {}
+
+    def has_head(self, workspace: Path) -> bool:
+        """带短 TTL 缓存地探测工作区是否有可回退的 HEAD。"""
+
+        workspace = Path(workspace).resolve()
+        now = time.monotonic()
+        cached = WorktreeSnapshotStore._head_cache.get(workspace)
+        if cached is not None and now - cached[1] < self._HEAD_CACHE_TTL_SECONDS:
+            return cached[0]
+        try:
+            result = self._has_head(workspace)
+        except SnapshotError:
+            return False
+        WorktreeSnapshotStore._head_cache[workspace] = (result, now)
+        return result
+
     def capture(self, workspace: Path) -> WorktreeSnapshot:
         """捕获工作区当前状态；非 Git 仓库返回 has_head=False 的空快照。"""
 
         workspace = Path(workspace).resolve()
         if not workspace.is_dir():
             return WorktreeSnapshot(b"", (), False)
-        if not self._has_head(workspace):
+        if not self.has_head(workspace):
             return WorktreeSnapshot(b"", (), False)
         # quotepath=false：非 ASCII 路径输出原生 UTF-8，diff/apply 两侧一致。
         # 注意不能强制 core.autocrlf：Windows 默认 autocrlf=true 下工作区

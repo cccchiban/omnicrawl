@@ -38,7 +38,14 @@ class UndoMixin:
     """/undo 回合快照与副作用回滚。"""
 
     def _begin_turn_snapshot(self) -> _ActiveTurnSnapshot | None:
-        """在模型执行前捕获工作区起点（git diff HEAD）；会话未启用时保持旧行为。"""
+        """登记本轮占位快照；工作区非 Git 或会话未启用时返回 None。
+
+        不再立即执行 ``git diff``/``ls-files``：只有本轮出现可回退写工具
+        （Edit_file/write_file）时，才在首个写工具执行前由
+        ``_ensure_turn_captured`` 补捕获起点。纯读/纯对话轮次全程 0 次
+        diff 快照与 0 次落盘。此处只保留一次 rev-parse 探测，用于在
+        非 Git 工作区尽早返回 None（保持旧契约：写文件轮次 /undo 拒绝）。
+        """
 
         session_store = getattr(self, "_session_store", None)
         session_state = getattr(self, "_session_state", None)
@@ -46,8 +53,7 @@ class UndoMixin:
             return None
         try:
             store = WorktreeSnapshotStore()
-            before = store.capture(self.workspace_root)
-            if not before.has_head:
+            if not store.has_head(self.workspace_root):
                 # 工作区不是有 HEAD 的 Git 仓库：diff 补丁无从谈起。本轮
                 # 禁用事务式 undo（纯对话/只读轮次仍可逻辑回退，写文件
                 # 轮次会被 _restore_turn_side_effects 明确拒绝）。
@@ -60,7 +66,6 @@ class UndoMixin:
                 snapshot_id=uuid.uuid4().hex,
                 store=store,
                 workspace=self.workspace_root.resolve(),
-                before=before,
             )
         except SnapshotError as exc:
             # 快照失败仅禁用本轮 undo，不中止回合：Git 环境异常时若直接
@@ -68,6 +73,27 @@ class UndoMixin:
             # 但对话与工具执行不受影响。
             LOGGER.warning("无法创建本轮 Git 快照，本轮禁用事务式 undo：%s", exc)
             return None
+
+    def _ensure_turn_captured(self, snapshot: _ActiveTurnSnapshot) -> None:
+        """首个可回退写工具执行前，捕获工作区起点（线程安全单飞）。
+
+        捕获失败只把本轮降级为“无事务式 undo”（账本仍记录），不中止
+        回合；多个并发写工具同时到达时由 capture_lock 保证只捕获一次。
+        """
+
+        if snapshot.before is not None or snapshot.capture_attempted:
+            return
+        with snapshot.capture_lock:
+            if snapshot.before is not None or snapshot.capture_attempted:
+                return
+            snapshot.capture_attempted = True
+            try:
+                snapshot.before = snapshot.store.capture(snapshot.workspace)
+            except SnapshotError as exc:
+                snapshot.capture_failed = True
+                LOGGER.warning(
+                    "无法创建本轮 Git 起点快照，本轮禁用事务式 undo：%s", exc
+                )
 
     def _record_turn_tool_execution(
         self,
@@ -80,6 +106,12 @@ class UndoMixin:
             return
         name = tool_call.name
         snapshot.executed_tools.append(name)
+        if name in _REVERSIBLE_UNDO_TOOLS:
+            # 可回退写工具需要真实 diff 快照才能安全回退：在工具副作用
+            # 发生前补捕获起点。其它可逆工具（读/记忆等）与不可逆工具
+            # （bash 等）都不需要快照——前者无副作用，后者整轮会被拒绝。
+            self._ensure_turn_captured(snapshot)
+            return
         if self._tool_is_undo_safe(name, tool_call.arguments):
             return
         snapshot.irreversible_tools.append(name)
@@ -109,12 +141,22 @@ class UndoMixin:
         return False
 
     def _complete_turn_snapshot(self, snapshot: _ActiveTurnSnapshot | None) -> None:
-        """捕获轮次终点并持久化 undo 补丁，作为 Session 事件记录。"""
+        """捕获轮次终点并持久化 undo 补丁，作为 Session 事件记录。
+
+        纯读/纯对话轮次没有起点快照（before 为 None），此处直接标记完成、
+        不落盘也不产生事件：/undo 会走“无快照且无副作用”的安全逻辑路径。
+        只有捕获过起点的写文件轮次才执行终点 diff 并落盘 4 个快照文件。
+        """
 
         if snapshot is None or snapshot.completed:
             return
         session_store = getattr(self, "_session_store", None)
         session_state = getattr(self, "_session_state", None)
+        before = snapshot.before
+        if before is None:
+            # 无起点快照（纯读/纯对话轮，或起点捕获失败降级）：不落盘。
+            snapshot.completed = True
+            return
         if not isinstance(session_store, SessionStore) or session_state is None:
             raise AgentError("Session 未启用，无法持久化轮次快照。")
         try:
@@ -123,9 +165,9 @@ class UndoMixin:
                 session_store.artifacts_dir / session_state.session_id / "undo"
             )
             undo_dir.mkdir(parents=True, exist_ok=True)
-            self._write_snapshot_file(undo_dir / "begin.patch", snapshot.before.patch)
+            self._write_snapshot_file(undo_dir / "begin.patch", before.patch)
             self._write_snapshot_untracked(
-                undo_dir / "begin.untracked.txt", snapshot.before.untracked
+                undo_dir / "begin.untracked.txt", before.untracked
             )
             self._write_snapshot_file(undo_dir / "end.patch", after.patch)
             self._write_snapshot_untracked(
@@ -135,6 +177,9 @@ class UndoMixin:
             raise AgentError(
                 f"本轮结束 Git 快照失败，副作用无法安全回退：{exc}"
             ) from exc
+        if snapshot.workspace is None:  # 防御：占位快照不应走到落盘分支。
+            snapshot.completed = True
+            return
         self._append_session_event(
             "turn_snapshot",
             {

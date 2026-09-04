@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
 from dataclasses import dataclass, field, replace
@@ -115,15 +116,26 @@ class AgentError(RuntimeError):
 
 @dataclass
 class _ActiveTurnSnapshot:
-    """当前模型轮次的工作区 diff 快照与副作用账本。"""
+    """当前模型轮次的工作区 diff 快照与副作用账本。
+
+    快照默认惰性捕获：``_begin_turn_snapshot`` 只登记占位，不执行 git；只有
+    本轮出现可能修改工作区的工具（``_record_turn_tool_execution`` 判定为
+    “需要快照”）时，才在首个此类工具执行前补捕获。纯读轮次全程 0 次 git
+    调用，/undo 走无快照无副作用的安全路径。并发工具批处理用
+    ``capture_lock`` 保证捕获单飞；捕获失败只降级为“本轮无事务式 undo”，
+    不中止回合，账本仍持续记录。
+    """
 
     snapshot_id: str
     store: WorktreeSnapshotStore
-    workspace: Path
-    before: WorktreeSnapshot
+    workspace: Path | None = None
+    before: WorktreeSnapshot | None = None
     executed_tools: list[str] = field(default_factory=list)
     irreversible_tools: list[str] = field(default_factory=list)
     completed: bool = False
+    capture_attempted: bool = False
+    capture_failed: bool = False
+    capture_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 _READ_ONLY_UNDO_TOOLS = frozenset(
