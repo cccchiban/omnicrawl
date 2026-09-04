@@ -102,8 +102,6 @@ class RenderingMixin:
     def _scroll_conversation_if_following(
         conversation: VerticalScroll,
         follow_latest: bool,
-        *,
-        defer_until_refresh: bool = False,
     ) -> None:
         """仅在用户原本位于底部时跟随新增内容。"""
 
@@ -117,8 +115,10 @@ class RenderingMixin:
                 # 布局期 compositor 会自动跟随底部。
                 if not conversation.is_anchored:
                     conversation.anchor()
-                if defer_until_refresh:
-                    conversation.call_after_refresh(conversation.scroll_end, animate=False)
+                # 不得再排队 scroll_end：锚定后新增内容由布局期 compositor
+                # 自动跟随底部；若跨刷新排队 scroll_end，用户上滑释放锚定后
+                # 迟到的回调仍会执行 Textual 的 scroll_end（先清除
+                # _anchor_released 再贴底），把用户拉回底部。
             else:
                 # 内容不足一屏时，Textual 8.2.7 的 anchor 会让 compositor 在
                 # 布局时把 scroll_y 设为「内容高度 - 容器高度」的负值（该路径
@@ -414,7 +414,6 @@ class RenderingMixin:
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,
-            defer_until_refresh=True,
         )
 
 
@@ -498,7 +497,6 @@ class RenderingMixin:
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,
-            defer_until_refresh=True,
         )
 
     @staticmethod
@@ -761,7 +759,6 @@ class RenderingMixin:
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,
-            defer_until_refresh=True,
         )
 
 
@@ -812,7 +809,6 @@ class RenderingMixin:
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,
-            defer_until_refresh=True,
         )
 
 
@@ -851,7 +847,6 @@ class RenderingMixin:
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,
-            defer_until_refresh=True,
         )
 
 
@@ -1083,6 +1078,5 @@ class RenderingMixin:
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,
-            defer_until_refresh=True,
         )
 
