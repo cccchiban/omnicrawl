@@ -22,15 +22,7 @@ from .config import TTSConfig
 # 模型仓库/目录管理与下载已下沉到 download.py（仅标准库依赖），引擎只负责推理。
 # 这里再导出供既有 ``from omnicrawl.tts.engine import ...`` 调用方兼容。
 from .download import (
-    CODEC_REPO_ID,
-    MANIFEST_CANDIDATE_RELATIVE_PATHS,
-    TTS_LAYOUT_REQUIRED_NAMES,
-    TTS_REPO_ID,
-    _find_manifest_path,
-    _snapshot_download_repo,
-    builtin_voice_names,
     ensure_model_dir,
-    models_ready,
 )
 from .normalize import WeTextNormalizer, prepare_tts_request_texts
 from .onnx_runtime import (
@@ -38,8 +30,6 @@ from .onnx_runtime import (
     _normalize_sample_mode,
     _resolve_stream_decode_frame_budget,
     EXECUTION_PROVIDER_CPU,
-    SAMPLE_MODE_FIXED,
-    SAMPLE_MODE_FULL,
     SAMPLE_MODE_GREEDY,
 )
 

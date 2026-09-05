@@ -20,4 +20,3 @@ __all__ = [
     "SubAgentTaskSnapshot",
     "SubAgentTaskSpec",
 ]
-from . import worktree

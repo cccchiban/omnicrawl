@@ -1,19 +1,13 @@
 """运行中工作区切换：准备新子系统、失败回滚、收尾旧资源。"""
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
-from ....skill import SkillManager, SkillMatchResult
+from pathlib import Path
+from typing import Any
+from ....skill import SkillManager
 from ....temp_workspace import (
     AgentTempWorkspace,
-    AgentTempWorkspaceConfig,
-    AgentTempWorkspaceError,
-    load_agent_temp_workspace_config,
 )
 from ....workspace_tools import (
-    DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    MAX_COMMAND_TIMEOUT_SECONDS,
-    WorkspaceToolError,
     WorkspaceTools,
 )
 

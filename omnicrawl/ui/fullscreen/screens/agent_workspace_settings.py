@@ -120,6 +120,7 @@ class AgentWorkspaceSettingsPane(SettingsPane):
                 id="agent-workspace-status",
             )
         with Horizontal(id="agent-workspace-actions"):
+            yield Static("", classes="pane-save-hint")
             yield Button("取消", id="agent-workspace-cancel")
             yield Button("保存", variant="primary", id="agent-workspace-save")
 
@@ -171,6 +172,7 @@ class AgentWorkspaceSettingsPane(SettingsPane):
         except (AgentWorkspaceConfigError, OSError, ValueError) as exc:
             self.query_one("#agent-workspace-status", Static).update(f"保存失败：{exc}")
             return
+        self.flash_save_hint()
         self.commit(configuration)
 
     def _read_select(self, widget_id: str) -> str:

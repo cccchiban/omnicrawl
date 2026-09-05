@@ -14,12 +14,11 @@ import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from ..runtime.llm_protocol import (
     compact_tool_description,
     compact_tool_schema,
-    tool_parameters_schema,
 )
 from .tools import TOOL_NAME_ALIASES, normalize_tool_call, normalize_tool_name
 from ..types import ToolCall, ToolDefinition, ToolResult

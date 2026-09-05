@@ -56,17 +56,35 @@ class StatusMixin:
             "message": "telemetry",
         }[self._carousel_page]
 
-    def _carousel_message_text(self) -> Text:
-        """从包内候选文件随机挑一条留言；空则显示占位文本。"""
+    def _carousel_ensure_message_line(self) -> str | None:
+        """在载入页面时固定当前留言：首次切入（或已有留言失效）时随机抽取。"""
 
-        lines = load_carousel_message_lines()
+        try:
+            lines = load_carousel_message_lines()
+        except Exception:
+            lines = []
         if not lines:
+            return None
+        line = getattr(self, "_carousel_message_line", None)
+        if line not in lines:
+            line = self._carousel_rand.choice(lines)
+            self._carousel_message_line = line
+        return line
+
+    def _carousel_message_text(self) -> Text:
+        """按已固定留言渲染留言页；无候选时显示占位文本。"""
+
+        line = self._carousel_ensure_message_line()
+        if line is None:
             return Text(self.CAROUSEL_MESSAGE_FALLBACK, style=TEXT_MUTED)
-        line = self._carousel_rand.choice(lines)
-        return Text(f"💬 {line}", style=TEXT_MUTED)
+        return Text(line, style=TEXT_MUTED)
 
     def _carousel_build_page_text(self, page: str) -> Text:
-        """按页类型装配完整内容：工作区路径页 / 遥测+模型状态页 / 留言页。"""
+        """按页类型装配完整内容：工作区路径页 / 遥测+模型状态页 / 留言页。
+
+        留言页的文案在该页停留期间保持固定（首次切入时抽取，重复构建
+        返回同一句），避免遥测刷新等重绘导致句子瞬间换掉。
+        """
 
         if page == "workspace":
             return self._context_summary_text()
@@ -79,6 +97,9 @@ class StatusMixin:
     def _carousel_display_text(self) -> Text:
         """当前页的稳态展示文本（compose 初始渲染用）。"""
 
+        if self._carousel_page == "message":
+            # 预抽取一次，保证首帧与其他路径渲染的留言一致。
+            self._carousel_ensure_message_line()
         return self._carousel_build_page_text(self._carousel_page)
 
     def _carousel_refresh(self) -> None:

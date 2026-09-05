@@ -28,6 +28,14 @@ SettingsPane {
     width: 100%;
     padding: 0 1;
 }
+SettingsPane .pane-save-hint {
+    height: 1;
+    margin: 1 1 1 0;
+    display: none;
+    color: $terminal-green;
+    text-style: bold;
+    content-align: left middle;
+}
 """
 
 
@@ -101,11 +109,48 @@ class SettingsPane(Widget, can_focus=True):
         """子类实现面板内容。"""
         raise NotImplementedError
 
+    def _can_refresh(self) -> bool:
+        """面板仍完整挂在 DOM 上时才允许查询/更新子节点。
+
+        Textual 的 ``is_mounted`` 卸载后不重置且不反映“正在拆除”，
+        ``_pruning`` 在 remove_children 同步阶段即置位并持续到拆完，
+        配合 ``is_attached`` 可覆盖卸载中/已卸载两个窗口，防止迟到的
+        refresh（如 on_mount 的 call_after_refresh 排队后被切走）在
+        子节点已清空时 query_one 抛 NoMatches 使整个 TUI 崩溃。
+        """
+        return self.is_mounted and not self._pruning and self.is_attached
+
     def on_mount(self) -> None:
         self.call_after_refresh(self.refresh_pane)
 
     def refresh_pane(self) -> None:
         """面板挂载后或需要重绘时调用；子类按需覆盖。"""
+
+    def flash_save_hint(self, text: str = "设置已保存") -> None:
+        """在按钮左侧短暂显示保存成功提示，约 2 秒后自动清除。
+
+        面板须在 compose 中提供一个带 ``pane-save-hint`` class 的
+        ``Static`` 占位；未提供或已卸载时静默跳过。
+        """
+        if not self.is_mounted:
+            return
+        hints = list(self.query(".pane-save-hint"))
+        if not hints:
+            return
+        hint = hints[0]
+        self._save_hint_widget = hint
+        hint.update(text)
+        hint.display = True
+        if getattr(self, "_save_hint_timer", None) is not None:
+            self._save_hint_timer.stop()
+        self._save_hint_timer = self.set_timer(2.0, self._hide_save_hint)
+
+    def _hide_save_hint(self) -> None:
+        hint = getattr(self, "_save_hint_widget", None)
+        if hint is None or not hint.is_attached:
+            return
+        hint.update("")
+        hint.display = False
 
 
 class SelectPane(SettingsPane):

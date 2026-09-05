@@ -5,17 +5,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable
 from ...session.session_facade import AgentSessionFacade
 from ...subagents.recovery import rebuild_task_snapshots_from_session_events
-from ....skill import SkillManager, SkillMatchResult
+from ....skill import SkillManager
 from ....workspace_tools import (
-    DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    MAX_COMMAND_TIMEOUT_SECONDS,
     WorkspaceToolError,
-    WorkspaceTools,
 )
-from ....workspace.monitor import BackgroundMonitorManager, MonitorPollResult, MonitorTaskSnapshot
+from ....workspace.monitor import MonitorPollResult, MonitorTaskSnapshot
 
 from ..shared import (
     AgentError,

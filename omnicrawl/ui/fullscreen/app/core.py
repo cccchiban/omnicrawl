@@ -532,6 +532,8 @@ class OmniCrawlApp(
         self._carousel_anim_interval: Any = None
         self._carousel_hold_timer: Any = None
         self._carousel_rand = random.Random()
+        # 留言页当前已固定展示的文案；None 表示尚未抽取（首次切入时抽取）。
+        self._carousel_message_line: str | None = None
         # 欢迎 Logo 解密扫描入场动画：仅首次挂载播放一次；定时器/游标与
         # 轮播同一模式，隐藏或清空会话时由 _stop_welcome_logo_animation
         # 收口，避免残留回调。

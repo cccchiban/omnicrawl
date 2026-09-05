@@ -21,7 +21,6 @@ from typing import Any, Callable, Mapping
 from .plugin_models import (
     OMNICRAWL_VERSION,
     PluginInstallError,
-    PluginManifest,
     PluginRecord,
     PluginVersionRef,
     is_valid_npm_name,

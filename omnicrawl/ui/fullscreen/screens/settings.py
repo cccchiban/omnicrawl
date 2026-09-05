@@ -827,7 +827,7 @@ class _GroupedRowsPane(SettingsPane):
         return f"{marker}{self._labels.get(key, key)}：{self.row_value(key)}"
 
     def refresh_pane(self) -> None:
-        if not self.is_mounted:
+        if not self._can_refresh():
             return
         for index, key in enumerate(self._rows):
             row = self.query_one(f"#grouped-pane-row-{index}", Static)

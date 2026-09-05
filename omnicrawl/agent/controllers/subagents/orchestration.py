@@ -9,45 +9,27 @@ import json
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePosixPath
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from ...toolkit.host_tools import (
     HostToolCatalog,
-    INVOKE_TOOL_NAME,
     build_provider_tools,
-    public_invoke_arguments,
-    tool_validation_error_result,
-    validate_tool_arguments,
 )
 from ...toolkit.tools import (
-    build_agent_tools,
-    build_mcp_tools,
-    mcp_prompt_result,
-    mcp_resource_result,
-    mcp_tool_result,
-    normalize_tool_call,
     public_tool_arguments,
-    TODO_TOOL_NAME,
-    workspace_command_tool_result,
-    workspace_tool_result,
 )
-from ...runtime.execution import AgentLoopLimits, AgentLoopObservation, AgentLoopRunner
+from ...runtime.execution import AgentLoopLimits, AgentLoopRunner
 from ...runtime.llm_protocol import (
     AgentLLMProtocol,
-    AgentProtocolError,
     build_extra_body,
     chat_completion_tools,
     function_name_for_tool,
-    resolve_tool_name_from_hashed_function_name,
     tool_name_from_function_name,
 )
 from ...context.prompt_context import (
     build_context_messages,
-    build_project_instructions_messages,
-    build_prompt_cache_identity,
     build_skill_context_message,
-    build_system_prompt,
 )
 from ...subagents.coordinator import (
     SubAgentCoordinator,
@@ -63,10 +45,7 @@ from ...subagents.execution import (
 from ...subagents.tasks import SubAgentTaskManager
 from ...subagents.worktree import (
     WorktreeError,
-    WorktreeSession,
-    apply_worktree_to_main,
     cleanup_worktree_session,
-    collect_worktree_artifacts,
     create_worktree_session,
 )
 from ....extensions.plugin_manager import (
@@ -74,27 +53,17 @@ from ....extensions.plugin_manager import (
     activate_plugin_dispatch_context,
 )
 from ...subagents.verify import VERIFY_COMMAND_TOOL_NAME, build_verify_command_tool
-from ...types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
+from ...types import AgentModelReply, ToolDefinition, ToolResult
 from ....approval import (
     APPROVAL_MODE_AUTO,
-    APPROVAL_MODE_REVIEW,
-    load_approval_mode,
-    load_approval_review_model,
-    normalize_approval_mode,
 )
 from ....config.models.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
 from ....llm import (
     LLMConfig,
     LLMError,
-    ModelError,
-    ModelErrorCode,
     ModelRuntimeManager,
-    OpenAIResponseLLM,
-    load_llm_config,
-    normalize_reasoning_effort,
 )
 from ....state.session_artifacts import (
-    preview_text,
     redact_sensitive_text,
     redact_sensitive_values,
 )

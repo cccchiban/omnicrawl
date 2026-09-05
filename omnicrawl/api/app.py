@@ -17,8 +17,8 @@ from ..agent import AgentConfig, LocalToolAgent
 from ..state.session_artifacts import redact_sensitive_text
 from ..config.models.llm import load_llm_config
 from ..config.core.runtime import get_section, load_config_data
-from ..config.core.settings import load_feature_enabled
 from ..config.features.subagents import load_subagent_config
+from ..config.core.settings import load_feature_enabled
 from ..workspace.context import (
     detect_project_context,
 )

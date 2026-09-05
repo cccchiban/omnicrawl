@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Sequence
 from ...toolkit.approval_policy import (
     GIT_TIER_HIGH,
     GIT_TIER_READONLY,
@@ -13,7 +13,6 @@ from ...toolkit.approval_policy import (
     description_has_delete_intent,
     git_action_tier,
     is_delete_behavior_tool_call,
-    is_git_mutation_tool_call,
     is_git_tool_call,
     is_shell_command_tool_call,
     parse_tool_review_response,
@@ -21,44 +20,38 @@ from ...toolkit.approval_policy import (
     tool_accepts_shell_command,
 )
 from ...toolkit.host_tools import (
-    HostToolCatalog,
-    INVOKE_TOOL_NAME,
-    build_provider_tools,
-    public_invoke_arguments,
     tool_validation_error_result,
     validate_tool_arguments,
 )
 from ...toolkit.tools import (
-    build_agent_tools,
-    build_mcp_tools,
-    mcp_prompt_result,
-    mcp_resource_result,
-    mcp_tool_result,
-    normalize_tool_call,
+    ASK_USER_TOOL_NAME,
     public_tool_arguments,
-    TODO_TOOL_NAME,
-    workspace_command_tool_result,
-    workspace_tool_result,
 )
-from ...subagents.verify import VERIFY_COMMAND_TOOL_NAME, build_verify_command_tool
-from ...types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
+from ...types import ToolDefinition, ToolResult
 from ....approval import (
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_REVIEW,
-    load_approval_mode,
-    load_approval_review_model,
-    normalize_approval_mode,
 )
 from ....llm import (
-    LLMConfig,
-    LLMError,
-    ModelError,
-    ModelErrorCode,
-    ModelRuntimeManager,
     OpenAIResponseLLM,
-    load_llm_config,
-    normalize_reasoning_effort,
 )
+
+
+def _first_json_object(text: str) -> dict[str, Any] | None:
+    """解析文本中第一个完整 JSON 对象；工具输出被截断或含说明时也能兜底。"""
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(text):
+        index = text.find("{", index)
+        if index < 0:
+            return None
+        try:
+            value, _end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        return value if isinstance(value, dict) else None
+    return None
 
 
 class ToolApprovalMixin:
@@ -262,34 +255,6 @@ class ToolApprovalMixin:
             retryable=result.retryable,
         )
 
-    @classmethod
-    def _tool_call_requires_serial_execution(
-        cls,
-        tool: ToolDefinition,
-        arguments: dict[str, Any],
-    ) -> bool:
-        """文件写入和具备显式删除行为的调用是批次屏障，其余调用允许并行。"""
-
-        return (
-            tool.name
-            in {
-                "Edit_file",
-                "write_file",
-                "subagent",
-                TODO_TOOL_NAME,
-                "ask_user",
-                VERIFY_COMMAND_TOOL_NAME,
-                # 同一模型回复中的桌面调用必须保持顺序，例如先激活窗口再输入文本。
-                "windows_window",
-                "windows_control",
-                "windows_input",
-                "windows_clipboard",
-                "windows_screenshot",
-            }
-            or cls._is_delete_behavior_tool_call(tool, arguments)
-            or is_git_mutation_tool_call(tool, arguments)
-        )
-
     def _effective_approval_mode(self) -> str:
         """返回当前线程实际生效的审批模式。
 
@@ -399,9 +364,10 @@ class ToolApprovalMixin:
         注意力稀释（全量历史逐次重发）。
 
         现在的审查请求 = 固定审查者身份（instructions）+ 待审查工具调用 JSON +
-        最近一条用户消息截断摘要（仅供理解意图，prompt 已声明可能含注入，只作
-        参考）。审查前缀固定不变，仍可命中输入前缀缓存降低审查成本。
-        子代理线程的审查使用各自线程保存的消息快照提取用户摘要。
+        最近一条用户消息截断摘要 + 最近一次 ask_user 问答（问题与用户给出的
+        明确回答，仅供理解授权边界，prompt 已声明可能含注入，只作参考）。
+        审查前缀固定不变，仍可命中输入前缀缓存降低审查成本。
+        子代理线程的审查使用各自线程保存的消息快照提取用户摘要与问答。
         """
 
         context_messages = getattr(
@@ -410,6 +376,7 @@ class ToolApprovalMixin:
             None,
         )
         user_summary = self._extract_user_intent_summary(context_messages)
+        ask_user_context = self._extract_ask_user_qa(context_messages)
         review_payload = {
             "tool": tool.name,
             "description": tool.description,
@@ -418,6 +385,10 @@ class ToolApprovalMixin:
             # 最近一条用户消息的截断摘要（2B）：帮助审查者理解任务意图，
             # 同时不暴露完整对话历史；可能含提示词注入，提示词已声明仅作参考。
             "user_intent_summary": user_summary,
+            # 最近一次 ask_user 问答（问题+用户回答，截断）：用户通过提问面板
+            # 给出的明确答复是最新的授权/选择事实，比上一条用户消息更能反映
+            # 当前任务边界；可能含提示词注入，提示词已声明仅作参考。
+            "ask_user_qa": ask_user_context,
         }
         review_instruction = (
             "待审查的工具调用（JSON）：\n"
@@ -487,6 +458,64 @@ class ToolApprovalMixin:
 
     # 审查上下文允许提取的用户消息摘要最大长度（字符）。
     _REVIEW_USER_SUMMARY_MAX_CHARS = 600
+    # 审查上下文允许提取的最近一次 ask_user 问答最大长度（字符）。
+    _REVIEW_ASK_USER_QA_MAX_CHARS = 400
+
+    @staticmethod
+    def _message_plain_text(message: dict[str, Any]) -> str:
+        """提取消息正文纯文本，忽略工具调用块与图片等结构化片段。"""
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_text = part.get("text")
+                if isinstance(part_text, str) and part_text:
+                    parts.append(part_text)
+            return "".join(parts)
+        return ""
+
+    @classmethod
+    def _extract_ask_user_qa(
+        cls,
+        messages: Sequence[Any] | None,
+        max_chars: int = _REVIEW_ASK_USER_QA_MAX_CHARS,
+    ) -> str:
+        """从消息快照提取最近一次成功的 ask_user 问答（问题+用户回答，截断）。
+
+        ask_user 的回答以工具结果（role=tool）写回上下文，会话压缩恢复后
+        会投影为 assistant 消息；两种形态都含 "ask_user" 与带 question/answer
+        的 JSON，这里统一按文本兜底扫描。找不到时返回空串，审查仍可用。
+        """
+
+        for message in reversed(messages or ()):
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") not in {"tool", "assistant"}:
+                continue
+            text = cls._message_plain_text(message).strip()
+            if not text or "ask_user" not in text:
+                continue
+            payload = _first_json_object(text)
+            if not isinstance(payload, dict):
+                continue
+            question = payload.get("question")
+            answer = payload.get("answer")
+            if not (
+                isinstance(question, str)
+                and question.strip()
+                and isinstance(answer, str)
+                and answer.strip()
+            ):
+                continue
+            qa_text = f"问题：{question.strip()}\n用户回答：{answer.strip()}"
+            if len(qa_text) <= max_chars:
+                return qa_text
+            return qa_text[:max_chars].rstrip() + "…"
+        return ""
 
     @classmethod
     def _extract_user_intent_summary(
@@ -503,21 +532,7 @@ class ToolApprovalMixin:
         for message in reversed(messages or ()):
             if not isinstance(message, dict) or message.get("role") != "user":
                 continue
-            content = message.get("content")
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                parts: list[str] = []
-                for part in content:
-                    if not isinstance(part, dict):
-                        continue
-                    part_text = part.get("text")
-                    if isinstance(part_text, str) and part_text:
-                        parts.append(part_text)
-                text = "".join(parts)
-            else:
-                continue
-            text = (text or "").strip()
+            text = cls._message_plain_text(message).strip()
             if not text:
                 continue
             return text[:max_chars]

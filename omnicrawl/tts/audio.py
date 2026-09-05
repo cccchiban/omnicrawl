@@ -122,7 +122,7 @@ def write_wav(path: str | Path, waveform: np.ndarray, sample_rate: int) -> Path:
         audio = audio.reshape(1, -1)  # 单声道 -> [1, samples]
     if audio.ndim != 2:
         raise ValueError(f"波形维度必须为 1 或 2，当前：{audio.ndim}")
-    channels, _samples = int(audio.shape[0]), int(audio.shape[1])
+    channels = int(audio.shape[0])
     # 约定 [channels, samples]；WAV 需要交错布局 [samples, channels]。
     interleaved = np.ascontiguousarray(audio.T)
     clipped = np.clip(interleaved, -1.0, 1.0)

@@ -128,7 +128,6 @@ class AgentLLMProtocol:
             owned_snapshot = self.runtime_manager.acquire_turn()
             runtime_snapshot = owned_snapshot
         try:
-            last_retryable_error: Exception | None = None
             request_attempt = 0
             guard_config = self.reasoning_guard_config
             retry_state = self.guard_retry_state
@@ -157,7 +156,6 @@ class AgentLLMProtocol:
                         runtime_snapshot,
                     )
                 except ReasoningGuardTriggered as exc:
-                    last_retryable_error = exc
                     if pause_requested():
                         raise AgentProtocolError(
                             "当前回合已暂停，已停止推理护栏自动重试。"
@@ -177,7 +175,6 @@ class AgentLLMProtocol:
                         cancel_check()
                     continue
                 except ConfiguredAutoRetryError as exc:
-                    last_retryable_error = exc
                     if pause_requested():
                         raise AgentProtocolError(
                             "当前回合已暂停，已停止上游错误自动重试。"
@@ -196,7 +193,6 @@ class AgentLLMProtocol:
                         cancel_check()
                     continue
                 except EmptyAgentReply as exc:
-                    last_retryable_error = exc
                     request_attempt += 1
                     if request_attempt < self.request_retry_count:
                         if cancel_check is not None:
@@ -209,7 +205,6 @@ class AgentLLMProtocol:
                         f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
                     ) from exc
                 except StreamInterruptedAfterOutputError as exc:
-                    last_retryable_error = exc
                     request_attempt += 1
                     if request_attempt < self.request_retry_count and on_stream_rollback is not None:
                         on_stream_rollback()
@@ -219,7 +214,6 @@ class AgentLLMProtocol:
                         continue
                     raise AgentProtocolError(f"Agent 模型流中断：{exc}") from exc
                 except RetryableAgentRequestError as exc:
-                    last_retryable_error = exc
                     request_attempt += 1
                     if request_attempt < self.request_retry_count:
                         on_retry_status(f"正在重试(第{request_attempt}次)")
@@ -227,10 +221,6 @@ class AgentLLMProtocol:
                             cancel_check()
                         continue
                     raise AgentProtocolError(f"Agent 模型请求中断：{exc}") from exc
-
-            raise AgentProtocolError(
-                f"Agent 连续 {self.request_retry_count} 次返回空响应，已停止本轮请求。"
-            ) from last_retryable_error
         finally:
             if owned_snapshot is not None:
                 self.runtime_manager.release_turn(owned_snapshot)
@@ -281,14 +271,12 @@ class AgentLLMProtocol:
     ) -> AgentModelReply:
         from ...llm.errors import ModelError, ModelErrorCode
         from ...llm.protocol import (
-            GenerationOptions,
             ModelTurnRequest,
             ReasoningDelta,
             ResponseCompleted,
             TextDelta,
             ToolCallCompleted,
             ToolCallStarted,
-            ToolSpec,
             UsageUpdated,
             conversation_from_openai_messages,
         )
@@ -460,7 +448,6 @@ class AgentLLMProtocol:
                 raise EmptyAgentReply("Agent 返回内容为空，且未返回工具调用或推理。")
 
             message = assistant_tool_call_message(
-                {},
                 content,
                 completed_calls,
                 reasoning,
@@ -661,7 +648,6 @@ class AgentLLMProtocol:
             raise EmptyAgentReply("Agent 返回内容为空，且未返回工具调用或推理。")
 
         message = assistant_tool_call_message(
-            {},
             content,
             tool_calls,
             reasoning,
@@ -1018,7 +1004,6 @@ def build_tool_calls_from_deltas(
 
 
 def assistant_tool_call_message(
-    raw_message: Any,
     content: str,
     tool_calls: list[ToolCall],
     reasoning: str,

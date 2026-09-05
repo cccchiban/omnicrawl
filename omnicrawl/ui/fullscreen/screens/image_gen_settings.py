@@ -166,6 +166,7 @@ class ImageGenSettingsPane(SettingsPane):
             )
             yield Static(" ", id="image-gen-status")
         with Horizontal(id="image-gen-actions"):
+            yield Static("", classes="pane-save-hint")
             yield Button("取消", id="image-gen-cancel")
             yield Button("保存", variant="primary", id="image-gen-save")
 
@@ -209,6 +210,7 @@ class ImageGenSettingsPane(SettingsPane):
         except (ImageGenConfigError, OSError, ValueError) as exc:
             self._set_status(f"保存失败：{exc}")
             return
+        self.flash_save_hint()
         self.commit(ImageGenSettingsResult(configuration, path))
 
     def _read_input(self, widget_id: str, *, fallback: str) -> str:

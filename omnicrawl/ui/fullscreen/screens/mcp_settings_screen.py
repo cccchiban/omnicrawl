@@ -59,7 +59,7 @@ class MCPSettingsPane(SettingsPane):
         yield Static("↑↓ 选择  ←→/Enter 修改  Esc 返回", id="mcp-pane-help")
 
     def refresh_pane(self) -> None:
-        if not self.is_mounted:
+        if not self._can_refresh():
             return
         labels = {"enabled": "MCP 总开关", "network": "外部网络工具", "write": "写入操作确认", "command": "命令操作确认", "audit": "审计日志", "timeout": "默认超时", "output": "Tool 输出上限", "servers": "MCP Server"}
         values = self._values()

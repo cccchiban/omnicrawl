@@ -225,6 +225,7 @@ class TTSSettingsPane(SettingsPane):
                 variant="primary",
             )
         with Horizontal(id="tts-actions"):
+            yield Static("", classes="pane-save-hint")
             yield Button("取消", id="tts-cancel")
             yield Button("保存", variant="primary", id="tts-save")
 
@@ -283,6 +284,7 @@ class TTSSettingsPane(SettingsPane):
         except (TTSConfigError, OSError, ValueError) as exc:
             self._set_status(f"保存失败：{exc}")
             return
+        self.flash_save_hint()
         self.commit(TTSSettingsResult(configuration, path))
 
     @work(thread=True, exclusive=True, group="tts-download", exit_on_error=False)

@@ -5,19 +5,14 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Mapping, Sequence
+from dataclasses import replace
+from typing import Any, Callable
 from ...types import AskUserRequest
 from ....approval import (
-    APPROVAL_MODE_AUTO,
-    APPROVAL_MODE_REVIEW,
-    load_approval_mode,
-    load_approval_review_model,
     normalize_approval_mode,
 )
 from ....config.features.image_gen import (
     ImageGenConfiguration,
-    load_image_gen_configuration,
 )
 from ....config.features.run_guard import RunGuardConfig
 from ....config.features.agent_workspace import AgentWorkspaceConfig
@@ -27,28 +22,20 @@ from ....config.features.tts import (
 )
 from ....config.models.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
 from ....config.features.subagents import (
-    SubAgentConfig,
     SubAgentConfigError,
-    load_subagent_config,
     validate_subagent_advanced_setting,
 )
 from ....config.features.tools import (
     ToolSwitchConfigError,
-    load_disabled_tools,
     validate_tool_switch_name,
 )
-from ....config.models.vision import VisionConfiguration, load_vision_configuration
+from ....config.models.vision import VisionConfiguration
 from ....llm import (
-    LLMConfig,
     LLMError,
-    ModelError,
-    ModelErrorCode,
     ModelRuntimeManager,
-    OpenAIResponseLLM,
-    load_llm_config,
     normalize_reasoning_effort,
 )
-from ....mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
+from ....mcp import MCPConfig, load_mcp_config
 
 from ..shared import (
     AgentError,

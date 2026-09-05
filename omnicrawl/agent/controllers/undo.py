@@ -4,20 +4,13 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
-from ..types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
+from typing import Any, Callable, Mapping
+from ..types import ToolCall
 from ...session import (
-    COMPACT_SUMMARY_PREFIX,
-    PromptHistoryEntry,
-    SessionIndexEntry,
-    SessionEvent,
-    SessionEventReadResult,
-    SessionState,
     SessionStore,
     SessionUndoPlan,
 )
 from ...state.turn_snapshot import (
-    SnapshotConflictError,
     SnapshotError,
     WorktreeSnapshot,
     WorktreeSnapshotStore,

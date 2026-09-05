@@ -9,28 +9,19 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any, Callable
 from .types import AskUserRequest
 from .toolkit.windows_desktop import WindowsDesktopTools
-from ..knowledge import KnowledgeBase, KnowledgeBaseError
+from ..knowledge import KnowledgeBase
 from .subagents.coordinator import (
     SubAgentCoordinator,
-    SubAgentExecutionResult,
-    SubAgentPublicResult,
 )
-from .subagents.definitions import AgentDefinition, AgentDefinitionRegistry
+from .subagents.definitions import AgentDefinitionRegistry
 from .subagents.worktree import (
-    WorktreeError,
     WorktreeSession,
-    apply_worktree_to_main,
-    cleanup_worktree_session,
-    collect_worktree_artifacts,
-    create_worktree_session,
 )
 from ..approval import (
-    APPROVAL_MODE_AUTO,
-    APPROVAL_MODE_REVIEW,
     load_approval_mode,
     load_approval_review_model,
     normalize_approval_mode,
@@ -51,27 +42,17 @@ from ..config.features.tts import (
 )
 from ..config.features.subagents import (
     SubAgentConfig,
-    SubAgentConfigError,
     load_subagent_config,
-    validate_subagent_advanced_setting,
 )
 from ..config.features.tools import (
-    ToolSwitchConfigError,
     load_disabled_tools,
-    validate_tool_switch_name,
 )
 from ..config.models.vision import VisionConfiguration, load_vision_configuration
 from ..llm import (
     LLMConfig,
-    LLMError,
-    ModelError,
-    ModelErrorCode,
-    ModelRuntimeManager,
-    OpenAIResponseLLM,
     load_llm_config,
-    normalize_reasoning_effort,
 )
-from ..mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
+from ..mcp import MCPConfig
 from ..skill import SkillManager, SkillMatchResult
 from ..temp_workspace import (
     AgentTempWorkspace,
@@ -82,7 +63,6 @@ from ..temp_workspace import (
 from ..workspace_tools import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
     MAX_COMMAND_TIMEOUT_SECONDS,
-    WorkspaceToolError,
     WorkspaceTools,
 )
 

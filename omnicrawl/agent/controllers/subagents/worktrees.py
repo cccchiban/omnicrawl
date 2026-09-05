@@ -1,11 +1,9 @@
 """SubAgent worktree 会话控制面：登记、查询、应用与丢弃。"""
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 from ...subagents.execution import (
-    FORK_BOILERPLATE,
     SubAgentExecutionContext,
-    SubAgentModelSnapshot,
 )
 from ...subagents.worktree import (
     WorktreeError,
@@ -13,7 +11,6 @@ from ...subagents.worktree import (
     apply_worktree_to_main,
     cleanup_worktree_session,
     collect_worktree_artifacts,
-    create_worktree_session,
     summarize_worktree_changes,
 )
 

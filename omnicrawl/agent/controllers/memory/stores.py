@@ -4,11 +4,10 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from ....memory import (
     MemoryStore,
     MemoryStoreError,
-    MemoryWriteRequest,
     migrate_legacy_memory,
 )
 

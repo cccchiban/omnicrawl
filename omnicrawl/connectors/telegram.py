@@ -58,7 +58,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import requests
 
@@ -630,7 +630,6 @@ class TelegramAgentBot:
         完全自动仅限本地 TUI 配置，远程默认自动审查（review）。
         """
 
-        from omnicrawl.agent import AgentError
         from omnicrawl.commands.slash import (
             format_mcp_status,
             format_memory_clean_result,

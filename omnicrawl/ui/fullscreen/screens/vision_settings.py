@@ -108,7 +108,7 @@ class VisionSettingsPane(SettingsPane):
         )
 
     def refresh_pane(self) -> None:
-        if not self.is_mounted:
+        if not self._can_refresh():
             return
         self.query_one("#vision-settings-enabled", Static).update(self._enabled_text())
         self._rebuild_rows()

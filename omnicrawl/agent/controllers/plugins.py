@@ -1,10 +1,9 @@
 """插件 Hook 分发与生命周期钩子。"""
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 from ...extensions.plugin_manager import (
     PluginDispatchContext,
-    activate_plugin_dispatch_context,
 )
 from ...extensions.plugin_models import HOOK_POLICIES
 

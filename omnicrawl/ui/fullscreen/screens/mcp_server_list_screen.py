@@ -59,7 +59,7 @@ class MCPServerListPane(SettingsPane):
         yield Static("↑↓ 选择  Enter 编辑  Space 启用/禁用  A 添加  D 删除  Esc 返回", id="mcp-servers-help")
 
     def refresh_pane(self) -> None:
-        if not self.is_mounted:
+        if not self._can_refresh():
             return
         rows = list(self._names)
         for index in range(20):

@@ -5,36 +5,18 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
-from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
-from ..runtime.llm_protocol import (
-    AgentLLMProtocol,
-    AgentProtocolError,
-    build_extra_body,
-    chat_completion_tools,
-    function_name_for_tool,
-    resolve_tool_name_from_hashed_function_name,
-    tool_name_from_function_name,
-)
-from ..types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, Mapping
+from ..runtime.llm_protocol import resolve_tool_name_from_hashed_function_name
+from ..types import ToolDefinition, ToolResult
 from ...config.features.context_compaction import (
     ContextCompactionConfig,
-    load_context_compaction_config,
 )
 from ...llm import (
     LLMConfig,
-    LLMError,
-    ModelError,
-    ModelErrorCode,
-    ModelRuntimeManager,
-    OpenAIResponseLLM,
-    load_llm_config,
-    normalize_reasoning_effort,
 )
 from ...state.turn_snapshot import (
-    SnapshotConflictError,
-    SnapshotError,
     WorktreeSnapshot,
     WorktreeSnapshotStore,
 )

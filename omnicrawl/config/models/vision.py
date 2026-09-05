@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from ...llm.protocol import SUPPORTED_PROTOCOLS
 from .llm import ActiveModelRef
-from ..core.runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
+from ..core.runtime import RuntimeConfigError, load_config_data, save_config_data
 
 
 class VisionConfigError(RuntimeError):

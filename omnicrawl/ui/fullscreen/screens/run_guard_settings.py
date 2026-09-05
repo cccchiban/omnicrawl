@@ -114,6 +114,7 @@ class RunGuardSettingsPane(SettingsPane):
                 id="run-guard-status",
             )
         with Horizontal(id="run-guard-actions"):
+            yield Static("", classes="pane-save-hint")
             yield Button("取消", id="run-guard-cancel")
             yield Button("保存", variant="primary", id="run-guard-save")
 
@@ -167,6 +168,7 @@ class RunGuardSettingsPane(SettingsPane):
         except (RunGuardConfigError, OSError, ValueError) as exc:
             self.query_one("#run-guard-status", Static).update(f"保存失败：{exc}")
             return
+        self.flash_save_hint()
         self.commit(configuration)
 
     def _read_int(self, widget_id: str) -> int:

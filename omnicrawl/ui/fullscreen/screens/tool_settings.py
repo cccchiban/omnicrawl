@@ -71,7 +71,7 @@ class ToolSettingsPane(SettingsPane):
         yield Static("↑↓ 选择  ←→/Enter/空格 切换  Esc 返回", id="tool-pane-help")
 
     def refresh_pane(self) -> None:
-        if not self.is_mounted:
+        if not self._can_refresh():
             return
         for index, key in enumerate(self._keys):
             marker = "› " if index == self._selected else "  "

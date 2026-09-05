@@ -5,19 +5,17 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
-from ....mcp import MCPClientManager, MCPConfig, MCPConfigError, MCPToolMeta, load_mcp_config
+from pathlib import Path
+from typing import Any
+from ....mcp import MCPClientManager, MCPConfigError, load_mcp_config
 from ....project import ProjectEntry, ProjectStore
 from ....session import (
-    COMPACT_SUMMARY_PREFIX,
     PromptHistoryEntry,
     SessionIndexEntry,
     SessionEvent,
     SessionEventReadResult,
     SessionState,
     SessionStore,
-    SessionUndoPlan,
 )
 
 from ..shared import (

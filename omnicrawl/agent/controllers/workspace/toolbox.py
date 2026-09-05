@@ -1,15 +1,13 @@
 """工作区/后台监控/Windows 桌面工具对象的惰性访问器与路径助手。"""
 from __future__ import annotations
 
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from ...toolkit.windows_desktop import WindowsDesktopTools
 from ....workspace_tools import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    MAX_COMMAND_TIMEOUT_SECONDS,
-    WorkspaceToolError,
     WorkspaceTools,
 )
-from ....workspace.monitor import BackgroundMonitorManager, MonitorPollResult, MonitorTaskSnapshot
+from ....workspace.monitor import BackgroundMonitorManager
 
 
 class WorkspaceToolboxMixin:

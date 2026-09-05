@@ -26,8 +26,6 @@ from .protocol import (
     PROTOCOL_GEMINI_GENERATE_CONTENT,
     PROTOCOL_OPENAI_CHAT_COMPLETIONS,
     PROTOCOL_OPENAI_RESPONSES,
-    ConversationMessage,
-    GenerationOptions,
     ModelIdentity,
     ModelStreamEvent,
     ModelTurnRequest,

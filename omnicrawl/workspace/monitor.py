@@ -22,7 +22,6 @@ from .process_control import (
     close_windows_handle as _close_windows_handle,
 )
 from .tools import (
-    MAX_COMMAND_TIMEOUT_SECONDS,
     WorkspaceCommandResult,
     WorkspaceToolError,
     WorkspaceTools,

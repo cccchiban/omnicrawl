@@ -16,11 +16,9 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .plugin_models import (
     CORE_HOOKS,
-    DEFAULT_MAX_MESSAGE_BYTES,
     DispatchOutcome,
     HOOK_API_VERSION,
     HOOK_POLICIES,
-    HOOK_PATCH_ALLOWLIST,
     HANDLER_MODE_GUARD,
     HANDLER_MODE_OBSERVE,
     HANDLER_MODE_NOTIFY,

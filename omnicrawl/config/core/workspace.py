@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 from .runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
 
