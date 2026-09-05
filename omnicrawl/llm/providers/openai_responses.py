@@ -60,36 +60,25 @@ class OpenAIResponsesRuntime:
     # 后续请求直接展平工具历史为纯文本，避免每轮先发一次必然 400 的请求。
     _tool_history_unsupported: bool = False
 
-    def stream_turn(
+
+    def _build_responses_kwargs(
         self,
         request: ModelTurnRequest,
         *,
-        cancel_check: Callable[[], None] | None = None,
-    ) -> Iterator[ModelStreamEvent]:
-        if self._closed:
-            raise ModelError(
-                code=ModelErrorCode.CONFIGURATION_ERROR,
-                message="Responses Runtime 已关闭。",
-            )
+        tools: list[dict[str, Any]],
+        input_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """组装 Responses create() 请求参数（含 reasoning 与缓存键）。"""
+
         options = request.generation_options
         extra_body = dict(sanitize_provider_options(options.provider_options))
         if options.reasoning_effort and options.reasoning_effort not in {"none", "disabled", ""}:
             effort = options.reasoning_effort
         else:
             effort = "none"
-        # 统一走标准 Responses 思考参数 reasoning.effort（各档位含 none 实测
-        # 均被网关接受且 none 能真正关闭思考）。旧 chat 风格扩展字段
-        # thinking / reasoning_effort 在 Responses 网关不被识别，移除避免冗余。
         extra_body.pop("thinking", None)
         extra_body.pop("reasoning_effort", None)
         extra_body.setdefault("reasoning", {"effort": effort})
-
-        tools = _tools_for_responses(request)
-        input_items = messages_to_responses_input(request.messages)
-        # 已确认当前网关/模型不支持工具调用历史 item：直接展平，避免每轮先发
-        # 一次必然 400 的请求（见下方策略 3 说明）。
-        if self._tool_history_unsupported and _has_tool_history_items(input_items):
-            input_items = _flatten_tool_history_to_text(input_items)
         kwargs: dict[str, Any] = {
             "model": self.identity.model_id,
             "instructions": request.system_prompt,
@@ -104,16 +93,25 @@ class OpenAIResponsesRuntime:
             kwargs["max_output_tokens"] = options.max_output_tokens
         if options.temperature is not None:
             kwargs["temperature"] = options.temperature
-
         prompt_cache_key = build_prompt_cache_key(
             request.prompt_cache_identity,
             model=self.identity.model_id,
         )
         if prompt_cache_key:
             kwargs["prompt_cache_key"] = prompt_cache_key
+        return kwargs
+
+
+    def _create_stream_with_retries(
+        self,
+        kwargs: dict[str, Any],
+        *,
+        input_items: list[dict[str, Any]],
+    ) -> tuple[Any, bool, bool]:
+        """发送流式请求；按兼容策略自动降级并返回 (stream, cache_warning, history_warning)。"""
+
         prompt_cache_warning = False
         tool_history_warning = False
-
         try:
             stream = self.client.responses.create(**kwargs)
         except Exception as exc:
@@ -153,25 +151,40 @@ class OpenAIResponsesRuntime:
                     message=f"Responses 请求失败：{format_openai_error(last_error)}",
                     retryable=retryable,
                 ) from last_error
+        return stream, prompt_cache_warning, tool_history_warning
 
-        # 累积 function_call 参数分片，并记录已完成 call_id，避免 SDK 在
-        # output_item.done 与 response.completed.output 重复报告同一调用。
+    def stream_turn(
+        self,
+        request: ModelTurnRequest,
+        *,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> Iterator[ModelStreamEvent]:
+        if self._closed:
+            raise ModelError(
+                code=ModelErrorCode.CONFIGURATION_ERROR,
+                message="Responses Runtime 已关闭。",
+            )
+
+        tools = _tools_for_responses(request)
+        input_items = messages_to_responses_input(request.messages)
+        if self._tool_history_unsupported and _has_tool_history_items(input_items):
+            input_items = _flatten_tool_history_to_text(input_items)
+        kwargs = self._build_responses_kwargs(
+            request,
+            tools=tools,
+            input_items=input_items,
+        )
+        stream, prompt_cache_warning, tool_history_warning = self._create_stream_with_retries(
+            kwargs,
+            input_items=input_items,
+        )
+
         call_buffers: dict[str, dict[str, str]] = {}
         emitted_call_ids: set[str] = set()
         started_call_ids: set[str] = set()
-        # 兼容网关把 output item 的 id（item_id）与真正回传工具结果所需的
-        # call_id 分开传递：参数 delta 可能同时携带二者，后续 done 事件却只
-        # 携带 item_id。始终以 call_id 作为上层工具循环的稳定标识。
         call_id_aliases: dict[str, str] = {}
         finish_reason = "stop"
-        # 是否已收到 response.completed 完成事件：网关可能以“优雅关闭连接
-        # （EOF）”包装断流，SDK 层迭代看似“正常耗尽”却从未到达完成事件，
-        # 仅靠 finish_reason 无法区分正常完成与截断，需要显式跟踪该信号。
         stream_completed_seen = False
-        # 兼容部分中转站：普通文本已经产生增量后，可能直接以 EOF 结束，
-        # 丢弃 response.completed（甚至连 output_text.done 也一起丢弃）。
-        # 只要没有未完成的工具调用，可将该文本流视为完整回复；工具流仍
-        # 必须等待结构化收尾，避免半截参数被误执行。
         output_text_delta_seen = False
         try:
             for event in registered_stream_events(
@@ -357,18 +370,8 @@ class OpenAIResponsesRuntime:
                 message=f"Responses 流式回复中断：{format_openai_error(exc)}",
                 retryable=is_retryable_model_request_error(exc),
             ) from exc
-
-        # 流迭代器正常耗尽后仍要确认取消状态：外层主动 close() 的流可能
-        # 以“正常结束、无可见内容”返回，此时必须优先处理取消，不能把
-        # 结果继续转换为空响应或可重试请求。
         if cancel_check is not None:
             cancel_check()
-
-        # 兼容部分 Responses 中转站：普通文本或完整工具调用流已经产生
-        # 可验证的内容后，网关会直接以 EOF 结束并丢弃 response.completed。
-        # 没有结构化工具调用时，已收到的文本就是该类网关唯一可用的完成
-        # 信号；工具调用则要求至少有一个已完整解析的调用，且不能残留未
-        # 完成的缓冲区，防止半截参数被当成真实调用。
         complete_buffered_calls = bool(call_buffers) and all(
             bool(buf.get("name")) and _arguments_json_complete(buf.get("arguments", ""))
             for buf in call_buffers.values()
@@ -383,9 +386,6 @@ class OpenAIResponsesRuntime:
                 message="Responses 流在收到 response.completed 前提前耗尽，疑似连接被网关截断。",
                 retryable=True,
             )
-
-        # Responses 的降级提示放在正常流事件之后，避免在模型首个文本增量前
-        # 插入非内容事件，保持 UI 首屏输出和旧 Provider 的事件顺序稳定。
         if prompt_cache_warning:
             yield ProviderWarning(
                 code="prompt_cache_unsupported",
@@ -396,10 +396,6 @@ class OpenAIResponsesRuntime:
                 code="tool_history_flattened",
                 message="当前网关不支持工具调用历史 item（HTTP 400），已自动转为纯文本后重试；后续请求将直接使用该适配。",
             )
-
-        # 收尾未完成的 function call。收到过 arguments delta 但 name 从未
-        # 到达（或调用已 emit 过）的残留条目都是截断信号：绝不能静默跳过
-        # （否则半截回复直接结束回合且不提示用户），交由上层回滚并重试。
         for call_id, buf in list(call_buffers.items()):
             name = buf.get("name") or ""
             if call_id in emitted_call_ids:
@@ -424,7 +420,6 @@ class OpenAIResponsesRuntime:
             emitted_call_ids.add(call_id)
             call_buffers.pop(call_id, None)
         yield ResponseCompleted(finish_reason=finish_reason)
-
     def close(self) -> None:
         self._closed = True
         client = self.client
