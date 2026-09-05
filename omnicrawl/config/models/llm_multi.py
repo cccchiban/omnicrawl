@@ -22,39 +22,54 @@ def is_multi_model_section(section: Mapping[str, Any]) -> bool:
     )
 
 
-def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
-    """从 llm.profiles + active_model + models.toml 构建当前 LLMConfig 视图。"""
 
-    defaults = (
-        llm_section.get("defaults")
-        if isinstance(llm_section.get("defaults"), dict)
-        else {}
-    )
-    profiles_raw = (
-        llm_section.get("profiles")
-        if isinstance(llm_section.get("profiles"), dict)
-        else {}
-    )
-    if not profiles_raw:
-        raise LLMError("多模型配置缺少 llm.profiles。")
 
-    env_model = (
-        os.getenv("OMNICRAWL_MODEL", "").strip()
-        or os.getenv("OPENAI_MODEL", "").strip()
-    )
-    env_profile = os.getenv("OMNICRAWL_PROFILE", "").strip()
+class _ModelSource:
+    """load_multi_model_llm_config 各解析阶段之间的中间态。"""
 
-    active_raw = (
-        llm_section.get("active_model")
-        if isinstance(llm_section.get("active_model"), dict)
-        else {}
+    __slots__ = (
+        "source", "profile_id", "protocol", "model_id", "catalog_key",
+        "context_window", "model_context_explicit", "max_output_tokens",
+        "temperature", "provider_options",
     )
-    try:
-        store = load_model_store()
-    except ModelStoreError as exc:
-        raise LLMError(str(exc)) from exc
 
-    source = str(active_raw.get("source") or "custom").strip() or "custom"
+    def __init__(
+        self,
+        *,
+        source: str,
+        profile_id: str = "",
+        protocol: str = "",
+        model_id: str = "",
+        catalog_key: str = "",
+        context_window: int = 128_000,
+        model_context_explicit: bool = False,
+        max_output_tokens: int = 0,
+        temperature: float | None = None,
+        provider_options: dict[str, Any] | None = None,
+    ) -> None:
+        self.source = source
+        self.profile_id = profile_id
+        self.protocol = protocol
+        self.model_id = model_id
+        self.catalog_key = catalog_key
+        self.context_window = context_window
+        self.model_context_explicit = model_context_explicit
+        self.max_output_tokens = max_output_tokens
+        self.temperature = temperature
+        self.provider_options = dict(provider_options or {})
+
+
+def _resolve_model_source(
+    *,
+    env_model: str,
+    env_profile: str,
+    active_raw: Mapping[str, Any],
+    store: Any,
+    source_default: str,
+) -> _ModelSource:
+    """按 OMNICRAWL_MODEL / active_model.source 判定当前模型来源并填充中间态。"""
+
+    source = source_default
     profile_id = ""
     protocol = ""
     model_id = ""
@@ -64,7 +79,6 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
     max_output_tokens = 0
     temperature: float | None = None
     provider_options: dict[str, Any] = {}
-
     if env_model and "/" not in env_model:
         try:
             record = store.resolve_alias(env_model)
@@ -123,6 +137,28 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
     if env_profile:
         profile_id = env_profile
 
+    return _ModelSource(
+        source=source,
+        profile_id=profile_id,
+        protocol=protocol,
+        model_id=model_id,
+        catalog_key=catalog_key,
+        context_window=context_window,
+        model_context_explicit=model_context_explicit,
+        max_output_tokens=max_output_tokens,
+        temperature=temperature,
+        provider_options=provider_options,
+    )
+
+
+def _resolve_profile(
+    *,
+    profile_id: str,
+    protocol: str,
+    profiles_raw: Mapping[str, Any],
+) -> tuple[str, str, dict[str, Any]]:
+    """校验 Profile 存在/启用，并推导最终 provider 与 protocol。"""
+
     profile_data = profiles_raw.get(profile_id)
     if not isinstance(profile_data, dict):
         raise LLMError(f"Profile 不存在或未启用：{profile_id}")
@@ -152,6 +188,18 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
             f"协议 {protocol} 属于 {protocol_provider}。"
         )
 
+    return provider, protocol, profile_data
+
+
+def _resolve_credentials(
+    *,
+    profile_id: str,
+    provider: str,
+    protocol: str,
+    profile_data: Mapping[str, Any],
+) -> tuple[str, str, str, str, ProviderProfile]:
+    """解析 Profile 凭据：api_key / base_url / user_agent。"""
+
     api_key_env = str(profile_data.get("api_key_env") or "").strip()
     api_key_plain = str(profile_data.get("api_key") or "").strip()
     user_agent = str(profile_data.get("user_agent") or "").strip()
@@ -172,18 +220,18 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
     if not base_url and provider == "openai":
         base_url = os.getenv("OPENAI_BASE_URL", "").strip()
 
-    reasoning_effort = _read_optional_text(
-        {**defaults, **llm_section},
-        "reasoning_effort",
-        "REASONING_EFFORT",
-        DEFAULT_REASONING_EFFORT,
-    )
-    thinking_type = _read_optional_text(
-        {**defaults, **llm_section},
-        "thinking_type",
-        "OPENAI_THINKING_TYPE",
-        DEFAULT_THINKING_TYPE,
-    )
+    return api_key, base_url, api_key_env, user_agent, profile_obj
+
+
+def _apply_window_overrides(
+    *,
+    source: str,
+    context_window: int,
+    model_context_explicit: bool,
+    profile_data: Mapping[str, Any],
+    defaults: Mapping[str, Any],
+) -> int:
+    """应用 Profile 默认窗口与 llm.defaults 的覆盖规则。"""
 
     if profile_data.get("default_context_window_tokens"):
         value = profile_data["default_context_window_tokens"]
@@ -205,6 +253,78 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
         ):
             context_window = defaults["context_window_tokens"]
 
+    return context_window
+
+
+def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
+    """从 llm.profiles + active_model + models.toml 构建当前 LLMConfig 视图。"""
+
+    defaults = (
+        llm_section.get("defaults")
+        if isinstance(llm_section.get("defaults"), dict)
+        else {}
+    )
+    profiles_raw = (
+        llm_section.get("profiles")
+        if isinstance(llm_section.get("profiles"), dict)
+        else {}
+    )
+    if not profiles_raw:
+        raise LLMError("多模型配置缺少 llm.profiles。")
+    env_model = (
+        os.getenv("OMNICRAWL_MODEL", "").strip()
+        or os.getenv("OPENAI_MODEL", "").strip()
+    )
+    env_profile = os.getenv("OMNICRAWL_PROFILE", "").strip()
+    active_raw = (
+        llm_section.get("active_model")
+        if isinstance(llm_section.get("active_model"), dict)
+        else {}
+    )
+    try:
+        store = load_model_store()
+    except ModelStoreError as exc:
+        raise LLMError(str(exc)) from exc
+    source = str(active_raw.get("source") or "custom").strip() or "custom"
+    state = _resolve_model_source(
+        env_model=env_model,
+        env_profile=env_profile,
+        active_raw=active_raw,
+        store=store,
+        source_default=source,
+    )
+    provider, protocol, profile_data = _resolve_profile(
+        profile_id=state.profile_id,
+        protocol=state.protocol,
+        profiles_raw=profiles_raw,
+    )
+    api_key, base_url, api_key_env, user_agent, _profile_obj = _resolve_credentials(
+        profile_id=state.profile_id,
+        provider=provider,
+        protocol=protocol,
+        profile_data=profile_data,
+    )
+
+    reasoning_effort = _read_optional_text(
+        {**defaults, **llm_section},
+        "reasoning_effort",
+        "REASONING_EFFORT",
+        DEFAULT_REASONING_EFFORT,
+    )
+    thinking_type = _read_optional_text(
+        {**defaults, **llm_section},
+        "thinking_type",
+        "OPENAI_THINKING_TYPE",
+        DEFAULT_THINKING_TYPE,
+    )
+    context_window = _apply_window_overrides(
+        source=state.source,
+        context_window=state.context_window,
+        model_context_explicit=state.model_context_explicit,
+        profile_data=profile_data,
+        defaults=defaults,
+    )
+
     timeout = defaults.get("request_timeout_seconds", 180)
     retries = defaults.get("request_retry_count", 5)
     if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
@@ -215,23 +335,24 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
     return LLMConfig(
         api_key=api_key,
         base_url=base_url,
-        model=model_id,
+        model=state.model_id,
         thinking_type=thinking_type,
         reasoning_effort=reasoning_effort,
         context_window_tokens=context_window if context_window > 0 else 128_000,
-        max_output_tokens=max_output_tokens,
-        temperature=temperature,
-        profile_id=profile_id,
+        max_output_tokens=state.max_output_tokens,
+        temperature=state.temperature,
+        profile_id=state.profile_id,
         provider=provider,
         protocol=protocol,
-        catalog_key=catalog_key,
-        model_source=source if source in {"custom", "detected"} else "custom",
+        catalog_key=state.catalog_key,
+        model_source=state.source if state.source in {"custom", "detected"} else "custom",
         api_key_env=api_key_env,
         user_agent=user_agent,
         request_timeout_seconds=timeout,
         request_retry_count=retries,
-        provider_options=provider_options,
+        provider_options=state.provider_options,
     )
+
 
 
 def parse_profiles(llm_section: Mapping[str, Any]) -> dict[str, ProviderProfile]:
