@@ -690,6 +690,78 @@ class TurnLoopMixin:
             self._subagent_event_callback = previous_subagent_callback
             self._todo_update_callback = previous_todo_callback
 
+    def _normalize_tool_call_for_batch(
+        self,
+        raw_tool_call: ToolCall,
+        *,
+        active_tools: Mapping[str, ToolDefinition],
+        catalog: HostToolCatalog,
+        persist_session_events: bool,
+    ) -> tuple[ToolCall, ToolDefinition | None, ToolResult | None]:
+        """规范化单个模型工具调用：invoke_tool 分发/归一化 + 审批。
+
+        返回 (tool_call, tool, denied_result)；denied_result 非 None 表示
+        审批拒绝，该调用直接以拒绝结果回填，不进入执行。
+        """
+
+        if raw_tool_call.name == INVOKE_TOOL_NAME:
+            # invoke_tool 已从 Provider 工具面移除（顶层注册真实工具名），
+            # 但保留 Host 分发路径兼容旧测试与直接构造的内部调用。
+            prepared = catalog.prepare_invocation(raw_tool_call.arguments)
+            if isinstance(prepared, ToolResult):
+                tool_call = ToolCall(
+                    name=INVOKE_TOOL_NAME,
+                    arguments=dict(raw_tool_call.arguments),
+                    id=raw_tool_call.id,
+                    function_name=raw_tool_call.function_name,
+                )
+                tool = None
+                denied_result = prepared
+            else:
+                tool_call = ToolCall(
+                    name=prepared.tool_name,
+                    arguments=prepared.arguments,
+                    id=raw_tool_call.id,
+                    function_name=raw_tool_call.function_name,
+                )
+                tool = prepared.tool
+                denied_result = None
+        else:
+            # 顶层注册所有工具：模型回传的真实工具名按 Host 完整目录直接
+            # 分发，不再区分 Provider 工具面与 Host 目录（同一套名字）。
+            tool_call = normalize_tool_call(raw_tool_call, active_tools)
+            tool = active_tools.get(tool_call.name)
+            denied_result = None
+
+        if persist_session_events:
+            if tool_call.name == INVOKE_TOOL_NAME and tool is None:
+                public_arguments = public_invoke_arguments(tool_call.arguments)
+            else:
+                public_arguments = public_tool_arguments(
+                    tool_call.name,
+                    tool_call.arguments,
+                )
+            self._append_session_event(
+                "tool_call_requested",
+                {
+                    "tool": tool_call.name,
+                    "arguments": public_arguments,
+                    "tool_call_id": tool_call.id,
+                    "function_name": tool_call.function_name,
+                },
+            )
+
+        if tool is not None and denied_result is None:
+            if persist_session_events:
+                denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
+            else:
+                denied_result = self._approve_tool_for_batch(
+                    tool,
+                    tool_call.arguments,
+                    persist_session_events=False,
+                )
+        return tool_call, tool, denied_result
+
     def _execute_tool_batch(
         self,
         raw_tool_calls: Sequence[ToolCall],
@@ -731,66 +803,18 @@ class TurnLoopMixin:
         active_tools = self._tools if tools is None else tools
         active_tools = dict(active_tools)
         catalog = HostToolCatalog(active_tools)
+
         normalized_calls: list[tuple[int, ToolCall, ToolDefinition | None, ToolResult | None]] = []
         for offset, raw_tool_call in enumerate(raw_tool_calls):
             check_cancelled()
-            if raw_tool_call.name == INVOKE_TOOL_NAME:
-                # invoke_tool 已从 Provider 工具面移除（顶层注册真实工具名），
-                # 但保留 Host 分发路径兼容旧测试与直接构造的内部调用。
-                prepared = catalog.prepare_invocation(raw_tool_call.arguments)
-                if isinstance(prepared, ToolResult):
-                    tool_call = ToolCall(
-                        name=INVOKE_TOOL_NAME,
-                        arguments=dict(raw_tool_call.arguments),
-                        id=raw_tool_call.id,
-                        function_name=raw_tool_call.function_name,
-                    )
-                    tool = None
-                    denied_result = prepared
-                else:
-                    tool_call = ToolCall(
-                        name=prepared.tool_name,
-                        arguments=prepared.arguments,
-                        id=raw_tool_call.id,
-                        function_name=raw_tool_call.function_name,
-                    )
-                    tool = prepared.tool
-                    denied_result = None
-            else:
-                # 顶层注册所有工具：模型回传的真实工具名按 Host 完整目录直接
-                # 分发，不再区分 Provider 工具面与 Host 目录（同一套名字）。
-                tool_call = normalize_tool_call(raw_tool_call, active_tools)
-                tool = active_tools.get(tool_call.name)
-                denied_result = None
-
-            if persist_session_events:
-                if tool_call.name == INVOKE_TOOL_NAME and tool is None:
-                    public_arguments = public_invoke_arguments(tool_call.arguments)
-                else:
-                    public_arguments = public_tool_arguments(
-                        tool_call.name,
-                        tool_call.arguments,
-                    )
-                self._append_session_event(
-                    "tool_call_requested",
-                    {
-                        "tool": tool_call.name,
-                        "arguments": public_arguments,
-                        "tool_call_id": tool_call.id,
-                        "function_name": tool_call.function_name,
-                    },
-                )
-
-            if tool is not None and denied_result is None:
-                if persist_session_events:
-                    denied_result = self._approve_tool_for_batch(tool, tool_call.arguments)
-                else:
-                    denied_result = self._approve_tool_for_batch(
-                        tool,
-                        tool_call.arguments,
-                        persist_session_events=False,
-                    )
+            tool_call, tool, denied_result = self._normalize_tool_call_for_batch(
+                raw_tool_call,
+                active_tools=active_tools,
+                catalog=catalog,
+                persist_session_events=persist_session_events,
+            )
             normalized_calls.append((first_step + offset, tool_call, tool, denied_result))
+
 
         results: list[ToolResult | None] = [None] * len(normalized_calls)
         # 每个工具的真实完成时刻（time.perf_counter 时钟，与 UI 的 started_at/
@@ -990,6 +1014,7 @@ class TurnLoopMixin:
             )
         status("")
         return observations
+
 
     def _apply_skill_command(self, text: str, status: Callable[[str], None]) -> str:
         """处理 /skill:name，并在每轮开始时清空上一轮手动 Skill 注入。"""
