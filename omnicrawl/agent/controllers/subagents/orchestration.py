@@ -75,6 +75,53 @@ from ..shared import (
 LOGGER = logging.getLogger(__name__)
 
 
+class _SubAgentTaskState:
+    """单次 _execute_subagent_task 执行的局部状态。
+
+    并发 worker 各自创建自己的 state 实例；阶段方法与闭包只读写该对象，
+    不触碰其它任务的可变状态，避免把任务局部数据提升到 self 造成串扰。
+    """
+
+    __slots__ = (
+        "execution_context",
+        "model_snapshot",
+        "owns_runtime_manager",
+        "runtime_manager",
+        "runtime_snapshot",
+        "protocol",
+        "cancel_check",
+        "messages",
+        "stream_conversation",
+        "task_identity",
+        "plugin_dispatch",
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "tool_start_times",
+        "tool_result_cache",
+        "approval_override",
+    )
+
+    def __init__(self, execution_context: SubAgentExecutionContext) -> None:
+        self.execution_context = execution_context
+        self.model_snapshot = execution_context.model_snapshot
+        self.owns_runtime_manager = self.model_snapshot is not None
+        self.runtime_manager: ModelRuntimeManager | None = None
+        self.runtime_snapshot = None
+        self.protocol = None
+        self.cancel_check: Callable[[], None] | None = None
+        self.messages: list[dict[str, Any]] = []
+        self.stream_conversation = False
+        self.task_identity: tuple[str, str] = ("", "")
+        self.plugin_dispatch = None
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cached_input_tokens = 0
+        self.tool_start_times: dict[Any, float] = {}
+        self.tool_result_cache: dict[str, ToolResult] = {}
+        self.approval_override = False
+
+
 class SubAgentOrchestrationMixin:
     """SubAgent 父侧编排：定义刷新、任务执行、事件注入与 LLM 协议。"""
 
@@ -746,74 +793,75 @@ class SubAgentOrchestrationMixin:
                 "fresh",
                 "",
             )
-        model_snapshot = execution_context.model_snapshot
-        owns_runtime_manager = model_snapshot is not None
-        runtime_manager: ModelRuntimeManager | None = None
-        runtime_snapshot = None
+        state = _SubAgentTaskState(execution_context)
+        state.cancel_check = cancel_check or getattr(self, "_cancel_check", None)
+        self._prepare_subagent_task_run(state, definition, child_tools, description, prompt)
+        return self._run_subagent_task_loop(state, definition, child_tools, prompt)
+
+    def _prepare_subagent_task_run(
+        self,
+        state: _SubAgentTaskState,
+        definition: AgentDefinition,
+        child_tools: Mapping[str, ToolDefinition],
+        description: str,
+        prompt: str,
+    ) -> None:
+        """准备子任务 Runtime、消息与 worktree 根目录覆盖。"""
 
         def release_runtime() -> None:
             """释放本任务持有的 Runtime 引用，并在需要时关闭专属 Manager。"""
 
-            nonlocal runtime_snapshot
-            if runtime_manager is not None and runtime_snapshot is not None:
-                runtime_manager.release_turn(runtime_snapshot)
-                runtime_snapshot = None
-            if owns_runtime_manager and runtime_manager is not None:
+            if state.runtime_manager is not None and state.runtime_snapshot is not None:
+                state.runtime_manager.release_turn(state.runtime_snapshot)
+                state.runtime_snapshot = None
+            if state.owns_runtime_manager and state.runtime_manager is not None:
                 # 专属 Runtime 不可泄漏到下一个任务；父 Runtime 则仍由父 Agent
                 # 生命周期管理，不能由子任务提前关闭。
                 try:
-                    runtime_manager.close()
+                    state.runtime_manager.close()
                 except Exception:  # noqa: BLE001 - 清理失败不遮蔽原始模型/取消异常
                     LOGGER.warning("SubAgent dedicated Runtime close failed.")
             self._clear_workspace_root_override()
 
         try:
-            runtime_manager = (
-                self._create_subagent_runtime_manager(model_snapshot)
-                if model_snapshot is not None
+            state.runtime_manager = (
+                self._create_subagent_runtime_manager(state.model_snapshot)
+                if state.model_snapshot is not None
                 else self._runtime_manager_for_protocol()
             )
-            protocol = self._subagent_llm_protocol(
+            state.protocol = self._subagent_llm_protocol(
                 definition,
                 child_tools,
-                execution_context=execution_context,
-                runtime_manager=runtime_manager,
+                execution_context=state.execution_context,
+                runtime_manager=state.runtime_manager,
             )
             # 最小测试夹具可替换 protocol 工厂并自行提供 RuntimeManager；生产路径
             # 已显式传入专属/父 Manager。回读只用于保持既有依赖注入契约。
-            if runtime_manager is None:
-                runtime_manager = getattr(protocol, "runtime_manager", None)
-            if runtime_manager is not None:
-                runtime_snapshot = runtime_manager.acquire_turn()
+            if state.runtime_manager is None:
+                state.runtime_manager = getattr(state.protocol, "runtime_manager", None)
+            if state.runtime_manager is not None:
+                state.runtime_snapshot = state.runtime_manager.acquire_turn()
         except BaseException:
             release_runtime()
             raise
 
-        input_tokens = 0
-        output_tokens = 0
-        cached_input_tokens = 0
-
-        def record_usage(input_count: int, output_count: int, cached_count: int) -> None:
-            nonlocal input_tokens, output_tokens, cached_input_tokens
-            input_tokens += max(0, int(input_count))
-            output_tokens += max(0, int(output_count))
-            cached_input_tokens += max(0, int(cached_count))
-
-        if cancel_check is None:
-            cancel_check = getattr(self, "_cancel_check", None)
         # Coordinator 将 task 来源放入当前 worker 的 ContextVar；不通过
         # ``self._subagent_coordinator`` 回读，避免定义刷新时旧后台 worker 取到
         # 新 Coordinator 而丢失正确的 task/batch 身份。
         try:
-            messages = self._build_subagent_messages(
-                execution_context,
+            state.messages = self._build_subagent_messages(
+                state.execution_context,
                 child_tools,
                 description,
                 prompt,
             )
             # worktree / 隔离任务：在本 worker 线程内切换 WorkspaceTools 根目录。
-            override_root = str(getattr(execution_context, "workspace_root", "") or "").strip()
-            if override_root and getattr(execution_context, "isolation", "shared") == "worktree":
+            override_root = str(
+                getattr(state.execution_context, "workspace_root", "") or ""
+            ).strip()
+            if override_root and getattr(
+                state.execution_context, "isolation", "shared"
+            ) == "worktree":
                 self._workspace_root_local.root = override_root
         except BaseException:
             release_runtime()
@@ -822,13 +870,32 @@ class SubAgentOrchestrationMixin:
 
         # 仅在 /review 等入口（run_subagent_task 挂接了实时回调）时流式上报
         # 子代理对话事件；任务身份由 Coordinator 写入 execution_context。
-        stream_conversation = bool(
+        state.stream_conversation = bool(
             getattr(self, "_stream_subagent_conversation", False)
         )
-        task_identity = (
-            str(getattr(execution_context, "task_id", "") or ""),
-            str(getattr(execution_context, "batch_id", "") or ""),
+        state.task_identity = (
+            str(getattr(state.execution_context, "task_id", "") or ""),
+            str(getattr(state.execution_context, "batch_id", "") or ""),
         )
+        plugin_dispatch = state.execution_context.plugin_dispatch
+        if plugin_dispatch is None:
+            # 兼容旧测试/调用方未注入 plugin_dispatch 的路径。
+            plugin_dispatch = PluginDispatchContext(handlers=(), source="none")
+        state.plugin_dispatch = plugin_dispatch
+
+    def _run_subagent_task_loop(
+        self,
+        state: _SubAgentTaskState,
+        definition: AgentDefinition,
+        child_tools: Mapping[str, ToolDefinition],
+        prompt: str,
+    ) -> SubAgentExecutionResult:
+        """以独立 messages 运行 AgentLoopRunner 并组装结果。"""
+
+        def record_usage(input_count: int, output_count: int, cached_count: int) -> None:
+            state.input_tokens += max(0, int(input_count))
+            state.output_tokens += max(0, int(output_count))
+            state.cached_input_tokens += max(0, int(cached_count))
 
         def request_child_reply(working_messages: list[dict[str, Any]]) -> AgentModelReply:
             """在独立任务并发之外，再限制 Provider 模型请求的同时在途数量。"""
@@ -841,75 +908,67 @@ class SubAgentOrchestrationMixin:
 
             semaphore = getattr(self, "_subagent_model_request_semaphore", None)
             if semaphore is None:
-                reply = protocol.request_reply(
+                reply = state.protocol.request_reply(
                     working_messages,
                     lambda _text: None,
                     record_usage,
                     lambda: None,
                     lambda _message: None,
-                    cancel_check,
+                    state.cancel_check,
                     None,
-                    runtime_snapshot,
+                    state.runtime_snapshot,
                     lambda: None,
                 )
             else:
                 # 不能无期限阻塞在并发槽位上；等待期间持续检查父回合取消，
                 # 确保尚未发起 Provider 请求的任务也能及时退出。
                 while not semaphore.acquire(timeout=0.1):
-                    if cancel_check is not None:
-                        cancel_check()
+                    if state.cancel_check is not None:
+                        state.cancel_check()
                 try:
-                    reply = protocol.request_reply(
+                    reply = state.protocol.request_reply(
                         working_messages,
                         lambda _text: None,
                         record_usage,
                         lambda: None,
                         lambda _message: None,
-                        cancel_check,
+                        state.cancel_check,
                         None,
-                        runtime_snapshot,
+                        state.runtime_snapshot,
                         lambda: None,
                     )
                 finally:
                     semaphore.release()
             # 只把带工具调用的过程性文本转发到子代理会话面板（最终评审 JSON
             # 由主线程渲染为报告，不重复展示在面板里）。
-            if stream_conversation and reply.content and reply.tool_calls:
+            if state.stream_conversation and reply.content and reply.tool_calls:
                 self._emit_subagent_live_event(
                     "subagent.turn.text",
                     {
-                        "task_id": task_identity[0],
-                        "batch_id": task_identity[1],
+                        "task_id": state.task_identity[0],
+                        "batch_id": state.task_identity[1],
                         "agent_type": definition.name,
                         "text": str(reply.content),
                     },
                 )
             return reply
 
-        plugin_dispatch = execution_context.plugin_dispatch
-        if plugin_dispatch is None:
-            # 兼容旧测试/调用方未注入 plugin_dispatch 的路径。
-            plugin_dispatch = PluginDispatchContext(handlers=(), source="none")
-
         def emit_conversation_event(event_name: str, payload: dict[str, Any]) -> None:
-            if not stream_conversation:
+            if not state.stream_conversation:
                 return
             self._emit_subagent_live_event(
                 event_name,
                 {
-                    "task_id": task_identity[0],
-                    "batch_id": task_identity[1],
+                    "task_id": state.task_identity[0],
+                    "batch_id": state.task_identity[1],
                     "agent_type": definition.name,
                     **payload,
                 },
             )
 
-        tool_start_times: dict[Any, float] = {}
-        tool_result_cache: dict[str, ToolResult] = {}
-
         def report_tool_start(_step: int, call: Any) -> None:
             key = str(getattr(call, "id", "") or "") or id(call)
-            tool_start_times[key] = time.perf_counter()
+            state.tool_start_times[key] = time.perf_counter()
             raw_arguments = getattr(call, "arguments", None)
             if not isinstance(raw_arguments, dict):
                 raw_arguments = {}
@@ -926,7 +985,7 @@ class SubAgentOrchestrationMixin:
 
         def report_tool_result(call: Any, result: Any) -> None:
             key = str(getattr(call, "id", "") or "") or id(call)
-            started_at = tool_start_times.pop(key, None)
+            started_at = state.tool_start_times.pop(key, None)
             # 优先用 Agent 层记录的真实完成时刻：快工具提前完成、整批等慢工具
             # 时仍显示各自真实耗时；缺省时退回到当前时刻。
             completed_at = getattr(result, "completed_at", None)
@@ -937,7 +996,9 @@ class SubAgentOrchestrationMixin:
                     "tool": str(getattr(call, "name", "") or ""),
                     "ok": bool(getattr(result, "ok", False)),
                     "output": str(
-                        getattr(result, "full_output", "") or getattr(result, "output", "") or ""
+                        getattr(result, "full_output", "")
+                        or getattr(result, "output", "")
+                        or ""
                     ),
                     "duration_seconds": (
                         max(0.0, finished_at - started_at)
@@ -950,40 +1011,39 @@ class SubAgentOrchestrationMixin:
         # gitMode=full 的角色（如 review）在本 worker 线程内强制自动批准：完整
         # git 子命令权限不经过主对话 manual/review 审批，避免收集 diff 时被逐条
         # 打断。覆盖由 try/finally 保证在任务结束后恢复，线程之间互不影响。
-        approval_override = False
         if getattr(definition, "git_mode", "readonly") == "full":
             self._approval_mode_local.mode = APPROVAL_MODE_AUTO
-            approval_override = True
+            state.approval_override = True
         try:
-            with activate_plugin_dispatch_context(plugin_dispatch):
+            with activate_plugin_dispatch_context(state.plugin_dispatch):
                 loop_result = AgentLoopRunner().run(
-                    messages=messages,
+                    messages=state.messages,
                     request_reply=request_child_reply,
                     execute_tool_batch=lambda calls, first_step: self._execute_tool_batch(
                         calls,
                         first_step,
                         report_tool_start=report_tool_start,
                         report_tool_result=report_tool_result,
-                        check_cancelled=cancel_check or (lambda: None),
+                        check_cancelled=state.cancel_check or (lambda: None),
                         status=lambda _message: None,
                         prompt=prompt,
-                        active_runtime_snapshot=runtime_snapshot,
+                        active_runtime_snapshot=state.runtime_snapshot,
                         vision_base_llm=(
-                            model_snapshot.llm_config
-                            if model_snapshot is not None
+                            state.model_snapshot.llm_config
+                            if state.model_snapshot is not None
                             else getattr(self.config, "llm", None)
                         ),
                         tools=child_tools,
-                        execution_cache=tool_result_cache,
+                        execution_cache=state.tool_result_cache,
                         persist_session_events=False,
                     ),
                     limits=AgentLoopLimits(
                         timeout_seconds=self.config.subagents.default_timeout_seconds,
                     ),
-                    cancel_check=cancel_check,
+                    cancel_check=state.cancel_check,
                 )
                 worktree_artifacts = self._collect_subagent_worktree_artifacts(
-                    execution_context
+                    state.execution_context
                 )
                 final_text = str(loop_result.final_text or "")
                 if worktree_artifacts:
@@ -995,15 +1055,25 @@ class SubAgentOrchestrationMixin:
                     final_text=final_text,
                     model_turns=loop_result.model_turns,
                     tool_calls=loop_result.tool_calls,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cached_input_tokens=cached_input_tokens,
+                    input_tokens=state.input_tokens,
+                    output_tokens=state.output_tokens,
+                    cached_input_tokens=state.cached_input_tokens,
                     artifacts=worktree_artifacts,
                 )
         finally:
-            if approval_override:
+            if state.approval_override:
                 self._approval_mode_local.mode = None
-            release_runtime()
+            # 释放 Runtime 引用（与准备阶段失败路径一致）。
+            if state.runtime_manager is not None and state.runtime_snapshot is not None:
+                state.runtime_manager.release_turn(state.runtime_snapshot)
+                state.runtime_snapshot = None
+            if state.owns_runtime_manager and state.runtime_manager is not None:
+                try:
+                    state.runtime_manager.close()
+                except Exception:  # noqa: BLE001 - 清理失败不遮蔽原始结果异常
+                    LOGGER.warning("SubAgent dedicated Runtime close failed.")
+            self._clear_workspace_root_override()
+
 
     def _subagent_llm_protocol(
         self,
