@@ -572,10 +572,7 @@ class TurnLoopMixin:
             snapshot_failure: Exception | None = None
             if not turn_snapshot_finalization_started:
                 turn_snapshot_finalization_started = True
-                try:
-                    self._complete_turn_snapshot(active_turn_snapshot)
-                except Exception as completion_exc:
-                    snapshot_failure = completion_exc
+                snapshot_failure = self._finalize_turn_snapshot_safely(active_turn_snapshot)
             terminal_exc = snapshot_failure or exc
             if not user_message_persisted:
                 # 取消发生在用户消息持久化之前（快速 ESC 竞态）：补写
@@ -619,10 +616,7 @@ class TurnLoopMixin:
             snapshot_failure = None
             if not turn_snapshot_finalization_started:
                 turn_snapshot_finalization_started = True
-                try:
-                    self._complete_turn_snapshot(active_turn_snapshot)
-                except Exception as completion_exc:
-                    snapshot_failure = completion_exc
+                snapshot_failure = self._finalize_turn_snapshot_safely(active_turn_snapshot)
             terminal_exc = snapshot_failure or exc
             event_type = (
                 "turn_cancelled"
@@ -674,21 +668,58 @@ class TurnLoopMixin:
         finally:
             if runtime_manager is not None and runtime_snapshot is not None:
                 runtime_manager.release_turn(runtime_snapshot)
-            self.__dict__.pop("_active_runtime_snapshot", None)
-            self.__dict__.pop("_active_guard_retry_state", None)
-            self.__dict__.pop("_active_run_guard_config", None)
-            self.__dict__.pop("_active_todo_items", None)
-            if pause_event_enabled and pause_token is not None:
-                reset_pause_event(pause_token)
-            if had_previous_fork_snapshot:
-                self._active_fork_context_messages = previous_fork_snapshot
-            else:
-                self.__dict__.pop("_active_fork_context_messages", None)
-            self._plugin_end_turn()
-            self._cancel_check = previous_cancel_check
-            self._reasoning_delta_callback = previous_reasoning_callback
-            self._subagent_event_callback = previous_subagent_callback
-            self._todo_update_callback = previous_todo_callback
+            self._restore_stream_turn_state(
+                had_previous_fork_snapshot=had_previous_fork_snapshot,
+                previous_fork_snapshot=previous_fork_snapshot,
+                previous_cancel_check=previous_cancel_check,
+                previous_reasoning_callback=previous_reasoning_callback,
+                previous_subagent_callback=previous_subagent_callback,
+                previous_todo_callback=previous_todo_callback,
+                pause_event_enabled=pause_event_enabled,
+                pause_token=pause_token,
+            )
+
+    def _restore_stream_turn_state(
+        self,
+        *,
+        had_previous_fork_snapshot: bool,
+        previous_fork_snapshot: Any,
+        previous_cancel_check: Callable[[], None] | None,
+        previous_reasoning_callback: Callable[[str], None] | None,
+        previous_subagent_callback: Callable[[str, dict[str, Any]], None] | None,
+        previous_todo_callback: Callable[[dict[str, Any]], None] | None,
+        pause_event_enabled: bool,
+        pause_token: Any,
+    ) -> None:
+        """回合 finally：恢复被本轮临时改写的 Agent 状态与暂停上下文。"""
+
+        self.__dict__.pop("_active_runtime_snapshot", None)
+        self.__dict__.pop("_active_guard_retry_state", None)
+        self.__dict__.pop("_active_run_guard_config", None)
+        self.__dict__.pop("_active_todo_items", None)
+        if pause_event_enabled and pause_token is not None:
+            reset_pause_event(pause_token)
+        if had_previous_fork_snapshot:
+            self._active_fork_context_messages = previous_fork_snapshot
+        else:
+            self.__dict__.pop("_active_fork_context_messages", None)
+        self._plugin_end_turn()
+        self._cancel_check = previous_cancel_check
+        self._reasoning_delta_callback = previous_reasoning_callback
+        self._subagent_event_callback = previous_subagent_callback
+        self._todo_update_callback = previous_todo_callback
+
+    def _finalize_turn_snapshot_safely(
+        self,
+        active_turn_snapshot: _ActiveTurnSnapshot | None,
+    ) -> Exception | None:
+        """异常收尾路径中完成回合快照；失败时返回快照异常而非抛出。"""
+
+        try:
+            self._complete_turn_snapshot(active_turn_snapshot)
+        except Exception as completion_exc:
+            return completion_exc
+        return None
 
     def _normalize_tool_call_for_batch(
         self,
