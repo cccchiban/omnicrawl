@@ -279,82 +279,29 @@ def _public_windows_desktop_arguments(
     return public
 
 
-def build_agent_tools(
+
+
+def _core_tool_definitions(
     *,
-    mcp_manager: MCPClientManager,
-    memory_enabled: bool,
     list: ToolRunner,
     read: ToolRunner,
     grep: ToolRunner,
-    web_search: ToolRunner | None = None,
-    fetcher: ToolRunner | None = None,
-    image_gen: ToolRunner | None = None,
-    tts: ToolRunner | None = None,
     edit_file: ToolRunner,
     write_file: ToolRunner,
     bash: ToolRunner,
     powershell: ToolRunner,
     monitor: ToolRunner,
-    git: ToolRunner | None = None,
-    memory_search: ToolRunner,
-    memory_read: ToolRunner,
-    memory_expand_related: ToolRunner,
-    memory_write: ToolRunner,
-    mcp_call: MCPToolRunner,
-    mcp_read_resource: MCPResourceRunner,
-    mcp_get_prompt: MCPPromptRunner,
-    read_image: ToolRunner | None = None,
     find: ToolRunner | None = None,
-    evidence_recall: ToolRunner | None = None,
-    subagent: ToolRunner | None = None,
-    subagent_types: Sequence[str] = (),
-    update_todos: ToolRunner | None = None,
-    ask_user: ToolRunner | None = None,
-    pause_work: ToolRunner | None = None,
-    windows_window: ToolRunner | None = None,
-    windows_control: ToolRunner | None = None,
-    windows_input: ToolRunner | None = None,
-    windows_clipboard: ToolRunner | None = None,
-    windows_screenshot: ToolRunner | None = None,
-    project_memory_search: ToolRunner | None = None,
-    project_memory_read: ToolRunner | None = None,
-    project_memory_expand_related: ToolRunner | None = None,
-    project_memory_write: ToolRunner | None = None,
-    session_memory_search: ToolRunner | None = None,
-    session_memory_read: ToolRunner | None = None,
-    session_memory_expand_related: ToolRunner | None = None,
-    session_memory_write: ToolRunner | None = None,
-    user_memory_search: ToolRunner | None = None,
-    user_memory_read: ToolRunner | None = None,
-    user_memory_expand_related: ToolRunner | None = None,
-    user_memory_write: ToolRunner | None = None,
-    kb_search: ToolRunner | None = None,
-    kb_read: ToolRunner | None = None,
-    kb_write: ToolRunner | None = None,
-    kb_append: ToolRunner | None = None,
-    kb_list: ToolRunner | None = None,
-    disabled_tools: frozenset[str] = frozenset(),
-) -> dict[str, ToolDefinition]:
-    """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。
+    read_image: ToolRunner | None = None,
+    web_search: ToolRunner | None = None,
+    fetcher: ToolRunner | None = None,
+    image_gen: ToolRunner | None = None,
+    tts: ToolRunner | None = None,
+    git: ToolRunner | None = None,
+) -> list[ToolDefinition]:
+    """核心工作区、Web 与生成类工具定义；可选工具在 runner 为空时自动省略。"""
 
-    ``disabled_tools`` 中的工具名（含 MCP 动态工具）不会出现在结果表中；
-    模型不可见即不可调用，与审批模式无关。
-    """
-
-    kb_runners = (kb_search, kb_read, kb_write, kb_append, kb_list)
-    if any(runner is not None for runner in kb_runners) and not all(
-        runner is not None for runner in kb_runners
-    ):
-        raise ValueError("知识库工具必须作为完整工具组注册。")
-
-    tools = build_mcp_tools(
-        mcp_manager=mcp_manager,
-        mcp_call=mcp_call,
-        mcp_read_resource=mcp_read_resource,
-        mcp_get_prompt=mcp_get_prompt,
-    )
-    tools.extend(
-        [
+    return [
             ToolDefinition(
                 name="list",
                 description='是什么：列出工作区指定路径下的文件和目录。怎么做：需要了解目录结构时使用；只需文件内容时不用，单文件路径会直接返回路径。怎样做：成功按行返回相对路径，目录末尾带 /；空目录返回‘目录为空’，超限追加截断提示；失败返回文本错误。建议：先非递归定位，再按需递归；结果超限时缩小范围。',
@@ -629,186 +576,207 @@ def build_agent_tools(
                 if git is not None
                 else []
             ),
-            *(
-                [
-                    ToolDefinition(
-                        name="kb_search",
-                        description='是什么：搜索独立于当前项目的工作知识库笔记摘要。怎么做：需要跨项目查找工作记录、决策或研究线索时使用；只查当前项目代码或完整笔记时不用，先搜摘要再 kb_read。怎样做：成功返回 JSON 数组，每项含 path、title、project、type、status、tags、snippet、score；空结果为 []，失败返回文本错误。建议：用 project/tags/type/status 缩小范围；摘要只用于筛选，命中后用 kb_read 读取全文，避免无关内容污染上下文。',
-                        argument_schema=json.dumps(
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "query": {"type": "string", "minLength": 1},
-                                    "project": {"type": "string"},
-                                    "tags": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                    },
-                                    "type": {
-                                        "type": "string",
-                                        "enum": [
-                                            "note",
-                                            "meeting",
-                                            "decision",
-                                            "log",
-                                            "research",
-                                            "reference",
-                                        ],
-                                    },
-                                    "status": {
-                                        "type": "string",
-                                        "enum": ["draft", "done", "archived"],
-                                    },
-                                    "max_results": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "maximum": 50,
-                                        "default": 10,
-                                    },
+    ]
+
+
+def _knowledge_tool_definitions(
+    *,
+    kb_search: ToolRunner | None = None,
+    kb_read: ToolRunner | None = None,
+    kb_write: ToolRunner | None = None,
+    kb_append: ToolRunner | None = None,
+    kb_list: ToolRunner | None = None,
+) -> list[ToolDefinition]:
+    """知识库工具组；整组注册，kb_search 为空时返回空表。"""
+
+    if kb_search is None:
+        return []
+    return [
+                ToolDefinition(
+                    name="kb_search",
+                    description='是什么：搜索独立于当前项目的工作知识库笔记摘要。怎么做：需要跨项目查找工作记录、决策或研究线索时使用；只查当前项目代码或完整笔记时不用，先搜摘要再 kb_read。怎样做：成功返回 JSON 数组，每项含 path、title、project、type、status、tags、snippet、score；空结果为 []，失败返回文本错误。建议：用 project/tags/type/status 缩小范围；摘要只用于筛选，命中后用 kb_read 读取全文，避免无关内容污染上下文。',
+                    argument_schema=json.dumps(
+                        {
+                            "type": "object",
+                            "properties": {
+                                "query": {"type": "string", "minLength": 1},
+                                "project": {"type": "string"},
+                                "tags": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
                                 },
-                                "required": ["query"],
-                                "additionalProperties": False,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        requires_confirmation=False,
-                        run=kb_search,
-                    ),
-                    ToolDefinition(
-                        name="kb_read",
-                        description='是什么：读取工作知识库中的一篇 Markdown 笔记全文。怎么做：kb_search 命中后需要完整正文时使用；只需定位笔记时不用；path 必须是知识库内相对路径，可省略 .md。怎样做：成功返回原始 Markdown 文本；超过 max_chars 时追加‘已截断’提示；不存在、越界或非 UTF-8 时返回文本错误。建议：先 kb_search 再 kb_read，并按需要设置 max_chars；不要把知识库路径当作工作区路径使用。',
-                        argument_schema=json.dumps(
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string", "minLength": 1},
-                                    "max_chars": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "maximum": 200000,
-                                        "default": 50000,
-                                    },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "note",
+                                        "meeting",
+                                        "decision",
+                                        "log",
+                                        "research",
+                                        "reference",
+                                    ],
                                 },
-                                "required": ["path"],
-                                "additionalProperties": False,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        requires_confirmation=False,
-                        run=kb_read,
-                    ),
-                    ToolDefinition(
-                        name="kb_write",
-                        description='是什么：新建或更新知识库 Markdown 笔记，并维护 frontmatter 与索引。怎么做：需要长期保存已确认的工作记录时使用；临时内容或项目代码不要写入知识库；create 仅新建，overwrite 覆盖正文，append 追加正文。怎样做：成功返回 JSON：note（path、title、created、updated、project、type、status、tags）和 mode；失败返回文本错误。建议：正文短而可独立理解，补充 project/tags/type/status 便于检索；overwrite 前先 kb_read，避免覆盖有价值内容。',
-                        argument_schema=json.dumps(
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string", "minLength": 1},
-                                    "content": {"type": "string"},
-                                    "mode": {
-                                        "type": "string",
-                                        "enum": ["create", "overwrite", "append"],
-                                        "default": "overwrite",
-                                    },
-                                    "title": {"type": "string"},
-                                    "project": {"type": "string"},
-                                    "tags": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                    },
-                                    "type": {
-                                        "type": "string",
-                                        "enum": [
-                                            "note",
-                                            "meeting",
-                                            "decision",
-                                            "log",
-                                            "research",
-                                            "reference",
-                                        ],
-                                    },
-                                    "status": {
-                                        "type": "string",
-                                        "enum": ["draft", "done", "archived"],
-                                    },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["draft", "done", "archived"],
                                 },
-                                "required": ["path", "content"],
-                                "additionalProperties": False,
-                            },
-                            ensure_ascii=False,
-                        ),
-                        requires_confirmation=False,
-                        run=kb_write,
-                    ),
-                    ToolDefinition(
-                        name="kb_append",
-                        description='是什么：向已有知识库笔记追加正文。怎么做：需要补充同一笔记的新信息时使用；新建笔记用 kb_write；不需要修改 frontmatter 时使用。怎样做：成功返回 JSON：note 元数据和 mode=append；失败返回文本错误；只更新 updated，不改其他 frontmatter 字段。建议：追加独立、简短且已确认的内容；追加前先 kb_read 确认目标，避免把不同主题混入同一笔记。',
-                        argument_schema=json.dumps(
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string", "minLength": 1},
-                                    "content": {"type": "string"},
+                                "max_results": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 50,
+                                    "default": 10,
                                 },
-                                "required": ["path", "content"],
-                                "additionalProperties": False,
                             },
-                            ensure_ascii=False,
-                        ),
-                        requires_confirmation=False,
-                        run=kb_append,
+                            "required": ["query"],
+                            "additionalProperties": False,
+                        },
+                        ensure_ascii=False,
                     ),
-                    ToolDefinition(
-                        name="kb_list",
-                        description='是什么：列出知识库笔记或按元数据筛选笔记。怎么做：需要浏览目录、核对元数据或批量定位笔记时使用；只需按关键词搜索时用 kb_search；不返回正文。怎样做：成功返回 JSON 数组，每项含 path、title、created、updated、project、type、status、tags；无结果为 []，失败返回文本错误。建议：优先用 project/tags/type/status/path 过滤并控制 max_results；找到目标后用 kb_read 获取正文。',
-                        argument_schema=json.dumps(
-                            {
-                                "type": "object",
-                                "properties": {
-                                    "path": {"type": "string"},
-                                    "project": {"type": "string"},
-                                    "tags": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                    },
-                                    "type": {
-                                        "type": "string",
-                                        "enum": [
-                                            "note",
-                                            "meeting",
-                                            "decision",
-                                            "log",
-                                            "research",
-                                            "reference",
-                                        ],
-                                    },
-                                    "status": {
-                                        "type": "string",
-                                        "enum": ["draft", "done", "archived"],
-                                    },
-                                    "max_results": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "maximum": 200,
-                                        "default": 100,
-                                    },
+                    requires_confirmation=False,
+                    run=kb_search,
+                ),
+                ToolDefinition(
+                    name="kb_read",
+                    description='是什么：读取工作知识库中的一篇 Markdown 笔记全文。怎么做：kb_search 命中后需要完整正文时使用；只需定位笔记时不用；path 必须是知识库内相对路径，可省略 .md。怎样做：成功返回原始 Markdown 文本；超过 max_chars 时追加‘已截断’提示；不存在、越界或非 UTF-8 时返回文本错误。建议：先 kb_search 再 kb_read，并按需要设置 max_chars；不要把知识库路径当作工作区路径使用。',
+                    argument_schema=json.dumps(
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "minLength": 1},
+                                "max_chars": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 200000,
+                                    "default": 50000,
                                 },
-                                "additionalProperties": False,
                             },
-                            ensure_ascii=False,
-                        ),
-                        requires_confirmation=False,
-                        run=kb_list,
+                            "required": ["path"],
+                            "additionalProperties": False,
+                        },
+                        ensure_ascii=False,
                     ),
-                ]
-                if kb_search is not None
-                else []
-            ),
-        ]
-    )
+                    requires_confirmation=False,
+                    run=kb_read,
+                ),
+                ToolDefinition(
+                    name="kb_write",
+                    description='是什么：新建或更新知识库 Markdown 笔记，并维护 frontmatter 与索引。怎么做：需要长期保存已确认的工作记录时使用；临时内容或项目代码不要写入知识库；create 仅新建，overwrite 覆盖正文，append 追加正文。怎样做：成功返回 JSON：note（path、title、created、updated、project、type、status、tags）和 mode；失败返回文本错误。建议：正文短而可独立理解，补充 project/tags/type/status 便于检索；overwrite 前先 kb_read，避免覆盖有价值内容。',
+                    argument_schema=json.dumps(
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "minLength": 1},
+                                "content": {"type": "string"},
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["create", "overwrite", "append"],
+                                    "default": "overwrite",
+                                },
+                                "title": {"type": "string"},
+                                "project": {"type": "string"},
+                                "tags": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "note",
+                                        "meeting",
+                                        "decision",
+                                        "log",
+                                        "research",
+                                        "reference",
+                                    ],
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["draft", "done", "archived"],
+                                },
+                            },
+                            "required": ["path", "content"],
+                            "additionalProperties": False,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    requires_confirmation=False,
+                    run=kb_write,
+                ),
+                ToolDefinition(
+                    name="kb_append",
+                    description='是什么：向已有知识库笔记追加正文。怎么做：需要补充同一笔记的新信息时使用；新建笔记用 kb_write；不需要修改 frontmatter 时使用。怎样做：成功返回 JSON：note 元数据和 mode=append；失败返回文本错误；只更新 updated，不改其他 frontmatter 字段。建议：追加独立、简短且已确认的内容；追加前先 kb_read 确认目标，避免把不同主题混入同一笔记。',
+                    argument_schema=json.dumps(
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "minLength": 1},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["path", "content"],
+                            "additionalProperties": False,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    requires_confirmation=False,
+                    run=kb_append,
+                ),
+                ToolDefinition(
+                    name="kb_list",
+                    description='是什么：列出知识库笔记或按元数据筛选笔记。怎么做：需要浏览目录、核对元数据或批量定位笔记时使用；只需按关键词搜索时用 kb_search；不返回正文。怎样做：成功返回 JSON 数组，每项含 path、title、created、updated、project、type、status、tags；无结果为 []，失败返回文本错误。建议：优先用 project/tags/type/status/path 过滤并控制 max_results；找到目标后用 kb_read 获取正文。',
+                    argument_schema=json.dumps(
+                        {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "project": {"type": "string"},
+                                "tags": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "note",
+                                        "meeting",
+                                        "decision",
+                                        "log",
+                                        "research",
+                                        "reference",
+                                    ],
+                                },
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["draft", "done", "archived"],
+                                },
+                                "max_results": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 200,
+                                    "default": 100,
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    requires_confirmation=False,
+                    run=kb_list,
+                ),
+    ]
+
+
+def _meta_tool_definitions(
+    *,
+    update_todos: ToolRunner | None = None,
+    ask_user: ToolRunner | None = None,
+    pause_work: ToolRunner | None = None,
+    evidence_recall: ToolRunner | None = None,
+) -> list[ToolDefinition]:
+    """轮次控制类工具：update_todos / ask_user / pause_work / evidence_recall。"""
+
+    definitions: list[ToolDefinition] = []
     if update_todos is not None:
-        tools.append(
+        definitions.append(
             ToolDefinition(
                 name=TODO_TOOL_NAME,
                 description=(
@@ -845,8 +813,9 @@ def build_agent_tools(
                 run=update_todos,
             )
         )
+
     if ask_user is not None:
-        tools.append(
+        definitions.append(
             ToolDefinition(
                 name=ASK_USER_TOOL_NAME,
                 description=(
@@ -882,8 +851,9 @@ def build_agent_tools(
                 run=ask_user,
             )
         )
+
     if pause_work is not None:
-        tools.append(
+        definitions.append(
             ToolDefinition(
                 name=PAUSE_WORK_TOOL_NAME,
                 description=(
@@ -900,8 +870,9 @@ def build_agent_tools(
                 run=pause_work,
             )
         )
+
     if evidence_recall is not None:
-        tools.append(
+        definitions.append(
             ToolDefinition(
                 name=RECALL_SESSION_EVIDENCE_TOOL_NAME,
                 description=(
@@ -935,6 +906,21 @@ def build_agent_tools(
                 model_output_is_bounded=True,
             )
         )
+
+    return definitions
+
+
+def _windows_tool_definitions(
+    *,
+    windows_window: ToolRunner | None = None,
+    windows_control: ToolRunner | None = None,
+    windows_input: ToolRunner | None = None,
+    windows_clipboard: ToolRunner | None = None,
+    windows_screenshot: ToolRunner | None = None,
+) -> list[ToolDefinition]:
+    """Windows 桌面自动化工具组；必须整组注册，否则返回空表。"""
+
+    definitions: list[ToolDefinition] = []
     windows_runners = (
         windows_window,
         windows_control,
@@ -945,7 +931,7 @@ def build_agent_tools(
     if any(runner is not None for runner in windows_runners):
         if not all(runner is not None for runner in windows_runners):
             raise ValueError("Windows 桌面工具必须作为完整工具组注册。")
-        tools.extend(
+        definitions.extend(
             [
                 ToolDefinition(
                     name="windows_window",
@@ -1004,6 +990,17 @@ def build_agent_tools(
                 ),
             ]
         )
+    return definitions
+
+
+def _subagent_tool_definition(
+    *,
+    subagent: ToolRunner | None = None,
+    subagent_types: Sequence[str] = (),
+) -> list[ToolDefinition]:
+    """SubAgent 调度工具；schema 内角色枚举来自注册的 subagent_types。"""
+
+    definitions: list[ToolDefinition] = []
     if subagent is not None:
         available_subagent_types = sorted(
             {
@@ -1014,7 +1011,7 @@ def build_agent_tools(
         )
         if not available_subagent_types:
             raise ValueError("注册 SubAgent 工具时必须提供至少一个可用角色。")
-        tools.append(
+        definitions.append(
             ToolDefinition(
                 name="subagent",
                 description='是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。',
@@ -1099,6 +1096,32 @@ def build_agent_tools(
                 run=subagent,
             )
         )
+    return definitions
+
+
+def _memory_tool_definitions(
+    *,
+    memory_enabled: bool,
+    memory_search: ToolRunner,
+    memory_read: ToolRunner,
+    memory_expand_related: ToolRunner,
+    memory_write: ToolRunner,
+    project_memory_search: ToolRunner | None = None,
+    project_memory_read: ToolRunner | None = None,
+    project_memory_expand_related: ToolRunner | None = None,
+    project_memory_write: ToolRunner | None = None,
+    session_memory_search: ToolRunner | None = None,
+    session_memory_read: ToolRunner | None = None,
+    session_memory_expand_related: ToolRunner | None = None,
+    session_memory_write: ToolRunner | None = None,
+    user_memory_search: ToolRunner | None = None,
+    user_memory_read: ToolRunner | None = None,
+    user_memory_expand_related: ToolRunner | None = None,
+    user_memory_write: ToolRunner | None = None,
+) -> list[ToolDefinition]:
+    """记忆工具：三类作用域完整绑定优先，否则退回旧通用 memory_* 兼容组。"""
+
+    definitions: list[ToolDefinition] = []
     if memory_enabled:
         scoped_runners = (
             project_memory_search,
@@ -1159,7 +1182,7 @@ def build_agent_tools(
                 assert read_runner is not None
                 assert expand_runner is not None
                 assert write_runner is not None
-                tools.extend(
+                definitions.extend(
                     [
                         ToolDefinition(
                             name=f"{prefix}_memory_search",
@@ -1219,7 +1242,7 @@ def build_agent_tools(
                 )
         else:
             # 兼容旧调用方；LocalToolAgent 已始终提供三类作用域绑定。
-            tools.extend(
+            definitions.extend(
                 [
                     ToolDefinition(
                         name="memory_search",
@@ -1254,9 +1277,161 @@ def build_agent_tools(
                     ),
                 ]
             )
+    return definitions
+
+
+def build_agent_tools(
+    *,
+    mcp_manager: MCPClientManager,
+    memory_enabled: bool,
+    list: ToolRunner,
+    read: ToolRunner,
+    grep: ToolRunner,
+    web_search: ToolRunner | None = None,
+    fetcher: ToolRunner | None = None,
+    image_gen: ToolRunner | None = None,
+    tts: ToolRunner | None = None,
+    edit_file: ToolRunner,
+    write_file: ToolRunner,
+    bash: ToolRunner,
+    powershell: ToolRunner,
+    monitor: ToolRunner,
+    git: ToolRunner | None = None,
+    memory_search: ToolRunner,
+    memory_read: ToolRunner,
+    memory_expand_related: ToolRunner,
+    memory_write: ToolRunner,
+    mcp_call: MCPToolRunner,
+    mcp_read_resource: MCPResourceRunner,
+    mcp_get_prompt: MCPPromptRunner,
+    read_image: ToolRunner | None = None,
+    find: ToolRunner | None = None,
+    evidence_recall: ToolRunner | None = None,
+    subagent: ToolRunner | None = None,
+    subagent_types: Sequence[str] = (),
+    update_todos: ToolRunner | None = None,
+    ask_user: ToolRunner | None = None,
+    pause_work: ToolRunner | None = None,
+    windows_window: ToolRunner | None = None,
+    windows_control: ToolRunner | None = None,
+    windows_input: ToolRunner | None = None,
+    windows_clipboard: ToolRunner | None = None,
+    windows_screenshot: ToolRunner | None = None,
+    project_memory_search: ToolRunner | None = None,
+    project_memory_read: ToolRunner | None = None,
+    project_memory_expand_related: ToolRunner | None = None,
+    project_memory_write: ToolRunner | None = None,
+    session_memory_search: ToolRunner | None = None,
+    session_memory_read: ToolRunner | None = None,
+    session_memory_expand_related: ToolRunner | None = None,
+    session_memory_write: ToolRunner | None = None,
+    user_memory_search: ToolRunner | None = None,
+    user_memory_read: ToolRunner | None = None,
+    user_memory_expand_related: ToolRunner | None = None,
+    user_memory_write: ToolRunner | None = None,
+    kb_search: ToolRunner | None = None,
+    kb_read: ToolRunner | None = None,
+    kb_write: ToolRunner | None = None,
+    kb_append: ToolRunner | None = None,
+    kb_list: ToolRunner | None = None,
+    disabled_tools: frozenset[str] = frozenset(),
+) -> dict[str, ToolDefinition]:
+    """构建 Agent 可用工具表，执行函数仍由 LocalToolAgent 绑定提供。
+
+    ``disabled_tools`` 中的工具名（含 MCP 动态工具）不会出现在结果表中；
+    模型不可见即不可调用，与审批模式无关。
+    """
+
+    kb_runners = (kb_search, kb_read, kb_write, kb_append, kb_list)
+    if any(runner is not None for runner in kb_runners) and not all(
+        runner is not None for runner in kb_runners
+    ):
+        raise ValueError("知识库工具必须作为完整工具组注册。")
+
+    tools = build_mcp_tools(
+        mcp_manager=mcp_manager,
+        mcp_call=mcp_call,
+        mcp_read_resource=mcp_read_resource,
+        mcp_get_prompt=mcp_get_prompt,
+    )
+    tools.extend(
+        _core_tool_definitions(
+            list=list,
+            read=read,
+            grep=grep,
+            edit_file=edit_file,
+            write_file=write_file,
+            bash=bash,
+            powershell=powershell,
+            monitor=monitor,
+            find=find,
+            read_image=read_image,
+            web_search=web_search,
+            fetcher=fetcher,
+            image_gen=image_gen,
+            tts=tts,
+            git=git,
+        )
+    )
+    tools.extend(
+        _knowledge_tool_definitions(
+            kb_search=kb_search,
+            kb_read=kb_read,
+            kb_write=kb_write,
+            kb_append=kb_append,
+            kb_list=kb_list,
+        )
+    )
+    tools.extend(
+        _meta_tool_definitions(
+            update_todos=update_todos,
+            ask_user=ask_user,
+            pause_work=pause_work,
+            evidence_recall=evidence_recall,
+        )
+    )
+    tools.extend(
+        _windows_tool_definitions(
+            windows_window=windows_window,
+            windows_control=windows_control,
+            windows_input=windows_input,
+            windows_clipboard=windows_clipboard,
+            windows_screenshot=windows_screenshot,
+        )
+    )
+    if subagent is not None:
+        tools.extend(
+            _subagent_tool_definition(
+                subagent=subagent,
+                subagent_types=subagent_types,
+            )
+        )
+    if memory_enabled:
+        tools.extend(
+            _memory_tool_definitions(
+                memory_enabled=memory_enabled,
+                memory_search=memory_search,
+                memory_read=memory_read,
+                memory_expand_related=memory_expand_related,
+                memory_write=memory_write,
+                project_memory_search=project_memory_search,
+                project_memory_read=project_memory_read,
+                project_memory_expand_related=project_memory_expand_related,
+                project_memory_write=project_memory_write,
+                session_memory_search=session_memory_search,
+                session_memory_read=session_memory_read,
+                session_memory_expand_related=session_memory_expand_related,
+                session_memory_write=session_memory_write,
+                user_memory_search=user_memory_search,
+                user_memory_read=user_memory_read,
+                user_memory_expand_related=user_memory_expand_related,
+                user_memory_write=user_memory_write,
+            )
+        )
     return {
         tool.name: tool for tool in tools if tool.name not in disabled_tools
     }
+
 
 
 def build_mcp_tools(
