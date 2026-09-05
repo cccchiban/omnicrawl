@@ -834,6 +834,70 @@ def _indent_body_lines(body: Text, prefix: str) -> Text:
     return rendered
 
 
+class RuntimeStatus(Horizontal):
+    """回合运行状态行：左侧动态文本 + 尾部 [ ESC ] 中断提示。
+
+    状态文本（含 Braille 帧）随回合阶段高频重绘，[ ESC ] 是恒定子组件，
+    独立接收鼠标悬停与点击；悬停时由 CSS 将 [ ESC ] 置为淡蓝色加粗，
+    离开恢复灰色（dim），点击触发与键盘 ESC 相同的宿主取消/聚焦动作，
+    让中断入口可发现又不抢占正文注意力。
+    """
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    RuntimeStatus {
+        height: 1;
+        width: auto;
+        border-top: none;
+        border-bottom: none;
+        margin-bottom: 0;
+    }
+    #runtime-status-label {
+        width: auto;
+        height: 1;
+        text-style: bold;
+    }
+    #runtime-status-esc-hint {
+        width: 8;
+        height: 1;
+        text-style: bold dim;
+        pointer: pointer;
+    }
+    #runtime-status-esc-hint:hover {
+        color: ansi_bright_blue;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__(classes="message runtime-status-message")
+        self._label = Static("", id="runtime-status-label")
+        # 前导空格是状态正文与提示之间的分隔，挂在提示一侧可避免依赖
+        # 动态标签的尾随空格。
+        self._hint = Static(" [ ESC ]", id="runtime-status-esc-hint", markup=False)
+
+    def compose(self) -> ComposeResult:
+        yield self._label
+        yield self._hint
+
+    def update_status(self, label_text: Text) -> None:
+        """更新状态文本（spinner + 状态文字），[ ESC ] 子组件保持不变。"""
+
+        self._label.update(label_text)
+
+    def on_click(self, event: Click) -> None:
+        """点击 [ ESC ] 与键盘 ESC 等价：交给宿主统一的取消/聚焦动作。"""
+
+        if event.chain != 1:
+            return
+        app = self.app
+        action = getattr(app, "action_cancel_or_focus", None)
+        if action is not None:
+            event.stop()
+            action()
+
+
 class ToolDisclosure(Static):
     """工具调用记录；所有工具默认展开，正文始终可见。
 

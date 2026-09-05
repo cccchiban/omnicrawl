@@ -27,10 +27,11 @@ from ....agent.toolkit.tools import (
     TODO_TOOL_NAME,
     public_tool_arguments,
 )
-from ..terminal.theme import TEXT_MUTED, TOOL_TEXT
+from ..terminal.theme import TOOL_TEXT
 from .widgets import (
     AssistantMessage,
     ReasoningDisclosure,
+    RuntimeStatus,
     SubAgentConversation,
     SubAgentProgressTree,
     ToolDisclosure,
@@ -1060,15 +1061,16 @@ class RenderingMixin:
             follow_latest = self._is_conversation_at_end(conversation)
         status = self._runtime_status_message
         if status is None:
-            status = Static("", classes="message runtime-status-message")
+            status = RuntimeStatus()
             self._runtime_status_message = status
             conversation.mount(status)
         spinner_frame = self.STATUS_SPINNER_FRAMES[self._status_spinner_index]
         # 所有活动中的回合状态都支持 Esc 取消；在状态行尾固定显示提示，
         # 让“正在思考/回复/调用”等同类状态的中断入口清晰可见。
-        status_text = Text(f"{spinner_frame} {self._runtime_status_text} ")
-        status_text.append("[ ESC ]", style=TEXT_MUTED)
-        status.update(status_text)
+        # [ ESC ] 是 RuntimeStatus 的恒定子组件：状态文本高频重绘不触碰
+        # 它，鼠标悬停由 CSS :hover 单独点亮为淡蓝色。
+        status_text = Text(f"{spinner_frame} {self._runtime_status_text}")
+        status.update_status(status_text)
         if (
             status.parent is conversation
             and conversation.children

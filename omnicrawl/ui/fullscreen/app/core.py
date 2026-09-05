@@ -42,6 +42,7 @@ from ..rendering.welcome_logo import welcome_logo_text
 from ..rendering.widgets import (
     AssistantMessage,
     ReasoningDisclosure,
+    RuntimeStatus,
     SubAgentProgressTree,
     TodoPlan,
     ToolDisclosure,
@@ -500,7 +501,7 @@ class OmniCrawlApp(
         self._tokens_per_second = 0.0
         self._runtime_status_text = "完成"
         self._runtime_status_state = "complete"
-        self._runtime_status_message: Static | None = None
+        self._runtime_status_message: RuntimeStatus | None = None
         self._status_spinner_index = 0
         self._command_matches: list[dict[str, str]] = []
         self._command_selection = 0
