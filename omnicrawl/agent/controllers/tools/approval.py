@@ -421,8 +421,10 @@ class ToolApprovalMixin:
                 # 与主对话 Runtime 一致使用标准 Responses 思考参数：旧 chat 风格
                 # 字段 thinking/reasoning_effort 在 Responses 网关不被识别，会让
                 # 审查模型按默认思考强度运行并只返回 reasoning item，导致下文
-                # 提取不到审查结论。none 档位实测能真正关闭思考。
-                extra_body={"reasoning": {"effort": "none"}},
+                # 提取不到审查结论。档位取网关通用的最小档 low：部分课程网关
+                # （如 axo.chibanban.de）只接受 low/medium/high/xhigh/max，
+                # 传 none 会被拒为 HTTP 400；low 实测可正常返回并关闭重思考。
+                extra_body={"reasoning": {"effort": "low"}},
                 timeout=min(self.config.request_timeout_seconds, 60),
             )
         except Exception as exc:
