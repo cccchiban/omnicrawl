@@ -49,7 +49,13 @@ WebSocket 长连接。
 - 认证方式：飞书自建应用的 `app_id` + `app_secret`；
 - Agent：通过 `create_default_agent()` 创建 OmniCrawl 默认 Agent；
 - 提问：`ask_user` 的三种模式（`select`/`question`/`confirm`）都会携带 `options`，`select` 发送交互式卡片让用户从选项中单选，`question`/`confirm` 也以选项卡片呈现，同时允许用户直接回复文本作为自定义答案；
-- 任务并发：一个连接器进程内同一时间只执行一个 Agent 任务；
+- 任务并发与排队：一个连接器进程内同一时间只执行一个 Agent 任务。任务执行期间
+  到达的普通任务消息不再被拒绝，而是进入**持久入站队列**，按到达顺序在当前任务
+  结束后依次执行（先到先服务）；`/` 开头的命令与提问的回答仍即时处理，不入队；
+- 入站可靠性：普通任务消息会**先持久化落盘再交给 Agent**（参考 openclaw 的
+  inbound durability 设计）。进程在任务执行中崩溃或重启后，启动时会自动回放
+  尚未完成的消息，避免消息丢失；已处理完成的消息（含 24 小时去重窗口）不会因
+  飞书重连/重投或重启而重复执行；
 - 文件目录：收到的资源保存到当前 Agent 工作区的 `.omnicrawl/.agent_tmp/` 分类目录。
 
 > 当前连接器进程与 OmniCrawl TUI/API 是独立入口。启动 TUI 时若飞书 App ID 和
@@ -322,10 +328,10 @@ $env:OMNICRAWL_AUTO_START_CONNECTORS = "0"
 | 命令 | 作用 |
 |---|---|
 | `/start`、`/help` | 查看帮助 |
-| `/status` | 查看工作区、会话和任务状态 |
+| `/status` | 查看工作区、会话、任务状态与排队任务数 |
 | `/session` | 查看当前会话 ID |
-| `/reset`、`/new` | 清空当前对话并开启新会话 |
-| `/cancel` | 请求取消当前任务；等待提问时也可取消 |
+| `/reset`、`/new` | 清空当前对话并开启新会话（需无活动任务） |
+| `/cancel` | 请求取消当前任务；等待提问时也可取消（排队中的消息暂不支持单独取消） |
 | `/approve` | 批准当前等待的敏感工具调用 |
 | `/reject` | 拒绝当前等待的敏感工具调用 |
 | `/thinking on\|off` | 开关思考内容展示 |
@@ -437,8 +443,10 @@ pip install lark-oapi
 | 路径 | 作用 |
 |---|---|
 | `omnicrawl/connectors/fsapp.py` | 飞书 WebSocket 连接、消息分派、Agent 任务、审批和文件收发 |
+| `omnicrawl/connectors/feishu_inbox.py` | 飞书入站持久队列与跨重启去重（先落盘后处理） |
 | `omnicrawl/docs/FSAPP.md` | 本配置与排障指南 |
 | `~/.OmniCrawl/config.toml` | 本机运行配置，包含 `[feishu]` 凭证和白名单 |
+| `<user_config>/connector-inbox/feishu/` | 飞书入站队列持久化目录（`pending.jsonl`/`done.jsonl`/`state.json`） |
 | `<workspace>/.omnicrawl/.agent_tmp/` | 飞书接收文件和 Agent 临时产物 |
 
 `pyproject.toml` 已配置 `omnicrawl` 包包含 `docs/*.md`，因此该文档会随包数据规则被
@@ -456,7 +464,9 @@ python -m py_compile omnicrawl/connectors/fsapp.py
 然后在飞书客户端完成：
 
 - `/start` 回复验证；
-- `/status` 状态验证；
+- `/status` 状态验证（空闲时应无排队提示）；
 - 一个只读 Agent 任务验证；
+- 连续发送两个任务：第二个应提示"正在排队"，第一个完成后第二个自动执行；
+- 任务执行中发送 `/status`：应显示"排队任务：N 条"；
 - 一个白名单外用户的拒绝验证；
 - 如需使用敏感工具，再验证 `/approve` 和 `/reject`。

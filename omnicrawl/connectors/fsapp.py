@@ -60,6 +60,8 @@ from typing import Any, Iterable, Mapping
 
 from omnicrawl.state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 
+from omnicrawl.connectors.feishu_inbox import FeishuInbox, InboxRecord
+
 # lark-oapi 是可选依赖：通过模块级 __getattr__（PEP 562）惰性加载，未安装或
 # 未实际使用（如 --check、TUI 自动启动的配置探测）时不付出导入成本；首次
 # 访问时导入并缓存到模块命名空间，此后与普通导入无异。
@@ -260,6 +262,8 @@ class _ActiveTask:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     started_at: float = field(default_factory=time.time)
+    # 持久入站队列去重键；由队列 worker 填充，任务终结时用于确认（出队）。
+    dedupe_key: str | None = None
 
 
 class _TaskCard:
@@ -690,7 +694,14 @@ def check_config(*, init_agent: bool = False) -> dict[str, Any]:
 class FeishuBot:
     """通过飞书长连接远程驱动一个 OmniCrawl ``LocalToolAgent``。"""
 
-    def __init__(self, config: FeishuConfig, *, agent: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: FeishuConfig,
+        *,
+        agent: Any | None = None,
+        inbox: FeishuInbox | None = None,
+        inbox_root: Path | None = None,
+    ) -> None:
         self.config = config
         self._client: Any | None = None
         self._ws_client: Any | None = None
@@ -704,6 +715,27 @@ class FeishuBot:
         self._pending_user_question: _PendingUserQuestion | None = None
         self._seen_messages: dict[str, float] = {}
         self._show_thinking = False
+        # 持久入站队列：外部可注入（测试/嵌入方），否则按 inbox_root（或默认
+        # 用户配置目录）惰性创建。用于先落盘再分发、跨重启去重与排队串行。
+        self._inbox = inbox
+        self._inbox_root = inbox_root
+        self._pump_lock = threading.Lock()
+
+    def _get_inbox(self) -> FeishuInbox:
+        """惰性创建并返回持久入站队列。"""
+
+        with self._lock:
+            if self._inbox is None:
+                root = self._inbox_root
+                if root is None:
+                    try:
+                        from omnicrawl.config.core.runtime import user_config_dir
+
+                        root = user_config_dir() / "connector-inbox" / "feishu"
+                    except Exception:  # noqa: BLE001 - 拿不到目录时退化为内存
+                        root = None
+                self._inbox = FeishuInbox(root=root)
+            return self._inbox
 
     # ------------------------------------------------------------------
     # Agent 与生命周期
@@ -765,6 +797,12 @@ class FeishuBot:
                 self._agent.close()
             except Exception:  # noqa: BLE001 - 退出阶段不覆盖原始错误
                 LOGGER.exception("关闭 OmniCrawl Agent 失败")
+        inbox = self._inbox
+        if inbox is not None:
+            try:
+                inbox.close()
+            except Exception:  # noqa: BLE001 - 退出阶段只记录
+                LOGGER.debug("关闭飞书入站队列失败", exc_info=True)
 
     # ------------------------------------------------------------------
     # 飞书消息 API
@@ -1275,7 +1313,11 @@ class FeishuBot:
                 _field(message, "message_type", "unknown"),
                 user_text[:200],
             )
-            if str(_field(message, "message_type", "") or "") == "text" and user_text.startswith("/"):
+            is_command = (
+                str(_field(message, "message_type", "") or "") == "text"
+                and user_text.startswith("/")
+            )
+            if is_command:
                 self._spawn(
                     self._dispatch,
                     receive_id,
@@ -1284,14 +1326,55 @@ class FeishuBot:
                     user_text,
                 )
                 return
-            self._start_task(
+
+            # 普通任务消息：先持久化入队（崩溃/重启不丢、跨重启去重），再由
+            # 串行 worker 依次执行；任务执行期间到达的消息会排队而不是被拒绝。
+            dedupe_key = self._inbox_dedupe_key(event, message, user_text)
+            if not self._get_inbox().enqueue(
+                event_id=message_id,
+                dedupe_key=dedupe_key,
+                payload={
+                    "receive_id": receive_id,
+                    "receive_id_type": receive_id_type,
+                    "sender_open_id": open_id,
+                    "text": user_text,
+                },
+            ):
+                LOGGER.info("忽略已处理的飞书消息：%s", dedupe_key)
+                return
+            self._send_text(
                 receive_id,
-                receive_id_type,
-                open_id,
-                user_text,
+                "📥 已收到任务，正在排队执行（/cancel 可取消，发送 /status 查看队列）。",
+                receive_id_type=receive_id_type,
             )
+            self._pump()
         except Exception:  # noqa: BLE001 - 单条事件失败不能杀死 SDK 长连接
             LOGGER.exception("处理飞书消息事件失败")
+
+    def _inbox_dedupe_key(self, event: Any, message: Any, user_text: str) -> str:
+        """计算跨重启去重键。
+
+        飞书在重连/重试时可能用新的 ``message_id`` 重投同一条逻辑消息
+        （openclaw #46778），只按 message_id 去重会漏。对文本消息使用
+        sender + chat + create_time + 内容哈希的稳定指纹；缺字段时回退到
+        message_id。图片/文件等媒体仍按 message_id 去重。
+        """
+
+        import hashlib
+
+        message_type = str(getattr(message, "message_type", "") or "")
+        message_id = str(_field(message, "message_id", "") or "")
+        if message_type != "text":
+            return message_id or f"type:{message_type}"
+        create_time = str(_field(message, "create_time", "") or "").strip()
+        chat_id = str(_field(message, "chat_id", "") or "").strip()
+        sender = _field(event, "sender", None)
+        sender_id = _field(sender, "sender_id", None)
+        open_id = str(_field(sender_id, "open_id", "") or "").strip()
+        if not (create_time and chat_id and open_id and user_text):
+            return message_id or "text:unknown"
+        digest = hashlib.sha256(user_text.encode("utf-8")).hexdigest()[:32]
+        return f"text:{open_id}:{chat_id}:{create_time}:{digest}"
 
     @staticmethod
     def _spawn(target: Any, *args: Any) -> threading.Thread:
@@ -1373,6 +1456,15 @@ class FeishuBot:
         ]
         if busy and task is not None:
             lines.append(f"任务已运行 {int(max(0, time.time() - task.started_at))} 秒，可发送 /cancel。")
+        try:
+            pending = self._get_inbox().pending_count
+            memory_only = self._get_inbox().memory_only
+            if pending:
+                lines.append(f"排队任务：{pending} 条（将依次执行）")
+            if memory_only:
+                lines.append("⚠️ 入站队列为纯内存模式（未启用跨重启持久化）")
+        except Exception:  # noqa: BLE001 - 状态展示不应失败
+            LOGGER.debug("读取飞书入站队列状态失败", exc_info=True)
         return "\n".join(lines)
 
     def _help_text(self) -> str:
@@ -1576,29 +1668,71 @@ class FeishuBot:
     # Agent 任务、取消和工具审批
     # ------------------------------------------------------------------
 
+    def _pump(self) -> None:
+        """从持久入站队列取一条消息并启动任务（若当前空闲）。
+
+        由入站消息和任务终结回调触发；使用 ``_pump_lock`` 防止并发重复启动。
+        消息只有在任务真正终结（``_execute_task`` finally 中 confirm）后才从
+        队列移除，因此执行中崩溃会在重启后由 ``recover`` 重新分发。
+        """
+
+        if self._stopped.is_set():
+            return
+        if not self._pump_lock.acquire(blocking=False):
+            return  # 已有 pump 在处理
+        try:
+            while not self._stopped.is_set():
+                with self._lock:
+                    active = self._active_task
+                if active is not None and active.thread is not None and active.thread.is_alive():
+                    return  # 已有任务在执行，队列会由该任务终结时继续推进
+                records = self._get_inbox().recover()
+                if not records:
+                    return
+                record = records[0]
+                payload = record.payload or {}
+                text = str(payload.get("text") or "").strip()
+                if not text:
+                    # 无法执行的记录直接确认丢弃，避免死循环。
+                    LOGGER.warning("丢弃无法执行的飞书入站记录：%s", record.dedupe_key)
+                    self._get_inbox().confirm(record.dedupe_key)
+                    continue
+                started = self._start_task(
+                    str(payload.get("receive_id") or ""),
+                    str(payload.get("receive_id_type") or "open_id"),
+                    str(payload.get("sender_open_id") or ""),
+                    text,
+                    dedupe_key=record.dedupe_key,
+                )
+                if not started:
+                    return
+                return  # 单条任务已启动，后续由 finally 中的 _pump 推进
+        finally:
+            self._pump_lock.release()
+
     def _start_task(
         self,
         receive_id: str,
         receive_id_type: str,
         sender_open_id: str,
         text: str,
-    ) -> None:
+        *,
+        dedupe_key: str | None = None,
+    ) -> bool:
+        """启动一个任务线程；若已有活动任务则返回 False（调用方自行处理）。"""
+
         with self._lock:
             current = self._active_task
             if current is not None and current.thread is not None and current.thread.is_alive():
                 busy_id = current.receive_id
-                self._send_text(
-                    receive_id,
-                    "🔄 当前已有任务正在执行，请等待完成或发送 /cancel 取消。",
-                    receive_id_type=receive_id_type,
-                )
                 LOGGER.info("拒绝并发飞书任务（当前任务目标=%s，新目标=%s）", busy_id, receive_id)
-                return
+                return False
             task = _ActiveTask(
                 receive_id=receive_id,
                 receive_id_type=receive_id_type,
                 sender_open_id=sender_open_id,
                 text=text,
+                dedupe_key=dedupe_key,
             )
             thread = threading.Thread(
                 target=self._execute_task,
@@ -1609,11 +1743,7 @@ class FeishuBot:
             task.thread = thread
             self._active_task = task
         thread.start()
-        self._send_text(
-            receive_id,
-            "✅ 已收到任务，开始执行（/cancel 可取消）。",
-            receive_id_type=receive_id_type,
-        )
+        return True
 
     def _execute_task(self, task: _ActiveTask) -> None:
         deltas: list[str] = []
@@ -1733,6 +1863,14 @@ class FeishuBot:
                 question = self._pending_user_question
                 if question is not None and question.receive_id == task.receive_id:
                     self._pending_user_question = None
+            # 任务终结（成功/失败/取消）后，确认队列中的这条已处理，并继续
+            # 执行后续排队消息。
+            if task.dedupe_key:
+                try:
+                    self._get_inbox().confirm(task.dedupe_key)
+                except Exception:  # noqa: BLE001 - 确认失败不掩盖任务结果
+                    LOGGER.debug("确认飞书入站队列任务失败", exc_info=True)
+            self._pump()
 
     def _request_cancel(self, receive_id: str, receive_id_type: str) -> None:
         with self._lock:
@@ -2025,6 +2163,16 @@ class FeishuBot:
         # 建连并行：先让机器人尽快上线，Agent 由后台线程预热，首个消息通常
         # 已就绪；预热失败只记日志，首个消息会再次构建并按既有路径回传错误。
         self._prewarm_agent()
+
+        # 恢复上次进程退出时尚未完成的入站消息（先落盘后处理的设计保证
+        # 崩溃/重启不丢任务）。
+        try:
+            pending = self._get_inbox().recover()
+            if pending:
+                LOGGER.info("发现 %d 条未完成的飞书入站消息，开始恢复执行", len(pending))
+                self._pump()
+        except Exception:  # noqa: BLE001 - 恢复失败不能阻止连接器上线
+            LOGGER.exception("恢复飞书入站队列失败")
 
         handler_builder = (
             sdk.EventDispatcherHandler.builder("", "")
