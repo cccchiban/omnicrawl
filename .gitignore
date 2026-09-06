@@ -22,6 +22,7 @@ designs/
 .omnicrawl/
 logs/
 tests/
+generated_audio/
 
 CLAUDE.md
 AGENTS.md
