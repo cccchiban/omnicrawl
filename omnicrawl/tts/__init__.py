@@ -20,6 +20,13 @@ numpy/sentencepiece/onnxruntime）。这样缺失引擎依赖时，设置页仍�
 """
 
 from .config import DEFAULT_MODEL_DIR, TTSConfig, resolve_model_dir
+from .custom_voices import (
+    add_custom_voice,
+    available_voice_names,
+    delete_custom_voice,
+    list_custom_voice_names,
+    load_custom_voices,
+)
 from .download import builtin_voice_names, ensure_model_dir, models_ready
 from .player import play_wav
 
@@ -28,8 +35,13 @@ __all__ = [
     "TTSConfig",
     "TtsEngine",
     "TtsResult",
+    "add_custom_voice",
+    "available_voice_names",
     "builtin_voice_names",
+    "delete_custom_voice",
     "ensure_model_dir",
+    "list_custom_voice_names",
+    "load_custom_voices",
     "models_ready",
     "play_wav",
     "resolve_model_dir",

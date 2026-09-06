@@ -52,8 +52,9 @@ class TTSConfig:
     prompt_audio_path: str | Path | None = None
     # 输出音频目录（synthesize 未指定 output_path 时使用）。
     output_dir: str | Path = "generated_audio"
-    # 是否用 codec 流式解码（低首字节延迟）。
-    streaming: bool = False
+    # 是否用 codec 流式解码（低首字节延迟；默认开启以降低显存占用，
+    # 避免全量解码在低显存设备上 OOM）。
+    streaming: bool = True
     # 长文本按 token 预算分块。
     voice_clone_max_text_tokens: int = 75
     # WeTextProcessing 文本归一化（需要 pynini，Windows 上默认关闭）。

@@ -521,7 +521,7 @@ class OmniCrawlApp(
         self._ask_user_custom_mode = False
         self._ask_user_selection = 0
         # 底部单行轮播 HUD：遥测页 10s → 工作区路径页 10s → 留言页 10s
-        # 循环；留言页每次切入从包内 carousel_messages.txt 随机取一条。
+        # 循环；留言页每轮切入从包内 carousel_messages.txt 随机取一条。
         # 切换时以解密扫描特效过渡，随机源固定实例便于测试复现。
         self._carousel_page = "telemetry"
         self._carousel_settled_text: Text | None = None
@@ -533,7 +533,8 @@ class OmniCrawlApp(
         self._carousel_anim_interval: Any = None
         self._carousel_hold_timer: Any = None
         self._carousel_rand = random.Random()
-        # 留言页当前已固定展示的文案；None 表示尚未抽取（首次切入时抽取）。
+        # 留言页当轮已固定展示的文案；None 表示尚未抽取，每轮切入
+        # message 页时在 _carousel_switch_to 中重置为 None 重新抽取。
         self._carousel_message_line: str | None = None
         # 欢迎 Logo 解密扫描入场动画：仅首次挂载播放一次；定时器/游标与
         # 轮播同一模式，隐藏或清空会话时由 _stop_welcome_logo_animation
@@ -543,6 +544,35 @@ class OmniCrawlApp(
         self._logo_anim_total_frames = 0
         self._logo_anim_started = False
         self._logo_rand = random.Random()
+        # 回合回复自动朗读器（仅主 TUI）：TTS 启用且模型就绪时，把模型正文
+        # 按段落流式朗读。播放器引擎随线程惰性创建，App 退出时统一关闭。
+        self._speech_announcer: TurnSpeechAnnouncer | None = None
+
+    def _speech_announcer_instance(self) -> TurnSpeechAnnouncer | None:
+        """惰性创建回合自动朗读器（测试可注入替身跳过真实 TTS）。"""
+        if self._speech_announcer is None:
+            try:
+                from ..turn.announcer import TurnSpeechAnnouncer
+            except Exception:  # noqa: BLE001 - 依赖缺失时自动朗读静默不可用
+                return None
+            try:
+                announcer = TurnSpeechAnnouncer(
+                    lambda: getattr(getattr(self.agent, "config", None), "tts", None)
+                )
+            except Exception:  # noqa: BLE001
+                return None
+            self._speech_announcer = announcer
+        return self._speech_announcer
+
+    def _close_speech_announcer(self) -> None:
+        """停止自动朗读线程并释放 TTS 引擎；幂等。"""
+        announcer = self._speech_announcer
+        self._speech_announcer = None
+        if announcer is not None:
+            try:
+                announcer.close()
+            except Exception:  # noqa: BLE001 - 关闭失败不阻塞退出
+                pass
 
     def compose(self) -> ComposeResult:
         with Vertical(id="shell"):

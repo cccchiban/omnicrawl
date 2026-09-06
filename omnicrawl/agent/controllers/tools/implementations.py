@@ -159,6 +159,12 @@ class ToolImplementationsMixin:
             kind=kind,
             options=options,
             request_id=str(arguments.get("request_id") or "").strip(),
+            # 与工具批次超时保持一致；入口据此在超时后自行关闭提问面板。
+            timeout_seconds=getattr(
+                getattr(self, "config", None),
+                "tool_timeout_seconds",
+                None,
+            ),
         )
         handler = getattr(self, "_ask_user_handler", None)
         try:

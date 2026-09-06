@@ -27,6 +27,10 @@ class AskUserRequest:
     kind: str = "question"
     options: tuple[str, ...] = ()
     request_id: str = ""
+    # 等待用户回答的最长秒数；None 表示由入口（UI/连接器）自行决定。
+    # 超时后入口应关闭提问面板并以“未回答”结束，避免工具批次已超时
+    # 而 UI 提问面板仍残留。
+    timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)

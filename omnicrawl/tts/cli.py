@@ -43,7 +43,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--sample-mode", choices=("greedy", "fixed", "full"), default="fixed")
     parser.add_argument("--do-sample", type=int, choices=[0, 1], default=1, help="是否采样（0 时强制 greedy）。")
-    parser.add_argument("--streaming", action="store_true", help="使用 codec 流式解码。")
+    parser.add_argument(
+        "--streaming",
+        "--no-streaming",
+        dest="streaming",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="codec 流式解码（默认开启以降低显存占用；--no-streaming 关闭，改全量解码）。",
+    )
     parser.add_argument("--no-play", action="store_true", help="合成后不自动播放。")
     parser.add_argument("--max-new-frames", type=int, default=375)
     parser.add_argument("--voice-clone-max-text-tokens", type=int, default=75)
@@ -81,8 +88,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     with TtsEngine(config) as engine:
         if args.list_voices:
             print("内置音色：")
-            for voice_row in engine.list_builtin_voices():
-                print(f"  - {voice_row['voice']}")
+            for voice_row in engine.list_available_voices():
+                suffix = "（自定义克隆）" if voice_row.get("group") == "Custom" else ""
+                print(f"  - {voice_row['voice']}{suffix}")
             return 0
         if args.warmup:
             engine.warmup()

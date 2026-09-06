@@ -60,6 +60,7 @@ class SettingsPane(Widget, can_focus=True):
         self._commit_callback: Optional[Callable[[Any], None]] = None
         self._navigate_callback: Optional[Callable[[str, Any], None]] = None
         self._modal_callback: Optional[Callable[[Any, Any], None]] = None
+        self._exit_callback: Optional[Callable[[], None]] = None
 
     def bind_pane_events(
         self,
@@ -68,8 +69,13 @@ class SettingsPane(Widget, can_focus=True):
         on_commit: Callable[[Any], None] | None = None,
         on_navigate: Callable[[str, Any], None] | None = None,
         on_modal: Callable[[Any, Any], None] | None = None,
+        on_exit: Callable[[], None] | None = None,
     ) -> None:
-        """宿主注入返回/提交/面板切换/弹层回调。"""
+        """宿主注入返回/提交/面板切换/弹层/整页退出回调。
+
+        ``on_exit`` 是“直接关闭当前所在设置面板”的请求：由二级表单里
+        的“取消”按钮触发，与 Esc 的“返回上一级”（``on_back``）区分。
+        """
         self._back_callback = on_back
         if on_commit is not None:
             self._commit_callback = on_commit
@@ -77,6 +83,8 @@ class SettingsPane(Widget, can_focus=True):
             self._navigate_callback = on_navigate
         if on_modal is not None:
             self._modal_callback = on_modal
+        if on_exit is not None:
+            self._exit_callback = on_exit
 
     def activate(self) -> None:
         """面板获得活动权：自绘列表类让 pane 自身聚焦，表单类可覆盖。"""
@@ -86,6 +94,11 @@ class SettingsPane(Widget, can_focus=True):
         """请求返回上一级（左侧列表或上级面板）。"""
         if self._back_callback is not None:
             self._back_callback()
+
+    def request_exit(self) -> None:
+        """请求直接关闭当前所在设置面板（二级表单“取消”按钮用）。"""
+        if self._exit_callback is not None:
+            self._exit_callback()
 
     def commit(self, result: Any = None) -> None:
         """请求“保存完成”。"""

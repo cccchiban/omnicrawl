@@ -84,19 +84,6 @@ from ..shared import (
 
 LOGGER = logging.getLogger(__name__)
 
-# TTS 启用时追加到 system prompt 的说话指令。
-# 顺序必须是「先调用工具，再补文字」：Agent 循环中模型输出文字即回合
-# 终止，若要求先给文字再调用工具，模型会直接以文字回复结束回合、跳过
-# 工具调用；先调用 tts_synthesize 朗读再补文字说明才符合循环结构。
-_TTS_SPEAK_INSTRUCTION = (
-    '<tts_instruction source="host-settings" trust="host">\n'
-    "TTS 语音合成已启用：生成回复时，请先调用 tts_synthesize 工具"
-    "朗读你的回答（或用户明确指定的文本），生成语音会自动播放；"
-    "调用工具后再给出简明扼要的文字回复。不要只输出文字而不调用工具；"
-    "若模型未就绪或合成失败，直接在回复中说明原因，不要反复重试。\n"
-    "</tts_instruction>"
-)
-
 class TurnLoopMixin:
     """主模型循环：run_stream、工具批执行、LLM 请求与回合收尾。"""
 
@@ -296,10 +283,6 @@ class TurnLoopMixin:
                     working_messages
                 )
 
-            # TTS 指令仅供本轮首次模型请求使用；首次请求结束后由
-            # request_main_reply 清除，后续工具观察请求不重复注入。
-            self._active_tts_instruction = self._tts_speak_instruction()
-
             # 完整构造的 Agent 才持有带 profile_id 的 LLMConfig；部分内部单测
             # 使用最小对象并替换模型请求方法，此时跳过 Runtime 快照。
             llm_config = getattr(self.config, "llm", None)
@@ -325,19 +308,14 @@ class TurnLoopMixin:
                         visible_output_seen = True
                     on_delta(delta)
 
-                try:
-                    return self._request_agent_reply(
-                        messages,
-                        report_main_delta,
-                        report_token_usage,
-                        _report_protocol_wait,
-                        report_retry_status,
-                        on_stream_rollback=on_stream_rollback,
-                    )
-                finally:
-                    # 首次模型请求的辅助指令只使用一次；工具结果回填后的后续请求
-                    # 保持工具可用，但不重复注入同一段指令。
-                    self.__dict__.pop("_active_tts_instruction", None)
+                return self._request_agent_reply(
+                    messages,
+                    report_main_delta,
+                    report_token_usage,
+                    _report_protocol_wait,
+                    report_retry_status,
+                    on_stream_rollback=on_stream_rollback,
+                )
 
             def execute_main_tool_batch(
                 calls: Sequence[ToolCall],
@@ -1083,40 +1061,6 @@ class TurnLoopMixin:
             "直接基于这个任务继续执行或重试：\n"
             f"{pending_text}"
         )
-
-    def _tts_speak_instruction(self) -> str:
-        """返回本轮首次模型请求使用的 TTS system 指令；条件不满足时返回空串。
-
-        触发条件：``config.tts.enabled`` 为真、``tts_synthesize`` 工具实际
-        注册（未被工具开关禁用）、且 ONNX 模型已就绪（避免指令促使模型在
-        模型缺失时触发数分钟的自动下载阻塞回合）。
-
-        指令由当前回合在首次请求前暂存，拼接到 system prompt；首次请求
-        完成后清除，因此工具结果后的后续请求不会重复注入，也不会改变
-        TTS 工具的可用性。
-        """
-
-        config = getattr(self, "config", None)
-        tts = getattr(config, "tts", None)
-        if tts is None or not getattr(tts, "enabled", False):
-            return ""
-        tools = getattr(self, "_tools", None) or {}
-        if "tts_synthesize" not in tools:
-            return ""
-        try:
-            from omnicrawl.tts import models_ready
-        except Exception:  # noqa: BLE001 - 依赖缺失按模型未就绪处理
-            return ""
-        try:
-            model_dir = tts.resolved_model_dir()
-        except Exception:  # noqa: BLE001
-            model_dir = None
-        try:
-            if not models_ready(model_dir):
-                return ""
-        except Exception:  # noqa: BLE001
-            return ""
-        return _TTS_SPEAK_INSTRUCTION
 
     @staticmethod
     def _is_continue_last_task_request(text: str) -> bool:

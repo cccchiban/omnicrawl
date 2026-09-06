@@ -7,7 +7,7 @@ onnxruntime-gpu；仅在用户点击按钮后下载并自动安装该 Python 包
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -19,6 +19,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Select, Static
 
 from ....config.features.tts import (
+    DEFAULT_TTS_VOICE,
     TTSConfigError,
     TTSConfiguration,
     load_tts_configuration,
@@ -51,6 +52,7 @@ def _models_ready(configuration: "TTSConfiguration") -> bool:
 
 
 def _voice_options(configuration: "TTSConfiguration") -> tuple[str, ...]:
+    """内置音色（manifest）+ 用户自定义克隆音色（custom_voices.json）。"""
     builtin_voice_names, _models_ready_fn = _tts_engine_probe()
     voices: list[str] = []
     if builtin_voice_names is not None:
@@ -60,7 +62,20 @@ def _voice_options(configuration: "TTSConfiguration") -> tuple[str, ...]:
             voices = []
     if not voices:
         voices = list(_FALLBACK_VOICES)
-    return tuple(voices)
+    try:
+        from ....tts.custom_voices import list_custom_voice_names
+
+        voices.extend(list_custom_voice_names())
+    except Exception:  # noqa: BLE001 - 自定义库读取失败不阻断设置页
+        pass
+    # 去重（保留 manifest 顺序，自定义追加在后）。
+    seen: set[str] = set()
+    unique: list[str] = []
+    for voice in voices:
+        if voice not in seen:
+            seen.add(voice)
+            unique.append(voice)
+    return tuple(unique)
 
 
 def _model_status_text(configuration: "TTSConfiguration") -> str:
@@ -68,7 +83,7 @@ def _model_status_text(configuration: "TTSConfiguration") -> str:
         model_dir = configuration.resolved_model_dir()
         voices = _voice_options(configuration)
         return (
-            f"模型已就绪：{model_dir}（内置音色 {len(voices)} 个）。"
+            f"模型已就绪：{model_dir}（可用音色 {len(voices)} 个）。"
             "状态：已下载 ✓"
         )
     return "模型未下载：点击下方按钮自动下载（约 763MB，首次使用约需数分钟）。"
@@ -117,6 +132,14 @@ _PANE_CSS = """
 .tts-control { height: 3; margin-bottom: 1; }
 .tts-status { height: 2; color: $terminal-white; }
 .tts-download-button { margin-bottom: 1; }
+.tts-clone-row { height: 3; margin-bottom: 1; }
+.tts-clone-row Input { width: 1fr; }
+.tts-clone-row Button { width: 14; margin-left: 1; }
+.tts-clone-note { height: 2; color: $terminal-text-muted; margin-bottom: 1; }
+.tts-delete-row { height: 3; margin-bottom: 1; }
+.tts-delete-row Select { width: 1fr; }
+.tts-delete-row Button { width: 14; margin-left: 1; }
+.tts-delete-note { height: 2; color: $terminal-text-muted; margin-bottom: 1; }
 #tts-actions { height: 3; align-horizontal: right; }
 """
 
@@ -150,6 +173,7 @@ class TTSSettingsPane(SettingsPane):
         self._previous_configuration = self._configuration
         self._downloading = False
         self._gpu_busy = False
+        self._clone_busy = False
         # onnxruntime 可能已在当前进程加载；安装新 wheel 后必须完整重启，
         # 才能让 tts_synthesize 使用新的 CUDA/cuDNN DLL。
         self._gpu_restart_required = False
@@ -178,13 +202,59 @@ class TTSSettingsPane(SettingsPane):
                 id="tts-auto-play",
                 classes="tts-control choice-select",
             )
-            yield Static("内置音色 voice", classes="tts-field-label")
+            yield Static("内置音色 voice（含克隆音色）", classes="tts-field-label")
             yield Select(
                 [(voice, voice) for voice in self._voice_options()],
                 value=c.voice if c.voice in self._voice_options() else "Junhao",
                 allow_blank=False,
                 id="tts-voice",
                 classes="tts-control choice-select",
+            )
+            yield Static("语音克隆：输入新音色名并选择参考音频（.wav）", classes="tts-field-label")
+            yield Input(
+                "",
+                placeholder="新音色名称（如 Fairy）",
+                id="tts-clone-name",
+                classes="tts-control",
+            )
+            with Horizontal(id="tts-clone-audio-row", classes="tts-clone-row"):
+                yield Input(
+                    "",
+                    placeholder="参考音频 .wav 路径，或点右侧“浏览…”",
+                    id="tts-clone-audio",
+                )
+                yield Button("浏览…", id="tts-clone-browse")
+            yield Button(
+                "克隆并保存为音色",
+                id="tts-clone",
+                classes="tts-download-button",
+                variant="primary",
+            )
+            yield Static(
+                "克隆音色存入用户自定义音色库（~/.omnicrawl/tts/custom_voices.json），"
+                "保存设置后即可在下拉中选用。",
+                id="tts-clone-note",
+                classes="tts-clone-note",
+            )
+            yield Static("删除自定义音色（仅克隆音色可删，内置音色不可删）", classes="tts-field-label")
+            with Horizontal(id="tts-delete-row", classes="tts-delete-row"):
+                yield Select(
+                    [(voice, voice) for voice in self._custom_voice_options()],
+                    prompt="（无自定义音色）",
+                    allow_blank=True,
+                    value=Select.NULL if not self._custom_voice_options() else self._custom_voice_options()[0],
+                    id="tts-delete-voice",
+                    classes="choice-select",
+                )
+                yield Button(
+                    "删除音色",
+                    id="tts-delete",
+                    variant="error",
+                )
+            yield Static(
+                "点删除后立即从自定义音色库移除；保存设置后才会从上方可用音色下拉消失。",
+                id="tts-delete-note",
+                classes="tts-delete-note",
             )
             yield Static("模型目录 model_dir（留空使用默认 ~/.omnicrawl/tts/models）", classes="tts-field-label")
             yield Input(
@@ -236,6 +306,15 @@ class TTSSettingsPane(SettingsPane):
     def _voice_options(self) -> tuple[str, ...]:
         return _voice_options(self._configuration)
 
+    def _custom_voice_options(self) -> tuple[str, ...]:
+        """仅返回用户自定义克隆音色（删除下拉候选；内置音色不可删）。"""
+        try:
+            from ....tts.custom_voices import list_custom_voice_names
+
+            return tuple(list_custom_voice_names())
+        except Exception:  # noqa: BLE001 - 自定义库读取失败不阻断设置页
+            return ()
+
     def _model_status(self) -> str:
         return _model_status_text(self._configuration)
 
@@ -243,22 +322,173 @@ class TTSSettingsPane(SettingsPane):
         if event.button.id == "tts-save":
             self.action_save()
         elif event.button.id == "tts-cancel":
-            self.action_cancel()
+            self.action_exit()
         elif event.button.id == "tts-download":
             self._start_download()
         elif event.button.id == "tts-gpu-download":
             self._start_gpu_install()
+        elif event.button.id == "tts-clone-browse":
+            self._open_audio_picker()
+        elif event.button.id == "tts-clone":
+            self._start_clone()
+        elif event.button.id == "tts-delete":
+            self._start_delete()
+
+    def _open_audio_picker(self) -> None:
+        """弹出音频文件选择器，选中后回填参考音频路径。"""
+        if self._clone_busy:
+            return
+        from .file_picker import FilePickerScreen
+
+        def on_result(path: Any) -> None:
+            if path is None or not self.is_mounted:
+                return
+            audio_input = self.query_one("#tts-clone-audio", Input)
+            audio_input.value = str(path)
+            audio_input.focus()
+
+        self.request_modal(lambda: FilePickerScreen(), on_result)
+
+    def _start_clone(self) -> None:
+        """校验输入并在后台线程克隆参考音频为自定义音色。"""
+        if self._clone_busy or self._downloading or self._gpu_busy:
+            self._set_status("请等待当前 TTS 任务完成后再克隆。")
+            return
+        if not self._models_ready():
+            self._set_status("模型未下载：请先点击“下载 ONNX 模型”完成后再克隆。")
+            return
+        voice = self._read_input("tts-clone-name", fallback="")
+        audio_path = self._read_input("tts-clone-audio", fallback="")
+        if not voice:
+            self._set_status("请先输入新音色名称。")
+            self.query_one("#tts-clone-name", Input).focus()
+            return
+        if not audio_path:
+            self._set_status("请先选择参考音频（.wav）。")
+            self.query_one("#tts-clone-audio", Input).focus()
+            return
+        from ....tts.custom_voices import validate_voice_name
+
+        try:
+            voice = validate_voice_name(voice)
+        except ValueError as exc:
+            self._set_status(f"音色名称无效：{exc}")
+            return
+        resolved_audio = Path(audio_path).expanduser()
+        if not resolved_audio.is_file() or resolved_audio.suffix.lower() != ".wav":
+            self._set_status("参考音频必须是已存在的 .wav 文件。")
+            return
+        self._clone_busy = True
+        self._set_status(f"正在克隆音色「{voice}」，首次需加载模型，请稍候…")
+        self._start_clone_worker(voice, resolved_audio)
+
+    @work(thread=True, exclusive=True, group="tts-clone", exit_on_error=False)
+    def _start_clone_worker(self, voice: str, audio_path: Path) -> None:
+        from ....tts import TTSConfig, TtsEngine
+
+        try:
+            config = self._configuration
+            with TtsEngine(
+                TTSConfig(
+                    model_dir=config.model_dir or None,
+                    thread_count=config.thread_count,
+                    device=getattr(config, "device", "auto"),
+                )
+            ) as engine:
+                entry = engine.clone_voice(
+                    voice=voice,
+                    reference_audio_path=audio_path,
+                    display_name=f"CN {voice}",
+                )
+            cloned_voice = str(entry.get("voice", voice))
+            self.app.call_from_thread(self._clone_finished, cloned_voice, None)
+        except Exception as exc:  # noqa: BLE001 - 失败原因展示给用户
+            self.app.call_from_thread(self._clone_finished, voice, str(exc))
+
+    def _clone_finished(self, voice: str, error: str | None) -> None:
+        self._clone_busy = False
+        if error:
+            self._set_status(f"克隆失败：{error}")
+            return
+        self._refresh_voice_options(voice)
+        self._refresh_delete_options()
+        self._set_status(f"克隆成功：已保存音色「{voice}」并加入下方音色列表。保存设置后生效。")
+
+    def _start_delete(self) -> None:
+        """删除下拉选中的自定义音色；无选中或忙时给出提示。"""
+        if self._clone_busy:
+            self._set_status("语音克隆进行中，请等待完成后再删除。")
+            return
+        delete_select = self.query_one("#tts-delete-voice", Select)
+        voice = delete_select.value
+        if voice is Select.NULL or not voice:
+            self._set_status("请先在上方下拉选择一个要删除的自定义音色。")
+            delete_select.focus()
+            return
+        try:
+            from ....tts.custom_voices import delete_custom_voice
+
+            removed = delete_custom_voice(str(voice))
+        except ValueError as exc:
+            self._set_status(f"删除失败：{exc}")
+            return
+        if not removed:
+            self._set_status(f"音色「{voice}」不在自定义音色库中，可能已被删除。")
+            self._refresh_delete_options()
+            return
+        self._delete_finished(str(voice))
+
+    def _delete_finished(self, voice: str) -> None:
+        """删除成功：从自定义库移除，并同步删除下拉与可用音色下拉。"""
+        self._set_status(f"已删除自定义音色「{voice}」。保存设置后从可用音色列表移除。")
+        # 若当前配置的音色正是被删除项，回退到首个可用音色，避免保存后指向不存在音色。
+        if self._configuration.voice == voice:
+            voices = self._voice_options()
+            self._configuration = replace(
+                self._configuration,
+                voice=voices[0] if voices else DEFAULT_TTS_VOICE,
+            )
+        self._refresh_delete_options()
+        self._refresh_voice_options()
+
+    def _refresh_delete_options(self) -> None:
+        """删除下拉重载自定义音色候选；无候选时置为空态。"""
+        if not self.is_mounted:
+            return
+        try:
+            delete_select = self.query_one("#tts-delete-voice", Select)
+        except Exception:  # noqa: BLE001 - 挂载前查询失败可忽略
+            return
+        options = self._custom_voice_options()
+        delete_select.set_options([(voice, voice) for voice in options])
+        if options:
+            delete_select.value = options[0]
+        else:
+            delete_select.value = Select.NULL
+            delete_select.prompt = "（无自定义音色）"
 
     def activate(self) -> None:
         self.query_one("#tts-enabled", Select).focus()
 
     def action_cancel(self) -> None:
-        if not self._downloading and not self._gpu_busy:
+        if not self._downloading and not self._gpu_busy and not self._clone_busy:
             self.request_back()
+
+    def action_exit(self) -> None:
+        """“取消”按钮：直接关闭整个设置面板。
+
+        与 Esc 的“返回左侧”共用忙碌守卫：TTS 下载/克隆/GPU 安装等后台
+        任务进行中不允许关闭设置页，避免 worker 回调打到已卸载的 pane。
+        """
+        if not self._downloading and not self._gpu_busy and not self._clone_busy:
+            self.request_exit()
 
     def action_save(self) -> None:
         if self._downloading or self._gpu_busy:
             self._set_status("TTS 依赖安装或模型下载中，请等待完成后再保存。")
+            return
+        if self._clone_busy:
+            self._set_status("语音克隆进行中，请等待完成后再保存。")
             return
         try:
             configuration = TTSConfiguration(
@@ -335,12 +565,13 @@ class TTSSettingsPane(SettingsPane):
         self._refresh_voice_options()
         self._set_status(f"模型下载完成：{model_dir}。内置音色已更新 ✓")
 
-    def _refresh_voice_options(self) -> None:
+    def _refresh_voice_options(self, select_voice: str | None = None) -> None:
         select = self.query_one("#tts-voice", Select)
         voices = self._voice_options()
         select.set_options([(voice, voice) for voice in voices])
-        if self._configuration.voice in voices:
-            select.value = self._configuration.voice
+        preferred = select_voice or self._configuration.voice
+        if preferred in voices:
+            select.value = preferred
         elif voices:
             select.value = voices[0]
 
@@ -501,8 +732,14 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
             self._pane.bind_pane_events(
                 on_back=lambda: self.dismiss(None),
                 on_commit=lambda result: self.dismiss(result),
+                on_modal=self._open_modal,
+                on_exit=lambda: self.dismiss(None),
             )
             yield self._pane
+
+    def _open_modal(self, factory: Any, on_result: Any) -> None:
+        """在薄壳里直接 push 弹层（如音频文件选择器）。"""
+        self.app.push_screen(factory(), on_result)
 
     def on_mount(self) -> None:
         if self._pane is not None:

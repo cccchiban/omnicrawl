@@ -5,8 +5,9 @@ OmniCrawl 的 TTS 功能基于 [OpenMOSS/MOSS-TTS-Nano](https://github.com/OpenM
 ## 能力概览
 
 - **CPU/CUDA 推理**：`onnxruntime` + `sentencepiece` + numpy，无 torch 依赖；CPU 使用 `onnxruntime`，CUDA 使用 `onnxruntime-gpu`；48kHz 立体声输出。
-- **18 个内置音色**：Junhao/Zhiming/Weiguo/Xiaoyu/Yuewen/Lingyu/Trump/Ava/...（中英文混音色）。
-- **语音克隆**：传入参考音频（`prompt_audio`）即可克隆该音色，优先于内置音色。
+- **18 个内置音色 + 用户自定义克隆音色**：Junhao/Zhiming/Weiguo/Xiaoyu/Yuewen/Lingyu/Trump/Ava/...（中英文混音色）；克隆音色存于 `~/.omnicrawl/tts/custom_voices.json`，由 `/settings → TTS 语音合成` 面板的"语音克隆"功能生成，与内置音色一起在下拉与 `tts_synthesize` 中可用。
+- **语音克隆**：传入参考音频（`prompt_audio`）即可克隆该音色，优先于内置音色；也可在设置面板输入名称 + 选择参考 .wav，把克隆结果保存为一条"自定义音色"长期使用（不依赖原始音频路径，随库跨会话可用）。
+- **删除自定义音色**：设置面板"语音克隆"区下方提供"选择要删除的音色"下拉与红色"删除音色"按钮；仅自定义（克隆）音色可删，内置音色不可删。删除后需保存设置才会从可用音色下拉移除；若被删音色正是当前配置的 voice，会自动回退到首个可用内置音色。
 - **长文本自动分块**：按 token 预算切句/切块，块间插入自然停顿。
 - **自动播放**：合成完成后默认本地播放（`winsound` 异步，不阻塞 Agent 线程），可用配置关闭。
 - **模型自动下载**：首次启用时自动下载约 763MB（TTS 673MB + Codec 91MB），支持断点续传。
@@ -22,15 +23,34 @@ voice = "Junhao"          # 内置音色名
 auto_play = true          # 合成完成后自动播放
 thread_count = 4          # onnxruntime CPU 推理线程数（1/2/4/8）
 device = "auto"           # 推理设备：auto / cpu / cuda
-streaming = false         # codec 流式解码（低首字节延迟）
+streaming = true          # codec 流式解码（低首字节延迟；默认开启，显著降低显存占用，
+                          #   避免 codec 全量解码在低显存（如 4GB）设备上 OOM）
 output_dir = ".omnicrawl/.agent_tmp/tts"   # 无 path 参数时的默认保存目录（相对工作区）
 ```
 
-配置读写由 `omnicrawl/config/features/tts.py` 提供；也可在 TUI 设置面板（`/settings → TTS 语音合成`）中直接修改并写回。`device = "cpu"` 始终使用 CPU；`device = "cuda"` 要求真实 session 使用 `CUDAExecutionProvider`，不可用时直接报错；`device = "auto"` 优先尝试 CUDA，CUDA provider 或会话初始化不可用时自动回退 CPU。CUDA 需要安装与本机 CUDA/cuDNN 兼容的 `onnxruntime-gpu`，不要与 CPU 版 `onnxruntime` 同时保留。
+配置读写由 `omnicrawl/config/features/tts.py` 提供；也可在 TUI 设置面板（`/settings → TTS 语音合成`）中直接修改并写回。`device = "cpu"` 始终使用 CPU；`device = "cuda"` 要求真实 session 使用 `CUDAExecutionProvider`，不可用时直接报错；`device = "auto"` 优先尝试 CUDA，但存在两类自动回退 CPU 的情形：① CUDA provider 或会话初始化不可用；② 首张 NVIDIA 显卡**显存 < 6GB**（`onnx_runtime.py::_CUDA_AUTO_MIN_VRAM_MIB`）。原因：MOSS-TTS 引擎一次初始化约 8 个 CUDA session（约占 2.1GB 显存），长文本自回归推理峰值还会再涨约 1.8GB——4GB 级小卡上长文本必 OOM，且 OOM 时 ONNX Runtime 会把带 ANSI 色码的 C++ 错误直写 stderr 覆盖全屏 TUI。CUDA 需要安装与本机 CUDA/cuDNN 兼容的 `onnxruntime-gpu`，不要与 CPU 版 `onnxruntime` 同时保留。
+
+## 主 TUI 自动播报
+
+启用 TTS（`tts.enabled=true`）且模型就绪后，主 TUI（全屏对话界面）中 Agent
+的文字回复会被**程序自动朗读**，模型无需感知或调用任何 TTS 工具：
+
+- 模型流式正文（不含推理/思考与工具调用内容）按段落实时切分、后台合成并
+  按顺序播放；回合结束时残留文本统一提交为最后一段，取消回合则丢弃未播内容。
+- 段落合成默认单引擎串行（`TurnSpeechAnnouncer` 默认 `max_concurrency=1`）：
+  每个 worker 会独立加载整套模型权重（约 2GB 级内存），串行合成即可满足
+  边输出边朗读，同时避免多套权重同时驻留内存导致高内存占用与 TUI 卡顿；
+  播放严格按输出顺序串行，不互相打断。
+- 仅主 TUI 生效；Telegram/飞书等远程入口不自动朗读。
+- 实现位于 `omnicrawl/ui/fullscreen/turn/announcer.py`（`TurnSpeechAnnouncer`），
+  由 `omnicrawl/ui/fullscreen/app/core.py` 惰性装配、App 退出时统一释放。
+
+`tts_synthesize` 工具仍保留注册，可用于手动朗读指定文本（如读文件内容、
+长代码注释等），但不再是模型回复的必经步骤。
 
 ## Agent 工具：`tts_synthesize`
 
-模型可通过 `tts_synthesize` 工具把文本合成为语音：
+模型可通过 `tts_synthesize` 工具把指定文本合成为语音：
 
 | 参数 | 说明 |
 |---|---|
@@ -90,3 +110,4 @@ print(result.audio_path, result.duration_seconds)
 - **为什么合成没有声音？** 检查 `tts.auto_play` 是否开启；Windows 播放依赖 `winsound`（WAV 格式），macOS/Linux 回退 `afplay`/`aplay`/`paplay`。
 - **WeTextProcessing 语义归一化怎么开？** `enable_wetext` 需要额外安装 `pynini` + `WeTextProcessing`（Windows 上安装较麻烦）；未安装时自动降级为纯 Python 稳健清洗，绝大多数场景足够。
 - **CPU 慢？** 调高 `thread_count`（最多 8）或把 `max_new_frames` 调低（会截断长音频）；也可以在设置面板选择 CUDA。若状态显示 provider 存在但实际会话仍是 CPU，通常是 CUDA/cuDNN DLL 缺失或版本不兼容；点击 GPU 按钮会安装 Python 运行时 DLL，但不会安装显卡驱动或 CUDA Toolkit。
+- **TUI 语音会话中屏幕被大片红色 `[E:onnxruntime:...]`/`CUDA error ... out of memory` 覆盖？** 这是 4GB 级小显存卡上 `device=auto` 走 CUDA 长文本推理 OOM 时，ONNX Runtime 把 C++ 层错误（带 ANSI 色码）直写 stderr 造成的。已做三层防护：① `device=auto` 检测到显存 < 6GB 时初始化即回退 CPU（`onnx_runtime.py`）；② ORT 默认日志级别提升到 FATAL（`silence_ort_logging`），抑制 provider 加载失败与推理期 ERROR 红字；③ TUI 运行期 Python 日志落盘 `~/.OmniCrawl/logs/tui.log`（`ui/fullscreen/app/runner.py`），不再经 lastResort 刷 stderr。若仍需 CUDA 加速，请使用显存 ≥ 6GB 的显卡或缩短单段文本（`voice_clone_max_text_tokens`/段落切分会控制单次推理长度）。

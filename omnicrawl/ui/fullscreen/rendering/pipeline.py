@@ -41,6 +41,16 @@ from .widgets import (
 class RenderingMixin:
     """原 ``OmniCrawlApp`` 的事件聚合与流式渲染方法。"""
 
+    def _active_announcer(self):
+        """返回当前可用的回合朗读器（无实例/未启用时返回 None）。"""
+        get_instance = getattr(self, "_speech_announcer_instance", None)
+        if not callable(get_instance):
+            return None
+        try:
+            return get_instance()
+        except Exception:  # noqa: BLE001 - 朗读器异常不拖垮渲染
+            return None
+
     @property
     def _stream_markdown(self) -> str:
         """当前流式消息的完整 Markdown（含 ``◇ `` 前缀，惰性拼接）。
@@ -811,6 +821,9 @@ class RenderingMixin:
             conversation,
             follow_latest,
         )
+        announcer = self._active_announcer()
+        if announcer is not None:
+            announcer.feed_text(delta)
 
 
     def _render_stream_markdown(self, *, force: bool = False) -> None:
@@ -893,6 +906,9 @@ class RenderingMixin:
                 self._last_generation_at,
             ) = snapshot
         self._refresh_token_rate()
+        announcer = self._active_announcer()
+        if announcer is not None:
+            announcer.rollback_turn()
 
 
     def _append_message(
@@ -972,6 +988,9 @@ class RenderingMixin:
         self.is_generating = False
         # 派生评审流程结束：退出子代理对话流模式，后续子代理事件恢复进度树。
         self._conversation_stream_active = False
+        announcer = self._active_announcer()
+        if announcer is not None:
+            announcer.flush_turn(cancelled=was_cancelled)
         if self._reasoning_message is not None:
             # 推理后直接结束回合（无回复/无工具）时，同样补齐未完成行。
             self._reasoning_message.flush_tail()
@@ -981,6 +1000,13 @@ class RenderingMixin:
         # 取消回合的终态不能被 finally 中的通用完成逻辑覆盖为“完成”：
         # 状态文本保持与 cancel_pending_turn 展示的“已取消”一致。
         self._set_runtime_status("已取消" if was_cancelled else "完成", "complete")
+        # 回合结束兜底关闭仍显示的提问面板：ask_user 工具批次超时后后台
+        # 等待线程可能尚未清理（或用户始终未答），不能把提问残留到下一回合。
+        if self._ask_user_request is not None:
+            self._set_ask_user_request(None)
+            # 唤醒仍阻塞在 _ask_user 等待循环中的后台线程，让其读到空答案
+            # 并退出，避免旧请求与新回合的提问复用同一 Event 造成错乱。
+            self._ask_user_event.set()
         self.query_one("#composer", TextArea).focus()
         self._drain_pending_inputs()
 

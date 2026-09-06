@@ -11,13 +11,14 @@
     auto_play = true          # 合成完成后自动播放
     thread_count = 4          # onnxruntime CPU 线程数
     device = "auto"          # 推理设备：auto / cpu / cuda
-    streaming = false         # codec 流式解码（低首字节延迟）
+    streaming = true         # codec 流式解码（低首字节延迟，默认开启：显存占用低）
     output_dir = ".omnicrawl/.agent_tmp/tts"   # 生成音频默认保存目录
 
 说明：
 - 推理基于 ONNX Runtime，支持 CPU/CUDA 设备；CUDA 需要安装兼容的 onnxruntime-gpu；模型首次使用自动下载约 763MB。
-- ``voice`` 仅在内置音色（18 个：Junhao/Zhiming/Weiguo/Xiaoyu/Yuewen/...）中
-  选择；``tts_synthesize`` 工具调用时可传 ``prompt_audio`` 参考音频做语音克隆。
+- ``voice`` 在可用音色中选取：模型内置音色（18 个：Junhao/Zhiming/Weiguo/Xiaoyu/...）
+  或用户自定义克隆音色（``~/.omnicrawl/tts/custom_voices.json``）；
+  ``tts_synthesize`` 工具调用时可传 ``prompt_audio`` 参考音频做即时克隆。
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ class TTSConfiguration:
     auto_play: bool = True
     thread_count: int = 4
     device: str = "auto"
-    streaming: bool = False
+    streaming: bool = True
     output_dir: str = DEFAULT_TTS_OUTPUT_DIR
 
     def __post_init__(self) -> None:
@@ -111,7 +112,7 @@ def load_tts_configuration(config_path: str | Path | None = None) -> TTSConfigur
             auto_play=bool(raw_section.get("auto_play", True)),
             thread_count=int(raw_section.get("thread_count") or 4),
             device=str(raw_section.get("device") or "auto"),
-            streaming=bool(raw_section.get("streaming", False)),
+            streaming=bool(raw_section.get("streaming", True)),
             output_dir=str(raw_section.get("output_dir") or DEFAULT_TTS_OUTPUT_DIR),
         )
     except TTSConfigError:

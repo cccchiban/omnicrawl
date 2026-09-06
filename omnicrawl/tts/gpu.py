@@ -88,7 +88,10 @@ try:
         try:
             session = ort.InferenceSession(
                 sys.argv[1],
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                providers=[
+                    ("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"}),
+                    "CPUExecutionProvider",
+                ],
             )
             result["session_providers"] = session.get_providers()
         except Exception as exc:

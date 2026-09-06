@@ -32,16 +32,22 @@ _URL_RE = re.compile(r"https?://[^\s\u3000，。！？；、）】》〉」』]+
 _EMAIL_RE = re.compile(r"(?<![\\w.+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\\w.-])")
 _MENTION_RE = re.compile(r"(?<![A-Za-z0-9_])@[A-Za-z0-9_]{1,32}")
 _REDDIT_RE = re.compile(r"(?<![A-Za-z0-9_])(?:u|r)/[A-Za-z0-9_]+")
-_HASHTAG_RE = re.compile(r"(?<![A-Za-z0-9_])#(?!\s)[^\s#]+")
 
 # `.map` / `.env` / `.gitignore`
 _DOT_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])\.(?=[A-Za-z0-9._-]*[A-Za-z0-9])[A-Za-z0-9._-]+")
 
-# `app.js.map` / `index.d.ts` / `v2.3.1` / `foo/bar-baz.py` 等
+# 纯数字日期（2024/05/01、2024-05-01）：斜杠/连字符原样保留，便于读作日期
+_DATE_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{4})(?![A-Za-z0-9_])"
+)
+
+# `app.js.map` / `index.d.ts` / `v2.3.1` / `foo/bar-baz.py` 等。
+# 要求必须含 `.` 或 `:`（否则像 `A/B` 这种口语列举会被误保护，斜杠无法清理；
+# 裸词 `foo-bar` 不再当路径，但后续无清理规则会改动它，行为等价）。
 _FILELIKE_RE = re.compile(
     r"(?<![A-Za-z0-9_])"
     r"(?=[A-Za-z0-9._/+:-]*[A-Za-z])"
-    r"(?=[A-Za-z0-9._/+:-]*[./+:-])"
+    r"(?=[A-Za-z0-9._/+:-]*[.:])"
     r"[A-Za-z0-9][A-Za-z0-9._/+:-]*"
     r"(?![A-Za-z0-9_])"
 )
@@ -53,6 +59,57 @@ _LATINISH = rf"(?:{_PROT}|(?=[A-Za-z0-9._/+:-]*[A-Za-z])[A-Za-z0-9][A-Za-z0-9._/
 _ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200d\ufeff]")
 _TRAILING_CLOSERS = set('"\')]}）】》〉」』”’')
 
+# 表情符号（含肤色修饰、零宽连接序列、旗帜等变体）
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001f1e6-\U0001f1ff"  # 区域指示符（旗帜）
+    "\U0001f300-\U0001f5ff"  # 杂项符号与象形文字
+    "\U0001f600-\U0001f64f"  # 表情符号
+    "\U0001f680-\U0001f6ff"  # 交通与地图符号
+    "\U0001f700-\U0001f77f"  # 炼金符号
+    "\U0001f780-\U0001f7ff"  # 几何图形扩展
+    "\U0001f800-\U0001f8ff"  # 补充箭头
+    "\U0001f900-\U0001f9ff"  # 补充符号与象形文字
+    "\U0001fa00-\U0001fa6f"  # 扩展象形文字
+    "\U0001fa70-\U0001faff"  # 扩展象形文字补充
+    "\u2600-\u27bf"          # 杂项符号/装饰符号/箭头
+    "\u2b00-\u2bff"          # 杂项符号与箭头
+    "\ufe0f"                # 变体选择符（表情呈现）
+    "\u200d"                # 零宽连接符（ZWJ 序列）
+    "]+"
+)
+# 装饰性符号（键盘符号、几何、圈号/括号、特殊标点等，朗读无实义）
+_DECORATIVE_SYMBOL_RE = re.compile(
+    "["
+    "\u2300-\u23ff"   # 杂项技术符号（⏰⌚⏳ 等）
+    "\u25a0-\u25ff"   # 几何图形（■□▲△ 等）
+    "\u2b00-\u2bff"   # 杂项符号与箭头
+    "\u00a9\u00ae"    # © ®
+    "]+"
+)
+# 需删除的朗读无实义装饰符（不含引号：引号由 _QUOTES_RE 单独处理，
+# 结构括号转引号后还需二次清理）。不删 `_`（可见下划线已在
+# _normalize_visible_underscores 转空格，剩余下划线只属于保护占位符
+# ___PROTn___，必须保留）。
+_STRIP_CHARS_RE = re.compile(
+    r"[\*#~·•◦∙●○◎◇◆★☆※→←↑↓↔↕]"
+)
+# 引号与反引号（原输入直接删；结构括号转换生成的引号在管道尾部再删一次）
+_QUOTES_RE = re.compile(r"[\"'`´‘’“”]")
+# 反引号包裹的内联代码整体删除（连同反引号），避免朗读代码原文
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+# 英文缩写撇号（字母之间）：朗读必须保留，先换占位符再恢复
+_APOSTROPHE_RE = re.compile(r"(?<=[A-Za-z])['’](?=[A-Za-z])")
+# 占位符刻意避开 `_` 与字母（_normalize_visible_underscores 会处理下划线，
+# 且下划线归一化按“含拉丁字母才算词”分段，纯标点哨兵不会被误判）。
+_APOSTROPHE_KEEP = "～ＡＰＯＳ～"
+# 分隔符（斜杠/反斜杠/竖线）：两侧为汉字/假名时替换为顿号（启用/禁用→启用、禁用），
+# 其余替换为空格（A/B→A B）；URL/日期/文件路径等受保护内容除外。
+_SEPARATOR_CJK_RE = re.compile(
+    rf"(?<=[{_CJK_CHARS}])[\\/|](?=[{_CJK_CHARS}])"
+)
+_SEPARATOR_SPACE_RE = re.compile(r"[\\/|]")
+
 
 def normalize_tts_text(text: str) -> str:
     """对 TTS 输入做鲁棒性正则化（纯清洗，不做语义展开）。"""
@@ -60,16 +117,58 @@ def normalize_tts_text(text: str) -> str:
     text = _normalize_markdown_and_lines(text)
     text = _normalize_flow_arrows(text)
     text, protected = _protect_spans(text)
-    text = _normalize_visible_underscores(text)
 
+    # 删除朗读无实义的符号（表情/装饰符/引号等）与斜杠等分隔符替换；
+    # 受保护内容（URL/路径/版本号等）不受影响。
+    text = _strip_speech_noise(text)
+    # 可见下划线→空格（不能放在噪声清理前：撇号/日期等占位符含下划线，
+    # 提前替换会破坏占位符，导致保护内容无法还原）。
+    text = _normalize_visible_underscores(text)
     text = _normalize_spaces(text)
     text = _normalize_structural_punctuation(text)
     text = _normalize_repeated_punctuation(text)
     text = _normalize_spaces(text)
+    # 结构括号（【】等）在上一阶段转成双引号，这里二次清理；随后恢复占位符。
+    text = _restore_noise_placeholders(text)
 
     text = _restore_spans(text, protected)
     text = text.strip()
     return _ensure_terminal_punctuation_by_line(text)
+
+
+def _strip_speech_noise(text: str) -> str:
+    """删除朗读无实义的装饰符号，并把斜杠等分隔符替换成可读分隔。
+
+    处理顺序（全部在受保护 span 替换为 ``___PROTn___`` 占位之后执行，
+    因此 URL/邮箱/@提及/文件路径/日期等含斜杠或点号的内容不受影响）：
+    1. 整体删除反引号包裹的内联代码（``code``），避免朗读代码原文；
+    2. 删除表情符号（含 ZWJ/变体序列）与装饰性几何/技术符号；
+    3. 保护英文缩写撇号（don't，占位符延迟到管道尾部恢复）；
+    4. 删除引号（``"`` ``'`` ``“”`` ``‘’``）与强调符（``*``/``#``/``~``）、
+       项目符号点、箭头等装饰符；删除后相邻中文字符直接相连；
+    5. 斜杠/反斜杠/竖线：两侧均为中文字符时替换为顿号
+       （``启用/禁用``→``启用、禁用``），其余替换为空格（``A/B``→``A B``）。
+    """
+    if not text:
+        return text
+    text = _INLINE_CODE_RE.sub("", text)
+    text = _EMOJI_RE.sub("", text)
+    text = _DECORATIVE_SYMBOL_RE.sub("", text)
+    text = _APOSTROPHE_RE.sub(_APOSTROPHE_KEEP, text)
+    text = _QUOTES_RE.sub("", text)
+    text = _STRIP_CHARS_RE.sub("", text)
+    text = _SEPARATOR_CJK_RE.sub("、", text)
+    text = _SEPARATOR_SPACE_RE.sub(" ", text)
+    return text
+
+
+def _restore_noise_placeholders(text: str) -> str:
+    """恢复撇号占位符（必须在结构括号转引号的二次清理之后调用）。"""
+    if not text:
+        return text
+    text = _QUOTES_RE.sub("", text)
+    text = text.replace(_APOSTROPHE_KEEP, "'")
+    return text
 
 
 def _base_cleanup(text: str) -> str:
@@ -119,8 +218,8 @@ def _protect_spans(text: str) -> tuple[str, list[str]]:
         _EMAIL_RE,
         _MENTION_RE,
         _REDDIT_RE,
-        _HASHTAG_RE,
         _DOT_TOKEN_RE,
+        _DATE_TOKEN_RE,
         _FILELIKE_RE,
     ):
         text = pattern.sub(repl, text)

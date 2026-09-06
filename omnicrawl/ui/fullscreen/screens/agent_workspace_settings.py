@@ -128,13 +128,17 @@ class AgentWorkspaceSettingsPane(SettingsPane):
         if event.button.id == "agent-workspace-save":
             self.action_save()
         elif event.button.id == "agent-workspace-cancel":
-            self.action_cancel()
+            self.action_exit()
 
     def activate(self) -> None:
         self.query_one("#agent-workspace-enabled", Select).focus()
 
     def action_cancel(self) -> None:
         self.request_back()
+
+    def action_exit(self) -> None:
+        """“取消”按钮：直接关闭整个设置面板。"""
+        self.request_exit()
 
     def action_save(self) -> None:
         try:
@@ -220,6 +224,7 @@ class AgentWorkspaceSettingsScreen(ModalScreen[Optional[AgentWorkspaceConfig]]):
             self._pane.bind_pane_events(
                 on_back=lambda: self.dismiss(None),
                 on_commit=lambda result: self.dismiss(result),
+                on_exit=lambda: self.dismiss(None),
             )
             yield self._pane
 

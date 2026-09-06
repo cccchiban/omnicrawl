@@ -367,6 +367,7 @@ class SettingsScreen(ModalScreen[Any]):
             on_commit=self._commit_pane,
             on_navigate=self._navigate_pane,
             on_modal=self._open_modal,
+            on_exit=self._exit_settings_pane,
         )
         pane.id = f"settings-pane-{self._mount_seq}"
         area.mount(pane)
@@ -374,6 +375,10 @@ class SettingsScreen(ModalScreen[Any]):
         # mount 后子节点尚未 compose 完成，此处同步 refresh 会撞上
         # “部分节点缺失”的窗口（如 #grouped-pane-status 尚不存在），
         # 引发 NoMatches 使整个 TUI 崩溃。
+
+    def _exit_settings_pane(self) -> None:
+        """二级表单 pane 的“取消”按钮：直接关闭整个设置面板回主界面。"""
+        self.dismiss(None)
 
     def _commit_pane(self, result: Any = None) -> None:
         """面板保存完成：SelectPane 已就地刷新；模型/渠道提交后保留在

@@ -72,7 +72,11 @@ class StatusMixin:
         return line
 
     def _carousel_message_text(self) -> Text:
-        """按已固定留言渲染留言页；无候选时显示占位文本。"""
+        """按已固定留言渲染留言页；无候选时显示占位文本。
+
+        每次切入留言页时 ``_carousel_switch_to`` 已清空缓存，
+        保证每轮停留展示一条新抽取的留言。
+        """
 
         line = self._carousel_ensure_message_line()
         if line is None:
@@ -82,8 +86,8 @@ class StatusMixin:
     def _carousel_build_page_text(self, page: str) -> Text:
         """按页类型装配完整内容：工作区路径页 / 遥测+模型状态页 / 留言页。
 
-        留言页的文案在该页停留期间保持固定（首次切入时抽取，重复构建
-        返回同一句），避免遥测刷新等重绘导致句子瞬间换掉。
+        留言页文案仅在当轮停留期间固定：切入该页时重新随机抽取，
+        停留中遥测刷新等重绘不换句子；下一轮切回时再抽新句。
         """
 
         if page == "workspace":
@@ -153,11 +157,17 @@ class StatusMixin:
         self._carousel_switch_to(self._carousel_next_page())
 
     def _carousel_switch_to(self, page: str, *, animate: bool = True) -> None:
-        """切换到指定页；``animate=False`` 时直接落定（测试/即时路径）。"""
+        """切换到指定页；``animate=False`` 时直接落定（测试/即时路径）。
+
+        切入留言页时清空上一条已固定留言，使该轮重新随机抽取；
+        避免整轮停留结束后再次切回时永远复用同一句。
+        """
 
         old = self._carousel_settled_text or self._carousel_build_page_text(
             self._carousel_page
         )
+        if page == "message":
+            self._carousel_message_line = None
         target = self._carousel_build_page_text(page)
         self._carousel_page = page
         self._carousel_anim_target = target

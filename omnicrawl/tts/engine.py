@@ -19,6 +19,7 @@ import sentencepiece as spm
 
 from .audio import load_reference_audio, write_wav
 from .config import TTSConfig
+from .custom_voices import load_custom_voices
 # 模型仓库/目录管理与下载已下沉到 download.py（仅标准库依赖），引擎只负责推理。
 # 这里再导出供既有 ``from omnicrawl.tts.engine import ...`` 调用方兼容。
 from .download import (
@@ -224,6 +225,22 @@ class TtsEngine:
     def list_builtin_voices(self) -> list[dict[str, Any]]:
         return list(self._runtime.list_builtin_voices())
 
+    def list_available_voices(self) -> list[dict[str, Any]]:
+        """返回全部可用音色：模型内置音色 + 用户自定义克隆音色。
+
+        自定义音色排在末尾，字段与内置音色一致（voice/display_name/group/
+        audio_file/prompt_audio_codes），便于 UI 与引擎统一消费。
+        """
+        voices = list(self._runtime.list_builtin_voices())
+        custom_names = {str(row.get("voice", "")).strip() for row in voices}
+        for row in load_custom_voices():
+            voice = str(row.get("voice", "")).strip()
+            if not voice or voice in custom_names:
+                continue
+            custom_names.add(voice)
+            voices.append(row)
+        return voices
+
     def list_text_samples(self) -> list[dict[str, Any]]:
         return list(self._runtime.list_text_samples())
 
@@ -398,6 +415,28 @@ class TtsEngine:
             )
         return prompt_audio_codes
 
+    def clone_voice(
+        self,
+        *,
+        voice: str,
+        reference_audio_path: str | Path,
+        display_name: str = "",
+    ) -> dict[str, Any]:
+        """把参考音频克隆为一条自定义音色并写入自定义音色库。
+
+        返回入库的音色条目 dict；同名音色会被覆盖。音色名由
+        ``custom_voices.validate_voice_name`` 校验（非法时抛 ValueError）。
+        """
+        from .custom_voices import add_custom_voice
+
+        codes = self.encode_reference_audio(reference_audio_path)
+        return add_custom_voice(
+            voice=voice,
+            prompt_audio_codes=codes,
+            display_name=display_name,
+            source_audio_path=str(reference_audio_path),
+        )
+
     def resolve_prompt_audio_codes(
         self,
         *,
@@ -406,13 +445,16 @@ class TtsEngine:
     ) -> list[list[int]]:
         if prompt_audio_path:
             return self.encode_reference_audio(prompt_audio_path)
-        resolved_voice = str(voice or self.list_builtin_voices()[0]["voice"])
+        resolved_voice = str(voice or self.list_available_voices()[0]["voice"])
         voice_row = next(
-            (item for item in self.list_builtin_voices() if item["voice"] == resolved_voice),
+            (item for item in self.list_available_voices() if item["voice"] == resolved_voice),
             None,
         )
         if voice_row is None:
-            raise ValueError(f"内置音色不存在：{resolved_voice}。可用：{', '.join(v['voice'] for v in self.list_builtin_voices())}")
+            raise ValueError(
+                f"音色不存在：{resolved_voice}。可用："
+                + ", ".join(v["voice"] for v in self.list_available_voices())
+            )
         return list(voice_row["prompt_audio_codes"])
 
     # ------------------------------------------------------------------
@@ -538,6 +580,11 @@ class TtsEngine:
         """把文本合成为语音并写出 WAV，返回 `TtsResult`。
 
         参数缺省时使用 `TTSConfig` 的对应值；显式传参仅覆盖本次调用。
+
+        显存注意：4GB 级小显存卡上 CUDA 长文本会 OOM，且 OOM 后销毁
+        CUDA session 可能触发原生崩溃，因此不能运行中热切换 CPU；
+        由 ``device=auto`` 在初始化时按显存容量预检（见
+        ``onnx_runtime._resolve_requested_provider``）决定是否回退 CPU。
         """
         config = self.config
         if max_new_frames is not None:

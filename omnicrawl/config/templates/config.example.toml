@@ -80,7 +80,8 @@ auto_play = true
 thread_count = 4
 # 推理设备：auto 优先 CUDA，不可用时回退 CPU；cuda 不可用时直接报错。
 device = "auto"
-streaming = false
+# codec 流式解码（低首字节延迟；默认开启，显存占用低，避免全量解码 OOM）。
+streaming = true
 output_dir = ".omnicrawl/.agent_tmp/tts"
 
 [approval]

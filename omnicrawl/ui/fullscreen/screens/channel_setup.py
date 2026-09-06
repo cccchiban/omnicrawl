@@ -10,6 +10,7 @@ from pathlib import Path
 
 from textual.app import App
 
+from ..terminal.select_compat import apply_textual_select_mount_patch
 from .channel_manager import ChannelManagerResult, ChannelManagerScreen
 
 
@@ -40,6 +41,8 @@ class ChannelSetupApp(App[bool]):
 def run_channel_setup(config_path: Path, models_path: Path) -> bool:
     """在当前终端运行首次启动渠道配置向导。"""
 
+    # 与全屏入口一致：先应用 Select 挂载竞态补丁（Textual #6581）。
+    apply_textual_select_mount_patch()
     result = ChannelSetupApp(config_path, models_path).run()
     return bool(result)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from typing import Any
 
 from rich.text import Text
@@ -311,13 +312,26 @@ class InputMixin:
         self._resize_composer_to_text()
 
     def _ask_user(self, request: AskUserRequest) -> str | None:
-        """在 UI 线程展示问题，并阻塞 Agent 工具线程等待答案。"""
+        """在 UI 线程展示问题，并阻塞 Agent 工具线程等待答案。
+
+        等待时长受 ``request.timeout_seconds`` 约束（与工具批次超时一致）：
+        超时未获回答时关闭提问面板并返回 None，避免工具批次已因超时继续
+        推进、而输入框上方仍残留本次提问。
+        """
 
         self._ask_user_event.clear()
         self._ask_user_answer = None
+        deadline: float | None = None
+        if request.timeout_seconds is not None and request.timeout_seconds > 0:
+            deadline = time.monotonic() + request.timeout_seconds
         self.call_from_thread(self._set_ask_user_request, request)
         while not self._ask_user_event.wait(0.05):
             if self._cancel_requested.is_set():
+                self.call_from_thread(self._set_ask_user_request, None)
+                return None
+            if deadline is not None and time.monotonic() >= deadline:
+                # 工具批次等待已超时：回合继续推进；这里必须关闭面板并退出
+                # 等待，否则后台线程会一直挂着、提问面板残留。
                 self.call_from_thread(self._set_ask_user_request, None)
                 return None
         answer = self._ask_user_answer

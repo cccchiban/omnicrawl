@@ -56,6 +56,10 @@ class TurnExecutionMixin:
         self._clear_todo_plan()
         self._append_message("user", text)
         self._set_runtime_status("正在思考", "working")
+        # 回合开始：朗读器进入新回合上下文（若无可用 TTS 则是空操作）。
+        announcer = self._active_announcer()
+        if announcer is not None:
+            announcer.on_turn_start()
         # 回合开始前快照累计统计；模型流中断自动重试触发回滚时据此恢复。
         self._generation_stats_snapshot = (
             self._generation_total_tokens,

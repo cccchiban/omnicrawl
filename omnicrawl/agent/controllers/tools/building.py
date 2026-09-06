@@ -153,11 +153,6 @@ class ToolBuildingMixin:
         """返回基础 system prompt，并在末尾追加当前活动模式提示词。"""
 
         template = build_system_prompt(self._system_prompt_template)
-        # TTS 指令由当前回合在首次模型请求前准备；工具结果后的后续请求
-        # 不重复注入，但仍保留 tts_synthesize 工具可用。
-        tts_instruction = getattr(self, "_active_tts_instruction", "")
-        if tts_instruction:
-            template = f"{template}\n\n{tts_instruction}"
         mode_prompt = str(getattr(self, "_active_mode_prompt", "") or "").strip()
         if mode_prompt:
             mode_name = self.active_mode or "active"

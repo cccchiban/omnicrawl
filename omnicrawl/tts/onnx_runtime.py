@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import site
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,6 +41,26 @@ _CUDA_DLL_RELATIVE_DIRS = (
     "nvidia/cudnn/bin",
 )
 _CUDA_DLL_HANDLES: list[Any] = []
+
+# CUDA EP 选项：默认 arena 策略会一次性预留大块显存，4GB 小显存卡上
+# 常驻占用偏高；kSameAsRequested 按需申请，实测常驻省约 400MB、峰值省约 500MB。
+_CUDA_PROVIDER_OPTIONS: dict[str, Any] = {
+    "arena_extend_strategy": "kSameAsRequested",
+}
+
+
+def silence_ort_logging() -> None:
+    """把 ONNX Runtime 的 C++ 默认日志级别提到 FATAL。
+
+    ORT 在 CUDA provider 加载失败或推理内核出错时会把 ERROR 级红字（带 ANSI
+    色码）直接写到 stderr；在 Textual 全屏 TUI 下这些输出会覆盖界面。此处把
+    默认 logger 级别提到 FATAL，只保留致命错误，避免语音会话运行期刷屏。
+    TUI 之外的 CLI 排查需要 ORT 细节时可临时改回默认（如 2/WARNING）。
+    """
+    try:
+        ort.set_default_logger_severity(4)
+    except Exception:  # noqa: BLE001 - 旧版 ORT 无此 API 时静默跳过
+        pass
 
 
 def _configure_python_cuda_dlls() -> tuple[str, ...]:
@@ -101,11 +122,54 @@ def _cuda_provider_available() -> bool:
     return "CUDAExecutionProvider" in set(ort.get_available_providers())
 
 
+# device=auto 使用 CUDA 的最小显存（MiB）。MOSS-TTS 引擎一次初始化 8 个
+# CUDA session 约占 2.1GB 显存，长文本自回归推理峰值还会再涨 ~1.8GB；
+# 低于该容量的卡（如 4GB 笔记本卡）长文本必 OOM，因此 auto 直接回退 CPU，
+# 避免运行期反复触发 CUDA OOM（红字刷屏 + 段落丢失）。
+_CUDA_AUTO_MIN_VRAM_MIB = 6 * 1024
+
+
+def _cuda_vram_mib() -> int | None:
+    """探测首张 NVIDIA 显卡的显存容量（MiB）；探测失败返回 None。"""
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return None
+        first_line = (completed.stdout or "").strip().splitlines()
+        if not first_line:
+            return None
+        return int(float(first_line[0].strip()))
+    except Exception:  # noqa: BLE001 - 探测失败按“未知”处理，不阻断 CUDA
+        return None
+
+
 def _resolve_requested_provider(device: str) -> str:
     normalized = _normalize_execution_provider(device)
     if normalized != DEVICE_AUTO:
         return normalized
-    return EXECUTION_PROVIDER_CUDA if _cuda_provider_available() else EXECUTION_PROVIDER_CPU
+    if not _cuda_provider_available():
+        return EXECUTION_PROVIDER_CPU
+    # 小显存卡自动回退 CPU：长文本推理在 4GB 卡上必然 OOM（实测 470 字
+    # 文本峰值 ~3.95GB），且 OOM 后 ORT 会向 stderr 刷红色错误覆盖 TUI。
+    vram_mib = _cuda_vram_mib()
+    if vram_mib is not None and vram_mib < _CUDA_AUTO_MIN_VRAM_MIB:
+        LOGGER.info(
+            "显卡显存 %dMiB 低于 auto 阈值 %dMiB，device=auto 回退 CPU。",
+            vram_mib,
+            _CUDA_AUTO_MIN_VRAM_MIB,
+        )
+        return EXECUTION_PROVIDER_CPU
+    return EXECUTION_PROVIDER_CUDA
 
 
 def _resolve_ort_providers(execution_provider: str) -> list[Any]:
@@ -125,7 +189,10 @@ def _resolve_ort_providers(execution_provider: str) -> list[Any]:
     preload_dlls = getattr(ort, "preload_dlls", None)
     if callable(preload_dlls):
         preload_dlls()
-    return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return [
+        ("CUDAExecutionProvider", _CUDA_PROVIDER_OPTIONS),
+        "CPUExecutionProvider",
+    ]
 
 
 def _flatten3d_int32(nested: list[list[list[int]]]) -> tuple[np.ndarray, list[int]]:
@@ -389,6 +456,9 @@ class OrtCpuRuntime:
         sample_mode: str | None = None,
         execution_provider: str = EXECUTION_PROVIDER_CPU,
     ) -> None:
+        # 任何 ORT session 创建前先把 C++ 日志级别提到 FATAL：CUDA 加载失败/
+        # 推理 OOM 的 ERROR 红字会直写 stderr，在 TUI 全屏下覆盖界面。
+        silence_ort_logging()
         self.model_dir = Path(model_dir).expanduser().resolve()
         self.thread_count = max(1, int(thread_count))
         self.requested_device = _normalize_execution_provider(execution_provider)
@@ -473,6 +543,10 @@ class OrtCpuRuntime:
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         options.intra_op_num_threads = self.thread_count
         options.inter_op_num_threads = 1
+        # 静默 ORT 默认的 WARNING（CUDA MemcpyTransformer 提示）与推理期 ERROR
+        # 红字（4GB 小显存卡长文本合成会触发 CUDA OOM，ORT 会把带 ANSI 色码的
+        # 错误直写 stderr 覆盖 TUI）。只保留 FATAL。
+        options.log_severity_level = 4
         session = ort.InferenceSession(str(path_value), sess_options=options, providers=self.ort_providers)
         if self.execution_provider == EXECUTION_PROVIDER_CUDA and "CUDAExecutionProvider" not in session.get_providers():
             raise RuntimeError(
