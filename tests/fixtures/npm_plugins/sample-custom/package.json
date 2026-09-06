@@ -1,0 +1,59 @@
+{
+  "name": "@omnicrawl-fixture/sample-custom",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/plugin.js",
+  "omnicrawl": {
+    "apiVersion": "1",
+    "engines": {
+      "omnicrawl": ">=0.1 <0.2",
+      "node": ">=20"
+    },
+    "entry": "dist/plugin.js",
+    "permissions": [
+      "hook:turn.end",
+      "hook:custom-emit",
+      "hook:custom-subscribe",
+      "hook:plugin.omnicrawl-fixture-sample-custom.batch-flushed"
+    ],
+    "hooks": [
+      {
+        "id": "emit-on-turn-end",
+        "hook": "turn.end",
+        "mode": "notify",
+        "priority": 10,
+        "timeoutMs": 5000
+      },
+      {
+        "id": "on-batch-flushed",
+        "hook": "plugin.omnicrawl-fixture-sample-custom.batch-flushed",
+        "mode": "notify",
+        "priority": 1,
+        "timeoutMs": 5000
+      }
+    ],
+    "customEvents": [
+      {
+        "name": "plugin.omnicrawl-fixture-sample-custom.batch-flushed",
+        "version": 1,
+        "visibility": "private",
+        "schema": {
+          "type": "object",
+          "required": [
+            "count"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    ],
+    "timeoutMs": 5000
+  }
+}
