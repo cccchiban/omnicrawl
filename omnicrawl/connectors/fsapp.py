@@ -431,6 +431,18 @@ def _require_lark() -> Any:
     return lark_module
 
 
+def _require_im_requests() -> None:
+    """把 lark-oapi IM 请求类加载进模块 globals。
+
+    模块级 ``__getattr__``（PEP 562）只拦截属性访问，函数体内的裸名引用
+    走 globals 查找、不会触发它；因此必须先通过属性访问显式触发一次加载，
+    之后的 ``CreateMessageRequest`` 等裸名才能解析。
+    """
+
+    for name in _LARK_REQUEST_NAMES:
+        __getattr__(name)
+
+
 def _card_json(elements: list[dict[str, Any]]) -> str:
     """生成飞书卡片 JSON；使用 ensure_ascii=False 保留中文可读性。"""
 
@@ -833,6 +845,9 @@ class FeishuBot:
 
     def _create_client(self) -> Any:
         sdk = _require_lark()
+        # 客户端就绪前把 IM 请求类加载进 globals：函数体内的裸名不触发
+        # 模块级 __getattr__，漏加载会在首次发消息时 NameError。
+        _require_im_requests()
         return (
             sdk.Client.builder()
             .app_id(self.config.app_id)
@@ -2178,6 +2193,13 @@ class FeishuBot:
             sdk.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self.handle_message)
         )
+        # 消息已读回执对机器人无用途，但 SDK 找不到处理器时会以 ERROR 级别
+        # 输出 "processor not found"；注册空处理器消除该噪音（老版本无入口则跳过）。
+        register_message_read = getattr(
+            handler_builder, "register_p2_im_message_message_read_v1", None
+        )
+        if callable(register_message_read):
+            handler_builder = register_message_read(lambda data: None)
         card_handler_registered = False
         for method_name in (
             "register_p1_card_action_trigger",
@@ -2316,6 +2338,13 @@ def main(argv: list[str] | None = None) -> int:
         _require_lark()
     except FeishuDependencyError as exc:
         print(f"缺少飞书 SDK：{exc}")
+        return 1
+    try:
+        # 函数体内的裸名（CreateMessageRequest 等）不触发模块级 __getattr__，
+        # 必须先显式加载进 globals，否则收到消息后无法回复（NameError）。
+        _require_im_requests()
+    except AttributeError as exc:
+        print(f"飞书 IM 请求类加载失败：{exc}")
         return 1
 
     # 同一平台只允许一个活动连接器实例：多个 TUI/API 进程并存时，后启动的
