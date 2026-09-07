@@ -31,6 +31,7 @@ from ...commands.slash import (
     handle_advisor_command,
     handle_approval_command,
     handle_mode_command,
+    handle_model_command,
     handle_reasoning_command,
     handle_review_command,
     handle_session_command,

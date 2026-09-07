@@ -851,6 +851,7 @@ def _build_generation_options(
         "max_output_tokens",
         "max_tokens",
         "temperature",
+        "reasoning_effort",
     ):
         merged_options.pop(host_key, None)
 
