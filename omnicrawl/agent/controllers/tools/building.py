@@ -31,6 +31,21 @@ class ToolBuildingMixin:
         disabled_tools = frozenset(
             getattr(getattr(self, "config", None), "disabled_tools", ())
         )
+        advisor = getattr(getattr(self, "config", None), "advisor", None)
+        advisor_active = bool(
+            advisor is not None
+            and getattr(advisor, "active", False)
+        )
+        # 未配置/黑名单命中时 advisor runner 传 None，工具表根本不出现 advisor
+        # （与 rpiv issue #72 一致：不要在 active set 里留一个永远失败的 stub）。
+        advisor_runner = None
+        if advisor_active:
+            blacklist_check = getattr(self, "_advisor_blacklisted_for_current_model", None)
+            blacklisted = bool(
+                blacklist_check is not None and blacklist_check(advisor)
+            )
+            if not blacklisted and "advisor" not in disabled_tools:
+                advisor_runner = getattr(self, "_tool_advisor", None)
         tools = build_agent_tools(
             mcp_manager=self._mcp_manager,
             memory_enabled=getattr(
@@ -99,6 +114,7 @@ class ToolBuildingMixin:
                 if bool(getattr(run_guard, "enabled", False))
                 else None
             ),
+            advisor=advisor_runner,
             windows_window=(windows_desktop.run_window if windows_desktop is not None else None),
             windows_control=(windows_desktop.run_control if windows_desktop is not None else None),
             windows_input=(windows_desktop.run_input if windows_desktop is not None else None),
@@ -153,6 +169,11 @@ class ToolBuildingMixin:
         """返回基础 system prompt，并在末尾追加当前活动模式提示词。"""
 
         template = build_system_prompt(self._system_prompt_template)
+        # 仅当 advisor 真正启用（配置 + 未命中黑名单）时追加使用准则区块，
+        # 与工具表剥离保持一致：未启用时不向模型暴露 advisor 概念。
+        advisor_block = self._advisor_guidelines_block()
+        if advisor_block:
+            template = f"{template}\n\n{advisor_block}"
         mode_prompt = str(getattr(self, "_active_mode_prompt", "") or "").strip()
         if mode_prompt:
             mode_name = self.active_mode or "active"
@@ -162,6 +183,27 @@ class ToolBuildingMixin:
                 "</active_mode_prompt>"
             )
         return template
+
+    def _advisor_guidelines_block(self) -> str:
+        """返回 advisor 使用准则；未启用或命中黑名单时返回空串（零成本）。"""
+
+        advisor = getattr(getattr(self, "config", None), "advisor", None)
+        if advisor is None or not getattr(advisor, "active", False):
+            return ""
+        blacklist_check = getattr(self, "_advisor_blacklisted_for_current_model", None)
+        if blacklist_check is not None and blacklist_check(advisor):
+            return ""
+        return (
+            "顾问策略（advisor）使用准则：\n"
+            "- 你可以在关键时刻调用零参数 `advisor` 工具，把当前整段工作上下文交给"
+            "已配置的更强顾问模型，获得 plan / correction / stop 三类指导。\n"
+            "- 适合调用：重大实质工作（写代码、下结论）之前；反复失败或方案不收敛（卡住）时；"
+            "换方向之前；长任务承诺方案前至少一次、声明完成前至少一次（先落盘再调用）。\n"
+            "- 不适合调用：短任务且下一步由刚读到的工具输出直接决定时；只做定向探索时。\n"
+            "- 收到指导后给其实质权重；若与你自己观察到的证据冲突，用一次 `advisor`"
+            " 把冲突摆给顾问做 reconcile，不盲从也不盲弃。\n"
+            "- 你必须在调用后下一条对用户可见的回复中转述关键指导（用户看不到折叠的工具卡片）。"
+        )
 
     def _render_system_prompt_template(self, tool_lines: str) -> str:
         """兼容旧测试入口；新链路不再向 system prompt 注入动态工具清单。"""

@@ -156,12 +156,15 @@ class ModelPickerPane(SettingsPane):
         selection_only: bool = False,
         switch_model: Callable[[str], None] | None = None,
         persist_selection: Callable[[CatalogModel], str] | None = None,
+        current_override: str | None = None,
     ) -> None:
         super().__init__(agent=agent)
         self._refresh_on_open = refresh_on_open
         self._selection_only = selection_only
         self._switch_model = switch_model
         self._persist_selection = persist_selection or _default_persist_selection
+        # 非主模型场景（如顾问页）可覆盖“当前模型”高亮；None 时用主模型。
+        self._current_override = (current_override or "").strip() or None
         self._channels: list[_ChannelChoice] = []
         self._custom: list[CatalogModel] = []
         self._detected: list[CatalogModel] = []
@@ -780,6 +783,8 @@ class ModelPickerPane(SettingsPane):
         self.query_one("#model-picker-diagnostics", Static).update("\n".join(lines))
 
     def _current_model(self) -> str:
+        if self._current_override:
+            return self._current_override
         return str(getattr(self._agent, "current_model", "") or "")
 
 

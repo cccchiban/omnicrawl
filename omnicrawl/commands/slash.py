@@ -19,6 +19,15 @@ from ..agent.toolkit.tools import public_tool_arguments
 from ..config.models.llm import LLMError, save_active_model_ref, save_reasoning_effort
 from ..config.models.model_catalog import save_llm_model
 from ..config.core.runtime import RuntimeConfigError
+from ..config.features.advisor import (
+    ADVISOR_EFFORT_OPTIONS,
+    AdvisorConfig,
+    AdvisorConfigError,
+    DEFAULT_ADVISOR_EFFORT,
+    clear_advisor_config,
+    load_advisor_config,
+    save_advisor_config,
+)
 
 
 # ── 工具确认展示 ──────────────────────────────────────────────
@@ -56,6 +65,7 @@ _TOOL_HUMAN_DESCRIPTIONS: dict[str, str] = {
     "user_memory_expand_related": "展开用户级相关记忆",
     "user_memory_write": "写入用户级记忆",
     "subagent": "分发只读子任务",
+    "advisor": "咨询顾问模型获取第二意见",
 }
 
 
@@ -887,10 +897,149 @@ def handle_model_command(agent: LocalToolAgent, command: str) -> str | None:
 
 
 def _load_model_store():
-    from ..config.models.model_catalog import load_model_store
+    from ..config.models.model_store import load_model_store
 
     return load_model_store()
 
+
+
+def handle_advisor_command(agent: LocalToolAgent, command: str) -> str | None:
+    """处理顾问策略斜杠命令；返回 None 表示不是 advisor 命令。
+
+    支持：
+    - ``/advisor``：查看当前顾问模型/effort，并列出可选模型与用法。
+    - ``/advisor <model_key> [effort]``：设置顾问模型（models.toml key/alias、
+      profile/model_id 或裸 model_id）与可选推理档位（缺省 high）。
+    - ``/advisor off``：清除顾问选择（关闭功能，工具即时剥离）。
+    保存后重建工具表，使 advisor 工具即时出现/消失。
+    """
+
+    text = command.strip()
+    normalized = text.lower()
+    if normalized != "/advisor" and not normalized.startswith("/advisor "):
+        return None
+
+    current_config = load_advisor_config()
+    parts = text.split(None, 2)
+    if len(parts) == 1:
+        return _advisor_status_message(agent, current_config)
+
+    action = parts[1].strip()
+    if action.casefold() in {"off", "none", "clear", "no"}:
+        return _advisor_clear(agent)
+    if action.casefold() in {"help", "-h", "--help"}:
+        return _advisor_help_message(current_config)
+
+    model_key = action
+    effort = parts[2].strip() if len(parts) > 2 else DEFAULT_ADVISOR_EFFORT
+    try:
+        normalized_effort = _normalize_advisor_effort(effort)
+    except AdvisorConfigError as exc:
+        return f"顾问设置失败：{exc}"
+
+    # 校验模型选择可用（apply_model_selection 解析失败即报错），不写无效引用。
+    try:
+        from ..config.models.llm_multi import apply_model_selection
+
+        apply_model_selection(agent.config.llm, model_key)
+    except Exception as exc:  # noqa: BLE001 - LLMError/ModelStoreError 统一转提示
+        return f"顾问模型无法解析：{exc}"
+
+    next_config = AdvisorConfig(
+        enabled=True,
+        model_key=model_key,
+        effort=normalized_effort,
+        disabled_for_models=current_config.disabled_for_models,
+    )
+    try:
+        path = save_advisor_config(next_config)
+    except AdvisorConfigError as exc:
+        return f"顾问设置写入失败：{exc}"
+    # 内存配置同步 + 重建工具表，让 advisor 工具即时出现。
+    try:
+        agent.config.advisor = next_config
+        agent._tools = agent._build_tools()
+    except Exception as exc:  # noqa: BLE001 - 工具重建失败不掩盖已保存配置
+        return (
+            f"顾问已保存为 {model_key}（effort={normalized_effort}），"
+            f"但工具表刷新失败：{exc}"
+        )
+    return f"顾问已启用：{model_key}（effort={normalized_effort}），已写入 {path}。"
+
+
+def _advisor_clear(agent: LocalToolAgent) -> str:
+    try:
+        path = clear_advisor_config()
+    except AdvisorConfigError as exc:
+        return f"清除顾问失败：{exc}"
+    next_config = AdvisorConfig(enabled=False)
+    try:
+        agent.config.advisor = next_config
+        agent._tools = agent._build_tools()
+    except Exception as exc:  # noqa: BLE001 - 工具重建失败不掩盖清除结果
+        return f"顾问已清除（{path}），但工具表刷新失败：{exc}"
+    return f"顾问已关闭并清除选择（{path}）。advisor 工具已从工具表剥离。"
+
+
+def _advisor_status_message(agent: LocalToolAgent, config: AdvisorConfig) -> str:
+    if config.active:
+        return (
+            f"当前顾问：{config.model_key}（effort={config.display_effort}）\n"
+            f"用法：/advisor <model_key> [effort]，/advisor off 关闭。"
+        )
+    return (
+        "顾问未启用。\n"
+        f"用法：/advisor <model_key> [effort]，effort 可选 "
+        f"{'/'.join(ADVISOR_EFFORT_OPTIONS)}（缺省 {DEFAULT_ADVISOR_EFFORT}）。\n"
+        "可用模型：\n" + _advisor_model_candidates(agent)
+    )
+
+
+def _advisor_help_message(config: AdvisorConfig) -> str:
+    state = (
+        f"当前顾问：{config.model_key}（effort={config.display_effort}）"
+        if config.active
+        else "顾问未启用"
+    )
+    return (
+        f"{state}\n"
+        "用法：\n"
+        "  /advisor                   查看状态与可用模型\n"
+        "  /advisor <model_key> [effort]  设置顾问模型与推理档位\n"
+        "  /advisor off               关闭并清除顾问\n"
+        f"effort 可选：{'/'.join(ADVISOR_EFFORT_OPTIONS)}（缺省 {DEFAULT_ADVISOR_EFFORT}）"
+    )
+
+
+def _advisor_model_candidates(agent: LocalToolAgent) -> str:
+    """列出可作顾问的候选模型：models.toml enabled 模型 + 当前主模型。"""
+
+    candidates: list[str] = []
+    try:
+        store = _load_model_store()
+        for record in store.models:
+            if not record.enabled:
+                continue
+            label = record.key
+            if record.aliases:
+                label += f"（别名：{'/'.join(record.aliases)}）"
+            candidates.append(f"  - {label}")
+    except Exception:  # noqa: BLE001 - 模型目录不可用时回退到仅主模型
+        pass
+    current = getattr(agent, "current_model", "") or agent.config.llm.model
+    if current:
+        candidates.append(f"  - {current}（当前主模型）")
+    return "\n".join(candidates) if candidates else "  （无可用模型，请先配置 models.toml）"
+
+
+def _normalize_advisor_effort(effort: str) -> str:
+    normalized = effort.strip().casefold()
+    if normalized in {"disabled", "off", "none"}:
+        normalized = "none"
+    if normalized not in ADVISOR_EFFORT_OPTIONS:
+        allowed = "/".join(ADVISOR_EFFORT_OPTIONS)
+        raise AdvisorConfigError(f"effort 仅支持 {allowed}，当前值：{effort}。")
+    return normalized
 
 
 _MODE_COMMANDS = {
@@ -924,6 +1073,7 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
         "/review",
         "/reasoning",
         "/model",
+        "/advisor",
         "/skills",
         "/memory:clean",
         "/mcp",
@@ -970,6 +1120,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
         "/plan": "启用主 Agent 计划模式，后续请求追加 templates/plan.md。",
         "/reasoning": "查看或切换推理强度。",
         "/model": "查看或切换当前模型（从下一次请求开始生效）。",
+        "/advisor": "查看或设置顾问策略模型（advisor）；/advisor off 关闭。",
         "/skills": "查看当前已加载的 Skill。",
         "/memory:clean": "清理过期长期记忆。",
         "/mcp": "查看 MCP 开关、服务和工具状态。",
@@ -996,6 +1147,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
     argument_commands = {
         "/reasoning",
         "/model",
+        "/advisor",
         "/resume",
         "/task",
         "/history",

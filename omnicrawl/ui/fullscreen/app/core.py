@@ -453,6 +453,12 @@ class OmniCrawlApp(
             handle_reasoning=lambda command_agent, command: resolve_facade(
                 "handle_reasoning_command"
             )(command_agent, command),
+            handle_model=lambda command_agent, command: resolve_facade(
+                "handle_model_command"
+            )(command_agent, command),
+            handle_advisor=lambda command_agent, command: resolve_facade(
+                "handle_advisor_command"
+            )(command_agent, command),
             handle_review=lambda command_agent, command: resolve_facade(
                 "handle_review_command"
             )(

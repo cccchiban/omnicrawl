@@ -16,6 +16,7 @@ from ....config.features.image_gen import (
 )
 from ....config.features.run_guard import RunGuardConfig
 from ....config.features.agent_workspace import AgentWorkspaceConfig
+from ....config.features.advisor import AdvisorConfig
 from ....config.features.tts import (
     TTSConfiguration,
     load_tts_configuration,
@@ -225,6 +226,26 @@ class SessionSettingsMixin:
             raise
         # 配置变化后缓存引擎失效，下次调用按新参数重建。
         self.__dict__.pop("_tts_engine", None)
+
+    def set_advisor_configuration(self, configuration: AdvisorConfig) -> None:
+        """运行时替换顾问策略配置并重建工具表；持久化由设置面板负责。
+
+        advisor 工具是否注册取决于配置的 ``active``（enabled 且选了模型）
+        以及当前模型是否命中 ``disabled_for_models`` 黑名单，因此每次
+        配置变化后都需要重建工具表，使 advisor 工具即时出现/消失。
+        """
+
+        if not isinstance(configuration, AdvisorConfig):
+            raise AgentError("顾问配置必须是 AdvisorConfig。")
+        previous_tools = self._tools
+        previous_config = getattr(self.config, "advisor", None)
+        self.config.advisor = configuration
+        try:
+            self._tools = self._build_tools()
+        except Exception:
+            self.config.advisor = previous_config
+            self._tools = previous_tools
+            raise
 
     def set_tts_enabled(self, enabled: bool) -> None:
         """事务式切换 TTS 功能开关（等价于更新 tts.enabled）。"""

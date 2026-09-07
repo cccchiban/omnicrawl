@@ -44,6 +44,10 @@ from ..config.features.subagents import (
     SubAgentConfig,
     load_subagent_config,
 )
+from ..config.features.advisor import (
+    AdvisorConfig,
+    load_advisor_config,
+)
 from ..config.features.tools import (
     load_disabled_tools,
 )
@@ -106,6 +110,7 @@ from .controllers.tools.approval import ToolApprovalMixin
 from .controllers.tools.building import ToolBuildingMixin
 from .controllers.tools.implementations import ToolImplementationsMixin
 from .controllers.tools.output import ToolOutputMixin
+from .controllers.advisor import AdvisorMixin
 from .controllers.plugins import PluginHooksMixin
 from .controllers.undo import UndoMixin
 
@@ -140,6 +145,7 @@ class AgentConfig:
     resume_session_id: str = ""
     mcp_config: MCPConfig | None = None
     subagents: SubAgentConfig = field(default_factory=load_subagent_config)
+    advisor: AdvisorConfig = field(default_factory=load_advisor_config)
     context_compaction: ContextCompactionConfig = field(
         default_factory=load_context_compaction_config
     )
@@ -216,6 +222,8 @@ class AgentConfig:
             raise AgentError("temp_workspace 必须是 AgentTempWorkspaceConfig。")
         if not isinstance(self.subagents, SubAgentConfig):
             raise AgentError("subagents 必须是 SubAgentConfig。")
+        if not isinstance(self.advisor, AdvisorConfig):
+            raise AgentError("advisor 必须是 AdvisorConfig。")
         if not isinstance(self.context_compaction, ContextCompactionConfig):
             raise AgentError("context_compaction 必须是 ContextCompactionConfig。")
         if not isinstance(self.run_guard, RunGuardConfig):
@@ -283,6 +291,7 @@ class LocalToolAgent(
     ToolBuildingMixin,
     ToolImplementationsMixin,
     ToolOutputMixin,
+    AdvisorMixin,
     PluginHooksMixin,
     UndoMixin,
 ):

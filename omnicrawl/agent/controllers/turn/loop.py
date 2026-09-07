@@ -809,6 +809,11 @@ class TurnLoopMixin:
                 DEFAULT_TOOL_TIMEOUT_SECONDS,
             )
 
+        # 把 status 回调暂存到实例槽，供 advisor 工具（父进程线程池执行）在
+        # 发起顾问请求时上报 "Consulting advisor…" 状态；批次结束恢复。
+        previous_advisor_status = getattr(self, "_advisor_status_reporter", None)
+        self._advisor_status_reporter = status
+
         active_tools = self._tools if tools is None else tools
         active_tools = dict(active_tools)
         catalog = HostToolCatalog(active_tools)
@@ -1021,6 +1026,11 @@ class TurnLoopMixin:
                     followup_messages=followup_messages,
                 )
             )
+        # 恢复上一工具批次的 advisor 状态回调（可能来自嵌套调用或旧值）。
+        if previous_advisor_status is None:
+            self.__dict__.pop("_advisor_status_reporter", None)
+        else:
+            self._advisor_status_reporter = previous_advisor_status
         status("")
         return observations
 
@@ -1185,6 +1195,10 @@ class TurnLoopMixin:
         on_stream_rollback: Callable[[], None] | None = None,
     ) -> AgentModelReply:
         """请求模型给出下一步：要么返回 tool_calls，要么输出最终回答。"""
+
+        # 保存当前工作分支快照：advisor 工具（线程池执行）转发给顾问的
+        # 是“模型当前正在看的分支”，而不是旧 _history。
+        self._advisor_turn_messages = list(messages)
 
         # model.request.before：可改 messages content / 采样参数；不暴露凭据。
         request_payload = self._dispatch_plugin_hook(

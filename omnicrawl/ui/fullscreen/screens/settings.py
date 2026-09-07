@@ -103,12 +103,13 @@ _FEATURES = (
     ("plugins", "插件功能", "plugins"),
 )
 # 一级设置项（左侧列表，自上而下）。工具审批/MCP/工具开关合并为 tools，
-# 子任务功能/高级合并为 subagents。
+# 子任务功能/高级合并为 subagents。顾问（第二个模型）紧跟 model/channels。
 _SETTING_ORDER = (
     "model",
+    "channels",
+    "advisor",
     "context",
     "reasoning",
-    "channels",
     "tools",
     "vision",
     "image_gen",
@@ -248,9 +249,10 @@ class SettingsScreen(ModalScreen[Any]):
     def _row_labels() -> dict[str, str]:
         labels = {
             "model": "模型",
+            "channels": "模型渠道",
+            "advisor": "顾问设置",
             "context": "上下文长度",
             "reasoning": "推理强度",
-            "channels": "模型渠道",
             "tools": "工具设置",
             "vision": "视觉",
             "image_gen": "图像生成",
@@ -427,6 +429,8 @@ class SettingsScreen(ModalScreen[Any]):
             return ModelPickerPane(self._agent, refresh_on_open=True)
         if key == "channels":
             return self._build_channel_pane()
+        if key == "advisor":
+            return self._build_advisor_pane()
         if key == "context":
             current_k = int(getattr(self._agent, "context_window_tokens", 128_000)) // 1000
             return SelectPane(
@@ -470,6 +474,17 @@ class SettingsScreen(ModalScreen[Any]):
                 agent=self._agent,
             )
         return self._build_complex_pane(key)
+
+    def _build_advisor_pane(self) -> Any:
+        """构造“顾问设置”面板：内嵌模型选择器，保存后同步运行时配置。"""
+
+        from .advisor_settings import AdvisorSettingsPane
+
+        return AdvisorSettingsPane(
+            self._agent,
+            resolve_config_path(),
+            apply_configuration=getattr(self._agent, "set_advisor_configuration", None),
+        )
 
     def _build_channel_pane(self) -> Any:
         """构造渠道管理 pane，apply 后把默认渠道应用到 agent。"""

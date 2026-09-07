@@ -635,6 +635,7 @@ class TelegramAgentBot:
             format_memory_clean_result,
             format_plugins_status,
             format_skills_list,
+            handle_advisor_command,
             handle_mode_command,
             handle_reasoning_command,
             handle_review_command,
@@ -671,11 +672,12 @@ class TelegramAgentBot:
         if normalized == "/memory:clean":
             return format_memory_clean_result(agent)
 
-        # 会话 / 子任务 / 推理强度 / 评审命令（slash.py 内部自己判断是否匹配）。
+        # 会话 / 子任务 / 推理强度 / 顾问 / 评审命令（slash.py 内部自己判断是否匹配）。
         for handler in (
             handle_session_command,
             handle_subagent_task_command,
             handle_reasoning_command,
+            handle_advisor_command,
             handle_review_command,
         ):
             reply = handler(agent, text)

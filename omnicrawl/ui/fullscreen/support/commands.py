@@ -16,6 +16,7 @@ from ....commands.slash import (
     format_mcp_status,
     format_plugins_status,
     format_skills_list,
+    handle_advisor_command,
     handle_approval_command,
     handle_mode_command,
     handle_reasoning_command,
@@ -133,6 +134,7 @@ class CommandDispatcher:
         handle_mode: Callable[[CommandAgent, str], str | None] = handle_mode_command,
         handle_reasoning: Callable[[CommandAgent, str], str | None] = handle_reasoning_command,
         handle_model: Callable[[CommandAgent, str], str | None] = handle_model_command,
+        handle_advisor: Callable[[CommandAgent, str], str | None] = handle_advisor_command,
         handle_review: Callable[[CommandAgent, str], str | None] = handle_review_command,
     ) -> None:
         self._agent = agent
@@ -146,6 +148,7 @@ class CommandDispatcher:
         self._handle_mode = handle_mode
         self._handle_reasoning = handle_reasoning
         self._handle_model = handle_model
+        self._handle_advisor = handle_advisor
         self._handle_review = handle_review
 
     def dispatch(self, text: str) -> CommandOutcome:
@@ -260,6 +263,14 @@ class CommandDispatcher:
             return CommandOutcome(
                 handled=True,
                 message=model_message,
+                refresh_context=True,
+            )
+
+        advisor_message = self._handle_advisor(self._agent, text)
+        if advisor_message is not None:
+            return CommandOutcome(
+                handled=True,
+                message=advisor_message,
                 refresh_context=True,
             )
         return CommandOutcome(handled=False)

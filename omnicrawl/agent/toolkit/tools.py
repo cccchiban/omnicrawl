@@ -24,6 +24,7 @@ from ...workspace_tools import (
 TODO_TOOL_NAME = "update_todos"
 ASK_USER_TOOL_NAME = "ask_user"
 PAUSE_WORK_TOOL_NAME = "pause_work"
+ADVISOR_TOOL_NAME = "advisor"
 
 TOOL_NAME_ALIASES = {
     "bashcommand": "bash",
@@ -771,8 +772,9 @@ def _meta_tool_definitions(
     ask_user: ToolRunner | None = None,
     pause_work: ToolRunner | None = None,
     evidence_recall: ToolRunner | None = None,
+    advisor: ToolRunner | None = None,
 ) -> list[ToolDefinition]:
-    """轮次控制类工具：update_todos / ask_user / pause_work / evidence_recall。"""
+    """轮次控制类工具：update_todos / ask_user / pause_work / evidence_recall / advisor。"""
 
     definitions: list[ToolDefinition] = []
     if update_todos is not None:
@@ -903,6 +905,29 @@ def _meta_tool_definitions(
                 ),
                 requires_confirmation=False,
                 run=evidence_recall,
+                model_output_is_bounded=True,
+            )
+        )
+
+    if advisor is not None:
+        definitions.append(
+            ToolDefinition(
+                name=ADVISOR_TOOL_NAME,
+                description=(
+                    "是什么：把当前整段工作上下文（任务 + 工具调用 + 结果）转发给已配置的"
+                    "顾问模型（更强的第二意见），返回 plan / correction / stop 三类纯文本指导。"
+                    "怎么做：零参数调用；适合在重大实质工作之前、卡住、换方向或声明完成之前"
+                    "需要更强判断时使用；短任务且下一步由刚读到的工具输出决定时不调用。"
+                    "怎样做：成功返回以 plan/correction/stop 开头的纯文本指导；失败返回错误文案。"
+                    "建议：给指导实质权重；与自己的证据冲突时可用一次 advisor 做 reconcile，"
+                    "不盲从也不盲弃；调用后应在下一条可见回复中转述关键指导。"
+                ),
+                argument_schema=json.dumps(
+                    {"type": "object", "properties": {}, "additionalProperties": False},
+                    ensure_ascii=False,
+                ),
+                requires_confirmation=False,
+                run=advisor,
                 model_output_is_bounded=True,
             )
         )
@@ -1312,6 +1337,7 @@ def build_agent_tools(
     update_todos: ToolRunner | None = None,
     ask_user: ToolRunner | None = None,
     pause_work: ToolRunner | None = None,
+    advisor: ToolRunner | None = None,
     windows_window: ToolRunner | None = None,
     windows_control: ToolRunner | None = None,
     windows_input: ToolRunner | None = None,
@@ -1388,6 +1414,7 @@ def build_agent_tools(
             ask_user=ask_user,
             pause_work=pause_work,
             evidence_recall=evidence_recall,
+            advisor=advisor,
         )
     )
     tools.extend(

@@ -1521,6 +1521,7 @@ class FeishuBot:
             format_memory_clean_result,
             format_plugins_status,
             format_skills_list,
+            handle_advisor_command,
             handle_mode_command,
             handle_model_command,
             handle_reasoning_command,
@@ -1562,6 +1563,7 @@ class FeishuBot:
             handle_subagent_task_command,
             handle_reasoning_command,
             handle_model_command,
+            handle_advisor_command,
             handle_review_command,
         ):
             reply = handler(agent, text)
