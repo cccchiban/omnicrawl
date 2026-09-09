@@ -15,9 +15,12 @@ from .hud import (
     status_summary_text,
     token_telemetry_text,
 )
-from .indicators import StatusMixin
+from .indicators import PendingQueue, QueueDelete, QueueToggle, StatusMixin
 
 __all__ = [
+    "PendingQueue",
+    "QueueDelete",
+    "QueueToggle",
     "StatusMixin",
     "compact_hud_value",
     "compact_token_count",

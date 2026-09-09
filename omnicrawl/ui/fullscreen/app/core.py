@@ -48,7 +48,7 @@ from ..rendering.widgets import (
     ToolDisclosure,
 )
 from ..screens.navigation import SettingsNavigationMixin
-from ..status.indicators import StatusMixin
+from ..status.indicators import PendingQueue, StatusMixin
 from ..support.commands import CommandDispatcher
 from ..support.monitor import MonitorStateAdapter
 from ..support.turns import AgentTurnController
@@ -301,16 +301,15 @@ class OmniCrawlApp(
     }
     /* 生成期间排队的用户消息预览条：位于命令菜单之下、输入框之上，
        黄色左边条与命令菜单的白色区分；默认隐藏，有排队时由
-       _render_pending_queue 动态显示并按摘要行数撑开高度。 */
+       _render_pending_queue 动态显示并按实际行数撑开高度。容器内部由
+       PendingQueue 自绘：标题行 + 每条消息摘要与行尾 [ DELETE ] 热区
+       （悬停变红可点击撤回）+ 超限时的展开/收起提示行。 */
     #pending-queue {
         display: none;
         height: auto;
-        max-height: 5;
         padding: 0 1;
         background: $terminal-surface;
         color: $terminal-text-secondary;
-        text-wrap: nowrap;
-        text-overflow: ellipsis;
         border-left: solid $terminal-amber;
     }
     /* 选中即复制后的状态提示：位于输入框上方（排队条之下），显示 2 秒
@@ -416,6 +415,8 @@ class OmniCrawlApp(
         self._conversation_visibility_refresh_pending = False
         self._conversation_visible_logical_lines = 0
         self._pending_inputs: deque[str] = deque()
+        # 排队预览条是否展开全部（超过可见上限时默认折叠，点击提示行切换）。
+        self._pending_queue_expanded = False
         self._cancel_requested = threading.Event()
         # Agent 回合协议和取消令牌由非 Textual 控制器持有；本应用仅适配其
         # 回调回到主线程并保留 UI/审批状态。
@@ -595,7 +596,7 @@ class OmniCrawlApp(
                         pass
                 yield Static("", id="command-menu")
                 yield Static("", id="sessions-menu")
-                yield Static("", id="pending-queue")
+                yield PendingQueue(id="pending-queue")
                 yield Static("", id="copy-status")
                 yield Composer(
                     submit_handler=self._submit_composer_text,

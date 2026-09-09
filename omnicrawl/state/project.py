@@ -168,7 +168,7 @@ class ProjectStore:
         self,
         session_entries: Iterable[Any],
         *,
-        recent_limit: int = 3,
+        recent_limit: int | None = None,
         sort_limit: int = 0,
     ) -> list[dict[str, Any]]:
         """只读聚合项目总览：显式项目 + 会话索引中的稳定目录。
@@ -178,10 +178,14 @@ class ProjectStore:
         - 自动排除隔离工作树、临时目录、解释器库目录（见 ``_is_scan_excluded``）；
         - 显式项目（created/imported/pinned）恒保留（即使 session_count=0）；
         - scanned 且 session_count=0 的目录不展示（只剩历史引用）；
+        - ``recent_limit``：每个项目 recent_sessions 的条数上限；
+          默认 ``None`` = 全部返回（按会话最近更新时间倒序，见下）；
         - 不写盘、不修改 projects.json（只读聚合，避免回灌）。
 
         返回按 pinned → 最近活动 → 名称 排序的视图字典列表：
         name/path/source/pinned/session_count/recent_at/recent_sessions。
+        recent_sessions 按 updated_at 倒序（最新在前）；项目整体顺序与
+        session_count/recent_at 的聚合语义不受输入条目顺序影响。
         """
 
         self.ensure()
@@ -221,7 +225,11 @@ class ProjectStore:
                 item["pinned"] = item["pinned"] or entry.pinned
                 item["name"] = entry.name
 
-        # 会话索引聚合（同一目录多会话合并计数）
+        def _stamp(raw_up: Any) -> str:
+            return _format_datetime(raw_up) if raw_up is not None else ""
+
+        # 会话索引聚合（同一目录多会话合并计数；全部收集后统一按时间倒序截断）
+        collected: dict[str, list[dict[str, Any]]] = {}
         for entry in session_entries:
             raw = getattr(entry, "workspace_root", None)
             if not raw:
@@ -238,18 +246,21 @@ class ProjectStore:
                 item = _make(Path(target).name or target, target, "scanned", False)
                 merged[key] = item
             item["session_count"] += 1
-            raw_up = getattr(entry, "updated_at", None)
-            stamp = _format_datetime(raw_up) if raw_up is not None else ""
+            stamp = _stamp(getattr(entry, "updated_at", None))
             if not item["recent_at"] or (stamp and stamp > item["recent_at"]):
                 item["recent_at"] = stamp
-            if len(item["recent_sessions"]) < max(1, recent_limit):
-                item["recent_sessions"].append(
-                    {
-                        "session_id": getattr(entry, "session_id", ""),
-                        "title": getattr(entry, "title", "") or "",
-                        "updated_at": stamp,
-                    }
-                )
+            collected.setdefault(key, []).append(
+                {
+                    "session_id": getattr(entry, "session_id", ""),
+                    "title": getattr(entry, "title", "") or "",
+                    "updated_at": stamp,
+                }
+            )
+
+        limit = max(1, recent_limit) if recent_limit is not None else None
+        for key, sess_list in collected.items():
+            sess_list.sort(key=lambda s: s["updated_at"], reverse=True)
+            merged[key]["recent_sessions"] = sess_list[:limit] if limit is not None else sess_list
 
         result = [
             item

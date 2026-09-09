@@ -21,6 +21,7 @@ from ...toolkit.host_tools import (
     public_invoke_arguments,
 )
 from ...toolkit.tools import (
+    ASK_USER_TOOL_NAME,
     normalize_tool_call,
     public_tool_arguments,
 )
@@ -80,6 +81,7 @@ from ..shared import (
     _RATE_LIMIT_ERROR_MARKERS,
     _tool_timeout_result,
     _unknown_tool_result,
+    ask_user_advisor_hint,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -958,7 +960,13 @@ class TurnLoopMixin:
                 try:
                     results[index] = futures[index].result(timeout=remaining)
                 except FutureTimeoutError:
-                    timeout_result = _tool_timeout_result(tool_timeout_seconds)
+                    # ask_user 超时（用户未回答）时，若顾问可用则附加托管提示，
+                    # 引导模型调用 advisor 代替用户决策；其余工具保持原通用文本。
+                    _tool_name = str(
+                        getattr(normalized_calls[index][1], "name", "") or ""
+                    )
+                    _hint = ask_user_advisor_hint(self) if _tool_name == ASK_USER_TOOL_NAME else ""
+                    timeout_result = _tool_timeout_result(tool_timeout_seconds, hint=_hint)
                     timeout_at = time.perf_counter()
                     with completion_lock:
                         timed_out.add(index)

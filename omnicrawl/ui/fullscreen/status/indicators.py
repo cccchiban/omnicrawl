@@ -9,8 +9,12 @@ P3 重构从 ``ui/fullscreen/__init__.py`` 拆出（2026-08-21）：
 
 from __future__ import annotations
 
+from collections import deque
+
 from rich.text import Text
-from textual.widgets import Static
+from textual import events
+from textual.containers import Horizontal, Vertical
+from textual.widgets import Static, TextArea
 
 from .hud import (
     compact_token_count,
@@ -22,7 +26,143 @@ from .hud import (
     status_summary_text,
     token_telemetry_text,
 )
-from ..terminal.theme import ACCENT_AMBER, TEXT_MUTED, TEXT_SECONDARY
+from ..terminal.theme import ACCENT_AMBER, TEXT_MUTED
+
+
+class QueueDelete(Static):
+    """排队消息行尾的 [ DELETE ] 热区。
+
+    悬停由 CSS 点亮为红色并显示手型光标，点击把该条从队列撤回并
+    回填到输入框（动作由宿主 App 的 ``_withdraw_pending_input`` 完成），
+    与 RuntimeStatus 的 [ ESC ] 采用同样的宿主回调模式。
+    """
+
+    can_focus = False
+
+    def __init__(self, index: int) -> None:
+        self._queue_index = index
+        super().__init__(" [ DELETE ]", markup=False)
+
+    def on_click(self, event: events.Click) -> None:
+        if event.chain != 1:
+            return
+        action = getattr(self.app, "_withdraw_pending_input", None)
+        if action is not None:
+            event.stop()
+            action(self._queue_index)
+
+
+class QueueToggle(Static):
+    """排队折叠提示行：队列超过可见上限时显示「… 还有 N 条 ›」。
+
+    点击在展开全部与折叠回前几条之间切换（宿主
+    ``_toggle_pending_queue_expanded``）；悬停高亮为青色。
+    """
+
+    can_focus = False
+
+    def __init__(self, label: str) -> None:
+        super().__init__(label, markup=False)
+
+    def on_click(self, event: events.Click) -> None:
+        if event.chain != 1:
+            return
+        action = getattr(self.app, "_toggle_pending_queue_expanded", None)
+        if action is not None:
+            event.stop()
+            action()
+
+
+class PendingQueue(Vertical):
+    """生成期间 FIFO 排队消息的可交互预览条（composer 上方）。
+
+    首行标题固定显示排队总数，之后按 FIFO 顺序每行一条消息摘要，
+    行尾是独立的 [ DELETE ] 热区：悬停变红、点击撤回该条并把内容回填
+    输入框。队列超过可见上限（构造参数）时默认折叠为前若干条 + 一行
+    「展开」提示；点击提示行可展开/收起全部条目，行数随内容伸缩。
+    """
+
+    DEFAULT_CSS = """
+    PendingQueue {
+        height: auto;
+    }
+    PendingQueue > .queue-row {
+        height: 1;
+        width: 1fr;
+    }
+    .queue-summary {
+        height: 1;
+        width: 1fr;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-wrap: nowrap;
+    }
+    QueueDelete {
+        height: 1;
+        width: auto;
+        text-style: bold dim;
+        pointer: pointer;
+    }
+    QueueDelete:hover {
+        color: ansi_red;
+        text-style: bold;
+    }
+    QueueToggle {
+        height: 1;
+        width: auto;
+        text-style: bold dim;
+        pointer: pointer;
+    }
+    QueueToggle:hover {
+        color: ansi_bright_cyan;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, *, max_visible: int = 3, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._max_visible = max_visible
+
+    def update_items(
+        self,
+        items: list[str],
+        expanded: bool,
+        *,
+        summary_limit: int = 40,
+    ) -> None:
+        """按当前队列内容重建预览行；空队列时只清空不显示。
+
+        ``expanded`` 为 True 且队列超过可见上限时展示全部条目并附加
+        「收起」行；否则折叠为前 ``max_visible`` 条 + 「展开」行。
+        """
+
+        self.remove_children()
+        count = len(items)
+        if not count:
+            return
+        title = Text(f"⏳ {count} 条消息排队", style=f"bold {ACCENT_AMBER}")
+        self.mount(Static(title))
+        show_all = expanded and count > self._max_visible
+        visible = items if show_all else items[: self._max_visible]
+        for index, text in enumerate(visible):
+            first_line = text.splitlines()[0] if text else ""
+            summary = " ".join(first_line.split())[:summary_limit]
+            row = Horizontal(
+                Static(
+                    f"  {index + 1}. {summary}",
+                    classes="queue-summary",
+                    markup=False,
+                ),
+                QueueDelete(index),
+                classes="queue-row",
+            )
+            self.mount(row)
+        if count > self._max_visible:
+            if show_all:
+                toggle_label = "  « 收起"
+            else:
+                toggle_label = f"  … 还有 {count - self._max_visible} 条 ›"
+            self.mount(QueueToggle(toggle_label))
 
 
 class StatusMixin:
@@ -246,51 +386,82 @@ class StatusMixin:
     def _pending_queue_rows(self) -> int:
         """排队预览条当前应占用的行数（无排队时为 0）。
 
-        行数 = 1 行标题 + 每条摘要一行（最多 QUEUE_PREVIEW_MAX_ROWS）
-        + 超出部分折叠提示行（仅当队列超过最大展示行数时）。
+        行数 = 1 行标题 + 可见消息行数 + （超出可见上限时）1 行
+        展开/收起提示行；展开态下可见消息行数为全部，折叠态为前
+        ``QUEUE_PREVIEW_MAX_ROWS`` 条。
         """
 
-        if not self._pending_inputs:
+        count = len(self._pending_inputs)
+        if not count:
             return 0
-        rows = 1 + min(len(self._pending_inputs), self.QUEUE_PREVIEW_MAX_ROWS)
-        if len(self._pending_inputs) > self.QUEUE_PREVIEW_MAX_ROWS:
+        visible = (
+            count
+            if self._pending_queue_expanded and count > self.QUEUE_PREVIEW_MAX_ROWS
+            else min(count, self.QUEUE_PREVIEW_MAX_ROWS)
+        )
+        rows = 1 + visible
+        if count > self.QUEUE_PREVIEW_MAX_ROWS:
             rows += 1
         return rows
 
     def _render_pending_queue(self) -> None:
         """在 composer 上方渲染 FIFO 排队消息预览条；空队列时隐藏。
 
-        标题行显示排队总数，随后按 FIFO 顺序展示每条消息的首行摘要
-        （超出 QUEUE_PREVIEW_MAX_ROWS 的部分折叠为一行计数），并在每次
-        队列变化（排队、逐条发送、清空）后同步高度。
+        标题行显示排队总数，随后按 FIFO 顺序每行展示一条消息摘要，
+        行尾 [ DELETE ] 可撤回对应消息并回填输入框；队列超过可见上限
+        时默认折叠为前几条 + 展开提示行，点击提示行可展开/收起全部，
+        并在每次队列变化（排队、撤回、逐条发送、清空）后同步高度。
         """
 
-        queue = self.query_one("#pending-queue", Static)
+        try:
+            queue = self.query_one("#pending-queue", PendingQueue)
+        except Exception:  # noqa: BLE001 - 组件尚未挂载的测试替身
+            return
         if not self._pending_inputs:
             queue.display = False
-            queue.update("")
+            queue.remove_children()
+            self._pending_queue_expanded = False
+            self._resize_composer_to_text()
             return
-        lines = Text(no_wrap=True, overflow="ellipsis")
-        lines.append(
-            f"⏳ {len(self._pending_inputs)} 条消息排队",
-            style=f"bold {ACCENT_AMBER}",
+        if len(self._pending_inputs) <= self.QUEUE_PREVIEW_MAX_ROWS:
+            # 队列缩回可见上限内：退出展开态，避免残留无效的展开/收起行。
+            self._pending_queue_expanded = False
+        queue.update_items(
+            list(self._pending_inputs),
+            self._pending_queue_expanded,
+            summary_limit=self.QUEUE_PREVIEW_SUMMARY_LIMIT,
         )
-        for index, text in enumerate(
-            list(self._pending_inputs)[: self.QUEUE_PREVIEW_MAX_ROWS], start=1
-        ):
-            first_line = text.splitlines()[0] if text else ""
-            summary = " ".join(first_line.split())[: self.QUEUE_PREVIEW_SUMMARY_LIMIT]
-            lines.append("\n")
-            lines.append(f"  {index}. {summary}", style=TEXT_SECONDARY)
-        if len(self._pending_inputs) > self.QUEUE_PREVIEW_MAX_ROWS:
-            lines.append("\n")
-            lines.append(
-                f"  … 还有 {len(self._pending_inputs) - self.QUEUE_PREVIEW_MAX_ROWS} 条",
-                style=TEXT_MUTED,
-            )
-        queue.update(lines)
         queue.display = True
         self._resize_composer_to_text()
+
+    def _withdraw_pending_input(self, index: int) -> None:
+        """撤回第 ``index`` 条排队消息：移出队列并回填输入框。
+
+        仅在生成期间队列非空且索引有效时执行；直接替换输入框当前
+        内容（不自动发送），让用户修改后再次 Enter 提交。正在提问
+        （ask_user 面板激活）时不执行，避免回填内容被提问模式吞掉。
+        """
+
+        if not self.is_generating or not 0 <= index < len(self._pending_inputs):
+            return
+        if self._ask_user_request is not None:
+            return
+        items = list(self._pending_inputs)
+        text = items.pop(index)
+        self._pending_inputs = deque(items)
+        composer = self.query_one("#composer", TextArea)
+        composer.text = text
+        composer.cursor_location = (0, len(text))
+        composer.focus()
+        self._refresh_pending_queue_count()
+
+    def _toggle_pending_queue_expanded(self) -> None:
+        """展开/收起排队预览中被折叠的条目。"""
+
+        if len(self._pending_inputs) <= self.QUEUE_PREVIEW_MAX_ROWS:
+            return
+        self._pending_queue_expanded = not self._pending_queue_expanded
+        self._render_pending_queue()
 
     def _token_telemetry_text(self) -> Text:
         """生成第二行遥测：项目名、CTX 占用、IN/OUT/CA 与 tok/s。"""
@@ -362,4 +533,4 @@ class StatusMixin:
         self._carousel_refresh()
 
 
-__all__ = ["StatusMixin"]
+__all__ = ["PendingQueue", "QueueDelete", "QueueToggle", "StatusMixin"]

@@ -54,6 +54,7 @@ from ...runtime.run_guard import mark_pause_requested
 
 from ..shared import (
     AgentError,
+    ask_user_advisor_hint,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -177,7 +178,13 @@ class ToolImplementationsMixin:
             LOGGER.warning("ask_user handler failed", exc_info=True)
             return ToolResult(ok=False, output=f"向用户提问失败：{exc}")
         if answer is None or not str(answer).strip():
-            return ToolResult(ok=False, output="用户未回答该问题。")
+            output = "用户未回答该问题。"
+            # 仅当顾问策略真正可用时提示可调用 advisor 托管（启用 + 已选模型 +
+            # 当前模型不在黑名单；与工具表注册/提示词注入同一判定）。
+            hint = ask_user_advisor_hint(self)
+            if hint:
+                output = f"{output}{hint}"
+            return ToolResult(ok=False, output=output)
         answer_text = str(answer).strip()
         return ToolResult(
             ok=True,

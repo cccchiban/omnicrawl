@@ -232,20 +232,44 @@ def _unknown_tool_result(
     return ToolResult(ok=False, output=output)
 
 
-def _tool_timeout_result(timeout_seconds: int) -> ToolResult:
+ASK_USER_ADVISOR_HINT = (
+    "（若用户暂时不在或无法作答：本环境已启用顾问策略，"
+    "可调用一次 advisor 代替用户评估并给出合理的决策方向，"
+    "避免任务空等；但高危或需审批的操作仍须获得用户的明确授权。）"
+)
+
+
+def ask_user_advisor_hint(agent: object) -> str:
+    """advisor 真正可用（启用 + 已选模型 + 不在黑名单）时返回托管提示，否则空串。
+
+    与工具表注册 / 系统提示词注入使用同一判定入口（``_advisor_is_active``）；
+    宿主未混入 AdvisorMixin 或探测失败时按未启用处理。
+    """
+
+    advisor_active = getattr(agent, "_advisor_is_active", None)
+    if not callable(advisor_active):
+        return ""
+    try:
+        return ASK_USER_ADVISOR_HINT if advisor_active() else ""
+    except Exception:  # noqa: BLE001 - 可用性探测失败按未启用处理
+        return ""
+
+
+def _tool_timeout_result(timeout_seconds: int, hint: str = "") -> ToolResult:
     """构造工具执行超时的结构化错误结果。
 
     返回给模型的是可读的超时说明；后台线程无法安全强杀，其结果被丢弃，
     因此该结果会在会话里留下“工具超时”记录，提示模型下一步处理。
+    ``hint`` 由调用方在需要时附加（如 ask_user 超时且顾问可用时的托管提示）。
     """
 
-    return ToolResult(
-        ok=False,
-        output=(
-            f"工具执行超时（超过 {timeout_seconds} 秒未完成），已中止等待。"
-            "（后台线程仍在运行，其结果已被丢弃。）"
-        ),
+    output = (
+        f"工具执行超时（超过 {timeout_seconds} 秒未完成），已中止等待。"
+        "（后台线程仍在运行，其结果已被丢弃。）"
     )
+    if hint:
+        output = f"{output}{hint}"
+    return ToolResult(ok=False, output=output)
 
 
 def _execute_call_with_timeout(
