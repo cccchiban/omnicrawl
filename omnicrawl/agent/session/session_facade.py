@@ -140,13 +140,23 @@ class AgentSessionFacade:
             raise self._error_type(str(exc)) from exc
 
     def list_projects(self) -> list[ProjectEntry]:
-        """列出已保存项目；读取前先扫描会话索引补齐缺失项目。"""
+        """列出已保存项目（不隐式扫描会话索引，避免每次读取回灌残留）。"""
 
-        self.scan_projects()
         project_store = self.require_project_store()
         try:
             return project_store.list_projects()
         except ProjectStoreError as exc:
+            raise self._error_type(str(exc)) from exc
+
+    def list_project_overview(self) -> list[dict[str, Any]]:
+        """项目总览（只读聚合，不写盘）：显式项目 + 会话索引稳定目录合并视图。"""
+
+        session_store = self.require_session_store()
+        project_store = self.require_project_store()
+        try:
+            sessions = session_store.list_sessions(limit=100, include_archived=True)
+            return project_store.project_overview(sessions)
+        except (ProjectStoreError, SessionStoreError) as exc:
             raise self._error_type(str(exc)) from exc
 
     def create_project(self, name: str, path: str = "") -> ProjectEntry:

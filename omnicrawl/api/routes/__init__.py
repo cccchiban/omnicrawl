@@ -12,6 +12,7 @@ from . import (
     projects,
     runs,
     sessions,
+    settings,
     subagents,
     support,
     system,
@@ -29,6 +30,7 @@ def build_api_router() -> APIRouter:
     router.include_router(sessions.router)
     router.include_router(projects.router)
     router.include_router(configuration.router)
+    router.include_router(settings.router)
     router.include_router(support.router)
     return router
 

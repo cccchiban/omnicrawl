@@ -89,9 +89,14 @@ class SessionStoreMixin:
         return self._session_facade().scan_projects()
 
     def list_projects(self) -> list[ProjectEntry]:
-        """列出已保存项目；每次读取前先扫描会话索引补齐缺失项目。"""
+        """列出已保存项目。"""
 
         return self._session_facade().list_projects()
+
+    def list_project_overview(self) -> list[dict[str, Any]]:
+        """项目总览（只读聚合：显式项目 + 会话索引稳定目录）。"""
+
+        return self._session_facade().list_project_overview()
 
     def create_project(self, name: str, path: str = "") -> ProjectEntry:
         """创建项目目录并持久化到项目列表。"""

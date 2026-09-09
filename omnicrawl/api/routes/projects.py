@@ -18,6 +18,12 @@ def list_projects(request: Request) -> dict[str, Any]:
     return data([jsonable(entry) for entry in service(request).agent.list_projects()])
 
 
+@router.get("/projects/overview")
+def list_project_overview(request: Request) -> dict[str, Any]:
+    """项目总览（只读聚合）：显式项目 + 会话索引稳定目录，含会话数/最近会话。"""
+    return data(service(request).agent.list_project_overview())
+
+
 @router.post("/projects")
 def create_project(payload: ProjectRequest, request: Request) -> dict[str, Any]:
     current = service(request)
