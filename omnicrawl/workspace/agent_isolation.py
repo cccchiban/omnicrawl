@@ -43,7 +43,8 @@ SubAgent 的 worktree 会话（``agent/subagents/worktree.py``）沿用同一套
 进程崩溃 / 被强杀（例如连接器随 TUI 退出被终止）留下的孤儿隔离区由
 启动清扫 ``sweep_expired_isolation_sessions`` 回收：超过保留期后，按创建时
 持久化的配置（``apply_on_exit`` / ``cleanup_on_exit``）先把变更应用回主工作区
-（延迟收尾），再走四层门禁决定是否删除。
+（延迟收尾），再走四层门禁决定是否删除。启动路径通过
+``start_background_isolation_sweep`` 在守护线程中执行清扫，不占用首屏时间。
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -1275,6 +1277,31 @@ def sweep_expired_isolation_sessions(
         kept=tuple(kept),
         applied=tuple(applied),
     )
+
+
+def start_background_isolation_sweep(
+    worktrees_root: Path | None = None,
+) -> threading.Thread:
+    """在守护线程中执行过期隔离区清扫，不阻塞启动关键路径。
+
+    清扫需要对每个过期会话运行多次 git 子进程（历史会话多时可达数秒），
+    放在 TUI / API 启动路径上会明显拖慢首屏。返回已启动的线程；失败只在
+    后台记录日志，不影响启动，也不改变清扫本身的 apply / 门禁语义。
+    """
+
+    def _run() -> None:
+        try:
+            sweep_expired_isolation_sessions(worktrees_root)
+        except Exception:  # noqa: BLE001 - 后台清扫失败不阻断启动
+            LOGGER.warning("后台隔离区清扫失败。", exc_info=True)
+
+    thread = threading.Thread(
+        target=_run,
+        name="omnicrawl-isolation-sweep",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:

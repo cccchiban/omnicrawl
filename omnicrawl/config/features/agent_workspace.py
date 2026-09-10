@@ -23,7 +23,8 @@
   第四层：有未推送远端（origin）的 commit 也不删（即使变更已应用回主工作区）。
 
 进程崩溃 / 被强杀遗留的过期隔离区由下一次启动清扫
-（``sweep_expired_isolation_sessions``）先 apply 回写再按四层门禁回收。
+（``sweep_expired_isolation_sessions``，启动路径经
+``start_background_isolation_sweep`` 在后台执行）先 apply 回写再按四层门禁回收。
 """
 
 from __future__ import annotations

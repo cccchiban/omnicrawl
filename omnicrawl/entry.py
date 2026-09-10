@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -40,10 +41,15 @@ from omnicrawl.ui.windows_launcher import configure_console_encoding
 
 LOGGER = logging.getLogger(__name__)
 
-# 启动画面最短展示时长：0 表示不人为延长"准备耗时"，完全由所有准备项
-#（包括 MCP 能力发现）是否完成决定何时进入可发送的 TUI。保留这个常量名
-# 兼容外部启动包装器；run_startup_splash 仍支持显式最短时长。
+# 启动画面最短展示时长：0 表示不人为延长"准备耗时"，配置、隔离区、插件、
+# Agent、连接器等准备项完成后即进入 TUI（MCP 能力发现已改为后台预热，不
+# 计入等待）。保留这个常量名兼容外部启动包装器；run_startup_splash 仍支持
+# 显式最短时长。
 SPLASH_DURATION_SECONDS = 0.0
+
+# prepare 完成后进入 TUI 前的停留秒数：仅保留日志框的短暂可读窗口，启动
+# 速度优先（历史上为 2 秒固定等待，见 run_startup_splash 的 hold_after_done）。
+SPLASH_HOLD_AFTER_DONE_SECONDS = 0.5
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -108,6 +114,24 @@ def _log_startup(
         sink.write_line(message, level=level)
 
 
+def _preload_mcp_tools_background(agent: Any, log_sink: Any = None) -> None:
+    """后台发现 MCP 能力；异常只记录日志与诊断，不阻断启动。
+
+    发现失败不再写入首屏 ``startup_messages``（线程与首屏时序已解耦）；
+    失败原因仍由 MCP registry 诊断保留，可通过 ``/mcp`` 查看。
+    """
+
+    try:
+        agent.preload_mcp_tools()
+        _log_startup(log_sink, "MCP 初始化完成")
+    except AgentError as exc:
+        LOGGER.warning("MCP 能力加载失败：%s", exc)
+        _log_startup(log_sink, f"MCP 能力加载失败：{exc}", level="warning")
+    except Exception as exc:  # noqa: BLE001 - MCP 是增量能力，失败不阻断启动
+        LOGGER.warning("MCP 能力加载异常：%s", exc, exc_info=True)
+        _log_startup(log_sink, f"MCP 能力加载异常：{exc}", level="error")
+
+
 def _prepare_startup(
     *,
     app_root: Path,
@@ -142,13 +166,8 @@ def _prepare_startup(
     isolation_session = None
     try:
         from omnicrawl.config.features.agent_workspace import load_agent_workspace_config
-        from omnicrawl.workspace.agent_isolation import (
-            prepare_isolated_workspace,
-            sweep_expired_isolation_sessions,
-        )
+        from omnicrawl.workspace.agent_isolation import prepare_isolated_workspace
 
-        # 启动清扫：回收上次崩溃 / 被强杀（如连接器随 TUI 退出）遗留的过期隔离区。
-        sweep_expired_isolation_sessions()
         agent_workspace_root, isolation_session = prepare_isolated_workspace(
             main_workspace=project_context.workspace_root,
             config=load_agent_workspace_config(),
@@ -162,6 +181,17 @@ def _prepare_startup(
         )
         agent_workspace_root = project_context.workspace_root
         isolation_session = None
+
+    # 启动清扫（后台挂载）：回收上次崩溃 / 被强杀（如连接器随 TUI 退出）遗留
+    # 的过期隔离区。放到隔离区创建之后再后台执行：新会话已注册，清扫的 in_use
+    # 保护与保留期判定都会跳过它；历史会话多时清扫要对每个过期会话运行多次
+    # git 子进程，不应占用 splash / 首屏时间。
+    try:
+        from omnicrawl.workspace.agent_isolation import start_background_isolation_sweep
+
+        start_background_isolation_sweep()
+    except Exception as exc:  # noqa: BLE001 - 清扫启动失败不阻断 TUI
+        LOGGER.warning("隔离区后台清扫启动失败：%s", exc)
 
     plugin_runtime = None
     plugin_lines: list[str] = []
@@ -227,28 +257,21 @@ def _prepare_startup(
             on_finalized=lambda summary: print(f"[isolation] {summary}", file=sys.stderr),
         )
     _log_startup(log_sink, "Agent 初始化完成")
+    # MCP 能力发现放后台线程：首次连接 + 能力枚举（远程 HTTP Server 还要
+    # TLS 握手）通常需要 1–4 秒，不应让 splash / 首屏等待。首个回合在模型
+    # 请求前会经 _ensure_mcp_tools_ready 等待发现完成，工具表不会缺失；失败
+    # 诊断由 MCP registry 记录（/mcp 可查），并写入启动日志与 tui.log。
     startup_messages: list[str] = []
     try:
-        # MCP 原先在 TUI 首屏之后后台发现，导致用户先看到主界面但暂时不能
-        # 输入。把这一步纳入 splash 的 prepare，使 splash 结束即代表可以发送。
-        agent.preload_mcp_tools()
-        _log_startup(log_sink, "MCP 初始化完成")
-    except AgentError as exc:
-        # MCP 是增量能力：发现失败不应阻止内置工具可用；把失败延迟到主界面
-        # 展示，同时仍视为该加载项已结束，避免启动页永久等待。
-        startup_messages.append(f"MCP 能力加载失败：{exc}")
-        _log_startup(
-            log_sink,
-            f"MCP 能力加载失败:{exc}",
-            level="warning",
-        )
-    except Exception as exc:  # noqa: BLE001
-        startup_messages.append(f"MCP 能力加载异常：{exc}")
-        _log_startup(
-            log_sink,
-            f"MCP 能力加载异常：{exc}",
-            level="error",
-        )
+        threading.Thread(
+            target=_preload_mcp_tools_background,
+            args=(agent, log_sink),
+            name="omnicrawl-mcp-preload",
+            daemon=True,
+        ).start()
+    except Exception as exc:  # noqa: BLE001 - 线程创建失败降级为同步预热
+        LOGGER.warning("MCP 后台预热线程创建失败，改为同步预热：%s", exc)
+        _preload_mcp_tools_background(agent, log_sink)
     if plugin_runtime is not None:
         agent.add_close_callback(plugin_runtime.close)
         plugin_runtime.notify_app_started()
@@ -334,10 +357,10 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         LOGGER.warning("启动自动更新失败，继续正常启动。", exc_info=True)
 
     # 显示启动画面（左侧黄色 Logo + 右侧圆角日志框 + 底部 XP 滚动条），
-    # 后台并行完成全部准备；准备阶段把 MCP/插件/Agent/连接器进度写入日志框。
-    # 启动页不设人为最短总时长（SPLASH_DURATION_SECONDS=0），但 prepare
-    # 完成后画面默认再停留 2 秒（run_startup_splash 的 hold_after_done），
-    # 便于查看日志框内刚写入的启动日志，随后进入可发送的 TUI。
+    # 后台并行完成全部准备；准备阶段把插件/Agent/连接器进度写入日志框
+    #（MCP 能力发现已改为后台预热，不占用此处等待）。
+    # 启动页不设人为最短总时长（SPLASH_DURATION_SECONDS=0），prepare 完成后
+    # 仅保留 SPLASH_HOLD_AFTER_DONE_SECONDS 的日志框可读窗口即进入 TUI。
     # 非交互终端（测试、管道）下 splash 直接同步执行准备，行为不变。
     # splash 期间 run_startup_splash 会把 root logging 的 WARNING/ERROR
     # 桥接进日志框：默认 root 无 handler 时这些警告会经 lastResort 直接落到
@@ -350,6 +373,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
                 log_sink=log_sink,
             ),
             duration=SPLASH_DURATION_SECONDS,
+            hold_after_done=SPLASH_HOLD_AFTER_DONE_SECONDS,
         )
     except LLMError as exc:
         print(f"配置加载失败：{exc}")

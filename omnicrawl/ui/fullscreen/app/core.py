@@ -618,8 +618,8 @@ class OmniCrawlApp(
         if not self.startup.startup_ready and callable(
             getattr(self.agent, "preload_mcp_tools", None)
         ):
-            # 直接启动 App 的兼容路径：真实入口已在 Splash 阶段完成 MCP
-            # 预热，因此不会在可见主界面后再锁住输入。
+            # 直接启动 App 的兼容路径：真实入口已在后台线程预热 MCP，首个
+            # 回合会等待发现完成；此路径没有预热协作者，只能同步锁输入预热。
             self.is_generating = True
             self._preload_mcp_tools()
         else:

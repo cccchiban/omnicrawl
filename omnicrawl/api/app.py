@@ -81,19 +81,24 @@ def create_default_agent() -> LocalToolAgent:
     agent_workspace_root = project_context.workspace_root
     try:
         from ..config.features.agent_workspace import load_agent_workspace_config
-        from ..workspace.agent_isolation import (
-            prepare_isolated_workspace,
-            sweep_expired_isolation_sessions,
-        )
+        from ..workspace.agent_isolation import prepare_isolated_workspace
 
-        # 启动清扫：回收上次崩溃 / 被强杀（如连接器随 TUI 退出）遗留的过期隔离区。
-        sweep_expired_isolation_sessions()
         agent_workspace_root, isolation_session = prepare_isolated_workspace(
             main_workspace=project_context.workspace_root,
             config=load_agent_workspace_config(),
         )
     except Exception as exc:  # noqa: BLE001 - 隔离失败不阻断 Agent 创建
         LOGGER.warning("隔离工作区初始化失败，回退到主工作区：%s", exc)
+
+    # 启动清扫（后台挂载，与 TUI 入口一致）：回收上次崩溃 / 被强杀遗留的
+    # 过期隔离区；历史会话多时会对每个过期会话运行多次 git 子进程，不应
+    # 占用 API 服务启动时间。失败只记录日志，不影响服务。
+    try:
+        from ..workspace.agent_isolation import start_background_isolation_sweep
+
+        start_background_isolation_sweep()
+    except Exception as exc:  # noqa: BLE001 - 清扫启动失败不阻断 Agent 创建
+        LOGGER.warning("隔离区后台清扫启动失败：%s", exc)
 
     plugin_runtime = None
     try:

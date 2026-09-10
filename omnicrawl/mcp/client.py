@@ -662,7 +662,7 @@ class _StreamableHTTPMCPConnection:
         self._lock = threading.Lock()
 
     def discover(self) -> _DiscoveredCapabilities:
-        self._request(
+        init_result = self._request(
             "initialize",
             {
                 "protocolVersion": MCP_STREAMABLE_HTTP_PROTOCOL_VERSION,
@@ -673,9 +673,19 @@ class _StreamableHTTPMCPConnection:
         self._initialized = True
         self._request("notifications/initialized", {}, notification=True)
         return _DiscoveredCapabilities(
-            tools=self._list_capability("tools/list", "tools"),
-            resources=self._list_capability("resources/list", "resources"),
-            prompts=self._list_capability("prompts/list", "prompts"),
+            tools=self._list_capability(
+                "tools/list", "tools", supported=_capability_declared(init_result, "tools")
+            ),
+            resources=self._list_capability(
+                "resources/list",
+                "resources",
+                supported=_capability_declared(init_result, "resources"),
+            ),
+            prompts=self._list_capability(
+                "prompts/list",
+                "prompts",
+                supported=_capability_declared(init_result, "prompts"),
+            ),
         )
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -699,7 +709,17 @@ class _StreamableHTTPMCPConnection:
     def close(self) -> None:
         self._client.close()
 
-    def _list_capability(self, method: str, result_key: str) -> list[dict[str, Any]]:
+    def _list_capability(
+        self,
+        method: str,
+        result_key: str,
+        *,
+        supported: bool = True,
+    ) -> list[dict[str, Any]]:
+        if not supported:
+            # 服务器未在 initialize 响应中声明该能力：跳过请求（远程 HTTP
+            # 每跳过一次就少一个网络往返，stdio 少一次进程内请求）。
+            return []
         try:
             payload = self._request(method, {})
         except Exception:
@@ -825,6 +845,21 @@ def _unwrap_json_rpc_response(payload: dict[str, Any], method: str) -> dict[str,
     return result
 
 
+def _capability_declared(init_result: dict[str, Any], capability: str) -> bool:
+    """initialize 响应是否声明了指定能力（缺失声明时保守按支持处理）。
+
+    服务器明确给出 capabilities 字典但未包含该能力时返回 False，调用方
+    跳过对应的 list 请求（例如只支持 tools 的服务器不再为 resources /
+    prompts 各付一次往返）；缺少 capabilities 字段或结构异常时返回 True，
+    对非标准服务器保持全量探测行为。
+    """
+
+    capabilities = init_result.get("capabilities")
+    if not isinstance(capabilities, dict):
+        return True
+    return capability in capabilities
+
+
 def _resolve_stdio_command(command: str) -> str:
     """解析 stdio Server 命令到真实可执行路径。
 
@@ -855,7 +890,7 @@ class _StdioMCPConnection:
 
     def discover(self) -> _DiscoveredCapabilities:
         self._start()
-        self._request(
+        init_result = self._request(
             "initialize",
             {
                 "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -865,9 +900,19 @@ class _StdioMCPConnection:
         )
         self._notify("notifications/initialized", {})
         return _DiscoveredCapabilities(
-            tools=self._list_capability("tools/list", "tools"),
-            resources=self._list_capability("resources/list", "resources"),
-            prompts=self._list_capability("prompts/list", "prompts"),
+            tools=self._list_capability(
+                "tools/list", "tools", supported=_capability_declared(init_result, "tools")
+            ),
+            resources=self._list_capability(
+                "resources/list",
+                "resources",
+                supported=_capability_declared(init_result, "resources"),
+            ),
+            prompts=self._list_capability(
+                "prompts/list",
+                "prompts",
+                supported=_capability_declared(init_result, "prompts"),
+            ),
         )
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -942,7 +987,17 @@ class _StdioMCPConnection:
         except OSError as exc:
             raise MCPClientError(f"启动 MCP Server 失败：{exc}") from exc
 
-    def _list_capability(self, method: str, result_key: str) -> list[dict[str, Any]]:
+    def _list_capability(
+        self,
+        method: str,
+        result_key: str,
+        *,
+        supported: bool = True,
+    ) -> list[dict[str, Any]]:
+        if not supported:
+            # 服务器未在 initialize 响应中声明该能力：跳过请求（远程 HTTP
+            # 每跳过一次就少一个网络往返，stdio 少一次进程内请求）。
+            return []
         try:
             payload = self._request(method, {})
         except Exception:
