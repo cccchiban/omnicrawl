@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace as _dataclass_replace
 from pathlib import Path
 from typing import Any
 from ....mcp import MCPClientManager, MCPConfigError, load_mcp_config
 from ....project import ProjectEntry, ProjectStore
+from ....state.session_models import format_datetime, utc_now
 from ....session import (
     PromptHistoryEntry,
     SessionIndexEntry,
@@ -46,13 +48,20 @@ class SessionStoreMixin:
 
         return self._session_facade().current_session_id()
 
-    def current_session_messages(self) -> list[dict[str, str]]:
+    def current_session_messages(self) -> list[dict[str, Any]]:
         """返回当前会话投影后的模型上下文消息，供非事件型客户端读取。
 
-        与 `resume_session` 重建的 `_history` 同源（来自 JSONL 转录投影），
-        但保留完整会话内容而不受 `max_history_turns` 窗口裁剪；会话系统
-        关闭或尚未创建会话时返回空列表。TUI 需要保留工具卡和子任务树时，
-        应优先使用 `current_session_events()`。
+        与 `resume_session` 重建的 `_history` 同源：同一会话内多轮对话完整
+        继承 assistant tool_calls 与 tool 结果消息，不再折叠为文本摘要，也不做
+        窗口裁剪——任何改写或截断都会让已发送前缀失效，破坏 Provider 前缀
+        缓存。
+
+        该结果来自落盘事件的投影，工具参数与推理文本已做过值级脱敏；运行期
+        `_history` 用的是模型原文，因此含密钥时会与这里不同（重启边界差异，
+        详见 `omnicrawl/docs/session_design.md` 第 19.5 节）。调用方需按 role
+        自行过滤（tool 消息与 content 为空的 tool_calls 消息不面向用户展示）。
+        会话系统关闭或尚未创建会话时返回空列表。TUI 需要保留工具卡和子任务
+        树时，应优先使用 `current_session_events()`。
         """
 
         state = getattr(self, "_session_state", None)
@@ -290,6 +299,53 @@ class SessionStoreMixin:
         return self._session_facade().require_project_store()
 
     def _append_session_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        """追加会话事件；持久化失败时中断当前任务，避免误以为会话可恢复。"""
+        """追加会话事件，并同步推进本轮协议轨迹投影。
 
-        self._session_facade().append_session_event(event_type, payload)
+        轨迹投影把事件增量投影为模型协议消息（assistant tool_calls + tool
+        结果），使同一会话内多轮对话完整继承运行时上下文；投影与恢复路径
+        共用同一状态机（``TurnHistoryProjector``），保证「不重启」与「重启
+        恢复」看到相同的历史。会话未启用（事件不落盘）时构造仅内存存在的
+        等价事件继续投影，无持久化的会话同样保持完整继承。
+        """
+
+        event = self._session_facade().append_session_event(event_type, payload)
+        projector = self.__dict__.get("_turn_history_projector")
+        if projector is None:
+            return
+        if event is None:
+            projector.feed(_ephemeral_session_event(self, event_type, payload))
+            return
+        # 落盘事件已做值级脱敏（密钥值被替换为 ***）。运行期投影必须使用未经
+        # 脱敏的原始 payload：它才是真正发往 Provider 的那份内容——用它投影
+        # 才能让同一会话内多轮对话与已发送前缀逐字一致（前缀缓存命中），也
+        # 避免模型看到自己的推理被改写。脱敏副本仍照常落盘；重启恢复时按
+        # 脱敏版本重建（安全优先，见 session_design.md 第 19.5 节）。
+        projector.feed(_dataclass_replace(event, payload=dict(payload)))
+
+
+def _ephemeral_session_event(
+    owner: Any,
+    event_type: str,
+    payload: dict[str, Any],
+) -> SessionEvent:
+    """构造只在内存中参与投影的事件（会话未启用、事件不落盘时使用）。
+
+    事件 ID 带单调序号，既不会与真实 JSONL 事件冲突，也保证同一轮内多条
+    事件顺序稳定；投影器只依赖 ``event_id``/``type``/``payload`` 三个字段。
+    """
+
+    sequence = int(getattr(owner, "_ephemeral_event_seq", 0)) + 1
+    owner._ephemeral_event_seq = sequence
+    state = getattr(owner, "_session_state", None)
+    # 占位 session_id 必须满足 SessionEvent 的 ID 格式校验（否则事件构造失败会
+    # 中断整个回合），因此使用全零的合法形状而非语义化字符串。
+    return SessionEvent.from_dict(
+        {
+            "version": 1,
+            "session_id": str(getattr(state, "session_id", "00000000-000000-000000")),
+            "event_id": f"memory-event-{sequence}-{event_type}",
+            "type": event_type,
+            "created_at": format_datetime(utc_now()),
+            "payload": dict(payload),
+        }
+    )

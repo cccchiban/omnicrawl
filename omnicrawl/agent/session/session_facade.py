@@ -498,13 +498,17 @@ class AgentSessionFacade:
                 pass
         return state
 
-    def append_session_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        """追加会话事件；持久化失败时中断当前任务，避免误以为会话可恢复。"""
+    def append_session_event(self, event_type: str, payload: dict[str, Any]) -> Any:
+        """追加会话事件；持久化失败时中断当前任务，避免误以为会话可恢复。
+
+        成功时返回落盘的 ``SessionEvent``，供调用方把同一事件喂给运行期协议
+        轨迹投影；会话未启用时返回 ``None``。
+        """
 
         store = getattr(self._owner, "_session_store", None)
         state = getattr(self._owner, "_session_state", None)
         if store is None or state is None:
-            return
+            return None
         try:
             event = store.append_event(state.session_id, event_type, payload)
             from ...state.session_projection import apply_run_guard_event
@@ -529,6 +533,7 @@ class AgentSessionFacade:
                 pending_user_text=pending_user_text,
                 todo_items=todo_items,
             )
+            return event
         except SessionStoreError as exc:
             raise self._error_type(str(exc)) from exc
 

@@ -202,7 +202,9 @@ class SessionState:
     path: Path
     created_at: datetime
     updated_at: datetime
-    messages: list[dict[str, str]]
+    # 面向模型的完整协议消息（user/assistant/tool，含 tool_calls 与 tool 结果），
+    # 不再只有纯文本：类型为 Any 字典，供恢复投影原样继承。
+    messages: list[dict[str, Any]]
     last_event_type: str
     event_count: int
     archived_at: datetime | None = None

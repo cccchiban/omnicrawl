@@ -21,6 +21,7 @@ from ....memory import (
 from ....session import (
     COMPACT_SUMMARY_PREFIX,
 )
+from ....state.session_projection import project_compaction_boundary_history
 
 from ..shared import (
     AgentError,
@@ -71,7 +72,7 @@ class TurnCompactionMixin:
             compact_payload["archive_id"] = archive_id
         self._append_session_event("compact_summary", compact_payload)
         before_tokens = estimate_json_tokens(self._history)
-        self._history = list(outcome.history_projection or ())
+        self._history = self._rebuild_history_after_compaction(compact_payload)
         self._write_compaction_memories(compact_payload)
         self._auto_recall_compaction_memory(compact_payload)
         after_tokens = estimate_json_tokens(self._history)
@@ -164,7 +165,7 @@ class TurnCompactionMixin:
             before_tokens = outcome.measurement_payload.get("estimated_next_input_tokens")
             if before_tokens is None:
                 before_tokens = estimate_json_tokens(self._history)
-            self._history = list(outcome.history_projection or ())
+            self._history = self._rebuild_history_after_compaction(compact_payload)
             self._write_compaction_memories(compact_payload)
             self._auto_recall_compaction_memory(compact_payload)
             # after 一律用替换后的真实 history 计算：无预算上限模式下
@@ -287,6 +288,27 @@ class TurnCompactionMixin:
         if notice and status is not None:
             status(notice)
         return result.summary
+
+    def _rebuild_history_after_compaction(
+        self,
+        compact_payload: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """用压缩边界重建运行期历史，并重置轨迹投影的累积基点。
+
+        压缩后的历史必须等于「重启后由 ``project_session_history`` 重建」
+        的结果，否则同一会话在压缩前后会出现两份不同上下文，既影响前缀缓存
+        也影响模型看到的工具调用与结果。重建后轨迹投影清空，只累积压缩边界
+        之后的新事件；已被摘要取代的窗口不再重复进入历史。
+        """
+
+        history = project_compaction_boundary_history(
+            compact_payload,
+            self._context_compaction_source_events(),
+        )
+        projector = self.__dict__.get("_turn_history_projector")
+        if projector is not None:
+            projector.reset()
+        return history
 
     def _write_compaction_memories(self, compact_payload: Mapping[str, Any]) -> None:
         """把压缩结果写入当前会话级记忆；失败不影响压缩。"""

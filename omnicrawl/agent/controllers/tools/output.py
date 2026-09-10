@@ -12,6 +12,9 @@ from ....llm import (
 from ....state.session_artifacts import (
     preview_text,
 )
+from ....state.session_projection import (
+    tool_result_message,
+)
 
 from ..shared import (
     TOOL_OUTPUT_ARCHIVED_PREVIEW_CHARS,
@@ -133,16 +136,19 @@ class ToolOutputMixin:
 
     @staticmethod
     def _tool_result_message(tool_call: ToolCall, result: ToolResult) -> dict[str, Any]:
-        content = (
-            f"状态：{'成功' if result.ok else '失败'}\n"
-            f"工具：{tool_call.name}\n"
-            f"结果：\n{result.output}"
+        """工具结果协议消息；与恢复投影共用同一构造器，保证逐字一致。
+
+        工具调用 ID 与事件、恢复投影使用同一规则（``tool_call.id or
+        tool_call.name``），否则重启恢复时 tool 消息无法与 assistant
+        tool_calls 配对。
+        """
+
+        return tool_result_message(
+            tool_call.name,
+            result.ok,
+            result.output,
+            tool_call.id or tool_call.name,
         )
-        return {
-            "role": "tool",
-            "tool_call_id": tool_call.id or tool_call.name,
-            "content": content,
-        }
 
     def _prepare_tool_result_for_model(
         self,

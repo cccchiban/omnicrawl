@@ -62,6 +62,9 @@ from ....llm import (
     ModelRuntimeManager,
 )
 from ....skill import SkillMatchResult
+from ....state.session_projection import (
+    TurnHistoryProjector,
+)
 from ...tool_process import (
     ToolProcessCancelled,
     ToolProcessError,
@@ -242,6 +245,13 @@ class TurnLoopMixin:
             pending_text if continue_requested and pending_text else text
         ).strip()
         try:
+            # 本轮协议轨迹投影最早安装：首个取消检查点、任意插件钩子或
+            # 会话事件都可能提前抛出；先把投影器挂好，取消/中断回合才能把
+            # 已落盘的用户消息与工具过程完整写入历史。工具参数协议原文只在
+            # 内存投影中使用（不落盘），使已发送前缀在跨轮时仍能命中缓存。
+            self._turn_history_projector = TurnHistoryProjector(
+                raw_arguments_provider=self._raw_tool_call_arguments
+            )
             # 暂停事件激活与 finally 清理必须在同一个保护边界内：任何
             # 后续异常（插件、turn.start、取消检查、上下文恢复失败等）
             # 都会由 finally 重置暂停上下文，避免遗留到下一回合。
@@ -310,7 +320,7 @@ class TurnLoopMixin:
                         visible_output_seen = True
                     on_delta(delta)
 
-                return self._request_agent_reply(
+                reply = self._request_agent_reply(
                     messages,
                     report_main_delta,
                     report_token_usage,
@@ -318,6 +328,12 @@ class TurnLoopMixin:
                     report_retry_status,
                     on_stream_rollback=on_stream_rollback,
                 )
+                if reply.tool_calls and isinstance(reply.message, dict):
+                    # 只暂存原始消息（含发往 Provider 的 arguments 原文），供写
+                    # tool_call_requested 事件时一并落盘；绝不改写发给模型的内容，
+                    # 否则模型会看到与自己不同的调用参数。
+                    self._active_assistant_tool_message = reply.message
+                return reply
 
             def execute_main_tool_batch(
                 calls: Sequence[ToolCall],
@@ -325,21 +341,26 @@ class TurnLoopMixin:
             ) -> list[AgentLoopObservation]:
                 nonlocal tool_execution_seen
                 tool_execution_seen = True
-                return self._execute_tool_batch(
-                    calls,
-                    first_step,
-                    report_tool_start=report_tool_start,
-                    report_tool_result=report_tool_result,
-                    check_cancelled=check_cancelled,
-                    status=status,
-                    prompt=text,
-                    active_runtime_snapshot=runtime_snapshot,
-                    vision_base_llm=getattr(self.config, "llm", None),
-                    record_tool_execution=lambda tool_call: self._record_turn_tool_execution(
-                        active_turn_snapshot,
-                        tool_call,
-                    ),
-                )
+                try:
+                    return self._execute_tool_batch(
+                        calls,
+                        first_step,
+                        report_tool_start=report_tool_start,
+                        report_tool_result=report_tool_result,
+                        check_cancelled=check_cancelled,
+                        status=status,
+                        prompt=text,
+                        active_runtime_snapshot=runtime_snapshot,
+                        vision_base_llm=getattr(self.config, "llm", None),
+                        record_tool_execution=lambda tool_call: self._record_turn_tool_execution(
+                            active_turn_snapshot,
+                            tool_call,
+                        ),
+                    )
+                finally:
+                    # 当前工具批的 assistant 消息骨架只在本批内有效，避免残留
+                    # 到下一个模型回合而让事件携带错位的 assistant_content。
+                    self.__dict__.pop("_active_assistant_tool_message", None)
 
             try:
                 loop_result = AgentLoopRunner().run(
@@ -467,18 +488,25 @@ class TurnLoopMixin:
                         "todo_items": [dict(item) for item in self._active_todo_items],
                     },
                 )
+                # 暂停回合同样写入完整协议轨迹：恢复投影会把 run_guard_paused
+                # 还原为说明消息，运行期必须保持一致，否则上下文分叉。
+                self._commit_turn_history()
             else:
                 self._append_session_event(
                     "assistant_message",
-                    {"content": final_reply},
+                    {
+                        "content": final_reply,
+                        **(
+                            {"reasoning_content": combined_reasoning}
+                            if combined_reasoning
+                            else {}
+                        ),
+                    },
                 )
             if context_overflow_recovered:
-                self._history.append(
-                    self._assistant_message(
-                        final_reply,
-                        combined_reasoning,
-                    )
-                )
+                # 溢出恢复分支的历史在恢复时就已重建，这里只提交压缩边界之后
+                # 的完整协议轨迹（工具调用、工具结果与本次最终回复）。
+                self._commit_turn_history()
                 self._run_context_compaction_after_turn(
                     context_messages=context_messages,
                     usage=turn_usage,
@@ -573,15 +601,10 @@ class TurnLoopMixin:
                     "summary": self._cancelled_turn_summary(active_turn_snapshot),
                 },
             )
-            # 被取消的回合同样写入历史：只保留任务文本与已执行工具摘要，
-            # 保证用户紧接着发送的后续消息仍能看到上一轮任务与进度，
-            # 避免 Agent 把延续任务误判为无前置信息的新任务。
-            self._history.extend(
-                [
-                    {"role": "user", "content": text},
-                    self._assistant_message(self._cancelled_turn_summary(active_turn_snapshot)),
-                ]
-            )
+            # 被取消的回合同样写入完整历史（任务文本 + 已执行工具协议消息 +
+            # 取消摘要），保证紧接着的后续消息仍能看到上一轮任务、进度与工具
+            # 结果原文；与恢复投影使用同一状态机，重启后完全一致。
+            self._commit_turn_history()
             if not turn_terminal_sent:
                 self._dispatch_plugin_hook(
                     "turn.cancelled",
@@ -626,14 +649,9 @@ class TurnLoopMixin:
                 },
             )
             if event_type == "turn_cancelled":
-                # 与 KeyboardInterrupt 取消路径一致：把任务文本与已执行工具摘要
-                # 写入历史，避免后续回合丢失被取消任务的前置上下文。
-                self._history.extend(
-                    [
-                        {"role": "user", "content": text},
-                        self._assistant_message(self._cancelled_turn_summary(active_turn_snapshot)),
-                    ]
-                )
+                # 与 KeyboardInterrupt 取消路径一致：写入完整本轮协议轨迹，
+                # 避免后续回合丢失被取消任务的前置上下文。
+                self._commit_turn_history()
             if not turn_terminal_sent:
                 hook_name = "turn.cancelled" if event_type == "turn_cancelled" else "turn.error"
                 self._dispatch_plugin_hook(
@@ -675,6 +693,7 @@ class TurnLoopMixin:
 
         self.__dict__.pop("_active_runtime_snapshot", None)
         self.__dict__.pop("_active_guard_retry_state", None)
+        self.__dict__.pop("_active_assistant_tool_message", None)
         self.__dict__.pop("_active_run_guard_config", None)
         self.__dict__.pop("_active_todo_items", None)
         if pause_event_enabled and pause_token is not None:
@@ -752,13 +771,42 @@ class TurnLoopMixin:
                     tool_call.name,
                     tool_call.arguments,
                 )
+            # 恢复所需的 assistant 协议字段：content、思考回传字段与
+            # arguments 原文必须与运行期发往 Provider 的那条消息完全一致，
+            # 否则重启后同一段历史出现两种写法，前缀缓存必然失效。
+            assistant_message = self.__dict__.get("_active_assistant_tool_message")
+            assistant_fields: dict[str, Any] = {}
+            effective_call_id = tool_call.id or tool_call.name
+            if isinstance(assistant_message, dict):
+                content = assistant_message.get("content")
+                assistant_fields["assistant_content"] = (
+                    content if isinstance(content, str) or content is None else None
+                )
+                reasoning = assistant_message.get("reasoning_content")
+                if not isinstance(reasoning, str) or not reasoning:
+                    reasoning = assistant_message.get("reasoning")
+                if isinstance(reasoning, str) and reasoning:
+                    assistant_fields["assistant_reasoning_content"] = reasoning
+            raw_fields = self._raw_tool_call_event_fields(
+                assistant_message,
+                effective_call_id,
+                tool_call.name,
+            )
+            # 协议原文（可能含明文密钥）只留在内存投影中，绝不随事件落盘。
+            raw_fields.pop("arguments_json", None)
+            assistant_fields.update(raw_fields)
             self._append_session_event(
                 "tool_call_requested",
                 {
                     "tool": tool_call.name,
                     "arguments": public_arguments,
-                    "tool_call_id": tool_call.id,
-                    "function_name": tool_call.function_name,
+                    "tool_call_id": effective_call_id,
+                    "function_name": (
+                        assistant_fields.get("function_name")
+                        or tool_call.function_name
+                        or tool_call.name
+                    ),
+                    **assistant_fields,
                 },
             )
 
@@ -1019,7 +1067,7 @@ class TurnLoopMixin:
                     "tool_result",
                     {
                         "tool": tool_call.name,
-                        "tool_call_id": tool_call.id,
+                        "tool_call_id": tool_call.id or tool_call.name,
                         "ok": prepared_result.ok,
                         "output": prepared_result.full_output or prepared_result.output,
                         "model_output": prepared_result.output,
@@ -1548,7 +1596,7 @@ class TurnLoopMixin:
         except Exception:
             LOGGER.warning("上下文超限后的模型压缩失败，无法自动续接当前回合。", exc_info=True)
             return None
-        if outcome.compact_payload is None or outcome.history_projection is None:
+        if outcome.compact_payload is None:
             diagnostic = outcome.diagnostic or "模型摘要未生成可用投影。"
             self._append_session_event(
                 "context_overflow_recovery_failed",
@@ -1561,7 +1609,7 @@ class TurnLoopMixin:
             compact_payload["archive_id"] = archive_id
         self._append_session_event("compact_summary", compact_payload)
         before_tokens = estimate_json_tokens(self._history)
-        self._history = list(outcome.history_projection)
+        self._history = self._rebuild_history_after_compaction(compact_payload)
         self._write_compaction_memories(compact_payload)
         self._auto_recall_compaction_memory(compact_payload)
         self._append_session_event(
@@ -1577,9 +1625,16 @@ class TurnLoopMixin:
             "user_message",
             {"content": _CONTEXT_OVERFLOW_RECOVERY_PROMPT},
         )
-        self._history.append(
-            {"role": "user", "content": _CONTEXT_OVERFLOW_RECOVERY_PROMPT}
-        )
+        # 恢复提示已随事件写入轨迹投影，这里取走使历史立即包含它，同时避免
+        # 收尾提交时重复追加同一条消息；无轨迹投影（直接调用本方法的最小
+        # 测试替身或宿主扩展）时退化为直接写入，保证当前回合能继续。
+        drained = self._drain_turn_history_projection()
+        if drained:
+            self._history.extend(drained)
+        else:
+            self._history.append(
+                {"role": "user", "content": _CONTEXT_OVERFLOW_RECOVERY_PROMPT}
+            )
         after_tokens = estimate_json_tokens(self._history)
         notice = self._format_compaction_notice(before_tokens, after_tokens)
         self._last_compaction_notice = notice or ""
@@ -1590,19 +1645,107 @@ class TurnLoopMixin:
         )
         return list(self._history)
 
-    def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
-        """写入完整回合，先记录可选预算快照，再执行现有确定性压缩。"""
+    def _raw_tool_call_arguments(self, call_id: str, tool_name: str) -> str:
+        """当前工具批中该调用的 arguments 协议原文（仅供内存历史投影）。
 
-        self._history.extend(
-            [
-                {"role": "user", "content": user_text},
-                self._assistant_message(assistant_text, reasoning),
-            ]
+        协议原文不回写 Session 事件：事件只保存脱敏后的公开参数，否则密钥、
+        Token 会随 ``tool_call_requested`` 落入会话文件。本方法只服务于同一
+        进程内的历史重建，使跨轮上下文与已发送内容逐字一致。
+        """
+
+        fields = self._raw_tool_call_event_fields(
+            self.__dict__.get("_active_assistant_tool_message"),
+            call_id,
+            tool_name,
         )
+        arguments = fields.get("arguments_json")
+        return arguments if isinstance(arguments, str) else ""
+
+    @staticmethod
+    def _raw_tool_call_event_fields(
+        assistant_message: Any,
+        call_id: str,
+        tool_name: str,
+    ) -> dict[str, Any]:
+        """从运行期原始 assistant 消息提取该调用的 arguments 协议原文。
+
+        恢复投影优先使用这里的 ``arguments_json``/``function_name``，它们就是
+        真正发往 Provider 的字段；公开参数投影只用于 UI 与审计。这样重启恢复
+        得到的历史与运行期已发送的历史逐字相同，不破坏前缀缓存。
+        """
+
+        if not isinstance(assistant_message, dict):
+            return {}
+        raw_calls = assistant_message.get("tool_calls")
+        if not isinstance(raw_calls, list):
+            return {}
+        for raw_call in raw_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            raw_id = str(raw_call.get("id") or "")
+            function = raw_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            raw_name = str(function.get("name") or "")
+            if raw_id != call_id and raw_name != tool_name:
+                continue
+            fields: dict[str, Any] = {}
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                fields["arguments_json"] = arguments
+            if raw_name:
+                fields["function_name"] = raw_name
+            return fields
+        return {}
+
+    def _commit_turn_history(self) -> None:
+        """把本轮投影出的完整协议消息追加进历史（幂等）。
+
+        ``take()`` 会为未返回结果的工具调用补「已中断」占位，与恢复投影完全
+        一致；投影器在这里被移出实例槽，重复调用不会重复追加消息。
+        """
+
+        projector = self.__dict__.pop("_turn_history_projector", None)
+        if projector is None:
+            return
+        entries = projector.take()
+        if entries:
+            self._history.extend(message for _anchor, message in entries)
+
+    def _drain_turn_history_projection(self) -> list[dict[str, Any]]:
+        """取走投影器当前已完成的消息（保留挂起工具组）。
+
+        用于压缩重建历史后立即把后续事件（例如溢出恢复提示）落进历史：先写
+        事件再 drain，历史立即生效，收尾提交时也不会重复追加。
+        """
+
+        projector = self.__dict__.get("_turn_history_projector")
+        if projector is None:
+            return []
+        return [message for _anchor, message in projector.drain()]
+
+    def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
+        """写入完整回合，先记录可选预算快照，再执行既有压缩判定。
+
+        正常情况下本轮完整协议消息（user、assistant tool_calls、tool 结果、
+        最终回复）已由事件投影累积，这里只负责提交；投影器缺失（宿主扩展、
+        最小测试替身直接调用）时退化为最小回合写入，保持既有可调用性。
+        """
+
+        if "_turn_history_projector" in self.__dict__:
+            self._commit_turn_history()
+        else:
+            self._history.extend(
+                [
+                    {"role": "user", "content": user_text},
+                    self._assistant_message(assistant_text, reasoning),
+                ]
+            )
         config = getattr(self.config, "context_compaction", None)
         status = getattr(self, "_turn_context_compaction_status", None)
         if config is None:
-            self._compact_history(force=False, status=status)
+            # 无压缩配置时历史只追加：任何按条数裁剪都会改写已发送过的前缀，
+            # 使同一会话内的前缀缓存周期性失效。
             return
         self._run_context_compaction_after_turn(
             context_messages=getattr(

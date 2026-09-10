@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...session import COMPACT_SUMMARY_PREFIX
+from ...state.session_projection import complete_tool_pairing
 
 
 COMPACT_SNIPPET_CHARS = 360
@@ -23,24 +24,26 @@ class CompactHistoryResult:
 
 
 def restore_history_window(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     max_history_turns: int,
-) -> list[dict[str, str]]:
-    """恢复最近上下文；如果首条是摘要边界，则固定保留摘要。"""
+) -> list[dict[str, Any]]:
+    """恢复会话历史窗口：完整继承，不再按轮硬裁剪。
 
-    max_messages = max_history_turns * 2
+    会话内多轮对话要求完整继承（含 assistant tool_calls 与 tool 结果原文），
+    且历史必须「只追加、不改写前缀」才能持续命中 Provider 前缀缓存。因此这里
+    只做协议层规范化：为缺失结果的工具调用补「已中断」占位、丢弃没有配对调用
+    来源的孤立 tool 消息；压缩摘要边界保持首位由投影层保证，不做任何裁剪。
+
+    ``max_history_turns`` 仍保留，仅用于确定性压缩的窗口判断（见
+    ``compact_history``），不再参与恢复裁剪：任何按轮截断都会让重启后的
+    历史前缀缩短，使已发送消息的缓存前缀周期性失效。
+    """
+
     if not messages:
         return []
-    if str(messages[0].get("content") or "").strip().startswith(COMPACT_SUMMARY_PREFIX):
-        if len(messages) <= max_messages:
-            return list(messages)
-        recent_messages = messages[1:]
-        recent_window = recent_messages[-max_messages:]
-        if recent_window and recent_window[0].get("role") != "user":
-            recent_window = recent_window[1:]
-        return [messages[0], *recent_window]
-    return messages[-max_messages:]
+    del max_history_turns  # 显式声明：恢复不再使用该参数裁剪历史
+    return complete_tool_pairing([dict(message) for message in messages])
 
 
 def compact_history(
@@ -49,34 +52,37 @@ def compact_history(
     max_history_turns: int,
     force: bool = False,
 ) -> CompactHistoryResult | None:
-    """计算需要压缩的历史窗口和确定性摘要；不负责写会话事件。"""
+    """计算需要压缩的历史窗口和确定性摘要；不负责写会话事件。
 
-    max_messages = max_history_turns * 2
+    切分点必须落在「轮」边界（user 消息）上：历史现在包含 assistant
+    tool_calls 与 tool 结果消息，按消息条数硬切会把一次工具调用与其结果拆开，
+    产生 Provider 会拒收的非法协议。
+
+    自动压缩（``force=False``）保留最后 ``max_history_turns`` 轮，轮数不足
+    时不压缩；手动压缩（``force=True``）保留最后一轮，确保用户显式请求一定
+    生效。首条为压缩摘要时，摘要会并入新的压缩窗口，其内容通过
+    ``previous_summary`` 继续保留。
+    """
+
+    if len(messages) <= 1:
+        return None
     has_leading_summary = bool(
         messages and str(messages[0].get("content") or "").strip().startswith(COMPACT_SUMMARY_PREFIX)
     )
-    max_compactable = max(0, len(messages) - 2)
-    if len(messages) <= max_messages:
-        if not force:
-            return None
-        compact_count = max_compactable
-        if compact_count < 2:
-            return None
-    else:
-        compact_count = len(messages) - max_messages
-
-    compact_count = min(compact_count, max_compactable)
-    if has_leading_summary:
-        if compact_count % 2 == 0:
-            compact_count -= 1
-        if compact_count < 3:
-            return None
-    else:
-        if compact_count % 2 == 1:
-            compact_count -= 1
-        if compact_count < 2:
-            return None
-    if compact_count > max_compactable:
+    body_start = 1 if has_leading_summary else 0
+    turn_starts = [
+        index
+        for index in range(body_start, len(messages))
+        if messages[index].get("role") == "user"
+    ]
+    if not turn_starts:
+        return None
+    keep_turns = max_history_turns if max_history_turns > 0 else 1
+    keep_index = (len(turn_starts) - 1) if force else (len(turn_starts) - keep_turns)
+    if keep_index <= 0:
+        return None
+    compact_count = turn_starts[keep_index]
+    if compact_count <= body_start:
         return None
 
     compacted_messages = messages[:compact_count]

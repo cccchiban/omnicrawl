@@ -631,3 +631,114 @@ LocalToolAgent(
 | 撤销 | `controllers/undo.py` | `/undo` 回合快照与回滚 |
 
 上述路径相对 `omnicrawl/agent/`。`core.py` 保留对外门面，所有方法仍可在 `LocalToolAgent` 实例上直接访问；需要改动某个领域实现时，直接定位对应文件即可。
+
+## 19. 完整上下文继承与缓存保护（2026-07 实施）
+
+### 19.1 目标与硬规则
+
+同一会话内的多轮对话必须**完整继承**上一轮真实发生过的模型协议消息，而不是把工具过程折叠成文本摘要。三条硬规则：
+
+| 规则 | 说明 |
+|------|------|
+| 完整继承 | 历史里保留 `assistant`（含 `tool_calls`）与 `tool`（含结果原文）消息，与运行时逐字一致。 |
+| 只追加 | 新消息只追加到历史尾部；已发送过的前缀永不改写，这是命中 Provider 前缀缓存的前提。 |
+| 单一投影 | 运行期历史、会话恢复历史、压缩后历史由同一个状态机（`TurnHistoryProjector`）产出。 |
+
+`AgentConfig.max_history_turns` 不再用于恢复裁剪：它只决定确定性压缩（`compact_history`）保留最后几轮。
+
+### 19.2 事件驱动的协议轨迹投影
+
+`omnicrawl/state/session_projection.py` 中的 `TurnHistoryProjector` 是唯一实现：
+
+```text
+SessionEvent（tool_call_requested / tool_result / user_message / assistant_message / ...）
+        │
+        ├── 运行期：_append_session_event() 每条事件 feed 一次，轮收尾 take()
+        ├── 恢复期：project_session_history() 对全量事件跑同一状态机
+        └── 压缩后：project_compaction_boundary_history() 只重放保留窗口
+```
+
+关键行为：
+
+- 一批连续的 `tool_call_requested` 合并为一条 `assistant` 消息（锚定该批最后一次调用事件）；
+- 每个 `tool_result` 各为一条 `tool` 消息（锚定自身事件），`tool_call_id` 与调用严格配对；
+- 未返回结果的调用补齐「已中断」占位；没有配对调用的孤立 `tool` 消息被丢弃；
+- `turn_cancelled` / `run_guard_paused` / `session_interrupted` 投影为说明性 `assistant` 消息；
+- `assistant_message` 回传 `reasoning_content`（思考模式下网关要求历史助手消息带该字段）。
+
+### 19.3 运行期收尾路径
+
+`run_stream()` 在 try 的最开始安装投影器，四类收尾都调用 `_commit_turn_history()`（幂等）：
+
+| 收尾 | 提交内容 |
+|------|----------|
+| 正常完成 | user → assistant(tool_calls) → tool 结果 → assistant(最终回复) |
+| 用户取消（含 ESC / 取消异常） | 同上，末尾换成取消摘要（仍会补未返回结果的「已中断」占位） |
+| 模型主动暂停 | 同上，末尾换成暂停说明消息 |
+| 异常中断 | 同上，末尾换成中断说明消息 |
+
+上下文溢出恢复会在重建历史后 `reset()` 投影器，只把压缩边界之后的事件写进历史；恢复指令通过 `_drain_turn_history_projection()` 立即进入历史，避免收尾重复追加。
+
+会话未启用（无 `SessionStore`）时，`_append_session_event()` 构造等价的内存事件（`_ephemeral_session_event`）继续投影，保证内存会话同样完整继承。
+
+### 19.4 压缩边界对齐
+
+压缩（模型摘要 `compact_summary` 与确定性压缩）都会用 `project_compaction_boundary_history()` 重建运行期历史：
+
+- 摘要消息 + `remaining_event_ids` 命中的事件 + **压缩边界之后新增的全部事件**；
+- 恢复侧 `project_session_history()` 使用同一规则，因此「压缩后继续对话」与「压缩后重启恢复」得到相同历史；
+- 确定性压缩按「轮」边界切分（`agent/session/history.py`），不会把 `tool_calls` 与其结果拆开。
+
+### 19.5 安全边界
+
+`arguments` 在事件里只保存**脱敏后的公开参数投影**（`public_tool_arguments` + `SessionStore` 的值级脱敏），协议原文不落盘：
+
+- 运行期历史用内存中的原文投影（`raw_arguments_provider`），跨轮前缀与已发送内容一致 → 缓存完全命中；
+- 重启恢复没有原文，回退到脱敏投影 → 该轮参数为脱敏版本（安全优先，属于预期的重启边界差异）；
+- `tool_result` 的 `output` 仍按既有规则保存（超限落 artifact），不受本次改动影响。
+
+同一规则适用于思考链：运行期投影器 feed 的是**未脱敏的原始 payload**（`SessionStoreMixin._append_session_event` 用 `dataclasses.replace` 换上原文），因此运行期 `_history` 里的 `reasoning_content` 与模型真实产出、与已发送请求逐字相同；JSONL 里保存的仍是脱敏副本，重启恢复后读到的就是该副本。
+
+### 19.6 思考模式 `reasoning_content` 契约
+
+上游（DeepSeek V4 thinking 等）在思考模式下要求历史 assistant 消息回传 `reasoning_content`，缺少就拒绝二次请求：
+
+```text
+HTTP 400 The `reasoning_content` in the thinking mode must be passed back to the API.
+```
+
+只要历史里出现了带 `tool_calls` 的 assistant 消息（完整继承后必然出现），**任何一处丢字段都会让「工具调用轮次之后的下一次请求」稳定失败**。三条链路都必须保留：
+
+| 链路 | 位置 | 规则 |
+|------|------|------|
+| 运行期收尾 | `loop.py` 写 `assistant_reasoning_content` / `reasoning_content` 到事件 | 原文入事件，投影器按同一批次的首次调用取值 |
+| 事件 → 投影 | `TurnHistoryProjector._flush_tool_calls` | 非空才写字段；同一批次多条调用共享同一条消息，不逐条覆盖 |
+| 历史 → 请求体 | `llm/providers/openai_chat.py::_to_openai_messages` | 带 `tool_calls` 的消息必带字段（推理为空时用空串占位，上游只检查存在性）；纯文本消息仅在确有推理时携带 |
+| Responses API | `llm/providers/openai_responses.py` | 使用标准 `reasoning` item；有 `tool_calls` 时携带，无工具调用时不携带（否则上游报 invalid message） |
+
+长会话的压缩与溢出恢复走同一个投影器（`project_compaction_boundary_history`），因此压缩后重建的历史同样保留推理；压缩摘要、取消摘要这类合成 assistant 消息不含工具调用，不需要该字段。
+
+已知限制（不属本次改动范围）：
+
+- Anthropic 路径不回传 thinking block（缺少 `signature` 存储）；仅在用户显式配置 `provider_options.thinking` 时会遇到；
+- Gemini 路径无 reasoning/thought-signature 处理；
+- 含密钥样式的推理文本在 JSONL 中被脱敏，重启恢复后读到的是脱敏版（安全优先，见 19.5）。
+
+### 19.7 已知不入历史的临时注入
+
+以下内容按设计**不进入**历史，它们只在当前回合内可见：
+
+- 子代理完成通知（`_inject_subagent_notifications`，原地附加到当前 user 消息）；
+- 视觉模型的图片 followup 消息（含 Base64，体量与安全都不适合长期保存）；
+- `context.build` 系列插件的临时上下文。
+
+### 19.8 验证
+
+| 验证 | 位置 |
+|------|------|
+| 投影重建、压缩边界、孤立/未配对工具调用 | `tests/test_turn_history_inheritance.py` |
+| 运行期历史 == 恢复投影（逐字一致） | `tests/test_turn_history_inheritance.py::RuntimeInheritanceTest` |
+| 取消/中断回合完整继承 | `tests/test_esc_cancel_context.py`、`tests/test_agent_context.py` |
+| 参数脱敏不回落 | `tests/test_session_store.py::test_sensitive_tool_arguments_are_redacted_in_session_events` |
+| 压缩后运行期与恢复一致 | `tests/test_context_overflow_recovery.py`、`tests/test_context_compaction_integration.py` |
+| 思考模式 `reasoning_content` 三条链路 | `tests/test_reasoning_content_inheritance.py` |

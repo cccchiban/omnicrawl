@@ -392,8 +392,17 @@ def _to_openai_messages(
                 "role": "assistant",
                 "content": "".join(content_parts) or None,
             }
+            # 思考模式上游（DeepSeek V4 thinking 等）要求历史 assistant 消息原样
+            # 回传 reasoning_content，否则二次请求会被拒绝：
+            # HTTP 400 "The `reasoning_content` in the thinking mode must be passed back"。
+            # 含 tool_calls 的消息属上游强制校验对象：即使推理为空也带空串占位
+            # （上游只检查字段存在性），避免工具历史出现后第二次请求必然失败；
+            # 纯文本消息仅在确有推理时携带，与运行期构造保持一致。
             if tool_calls:
+                payload["reasoning_content"] = message.reasoning or ""
                 payload["tool_calls"] = tool_calls
+            elif message.reasoning:
+                payload["reasoning_content"] = message.reasoning
             result.append(payload)
             continue
         if message.role == "system" and message.tools:
