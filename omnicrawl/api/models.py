@@ -184,6 +184,8 @@ class RunState:
     confirmations: dict[str, PendingConfirmation] = field(default_factory=dict)
     user_questions: dict[str, PendingUserQuestion] = field(default_factory=dict)
     condition: threading.Condition = field(default_factory=threading.Condition)
+    # update_todos 最近一次清单（供 get_run 恢复计划区；事件流仍保留全部 todo.updated）
+    last_todo_items: tuple[dict[str, Any], ...] = ()
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -194,6 +196,7 @@ class RunState:
             "updated_at": self.updated_at,
             "result": self.result,
             "error": self.error,
+            "todo_items": list(self.last_todo_items),
         }
 
 

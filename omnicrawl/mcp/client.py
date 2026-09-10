@@ -107,6 +107,13 @@ class MCPClientManager:
         }
         self._failure_counts: dict[str, int] = {name: 0 for name in self.config.servers}
         self._discovered = False
+        # discover 并发保护：后台预热与首个 run 惰性发现可能同时触发，
+        # 幂等锁保证只执行一次完整的 Server 连接/能力发现。
+        self._discover_lock = threading.Lock()
+        # 关闭协同：close() 与发现的「晚注册」互斥；关闭后不再启动新
+        # Server，发现期间完成的连接会被拒绝并回收，避免泄漏子进程。
+        self._connections_lock = threading.Lock()
+        self._closed = False
         self._session_id = f"session-{uuid.uuid4().hex[:12]}"
         self._approval_mode_getter = approval_mode_getter or (lambda: "")
         self._audit_logger = MCPAuditLogger(
@@ -128,64 +135,97 @@ class MCPClientManager:
         """连接启用的 Server 并发现 Tool、Resource、Prompt。
 
         单个 Server 失败只记录诊断并降级，不影响其他 Server 或内置工具。
+        ``_discovered`` 在结束时才置位：发现期间再次调用会被锁阻塞并等待
+        完成，保证调用方（含 run 前的惰性加载）拿到的工具表是完整的。
+        关闭流程已开始（``close()``）后不再启动新 Server；发现期间完成的
+        连接若晚于关闭会被拒绝并回收，避免子进程泄漏。
         """
 
-        self._discovered = True
-        if not self.config.enabled:
-            self.registry.add_diagnostic("info", "MCP_DISABLED", "MCP 已关闭。")
-            return
-
-        enabled_servers = self.config.enabled_servers
-        if not enabled_servers:
-            self.registry.add_diagnostic(
-                "warning",
-                "NO_ENABLED_SERVERS",
-                "MCP 已启用，但没有启用的 Server。",
-            )
-            return
-
-        for server in enabled_servers:
-            if server.transport == MCP_TRANSPORT_STDIO:
-                connection: _MCPConnection = _StdioMCPConnection(
-                    server,
-                    self._audit_logger.workspace_root,
-                )
-            elif server.transport == MCP_TRANSPORT_STREAMABLE_HTTP:
-                connection = _StreamableHTTPMCPConnection(server)
-            else:
-                self._server_status[server.name] = "unsupported"
-                self.registry.add_diagnostic(
-                    "warning",
-                    "TRANSPORT_UNSUPPORTED",
-                    f"暂不支持 {server.transport} 传输，已跳过 Server：{server.name}",
-                    server_name=server.name,
-                )
-                continue
-
+        with self._discover_lock:
+            if self._discovered:
+                # 已完成（含全部失败降级）：无需重复执行
+                return
+            if self._closed:
+                # 关闭流程已开始：不再启动任何 Server
+                return
             try:
-                capabilities = connection.discover()
-            except Exception as exc:
-                connection.close()
-                self._server_status[server.name] = "degraded"
-                self._failure_counts[server.name] = self._failure_counts.get(server.name, 0) + 1
-                self.registry.add_diagnostic(
-                    "error",
-                    "SERVER_UNAVAILABLE",
-                    f"MCP Server 连接或能力发现失败：{exc}",
-                    server_name=server.name,
-                )
-                continue
+                if not self.config.enabled:
+                    self.registry.add_diagnostic("info", "MCP_DISABLED", "MCP 已关闭。")
+                    return
 
-            self._connections[server.name] = connection
-            self._server_status[server.name] = "connected"
-            self._register_capabilities(server, capabilities)
+                enabled_servers = self.config.enabled_servers
+                if not enabled_servers:
+                    self.registry.add_diagnostic(
+                        "warning",
+                        "NO_ENABLED_SERVERS",
+                        "MCP 已启用，但没有启用的 Server。",
+                    )
+                    return
+
+                for server in enabled_servers:
+                    if self._closed:
+                        # 关闭流程已开始：停止启动后续 Server
+                        break
+                    if server.transport == MCP_TRANSPORT_STDIO:
+                        connection: _MCPConnection = _StdioMCPConnection(
+                            server,
+                            self._audit_logger.workspace_root,
+                        )
+                    elif server.transport == MCP_TRANSPORT_STREAMABLE_HTTP:
+                        connection = _StreamableHTTPMCPConnection(server)
+                    else:
+                        self._server_status[server.name] = "unsupported"
+                        self.registry.add_diagnostic(
+                            "warning",
+                            "TRANSPORT_UNSUPPORTED",
+                            f"暂不支持 {server.transport} 传输，已跳过 Server：{server.name}",
+                            server_name=server.name,
+                        )
+                        continue
+
+                    try:
+                        capabilities = connection.discover()
+                    except Exception as exc:
+                        connection.close()
+                        self._server_status[server.name] = "degraded"
+                        self._failure_counts[server.name] = self._failure_counts.get(server.name, 0) + 1
+                        self.registry.add_diagnostic(
+                            "error",
+                            "SERVER_UNAVAILABLE",
+                            f"MCP Server 连接或能力发现失败：{exc}",
+                            server_name=server.name,
+                        )
+                        continue
+
+                    rejected = False
+                    with self._connections_lock:
+                        if self._closed:
+                            rejected = True
+                        else:
+                            self._connections[server.name] = connection
+                    if rejected:
+                        # 关闭流程已开始：拒绝注册并回收本次连接
+                        connection.close()
+                        continue
+                    self._server_status[server.name] = "connected"
+                    self._register_capabilities(server, capabilities)
+            finally:
+                # 无论成功/失败/禁用，发现流程结束即标记完成（后续不再重复执行）
+                self._discovered = True
 
     def close(self) -> None:
-        """关闭所有由 Host 启动的 MCP 连接。"""
+        """关闭所有由 Host 启动的 MCP 连接。
 
-        for connection in list(self._connections.values()):
+        与发现流程协同：关闭标记在锁内置位后清空连接表；晚于关闭完成的
+        注册会被 discover() 拒绝并回收，不会向已关闭的 Manager 泄漏子进程。
+        """
+
+        with self._connections_lock:
+            self._closed = True
+            connections = list(self._connections.values())
+            self._connections.clear()
+        for connection in connections:
             connection.close()
-        self._connections.clear()
 
     def call_tool(self, logical_name: str, arguments: dict[str, Any]) -> MCPToolCallResult:
         """调用已注册的 MCP Tool，并把协议结果归一化为文本输出。"""

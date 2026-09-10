@@ -17,10 +17,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Static, TextArea
 
 from .hud import (
-    compact_token_count,
     context_summary_text,
     decrypt_frame,
-    gradient_text,
     load_carousel_message_lines,
     pending_queue_text,
     status_summary_text,
@@ -473,18 +471,6 @@ class StatusMixin:
             getattr(self.agent, "context_window_tokens", 128_000),
             self._tokens_per_second,
         )
-
-    @staticmethod
-    def _compact_token_count(value: int) -> str:
-        """兼容原有测试与调用入口。"""
-
-        return compact_token_count(value)
-
-    @staticmethod
-    def _gradient_text(text: str) -> Text:
-        """兼容原有测试与调用入口。"""
-
-        return gradient_text(text)
 
     def _mcp_enabled_count(self) -> int:
         """返回当前全局启用的 MCP Server 数量，不触发 MCP 能力发现。"""

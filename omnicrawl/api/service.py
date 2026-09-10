@@ -15,7 +15,7 @@ from typing import Any, Callable
 from fastapi import status
 
 from ..agent import AskUserRequest, ToolCall, ToolResult
-from ..agent.toolkit.tools import public_tool_arguments
+from ..agent.toolkit.tools import TODO_TOOL_NAME, public_tool_arguments
 from ..state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 from .models import (
     ACTIVE_RUN_STATUSES,
@@ -316,6 +316,7 @@ class AgentAPIService:
                     "模型流中断，先前输出已作废，正在自动重试",
                     check_cancelled,
                 ),
+                on_todo_update=lambda payload: self._on_todo_update(run, payload),
                 cancel_check=check_cancelled,
                 on_subagent_event=lambda event_name, payload: self._on_subagent_event(
                     run,
@@ -476,6 +477,27 @@ class AgentAPIService:
         check_cancelled()
         self._emit(run, "status.changed", {"message": message})
 
+    def _on_todo_update(self, run: RunState, payload: dict[str, Any]) -> None:
+        """把 Agent 的执行清单（update_todos）作为事件推给订阅方。"""
+        todos = payload.get("todos") if isinstance(payload, dict) else None
+        if not isinstance(todos, list):
+            return
+        safe_items = tuple(
+            {
+                "id": str(item.get("id") or str(index)),
+                "step": str(item.get("step") or ""),
+                "completed": bool(item.get("completed")),
+            }
+            for index, item in enumerate(todos[:20], start=1)
+            if isinstance(item, dict) and str(item.get("step") or "").strip()
+        )
+        run.last_todo_items = safe_items
+        self._emit(
+            run,
+            "todo.updated",
+            {"run_id": run.run_id, "session_id": run.session_id, "todos": list(safe_items)},
+        )
+
     def _on_tool_start(
         self,
         run: RunState,
@@ -484,6 +506,10 @@ class AgentAPIService:
         check_cancelled: Callable[[], None],
     ) -> None:
         check_cancelled()
+        if tool_call.name == TODO_TOOL_NAME:
+            # Todo 是展示层状态（输入框上方计划区），不在会话流里生成工具卡；
+            # 清单由 update_todos 工具的 UI 回调经 todo.updated 事件单独推送。
+            return
         arguments = public_tool_arguments(tool_call.name, tool_call.arguments)
         self._emit(
             run,
@@ -504,6 +530,10 @@ class AgentAPIService:
         check_cancelled: Callable[[], None],
     ) -> None:
         check_cancelled()
+        if tool_call.name == TODO_TOOL_NAME and tool_result.ok:
+            # todo 工具成功时清单已由 todo.updated 承载，不产生工具卡；
+            # 失败（参数非法等）仍走通用事件，用户可见错误。
+            return
         artifact = tool_result.ui_artifact if isinstance(tool_result.ui_artifact, dict) else {}
         # HTML 正文仅保存于受会话访问控制的 artifact 存储中，不能随着 SSE
         # 事件回传；事件只提供客户端定位展示所需的元数据。

@@ -14,8 +14,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
-from textual.events import Click, Resize
-from textual.geometry import Size
+from textual.events import Click
 from textual.selection import Selection
 from textual.screen import ModalScreen
 from textual.strip import Strip

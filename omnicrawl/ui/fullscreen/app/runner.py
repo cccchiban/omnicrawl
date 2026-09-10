@@ -6,9 +6,9 @@ import logging
 
 from ....agent import LocalToolAgent
 from ....config.core.runtime import user_config_dir
-from .._compat import resolve_facade
 from ..terminal.handling import _disable_terminal_mouse_reporting
 from ..terminal.select_compat import apply_textual_select_mount_patch
+from .core import OmniCrawlApp
 from .startup import FullscreenStartup
 
 _TUI_LOG_DIRNAME = "logs"
@@ -54,12 +54,7 @@ def _detach_tui_log_file(handler: logging.Handler | None) -> None:
 
 
 def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> int:
-    """运行默认全屏 TUI。
-
-    ``OmniCrawlApp`` 通过 ``resolve_facade`` 从门面模块按名解析：测试会
-    patch ``omnicrawl.ui.fullscreen.OmniCrawlApp``，必须调用时解析 patch
-    才能生效，因此入口不直接导入 ``app/__init__.py`` 里的类。
-    """
+    """运行默认全屏 TUI。"""
 
     # Textual 8.2.x Select 挂载竞态补丁（Windows 间歇 NoMatches 崩溃，
     # 上游 #6581 未修复）：必须在首个 Screen 挂载前应用。
@@ -67,7 +62,7 @@ def run_fullscreen_tui(agent: LocalToolAgent, startup: FullscreenStartup) -> int
     # TUI 全屏运行期把 Python 日志收进文件：避免 TTS/连接器等模块的
     # WARNING/ERROR 经 lastResort 直写 stderr，在画面上刷出杂散行。
     file_handler = _attach_tui_log_file()
-    app = resolve_facade("OmniCrawlApp")(agent, startup)
+    app = OmniCrawlApp(agent, startup)
     try:
         app.run()
     finally:

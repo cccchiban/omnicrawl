@@ -11,7 +11,6 @@ from rich.text import Text
 from ..terminal.theme import (
     ACCENT_GREEN,
     BORDER_MUTED,
-    BORDER_SUBTLE,
     TEXT_MUTED,
     TEXT_PRIMARY,
 )

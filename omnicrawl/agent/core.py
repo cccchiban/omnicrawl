@@ -376,6 +376,10 @@ class LocalToolAgent(
 
         self._client: Any | None = None
         self._mcp_manager = self._create_mcp_manager()
+        # MCP「发现＋工具表重建」并发保护：锁串行化交接，标记已完成交接的
+        # Manager，避免并发调用在工具表重建完成前提前返回。
+        self._mcp_tools_lock = threading.Lock()
+        self._mcp_tools_ready_manager: Any = None
         self._subagent_registry: AgentDefinitionRegistry | None = None
         self._subagent_coordinator: SubAgentCoordinator | None = None
         self._subagent_worktree_sessions: dict[str, WorktreeSession] = {}

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any, Optional
 
 from textual.app import ComposeResult
@@ -14,7 +13,12 @@ from textual.widgets import Static
 from ....agent import AgentError
 from ....config.core.settings import SettingsConfigError
 from ....mcp.config import MCPConfig, MCPConfigError
-from .mcp_settings import MCPSettingsAction, _apply_and_save, _current_config
+from .mcp_settings import (
+    MCPSettingsAction,
+    _apply_and_save,
+    _current_config,
+    toggle_mcp_row,
+)
 from ..terminal.theme import terminal_css
 from .panes import SettingsPane
 
@@ -61,7 +65,7 @@ class MCPSettingsPane(SettingsPane):
     def refresh_pane(self) -> None:
         if not self._can_refresh():
             return
-        labels = {"enabled": "MCP 总开关", "network": "外部网络工具", "write": "写入操作确认", "command": "命令操作确认", "audit": "审计日志", "timeout": "默认超时", "output": "Tool 输出上限", "servers": "MCP Server"}
+        labels = {"enabled": "MCP 总开关", "network": "外部网络工具", "write": "写入操作确认", "command": "命令操作确认", "audit": "审计日志", "timeout": "默认超时", "servers": "MCP Server"}
         values = self._values()
         for index, key in enumerate(self._ROWS):
             row = self.query_one(f"#mcp-pane-row-{key}", Static)
@@ -95,22 +99,7 @@ class MCPSettingsPane(SettingsPane):
         if key == "servers":
             self.request_navigate("mcp_servers")
             return
-        if key == "timeout":
-            options = (10, 30, 60, 120, 300)
-            current = self._config.default_timeout_seconds
-            index = min(range(len(options)), key=lambda i: abs(options[i] - current))
-            value = options[(index + direction) % len(options)]
-            self._config = replace(self._config, default_timeout_seconds=value)
-        elif key == "network":
-            self._config = replace(self._config, policy=replace(self._config.policy, allow_external_network_tools=not self._config.policy.allow_external_network_tools))
-        elif key == "write":
-            self._config = replace(self._config, policy=replace(self._config.policy, require_confirmation_for_write=not self._config.policy.require_confirmation_for_write))
-        elif key == "command":
-            self._config = replace(self._config, policy=replace(self._config.policy, require_confirmation_for_command=not self._config.policy.require_confirmation_for_command))
-        elif key == "audit":
-            self._config = replace(self._config, policy=replace(self._config.policy, audit_log_enabled=not self._config.policy.audit_log_enabled))
-        elif key == "enabled":
-            self._config = replace(self._config, enabled=not self._config.enabled)
+        self._config = toggle_mcp_row(self._config, key, direction)
         self._save()
 
     def _save(self) -> None:
@@ -190,10 +179,13 @@ class MCPSettingsScreen(ModalScreen[Optional[MCPSettingsAction]]):
             self._pane.action_move_down()
 
     def action_previous_value(self) -> None:
-        if self._pane is not None:
-            self._pane.action_change()
+        # 左/右键在档位式循环修改中语义相同：均切换下一档。
+        self._change_value()
 
     def action_next_value(self) -> None:
+        self._change_value()
+
+    def _change_value(self) -> None:
         if self._pane is not None:
             self._pane.action_change()
 

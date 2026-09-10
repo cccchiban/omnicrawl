@@ -12,9 +12,10 @@ P4 归类重构（2026-08-21）：``ui/fullscreen`` 下所有业务逻辑均已�
 - ``conversation/`` 会话视图（view）
 
 本文件**只做再导出，不存放业务逻辑**；进程入口 ``run_fullscreen_tui``
-位于 ``app/runner.py``。这里保留的模块级名称是既有测试/扩展的
-monkeypatch 契约：``sys``（``omnicrawl.ui.fullscreen.sys.__stdout__``）、
-``OmniCrawlApp``、``ModelPickerScreen`` 与 ``commands.slash`` 委托函数。
+位于 ``app/runner.py``。这里保留的模块级名称是既有测试/扩展的导入契约：
+``sys``、``OmniCrawlApp``、``ModelPickerScreen`` 与 ``commands.slash``
+委托函数只保证可按名导入；子包内部一律静态导入，对这些门面名称做
+monkeypatch 不再生效。
 """
 
 from __future__ import annotations

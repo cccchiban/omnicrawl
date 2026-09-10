@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable
 from ...session.session_facade import AgentSessionFacade
 from ...subagents.recovery import rebuild_task_snapshots_from_session_events
@@ -99,16 +100,30 @@ class SessionControlMixin:
         启动期只保留内置工具，等首次真正需要模型上下文或用户查看 `/mcp`
         时再拉起 stdio MCP Server。这样不会减少 MCP 功能，只是把昂贵的
         进程启动和能力枚举从 GUI 首屏路径移到首次使用路径。
+
+        发现与工具表重建必须作为整体交接：``discover()`` 结束到
+        ``_build_tools()`` 完成之间存在窗口，并发调用（后台预热与首个
+        run）若只看 ``manager.discovered`` 会提前返回旧工具表。锁 +
+        「已完成交接的 Manager」标记消除该窗口。
         """
 
         manager = getattr(self, "_mcp_manager", None)
-        if manager is None or not manager.enabled or manager.discovered:
+        if manager is None or not manager.enabled:
+            return
+        if getattr(self, "_mcp_tools_ready_manager", None) is manager:
             return
 
-        if status is not None:
-            status("正在加载 MCP 能力")
-        manager.discover()
-        self._tools = self._build_tools()
+        lock = getattr(self, "_mcp_tools_lock", None)
+        if lock is None:
+            lock = self._mcp_tools_lock = threading.Lock()
+        with lock:
+            if getattr(self, "_mcp_tools_ready_manager", None) is manager:
+                return
+            if status is not None:
+                status("正在加载 MCP 能力")
+            manager.discover()
+            self._tools = self._build_tools()
+            self._mcp_tools_ready_manager = manager
 
     def list_monitor_tasks(self) -> list[MonitorTaskSnapshot]:
         """列出当前 Agent 受管的后台任务，供 TUI 与本地 API 只读展示。"""

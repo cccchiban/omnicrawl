@@ -82,6 +82,20 @@ class RenderingMixin:
 
         return self._stream_nl_count + (0 if self._stream_ends_newline else 1)
 
+    def _reset_stream_state(self) -> None:
+        """复位流式渲染的状态字段（收口/封口/清空后必须保持一致）。
+
+        仅复位渲染管线自身维护的字段；``_stream_message``（消息组件引用）
+        与 ``_stream_start_text_len``（回滚起点）由调用方按场景单独处理。
+        """
+
+        self._stream_markdown = ""
+        self._stream_render_buffer = ""
+        self._stream_nl_count = 0
+        self._stream_ends_newline = True
+        self._stream_last_delta_at = 0.0
+        self._stream_render_pending = False
+
     def _stream_is_settled(self) -> bool:
         """距最后一个流式分片是否已超过停顿阈值。"""
 
@@ -558,11 +572,7 @@ class RenderingMixin:
             # 先补齐未完成行，再封口思考组件。
             self._reasoning_message.flush_tail()
         self._stream_message = None
-        self._stream_markdown = ""
-        self._stream_render_buffer = ""
-        self._stream_nl_count = 0
-        self._stream_ends_newline = True
-        self._stream_last_delta_at = 0.0
+        self._reset_stream_state()
         self._stream_start_text_len = None
         self._reasoning_message = None
         tool_name = str(getattr(tool_call, "name", ""))
@@ -862,6 +872,13 @@ class RenderingMixin:
             conversation,
             follow_latest,
         )
+        if not settled and not self._stream_render_pending:
+            # 定时器早于停顿阈值触发（流式分片间隔 < STREAM_SETTLE_SECONDS
+            # 时经常发生）：若不再续排，后续停顿将永远没有收口回调，残留的
+            # 未换行缓冲会一直停留在不可见状态。此处重排一次定时器，让它在
+            # 距最后分片满阈值后再做全量收口。
+            self._stream_render_pending = True
+            self.set_timer(self.STREAM_RENDER_INTERVAL_SECONDS, self._render_stream_markdown)
 
 
     def _rollback_stream(self) -> None:
@@ -878,12 +895,7 @@ class RenderingMixin:
             except Exception:
                 pass
             self._stream_message = None
-        self._stream_markdown = ""
-        self._stream_render_buffer = ""
-        self._stream_nl_count = 0
-        self._stream_ends_newline = True
-        self._stream_last_delta_at = 0.0
-        self._stream_render_pending = False
+        self._reset_stream_state()
         self._mark_conversation_visibility_dirty()
         self._request_conversation_visibility_refresh()
         if self._stream_start_text_len is not None:
@@ -965,11 +977,7 @@ class RenderingMixin:
                 if self._stream_message is not None:
                     self._render_stream_markdown(force=True)
                 self._stream_message = None
-                self._stream_markdown = ""
-                self._stream_render_buffer = ""
-                self._stream_nl_count = 0
-                self._stream_ends_newline = True
-                self._stream_last_delta_at = 0.0
+                self._reset_stream_state()
                 self._stream_start_text_len = None
             conversation.mount(widget)
             self._register_conversation_widget(widget, text)

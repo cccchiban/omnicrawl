@@ -129,11 +129,16 @@ class ConversationViewMixin:
 
         # 可见窗口是消息序列的后缀。使用索引而不是集合，既不依赖 Widget
         # 是否可哈希，也能让同一组件的显示状态在每次重算时保持稳定。
-        first_visible = len(message_widgets)
+        # 最新一条消息即使超出整个行预算也必须显示（只截断它前面的旧
+        # 消息），否则超长输出（超过 2000 逻辑行）会让整个会话区空白。
+        first_visible = len(message_widgets) - 1
         remaining = max_lines
         for index in range(len(message_widgets) - 1, -1, -1):
             line_count = conversation_widget_line_count(message_widgets[index])
             if line_count > remaining:
+                if index == len(message_widgets) - 1:
+                    first_visible = index
+                    remaining = 0
                 break
             first_visible = index
             remaining -= line_count
@@ -225,12 +230,7 @@ class ConversationViewMixin:
             pass
         self.conversation_text = ""
         self._stream_message = None
-        self._stream_markdown = ""
-        self._stream_render_buffer = ""
-        self._stream_nl_count = 0
-        self._stream_ends_newline = True
-        self._stream_last_delta_at = 0.0
-        self._stream_render_pending = False
+        self._reset_stream_state()
         self._stream_start_text_len = None
         self._conversation_visibility_dirty = True
         self._conversation_visibility_refresh_pending = False

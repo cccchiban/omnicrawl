@@ -35,13 +35,11 @@ from ..terminal.theme import (
 FILE_CHANGE_TOOLS = frozenset({"write_file", "Edit_file"})
 # 豁免“原始输出 + 五行折叠”规则的工具：write_file 与 Edit_file 保留
 # 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
-FULL_BODY_TOOLS = frozenset({"write_file", "Edit_file"})
-# 正文对用户没有展示价值、完全隐藏的工具：read（文件内容只读，标题已
-# 含路径与行号摘要）；全部记忆工具与知识库工具（搜索/读取/展开/写入
-# 结果只供模型消费，对用户无意义）。不显示返回内容，也不显示任何
-# “已隐藏”提示行，只保留标题行。
-HIDDEN_BODY_TOOLS = frozenset({
-    "read",
+# （与 FILE_CHANGE_TOOLS 同集，语义都是“保留文件变更预览的工具”。）
+FULL_BODY_TOOLS = FILE_CHANGE_TOOLS
+# 记忆类工具（4 组 × 4 动作）。统一在此登记：正文隐藏、标题 query 摘要
+# 等规则都引用本集合，新增记忆工具只需改这一处。
+MEMORY_TOOLS = frozenset({
     "memory_search",
     "memory_read",
     "memory_expand_related",
@@ -58,12 +56,20 @@ HIDDEN_BODY_TOOLS = frozenset({
     "user_memory_read",
     "user_memory_expand_related",
     "user_memory_write",
+})
+# 知识库类工具：正文对用户无展示价值，与记忆工具一起隐藏。
+KB_TOOLS = frozenset({
     "kb_search",
     "kb_read",
     "kb_write",
     "kb_append",
     "kb_list",
 })
+# 正文对用户没有展示价值、完全隐藏的工具：read（文件内容只读，标题已
+# 含路径与行号摘要）；全部记忆工具与知识库工具（搜索/读取/展开/写入
+# 结果只供模型消费，对用户无意义）。不显示返回内容，也不显示任何
+# “已隐藏”提示行，只保留标题行。
+HIDDEN_BODY_TOOLS = frozenset({"read"}) | MEMORY_TOOLS | KB_TOOLS
 MAX_DIFF_BODY_LINES = 80
 MAX_PATH_CHARS = 48
 MAX_PREVIEW_CHARS_PER_LINE = 160
@@ -150,24 +156,7 @@ def _tool_title_context(tool_name: str, arguments: Any, result_text: str) -> str
     if operation == "windows_screenshot":
         target = str(args.get("target") or "").strip()
         return target or "截图"
-    if operation in {
-        "memory_search",
-        "memory_read",
-        "memory_expand_related",
-        "memory_write",
-        "project_memory_search",
-        "project_memory_read",
-        "project_memory_expand_related",
-        "project_memory_write",
-        "session_memory_search",
-        "session_memory_read",
-        "session_memory_expand_related",
-        "session_memory_write",
-        "user_memory_search",
-        "user_memory_read",
-        "user_memory_expand_related",
-        "user_memory_write",
-    }:
+    if operation in MEMORY_TOOLS:
         query = str(args.get("query") or "").strip()
         ids = args.get("memory_ids")
         if query:
@@ -634,7 +623,10 @@ def gutter_diff_text(
     *,
     start_line: int = 1,
 ) -> tuple[Text, int, int]:
-    """把 old/new 渲染成旁注行号 diff，并返回 (+added, -removed) 行统计。
+    """把 old/new 渲染成旁注行号 diff，并返回完整 diff 的 (+added, -removed)。
+
+    行数统计反映完整改动的真实增删（不受预览行数上限截断影响），
+    避免工具卡标题在超大 diff 时把「截断预览统计」当成「改动统计」。
 
     ``start_line`` 为替换位置在文件中的真实起始行号（默认 1）；旁注
     行号从该行号开始递增，而不是 snippet 内的相对计数。
@@ -646,8 +638,9 @@ def gutter_diff_text(
     rendered = Text()
     rendered.append("@@ snippet @@\n", style=COLOR_HUNK)
 
-    added = 0
-    removed = 0
+    # 完整 diff 的增删统计：单独遍历 opcode，不受渲染行数上限影响。
+    added, removed = _full_change_counts(matcher, old_lines, new_lines)
+
     body_lines = 0
     old_no = start_line
     new_no = start_line
@@ -676,7 +669,6 @@ def gutter_diff_text(
                     break
                 _append_gutter_line(rendered, old_no, "-", line, COLOR_DEL)
                 body_lines += 1
-                removed += 1
                 old_no += 1
 
         if truncated:
@@ -689,7 +681,6 @@ def gutter_diff_text(
                     break
                 _append_gutter_line(rendered, new_no, "+", line, COLOR_ADD)
                 body_lines += 1
-                added += 1
                 new_no += 1
 
     if truncated:
@@ -698,6 +689,26 @@ def gutter_diff_text(
         rendered.append(" (no textual changes)\n", style=COLOR_META)
 
     return rendered, added, removed
+
+
+def _full_change_counts(
+    matcher: SequenceMatcher,
+    old_lines: list[str],
+    new_lines: list[str],
+) -> tuple[int, int]:
+    """统计完整 diff 的真实增删行数（不受预览行数上限影响）。"""
+
+    added = 0
+    removed = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "delete":
+            removed += i2 - i1
+        elif tag == "insert":
+            added += j2 - j1
+        elif tag == "replace":
+            removed += i2 - i1
+            added += j2 - j1
+    return added, removed
 
 
 def _append_gutter_line(

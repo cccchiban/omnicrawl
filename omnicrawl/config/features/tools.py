@@ -8,7 +8,7 @@ config.toml 的 ``tools`` 段覆盖任意工具开关。开关只影响 Agent
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ..core.runtime import RuntimeConfigError, get_section, load_config_data, save_config_data
 
@@ -135,6 +135,31 @@ def load_disabled_tools(config_path: str | Path | None = None) -> frozenset[str]
     )
 
 
+def save_tool_switches(
+    switches: Mapping[str, bool],
+    config_path: str | Path | None = None,
+) -> Path:
+    """批量更新多个工具开关并原子写回（单次读写周期）。
+
+    先校验全部名称与取值，再一次性写盘；任何一项非法都不会产生部分写入。
+    """
+
+    validated: dict[str, bool] = {}
+    for raw_name, enabled in switches.items():
+        normalized_name = validate_tool_switch_name(raw_name)
+        if not isinstance(enabled, bool):
+            raise ToolSwitchConfigError(f"配置项 tools.{normalized_name} 必须是布尔值。")
+        validated[normalized_name] = enabled
+    try:
+        data: dict[str, Any] = load_config_data(config_path)
+        section = get_section(data, "tools")
+        section.update(validated)
+        data["tools"] = section
+        return save_config_data(data, config_path)
+    except RuntimeConfigError as exc:
+        raise ToolSwitchConfigError(str(exc)) from exc
+
+
 def save_tool_switch(
     name: str,
     enabled: bool,
@@ -142,17 +167,7 @@ def save_tool_switch(
 ) -> Path:
     """保留其他配置段，只更新单个工具开关并原子写回。"""
 
-    normalized_name = validate_tool_switch_name(name)
-    if not isinstance(enabled, bool):
-        raise ToolSwitchConfigError(f"配置项 tools.{normalized_name} 必须是布尔值。")
-    try:
-        data: dict[str, Any] = load_config_data(config_path)
-        section = get_section(data, "tools")
-        section[normalized_name] = enabled
-        data["tools"] = section
-        return save_config_data(data, config_path)
-    except RuntimeConfigError as exc:
-        raise ToolSwitchConfigError(str(exc)) from exc
+    return save_tool_switches({name: enabled}, config_path)
 
 
 __all__ = [
@@ -163,5 +178,6 @@ __all__ = [
     "load_disabled_tools",
     "load_tool_switches",
     "save_tool_switch",
+    "save_tool_switches",
     "validate_tool_switch_name",
 ]

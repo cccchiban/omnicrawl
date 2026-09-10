@@ -50,8 +50,12 @@ from ..models import APIServiceError
 
 router = APIRouter(tags=["settings"])
 
-# 内置工具开关清单（只读展示；写开关在后续批次开放）
-from ...config.features.tools import TOOL_SWITCH_KEYS  # noqa: E402
+# 内置工具开关清单（读写在 /settings 与 PUT /settings/tools 提供）
+from ...config.features.tools import (  # noqa: E402
+    TOOL_SWITCH_KEYS,
+    save_tool_switches,
+    validate_tool_switch_name,
+)
 from ...config.features.subagents import SUBAGENT_ADVANCED_SETTING_KEYS  # noqa: E402
 
 
@@ -790,6 +794,87 @@ def put_tts(payload: TtsSetting, request: Request) -> dict[str, Any]:
         agent.set_tts_configuration(previous)
         raise
     return data({**_serialize_tts(next_config), "saved_path": str(path)})
+
+
+def _rollback_tool_switches(
+    agent: Any,
+    applied: dict[str, bool],
+    previous_states: dict[str, bool],
+) -> None:
+    """尽力把已应用的开关恢复为原状态（回滚失败不掩盖原始异常）。"""
+
+    for name in applied:
+        try:
+            agent.set_tool_enabled(name, previous_states[name])
+        except Exception:  # noqa: BLE001 - 回滚尽力而为
+            pass
+
+
+@router.put("/settings/tools")
+def put_tools(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """更新内置工具开关：接受 {name, enabled} 或 {switches: {name: bool}}。
+
+    全部名称与取值先校验、运行时逐项应用，最后一次性原子落盘到
+    config.toml [tools]；任一步失败都会回滚已应用的开关，不留部分修改。
+    """
+    current = service(request)
+    current.ensure_mutation_allowed()
+    agent = current.agent
+
+    entries: list[tuple[str, bool]] = []
+    raw_switches = payload.get("switches")
+    if isinstance(raw_switches, dict):
+        for name, enabled in raw_switches.items():
+            if not isinstance(enabled, bool):
+                raise APIServiceError(
+                    "INVALID_SETTING", f"tools.{name} 必须是布尔值。", status_code=400
+                )
+            entries.append((str(name), enabled))
+    else:
+        name = payload.get("name")
+        enabled = payload.get("enabled")
+        if not isinstance(name, str) or not name.strip() or not isinstance(enabled, bool):
+            raise APIServiceError(
+                "INVALID_SETTING",
+                "tools 更新需要 {name, enabled} 或 {switches: {name: bool}}。",
+                status_code=400,
+            )
+        entries.append((name.strip(), enabled))
+
+    # 先校验全部名称，避免批量更新中途失败留下部分改动。
+    normalized_entries: list[tuple[str, bool]] = []
+    for raw_name, enabled in entries:
+        try:
+            normalized_entries.append((validate_tool_switch_name(raw_name), enabled))
+        except Exception as exc:  # noqa: BLE001 - 校验异常统一转 400
+            raise _as_invalid_setting(exc) from exc
+
+    previous_states = {
+        name: name not in frozenset(getattr(agent.config, "disabled_tools", ()))
+        for name, _ in normalized_entries
+    }
+    applied: dict[str, bool] = {}
+    for name, enabled in normalized_entries:
+        try:
+            agent.set_tool_enabled(name, enabled)
+        except Exception as exc:  # noqa: BLE001 - 运行时切换失败回滚并报 400
+            _rollback_tool_switches(agent, applied, previous_states)
+            raise _as_invalid_setting(exc) from exc
+        applied[name] = enabled
+
+    if normalized_entries:
+        try:
+            save_tool_switches({name: enabled for name, enabled in normalized_entries})
+        except Exception:
+            # 持久化失败：回滚全部运行时改动（恢复各自原开关）
+            _rollback_tool_switches(agent, applied, previous_states)
+            raise
+
+    switches = {
+        name: not (name in frozenset(getattr(agent.config, "disabled_tools", ())))
+        for name in TOOL_SWITCH_KEYS
+    }
+    return data({"switches": switches, "applied": applied})
 
 
 __all__ = ["router"]

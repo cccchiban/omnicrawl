@@ -554,56 +554,16 @@ class SettingsScreen(ModalScreen[Any]):
             label = TOOL_SWITCH_LABELS.get(tool_name, tool_name)
             return f"{label}已{'启用' if enabled else '关闭'}，已保存到 {path}。"
         # MCP 行：开关切换；timeout 为档位循环。
-        from dataclasses import replace
-
         from ....mcp.config import MCPConfig, load_mcp_config
-        from .mcp_settings import _apply_and_save, _current_config
+        from .mcp_settings import _apply_and_save, _current_config, toggle_mcp_row
 
         config = _current_config(self._agent)
         if not isinstance(config, MCPConfig):
             config = load_mcp_config()
-        if row_key == "mcp-enabled":
-            candidate = replace(config, enabled=not config.enabled)
-        elif row_key == "mcp-network":
-            candidate = replace(
-                config,
-                policy=replace(
-                    config.policy,
-                    allow_external_network_tools=not config.policy.allow_external_network_tools,
-                ),
-            )
-        elif row_key == "mcp-write":
-            candidate = replace(
-                config,
-                policy=replace(
-                    config.policy,
-                    require_confirmation_for_write=not config.policy.require_confirmation_for_write,
-                ),
-            )
-        elif row_key == "mcp-command":
-            candidate = replace(
-                config,
-                policy=replace(
-                    config.policy,
-                    require_confirmation_for_command=not config.policy.require_confirmation_for_command,
-                ),
-            )
-        elif row_key == "mcp-audit":
-            candidate = replace(
-                config,
-                policy=replace(
-                    config.policy,
-                    audit_log_enabled=not config.policy.audit_log_enabled,
-                ),
-            )
-        elif row_key == "mcp-timeout":
-            options = (10, 30, 60, 120, 300)
-            current_value = getattr(config, "default_timeout_seconds", 60)
-            index = min(range(len(options)), key=lambda i: abs(options[i] - current_value))
-            new_value = options[(index + direction) % len(options)]
-            candidate = replace(config, default_timeout_seconds=new_value)
-        else:
+        key = row_key[len("mcp-"):] if row_key.startswith("mcp-") else row_key
+        if key not in {"enabled", "network", "write", "command", "audit", "timeout"}:
             return "设置未完成：未知的设置项。"
+        candidate = toggle_mcp_row(config, key, direction)
         try:
             path = _apply_and_save(self, candidate)
         except Exception as exc:  # noqa: BLE001 - 写盘/校验失败统一转为状态文本
@@ -1031,23 +991,37 @@ def _apply_setting_value(screen: SettingsScreen, key: str, value: object) -> str
             "trigger_context_tokens",
             None,
         )
+        model_source = str(
+            getattr(getattr(screen._agent, "config", None), "llm", None)
+            and getattr(screen._agent.config.llm, "model_source", "legacy")
+            or "legacy"
+        )
+        catalog_key = str(
+            getattr(getattr(screen._agent, "config", None), "llm", None)
+            and getattr(screen._agent.config.llm, "catalog_key", "")
+            or ""
+        )
         screen._agent.set_context_window_tokens(tokens)
+        screen._agent.set_context_compaction_trigger_percent(percent)
         try:
+            # 原子落盘：先写窗口，再写触发阈值。若第二段失败，把磁盘上的
+            # 窗口值回滚为旧值，避免「新窗口 + 旧百分比」的自相矛盾配置。
             path = save_context_window_tokens(
                 tokens,
-                model_source=str(
-                    getattr(getattr(screen._agent, "config", None), "llm", None)
-                    and getattr(screen._agent.config.llm, "model_source", "legacy")
-                    or "legacy"
-                ),
-                catalog_key=str(
-                    getattr(getattr(screen._agent, "config", None), "llm", None)
-                    and getattr(screen._agent.config.llm, "catalog_key", "")
-                    or ""
-                ),
+                model_source=model_source,
+                catalog_key=catalog_key,
             )
-            screen._agent.set_context_compaction_trigger_percent(percent)
-            save_context_compaction_trigger_percent(percent, context_window_tokens=tokens)
+            try:
+                save_context_compaction_trigger_percent(
+                    percent, context_window_tokens=tokens
+                )
+            except Exception:
+                save_context_window_tokens(
+                    previous,
+                    model_source=model_source,
+                    catalog_key=catalog_key,
+                )
+                raise
         except Exception:
             screen._agent.set_context_window_tokens(previous)
             if previous_trigger is not None:

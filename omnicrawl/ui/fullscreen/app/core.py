@@ -23,7 +23,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
 from ....agent import AskUserRequest, LocalToolAgent
-from .._compat import resolve_facade
+from ....commands.slash import handle_review_command
 from ..conversation.view import (
     CONVERSATION_DISPLAY_MAX_LOGICAL_LINES as _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES,
     ConversationViewMixin,
@@ -421,48 +421,11 @@ class OmniCrawlApp(
         # Agent 回合协议和取消令牌由非 Textual 控制器持有；本应用仅适配其
         # 回调回到主线程并保留 UI/审批状态。
         self._turn_controller = AgentTurnController(agent, self._cancel_requested)
-        # 用 lambda 延迟解析门面模块级委托函数：重构后的 Dispatcher 不依赖
-        # Textual，且测试/扩展仍可在 App 创建后 patch
-        # ``omnicrawl.ui.fullscreen.<委托名>`` 命令入口（resolve_facade
-        # 在调用时按名解析，patch 立即生效）。
+        # CommandDispatcher 默认注入 commands.slash 的静态处理器；这里只需
+        # 覆盖 handle_review：把 SubAgent 事件回灌到 App 自身的实时渲染。
         self._command_dispatcher = CommandDispatcher(
             agent,
-            format_skills=lambda command_agent: resolve_facade(
-                "format_skills_list"
-            )(command_agent),
-            format_mcp=lambda command_agent: resolve_facade(
-                "format_mcp_status"
-            )(command_agent),
-            format_plugins=lambda command_agent: resolve_facade(
-                "format_plugins_status"
-            )(command_agent),
-            format_memory_clean=lambda command_agent: resolve_facade(
-                "format_memory_clean_result"
-            )(command_agent),
-            handle_session=lambda command_agent, command: resolve_facade(
-                "handle_session_command"
-            )(command_agent, command),
-            handle_subagent_task=lambda command_agent, command: resolve_facade(
-                "handle_subagent_task_command"
-            )(command_agent, command),
-            handle_approval=lambda command_agent, command: resolve_facade(
-                "handle_approval_command"
-            )(command_agent, command),
-            handle_mode=lambda command_agent, command: resolve_facade(
-                "handle_mode_command"
-            )(command_agent, command),
-            handle_reasoning=lambda command_agent, command: resolve_facade(
-                "handle_reasoning_command"
-            )(command_agent, command),
-            handle_model=lambda command_agent, command: resolve_facade(
-                "handle_model_command"
-            )(command_agent, command),
-            handle_advisor=lambda command_agent, command: resolve_facade(
-                "handle_advisor_command"
-            )(command_agent, command),
-            handle_review=lambda command_agent, command: resolve_facade(
-                "handle_review_command"
-            )(
+            handle_review=lambda command_agent, command: handle_review_command(
                 command_agent,
                 command,
                 on_subagent_event=lambda event_name, payload: self.call_from_thread(
@@ -473,14 +436,9 @@ class OmniCrawlApp(
             ),
         )
         self._stream_message: AssistantMessage | None = None
-        self._stream_markdown = ""
         # 尚未落盘的流式缓冲：按换行边界切成小块增量渲染，避免逐分片
         # 全量重解析整条消息的 Markdown（长消息数百毫秒/次）。
-        self._stream_render_buffer = ""
-        self._stream_nl_count = 0
-        self._stream_ends_newline = True
-        self._stream_last_delta_at = 0.0
-        self._stream_render_pending = False
+        self._reset_stream_state()
         self._stream_start_text_len: int | None = None
         self._tool_messages: dict[str, ToolDisclosure] = {}
         self._subagent_trees: dict[str, SubAgentProgressTree] = {}

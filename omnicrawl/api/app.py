@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
@@ -165,9 +166,29 @@ def create_app(
             agent,
             confirmation_timeout_seconds=api_config.confirmation_timeout_seconds,
         )
+        # 预热 MCP：服务启动即后台发现能力（对齐 TUI splash 阶段 preload），
+        # 避免首个 run 在请求路径上同步拉起 MCP Server 并长时间卡「正在加载
+        # MCP 能力」。失败不阻塞服务启动；run 前若发现未完成会经
+        # _ensure_mcp_tools_ready + discover 幂等锁等待到同一结果。
+        warmup_thread: threading.Thread | None = None
+        preload_mcp = getattr(agent, "preload_mcp_tools", None)
+        if callable(preload_mcp):
+            def _warmup() -> None:
+                try:
+                    preload_mcp()
+                except Exception as exc:  # noqa: BLE001 - 预热失败不阻断 API
+                    LOGGER.warning("MCP 后台预热失败（首个 run 将惰性重试）：%s", exc)
+
+            warmup_thread = threading.Thread(target=_warmup, name="mcp-warmup", daemon=True)
+            warmup_thread.start()
         try:
             yield
         finally:
+            # 先等 MCP 后台预热退出（其发现可能仍在注册连接），再停服务并关闭
+            # Agent；晚到的注册会被 MCPClientManager 的关闭协同拒绝并回收，
+            # 避免子进程泄漏到已关闭的 Manager。
+            if warmup_thread is not None and warmup_thread.is_alive():
+                warmup_thread.join(timeout=5.0)
             current = application.state.service
             if current is not None:
                 current.close()

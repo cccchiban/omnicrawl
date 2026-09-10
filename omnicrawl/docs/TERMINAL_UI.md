@@ -61,17 +61,19 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 
 ## 文件边界
 
-- `omnicrawl/ui/fullscreen/`：Textual 应用、全屏布局、流式事件桥接和人工确认模态框。
-  - `__init__.py`：`OmniCrawlApp` 入口、Widget 生命周期与渲染。
-  - `turns.py`：Agent 回合生命周期控制器（无 Textual 依赖）。
-  - `commands.py`：斜杠命令分派（无 Textual 依赖）。
-  - `settings.py`：中文运行设置模态面板与即时保存。
-  - `theme.py`：透明终端主题、Textual Theme 注册，以及 CSS/Rich 对应的终端自适应色彩令牌。
-  - `monitor.py`：Monitor 游标/轮询状态适配（无 Textual 依赖）。
-  - `widgets.py` / `hud.py` / `tool_diff.py`：界面组件、SubAgent 进度树、顶部遥测与文件变更 diff 渲染。
+- `omnicrawl/ui/fullscreen/`：Textual 应用、全屏布局、流式事件桥接和人工确认模态框。业务逻辑按职责拆入子包，`__init__.py` 只做再导出（`OmniCrawlApp`、`run_fullscreen_tui` 与斜杠命令处理器是既有测试/扩展的导入契约，仅保证可按名导入；子包内部静态导入，monkeypatch 门面名称不再生效）。
+  - `app/`：装配与进程入口——`core.py`（`OmniCrawlApp` 组合类、CSS/BINDINGS/常量/状态）、`runner.py`（`run_fullscreen_tui`）、`startup.py`（启动参数）。
+  - `turn/`：回合执行——`execution.py`（回合循环与取消）、`announcer.py`（TTS 朗读器线程）。
+  - `support/`：无 Textual 支持层——`turns.py`（Agent 回合控制器）、`commands.py`（斜杠命令分派）、`monitor.py`（Monitor 游标/轮询适配）。
+  - `screens/`：设置与管理面板——`navigation.py`（面板导航路由）、`settings.py`（中文运行设置）、`model_picker.py`、`channel_manager.py`、`mcp_settings*.py`、`tool_settings.py`、`vision_settings.py`、`image_gen_settings.py`、`run_guard_settings.py`、`agent_workspace_settings.py`、`tts_settings.py`、`panes.py` 等。
+  - `rendering/`：渲染管线与对话组件——`pipeline.py`（事件聚合/流式渲染）、`widgets.py`（消息/工具卡/进度树组件）、`tool_diff.py`（文件变更 diff 预览，纯格式化）、`latex.py`（LaTeX→Unicode）。
+  - `status/`：顶部 HUD——`indicators.py`（读取 Agent/App 状态装配展示文本）、`hud.py`（纯格式化函数）。
+  - `terminal/`：终端协议与外观——`handling.py`（Windows 输入自愈/监视器）、`theme.py`（透明主题与色彩令牌）、`select_compat.py`（Textual Select 挂载竞态补丁）。
+  - `conversation/`：会话视图——`view.py`（消息窗口/清空/历史重放）。
+  - `input/`：输入区——`composer.py`、`editing.py`、`menu.py`、`sessions_menu.py`。
 - `main.py`：默认创建 Agent 后直接启动全屏工作台。
 - `omnicrawl/ui/tui/`、`stream_turn.py`、`chat_session.py`、`inline_input.py`：旧纯 Python ANSI TUI 已删除，不再提供；纯文本兼容导出仅保留 `omnicrawl.ui.UIStartupError`。
-- `tests/test_fullscreen_tui.py`、`tests/test_fullscreen_turns.py`、`tests/test_fullscreen_commands.py`、`tests/test_fullscreen_monitor.py`：全屏工作台与状态边界回归。
+- 测试：`tests/test_fullscreen_*.py`（turns/scroll_anchor/tool_diff/monitor/carousel/pending_queue/runtime_status/visibility_regression 等）与 `tests/test_fsapp_*.py`、`tests/test_settings_*.py`：全屏工作台与设置面板边界回归。
 - `omnicrawl/docs/TERMINAL_UI.md`：本文档。
 
 ## 兼容范围与限制
@@ -86,8 +88,9 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 每次修改 TUI 后至少执行：
 
 ```powershell
-python -m unittest tests.test_fullscreen_tui tests.test_fullscreen_turns tests.test_fullscreen_commands -v
-python -m unittest discover -s tests -v
+python -m pytest tests/test_fullscreen_turns.py tests/test_fullscreen_scroll_anchor.py tests/test_fullscreen_tool_diff.py tests/test_fullscreen_monitor.py tests/test_fullscreen_runtime_status.py tests/test_fullscreen_carousel.py tests/test_fullscreen_pending_queue.py tests/test_fullscreen_visibility_regression.py -q
+python -m pytest tests/test_settings_api.py tests/test_settings_simple_select_pane.py tests/test_settings_pane_cancel_exit.py tests/test_settings_context_atomicity.py tests/test_fsapp_tool_cards.py -q
+python -m pytest tests -q
 python -m compileall -q omnicrawl main.py
 git diff --check
 ```

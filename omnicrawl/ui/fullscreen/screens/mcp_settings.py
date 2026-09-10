@@ -9,7 +9,7 @@ mcp_server_editor_screen.py。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from textual.screen import ModalScreen
@@ -40,6 +40,45 @@ def _current_config(agent: Any) -> MCPConfig:
     config = getattr(agent, "config", None)
     candidate = getattr(config, "mcp_config", None) or getattr(manager, "config", None)
     return candidate if isinstance(candidate, MCPConfig) else load_mcp_config()
+
+
+# 超时档位（秒）：settings 面板与 MCP 设置面板共用。
+MCP_TIMEOUT_OPTIONS = (10, 30, 60, 120, 300)
+# MCP 面板行 → policy 字段名（布尔取反）。
+_MCP_POLICY_FIELDS = {
+    "network": "allow_external_network_tools",
+    "write": "require_confirmation_for_write",
+    "command": "require_confirmation_for_command",
+    "audit": "audit_log_enabled",
+}
+
+
+def toggle_mcp_row(config: MCPConfig, key: str, direction: int = 1) -> MCPConfig:
+    """返回切换 MCP 设置行后的新配置（纯函数，不改原对象）。
+
+    key 取值：``enabled``/``network``/``write``/``command``/``audit``
+    （布尔取反）或 ``timeout``（按 ``MCP_TIMEOUT_OPTIONS`` 档位循环）。
+    未知 key 原样返回。
+    """
+
+    if key == "enabled":
+        return replace(config, enabled=not config.enabled)
+    if key in _MCP_POLICY_FIELDS:
+        field = _MCP_POLICY_FIELDS[key]
+        current = getattr(config.policy, field)
+        return replace(
+            config,
+            policy=replace(config.policy, **{field: not current}),
+        )
+    if key == "timeout":
+        current_value = getattr(config, "default_timeout_seconds", 60)
+        index = min(
+            range(len(MCP_TIMEOUT_OPTIONS)),
+            key=lambda i: abs(MCP_TIMEOUT_OPTIONS[i] - current_value),
+        )
+        new_value = MCP_TIMEOUT_OPTIONS[(index + direction) % len(MCP_TIMEOUT_OPTIONS)]
+        return replace(config, default_timeout_seconds=new_value)
+    return config
 
 
 def _apply_and_save(screen: ModalScreen[Any], config: MCPConfig) -> str:
