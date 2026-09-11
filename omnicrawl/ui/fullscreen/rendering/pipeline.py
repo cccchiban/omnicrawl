@@ -27,6 +27,7 @@ from ....agent.toolkit.tools import (
     TODO_TOOL_NAME,
     public_tool_arguments,
 )
+from ..conversation.view import find_conversation_scroll
 from ..terminal.theme import TOOL_TEXT
 from .widgets import (
     AssistantMessage,
@@ -851,10 +852,9 @@ class RenderingMixin:
         message = self._stream_message
         if message is None or message.parent is None:
             return
-        conversations = self.query("#conversation")
-        if not conversations:
+        conversation = find_conversation_scroll(self)
+        if conversation is None:
             return
-        conversation = conversations.first(VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
         settled = force or self._stream_is_settled()
         if settled:
@@ -1056,6 +1056,8 @@ class RenderingMixin:
         self._runtime_status_message = None
         if status is not None:
             status.remove()
+            # 状态行移除后末项回到最后一条消息：重算 trailing 标记。
+            self._request_conversation_visibility_refresh()
 
 
     def _tick_status_indicator(self) -> None:
@@ -1087,10 +1089,9 @@ class RenderingMixin:
             self._remove_runtime_status_message()
             return
 
-        conversations = self.query("#conversation")
-        if not conversations:
+        conversation = find_conversation_scroll(self)
+        if conversation is None:
             return
-        conversation = conversations.first(VerticalScroll)
         if follow_latest is None:
             follow_latest = self._is_conversation_at_end(conversation)
         status = self._runtime_status_message
@@ -1098,6 +1099,8 @@ class RenderingMixin:
             status = RuntimeStatus()
             self._runtime_status_message = status
             conversation.mount(status)
+            # 末条消息标记跟随消息序列末项：状态行成为末项后需要重算。
+            self._request_conversation_visibility_refresh()
         spinner_frame = self.STATUS_SPINNER_FRAMES[self._status_spinner_index]
         # 所有活动中的回合状态都支持 Esc 取消；在状态行尾固定显示提示，
         # 让“正在思考/回复/调用”等同类状态的中断入口清晰可见。
@@ -1111,6 +1114,7 @@ class RenderingMixin:
             and conversation.children[-1] is not status
         ):
             conversation.move_child(status, after=conversation.children[-1])
+            self._request_conversation_visibility_refresh()
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,

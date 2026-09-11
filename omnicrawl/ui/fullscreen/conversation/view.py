@@ -38,6 +38,27 @@ def conversation_widget_line_count(widget: object) -> int:
     return 1
 
 
+def find_conversation_scroll(host: object) -> VerticalScroll | None:
+    """快速定位 ``#conversation`` 消息区；未挂载时返回 None。
+
+    通用 ``query("#conversation")`` 每次都要对整棵组件树做 CSS 选择器匹配
+    （长会话下每条历史消息都参与），在流式高频路径上是主要开销；ID 选择器
+    改走 Textual 的 ``query_one`` 索引查询（O(1) 且有缓存）。没有
+    ``query_one`` 的测试替身仍退回通用查询。
+    """
+
+    query_one = getattr(host, "query_one", None)
+    if callable(query_one):
+        try:
+            return query_one("#conversation", VerticalScroll)
+        except Exception:  # noqa: BLE001 - 尚未挂载/已卸载时与空查询同义
+            return None
+    conversations = host.query("#conversation")
+    if not conversations:
+        return None
+    return conversations.first(VerticalScroll)
+
+
 class ConversationViewMixin:
     """原 ``OmniCrawlApp`` 的会话视图方法。"""
 
@@ -105,11 +126,10 @@ class ConversationViewMixin:
 
         if not getattr(self, "_conversation_visibility_dirty", True):
             return
-        conversations = self.query("#conversation")
-        if not conversations:
+        conversation = find_conversation_scroll(self)
+        if conversation is None:
             self._conversation_visibility_refresh_pending = False
             return
-        conversation = conversations.first(VerticalScroll)
         max_lines = max(
             1,
             int(
@@ -154,6 +174,41 @@ class ConversationViewMixin:
                 visible_lines += conversation_widget_line_count(child)
         self._conversation_visible_logical_lines = visible_lines
         self._conversation_visibility_dirty = False
+        self._refresh_trailing_message_marker()
+
+    def _refresh_trailing_message_marker(self) -> None:
+        """把末条消息标记移动到消息序列的最后一项。
+
+        末条消息需要去掉底部间隔（``margin-bottom: 0``），否则会话底部会多出
+        一行空白。原实现用 CSS ``:last-child`` 表达，但顺序伪类会让每条消息都
+        被 Textual 视为「顺序样式」节点：每次挂载新消息都要为全部历史消息重算
+        样式，长会话中每挂载一条的成本随消息数线性增长。这里改为显式的
+        ``trailing`` 类，只在末项变化时更新旧、新两个组件。
+        """
+
+        conversation = find_conversation_scroll(self)
+        if conversation is None:
+            return
+        # ``Widget.remove()`` 只是把组件标记为待移除（``Prune`` 消息异步完成
+        # 真正的 DOM 摘除），因此在本次刷新早于移除完成时，末项仍是正在退场
+        # 的组件。``_pruning`` 由 Textual 在发起移除时同步置位，这里把它视为
+        # 已移除，保证标记与移除后的最终序列一致。
+        displayed = [
+            child
+            for child in conversation.displayed_children
+            if not getattr(child, "_pruning", False)
+        ]
+        last = displayed[-1] if displayed else None
+        if last is not None and not last.has_class("message"):
+            last = None
+        previous = getattr(self, "_trailing_message_widget", None)
+        if previous is last:
+            return
+        if previous is not None and previous.parent is not None:
+            previous.set_class(False, "trailing")
+        if last is not None:
+            last.set_class(True, "trailing")
+        self._trailing_message_widget = last
 
     def _request_conversation_visibility_refresh(self) -> None:
         """合并同一批事件的窗口重算，避免流式输出逐片扫描全部消息。"""
@@ -199,8 +254,14 @@ class ConversationViewMixin:
         return conversation_widget_line_count(widget)
 
     def _hide_welcome_logo(self) -> None:
-        """隐藏启动欢迎 Logo 区域，让位给首条会话内容；幂等且容忍缺位。"""
+        """隐藏启动欢迎 Logo 区域，让位给首条会话内容；幂等且容忍缺位。
 
+        流式路径每个分片都会调用本方法；Logo 已隐藏时直接返回，避免重复
+        停表、重复落定静态文本以及随之而来的组件重绘。
+        """
+
+        if getattr(self, "_welcome_logo_hidden", False):
+            return
         # 首条消息即停掉入场动画，避免隐藏后仍有回调刷新不可见组件。
         stop = getattr(self, "_stop_welcome_logo_animation", None)
         if callable(stop):
@@ -208,6 +269,7 @@ class ConversationViewMixin:
         try:
             # 保持现有组件级语义，避免调用方/测试直接观察 Logo 时仍看到 display=True。
             self.query_one("#welcome-logo", Static).display = False
+            self._welcome_logo_hidden = True
         except Exception:  # noqa: BLE001 - 组件尚未挂载时静默忽略
             pass
         try:
@@ -228,6 +290,8 @@ class ConversationViewMixin:
             self.query_one("#welcome-logo", Static).display = True
         except Exception:  # noqa: BLE001 - 兼容无 Logo 的旧测试/布局
             pass
+        # Logo 重新可见：允许下一条消息再次执行一次隐藏收口。
+        self._welcome_logo_hidden = False
         self.conversation_text = ""
         self._stream_message = None
         self._reset_stream_state()
@@ -235,6 +299,7 @@ class ConversationViewMixin:
         self._conversation_visibility_dirty = True
         self._conversation_visibility_refresh_pending = False
         self._conversation_visible_logical_lines = 0
+        self._trailing_message_widget = None
         self._tool_messages.clear()
         self._subagent_trees.clear()
         self._subagent_conversations.clear()

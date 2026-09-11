@@ -875,14 +875,23 @@ class RuntimeStatus(Horizontal):
         # 前导空格是状态正文与提示之间的分隔，挂在提示一侧可避免依赖
         # 动态标签的尾随空格。
         self._hint = Static(" [ ESC ]", id="runtime-status-esc-hint", markup=False)
+        self._last_label_plain = ""
 
     def compose(self) -> ComposeResult:
         yield self._label
         yield self._hint
 
     def update_status(self, label_text: Text) -> None:
-        """更新状态文本（spinner + 状态文字），[ ESC ] 子组件保持不变。"""
+        """更新状态文本（spinner + 状态文字），[ ESC ] 子组件保持不变。
 
+        文本与上一帧一致时直接跳过：``Static.update`` 会使组件布局失效，
+        而 spinner 帧由宿主按固定节奏推进，同一帧内的流式分片无需重复重绘。
+        """
+
+        plain = label_text.plain
+        if plain == self._last_label_plain:
+            return
+        self._last_label_plain = plain
         self._label.update(label_text)
 
     def on_click(self, event: Click) -> None:

@@ -1,7 +1,7 @@
 """运行设置路由：GET /settings 全量只读 + PUT /settings/<domain> 增量写。
 
 对齐 TUI「运行设置」面板 16 个一级项。写端点按域接收白名单字段，
-未传字段保持当前值；全部先 ``ensure_mutation_allowed()``（运行中 409）。
+未传字段保持当前值；运行中亦可修改（设置属运行时配置，即时生效）。
 敏感字段（api_key / token / 渠道凭据）不回传明文，仅回 ``has_*`` 标记；
 客户端不提供时写操作保留原值。
 """
@@ -384,7 +384,6 @@ def _load_subagents_advanced_payload(agent: Any) -> dict[str, Any]:
 @router.put("/settings/context")
 def put_context(payload: ContextWindowSetting, request: Request) -> dict[str, Any]:
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     tokens = payload.window_tokens
     percent = int(
@@ -429,7 +428,6 @@ def put_context_compaction(
     payload: ContextCompactionSetting, request: Request
 ) -> dict[str, Any]:
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     percent = payload.trigger_percent
     context_window = int(getattr(agent, "context_window_tokens", 128_000))
@@ -463,7 +461,6 @@ def put_context_compaction(
 @router.put("/settings/show_thinking")
 def put_show_thinking(payload: BoolSetting, request: Request) -> dict[str, Any]:
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     previous = bool(getattr(agent.config, "show_thinking", True))
     agent.set_show_thinking(payload.enabled)
@@ -479,7 +476,6 @@ def put_show_thinking(payload: BoolSetting, request: Request) -> dict[str, Any]:
 def put_features(payload: FeaturesSetting, request: Request) -> dict[str, Any]:
     """批量更新功能开关（memory/plugins/subagents/show_thinking）。"""
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     changes: dict[str, bool] = {}
     for key in ("memory", "plugins", "subagents", "show_thinking"):
@@ -554,7 +550,6 @@ def _feature_enabled(agent: Any, name: str) -> bool:
 def put_run_guard(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     """更新持续运转配置：接受 {enabled} 或完整 {guard,continuation} 子集。"""
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     previous = getattr(agent.config, "run_guard", None)
     if not isinstance(previous, RunGuardConfig):
@@ -624,7 +619,6 @@ def put_agent_workspace(
 ) -> dict[str, Any]:
     """更新隔离工作区配置：只更新显式提供的字段，其余保持当前值。"""
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     previous = getattr(agent.config, "agent_workspace", None)
     if not isinstance(previous, AgentWorkspaceConfig):
@@ -665,7 +659,6 @@ def put_agent_workspace(
 def put_vision(payload: BoolSetting, request: Request) -> dict[str, Any]:
     """批次 1：仅视觉总开关（模型引用管理在后续批次）。"""
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     previous = getattr(agent.config, "vision", None)
     if not isinstance(previous, VisionConfiguration):
@@ -690,7 +683,6 @@ def _save_vision(config: VisionConfiguration):
 def put_image_gen(payload: ImageGenSetting, request: Request) -> dict[str, Any]:
     """更新图像生成配置；不接收 api_key 明文（保留原值或通过清空 api_key_env 禁用）。"""
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     previous = getattr(agent.config, "image_gen", None)
     if not isinstance(previous, ImageGenConfiguration):
@@ -751,7 +743,6 @@ def put_image_gen(payload: ImageGenSetting, request: Request) -> dict[str, Any]:
 def put_tts(payload: TtsSetting, request: Request) -> dict[str, Any]:
     """更新 TTS 配置：只更新显式提供的字段，其余保持当前值。"""
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
     previous = getattr(agent.config, "tts", None)
     if not isinstance(previous, TTSConfiguration):
@@ -818,7 +809,6 @@ def put_tools(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     config.toml [tools]；任一步失败都会回滚已应用的开关，不留部分修改。
     """
     current = service(request)
-    current.ensure_mutation_allowed()
     agent = current.agent
 
     entries: list[tuple[str, bool]] = []

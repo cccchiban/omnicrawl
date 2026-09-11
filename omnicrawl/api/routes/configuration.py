@@ -98,7 +98,6 @@ def refresh_model_catalog(request: Request) -> dict[str, Any]:
     """强制刷新远端模型发现缓存。"""
 
     current = service(request)
-    current.ensure_mutation_allowed()
     clear_discovery_cache()
     try:
         catalog = build_catalog(config=current.agent.config.llm, refresh=True)
@@ -117,7 +116,6 @@ def refresh_model_catalog(request: Request) -> dict[str, Any]:
 @router.put("/models/current")
 def set_model(payload: ModelChangeRequest, request: Request) -> dict[str, Any]:
     current = service(request)
-    current.ensure_mutation_allowed()
     selection = _resolve_model_selection(payload)
 
     def persist() -> None:
@@ -187,7 +185,6 @@ def _resolve_model_selection(payload: ModelChangeRequest) -> dict[str, Any]:
 @router.put("/reasoning")
 def set_reasoning(payload: ReasoningChangeRequest, request: Request) -> dict[str, Any]:
     current = service(request)
-    current.ensure_mutation_allowed()
     effort = current.agent.set_reasoning_effort(payload.effort)
     save_reasoning_effort(effort)
     return data({"reasoning_effort": effort})
@@ -196,7 +193,6 @@ def set_reasoning(payload: ReasoningChangeRequest, request: Request) -> dict[str
 @router.put("/approval")
 def set_approval(payload: ApprovalChangeRequest, request: Request) -> dict[str, Any]:
     current = service(request)
-    current.ensure_mutation_allowed()
     mode = normalize_approval_mode(payload.mode)
     current.agent.set_approval_mode(mode)
     save_approval_mode(mode)

@@ -143,7 +143,12 @@ class OmniCrawlApp(
         /* 消息间仅保留一行间隔：由 margin-bottom 1 提供，不再用 blank 边框额外撑高。 */
         border: none;
     }
-    #conversation > .message:last-child { margin-bottom: 0; }
+    /* 末条消息去掉尾部间隔，避免会话底部多出一行空白。此处用显式
+       ``trailing`` 类而不是 ``:last-child``：顺序伪类会让每条消息都被
+       Textual 标记为「顺序样式」节点，每次挂载新消息都要为全部历史消息
+       重算样式（长会话下每挂载一条的成本随消息数线性增长）。类标记由
+       ConversationViewMixin 维护，只在末项变化时更新两个组件。 */
+    #conversation > .message.trailing { margin-bottom: 0; }
     /* 用户消息：无背景色，左侧青色细竖条强调；正文显式白色，
        user： 标签行保持灰色斜体。 */
     .user-message { color: $terminal-white; border-left: solid $terminal-cyan; }
@@ -678,11 +683,14 @@ class OmniCrawlApp(
         """停止 Logo 入场动画并落定静态文本；幂等（隐藏/清空时调用）。"""
 
         interval = getattr(self, "_logo_anim_interval", None)
-        if interval is not None:
-            try:
-                interval.stop()
-            except Exception:
-                pass
+        if interval is None:
+            # 动画已停止（自然播完或被隐藏收口）：静态 Logo 已落定，
+            # 不必在后续每次隐藏请求（流式分片）中重复重绘。
+            return
+        try:
+            interval.stop()
+        except Exception:
+            pass
         self._logo_anim_interval = None
         try:
             # 隐藏路径已 display=False，这里统一落定静态白色 Logo，

@@ -98,7 +98,7 @@ class AgentAPIService:
         if run is not None and run.status in ACTIVE_RUN_STATUSES:
             raise APIServiceError(
                 "RUN_ACTIVE",
-                "当前已有生成任务运行，暂不能修改会话、项目或运行配置。",
+                "当前已有生成任务运行，暂不能修改会话或项目。",
                 status_code=status.HTTP_409_CONFLICT,
                 details={"run_id": run.run_id},
             )
