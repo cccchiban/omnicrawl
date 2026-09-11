@@ -35,6 +35,7 @@ from ....approval import (
 from ....llm import (
     OpenAIResponseLLM,
 )
+from ....llm.desensitization import maybe_create_oneshot_masker
 
 
 def _first_json_object(text: str) -> dict[str, Any] | None:
@@ -394,11 +395,28 @@ class ToolApprovalMixin:
             "待审查的工具调用（JSON）：\n"
             + json.dumps(review_payload, ensure_ascii=False, indent=2)
         )
+        # 消息脱敏（opt-in，设计稿 §4.4 旁路接入）：审查请求同样出网，复用
+        # [desensitization] 配置屏蔽出站文本、还原审查结论；未启用时为 None。
+        masker = maybe_create_oneshot_masker()
+        masked_instruction = review_instruction
+        if masker is not None:
+            try:
+                masked_instruction = masker.mask(review_instruction)
+            except Exception:
+                if masker.config.fail_closed:
+                    masker.close()
+                    return False, (
+                        "自动审查请求失败：消息脱敏屏蔽失败，"
+                        "已按 fail-closed 策略中止（未发送原文）。"
+                    )
+                # 可用性优先降级：发送原文、不做还原（fail_closed=false）。
+                masker.close()
+                masker = None
         input_messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": review_instruction}
+                    {"type": "input_text", "text": masked_instruction}
                 ],
             }
         ]
@@ -428,18 +446,26 @@ class ToolApprovalMixin:
                 timeout=min(self.config.request_timeout_seconds, 60),
             )
         except Exception as exc:
+            if masker is not None:
+                masker.close()
             return False, f"自动审查请求失败：{OpenAIResponseLLM.format_request_error(exc)}"
 
         try:
             review_text = OpenAIResponseLLM._extract_text(
                 response, include_reasoning=True
             )
+            if masker is not None:
+                review_text = masker.restore(review_text)
             approved, reason = self._parse_tool_review_response(review_text)
         except Exception as exc:
             # 网关可能返回非标准 Responses 结构（如 reasoning item 的 content 为
             # null、output_text 为空等），解析失败时按拒绝处理并给出原因，不能把
             # 异常抛到回合层导致整轮任务中断并显示“界面任务异常”。
+            if masker is not None:
+                masker.close()
             return False, f"自动审查响应解析失败：{OpenAIResponseLLM.format_request_error(exc)}"
+        if masker is not None:
+            masker.close()
         if approved:
             return True, ""
         if not review_text:

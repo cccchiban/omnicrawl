@@ -192,7 +192,11 @@ def build_runtime(profile: ProviderProfile, model: ModelDescriptor) -> ModelRunt
             enabled=model.enabled,
         )
     adapter = get_adapter(protocol)
-    return adapter.create_runtime(profile, model)
+    runtime = adapter.create_runtime(profile, model)
+    # 出网消息脱敏（opt-in，默认关闭）：按配置在运行时外层包一层装饰器。
+    from .desensitization import maybe_wrap_runtime
+
+    return maybe_wrap_runtime(runtime)
 
 
 def protocol_for_provider(provider: str, preferred: str = "") -> str:

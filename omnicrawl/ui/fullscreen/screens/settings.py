@@ -116,6 +116,7 @@ _SETTING_ORDER = (
     "tts",
     "run_guard",
     "agent_workspace",
+    "desensitization",
     "memory",
     "plugins",
     "subagents",
@@ -259,6 +260,7 @@ class SettingsScreen(ModalScreen[Any]):
             "tts": "TTS 语音合成",
             "run_guard": "持续运转",
             "agent_workspace": "隔离工作区",
+            "desensitization": "消息脱敏",
             "memory": "记忆功能",
             "plugins": "插件功能",
             "subagents": "子任务设置",
@@ -666,6 +668,13 @@ class SettingsScreen(ModalScreen[Any]):
                 resolve_config_path(),
                 agent=self._agent,
                 apply_configuration=getattr(self._agent, "set_agent_workspace_configuration", None),
+            )
+        if key == "desensitization":
+            from .desensitization_settings import DesensitizationSettingsPane
+
+            return DesensitizationSettingsPane(
+                resolve_config_path(),
+                agent=self._agent,
             )
         return None
 

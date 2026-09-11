@@ -82,7 +82,6 @@ class ContextCompactionService:
         history_messages: Sequence[Mapping[str, Any]],
         tool_schemas: Sequence[Mapping[str, Any]],
         recent_turns: int,
-        recent_context_ratio: float,
         target_summary_tokens: int,
         next_user_reserve_tokens: int,
         trigger_context_tokens: int,
@@ -106,12 +105,9 @@ class ContextCompactionService:
             emergency_context_ratio=emergency_context_ratio,
             usage=usage,
         )
-        batch = self._budget_manager.select_batch(
-            source_events,
-            recent_turns=recent_turns,
-            recent_token_budget=max(1, int(context_window_tokens * recent_context_ratio)),
-            allow_single_large_turn=measured.snapshot.trigger_reached,
-        )
+        # 「压缩即丢弃」：整个窗口（含最近回合）都交给摘要模型，投影只保留
+        # 摘要与最终回复锚点，因此批量选择不再接收保留窗口参数。
+        batch = self._budget_manager.select_batch(source_events)
         turns_since = self._budget_manager.turns_since_last_model_compaction(source_events)
         decision = self._budget_manager.decide_auto_compaction(
             measured.snapshot,
@@ -182,11 +178,7 @@ class ContextCompactionService:
         reasoning_effort: str,
         preserve_exact_evidence: bool,
     ) -> ContextCompactionOutcome:
-        batch = self._budget_manager.select_batch(
-            source_events,
-            recent_turns=1,
-            manual=True,
-        )
+        batch = self._budget_manager.select_batch(source_events)
         if batch is None:
             return ContextCompactionOutcome(
                 measurement_payload={},
@@ -268,6 +260,7 @@ class ContextCompactionService:
         structured = validation.normalized
         content = render_summary_markdown(structured)
         final_reply_event = latest_final_reply_event(source_events)
+        # 保留窗口为空（压缩即丢弃）：投影 = 摘要 + 最终回复锚点。
         projection = self._assembler.assemble(
             structured,
             batch.recent_events,

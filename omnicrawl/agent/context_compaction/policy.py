@@ -216,16 +216,16 @@ class ContextBudgetManager:
     def select_batch(
         self,
         events: Sequence[SourceEvent],
-        *,
-        recent_turns: int,
-        recent_token_budget: int | None = None,
-        manual: bool = False,
-        allow_single_large_turn: bool = False,
     ) -> CompactionBatch | None:
-        """从最后摘要边界之后选择完整回合，不截断工具链或未完成回合。"""
+        """从最后摘要边界之后选择全部完整回合，不截断工具链或未完成回合。
 
-        if recent_turns <= 0:
-            raise ValueError("recent_turns 必须是正整数。")
+        压缩即丢弃：摘要必须覆盖整个窗口，投影只保留「摘要 + 最终回复锚点」，
+        因此这里不再保留任何原文回合。若仍保留尾部若干回合，它们既不在摘要
+        覆盖范围内，也不会被下次压缩重新纳入，等于在上下文里留下第二份无人
+        负责的历史。``recent_turns`` 仍参与触发预估的热窗口划分（``measure``），
+        但不再决定压缩后保留哪些原文。
+        """
+
         boundary_index = -1
         previous_summary: Mapping[str, Any] | None = None
         previous_covered: tuple[str, ...] = ()
@@ -260,50 +260,17 @@ class ContextBudgetManager:
                     ]
                     carried_events = model_events[-remaining_count:]
         turns = _complete_turns([*carried_events, *events[boundary_index + 1 :]])
-        if manual:
-            if len(turns) < 2:
-                return None
-            compact_turns = turns[:-1]
-            recent = turns[-1:]
-            single_large_turn = False
-        else:
-            retain_count = min(len(turns), recent_turns)
-            if recent_token_budget is not None:
-                if recent_token_budget <= 0:
-                    raise ValueError("recent_token_budget 必须是正整数。")
-                retained_tokens = 0
-                retain_count = 0
-                for turn in reversed(turns[-recent_turns:]):
-                    turn_tokens = estimate_json_tokens(
-                        [event.to_prompt_dict() for event in turn]
-                    )
-                    if retain_count > 0 and retained_tokens + turn_tokens > recent_token_budget:
-                        break
-                    if retain_count == 0 and turn_tokens > recent_token_budget:
-                        break
-                    retained_tokens += turn_tokens
-                    retain_count += 1
-            compact_count = len(turns) - retain_count
-            if compact_count > 0:
-                compact_turns = turns[:compact_count]
-                recent = turns[compact_count:]
-                single_large_turn = len(turns) == 1 and retain_count == 0
-            elif allow_single_large_turn and len(turns) == 1:
-                compact_turns = turns
-                recent = []
-                single_large_turn = True
-            else:
-                return None
-
-        compact_events = tuple(event for turn in compact_turns for event in turn)
+        if not turns:
+            return None
+        compact_events = tuple(event for turn in turns for event in turn)
         if not compact_events:
             return None
         return CompactionBatch(
             events=compact_events,
-            recent_events=tuple(event for turn in recent for event in turn),
+            recent_events=(),
             previous_summary=previous_summary,
             previous_covered_event_ids=previous_covered,
-            single_large_turn=single_large_turn,
+            single_large_turn=len(turns) == 1,
         )
 
     @staticmethod

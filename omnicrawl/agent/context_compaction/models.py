@@ -97,7 +97,12 @@ class SourceEvent:
 
 @dataclass(frozen=True)
 class CompactionBatch:
-    """本次退出热窗口的完整事件批次及压缩后保留的最近事件。"""
+    """本次交给摘要模型的完整事件批次。
+
+    ``recent_events`` 是压缩后仍以原文保留的回合。当前策略「压缩即丢弃」不保留
+    任何原文（投影只留摘要与最终回复锚点），批量选择器恒返回空元组；字段与
+    ``ContextAssembler`` 的对应入参仅为兼容既有调用方保留。
+    """
 
     events: tuple[SourceEvent, ...]
     recent_events: tuple[SourceEvent, ...]

@@ -117,7 +117,6 @@ class TurnCompactionMixin:
                 history_messages=self._history,
                 tool_schemas=self._chat_completion_tools(),
                 recent_turns=config.recent_turns,
-                recent_context_ratio=config.recent_context_ratio,
                 target_summary_tokens=config.target_summary_tokens,
                 next_user_reserve_tokens=config.next_user_reserve_tokens,
                 trigger_context_tokens=config.trigger_context_tokens,

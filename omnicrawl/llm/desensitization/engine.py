@@ -1,0 +1,499 @@
+"""匹配引擎：结构感知（键名规则）为主、熵检测兜底为辅，产出待脱敏值并完成替换。
+
+结构感知层（设计稿 §5.1）：已解析结构（工具调用参数等 dict）递归匹配，以及
+文本中的可解析片段（``.env`` 赋值 / ``key: value`` / JSON 字符串值）。
+熵检测兜底（§5.2）：对无键名、无法结构化的「裸值」按长度 / 字符类混合 / 香农熵
+判定，形态白名单优先跳过（宁少勿滥）。纯字母 / 纯数字单类令牌在对应开关开启时
+按长度直接判定（§5.2 扩展）。命中值替换为占位符；豁免表优先。
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+from collections import Counter
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any, Iterable
+
+from .registry import (
+    PLACEHOLDER_PATTERN,
+    DesensitizationStats,
+    PlaceholderCycle,
+    format_placeholder,
+)
+
+# 种子与 omnicrawl/mcp/security.py::_SENSITIVE_FIELD_NAMES 保持同步（设计稿 §5.1）；
+# llm 层不反向依赖 mcp 包，故声明为独立集合，由测试守护两者一致。
+SENSITIVE_KEY_WORDS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "access_key",
+        "secret_key",
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+    }
+)
+
+# 中英文常见键扩展（设计稿 §5.1）。
+EXTRA_SENSITIVE_KEY_WORDS = frozenset(
+    {
+        "passwd",
+        "pwd",
+        "credential",
+        "credentials",
+        "private_key",
+        "session",
+        "csrf",
+    }
+)
+
+_CN_SENSITIVE_WORDS = ("密码", "密钥", "令牌", "身份证", "手机号", "银行卡", "口令")
+
+DEFAULT_EXEMPT_KEY_WORDS = frozenset({"public_key", "example"})
+
+_KEY_SEPARATOR_PATTERN = re.compile(r"[\s\-]+")
+_UNDERSCORE_RUN_PATTERN = re.compile(r"_+")
+
+# .env / shell 风格赋值：行首 KEY=VALUE（支持 export 前缀与引号包裹）。
+_ENV_ASSIGNMENT_PATTERN = re.compile(
+    r"(?m)^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]{0,63})(\s*=\s*)(\S.*)$"
+)
+# key: value（YAML / TOML 行内片段）；冒号后要求空白，避免误伤 URL 等形态。
+_KV_ASSIGNMENT_PATTERN = re.compile(
+    r"(?m)^(\s*)([A-Za-z_][A-Za-z0-9_.\-]{0,63})(\s*:\s+)(\S.*)$"
+)
+# JSON 字符串值对（含嵌套与多行文本中的片段）。
+_JSON_STRING_PAIR_PATTERN = re.compile(
+    r'"(?P<key>(?:[^"\\]|\\.){1,80})"\s*:\s*"(?P<value>(?:[^"\\]|\\.)*)"'
+)
+
+
+def normalize_key(key: str) -> str:
+    """键名归一：大小写不敏感、`-` / 空格归一为 `_`、折叠重复下划线（§5.1）。"""
+
+    normalized = _KEY_SEPARATOR_PATTERN.sub("_", key.strip().casefold())
+    return _UNDERSCORE_RUN_PATTERN.sub("_", normalized).strip("_")
+
+
+def _normalize_keys(keys: Iterable[str]) -> frozenset[str]:
+    return frozenset(value for value in (normalize_key(str(item)) for item in keys) if value)
+
+
+def _matches_word(word: str, words: frozenset[str]) -> bool:
+    """匹配单个词（含简单复数：tokens → token）。"""
+
+    if word in words:
+        return True
+    return word.endswith("s") and word[:-1] in words
+
+
+class SensitiveMatcher:
+    """键名匹配：归一化全名 / `_` 分段命中 / 中文敏感词子串；豁免表优先。"""
+
+    def __init__(
+        self,
+        *,
+        extra_keys: Iterable[str] = (),
+        exempt_keys: Iterable[str] = (),
+    ) -> None:
+        self._sensitive = (
+            SENSITIVE_KEY_WORDS | EXTRA_SENSITIVE_KEY_WORDS | _normalize_keys(extra_keys)
+        )
+        self._exempt = DEFAULT_EXEMPT_KEY_WORDS | _normalize_keys(exempt_keys)
+
+    def is_sensitive(self, key: str) -> bool:
+        """判断键名是否命中敏感规则（豁免优先于命中）。"""
+
+        normalized = normalize_key(key)
+        if not normalized:
+            return False
+        parts = normalized.split("_")
+        if normalized in self._exempt or any(
+            _matches_word(part, self._exempt) for part in parts
+        ):
+            return False
+        if normalized in self._sensitive or any(
+            _matches_word(part, self._sensitive) for part in parts
+        ):
+            return True
+        return any(word in normalized for word in _CN_SENSITIVE_WORDS)
+
+
+def should_skip_value(value: str) -> bool:
+    """跳过无需脱敏的值：空串、已有脱敏串（***）、已是占位符样式（§5.1）。"""
+
+    if not value or not value.strip():
+        return True
+    if not value.strip().strip("*"):
+        return True
+    return PLACEHOLDER_PATTERN.search(value) is not None
+
+
+# ── 熵检测兜底（设计稿 §5.2） ────────────────────────────────────────────
+
+# 候选值两侧的标点剥离集：只替换值本体，标点与空白保留在原文中。
+ENTROPY_TOKEN_STRIP_CHARS = "\"'`()[]{}<>,;!?*.:"
+
+# 分段词形的段长阈值：各段均短于该长度的 `a_b-c` 串按「词形」跳过（代码标识符 /
+# 组合词），保证 `utf8_encode_value_longer` 类高熵词形不误报。
+_ENTROPY_SEGMENT_MAX_LENGTH = 10
+
+_UUID_FULL_PATTERN = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+# 全十六进制（含纯数字）：摘要 / 提交哈希 / 编号等，按哈希类跳过。
+_HEX_FULL_PATTERN = re.compile(r"[0-9a-fA-F]+")
+# 十六进制 + 冒号：MAC / IPv6 地址等形态。
+_HEX_COLON_FULL_PATTERN = re.compile(r"[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4}){2,}")
+# 前缀哈希：sha256:… / md5:… 等摘要标记。
+_PREFIXED_HEX_FULL_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,15}:[0-9a-fA-F]{16,}")
+_SEGMENTED_FULL_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[_\-][A-Za-z0-9]+)+")
+_SEGMENT_SPLIT_PATTERN = re.compile(r"[_\-]")
+_VERSION_FULL_PATTERN = re.compile(r"v?\d+(\.\d+){1,3}([-+][0-9A-Za-z.+\-]+)?")
+_DATETIME_FULL_PATTERN = re.compile(
+    r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?"
+)
+_IDENTIFIER_FULL_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# 单类令牌（纯字母 / 纯数字）：对应开关开启后长度达标即视为候选（§5.2 扩展）。
+_PURE_LETTERS_FULL_PATTERN = re.compile(r"[A-Za-z]+")
+_PURE_DIGITS_FULL_PATTERN = re.compile(r"[0-9]+")
+
+# 代码结构标点：token 含任一即按代码 / 序列化片段跳过（普通代码不误伤）。
+_CODE_PUNCTUATION_CHARS = frozenset("()[]{}'\";,<>`")
+# 命名链（蛇形 / 点分 / 命名空间路径 / 枚举）：各段短于该长度或为无数字词时跳过。
+_NAMING_SEGMENT_MAX_LENGTH = 18
+_NAMING_CHAIN_FULL_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[_.\-:|]+[A-Za-z0-9]+)+[_.\-:|]*")
+_NAMING_SEGMENT_SPLIT_PATTERN = re.compile(r"[_.\-:|]+")
+
+
+def shannon_entropy_bits(text: str) -> float:
+    """字符频率的香农熵（bit/char）；长度 ≤1 时为 0。"""
+
+    length = len(text)
+    if length <= 1:
+        return 0.0
+    counts = Counter(text)
+    return -sum((count / length) * math.log2(count / length) for count in counts.values())
+
+
+def is_entropy_exempt(token: str) -> bool:
+    """熵兜底的形态白名单（§5.2）：哈希 / 地址 / 路径 / 词形标识符等一律跳过。"""
+
+    # 变量 / 装饰器 / 标签 / 下划线前导：按剩余词形判定，避免误伤 shell / CSS / 装饰器。
+    token = token.lstrip("$@#_") or token
+    if "esensitized" in token.lower():
+        return True
+    if _UUID_FULL_PATTERN.fullmatch(token):
+        return True
+    if _HEX_FULL_PATTERN.fullmatch(token):
+        return True
+    if _HEX_COLON_FULL_PATTERN.fullmatch(token):
+        return True
+    if _PREFIXED_HEX_FULL_PATTERN.fullmatch(token):
+        return True
+    if _VERSION_FULL_PATTERN.fullmatch(token):
+        return True
+    if _DATETIME_FULL_PATTERN.fullmatch(token):
+        return True
+    if "/" in token or "\\" in token:
+        # URL / 文件路径（含 Windows 路径）统一跳过。
+        return True
+    if not _CODE_PUNCTUATION_CHARS.isdisjoint(token):
+        # 代码 / 序列化片段（函数调用、字面量、列表等）：普通代码不误伤。
+        return True
+    if _is_naming_chain(token):
+        # 命名链（self.a.b、命名空间路径等）：按词形命名跳过。
+        return True
+    if "=" in token.rstrip("="):
+        # 非尾部等号（赋值 / 查询片段）；base64 的 padding 等号在尾部，不受影响。
+        return True
+    if token.endswith("=") and _is_naming_chain(token.rstrip("=")):
+        # 形如 `name=` 的命名片段（f-string / 参数名残留）。
+        return True
+    if _is_word_like_segmented(token):
+        return True
+    if _IDENTIFIER_FULL_PATTERN.fullmatch(token) and not any(
+        character.isdigit() for character in token
+    ):
+        # 纯词形标识符（无数字的 snake_case / camelCase）。
+        return True
+    return False
+
+
+def _is_word_like_segmented(token: str) -> bool:
+    """分段词形：`a_b` / `a-b` 且所有分段短于阈值（代码标识符 / 组合词）。"""
+
+    if _SEGMENTED_FULL_PATTERN.fullmatch(token) is None:
+        return False
+    segments = [segment for segment in _SEGMENT_SPLIT_PATTERN.split(token) if segment]
+    return max((len(segment) for segment in segments), default=0) < _ENTROPY_SEGMENT_MAX_LENGTH
+
+
+def _is_naming_chain(token: str) -> bool:
+    """命名链：`a.b` / `a_b_c` / `hook:topic` 等（蛇形 / 点分 / 命名空间 / 枚举）。
+
+    每段为无数字词或短于阈值时按命名跳过（普通代码不误伤）；秘密的随机段
+    通常含数字且较长（JWT 的 base64url 段普遍 ≥ 20），仍会被检测。
+    """
+
+    if _NAMING_CHAIN_FULL_PATTERN.fullmatch(token) is None:
+        return False
+    segments = [
+        segment for segment in _NAMING_SEGMENT_SPLIT_PATTERN.split(token) if segment
+    ]
+    return all(
+        len(segment) < _NAMING_SEGMENT_MAX_LENGTH
+        or not any(character.isdigit() for character in segment)
+        for segment in segments
+    )
+
+
+def is_entropy_candidate(
+    token: str,
+    *,
+    min_length: int,
+    min_bits: float,
+    pure_letters: bool = False,
+    pure_digits: bool = False,
+) -> bool:
+    """熵兜底候选判定：长度 + 单类开关 + 形态白名单 + 字符类混合 + 香农熵（§5.2）。
+
+    纯字母 / 纯数字（``pure_letters`` / ``pure_digits`` 开启时）不受字符类混合与
+    熵阈值约束：长度达标即视为候选；仍跳过十六进制字母串（哈希 / 编号语义）与
+    含 ``Desensitized`` 字样的占位符残留。
+    """
+
+    if len(token) < min_length:
+        return False
+    if pure_digits and _PURE_DIGITS_FULL_PATTERN.fullmatch(token):
+        return True
+    if pure_letters and _PURE_LETTERS_FULL_PATTERN.fullmatch(token):
+        if _HEX_FULL_PATTERN.fullmatch(token) or "esensitized" in token.lower():
+            return False
+        return True
+    if is_entropy_exempt(token):
+        return False
+    has_lower = any("a" <= character <= "z" for character in token)
+    has_upper = any("A" <= character <= "Z" for character in token)
+    has_digit = any("0" <= character <= "9" for character in token)
+    has_symbol = any(not character.isalnum() for character in token)
+    if not (has_lower or has_upper):
+        return False
+    if not (has_digit or has_symbol):
+        return False
+    if sum((has_lower, has_upper, has_digit, has_symbol)) < 2:
+        return False
+    return shannon_entropy_bits(token) >= min_bits
+
+
+@lru_cache(maxsize=8)
+def _entropy_scan_pattern(min_length: int) -> re.Pattern:
+    """按长度下限生成候选扫描正则（可打印 ASCII 连续段）。"""
+
+    return re.compile(rf"[!-~]{{{max(1, int(min_length))},}}")
+
+
+def find_entropy_spans(
+    text: str,
+    *,
+    min_length: int,
+    min_bits: float,
+    pure_letters: bool = False,
+    pure_digits: bool = False,
+) -> list[tuple[int, int]]:
+    """扫描文本并返回需要熵脱敏的 token 区间（半开区间，标点保留在区间外）。"""
+
+    spans: list[tuple[int, int]] = []
+    if not text:
+        return spans
+    for match in _entropy_scan_pattern(min_length).finditer(text):
+        start, end = match.start(), match.end()
+        while start < end and text[start] in ENTROPY_TOKEN_STRIP_CHARS:
+            start += 1
+        while end > start and text[end - 1] in ENTROPY_TOKEN_STRIP_CHARS:
+            end -= 1
+        token = text[start:end]
+        if not token:
+            continue
+        if is_entropy_candidate(
+            token,
+            min_length=min_length,
+            min_bits=min_bits,
+            pure_letters=pure_letters,
+            pure_digits=pure_digits,
+        ):
+            spans.append((start, end))
+    return spans
+
+
+@dataclass
+class MaskContext:
+    """一次出站屏蔽的上下文：匹配器 + 周期注册表 + 审计计数 + 熵兜底参数。"""
+
+    matcher: SensitiveMatcher
+    cycle: PlaceholderCycle
+    stats: DesensitizationStats
+    # 默认值与 omnicrawl/config/features/desensitization.py 保持一致。
+    entropy_enabled: bool = True
+    entropy_min_length: int = 20
+    entropy_min_bits: float = 3.5
+    entropy_pure_letters: bool = False
+    entropy_pure_digits: bool = False
+
+    def placeholder_for(self, value: str) -> str | None:
+        """值 → 占位符；被跳过（空串 / 已脱敏 / 占位符样式）时返回 None。"""
+
+        if should_skip_value(value):
+            self.stats.skipped_values += 1
+            return None
+        seq, created = self.cycle.seq_for_value(value)
+        if created:
+            self.stats.values_masked += 1
+        return format_placeholder(seq)
+
+
+def mask_structured_value(value: Any, ctx: MaskContext) -> Any:
+    """递归处理 dict / list：敏感键（或其子树）下的字符串叶子替换为占位符。
+
+    键、结构与非字符串标量不动；非敏感键下的字符串同样做文本级匹配
+    （结构 + 熵兜底），覆盖参数内自由文本，避免长历史回程时的原文回声。
+    """
+
+    if isinstance(value, dict):
+        result: dict[Any, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, str) and ctx.matcher.is_sensitive(key):
+                result[key] = _mask_sensitive_subtree(item, ctx)
+            else:
+                result[key] = mask_structured_value(item, ctx)
+        return result
+    if isinstance(value, list):
+        return [mask_structured_value(item, ctx) for item in value]
+    if isinstance(value, str):
+        return mask_text(value, ctx)
+    return value
+
+
+def _mask_sensitive_subtree(value: Any, ctx: MaskContext) -> Any:
+    """敏感键之下的子树：所有字符串叶子都视为值并脱敏。"""
+
+    if isinstance(value, str):
+        placeholder = ctx.placeholder_for(value)
+        return placeholder if placeholder is not None else value
+    if isinstance(value, dict):
+        return {key: _mask_sensitive_subtree(item, ctx) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_sensitive_subtree(item, ctx) for item in value]
+    return value
+
+
+def mask_text(text: str, ctx: MaskContext) -> str:
+    """文本匹配：结构感知（`.env` / `key: value` / JSON）→ 熵检测兜底（§5.3 优先级）。"""
+
+    if not text:
+        return text
+    masked = _ENV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, ctx), text)
+    masked = _KV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, ctx), masked)
+    masked = _JSON_STRING_PAIR_PATTERN.sub(lambda match: _replace_json_pair(match, ctx), masked)
+    if ctx.entropy_enabled:
+        masked = _mask_entropy_text(masked, ctx)
+    return masked
+
+
+def _mask_entropy_text(text: str, ctx: MaskContext) -> str:
+    """对结构层未覆盖的剩余文本做熵兜底；已生成的占位符不参与候选（跳过）。"""
+
+    spans = find_entropy_spans(
+        text,
+        min_length=ctx.entropy_min_length,
+        min_bits=ctx.entropy_min_bits,
+        pure_letters=ctx.entropy_pure_letters,
+        pure_digits=ctx.entropy_pure_digits,
+    )
+    if not spans:
+        return text
+    result = text
+    for start, end in reversed(spans):
+        token = text[start:end]
+        before = ctx.stats.values_masked
+        placeholder = ctx.placeholder_for(token)
+        if placeholder is None:
+            continue
+        if ctx.stats.values_masked > before:
+            ctx.stats.entropy_masked += 1
+        result = result[:start] + placeholder + result[end:]
+    return result
+
+
+def _replace_assignment(match: re.Match, ctx: MaskContext) -> str:
+    if not ctx.matcher.is_sensitive(match.group(2)):
+        return match.group(0)
+    raw_value = match.group(4)
+    masked = _mask_assignment_value(raw_value, ctx)
+    if masked == raw_value:
+        return match.group(0)
+    start, end = match.span(4)
+    return match.string[match.start() : start] + masked + match.string[end : match.end()]
+
+
+def _mask_assignment_value(raw_value: str, ctx: MaskContext) -> str:
+    """处理赋值右侧值区间：保留引号与行尾空白，只替换值本体。"""
+
+    stripped = raw_value.rstrip()
+    trailing = raw_value[len(stripped) :]
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in "\"'":
+        inner = stripped[1:-1]
+        placeholder = ctx.placeholder_for(inner)
+        if placeholder is None:
+            return raw_value
+        return f"{stripped[0]}{placeholder}{stripped[-1]}{trailing}"
+    placeholder = ctx.placeholder_for(stripped)
+    if placeholder is None:
+        return raw_value
+    return f"{placeholder}{trailing}"
+
+
+def _replace_json_pair(match: re.Match, ctx: MaskContext) -> str:
+    if not ctx.matcher.is_sensitive(_try_unescape_json_string(match.group("key"))):
+        return match.group(0)
+    raw_value = match.group("value")
+    placeholder = ctx.placeholder_for(_try_unescape_json_string(raw_value))
+    if placeholder is None:
+        return match.group(0)
+    start, end = match.span("value")
+    return match.string[match.start() : start] + placeholder + match.string[end : match.end()]
+
+
+def _try_unescape_json_string(raw: str) -> str:
+    try:
+        value = json.loads(f'"{raw}"')
+    except Exception:
+        return raw
+    return value if isinstance(value, str) else raw
+
+
+__all__ = [
+    "DEFAULT_EXEMPT_KEY_WORDS",
+    "ENTROPY_TOKEN_STRIP_CHARS",
+    "EXTRA_SENSITIVE_KEY_WORDS",
+    "MaskContext",
+    "SENSITIVE_KEY_WORDS",
+    "SensitiveMatcher",
+    "find_entropy_spans",
+    "is_entropy_candidate",
+    "is_entropy_exempt",
+    "mask_structured_value",
+    "mask_text",
+    "normalize_key",
+    "shannon_entropy_bits",
+    "should_skip_value",
+]

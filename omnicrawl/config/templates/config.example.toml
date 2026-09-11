@@ -141,12 +141,30 @@ minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85
 summary_profile = ""
 reasoning_effort = "low"
+# 模型压缩「压缩即丢弃」：压缩后上下文只有摘要 + 最终回复锚点，不保留原文回合；
+# recent_turns 仍用于触发预估的热窗口划分。
 recent_turns = 6
-recent_context_ratio = 0.25
 target_summary_tokens = 0
 preserve_exact_evidence = true
 allow_cross_provider = false
 failure_fallback = "deterministic"
+
+# AI 消息可逆脱敏（opt-in，默认关闭）：把发往模型的消息副本中命中的敏感值
+# 替换为 ｛Desensitized:n｝ 占位符，模型返回后按序号还原；原文不出本机。
+# 仅作用于 AI 消息（含工具调用消息），不改动请求参数；设计稿与实现进度见
+# omnicrawl/docs/agent_gateway_desensitization_design.md（及 *_progress.md）。
+# 说明：熵检测兜底（entropy_*）为 P2 增强，键位已保留。
+# [desensitization]
+# enabled = false                # 显式启用后才生效；未启用零成本
+# fail_closed = true             # 屏蔽异常时中止请求，不静默发送原文
+# strict_restore = false         # 还原缺失时中止并报错（默认保留 + 告警）
+# extra_sensitive_keys = []      # 追加敏感键名
+# exempt_keys = []               # 豁免键名（优先于命中）
+# entropy_enabled = true         # 熵兜底开关（关闭则仅键名/结构匹配）
+# entropy_min_length = 20        # 熵兜底长度下限
+# entropy_min_bits = 3.5         # 熵兜底阈值
+# entropy_pure_letters = false   # 纯字母令牌：长度达标即脱敏（默认关闭；十六进制字母串仍跳过）
+# entropy_pure_digits = false    # 纯数字令牌：长度达标即脱敏（默认关闭）
 
 [api]
 bearer_token = "请替换为随机长令牌"

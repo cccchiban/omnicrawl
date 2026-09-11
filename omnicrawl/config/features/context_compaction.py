@@ -22,6 +22,10 @@ class ContextCompactionConfig:
     显式产生摘要模型调用。``summary_profile`` 接受 models.toml key/alias、裸模型 ID
     或 ``profile/model_id``，跨供应商仍需单独允许。
 
+    模型压缩「压缩即丢弃」：被压缩窗口内的全部完整回合都会交给摘要模型，压缩后
+    上下文只保留摘要与最终回复锚点，不再以原文保留最近若干回合；``recent_turns``
+    仍用于触发预估的热窗口划分。
+
     ``target_summary_tokens`` 为 0 时表示不设摘要预算上限：摘要以完整性优先，
     不再被 token 预算卡住或校验拒绝（建议同时保持较大的触发阈值，避免过早压缩）。
 
@@ -41,7 +45,6 @@ class ContextCompactionConfig:
     summary_profile: str = ""
     reasoning_effort: str = "low"
     recent_turns: int = 6
-    recent_context_ratio: float = 0.25
     target_summary_tokens: int = 6_000
     preserve_exact_evidence: bool = True
     archive_compacted_events: bool = True
@@ -68,7 +71,6 @@ class ContextCompactionConfig:
                 self.trigger_context_percent,
             )
         _require_ratio("emergency_context_ratio", self.emergency_context_ratio, upper=1.0)
-        _require_ratio("recent_context_ratio", self.recent_context_ratio, upper=1.0)
         if not isinstance(self.summary_profile, str):
             raise ContextCompactionConfigError(
                 "context_compaction.summary_profile 必须是字符串。"

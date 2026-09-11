@@ -474,7 +474,11 @@ class AgentLLMProtocol:
         on_reasoning_delta: Callable[[str], None] | None,
         reasoning_guard_config: Any = None,
     ) -> AgentModelReply:
-        """旧路径：直接调用 OpenAI Chat Completions 流式接口。"""
+        """旧路径：直接调用 OpenAI Chat Completions 流式接口。
+
+        仅在未提供 ``runtime_manager``（遗留最小夹具 / 嵌入调用）时触发；
+        生产配置统一走统一运行时，消息脱敏装饰器不在本路径上（设计稿 §4.4）。
+        """
 
         system_prompt = self.system_prompt_provider()
         extra_body = dict(self.extra_body_provider() or {})

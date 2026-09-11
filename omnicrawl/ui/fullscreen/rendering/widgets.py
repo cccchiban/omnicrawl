@@ -14,7 +14,7 @@ from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
-from textual.events import Click
+from textual.events import Click, Resize
 from textual.selection import Selection
 from textual.screen import ModalScreen
 from textual.strip import Strip
@@ -655,6 +655,7 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         self._last_render_at: float | None = None
         self._render_timer = None  # 停顿检查定时器（textual Timer）
         self._render_pending = False
+        self._collapsed_height = 0  # 已写入折叠高度的行数（0 = 尚未收口）
 
     @property
     def reasoning_text(self) -> str:
@@ -695,11 +696,10 @@ class ReasoningDisclosure(RichLog, can_focus=False):
         )
         self._render_pending = True
         if not self._expanded:
-            # 折叠态不依赖全量重绘：按当前已渲染行数轻量更新高度并锚定
-            # 底部，使思考中流式更新始终落在最新五行（与 _render_markdown
-            # 折叠高度的计算口径一致，避免停顿重绘时高度跳变）。
-            self.styles.height = min(self.COLLAPSED_HEIGHT, max(1, len(self.lines)))
-            self.anchor()
+            # 折叠态不依赖全量重绘：按当前可见行数轻量更新高度并锚定底部，
+            # 使思考中流式更新始终落在最新五行（与 _render_markdown 折叠高度
+            # 的计算口径一致，避免停顿重绘时高度跳变）。
+            self._apply_collapsed_height()
         self.refresh()
 
     def _flush_stream_chunk(self) -> None:
@@ -784,17 +784,55 @@ class ReasoningDisclosure(RichLog, can_focus=False):
             scroll_end=False,
         )
         if self._expanded:
+            self._collapsed_height = 0
             self.anchor(False)
             self.styles.height = None
         else:
-            content_rows = max(1, len(self.lines))
-            self.styles.height = min(self.COLLAPSED_HEIGHT, content_rows)
-            # 锚定底部：新高度要在下一次布局才生效，直接 scroll_end 会按旧
-            # 高度算出的 max_scroll_y 停在顶部；anchor 的语义是在每次重新
-            # 布局后持续跟随底部，流式重绘与高度变更都会自动滚到最新五行
-            # （与 _scroll_conversation_if_following 同机制）。
-            self.anchor()
+            self._apply_collapsed_height()
         self.refresh()
+
+    def _collapsed_rows(self) -> int:
+        """折叠态应占的行数（不超过 ``COLLAPSED_HEIGHT``）。
+
+        ``RichLog.write`` 在组件宽度未知前只把内容入队、并不渲染（Textual
+        的 ``_size_known`` 此时为假），``lines`` 因此是空的；若直接按它算
+        高度，折叠块会被压成一行——只剩一行背景色——而且首次布局冲刷延迟
+        渲染之后也没有人会再把它改回来。宽度未知时退回逻辑行数，等
+        ``on_resize`` 拿到真实渲染行后再收口一次。
+        """
+
+        rows = len(self.lines) if self._size_known else max(1, self._line_count)
+        return min(self.COLLAPSED_HEIGHT, max(1, rows))
+
+    def _apply_collapsed_height(self) -> None:
+        """把折叠高度收敛到最新 ``COLLAPSED_HEIGHT`` 行并锚定底部。
+
+        锚定底部（而不是直接 ``scroll_end``）：新高度要到下一次布局才生效，
+        直接滚动会按旧高度算出的 ``max_scroll_y`` 停在顶部；``anchor`` 的语义
+        是每次重新布局后持续跟随底部，流式重绘与高度变更都会自动滚到最新五行
+        （与 ``_scroll_conversation_if_following`` 同机制）。
+        """
+
+        if self._expanded:
+            return
+        target = self._collapsed_rows()
+        if self._collapsed_height == target:
+            return
+        self._collapsed_height = target
+        self.styles.height = target
+        self.anchor()
+
+    def on_resize(self, event: Resize) -> None:
+        """尺寸首次可知时冲刷延迟渲染，并据此重新收口折叠高度。
+
+        ``RichLog.on_resize`` 在第一次拿到非零宽度时才会把 ``write`` 入队的
+        内容真正渲染出来。高度必须在这之后重算：思考内容较短、来不及等到
+        首次布局就已经 ``flush_tail`` 时，此前按空 ``lines`` 算出的高度会把
+        折叠块永远压在「一行背景色」。
+        """
+
+        super().on_resize(event)
+        self._apply_collapsed_height()
 
     def _render_line(self, y: int, scroll_x: int, width: int) -> Strip:
         """渲染行补充文本坐标，供 Screen 命中鼠标拖选位置。
