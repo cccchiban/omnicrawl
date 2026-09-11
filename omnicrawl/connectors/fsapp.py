@@ -6,7 +6,8 @@ OmniCrawl 的 ``LocalToolAgent.run_stream`` 协议：
 * 飞书侧使用 ``lark.ws.Client`` 长连接接收 ``im.message.receive_v1`` 事件；
 * 应用凭证优先从环境变量读取，其次读取 ``config.toml`` 的 ``[feishu]`` 段；
 * 普通文本、图片和文件消息会转成 OmniCrawl Agent 任务；
-* Agent 的状态、工具调用和最终回答通过飞书消息/交互式卡片回传；
+* 显示方式对齐 TUI 消息流：每个条目（正文段、工具调用、思考、执行计划、
+  子任务进度）独立成一条消息、按发生顺序出现；
 * 敏感工具确认通过飞书回复 ``/approve`` 或 ``/reject`` 完成；
 * 任务取消、会话命令、计划模式和审批模式命令复用 OmniCrawl 的共享实现；
 * 单个进程只允许一个活动 Agent 回合，避免并发驱动同一个 Agent 实例造成上下文
@@ -55,10 +56,13 @@ import threading
 import time
 
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from omnicrawl.agent.toolkit.tools import ASK_USER_TOOL_NAME, TODO_TOOL_NAME
 from omnicrawl.state.session_artifacts import redact_sensitive_text, redact_sensitive_values
+from omnicrawl.ui.tool_labels import format_duration, format_tool_status
 
 from omnicrawl.connectors.feishu_inbox import FeishuInbox, InboxRecord
 
@@ -158,44 +162,336 @@ _FILE_TYPE_MAP = {
 _MESSAGE_RESOURCE_TYPES = frozenset({"image", "audio", "file", "media"})
 
 # 飞书单条文本消息的上限约 4000 字符，保守取 3000 以便分段后仍有余量；
-# 卡片正文同样受平台限制，超长回答先分段再发送。
+# 卡片正文同样受平台限制，超长内容先分段再发送。
 MAX_TEXT_CHARS = 3000
 
-# 常见工具调用的中文展示名；未知工具回退为原名，避免用户看到一堆英文名。
-_TOOL_NAME_LABELS = {
-    "read_file": "读取文件",
-    "write_file": "写入文件",
-    "edit_file": "编辑文件",
-    "list_dir": "列出目录",
-    "run_command": "运行命令",
-    "bash": "执行命令",
-    "web_search": "联网搜索",
-    "search_web": "联网搜索",
-    "ask_user": "询问用户",
-    "read_webpage": "读取网页",
-    "fetch_url": "抓取网页",
-    "upload_file": "上传文件",
-    "download_file": "下载文件",
-    "create_file": "创建文件",
-    "move_file": "移动文件",
-    "copy_file": "复制文件",
-    "delete_file": "删除文件",
-    "get_weather": "查询天气",
-    "get_time": "查询时间",
-    "get_calendar": "查询日历",
-    "send_email": "发送邮件",
-    "send_message": "发送消息",
-    "search_docs": "搜索文档",
-    "summarize": "总结内容",
-    "translate": "翻译",
-    "image_gen": "生成图片",
-    "image_edit": "编辑图片",
+# ----------------------------------------------------------------------
+# 显示规则（对齐 TUI 的消息流语义）
+# ----------------------------------------------------------------------
+
+# 与 TUI 的消息流一致：每个条目（正文段、工具调用、思考、计划、子任务）独立
+# 成一条消息，按发生顺序出现，各自原地更新；正文单条上限之外的部分在封口时
+# 改用文本消息分片补发。
+SEGMENT_MAX_CHARS = 6000
+# 流式 patch 节拍（秒）：飞书对消息更新有频率限制，不做逐字 patch。
+STREAM_PATCH_INTERVAL_SECONDS = 1.5
+# 工具正文采样：与 TUI 一致，最多 5 行，超出时保留首尾各 2 行有效行。
+TOOL_BODY_MAX_LINES = 5
+TOOL_BODY_HEAD_LINES = 2
+TOOL_BODY_TAIL_LINES = 2
+TOOL_BODY_MAX_CHARS_PER_LINE = 160
+# 文件变更预览行数与结果摘要行数。
+FILE_CHANGE_PREVIEW_LINES = 5
+FILE_CHANGE_RESULT_LINES = 1
+# 折叠思考：运行中只显示最新 5 行，定型后保留最多 4000 字符。
+REASONING_PREVIEW_LINES = 5
+REASONING_MAX_CHARS = 4000
+# 执行计划与子任务进度消息的最大行数。
+MAX_TODO_LINES = 20
+MAX_SUBAGENT_LINES = 20
+# 工具摘要中路径/目标/命令/参数的压缩上限。
+MAX_PATH_CHARS = 48
+MAX_PATTERN_CHARS = 36
+MAX_COMMAND_CHARS = 120
+MAX_ARGS_CHARS = 120
+
+# 记忆与知识库工具：正文对远程用户没有展示价值，与 TUI 一致只保留摘要行。
+_MEMORY_TOOL_OPERATIONS = frozenset(
+    f"{prefix}memory_{action}"
+    for prefix in ("", "project_", "session_", "user_")
+    for action in ("search", "read", "expand_related", "write")
+)
+_KB_TOOL_OPERATIONS = frozenset({"kb_search", "kb_read", "kb_write", "kb_append", "kb_list"})
+# 正文完全隐藏的工具（与 TUI 的 HIDDEN_BODY_TOOLS 同规则）。
+_HIDDEN_BODY_OPERATIONS = frozenset({"read"}) | _MEMORY_TOOL_OPERATIONS | _KB_TOOL_OPERATIONS
+# 文件变更工具：展示变更统计与变更预览，而不是采样后的原始输出。
+_FILE_CHANGE_OPERATIONS = frozenset({"write_file", "Edit_file"})
+# 提问与执行计划不产生工具消息：提问有独立卡片，计划由独立消息原地更新。
+_TOOLS_WITHOUT_RECORD = frozenset({ASK_USER_TOOL_NAME, TODO_TOOL_NAME})
+
+# 子任务进度：状态图标与中文标签沿用 TUI 进度树的取值。
+_SUBAGENT_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
+_SUBAGENT_STATUS_PRESENTATION = {
+    "queued": ("○", "等待中"),
+    "running": ("●", "运行中"),
+    "waiting_approval": ("◆", "等待审批"),
+    "completed": ("✓", "完成"),
+    "failed": ("×", "失败"),
+    "cancelled": ("–", "已取消"),
 }
+_SUBAGENT_EVENT_STATUS = {
+    "subagent.task.queued": "queued",
+    "subagent.task.started": "running",
+    "subagent.task.running": "running",
+    "subagent.task.waiting_approval": "waiting_approval",
+    "subagent.task.completed": "completed",
+    "subagent.task.failed": "failed",
+    "subagent.task.cancelled": "cancelled",
+    "subagent.task.approval_cancelled": "cancelled",
+}
+# 工具记录终态：不再被迟到的完成事件或取消收口覆盖。
+_TOOL_TERMINAL_STATUSES = frozenset({"成功", "失败", "已取消"})
 
 # WebSocket 重连后某些事件可能再次投递。进程内短期去重足够覆盖常见重连
 # 场景，同时不会把长期会话状态写入全局配置。
 _DEDUP_TTL_SECONDS = 10 * 60
 _DEDUP_MAX_ENTRIES = 2000
+
+
+def _operation_of(tool_name: str) -> str:
+    """返回工具末级操作名，兼容 ``server.operation`` 形式的 MCP 工具。"""
+
+    return str(tool_name or "").rsplit(".", 1)[-1]
+
+
+def _safe_label(value: Any, *, max_chars: int) -> str:
+    """折叠空白并限制长度，避免超长文本撑爆卡片字段。"""
+
+    return " ".join(str(value or "").split())[:max_chars]
+
+
+def _compact_line(value: Any, *, max_chars: int) -> str:
+    """把参数压缩成单行摘要；超长时截断并附加省略号。"""
+
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def _clip_line(line: str, *, max_chars: int = TOOL_BODY_MAX_CHARS_PER_LINE) -> str:
+    """限制单行宽度，避免一行超长输出在卡片里横向溢出。"""
+
+    text = str(line or "").rstrip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def _fenced_body(body: str) -> str:
+    """把工具正文放入围栏代码块；正文内部的三反引号先替换掉。"""
+
+    return "```\n" + str(body or "").replace("```", "'''") + "\n```"
+
+
+def _sample_output_lines(output: str) -> list[str]:
+    """按 TUI 规则采样工具输出：最多 5 行，超出时保留首尾各 2 行有效行。"""
+
+    lines = [_clip_line(line) for line in str(output or "").splitlines()]
+    if len(lines) <= TOOL_BODY_MAX_LINES:
+        return lines
+    effective = [line for line in lines if line.strip()]
+    if len(effective) <= TOOL_BODY_MAX_LINES:
+        return effective
+    return effective[:TOOL_BODY_HEAD_LINES] + effective[-TOOL_BODY_TAIL_LINES:]
+
+
+def _read_result_line_range(result_text: str) -> tuple[int, int] | None:
+    """从 read 的行号输出中解析实际返回的首尾源码行号（与 TUI 同规则）。"""
+
+    if not result_text:
+        return None
+    line_numbers = [
+        int(match) for match in re.findall(r"(?m)^\s*(\d+):\s", result_text)
+    ]
+    if line_numbers:
+        return line_numbers[0], line_numbers[-1]
+    return None
+
+
+def _list_result_summary(result_text: str) -> str | None:
+    """把目录列表结果压缩为「N 项」摘要（与 TUI 同规则）。"""
+
+    if not result_text:
+        return None
+    lines = [line.strip() for line in result_text.splitlines() if line.strip()]
+    if not lines or lines == ["目录为空。"]:
+        return "0 项"
+    truncated = any(line.startswith("...") for line in lines)
+    visible_count = sum(not line.startswith("...") for line in lines)
+    return f"{visible_count}{'+' if truncated else ''} 项"
+
+
+def _format_line_stats(*, added: int, removed: int) -> str:
+    parts: list[str] = []
+    if added:
+        parts.append(f"+{added}")
+    if removed:
+        parts.append(f"-{removed}")
+    return " ".join(parts) if parts else "0"
+
+
+def _diff_preview_lines(old_text: str, new_text: str) -> tuple[list[str], int, int]:
+    """生成带 ``+``/``-`` 前缀的变更预览，并返回完整改动的 (added, removed)。"""
+
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    matcher = SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
+    preview: list[str] = []
+    added = removed = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag in {"replace", "delete"}:
+            removed += i2 - i1
+            preview.extend(f"- {line}" for line in old_lines[i1:i2])
+        if tag in {"replace", "insert"}:
+            added += j2 - j1
+            preview.extend(f"+ {line}" for line in new_lines[j1:j2])
+    return preview, added, removed
+
+
+def _file_change_summary(operation: str, arguments: Mapping[str, Any]) -> str:
+    """文件变更统计：Edit_file 用 ``+N -M``，write_file 用 ``rewrite +N lines``。"""
+
+    if operation == "Edit_file":
+        _preview, added, removed = _diff_preview_lines(
+            str(arguments.get("old_text") or ""),
+            str(arguments.get("new_text") or ""),
+        )
+        return _format_line_stats(added=added, removed=removed)
+    content = str(arguments.get("content") or "")
+    line_count = 0 if content == "" else len(content.splitlines())
+    label = "append" if str(arguments.get("mode") or "").casefold() == "append" else "rewrite"
+    return f"{label} +{line_count} lines"
+
+
+def _file_change_preview(operation: str, arguments: Mapping[str, Any]) -> str:
+    """文件变更预览：Edit_file 输出 +/- diff，write_file 输出新增行。"""
+
+    if operation == "Edit_file":
+        preview, _added, _removed = _diff_preview_lines(
+            str(arguments.get("old_text") or ""),
+            str(arguments.get("new_text") or ""),
+        )
+    else:
+        content = str(arguments.get("content") or "")
+        preview = [f"+ {line}" for line in content.splitlines()] or ["+ (empty)"]
+    visible = preview[:FILE_CHANGE_PREVIEW_LINES]
+    body = "\n".join(_clip_line(line) for line in visible)
+    omitted = len(preview) - len(visible)
+    if omitted > 0:
+        body += f"\n… 还有 {omitted} 行未展示"
+    return body
+
+
+def _tool_summary(tool_name: str, arguments: Any, result_text: str = "") -> str:
+    """生成工具记录标题摘要（工具名 + 关键参数 + 结果摘要），与 TUI 同规则。"""
+
+    name = str(tool_name or "?")
+    operation = _operation_of(name)
+    args = arguments if isinstance(arguments, Mapping) else {}
+    if operation == "list":
+        summary = f"{name} {_compact_line(args.get('path') or '.', max_chars=MAX_PATH_CHARS)}"
+        count = _list_result_summary(result_text)
+        return f"{summary} · {count}" if count else summary
+    if operation == "read":
+        summary = f"{name} {_compact_line(args.get('path') or '(未指定文件)', max_chars=MAX_PATH_CHARS)}"
+        line_range = _read_result_line_range(result_text)
+        if line_range is not None:
+            summary += f" · 第 {line_range[0]}-{line_range[1]} 行"
+        return summary
+    if operation == "read_image":
+        path = _compact_line(args.get("path") or "(未指定图片)", max_chars=MAX_PATH_CHARS)
+        return f"{name} {path} · 图片"
+    if operation in {"find", "grep"}:
+        path = _compact_line(args.get("path") or ".", max_chars=MAX_PATH_CHARS)
+        target = _compact_line(args.get("pattern"), max_chars=MAX_PATTERN_CHARS) or "(未指定)"
+        return f"{name} {path} · 目标: {target}"
+    if operation in {"bash", "powershell"}:
+        command = _compact_line(args.get("command"), max_chars=MAX_COMMAND_CHARS)
+        return f"{name} {command}".rstrip()
+    if operation in _FILE_CHANGE_OPERATIONS:
+        path = _compact_line(args.get("path") or "(unknown path)", max_chars=MAX_PATH_CHARS)
+        return f"{name} {path} · {_file_change_summary(operation, args)}"
+    if operation == "monitor":
+        context = _compact_line(args.get("action") or "任务", max_chars=MAX_PATTERN_CHARS)
+        detail = _compact_line(
+            args.get("command") or args.get("monitor_id"),
+            max_chars=MAX_COMMAND_CHARS,
+        )
+        return f"{name} {context} {detail}".rstrip()
+    if operation == "subagent":
+        context = _compact_line(args.get("action") or "任务", max_chars=MAX_PATTERN_CHARS)
+        tasks = args.get("tasks")
+        count = len(tasks) if isinstance(tasks, list) else 0
+        return f"{name} {context}" + (f" · {count} 项" if count else "")
+    if operation in _MEMORY_TOOL_OPERATIONS:
+        query = _compact_line(args.get("query"), max_chars=MAX_PATH_CHARS)
+        if query:
+            return f"{name} {query}"
+        ids = args.get("memory_ids")
+        if isinstance(ids, list):
+            return f"{name} {len(ids)} 条记忆"
+        return name
+    if operation in _KB_TOOL_OPERATIONS:
+        detail = _compact_line(
+            args.get("query") or args.get("path"),
+            max_chars=MAX_PATH_CHARS,
+        )
+        return f"{name} {detail}".rstrip()
+    # 其余工具（含 MCP）：附带紧凑参数摘要，便于远程判断这次调用了什么。
+    safe = redact_sensitive_values(dict(args)) if args else {}
+    payload = (
+        _compact_line(json.dumps(safe, ensure_ascii=False), max_chars=MAX_ARGS_CHARS)
+        if safe
+        else ""
+    )
+    return f"{name} {payload}".rstrip()
+
+
+def _tool_body(tool_name: str, arguments: Any, result_text: str) -> str:
+    """生成工具记录正文：与 TUI 一致展示原始输出，或隐藏/展示文件变更预览。"""
+
+    operation = _operation_of(tool_name)
+    args = arguments if isinstance(arguments, Mapping) else {}
+    if operation in _HIDDEN_BODY_OPERATIONS:
+        return ""
+    if operation in _FILE_CHANGE_OPERATIONS:
+        preview = _file_change_preview(operation, args)
+        note = _file_change_result_note(operation, result_text)
+        return f"{preview}\n{note}" if note else preview
+    return "\n".join(_sample_output_lines(result_text)).strip("\n")
+
+
+def _file_change_result_note(operation: str, result_text: str) -> str:
+    """文件变更工具的结果摘要：Edit_file 只保留「替换 N 处」（与 TUI 一致）。"""
+
+    if operation == "Edit_file":
+        match = re.search(r"替换\s*\d+\s*处", str(result_text or ""))
+        if match:
+            return match.group(0)
+    return next(
+        (line for line in _sample_output_lines(result_text) if line.strip()),
+        "",
+    )
+
+
+def _split_segment_for_card(text: str) -> tuple[str, str]:
+    """把长正文切成「单条消息正文」与「需要文本消息补发的剩余部分」。"""
+
+    if len(text) <= SEGMENT_MAX_CHARS:
+        return text, ""
+    head = text[:SEGMENT_MAX_CHARS]
+    for boundary in ("\n\n", "\n"):
+        index = head.rfind(boundary)
+        if index > SEGMENT_MAX_CHARS // 2:
+            head = head[:index]
+            break
+    return head, text[len(head):].lstrip("\n")
+
+
+def _format_elapsed(seconds: float) -> str:
+    """子任务耗时格式，与 TUI 进度树一致（MM:SS / HH:MM:SS）。"""
+
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds_part = divmod(remainder, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds_part:02d}"
+    return f"{minutes:02d}:{seconds_part:02d}"
 
 
 class FeishuDependencyError(RuntimeError):
@@ -266,65 +562,172 @@ class _ActiveTask:
     dedupe_key: str | None = None
 
 
-class _TaskCard:
-    """一个持续 patch 的飞书任务卡片。
+@dataclass
+class _ToolRecord:
+    """一条工具调用记录，展示语义与 TUI 工具卡一致。"""
 
-    Agent 的 token 增量不逐字 patch，避免飞书 API 频率限制；只有状态和工具
-    步骤变化时更新卡片，最终回答完成后再一次性定型。卡片更新失败时由外层
-    发送普通文本兜底，因此卡片不是任务完成的单点依赖。
+    key: str
+    name: str
+    summary: str
+    arguments: Any = None
+    status: str = "调用中"
+    started_at: float = field(default_factory=time.monotonic)
+    finished_at: float | None = None
+    body: str = ""
+
+    @property
+    def running(self) -> bool:
+        return self.status == "调用中"
+
+    @property
+    def duration_seconds(self) -> float:
+        ended = self.finished_at if self.finished_at is not None else time.monotonic()
+        return max(0.0, ended - self.started_at)
+
+    def render(self, *, with_body: bool = True) -> str:
+        """渲染为 markdown：``● 摘要 · ✓ 成功 · 136ms``，正文放围栏代码块。
+
+        运行中不带耗时：本地不做逐秒 patch，冻结的耗时会误导；收口时再给出
+        真实时长。摘要与正文发往飞书前统一做敏感信息脱敏。
+        """
+
+        status = format_tool_status(self.status)
+        line = f"● {redact_sensitive_text(self.summary)} · {status.icon} {status.label}"
+        if self.finished_at is not None:
+            line += f" · {format_duration(self.duration_seconds)}"
+        if not with_body or not self.body:
+            return line
+        return f"{line}\n{_fenced_body(redact_sensitive_text(self.body))}"
+
+    def finish(self, *, ok: bool, output: str) -> None:
+        self.summary = _tool_summary(self.name, self.arguments, output)
+        self.status = "成功" if ok else "失败"
+        self.body = _tool_body(self.name, self.arguments, output)
+        self.finished_at = time.monotonic()
+        # 结果落地后释放参数：长参数不再随卡片常驻内存。
+        self.arguments = None
+
+    def abort(self) -> None:
+        """把尚未完成的记录收口为「已取消」，避免长期停在「调用中」。"""
+
+        if self.status in _TOOL_TERMINAL_STATUSES:
+            return
+        self.status = "已取消"
+        self.finished_at = time.monotonic()
+
+
+@dataclass
+class _SubAgentNode:
+    """子任务进度节点；只保留安全字段，不展示 prompt 或结果。"""
+
+    key: str
+    agent_type: str
+    description: str
+    status: str = "queued"
+    first_seen_at: float = field(default_factory=time.monotonic)
+    started_at: float | None = None
+    finished_at: float | None = None
+
+
+def _markdown_card(content: str) -> str:
+    """把一段 Markdown 组装为单元素卡片消息。"""
+
+    return _card_json([{"tag": "markdown", "content": content}])
+
+
+def _reasoning_panel(text: str, *, streaming: bool) -> dict[str, Any]:
+    """思考折叠面板：运行中只显示最新五行，收口后给完整内容。"""
+
+    cleaned = _clean_text(text)
+    if streaming:
+        lines = [line for line in cleaned.splitlines() if line.strip()]
+        preview = "\n".join(lines[-REASONING_PREVIEW_LINES:])
+        hint = f"· 正在思考，仅显示最新 {REASONING_PREVIEW_LINES} 行"
+        content = f"{preview}\n\n{hint}" if preview else hint
+    else:
+        content = cleaned
+        if len(content) > REASONING_MAX_CHARS:
+            content = "…（更早内容已省略）\n" + content[-REASONING_MAX_CHARS:]
+    return {
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "plain_text", "content": "💭 思考内容"}},
+        "elements": [{"tag": "markdown", "content": content or "（无内容）"}],
+    }
+
+
+def _normalize_todos(items: Any) -> list[tuple[str, bool]]:
+    """规范化执行计划清单：过滤空步骤并限制条数。"""
+
+    normalized: list[tuple[str, bool]] = []
+    if isinstance(items, (list, tuple)):
+        for item in items[:MAX_TODO_LINES]:
+            if not isinstance(item, Mapping):
+                continue
+            text = str(
+                item.get("step") or item.get("description") or item.get("title") or ""
+            ).strip()
+            if not text:
+                continue
+            completed = bool(item.get("completed")) or str(
+                item.get("status") or ""
+            ).casefold() in {"completed", "done", "complete"}
+            normalized.append((" ".join(text.split())[:240], completed))
+    return normalized
+
+
+def _todos_text(todos: list[tuple[str, bool]]) -> str:
+    completed = sum(1 for _step, done in todos if done)
+    lines = [f"**执行计划 · {completed}/{len(todos)} 完成**"]
+    lines.extend(f"{'▣' if done else '▢'} {step}" for step, done in todos)
+    return "\n".join(lines)
+
+
+def _subagents_text(order: list[str], nodes: Mapping[str, _SubAgentNode]) -> str:
+    """子任务进度段：根标签 + ├─/└─ 节点，与 TUI 进度树同形。"""
+
+    total = len(order)
+    completed = sum(1 for key in order if nodes[key].status == "completed")
+    root = "◇ 并行子任务" if total > 1 else "◇ 子任务进度"
+    lines = [f"**{root} · {completed}/{total} 完成**"]
+    now = time.monotonic()
+    visible = order[:MAX_SUBAGENT_LINES]
+    for index, key in enumerate(visible):
+        node = nodes[key]
+        icon, label = _SUBAGENT_STATUS_PRESENTATION.get(
+            node.status,
+            ("·", node.status),
+        )
+        connector = "└─" if index == total - 1 else "├─"
+        line = f"{connector} {icon} {node.description} · {node.agent_type} · {label}"
+        if node.started_at is not None:
+            ended = node.finished_at if node.finished_at is not None else now
+            line += f" · {_format_elapsed(ended - node.started_at)}"
+        lines.append(line)
+    if total > len(visible):
+        lines.append(f"… 还有 {total - len(visible)} 个任务")
+    return "\n".join(lines)
+
+
+class _TimelineMessage:
+    """时间线条目消息：首次发送卡片，之后原地 patch 同一条消息。
+
+    与 TUI 的消息流一致：每个条目独立占一条消息、按发生顺序出现；条目自身
+    的流式更新只影响自己的消息，条目之间互不覆盖。
     """
 
     def __init__(self, bot: "FeishuBot", receive_id: str, receive_id_type: str) -> None:
         self._bot = bot
         self.receive_id = receive_id
         self.receive_id_type = receive_id_type
-        self.status = "🤔 思考中..."
-        self.steps: list[tuple[str, str]] = []
-        self.final: str | None = None
-        self.stream: str = ""
         self.message_id: str | None = None
-        self.started = False
+        self.available = True
 
-    def _step_panel(self, index: int, summary: str, detail: str) -> dict[str, Any]:
-        detail = detail.strip() or "_(无输出)_"
-        return {
-            "tag": "collapsible_panel",
-            "expanded": False,
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": f"步骤 {index} · {summary}",
-                }
-            },
-            "elements": [{"tag": "markdown", "content": detail}],
-        }
+    def _deliver(self, payload: str) -> bool:
+        """把卡片内容交给飞书：首次发送，之后 patch 原消息。"""
 
-    def _payload(self) -> str:
-        elements: list[dict[str, Any]] = [
-            {"tag": "markdown", "content": f"**{self.status}**"},
-        ]
-        # 流式节流期间展示“正在生成”节，实时反馈 Agent 增量，避免执行过程中
-        # 用户只能看到状态行而看不到任何文本。
-        if self.stream and self.final is None:
-            elements.append(
-                {
-                    "tag": "markdown",
-                    "content": f"⏳ 正在生成…\n\n{self.stream}",
-                }
-            )
-        for index, (summary, detail) in enumerate(self.steps, start=1):
-            elements.append(self._step_panel(index, summary, detail))
-        if self.final:
-            elements.extend(
-                [
-                    {"tag": "hr"},
-                    {"tag": "markdown", "content": self.final},
-                ]
-            )
-        return _card_json(elements)
-
-    def _push(self) -> bool:
-        payload = self._payload()
+        if not self.available:
+            return False
         if self.message_id:
             return self._bot._patch_card(self.message_id, payload)
         message_id = self._bot._send_raw(
@@ -334,91 +737,168 @@ class _TaskCard:
             receive_id_type=self.receive_id_type,
         )
         if not message_id:
+            self.available = False
             return False
         self.message_id = message_id
-        self.started = True
         return True
 
-    def start(self) -> bool:
-        return self._push()
 
-    def set_status(self, status: str) -> bool:
-        status = str(status or "").strip()
-        if not status or status == self.status:
-            return True
-        self.status = status
-        return self._push()
+class _TextMessage(_TimelineMessage):
+    """一个模型 pass 的正文消息：``◇`` 前缀流式更新，工具调用处封口。
 
-    def add_step(self, summary: str, detail: str = "") -> bool:
-        self.steps.append((str(summary or "步骤"), str(detail or "")))
-        self.status = f"⏳ 工作中 · 步骤 {len(self.steps)}"
-        return self._push()
-
-    def set_stream(self, text: str) -> bool:
-        """更新流式预览；final 定型后不再展示，避免与最终回答重复。"""
-
-        if self.final is not None:
-            return True
-        self.stream = str(text or "")
-        return self._push()
-
-    def done(self, text: str) -> bool:
-        self.status = "✅ 已完成"
-        # 若流式预览已包含最终回答的绝大部分，final 直接使用同一文本；
-        # 但流式是节流快照、可能比最终结果短，因此仍以最终结果为准。
-        self.final = _display_text(text)
-        self.stream = ""
-        return self._push()
-
-    def fail(self, message: str) -> bool:
-        self.status = f"❌ {str(message or '任务失败')}"
-        self.final = None
-        self.stream = ""
-        return self._push()
-
-
-class _ToolCallCard:
-    """单次工具调用的独立飞书卡片。
-
-    工具调用开始时发送一张“⏳ 执行中”卡片；结束时 patch 同一张卡片为
-    “✅ 成功”或“❌ 失败”，只展示工具名与状态，不展示输出内容。
-    任务卡片不再累积工具步骤，最终回答与工具过程解耦。
+    TUI 在每次工具调用处把回答记录封口、下一段另起一条；这里用独立消息承载
+    同一语义：封口后本条消息不再变化，下一段正文由新的消息承接。
     """
 
-    def __init__(self, bot: "FeishuBot", receive_id: str, receive_id_type: str) -> None:
-        self._bot = bot
-        self.receive_id = receive_id
-        self.receive_id_type = receive_id_type
-        self.message_id: str | None = None
-        self.name: str = "?"
+    def stream(self, text: str) -> bool:
+        """流式刷新正文预览（节拍由调用方控制）。"""
 
-    def _payload(self, status: str) -> str:
-        return _card_json(
-            [
-                {"tag": "markdown", "content": status},
-            ]
-        )
-
-    def start(self, name: str) -> bool:
-        self.name = str(name or "?")
-        self.message_id = self._bot._send_raw(
-            self.receive_id,
-            self._payload(f"🛠 工具调用：**{self.name}**\n⏳ 执行中..."),
-            msg_type="interactive",
-            receive_id_type=self.receive_id_type,
-        )
-        return bool(self.message_id)
-
-    def finish(self, ok: bool) -> bool:
-        if not self.message_id:
+        head, _tail = _split_segment_for_card(_clean_text(text))
+        if not head:
+            # 首片内容可能只剩内部标签，避免先发一条空消息。
             return False
-        status = f"✅ 工具调用完成：**{self.name}**" if ok else f"❌ 工具调用失败：**{self.name}**"
-        return self._bot._patch_card(self.message_id, self._payload(status))
+        return self._deliver(_markdown_card(f"◇ {head}"))
+
+    def seal(self, text: str, *, suffix: str = "") -> str | None:
+        """封口本条正文；返回仍需以文本消息补发的剩余内容。
+
+        卡片不可用时返回全文，调用方回退为普通文本消息，保证正文不会因为
+        卡片接口失败而丢失。
+        """
+
+        cleaned = _clean_text(text)
+        if not cleaned:
+            return None
+        if not self.available:
+            return f"{cleaned}{suffix}"
+        head, tail = _split_segment_for_card(cleaned)
+        if tail:
+            head += "\n\n…（内容较长，其余部分以消息形式发送）"
+        if not self._deliver(_markdown_card(f"◇ {head}{suffix}")):
+            self.available = False
+            return f"{cleaned}{suffix}"
+        return tail or None
+
+
+class _ToolMessage(_TimelineMessage):
+    """一次工具调用的独立消息：开始即出现，完成时原地收口。
+
+    与 TUI 工具卡一致：调用一开始就进入消息流（``… 调用中``），结果落地后
+    在同一张卡上补齐状态、耗时与采样正文；卡片不可用时以文本消息兜底整条
+    记录，避免结果丢失。
+    """
+
+    def __init__(
+        self,
+        bot: "FeishuBot",
+        receive_id: str,
+        receive_id_type: str,
+        record: _ToolRecord,
+    ) -> None:
+        super().__init__(bot, receive_id, receive_id_type)
+        self.record = record
+
+    @property
+    def running(self) -> bool:
+        return self.record.running
+
+    def start(self) -> bool:
+        return self._deliver(_markdown_card(self.record.render(with_body=False)))
+
+    def finish(self, *, ok: bool, output: str) -> bool:
+        self.record.finish(ok=ok, output=output)
+        content = self.record.render(with_body=True)
+        if self._deliver(_markdown_card(content)):
+            return True
+        # 卡片创建或更新失败：整条记录改用文本消息兜底，用户仍能看到结果。
+        self.available = False
+        self._bot._send_text(self.receive_id, content, receive_id_type=self.receive_id_type)
+        return False
 
     def abort(self) -> bool:
-        if not self.message_id:
+        if not self.running:
             return False
-        return self._bot._patch_card(self.message_id, self._payload(f"⏹ 工具调用已中断：**{self.name}**"))
+        self.record.abort()
+        if self.message_id is None:
+            return False
+        return self._deliver(_markdown_card(self.record.render(with_body=False)))
+
+
+class _ReasoningMessage(_TimelineMessage):
+    """一个 pass 的思考折叠面板消息（仅 ``/thinking on`` 时创建）。"""
+
+    def stream(self, text: str) -> bool:
+        return self._deliver(_card_json([_reasoning_panel(text, streaming=True)]))
+
+    def seal(self, text: str) -> bool:
+        return self._deliver(_card_json([_reasoning_panel(text, streaming=False)]))
+
+
+class _PlanMessage(_TimelineMessage):
+    """执行计划消息：首次更新时出现，之后原地替换整份清单。"""
+
+    def __init__(self, bot: "FeishuBot", receive_id: str, receive_id_type: str) -> None:
+        super().__init__(bot, receive_id, receive_id_type)
+        self.todos: list[tuple[str, bool]] = []
+
+    def update(self, items: Any) -> bool:
+        normalized = _normalize_todos(items)
+        if not normalized or normalized == self.todos:
+            return False
+        self.todos = normalized
+        return self._deliver(_markdown_card(_todos_text(self.todos)))
+
+
+class _SubAgentMessage(_TimelineMessage):
+    """同一批子任务的进度消息：首次事件出现，之后原地更新进度树。"""
+
+    def __init__(self, bot: "FeishuBot", receive_id: str, receive_id_type: str) -> None:
+        super().__init__(bot, receive_id, receive_id_type)
+        self._nodes: dict[str, _SubAgentNode] = {}
+        self._order: list[str] = []
+
+    def update(self, event_name: str, payload: Mapping[str, Any]) -> bool:
+        """按 task_id 原地更新子任务节点；终态节点拒绝迟到的活动事件。"""
+
+        status = _SUBAGENT_EVENT_STATUS.get(str(event_name))
+        if status is None:
+            return False
+        task_id = str(payload.get("task_id") or "task")
+        now = time.monotonic()
+        node = self._nodes.get(task_id)
+        if node is None:
+            node = _SubAgentNode(
+                key=task_id,
+                agent_type=_safe_label(
+                    payload.get("agent_type") or "subagent",
+                    max_chars=80,
+                ),
+                description=_safe_label(
+                    payload.get("description") or task_id,
+                    max_chars=120,
+                ),
+            )
+            self._nodes[task_id] = node
+            self._order.append(task_id)
+        elif node.status in _SUBAGENT_TERMINAL_STATUSES:
+            return False
+        else:
+            node.agent_type = _safe_label(
+                payload.get("agent_type") or node.agent_type,
+                max_chars=80,
+            )
+            node.description = _safe_label(
+                payload.get("description") or node.description,
+                max_chars=120,
+            )
+        node.status = status
+        if status in {"running", "waiting_approval"} and node.started_at is None:
+            node.started_at = now
+        if status in _SUBAGENT_TERMINAL_STATUSES:
+            if node.started_at is None:
+                node.started_at = node.first_seen_at
+            node.finished_at = now
+        return self._deliver(_markdown_card(_subagents_text(self._order, self._nodes)))
 
 
 def _require_lark() -> Any:
@@ -528,11 +1008,11 @@ def _split_text(text: str) -> list[str]:
     return parts
 
 
-def _display_text(text: Any) -> str:
-    """清理内部展示标签、脱敏敏感值，并给空响应提供可读兜底。
+def _clean_text(text: Any) -> str:
+    """清理内部展示标签、脱敏敏感值，并折叠空行与行尾空格。
 
-    折叠连续空行、去除每行行尾空格，让卡片正文更整洁；文本仍保留原始
-    换行结构（表格/代码块依赖它）。
+    文本仍保留原始换行结构（表格/代码块依赖它）；空文本返回空串，由
+    调用方决定兜底文案（流式预览不需要兜底，定型回答需要）。
     """
 
     raw = str(text or "")
@@ -541,7 +1021,34 @@ def _display_text(text: Any) -> str:
     # 折叠 3 个及以上连续空行为最多 2 个，并清理行尾空格（不影响代码块/表格）。
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
-    return cleaned or "（任务完成，无文本输出）"
+    return cleaned
+
+
+def _display_text(text: Any) -> str:
+    """清理文本并给空响应提供可读兜底（定型回答与兜底文本共用）。"""
+
+    return _clean_text(text) or "（任务完成，无文本输出）"
+
+
+def _resolve_final_text(streamed: str, reply: str) -> str:
+    """正文定型：流式片段不完整时用最终回答补齐，否则沿用已展示内容。
+
+    最终回答是模型最后一次回复的文本；当它比流式片段更完整（忽略空白后以
+    流式片段为前缀）时改用最终回答，其余情况保留用户已经看过的流式内容，
+    避免定型时正文突然变化，也避免重复展示早先段落。
+    """
+
+    streamed_text = _clean_text(streamed)
+    reply_text = _clean_text(reply)
+    if not streamed_text:
+        return reply_text
+    if not reply_text:
+        return streamed_text
+    squeezed_streamed = "".join(streamed_text.split())
+    squeezed_reply = "".join(reply_text.split())
+    if squeezed_reply.startswith(squeezed_streamed):
+        return reply_text
+    return streamed_text
 
 
 def _parse_json(value: Any) -> dict[str, Any]:
@@ -1763,63 +2270,187 @@ class FeishuBot:
         return True
 
     def _execute_task(self, task: _ActiveTask) -> None:
+        # 与 TUI 消息流一致：每个条目独立成消息、按发生顺序出现。deltas 只装
+        # 当前 pass 的正文增量，工具调用处封口并清空，下一段正文另起一条消息。
         deltas: list[str] = []
+        all_deltas: list[str] = []
         reasoning: list[str] = []
-        card = _TaskCard(self, task.receive_id, task.receive_id_type)
-        card_available = card.start()
-        tool_cards: dict[str, _ToolCallCard] = {}
-        tool_order: list[str] = []
-        # 流式节流：不逐字 patch 卡片（飞书 API 频率限制），而是周期性快照。
-        _STREAM_PATCH_INTERVAL_SECONDS = 1.5
-        last_stream_patch = time.monotonic()
+        text_message: _TextMessage | None = None
+        reasoning_message: _ReasoningMessage | None = None
+        plan_message: _PlanMessage | None = None
+        subagent_messages: dict[str, _SubAgentMessage] = {}
+        tool_messages: dict[str, _ToolMessage] = {}
+        streamed_any = False
+        last_status = ""
+        now = time.monotonic()
+        last_stream_patch = now
+        last_reasoning_patch = now
 
         def check_cancelled() -> None:
             if self._stopped.is_set() or task.cancel_event.is_set():
                 raise FeishuTaskCancelled("任务已被取消。")
 
+        def seal_reasoning() -> None:
+            nonlocal reasoning_message
+            if reasoning_message is None:
+                return
+            reasoning_message.seal("".join(reasoning))
+            reasoning_message = None
+            reasoning.clear()
+
+        def seal_text(*, text: str | None = None, suffix: str = "") -> None:
+            """封口当前正文段：默认用流式累积文本，超长尾部补发为文本消息。"""
+
+            nonlocal text_message
+            if text_message is None:
+                return
+            remaining = text_message.seal(
+                "".join(deltas) if text is None else text,
+                suffix=suffix,
+            )
+            text_message = None
+            deltas.clear()
+            if remaining:
+                self._send_text(
+                    task.receive_id,
+                    remaining,
+                    receive_id_type=task.receive_id_type,
+                )
+
+        def abort_running_tools() -> None:
+            for message in tool_messages.values():
+                message.abort()
+
         def on_delta(delta: str) -> None:
-            nonlocal last_stream_patch
+            nonlocal last_stream_patch, text_message, streamed_any
             if not delta:
                 return
             deltas.append(delta)
-            # 节流：至少间隔 STREAM_PATCH_INTERVAL 才 patch 一次，避免 API 频率限制。
+            all_deltas.append(delta)
+            if text_message is None:
+                joined = _clean_text("".join(deltas))
+                if not joined:
+                    # 首片内容可能只剩内部标签，避免先发一条空消息。
+                    return
+                # 正文开始：思考阶段到此结束，面板收口为完整内容（与 TUI 一致）。
+                seal_reasoning()
+                text_message = _TextMessage(self, task.receive_id, task.receive_id_type)
+                text_message.stream(joined)
+                streamed_any = True
+                last_stream_patch = time.monotonic()
+                return
             now = time.monotonic()
-            if card_available and now - last_stream_patch >= _STREAM_PATCH_INTERVAL_SECONDS:
-                card.set_stream("".join(deltas))
-                last_stream_patch = now
+            if now - last_stream_patch < STREAM_PATCH_INTERVAL_SECONDS:
+                return
+            last_stream_patch = now
+            text_message.stream("".join(deltas))
 
         def on_reasoning(delta: str) -> None:
-            if self._show_thinking and delta:
-                reasoning.append(delta)
+            nonlocal last_reasoning_patch, reasoning_message
+            if not (self._show_thinking and delta):
+                return
+            reasoning.append(delta)
+            if reasoning_message is None:
+                reasoning_message = _ReasoningMessage(
+                    self,
+                    task.receive_id,
+                    task.receive_id_type,
+                )
+                reasoning_message.stream("".join(reasoning))
+                last_reasoning_patch = time.monotonic()
+                return
+            now = time.monotonic()
+            if now - last_reasoning_patch < STREAM_PATCH_INTERVAL_SECONDS:
+                return
+            last_reasoning_patch = now
+            reasoning_message.stream("".join(reasoning))
 
         def on_status(message: str) -> None:
-            if not card_available:
+            nonlocal last_status
+            text = str(message or "").strip()
+            if not text or text == last_status:
                 return
-            card.set_status(f"⏳ {str(message or '工作中')}")
+            last_status = text
+            self._send_text(
+                task.receive_id,
+                f"⏳ {text}",
+                receive_id_type=task.receive_id_type,
+            )
 
         def on_tool_start(step: int, tool_call: Any) -> None:
-            name = _TOOL_NAME_LABELS.get(
-                str(getattr(tool_call, "name", "?")),
-                str(getattr(tool_call, "name", "?")),
+            # 工具调用是模型 pass 的边界（与 TUI 一致）：先封口思考与正文，
+            # 再让这次调用以独立消息出现在时间线里。
+            seal_reasoning()
+            seal_text()
+            name = str(getattr(tool_call, "name", "?") or "?")
+            if _operation_of(name) in _TOOLS_WITHOUT_RECORD:
+                return
+            arguments = getattr(tool_call, "arguments", {}) or {}
+            key = str(getattr(tool_call, "id", "") or "") or f"step-{step}"
+            if key in tool_messages:
+                return
+            message = _ToolMessage(
+                self,
+                task.receive_id,
+                task.receive_id_type,
+                _ToolRecord(
+                    key=key,
+                    name=name,
+                    summary=_tool_summary(name, arguments),
+                    arguments=dict(arguments) if isinstance(arguments, Mapping) else arguments,
+                ),
             )
-            tool_id = str(getattr(tool_call, "id", "") or "")
-            key = tool_id or f"step-{step}"
-            if key not in tool_cards:
-                tool_cards[key] = _ToolCallCard(self, task.receive_id, task.receive_id_type)
-                tool_cards[key].start(name)
-                tool_order.append(key)
+            tool_messages[key] = message
+            message.start()
 
         def on_tool_result(tool_call: Any, tool_result: Any) -> None:
-            tool_id = str(getattr(tool_call, "id", "") or "")
-            ok = bool(getattr(tool_result, "ok", True))
-            # 有 id 时按 id 精确配对；无 id 时按开始顺序回退匹配。
-            key = tool_id or (tool_order[0] if tool_order else "")
-            card = tool_cards.pop(key, None)
-            if card is None:
+            name = str(getattr(tool_call, "name", "") or "")
+            if _operation_of(name) in _TOOLS_WITHOUT_RECORD:
                 return
-            card.finish(ok)
-            if key in tool_order:
-                tool_order.remove(key)
+            key = str(getattr(tool_call, "id", "") or "")
+            message = tool_messages.get(key) if key else None
+            if message is None:
+                # 无 id 时按开始顺序回退匹配仍未完成的记录。
+                message = next(
+                    (item for item in tool_messages.values() if item.running),
+                    None,
+                )
+            if message is None:
+                return
+            message.finish(
+                ok=bool(getattr(tool_result, "ok", True)),
+                output=str(getattr(tool_result, "output", "") or ""),
+            )
+
+        def on_subagent_event(event_name: str, payload: Any) -> None:
+            if not isinstance(payload, Mapping):
+                return
+            batch_id = str(
+                payload.get("batch_id") or f"batch-{payload.get('task_id') or 'task'}"
+            )
+            message = subagent_messages.get(batch_id)
+            if message is None:
+                message = _SubAgentMessage(self, task.receive_id, task.receive_id_type)
+                subagent_messages[batch_id] = message
+            message.update(event_name, payload)
+
+        def on_todo_update(payload: Any) -> None:
+            nonlocal plan_message
+            if not isinstance(payload, Mapping):
+                return
+            if plan_message is None:
+                plan_message = _PlanMessage(self, task.receive_id, task.receive_id_type)
+            plan_message.update(payload.get("todos"))
+
+        def on_stream_rollback() -> None:
+            # 模型流中断后自动重试：丢弃已展示但作废的半截输出（与 TUI 一致）。
+            # 已封口的正文段不受影响；当前段的消息保留，重试内容到达后覆盖。
+            nonlocal last_stream_patch, last_reasoning_patch
+            deltas.clear()
+            all_deltas.clear()
+            reasoning.clear()
+            last_stream_patch = 0.0
+            last_reasoning_patch = 0.0
 
         try:
             agent = self._ensure_agent()
@@ -1831,46 +2462,59 @@ class FeishuBot:
                 on_tool_result=on_tool_result,
                 cancel_check=check_cancelled,
                 on_reasoning_delta=on_reasoning,
+                on_subagent_event=on_subagent_event,
+                on_todo_update=on_todo_update,
+                on_stream_rollback=on_stream_rollback,
             )
             check_cancelled()
-            raw_reply = str(result or "".join(deltas) or "")
-            reply = _display_text(raw_reply)
-            if self._show_thinking and reasoning:
-                # 思考默认不展示；显式开启时作为独立卡片步骤，不混入最终回答。
-                card.add_step("思考内容", "".join(reasoning))
-            card_ok = card.done(reply)
-            if not card_ok:
-                self._send_text(task.receive_id, reply, receive_id_type=task.receive_id_type)
+            reply_text = str(result or "")
+            # 文件标记扫描沿用全量文本兜底；正文定型只用最终回答与当前段，
+            # 避免把早先段落重复补发一遍。
+            raw_reply = reply_text or "".join(all_deltas)
+            if self._show_thinking and reasoning_message is not None:
+                # 思考默认不展示；显式开启时收口为完整内容（超长保留尾部）。
+                seal_reasoning()
+            if text_message is not None:
+                # 正文定型：流式片段不完整时用最终回答补齐，其余情况保留
+                # 用户已经看过的流式内容，不重复展示早先段落。
+                seal_text(
+                    text=_resolve_final_text("".join(deltas), _display_text(reply_text))
+                )
+            elif reply_text or not streamed_any:
+                # 末段没有流式正文：模型未流式输出最终回答，或整轮都没有可见
+                # 正文（如只执行了工具）时补发一条消息。
+                message = _TextMessage(self, task.receive_id, task.receive_id_type)
+                remaining = message.seal(_display_text(reply_text))
+                if remaining:
+                    self._send_text(
+                        task.receive_id,
+                        remaining,
+                        receive_id_type=task.receive_id_type,
+                    )
             self._send_generated_files(
                 task.receive_id,
                 raw_reply,
                 receive_id_type=task.receive_id_type,
             )
         except FeishuTaskCancelled:
-            partial = _display_text("".join(deltas)) if deltas else ""
-            if card_available:
-                card.fail("任务已取消")
-            if partial:
+            abort_running_tools()
+            partial = _clean_text("".join(deltas)) if deltas else ""
+            if text_message is not None and partial:
+                seal_text(suffix="\n\n⏹ 输出已中断，任务已取消。")
+            else:
                 self._send_text(
                     task.receive_id,
-                    f"{partial}\n\n⏹ 输出已中断，任务已取消。",
+                    "⏹ 任务已取消。",
                     receive_id_type=task.receive_id_type,
                 )
-            else:
-                self._send_text(task.receive_id, "⏹ 任务已取消。", receive_id_type=task.receive_id_type)
         except Exception as exc:  # noqa: BLE001 - 远程任务必须回传脱敏错误
             LOGGER.exception("飞书 Agent 任务失败")
+            abort_running_tools()
+            # 封口已展示的正文，避免半截段落永远停在流式状态。
+            seal_text()
             error = f"❌ 任务执行失败：{redact_sensitive_text(str(exc))}"
-            if card_available:
-                card.fail("任务执行失败")
             self._send_text(task.receive_id, error, receive_id_type=task.receive_id_type)
         finally:
-            # 取消/异常中断时，尚未收到完成事件的工具卡片置为“已中断”，避免
-            # 永远停留在“执行中”状态。
-            for tool_card in tool_cards.values():
-                tool_card.abort()
-            tool_cards.clear()
-            tool_order.clear()
             with self._lock:
                 if self._active_task is task:
                     self._active_task = None
@@ -1888,6 +2532,7 @@ class FeishuBot:
                 except Exception:  # noqa: BLE001 - 确认失败不掩盖任务结果
                     LOGGER.debug("确认飞书入站队列任务失败", exc_info=True)
             self._pump()
+
 
     def _request_cancel(self, receive_id: str, receive_id_type: str) -> None:
         with self._lock:

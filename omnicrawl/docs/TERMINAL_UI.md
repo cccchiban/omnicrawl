@@ -89,7 +89,7 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 
 ```powershell
 python -m pytest tests/test_fullscreen_turns.py tests/test_fullscreen_scroll_anchor.py tests/test_fullscreen_tool_diff.py tests/test_fullscreen_monitor.py tests/test_fullscreen_runtime_status.py tests/test_fullscreen_carousel.py tests/test_fullscreen_pending_queue.py tests/test_fullscreen_visibility_regression.py -q
-python -m pytest tests/test_settings_api.py tests/test_settings_simple_select_pane.py tests/test_settings_pane_cancel_exit.py tests/test_settings_context_atomicity.py tests/test_fsapp_tool_cards.py -q
+python -m pytest tests/test_settings_api.py tests/test_settings_simple_select_pane.py tests/test_settings_pane_cancel_exit.py tests/test_settings_context_atomicity.py tests/test_fsapp_display.py -q
 python -m pytest tests -q
 python -m compileall -q omnicrawl main.py
 git diff --check

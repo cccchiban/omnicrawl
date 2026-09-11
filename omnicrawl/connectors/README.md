@@ -78,6 +78,13 @@
 飞书连接器使用 `lark-oapi` WebSocket 长连接，配置和扫码授权限制见
 `omnicrawl/docs/FSAPP.md`。独立运行：`python -m omnicrawl.connectors.fsapp`。
 
+输出展示（对齐 TUI 消息流）：每个条目独立成一条消息、按发生顺序出现。
+正文段以 `◇` 前缀流式更新、在每次工具调用处封口另起一条；工具调用各自成一条
+消息（`● 工具名 参数摘要 · ✓ 成功 · 耗时` 加采样后的输出正文，与 TUI 工具卡同
+规则），开始即出现、完成时原地收口；思考（`/thinking on` 时折叠面板）、执行
+计划与子任务进度也各自成一条消息原地更新。提问（`ask_user`）仍使用独立选项
+卡片。详见 `omnicrawl/docs/FSAPP.md` 的「飞书侧显示方式」。
+
 ## 约定
 
 - 密钥、Token 等敏感配置不入库，从环境变量或 `config.toml` 读取。
