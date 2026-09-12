@@ -64,7 +64,7 @@ from omnicrawl.agent.toolkit.tools import ASK_USER_TOOL_NAME, TODO_TOOL_NAME
 from omnicrawl.state.session_artifacts import redact_sensitive_text, redact_sensitive_values
 from omnicrawl.ui.tool_labels import format_duration, format_tool_status
 
-from omnicrawl.connectors.feishu_inbox import FeishuInbox, InboxRecord
+from omnicrawl.connectors.feishu_inbox import FeishuInbox
 
 # lark-oapi 是可选依赖：通过模块级 __getattr__（PEP 562）惰性加载，未安装或
 # 未实际使用（如 --check、TUI 自动启动的配置探测）时不付出导入成本；首次

@@ -15,8 +15,6 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from ...config.core.settings import (
-    SettingsConfigError,
-    load_show_thinking,
     save_context_compaction_trigger_percent,
     save_context_window_tokens,
     save_feature_enabled,

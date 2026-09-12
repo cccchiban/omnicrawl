@@ -322,7 +322,7 @@ class WorkspaceSwitchingMixin:
             if callable(closer):
                 try:
                     closer()
-                except Exception:
+                except Exception:  # noqa: BLE001 - 候选资源清理失败不影响切换主流程
                     pass
 
     def _teardown_workspace_resources(self, *, discard_empty_session: bool) -> None:
@@ -345,7 +345,7 @@ class WorkspaceSwitchingMixin:
         if old_temp is not None:
             try:
                 old_temp.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 临时工作区清理失败不阻断资源释放
                 pass
             self.__dict__.pop("_temp_workspace", None)
 
@@ -353,7 +353,7 @@ class WorkspaceSwitchingMixin:
         if old_monitor_manager is not None:
             try:
                 old_monitor_manager.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - Monitor 清理失败不阻断资源释放
                 pass
             self.__dict__.pop("_monitor_manager", None)
 
@@ -361,7 +361,7 @@ class WorkspaceSwitchingMixin:
         if old_mcp is not None:
             try:
                 old_mcp.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 旧 MCP 清理失败不阻断资源释放
                 pass
             self.__dict__.pop("_mcp_manager", None)
 

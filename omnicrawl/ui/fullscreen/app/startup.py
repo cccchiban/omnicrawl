@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ....version_check import current_version
+from ....version_check import current_version as _current_version
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class FullscreenStartup:
     approval_label: str
     workspace_label: str
     temp_label: str
-    current_version: str = current_version()
+    current_version: str = _current_version()
     version_check_enabled: bool = False
     # 真实入口在 Splash 阶段已完成所有准备；直接启动 App 的测试/扩展则
     # 保留旧行为，在 on_mount 中异步预热 MCP 并锁定输入。

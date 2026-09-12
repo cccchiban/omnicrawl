@@ -424,13 +424,13 @@ class SessionSettingsMixin:
             self.config.mcp_config = previous_config
             try:
                 next_manager.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 回滚清理失败不掩盖原始异常
                 pass
             raise
         if previous_manager is not None:
             try:
                 previous_manager.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 旧 MCP 管理器已被替换，关闭失败不阻断切换
                 pass
 
     def set_plugin_enabled(self, enabled: bool) -> None:

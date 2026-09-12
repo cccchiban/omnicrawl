@@ -12,7 +12,7 @@ from textual.widgets import Static
 
 from ....agent import AgentError
 from ....config.core.settings import SettingsConfigError
-from ....mcp.config import MCPConfig, MCPConfigError
+from ....mcp.config import MCPConfigError
 from .mcp_settings import (
     MCPSettingsAction,
     _apply_and_save,

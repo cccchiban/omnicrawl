@@ -217,7 +217,7 @@ def _worker_main() -> int:
         try:
             sys.stderr.write(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
             sys.stderr.flush()
-        except Exception:
+        except Exception:  # noqa: BLE001 - 子进程即将退出，stderr 写入失败无处上报
             pass
         return 2
 

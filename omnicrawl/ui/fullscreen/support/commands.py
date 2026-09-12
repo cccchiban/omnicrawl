@@ -241,7 +241,6 @@ class CommandDispatcher:
                 command=lambda text=text: self._handle_review(self._agent, text),
             )
 
-        normalized = stripped.lower()
         approval_message = self._handle_approval(self._agent, text)
         if approval_message is not None:
             return CommandOutcome(

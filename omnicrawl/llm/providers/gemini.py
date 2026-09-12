@@ -153,7 +153,7 @@ class GeminiGenerateContentRuntime:
         if callable(close):
             try:
                 close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - SDK 客户端关闭失败不影响已释放的运行时
                 pass
 
 

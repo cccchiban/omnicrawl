@@ -12,7 +12,6 @@ stop 三类指导后作为工具结果继续执行。
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable, Mapping
 

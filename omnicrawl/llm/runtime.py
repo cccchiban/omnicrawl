@@ -145,7 +145,7 @@ class ModelRuntimeManager:
             except Exception:
                 try:
                     candidate_runtime.close()
-                except Exception:
+                except Exception:  # noqa: BLE001 - 持久化失败后回收候选运行时，失败不掩盖原始异常
                     pass
                 raise
 
@@ -202,7 +202,7 @@ class ModelRuntimeManager:
         for snapshot in snapshots:
             try:
                 snapshot.runtime.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 关闭已退役运行时失败不阻断整体关闭
                 pass
 
     def _close_retired_if_idle(self) -> None:
@@ -219,7 +219,7 @@ class ModelRuntimeManager:
         for snapshot in to_close:
             try:
                 snapshot.runtime.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 关闭空闲运行时失败不阻断后续回收
                 pass
 
 

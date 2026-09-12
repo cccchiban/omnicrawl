@@ -98,7 +98,7 @@ def _apply_and_save(screen: ModalScreen[Any], config: MCPConfig) -> str:
                 apply_config(previous)
             else:
                 screen._agent.config.mcp_config = previous
-        except Exception:
+        except Exception:  # noqa: BLE001 - 保存失败后回滚尽力而为，不掩盖原始异常
             pass
         raise
 

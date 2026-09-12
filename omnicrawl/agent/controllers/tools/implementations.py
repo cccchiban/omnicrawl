@@ -307,7 +307,7 @@ class ToolImplementationsMixin:
             )
 
         try:
-            from omnicrawl.tts import TtsEngine, TTSConfig
+            from omnicrawl.tts import TtsEngine, TTSConfig  # noqa: F401 - 仅用于探测可选依赖是否安装
         except ModuleNotFoundError as exc:
             dependency = str(getattr(exc, "name", "") or "") or "可选依赖"
             return _error_result(

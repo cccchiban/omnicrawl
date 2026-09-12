@@ -610,7 +610,7 @@ def smoke_test_worker(plugin_root: Path, plugin_name: str) -> None:
     except Exception as exc:  # noqa: BLE001
         try:
             client.close(force=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 - 握手已失败，强制关闭失败不掩盖原始异常
             pass
         raise PluginInstallError(f"Worker 握手冒烟失败：{exc}") from exc
 

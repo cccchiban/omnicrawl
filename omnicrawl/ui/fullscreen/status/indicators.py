@@ -279,7 +279,7 @@ class StatusMixin:
         if timer is not None:
             try:
                 timer.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 轮播停留定时器已停止时重复 stop 无害
                 pass
         self._carousel_hold_timer = self.set_timer(
             self._carousel_page_duration(),
@@ -345,7 +345,7 @@ class StatusMixin:
         )
         try:
             self.query_one("#carousel-display", Static).update(frame)
-        except Exception:
+        except Exception:  # noqa: BLE001 - 轮播组件可能尚未挂载，动画帧渲染失败不中断
             pass
 
     def _carousel_animation_finish(self) -> None:
@@ -355,7 +355,7 @@ class StatusMixin:
         if interval is not None:
             try:
                 interval.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 轮播动画定时器已停止时重复 stop 无害
                 pass
         self._carousel_anim_interval = None
         self._carousel_animating = False
@@ -366,7 +366,7 @@ class StatusMixin:
             self.query_one("#carousel-display", Static).update(
                 self._carousel_settled_text
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - 轮播组件可能尚未挂载，失败不中断动画收口
             pass
         self._carousel_schedule_hold()
 

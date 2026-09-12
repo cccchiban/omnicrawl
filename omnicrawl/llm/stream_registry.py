@@ -172,7 +172,7 @@ def _close_active(collection: list[ResourceEntry], *, owner: Optional[object]) -
             if callable(close):
                 close()
                 closed += 1
-        except Exception:
+        except Exception:  # noqa: BLE001 - 资源关闭失败仍继续回收其余资源
             pass
         finally:
             _unregister(collection, resource)

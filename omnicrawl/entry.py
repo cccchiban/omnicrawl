@@ -440,7 +440,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
             # Agent 尚未创建成功时没有关闭回调，只能由入口直接回收 Runtime。
             try:
                 plugin_runtime.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 入口退出阶段回收 Runtime 失败不阻断收尾
                 pass
         # Agent 创建失败（agent is None）时隔离会话无人收尾，兜底应用并清理。
         if isolation_session is not None and agent is None:

@@ -19,7 +19,9 @@ from ..state.session_artifacts import redact_sensitive_text
 from ..config.models.llm import load_llm_config
 from ..config.core.runtime import get_section, load_config_data
 from ..config.features.subagents import load_subagent_config
-from ..config.core.settings import load_feature_enabled
+# 本模块未直接调用，但 test_subagent_integration 会 patch 该模块属性；删除会让
+# unittest.mock.patch 因属性缺失而报错，故保留为模块级测试 patch 点。
+from ..config.core.settings import load_feature_enabled  # noqa: F401
 from ..workspace.context import (
     detect_project_context,
 )

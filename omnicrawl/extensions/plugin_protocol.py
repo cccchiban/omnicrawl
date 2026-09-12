@@ -378,7 +378,7 @@ class PluginWorkerClient:
                 if self._on_stderr is not None:
                     try:
                         self._on_stderr(text)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - stderr 回调失败不中断 Worker 输出读取
                         pass
         except Exception:
             return

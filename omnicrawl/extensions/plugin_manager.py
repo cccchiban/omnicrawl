@@ -615,7 +615,7 @@ class HookDispatcher:
         if self._audit_sink is not None:
             try:
                 self._audit_sink(record)
-            except Exception:
+            except Exception:  # noqa: BLE001 - 审计回调失败不阻断动作执行
                 pass
         else:
             logger.debug(
@@ -828,7 +828,7 @@ class PluginManager:
             diagnostics.append(f"{state.name} initialize 失败：{exc}")
             try:
                 client.close(force=True)
-            except Exception:
+            except Exception:  # noqa: BLE001 - initialize 失败后强制关闭，失败不掩盖原始诊断
                 pass
             state.active = False
             state.last_error = str(exc)
@@ -1059,7 +1059,7 @@ class PluginManager:
             except Exception:
                 try:
                     client.close(force=True)
-                except Exception:
+                except Exception:  # noqa: BLE001 - 强制关闭失败不阻断其余 Worker 回收
                     pass
         self._workers.clear()
         self.dispatcher.set_execution_plan([], {})
@@ -1119,7 +1119,7 @@ class PluginRuntime:
         except BaseException:
             try:
                 candidate.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - bootstrap 失败后回收候选 Manager，失败不掩盖原始异常
                 pass
             self.manager = None
             self._started = False
@@ -1158,14 +1158,14 @@ class PluginRuntime:
         except BaseException:
             try:
                 candidate.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 切换失败后回收候选 Manager，失败不掩盖原始异常
                 pass
             raise
 
         if old_manager is not None:
             try:
                 old_manager.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 旧 Manager 关闭失败不阻断工作区切换
                 pass
         self.workspace_root = new_root
         self.manager = candidate
@@ -1211,7 +1211,7 @@ class PluginRuntime:
         if self.manager is not None:
             try:
                 self.manager.close()
-            except Exception:
+            except Exception:  # noqa: BLE001 - Manager 关闭失败不阻断 Runtime 收尾
                 pass
             self.manager = None
 
@@ -1219,13 +1219,13 @@ class PluginRuntime:
         if self.manager is not None and self.config.enabled:
             try:
                 self.manager.dispatch("app.stop.before", {"phase": "stopping"})
-            except Exception:
+            except Exception:  # noqa: BLE001 - 停止前钩子失败不阻断 Runtime 关闭
                 pass
         # Agent/会话资源由调用方先关闭，再调用这里。
         if self.manager is not None and self.config.enabled:
             try:
                 self.manager.dispatch("app.stop.after", {"phase": "stopped"})
-            except Exception:
+            except Exception:  # noqa: BLE001 - 停止后钩子失败不阻断 Runtime 关闭
                 pass
         self.close_manager_only()
         self._started = False

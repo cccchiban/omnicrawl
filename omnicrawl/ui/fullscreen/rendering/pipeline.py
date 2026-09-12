@@ -892,7 +892,7 @@ class RenderingMixin:
             try:
                 if self._stream_message.parent is not None:
                     self._stream_message.remove()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 消息组件可已被移除，重复 remove 无害
                 pass
             self._stream_message = None
         self._reset_stream_state()
@@ -905,7 +905,7 @@ class RenderingMixin:
             try:
                 if self._reasoning_message.parent is not None:
                     self._reasoning_message.remove()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 推理组件可已被移除，重复 remove 无害
                 pass
             self._reasoning_message = None
         # 撤销本次回合已累计的 token 与输出时长：重试生成的完整回复不会与

@@ -23,10 +23,7 @@ from ...toolkit.host_tools import (
     tool_validation_error_result,
     validate_tool_arguments,
 )
-from ...toolkit.tools import (
-    ASK_USER_TOOL_NAME,
-    public_tool_arguments,
-)
+from ...toolkit.tools import public_tool_arguments
 from ...types import ToolDefinition, ToolResult
 from ....approval import (
     APPROVAL_MODE_AUTO,

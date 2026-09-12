@@ -676,7 +676,7 @@ class OmniCrawlApp(
         frame = welcome_logo_frame(progress, rand_source=self._logo_rand)
         try:
             self.query_one("#welcome-logo", Static).update(frame)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Logo 组件可能尚未挂载，动画帧渲染失败不中断
             pass
 
     def _stop_welcome_logo_animation(self) -> None:
@@ -689,14 +689,14 @@ class OmniCrawlApp(
             return
         try:
             interval.stop()
-        except Exception:
+        except Exception:  # noqa: BLE001 - Logo 动画定时器已停止时重复 stop 无害
             pass
         self._logo_anim_interval = None
         try:
             # 隐藏路径已 display=False，这里统一落定静态白色 Logo，
             # 避免清空会话重新显示时停在乱码中间帧。
             self.query_one("#welcome-logo", Static).update(welcome_logo_text())
-        except Exception:
+        except Exception:  # noqa: BLE001 - Logo 组件可能尚未挂载，落实静态文本失败不中断收口
             pass
 
     def on_resize(self, _event: events.Resize) -> None:

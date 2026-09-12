@@ -313,7 +313,7 @@ def _extract_structured_error_text(exc: Exception) -> str:
     if response is not None:
         try:
             payloads.append(response.json())
-        except Exception:
+        except Exception:  # noqa: BLE001 - 响应体非 JSON 时跳过，错误文本提取尽力而为
             pass
 
     fragments: list[str] = []

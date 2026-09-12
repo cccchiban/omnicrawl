@@ -46,7 +46,7 @@ class PluginHooksMixin:
         if callable(begin):
             try:
                 begin()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 插件回合开始钩子失败不阻断主流程
                 pass
 
     def _plugin_end_turn(self) -> None:
@@ -57,7 +57,7 @@ class PluginHooksMixin:
         if callable(end):
             try:
                 end()
-            except Exception:
+            except Exception:  # noqa: BLE001 - 插件回合结束钩子失败不阻断主流程
                 pass
 
     @staticmethod
