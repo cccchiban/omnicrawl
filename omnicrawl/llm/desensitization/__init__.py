@@ -21,6 +21,7 @@ from .registry import (
     DesensitizationStats,
     PlaceholderCycle,
     SequenceRegistry,
+    StableSequenceIndex,
     collect_placeholder_numbers,
     format_placeholder,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "PlaceholderCycle",
     "SensitiveMatcher",
     "SequenceRegistry",
+    "StableSequenceIndex",
     "StreamRestorer",
     "collect_placeholder_numbers",
     "find_entropy_spans",

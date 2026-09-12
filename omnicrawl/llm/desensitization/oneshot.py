@@ -70,6 +70,8 @@ class OneShotMasker:
             entropy_pure_digits=self._config.entropy_pure_digits,
         )
         masked = mask_text(text, context)
+        # 稳定序号复用计数（只到计数粒度，§10.2）。
+        self._stats.sequence_reuses += cycle.stable_reuses
         self._cycle = cycle
         return masked
 

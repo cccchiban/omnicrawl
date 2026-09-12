@@ -1706,6 +1706,23 @@ def normalize_identifier(value: str) -> str:
     return re.sub(r"[\s_-]+", "", value).lower()
 
 
+def _join_mcp_output(
+    header_parts: list[str],
+    output: str,
+    full_output: str,
+) -> tuple[str, str]:
+    """拼接 MCP 结果文本，返回 (可见输出, 完整输出)。
+
+    两者相同时复用同一个字符串，避免为可能很大的输出重复拼接一次。
+    """
+
+    text = "\n".join([*header_parts, f"输出：\n{output}"])
+    if not full_output or full_output == output:
+        return text, text
+    full_text = "\n".join([*header_parts, f"输出：\n{full_output}"])
+    return text, full_text
+
+
 def mcp_tool_result(
     mcp_manager: MCPClientManager,
     meta: MCPToolMeta,
@@ -1723,14 +1740,8 @@ def mcp_tool_result(
         output_parts.append(f"错误码：{result.error_code}")
     if result.retryable:
         output_parts.append("可重试：是")
-    output_parts.append(f"输出：\n{result.output}")
-    full_output_parts = list(output_parts)
-    full_output_parts[-1] = f"输出：\n{result.full_output or result.output}"
-    return ToolResult(
-        ok=result.ok,
-        output="\n".join(output_parts),
-        full_output="\n".join(full_output_parts),
-    )
+    text, full_text = _join_mcp_output(output_parts, result.output, result.full_output)
+    return ToolResult(ok=result.ok, output=text, full_output=full_text)
 
 
 def mcp_resource_result(mcp_manager: MCPClientManager, logical_uri: str) -> ToolResult:
@@ -1745,14 +1756,8 @@ def mcp_resource_result(mcp_manager: MCPClientManager, logical_uri: str) -> Tool
         output_parts.append(f"错误码：{result.error_code}")
     if result.retryable:
         output_parts.append("可重试：是")
-    output_parts.append(f"输出：\n{result.output}")
-    full_output_parts = list(output_parts)
-    full_output_parts[-1] = f"输出：\n{result.full_output or result.output}"
-    return ToolResult(
-        ok=result.ok,
-        output="\n".join(output_parts),
-        full_output="\n".join(full_output_parts),
-    )
+    text, full_text = _join_mcp_output(output_parts, result.output, result.full_output)
+    return ToolResult(ok=result.ok, output=text, full_output=full_text)
 
 
 def mcp_prompt_result(
@@ -1775,14 +1780,8 @@ def mcp_prompt_result(
         output_parts.append(f"错误码：{result.error_code}")
     if result.retryable:
         output_parts.append("可重试：是")
-    output_parts.append(f"输出：\n{result.output}")
-    full_output_parts = list(output_parts)
-    full_output_parts[-1] = f"输出：\n{result.full_output or result.output}"
-    return ToolResult(
-        ok=result.ok,
-        output="\n".join(output_parts),
-        full_output="\n".join(full_output_parts),
-    )
+    text, full_text = _join_mcp_output(output_parts, result.output, result.full_output)
+    return ToolResult(ok=result.ok, output=text, full_output=full_text)
 
 
 def read_required_string_list(arguments: dict[str, Any], key: str) -> list[str]:

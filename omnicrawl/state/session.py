@@ -150,6 +150,9 @@ class SessionStore:
         self.compacted_dir = self.archive_dir / "compacted"
         self.durable = durable or DurableWritePolicy()
         self._write_lock = _lock_for_root(self.root)
+        # 索引读缓存：事件热路径每条都要解析整份 index.json；按
+        # (mtime_ns, size) 校验跨进程变化，未变化时复用已解析条目。
+        self._entries_cache: tuple[tuple[int, int], list[SessionIndexEntry]] | None = None
         self.prompt_history = PromptHistoryStore(
             self.history_path,
             fsync=self.durable.fsync,
@@ -1133,7 +1136,16 @@ class SessionStore:
 
     def _load_entries(self) -> list[SessionIndexEntry]:
         if not self.index_path.exists():
+            self._entries_cache = None
             return []
+        try:
+            index_stat = self.index_path.stat()
+        except OSError as exc:
+            raise SessionStoreError(f"读取会话索引失败：{self.index_path}，{exc}") from exc
+        cache_key = (index_stat.st_mtime_ns, index_stat.st_size)
+        cached = self._entries_cache
+        if cached is not None and cached[0] == cache_key:
+            return list(cached[1])
         try:
             data = json.loads(self.index_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
@@ -1143,12 +1155,14 @@ class SessionStore:
         except OSError as exc:
             raise SessionStoreError(f"读取会话索引失败：{self.index_path}，{exc}") from exc
         sessions, _schema_version = _parse_index_document(data)
-        return [SessionIndexEntry.from_dict(item) for item in sessions]
+        entries = [SessionIndexEntry.from_dict(item) for item in sessions]
+        self._entries_cache = (cache_key, entries)
+        return list(entries)
 
     def _save_entries(self, entries: list[SessionIndexEntry]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         data = _build_index_document(entries)
-        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+        text = json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
         try:
             _atomic_write_text(
                 self.index_path,
@@ -1159,6 +1173,15 @@ class SessionStore:
             )
         except SessionStoreError as exc:
             raise SessionStoreError(f"写入会话索引失败：{self.index_path}，{exc}") from exc
+        try:
+            index_stat = self.index_path.stat()
+        except OSError:
+            self._entries_cache = None
+        else:
+            self._entries_cache = (
+                (index_stat.st_mtime_ns, index_stat.st_size),
+                list(entries),
+            )
 
     def _exclusive_write(self):
         """同一会话根的进程内 + 跨进程写互斥。"""

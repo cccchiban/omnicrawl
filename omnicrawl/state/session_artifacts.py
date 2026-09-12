@@ -8,28 +8,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-
-# 这些字段是凭据容器的稳定语义名，而不是任意包含 "key" 的业务字段。
-# 保持集合精确可避免把 keyboard、monkey、key_count 等正常用户数据误删。
-_SENSITIVE_FIELD_NAMES = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "access_key",
-        "secret_key",
-        "authorization",
-        "cookie",
-        "password",
-        "secret",
-        "token",
-        "access_token",
-        "refresh_token",
-        "id_token",
-    }
-)
-
+# 路径判断与凭据脱敏的统一实现位于包根；这里以 ``X as X`` 形式再导出，
+# 既有调用方（agent / api / connectors / state 等 20+ 处）无需改导入路径。
+from ..paths import is_relative_to
+from ..redaction import redact_sensitive_text as redact_sensitive_text
+from ..redaction import redact_sensitive_values as redact_sensitive_values
 from .session_locking import atomic_write_text
-from .session_models import SessionStoreError, clean_title, is_relative_to
+from .session_models import SessionStoreError, clean_title
 
 
 TOOL_RESULT_INLINE_OUTPUT_CHARS = 8 * 1024
@@ -37,14 +22,6 @@ TOOL_RESULT_LARGE_OUTPUT_CHARS = 128 * 1024
 TOOL_RESULT_PREVIEW_CHARS = 1200
 SUBAGENT_RESULT_LARGE_OUTPUT_CHARS = 128 * 1024
 _SUBAGENT_TASK_ID_PATTERN = re.compile(r"^task-[a-f0-9]{12}$")
-_SENSITIVE_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)((?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|"
-    r"access[_-]?token|refresh[_-]?token|id[_-]?token|cookie|password|secret|token)"
-    r"\s*[:=]\s*[\"']?)([^\"'\s,;]+)"
-)
-_AUTHORIZATION_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)(\bauthorization\s*[:=]\s*[\"']?)(?:Bearer\s+)?([^\"'\s,;]+)"
-)
 _SENSITIVE_HTML_ATTRIBUTE_PATTERN = re.compile(
     r"(?i)(\b(?:api[_-]?key|apikey|access[_-]?key|secret[_-]?key|"
     r"access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|cookie|"
@@ -55,19 +32,7 @@ _SENSITIVE_JSON_PROPERTY_PATTERN = re.compile(
     r"access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|cookie|"
     r"password|secret|token)[\"']\s*:\s*[\"'])(.*?)([\"'])"
 )
-_BEARER_SECRET_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_PROVIDER_SECRET_PATTERN = re.compile(r"\b(?:sk|ak|ah)-[A-Za-z0-9_-]{24,}\b")
-_GITHUB_SECRET_PATTERN = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
-)
-_AWS_ACCESS_KEY_PATTERN = re.compile(
-    r"\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b"
-)
-_PEM_PRIVATE_KEY_PATTERN = re.compile(
-    r"-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----.*?"
-    r"-----END(?: [A-Z0-9]+)? PRIVATE KEY-----",
-    re.DOTALL,
-)
+
 
 
 class SessionArtifactStore:
@@ -308,37 +273,6 @@ def normalize_relative_artifact_path(raw_path: Any) -> str:
     if not path.parts or path.parts[0].lower() != "artifacts":
         raise SessionStoreError(f"artifact 路径必须位于 artifacts 目录：{raw_path}")
     return normalized
-
-
-def redact_sensitive_values(value: Any) -> Any:
-    if isinstance(value, dict):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                continue
-            normalized_key = key.strip().lower().replace("-", "_")
-            is_header_secret = normalized_key.startswith("x_") and normalized_key[2:] in _SENSITIVE_FIELD_NAMES
-            redacted[key] = (
-                "***"
-                if normalized_key in _SENSITIVE_FIELD_NAMES or is_header_secret
-                else redact_sensitive_values(item)
-            )
-        return redacted
-    if isinstance(value, list):
-        return [redact_sensitive_values(item) for item in value[:100]]
-    if isinstance(value, str):
-        return redact_sensitive_text(value)
-    return value
-
-
-def redact_sensitive_text(text: str) -> str:
-    redacted = _PEM_PRIVATE_KEY_PATTERN.sub("*** PRIVATE KEY REDACTED ***", text)
-    redacted = _SENSITIVE_ASSIGNMENT_PATTERN.sub(r"\1***", redacted)
-    redacted = _AUTHORIZATION_ASSIGNMENT_PATTERN.sub(r"\1Bearer ***", redacted)
-    redacted = _BEARER_SECRET_PATTERN.sub("Bearer ***", redacted)
-    redacted = _PROVIDER_SECRET_PATTERN.sub("***", redacted)
-    redacted = _GITHUB_SECRET_PATTERN.sub("***", redacted)
-    return _AWS_ACCESS_KEY_PATTERN.sub("***", redacted)
 
 
 def redact_sensitive_html(html: str) -> str:

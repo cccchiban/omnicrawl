@@ -238,6 +238,8 @@ class KnowledgeBase:
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = Path(root).expanduser() if root is not None else _default_knowledge_root()
+        # 扫描缓存：按 (mtime_ns, size) 失效，未变化文件不再重复读取与解析。
+        self._notes_cache: dict[str, tuple[int, int, KnowledgeNoteMeta, str]] = {}
 
     @property
     def root(self) -> Path:
@@ -330,26 +332,81 @@ class KnowledgeBase:
     def list_notes(self) -> list[KnowledgeNoteMeta]:
         """扫描知识库全部笔记（跳过 INDEX.md/README.md 与隐藏目录）。"""
 
-        if not self.root.is_dir():
-            return []
-        notes: list[KnowledgeNoteMeta] = []
-        for path in self.root.rglob("*.md"):
-            try:
-                resolved = path.resolve()
-                rel = resolved.relative_to(self.root.resolve())
-            except (OSError, ValueError):
-                continue
-            if resolved.name in {INDEX_FILENAME, README_FILENAME}:
-                continue
-            if any(part.startswith(".") for part in rel.parts):
-                continue
-            try:
-                text = resolved.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            meta, _body, _extra = _parse_frontmatter(text)
-            notes.append(self._meta_from_dict(rel.as_posix(), meta))
+        notes = [meta for meta, _body in self._scan_notes()]
         return sorted(notes, key=lambda note: note.rel_path.lower())
+
+    def _scan_notes(self) -> list[tuple[KnowledgeNoteMeta, str]]:
+        """单次遍历全部笔记并返回 (元数据, 正文)。
+
+        用 ``os.scandir`` 遍历替代逐文件 ``Path.resolve``（Windows 上后者是
+        扫描的主要成本）；未变化文件按 (mtime_ns, size) 直接复用缓存，不再
+        读取与解析。不跟随目录符号链接，符号链接文件仍校验落在根目录内。
+        """
+
+        if not self.root.is_dir():
+            self._notes_cache.clear()
+            return []
+        root = self.root.resolve()
+        root_str = str(root)
+        documents: list[tuple[KnowledgeNoteMeta, str]] = []
+        seen: set[str] = set()
+        stack = [root_str]
+        while stack:
+            current = stack.pop()
+            try:
+                with os.scandir(current) as iterator:
+                    for entry in iterator:
+                        name = entry.name
+                        if name.startswith("."):
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                            continue
+                        if not name.endswith(".md"):
+                            continue
+                        if name in {INDEX_FILENAME, README_FILENAME}:
+                            continue
+                        path_str = entry.path
+                        seen.add(path_str)
+                        is_link = entry.is_symlink()
+                        try:
+                            resolved = Path(path_str).resolve() if is_link else Path(path_str)
+                            if is_link and resolved.name in {INDEX_FILENAME, README_FILENAME}:
+                                continue
+                            rel_path = resolved.relative_to(root).as_posix()
+                            file_stat = resolved.stat()
+                        except (OSError, ValueError):
+                            continue
+                        cached = self._notes_cache.get(path_str)
+                        if (
+                            not is_link
+                            and cached is not None
+                            and cached[0] == file_stat.st_mtime_ns
+                            and cached[1] == file_stat.st_size
+                        ):
+                            documents.append((cached[2], cached[3]))
+                            continue
+                        try:
+                            text = resolved.read_text(encoding="utf-8")
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                        meta, body, _extra = _parse_frontmatter(text)
+                        note_meta = self._meta_from_dict(rel_path, meta)
+                        if not is_link:
+                            self._notes_cache[path_str] = (
+                                file_stat.st_mtime_ns,
+                                file_stat.st_size,
+                                note_meta,
+                                body,
+                            )
+                        documents.append((note_meta, body))
+            except OSError:
+                continue
+        if self._notes_cache:
+            self._notes_cache = {
+                key: value for key, value in self._notes_cache.items() if key in seen
+            }
+        return documents
 
     def read(self, rel_path: str) -> str:
         target = self._safe_join(rel_path, default_suffix=".md")
@@ -492,7 +549,7 @@ class KnowledgeBase:
         ]
 
         results: list[KnowledgeSearchResult] = []
-        for note in self.list_notes():
+        for note, body in self._scan_notes():
             if project_filter and note.project.casefold() != project_filter:
                 continue
             if type_filter and note.type.casefold() != type_filter:
@@ -503,11 +560,6 @@ class KnowledgeBase:
                 note_tags = {tag.casefold() for tag in note.tags}
                 if not any(tag in note_tags for tag in tag_filters):
                     continue
-            try:
-                text = self.read(note.rel_path)
-            except KnowledgeBaseError:
-                continue
-            _meta, body, _extra = _parse_frontmatter(text)
             title_blob = " ".join(
                 [note.title, note.project, note.type, note.status, *note.tags]
             ).casefold()

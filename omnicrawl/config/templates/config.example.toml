@@ -151,8 +151,8 @@ failure_fallback = "deterministic"
 
 # AI 消息可逆脱敏（opt-in，默认关闭）：把发往模型的消息副本中命中的敏感值
 # 替换为 ｛Desensitized:n｝ 占位符，模型返回后按序号还原；原文不出本机。
-# 仅作用于 AI 消息（含工具调用消息），不改动请求参数；设计稿与实现进度见
-# omnicrawl/docs/agent_gateway_desensitization_design.md（及 *_progress.md）。
+# 仅作用于 AI 消息（含工具调用消息），不改动请求参数；设计文档见
+# omnicrawl/docs/agent_gateway_desensitization_design.md。
 # 说明：熵检测兜底（entropy_*）为 P2 增强，键位已保留。
 # [desensitization]
 # enabled = false                # 显式启用后才生效；未启用零成本

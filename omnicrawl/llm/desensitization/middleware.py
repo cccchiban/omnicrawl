@@ -194,6 +194,8 @@ def _mask_request(
         entropy_pure_digits=config.entropy_pure_digits,
     )
     messages = tuple(_mask_message(message, context) for message in request.messages)
+    # 稳定序号复用计数（只到计数粒度，§10.2）：同一值跨请求复用同一序号即前缀缓存可命中。
+    stats.sequence_reuses += cycle.stable_reuses
     return replace(request, messages=messages)
 
 

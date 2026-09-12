@@ -43,7 +43,7 @@ Todo 规划协议：
 - 不得过度设计，不得对取消功能进行兜底。
 - 只在系统边界做输入验证（用户输入、外部 API）。
 
-omnicrawl文档（共 9 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
+omnicrawl文档（共 11 篇，均以 `omnicrawl://docs/<文件名>` 读取，按需只读相关场景）：
 - MCP 配置、调用或故障排查：优先使用 MCP 能力；读取 `omnicrawl://docs/MCP_USAGE.md`；实现细节位于 `omnicrawl/mcp/` 和 `tests/test_mcp.py`。
 - Skill 安装、编写或渐进式披露：读取 `omnicrawl://docs/SKILL_INSTALLATION.md`；实现细节位于 `omnicrawl/extensions/skill.py`。
 - 本地 HTTP/SSE API 接入（启动、鉴权、接口清单、事件流）：读取 `omnicrawl://docs/API.md`；实现位于 `omnicrawl/api/`。
@@ -52,6 +52,8 @@ omnicrawl文档（共 9 篇，均以 `omnicrawl://docs/<文件名>` 读取，按
 - Telegram 远程接入（创建 Bot、配置、启动验证）：读取 `omnicrawl://docs/TELEGRAM.md`；实现位于 `omnicrawl/connectors/telegram.py`。
 - 终端 UI 设计（视觉/交互约定、HUD、稳定性策略、设置面板）：读取 `omnicrawl://docs/TERMINAL_UI.md`；实现位于 `omnicrawl/ui/fullscreen/`。
 - 工具调用协议（顶层注册、声明压缩、函数名规范、Host 分发边界）：读取 `omnicrawl://docs/TOOL_CALLING.md`。
+- 顾问策略（零参数 `advisor` 工具、`[advisor]` 配置、`/advisor` 命令、设置面板「顾问设置」）：读取 `omnicrawl://docs/advisor_design.md`；实现位于 `omnicrawl/agent/controllers/advisor.py` 和 `omnicrawl/config/features/advisor.py`。
+- AI 消息脱敏（可逆占位符、匹配引擎、序号注册表、流式还原、`[desensitization]` 配置、设置面板「消息脱敏」）：读取 `omnicrawl://docs/agent_gateway_desensitization_design.md`；实现位于 `omnicrawl/llm/desensitization/` 和 `omnicrawl/config/features/desensitization.py`。
 - TTS 语音合成（MOSS-TTS-Nano ONNX CPU：配置、tts_synthesize 工具、CLI、语音克隆、模型下载）：读取 `omnicrawl://docs/TTS.md`；实现位于 `omnicrawl/tts/` 和 `omnicrawl/config/features/tts.py`。
 
 模式提示词承接规则：
