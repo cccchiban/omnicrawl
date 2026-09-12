@@ -621,40 +621,20 @@ class TelegramAgentBot:
         return str(relative).replace(os.sep, "/")
 
     def _handle_harness_command(self, text: str) -> str | None:
-        """把 harness 管理命令转发给 slash 命令处理器。
+        """把 harness 管理命令交给命令注册表执行。
 
         返回回复文本；返回 None 表示不是本模块支持的 harness 命令。
-        复用 omnicrawl.commands.slash 的实现，保证与 TUI 行为一致且不重复维护。
+        解析/匹配/执行统一在 omnicrawl.commands.slash 的注册表中，跟随 TUI
+        的命令集合变化而不需要在这里重复维护。
 
-        远程审批仅支持 manual/review 两档，禁止 auto（安全边界）；
-        完全自动仅限本地 TUI 配置，远程默认自动审查（review）。
+        远程安全边界（审批仅 manual/review、禁止 auto）由命令处理器读取
+        ``channel`` 后判断，与本入口的实现保持一致。
         """
 
-        from omnicrawl.commands.slash import (
-            format_mcp_status,
-            format_memory_clean_result,
-            format_plugins_status,
-            format_skills_list,
-            handle_advisor_command,
-            handle_mode_command,
-            handle_reasoning_command,
-            handle_review_command,
-            handle_session_command,
-            handle_subagent_task_command,
-        )
-        from omnicrawl.config.features.approval import (
-            APPROVAL_MODE_MANUAL,
-            APPROVAL_MODE_REVIEW,
-            approval_mode_label,
-            save_approval_mode,
-        )
+        from omnicrawl.commands.slash import REGISTRY
 
         agent = self._ensure_agent()
         normalized = text.strip().casefold()
-
-        mode_reply = handle_mode_command(agent, text)
-        if mode_reply is not None:
-            return mode_reply
 
         # /resume latest：恢复最近活动的会话（跨端接力一步到位，
         # 免去先 /sessions 查 ID 再 /resume 的两步操作）。
@@ -662,60 +642,12 @@ class TelegramAgentBot:
         if len(parts) == 2 and parts[0] == "/resume" and parts[1] == "latest":
             return self._resume_latest_session(agent)
 
-        # 只读查询类命令。
-        if normalized == "/mcp":
-            return format_mcp_status(agent)
-        if normalized == "/plugins":
-            return format_plugins_status(agent)
-        if normalized == "/skills":
-            return format_skills_list(agent)
-        if normalized == "/memory:clean":
-            return format_memory_clean_result(agent)
-
-        # 会话 / 子任务 / 推理强度 / 顾问 / 评审命令（slash.py 内部自己判断是否匹配）。
-        for handler in (
-            handle_session_command,
-            handle_subagent_task_command,
-            handle_reasoning_command,
-            handle_advisor_command,
-            handle_review_command,
-        ):
-            reply = handler(agent, text)
-            if reply is not None:
-                return reply
-
-        # 审批模式：远程仅允许 manual/review，禁止 auto（安全边界）。
-        # 完全自动仅限本地 TUI，远程默认自动审查（review）。
-        if normalized == "/approval":
-            return (
-                f"当前工具审批模式：{approval_mode_label(agent.approval_mode)}。\n"
-                "可用切换：/approval:manual（手动确认）\n"
-                "          /approval:review（自动审查，默认）\n"
-                "远程不支持 /approval:auto（完全自动仅限本地 TUI）"
-            )
-        # 远程显式拒绝完全自动
-        if normalized in ("/approval:auto", "/auto-approve:on"):
-            return (
-                "❌ 远程不支持完全自动批准（/approval:auto）。\n"
-                "完全自动仅限本地 TUI 配置；远程仅支持 /approval:manual / /approval:review，"
-                f"当前仍为 {approval_mode_label(agent.approval_mode)}。"
-            )
-        approval_remote_map = {
-            "/approval:manual": APPROVAL_MODE_MANUAL,
-            "/auto-approve:off": APPROVAL_MODE_MANUAL,
-            "/approval:review": APPROVAL_MODE_REVIEW,
-            "/auto-review:on": APPROVAL_MODE_REVIEW,
-        }
-        if normalized in approval_remote_map:
-            mode = approval_remote_map[normalized]
-            agent.set_approval_mode(mode)
-            try:
-                path = save_approval_mode(mode)
-                saved = f"并已同步到 {path}"
-            except Exception as exc:  # noqa: BLE001
-                saved = f"但写入 config.toml 失败：{exc}"
-            return f"审批模式已切换为 {approval_mode_label(mode)}，{saved}。"
-        return None
+        result = REGISTRY.dispatch(text, agent=agent, channel="telegram")
+        if not result.handled:
+            return None
+        # 连接器本身运行在工作线程，慢命令（/mcp、/review 等）直接同步执行。
+        resolved = result.resolve()
+        return resolved.error or resolved.message
 
     def _resume_latest_session(self, agent: Any) -> str:
         """恢复最近活动的会话（list_sessions 按 updated_at 倒序，取第一条）。
@@ -774,7 +706,7 @@ class TelegramAgentBot:
             "  /resume <id> / /resume latest  恢复会话（latest 恢复最近活动）\n"
             "  /rename <标题>  重命名当前会话\n"
             "  /undo      回退最近一轮\n"
-            "  /compact [--model]  压缩上下文\n"
+            "  /compact  压缩上下文\n"
             "  /history [关键词]  提示历史\n\n"
             "子系统状态：\n"
             "  /tasks / /task <id> [cancel]  后台子任务\n"

@@ -46,7 +46,7 @@
 - 任务控制：`/status` `/session` `/reset` `/cancel` `/approve` `/reject` `/start`
 - 运行参数：`/workspace [路径]`（查看/切换工作区，切换会持久化并同步到 TUI）`/reasoning [级别]` `/thinking on|off` `/plan`（启用主 Agent 计划模式）
 - 输出显示：`/thinking on|off`（思考内容开关，默认关闭；开启后以独立 🧠 消息显示）
-- 会话管理：`/sessions` `/archives` `/archive` `/resume <id>` `/resume latest`（一步恢复最近活动会话）`/rename <标题>` `/undo` `/compact [--model]` `/history [关键词]`
+- 会话管理：`/sessions` `/archives` `/archive` `/resume <id>` `/resume latest`（一步恢复最近活动会话）`/rename <标题>` `/undo` `/compact` `/history [关键词]`
 - 子系统状态：`/tasks` `/task <id>` `/task cancel <id>` `/mcp` `/plugins` `/skills` `/memory:clean` `/reasoning [级别]` `/approval` `/approval:manual`
 
 其余文本作为任务交给 OmniCrawl Agent 执行。敏感工具调用（bash/powershell）

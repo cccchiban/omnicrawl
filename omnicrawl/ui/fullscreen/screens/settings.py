@@ -1,7 +1,7 @@
-"""全屏 TUI 的中文运行设置面板（全屏三区：顶部标题 + 左侧列表 + 右侧二级面板）。
+"""全屏 TUI 的中文运行设置面板（全屏两区：左侧列表 + 右侧二级面板）。
 
 布局与交互：
-- 顶部：与窗口标题一致的“运行设置”标题，贴近左侧栏对齐；
+- 顶部不再有标题：设置页从屏幕第一行开始铺满整个终端；
 - 左侧：圆角框内从上到下排列所有设置项，只显示设置项名称，不显示状态；
 - 右侧：比左侧更宽的圆角框，实时展示左侧选中项的二级菜单内容：
   - 简单开关/枚举项 → 单个下拉选项框（选择即应用保存）；
@@ -22,6 +22,7 @@ from typing import Any, Optional
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
@@ -54,10 +55,14 @@ from ....config.features.tools import (
     save_tool_switch,
 )
 from ....llm import LLMError, save_reasoning_effort
+from ..terminal.crosshair_border import apply_crosshair_border_patch
 from ..terminal.theme import terminal_css
 from .panes import SelectPane, SettingsPane
 
-SETTINGS_TITLE = "运行设置"
+# 焦点栏使用的 crosshair 边框是自定义类型（见 terminal/crosshair_border.py）：
+# 必须在 SettingsScreen.CSS 被 Textual 解析前注册，否则 CSS 白名单校验会拒绝
+# 该边框名。本模块是该类型的唯一定义/使用者，故在导入期显式应用补丁。
+apply_crosshair_border_patch()
 
 
 @dataclass(frozen=True)
@@ -141,14 +146,9 @@ class SettingsScreen(ModalScreen[Any]):
     SettingsScreen {
         background: $terminal-canvas;
     }
-    #settings-title {
-        height: 3;
-        align: left middle;
-        margin-left: 2;
-        color: $terminal-white;
-        text-style: bold;
-    }
     #settings-main {
+        /* 铺满终端：显式 100% 宽度，避免 auto 宽度按内容收缩留出左右空白。 */
+        width: 100%;
         height: 1fr;
         layout: horizontal;
     }
@@ -156,7 +156,9 @@ class SettingsScreen(ModalScreen[Any]):
         width: 30;
         min-width: 24;
         height: 100%;
-        padding: 0 1 0 2;
+        /* 与全局 1 格边距一致：去掉原顶部标题后的 2 格对齐缩进，
+           使左右两栏尽可能铺满终端。 */
+        padding: 0 1;
     }
     #settings-left-box {
         height: 100%;
@@ -167,13 +169,21 @@ class SettingsScreen(ModalScreen[Any]):
     #settings-right-col {
         width: 1fr;
         height: 100%;
-        padding: 0 2 0 1;
+        padding: 0 1;
     }
     #settings-right-box {
         height: 100%;
         border: round $terminal-border-strong;
         background: $terminal-surface;
     }
+    /* 焦点所在的一栏：四角换成指向框内的准星箭头（crosshair）。不能用
+       :focus-within —— 该伪类会让 Textual 在每次焦点变化时重算整栏子树样式
+       （右侧缓存了全部已访问面板时单次可达数百毫秒）。改由 SettingsScreen
+       在 set_focus 里切换该栏自己的 .focused class，并且绕开 set_class 默认
+       的整树重算，只把规则应用回该栏自身（见 _set_box_focused）。
+       crosshair 由 terminal/crosshair_border.py 注册（非内置边框名）。 */
+    #settings-left-box.focused { border: crosshair $terminal-amber; }
+    #settings-right-box.focused { border: crosshair $terminal-amber; }
     #settings-right-title {
         height: 1;
         margin: 1 2 0 2;
@@ -214,14 +224,15 @@ class SettingsScreen(ModalScreen[Any]):
         self._rows: list[_SettingsRow] = []
         self._pane: Optional[SettingsPane] = None
         self._pane_key: Optional[str] = None
+        # 右侧面板实例缓存：左侧导航时复用已构建的面板，避免逐项重建
+        # （重复读盘、重建控件树、反复触发模型发现等 worker）。
+        self._pane_cache: dict[str, SettingsPane] = {}
+        self._guide: Optional[Static] = None
         self._last_status = ""
-        self._mount_seq = 0
 
     # ---------- compose ----------
 
     def compose(self) -> ComposeResult:
-        title = "子任务高级设置" if self._advanced else SETTINGS_TITLE
-        yield Static(title, id="settings-title")
         with Container(id="settings-main"):
             with Vertical(id="settings-left-col"):
                 with Container(id="settings-left-box"):
@@ -238,6 +249,70 @@ class SettingsScreen(ModalScreen[Any]):
 
     def on_mount(self) -> None:
         self.call_after_refresh(self._focus_row)
+
+    def set_focus(
+        self,
+        widget: Any,
+        scroll_visible: bool = True,
+        from_app_focus: bool = False,
+    ) -> None:
+        """焦点变化时同步两栏的准星边框。
+
+        焦点指示不用 CSS ``:focus-within``：该伪类会让 Textual 在每次焦点
+        变化时重算整栏子树的样式，右侧缓存了全部已访问面板后单次可达数百
+        毫秒（与面板数量成正比）。这里只重算焦点所在那一栏自身的样式。
+        """
+
+        super().set_focus(
+            widget,
+            scroll_visible=scroll_visible,
+            from_app_focus=from_app_focus,
+        )
+        self._sync_focus_borders(widget)
+
+    def _sync_focus_borders(self, focused: Any) -> None:
+        """把 ``focused`` class 切到焦点所在的一栏（两侧都无焦点则全部清除）。"""
+
+        if not self.is_mounted:
+            return
+        try:
+            left_box = self.query_one("#settings-left-box", Container)
+            right_box = self.query_one("#settings-right-box", Container)
+        except NoMatches:
+            return
+        self._set_box_focused(left_box, self._is_within(focused, left_box))
+        self._set_box_focused(right_box, self._is_within(focused, right_box))
+
+    def _set_box_focused(self, box: Container, focused: bool) -> None:
+        """切换某一栏的聚焦边框，只重算该栏自身样式。
+
+        ``set_class`` 默认会走 ``App.update_styles``，对整棵子树重新套用样式
+        表：右侧缓存了全部已访问面板后，单次可达数百毫秒（与面板数量成正
+        比），这正是「看过所有设置后焦点切换变慢」的根源。这里关闭
+        ``set_class`` 的自动样式更新，只对目标栏自身应用一次规则。
+
+        边框在 crosshair / round 之间切换不改变边框宽度（同为 1 格），因此
+        也不会触发重新布局，只影响该栏自身的重绘。
+        """
+
+        if box.has_class("focused") == focused:
+            return
+        box.set_class(focused, "focused", update=False)
+        try:
+            self.app.stylesheet.apply(box)
+        except Exception:  # noqa: BLE001 - 兜底：退回整树更新以保证样式一致
+            box.update_node_styles()
+
+    @staticmethod
+    def _is_within(widget: Any, ancestor: Any) -> bool:
+        """``widget`` 是否位于 ``ancestor`` 子树内（含自身）。"""
+
+        node = widget
+        while node is not None:
+            if node is ancestor:
+                return True
+            node = getattr(node, "parent", None)
+        return False
 
     def _help_text(self) -> str:
         if self._advanced:
@@ -328,7 +403,7 @@ class SettingsScreen(ModalScreen[Any]):
     # ---------- 右侧面板管理 ----------
 
     def _on_row_focused(self, row: "_SettingsRow") -> None:
-        """左侧行获得焦点：记录选中项，异步刷新右侧（预览）。"""
+        """左侧行获得焦点：记录选中项并切换右侧面板（预览）。"""
         key = row.key
         if key == self._pane_key and self._pane is not None and self._pane.is_attached:
             return
@@ -336,36 +411,24 @@ class SettingsScreen(ModalScreen[Any]):
         self._refresh_right_area()
 
     def _refresh_right_area(self) -> None:
-        """移除右侧旧内容并用唯一 id 挂载新内容。"""
+        """切换右侧内容：优先复用已构建的面板，仅首次访问才构建。
+
+        旧实现每次导航都 ``remove_children`` 再重建面板（多数面板在
+        ``__init__`` 中同步读盘，模型面板还会重新发起网络发现），在左右
+        列表间反复移动时会明显卡顿；这里改为隐藏旧面板、复用缓存实例。
+        """
         if not self.is_mounted:
             return
-        self._mount_seq += 1
-        area = self.query_one("#settings-right-area", Container)
-        # remove_children 是异步移除：旧节点延迟销毁，因此新节点必须用
-        # 递增唯一 id，避免与尚未销毁的旧 id 冲突。
-        area.remove_children()
         key = self._pane_key or (self._rows[0].key if self._rows else "")
-        title = self.query_one("#settings-right-title", Static)
-        title.update(self._row_label(key))
-        self.call_after_refresh(self._mount_current_pane, key)
-
-    def _mount_current_pane(self, key: str) -> None:
-        """刷新回调中真正挂载右侧内容（此时旧节点已移除）。"""
-        if not self.is_mounted or key != self._pane_key:
+        self.query_one("#settings-right-title", Static).update(self._row_label(key))
+        cached = self._pane_cache.get(key)
+        if cached is not None and cached.is_attached:
+            self._show_pane(cached)
             return
-        area = self.query_one("#settings-right-area", Container)
         pane = self._build_pane(key)
         if pane is None:
-            self._pane = None
-            area.mount(
-                Static(
-                    "",
-                    id=f"settings-guide-{self._mount_seq}",
-                    classes="settings-guide",
-                )
-            )
+            self._show_placeholder(key)
             return
-        self._pane = pane
         pane.bind_pane_events(
             on_back=self.action_back_to_list,
             on_commit=self._commit_pane,
@@ -373,12 +436,50 @@ class SettingsScreen(ModalScreen[Any]):
             on_modal=self._open_modal,
             on_exit=self._exit_settings_pane,
         )
-        pane.id = f"settings-pane-{self._mount_seq}"
-        area.mount(pane)
+        pane.id = f"settings-pane-{key}"
+        self._pane_cache[key] = pane
+        self._hide_right_area()
+        self._pane = pane
+        self._guide = None
+        self.query_one("#settings-right-area", Container).mount(pane)
         # 初次渲染交给 SettingsPane.on_mount 的 call_after_refresh：
         # mount 后子节点尚未 compose 完成，此处同步 refresh 会撞上
         # “部分节点缺失”的窗口（如 #grouped-pane-status 尚不存在），
         # 引发 NoMatches 使整个 TUI 崩溃。
+
+    def _show_pane(self, pane: SettingsPane) -> None:
+        """切到已构建的面板：隐藏旧内容、显示缓存实例并按其内存态重绘。
+
+        重绘等价于“重新构建后再渲染”，但不再读盘、不再重建控件树，也
+        不会像重建那样重新触发模型发现等 worker。
+        """
+        if self._pane is pane and pane.display:
+            return
+        self._hide_right_area()
+        self._guide = None
+        self._pane = pane
+        pane.display = True
+        pane.refresh_pane()
+
+    def _show_placeholder(self, key: str) -> None:
+        """无二级面板的设置项：复用同一个空引导占位。"""
+        self._hide_right_area()
+        self._pane = None
+        if self._guide is None or not self._guide.is_attached:
+            self._guide = Static(
+                "",
+                id=f"settings-guide-{key}",
+                classes="settings-guide",
+            )
+            self.query_one("#settings-right-area", Container).mount(self._guide)
+            return
+        self._guide.display = True
+
+    def _hide_right_area(self) -> None:
+        """隐藏当前可见的右侧内容，保留已构建实例供下次复用。"""
+        for widget in (self._pane, self._guide):
+            if widget is not None and widget.is_attached:
+                widget.display = False
 
     def _exit_settings_pane(self) -> None:
         """二级表单 pane 的“取消”按钮：直接关闭整个设置面板回主界面。"""
@@ -406,7 +507,7 @@ class SettingsScreen(ModalScreen[Any]):
 
             self.app.push_screen(
                 MCPServerListScreen(self._agent),
-                lambda _result: self._focus_row("mcp"),
+                lambda _result: self._focus_row("tools"),
             )
 
     def _open_modal(self, factory: Any, on_result: Any) -> None:

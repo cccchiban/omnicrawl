@@ -14,6 +14,7 @@ from contextvars import copy_context
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+from ....http_client import create_direct_client
 from ...toolkit.host_tools import (
     HostToolCatalog,
     INVOKE_TOOL_NAME,
@@ -1405,14 +1406,15 @@ class TurnLoopMixin:
             return client
 
         try:
-            import httpx
             from openai import OpenAI
         except ImportError as exc:
             raise AgentError(
                 "缺少 openai/httpx 依赖，请先执行：pip install -r requirements.txt"
             ) from exc
 
-        http_client = httpx.Client(trust_env=False, follow_redirects=True)
+        # 直连 + 长 keepalive：见 omnicrawl/http_client.py。自动审查与遗留调用
+        # 复用同一 client，默认 5 秒 keepalive 会让跨回合请求反复重做 TLS 握手。
+        http_client = create_direct_client()
         openai_kwargs: dict[str, Any] = {
             "api_key": self.config.llm.api_key,
             "base_url": self.config.llm.base_url,

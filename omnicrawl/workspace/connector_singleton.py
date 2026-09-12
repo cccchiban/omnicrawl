@@ -255,10 +255,16 @@ class ConnectorInstanceLock:
         self.release()
 
 
+# 公开别名：跨进程单例之外的调用方（如 API 多 worker 的运行状态存储）也需要
+# 判断“某个进程是否还活着”，复用这里的跨平台实现而不是各写一份。
+pid_is_running = _pid_is_running
+
+
 __all__ = [
     "ConnectorInstanceLock",
     "LOCK_FILENAME_PREFIX",
     "LOCK_FILENAME_SUFFIX",
     "STALE_RECLAIM_WAIT_SECONDS",
     "connector_lock_path",
+    "pid_is_running",
 ]

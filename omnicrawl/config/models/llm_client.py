@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Iterable
 
+from ...http_client import create_direct_client
 from .llm import (
     KNOWN_AVAILABLE_MODELS,
     LLMConfig,
@@ -32,14 +33,14 @@ class OpenAIResponseLLM:
             raise LLMError("缺少 API Key，请在 config.toml 的 llm 配置 中配置，或设置 OPENAI_API_KEY。")
 
         try:
-            import httpx
             from openai import OpenAI
         except ImportError as exc:
             raise LLMError(
                 "缺少 openai/httpx 依赖，请先执行：pip install -r requirements.txt"
             ) from exc
 
-        http_client = httpx.Client(trust_env=False, follow_redirects=True)
+        # 直连 + 长 keepalive：见 omnicrawl/http_client.py。
+        http_client = create_direct_client()
         openai_kwargs: dict[str, Any] = {
             "api_key": self.config.api_key,
             "base_url": self.config.base_url,

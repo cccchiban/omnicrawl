@@ -531,6 +531,6 @@ user_memory_search/read/expand_related/write
 | `project-context/general` | 项目目标、约束、关键决策、当前状态、文件与产物 |
 | `task-history/general` | 完成状态、未完成事项与后续任务 |
 
-自动模型压缩、手动 `/compact --model` 和确定性 `/compact` 均只写入当前会话级目录。新建或切换 Session 后，Agent 重新绑定会话级 Store，因此不会检索其他 Session 的压缩记忆。
+自动模型压缩、手动 `/compact`（含摘要模型不可用时的确定性降级）均只写入当前会话级目录。新建或切换 Session 后，Agent 重新绑定会话级 Store，因此不会检索其他 Session 的压缩记忆。
 
 记忆系统关闭时跳过同步；记忆写入异常只记录警告，不回滚已经完成的会话压缩。写入继续复用 `MemoryStore` 的相似内容合并与过期清理机制。项目级和用户级记忆必须通过对应的独立工具显式写入，不由压缩流程自动生成。

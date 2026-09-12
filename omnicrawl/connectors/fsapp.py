@@ -2021,90 +2021,28 @@ class FeishuBot:
     # ------------------------------------------------------------------
 
     def _handle_harness_command(self, text: str) -> str | None:
-        """复用 ``commands.slash``，保持飞书、Telegram 与 TUI 命令一致。"""
+        """把 harness 管理命令交给命令注册表执行。
 
-        from omnicrawl.commands.slash import (
-            format_mcp_status,
-            format_memory_clean_result,
-            format_plugins_status,
-            format_skills_list,
-            handle_advisor_command,
-            handle_mode_command,
-            handle_model_command,
-            handle_reasoning_command,
-            handle_review_command,
-            handle_session_command,
-            handle_subagent_task_command,
-        )
+        解析/匹配/执行统一在 ``commands.slash`` 的注册表中，飞书、Telegram
+        与 TUI 共用同一套命令声明，不再在此重复维护命令顺序。
+        远程安全边界（审批仅 manual/review、禁止 auto）由命令处理器读取
+        ``channel`` 后判断。
+        """
+
+        from omnicrawl.commands.slash import REGISTRY
         from omnicrawl.config.features.approval import (
             APPROVAL_MODE_AUTO,
-            APPROVAL_MODE_MANUAL,
             APPROVAL_MODE_REVIEW,
             approval_mode_label,
             load_approval_mode,
-            save_approval_mode,
         )
 
         agent = self._ensure_agent()
         normalized = text.strip().casefold()
 
-        mode_reply = handle_mode_command(agent, text)
-        if mode_reply is not None:
-            return mode_reply
-
         parts = normalized.split()
         if len(parts) == 2 and parts[0] == "/resume" and parts[1] == "latest":
             return self._resume_latest_session(agent)
-
-        if normalized == "/mcp":
-            return format_mcp_status(agent)
-        if normalized == "/plugins":
-            return format_plugins_status(agent)
-        if normalized == "/skills":
-            return format_skills_list(agent)
-        if normalized == "/memory:clean":
-            return format_memory_clean_result(agent)
-
-        for handler in (
-            handle_session_command,
-            handle_subagent_task_command,
-            handle_reasoning_command,
-            handle_model_command,
-            handle_advisor_command,
-            handle_review_command,
-        ):
-            reply = handler(agent, text)
-            if reply is not None:
-                return reply
-
-        if normalized == "/approval":
-            return (
-                f"当前工具审批模式：{approval_mode_label(agent.approval_mode)}。\n"
-                "可用切换：/approval:manual（手动确认）\n"
-                "          /approval:review（自动审查，默认）\n"
-                "远程不支持 /approval:auto（完全自动仅限本地 TUI）"
-            )
-        if normalized in {"/approval:auto", "/auto-approve:on"}:
-            return (
-                "❌ 远程不支持完全自动批准。完全自动仅限本地 TUI 配置；"
-                f"当前仍为 {approval_mode_label(agent.approval_mode)}。"
-            )
-
-        approval_remote_map = {
-            "/approval:manual": APPROVAL_MODE_MANUAL,
-            "/auto-approve:off": APPROVAL_MODE_MANUAL,
-            "/approval:review": APPROVAL_MODE_REVIEW,
-            "/auto-review:on": APPROVAL_MODE_REVIEW,
-        }
-        if normalized in approval_remote_map:
-            mode = approval_remote_map[normalized]
-            agent.set_approval_mode(mode)
-            try:
-                path = save_approval_mode(mode)
-                saved = f"并已同步到 {path}"
-            except Exception as exc:  # noqa: BLE001
-                saved = f"但写入 config.toml 失败：{redact_sensitive_text(str(exc))}"
-            return f"审批模式已切换为 {approval_mode_label(mode)}，{saved}。"
 
         # 若配置文件由本地 TUI 切成 auto，远程连接器不会因此绕过审批；该分支
         # 仅在兼容调用者读取磁盘模式时提供明确的安全解释，不实际应用 auto。
@@ -2112,7 +2050,13 @@ class FeishuBot:
             disk_mode = load_approval_mode()
             effective = APPROVAL_MODE_REVIEW if disk_mode == APPROVAL_MODE_AUTO else disk_mode
             return f"磁盘审批模式为 {approval_mode_label(disk_mode)}，飞书远程按 {approval_mode_label(effective)} 生效。"
-        return None
+
+        result = REGISTRY.dispatch(text, agent=agent, channel="feishu")
+        if not result.handled:
+            return None
+        # 连接器本身运行在工作线程，慢命令（/mcp、/review 等）直接同步执行。
+        resolved = result.resolve()
+        return resolved.error or resolved.message
 
     @staticmethod
     def _resume_latest_session(agent: Any) -> str:

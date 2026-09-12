@@ -300,7 +300,7 @@ class ContextBudgetManager:
         """返回距上次自动模型尝试的完整回合数。
 
         成功摘要和自动模型失败都建立冷却边界，避免摘要服务异常时每个回合
-        连续产生付费重试；手动 `/compact --model` 失败不改变自动冷却。
+        连续产生付费重试；手动 `/compact` 失败不改变自动冷却。
         """
 
         last_index: int | None = None

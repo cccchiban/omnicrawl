@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any, Mapping
 
+from ...http_client import create_direct_client
 from ..errors import ModelError, ModelErrorCode, map_openai_exception
 from ..protocol import ToolSpec
 from ..registry import ProviderProfile
@@ -67,7 +68,6 @@ def create_openai_client(profile: ProviderProfile) -> Any:
             ),
         )
     try:
-        import httpx
         from openai import OpenAI
     except ImportError as exc:
         raise ModelError(
@@ -79,12 +79,9 @@ def create_openai_client(profile: ProviderProfile) -> Any:
     base_url = profile.base_url.strip()
     if base_url:
         kwargs["base_url"] = base_url
-    # OpenAI SDK 默认 trust_env=True，会在 Windows 上读取系统代理注册表。
-    # 本地代理常把 HTTPS 代理地址声明为 https://127.0.0.1:port，但实际只
-    # 支持明文 HTTP CONNECT，HTTPX 随后会在代理握手阶段抛出 SSLEOFError。
-    # OmniCrawl 当前没有 Provider 代理配置，因此默认直连 Provider；需要代理
-    # 时应在 Provider 层显式增加受控配置，而不是隐式继承系统代理。
-    http_client = httpx.Client(trust_env=False, follow_redirects=True)
+    # 直连 + 长 keepalive：见 omnicrawl/http_client.py。httpx 默认 5 秒空闲即
+    # 断开连接，会让跨回合的每次模型请求都重做一次 TLS 握手。
+    http_client = create_direct_client()
     headers = user_agent_headers(profile)
     if headers:
         kwargs["default_headers"] = headers

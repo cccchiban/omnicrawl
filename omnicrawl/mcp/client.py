@@ -21,6 +21,7 @@ from typing import Any, Callable, Protocol
 
 import httpx
 
+from ..http_client import connection_limits
 from .audit import MCPAuditLogger
 from .config import (
     MCPConfig,
@@ -732,7 +733,12 @@ class _StreamableHTTPMCPConnection:
 
     def __init__(self, server: MCPServerConfig) -> None:
         self.server = server
-        self._client = httpx.Client(timeout=server.timeout_seconds)
+        # 长 keepalive：MCP 每次工具调用都是一次 POST，默认 5 秒空闲断连会让
+        # 相邻回合反复重做 TLS 握手。见 omnicrawl/http_client.py。
+        self._client = httpx.Client(
+            timeout=server.timeout_seconds,
+            limits=connection_limits(),
+        )
         self._session_id: str | None = None
         self._initialized = False
         self._next_request_id = 1

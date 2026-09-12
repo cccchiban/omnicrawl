@@ -230,7 +230,11 @@ class TurnCompactionMixin:
         before_tokens: int | None,
         after_tokens: int | None,
     ) -> str | None:
-        """生成“压缩完成，xxk~xxk”的灰色提示文本；数据缺失时返回 None。"""
+        """生成“---已压缩 xxk~xxk ---”的分隔提示文本；数据缺失时返回 None。
+
+        文本由 TUI 以灰色单独成行渲染（见 ``_handle_status`` 的 compact
+        分支），作为“上下文已被摘要替换”的可见边界。
+        """
         try:
             before = int(before_tokens) if before_tokens is not None else 0
             after = int(after_tokens) if after_tokens is not None else 0
@@ -240,7 +244,7 @@ class TurnCompactionMixin:
             return None
         before_k = max(1, round(before / 1000))
         after_k = max(1, round(after / 1000))
-        return f"压缩完成，{before_k}k~{after_k}k"
+        return f"---已压缩 {before_k}k~{after_k}k ---"
 
     def _compact_history(
         self,

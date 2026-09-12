@@ -92,6 +92,9 @@ TERMINAL_THEME = Theme(
         "terminal-text": TERMINAL_FOREGROUND,
         "terminal-text-secondary": TERMINAL_FOREGROUND,
         "terminal-text-muted": TERMINAL_FOREGROUND,
+        # 真正的灰色（ANSI 亮黑）：终端原生透明度下用于压缩分隔等需要与正文
+        # 明确区分的提示，避免与默认前景同色而被忽略。
+        "terminal-text-gray": "ansi_bright_black",
         "terminal-text-faint": TERMINAL_FOREGROUND,
         "terminal-text-on-accent": TERMINAL_FOREGROUND,
         "terminal-border": TERMINAL_FOREGROUND,

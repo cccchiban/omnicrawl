@@ -172,6 +172,11 @@ host = "127.0.0.1"
 port = 8765
 allowed_origins = ["http://localhost:5173"]
 confirmation_timeout_seconds = 300
+# uvicorn worker 进程数，默认 1（Run 状态、事件流、审批全部在进程内存里）。
+# >1 时内核按连接在 worker 间轮询，同一客户端的后续请求可能落到任意 worker，
+# 因此运行状态自动改走跨进程共享存储（~/.OmniCrawl/api-runs-<host>-<port>.sqlite3）。
+# 每个 worker 会各自创建一个 Agent 与独立隔离 worktree，按机器核数与内存设置。
+workers = 1
 
 [agent_temp]
 enabled = true

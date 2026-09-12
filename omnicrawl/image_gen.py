@@ -22,6 +22,7 @@ from .config.features.image_gen import (
     ImageGenConfiguration,
     load_image_gen_configuration,
 )
+from .http_client import create_direct_client
 
 DEFAULT_OUTPUT_DIR = Path(".omnicrawl") / ".agent_tmp" / "images"
 _DEFAULT_OUTPUT_FORMAT = "png"
@@ -198,18 +199,16 @@ class ImageGenerator:
                 base_url=conf.base_url,
                 timeout=conf.timeout_seconds,
             )
-        import httpx
         from openai import OpenAI
 
-        # 与项目其他 OpenAI 调用保持一致（见 llm/providers/openai_common.py）：
-        # OpenAI SDK 默认 trust_env=True，会在 Windows 上读取系统代理注册表，
-        # 对可直连的中转站会导致 TLS 握手失败（EOF occurred in violation of protocol），
-        # 因此显式禁用系统代理，直连目标服务。
+        # 与项目其他 OpenAI 调用保持一致（见 omnicrawl/http_client.py）：
+        # 禁用系统代理直连目标服务，并抬高 keepalive 窗口以复用连接，
+        # 避免每次图片请求都重做一次 TLS 握手。
         return OpenAI(
             api_key=conf.resolve_api_key(),
             base_url=conf.base_url,
             timeout=conf.timeout_seconds,
-            http_client=httpx.Client(trust_env=False, follow_redirects=True),
+            http_client=create_direct_client(),
         )
 
     def _save_results(self, result: Any, *, output_path: str | None, prefix: str) -> str:

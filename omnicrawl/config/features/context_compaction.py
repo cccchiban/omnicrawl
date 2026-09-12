@@ -18,8 +18,8 @@ class ContextCompactionConfig:
     """上下文压缩配置。
 
     上下文压缩始终作为 Agent 基础能力运行。完整回合结束时由模型摘要 service
-    接管自动压缩；普通 ``/compact`` 仍保持本地确定性，``/compact --model``
-    显式产生摘要模型调用。``summary_profile`` 接受 models.toml key/alias、裸模型 ID
+    接管自动压缩；手动 ``/compact`` 默认产生摘要模型调用，摘要不可用或校验
+    失败时自动降级为本地确定性压缩。``summary_profile`` 接受 models.toml key/alias、裸模型 ID
     或 ``profile/model_id``，跨供应商仍需单独允许。
 
     模型压缩「压缩即丢弃」：被压缩窗口内的全部完整回合都会交给摘要模型，压缩后

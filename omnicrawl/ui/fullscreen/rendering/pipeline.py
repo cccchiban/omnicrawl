@@ -384,8 +384,10 @@ class RenderingMixin:
     def _handle_status(self, message: str) -> None:
         if not message:
             return
-        if message.startswith("压缩完成"):
-            self._append_message("status", message)
+        # 自动/手动压缩完成提示：以灰色分隔行单独展示在对话中，标注
+        # “上下文已被摘要替换”的边界（旧文案“压缩完成”一并兼容）。
+        if message.startswith(("---已压缩", "压缩完成")):
+            self._append_message("compact", message)
             return
         if message.startswith("正在重试"):
             # 重试仍处于等待模型回复阶段：用 working 状态显示
@@ -962,6 +964,8 @@ class RenderingMixin:
                     "status": "· ",
                     "tool": "⌁ ",
                     "error": "△ ",
+                    # 压缩分隔行自带 --- 装饰，不再叠加圆点前缀。
+                    "compact": "",
                 }
                 prefixed_text = f"{prefixes.get(kind, '· ')}{text}"
                 if kind == "assistant":

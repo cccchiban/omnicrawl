@@ -13,30 +13,26 @@ P4 归类重构（2026-08-21）：``ui/fullscreen`` 下所有业务逻辑均已�
 
 本文件**只做再导出，不存放业务逻辑**；进程入口 ``run_fullscreen_tui``
 位于 ``app/runner.py``。这里保留的模块级名称是既有测试/扩展的导入契约：
-``sys``、``OmniCrawlApp``、``ModelPickerScreen`` 与 ``commands.slash``
-委托函数只保证可按名导入；子包内部一律静态导入，对这些门面名称做
-monkeypatch 不再生效。
+``sys``、``OmniCrawlApp``、``ModelPickerScreen`` 以及命令注册表
+（``REGISTRY``）与格式化函数只保证可按名导入；子包内部一律静态导入，
+对这些门面名称做 monkeypatch 不再生效。
 """
 
 from __future__ import annotations
 
 import sys
 
+from ...commands.framework import CommandResult
 from ...commands.slash import (
+    REGISTRY,
     build_slash_command_options,
+    build_slash_commands,
     format_memory_clean_result,
     format_mcp_status,
     format_plugins_status,
+    format_review_report,
     format_skills_list,
     format_tool_confirmation,
-    handle_advisor_command,
-    handle_approval_command,
-    handle_mode_command,
-    handle_model_command,
-    handle_reasoning_command,
-    handle_review_command,
-    handle_session_command,
-    handle_subagent_task_command,
 )
 from .app import OmniCrawlApp
 from .app.runner import run_fullscreen_tui

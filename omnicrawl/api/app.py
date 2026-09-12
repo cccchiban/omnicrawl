@@ -30,6 +30,7 @@ from .deps import data, error_response
 from .models import APIConfig, APIServiceError
 from .routes import build_api_router
 from .service import AgentAPIService
+from .shared_store import SharedRunStore, api_run_store_path
 
 
 LOGGER = logging.getLogger(__name__)
@@ -62,12 +63,18 @@ def load_api_config() -> APIConfig:
         timeout_seconds = float(raw_timeout)
     except (TypeError, ValueError) as exc:
         raise ValueError("api.confirmation_timeout_seconds 必须是数字。") from exc
+    raw_workers: Any = os.getenv("OMNICRAWL_API_WORKERS", "").strip() or section.get("workers", 1)
+    try:
+        workers = int(raw_workers)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("api.workers 必须是整数。") from exc
     return APIConfig(
         bearer_token=bearer_token,
         host=str(host),
         port=port,
         allowed_origins=origins,
         confirmation_timeout_seconds=timeout_seconds,
+        workers=workers,
     )
 
 
@@ -157,6 +164,17 @@ def create_default_agent() -> LocalToolAgent:
     return agent
 
 
+def create_app_from_env() -> FastAPI:
+    """uvicorn 多 worker 用的工厂入口。
+
+    ``uvicorn --workers`` 必须在子进程里按 import string 重新导入并构造 App，
+    传 App 实例时 ``workers`` 参数会被忽略。配置在每个子进程里各自从环境变量
+    与本地 config 重新读取。
+    """
+
+    return create_app()
+
+
 def create_app(
     *,
     config: APIConfig | None = None,
@@ -169,10 +187,29 @@ def create_app(
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         agent = application.state.agent_factory()
-        application.state.service = AgentAPIService(
-            agent,
-            confirmation_timeout_seconds=api_config.confirmation_timeout_seconds,
-        )
+        store: SharedRunStore | None = None
+        try:
+            if api_config.workers > 1:
+                # 多 worker：每个 worker 有自己的 Agent 与隔离 worktree，但内核
+                # 会把同一客户端的后续请求轮询到任意 worker，因此 Run 状态与
+                # 事件流必须落共享存储。
+                store = SharedRunStore(
+                    api_run_store_path(api_config.host, api_config.port)
+                )
+            application.state.service = AgentAPIService(
+                agent,
+                confirmation_timeout_seconds=api_config.confirmation_timeout_seconds,
+                store=store,
+            )
+        except BaseException:
+            # 已创建的资源必须回收，否则 worker 启动失败会泄漏连接与 Agent。
+            if store is not None:
+                store.close()
+            try:
+                agent.close()
+            except Exception:  # noqa: BLE001 - 不掩盖启动失败的真实原因
+                LOGGER.warning("API 启动失败后关闭 Agent 出错", exc_info=True)
+            raise
         # 预热 MCP：服务启动即后台发现能力（对齐 TUI splash 阶段 preload），
         # 避免首个 run 在请求路径上同步拉起 MCP Server 并长时间卡「正在加载
         # MCP 能力」。失败不阻塞服务启动；run 前若发现未完成会经
@@ -200,6 +237,8 @@ def create_app(
             if current is not None:
                 current.close()
                 application.state.service = None
+            if store is not None:
+                store.close()
 
     app = FastAPI(
         title="OmniCrawl Local API",
@@ -257,6 +296,7 @@ def create_app(
 
 __all__ = [
     "create_app",
+    "create_app_from_env",
     "create_default_agent",
     "load_api_config",
 ]

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import platform
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -104,16 +105,28 @@ def windows_process_name_chain(limit: int = 12) -> list[str]:
     """返回当前进程到祖先进程的 exe 名称链；失败时返回空列表。
 
     使用 Win32 Toolhelp API 避免依赖 psutil，也避免通过 shell 再启动子进程。
+
+    父进程链在进程生命周期内不会变化，但每次调用都要加载 kernel32、重建
+    ``PROCESSENTRY32W`` 结构并抓一次全量进程快照（实测约 14ms）。该结果会被
+    ``runtime_environment_context`` 用于构建每回合的 runtime 上下文消息，因此
+    这里做进程级缓存；返回列表副本，避免调用方改写缓存。
     """
 
+    return list(_windows_process_name_chain_cached(limit))
+
+
+@lru_cache(maxsize=4)
+def _windows_process_name_chain_cached(limit: int) -> tuple[str, ...]:
+    """实际枚举进程链；结果按 ``limit`` 缓存。"""
+
     if os.name != "nt":
-        return []
+        return ()
 
     try:
         import ctypes
         from ctypes import wintypes
     except ImportError:
-        return []
+        return ()
 
     class PROCESSENTRY32W(ctypes.Structure):
         _fields_ = [
@@ -132,14 +145,14 @@ def windows_process_name_chain(limit: int = 12) -> list[str]:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
     if snapshot == wintypes.HANDLE(-1).value:
-        return []
+        return ()
 
     process_table: dict[int, tuple[int, str]] = {}
     try:
         entry = PROCESSENTRY32W()
         entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
         if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
-            return []
+            return ()
         while True:
             process_table[int(entry.th32ProcessID)] = (
                 int(entry.th32ParentProcessID),
@@ -166,7 +179,7 @@ def windows_process_name_chain(limit: int = 12) -> list[str]:
         if parent_pid <= 0:
             break
         pid = parent_pid
-    return chain
+    return tuple(chain)
 
 
 def detect_terminal_hint() -> str:

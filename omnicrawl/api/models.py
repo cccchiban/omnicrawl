@@ -18,6 +18,9 @@ from pydantic import BaseModel, Field
 API_PREFIX = "/api/v1"
 TERMINAL_RUN_STATUSES = {"completed", "cancelled", "failed"}
 ACTIVE_RUN_STATUSES = {"pending", "running", "waiting_confirmation", "waiting_user"}
+# 本机 API 的多 worker 上限：每个 worker 都会建自己的 Agent + 隔离 worktree，
+# 上限只用于拦住明显误配的值，不是性能建议值。
+MAX_API_WORKERS = 32
 
 
 class APIServiceError(RuntimeError):
@@ -51,6 +54,10 @@ class APIConfig:
     port: int = 8765
     allowed_origins: tuple[str, ...] = ()
     confirmation_timeout_seconds: float = 300.0
+    # >1 时以 uvicorn 多 worker 启动：内核按连接在 worker 间轮询，因此 Run 状态、
+    # 事件流与人工决策改由跨进程共享存储承载（见 shared_store.py）。=1 时全部留在
+    # 进程内存，行为与历史版本一致。
+    workers: int = 1
 
     def __post_init__(self) -> None:
         token = self.bearer_token.strip()
@@ -62,6 +69,8 @@ class APIConfig:
             raise ValueError("api.port 必须是 1 到 65535 的整数。")
         if self.confirmation_timeout_seconds <= 0:
             raise ValueError("api.confirmation_timeout_seconds 必须大于 0。")
+        if isinstance(self.workers, bool) or not 1 <= int(self.workers) <= MAX_API_WORKERS:
+            raise ValueError(f"api.workers 必须是 1 到 {MAX_API_WORKERS} 的整数。")
         origins = tuple(origin.strip() for origin in self.allowed_origins if origin.strip())
         if "*" in origins:
             raise ValueError("api.allowed_origins 不允许使用通配符 *。")
@@ -69,6 +78,7 @@ class APIConfig:
         object.__setattr__(self, "host", self.host.strip())
         object.__setattr__(self, "port", int(self.port))
         object.__setattr__(self, "allowed_origins", origins)
+        object.__setattr__(self, "workers", int(self.workers))
 
 
 class RunRequest(BaseModel):
@@ -209,6 +219,7 @@ __all__ = [
     "ConfirmationDecision",
     "ExportRequest",
     "UserQuestionAnswer",
+    "MAX_API_WORKERS",
     "ModelChangeRequest",
     "PendingConfirmation",
     "PendingUserQuestion",

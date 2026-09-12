@@ -23,9 +23,20 @@ def usage_from_openai_payload(payload: Any) -> TokenUsage | None:
     cached_input_tokens = _read_cached_input_tokens(usage) or 0
     reasoning_tokens = _read_usage_int(usage, ("reasoning_tokens", "output_reasoning_tokens")) or 0
     if reasoning_tokens == 0:
-        details = getattr(usage, "output_tokens_details", None)
-        if details is None and isinstance(_to_mapping(usage), dict):
-            details = _to_mapping(usage).get("output_tokens_details")
+        # Responses API 用 output_tokens_details，Chat Completions 用
+        # completion_tokens_details；两种协议都要认，否则 Chat Completions
+        # 路径上的 reasoning_tokens 永远是 0。
+        details: Any = None
+        for attribute in ("output_tokens_details", "completion_tokens_details"):
+            details = getattr(usage, attribute, None)
+            if details is not None:
+                break
+        if details is None:
+            mapping = _to_mapping(usage)
+            if isinstance(mapping, dict):
+                details = mapping.get("output_tokens_details") or mapping.get(
+                    "completion_tokens_details"
+                )
         reasoning_tokens = _read_usage_int(details, ("reasoning_tokens",)) or 0
     return TokenUsage(
         input_tokens=input_tokens or 0,

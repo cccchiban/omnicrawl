@@ -195,7 +195,15 @@ class TurnExecutionMixin:
             return True
 
         previous_session_id = self.agent.current_session_id
-        outcome = self._command_dispatcher.dispatch(text)
+        outcome = self._command_dispatcher.dispatch(
+            text,
+            # 派生 SubAgent（如 /review）的进度事件回灌到 App 自身的实时渲染。
+            on_subagent_event=lambda event_name, payload: self.call_from_thread(
+                self._handle_subagent_event,
+                event_name,
+                payload,
+            ),
+        )
         if not outcome.handled:
             return False
         if outcome.exit_requested:

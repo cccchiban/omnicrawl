@@ -23,7 +23,6 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
 from ....agent import AskUserRequest, LocalToolAgent
-from ....commands.slash import handle_review_command
 from ..conversation.view import (
     CONVERSATION_DISPLAY_MAX_LOGICAL_LINES as _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES,
     ConversationViewMixin,
@@ -154,6 +153,9 @@ class OmniCrawlApp(
     .user-message { color: $terminal-white; border-left: solid $terminal-cyan; }
     .assistant-message { color: $terminal-text; }
     .status-message { color: $terminal-text-muted; }
+    /* 自动/手动压缩提示：单独一行的灰色分隔（---已压缩 xxk~xxk ---），
+       标记上下文已被摘要替换的边界，与普通状态行区分。 */
+    .compact-message { color: $terminal-text-gray; }
     .subagent-tree-message { color: $terminal-text; padding-left: 2; }
     /* 方案6：状态色点 + 缩进，最克制。工具卡不再使用边框/背景色块，
        状态由标题行首的状态色点（●）表达；正文缩进由 ToolDisclosure
@@ -426,20 +428,9 @@ class OmniCrawlApp(
         # Agent 回合协议和取消令牌由非 Textual 控制器持有；本应用仅适配其
         # 回调回到主线程并保留 UI/审批状态。
         self._turn_controller = AgentTurnController(agent, self._cancel_requested)
-        # CommandDispatcher 默认注入 commands.slash 的静态处理器；这里只需
-        # 覆盖 handle_review：把 SubAgent 事件回灌到 App 自身的实时渲染。
-        self._command_dispatcher = CommandDispatcher(
-            agent,
-            handle_review=lambda command_agent, command: handle_review_command(
-                command_agent,
-                command,
-                on_subagent_event=lambda event_name, payload: self.call_from_thread(
-                    self._handle_subagent_event,
-                    event_name,
-                    payload,
-                ),
-            ),
-        )
+        # 命令分派统一走 commands.slash 的注册表；派生 SubAgent 事件在
+        # dispatch 时以 on_subagent_event 透传，由 App 回灌到实时渲染。
+        self._command_dispatcher = CommandDispatcher(agent)
         self._stream_message: AssistantMessage | None = None
         # 尚未落盘的流式缓冲：按换行边界切成小块增量渲染，避免逐分片
         # 全量重解析整条消息的 Markdown（长消息数百毫秒/次）。
