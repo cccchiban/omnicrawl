@@ -156,6 +156,10 @@ class DesensitizationStats:
     restore_malformed: int = 0
     skipped_values: int = 0
     entropy_masked: int = 0
+    # 值类型规则层（PEM / 连接串 / 邮箱 / 银行卡 / IP / URL / MAC / 车牌 / gitleaks）命中数。
+    rules_masked: int = 0
+    # NER 兜底层（BiLSTM-CRF：人名 / 地名 / 机构名）命中数。
+    ner_masked: int = 0
     mask_failures: int = 0
     last_mask_duration_ms: float = 0.0
 

@@ -122,15 +122,6 @@ READ_ONLY_TOOL_NAMES = frozenset(
         "memory_search",
         "memory_read",
         "memory_expand_related",
-        "project_memory_search",
-        "project_memory_read",
-        "project_memory_expand_related",
-        "session_memory_search",
-        "session_memory_read",
-        "session_memory_expand_related",
-        "user_memory_search",
-        "user_memory_read",
-        "user_memory_expand_related",
     }
 )
 # delegated-read-only 继承父 Host 已注册的 MCP、Skill、桌面、浏览器和其他外部
@@ -141,9 +132,6 @@ READ_ONLY_BLOCKED_TOOL_NAMES = frozenset(
         "write_file",
         "Edit_file",
         "memory_write",
-        "project_memory_write",
-        "session_memory_write",
-        "user_memory_write",
         "subagent",
         # 结构化 git 工具默认对只读子代理不可见；只读 git 查询仍可
         # 通过被只读命令包装的 bash 完成（git 只读子命令白名单）。

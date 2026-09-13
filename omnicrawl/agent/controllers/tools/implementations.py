@@ -23,18 +23,6 @@ from ...toolkit.memory_tools import (
     memory_read_result,
     memory_search_result,
     memory_write_result,
-    project_memory_expand_related_result,
-    project_memory_read_result,
-    project_memory_search_result,
-    project_memory_write_result,
-    session_memory_expand_related_result,
-    session_memory_read_result,
-    session_memory_search_result,
-    session_memory_write_result,
-    user_memory_expand_related_result,
-    user_memory_read_result,
-    user_memory_search_result,
-    user_memory_write_result,
 )
 from ...toolkit.knowledge_tools import (
     kb_append_result,
@@ -502,52 +490,18 @@ class ToolImplementationsMixin:
         )
 
     def _tool_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_search_result(self._require_memory_store("project"), arguments)
+        return memory_search_result(self._require_memory_store_for_arguments(arguments), arguments)
 
     def _tool_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_read_result(self._require_memory_store("project"), arguments)
+        return memory_read_result(self._require_memory_store_for_arguments(arguments), arguments)
 
     def _tool_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_expand_related_result(self._require_memory_store("project"), arguments)
+        return memory_expand_related_result(
+            self._require_memory_store_for_arguments(arguments), arguments
+        )
 
     def _tool_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
-        return memory_write_result(self._require_memory_store("project"), arguments)
-
-    def _tool_project_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
-        return project_memory_search_result(self._require_memory_store("project"), arguments)
-
-    def _tool_project_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
-        return project_memory_read_result(self._require_memory_store("project"), arguments)
-
-    def _tool_project_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
-        return project_memory_expand_related_result(self._require_memory_store("project"), arguments)
-
-    def _tool_project_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
-        return project_memory_write_result(self._require_memory_store("project"), arguments)
-
-    def _tool_session_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
-        return session_memory_search_result(self._require_memory_store("session"), arguments)
-
-    def _tool_session_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
-        return session_memory_read_result(self._require_memory_store("session"), arguments)
-
-    def _tool_session_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
-        return session_memory_expand_related_result(self._require_memory_store("session"), arguments)
-
-    def _tool_session_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
-        return session_memory_write_result(self._require_memory_store("session"), arguments)
-
-    def _tool_user_memory_search(self, arguments: dict[str, Any]) -> ToolResult:
-        return user_memory_search_result(self._require_memory_store("user"), arguments)
-
-    def _tool_user_memory_read(self, arguments: dict[str, Any]) -> ToolResult:
-        return user_memory_read_result(self._require_memory_store("user"), arguments)
-
-    def _tool_user_memory_expand_related(self, arguments: dict[str, Any]) -> ToolResult:
-        return user_memory_expand_related_result(self._require_memory_store("user"), arguments)
-
-    def _tool_user_memory_write(self, arguments: dict[str, Any]) -> ToolResult:
-        return user_memory_write_result(self._require_memory_store("user"), arguments)
+        return memory_write_result(self._require_memory_store_for_arguments(arguments), arguments)
 
     def _tool_kb_search(self, arguments: dict[str, Any]) -> ToolResult:
         return kb_search_result(self._get_knowledge_base(), arguments)
@@ -563,6 +517,14 @@ class ToolImplementationsMixin:
 
     def _tool_kb_list(self, arguments: dict[str, Any]) -> ToolResult:
         return kb_list_result(self._get_knowledge_base(), arguments)
+
+    def _require_memory_store_for_arguments(self, arguments: dict[str, Any]) -> MemoryStore:
+        """按调用参数里的 ``scope`` 解析记忆存储，缺省 project。"""
+
+        scope = str(arguments.get("scope") or "project").strip().lower()
+        if scope not in {"project", "session", "user"}:
+            raise AgentError(f"scope 仅支持 project、session、user；收到：{scope}。")
+        return self._require_memory_store(scope)
 
     def _require_memory_store(self, scope: str = "project") -> MemoryStore:
         stores = {

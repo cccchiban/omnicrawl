@@ -23,11 +23,12 @@ from ..documentation import (
 from ..llm.stream_registry import current_stream_scope, registered_resource
 from ..state.session_locking import ProcessFileLock, atomic_write_text
 from ..state.session_models import SessionStoreError
-from .ripgrep import (
-    RipgrepError,
+from .search_backend import (
+    SearchBackendError,
+    SearchRegexError,
     batch_paths,
-    resolve_ripgrep_binary,
-    run_ripgrep,
+    native_backend_available,
+    run_search,
 )
 from .temp import DEFAULT_AGENT_TEMP_DIRECTORY
 
@@ -275,6 +276,23 @@ def _format_edit_context(
     return first_line, last_line, "\n".join(numbered)
 
 
+def _relative_under_prefix(text: str, prefix: str, folded_prefix: str) -> str | None:
+    """文本落在前缀之下时返回相对部分，否则返回 None。
+
+    ``prefix`` 已带尾部分隔符，避免 ``/opt/foo`` 误命中 ``/opt/foobar``；比较先用
+    原样字符串（命中率最高的情形），大小写不同再折一次。``os.path.normcase`` 在
+    Windows 上是 ``str.lower()``，极少数非 ASCII 字符会改变长度，此时前缀偏移量
+    不可信，直接放弃快速路径让调用方回退到 ``os.path.relpath``。
+    """
+
+    if text.startswith(prefix):
+        return text[len(prefix) :]
+    folded = os.path.normcase(text)
+    if len(folded) == len(text) and folded.startswith(folded_prefix):
+        return text[len(prefix) :]
+    return None
+
+
 class WorkspaceTools:
     """工作区文件、搜索和命令工具的共享实现。
 
@@ -294,6 +312,25 @@ class WorkspaceTools:
         ripgrep_binary: Path | None = None,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
+        # 搜索结果里的路径都是用工作区根拼出来的，预存前缀让 relative_path 走
+        # 纯字符串比较（见 _relative_path_text）。
+        self._workspace_root_text = str(self.workspace_root)
+        # 调用方可能传进未解析形式的工作区根（8.3 短路径、经符号链接的路径、含
+        # `..` 的路径）。旧实现用 Path.resolve() 把这类输入归一后再取相对路径，
+        # 这里改为同时预存原始形式做前缀比较，保持语义又不用每条匹配做系统调用。
+        root_forms = [self._workspace_root_text]
+        original_root_text = str(workspace_root)
+        if original_root_text != self._workspace_root_text:
+            root_forms.append(original_root_text)
+        self._workspace_root_forms = tuple(
+            (
+                form,
+                prefix,
+                os.path.normcase(prefix),
+            )
+            for form in root_forms
+            for prefix in (os.path.join(form, ""),)
+        )
         self.command_timeout_seconds = max(
             1,
             min(command_timeout_seconds, MAX_COMMAND_TIMEOUT_SECONDS),
@@ -301,6 +338,7 @@ class WorkspaceTools:
         self.max_file_read_chars = max_file_read_chars
         self._extra_protection_message = extra_protection_message
         self._resource_owner = resource_owner
+        # 只在需要回退到外部 ripgrep 时使用；默认走随包的原生搜索扩展。
         self._ripgrep_binary_override = ripgrep_binary
 
     def list_files(self, arguments: dict[str, Any]) -> str:
@@ -583,7 +621,7 @@ class WorkspaceTools:
         )
 
     def grep(self, arguments: dict[str, Any]) -> str:
-        """在 UTF-8 文本文件中执行 grep 风格搜索（由打包的 ripgrep 二进制执行）。
+        """在 UTF-8 文本文件中执行 grep 风格搜索（由随包的原生搜索扩展执行）。
 
         pattern 默认按正则表达式解释，可使用 ``|`` 连接多个候选目标，
         例如 ``messages|context|tool_calls``；use_regex=false 时按精确子串匹配。
@@ -598,15 +636,10 @@ class WorkspaceTools:
 
         use_regex = bool(arguments.get("use_regex", True))
         case_sensitive = bool(arguments.get("case_sensitive", False))
-        if use_regex:
-            # 保留 Python 正则预编译，仅用于给出与旧实现一致的中文错误提示；
-            # 实际匹配交由 ripgrep 执行。
-            try:
-                re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
-            except re.error as exc:
-                raise WorkspaceToolError(
-                    f"无效的正则表达式：{exc}。可设置 use_regex=false 按精确子串匹配。"
-                ) from exc
+        # 不在 Python 侧预编译校验：真正执行匹配的是后端的 RE2 系引擎，而
+        # Python re 的方言与之不同（\p{...}、(?<name>...) 等 RE2 合法写法会被
+        # 误判为非法，lookahead/反向引用等 Python 合法写法又会漏到后端才报错）。
+        # 正则合法性以后端为准，由 _run_search_over_roots 统一翻译成中文提示。
 
         raw_path = str(arguments.get("path") or ".").strip()
         roots = self._resolve_grep_roots(raw_path)
@@ -725,7 +758,7 @@ class WorkspaceTools:
     ) -> str:
         """输出每个文件的匹配行数（grep -c 语义）。"""
 
-        stdout, returncode = self._run_ripgrep_over_roots(
+        stdout, returncode = self._run_search_over_roots(
             roots,
             pattern=pattern,
             use_regex=use_regex,
@@ -735,6 +768,7 @@ class WorkspaceTools:
             extra_args=["--count", "--with-filename"],
         )
         counts: list[tuple[str, str]] = []
+        parse_capped = False
         if returncode != 1:
             for line in stdout.splitlines():
                 path_text, separator, count_text = line.rpartition(":")
@@ -745,6 +779,7 @@ class WorkspaceTools:
                     continue
                 counts.append((self.relative_path(path), count_text))
                 if len(counts) >= SEARCH_PARSE_LINE_CAP:
+                    parse_capped = True
                     break
         counts.sort(key=lambda item: item[0].casefold())
         return self._render_search_result(
@@ -752,6 +787,7 @@ class WorkspaceTools:
             max_results=max_results,
             prefix="grep_counts",
             label="个文件",
+            partial=parse_capped,
         )
 
     def _grep_list_files(
@@ -769,7 +805,7 @@ class WorkspaceTools:
     ) -> str:
         """只输出包含匹配的文件路径（grep -l 语义）。"""
 
-        stdout, returncode = self._run_ripgrep_over_roots(
+        stdout, returncode = self._run_search_over_roots(
             roots,
             pattern=pattern,
             use_regex=use_regex,
@@ -779,6 +815,7 @@ class WorkspaceTools:
             extra_args=["--files-with-matches", "-m", "1"],
         )
         matched: list[str] = []
+        parse_capped = False
         if returncode != 1:
             for line in stdout.splitlines():
                 if not line:
@@ -788,6 +825,7 @@ class WorkspaceTools:
                     continue
                 matched.append(self.relative_path(path))
                 if len(matched) >= SEARCH_PARSE_LINE_CAP:
+                    parse_capped = True
                     break
         matched.sort(key=lambda item: item.casefold())
         return self._render_search_result(
@@ -795,6 +833,7 @@ class WorkspaceTools:
             max_results=max_results,
             prefix="grep_files",
             label="个文件",
+            partial=parse_capped,
         )
 
     def _scan_grep(
@@ -809,14 +848,14 @@ class WorkspaceTools:
         include_re: re.Pattern[str] | None,
         exclude_re: re.Pattern[str] | None,
     ) -> tuple[list[tuple[str, int, str]], bool]:
-        """调用 ripgrep --json 收集匹配行；返回（匹配行列表，是否超过解析上限）。
+        """调用搜索后端的 --json 输出收集匹配行；返回（匹配行列表，是否超过解析上限）。
 
         ``--json`` 输出是 NDJSON，match 记录的路径/行号/行文本都是结构化字段，
         不存在文本格式 ``path:line:text`` 的冒号歧义（Windows 盘符、路径内冒号
         不再误切）；非 UTF-8 行给出占位文本而不是丢弃匹配。
         """
 
-        stdout, returncode = self._run_ripgrep_over_roots(
+        stdout, returncode = self._run_search_over_roots(
             roots,
             pattern=pattern,
             use_regex=use_regex,
@@ -827,6 +866,10 @@ class WorkspaceTools:
         )
         match_lines: list[tuple[str, int, str]] = []
         parse_capped = False
+        # 匹配记录按文件连续输出，安全过滤只与文件有关：按文件缓存一次判定，
+        # 避免命中密集时为每行都构造 Path 并重跑保护路径检查。
+        filtered_relative: str | None = None
+        filtered_accepted = False
         if returncode != 1:
             for raw_line in stdout.splitlines():
                 if not raw_line:
@@ -835,11 +878,14 @@ class WorkspaceTools:
                 if parsed is None:
                     continue
                 relative, line_no, text = parsed
-                if not self._passes_grep_filters(
-                    self._search_path_from_output(relative),
-                    include_re,
-                    exclude_re,
-                ):
+                if relative != filtered_relative:
+                    filtered_relative = relative
+                    filtered_accepted = self._passes_grep_filters(
+                        self._search_path_from_output(relative),
+                        include_re,
+                        exclude_re,
+                    )
+                if not filtered_accepted:
                     continue
                 match_lines.append((relative, line_no, text))
                 if len(match_lines) >= SEARCH_PARSE_LINE_CAP:
@@ -890,12 +936,13 @@ class WorkspaceTools:
             return None
         if not isinstance(text, str):
             return (
-                self.relative_path(Path(path_text)),
+                self._relative_path_text(path_text),
                 line_number,
                 "(line is not valid UTF-8)",
             )
         return (
-            self.relative_path(Path(path_text)),
+            # 直接用路径文本换算，避免每条匹配都构造一次 Path 对象。
+            self._relative_path_text(path_text),
             line_number,
             self._cap_match_line(text.rstrip("\r\n")),
         )
@@ -960,8 +1007,12 @@ class WorkspaceTools:
         prefix: str,
         empty_text: str = "未找到匹配结果。",
         label: str = "条",
+        partial: bool = False,
     ) -> str:
-        """渲染搜索结果：不超限原样返回，超限保留前 max_results 条并落盘完整结果。"""
+        """渲染搜索结果：不超限原样返回，超限保留前 max_results 条并落盘完整结果。
+
+        partial=True 表示 all_items 本身已被解析上限截断，落盘内容同样不完整。
+        """
 
         if not all_items:
             return empty_text
@@ -973,6 +1024,7 @@ class WorkspaceTools:
             max_results=max_results,
             prefix=prefix,
             label=label,
+            partial=partial,
         )
 
     def _resolve_grep_roots(self, raw_path: str) -> list[Path]:
@@ -1042,7 +1094,7 @@ class WorkspaceTools:
             return False
         return True
 
-    def _run_ripgrep_over_roots(
+    def _run_search_over_roots(
         self,
         roots: list[Path],
         *,
@@ -1053,23 +1105,25 @@ class WorkspaceTools:
         include_glob: str | None,
         exclude_glob: str | None,
     ) -> tuple[str, int]:
-        """让 ripgrep 直接遍历目录搜索（单次调用，返回 (stdout, returncode)）。
+        """让搜索后端直接遍历目录搜索（返回合并后的 (stdout, returncode)）。
 
-        相比旧实现（Python os.walk 全量枚举文件后分批喂给 rg），直接把目录
-        交给 rg 遍历可以：
+        相比更早的纯 Python 实现（os.walk 全量枚举文件），把目录交给搜索后端
+        遍历可以：
         - 原生读取 .gitignore / .ignore，自动跳过 node_modules、dist、构建产物
           等被忽略目录（旧实现会全量枚举这些目录，实测多枚举 20+ 倍文件）；
-        - 用 rg 的并行 I/O 与内存映射加速匹配，不再受 Python 单线程遍历限制；
-        - 保护路径（PROTECTED_PATH_GLOBS）与 include/exclude 转成 --glob 在
-          rg 侧剪枝，进一步减少要扫描的文件数。
+        - 用 Go 原生扫描的并行 I/O 加速匹配，不再受 Python 单线程遍历限制；
+        - 保护路径（PROTECTED_PATH_GLOBS）与 include/exclude 转成 glob 在
+          后端侧剪枝，进一步减少要扫描的文件数。
 
         include/exclude 的 glob 语义与旧实现一致（匹配文件名，大小写不敏感）：
-        rg 的 -g 参数无 / 时匹配任意层级的 basename，因此把用户 glob 原样传入
+        后端 glob 无 / 时匹配任意层级的 basename，因此把用户 glob 原样传入
         即可。保护路径 glob 与 include 一样是 basename 语义，对目录会剪枝其
         全部内容。
+
+        原生后端不经命令行传参，一次调用即可覆盖全部 roots；只有回退到外部
+        rg 时才需要按字符预算分批，避免 Windows 命令行过长。
         """
 
-        binary = self._ripgrep_binary()
         args = list(extra_args)
         if not use_regex:
             args.append("--fixed-strings")
@@ -1096,36 +1150,30 @@ class WorkspaceTools:
             exclude_glob and _glob_is_basename_only(exclude_glob)
         ):
             args.append("--glob-case-insensitive")
+        if self._ripgrep_binary_override is None and native_backend_available():
+            batches = [[str(root) for root in roots]]
+        else:
+            batches = batch_paths(roots)
         combined_stdout: list[str] = []
         matched = False
-        for path_batch in batch_paths(roots):
+        for path_batch in batches:
             try:
-                stdout, returncode = run_ripgrep(
-                    binary,
+                stdout, returncode = run_search(
                     [*args, "--", pattern, *path_batch],
                     cwd=self.workspace_root,
                     timeout=self.command_timeout_seconds,
+                    ripgrep_binary=self._ripgrep_binary_override,
                 )
-            except RipgrepError as exc:
+            except SearchRegexError as exc:
+                # pattern 语法不被后端支持属于用户输入问题，提示可以退化成
+                # 精确子串匹配，而不是让模型误以为搜索后端故障。
+                hint = "。可设置 use_regex=false 按精确子串匹配。" if use_regex else "。"
+                raise WorkspaceToolError(f"{exc}{hint}") from exc
+            except SearchBackendError as exc:
                 raise WorkspaceToolError(str(exc)) from exc
             combined_stdout.append(stdout)
             matched = matched or returncode == 0
         return "".join(combined_stdout), 0 if matched else 1
-
-    def _ripgrep_binary(self) -> Path:
-        """返回可用的 ripgrep 二进制；优先随包分发，其次 PATH。"""
-        if self._ripgrep_binary_override is not None:
-            binary = Path(self._ripgrep_binary_override)
-            if not binary.is_file():
-                raise WorkspaceToolError(f"ripgrep 二进制不存在：{binary}")
-            return binary
-        binary = resolve_ripgrep_binary()
-        if binary is None:
-            raise WorkspaceToolError(
-                "未找到 ripgrep 二进制：omnicrawl/bin 未随包分发当前平台的 rg，"
-                "PATH 中也没有 rg。"
-            )
-        return binary
 
     def _format_grep_matches(
         self,
@@ -1228,28 +1276,27 @@ class WorkspaceTools:
         *,
         include_dirs: bool,
     ) -> list[tuple[Path, bool]]:
-        """用 ``rg --files`` 枚举搜索候选（原生读 .gitignore，保护路径剪枝）。
+        """用搜索后端的 ``--files`` 枚举候选（原生读 .gitignore，保护路径剪枝）。
 
         相比旧实现（os.walk 全量遍历、不读 .gitignore，node_modules/dist 等
-        被忽略目录全部展开），把遍历交给 rg：跳过被忽略目录、并行 I/O。
-        rg 只列文件；需要目录时由文件路径的祖先推导（空目录不再返回，与
+        被忽略目录全部展开），把遍历交给搜索后端：跳过被忽略目录、并行 I/O。
+        后端只列文件；需要目录时由文件路径的祖先推导（空目录不再返回，与
         deepseek glob 工具"只返回文件"的语义一致，但保留 kind 过滤能力）。
         """
 
         if root.is_file():
             return [(root, False)]
-        binary = self._ripgrep_binary()
         args = ["--files", "--hidden", "--no-require-git"]
         for glob_pattern in PROTECTED_PATH_GLOBS:
             args.extend(["--glob", glob_pattern])
         try:
-            stdout, returncode = run_ripgrep(
-                binary,
+            stdout, returncode = run_search(
                 [*args, "--", str(root)],
                 cwd=self.workspace_root,
                 timeout=self.command_timeout_seconds,
+                ripgrep_binary=self._ripgrep_binary_override,
             )
-        except RipgrepError as exc:
+        except SearchBackendError as exc:
             raise WorkspaceToolError(str(exc)) from exc
         if returncode == 1:
             return []
@@ -1704,10 +1751,35 @@ class WorkspaceTools:
         return any(part in PROTECTED_NAMES or part.startswith(".env.") for part in path.parts)
 
     def relative_path(self, path: Path) -> str:
+        """返回工作区相对路径；工作区之外的路径原样返回。"""
+
+        return self._relative_path_text(str(path))
+
+    def _relative_path_text(self, text: str) -> str:
+        """把路径文本换算成工作区相对路径，纯字符串运算、不做系统调用。
+
+        这里刻意不走 ``Path.resolve()``，也尽量不依赖 ``os.path.relpath``：前者
+        给每条匹配做一次系统调用（Windows 上是 GetFinalPathNameByHandle，单次
+        几十微秒），后者内部要对两个路径各做一次 normpath/normcase（约 80 微秒）。
+        搜索结果里的路径都是用工作区根拼出来的，因此先用前缀比较命中（大小写差异
+        折一次）；仍不命中才回退到 relpath。工作区之外的路径 relpath 会给出 ``..``，
+        此时原样返回输入文本（与旧实现一致）。
+        """
+
+        for form_text, prefix, folded_prefix in self._workspace_root_forms:
+            if text == form_text:
+                return os.curdir
+            relative = _relative_under_prefix(text, prefix, folded_prefix)
+            if relative is not None:
+                return relative
         try:
-            return str(path.resolve().relative_to(self.workspace_root))
+            relative = os.path.relpath(text, self._workspace_root_text)
         except ValueError:
-            return str(path)
+            # Windows 上跨盘符，relpath 无法给出相对路径。
+            return text
+        if relative == os.pardir or relative.startswith(f"{os.pardir}{os.sep}"):
+            return text
+        return relative
 
     @staticmethod
     def _format_read_lines(

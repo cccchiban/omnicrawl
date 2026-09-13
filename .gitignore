@@ -30,6 +30,11 @@ AGENTS.md
 
 subagents.toml
 
+# 原生搜索扩展（Go）的构建产物：由 native/build.py / pip install 就地生成
+omnicrawl/_ocsearch.pyd
+omnicrawl/_ocsearch.so
+omnicrawl/_ocsearch.h
+
 # Editor lock files (auto-created by omnicrawl edit tooling)
 *.omnicrawl.edit.lock
 *.omnicrawl.replace.lock

@@ -37,25 +37,13 @@ FILE_CHANGE_TOOLS = frozenset({"write_file", "Edit_file"})
 # 文件变更预览（diff/rewrite 摘要），其余工具一律直接展示工具返回的原始输出。
 # （与 FILE_CHANGE_TOOLS 同集，语义都是“保留文件变更预览的工具”。）
 FULL_BODY_TOOLS = FILE_CHANGE_TOOLS
-# 记忆类工具（4 组 × 4 动作）。统一在此登记：正文隐藏、标题 query 摘要
-# 等规则都引用本集合，新增记忆工具只需改这一处。
+# 记忆类工具（search/read/expand_related/write，作用域由 scope 参数决定）。
+# 统一在此登记：正文隐藏、标题 query 摘要等规则都引用本集合。
 MEMORY_TOOLS = frozenset({
     "memory_search",
     "memory_read",
     "memory_expand_related",
     "memory_write",
-    "project_memory_search",
-    "project_memory_read",
-    "project_memory_expand_related",
-    "project_memory_write",
-    "session_memory_search",
-    "session_memory_read",
-    "session_memory_expand_related",
-    "session_memory_write",
-    "user_memory_search",
-    "user_memory_read",
-    "user_memory_expand_related",
-    "user_memory_write",
 })
 # 知识库类工具：正文对用户无展示价值，与记忆工具一起隐藏。
 KB_TOOLS = frozenset({

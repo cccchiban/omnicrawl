@@ -197,9 +197,7 @@ MAX_ARGS_CHARS = 120
 
 # 记忆与知识库工具：正文对远程用户没有展示价值，与 TUI 一致只保留摘要行。
 _MEMORY_TOOL_OPERATIONS = frozenset(
-    f"{prefix}memory_{action}"
-    for prefix in ("", "project_", "session_", "user_")
-    for action in ("search", "read", "expand_related", "write")
+    f"memory_{action}" for action in ("search", "read", "expand_related", "write")
 )
 _KB_TOOL_OPERATIONS = frozenset({"kb_search", "kb_read", "kb_write", "kb_append", "kb_list"})
 # 正文完全隐藏的工具（与 TUI 的 HIDDEN_BODY_TOOLS 同规则）。

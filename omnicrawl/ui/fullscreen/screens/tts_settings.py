@@ -112,9 +112,9 @@ _FALLBACK_VOICES = (
 )
 _THREAD_COUNTS = (1, 2, 4, 8)
 _DEVICE_OPTIONS = (
-    ("自动（优先 CUDA，不可用时回退 CPU）", "auto"),
+    ("自动", "auto"),
     ("CPU", "cpu"),
-    ("CUDA（不可用时报错）", "cuda"),
+    ("CUDA", "cuda"),
 )
 
 
@@ -186,7 +186,7 @@ class TTSSettingsPane(SettingsPane):
     def compose_pane(self) -> ComposeResult:
         c = self._configuration
         with VerticalScroll(id="tts-form"):
-            yield Static("启用 TTS（注册 tts_synthesize 工具）", classes="tts-field-label")
+            yield Static("启用 TTS", classes="tts-field-label")
             yield Select(
                 [("停用", False), ("启用", True)],
                 value=c.enabled,
@@ -202,7 +202,7 @@ class TTSSettingsPane(SettingsPane):
                 id="tts-auto-play",
                 classes="tts-control choice-select",
             )
-            yield Static("内置音色 voice（含克隆音色）", classes="tts-field-label")
+            yield Static("内置音色 voice", classes="tts-field-label")
             yield Select(
                 [(voice, voice) for voice in self._voice_options()],
                 value=c.voice if c.voice in self._voice_options() else "Junhao",
@@ -236,7 +236,7 @@ class TTSSettingsPane(SettingsPane):
                 id="tts-clone-note",
                 classes="tts-clone-note",
             )
-            yield Static("删除自定义音色（仅克隆音色可删，内置音色不可删）", classes="tts-field-label")
+            yield Static("删除自定义音色", classes="tts-field-label")
             with Horizontal(id="tts-delete-row", classes="tts-delete-row"):
                 yield Select(
                     [(voice, voice) for voice in self._custom_voice_options()],
@@ -724,7 +724,7 @@ class TTSSettingsScreen(ModalScreen[Optional[TTSSettingsResult]]):
 
     def compose(self) -> ComposeResult:
         with Container(id="tts-dialog"):
-            yield Static("TTS 语音合成（MOSS-TTS-Nano · ONNX 推理）", id="tts-title")
+            yield Static("TTS 语音合成", id="tts-title")
             self._pane = TTSSettingsPane(
                 self._config_path,
                 apply_configuration=self._apply_configuration,

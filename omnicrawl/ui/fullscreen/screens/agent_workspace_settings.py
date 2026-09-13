@@ -61,7 +61,7 @@ class AgentWorkspaceSettingsPane(SettingsPane):
         with VerticalScroll(id="agent-workspace-form"):
             yield Static("隔离功能总开关", classes="agent-workspace-label")
             yield Select(
-                [("停用（直接使用主工作区）", False), ("启用（每个进程独立隔离区）", True)],
+                [("停用", False), ("启用", True)],
                 value=c.enabled,
                 allow_blank=False,
                 id="agent-workspace-enabled",
@@ -69,7 +69,7 @@ class AgentWorkspaceSettingsPane(SettingsPane):
             )
             yield Static("隔离模式", classes="agent-workspace-label")
             yield Select(
-                [("worktree（Git 工作树，推荐）", "worktree"), ("local（普通目录复制）", "local")],
+                [("worktree", "worktree"), ("local", "local")],
                 value=c.mode,
                 allow_blank=False,
                 id="agent-workspace-mode",
@@ -82,7 +82,7 @@ class AgentWorkspaceSettingsPane(SettingsPane):
             ):
                 yield Static(label, classes="agent-workspace-label")
                 yield Input(str(value), id=widget_id, classes="agent-workspace-control")
-            yield Static("Detached HEAD（不创建临时分支）", classes="agent-workspace-label")
+            yield Static("Detached HEAD", classes="agent-workspace-label")
             yield Select(
                 [("停用", False), ("启用", True)],
                 value=c.detached,
@@ -90,7 +90,7 @@ class AgentWorkspaceSettingsPane(SettingsPane):
                 id="agent-workspace-detached",
                 classes="agent-workspace-control choice-select",
             )
-            yield Static("带入主工作区未提交变更（git diff 补丁）", classes="agent-workspace-label")
+            yield Static("带入主工作区未提交变更", classes="agent-workspace-label")
             yield Select(
                 [("停用", False), ("启用", True)],
                 value=c.sync_uncommitted,
@@ -108,7 +108,7 @@ class AgentWorkspaceSettingsPane(SettingsPane):
             )
             yield Static("退出时清理策略", classes="agent-workspace-label")
             yield Select(
-                [("auto（自动清理可回收项）", "auto"), ("keep（保留）", "keep"), ("never（永不清理）", "never")],
+                [("auto", "auto"), ("keep", "keep"), ("never", "never")],
                 value=c.cleanup_on_exit,
                 allow_blank=False,
                 id="agent-workspace-cleanup",

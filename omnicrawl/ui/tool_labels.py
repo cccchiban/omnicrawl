@@ -44,18 +44,6 @@ _TOOL_DISPLAY_ICONS = {
     "memory_read": "◎",
     "memory_expand_related": "◎",
     "memory_write": "◎",
-    "project_memory_search": "◎",
-    "project_memory_read": "◎",
-    "project_memory_expand_related": "◎",
-    "project_memory_write": "◎",
-    "session_memory_search": "◎",
-    "session_memory_read": "◎",
-    "session_memory_expand_related": "◎",
-    "session_memory_write": "◎",
-    "user_memory_search": "◎",
-    "user_memory_read": "◎",
-    "user_memory_expand_related": "◎",
-    "user_memory_write": "◎",
 }
 
 _MCP_OPERATION_ICONS = {

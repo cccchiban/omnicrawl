@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnicrawl-agent"
-version = "0.1.56"
+version = "0.1.57"
 description = "Local OmniCrawl agent with TUI, tools, MCP and NPM Hook plugins"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,6 +33,10 @@ dependencies = [
 
 [project.optional-dependencies]
 windows = ["pywin32>=306"]
+# NER 兜底层（BiLSTM-CRF：人名 / 地名 / 机构名），pip install -e .[ner]。
+# CUDA 版 torch 请按官方 index 安装；CPU 版直接 pip install torch 即可，
+# 推理时 auto 优先 CUDA、不可用自动回退 CPU（见 llm/desensitization/ner.py）。
+ner = ["torch>=2.0"]
 # TTS（omnicrawl.tts）：MOSS-TTS-Nano ONNX 推理，pip install -e .[tts]
 tts = ["onnxruntime>=1.19.2", "sentencepiece>=0.1.99"]
 # CUDA 版：先卸载 onnxruntime；设置页会按当前 Python 安装兼容的 CUDA/cuDNN wheel。
@@ -66,8 +70,9 @@ omnicrawl = [
     "config/templates/config.example.toml",
     "config/templates/models.example.toml",
     "config/templates/subagents.example.toml",
+    "llm/desensitization/gitleaks.toml",
+    "llm/desensitization/models/*.pt",
     "templates/*.md",
     "connectors/*.md",
-    "bin/*",
     "ui/fullscreen/status/*.txt",
 ]

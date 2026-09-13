@@ -16,12 +16,14 @@ from ...config.features.desensitization import (
     load_desensitization_config,
 )
 from .engine import MaskContext, SensitiveMatcher, mask_text
+from .ner import NerLayer, build_ner_layer
 from .registry import (
     DesensitizationStats,
     PlaceholderCycle,
     SequenceRegistry,
     collect_placeholder_numbers,
 )
+from .rules import PatternRule, build_enabled_rules
 from .stream import StreamRestorer
 
 
@@ -45,6 +47,9 @@ class OneShotMasker:
             exempt_keys=config.exempt_keys,
         )
         self._stats = DesensitizationStats()
+        self._rules: tuple[PatternRule, ...] = build_enabled_rules(config)
+        # NER 兜底层：与运行时装饰器共用构建入口与共享抽取器（同一模型只加载一次）。
+        self._ner_layer: NerLayer | None = build_ner_layer(config)
         self._registry = SequenceRegistry(sequence_source=sequence_source)
         self._cycle: PlaceholderCycle | None = None
 
@@ -68,6 +73,8 @@ class OneShotMasker:
             entropy_min_bits=self._config.entropy_min_bits,
             entropy_pure_letters=self._config.entropy_pure_letters,
             entropy_pure_digits=self._config.entropy_pure_digits,
+            pattern_rules=self._rules,
+            ner_layer=self._ner_layer,
         )
         masked = mask_text(text, context)
         # 稳定序号复用计数（只到计数粒度，§10.2）。

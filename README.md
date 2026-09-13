@@ -19,7 +19,7 @@ OmniCrawl 是一款本地运行的个人 AI 编程助手（终端工作台），
 
 - Python `>=3.9`
 - 安装完整功能建议本机具备 Node.js 20+（仅插件功能需要，缺失不影响无插件模式启动）
-- `grep` 工具由 ripgrep 二进制执行：Windows/Linux/macOS 的 x86_64 与 arm64 版本均随 wheel 打包（`omnicrawl/bin/`，与项目内 rg 同版本）；未内置的平台请自行安装 ripgrep 并确保 `rg` 在 PATH 中
+- `grep`/`find` 的文本搜索由随包分发的 Go 原生扩展执行（`omnicrawl/_ocsearch.pyd`/`.so`，abi3 稳定 ABI，覆盖 Python 3.9+），源码在 `native/`；wheel 不再内置 ripgrep 二进制。原生扩展不可用时（从源码安装且未编译、或平台不在构建矩阵内）自动回退到 PATH 中的 `rg`，两者都没有时会明确报错
 
 ## 安装
 
@@ -39,6 +39,24 @@ pip install -r requirements.txt
 # 可选：以可编辑方式安装 console script（同时提供 ocl 和 omnicrawl 两个命令）
 pip install -e . --no-build-isolation
 ```
+
+### 构建原生搜索扩展（发布 wheel 时需要）
+
+搜索核心是 Go 实现（`native/`），随 wheel 分发；构建需要 Go 1.21+ 与 cgo 可用的
+C 编译器（`gcc`/`clang`，Windows 上是 MinGW-w64，**MSVC 的 `cl.exe` 不被 cgo 支持**）：
+
+```powershell
+# 可选：单独构建扩展
+python native/build.py --out omnicrawl/_ocsearch.pyd
+
+# 构建 wheel（产物：omnicrawl_agent-<版本>-cp39-abi3-<平台>.whl）
+python setup.py bdist_wheel
+```
+
+Windows 缺少编译器时可用 `winget install BrechtSanders.WinLibs.POSIX.UCRT`。发布
+wheel 时建议设置 `OMNICRAWL_REQUIRE_NATIVE_SEARCH=1`，让缺少工具链的构建直接失败；
+未设置时构建降级为“不带原生扩展”，运行时回退到 PATH 上的 `rg`。abi3 只省去按
+Python 版本分份，仍需在 Linux/macOS 各构建一次。详见 `native/README.md`。
 
 ## 启动
 
@@ -84,7 +102,7 @@ omnicrawl/
 ├── config/        # 配置加载（core/ 基础仓库、models/ 模型渠道、features/ 功能开关）
 ├── llm/           # 多协议模型运行时
 ├── ui/            # 终端 TUI（Textual）
-├── workspace/     # 工作区工具与 ripgrep 封装
+├── workspace/     # 工作区工具与搜索后端封装
 ├── connectors/    # Telegram/飞书远程连接与自动启动监督器
 └── docs/          # 技术文档
 ```

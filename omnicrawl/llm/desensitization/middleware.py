@@ -34,12 +34,14 @@ from ..protocol import (
     ToolResultBlock,
 )
 from .engine import MaskContext, SensitiveMatcher, mask_structured_value, mask_text
+from .ner import NerLayer, build_ner_layer
 from .registry import (
     DesensitizationStats,
     PlaceholderCycle,
     SequenceRegistry,
     collect_placeholder_numbers,
 )
+from .rules import PatternRule, build_enabled_rules
 from .stream import StreamRestorer
 
 
@@ -67,6 +69,10 @@ class DesensitizationRuntime:
             extra_keys=config.extra_sensitive_keys,
             exempt_keys=config.exempt_keys,
         )
+        # 值类型规则层（含 gitleaks）在运行时构建时解析一次，请求间复用（规则对象不可变）。
+        self._rules: tuple[PatternRule, ...] = build_enabled_rules(config)
+        # NER 兜底层（可选依赖 torch）：未启用 / 环境不满足时为 None，静默跳过。
+        self._ner_layer: NerLayer | None = build_ner_layer(config)
         self._registry = registry or SequenceRegistry()
 
     @property
@@ -101,7 +107,13 @@ class DesensitizationRuntime:
             else:
                 cycle.reserved = collect_placeholder_numbers(_iter_request_texts(request))
                 masked_request = _mask_request(
-                    request, self._matcher, cycle, self._registry.stats, self._config
+                    request,
+                    self._matcher,
+                    cycle,
+                    self._registry.stats,
+                    self._config,
+                    self._rules,
+                    self._ner_layer,
                 )
                 cycle.masked_request = masked_request
         except Exception as exc:
@@ -182,6 +194,8 @@ def _mask_request(
     cycle: PlaceholderCycle,
     stats: DesensitizationStats,
     config: DesensitizationConfig,
+    rules: tuple[PatternRule, ...] = (),
+    ner_layer: NerLayer | None = None,
 ) -> ModelTurnRequest:
     context = MaskContext(
         matcher=matcher,
@@ -192,6 +206,8 @@ def _mask_request(
         entropy_min_bits=config.entropy_min_bits,
         entropy_pure_letters=config.entropy_pure_letters,
         entropy_pure_digits=config.entropy_pure_digits,
+        pattern_rules=rules,
+        ner_layer=ner_layer,
     )
     messages = tuple(_mask_message(message, context) for message in request.messages)
     # 稳定序号复用计数（只到计数粒度，§10.2）：同一值跨请求复用同一序号即前缀缓存可命中。

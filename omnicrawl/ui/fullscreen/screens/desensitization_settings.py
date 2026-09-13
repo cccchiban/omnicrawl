@@ -86,7 +86,7 @@ class DesensitizationSettingsPane(SettingsPane):
                 id="desensitization-strict-restore",
                 classes="desensitization-control choice-select",
             )
-            yield Static("熵检测兜底（自由文本高熵令牌）", classes="desensitization-label")
+            yield Static("熵检测兜底", classes="desensitization-label")
             yield Select(
                 [("开启", True), ("关闭（仅键名 / 结构匹配）", False)],
                 value=c.entropy_enabled,
@@ -122,6 +122,85 @@ class DesensitizationSettingsPane(SettingsPane):
                     "豁免键名（逗号分隔，可留空）",
                     "desensitization-exempt-keys",
                     ", ".join(c.exempt_keys),
+                ),
+            ):
+                yield Static(label, classes="desensitization-label")
+                yield Input(str(value), id=widget_id, classes="desensitization-control")
+            for label, widget_id, value in (
+                ("PEM 私钥（BEGIN/END PRIVATE KEY）", "desensitization-detect-pem-private-key", c.detect_pem_private_key),
+                ("数据库连接串", "desensitization-detect-db-connection-string", c.detect_db_connection_string),
+                ("邮箱地址", "desensitization-detect-email", c.detect_email),
+                ("银行卡号", "desensitization-detect-bank-card", c.detect_bank_card),
+                ("内网 IP", "desensitization-detect-internal-ip", c.detect_internal_ip),
+                ("外网 IP", "desensitization-detect-external-ip", c.detect_external_ip),
+                ("网址（http / https / ftp）", "desensitization-detect-url", c.detect_url),
+                ("MAC 地址", "desensitization-detect-mac-address", c.detect_mac_address),
+                ("中国大陆车牌", "desensitization-detect-license-plate", c.detect_license_plate),
+                ("gitleaks 开源规则", "desensitization-gitleaks-enabled", c.gitleaks_enabled),
+            ):
+                yield Static(label, classes="desensitization-label")
+                yield Select(
+                    [("关闭", False), ("开启", True)],
+                    value=value,
+                    allow_blank=False,
+                    id=widget_id,
+                    classes="desensitization-control choice-select",
+                )
+            yield Static(
+                "自定义 gitleaks.toml 路径（可留空；按规则 id 覆盖 / 追加）",
+                classes="desensitization-label",
+            )
+            yield Input(
+                c.gitleaks_config_path,
+                id="desensitization-gitleaks-config-path",
+                classes="desensitization-control",
+            )
+            yield Static(
+                "NER 兜底层（人名 / 地名 / 机构名；需可选依赖 torch，缺失时自动跳过）",
+                classes="desensitization-label",
+            )
+            yield Select(
+                [("关闭", False), ("开启", True)],
+                value=c.ner_enabled,
+                allow_blank=False,
+                id="desensitization-ner-enabled",
+                classes="desensitization-control choice-select",
+            )
+            yield Static(
+                "NER 推理设备（auto 优先 CUDA、不可用回退 CPU）",
+                classes="desensitization-label",
+            )
+            yield Select(
+                [("auto", "auto"), ("cpu", "cpu"), ("cuda", "cuda")],
+                value=c.ner_device,
+                allow_blank=False,
+                id="desensitization-ner-device",
+                classes="desensitization-control choice-select",
+            )
+            yield Static(
+                "NER 模型路径（可留空；用随包权重或环境变量 OMNICRAWL_NER_MODEL）",
+                classes="desensitization-label",
+            )
+            yield Input(
+                c.ner_model_path,
+                id="desensitization-ner-model-path",
+                classes="desensitization-control",
+            )
+            for label, widget_id, value in (
+                (
+                    "NER 实体类型（逗号分隔，可选 PER / ORG / LOC）",
+                    "desensitization-ner-entity-types",
+                    ", ".join(c.ner_entity_types),
+                ),
+                (
+                    "NER 最小实体长度（2 规避单字地名歧义）",
+                    "desensitization-ner-min-entity-chars",
+                    c.ner_min_entity_chars,
+                ),
+                (
+                    "NER 推理结果缓存容量（单位「块」，0 关闭）",
+                    "desensitization-ner-cache-size",
+                    c.ner_cache_size,
                 ),
             ):
                 yield Static(label, classes="desensitization-label")
@@ -164,6 +243,33 @@ class DesensitizationSettingsPane(SettingsPane):
                 entropy_min_bits=self._read_float("desensitization-entropy-min-bits"),
                 entropy_pure_letters=self._read_bool("desensitization-entropy-pure-letters"),
                 entropy_pure_digits=self._read_bool("desensitization-entropy-pure-digits"),
+                detect_pem_private_key=self._read_bool("desensitization-detect-pem-private-key"),
+                detect_db_connection_string=self._read_bool(
+                    "desensitization-detect-db-connection-string"
+                ),
+                detect_email=self._read_bool("desensitization-detect-email"),
+                detect_bank_card=self._read_bool("desensitization-detect-bank-card"),
+                detect_internal_ip=self._read_bool("desensitization-detect-internal-ip"),
+                detect_external_ip=self._read_bool("desensitization-detect-external-ip"),
+                detect_url=self._read_bool("desensitization-detect-url"),
+                detect_mac_address=self._read_bool("desensitization-detect-mac-address"),
+                detect_license_plate=self._read_bool("desensitization-detect-license-plate"),
+                gitleaks_enabled=self._read_bool("desensitization-gitleaks-enabled"),
+                gitleaks_config_path=self.query_one(
+                    "#desensitization-gitleaks-config-path", Input
+                ).value.strip(),
+                ner_enabled=self._read_bool("desensitization-ner-enabled"),
+                ner_device=str(
+                    self.query_one("#desensitization-ner-device", Select).value
+                ),
+                ner_model_path=self.query_one(
+                    "#desensitization-ner-model-path", Input
+                ).value.strip(),
+                ner_entity_types=self._read_keys("desensitization-ner-entity-types"),
+                ner_min_entity_chars=self._read_int(
+                    "desensitization-ner-min-entity-chars"
+                ),
+                ner_cache_size=self._read_int("desensitization-ner-cache-size"),
             )
             if self._config_path is not None:
                 save_desensitization_config(configuration, self._config_path)
@@ -200,7 +306,7 @@ class DesensitizationSettingsScreen(ModalScreen[Optional[DesensitizationConfig]]
 
     CSS = terminal_css("""
     DesensitizationSettingsScreen { align: center middle; background: $terminal-overlay; }
-    #desensitization-dialog { width: 96; max-width: 96%; height: 46; max-height: 95%; padding: 1 2; border: round $terminal-border-strong; background: $terminal-surface; }
+    #desensitization-dialog { width: 96; max-width: 96%; height: 52; max-height: 95%; padding: 1 2; border: round $terminal-border-strong; background: $terminal-surface; }
     #desensitization-title { height: 1; margin-bottom: 1; color: $terminal-white; text-style: bold; }
     """ + _PANE_CSS + terminal_select_css())
 

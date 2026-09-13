@@ -20,3 +20,6 @@ tomli-w>=1.0
 numpy>=1.24
 onnxruntime>=1.19.2
 sentencepiece>=0.1.99
+
+# NER 兜底层（omnicrawl.llm.desensitization.ner，可选、默认不启用）：需要 torch>=2.0。
+# 启用前执行 `pip install -e .[ner]`；CUDA 版 torch 请按官方 index 安装。未安装时该层自动跳过。

@@ -95,7 +95,7 @@ class ImageGenSettingsPane(SettingsPane):
                 id="image-gen-enabled",
                 classes="image-gen-control choice-select",
             )
-            yield Static("接口地址 base_url（官方或 OpenAI 兼容中转站）", classes="image-gen-field-label")
+            yield Static("接口地址 base_url", classes="image-gen-field-label")
             yield Input(
                 c.base_url,
                 placeholder="https://api.openai.com/v1",
@@ -252,7 +252,7 @@ class ImageGenSettingsScreen(ModalScreen[Optional[ImageGenSettingsResult]]):
 
     def compose(self) -> ComposeResult:
         with Container(id="image-gen-dialog"):
-            yield Static("图像生成配置（OpenAI 兼容 Image API）", id="image-gen-title")
+            yield Static("图像生成配置", id="image-gen-title")
             self._pane = ImageGenSettingsPane(
                 self._config_path,
                 apply_configuration=self._apply_configuration,

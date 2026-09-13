@@ -17,5 +17,9 @@
 *.html text eol=lf
 *.xml text eol=lf
 
-# 随包分发的 ripgrep 二进制
-*.exe binary
+# 原生搜索扩展的构建产物
+*.pyd binary
+*.so binary
+
+# NER 兜底模型权重（PyTorch checkpoint，二进制）
+*.pt binary

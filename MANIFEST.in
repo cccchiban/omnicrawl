@@ -1,0 +1,20 @@
+# Go sources for the bundled native search extension (compiled when installing
+# from an sdist).
+#
+# KEEP THIS FILE ASCII-ONLY: setuptools' sdist reads it with the *locale* codec
+# (cp936/GBK on a Chinese Windows), so any non-ASCII byte aborts the build with
+# UnicodeDecodeError before the sdist is even written.
+graft native
+include LICENSE
+include README.md
+
+# BiLSTM-CRF NER fallback model weights (~5MB), shipped inside the package.
+recursive-include omnicrawl/llm/desensitization/models *.pt
+
+# Never ship build output back into the source distribution.
+global-exclude *.pyd
+global-exclude *.so
+global-exclude *.h
+prune native/**/__pycache__
+prune dist
+prune build

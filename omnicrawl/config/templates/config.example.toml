@@ -165,6 +165,31 @@ failure_fallback = "deterministic"
 # entropy_min_bits = 3.5         # 熵兜底阈值
 # entropy_pure_letters = false   # 纯字母令牌：长度达标即脱敏（默认关闭；十六进制字母串仍跳过）
 # entropy_pure_digits = false    # 纯数字令牌：长度达标即脱敏（默认关闭）
+# 值类型规则层（正则识别「无键名的敏感值类型」）：高危类型默认开启，
+# 泛化类型（邮箱 / 外网 IP / 网址）误报较高，默认关闭、按需开启。
+# detect_pem_private_key = true         # PEM 私钥（BEGIN/END … PRIVATE KEY）
+# detect_db_connection_string = true    # 数据库连接串（URI / ADO 键值）
+# detect_email = false                  # 邮箱地址
+# detect_bank_card = true               # 银行卡号（Luhn 校验）
+# detect_internal_ip = true             # 内网 IP（私有 / 链路本地）
+# detect_external_ip = false            # 外网 IP（公网可路由）
+# detect_url = false                    # 网址（http / https / ftp）
+# detect_mac_address = true             # MAC 地址
+# detect_license_plate = true           # 中国大陆车牌
+# gitleaks 开源规则：默认加载内置离线快照（omnicrawl/llm/desensitization/gitleaks.toml）；
+# gitleaks_config_path 指向自定义文件时按规则 id 覆盖 / 追加（失败回退内置快照）。
+# NER 兜底层（BiLSTM-CRF：人名 / 地名 / 机构名）：结构 / 规则 / 熵之外的最后一道语义
+# 兜底，输入是前几层处理后的文本；需要可选依赖 torch（pip install -e .[ner]）。
+# 权重随包分发，可用 ner_model_path 或环境变量 OMNICRAWL_NER_MODEL 覆盖；
+# torch / 权重缺失时本层静默跳过，不影响既有脱敏链路。
+# ner_enabled = false                   # 默认关闭；开启后作为语义兜底
+# ner_model_path = ""                   # checkpoint 路径；留空用随包权重 / 环境变量
+# ner_device = "auto"                   # auto 优先 CUDA、不可用回退 CPU
+# ner_entity_types = ["PER", "ORG", "LOC"]  # 需要识别的实体类型
+# ner_min_entity_chars = 2              # 最小实体长度（2 规避单字地名歧义）
+# 推理结果缓存：按「块」（≤200 字符）缓存，长会话中未变历史不再重复推理；
+# 容量单位是块数，默认 2048（约 400KB 文本），0 关闭。
+# ner_cache_size = 2048
 
 [api]
 bearer_token = "请替换为随机长令牌"

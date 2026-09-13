@@ -41,18 +41,10 @@ TOOL_SWITCH_KEYS: tuple[str, ...] = (
     "windows_screenshot",
     "subagent",
     "update_todos",
-    "project_memory_search",
-    "project_memory_read",
-    "project_memory_expand_related",
-    "project_memory_write",
-    "session_memory_search",
-    "session_memory_read",
-    "session_memory_expand_related",
-    "session_memory_write",
-    "user_memory_search",
-    "user_memory_read",
-    "user_memory_expand_related",
-    "user_memory_write",
+    "memory_search",
+    "memory_read",
+    "memory_expand_related",
+    "memory_write",
 )
 
 # 默认开关：除 powershell 外全部启用。
@@ -84,25 +76,30 @@ TOOL_SWITCH_LABELS: dict[str, str] = {
     "windows_screenshot": "截取 Windows 桌面",
     "subagent": "分发受限子任务",
     "update_todos": "维护自动执行清单",
-    "project_memory_search": "搜索项目级记忆",
-    "project_memory_read": "读取项目级记忆",
-    "project_memory_expand_related": "展开项目级相关记忆",
-    "project_memory_write": "写入项目级记忆",
-    "session_memory_search": "搜索会话记忆",
-    "session_memory_read": "读取会话记忆",
-    "session_memory_expand_related": "展开会话相关记忆",
-    "session_memory_write": "写入会话记忆",
-    "user_memory_search": "搜索用户级记忆",
-    "user_memory_read": "读取用户级记忆",
-    "user_memory_expand_related": "展开用户级相关记忆",
-    "user_memory_write": "写入用户级记忆",
+    "memory_search": "搜索长期记忆（scope 选作用域）",
+    "memory_read": "读取长期记忆",
+    "memory_expand_related": "展开相关长期记忆",
+    "memory_write": "写入长期记忆（scope 选作用域）",
+}
+
+# 旧版本把记忆工具按作用域拆成 project_/session_/user_ 三类共 12 个开关；
+# 现已合并为带 scope 参数的 4 个 memory_* 工具。这里把旧开关名归一化，
+# 保证已有的 config.toml / 设置面板不会再遇到“不支持的 工具”错误。
+_LEGACY_TOOL_SWITCH_ALIASES: dict[str, str] = {
+    f"{prefix}memory_{action}": f"memory_{action}"
+    for prefix in ("project_", "session_", "user_")
+    for action in ("search", "read", "expand_related", "write")
 }
 
 
 def validate_tool_switch_name(name: str) -> str:
-    """校验工具名是否为可开关的内置工具。"""
+    """校验工具名是否为可开关的内置工具，返回规范化后的开关名。
+
+    旧版按作用域拆分的记忆工具名会被映射到统一的 ``memory_*`` 开关。
+    """
 
     normalized = str(name).strip()
+    normalized = _LEGACY_TOOL_SWITCH_ALIASES.get(normalized, normalized)
     if normalized not in TOOL_SWITCH_DEFAULTS:
         raise ToolSwitchConfigError(
             f"tools 配置不支持工具：{normalized}。可用：{', '.join(TOOL_SWITCH_KEYS)}。"

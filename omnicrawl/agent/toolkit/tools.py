@@ -89,6 +89,11 @@ MEMORY_WRITE_ARGUMENT_SCHEMA = json.dumps(
     {
         "type": "object",
         "properties": {
+            "scope": {
+                "type": "string",
+                "enum": ["project", "session", "user"],
+                "description": "记忆作用域：project=当前项目；session=当前会话；user=跨会话偏好。缺省 project。",
+            },
             "memories": {
                 "type": "array",
                 "minItems": 1,
@@ -1126,183 +1131,74 @@ def _subagent_tool_definition(
 
 def _memory_tool_definitions(
     *,
-    memory_enabled: bool,
     memory_search: ToolRunner,
     memory_read: ToolRunner,
     memory_expand_related: ToolRunner,
     memory_write: ToolRunner,
-    project_memory_search: ToolRunner | None = None,
-    project_memory_read: ToolRunner | None = None,
-    project_memory_expand_related: ToolRunner | None = None,
-    project_memory_write: ToolRunner | None = None,
-    session_memory_search: ToolRunner | None = None,
-    session_memory_read: ToolRunner | None = None,
-    session_memory_expand_related: ToolRunner | None = None,
-    session_memory_write: ToolRunner | None = None,
-    user_memory_search: ToolRunner | None = None,
-    user_memory_read: ToolRunner | None = None,
-    user_memory_expand_related: ToolRunner | None = None,
-    user_memory_write: ToolRunner | None = None,
 ) -> list[ToolDefinition]:
-    """记忆工具：三类作用域完整绑定优先，否则退回旧通用 memory_* 兼容组。"""
+    """四个记忆工具：作用域由参数 ``scope`` 决定，而不是工具名。"""
 
-    definitions: list[ToolDefinition] = []
-    if memory_enabled:
-        scoped_runners = (
-            project_memory_search,
-            project_memory_read,
-            project_memory_expand_related,
-            project_memory_write,
-            session_memory_search,
-            session_memory_read,
-            session_memory_expand_related,
-            session_memory_write,
-            user_memory_search,
-            user_memory_read,
-            user_memory_expand_related,
-            user_memory_write,
-        )
-        if any(runner is not None for runner in scoped_runners):
-            if not all(runner is not None for runner in scoped_runners):
-                raise ValueError("三类记忆工具必须完整提供 search/read/expand/write 绑定。")
-            scope_definitions = (
-                (
-                    "project",
-                    "项目级",
-                    "当前项目的具体技术信息；存储与检索严格绑定当前工作区",
-                    project_memory_search,
-                    project_memory_read,
-                    project_memory_expand_related,
-                    project_memory_write,
-                ),
-                (
-                    "session",
-                    "会话级",
-                    "当前会话的目标、约束、决策、文件、完成状态和后续事项；禁止跨会话读取",
-                    session_memory_search,
-                    session_memory_read,
-                    session_memory_expand_related,
-                    session_memory_write,
-                ),
-                (
-                    "user",
-                    "用户级",
-                    "用户习惯、稳定偏好和用户纠错；跨项目、跨会话共享",
-                    user_memory_search,
-                    user_memory_read,
-                    user_memory_expand_related,
-                    user_memory_write,
-                ),
-            )
-            for (
-                prefix,
-                label,
-                purpose,
-                search_runner,
-                read_runner,
-                expand_runner,
-                write_runner,
-            ) in scope_definitions:
-                assert search_runner is not None
-                assert read_runner is not None
-                assert expand_runner is not None
-                assert write_runner is not None
-                definitions.extend(
-                    [
-                        ToolDefinition(
-                            name=f"{prefix}_memory_search",
-                            description=(
-                                 f"是什么：搜索{label}记忆摘要。"
-                                 f"怎么做：需要恢复{purpose}时使用；只需完整正文时不用，先搜索再按 id 读取；不确定目录可省略 candidate_directories。"
-                                 "怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；空结果为 []，失败返回文本错误。"
-                                 "建议：query 写具体主题并提供 reason；用 candidate_directories 缩小范围，命中后再调用对应 memory_read，减少上下文。"
-                             ),
-                            argument_schema=(
-                                '{"query":"要检索的主题","reason":"为什么当前需要该作用域记忆",'
-                                '"candidate_directories":["project-context/general"],"max_results":5}'
-                            ),
-                            requires_confirmation=False,
-                            run=search_runner,
-                        ),
-                        ToolDefinition(
-                            name=f"{prefix}_memory_read",
-                            description=(
-                                 f"是什么：读取{label}记忆的完整正文并加深实际读取项。"
-                                 f"怎么做：已通过对应 memory_search 命中且需要细节时使用；只有模糊主题时不用；memory_ids 必须来自同一作用域。"
-                                 "怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；缺失 ID 不出现在数组中，失败返回文本错误。"
-                                 "建议：只读取与当前决策相关的 ID，避免一次加载过多正文；读取后再决定是否 expand_related。"
-                             ),
-                            argument_schema='{"memory_ids":["20260603-164500"]}',
-                            requires_confirmation=False,
-                            run=read_runner,
-                        ),
-                        ToolDefinition(
-                            name=f"{prefix}_memory_expand_related",
-                            description=(
-                                 f"是什么：沿关联目录扩展{label}记忆的候选摘要。"
-                                 f"怎么做：初次搜索未覆盖相关背景、且已有 memory_ids 时使用；没有已知 ID 或需要全文时不用。"
-                                 "怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；按 max_depth/max_results 限制，失败返回文本错误。"
-                                 "建议：默认一层、少量结果即可；先 expand_related 找候选，再按需 memory_read，扩展过深会增加噪声。"
-                             ),
-                            argument_schema=(
-                                '{"memory_ids":["20260603-164500"],'
-                                '"max_depth":1,"max_results":5}'
-                            ),
-                            requires_confirmation=False,
-                            run=expand_runner,
-                        ),
-                        ToolDefinition(
-                            name=f"{prefix}_memory_write",
-                            description=(
-                                 f"是什么：写入或合并{label}长期记忆。"
-                                 f"怎么做：只有信息已确认且具有长期复用价值时使用；临时进度、完整对话、凭据或不属于{purpose}的内容不用写。"
-                                 "怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；memories 为空或字段类型错误时返回文本错误。"
-                                 "建议：content 短小、准确、可独立理解，补充 related_directories；批量写入前去重，避免污染后续检索。"
-                             ),
-                            argument_schema=MEMORY_WRITE_ARGUMENT_SCHEMA,
-                            requires_confirmation=False,
-                            run=write_runner,
-                        ),
-                    ]
-                )
-        else:
-            # 兼容旧调用方；LocalToolAgent 已始终提供三类作用域绑定。
-            definitions.extend(
-                [
-                    ToolDefinition(
-                        name="memory_search",
-                        description='是什么：按当前任务检索候选长期记忆摘要。怎么做：需要查找项目背景或用户偏好时使用；不需要长期上下文时不用，且不直接返回正文。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；失败返回文本错误。建议：先 search 再 memory_read，query 具体并说明 reason；只读取真正相关的 ID，减少上下文噪声。',
-                        argument_schema=(
-                            '{"query":"用户偏好或项目主题","reason":"为什么当前需要查记忆",'
-                            '"candidate_directories":["project-context/general"],"max_results":5}'
-                        ),
-                        requires_confirmation=False,
-                        run=memory_search,
-                    ),
-                    ToolDefinition(
-                        name="memory_read",
-                        description='是什么：按记忆 ID 读取完整长期记忆内容并加深回忆。怎么做：已有候选 ID 且需要细节时使用；只有主题没有 ID 时先 memory_search。怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；缺失项不返回，失败返回文本错误。建议：限制 memory_ids 数量并按需读取，避免把无关正文带入当前决策。',
-                        argument_schema='{"memory_ids":["20260603-164500"]}',
-                        requires_confirmation=False,
-                        run=memory_read,
-                    ),
-                    ToolDefinition(
-                        name="memory_expand_related",
-                        description='是什么：沿已读记忆的关联目录扩展候选摘要。怎么做：已有记忆 ID 但需要查找相关背景时使用；没有已读 ID 或需要完整正文时不用。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；失败返回文本错误。建议：默认一层、小批量扩展；命中后再 memory_read，深度或数量过大会增加噪声。',
-                        argument_schema='{"memory_ids":["20260603-164500"],"max_depth":1,"max_results":5}',
-                        requires_confirmation=False,
-                        run=memory_expand_related,
-                    ),
-                    ToolDefinition(
-                        name="memory_write",
-                        description='是什么：写入或合并具有长期复用价值的长期记忆。怎么做：只保存已确认的稳定事实、偏好或决策时使用；临时进度、凭据和未经验证结论不用写。怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；参数无效时返回文本错误。建议：content 短而可独立理解，先检查是否已有重复记忆；相关目录有助于后续检索。',
-                        argument_schema=MEMORY_WRITE_ARGUMENT_SCHEMA,
-                        requires_confirmation=False,
-                        run=memory_write,
-                    ),
-                ]
-            )
-    return definitions
+    scope_note = (
+        "scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；"
+        "session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；"
+        "user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。"
+    )
+    return [
+        ToolDefinition(
+            name="memory_search",
+            description=(
+                "是什么：搜索长期记忆摘要。"
+                f"怎么做：需要恢复项目背景、会话进度或用户偏好时使用；只需完整正文时不用，先搜索再按 id 读取；{scope_note}"
+                "怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；空结果为 []，失败返回文本错误。"
+                "建议：query 写具体主题并提供 reason；用 scope 与 candidate_directories 缩小范围，命中后再 memory_read，减少上下文。"
+            ),
+            argument_schema=(
+                '{"query":"要检索的主题","reason":"为什么当前需要该记忆","scope":"project",'
+                '"candidate_directories":["project-context/general"],"max_results":5}'
+            ),
+            requires_confirmation=False,
+            run=memory_search,
+        ),
+        ToolDefinition(
+            name="memory_read",
+            description=(
+                "是什么：按记忆 ID 读取完整正文并加深实际读取项。"
+                f"怎么做：已通过 memory_search 命中且需要细节时使用；只有模糊主题时不用；memory_ids 必须来自同一 scope。{scope_note}"
+                "怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；缺失 ID 不出现在数组中，失败返回文本错误。"
+                "建议：只读取与当前决策相关的 ID，避免一次加载过多正文；读取后再决定是否 expand_related。"
+            ),
+            argument_schema='{"memory_ids":["20260603-164500"],"scope":"project"}',
+            requires_confirmation=False,
+            run=memory_read,
+        ),
+        ToolDefinition(
+            name="memory_expand_related",
+            description=(
+                "是什么：沿关联目录扩展记忆的候选摘要。"
+                f"怎么做：初次搜索未覆盖相关背景、且已有 memory_ids 时使用；没有已知 ID 或需要全文时不用。{scope_note}"
+                "怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；按 max_depth/max_results 限制，失败返回文本错误。"
+                "建议：默认一层、少量结果即可；先 expand_related 找候选，再按需 memory_read，扩展过深会增加噪声。"
+            ),
+            argument_schema=(
+                '{"memory_ids":["20260603-164500"],"scope":"project",'
+                '"max_depth":1,"max_results":5}'
+            ),
+            requires_confirmation=False,
+            run=memory_expand_related,
+        ),
+        ToolDefinition(
+            name="memory_write",
+            description=(
+                "是什么：写入或合并长期记忆。"
+                f"怎么做：只有信息已确认且具有长期复用价值时使用；临时进度、完整对话、凭据不用写。{scope_note}"
+                "怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；memories 为空或字段类型错误时返回文本错误。"
+                "建议：content 短小、准确、可独立理解，补充 related_directories；批量写入前去重，避免污染后续检索。"
+            ),
+            argument_schema=MEMORY_WRITE_ARGUMENT_SCHEMA,
+            requires_confirmation=False,
+            run=memory_write,
+        ),
+    ]
 
 
 def build_agent_tools(
@@ -1343,18 +1239,6 @@ def build_agent_tools(
     windows_input: ToolRunner | None = None,
     windows_clipboard: ToolRunner | None = None,
     windows_screenshot: ToolRunner | None = None,
-    project_memory_search: ToolRunner | None = None,
-    project_memory_read: ToolRunner | None = None,
-    project_memory_expand_related: ToolRunner | None = None,
-    project_memory_write: ToolRunner | None = None,
-    session_memory_search: ToolRunner | None = None,
-    session_memory_read: ToolRunner | None = None,
-    session_memory_expand_related: ToolRunner | None = None,
-    session_memory_write: ToolRunner | None = None,
-    user_memory_search: ToolRunner | None = None,
-    user_memory_read: ToolRunner | None = None,
-    user_memory_expand_related: ToolRunner | None = None,
-    user_memory_write: ToolRunner | None = None,
     kb_search: ToolRunner | None = None,
     kb_read: ToolRunner | None = None,
     kb_write: ToolRunner | None = None,
@@ -1436,23 +1320,10 @@ def build_agent_tools(
     if memory_enabled:
         tools.extend(
             _memory_tool_definitions(
-                memory_enabled=memory_enabled,
                 memory_search=memory_search,
                 memory_read=memory_read,
                 memory_expand_related=memory_expand_related,
                 memory_write=memory_write,
-                project_memory_search=project_memory_search,
-                project_memory_read=project_memory_read,
-                project_memory_expand_related=project_memory_expand_related,
-                project_memory_write=project_memory_write,
-                session_memory_search=session_memory_search,
-                session_memory_read=session_memory_read,
-                session_memory_expand_related=session_memory_expand_related,
-                session_memory_write=session_memory_write,
-                user_memory_search=user_memory_search,
-                user_memory_read=user_memory_read,
-                user_memory_expand_related=user_memory_expand_related,
-                user_memory_write=user_memory_write,
             )
         )
     return {

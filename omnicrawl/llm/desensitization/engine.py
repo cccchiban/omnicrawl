@@ -2,6 +2,8 @@
 
 结构感知层（设计稿 §5.1）：已解析结构（工具调用参数等 dict）递归匹配，以及
 文本中的可解析片段（``.env`` 赋值 / ``key: value`` / JSON 字符串值）。
+值类型规则层（§5.3）：无键名但形态确定的敏感值（PEM / 连接串 / 邮箱 / 银行卡 /
+IP / URL / MAC / 车牌 / gitleaks），由 ``rules.py`` / ``gitleaks.py`` 提供规则。
 熵检测兜底（§5.2）：对无键名、无法结构化的「裸值」按长度 / 字符类混合 / 香农熵
 判定，形态白名单优先跳过（宁少勿滥）。纯字母 / 纯数字单类令牌在对应开关开启时
 按长度直接判定（§5.2 扩展）。命中值替换为占位符；豁免表优先。
@@ -10,12 +12,10 @@
 from __future__ import annotations
 
 import json
-import math
 import re
-from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
 
 from .registry import (
     PLACEHOLDER_PATTERN,
@@ -23,6 +23,10 @@ from .registry import (
     PlaceholderCycle,
     format_placeholder,
 )
+from .rules import PatternRule, scan_pattern_rules, shannon_entropy_bits
+
+if TYPE_CHECKING:  # 避免 engine ↔ ner 顶层循环依赖；NER 为可选层。
+    from .ner import NerLayer
 
 # 种子与 omnicrawl/mcp/security.py::_SENSITIVE_FIELD_NAMES 保持同步（设计稿 §5.1）；
 # llm 层不反向依赖 mcp 包，故声明为独立集合，由测试守护两者一致。
@@ -173,16 +177,6 @@ _CODE_PUNCTUATION_CHARS = frozenset("()[]{}'\";,<>`")
 _NAMING_SEGMENT_MAX_LENGTH = 18
 _NAMING_CHAIN_FULL_PATTERN = re.compile(r"[A-Za-z0-9]+(?:[_.\-:|]+[A-Za-z0-9]+)+[_.\-:|]*")
 _NAMING_SEGMENT_SPLIT_PATTERN = re.compile(r"[_.\-:|]+")
-
-
-def shannon_entropy_bits(text: str) -> float:
-    """字符频率的香农熵（bit/char）；长度 ≤1 时为 0。"""
-
-    length = len(text)
-    if length <= 1:
-        return 0.0
-    counts = Counter(text)
-    return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
 def is_entropy_exempt(token: str) -> bool:
@@ -348,6 +342,12 @@ class MaskContext:
     entropy_min_bits: float = 3.5
     entropy_pure_letters: bool = False
     entropy_pure_digits: bool = False
+    # 值类型规则层（PEM / 连接串 / 邮箱 / 银行卡 / IP / URL / MAC / 车牌 / gitleaks）。
+    # 为空时不启用规则层（保持仅结构 + 熵的旧行为）。
+    pattern_rules: tuple[PatternRule, ...] = ()
+    # NER 兜底层（BiLSTM-CRF，可选依赖 torch）：结构 / 规则 / 熵之外的最后一道语义兜底。
+    # 为 None 时本层不参与，保持既有行为。
+    ner_layer: "NerLayer | None" = None
 
     def placeholder_for(self, value: str) -> str | None:
         """值 → 占位符；被跳过（空串 / 已脱敏 / 占位符样式）时返回 None。"""
@@ -397,16 +397,45 @@ def _mask_sensitive_subtree(value: Any, ctx: MaskContext) -> Any:
 
 
 def mask_text(text: str, ctx: MaskContext) -> str:
-    """文本匹配：结构感知（`.env` / `key: value` / JSON）→ 熵检测兜底（§5.3 优先级）。"""
+    """文本匹配：结构感知 → 值类型规则层 → 熵兜底 → NER 语义兜底。
+
+    优先级遵循设计稿 §5.4：豁免表 → 结构命中 → 值类型规则 → 熵兜底 → NER 兜底；
+    同一位置只登记一次（最先命中的层级生效，规则层内部按规则顺序与重叠去重）。
+
+    NER 层接收的是**前几层处理后的文本**（命中值已是占位符），因此不会被邮箱 /
+    手机号等其它类型数据干扰，也不会重复登记已脱敏的值。
+    """
 
     if not text:
         return text
     masked = _ENV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, ctx), text)
     masked = _KV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, ctx), masked)
     masked = _JSON_STRING_PAIR_PATTERN.sub(lambda match: _replace_json_pair(match, ctx), masked)
+    if ctx.pattern_rules:
+        masked = _mask_pattern_text(masked, ctx)
     if ctx.entropy_enabled:
         masked = _mask_entropy_text(masked, ctx)
+    if ctx.ner_layer is not None:
+        masked = _mask_ner_text(masked, ctx)
     return masked
+
+
+def _mask_pattern_text(text: str, ctx: MaskContext) -> str:
+    """值类型规则层：命中区间替换为占位符（重叠区间由先命中的规则占位）。"""
+
+    matches = scan_pattern_rules(text, ctx.pattern_rules)
+    if not matches:
+        return text
+    result = text
+    for match in reversed(matches):
+        before = ctx.stats.values_masked
+        placeholder = ctx.placeholder_for(match.value)
+        if placeholder is None:
+            continue
+        if ctx.stats.values_masked > before:
+            ctx.stats.rules_masked += 1
+        result = result[: match.start] + placeholder + result[match.end :]
+    return result
 
 
 def _mask_entropy_text(text: str, ctx: MaskContext) -> str:
@@ -430,6 +459,30 @@ def _mask_entropy_text(text: str, ctx: MaskContext) -> str:
             continue
         if ctx.stats.values_masked > before:
             ctx.stats.entropy_masked += 1
+        result = result[:start] + placeholder + result[end:]
+    return result
+
+
+def _mask_ner_text(text: str, ctx: MaskContext) -> str:
+    """NER 兜底层：把语义实体（人名 / 地名 / 机构名）替换为占位符。
+
+    与前几层一样只替换值本体；区间由 ``NerLayer`` 过滤（实体类型 / 含汉字 / 最小
+    长度 / 不与既有占位符重叠）。登记走 ``placeholder_for``，还原沿用标准机制。
+    """
+
+    layer = ctx.ner_layer
+    spans = layer.find_spans(text)
+    if not spans:
+        return text
+    result = text
+    for start, end in reversed(spans):
+        token = text[start:end]
+        before = ctx.stats.values_masked
+        placeholder = ctx.placeholder_for(token)
+        if placeholder is None:
+            continue
+        if ctx.stats.values_masked > before:
+            ctx.stats.ner_masked += 1
         result = result[:start] + placeholder + result[end:]
     return result
 
