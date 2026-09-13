@@ -139,7 +139,9 @@ def should_skip_value(value: str) -> bool:
         return True
     if not value.strip().strip("*"):
         return True
-    return PLACEHOLDER_PATTERN.search(value) is not None
+    # 只跳过「整串恰为一个占位符」的值：值里嵌有占位符样式文本时其余部分仍须继续脱敏，
+    # 否则同一条值里的真实秘密会随整串一起出网（§5.1）。
+    return PLACEHOLDER_PATTERN.fullmatch(value.strip()) is not None
 
 
 # ── 熵检测兜底（设计稿 §5.2） ────────────────────────────────────────────
@@ -491,28 +493,35 @@ def _replace_assignment(match: re.Match, ctx: MaskContext) -> str:
     if not ctx.matcher.is_sensitive(match.group(2)):
         return match.group(0)
     raw_value = match.group(4)
-    masked = _mask_assignment_value(raw_value, ctx)
-    if masked == raw_value:
+    body = _assignment_value_body(raw_value)
+    if body is None:
         return match.group(0)
+    body_start, body_end = body
+    placeholder = ctx.placeholder_for(raw_value[body_start:body_end])
+    if placeholder is None:
+        return match.group(0)
+    masked_value = raw_value[:body_start] + placeholder + raw_value[body_end:]
     start, end = match.span(4)
-    return match.string[match.start() : start] + masked + match.string[end : match.end()]
+    return match.string[match.start() : start] + masked_value + match.string[end : match.end()]
 
 
-def _mask_assignment_value(raw_value: str, ctx: MaskContext) -> str:
-    """处理赋值右侧值区间：保留引号与行尾空白，只替换值本体。"""
+def _assignment_value_body(raw_value: str) -> tuple[int, int] | None:
+    """定位赋值右侧的值本体区间（相对 ``raw_value``）；形态不明确时返回 None。
+
+    带引号时只取**配对引号内部**：`KEY = "v"  # 注释` 只替换 `v`，注释保留；
+    `KEY = "` 这类被换行截断的片段（引号未配对）不当作值，避免连引号和后续文本一起吞掉。
+    """
 
     stripped = raw_value.rstrip()
-    trailing = raw_value[len(stripped) :]
-    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in "\"'":
-        inner = stripped[1:-1]
-        placeholder = ctx.placeholder_for(inner)
-        if placeholder is None:
-            return raw_value
-        return f"{stripped[0]}{placeholder}{stripped[-1]}{trailing}"
-    placeholder = ctx.placeholder_for(stripped)
-    if placeholder is None:
-        return raw_value
-    return f"{placeholder}{trailing}"
+    if not stripped:
+        return None
+    quote = stripped[0]
+    if quote in "\"'":
+        closing = stripped.find(quote, 1)
+        if closing < 0:
+            return None
+        return 1, closing
+    return 0, len(stripped)
 
 
 def _replace_json_pair(match: re.Match, ctx: MaskContext) -> str:

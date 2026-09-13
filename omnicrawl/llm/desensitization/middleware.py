@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
 import time
 from dataclasses import replace
 from typing import Any, Callable, Iterator
@@ -73,6 +75,7 @@ class DesensitizationRuntime:
         self._rules: tuple[PatternRule, ...] = build_enabled_rules(config)
         # NER 兜底层（可选依赖 torch）：未启用 / 环境不满足时为 None，静默跳过。
         self._ner_layer: NerLayer | None = build_ner_layer(config)
+        self._memo = _MessageMaskMemo()
         self._registry = registry or SequenceRegistry()
 
     @property
@@ -90,6 +93,7 @@ class DesensitizationRuntime:
     def close(self) -> None:
         """关闭：丢弃全部未注销序号（不落盘、不恢复，§7.3），再关闭内层运行时。"""
 
+        self._memo.clear()
         self._registry.drop_all()
         self._inner.close()
 
@@ -114,6 +118,7 @@ class DesensitizationRuntime:
                     self._config,
                     self._rules,
                     self._ner_layer,
+                    self._memo,
                 )
                 cycle.masked_request = masked_request
         except Exception as exc:
@@ -196,6 +201,7 @@ def _mask_request(
     config: DesensitizationConfig,
     rules: tuple[PatternRule, ...] = (),
     ner_layer: NerLayer | None = None,
+    memo: "_MessageMaskMemo | None" = None,
 ) -> ModelTurnRequest:
     context = MaskContext(
         matcher=matcher,
@@ -209,7 +215,9 @@ def _mask_request(
         pattern_rules=rules,
         ner_layer=ner_layer,
     )
-    messages = tuple(_mask_message(message, context) for message in request.messages)
+    messages = tuple(
+        _mask_message_cached(message, context, memo) for message in request.messages
+    )
     # 稳定序号复用计数（只到计数粒度，§10.2）：同一值跨请求复用同一序号即前缀缓存可命中。
     stats.sequence_reuses += cycle.stable_reuses
     return replace(request, messages=messages)
@@ -275,6 +283,141 @@ def _json_text(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
     except Exception:
         return ""
+
+
+#: 逐消息屏蔽结果缓存的字符预算（超出按最久未用淘汰）。历史文本本身已在内存里，
+#: 这里多留一份屏蔽后的内容，是为了让「只追加」的历史每轮只扫新消息。
+#: 预算同时也是「被屏蔽值原文」在缓存里的驻留上限：调小更保守、命中率随之下降。
+#: 设为 0 即关闭该缓存（退回每轮全量重扫，行为与优化前一致）。
+_MEMO_MAX_CHARS = 1024 * 1024
+
+
+class _MessageMaskMemo:
+    """逐消息屏蔽结果缓存（§5.6 性能）。
+
+    历史每轮全量重发且只追加：已出现过且逐字未变的消息不必重复走匹配引擎。
+    条目保存「屏蔽后的 blocks / reasoning」与新增的 (序号, 原文) 对——序号由进程级
+    稳定索引保证永久一致，缓存只是省掉扫描；原文那份用于把缓存结果重新登记进本周期的
+    还原集合，否则模型回引历史占位符会落入「未注册序号」分支。
+
+    结果对象按当前消息重建（只替换参与屏蔽的字段），因此未参与屏蔽的字段
+    （如 per-message 工具声明）不会因复用而丢失。
+    """
+
+    def __init__(self, max_chars: int = _MEMO_MAX_CHARS) -> None:
+        self._max_chars = max_chars
+        self._entries: dict[bytes, tuple[Any, Any, tuple[tuple[int, str], ...], int]] = {}
+        self._chars = 0
+        self._lock = threading.Lock()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: bytes) -> tuple[Any, Any, tuple[tuple[int, str], ...]] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                self.misses += 1
+                return None
+            # 命中即移到最新（dict 保序，重插即置尾）。
+            self._entries[key] = self._entries.pop(key)
+            self.hits += 1
+            return entry[0], entry[1], entry[2]
+
+    def put(
+        self,
+        key: bytes,
+        blocks: Any,
+        reasoning: Any,
+        pairs: tuple[tuple[int, str], ...],
+        chars: int,
+    ) -> None:
+        if self._max_chars <= 0:
+            return
+        with self._lock:
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._chars -= previous[3]
+            self._entries[key] = (blocks, reasoning, pairs, chars)
+            self._chars += chars
+            while self._chars > self._max_chars and len(self._entries) > 1:
+                # 淘汰「最近用过」而不是「最久没用」：历史是每轮从头到尾顺序全扫，
+                # 工作集超出预算时 LRU 会正好淘汰下一轮马上要用的条目（抖动到 0 命中），
+                # 淘汰最近用过的条目则等价于把历史头部钉在缓存里，命中率随预算线性下降。
+                evicted_key = next(reversed(self._entries))
+                self._chars -= self._entries.pop(evicted_key)[3]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._chars = 0
+
+
+def _digest_text(digest: Any, tag: bytes, text: str) -> None:
+    digest.update(tag)
+    digest.update(str(len(text)).encode("ascii"))
+    digest.update(b"\x1f")
+    digest.update(text.encode("utf-8", "replace"))
+
+
+def _message_digest(message: ConversationMessage) -> bytes:
+    """缓存键：只覆盖参与屏蔽的字段（role / 文本块 / 工具参数 / 工具结果 / 思考）。"""
+
+    digest = hashlib.blake2b(digest_size=16)
+    _digest_text(digest, b"r", message.role or "")
+    if message.reasoning:
+        _digest_text(digest, b"q", message.reasoning)
+    for block in message.blocks:
+        if isinstance(block, TextBlock):
+            _digest_text(digest, b"t", block.text or "")
+        elif isinstance(block, ToolCallBlock):
+            _digest_text(digest, b"c", _json_text(block.arguments))
+        elif isinstance(block, ToolResultBlock):
+            _digest_text(digest, b"s", block.content or "")
+        else:
+            _digest_text(digest, b"x", type(block).__name__)
+    return digest.digest()
+
+
+def _masked_chars(message: ConversationMessage) -> int:
+    total = len(message.reasoning or "")
+    for block in message.blocks:
+        if isinstance(block, TextBlock):
+            total += len(block.text or "")
+        elif isinstance(block, ToolResultBlock):
+            total += len(block.content or "")
+        elif isinstance(block, ToolCallBlock):
+            total += len(_json_text(block.arguments))
+    return total
+
+
+def _mask_message_cached(
+    message: ConversationMessage,
+    ctx: MaskContext,
+    memo: "_MessageMaskMemo | None" = None,
+) -> ConversationMessage:
+    """带缓存的单条消息屏蔽：命中即复用，未命中才走引擎并记入缓存。"""
+
+    if memo is None:
+        return _mask_message(message, ctx)
+    key = _message_digest(message)
+    cached = memo.get(key)
+    if cached is not None:
+        blocks, reasoning, pairs = cached
+        for seq, value in pairs:
+            ctx.cycle.adopt(value, seq)
+        if blocks == message.blocks and reasoning == message.reasoning:
+            return message
+        return replace(message, blocks=blocks, reasoning=reasoning)
+    registered_before = len(ctx.cycle.entries)
+    masked = _mask_message(message, ctx)
+    memo.put(
+        key,
+        masked.blocks,
+        masked.reasoning,
+        ctx.cycle.pairs_from(registered_before),
+        _masked_chars(masked),
+    )
+    return masked
 
 
 __all__ = [

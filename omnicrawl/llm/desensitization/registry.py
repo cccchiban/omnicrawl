@@ -200,6 +200,26 @@ class PlaceholderCycle:
 
         return self.entries.get(seq)
 
+    def adopt(self, value: str, seq: int) -> None:
+        """把「本进程已确定过序号」的值登记进本周期（复用缓存屏蔽结果时使用）。
+
+        序号分配结果由进程级稳定索引保证永久一致；缓存只是跳过重复扫描，仍必须把
+        (序号 → 原文) 落回本周期还原集合，否则模型回引历史占位符时会落入未注册分支。
+        """
+
+        if not value or seq <= 0:
+            return
+        if self._value_index.get(value) == seq:
+            return
+        self._value_index[value] = seq
+        self.entries[seq] = value
+        self.stable_reuses += 1
+
+    def pairs_from(self, start: int) -> tuple[tuple[int, str], ...]:
+        """返回 ``start`` 之后新增的 (序号, 值) 对（``entries`` 按登记顺序追加）。"""
+
+        return tuple(itertools.islice(self.entries.items(), start, None))
+
     def close(self) -> None:
         """注销本周期全部序号并释放原文（§7.3）。
 
@@ -209,6 +229,9 @@ class PlaceholderCycle:
 
         self.entries.clear()
         self._value_index.clear()
+        # 结束的周期不再需要请求副本：否则失败 / 取消遗留的周期会各留一份完整历史。
+        self.source_request = None
+        self.masked_request = None
         self.closed = True
 
 
@@ -246,6 +269,12 @@ class SequenceRegistry:
             ):
                 self.stats.cycles_reused += 1
                 return last, True
+
+            # 只有紧邻的上一个未完成周期才可能被同一逻辑请求的重试复用；请求一旦换新，
+            # 它就永远不会再命中，就地注销，避免原文与屏蔽副本随失败 / 取消无限累积。
+            if last is not None and not last.closed:
+                last.close()
+                self._open_cycles.pop(last.cycle_id, None)
             cycle = PlaceholderCycle(
                 cycle_id=_next_cycle_id(),
                 stable_index=self._stable_index,
