@@ -16,7 +16,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 HOOK_API_VERSION = "1"
-OMNICRAWL_VERSION = "0.1.55"
+# 需与 pyproject.toml 的 version 保持同步（tests/test_packaging_entrypoints.py 会校验）。
+OMNICRAWL_VERSION = "0.1.59"
 PLUGIN_SCHEMA_VERSION = 1
 
 HANDLER_MODE_OBSERVE = "observe"

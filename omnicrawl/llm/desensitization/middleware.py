@@ -22,6 +22,7 @@ from ...config.features.desensitization import (
 from ..errors import ModelError, ModelErrorCode
 from ..protocol import (
     ConversationMessage,
+    ImageBlock,
     MessageBlock,
     ModelRuntime,
     ModelStreamEvent,
@@ -360,7 +361,15 @@ def _digest_text(digest: Any, tag: bytes, text: str) -> None:
 
 
 def _message_digest(message: ConversationMessage) -> bytes:
-    """缓存键：只覆盖参与屏蔽的字段（role / 文本块 / 工具参数 / 工具结果 / 思考）。"""
+    """缓存键：覆盖「复用安全」所需的全部字段，而不只是被屏蔽的文本。
+
+    命中缓存后是整块复用缓存里的 ``blocks``，因此任何决定消息身份的字段都必须
+    进键：``tool_call_id`` / 函数名 / 图片数据 / ``ok``。只按正文做键会让两条正文
+    相同的消息互相串号——最典型的是同一批里两个返回值完全一样的工具结果（如两个
+    ``memory_search`` 都返回 ``[]``）：第二条会拿到第一条的 ``tool_call_id``，使
+    assistant 声明的另一个 ``tool_call_id`` 没有配对结果，Provider 直接以 HTTP 400
+    拒收整轮请求（Anthropic / OpenAI / 网关均为硬校验）。
+    """
 
     digest = hashlib.blake2b(digest_size=16)
     _digest_text(digest, b"r", message.role or "")
@@ -370,9 +379,21 @@ def _message_digest(message: ConversationMessage) -> bytes:
         if isinstance(block, TextBlock):
             _digest_text(digest, b"t", block.text or "")
         elif isinstance(block, ToolCallBlock):
-            _digest_text(digest, b"c", _json_text(block.arguments))
+            # 调用身份：id 不同即不同消息，重复的 id 会让 Provider 报「工具结果无配对调用」。
+            _digest_text(digest, b"c", block.call_id or "")
+            _digest_text(digest, b"n", block.name or "")
+            _digest_text(digest, b"p", block.provider_call_id or "")
+            _digest_text(digest, b"a", _json_text(block.arguments))
         elif isinstance(block, ToolResultBlock):
-            _digest_text(digest, b"s", block.content or "")
+            # 结果身份：call_id 与 ok 必须进键，否则「同样返回 [] 的两条结果」会串号。
+            _digest_text(digest, b"s", block.call_id or "")
+            _digest_text(digest, b"k", "1" if block.ok else "0")
+            _digest_text(digest, b"v", block.content or "")
+        elif isinstance(block, ImageBlock):
+            # 图片不参与文本屏蔽，但缓存复用会整块替换：不同图片绝不能共享条目。
+            _digest_text(digest, b"i", block.media_type or "")
+            _digest_text(digest, b"d", block.detail or "")
+            _digest_text(digest, b"b", block.data_base64 or "")
         else:
             _digest_text(digest, b"x", type(block).__name__)
     return digest.digest()

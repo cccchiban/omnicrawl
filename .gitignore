@@ -22,7 +22,6 @@ designs/
 .omnicrawl/
 logs/
 tests/
-docs/
 generated_audio/
 
 CLAUDE.md
