@@ -107,20 +107,20 @@ class ContextBudgetManager:
         if not 0 < emergency_context_ratio < 1:
             raise ValueError("emergency_context_ratio 必须满足 0 < value < 1。")
 
-        # 预估下一请求输入不把冷历史计入：冷历史在折叠窗口之外，只会在
-        # 压缩/溢出恢复时以摘要替代，不会原样进入下一次模型请求；计入它会把
-        # 触发阈值当成“系统提示+冷历史+近回合”的总和，导致上下文远未用满
-        # （不足窗口十分之一）就提前触发压缩。折叠与近回合的取舍见下方
-        # “compactable_tokens”注释。
+        # 预估下一请求输入必须包含全部历史：压缩前冷历史仍原样进入下一次模型
+        # 请求（working_messages = 稳定上下文 + 完整 _history + 下一条用户消息）。
+        # 漏算冷历史会让预估远低于真实请求，长会话里触发阈值永远达不到，上下文
+        # 越过窗口也不压缩，只能等上下文超限再走溢出恢复。
+        # 已存在的压缩摘要单独计入 existing_summary_tokens，不会重复累加。
         estimated_next_input_tokens = (
             stable_context_tokens
             + existing_summary_tokens
+            + cold_history_tokens
             + recent_history_tokens
             + next_user_reserve_tokens
         )
-        # 冷历史 + 既有摘要是真正会被本次压缩替换的“可压缩体积”；冷历史
-        # 不计入预估输入后，它仍保留在压缩收益的测算里，压缩后预估输入
-        # （simulated_compacted_input_tokens）依旧能反映“压掉冷历史后剩余量”。
+        # compactable_tokens 是真正会被本次压缩替换的“可压缩体积”：既有摘要与冷
+        # 历史都会被新摘要取代；近回合与稳定上下文不在压缩窗口内。
         compactable_tokens = existing_summary_tokens + cold_history_tokens
         # target_summary_tokens <= 0 表示无摘要预算上限：模拟阶段无法预估实际摘要
         # 大小，保守按“不承诺节省”处理（potential_retired_tokens=0），避免

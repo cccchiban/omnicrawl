@@ -577,27 +577,36 @@ def handle_undo_command(ctx: CommandContext) -> CommandResult:
     name="compact",
     description="使用结构化摘要模型压缩当前会话上下文。",
     usage="/compact",
-    type=CommandType.ACTION,
+    # 结构化摘要需要模型调用，交给交互端的工作线程执行。
+    type=CommandType.BACKGROUND,
 )
 def handle_compact_command(ctx: CommandContext) -> CommandResult:
     """压缩当前会话上下文：默认使用结构化摘要模型。
 
     摘要模型不可用或校验失败时，``compact_conversation_model`` 内部会自动
-    降级为本地确定性压缩，因此不再保留单独的 ``--model`` 开关。
+    降级为本地确定性压缩，因此不再保留单独的 ``--model`` 开关。模型调用与
+    事件写入推迟到 ``deferred``，避免阻塞交互端主线程。
     """
 
     if ctx.args.strip():
-        return CommandResult(message="用法：/compact。", refresh_context=True)
+        return CommandResult(message="参数错误：/compact。", refresh_context=True)
 
-    try:
-        summary = ctx.agent.compact_conversation_model()
-    except AgentError as exc:
-        return CommandResult(message=f"模型会话压缩失败：{exc}", refresh_context=True)
+    def run_compact() -> CommandResult:
+        try:
+            summary = ctx.agent.compact_conversation_model()
+        except AgentError as exc:
+            return CommandResult(message=f"模型会话压缩失败：{exc}", refresh_context=True)
 
-    notice = getattr(ctx.agent, "_last_compaction_notice", "") or ""
-    lead = f"{notice}\n" if notice else ""
-    tail = "已压缩当前会话，完整转录仍保留，后续恢复将从摘要边界继续。"
-    return CommandResult(message=f"{lead}{tail}\n{summary}", refresh_context=True)
+        notice = getattr(ctx.agent, "_last_compaction_notice", "") or ""
+        lead = f"{notice}\n" if notice else ""
+        tail = "已压缩当前会话，完整转录仍保留，后续恢复将从摘要边界继续。"
+        return CommandResult(message=f"{lead}{tail}\n{summary}", refresh_context=True)
+
+    return CommandResult(
+        message="正在压缩当前会话上下文…",
+        working_status="正在压缩上下文",
+        deferred=run_compact,
+    )
 
 
 @REGISTRY.command(
