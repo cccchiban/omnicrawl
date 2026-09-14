@@ -588,7 +588,7 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 - 赋值形态（`.env` 风格行与 `key: value`）：**只取配对引号内的值**。
   - 被换行截断、引号未配对的片段不再被当作值（此前会把那个引号本身当值替换成占位符）；
   - 引号后跟注释或代码时只屏蔽引号内的值，注释与尾段保持原样（此前整行尾段会被吞进占位符）；
-  - 无引号的值语义不变（整段视为值）。
+  - 无引号的值在行内注释起点前收尾（`KEY = v # 说明` 只替换 `v`；`#` 前无空白时仍整体视为值）。
 - 实现：`engine._assignment_value_body()` 取代 `_mask_assignment_value()` 取代 `_mask_assignment_value()`，后续 splice 只在「值本体区间」内替换。
 
 ### 15.4 回归与验证
@@ -608,3 +608,11 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 - **修复**：`_message_digest` 纳入调用/结果身份字段与图片内容（`call_id` / `name` / `provider_call_id` / `ok` / `media_type` / `detail` / `data_base64`）。这只是让「正文相同但身份不同」不再命中缓存，正常追加历史的命中率不变。
 - **不变量**：脱敏层不得改动消息序列结构与工具配对；屏蔽只发生在文本与工具参数内容层。
 - **回归测试**：`tests/test_desensitization_prefix_cache.py::ToolPairingIntegrityTest`（相同结果 / 相同调用 / 相同文案不同图片三条；对旧摘要实现逐条失败、对修复实现全绿）。
+
+### 15.7 无引号赋值的行内注释与缓存复用可还原性
+
+两个「内容被写坏」的缺陷，都落在出站屏蔽与还原的交界处：
+
+- **赋值值本体**：无引号赋值此前把行尾整体视为值，`KEY = v # 注释` 会把行内注释一起登记并替换——注释在模型侧消失，模型改写该行时无从恢复原文。现在无引号值在**行内注释起点**（`#` 位于值首或前一个字符为空白）前收尾，`v#frag` 与值中的普通 `#` 仍整体视为值；值本体为空（`KEY = # 说明`）时按形态不明确处理，整行不动。实现：`engine._inline_comment_start()`。
+- **逐消息缓存复用**（§15.1）：缓存条目回放的屏蔽文本，可能引用**本周期没有登记项的序号**——登记过该值的消息已被压缩 / 丢弃，而条目里的 `pairs` 只记录「屏蔽本条消息时新增的登记」，复用同值时不产生新条目。复用会把无法还原的占位符交给模型；模型把它回写进工具参数（如 `write_file` 的 content）就是一处被改坏的内容。现在缓存条目额外记住文本引用的序号，命中时逐个校验本周期可还原性，任一缺失即回落重扫、把序号重新登记进本周期。实现：`middleware._mask_message_cached()`、`_referenced_sequences()`、`_iter_message_texts()`。
+- **回归**：`tests/test_desensitization_comment_and_cache.py`。两个缺陷各有一条判据（注释在模型侧可见、回写内容不含无法还原的占位符），修复前两条判据均失败。

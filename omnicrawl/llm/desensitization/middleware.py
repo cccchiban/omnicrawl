@@ -42,6 +42,7 @@ from .registry import (
     DesensitizationStats,
     PlaceholderCycle,
     SequenceRegistry,
+    PLACEHOLDER_PATTERN,
     collect_placeholder_numbers,
 )
 from .rules import PatternRule, build_enabled_rules
@@ -307,13 +308,17 @@ class _MessageMaskMemo:
 
     def __init__(self, max_chars: int = _MEMO_MAX_CHARS) -> None:
         self._max_chars = max_chars
-        self._entries: dict[bytes, tuple[Any, Any, tuple[tuple[int, str], ...], int]] = {}
+        self._entries: dict[
+            bytes, tuple[Any, Any, tuple[tuple[int, str], ...], int, tuple[int, ...]]
+        ] = {}
         self._chars = 0
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
 
-    def get(self, key: bytes) -> tuple[Any, Any, tuple[tuple[int, str], ...]] | None:
+    def get(
+        self, key: bytes
+    ) -> tuple[Any, Any, tuple[tuple[int, str], ...], tuple[int, ...]] | None:
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
@@ -322,7 +327,7 @@ class _MessageMaskMemo:
             # 命中即移到最新（dict 保序，重插即置尾）。
             self._entries[key] = self._entries.pop(key)
             self.hits += 1
-            return entry[0], entry[1], entry[2]
+            return entry[0], entry[1], entry[2], entry[4]
 
     def put(
         self,
@@ -331,6 +336,7 @@ class _MessageMaskMemo:
         reasoning: Any,
         pairs: tuple[tuple[int, str], ...],
         chars: int,
+        seqs: tuple[int, ...] = (),
     ) -> None:
         if self._max_chars <= 0:
             return
@@ -338,7 +344,7 @@ class _MessageMaskMemo:
             previous = self._entries.pop(key, None)
             if previous is not None:
                 self._chars -= previous[3]
-            self._entries[key] = (blocks, reasoning, pairs, chars)
+            self._entries[key] = (blocks, reasoning, pairs, chars, seqs)
             self._chars += chars
             while self._chars > self._max_chars and len(self._entries) > 1:
                 # 淘汰「最近用过」而不是「最久没用」：历史是每轮从头到尾顺序全扫，
@@ -423,12 +429,16 @@ def _mask_message_cached(
     key = _message_digest(message)
     cached = memo.get(key)
     if cached is not None:
-        blocks, reasoning, pairs = cached
+        blocks, reasoning, pairs, seqs = cached
         for seq, value in pairs:
             ctx.cycle.adopt(value, seq)
-        if blocks == message.blocks and reasoning == message.reasoning:
-            return message
-        return replace(message, blocks=blocks, reasoning=reasoning)
+        if all(ctx.cycle.lookup(seq) is not None for seq in seqs):
+            if blocks == message.blocks and reasoning == message.reasoning:
+                return message
+            return replace(message, blocks=blocks, reasoning=reasoning)
+        # 缓存里的占位符引用了本周期无法还原的序号（登记过该值的消息已被
+        # 压缩 / 丢弃）。复用会把无法还原的占位符交给模型，模型回写进工具参数
+        # 就是一处被改坏的内容；退回重扫，把序号重新登记进本周期。
     registered_before = len(ctx.cycle.entries)
     masked = _mask_message(message, ctx)
     memo.put(
@@ -437,8 +447,34 @@ def _mask_message_cached(
         masked.reasoning,
         ctx.cycle.pairs_from(registered_before),
         _masked_chars(masked),
+        _referenced_sequences(masked),
     )
     return masked
+
+
+def _referenced_sequences(message: ConversationMessage) -> tuple[int, ...]:
+    """消息文本里出现的占位符序号（缓存复用前据此确认本周期可还原）。"""
+
+    seqs: list[int] = []
+    for text in _iter_message_texts(message):
+        for match in PLACEHOLDER_PATTERN.finditer(text):
+            seq = int(match.group(1))
+            if seq not in seqs:
+                seqs.append(seq)
+    return tuple(seqs)
+
+
+def _iter_message_texts(message: ConversationMessage):
+    """遍历消息中参与屏蔽的文本字段（与屏蔽路径保持一致）。"""
+
+    yield message.reasoning or ""
+    for block in message.blocks:
+        if isinstance(block, TextBlock):
+            yield block.text or ""
+        elif isinstance(block, ToolResultBlock):
+            yield block.content or ""
+        elif isinstance(block, ToolCallBlock):
+            yield _json_text(block.arguments)
 
 
 __all__ = [

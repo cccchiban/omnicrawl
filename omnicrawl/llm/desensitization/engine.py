@@ -521,7 +521,24 @@ def _assignment_value_body(raw_value: str) -> tuple[int, int] | None:
         if closing < 0:
             return None
         return 1, closing
-    return 0, len(stripped)
+    body_end = _inline_comment_start(stripped)
+    if body_end == 0:
+        return None
+    return 0, body_end
+
+
+def _inline_comment_start(text: str) -> int:
+    """无引号值的行内注释起点：``#`` 位于串首或前一个
+    字符为空白时才算注释，所以 `v#frag` 与值中的普通 `#` 仍算值本体。
+
+    返回注释前的值尾（已去掉尾随空白）；无注释时返回 ``len(text)``，值本体
+    为空（如 `KEY = # 说明`）时返回 0，由调用方按「形态不明确」处理。
+    """
+
+    for index, character in enumerate(text):
+        if character == "#" and (index == 0 or text[index - 1].isspace()):
+            return len(text[:index].rstrip())
+    return len(text)
 
 
 def _replace_json_pair(match: re.Match, ctx: MaskContext) -> str:
