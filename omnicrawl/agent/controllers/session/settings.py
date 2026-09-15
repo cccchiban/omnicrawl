@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
+from functools import partial
 from typing import Any, Callable
 from ...types import AskUserRequest
 from ....approval import (
@@ -36,6 +37,7 @@ from ....llm import (
     ModelRuntimeManager,
     normalize_reasoning_effort,
 )
+from ....llm.registry import build_runtime
 from ....mcp import MCPConfig, load_mcp_config
 
 from ..shared import (
@@ -136,6 +138,11 @@ class SessionSettingsMixin:
                 # 允许回合进行中切换：当前回合继续用旧快照，下一次请求自动
                 # 使用新模型，即“从修改后的下一次请求开始生效”。
                 allow_during_turn=True,
+                # 注入会话级序号映射：切换模型后旧序号仍可还原（消息脱敏 §7.2）。
+                runtime_factory=partial(
+                    build_runtime,
+                    store_provider=self.current_desensitization_sequences,
+                ),
             )
         except Exception as exc:
             raise AgentError(f"模型运行时切换失败：{exc}") from exc

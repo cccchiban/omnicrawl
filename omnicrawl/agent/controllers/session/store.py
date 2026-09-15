@@ -48,6 +48,22 @@ class SessionStoreMixin:
 
         return self._session_facade().current_session_id()
 
+    def current_desensitization_sequences(self) -> Any:
+        """当前会话的「序号 → 原文」映射（消息脱敏 §7.2）。
+
+        会话所有者持有一个实例，本会话内的模型运行时共享它：切换模型重建运行时不会
+        丢序号，会话切换（新建 / 恢复 / 工作区切换）时自动丢弃上一会话的原文。
+        """
+
+        from ....llm.desensitization import SessionSequenceCache
+
+        store = getattr(self, "_desensitization_sequences", None)
+        if store is None:
+            store = SessionSequenceCache()
+            self._desensitization_sequences = store
+        store.rebind(self.current_session_id)
+        return store
+
     def current_session_messages(self) -> list[dict[str, Any]]:
         """返回当前会话投影后的模型上下文消息，供非事件型客户端读取。
 

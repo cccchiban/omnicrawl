@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextvars import copy_context
+from functools import partial
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -53,6 +54,7 @@ from ...context.prompt_context import (
 from ...types import AgentModelReply, ToolCall, ToolDefinition, ToolResult
 from ....config.core.runtime import global_agents_path
 from ....config.models.llm_multi import llm_config_to_profile_and_descriptor
+from ....llm.registry import build_runtime
 from ....config.features.subagents import (
     SubAgentConfig,
 )
@@ -1407,10 +1409,17 @@ class TurnLoopMixin:
             or getattr(self, "_runtime_model_id", "") != current_model
         ):
             profile, descriptor = llm_config_to_profile_and_descriptor(self.config.llm)
+            # 注入会话级序号映射：切换模型重建运行时也不丢序号（消息脱敏 §7.2）。
+            store_provider = self.current_desensitization_sequences
+            runtime_factory = partial(build_runtime, store_provider=store_provider)
             if manager.active_snapshot is None:
-                manager.bootstrap(profile, descriptor)
+                manager.bootstrap(
+                    profile,
+                    descriptor,
+                    runtime=runtime_factory(profile, descriptor),
+                )
             else:
-                manager.switch(profile, descriptor)
+                manager.switch(profile, descriptor, runtime_factory=runtime_factory)
             self._runtime_model_id = current_model
             # base_url/api_key 可能随 profile 变化，丢弃旧 client。
             self.__dict__.pop("_client", None)

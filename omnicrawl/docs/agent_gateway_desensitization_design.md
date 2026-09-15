@@ -15,7 +15,7 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 3. 模型返回后，按序号还原成原文，交回宿主；
 4. 本地业务（工具执行、会话、UI）维持原文语义——「脱敏但又不影响业务」。
 
-一句话：**原文不出本机；模型只见代号；代号随用随销。**
+一句话：**原文不出本机；模型只见代号；代号在会话内可反复还原。**
 
 核心概念：
 
@@ -96,9 +96,9 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
                           │
 [入站] 返回含 ｛Desensitized:n｝ ──▶ 还原为原文（可多处）
                           │
-[完成] 本周期还原组装结束 ──▶ 注销本周期全部序号
-[异常] 周期未完成（失败 / 取消 / 超时 / 截断）──▶ 不注销，遗留
-[关闭] 运行时关闭 ──▶ 丢弃全部未注销序号（不落盘、不恢复）
+[完成] 本周期还原组装结束 ──▶ 释放周期自身状态（会话级序号映射保留）
+[异常] 周期未完成（失败 / 取消 / 超时 / 截断）──▶ 不释放，遗留
+[关闭] 运行时关闭 ──▶ 丢弃会话级「序号 → 原文」映射（不落盘、不恢复）
 ```
 
 ## 4. 接线与覆盖范围
@@ -109,10 +109,11 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 
 - 配置未启用或配置不可读 → 原样返回内层运行时（零成本）；
 - 启用 → 返回 `DesensitizationRuntime`：实现 `ModelRuntime` 协议，`identity`/`capabilities` 透传内层；
-- `stream_turn` 入口对 `request.messages` 做屏蔽并注册序号；出口对事件流逐事件还原、按周期注销；
+- `stream_turn` 入口对 `request.messages` 做屏蔽并注册序号；出口对事件流逐事件还原、关闭本周期（会话级映射保留）；
 - 对上层完全透明：上层协议、事件消费、回调（`on_delta` / `on_reasoning_delta`）、回复组装、后续工具执行全部拿到**还原后**的内容；
 - 协议无关：四种 Provider 适配器（OpenAI Chat Completions / Responses、Anthropic Messages、Gemini Generate Content）无需改动；
-- `close()`：先丢弃全部未注销序号（`drop_all`），再关闭内层运行时。
+- `close()`：丢弃未完成周期的请求副本（`drop_all`，**不释放会话级映射**），再关闭内层运行时；
+- `store_provider`：会话所有者把当前会话的「序号 → 原文」映射传给运行时（`build_runtime(..., store_provider=...)` → `maybe_wrap_runtime(..., store_provider=...)`），同一会话内重建的运行时共享同一份映射（§7.2）。
 
 ### 4.2 覆盖链路
 
@@ -302,8 +303,8 @@ NER 语义兜底命中（人名 / 地名 / 机构名）→ 脱敏
 
 | 情况 | 行为 |
 |---|---|
-| 序号已注册（本周期） | 替换为原文（同一序号多处出现全部替换） |
-| 序号未知（未注册 / 非本周期） | 不动，记录告警（不静默当作原文）；`strict_restore` 开启时中止并报错 |
+| 序号已注册（会话内） | 替换为原文（同一序号多处出现全部替换；跨周期、跨请求同样有效） |
+| 序号未知（未注册 / 未被本会话登记） | 不动，记录告警（不静默当作原文）；`strict_restore` 开启时中止并报错 |
 | 畸形（疑似前缀 / 缺括号 / 非数字） | 不动，记录告警；`strict_restore` 开启时中止并报错 |
 | 出现在 dict 键 / 工具名 / 结构件 | 不替换（只处理字符串值与文本） |
 | 字符串值**恰好等于**一个占位符 | 将该字符串整体替换为原文 |
@@ -328,7 +329,7 @@ SequenceRegistry(
 )
 
 PlaceholderCycle(
-  entries:     {seq → 原文},
+  entries:     {seq → 原文},   # 会话级共享：跨周期保留（§7.2）
   reserved:    {已出现的占位符样式序号},    # 分配时跳过
   value_index: {原文 → seq},               # 同值去重（本周期）
   stable_reuses: int,                      # 跨周期复用稳定序号的次数
@@ -343,25 +344,27 @@ StableSequenceIndex(
 - 序号分配分两层：**进程级稳定索引**决定「哪个值用哪个序号」（同值永远同号，跨请求逐字可复现，§7.2），**进程级单调计数器**只为新值提供候选序号（从 1 开始，不回收）；
 - 原文仅存于内存；**不落盘、不进日志、不进会话事件、不进 SSE、不进异常信息、不缓存**；
 - 稳定索引只存 `HMAC-SHA256(值)`（进程启动时随机盐）与整数序号：原文不在其中，不可反推、也不可跨进程关联；条目数随「进程内出现过的不同敏感值数量」增长，不随请求数增长；
+- **会话级保留**：`entries`（`seq → 原文`）由**会话所有者**持有并注入各周期（未注入时退化为注册表私有映射）；周期结束不清空，因此同一序号在会话内可反复还原（含上下文里出现过的旧序号）；会话切换 / 关闭即释放，运行时关闭（切换模型）不释放（§7.2）。
 - 可观测信息只到「计数 / 规则 / 序号」粒度（§10.2）。
 
-### 7.2 生命周期（原文单次使用 + 序号稳定复用）
+### 7.2 生命周期（会话内保留 + 序号稳定复用）
 
 | 阶段 | 触发 | 动作 |
 |---|---|---|
 | 注册 | 出站屏蔽完成一次替换 | 分配序号 n；登记 `n → 原文` |
 | 使用 | 模型返回含 `｛Desensitized:n｝` | 还原为原文（可多处） |
-| 注销 | **本周期还原组装结束**（收到最终可用回复） | 释放本周期全部注册项（含未被模型引用的） |
-| 遗留 | 周期未完成（请求失败 / 取消 / 超时 / 截断） | 不注销；保留到运行时关闭 |
-| 关闭 | 运行时关闭 | 丢弃全部未注销项；不落盘、不恢复 |
+| 注销 | **本周期还原组装结束**（收到最终可用回复） | 只释放周期自身状态；会话级「序号 → 原文」映射保留（§7.2） |
+| 遗留 | 周期未完成（请求失败 / 取消 / 超时 / 截断） | 不关闭周期；条目保留到运行时关闭 |
+| 关闭 | 运行时关闭（或进程退出） | 丢弃会话级「序号 → 原文」映射；不落盘、不恢复 |
 
 说明：
 
-- **原文单次使用**：`seq → 原文` 只在本周期有效，周期结束（含关闭）即释放，不跨请求驻留；
-- **序号稳定复用**：`值指纹 → 序号` 存在进程级稳定索引中，不随周期注销清理——同一段历史在连续请求中被脱敏成逐字一致的文本，提供方前缀缓存才能持续命中（§9.3）。这是与「序号单次使用」的明确取舍：改号能降低同号歧义，但会让整段历史在缓存中失配（实测命中率跌到 3% 量级）；
-- 周期完成时**统一注销本周期全部序号**（含未被引用项）：未被引用的项已无使用场景，统一注销可缩短原文驻留、避免「死登记」；
-- 周期是否完成以「该逻辑请求的最终结果」为准：回复可用（有文本 / 工具调用 / 推理且未被截断）即注销；中断重试则保留。
+- **原文会话内驻留**：`seq → 原文` 在本会话内持续有效，周期结束不再释放；同一序号可跨请求、跨周期反复还原，随会话切换 / 会话关闭统一丢弃、不落盘（切换模型重建运行时不丢弃）；
+- **序号稳定复用**：`值指纹 → 序号` 存在进程级稳定索引中，不随周期注销清理——同一段历史在连续请求中被脱敏成逐字一致的文本，提供方前缀缓存才能持续命中（§9.3）。这是与「序号随值改号」的明确取舍：改号能降低同号歧义，但会让整段历史在缓存中失配（实测命中率跌到 3% 量级）；
+- 周期完成时**不再清空登记项**：会话级「序号 → 原文」映射由注册表持有、各周期共享，周期结束只释放周期自身状态（`source_request` / `masked_request`）；代价是原文在本会话内持续驻留；
+- 周期是否完成以「该逻辑请求的最终结果」为准：回复可用（有文本 / 工具调用 / 推理且未被截断）即关闭本周期；中断重试则保留。
 - 稳定索引随进程存活（含运行时重建：切换模型后同一值仍是同号）；进程退出即消失，不落盘；
+- **会话级映射的存活期**：`seq → 原文` 由会话所有者（Agent）持有，运行时经 `store_provider` 共享同一份映射：切换模型重建运行时不丢序号；会话切换 / 关闭时 `rebind` / `clear` 丢弃；未注入映射的运行时（顾问、子代理、压缩摘要、视觉代理、工具输出压缩）退化为各自的私有映射，随该运行时关闭释放（§7.2）；
 
 ### 7.3 并发与重试
 
@@ -414,7 +417,7 @@ StableSequenceIndex(
 
 ### 9.4 安全与威胁模型（摘要）
 
-- **还原是一个受控的「原文回插信道」**：若注入内容诱导模型输出 `｛Desensitized:n｝` 并借工具把值写到别处，存在借道外泄的理论风险。缓解：`n → 原文` 映射仅本周期有效（跨周期一律不可还原，§7.2）、还原范围仅限模型返回；可观测 / 可审计；既有工具审批链不变；
+- **还原是一个受控的「原文回插信道」**：若注入内容诱导模型输出 `｛Desensitized:n｝` 并借工具把值写到别处，存在借道外泄的理论风险。缓解：`n → 原文` 映射只在会话（运行时存活期）内有效、随运行时关闭丢弃（§7.2），还原范围仅限模型返回；可观测 / 可审计；既有工具审批链不变；
 - **内存驻留**：注册表在内存中暂存原文（进程崩溃转储风险由宿主环境承担）；关闭即丢弃、不落盘；
 - **日志 / 遥测**：本层不记录原文（§10.2）；
 - 本机制只保证「模型侧看不到原文」，不消除其它泄露路径（网络抓包、宿主日志配置错误等）。
@@ -502,7 +505,7 @@ ner_cache_size = 2048                 # 推理结果缓存容量（单位为「�
 2. 出站屏蔽：`API_KEY=｛Desensitized:7｝`，注册 `7 → sk-live-8f3…`（内存）；
 3. 模型请求写文件：`write_file(content="｛Desensitized:7｝")`；
 4. 入站还原：工具参数还原为 `sk-live-8f3…` → 工具按原文写文件（业务不受影响）；
-5. 周期完成：注销 7；模型侧全程只见 `｛Desensitized:7｝`。
+5. 周期完成：只释放周期自身状态；序号 7 在会话内继续有效（后续回复再次引用该序号仍还原为原文），运行时关闭才丢弃。
 
 **流式分片**：模型流式输出 `…｛Desensitized:1` + `2｝…` 两片 → 尾部挂起缓冲在完整占位符到齐后一次还原（§8.2）；若模型把全角归一化为半角，按兼容匹配同样可还原（§6.2）。
 
@@ -529,7 +532,7 @@ ner_cache_size = 2048                 # 推理结果缓存容量（单位为「�
 | 15 | 豁免表 / 敏感键扩展 | 配置生效、优先级正确 |
 | 16 | 大消息 / 长历史性能 | 无明显卡顿；缓存影响可观测 |
 | 17 | 连续两次请求：历史只追加、内容不变 | 未变历史脱敏后**逐字一致**（同值同号）；前缀缓存可持续命中 |
-| 18 | 周期注销后同一值再次出站 | 复用同一序号；原文条目已释放（跨周期不可还原） |
+| 18 | 周期注销后同一值再次出站 | 复用同一序号；会话级映射保留，跨周期仍可还原 |
 | 19 | 工具结果含 PEM 私钥 / 连接串 / 银行卡 / MAC / 车牌 / 内网 IP | 值类型规则命中并替换；模型返回引用处还原 |
 | 20 | 自由文本含邮箱 / 外网 IP / 网址（对应开关开启时） | 命中；`example.com` / 环回地址 / 版本号不误伤 |
 | 21 | 历史中含 gitleaks 类密钥（GitHub PAT / AWS / Stripe / Slack 等） | 命中替换；上游 allowlist 与熵阈值生效（示例密钥不脱敏） |
@@ -540,6 +543,9 @@ ner_cache_size = 2048                 # 推理结果缓存容量（单位为「�
 | 26 | `ner_enabled = false` 或未安装 torch / 权重缺失 | 本层静默跳过，既有链路行为不变（零成本） |
 | 27 | 长文本（>200 字符） | 按句末标点切块推理，偏移正确回填；结果缓存命中的重复文本不再推理 |
 | 28 | `ner_device = auto` 且存在 CUDA | 优先 CUDA；不可用 / 运行期 CUDA 出错回退 CPU |
+| 29 | 同一份回复里多次写出同一序号（不同位置、文本 / 推理 / 工具参数） | 每处都还原为同一原文 |
+| 30 | 引用上下文里出现过、但源消息已离开上下文的旧序号 | 会话级映射仍命中并还原（此前为「保留 + 告警」） |
+| 31 | 运行时关闭（切换模型 / 退出）后同一序号 | 映射已丢弃：按未注册处置（保留 + 告警） |
 
 ### 12.3 测试与回归
 
@@ -552,10 +558,10 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 ## 13. 已知边界与形态说明
 
 - **覆盖缺口**：同值全局回声不掩蔽、语义不可见位置、非字符串标量、规则层的形态盲区（§5.5）。
-- **形态边界**：本文核心（匹配引擎、占位符协议、注册表生命周期、还原规则）与进程形态无关。当前落点是进程内中间件；若未来改为独立网关进程 / 上游网关侧实现，边界从「函数调用」变为「服务调用」，注册表生命周期改与网关进程绑定，OmniCrawl 侧改为指向网关或旁路转发；「只动消息、不动请求参数」与「原文单次使用、序号稳定复用」语义保持不变。
+- **形态边界**：本文核心（匹配引擎、占位符协议、注册表生命周期、还原规则）与进程形态无关。当前落点是进程内中间件；若未来改为独立网关进程 / 上游网关侧实现，边界从「函数调用」变为「服务调用」，注册表生命周期改与网关进程绑定，OmniCrawl 侧改为指向网关或旁路转发；「只动消息、不动请求参数」与「序号在会话内稳定复用、可反复还原」语义保持不变。
 - **生效性**：配置在运行时构建时读取，运行中修改需切换模型或重启 TUI（§4.4）。
-- **不替代**：不替代既有不可逆值级脱敏（两者并存，§1.1）；不提供跨进程 / 跨机同步的映射（稳定索引 / 周期条目均与进程绑定）。
-- **同号歧义（已接受）**：稳定序号优先于碰撞改号（§6.3）。若出站历史中残留了不可还原的旧占位符文本、且与某值的稳定号相同，同一请求内会出现同号两义；还原仍以本周期条目为准，风险与既有「未知序号保留 + 告警」路径同级。
+- **不替代**：不替代既有不可逆值级脱敏（两者并存，§1.1）；不提供跨进程 / 跨机同步的映射（稳定索引为进程级、序号映射随运行时生命周期）。
+- **同号歧义（已接受）**：稳定序号优先于碰撞改号（§6.3）。若出站历史中残留了不可还原的旧占位符文本、且与某值的稳定号相同，同一请求内会出现同号两义；还原仍以会话级映射为准，风险与既有「未知序号保留 + 告警」路径同级。
 
 ## 14. 参考
 
@@ -617,3 +623,74 @@ python -m pytest tests/test_desensitization.py tests/test_desensitization_settin
 - **赋值值本体**：无引号赋值此前把行尾整体视为值，`KEY = v # 注释` 会把行内注释一起登记并替换——注释在模型侧消失，模型改写该行时无从恢复原文。现在无引号值在**行内注释起点**（`#` 位于值首或前一个字符为空白）前收尾，`v#frag` 与值中的普通 `#` 仍整体视为值；值本体为空（`KEY = # 说明`）时按形态不明确处理，整行不动。实现：`engine._inline_comment_start()`。
 - **逐消息缓存复用**（§15.1）：缓存条目回放的屏蔽文本，可能引用**本周期没有登记项的序号**——登记过该值的消息已被压缩 / 丢弃，而条目里的 `pairs` 只记录「屏蔽本条消息时新增的登记」，复用同值时不产生新条目。复用会把无法还原的占位符交给模型；模型把它回写进工具参数（如 `write_file` 的 content）就是一处被改坏的内容。现在缓存条目额外记住文本引用的序号，命中时逐个校验本周期可还原性，任一缺失即回落重扫、把序号重新登记进本周期。实现：`middleware._mask_message_cached()`、`_referenced_sequences()`、`_iter_message_texts()`。
 - **回归**：`tests/test_desensitization_comment_and_cache.py`。两个缺陷各有一条判据（注释在模型侧可见、回写内容不含无法还原的占位符），修复前两条判据均失败。
+
+## 16. 变更记录：序号会话级缓存（2026-09-15，待发布）
+
+本节记录与代码同步的**已落地行为**；涉及 §1 / §3 / §6.2 / §7.1 / §7.2 / §9.4 / §12.1 / §12.2 / §13 的表述，以本节与代码为准。
+
+### 16.1 行为变化：一个序号在会话内可反复替换
+
+- **旧行为**：`seq → 原文` 只在本周期有效，周期结束（收到可用回复）即释放；模型在后续回复里回引「上下文里出现过的旧序号」时命中不了映射，落进「未注册序号 → 原样保留 + 告警」分支——模型把该占位符写回文件 / 请求参数时，落盘的就是占位符文本。
+- **新行为**：`seq → 原文` 提升为**会话级共享映射**，由 `SequenceRegistry` 持有并注入各周期（`PlaceholderCycle.entries` 指向同一份 dict）。
+  - 同一序号在一份回复里出现任意多次（不同位置：文本 / 推理 / 工具参数）都还原为同一原文；
+  - 跨周期、跨请求仍可还原：源消息即使已被压缩或丢弃，只要模型引用了该序号，仍能还原；
+  - 周期结束只释放周期自身状态（`source_request` / `masked_request` / `value_index` / `closed`），不再清空映射；
+  - 会话级映射由会话所有者（Agent）持有并传给运行时（`store_provider`）：运行时关闭（切换模型 / 重建运行时）不释放映射，映射随会话切换 / 关闭释放；未注入映射的运行时退化为注册表私有映射（等价于按运行时隔离）。
+  - 落点：`SequenceRegistry(store_provider=...)`、`SessionSequenceCache`（`rebind` / `clear`）、`build_runtime(..., store_provider=...)`、`maybe_wrap_runtime(..., store_provider=...)`、Agent 的 `current_desensitization_sequences()` 与会话内运行时构建点（`_ensure_runtime_manager`、模型切换 `switch(..., runtime_factory=...)`）。详见 §16.4。
+- **代价**：被屏蔽值的原文在本会话内持续驻留内存（此前只在本周期内驻留）；可还原窗口从「单次请求」变为「整个会话」，同号歧义（§13）的暴露面随之变大——属已接受的取舍，窗口仍随会话切换 / 关闭结束。
+
+### 16.2 落点
+
+| 职责 | 文件 |
+|---|---|
+| 会话级映射的持有 / 注入 / 释放 | `omnicrawl/llm/desensitization/registry.py`（`SequenceRegistry._entries`、`PlaceholderCycle.entries`、`PlaceholderCycle.close`、`SequenceRegistry.drop_all`） |
+| 还原路径（未改动） | `omnicrawl/llm/desensitization/stream.py`（`StreamRestorer` 逐处还原）；`middleware.py` 的逐消息缓存命中校验（§15.7）因此更易满足 |
+
+### 16.3 回归与验证
+
+- 项目测试：`python -m pytest tests/test_desensitization.py tests/test_desensitization_prefix_cache.py tests/test_desensitization_ner.py tests/test_desensitization_rules.py tests/test_desensitization_settings.py -q` → **197 passed / 1 failed**（`ner` 的 CUDA 回退用例在无 GPU 机器上失败，与本次改动无关）。
+- 新增 / 更新用例：
+  - `tests/test_desensitization.py::SessionSequenceCacheTest::test_same_sequence_restored_at_many_positions`：同一序号三处（文本 ×2 + 工具参数）全部还原；
+  - `tests/test_desensitization.py::SessionSequenceCacheTest::test_sequence_referenced_in_context_restored_after_source_dropped`：源消息已离开上下文，引用旧序号仍还原；**回退实现后该用例失败**（还原结果停在占位符文本）；
+  - `tests/test_desensitization.py::RegistryTest::test_close_and_drop_all` 与 `tests/test_desensitization_prefix_cache.py::StableSequenceIndexTest::test_same_value_keeps_sequence_across_closed_cycles`：按新语义更新（周期结束不清空；`drop_all` 后回到未注册）。
+
+### 16.4 会话级映射的所有权：跨模型切换保留（2026-09-15 追加）
+
+§16.1 的第一版把映射放在注册表实例里，而注册表随运行时创建 / 关闭：**切换模型会重建运行时并关闭旧运行时**，映射随之丢失，与「单会话内缓存」的目标不一致。本轮把映射的所有权上移到**会话所有者**：
+
+- 新类型 `SessionSequenceCache`（`omnicrawl/llm/desensitization/registry.py`）：持有 `session_id` 与 `seq → 原文` 映射，`rebind(session_id)` 在会话标识变化时丢弃上一会话的原文，`clear()` 供会话关闭使用；原文仍只在本进程内存驻留。
+- `SequenceRegistry(store_provider=...)`：每个发送周期开始时向 `store_provider` 取当前会话的映射；注册表不再自己保管映射的归属——**注入的映射不随 `drop_all`（运行时关闭）释放**，未注入时退化为注册表私有映射（等价于旧行为，旁路 / 测试不受影响）。
+- `maybe_wrap_runtime(runtime, *, store_provider=...)`、`build_runtime(profile, model, *, store_provider=...)`：把会话映射透传到运行时装饰器。
+- 会话所有者：Agent 的 `current_desensitization_sequences()`（`omnicrawl/agent/controllers/session/store.py`）持有一个映射实例，调用时按 `current_session_id` `rebind`，因此会话新建 / 恢复 / 工作区切换后自动换新。
+- 会话内运行时构建点注入该映射：`omnicrawl/agent/controllers/turn/loop.py::_ensure_runtime_manager`（首次 bootstrap 与模型变化 switch）以及模型切换路径 `omnicrawl/agent/controllers/session/settings.py`（`switch(..., runtime_factory=partial(build_runtime, store_provider=...))`）。
+- 未注入映射的运行时（顾问、子代理、压缩摘要、视觉代理、工具输出压缩）保持原语义：各自的私有映射随该运行时关闭释放（它们的请求自带上下文，屏蔽 / 还原在本次运行内闭环）。
+
+行为归属总览：
+
+| 事件 | 映射 |
+|---|---|
+| 同一会话内重建运行时（切换模型 / 改设置） | **保留**：新运行时经 `store_provider` 拿到同一份映射 |
+| 会话新建 / 恢复 / 工作区切换 | **丢弃**：`rebind` 清空上一会话原文 |
+| 会话关闭 / Agent 结束 | **丢弃**（`clear`，不落盘、不恢复） |
+| 旁路运行时（顾问 / 子代理 / 摘要等）关闭 | 释放该运行时自己的私有映射 |
+
+回归（`tests/test_desensitization.py`，本轮新增/更新）：
+
+- `SessionSequenceCacheTest::test_sequence_survives_runtime_rebuild_in_same_session`：运行时 A 关闭后用同一 `store_provider` 重建运行时 B，B 仍能还原 A 分配的序号；
+- `SessionSequenceCacheTest::test_other_session_cannot_restore`：另一个会话的运行时拿不到本会话映射（未注册 → 原样保留 + 告警）；
+- `SessionSequenceCacheTest::test_rebind_drops_previous_session_mapping`：`rebind` 只在会话标识变化时清空；
+- `SessionSequenceCacheTest::test_session_mapping_is_per_registry`：未注入映射的注册表之间互不可见。
+
+最终验证（本机，2026-09-15）：
+
+```bash
+python -m pytest tests/test_desensitization.py tests/test_desensitization_prefix_cache.py \
+  tests/test_desensitization_ner.py tests/test_desensitization_rules.py \
+  tests/test_desensitization_settings.py -q
+# 198 passed / 1 failed（ner 的 CUDA 回退用例：本机无 GPU，与本次改动无关）
+
+python -m pytest tests/test_desensitization*.py tests/test_model_runtime.py \
+  tests/test_agent_module_boundaries.py tests/test_session_module_boundaries.py \
+  tests/test_llm_module_boundaries.py tests/test_agent_context.py -q
+# 285 passed / 1 failed（同上）
+```

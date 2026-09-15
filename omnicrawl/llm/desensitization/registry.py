@@ -4,7 +4,7 @@
 只到「计数 / 规则 ID / 序号」粒度（§10.2）。
 
 序号按「值的指纹」稳定分配（§7.2）：同一值在连续请求中始终复用同一序号，使未变
-历史脱敏后逐字一致，从而命中提供方前缀缓存；原文仍按周期注销、不跨请求驻留。
+历史脱敏后逐字一致，从而命中提供方前缀缓存；原文在会话内驻留、随会话切换 / 关闭释放。
 """
 
 from __future__ import annotations
@@ -115,6 +115,31 @@ class StableSequenceIndex:
             return dict(self._entries)
 
 
+class SessionSequenceCache:
+    """会话级「序号 → 原文」映射（§7.1/§7.2）。
+
+    由会话所有者持有一个实例，同一会话内构建的所有运行时共享它：切换模型会重建
+    运行时，但不会丢序号；会话切换（新建 / 恢复）时 ``rebind`` 丢弃上一会话的原文。
+    映射只在本进程内存驻留，不落盘、不进日志、不进会话事件（§10.2）。
+    """
+
+    def __init__(self, session_id: str = "") -> None:
+        self.session_id = session_id
+        self.entries: dict[int, str] = {}
+
+    def rebind(self, session_id: str) -> None:
+        """会话标识变化 → 丢弃上一会话的映射（会话隔离，§7.2）。"""
+
+        if session_id != self.session_id:
+            self.entries.clear()
+            self.session_id = session_id
+
+    def clear(self) -> None:
+        """会话结束：丢弃全部原文，不落盘、不恢复（§7.3）。"""
+
+        self.entries.clear()
+
+
 def _shared_stable_index() -> StableSequenceIndex:
     """进程级共享稳定索引：同一值在任何运行时 / 任何请求都拿到同一序号。"""
 
@@ -166,10 +191,16 @@ class DesensitizationStats:
 
 @dataclass
 class PlaceholderCycle:
-    """一次发送-接收周期的注册集合：序号 → 原文，同值同号（§5.3/§7）。"""
+    """一次发送-接收周期的注册集合：序号 → 原文，同值同号（§5.3/§7）。
+
+    ``entries`` 是**会话级共享**映射：由会话所有者注入各周期（未注入时退化为注册表私有映射），
+    序号在会话内不再单次使用，模型把同一序号写多少个、写在文本 / 推理 / 工具参数
+    哪个位置，都还原为同一原文；上下文里出现过的旧序号同样有效（§7.2）。
+    """
 
     cycle_id: str
     stable_index: StableSequenceIndex
+    # 会话级共享映射：注册表注入同一份实例；单独直接构造（测试）时退化为周期私有。
     entries: dict[int, str] = field(default_factory=dict)
     reserved: set[int] = field(default_factory=set)
     closed: bool = False
@@ -221,13 +252,13 @@ class PlaceholderCycle:
         return tuple(itertools.islice(self.entries.items(), start, None))
 
     def close(self) -> None:
-        """注销本周期全部序号并释放原文（§7.3）。
+        """结束本周期：只释放周期自身状态，会话级「序号 → 原文」映射保留（§7.3）。
 
-        只清本周期条目：进程级稳定索引是「值指纹 → 序号」的映射，保留它才能让同一
-        历史在后续请求中逐字一致（原文不在该索引中，无需释放）。
+        保留映射是「序号在会话内可反复还原」的前提：后续回复里同一序号出现任意多次、
+        或模型回引上下文里出现过的序号，都还原为同一原文。原文只在本进程内存驻留，
+        由映射所有者（会话所有者，或未注入时的注册表）统一释放，不落盘、不恢复。
         """
 
-        self.entries.clear()
         self._value_index.clear()
         # 结束的周期不再需要请求副本：否则失败 / 取消遗留的周期会各留一份完整历史。
         self.source_request = None
@@ -236,13 +267,18 @@ class PlaceholderCycle:
 
 
 class SequenceRegistry:
-    """按周期管理注册表：分配 / 复用 / 注销 / 关闭丢弃（设计稿 §7）。"""
+    """按周期管理注册表：分配 / 复用 / 还原 / 关闭丢弃（设计稿 §7）。
+
+    「序号 → 原文」映射由本类或注入方（会话所有者）持有并注入各周期：周期结束只释放
+    周期自身状态，映射随会话切换 / 关闭释放（§7.2）。
+    """
 
     def __init__(
         self,
         *,
         sequence_source: Callable[[], int] | None = None,
         stable_index: StableSequenceIndex | None = None,
+        store_provider: Callable[[], SessionSequenceCache] | None = None,
     ) -> None:
         self._lock = threading.Lock()
         if stable_index is not None:
@@ -252,6 +288,15 @@ class SequenceRegistry:
             self._stable_index = StableSequenceIndex(sequence_source=sequence_source)
         else:
             self._stable_index = _shared_stable_index()
+        # 「序号 → 原文」映射的来源：注入者（会话所有者）持有则运行时关闭只清周期状态，
+        # 序号在同一会话的多个运行时之间共享；未注入时退化为注册表私有映射（§7.2）。
+        if store_provider is not None:
+            self._store_provider = store_provider
+            self._release_store = False
+        else:
+            private_store = SessionSequenceCache()
+            self._store_provider = lambda: private_store
+            self._release_store = True
         self._open_cycles: dict[str, PlaceholderCycle] = {}
         self._last_cycle: PlaceholderCycle | None = None
         self.stats = DesensitizationStats()
@@ -278,6 +323,7 @@ class SequenceRegistry:
             cycle = PlaceholderCycle(
                 cycle_id=_next_cycle_id(),
                 stable_index=self._stable_index,
+                entries=self._store_provider().entries,
             )
             cycle.source_request = request
             self._open_cycles[cycle.cycle_id] = cycle
@@ -286,7 +332,7 @@ class SequenceRegistry:
             return cycle, False
 
     def close_cycle(self, cycle: PlaceholderCycle) -> None:
-        """周期还原组装结束：注销本周期全部序号（含未被引用项，§7.3）。"""
+        """周期还原组装结束：释放周期自身状态，会话级序号映射保留（§7.3）。"""
 
         with self._lock:
             cycle.close()
@@ -295,13 +341,19 @@ class SequenceRegistry:
                 self._last_cycle = None
 
     def drop_all(self) -> None:
-        """运行时关闭：丢弃全部未注销序号，不落盘、不恢复（§7.3）。"""
+        """运行时关闭：丢弃未完成周期的请求副本；映射由注入方持有（§7.3）。
+
+        会话级映射不随运行时关闭释放（切换模型会重建运行时）；只有注册表自己创建
+        的私有映射才在此清空。
+        """
 
         with self._lock:
             for cycle in self._open_cycles.values():
                 cycle.close()
             self._open_cycles.clear()
             self._last_cycle = None
+            if self._release_store:
+                self._store_provider().clear()
 
     @property
     def open_cycle_count(self) -> int:
@@ -329,6 +381,7 @@ __all__ = [
     "PLACEHOLDER_PREFIX_PATTERN",
     "PlaceholderCycle",
     "SequenceRegistry",
+    "SessionSequenceCache",
     "StableSequenceIndex",
     "collect_placeholder_numbers",
     "format_placeholder",

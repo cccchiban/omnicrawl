@@ -42,6 +42,7 @@ from .registry import (
     DesensitizationStats,
     PlaceholderCycle,
     SequenceRegistry,
+    SessionSequenceCache,
     PLACEHOLDER_PATTERN,
     collect_placeholder_numbers,
 )
@@ -182,8 +183,16 @@ class DesensitizationRuntime:
         return [event]
 
 
-def maybe_wrap_runtime(runtime: ModelRuntime) -> ModelRuntime:
-    """按配置决定是否包装运行时；未启用或配置不可读时原样返回（零成本）。"""
+def maybe_wrap_runtime(
+    runtime: ModelRuntime,
+    *,
+    store_provider: Callable[[], SessionSequenceCache] | None = None,
+) -> ModelRuntime:
+    """按配置决定是否包装运行时；未启用或配置不可读时原样返回（零成本）。
+
+    ``store_provider`` 返回当前会话的「序号 → 原文」映射（会话所有者持有，见 §7.2）；
+    未提供时注册表用自己的私有映射，即按运行时隔离（等价于旧行为）。
+    """
 
     try:
         config = load_desensitization_config()
@@ -192,7 +201,13 @@ def maybe_wrap_runtime(runtime: ModelRuntime) -> ModelRuntime:
         return runtime
     if not config.enabled:
         return runtime
-    return DesensitizationRuntime(runtime, config)
+    if store_provider is None:
+        return DesensitizationRuntime(runtime, config)
+    return DesensitizationRuntime(
+        runtime,
+        config,
+        registry=SequenceRegistry(store_provider=store_provider),
+    )
 
 
 def _mask_request(

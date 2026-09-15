@@ -166,7 +166,12 @@ def get_adapter(protocol_or_provider: str) -> ModelProviderAdapter:
     )
 
 
-def build_runtime(profile: ProviderProfile, model: ModelDescriptor) -> ModelRuntime:
+def build_runtime(
+    profile: ProviderProfile,
+    model: ModelDescriptor,
+    *,
+    store_provider: Callable[[], Any] | None = None,
+) -> ModelRuntime:
     protocol = profile.resolve_protocol(model.protocol)
     if protocol != model.protocol:
         identity = ModelIdentity(
@@ -193,10 +198,11 @@ def build_runtime(profile: ProviderProfile, model: ModelDescriptor) -> ModelRunt
         )
     adapter = get_adapter(protocol)
     runtime = adapter.create_runtime(profile, model)
-    # 出网消息脱敏（opt-in，默认关闭）：按配置在运行时外层包一层装饰器。
+    # 出网消息脱敏（opt-in，默认关闭）：按配置在运行时外层包一层装饰器；
+    # store_provider 由会话所有者在构建运行时传入，使序号映射跨模型切换保留（§7.2）。
     from .desensitization import maybe_wrap_runtime
 
-    return maybe_wrap_runtime(runtime)
+    return maybe_wrap_runtime(runtime, store_provider=store_provider)
 
 
 def protocol_for_provider(provider: str, preferred: str = "") -> str:
