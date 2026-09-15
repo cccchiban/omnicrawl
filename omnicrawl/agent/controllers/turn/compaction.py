@@ -161,6 +161,13 @@ class TurnCompactionMixin:
             return
         snapshot = measurement.snapshot
         if not snapshot.trigger_reached:
+            # 未触发压缩的回合同样写入测量事件：会话转录与投影依赖逐回合的
+            # 上下文计量，只在压缩时才记录会让计量停在旧值上。
+            if measurement.event_payload:
+                self._append_session_event(
+                    "context_compaction_measurement",
+                    dict(measurement.event_payload),
+                )
             return
         try:
             self._dispatch_plugin_hook(
