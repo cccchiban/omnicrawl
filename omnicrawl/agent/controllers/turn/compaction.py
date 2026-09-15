@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 from ...context_compaction import (
     ContextCompactionService,
     ModelSummaryCompactor,
@@ -33,6 +33,31 @@ LOGGER = logging.getLogger(__name__)
 # 摘要请求沿用原请求前缀；单块索引预算在运行态按剩余窗口放大（见
 # ModelSummaryCompactor 的 budget_provider），这里的值只是窗口余额不足时的下限。
 _SUMMARY_INDEX_CHUNK_TOKENS = 12_000
+
+
+def _desensitization_config() -> Any:
+    """当前 [desensitization] 配置；未启用或不可读时返回 None（占位符守卫不介入）。"""
+
+    from ....config.features.desensitization import load_desensitization_config
+
+    try:
+        config = load_desensitization_config()
+    except Exception:
+        return None
+    return config if config.enabled else None
+
+
+def _payload_strings(value: Any) -> Iterator[str]:
+    """递归收集 payload 里的字符串值。"""
+
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _payload_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _payload_strings(item)
 
 
 class TurnCompactionMixin:
@@ -282,6 +307,54 @@ class TurnCompactionMixin:
             if not fallback:
                 LOGGER.warning("模型摘要失败后无法建立确定性压缩边界：%s", outcome.diagnostic)
 
+    def _unresolved_compaction_placeholders(
+        self,
+        payload: Mapping[str, Any],
+    ) -> tuple[int, ...]:
+        """扫出压缩产物里无法还原的脱敏占位符序号（升序去重）。
+
+        判定口径是当前会话的「序号 → 原文」映射：序号出现在文本里、映射里却没有，
+        还原阶段就只能原样保留，落进会话 / 记忆后会长期显示。
+        """
+
+        from ....llm.desensitization import collect_placeholder_numbers
+
+        if _desensitization_config() is None:
+            return ()
+        provider = getattr(self, "current_desensitization_sequences", None)
+        entries = provider().entries if provider is not None else {}
+        return tuple(
+            sorted(
+                {
+                    seq
+                    for seq in collect_placeholder_numbers(_payload_strings(payload))
+                    if seq not in entries
+                }
+            )
+        )
+
+    def _compaction_leak_guard(
+        self,
+        payload: Mapping[str, Any],
+    ) -> tuple[int, ...]:
+        """压缩产物落库前的占位符守卫：默认告警，strict_restore 打开时拒绝落库。"""
+
+        unresolved = self._unresolved_compaction_placeholders(payload)
+        if not unresolved:
+            return ()
+        config = _desensitization_config()
+        if config is not None and config.strict_restore:
+            LOGGER.warning(
+                "压缩产物含无法还原的脱敏占位符（序号 %s），已丢弃本次模型摘要。",
+                unresolved,
+            )
+            return unresolved
+        LOGGER.warning(
+            "压缩产物含无法还原的脱敏占位符（序号 %s），已原样写入压缩结果。",
+            unresolved,
+        )
+        return ()
+
     def _context_compaction_service(self) -> ContextCompactionService:
         existing = getattr(self, "_context_compaction_service_instance", None)
         if existing is not None and hasattr(existing, "after_complete_turn"):
@@ -308,7 +381,9 @@ class TurnCompactionMixin:
                 model_adapter,
                 max_input_tokens=_SUMMARY_INDEX_CHUNK_TOKENS,
                 budget_provider=model_adapter.index_chunk_budget_tokens,
-            )
+            ),
+            # 落库守卫：压缩产物含无法还原的占位符时不把它写进会话 / 记忆。
+            placeholder_guard=self._compaction_leak_guard,
         )
         self._context_compaction_service_instance = service
         return service
@@ -392,6 +467,13 @@ class TurnCompactionMixin:
         if result is None:
             return ""
 
+        unresolved = self._unresolved_compaction_placeholders({"content": result.summary})
+        if unresolved:
+            # 确定性摘要来自宿主原文，没有可回退的另一条路径：只告警。
+            LOGGER.warning(
+                "确定性压缩结果含无法还原的脱敏占位符（序号 %s），已原样写入。",
+                unresolved,
+            )
         self._append_session_event(
             "compact_summary",
             {

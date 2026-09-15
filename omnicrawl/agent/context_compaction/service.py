@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .ledger import UsageLedger
 from .models import (
@@ -33,12 +33,14 @@ class ContextCompactionService:
         validator: SummaryValidator | None = None,
         assembler: ContextAssembler | None = None,
         ledger: UsageLedger | None = None,
+        placeholder_guard: Callable[[Mapping[str, Any]], tuple[int, ...]] | None = None,
     ) -> None:
         self._compactor = compactor
         self._budget_manager = budget_manager or ContextBudgetManager()
         self._validator = validator or SummaryValidator()
         self._assembler = assembler or ContextAssembler()
         self._ledger = ledger or UsageLedger()
+        self._placeholder_guard = placeholder_guard
 
     def measure_after_complete_turn(
         self,
@@ -298,6 +300,19 @@ class ContextCompactionService:
                 final_reply_event.event_id if final_reply_event is not None else ""
             ),
         }
+        if self._placeholder_guard is not None:
+            unresolved = self._placeholder_guard(compact_payload)
+            if unresolved:
+                # 落库前拦截：把无法还原的占位符写进会话 / 记忆会让占位符长期显示。
+                return ContextCompactionOutcome(
+                    measurement_payload=measurement_payload,
+                    fallback_required=True,
+                    diagnostic=(
+                        "压缩产物含无法还原的脱敏占位符（序号 "
+                        + ", ".join(str(seq) for seq in unresolved)
+                        + "），已丢弃本次模型摘要。"
+                    ),
+                )
         return ContextCompactionOutcome(
             measurement_payload=measurement_payload,
             compact_payload=compact_payload,
