@@ -11,6 +11,9 @@ include README.md
 # BiLSTM-CRF NER fallback model weights (~5MB), shipped inside the package.
 recursive-include omnicrawl/llm/desensitization/models *.pt
 
+# Config-chat router assets (~17MB): trained router, config labels and alias table.
+recursive-include omnicrawl/config_chat/assets *.json *.pt
+
 # Never ship build output back into the source distribution.
 global-exclude *.pyd
 global-exclude *.so
