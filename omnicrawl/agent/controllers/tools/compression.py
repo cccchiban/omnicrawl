@@ -34,8 +34,8 @@ MAX_PARALLEL_COMPRESSIONS = 4
 # 超出模型请求超时后的宽限，避免线程池回收阻塞本回合。
 COMPACTION_GRACE_SECONDS = 5.0
 RAW_OUTPUT_SEPARATOR = "—— 原始输出（未压缩）——"
-# 压缩作用域：只有这三类会产生大段原始输出的工具参与压缩，其余工具一律保留原文。
-COMPACTABLE_TOOLS = frozenset({"bash", "powershell", "git"})
+# 压缩作用域：只有这几类会产生大段原始输出的工具参与压缩，其余工具一律保留原文。
+COMPACTABLE_TOOLS = frozenset({"bash", "powershell", "git", "grep"})
 
 
 class ToolOutputCompressionMixin:

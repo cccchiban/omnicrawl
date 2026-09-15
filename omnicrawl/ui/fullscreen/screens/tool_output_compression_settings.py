@@ -155,7 +155,7 @@ class ToolOutputCompressionSettingsPane(SettingsPane):
                         with Horizontal(classes="toc-field"):
                             yield Static(label, classes="toc-field-label")
                             yield Input(str(value), id=widget_id, classes="toc-value")
-            yield Static("作用域：bash / powershell / git", id="toc-scope")
+            yield Static("作用域：bash / powershell / git / grep", id="toc-scope")
             yield Static(self._current_text(), id="toc-model")
             with Container(id="toc-picker-wrap"):
                 self._picker = ModelPickerPane(
