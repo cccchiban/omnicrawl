@@ -89,6 +89,8 @@ class OpenAIResponsesRuntime:
         }
         if tools:
             kwargs["tools"] = tools
+            if options.tool_choice:
+                kwargs["tool_choice"] = options.tool_choice
         if options.max_output_tokens:
             kwargs["max_output_tokens"] = options.max_output_tokens
         if options.temperature is not None:

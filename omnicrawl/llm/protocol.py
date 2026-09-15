@@ -117,6 +117,8 @@ class GenerationOptions:
     max_output_tokens: int | None = None
     temperature: float | None = None
     reasoning_effort: str = ""
+    # 空字符串＝沿用 Provider 默认（有工具面时为 auto）。
+    tool_choice: str = ""
     request_timeout_seconds: float = 180.0
     request_retry_count: int = 5
     provider_options: Mapping[str, Any] = field(default_factory=dict)

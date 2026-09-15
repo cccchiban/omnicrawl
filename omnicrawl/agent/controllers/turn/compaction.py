@@ -29,7 +29,8 @@ from ..shared import (
 
 LOGGER = logging.getLogger(__name__)
 
-# 摘要请求沿用原请求前缀，索引块预算按剩余窗口收缩，避免「前缀 + 事件索引」超出摘要模型窗口。
+# 摘要请求沿用原请求前缀；单块索引预算在运行态按剩余窗口放大（见
+# ModelSummaryCompactor 的 budget_provider），这里的值只是窗口余额不足时的下限。
 _SUMMARY_INDEX_CHUNK_TOKENS = 12_000
 
 
@@ -285,11 +286,13 @@ class TurnCompactionMixin:
             system_prompt_provider=self._system_prompt,
             context_prefix_provider=self._compaction_request_prefix,
             prompt_cache_identity_provider=self._prompt_cache_identity,
+            tools_provider=self._chat_completion_tools,
         )
         service = ContextCompactionService(
             compactor=ModelSummaryCompactor(
                 model_adapter,
                 max_input_tokens=_SUMMARY_INDEX_CHUNK_TOKENS,
+                budget_provider=model_adapter.index_chunk_budget_tokens,
             )
         )
         self._context_compaction_service_instance = service

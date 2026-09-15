@@ -358,7 +358,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 >
 > 配置 `archive_compacted_events` 时，被压缩窗口的原始事件归档到 `.agent_sessions/archive/compacted/<session>/`（第二级存储），`compact_summary` 事件记录 archive_id，任意被压缩事件均可按需精确恢复；配置 `auto_memory_recall` 时，压缩完成后自动检索长期记忆并把命中结果注入后续上下文（`compaction_memory_recall` 事件留痕）。`context_compaction_measurement` 事件包含覆盖度指标（coverage_ratio、字段计数、退休 token）与归档信息。
 >
-> 摘要请求沿用原请求前缀：系统提示词与最近一次主请求的逐字消息原样重发，缓存身份与主请求一致，用于命中提供方前缀缓存；被压缩事件只以 `events_index`（event_id / type / 截断预览）附在末尾，正文靠前缀对齐。因此该请求不注册任何工具，并在提示词中强约束「只输出一个 JSON 对象、禁止调用工具」；一旦模型返回工具调用，带反馈重试一次，仍失败则走既有降级路径。
+> 摘要请求沿用原请求前缀：系统提示词、最近一次主请求的逐字消息与工具声明原样重发，缓存身份与主请求一致，用于命中提供方前缀缓存；被压缩事件只以 `events_index`（event_id / type / 截断预览）附在末尾，正文靠前缀对齐。工具块在 prompt 里排在前缀最前面，少带工具会让第一次摘要请求无法复用主请求已建立的前缀缓存，因此该请求带同一份工具声明并固定 `tool_choice=none`，同时用提示词强约束「只输出一个 JSON 对象、禁止调用工具」；一旦模型返回工具调用，带反馈重试一次，仍失败则走既有降级路径。`events_index` 的单块预算在运行态按「摘要模型窗口 − 前缀 − 输出预留」放大（索引只是目录，正文在前缀里），只有窗口余额不足时才分块并追加一次 `merge_chunks`。
 
 当前实现已经采用“摘要替换 + 最近窗口”，并将 `compact_summary` 追加到 Session 转录；本节保留初始设计内容用于追溯。
 

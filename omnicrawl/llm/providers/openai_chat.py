@@ -105,7 +105,7 @@ class OpenAIChatCompletionsRuntime:
         }
         if tools:
             request_kwargs["tools"] = tools
-            request_kwargs["tool_choice"] = "auto"
+            request_kwargs["tool_choice"] = options.tool_choice or "auto"
         if options.max_output_tokens:
             request_kwargs["max_tokens"] = options.max_output_tokens
         if options.temperature is not None:

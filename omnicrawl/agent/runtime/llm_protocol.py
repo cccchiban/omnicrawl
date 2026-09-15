@@ -491,7 +491,7 @@ class AgentLLMProtocol:
             "model": self.model,
             "messages": [{"role": "system", "content": system_prompt}, *messages],
             "tools": self.tools_provider(),
-            "tool_choice": "auto",
+            "tool_choice": str(extra_body.pop("tool_choice", "") or "auto").strip() or "auto",
             "stream": True,
             "extra_body": extra_body,
             "timeout": self.request_timeout_seconds,
@@ -839,6 +839,8 @@ def _build_generation_options(
     if temperature is None:
         temperature = _coerce_optional_float(getattr(descriptor, "temperature", None))
 
+    tool_choice = str(merged_options.pop("tool_choice", "") or "").strip()
+
     # Host 权威字段不进入 provider_options。
     for host_key in (
         "model",
@@ -863,6 +865,7 @@ def _build_generation_options(
         max_output_tokens=max_output,
         temperature=temperature,
         reasoning_effort=reasoning_effort,
+        tool_choice=tool_choice,
         request_timeout_seconds=request_timeout_seconds,
         request_retry_count=request_retry_count,
         provider_options=merged_options,

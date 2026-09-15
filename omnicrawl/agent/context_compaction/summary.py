@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from importlib import resources
 from pathlib import Path
@@ -20,7 +21,22 @@ from .models import (
     SummaryModelResponse,
     TokenUsageSample,
 )
-from .policy import estimate_json_tokens
+from .policy import (
+    estimate_json_tokens,
+    estimate_messages_tokens,
+    estimate_text_tokens,
+)
+
+
+# 摘要请求与主请求共享同一份工具声明，只有 tool_choice 不同：工具块在 prompt 里排在
+# 前缀最前面，少带工具会让第一次摘要请求无法命中主请求已建立的前缀缓存。
+_SUMMARY_TOOL_CHOICE = "none"
+# 索引只是待压缩事件的目录（正文留在复用前缀里），预算越大分块越少、整段前缀重发
+# 次数越少；这里给索引块设硬上限，运行态再按窗口余额放大（见 index_chunk_budget_tokens）。
+_MAX_INDEX_CHUNK_TOKENS = 128_000
+_SUMMARY_OUTPUT_RESERVE_TOKENS = 16_000
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SummaryGenerationError(RuntimeError):
@@ -28,7 +44,7 @@ class SummaryGenerationError(RuntimeError):
 
 
 class RuntimeSummaryModelAdapter:
-    """通过复用原请求前缀（含系统提示词），且不注册任何工具。"""
+    """通过复用原请求前缀（含系统提示词与工具声明），且用 tool_choice=none 禁止调用工具。"""
 
     def __init__(
         self,
@@ -41,6 +57,7 @@ class RuntimeSummaryModelAdapter:
         system_prompt_provider: Callable[[], str] | None = None,
         context_prefix_provider: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
         prompt_cache_identity_provider: Callable[[], Mapping[str, str]] | None = None,
+        tools_provider: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
     ) -> None:
         self._parent_llm = parent_llm
         self._summary_profile = summary_profile.strip()
@@ -50,12 +67,55 @@ class RuntimeSummaryModelAdapter:
         self._system_prompt_provider = system_prompt_provider
         self._context_prefix_provider = context_prefix_provider
         self._prompt_cache_identity_provider = prompt_cache_identity_provider
+        self._tools_provider = tools_provider
 
     def _context_prefix(self) -> list[dict[str, Any]]:
         provider = self._context_prefix_provider
         if provider is None:
             return []
         return [dict(message) for message in provider() or ()]
+
+    def _tools_payload(self) -> list[dict[str, Any]]:
+        """与主请求一致的工具面：逐字相同才能命中同一前缀缓存。
+
+        摘要走其他模型时前缀缓存本就不共享，此时不声明工具，避免落到不支持工具的模型上。
+        """
+
+        provider = self._tools_provider
+        if provider is None or not self._shares_parent_model():
+            return []
+        return [dict(tool) for tool in provider() or ()]
+
+    def _shares_parent_model(self) -> bool:
+        try:
+            return self.resolve_model_config().model == self._parent_llm.model
+        except SummaryGenerationError:
+            return False
+
+    def index_chunk_budget_tokens(self) -> int:
+        """按「摘要模型窗口 − 复用前缀 − 输出预留」估算单块事件索引预算。
+
+        返回 0 表示窗口余额不足：调用方回退到默认预算，继续分块。
+        """
+
+        try:
+            window = int(
+                getattr(self.resolve_model_config(), "context_window_tokens", 0) or 0
+            )
+        except SummaryGenerationError:
+            return 0
+        if window <= 0:
+            return 0
+        return max(
+            0,
+            window // 2 - self._prefix_token_estimate() - _SUMMARY_OUTPUT_RESERVE_TOKENS,
+        )
+
+    def _prefix_token_estimate(self) -> int:
+        """复用前缀的 token 估算：系统提示词 + 逐字复用的主请求消息。"""
+
+        total = estimate_text_tokens(self._system_prompt())
+        return total + estimate_messages_tokens(self._context_prefix())
 
     def _system_prompt(self) -> str:
         provider = self._system_prompt_provider
@@ -95,7 +155,12 @@ class RuntimeSummaryModelAdapter:
         return replace(
             selected,
             reasoning_effort=self._reasoning_effort,
-            provider_options=dict(selected.provider_options),
+            # tool_choice 经 extra_body 提升为顶层请求参数：工具面照带（命中前缀缓存），
+            # 但模型不允许调用工具。
+            provider_options={
+                **dict(selected.provider_options),
+                "tool_choice": _SUMMARY_TOOL_CHOICE,
+            },
         )
 
     def __call__(
@@ -108,6 +173,9 @@ class RuntimeSummaryModelAdapter:
         try:
             profile, descriptor = llm_config_to_profile_and_descriptor(model_config)
             snapshot = manager.bootstrap(profile, descriptor)
+            prefix = self._context_prefix()
+            tools_payload = self._tools_payload()
+            prefix_tokens = self._prefix_token_estimate()
             protocol = AgentLLMProtocol(
                 client=None,
                 model=model_config.model,
@@ -118,7 +186,7 @@ class RuntimeSummaryModelAdapter:
                 prompt_cache_identity_provider=lambda: self._prompt_cache_identity(
                     model_config.model
                 ),
-                tools_provider=lambda: [],
+                tools_provider=lambda: tools_payload,
                 extra_body_provider=lambda: build_extra_body(model_config),
                 tool_name_from_function_name=lambda name: name,
                 function_name_for_tool=lambda name: name,
@@ -131,13 +199,26 @@ class RuntimeSummaryModelAdapter:
                 usage = usage.add(input_tokens, output_tokens, cached)
 
             reply = protocol.request_reply(
-                [*self._context_prefix(), *[dict(message) for message in messages]],
+                [*prefix, *[dict(message) for message in messages]],
                 lambda _delta: None,
                 record_usage,
                 lambda: None,
                 lambda _status: None,
                 runtime_snapshot=snapshot,
                 on_stream_rollback=lambda: None,
+            )
+            # 与网关侧请求日志对齐的画像：前缀逐字一致时，第一次摘要请求也应命中主请求缓存。
+            LOGGER.info(
+                "上下文摘要请求：model=%s prefix_messages=%d prefix_tokens≈%d tools=%d "
+                "tool_choice=%s input=%d cached=%d output=%d",
+                model_config.catalog_key or model_config.model,
+                len(prefix),
+                prefix_tokens,
+                len(tools_payload),
+                _SUMMARY_TOOL_CHOICE if tools_payload else "-",
+                usage.input_tokens,
+                usage.cached_input_tokens,
+                usage.output_tokens,
             )
             return SummaryModelResponse(
                 content=reply.content,
@@ -162,11 +243,24 @@ class ModelSummaryCompactor:
         call_model: SummaryModelCall,
         *,
         max_input_tokens: int = 64_000,
+        budget_provider: Callable[[], int] | None = None,
     ) -> None:
         if max_input_tokens <= 0:
             raise ValueError("max_input_tokens 必须是正整数。")
         self._call_model = call_model
         self._max_input_tokens = max_input_tokens
+        self._budget_provider = budget_provider
+
+    def _chunk_budget(self) -> int:
+        """单块索引预算：默认值与窗口余额取大者，并受硬上限约束。"""
+
+        budget = self._max_input_tokens
+        if self._budget_provider is not None:
+            try:
+                budget = max(budget, int(self._budget_provider() or 0))
+            except Exception:  # noqa: BLE001 - 预算解析失败时退回默认预算
+                pass
+        return min(budget, _MAX_INDEX_CHUNK_TOKENS)
 
     def compact(
         self,
@@ -176,7 +270,7 @@ class ModelSummaryCompactor:
         validation_feedback: Sequence[str] = (),
     ) -> ModelSummaryResult:
         previous = _previous_structured(batch.previous_summary)
-        chunks = _chunk_events(batch.events, self._max_input_tokens)
+        chunks = _chunk_events(batch.events, self._chunk_budget())
         if not chunks:
             raise SummaryGenerationError("没有可供模型摘要的事件。")
 
