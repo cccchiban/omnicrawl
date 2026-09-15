@@ -63,7 +63,7 @@ max_output_chars = 1500    # 压缩结果硬上限
 timeout_seconds = 60
 ```
 
-`active = enabled and model_key`（与 advisor 同语义）。设置面板「工具输出压缩」页提供开关、思考开关与思考深度、4 个预算输入与内嵌模型选择器；保存写盘后经 `set_tool_output_compression_configuration` 同步运行态。本功能**不注册工具、不新增斜杠命令**，因此配置变化不重建工具表。
+`active = enabled and model_key`（与 advisor 同语义）。设置面板「工具输出压缩」页提供开关、思考开关与思考深度、4 个预算输入与内嵌模型选择器；保存写盘后经 `set_tool_output_compression_configuration` 同步运行态。面板布局：开关与预算输入两两并排成定高行，模型选择器紧随其后并吃掉面板剩余高度（矮窗口由自身 `min-height` 兜底），页脚必须显式 `height: auto` —— Textual 的 `Vertical` 默认 `height: 1fr`，不写就会和表单区对半分屏，在按钮下方留下半屏空白。本功能**不注册工具、不新增斜杠命令**，因此配置变化不重建工具表。
 
 ## 6. 实现落点
 

@@ -352,7 +352,11 @@ YYYYMMDD-HHMMSS-随机短 ID
 
 > 模型辅助摘要、Prompt Cache、Token 测量、滚动结构化摘要和按需证据恢复的实现基线。上下文压缩始终开启，仅在完整回合结束后实际上下文达到配置的触发阈值（默认按上下文窗口的 80%，config 中 `context_compaction.trigger_context_tokens`）时批量压缩，不设回合间隔冷却。`target_summary_tokens = 0` 时摘要不设预算上限、以完整性优先（不再被 token 预算卡住或校验拒绝）。预估「下一次请求」时按完整历史计算：压缩前冷历史仍原样进入请求，只有已存在的压缩摘要单独计入，否则长会话永远达不到触发阈值。
 >
-> 触发点：完整回合结束后测量实际上下文（稳定上下文 + 既有摘要 + 全部历史，不含下一轮用户预留），达到 ``trigger_context_tokens`` 时先分发 ``context.compaction.after_turn`` Hook（notify，仅供观察），再由宿主执行压缩；Hook 缺失、被拒绝或分发异常都不影响压缩执行。
+> 触发点：完整回合结束后测量实际上下文（稳定上下文 + 既有摘要 + 全部历史，不含下一轮用户预留），达到 ``trigger_context_tokens`` 时先分发 ``context.compaction.after_turn`` Hook（notify，仅供观察），再由宿主执行压缩；Hook 缺失、被拒绝或分发异常都不影响压缩执行。测量同时取「本地估算」与「供应商回报的最近一次请求输入 token」中的较大值：本地估算按 CJK 1 token/字、其余 4 字符 1 token 折算，代码/JSON 密集的工具结果会低估近一倍，只看估算时阈值永远达不到；测量事件的 `provider_input_tokens` 记录该真实值，0 表示本次没有可用数据（此时退回纯估算口径，行为与旧版一致）。
+>
+> 模型摘要请求逐字复用最近一次主请求的系统提示词、消息与工具声明（工具块排在 prompt 最前，`tool_choice=none` 禁止调用工具），并沿用同一 `prompt_cache_identity`：摘要请求据此具备与主请求相同的前缀，**是否命中仍取决于提供方缓存策略（TTL、最小缓存长度、模型/渠道）**；实际命中量看 `compact_summary` 事件的 `summary_input_tokens` / `cached_input_tokens`。摘要模型与主请求不同源（provider / protocol / model 任一不一致）时不声明工具——前缀缓存本就不共享，标记为不可复用而非假装可复用。前缀取自最近一次主请求消息的快照，按深拷贝隔离——消息里的 `tool_calls` / `content` 数组是嵌套结构，任何原地改写都会让前缀与主请求不再逐字一致、使缓存整段失配。没有可复用前缀时不发摘要请求（待压缩正文只存在于前缀里，索引只带 200 字符预览），直接降级为确定性压缩。
+>
+> 压缩成功（模型摘要、确定性压缩、溢出恢复任一形式）后立即作废复用前缀与真实用量下界：`_last_request_messages` 清空、`_last_request_input_tokens` 归零。前缀作废保证不会把**已被压缩掉的旧历史**再发一次摘要请求（此时按无前缀降级）；用量归零让下一次触发判定退回「压缩后的实际估算」，避免「压缩 → 判定仍用压缩前的旧输入 → 立刻再压一次」的循环。四条成功路径（自动回合结束、`/compact` 模型摘要、确定性压缩、溢出恢复）都走同一作废入口。
 >
 > 摘要采用结构化字段（objective/constraints/decisions/completed/current_state/open_issues/artifacts/exact_evidence，以及过程与负信息字段 read_files/modified_files/failed_attempts/excluded_approaches，九部分覆盖字段 key_concepts/problem_solving_process/user_messages/next_steps）。校验器对“该记的没记”把关：被压缩窗口内成功写入的文件必须被 modified_files 覆盖（事件引用或路径匹配），失败的工具调用必须被 failed_attempts 覆盖，用户消息必须被 user_messages 以原文逐字覆盖，否则带反馈重试；重试仍失败则降级。
 >

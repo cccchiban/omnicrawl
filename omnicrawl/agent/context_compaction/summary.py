@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import logging
 from dataclasses import replace
@@ -37,6 +39,15 @@ _MAX_INDEX_CHUNK_TOKENS = 128_000
 _SUMMARY_OUTPUT_RESERVE_TOKENS = 16_000
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _fingerprint(value: Any) -> str:
+    """稳定指纹（只记哈希，不记原文）：用于核对两处请求是否同前缀/同工具面。"""
+
+    serialized = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
 
 
 class SummaryGenerationError(RuntimeError):
@@ -82,15 +93,29 @@ class RuntimeSummaryModelAdapter:
         """
 
         provider = self._tools_provider
-        if provider is None or not self._shares_parent_model():
+        if provider is None:
             return []
-        return [dict(tool) for tool in provider() or ()]
+        if not self._shares_parent_model():
+            # 不在同一缓存域：前缀缓存本就不共享，也不声明工具（避免落到不支持工具的模型）。
+            LOGGER.info("摘要模型与主请求不同源，本次不声明工具：前缀缓存不共享。")
+            return []
+        # 深拷贝：工具参数 schema 是嵌套结构，任何原地改写都会让工具面与主请求
+        # 不再逐字一致，前缀随之整段失配。
+        return [copy.deepcopy(tool) for tool in provider() or ()]
 
     def _shares_parent_model(self) -> bool:
+        """摘要请求能否共享主请求的前缀缓存域：provider / protocol / model 三者都须一致。"""
+
         try:
-            return self.resolve_model_config().model == self._parent_llm.model
+            selected = self.resolve_model_config()
         except SummaryGenerationError:
             return False
+        parent = self._parent_llm
+        return all(
+            str(getattr(selected, attribute, "") or "")
+            == str(getattr(parent, attribute, "") or "")
+            for attribute in ("provider", "protocol", "model")
+        )
 
     def index_chunk_budget_tokens(self) -> int:
         """按「摘要模型窗口 − 复用前缀 − 输出预留」估算单块事件索引预算。
@@ -174,6 +199,12 @@ class RuntimeSummaryModelAdapter:
             profile, descriptor = llm_config_to_profile_and_descriptor(model_config)
             snapshot = manager.bootstrap(profile, descriptor)
             prefix = self._context_prefix()
+            if not prefix:
+                # 待压缩正文只存在于复用前缀里（索引只带 200 字符预览）：没有前缀
+                # 既不可能命中缓存，也拿不到正文，直接降级到确定性压缩。
+                raise SummaryGenerationError(
+                    "没有可复用的主请求前缀，已跳过本次模型摘要（降级为确定性压缩）。"
+                )
             tools_payload = self._tools_payload()
             prefix_tokens = self._prefix_token_estimate()
             protocol = AgentLLMProtocol(
@@ -207,15 +238,21 @@ class RuntimeSummaryModelAdapter:
                 runtime_snapshot=snapshot,
                 on_stream_rollback=lambda: None,
             )
-            # 与网关侧请求日志对齐的画像：前缀逐字一致时，第一次摘要请求也应命中主请求缓存。
+            # 与网关侧请求日志对齐的画像：指纹用于判断摘要请求是否与主请求同前缀/同工具面
+            # （只记哈希，不记原文），命中量直接看 input/cached。
             LOGGER.info(
-                "上下文摘要请求：model=%s prefix_messages=%d prefix_tokens≈%d tools=%d "
-                "tool_choice=%s input=%d cached=%d output=%d",
+                "上下文摘要请求：model=%s provider=%s prefix_messages=%d prefix_tokens≈%d "
+                "prefix_fingerprint=%s tools=%d tools_fingerprint=%s tool_choice=%s "
+                "cache_identity=%s input=%d cached=%d output=%d",
                 model_config.catalog_key or model_config.model,
+                model_config.provider,
                 len(prefix),
                 prefix_tokens,
+                _fingerprint(prefix),
                 len(tools_payload),
+                _fingerprint(tools_payload),
                 _SUMMARY_TOOL_CHOICE if tools_payload else "-",
+                _fingerprint(self._prompt_cache_identity(model_config.model)),
                 usage.input_tokens,
                 usage.cached_input_tokens,
                 usage.output_tokens,

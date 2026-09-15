@@ -1,6 +1,7 @@
 """上下文压缩与溢出恢复：手动/自动压缩、压缩记忆回写与会话归档。"""
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Callable, Mapping, Sequence
 from ...context_compaction import (
@@ -75,6 +76,7 @@ class TurnCompactionMixin:
         if archive_id:
             compact_payload["archive_id"] = archive_id
         self._append_session_event("compact_summary", compact_payload)
+        self._invalidate_compaction_prefix()
         before_tokens = estimate_json_tokens(self._history)
         self._history = self._rebuild_history_after_compaction(compact_payload)
         self._write_compaction_memories(compact_payload)
@@ -109,8 +111,14 @@ class TurnCompactionMixin:
         *,
         context_messages: Sequence[Mapping[str, Any]],
         usage: TokenUsageSample,
+        last_request_input_tokens: int = 0,
     ) -> dict[str, Any]:
-        """回合结束边界的测量输入：压缩判定与 Hook 载荷共用同一份口径。"""
+        """回合结束边界的测量输入：压缩判定与 Hook 载荷共用同一份口径。
+
+        ``last_request_input_tokens`` 是本回合最近一次模型请求的真实输入
+        token：本地估算对代码/JSON 密集的历史会低估，压缩判定用它作为真实
+        下界，避免阈值永远达不到。
+        """
 
         config = self.config.context_compaction
         return {
@@ -131,6 +139,7 @@ class TurnCompactionMixin:
             ),
             "emergency_context_ratio": config.emergency_context_ratio,
             "usage": usage,
+            "provider_input_tokens": max(0, int(last_request_input_tokens)),
         }
 
     def _trigger_context_compaction_after_turn(
@@ -138,6 +147,7 @@ class TurnCompactionMixin:
         *,
         context_messages: Sequence[Mapping[str, Any]],
         usage: TokenUsageSample,
+        last_request_input_tokens: int = 0,
         status: Callable[[str], None] | None = None,
         turn_id: str | None = None,
     ) -> None:
@@ -155,6 +165,7 @@ class TurnCompactionMixin:
                 **self._after_turn_measure_kwargs(
                     context_messages=context_messages,
                     usage=usage,
+                    last_request_input_tokens=last_request_input_tokens,
                 )
             )
         except Exception:
@@ -189,6 +200,7 @@ class TurnCompactionMixin:
             context_messages=context_messages,
             usage=usage,
             status=status,
+            last_request_input_tokens=last_request_input_tokens,
         )
 
     def _run_context_compaction_after_turn(
@@ -197,6 +209,7 @@ class TurnCompactionMixin:
         context_messages: Sequence[Mapping[str, Any]],
         usage: TokenUsageSample,
         status: Callable[[str], None] | None = None,
+        last_request_input_tokens: int = 0,
     ) -> None:
         config = self.config.context_compaction
         service = self._context_compaction_service()
@@ -208,6 +221,7 @@ class TurnCompactionMixin:
                 **self._after_turn_measure_kwargs(
                     context_messages=context_messages,
                     usage=usage,
+                    last_request_input_tokens=last_request_input_tokens,
                 ),
             )
         except Exception:
@@ -236,6 +250,7 @@ class TurnCompactionMixin:
                 "compact_summary",
                 compact_payload,
             )
+            self._invalidate_compaction_prefix()
             before_tokens = outcome.measurement_payload.get("estimated_next_input_tokens")
             if before_tokens is None:
                 before_tokens = estimate_json_tokens(self._history)
@@ -298,13 +313,26 @@ class TurnCompactionMixin:
         self._context_compaction_service_instance = service
         return service
 
+    def _invalidate_compaction_prefix(self) -> None:
+        """压缩改写了历史：作废复用前缀与真实用量下界。
+
+        前缀作废后 `_compaction_request_prefix()` 返回空，模型摘要按无前缀降级
+        （绝不把已被压缩掉的旧历史重发一次）；用量下界归零，让下一次触发判定回到
+        「压缩后的实际估算」，不会再拿压缩前的旧值立刻重复压缩。
+        """
+
+        self._last_request_messages = []
+        self._last_request_input_tokens = 0
+
     def _compaction_request_prefix(self) -> list[dict[str, Any]]:
         """复用原请求前缀：返回最近一次主请求的逐字消息。"""
 
         messages = getattr(self, "_last_request_messages", None)
         if not messages:
             return []
-        return [dict(message) for message in messages]
+        # 深拷贝：消息里的 tool_calls / content 数组是嵌套结构，任何原地改写都会让
+        # 压缩请求的前缀与主请求不再逐字一致，提供方前缀缓存随即整段失配。
+        return copy.deepcopy(list(messages))
 
     def _context_compaction_source_events(self) -> tuple[SourceEvent, ...]:
         store = getattr(self, "_session_store", None)
@@ -373,6 +401,7 @@ class TurnCompactionMixin:
                 "manual": force,
             },
         )
+        self._invalidate_compaction_prefix()
         summary_message = {"role": "assistant", "content": f"{COMPACT_SUMMARY_PREFIX}{result.summary}"}
         self._history = [summary_message, *result.recent_messages]
         self._write_compaction_memories({"content": result.summary})

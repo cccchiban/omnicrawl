@@ -22,6 +22,7 @@ from ....config.features.tts import (
     TTSConfiguration,
     load_tts_configuration,
 )
+from ....config.features.tool_output_compression import ToolOutputCompressionConfig
 from ....config.models.llm_multi import apply_model_selection, llm_config_to_profile_and_descriptor
 from ....config.features.subagents import (
     SubAgentConfigError,

@@ -135,6 +135,11 @@ class TurnLoopMixin:
             lambda _input_tokens, _output_tokens, _cached_input_tokens: None
         )
         turn_usage = TokenUsageSample()
+        # 本回合最近一次模型请求的输入 token（每次请求覆盖、不做累加）：回合
+        # 结束的自动压缩用它作为「实际上下文」的真实下界。
+        last_request_input_tokens = 0
+        # 镜像到实例属性：压缩改写历史后由压缩控制器归零，判定不再用压缩前的旧值。
+        self._last_request_input_tokens = 0
         visible_output_seen = False
         run_guard = getattr(self.config, "run_guard", None)
         run_guard_enabled = bool(getattr(run_guard, "enabled", False))
@@ -171,7 +176,9 @@ class TurnLoopMixin:
             output_tokens: int,
             cached_input_tokens: int,
         ) -> None:
-            nonlocal turn_usage
+            nonlocal turn_usage, last_request_input_tokens
+            last_request_input_tokens = max(0, int(input_tokens))
+            self._last_request_input_tokens = last_request_input_tokens
             turn_usage = turn_usage.add(
                 input_tokens,
                 output_tokens,
@@ -572,6 +579,9 @@ class TurnLoopMixin:
                 usage=turn_usage,
                 status=status,
                 turn_id=turn_id,
+                last_request_input_tokens=getattr(
+                    self, "_last_request_input_tokens", 0
+                ),
             )
             turn_snapshot_finalization_started = True
             self._complete_turn_snapshot(active_turn_snapshot)
@@ -1643,6 +1653,7 @@ class TurnLoopMixin:
         if archive_id:
             compact_payload["archive_id"] = archive_id
         self._append_session_event("compact_summary", compact_payload)
+        self._invalidate_compaction_prefix()
         before_tokens = estimate_json_tokens(self._history)
         self._history = self._rebuild_history_after_compaction(compact_payload)
         self._write_compaction_memories(compact_payload)

@@ -61,6 +61,9 @@ class ContextBudgetSnapshot:
     trigger_reached: bool
     emergency_ratio_reached: bool
     cache_hit_ratio: float
+    # 供应商返回的最近一次请求输入 token：与聚合估算同口径的真实下界，
+    # 0 表示本次测量没有可用数据（例如回退模型不回报用量）。
+    provider_input_tokens: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +82,7 @@ class ContextBudgetSnapshot:
             "trigger_reached": self.trigger_reached,
             "emergency_ratio_reached": self.emergency_ratio_reached,
             "cache_hit_ratio": self.cache_hit_ratio,
+            "provider_input_tokens": self.provider_input_tokens,
         }
 
 

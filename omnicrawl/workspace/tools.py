@@ -587,12 +587,22 @@ class WorkspaceTools:
         )
 
     def find_files(self, arguments: dict[str, Any]) -> str:
-        """按名称或相对路径查找文件和目录，不读取文件内容。"""
+        """按名称或相对路径查找工作区内的文件和目录，不读取文件内容。
+
+        ``path`` 必须是工作区内的目标：工作区外的绝对路径、经 ``..`` 逃逸的
+        相对路径以及指向区外的链接都拒绝——find 的契约是"查找工作区文件"，与
+        grep 的根目录保护同源。``pattern`` 按文件名或工作区相对路径解释。
+        """
 
         pattern = str(arguments.get("pattern") or "").strip()
         if not pattern:
             raise WorkspaceToolError("pattern 不能为空。")
         root = self.safe_path(str(arguments.get("path") or "."))
+        if not self.is_within_workspace(root):
+            raise WorkspaceToolError(
+                f"find 只能在工作区内查找：{self.relative_path(root)} 不在工作区内；"
+                "请把 path 指向工作区内的目录或文件。"
+            )
         if not root.exists():
             raise WorkspaceToolError(f"路径不存在：{self.relative_path(root)}")
         kind = str(arguments.get("kind") or "all").strip().lower()
@@ -1710,6 +1720,19 @@ class WorkspaceTools:
         if extra_message:
             raise WorkspaceToolError(extra_message)
         return resolved
+
+    def is_within_workspace(self, path: Path) -> bool:
+        """判断路径是否位于工作区内；先解析链接与 ``..``，逃逸到区外即为 False。
+
+        ``safe_path`` 有意允许工作区外的绝对路径（read/list 等工具借此读取
+        本机其它文件），所以"只查工作区"的工具要自己补这道检查。
+        """
+
+        try:
+            Path(path).resolve().relative_to(self.workspace_root)
+        except (OSError, ValueError):
+            return False
+        return True
 
     def read_text(self, path: Path) -> str:
         try:

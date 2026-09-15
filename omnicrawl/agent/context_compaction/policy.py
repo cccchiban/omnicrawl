@@ -45,6 +45,7 @@ class ContextBudgetManager:
         trigger_context_tokens: int,
         context_window_tokens: int,
         usage: TokenUsageSample,
+        provider_input_tokens: int = 0,
         emergency_context_ratio: float = 0.85,
     ) -> ContextBudgetSnapshot:
         if recent_turns <= 0:
@@ -72,6 +73,7 @@ class ContextBudgetManager:
             trigger_context_tokens=trigger_context_tokens,
             context_window_tokens=context_window_tokens,
             usage=usage,
+            provider_input_tokens=provider_input_tokens,
             emergency_context_ratio=emergency_context_ratio,
         )
 
@@ -88,6 +90,7 @@ class ContextBudgetManager:
         context_window_tokens: int,
         usage: TokenUsageSample,
         emergency_context_ratio: float = 0.85,
+        provider_input_tokens: int = 0,
     ) -> ContextBudgetSnapshot:
         counts = {
             "stable_context_tokens": stable_context_tokens,
@@ -106,6 +109,12 @@ class ContextBudgetManager:
             raise ValueError("触发阈值和上下文窗口必须是正整数。")
         if not 0 < emergency_context_ratio < 1:
             raise ValueError("emergency_context_ratio 必须满足 0 < value < 1。")
+        if (
+            isinstance(provider_input_tokens, bool)
+            or not isinstance(provider_input_tokens, int)
+            or provider_input_tokens < 0
+        ):
+            raise ValueError("provider_input_tokens 必须是非负整数。")
 
         # 预估下一请求输入必须包含全部历史：压缩前冷历史仍原样进入下一次模型
         # 请求（working_messages = 稳定上下文 + 完整 _history + 下一条用户消息）。
@@ -139,11 +148,15 @@ class ContextBudgetManager:
         emergency_tokens = math.ceil(context_window_tokens * emergency_context_ratio)
         # 自动压缩触发口径＝回合结束后实际上下文（稳定上下文 + 既有摘要 + 全部
         # 历史），不含下一轮用户预留：预留只影响下一请求预估与紧急比。
-        post_turn_context_tokens = (
+        # 本地估算把非 CJK 文本按 4 字符 1 token 折算，代码/JSON 密集的工具结果
+        # 会低估近一半，因此与供应商回报的最近一次请求输入取大值：后者是同一
+        # 口径的真实值（已含系统提示、工具定义与缓存命中），0 表示没有可用数据。
+        post_turn_context_tokens = max(
             stable_context_tokens
             + existing_summary_tokens
             + cold_history_tokens
-            + recent_history_tokens
+            + recent_history_tokens,
+            provider_input_tokens,
         )
         return ContextBudgetSnapshot(
             stable_context_tokens=stable_context_tokens,
@@ -163,6 +176,7 @@ class ContextBudgetManager:
             trigger_reached=post_turn_context_tokens >= trigger_context_tokens,
             emergency_ratio_reached=estimated_next_input_tokens >= emergency_tokens,
             cache_hit_ratio=cache_hit_ratio,
+            provider_input_tokens=provider_input_tokens,
         )
 
     def select_recovery_batch(

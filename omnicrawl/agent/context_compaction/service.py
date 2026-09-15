@@ -54,6 +54,7 @@ class ContextCompactionService:
         context_window_tokens: int,
         emergency_context_ratio: float,
         usage: TokenUsageSample,
+        provider_input_tokens: int = 0,
     ) -> ContextMeasurementResult:
         snapshot = self._budget_manager.measure(
             system_prompt=system_prompt,
@@ -67,6 +68,7 @@ class ContextCompactionService:
             context_window_tokens=context_window_tokens,
             emergency_context_ratio=emergency_context_ratio,
             usage=usage,
+            provider_input_tokens=provider_input_tokens,
         )
         return ContextMeasurementResult(
             snapshot=snapshot,
@@ -90,6 +92,7 @@ class ContextCompactionService:
         reasoning_effort: str,
         preserve_exact_evidence: bool,
         usage: TokenUsageSample,
+        provider_input_tokens: int = 0,
     ) -> ContextCompactionOutcome:
         measured = self.measure_after_complete_turn(
             system_prompt=system_prompt,
@@ -103,6 +106,7 @@ class ContextCompactionService:
             context_window_tokens=context_window_tokens,
             emergency_context_ratio=emergency_context_ratio,
             usage=usage,
+            provider_input_tokens=provider_input_tokens,
         )
         # 「压缩即丢弃」：整个窗口（含最近回合）都交给摘要模型，投影只保留
         # 摘要与最终回复锚点，因此批量选择不再接收保留窗口参数。

@@ -41,17 +41,31 @@ _THINKING_LABELS = {
 
 _PANE_CSS = """
 #toc-form { height: 1fr; }
+/* 字段两两并排，尽量少占竖向行数。 */
+.toc-fields { height: 3; margin-bottom: 1; }
+.toc-field { width: 1fr; height: 3; }
+.toc-field-label {
+    width: auto;
+    height: 3;
+    content-align: left middle;
+    color: $terminal-text-muted;
+    margin-right: 1;
+}
+/* Input 默认 width:100%，并排使用时会撑出容器，必须改成 1fr。 */
+.toc-value { width: 1fr; }
+#toc-scope { height: 1; color: $terminal-text-muted; }
 #toc-model { height: 1; margin-bottom: 1; color: $terminal-text-secondary; }
-.toc-label { height: 1; color: $terminal-text-muted; }
-.toc-control { margin-bottom: 1; }
 #toc-picker-wrap {
-    /* 高度优先给模型选择器：矮窗口下 min-height 保证仍有可浏览行。 */
+    /* 模型选择器内部固定占约 15 行（搜索框/标题/帮助/状态），min-height 保证列表有可浏览行数；
+       面板更高时由 1fr 继续吸收空余，超出部分交给 #toc-form 滚动。 */
     height: 1fr;
-    min-height: 16;
+    min-height: 22;
     border: round $terminal-border;
     background: $terminal-background;
     margin-bottom: 1;
 }
+/* Vertical 默认 height: 1fr 会让页脚占半个面板，底部留出空白。 */
+#toc-footer { height: auto; }
 #toc-status { height: 1; color: $terminal-white; margin-bottom: 1; }
 #toc-actions { height: 3; align-horizontal: right; }
 """
@@ -102,39 +116,46 @@ class ToolOutputCompressionSettingsPane(SettingsPane):
         self._status = "选择压缩模型、调整开关后按 Ctrl+S 保存。"
 
     def compose_pane(self) -> ComposeResult:
-        # 可滚动表单区：字段 + 当前模型说明 + 内嵌模型选择器；状态与按钮栏固定在下。
+        # 可滚动表单区：字段并排省行数，模型选择器紧随其后；状态与按钮固定在下方。
         with VerticalScroll(id="toc-form"):
-            yield Static("启用", classes="toc-label")
-            yield Select(
-                [("停用", False), ("启用", True)],
-                value=self._enabled,
-                allow_blank=False,
-                id="toc-enabled",
-                classes="toc-control choice-select",
-            )
-            yield Static("作用域：bash / powershell / git", classes="toc-label")
-            yield Static("思考", classes="toc-label")
-            yield Select(
-                [("关闭", False), ("开启", True)],
-                value=self._thinking_enabled,
-                allow_blank=False,
-                id="toc-thinking",
-                classes="toc-control choice-select",
-            )
-            yield Static("思考深度", classes="toc-label")
-            yield Select(
-                [
-                    (_THINKING_LABELS.get(option, option), option)
-                    for option in THINKING_EFFORT_OPTIONS
-                ],
-                value=self._thinking_effort,
-                allow_blank=False,
-                id="toc-effort",
-                classes="toc-control choice-select",
-            )
-            for label, widget_id, value in self._numeric_rows():
-                yield Static(label, classes="toc-label")
-                yield Input(str(value), id=widget_id, classes="toc-control")
+            with Horizontal(classes="toc-fields"):
+                with Horizontal(classes="toc-field"):
+                    yield Static("启用", classes="toc-field-label")
+                    yield Select(
+                        [("停用", False), ("启用", True)],
+                        value=self._enabled,
+                        allow_blank=False,
+                        id="toc-enabled",
+                        classes="toc-value choice-select",
+                    )
+                with Horizontal(classes="toc-field"):
+                    yield Static("思考", classes="toc-field-label")
+                    yield Select(
+                        [("关闭", False), ("开启", True)],
+                        value=self._thinking_enabled,
+                        allow_blank=False,
+                        id="toc-thinking",
+                        classes="toc-value choice-select",
+                    )
+                with Horizontal(classes="toc-field"):
+                    yield Static("思考深度", classes="toc-field-label")
+                    yield Select(
+                        [
+                            (_THINKING_LABELS.get(option, option), option)
+                            for option in THINKING_EFFORT_OPTIONS
+                        ],
+                        value=self._thinking_effort,
+                        allow_blank=False,
+                        id="toc-effort",
+                        classes="toc-value choice-select",
+                    )
+            for row in self._numeric_rows():
+                with Horizontal(classes="toc-fields"):
+                    for label, widget_id, value in row:
+                        with Horizontal(classes="toc-field"):
+                            yield Static(label, classes="toc-field-label")
+                            yield Input(str(value), id=widget_id, classes="toc-value")
+            yield Static("作用域：bash / powershell / git", id="toc-scope")
             yield Static(self._current_text(), id="toc-model")
             with Container(id="toc-picker-wrap"):
                 self._picker = ModelPickerPane(
@@ -234,13 +255,17 @@ class ToolOutputCompressionSettingsPane(SettingsPane):
         self._status = f"压缩模型已选择：{result.model}；按 Ctrl+S 保存。"
         self.refresh_pane()
 
-    def _numeric_rows(self) -> tuple[tuple[str, str, int], ...]:
+    def _numeric_rows(self) -> tuple[tuple[tuple[str, str, int], ...], ...]:
         loaded = self._previous_configuration
         return (
-            ("最小压缩字符数（模型可见文本短于此值不压缩）", "toc-min-chars", loaded.min_chars),
-            ("单次压缩输入上限（字符）", "toc-max-input-chars", loaded.max_input_chars),
-            ("压缩结果上限（字符）", "toc-max-output-chars", loaded.max_output_chars),
-            ("单条压缩超时（秒）", "toc-timeout", loaded.timeout_seconds),
+            (
+                ("最小压缩字符数", "toc-min-chars", loaded.min_chars),
+                ("单次压缩输入上限", "toc-max-input-chars", loaded.max_input_chars),
+            ),
+            (
+                ("压缩结果上限", "toc-max-output-chars", loaded.max_output_chars),
+                ("单条压缩超时（秒）", "toc-timeout", loaded.timeout_seconds),
+            ),
         )
 
     def _read_positive_int(self, widget_id: str, label: str) -> int:

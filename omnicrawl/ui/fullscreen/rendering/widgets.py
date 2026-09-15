@@ -951,9 +951,12 @@ class RuntimeStatus(Horizontal):
 class _ToolBodyHint(Static):
     """工具卡省略区中间的可点击提示行（「点击展开 N 行」）。
 
-    默认灰色 + 下划线表示可点击，鼠标悬停变亮蓝（``:hover``）；点击由宿主
+    默认灰色斜体 + 下划线表示可点击，鼠标悬停变亮蓝（``:hover``）；点击由宿主
     工具卡的 ``expand_body`` 展开被省略的正文。点击事件不再向上冒泡：否则
     同一次点击会继续被卡片的「展开态点击收起」逻辑处理，立刻又折回缩略态。
+
+    下划线只覆盖文字：前导缩进空格单独成段并关闭下划线，否则整行文本样式
+    会把下划线画到文字左侧的缩进区。
     """
 
     can_focus = False
@@ -976,9 +979,9 @@ class ToolDisclosure(Vertical):
 
     除 write_file、Edit_file 外，所有工具的正文做头尾采样：不超过五行时
     原样显示；超出时剥离前导空行后保留首尾各两行有效行，中间被省略的行数
-    由一行灰色带下划线的「点击展开 N 行」替代——鼠标悬停该行变蓝表示可
-    点击，点击展开完整正文，再点击工具卡即回到缩略态。write_file 与
-    Edit_file 保留完整文件变更预览（Edit_file 的结果区只显示“替换 N 处”
+    由一行灰色斜体带下划线的「点击展开 N 行」替代（前导缩进不参与下划线）——
+    鼠标悬停该行变蓝表示可点击，点击展开完整正文，再点击工具卡即回到缩略态。
+    write_file 与 Edit_file 保留完整文件变更预览（Edit_file 的结果区只显示“替换 N 处”
     摘要），read 与写入类记忆工具的正文不展示给终端用户（只保留标题行，
     且没有任何“已隐藏”提示）。
 
@@ -1010,8 +1013,9 @@ class ToolDisclosure(Vertical):
     TAIL_BODY_LINES = 2
     # 方案6：正文相对标题的缩进宽度（4 空格）。
     BODY_INDENT = "    "
-    # 省略区提示行文案：与正文同缩进，占位符是中间被省略的有效行数。
-    EXPAND_HINT = BODY_INDENT + "点击展开 {lines} 行"
+    # 省略区提示行文案：占位符是中间被省略的有效行数。缩进不写进文案——
+    # 渲染时以单独一段「不参与下划线」的前导空格补上。
+    EXPAND_HINT = "点击展开 {lines} 行"
     # 豁免五行限制的工具：write_file 与 Edit_file 保持完整正文展示；
     # read 与写入类记忆工具已由 tool_disclosure_body 直接隐藏（正文为
     # 空），无需豁免。
@@ -1028,7 +1032,7 @@ class ToolDisclosure(Vertical):
         height: 1;
         width: auto;
         color: $terminal-text-gray;
-        text-style: underline;
+        text-style: underline italic;
         pointer: pointer;
     }
     ToolDisclosure > .tool-disclosure-hint:hover {
@@ -1184,9 +1188,13 @@ class ToolDisclosure(Vertical):
         self._body_line.update(head_text)
         self._tail_line.update(tail_text if tail_text is not None else "")
         self._tail_line.display = tail_text is not None
-        hint_text = (
-            Text(self.EXPAND_HINT.format(lines=hidden_lines)) if hidden_lines else None
-        )
+        hint_text = None
+        if hidden_lines:
+            # 缩进单独成段并关闭下划线：提示行整段由 CSS 加下划线，若缩进并进
+            # 同一段文本，下划线会向文字左侧多画 4 格。
+            hint_text = Text()
+            hint_text.append(self.BODY_INDENT, style="not underline")
+            hint_text.append(self.EXPAND_HINT.format(lines=hidden_lines))
         self._hint_line.display = hint_text is not None
         if hint_text is not None:
             self._hint_line.update(hint_text)

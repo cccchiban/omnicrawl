@@ -319,7 +319,7 @@ def _core_tool_definitions(
                 [
                     ToolDefinition(
                         name="find",
-                        description='是什么：按名称或相对路径查找工作区文件和目录，不读取内容。怎么做：不知道目标路径、需要 glob 模式或筛选 kind 时使用；已知精确路径或要搜内容时不用。怎样做：成功按行返回路径，目录末尾带 /；无结果返回‘未找到匹配结果’；超限保留前 max_results 并给出完整结果路径；失败返回文本错误。建议：先用具体 path/pattern 缩小范围，再用 read 读取内容；不要用 find 替代 grep。',
+                        description='是什么：按名称或相对路径查找工作区文件和目录，不读取内容。怎么做：不知道目标路径、需要 glob 模式或筛选 kind 时使用；已知精确路径或要搜内容时不用；path 只能指向工作区内，工作区外会被拒绝。怎样做：pattern 按文件名或工作区相对路径匹配（如 `*.py`、`omnicrawl/ui/**/*.py`）；成功按行返回路径，目录末尾带 /；无结果返回‘未找到匹配结果’；超限保留前 max_results 并给出完整结果路径；失败返回文本错误。建议：先用具体 path/pattern 缩小范围，再用 read 读取内容；不要用 find 替代 grep。',
                         argument_schema=(
                             '{"pattern":"agent","path":".","kind":"all|file|directory",'
                             '"case_sensitive":false,"max_results":50}'
