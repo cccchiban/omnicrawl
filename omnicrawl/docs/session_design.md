@@ -350,11 +350,15 @@ YYYYMMDD-HHMMSS-随机短 ID
 
 ## 9. 长会话压缩
 
-> 模型辅助摘要、Prompt Cache、Token 测量、滚动结构化摘要和按需证据恢复的实现基线。上下文压缩始终开启，仅在完整回合结束且预计下一次请求达到配置的触发阈值（默认按上下文窗口的 80%，config 中 `context_compaction.trigger_context_tokens`）时批量压缩，两次模型压缩至少冷却 4 个完整回合。`target_summary_tokens = 0` 时摘要不设预算上限、以完整性优先（不再被 token 预算卡住或校验拒绝）。预估「下一次请求」时按完整历史计算：压缩前冷历史仍原样进入请求，只有已存在的压缩摘要单独计入，否则长会话永远达不到触发阈值。
+> 模型辅助摘要、Prompt Cache、Token 测量、滚动结构化摘要和按需证据恢复的实现基线。上下文压缩始终开启，仅在完整回合结束后实际上下文达到配置的触发阈值（默认按上下文窗口的 80%，config 中 `context_compaction.trigger_context_tokens`）时批量压缩，两次模型压缩至少冷却 4 个完整回合。`target_summary_tokens = 0` 时摘要不设预算上限、以完整性优先（不再被 token 预算卡住或校验拒绝）。预估「下一次请求」时按完整历史计算：压缩前冷历史仍原样进入请求，只有已存在的压缩摘要单独计入，否则长会话永远达不到触发阈值。
+>
+> 触发点：完整回合结束后测量实际上下文（稳定上下文 + 既有摘要 + 全部历史，不含下一轮用户预留），达到 ``trigger_context_tokens`` 时先分发 ``context.compaction.after_turn`` Hook（notify，仅供观察），再由宿主执行压缩；Hook 缺失、被拒绝或分发异常都不影响压缩执行。
 >
 > 摘要采用结构化字段（objective/constraints/decisions/completed/current_state/open_issues/artifacts/exact_evidence，以及过程与负信息字段 read_files/modified_files/failed_attempts/excluded_approaches，九部分覆盖字段 key_concepts/problem_solving_process/user_messages/next_steps）。校验器对“该记的没记”把关：被压缩窗口内成功写入的文件必须被 modified_files 覆盖（事件引用或路径匹配），失败的工具调用必须被 failed_attempts 覆盖，用户消息必须被 user_messages 以原文逐字覆盖，否则带反馈重试；重试仍失败则降级。
 >
 > 配置 `archive_compacted_events` 时，被压缩窗口的原始事件归档到 `.agent_sessions/archive/compacted/<session>/`（第二级存储），`compact_summary` 事件记录 archive_id，任意被压缩事件均可按需精确恢复；配置 `auto_memory_recall` 时，压缩完成后自动检索长期记忆并把命中结果注入后续上下文（`compaction_memory_recall` 事件留痕）。`context_compaction_measurement` 事件包含覆盖度指标（coverage_ratio、字段计数、退休 token）与归档信息。
+>
+> 摘要请求沿用原请求前缀：系统提示词与最近一次主请求的逐字消息原样重发，缓存身份与主请求一致，用于命中提供方前缀缓存；被压缩事件只以 `events_index`（event_id / type / 截断预览）附在末尾，正文靠前缀对齐。因此该请求不注册任何工具，并在提示词中强约束「只输出一个 JSON 对象、禁止调用工具」；一旦模型返回工具调用，带反馈重试一次，仍失败则走既有降级路径。
 
 当前实现已经采用“摘要替换 + 最近窗口”，并将 `compact_summary` 追加到 Session 转录；本节保留初始设计内容用于追溯。
 

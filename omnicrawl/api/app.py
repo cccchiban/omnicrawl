@@ -81,8 +81,7 @@ def load_api_config() -> APIConfig:
 def create_default_agent() -> LocalToolAgent:
     """按 TUI 相同的配置与工作区检测规则创建 Agent，并注入 PluginRuntime。"""
 
-    app_root = Path(__file__).resolve().parents[2]
-    project_context = detect_project_context(app_root=app_root)
+    project_context = detect_project_context()
 
     # 主 Agent 隔离工作区（与 TUI 一致）：多个进程并行时各自在独立 worktree
     # / 目录中读写，互不写穿；创建失败仅告警并回退主工作区。

@@ -6,7 +6,7 @@ import json
 from dataclasses import replace
 from importlib import resources
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from ..runtime.llm_protocol import AgentLLMProtocol, build_extra_body
 from ...config.models.llm import LLMConfig, LLMError
@@ -28,7 +28,7 @@ class SummaryGenerationError(RuntimeError):
 
 
 class RuntimeSummaryModelAdapter:
-    """通过现有统一 LLM 协议执行隔离的无工具摘要请求。"""
+    """通过复用原请求前缀（含系统提示词），且不注册任何工具。"""
 
     def __init__(
         self,
@@ -38,12 +38,40 @@ class RuntimeSummaryModelAdapter:
         reasoning_effort: str,
         allow_cross_provider: bool,
         workspace_root: Path,
+        system_prompt_provider: Callable[[], str] | None = None,
+        context_prefix_provider: Callable[[], Sequence[Mapping[str, Any]]] | None = None,
+        prompt_cache_identity_provider: Callable[[], Mapping[str, str]] | None = None,
     ) -> None:
         self._parent_llm = parent_llm
         self._summary_profile = summary_profile.strip()
         self._reasoning_effort = reasoning_effort
         self._allow_cross_provider = allow_cross_provider
         self._workspace_root = workspace_root
+        self._system_prompt_provider = system_prompt_provider
+        self._context_prefix_provider = context_prefix_provider
+        self._prompt_cache_identity_provider = prompt_cache_identity_provider
+
+    def _context_prefix(self) -> list[dict[str, Any]]:
+        provider = self._context_prefix_provider
+        if provider is None:
+            return []
+        return [dict(message) for message in provider() or ()]
+
+    def _system_prompt(self) -> str:
+        provider = self._system_prompt_provider
+        return str(provider() or "") if provider is not None else ""
+
+    def _prompt_cache_identity(self, model: str) -> dict[str, str]:
+        """与主请求同一缓存身份：前缀一致时摘要调用才命中同一前缀缓存。"""
+
+        provider = self._prompt_cache_identity_provider
+        if provider is None:
+            return {
+                "workspace": str(self._workspace_root),
+                "context": "summary",
+                "model": model,
+            }
+        return {str(key): str(value) for key, value in (provider() or {}).items()}
 
     def resolve_model_config(self) -> LLMConfig:
         try:
@@ -86,12 +114,10 @@ class RuntimeSummaryModelAdapter:
                 request_timeout_seconds=model_config.request_timeout_seconds,
                 request_retry_count=model_config.request_retry_count,
                 workspace_root=self._workspace_root,
-                system_prompt_provider=lambda: "",
-                prompt_cache_identity_provider=lambda: {
-                    "workspace": str(self._workspace_root),
-                    "context": "summary",
-                    "model": model_config.model,
-                },
+                system_prompt_provider=self._system_prompt,
+                prompt_cache_identity_provider=lambda: self._prompt_cache_identity(
+                    model_config.model
+                ),
                 tools_provider=lambda: [],
                 extra_body_provider=lambda: build_extra_body(model_config),
                 tool_name_from_function_name=lambda name: name,
@@ -105,7 +131,7 @@ class RuntimeSummaryModelAdapter:
                 usage = usage.add(input_tokens, output_tokens, cached)
 
             reply = protocol.request_reply(
-                [dict(message) for message in messages],
+                [*self._context_prefix(), *[dict(message) for message in messages]],
                 lambda _delta: None,
                 record_usage,
                 lambda: None,
@@ -118,6 +144,7 @@ class RuntimeSummaryModelAdapter:
                 usage=usage,
                 profile=model_config.catalog_key or model_config.model,
                 provider=model_config.provider,
+                tool_calls=len(reply.tool_calls),
             )
         except SummaryGenerationError:
             raise
@@ -233,7 +260,8 @@ class ModelSummaryCompactor:
             "chunk_index": chunk_index,
             "chunk_count": chunk_count,
             "previous_summary": previous_summary,
-            "source_events": [event.to_prompt_dict() for event in source_events],
+            # 事件正文随复用的原请求前缀一起发送，这里只给模型 ID、类型与预览索引。
+            "events_index": [event.to_index_dict() for event in source_events],
             "partial_summaries": list(partial_summaries),
             "validation_feedback": list(validation_feedback),
         }
@@ -259,6 +287,9 @@ class ModelSummaryCompactor:
             )
             latest_profile = response.profile or latest_profile
             latest_provider = response.provider or latest_provider
+            if response.tool_calls:
+                parse_error = "摘要响应里出现了工具调用；本请求禁止调用工具，只允许输出 JSON 对象。"
+                continue
             try:
                 structured = parse_structured_summary(response.content)
             except SummaryGenerationError as exc:
@@ -321,14 +352,7 @@ def _chunk_events(
     current: list[SourceEvent] = []
     current_tokens = 0
     for event in events:
-        event_tokens = estimate_json_tokens(event.to_prompt_dict())
-        if event_tokens > max_input_tokens:
-            if current:
-                chunks.append(current)
-                current = []
-                current_tokens = 0
-            chunks.extend([[part] for part in _split_large_event(event, max_input_tokens)])
-            continue
+        event_tokens = estimate_json_tokens(event.to_index_dict())
         if current and current_tokens + event_tokens > max_input_tokens:
             chunks.append(current)
             current = []
@@ -339,28 +363,3 @@ def _chunk_events(
         chunks.append(current)
     return [tuple(chunk) for chunk in chunks]
 
-
-def _split_large_event(event: SourceEvent, max_input_tokens: int) -> list[SourceEvent]:
-    serialized = json.dumps(dict(event.payload), ensure_ascii=False, separators=(",", ":"))
-    # 启发式估算按最坏的 CJK 1 字符≈1 Token 切分，给提示词和 Schema 留 20% 余量。
-    chunk_chars = max(1_000, int(max_input_tokens * 0.8))
-    parts: list[SourceEvent] = []
-    total = max(1, math_ceil_div(len(serialized), chunk_chars))
-    for index in range(total):
-        text = serialized[index * chunk_chars : (index + 1) * chunk_chars]
-        parts.append(
-            SourceEvent(
-                event_id=event.event_id,
-                type=event.type,
-                payload={
-                    "chunk_text": text,
-                    "chunk_index": index + 1,
-                    "chunk_count": total,
-                },
-            )
-        )
-    return parts
-
-
-def math_ceil_div(value: int, divisor: int) -> int:
-    return (value + divisor - 1) // divisor

@@ -12,7 +12,7 @@
   ``MaskContext.placeholder_for`` 分配序号并替换；还原 / 流式 / 周期注销全部沿用既有
   ``registry`` / ``stream``，本层不新增任何还原路径。
 - **模型能力边界**：只识别 PER / ORG / LOC（BIO），不识别邮箱 / 手机号 / 身份证号等
-  结构化敏感信息——那些由值类型规则层负责。丢弃不含汉字的实体、默认丢弃单字实体，
+  结构化敏感信息——那些由值类型规则层负责。丢弃整体未落在中文片段内的实体（非中文字符已在入口被隔离）、默认丢弃单字实体，
   避免把拉丁字母编号或「日 / 美 / 京」这类歧义单字误当实体而改坏原文。
 - **CUDA 优先、CPU 兜底**：``ner_device`` 取 ``auto``（默认）时优先 CUDA、不可用回退
   CPU；显式 ``cuda`` 在不可用或运行期 CUDA 出错时同样回退，保证可用性。
@@ -94,6 +94,42 @@ def resolve_device(requested: str | None = None) -> str:
     except Exception:  # noqa: BLE001 - 探测失败一律按 CPU 处理
         pass
     return DEVICE_CPU
+
+
+#: 中文姓名内部连接符：随中文片段一起进入模型，也允许出现在实体区间内。
+_CHINESE_CONNECTORS = "·・"
+
+#: 隔离用的分隔符：与被替换字符等长，保证模型返回的偏移与原文一一对应。
+_CHINESE_ISOLATION_SEPARATOR = " "
+
+
+def _is_chinese_char(char: str) -> bool:
+    """是否属于兜底层保留的字符：汉字与中文姓名连接符。"""
+
+    return "一" <= char <= "鿿" or char in _CHINESE_CONNECTORS
+
+
+def _isolate_chinese(text: str) -> str:
+    """中文片段隔离：非中文字符等长替换为分隔符，只让中文片段进入模型。
+
+    长度不变，因此模型返回的偏移可直接用于原文；命中是否合法再由出口
+    ``_is_chinese_span`` 复核，跨片段实体不会成立。
+    """
+
+    if not text:
+        return text
+    return "".join(
+        char if _is_chinese_char(char) else _CHINESE_ISOLATION_SEPARATOR
+        for char in text
+    )
+
+
+def _is_chinese_span(value: str) -> bool:
+    """实体区间是否整体落在中文片段内（至少含一个汉字，其余只能是连接符）。"""
+
+    if not value or not _has_cjk(value):
+        return False
+    return all(_is_chinese_char(char) for char in value)
 
 
 def _has_cjk(text: str) -> bool:
@@ -288,8 +324,13 @@ class NerExtractor:
         if not chunks:
             return []
         self.inferred_chunks += len(chunks)
+        # 隔离：非中文字符等长替换为分隔符，模型只看到中文片段。
         encoded = [
-            [self.char2idx.get(char, self.unk_id) for char in chunk] for chunk in chunks
+            [
+                self.char2idx.get(char, self.unk_id)
+                for char in _isolate_chinese(chunk)
+            ]
+            for chunk in chunks
         ]
         results: list[list[tuple[int, int, str]]] = [[] for _ in chunks]
         with self._infer_lock:
@@ -398,7 +439,7 @@ class NerLayer:
     过滤规则（宁少勿滥，避免改坏原文）：
 
     - 只保留配置允许的实体类型；
-    - 丢弃不含汉字的实体（模型在拉丁字母片段上的误报）；
+    - 丢弃整体未落在中文片段内的实体（入口隔离后模型只见中文，含拉丁字母的误报不成立）；
     - 丢弃长度小于 ``min_entity_chars`` 的实体（默认 2，规避单字地名歧义）；
     - 丢弃与已有 ``｛Desensitized:n｝`` 占位符重叠的实体（前几层的结果不参与改写）。
     """
@@ -448,7 +489,7 @@ class NerLayer:
             if end <= start or end > len(text):
                 continue
             value = text[start:end]
-            if not _has_cjk(value) or len(value) < self._min_entity_chars:
+            if len(value) < self._min_entity_chars or not _is_chinese_span(value):
                 continue
             if placeholders is None:
                 placeholders = _placeholder_spans(text)

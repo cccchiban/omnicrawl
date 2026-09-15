@@ -508,26 +508,13 @@ class TurnLoopMixin:
                 # 溢出恢复分支的历史在恢复时就已重建，这里只提交压缩边界之后
                 # 的完整协议轨迹（工具调用、工具结果与本次最终回复）。
                 self._commit_turn_history()
-                self._run_context_compaction_after_turn(
-                    context_messages=context_messages,
-                    usage=turn_usage,
-                    status=status,
-                )
             else:
-                self._turn_context_compaction_context_messages = context_messages
-                self._turn_context_compaction_usage = turn_usage
-                self._turn_context_compaction_status = status
-                try:
-                    # 保持既有三参数调用形态，兼容宿主扩展和最小测试替身。
-                    self._append_history(
-                        text,
-                        final_reply,
-                        combined_reasoning,
-                    )
-                finally:
-                    self.__dict__.pop("_turn_context_compaction_context_messages", None)
-                    self.__dict__.pop("_turn_context_compaction_usage", None)
-                    self.__dict__.pop("_turn_context_compaction_status", None)
+                # 保持既有三参数调用形态，兼容宿主扩展和最小测试替身。
+                self._append_history(
+                    text,
+                    final_reply,
+                    combined_reasoning,
+                )
             continuation_exhausted = False
             if not loop_result.paused:
                 self._pending_user_text = None
@@ -571,6 +558,12 @@ class TurnLoopMixin:
                     "userText": text,
                     "assistantText": final_reply,
                 },
+                turn_id=turn_id,
+            )
+            self._trigger_context_compaction_after_turn(
+                context_messages=context_messages,
+                usage=turn_usage,
+                status=status,
                 turn_id=turn_id,
             )
             turn_snapshot_finalization_started = True
@@ -1269,6 +1262,8 @@ class TurnLoopMixin:
             raise AgentError("model.request.before 被插件拒绝。")
         if isinstance(request_payload.get("messages"), list):
             messages = request_payload["messages"]  # type: ignore[assignment]
+        # 上下文压缩请求沿用这份原请求消息作为前缀，以命中提供方前缀缓存。
+        self._last_request_messages = list(messages)
 
         # 自动审查保留消息快照：仅用于提取最近一条用户消息摘要，供审查者
         # 理解任务意图（不再复用完整上下文，避免污染）。按线程隔离，子代理
@@ -1727,7 +1722,7 @@ class TurnLoopMixin:
         return [message for _anchor, message in projector.drain()]
 
     def _append_history(self, user_text: str, assistant_text: str, reasoning: str = "") -> None:
-        """写入完整回合，先记录可选预算快照，再执行既有压缩判定。
+        """把本轮完整协议消息提交进历史（幂等）；压缩判定由 Hook 边界单独执行。
 
         正常情况下本轮完整协议消息（user、assistant tool_calls、tool 结果、
         最终回复）已由事件投影累积，这里只负责提交；投影器缺失（宿主扩展、
@@ -1743,25 +1738,7 @@ class TurnLoopMixin:
                     self._assistant_message(assistant_text, reasoning),
                 ]
             )
-        config = getattr(self.config, "context_compaction", None)
-        status = getattr(self, "_turn_context_compaction_status", None)
-        if config is None:
-            # 无压缩配置时历史只追加：任何按条数裁剪都会改写已发送过的前缀，
-            # 使同一会话内的前缀缓存周期性失效。
-            return
-        self._run_context_compaction_after_turn(
-            context_messages=getattr(
-                self,
-                "_turn_context_compaction_context_messages",
-                (),
-            ),
-            usage=getattr(
-                self,
-                "_turn_context_compaction_usage",
-                TokenUsageSample(),
-            ),
-            status=status,
-        )
+
 
     @staticmethod
     def _confirm_in_terminal(tool_name: str, arguments: dict[str, Any]) -> bool:

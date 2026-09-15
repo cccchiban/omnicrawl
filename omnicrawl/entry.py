@@ -22,7 +22,6 @@ from omnicrawl.config.core.bootstrap import (
 )
 from omnicrawl.llm import LLMError, load_llm_config
 from omnicrawl.project_context import (
-    ProjectContextError,
     detect_project_context,
     project_context_status_label,
 )
@@ -134,7 +133,6 @@ def _preload_mcp_tools_background(agent: Any, log_sink: Any = None) -> None:
 
 def _prepare_startup(
     *,
-    app_root: Path,
     resume_session_id: str,
     log_sink: Any = None,
 ) -> dict[str, Any]:
@@ -157,7 +155,7 @@ def _prepare_startup(
     approval_mode = load_approval_mode()
     temp_workspace_config = load_agent_temp_workspace_config()
     subagent_config = load_subagent_config()
-    project_context = detect_project_context(app_root=app_root)
+    project_context = detect_project_context()
     fullscreen_startup, run_fullscreen_tui = _load_fullscreen_ui()
     _log_startup(log_sink, "配置与项目上下文加载完成")
 
@@ -335,15 +333,6 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     if not setup.api_key_configured:
         return 2
 
-    # 主目录/盘根等过宽启动目录回退时使用 Agent 程序目录（而非 cwd），
-    # 否则用户在主目录直接启动会把整个主目录当工作区（历史上 git add
-    # 全量快照会遍历 AppData/.cargo/.codex 等巨量文件而卡死，见旧版
-    # turn_snapshot 卡死 bug；现改为 git diff 机制后仍应避免以盘根为
-    # 工作区）。包安装后本文件位于 site-packages/omnicrawl/，parent.parent
-    # 即程序根；工作区检测仍从启动目录向上找项目标记，不影响从项目内
-    # 启动的路径。
-    app_root = Path(__file__).resolve().parent.parent
-
     # 启动自动更新：联网比对 PyPI 最新版，版本落后且为 pip 安装环境时先打印
     # 说明并自动 pip 升级，成功后以子进程重新拉起 TUI 并返回其退出码；跳过、
     # 无新版本或升级失败均返回 None 继续正常启动（失败策略：用当前版本启动）。
@@ -368,7 +357,6 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     try:
         prepared = run_startup_splash(
             lambda log_sink: _prepare_startup(
-                app_root=app_root,
                 resume_session_id=args.resume,
                 log_sink=log_sink,
             ),
@@ -383,9 +371,6 @@ def run_application(argv: Sequence[str] | None = None) -> int:
         return 1
     except AgentTempWorkspaceError as exc:
         print(f"配置加载失败：{exc}")
-        return 1
-    except ProjectContextError as exc:
-        print(f"项目路径检测失败：{exc}")
         return 1
     except UIStartupError as exc:
         print(f"界面启动失败：{exc}")

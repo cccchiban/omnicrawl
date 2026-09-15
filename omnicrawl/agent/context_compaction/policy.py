@@ -135,7 +135,16 @@ class ContextBudgetManager:
             if usage.input_tokens > 0
             else 0.0
         )
+        # 紧急比仍按预估的下一次请求（含预留）判断，作为窗口溢出前的兜底。
         emergency_tokens = math.ceil(context_window_tokens * emergency_context_ratio)
+        # 自动压缩触发口径＝回合结束后实际上下文（稳定上下文 + 既有摘要 + 全部
+        # 历史），不含下一轮用户预留：预留只影响下一请求预估与紧急比。
+        post_turn_context_tokens = (
+            stable_context_tokens
+            + existing_summary_tokens
+            + cold_history_tokens
+            + recent_history_tokens
+        )
         return ContextBudgetSnapshot(
             stable_context_tokens=stable_context_tokens,
             existing_summary_tokens=existing_summary_tokens,
@@ -150,7 +159,8 @@ class ContextBudgetManager:
             potential_retired_tokens=potential_retired_tokens,
             trigger_context_tokens=trigger_context_tokens,
             context_window_tokens=context_window_tokens,
-            trigger_reached=estimated_next_input_tokens >= trigger_context_tokens,
+            post_turn_context_tokens=post_turn_context_tokens,
+            trigger_reached=post_turn_context_tokens >= trigger_context_tokens,
             emergency_ratio_reached=estimated_next_input_tokens >= emergency_tokens,
             cache_hit_ratio=cache_hit_ratio,
         )

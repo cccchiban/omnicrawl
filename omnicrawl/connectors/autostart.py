@@ -26,6 +26,7 @@ from typing import Any, Callable
 from omnicrawl.config.core.runtime import user_config_dir
 from omnicrawl.state.session_artifacts import redact_sensitive_text
 from omnicrawl.workspace.connector_singleton import ConnectorInstanceLock
+from omnicrawl.workspace.context import LAUNCH_CWD_ENV
 from omnicrawl.workspace.process_control import (
     assign_process_to_kill_on_close_job,
     close_windows_handle,
@@ -196,7 +197,7 @@ class ConnectorProcessManager:
             return
 
         command = [sys.executable, "-m", spec.module]
-        environment = _child_environment(self.workspace_root)
+        environment = _child_environment()
         popen_kwargs: dict[str, Any] = {
             "cwd": str(self.workspace_root),
             "env": environment,
@@ -428,13 +429,13 @@ def _auto_start_enabled() -> bool:
     return True
 
 
-def _child_environment(workspace_root: Path) -> dict[str, str]:
-    """构造子进程环境，固定工作区并确保源码运行时可导入包。"""
+def _child_environment() -> dict[str, str]:
+    """构造子进程环境，确保源码运行时可导入包。"""
 
     environment = os.environ.copy()
-    # 继承当前入口最终选定的工作区，避免 Windows 弹窗保留的
-    # AI_VOICE_CHAT_LAUNCH_CWD 让连接器重新检测到另一个目录。
-    environment["AI_WORKSPACE_ROOT"] = str(workspace_root)
+    # 连接器子进程以 workspace_root 为 cwd 启动，先清掉继承的启动目录变量，
+    # 否则会沿用主进程最初的启动目录，而不是当前工作区。
+    environment.pop(LAUNCH_CWD_ENV, None)
 
     # ``python main.py`` 从任意工作区启动时，子进程 cwd 可能不是源码根目录；
     # 把 omnicrawl 包的父目录加入 PYTHONPATH，同时保留用户已有设置。

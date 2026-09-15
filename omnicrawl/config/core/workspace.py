@@ -4,8 +4,8 @@
 （如远程 Telegram Bot）无法感知。把当前工作区根目录写回 config.toml 的
 ``[workspace] root``，其他入口在合适时机重读即可实现跨进程工作区同步。
 
-优先级说明：``AI_WORKSPACE_ROOT`` 环境变量在 ``detect_project_context``
-中优先级最高；此处持久化的值用于运行中同步，不改变启动时的检测规则。
+启动时工作区始终是启动目录本身，不做标记查找与回退；此处持久化的值
+只用于运行中同步。
 """
 
 from __future__ import annotations

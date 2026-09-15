@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
@@ -43,7 +44,7 @@ class TokenUsageSample:
 
 @dataclass(frozen=True)
 class ContextBudgetSnapshot:
-    """完整回合结束后的下一请求预算估算。"""
+    """完整回合结束后的上下文预算与下一请求估算。"""
 
     stable_context_tokens: int
     existing_summary_tokens: int
@@ -52,6 +53,7 @@ class ContextBudgetSnapshot:
     next_user_reserve_tokens: int
     target_summary_tokens: int
     estimated_next_input_tokens: int
+    post_turn_context_tokens: int
     simulated_compacted_input_tokens: int
     potential_retired_tokens: int
     trigger_context_tokens: int
@@ -69,6 +71,7 @@ class ContextBudgetSnapshot:
             "next_user_reserve_tokens": self.next_user_reserve_tokens,
             "target_summary_tokens": self.target_summary_tokens,
             "estimated_next_input_tokens": self.estimated_next_input_tokens,
+            "post_turn_context_tokens": self.post_turn_context_tokens,
             "simulated_compacted_input_tokens": self.simulated_compacted_input_tokens,
             "potential_retired_tokens": self.potential_retired_tokens,
             "trigger_context_tokens": self.trigger_context_tokens,
@@ -93,6 +96,16 @@ class SourceEvent:
             "type": self.type,
             "payload": dict(self.payload),
         }
+
+    def to_index_dict(self, *, preview_chars: int = 200) -> dict[str, Any]:
+        """ID、类型与短预览：正文留在复用的原文上下文里。"""
+
+        serialized = json.dumps(
+            dict(self.payload), ensure_ascii=False, separators=(",", ":")
+        )
+        if 0 < preview_chars < len(serialized):
+            serialized = serialized[:preview_chars] + "…"
+        return {"event_id": self.event_id, "type": self.type, "preview": serialized}
 
 
 @dataclass(frozen=True)
@@ -132,6 +145,7 @@ class SummaryModelResponse:
     usage: TokenUsageSample = field(default_factory=TokenUsageSample)
     profile: str = ""
     provider: str = ""
+    tool_calls: int = 0
 
 
 SummaryModelCall = Callable[[Sequence[Mapping[str, Any]]], SummaryModelResponse]

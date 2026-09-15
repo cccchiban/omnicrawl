@@ -30,7 +30,7 @@ config.toml 的 ``[desensitization]`` 段：
     gitleaks_enabled = true               # gitleaks 开源规则（内置离线快照）
     gitleaks_config_path = ""             # 自定义 gitleaks.toml（按 id 覆盖 / 追加）
     # NER 兜底层（BiLSTM-CRF：人名 / 地名 / 机构名）：结构 / 规则 / 熵之外的最后一道
-    # 语义兜底，输入是前几层处理后的文本；可选依赖 torch，缺失时自动跳过。
+    # 语义兜底，输入是前几层处理后的文本且只对中文片段兜底（非中文字符已等长隔离）；可选依赖 torch，缺失时自动跳过。
     ner_enabled = false                   # 默认关闭；开启后作为语义兜底
     ner_model_path = ""                   # checkpoint 路径；留空用随包权重 / 环境变量
     ner_device = "auto"                   # auto 优先 CUDA、不可用回退 CPU

@@ -29,6 +29,9 @@ from ..shared import (
 
 LOGGER = logging.getLogger(__name__)
 
+# 摘要请求沿用原请求前缀，索引块预算按剩余窗口收缩，避免「前缀 + 事件索引」超出摘要模型窗口。
+_SUMMARY_INDEX_CHUNK_TOKENS = 12_000
+
 
 class TurnCompactionMixin:
     """上下文压缩与溢出恢复：手动/自动压缩、压缩记忆回写与会话归档。"""
@@ -100,6 +103,86 @@ class TurnCompactionMixin:
             {"content": f"[评审报告]\n{text}"},
         )
 
+    def _after_turn_measure_kwargs(
+        self,
+        *,
+        context_messages: Sequence[Mapping[str, Any]],
+        usage: TokenUsageSample,
+    ) -> dict[str, Any]:
+        """回合结束边界的测量输入：压缩判定与 Hook 载荷共用同一份口径。"""
+
+        config = self.config.context_compaction
+        return {
+            "system_prompt": self._system_prompt(),
+            "context_messages": context_messages,
+            "history_messages": self._history,
+            "tool_schemas": self._chat_completion_tools(),
+            "recent_turns": config.recent_turns,
+            "target_summary_tokens": config.target_summary_tokens,
+            "next_user_reserve_tokens": config.next_user_reserve_tokens,
+            "trigger_context_tokens": config.trigger_context_tokens,
+            "context_window_tokens": int(
+                getattr(
+                    getattr(self.config, "llm", None),
+                    "context_window_tokens",
+                    128_000,
+                )
+            ),
+            "emergency_context_ratio": config.emergency_context_ratio,
+            "usage": usage,
+        }
+
+    def _trigger_context_compaction_after_turn(
+        self,
+        *,
+        context_messages: Sequence[Mapping[str, Any]],
+        usage: TokenUsageSample,
+        status: Callable[[str], None] | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        """回合结束边界的压缩触发点：实际上下文达到阈值时先发 Hook 再压缩。
+
+        ``context.compaction.after_turn`` 是 notify Hook，只给插件观察机会；插件缺失、被拒绝或
+        分发异常都不影响宿主压缩。无压缩配置时不做任何裁剪：按条数裁剪会改写
+        已发送过的前缀，使同一会话内的前缀缓存周期性失效。
+        """
+
+        if getattr(self.config, "context_compaction", None) is None:
+            return
+        try:
+            measurement = self._context_compaction_service().measure_after_complete_turn(
+                **self._after_turn_measure_kwargs(
+                    context_messages=context_messages,
+                    usage=usage,
+                )
+            )
+        except Exception:
+            LOGGER.warning("上下文压缩测量失败，已跳过本回合压缩。", exc_info=True)
+            return
+        snapshot = measurement.snapshot
+        if not snapshot.trigger_reached:
+            return
+        try:
+            self._dispatch_plugin_hook(
+                "context.compaction.after_turn",
+                {
+                    "postTurnContextTokens": snapshot.post_turn_context_tokens,
+                    "triggerContextTokens": snapshot.trigger_context_tokens,
+                    "turnId": turn_id or "",
+                },
+                turn_id=turn_id,
+            )
+        except Exception:  # noqa: BLE001 - hook is observe-only
+            LOGGER.warning(
+                "context.compaction.after_turn hook dispatch failed; compaction continues.",
+                exc_info=True,
+            )
+        self._run_context_compaction_after_turn(
+            context_messages=context_messages,
+            usage=usage,
+            status=status,
+        )
+
     def _run_context_compaction_after_turn(
         self,
         *,
@@ -112,28 +195,15 @@ class TurnCompactionMixin:
         try:
             outcome = service.after_complete_turn(
                 source_events=self._context_compaction_source_events(),
-                system_prompt=self._system_prompt(),
-                context_messages=context_messages,
-                history_messages=self._history,
-                tool_schemas=self._chat_completion_tools(),
-                recent_turns=config.recent_turns,
-                target_summary_tokens=config.target_summary_tokens,
-                next_user_reserve_tokens=config.next_user_reserve_tokens,
-                trigger_context_tokens=config.trigger_context_tokens,
-                context_window_tokens=int(
-                    getattr(
-                        getattr(self.config, "llm", None),
-                        "context_window_tokens",
-                        128_000,
-                    )
-                ),
-                emergency_context_ratio=config.emergency_context_ratio,
                 minimum_turns_between_model_compactions=(
                     config.minimum_turns_between_model_compactions
                 ),
                 reasoning_effort=config.reasoning_effort,
                 preserve_exact_evidence=config.preserve_exact_evidence,
-                usage=usage,
+                **self._after_turn_measure_kwargs(
+                    context_messages=context_messages,
+                    usage=usage,
+                ),
             )
         except Exception:
             LOGGER.warning("上下文压缩自动流程失败，已跳过本回合。", exc_info=True)
@@ -208,12 +278,26 @@ class TurnCompactionMixin:
             reasoning_effort=self.config.context_compaction.reasoning_effort,
             allow_cross_provider=self.config.context_compaction.allow_cross_provider,
             workspace_root=self.workspace_root,
+            system_prompt_provider=self._system_prompt,
+            context_prefix_provider=self._compaction_request_prefix,
+            prompt_cache_identity_provider=self._prompt_cache_identity,
         )
         service = ContextCompactionService(
-            compactor=ModelSummaryCompactor(model_adapter, max_input_tokens=64_000)
+            compactor=ModelSummaryCompactor(
+                model_adapter,
+                max_input_tokens=_SUMMARY_INDEX_CHUNK_TOKENS,
+            )
         )
         self._context_compaction_service_instance = service
         return service
+
+    def _compaction_request_prefix(self) -> list[dict[str, Any]]:
+        """复用原请求前缀：返回最近一次主请求的逐字消息。"""
+
+        messages = getattr(self, "_last_request_messages", None)
+        if not messages:
+            return []
+        return [dict(message) for message in messages]
 
     def _context_compaction_source_events(self) -> tuple[SourceEvent, ...]:
         store = getattr(self, "_session_store", None)

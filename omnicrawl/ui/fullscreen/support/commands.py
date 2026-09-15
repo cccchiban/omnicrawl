@@ -57,6 +57,7 @@ class CommandOutcome:
     exit_requested: bool = False
     workspace_switch_requested: bool = False
     open_settings: bool = False
+    open_config_chat: bool = False
     clear_conversation: bool = False
     replay_conversation: bool = False
     # 慢命令运行时 HUD 状态行的文本（如 "正在评审"）；None 时沿用默认等待态。
@@ -124,6 +125,7 @@ class CommandDispatcher:
             exit_requested=result.exit_requested,
             workspace_switch_requested=result.workspace_switch_requested,
             open_settings=result.open_settings,
+            open_config_chat=getattr(result, "open_config_chat", False),
             clear_conversation=result.clear_conversation,
             replay_conversation=result.replay_conversation,
             working_status=result.working_status,

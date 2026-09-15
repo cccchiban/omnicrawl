@@ -585,7 +585,8 @@ def handle_compact_command(ctx: CommandContext) -> CommandResult:
 
     摘要模型不可用或校验失败时，``compact_conversation_model`` 内部会自动
     降级为本地确定性压缩，因此不再保留单独的 ``--model`` 开关。模型调用与
-    事件写入推迟到 ``deferred``，避免阻塞交互端主线程。
+    事件写入推迟到 ``deferred``，避免阻塞交互端主线程；摘要正文只进会话事件
+    与投影，不在命令输出里回显。
     """
 
     if ctx.args.strip():
@@ -593,14 +594,14 @@ def handle_compact_command(ctx: CommandContext) -> CommandResult:
 
     def run_compact() -> CommandResult:
         try:
-            summary = ctx.agent.compact_conversation_model()
+            ctx.agent.compact_conversation_model()
         except AgentError as exc:
             return CommandResult(message=f"模型会话压缩失败：{exc}", refresh_context=True)
 
         notice = getattr(ctx.agent, "_last_compaction_notice", "") or ""
         lead = f"{notice}\n" if notice else ""
         tail = "已压缩当前会话，完整转录仍保留，后续恢复将从摘要边界继续。"
-        return CommandResult(message=f"{lead}{tail}\n{summary}", refresh_context=True)
+        return CommandResult(message=lead + tail, refresh_context=True)
 
     return CommandResult(
         message="正在压缩当前会话上下文…",
@@ -1376,16 +1377,26 @@ def handle_quit_command(ctx: CommandContext) -> CommandResult:
 @REGISTRY.command(
     name="settings",
     description="打开中文设置面板，修改运行时开关并立即保存。",
-    usage="/settings",
+    usage="/settings [--chat]",
     type=CommandType.UI,
+    arg_prompt="--chat",
 )
 def handle_settings_command(ctx: CommandContext) -> CommandResult:
-    """请求交互端打开设置面板；设置面板仅存在于本地 TUI。"""
+    """请求交互端打开设置面板或无上下文配置对话。"""
 
     if ctx.is_remote:
         return CommandResult(
             message="远程连接不支持 /settings；请在本地 TUI 中打开设置面板。"
         )
+    if ctx.args.strip().casefold() == "--chat":
+        return CommandResult(
+            message="进入配置对话",
+            open_config_chat=True,
+            clear_conversation=True,
+            refresh_context=True,
+        )
+    if ctx.args.strip():
+        return CommandResult(error="/settings 只支持可选参数 --chat。")
     return CommandResult(
         message="打开设置面板", open_settings=True, refresh_context=True
     )

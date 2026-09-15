@@ -23,6 +23,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Static, TextArea
 
 from ....agent import AskUserRequest, LocalToolAgent
+from ....config_chat.service import ConfigChatService
 from ..conversation.view import (
     CONVERSATION_DISPLAY_MAX_LOGICAL_LINES as _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES,
     ConversationViewMixin,
@@ -46,6 +47,7 @@ from ..rendering.widgets import (
     TodoPlan,
     ToolDisclosure,
 )
+from ..screens.config_chat import ConfigChatScreen
 from ..screens.navigation import SettingsNavigationMixin
 from ..status.indicators import PendingQueue, StatusMixin
 from ..support.commands import CommandDispatcher
@@ -569,9 +571,17 @@ class OmniCrawlApp(
             with Horizontal(id="bottom-carousel"):
                 yield Static(self._carousel_display_text(), id="carousel-display")
 
+    def _open_config_chat(self) -> None:
+        """进入无上下文配置对话；Screen 关闭后底层页面自动恢复。"""
+        try:
+            service = ConfigChatService(self.agent)
+        except Exception as exc:  # noqa: BLE001 - 配置模型缺失不影响主 TUI
+            self._append_message("error", f"配置对话不可用：{exc}")
+            return
+        self.push_screen(ConfigChatScreen(service))
+
     def action_scroll_conversation_up(self) -> None:
         """在固定输入框获得焦点时向上滚动一行消息。"""
-
         self.query_one("#conversation", VerticalScroll).scroll_up()
 
     def action_scroll_conversation_down(self) -> None:

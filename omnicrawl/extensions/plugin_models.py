@@ -17,7 +17,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 HOOK_API_VERSION = "1"
 # 需与 pyproject.toml 的 version 保持同步（tests/test_packaging_entrypoints.py 会校验）。
-OMNICRAWL_VERSION = "0.1.59"
+OMNICRAWL_VERSION = "0.1.60"
 PLUGIN_SCHEMA_VERSION = 1
 
 HANDLER_MODE_OBSERVE = "observe"
@@ -65,6 +65,7 @@ CORE_HOOKS = frozenset(
         "turn.cancelled",
         "context.build.before",
         "context.build.after",
+        "context.compaction.after_turn",
         "model.request.before",
         "model.response.after",
         "model.request.error",
@@ -98,6 +99,7 @@ HOOK_ALLOWED_MODES: dict[str, frozenset[str]] = {
     "turn.cancelled": frozenset({HANDLER_MODE_NOTIFY}),
     "context.build.before": frozenset({HANDLER_MODE_TRANSFORM}),
     "context.build.after": frozenset({HANDLER_MODE_OBSERVE}),
+    "context.compaction.after_turn": frozenset({HANDLER_MODE_NOTIFY}),
     "model.request.before": frozenset({HANDLER_MODE_TRANSFORM, HANDLER_MODE_GUARD}),
     "model.response.after": frozenset({HANDLER_MODE_OBSERVE}),
     "model.request.error": frozenset({HANDLER_MODE_NOTIFY}),
@@ -244,6 +246,7 @@ HOOK_POLICIES: dict[str, HookPolicy] = {
     "turn.cancelled": _policy(on_deny="ignore"),
     "context.build.before": _policy(on_deny="ignore"),
     "context.build.after": _policy(on_deny="ignore"),
+    "context.compaction.after_turn": _policy(on_deny="ignore"),
     "model.request.before": _policy(
         on_deny="reject-operation",
         on_timeout="reject-operation",

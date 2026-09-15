@@ -57,6 +57,7 @@ from ....config.features.tools import (
 from ....llm import LLMError, save_reasoning_effort
 from ..terminal.crosshair_border import apply_crosshair_border_patch
 from ..terminal.theme import terminal_css
+from .config_chat import ConfigChatPane
 from .panes import SelectPane, SettingsPane
 
 # 焦点栏使用的 crosshair 边框是自定义类型（见 terminal/crosshair_border.py）：
@@ -127,6 +128,7 @@ _SETTING_ORDER = (
     "subagents",
     "context_compaction_threshold",
     "show_thinking",
+    "config_chat",
 )
 
 
@@ -341,6 +343,7 @@ class SettingsScreen(ModalScreen[Any]):
             "subagents": "子任务设置",
             "context_compaction_threshold": "上下文压缩阈值",
             "show_thinking": "思考显示",
+            "config_chat": "通过对话修改设置",
         }
         labels.update(_SUBAGENT_ADVANCED_LABELS)
         return labels
@@ -526,6 +529,9 @@ class SettingsScreen(ModalScreen[Any]):
                 lambda value: self._apply_simple(key, value),
                 agent=self._agent,
             )
+        if key == "config_chat":
+            service = ConfigChatService(self._agent)
+            return ConfigChatPane(service, on_changed=self._on_config_chat_changed)
         if key == "model":
             from .model_picker import ModelPickerPane
 
