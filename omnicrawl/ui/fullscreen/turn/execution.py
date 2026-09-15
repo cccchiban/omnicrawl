@@ -215,10 +215,10 @@ class TurnExecutionMixin:
         if outcome.open_config_chat:
             self._clear_conversation_view()
             self._open_config_chat()
-            return
+            return True
         if outcome.open_settings:
             self._open_settings()
-            return
+            return True
         if outcome.execution == "slow":
             # 工作区切换会重建 Session、MCP、Monitor 和临时目录，必须放在
             # Textual worker 中，避免文件和进程操作阻塞主事件循环。

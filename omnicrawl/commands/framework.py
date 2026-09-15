@@ -98,6 +98,7 @@ class CommandResult:
     exit_requested: bool = False
     open_settings: bool = False
     open_config_chat: bool = False
+    clear_conversation: bool = False
     replay_conversation: bool = False
     workspace_switch_requested: bool = False
     stream_subagent_conversation: bool = False
