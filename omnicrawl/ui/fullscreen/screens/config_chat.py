@@ -92,8 +92,7 @@ class ConfigChatView(Widget, can_focus=True):
         event.input.value = ""
         self._append_user(text)
         self._worker = self.run_worker(
-            self._apply_in_worker,
-            text,
+            lambda: self._apply_in_worker(text),
             thread=True,
             exclusive=True,
         )
@@ -173,10 +172,10 @@ class ConfigChatScreen(ModalScreen[Any]):
     def compose(self) -> ComposeResult:
         with Vertical(id="config-chat-screen-body"):
             yield Static("通过对话修改设置", id="config-chat-screen-title")
-            self.view = ConfigChatView(self.service, on_exit=self.action_exit)
+            self.view = ConfigChatView(self.service, on_exit=self.action_exit_chat)
             yield self.view
 
-    def action_exit(self) -> None:
+    def action_exit_chat(self) -> None:
         self.dismiss(None)
 
 

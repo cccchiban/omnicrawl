@@ -8,6 +8,8 @@ P3 重构从 ``ui/fullscreen/__init__.py`` 拆出（2026-08-21）：``CommandMen
 
 from __future__ import annotations
 
+from typing import Any
+
 from rich.text import Text
 from textual import events
 from textual.widgets import Static, TextArea
@@ -45,15 +47,21 @@ class CommandMenuMixin:
         return False
 
     def _refresh_command_menu(self, value: str) -> None:
-        """根据当前斜杠前缀实时筛选统一命令源，并保留完整候选供上下键选择。"""
+        """根据当前斜杠前缀实时筛选统一命令源，并保留完整候选供上下键选择。
 
-        query = value.strip().lower()
-        # 空白检查针对去除前导空格后的文本：允许在 "/" 前误敲的空格，
-        # 但一旦命令后出现空格（参数或补全产生的尾随空格）即隐藏菜单。
+        空白检查针对去除前导空格后的文本：允许在 "/" 前误敲的空格；命令名之后
+        出现空格则改按参数筛选（``/settings --`` → ``--chat``）。命令名已完整
+        输入时，在命令候选后附上参数提示，让用户知道还有哪些开关可用。
+        """
+
         stripped = value.lstrip()
-        if not query.startswith("/") or any(char.isspace() for char in stripped):
+        if not stripped.startswith("/"):
             self._hide_command_menu()
             return
+        if any(char.isspace() for char in stripped):
+            self._refresh_parameter_menu(stripped)
+            return
+        query = value.strip().lower()
         matches = [
             option
             for option in build_slash_command_options(self.agent)
@@ -61,9 +69,73 @@ class CommandMenuMixin:
         ]
         # Python 排序稳定：仅把前缀命中提到前面，同级保留统一命令源的产品顺序。
         matches.sort(key=lambda option: not option["command"].lower().startswith(query))
+        matches.extend(self._parameter_hints(matches, query))
         self._command_matches = matches
         self._command_selection = 0
         if not self._command_matches:
+            self._hide_command_menu()
+            return
+        self._render_command_menu()
+
+    @staticmethod
+    def _parameter_options(
+        command: str,
+        parameters: tuple[tuple[str, str], ...],
+    ) -> list[dict[str, Any]]:
+        """把命令声明的参数转成菜单候选；``insert`` 为补全后写入输入框的完整文本。"""
+
+        return [
+            {
+                "command": parameter,
+                "insert": f"{command} {parameter}",
+                "title": parameter,
+                "description": summary,
+                "category": "参数",
+                "search": parameter,
+            }
+            for parameter, summary in parameters
+        ]
+
+    def _parameter_hints(
+        self,
+        options: list[dict[str, Any]],
+        query: str,
+    ) -> list[dict[str, Any]]:
+        """输入已是完整命令名时，追加它的参数候选作为提示。"""
+
+        for option in options:
+            if option["command"].lower() == query and option.get("parameters"):
+                return self._parameter_options(option["command"], option["parameters"])
+        return []
+
+    def _refresh_parameter_menu(self, stripped: str) -> None:
+        """命令名后已出现空格：按已录入的参数前缀筛选该命令的参数候选。"""
+
+        parts = stripped.split(maxsplit=1)
+        head = parts[0].casefold()
+        tail = parts[1].strip().casefold() if len(parts) > 1 else ""
+        source = next(
+            (
+                option
+                for option in build_slash_command_options(self.agent)
+                if option["command"].casefold() == head
+            ),
+            None,
+        )
+        matches: list[dict[str, Any]] = []
+        if source is not None:
+            # 运行时 Skill 等候选没有 parameters 键，缺省视为无参数。
+            declared = source.get("parameters", ())
+            matches = [
+                entry
+                for entry in self._parameter_options(source["command"], declared)
+                # 参数已输入完整时不再提示，避免反复补全同一段文本。
+                if entry["command"].casefold().startswith(tail)
+                and entry["command"].casefold() != tail
+            ]
+        self._command_matches = matches
+        self._command_selection = 0
+        if not matches:
             self._hide_command_menu()
             return
         self._render_command_menu()

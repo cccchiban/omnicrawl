@@ -1380,6 +1380,7 @@ def handle_quit_command(ctx: CommandContext) -> CommandResult:
     usage="/settings [--chat]",
     type=CommandType.UI,
     arg_prompt="--chat",
+    parameters=(("--chat", "无上下文配置对话"),),
 )
 def handle_settings_command(ctx: CommandContext) -> CommandResult:
     """请求交互端打开设置面板或无上下文配置对话。"""
@@ -1461,10 +1462,11 @@ def build_slash_commands(agent: LocalToolAgent) -> list[str]:
     return commands
 
 
-def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, str]]:
+def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, Any]]:
     """构建可供交互客户端使用的斜杠命令元数据。
 
-    TUI 使用命令字符串做 Tab 补全；API 客户端可使用说明、显示标题和搜索文本。
+    TUI 使用命令字符串做 Tab 补全；API 客户端可使用说明、显示标题和搜索文本；
+    ``parameters`` 是命令声明的可选参数 ``(参数, 说明)``，供输入框提示 ``--chat``。
     内置命令的说明与是否接受参数都由注册表声明派生，只有运行时 Skill 在此拼接，
     避免不同交互入口的命令不一致。
     """

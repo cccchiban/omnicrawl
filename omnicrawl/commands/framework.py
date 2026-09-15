@@ -98,10 +98,7 @@ class CommandResult:
     exit_requested: bool = False
     open_settings: bool = False
     open_config_chat: bool = False
-<<<<<<< ours
     clear_conversation: bool = False
-=======
->>>>>>> theirs
     replay_conversation: bool = False
     workspace_switch_requested: bool = False
     stream_subagent_conversation: bool = False
@@ -173,10 +170,12 @@ class Command:
     ``type`` / ``arg_prompt`` / ``hidden`` / ``handler``。``handler`` 因无默认值
     在 dataclass 中需排在默认字段之前，语义顺序不受影响。
 
-    另有两个纯展示用扩展字段，用于表达本仓库既有命令的补全形态：
+    另有三个纯展示用扩展字段，用于表达本仓库既有命令的补全形态与参数提示：
 
     - ``completions``：共享同一处理器的额外补全/帮助形态（纯展示，不参与分发）。
     - ``usage`` 缺省时由 ``name`` 生成 ``/name``。
+    - ``parameters``：可选参数 ``(参数, 一句话说明)``；交互端在命令名后提示并补全
+      ``--chat`` 这类开关参数，处理器自行解析 ``ctx.args``。
     """
 
     name: str
@@ -188,6 +187,7 @@ class Command:
     arg_prompt: str | None = None
     hidden: bool = False
     completions: tuple[str, ...] = ()
+    parameters: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not _normalize(self.name):
@@ -278,6 +278,7 @@ class CommandRegistry:
         arg_prompt: str | None = None,
         hidden: bool = False,
         completions: Sequence[str] = (),
+        parameters: Sequence[tuple[str, str]] = (),
     ) -> Callable[[Handler], Handler]:
         """装饰器工厂：声明并注册一条命令，返回原函数。"""
 
@@ -293,6 +294,7 @@ class CommandRegistry:
                     arg_prompt=arg_prompt,
                     hidden=hidden,
                     completions=tuple(completions),
+                    parameters=tuple(parameters),
                 )
             )
             return handler
@@ -417,10 +419,14 @@ class CommandRegistry:
             names.extend(command.completions)
         return names
 
-    def options(self, *, include_hidden: bool = False) -> list[dict[str, str]]:
-        """构造交互端菜单元数据；结构沿用既有 TUI 契约。"""
+    def options(self, *, include_hidden: bool = False) -> list[dict[str, Any]]:
+        """构造交互端菜单元数据；结构沿用既有 TUI 契约。
 
-        options: list[dict[str, str]] = []
+        ``parameters`` 是命令声明的可选参数 ``(参数, 说明)``，供输入框在命令名后
+        提示并补全 ``--chat`` 这类开关；其余键保持既有字符串形状。
+        """
+
+        options: list[dict[str, Any]] = []
         for command in self.commands(include_hidden=include_hidden):
             for display in (command.display, *command.completions):
                 takes_argument = display == command.display and command.takes_argument
@@ -432,6 +438,7 @@ class CommandRegistry:
                         "description": command.description or "执行斜杠命令。",
                         "category": "命令",
                         "search": display,
+                        "parameters": command.parameters,
                     }
                 )
         return options

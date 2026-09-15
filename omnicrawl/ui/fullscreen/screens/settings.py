@@ -54,6 +54,7 @@ from ....config.features.tools import (
     ToolSwitchConfigError,
     save_tool_switch,
 )
+from ....config_chat.service import ConfigChatService
 from ....llm import LLMError, save_reasoning_effort
 from ..terminal.crosshair_border import apply_crosshair_border_patch
 from ..terminal.theme import terminal_css
@@ -108,9 +109,11 @@ _FEATURES = (
     ("memory", "记忆功能", "memory"),
     ("plugins", "插件功能", "plugins"),
 )
-# 一级设置项（左侧列表，自上而下）。工具审批/MCP/工具开关合并为 tools，
-# 子任务功能/高级合并为 subagents。顾问（第二个模型）紧跟 model/channels。
+# 一级设置项（左侧列表，自上而下）。配置对话作为入口排在最前；
+# 工具审批/MCP/工具开关合并为 tools，子任务功能/高级合并为 subagents。
+# 顾问（第二个模型）紧跟 model/channels。
 _SETTING_ORDER = (
+    "config_chat",
     "model",
     "channels",
     "advisor",
@@ -128,7 +131,6 @@ _SETTING_ORDER = (
     "subagents",
     "context_compaction_threshold",
     "show_thinking",
-    "config_chat",
 )
 
 
@@ -515,6 +517,15 @@ class SettingsScreen(ModalScreen[Any]):
 
     def _open_modal(self, factory: Any, on_result: Any) -> None:
         self.app.push_screen(factory(), on_result)
+
+    def _on_config_chat_changed(self, changes: list[Any]) -> None:
+        """配置对话写回配置后，丢弃其它已缓存面板，使其下次进入重新读盘。"""
+        for key, pane in list(self._pane_cache.items()):
+            if pane is self._pane:
+                continue
+            self._pane_cache.pop(key, None)
+            if pane.is_attached:
+                pane.remove()
 
     # ---------- 构建右侧面板 ----------
 
