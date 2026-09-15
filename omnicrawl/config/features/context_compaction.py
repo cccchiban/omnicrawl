@@ -40,7 +40,6 @@ class ContextCompactionConfig:
     trigger_context_percent: int | None = 80
     trigger_context_tokens: int = 100_000
     next_user_reserve_tokens: int = 10_240
-    minimum_turns_between_model_compactions: int = 4
     emergency_context_ratio: float = 0.85
     summary_profile: str = ""
     reasoning_effort: str = "low"
@@ -56,7 +55,6 @@ class ContextCompactionConfig:
         for name in (
             "trigger_context_tokens",
             "next_user_reserve_tokens",
-            "minimum_turns_between_model_compactions",
             "recent_turns",
             "target_summary_tokens",
         ):
@@ -146,8 +144,12 @@ def _require_ratio(name: str, value: Any, *, upper: float) -> None:
         )
 
 
+# 已删除的配置项：旧 config.toml 里残留时忽略，避免严格校验直接拒绝启动。
+_RETIRED_FIELDS = frozenset({"minimum_turns_between_model_compactions"})
+
+
 def _reject_unknown_fields(section: Mapping[str, Any], *, allowed: set[str]) -> None:
-    unknown = sorted(set(section) - allowed)
+    unknown = sorted(set(section) - allowed - _RETIRED_FIELDS)
     if unknown:
         raise ContextCompactionConfigError(
             "context_compaction 包含未知配置项：" + ", ".join(unknown)

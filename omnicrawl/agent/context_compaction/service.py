@@ -87,7 +87,6 @@ class ContextCompactionService:
         trigger_context_tokens: int,
         context_window_tokens: int,
         emergency_context_ratio: float,
-        minimum_turns_between_model_compactions: int,
         reasoning_effort: str,
         preserve_exact_evidence: bool,
         usage: TokenUsageSample,
@@ -108,20 +107,10 @@ class ContextCompactionService:
         # 「压缩即丢弃」：整个窗口（含最近回合）都交给摘要模型，投影只保留
         # 摘要与最终回复锚点，因此批量选择不再接收保留窗口参数。
         batch = self._budget_manager.select_batch(source_events)
-        turns_since = self._budget_manager.turns_since_last_model_compaction(source_events)
-        decision = self._budget_manager.decide_auto_compaction(
-            measured.snapshot,
-            batch,
-            turns_since_last_model_compaction=turns_since,
-            minimum_turns_between_model_compactions=(
-                minimum_turns_between_model_compactions
-            ),
-        )
+        decision = self._budget_manager.decide_auto_compaction(measured.snapshot, batch)
         measurement_payload = {
             **measured.event_payload,
             "auto_decision": decision.reason,
-            "turns_since_last_model_compaction": turns_since,
-            "cooldown_bypassed": decision.bypassed_cooldown,
         }
         if not decision.should_compact or batch is None:
             return ContextCompactionOutcome(measurement_payload=measurement_payload)

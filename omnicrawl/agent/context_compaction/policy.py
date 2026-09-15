@@ -287,45 +287,12 @@ class ContextBudgetManager:
     def decide_auto_compaction(
         snapshot: ContextBudgetSnapshot,
         batch: CompactionBatch | None,
-        *,
-        turns_since_last_model_compaction: int | None,
-        minimum_turns_between_model_compactions: int,
     ) -> AutoCompactionDecision:
         if not snapshot.trigger_reached:
             return AutoCompactionDecision(False, "below_trigger_threshold")
         if batch is None:
             return AutoCompactionDecision(False, "no_complete_batch")
-        if turns_since_last_model_compaction is None:
-            return AutoCompactionDecision(True, "first_model_compaction")
-        if turns_since_last_model_compaction >= minimum_turns_between_model_compactions:
-            return AutoCompactionDecision(True, "cooldown_satisfied")
-        if snapshot.emergency_ratio_reached:
-            return AutoCompactionDecision(True, "emergency_bypass", True)
-        return AutoCompactionDecision(False, "cooldown_active")
-
-    @staticmethod
-    def turns_since_last_model_compaction(
-        events: Sequence[SourceEvent],
-    ) -> int | None:
-        """返回距上次自动模型尝试的完整回合数。
-
-        成功摘要和自动模型失败都建立冷却边界，避免摘要服务异常时每个回合
-        连续产生付费重试；手动 `/compact` 失败不改变自动冷却。
-        """
-
-        last_index: int | None = None
-        for index, event in enumerate(events):
-            model_summary = event.type == "compact_summary" and bool(
-                event.payload.get("model_generated", False)
-            )
-            automatic_failure = event.type == "context_compaction_failed" and (
-                event.payload.get("mode") == "automatic_model"
-            )
-            if model_summary or automatic_failure:
-                last_index = index
-        if last_index is None:
-            return None
-        return len(_complete_turns(events[last_index + 1 :]))
+        return AutoCompactionDecision(True, "trigger_reached")
 
 
 def estimate_messages_tokens(messages: Iterable[Mapping[str, Any]]) -> int:

@@ -535,15 +535,6 @@
     "预留额度",
     "next_user_reserve_tokens"
   ],
-  "context_compaction.minimum_turns_between_model_compactions": [
-    "上下文压缩压缩最小间隔回合",
-    "上下文压缩的压缩最小间隔回合",
-    "压缩压缩最小间隔回合",
-    "压缩的压缩最小间隔回合",
-    "context_compaction.minimum_turns_between_model_compactions",
-    "压缩最小间隔回合",
-    "minimum_turns_between_model_compactions"
-  ],
   "context_compaction.emergency_context_ratio": [
     "上下文压缩紧急压缩比例",
     "上下文压缩的紧急压缩比例",

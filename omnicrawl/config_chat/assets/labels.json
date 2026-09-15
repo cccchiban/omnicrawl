@@ -521,14 +521,6 @@
       "default": "10240"
     },
     {
-      "path": "context_compaction.minimum_turns_between_model_compactions",
-      "kind": "key",
-      "section": "context_compaction",
-      "name": "minimum_turns_between_model_compactions",
-      "type": "int",
-      "default": "4"
-    },
-    {
       "path": "context_compaction.emergency_context_ratio",
       "kind": "key",
       "section": "context_compaction",

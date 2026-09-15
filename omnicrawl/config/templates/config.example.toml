@@ -137,7 +137,6 @@ max_auto_followups = 3
 trigger_context_tokens = 100000
 trigger_context_percent = 80
 next_user_reserve_tokens = 10240
-minimum_turns_between_model_compactions = 4
 emergency_context_ratio = 0.85
 summary_profile = ""
 reasoning_effort = "low"

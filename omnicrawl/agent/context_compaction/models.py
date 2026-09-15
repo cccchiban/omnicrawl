@@ -134,7 +134,6 @@ class CompactionBatch:
 class AutoCompactionDecision:
     should_compact: bool
     reason: str
-    bypassed_cooldown: bool = False
 
 
 @dataclass(frozen=True)

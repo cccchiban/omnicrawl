@@ -350,7 +350,7 @@ YYYYMMDD-HHMMSS-随机短 ID
 
 ## 9. 长会话压缩
 
-> 模型辅助摘要、Prompt Cache、Token 测量、滚动结构化摘要和按需证据恢复的实现基线。上下文压缩始终开启，仅在完整回合结束后实际上下文达到配置的触发阈值（默认按上下文窗口的 80%，config 中 `context_compaction.trigger_context_tokens`）时批量压缩，两次模型压缩至少冷却 4 个完整回合。`target_summary_tokens = 0` 时摘要不设预算上限、以完整性优先（不再被 token 预算卡住或校验拒绝）。预估「下一次请求」时按完整历史计算：压缩前冷历史仍原样进入请求，只有已存在的压缩摘要单独计入，否则长会话永远达不到触发阈值。
+> 模型辅助摘要、Prompt Cache、Token 测量、滚动结构化摘要和按需证据恢复的实现基线。上下文压缩始终开启，仅在完整回合结束后实际上下文达到配置的触发阈值（默认按上下文窗口的 80%，config 中 `context_compaction.trigger_context_tokens`）时批量压缩，不设回合间隔冷却。`target_summary_tokens = 0` 时摘要不设预算上限、以完整性优先（不再被 token 预算卡住或校验拒绝）。预估「下一次请求」时按完整历史计算：压缩前冷历史仍原样进入请求，只有已存在的压缩摘要单独计入，否则长会话永远达不到触发阈值。
 >
 > 触发点：完整回合结束后测量实际上下文（稳定上下文 + 既有摘要 + 全部历史，不含下一轮用户预留），达到 ``trigger_context_tokens`` 时先分发 ``context.compaction.after_turn`` Hook（notify，仅供观察），再由宿主执行压缩；Hook 缺失、被拒绝或分发异常都不影响压缩执行。
 >

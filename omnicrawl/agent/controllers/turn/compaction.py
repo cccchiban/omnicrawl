@@ -202,9 +202,6 @@ class TurnCompactionMixin:
         try:
             outcome = service.after_complete_turn(
                 source_events=self._context_compaction_source_events(),
-                minimum_turns_between_model_compactions=(
-                    config.minimum_turns_between_model_compactions
-                ),
                 reasoning_effort=config.reasoning_effort,
                 preserve_exact_evidence=config.preserve_exact_evidence,
                 **self._after_turn_measure_kwargs(
