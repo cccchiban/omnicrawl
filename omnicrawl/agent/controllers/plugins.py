@@ -81,6 +81,68 @@ class PluginHooksMixin:
             )
         )
 
+    # 插件故障导致的 Hook 拒绝：文案必须与插件显式 deny 区分（code 来自扩展层）。
+    PLUGIN_DENY_LABELS = {
+        "timeout": "超时",
+        "protocol-error": "通信协议错误",
+        "handler-error": "执行失败",
+        "invalid-patch": "返回了非法改动",
+        "dispatch-error": "分发异常",
+    }
+
+    @staticmethod
+    def _plugin_denial_facts(hook_name: str, outcome: Any) -> dict[str, Any]:
+        """提取拒绝事实：状态码、原因、出错 Handler 与耗时。"""
+
+        detail: dict[str, Any] = {
+            "hook": hook_name,
+            "code": str(getattr(outcome, "deny_code", "") or ""),
+            "reason": str(getattr(outcome, "deny_reason", "") or ""),
+        }
+        for result in getattr(outcome, "results", ()) or ():
+            if str(getattr(result, "status", "") or "") not in {
+                "timeout",
+                "protocol-error",
+                "handler-error",
+            }:
+                continue
+            detail["handler"] = str(getattr(result, "handler_key", "") or "")
+            elapsed_ms = getattr(result, "elapsed_ms", None)
+            if isinstance(elapsed_ms, (int, float)):
+                detail["elapsed_ms"] = float(elapsed_ms)
+            break
+        return detail
+
+    def _plugin_denial_error(self, hook_name: str) -> AgentError:
+        """生成 Hook 被拒的错误，区分插件故障与插件显式拒绝。
+
+        插件故障（超时 / 协议错误 / Handler 异常）与插件显式 deny 都会让分发返回
+        None，但只有后者是插件的意图；前者必须让用户看到真实原因与出错的 Handler，
+        否则无从判断是哪一环挡下了本轮。
+        """
+
+        detail = getattr(self, "_plugin_denial_detail", None)
+        if not isinstance(detail, dict) or detail.get("hook") != hook_name:
+            return AgentError(f"{hook_name} 被插件拒绝。")
+        reason = str(detail.get("reason") or "")
+        label = self.PLUGIN_DENY_LABELS.get(str(detail.get("code") or ""))
+        if label is None:
+            suffix = f"：{reason}" if reason else "。"
+            return AgentError(f"{hook_name} 被插件拒绝{suffix}")
+        elapsed_ms = detail.get("elapsed_ms")
+        facts = "，".join(
+            item
+            for item in (
+                str(detail.get("handler") or ""),
+                f"{elapsed_ms:.0f}ms" if isinstance(elapsed_ms, (int, float)) else "",
+            )
+            if item
+        )
+        detail_text = "；".join(item for item in (facts, reason) if item)
+        if detail_text:
+            return AgentError(f"{hook_name} 插件{label}（{detail_text}）")
+        return AgentError(f"{hook_name} 插件{label}。")
+
     def _dispatch_plugin_hook(
         self,
         hook_name: str,
@@ -96,6 +158,7 @@ class PluginHooksMixin:
         """
 
         data = dict(payload or {})
+        self._plugin_denial_detail = None
         manager = self._plugin_manager_or_none()
         if manager is None:
             return data
@@ -115,13 +178,19 @@ class PluginHooksMixin:
                 session_id=resolved_session_id,
                 turn_id=turn_id,
             )
-        except Exception:
+        except Exception as exc:
             # 守卫类 Hook 与 HOOK_POLICIES 保持一致：基础设施异常不可静默放行。
             if self._hook_requires_fail_closed(hook_name):
+                self._plugin_denial_detail = {
+                    "hook": hook_name,
+                    "code": "dispatch-error",
+                    "reason": str(exc),
+                }
                 return None
             return data
         denied = bool(getattr(outcome, "denied", False))
         if denied:
+            self._plugin_denial_detail = self._plugin_denial_facts(hook_name, outcome)
             return None
         result_payload = getattr(outcome, "payload", data)
         return dict(result_payload) if isinstance(result_payload, dict) else data
@@ -141,7 +210,7 @@ class PluginHooksMixin:
                 session_id=session_id,
             )
             if denied is None:
-                raise AgentError("session.resume.before 被插件拒绝。")
+                raise self._plugin_denial_error("session.resume.before")
             self._dispatch_plugin_hook(
                 "session.resume.after",
                 {"sessionId": session_id},

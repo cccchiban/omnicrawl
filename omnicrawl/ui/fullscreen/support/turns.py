@@ -47,6 +47,7 @@ class AgentTurnCallbacks:
     on_reasoning_delta: Callable[[str], None]
     on_subagent_event: Callable[[str, dict[str, Any]], None]
     on_todo_update: Callable[[dict[str, Any]], None] | None = None
+    on_tool_output_update: Callable[[Any, Any], None] | None = None
     on_stream_rollback: Callable[[], None] | None = None
 
 
@@ -102,6 +103,8 @@ class AgentTurnController:
             }
             if callbacks.on_todo_update is not None:
                 callback_kwargs["on_todo_update"] = callbacks.on_todo_update
+            if callbacks.on_tool_output_update is not None:
+                callback_kwargs["on_tool_output_update"] = callbacks.on_tool_output_update
             return self._agent.run_stream(
                 text,
                 callbacks.on_delta,

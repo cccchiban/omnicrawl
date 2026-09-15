@@ -117,6 +117,7 @@ _SETTING_ORDER = (
     "model",
     "channels",
     "advisor",
+    "tool_output_compression",
     "context",
     "reasoning",
     "tools",
@@ -331,6 +332,7 @@ class SettingsScreen(ModalScreen[Any]):
             "model": "模型",
             "channels": "模型渠道",
             "advisor": "顾问设置",
+            "tool_output_compression": "工具输出压缩",
             "context": "上下文长度",
             "reasoning": "推理强度",
             "tools": "工具设置",
@@ -551,6 +553,8 @@ class SettingsScreen(ModalScreen[Any]):
             return self._build_channel_pane()
         if key == "advisor":
             return self._build_advisor_pane()
+        if key == "tool_output_compression":
+            return self._build_tool_output_compression_pane()
         if key == "context":
             current_k = int(getattr(self._agent, "context_window_tokens", 128_000)) // 1000
             return SelectPane(
@@ -604,6 +608,19 @@ class SettingsScreen(ModalScreen[Any]):
             self._agent,
             resolve_config_path(),
             apply_configuration=getattr(self._agent, "set_advisor_configuration", None),
+        )
+
+    def _build_tool_output_compression_pane(self) -> Any:
+        """构造“工具输出压缩”面板：开关 + 预算 + 内嵌模型选择器。"""
+
+        from .tool_output_compression_settings import ToolOutputCompressionSettingsPane
+
+        return ToolOutputCompressionSettingsPane(
+            self._agent,
+            resolve_config_path(),
+            apply_configuration=getattr(
+                self._agent, "set_tool_output_compression_configuration", None
+            ),
         )
 
     def _build_channel_pane(self) -> Any:

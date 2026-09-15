@@ -100,6 +100,7 @@ class TurnLoopMixin:
         on_status: Callable[[str], None] | None = None,
         on_tool_start: Callable[[int, ToolCall], None] | None = None,
         on_tool_result: Callable[[ToolCall, ToolResult], None] | None = None,
+        on_tool_output_update: Callable[[ToolCall, ToolResult], None] | None = None,
         on_token_usage: Callable[[int, int, int], None] | None = None,
         on_protocol_wait: Callable[[], None] | None = None,
         on_retry_status: Callable[[str], None] | None = None,
@@ -125,6 +126,9 @@ class TurnLoopMixin:
         status = on_status or (lambda _message: None)
         report_tool_start = on_tool_start or (lambda _step, _tool_call: None)
         report_tool_result = on_tool_result or (lambda _tool_call, _result: None)
+        report_tool_output_update = on_tool_output_update or (
+            lambda _tool_call, _result: None
+        )
         external_token_usage = on_token_usage or (
             lambda _input_tokens, _output_tokens, _cached_input_tokens: None
         )
@@ -232,7 +236,7 @@ class TurnLoopMixin:
         )
         if turn_payload is None:
             self._plugin_end_turn()
-            raise AgentError("turn.start 被插件拒绝。")
+            raise self._plugin_denial_error("turn.start")
         text = str(turn_payload.get("userText", text) or text).strip()
         if not text:
             self._plugin_end_turn()
@@ -348,6 +352,7 @@ class TurnLoopMixin:
                         first_step,
                         report_tool_start=report_tool_start,
                         report_tool_result=report_tool_result,
+                        report_tool_output_update=report_tool_output_update,
                         check_cancelled=check_cancelled,
                         status=status,
                         prompt=text,
@@ -822,6 +827,7 @@ class TurnLoopMixin:
         *,
         report_tool_start: Callable[[int, ToolCall], None],
         report_tool_result: Callable[[ToolCall, ToolResult], None],
+        report_tool_output_update: Callable[[ToolCall, ToolResult], None] | None = None,
         check_cancelled: Callable[[], None],
         status: Callable[[str], None],
         prompt: str = "",
@@ -1034,6 +1040,29 @@ class TurnLoopMixin:
         # 批次输出预算：单工具 >50K 或回合聚合 >200K 的输出落盘，模型上下文
         # 只保留头尾预览与文件路径（模型可用 read_file 读取完整内容）。
         results = self._apply_batch_output_budget(results)
+        # 工具输出压缩：在结果写入模型上下文之前，用外接模型把长输出压成精简观察。
+        # 未启用/无合格结果时零开销；压缩失败、超时或未缩小时保留原文，压缩成功后
+        # 回调 UI 把对应工具卡正文换成压缩结果。
+        compact_items: list[tuple[ToolCall, ToolResult]] = []
+        compact_indexes: list[int] = []
+        for index, ((_call_step, tool_call, _tool, _denied), tool_result) in enumerate(
+            zip(normalized_calls, results)
+        ):
+            if tool_result is None:
+                continue
+            compact_indexes.append(index)
+            compact_items.append((tool_call, tool_result))
+        if compact_items:
+            compacted = self._compact_tool_outputs(
+                compact_items,
+                prompt=prompt,
+                check_cancelled=check_cancelled,
+                report_update=report_tool_output_update
+                or (lambda _tool_call, _result: None),
+                status=status,
+            )
+            for position, index in enumerate(compact_indexes):
+                results[index] = compacted[position]
         observations: list[AgentLoopObservation] = []
         for index, ((_call_step, tool_call, _tool, _denied), tool_result) in enumerate(
             zip(normalized_calls, results)
@@ -1259,7 +1288,7 @@ class TurnLoopMixin:
             },
         )
         if request_payload is None:
-            raise AgentError("model.request.before 被插件拒绝。")
+            raise self._plugin_denial_error("model.request.before")
         if isinstance(request_payload.get("messages"), list):
             messages = request_payload["messages"]  # type: ignore[assignment]
         # 上下文压缩请求沿用这份原请求消息作为前缀，以命中提供方前缀缓存。

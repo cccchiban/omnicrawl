@@ -48,6 +48,10 @@ from ..config.features.advisor import (
     AdvisorConfig,
     load_advisor_config,
 )
+from ..config.features.tool_output_compression import (
+    ToolOutputCompressionConfig,
+    load_tool_output_compression_config,
+)
 from ..config.features.tools import (
     load_disabled_tools,
 )
@@ -112,6 +116,7 @@ from .controllers.tools.implementations import ToolImplementationsMixin
 from .controllers.tools.output import ToolOutputMixin
 from .controllers.advisor import AdvisorMixin
 from .controllers.plugins import PluginHooksMixin
+from .controllers.tools.compression import ToolOutputCompressionMixin
 from .controllers.undo import UndoMixin
 
 
@@ -148,6 +153,10 @@ class AgentConfig:
     advisor: AdvisorConfig = field(default_factory=load_advisor_config)
     context_compaction: ContextCompactionConfig = field(
         default_factory=load_context_compaction_config
+    )
+    # 工具输出压缩：结果进入模型上下文前用外接模型压成精简观察（默认关闭）。
+    tool_output_compression: ToolOutputCompressionConfig = field(
+        default_factory=load_tool_output_compression_config
     )
     run_guard: RunGuardConfig = field(default_factory=load_run_guard_config)
     agent_workspace: AgentWorkspaceConfig = field(default_factory=load_agent_workspace_config)
@@ -234,6 +243,8 @@ class AgentConfig:
             raise AgentError("image_gen 必须是 ImageGenConfiguration。")
         if not isinstance(self.tts, TTSConfiguration):
             raise AgentError("tts 必须是 TTSConfiguration。")
+        if not isinstance(self.tool_output_compression, ToolOutputCompressionConfig):
+            raise AgentError("tool_output_compression 必须是 ToolOutputCompressionConfig。")
         # 百分比是配置关系而不是一次性 UI 计算结果：启动时按当前模型窗口
         # 重新换算，避免模型/窗口变化后仍沿用旧 Token 阈值。
         context_window_tokens = max(
@@ -294,6 +305,7 @@ class LocalToolAgent(
     AdvisorMixin,
     PluginHooksMixin,
     UndoMixin,
+    ToolOutputCompressionMixin,
 ):
     """能在本地项目内读文件、检索、按确认执行写入/命令的简化 Agent Harness。
 
@@ -325,6 +337,8 @@ class LocalToolAgent(
         self._close_callbacks: list[Callable[[], None]] = []
         # PluginManager 由进程级 PluginRuntime 在 Agent 创建前注入；缺省保持无插件兼容。
         self._plugin_manager = plugin_manager
+        # 最近一次 Hook 被拒的细节（含故障原因与出错 Handler），供错误文案使用。
+        self._plugin_denial_detail: dict[str, Any] | None = None
         # 工作区切换成功后回调 PluginRuntime.switch_workspace，用于关闭旧 Worker 并重建。
         self._on_workspace_switched = on_workspace_switched
         # 设置面板切换 plugins.enabled 时复用进程级 PluginRuntime 的事务重建。

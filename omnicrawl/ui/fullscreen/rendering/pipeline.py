@@ -42,6 +42,10 @@ from .widgets import (
 class RenderingMixin:
     """原 ``OmniCrawlApp`` 的事件聚合与流式渲染方法。"""
 
+    # 已收口的工具卡只保留最近若干张：工具输出压缩在收口之后才完成，刷新正文
+    # 需要回查卡片，但不能让长会话无限持有已终态的卡片。
+    MAX_FINISHED_TOOL_CARDS = 32
+
     def _active_announcer(self):
         """返回当前可用的回合朗读器（无实例/未启用时返回 None）。"""
         get_instance = getattr(self, "_speech_announcer_instance", None)
@@ -660,10 +664,36 @@ class RenderingMixin:
             finished_at=completed_at if completed_at is not None else time.perf_counter(),
         )
         self._register_conversation_widget(tool_message)
+        self._remember_finished_tool_card(key, tool_message)
         self._append_conversation_text(f"结果  {tool_message.status}\n{output}\n")
         self._scroll_conversation_if_following(conversation, follow_latest)
         self._set_runtime_status("正在思考", "working")
 
+
+    def _handle_tool_output_update(self, tool_call: Any, result: Any) -> None:
+        """工具输出压缩完成后，用压缩结果刷新已收口的工具卡正文。
+
+        模型上下文用的是压缩后的文本，卡片也应随之更新；压缩是旁路调用，可能
+        在卡片收口之后才返回，因此这里按协议 ID 回查已收口卡片。
+        """
+
+        tool_message = self._finished_tool_cards.get(self._tool_call_key(tool_call))
+        if tool_message is None:
+            return
+        output = str(getattr(result, "full_output", "") or result.output or "")
+        if not output:
+            return
+        tool_message.update_body(output)
+        self._register_conversation_widget(tool_message)
+
+    def _remember_finished_tool_card(self, key: str, widget: ToolDisclosure) -> None:
+        """记住最近收口的工具卡；超出上限时淘汰最早的卡片。"""
+
+        self._finished_tool_cards.pop(key, None)
+        self._finished_tool_cards[key] = widget
+        while len(self._finished_tool_cards) > self.MAX_FINISHED_TOOL_CARDS:
+            oldest = next(iter(self._finished_tool_cards))
+            self._finished_tool_cards.pop(oldest, None)
 
     @staticmethod
     def _public_tool_arguments(tool_call: Any) -> Any:

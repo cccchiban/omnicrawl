@@ -438,6 +438,8 @@ class OmniCrawlApp(
         # 全量重解析整条消息的 Markdown（长消息数百毫秒/次）。
         self._reset_stream_state()
         self._stream_start_text_len: int | None = None
+        # 已收口的工具卡（有界）：工具输出压缩完成后据此刷新对应卡片正文。
+        self._finished_tool_cards: dict[str, ToolDisclosure] = {}
         self._tool_messages: dict[str, ToolDisclosure] = {}
         self._subagent_trees: dict[str, SubAgentProgressTree] = {}
         # /review 等派生评审流程：子代理对话面板（│ 包裹 + 左右缩进）与

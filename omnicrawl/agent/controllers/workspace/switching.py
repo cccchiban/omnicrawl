@@ -54,7 +54,7 @@ class WorkspaceSwitchingMixin:
             {"from": str(old_root), "to": str(new_root)},
         )
         if switch_payload is None:
-            raise AgentError("workspace.switch.before 被插件拒绝。")
+            raise self._plugin_denial_error("workspace.switch.before")
 
         coordinator = getattr(self, "_subagent_coordinator", None)
         if coordinator is not None:

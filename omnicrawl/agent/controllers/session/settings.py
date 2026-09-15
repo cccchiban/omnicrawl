@@ -247,6 +247,20 @@ class SessionSettingsMixin:
             self._tools = previous_tools
             raise
 
+    def set_tool_output_compression_configuration(
+        self,
+        configuration: ToolOutputCompressionConfig,
+    ) -> None:
+        """运行时替换工具输出压缩配置；持久化由设置面板负责。
+
+        压缩发生在工具批次收口时并按当时的配置读取，不改变工具表，因此这里
+        只替换配置对象。
+        """
+
+        if not isinstance(configuration, ToolOutputCompressionConfig):
+            raise AgentError("工具输出压缩配置必须是 ToolOutputCompressionConfig。")
+        self.config.tool_output_compression = configuration
+
     def set_tts_enabled(self, enabled: bool) -> None:
         """事务式切换 TTS 功能开关（等价于更新 tts.enabled）。"""
 

@@ -13,7 +13,7 @@ from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, Vertical
 from textual.events import Click, Resize
 from textual.selection import Selection
 from textual.screen import ModalScreen
@@ -23,7 +23,11 @@ from textual.widgets import Button, RichLog, Static
 from ....agent.toolkit.tools import ASK_USER_TOOL_NAME
 from .latex import latex_to_text
 from ..terminal.theme import REASONING_BACKGROUND, REASONING_TEXT, terminal_css
-from .tool_diff import tool_disclosure_body, tool_disclosure_title
+from .tool_diff import (
+    FILE_CHANGE_TOOLS,
+    tool_disclosure_body,
+    tool_disclosure_title,
+)
 
 
 _SUBAGENT_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
@@ -944,16 +948,43 @@ class RuntimeStatus(Horizontal):
             action()
 
 
-class ToolDisclosure(Static):
-    """工具调用记录；所有工具默认展开，正文始终可见。
+class _ToolBodyHint(Static):
+    """工具卡省略区中间的可点击提示行（「点击展开 N 行」）。
 
-    除 write_file、Edit_file 外，所有工具的展开正文做头尾采样：
-    不超过五行时原样显示，超出时剥离前导空行后保留首尾各两行有效行，
-    中间直接折叠（不显示任何截断提示行），避免大段工具输出刷屏，同时
-    让测试汇总、错误栈尾部等关键信息直接可见；write_file 与 Edit_file
-    保留完整文件变更预览（Edit_file 的结果区只显示“替换 N 处”摘要），
-    read 与写入类记忆工具的正文不展示给终端用户（只保留标题行，且没有
-    任何“已隐藏”提示）。鼠标交互已全面禁用，展开/折叠不再提供切换入口。
+    默认灰色 + 下划线表示可点击，鼠标悬停变亮蓝（``:hover``）；点击由宿主
+    工具卡的 ``expand_body`` 展开被省略的正文。点击事件不再向上冒泡：否则
+    同一次点击会继续被卡片的「展开态点击收起」逻辑处理，立刻又折回缩略态。
+    """
+
+    can_focus = False
+
+    def __init__(self) -> None:
+        super().__init__("", classes="tool-disclosure-hint", markup=False)
+
+    def on_click(self, event: Click) -> None:
+        if event.chain != 1:
+            return
+        expand = getattr(self.parent, "expand_body", None)
+        if expand is None:
+            return
+        event.stop()
+        expand()
+
+
+class ToolDisclosure(Vertical):
+    """工具调用记录；正文默认缩略为头尾，省略区留一行可点击提示。
+
+    除 write_file、Edit_file 外，所有工具的正文做头尾采样：不超过五行时
+    原样显示；超出时剥离前导空行后保留首尾各两行有效行，中间被省略的行数
+    由一行灰色带下划线的「点击展开 N 行」替代——鼠标悬停该行变蓝表示可
+    点击，点击展开完整正文，再点击工具卡即回到缩略态。write_file 与
+    Edit_file 保留完整文件变更预览（Edit_file 的结果区只显示“替换 N 处”
+    摘要），read 与写入类记忆工具的正文不展示给终端用户（只保留标题行，
+    且没有任何“已隐藏”提示）。
+
+    标题行、正文区与提示行是彼此独立的子组件：展开/收起只重绘正文区，不
+    重建标题，因此终态已释放参数与结果原文的工具卡仍能展开（正文源在
+    ``finish`` 渲染时已缓存）。
     """
 
     can_focus = False
@@ -974,15 +1005,36 @@ class ToolDisclosure(Static):
 
     # 工具展开正文的行数上限（不含标题行）。
     MAX_EXPANDED_BODY_LINES = 5
-    # 正文被截断时首部与尾部各保留的有效行数。
+    # 正文被缩略时首部与尾部各保留的有效行数。
     HEAD_BODY_LINES = 2
     TAIL_BODY_LINES = 2
     # 方案6：正文相对标题的缩进宽度（4 空格）。
     BODY_INDENT = "    "
+    # 省略区提示行文案：与正文同缩进，占位符是中间被省略的有效行数。
+    EXPAND_HINT = BODY_INDENT + "点击展开 {lines} 行"
     # 豁免五行限制的工具：write_file 与 Edit_file 保持完整正文展示；
     # read 与写入类记忆工具已由 tool_disclosure_body 直接隐藏（正文为
     # 空），无需豁免。
     UNLIMITED_TOOL_NAMES = frozenset({"write_file", "Edit_file"})
+
+    # 提示行是唯一保留鼠标交互的正文元素：悬停点亮表示可点击，点击交给
+    # 卡片的 expand_body；正文与标题仍不参与点击（点击卡片其余部分是
+    # 展开态的收起动作）。
+    DEFAULT_CSS = terminal_css("""
+    ToolDisclosure {
+        height: auto;
+    }
+    ToolDisclosure > .tool-disclosure-hint {
+        height: 1;
+        width: auto;
+        color: $terminal-text-gray;
+        text-style: underline;
+        pointer: pointer;
+    }
+    ToolDisclosure > .tool-disclosure-hint:hover {
+        color: ansi_bright_blue;
+    }
+    """)
 
     def __init__(self, tool_name: str, arguments: Any, started_at: float) -> None:
         super().__init__(classes="message tool-message tool-running")
@@ -994,7 +1046,33 @@ class ToolDisclosure(Static):
         self.result_text = ""
         # 除 write_file 与 Edit_file 外的所有工具正文受五行上限约束。
         self._limit_body_lines = tool_name not in self.UNLIMITED_TOOL_NAMES
+        self._expanded = False
+        self._title_text = Text()
+        self._body_source = Text()
+        self._display_text = Text()
+        self._title_line = Static("", markup=False)
+        self._body_line = Static("", markup=False)
+        self._hint_line = _ToolBodyHint()
+        self._tail_line = Static("", markup=False)
+        self._hint_line.display = False
+        self._tail_line.display = False
         self._refresh_display()
+
+    def compose(self) -> ComposeResult:
+        yield self._title_line
+        yield self._body_line
+        yield self._hint_line
+        yield self._tail_line
+
+    @property
+    def content(self) -> Text:
+        """当前显示内容（标题 + 正文区 + 省略提示行），供会话显示窗口按逻辑行数计预算。
+
+        与 ``Static.content`` 同口径：工具卡改为容器后，整卡文本改由本属性
+        提供给 ``conversation_widget_line_count``。
+        """
+
+        return self._display_text
 
     def finish(self, *, ok: bool, output: str, finished_at: float) -> None:
         if self.tool_name == ASK_USER_TOOL_NAME:
@@ -1005,14 +1083,32 @@ class ToolDisclosure(Static):
         self.result_text = output
         self._apply_status_class()
         self._refresh_display()
-        # 终态已渲染进 Static 行，此后 refresh_elapsed 直接 return 不再重绘；
-        # 释放参数与结果原文，避免 read 全文/write_file 大 content/bash 大
-        # 输出随历史工具卡永久滞留（单卡可省数 KB~MB）。
+        # 终态已渲染进子组件，此后 refresh_elapsed 直接 return 不再重绘；
+        # 清空参数与结果原文，避免 read 全文/write_file 大 content/bash 大
+        # 输出随历时长滞留（单卡可省数 KB~MB）。展开/收起只重绘正文区，
+        # 正文源已在 _body_source 中缓存，不受释放影响。
         self.arguments = None
         self.result_text = ""
 
+    def update_body(self, output: str) -> None:
+        """替换正文区文本，保留已渲染的标题与状态。
+
+        工具输出压缩在卡片收口之后才拿到压缩结果，不能复用 ``finish``：它会按
+        新参数重建标题并再次释放结果原文。文件变更类工具的正文由调用参数生成，
+        替换会丢掉 diff 预览，因此这类工具保持原正文。
+        """
+
+        if self.tool_name.rsplit(".", 1)[-1] in FILE_CHANGE_TOOLS:
+            return
+        self._body_source = tool_disclosure_body(
+            tool_name=self.tool_name,
+            arguments=None,
+            result_text=output,
+        )
+        self._render_body()
+
     def _apply_status_class(self) -> None:
-        """按当前状态切换边框语义色 class（tool-running/ok/fail/pending/cancelled）。"""
+        """按当前状态切换语义 class（tool-running/ok/fail/pending/cancelled）。"""
 
         target = self.STATUS_CLASS.get(self.status)
         for name in self.STATUS_CLASS.values():
@@ -1021,8 +1117,8 @@ class ToolDisclosure(Static):
     def refresh_elapsed(self, now: float | None = None) -> None:
         """调用期间实时刷新已耗时；终态记录不再重绘。
 
-        与 SubAgentTree.refresh_elapsed 同语义：只有「调用中」「等待回复」
-        的工具行参与 tick 刷新，完成后保留 finish() 记录的最终耗时。
+        与子代理进度树同语义：只有「调用中」「等待回复」的工具行参与 tick
+        刷新，完成后保留 finish() 记录的最终耗时。
         """
 
         if self.status not in {"调用中", "等待回复"}:
@@ -1033,10 +1129,30 @@ class ToolDisclosure(Static):
         )
         self._refresh_display()
 
+    def expand_body(self) -> None:
+        """展开被省略的正文（由省略区提示行点击触发）。"""
+
+        if self._expanded:
+            return
+        self._expanded = True
+        self._render_body()
+
+    def on_click(self, event: Click) -> None:
+        """展开态点击工具卡回到缩略状态。
+
+        提示行在展开态不可见，其点击由提示行自己消费并停止冒泡，因此这里
+        只处理「展开 → 缩略」这一半。
+        """
+
+        if event.chain != 1 or not self._expanded:
+            return
+        self._expanded = False
+        self._render_body()
+
     def _refresh_display(self) -> None:
         # 工作区工具与文件变更工具使用统一的短标识 + 上下文摘要；其他工具
         # 保持「参数 + 结果」正文，避免标题泄露完整参数或内部工具协议。
-        title = tool_disclosure_title(
+        self._title_text = tool_disclosure_title(
             tool_name=self.tool_name,
             arguments=self.arguments,
             status=self.status,
@@ -1044,39 +1160,62 @@ class ToolDisclosure(Static):
             expanded=True,
             result_text=self.result_text,
         )
-        body = tool_disclosure_body(
+        self._body_source = tool_disclosure_body(
             tool_name=self.tool_name,
             arguments=self.arguments,
             result_text=self.result_text,
         )
-        if self._limit_body_lines and body.plain:
-            body = self._truncate_body_lines(body)
-        rendered = Text()
-        rendered.append_text(title)
-        if body.plain:
-            rendered.append("\n")
-            rendered.append_text(_indent_body_lines(body, self.BODY_INDENT))
-        self.update(rendered)
+        self._title_line.update(self._title_text)
+        self._render_body()
 
-    def _truncate_body_lines(self, body: Text) -> Text:
-        """把展开正文做头尾采样，中间直接折叠，不显示截断提示。
+    def _render_body(self) -> None:
+        """按展开状态重绘正文区。
 
-        剥离前导空行后按有效（非空）行计数：不超过上限时原样返回；
-        超出时保留首尾各两行有效行，中间直接折叠（不渲染任何提示行）。
+        缩略态是「首部 + 提示行 + 尾部」，展开态是完整正文；两种状态共用
+        同一份正文源，因此展开/收起不重建标题，也不依赖已在终态释放的原始
+        参数与结果文本。
         """
 
+        head, hidden_lines, tail = self._body_parts(self._body_source)
+        head_text = _indent_body_lines(head, self.BODY_INDENT)
+        tail_text = (
+            _indent_body_lines(tail, self.BODY_INDENT) if tail is not None else None
+        )
+        self._body_line.update(head_text)
+        self._tail_line.update(tail_text if tail_text is not None else "")
+        self._tail_line.display = tail_text is not None
+        hint_text = (
+            Text(self.EXPAND_HINT.format(lines=hidden_lines)) if hidden_lines else None
+        )
+        self._hint_line.display = hint_text is not None
+        if hint_text is not None:
+            self._hint_line.update(hint_text)
+        displayed = Text()
+        displayed.append_text(self._title_text)
+        for part in (head_text, hint_text, tail_text):
+            if part is None or not part.plain:
+                continue
+            displayed.append("\n")
+            displayed.append_text(part)
+        self._display_text = displayed
+
+    def _body_parts(self, body: Text) -> tuple[Text, int, Text | None]:
+        """把正文拆成「保留的首部 / 省略的有效行数 / 保留的尾部」。
+
+        展开态与豁免工具返回完整正文（省略 0 行、无尾部）；缩略态按有效
+        （非空）行采样：首尾各留 HEAD/TAIL 行，中间只汇报省略行数，展开
+        入口由提示行承载。
+        """
+
+        if self._expanded or not self._limit_body_lines:
+            return body, 0, None
         parts = body.split("\n")
         if len(parts) <= self.MAX_EXPANDED_BODY_LINES:
-            return body
-        # 空行不计入有效行；前导空行自然被排除在采样之外。
+            return body, 0, None
         effective = [part for part in parts if part.plain.strip()]
         if len(effective) <= self.MAX_EXPANDED_BODY_LINES:
-            return body
-        truncated = Text()
-        for part in effective[: self.HEAD_BODY_LINES]:
-            truncated.append_text(part)
-            truncated.append("\n")
-        for part in effective[-self.TAIL_BODY_LINES :]:
-            truncated.append("\n")
-            truncated.append_text(part)
-        return truncated
+            return body, 0, None
+        head = Text("\n").join(effective[: self.HEAD_BODY_LINES])
+        tail = Text("\n").join(effective[-self.TAIL_BODY_LINES :])
+        hidden_lines = len(effective) - self.HEAD_BODY_LINES - self.TAIL_BODY_LINES
+        return head, hidden_lines, tail

@@ -83,6 +83,11 @@ class TurnExecutionMixin:
                 call,
                 result,
             ),
+            on_tool_output_update=lambda call, result: self.call_from_thread(
+                self._handle_tool_output_update,
+                call,
+                result,
+            ),
             on_token_usage=lambda incoming, outgoing, cached: self.call_from_thread(
                 self._handle_token_usage,
                 incoming,
