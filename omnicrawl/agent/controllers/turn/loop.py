@@ -1539,6 +1539,15 @@ class TurnLoopMixin:
         capabilities = getattr(runtime, "capabilities", None)
         return bool(getattr(capabilities, "vision", False))
 
+    def _native_vision_enabled(self, snapshot: Any | None = None) -> bool:
+        """当前模型是否优先使用原生视觉：显式开关优先，未配置时按运行时能力。"""
+
+        llm = getattr(getattr(self, "config", None), "llm", None)
+        override = getattr(llm, "native_vision", None)
+        if override is not None:
+            return bool(override)
+        return self._model_supports_vision(snapshot)
+
     def _active_model_supports_vision(self) -> bool:
         """兼容旧调用方：判断当前主 Agent Runtime 是否支持视觉。"""
 

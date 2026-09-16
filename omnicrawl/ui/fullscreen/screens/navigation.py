@@ -125,9 +125,15 @@ class SettingsNavigationMixin:
         def receive_vision(result: VisionSettingsResult | None) -> None:
             if result is not None:
                 state = "已启用" if result.configuration.enabled else "已停用"
+                native = (
+                    "未配置"
+                    if result.native_value is None
+                    else ("已开启" if result.native_value else "已关闭")
+                )
                 self._append_message(
                     "status",
-                    f"视觉模型代理{state}，已配置 {len(result.configuration.models)} 个故障转移模型。",
+                    f"视觉模型代理{state}，已配置 {len(result.configuration.models)} 个故障转移模型；"
+                    f"模型原生视觉{native}。",
                 )
             self._open_settings()
 
@@ -136,6 +142,8 @@ class SettingsNavigationMixin:
                 self.agent,
                 resolve_config_path(),
                 apply_configuration=apply_vision,
+                apply_native_vision=getattr(self.agent, "set_model_native_vision", None),
+                models_path=resolve_models_path(),
             ),
             receive_vision,
         )

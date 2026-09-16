@@ -210,6 +210,16 @@ class SessionSettingsMixin:
             raise AgentError("视觉代理配置必须是 VisionConfiguration。")
         self.config.vision = configuration
 
+    def set_model_native_vision(self, value: bool | None) -> None:
+        """运行时更新当前模型的模型原生视觉开关；持久化由视觉设置面板负责。"""
+
+        if value is not None and not isinstance(value, bool):
+            raise AgentError("模型原生视觉必须是布尔值或未配置。")
+        llm = getattr(self.config, "llm", None)
+        if llm is None:
+            raise AgentError("当前 Agent 缺少模型配置。")
+        llm.native_vision = value
+
     def set_image_gen_configuration(self, configuration: ImageGenConfiguration) -> None:
         """运行时更新图像生成配置；持久化由图像生成设置面板负责。"""
 

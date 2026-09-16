@@ -12,6 +12,12 @@ from .llm import (
     LLMError,
 )
 from .model_store import ModelStoreError, load_model_store, provider_from_protocol
+from .vision import (
+    VisionConfigError,
+    NATIVE_VISION_FIELD,
+    parse_native_vision,
+    resolve_native_vision,
+)
 from ...llm.providers.openai_common import resolve_api_key
 from ...llm.registry import ProviderProfile
 
@@ -30,7 +36,7 @@ class _ModelSource:
     __slots__ = (
         "source", "profile_id", "protocol", "model_id", "catalog_key",
         "context_window", "model_context_explicit", "max_output_tokens",
-        "temperature", "provider_options",
+        "temperature", "provider_options", "native_vision",
     )
 
     def __init__(
@@ -45,6 +51,7 @@ class _ModelSource:
         model_context_explicit: bool = False,
         max_output_tokens: int = 0,
         temperature: float | None = None,
+        native_vision: bool | None = None,
         provider_options: dict[str, Any] | None = None,
     ) -> None:
         self.source = source
@@ -56,6 +63,7 @@ class _ModelSource:
         self.model_context_explicit = model_context_explicit
         self.max_output_tokens = max_output_tokens
         self.temperature = temperature
+        self.native_vision = native_vision
         self.provider_options = dict(provider_options or {})
 
 
@@ -79,6 +87,7 @@ def _resolve_model_source(
     max_output_tokens = 0
     temperature: float | None = None
     provider_options: dict[str, Any] = {}
+    native_vision: bool | None = None
     if env_model and "/" not in env_model:
         try:
             record = store.resolve_alias(env_model)
@@ -95,6 +104,7 @@ def _resolve_model_source(
             max_output_tokens = int(getattr(record, "max_output_tokens", 0) or 0)
             temperature = getattr(record, "temperature", None)
             provider_options = dict(record.provider_options)
+            native_vision = _record_native_vision(record)
         else:
             model_id = env_model
             source = "detected"
@@ -125,6 +135,7 @@ def _resolve_model_source(
         max_output_tokens = int(getattr(record, "max_output_tokens", 0) or 0)
         temperature = getattr(record, "temperature", None)
         provider_options = dict(record.provider_options)
+        native_vision = _record_native_vision(record)
     else:
         profile_id = str(active_raw.get("profile") or "").strip()
         model_id = str(active_raw.get("model_id") or "").strip()
@@ -147,8 +158,24 @@ def _resolve_model_source(
         model_context_explicit=model_context_explicit,
         max_output_tokens=max_output_tokens,
         temperature=temperature,
+        native_vision=native_vision,
         provider_options=provider_options,
     )
+
+
+def _selection_native_vision(catalog_key: str, profile_id: str) -> bool | None:
+    """模型切换时按模型/渠道覆盖重建原生视觉开关；读取失败按未配置处理。"""
+
+    try:
+        return resolve_native_vision(catalog_key=catalog_key, profile_id=profile_id).value
+    except VisionConfigError:
+        return None
+
+
+def _record_native_vision(record: Any) -> bool | None:
+    """读取模型条目的模型原生视觉开关；未配置时为 ``None``。"""
+
+    return parse_native_vision(getattr(record, NATIVE_VISION_FIELD, None))
 
 
 def _resolve_profile(
@@ -332,6 +359,11 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
     if not isinstance(retries, int) or isinstance(retries, bool) or retries <= 0:
         retries = 5
 
+    # 模型原生视觉：模型条目覆盖 > 渠道 Profile 覆盖；未配置时按运行时能力。
+    native_vision = state.native_vision
+    if native_vision is None:
+        native_vision = parse_native_vision(profile_data.get(NATIVE_VISION_FIELD))
+
     return LLMConfig(
         api_key=api_key,
         base_url=base_url,
@@ -341,6 +373,7 @@ def load_multi_model_llm_config(llm_section: dict[str, Any]) -> LLMConfig:
         context_window_tokens=context_window if context_window > 0 else 128_000,
         max_output_tokens=state.max_output_tokens,
         temperature=state.temperature,
+        native_vision=native_vision,
         profile_id=state.profile_id,
         provider=provider,
         protocol=protocol,
@@ -508,6 +541,7 @@ def apply_model_selection(config: LLMConfig, selection: str) -> LLMConfig:
         context_window_tokens=config.context_window_tokens,
         max_output_tokens=0,
         temperature=None,
+        native_vision=_selection_native_vision("", config.profile_id),
         system_prompt=config.system_prompt,
         max_history_turns=config.max_history_turns,
         profile_id=config.profile_id,
@@ -552,6 +586,7 @@ def _config_from_custom_record(config: LLMConfig, record: Any) -> LLMConfig:
         or config.context_window_tokens,
         max_output_tokens=int(getattr(record, "max_output_tokens", 0) or 0),
         temperature=getattr(record, "temperature", None),
+        native_vision=_selection_native_vision(record.key, record.profile),
         system_prompt=config.system_prompt,
         max_history_turns=config.max_history_turns,
         profile_id=profile.id,
@@ -586,6 +621,7 @@ def _config_from_profile_model(
             context_window_tokens=config.context_window_tokens,
             max_output_tokens=0,
             temperature=None,
+            native_vision=_selection_native_vision("", profile_id),
             system_prompt=config.system_prompt,
             max_history_turns=config.max_history_turns,
             profile_id=profile_id,
@@ -617,6 +653,7 @@ def _config_from_profile_model(
         or config.context_window_tokens,
         max_output_tokens=0,
         temperature=None,
+        native_vision=_selection_native_vision("", profile.id),
         system_prompt=config.system_prompt,
         max_history_turns=config.max_history_turns,
         profile_id=profile.id,

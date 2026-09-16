@@ -51,6 +51,7 @@ enabled = true
 
 # 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
 # models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。
+# 模型原生视觉在设置页「视觉」按当前模型/渠道开关（models.toml 或 [llm.profiles.<id>] 的 native_vision）。
 [vision]
 enabled = false
 models = []

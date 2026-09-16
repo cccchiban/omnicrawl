@@ -771,6 +771,8 @@ class SettingsScreen(ModalScreen[Any]):
                 self._agent,
                 resolve_config_path(),
                 apply_configuration=getattr(self._agent, "set_vision_configuration", None),
+                apply_native_vision=getattr(self._agent, "set_model_native_vision", None),
+                models_path=resolve_models_path(),
             )
         if key == "image_gen":
             from .image_gen_settings import ImageGenSettingsPane

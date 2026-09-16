@@ -44,6 +44,8 @@ class LLMConfig:
     )
     context_window_tokens: int = 128_000
     max_output_tokens: int = 0
+    # 模型原生视觉：True/False 显式为该模型或渠道开启/关闭，None 表示未配置。
+    native_vision: bool | None = None
     temperature: float | None = None
     system_prompt: str = (
         "你是一个通过语音和用户对话的中文 AI 助手。"
@@ -76,6 +78,8 @@ class LLMConfig:
             raise LLMError("配置项 llm.context_window_tokens 必须是正整数。")
         if self.context_window_tokens <= 0:
             raise LLMError("配置项 llm.context_window_tokens 必须大于 0。")
+        if self.native_vision is not None and not isinstance(self.native_vision, bool):
+            raise LLMError("配置项 llm.native_vision 必须是布尔值。")
         if self.model_source == "legacy":
             _require_non_empty("api_key", self.api_key, "OPENAI_API_KEY")
             _require_non_empty("base_url", self.base_url, "OPENAI_BASE_URL")

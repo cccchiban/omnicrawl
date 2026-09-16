@@ -47,6 +47,7 @@ class CustomModelRecord:
     context_window_tokens: int = 0
     max_output_tokens: int = 0
     temperature: float | None = None
+    native_vision: bool | None = None
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
     provider_options: Mapping[str, Any] = field(default_factory=dict)
     sort_order: int = 0
@@ -171,6 +172,8 @@ def save_model_store(store: ModelStore, models_path: str | Path | None = None) -
             item["max_output_tokens"] = record.max_output_tokens
         if record.temperature is not None:
             item["temperature"] = record.temperature
+        if record.native_vision is not None:
+            item["native_vision"] = record.native_vision
         caps = record.capabilities.to_dict()
         # 只写非默认能力，保持文件简洁
         meaningful = {
@@ -264,6 +267,10 @@ def _parse_model_record(key: str, raw: Any) -> CustomModelRecord:
             max_output_tokens=max_output_tokens,
         )
 
+    native_vision = raw.get("native_vision")
+    if native_vision is not None and not isinstance(native_vision, bool):
+        raise ModelStoreError(f"模型 {key}.native_vision 必须是布尔值。")
+
     provider_options = raw.get("provider_options") or {}
     if not isinstance(provider_options, dict):
         raise ModelStoreError(f"模型 {key}.provider_options 必须是对象。")
@@ -288,6 +295,7 @@ def _parse_model_record(key: str, raw: Any) -> CustomModelRecord:
         context_window_tokens=context_window_tokens,
         max_output_tokens=max_output_tokens,
         temperature=temperature,
+        native_vision=native_vision,
         capabilities=capabilities,
         provider_options=dict(provider_options),
         sort_order=sort_order,

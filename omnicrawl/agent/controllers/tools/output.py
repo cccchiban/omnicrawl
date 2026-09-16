@@ -180,7 +180,7 @@ class ToolOutputMixin:
                     (),
                 )
             vision_prompt = raw_prompt
-        if self._model_supports_vision(active_runtime_snapshot):
+        if self._native_vision_enabled(active_runtime_snapshot):
             return result, self._tool_result_followup_messages(
                 tool_call,
                 result,
@@ -269,7 +269,7 @@ class ToolOutputMixin:
         if (
             not result.ok
             or not result.model_images
-            or not self._model_supports_vision(active_runtime_snapshot)
+            or not self._native_vision_enabled(active_runtime_snapshot)
         ):
             return ()
         content: list[dict[str, Any]] = [
