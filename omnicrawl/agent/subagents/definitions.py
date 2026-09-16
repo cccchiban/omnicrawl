@@ -91,7 +91,8 @@ class AgentDefinitionRegistry:
         home_directory: Path | None = None,
     ) -> None:
         self._builtin_directory = Path(
-            builtin_directory or Path(__file__).resolve().parent / "builtin"
+            builtin_directory
+            or Path(__file__).resolve().parents[2] / "templates" / "subagents"
         ).resolve()
         self._home_directory = Path(home_directory or Path.home()).expanduser().resolve()
         self._index: dict[str, AgentDefinition] = {}

@@ -208,8 +208,8 @@ class ToolBuildingMixin:
     def _load_system_prompt_template(self) -> str:
         """读取独立系统提示词模板，避免把长规范硬编码在 Python 代码里。"""
 
-        # system_prompt.md 固定在 agent 包根；本文件位于 controllers/tools/ 下两层。
-        prompt_path = Path(__file__).resolve().parents[2] / SYSTEM_PROMPT_FILE
+        # 本文件位于 controllers/tools/ 下三层，提示词模板统一放在包内 templates/。
+        prompt_path = Path(__file__).resolve().parents[3] / "templates" / SYSTEM_PROMPT_FILE
         try:
             template = prompt_path.read_text(encoding="utf-8").strip()
         except UnicodeDecodeError as exc:

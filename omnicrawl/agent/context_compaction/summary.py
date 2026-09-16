@@ -438,8 +438,8 @@ class ModelSummaryCompactor:
 
 def load_summary_prompt() -> str:
     return (
-        resources.files("omnicrawl.agent.context_compaction")
-        .joinpath("summary_prompt.md")
+        resources.files("omnicrawl")
+        .joinpath("templates", "summary_prompt.md")
         .read_text(encoding="utf-8")
         .strip()
     )
