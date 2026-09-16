@@ -1021,6 +1021,13 @@ class ToolDisclosure(Vertical):
     # 空），无需豁免。
     UNLIMITED_TOOL_NAMES = frozenset({"write_file", "Edit_file"})
 
+    # 正文流式渲染：工具完成后按块释放终态正文，让编辑内容逐行出现而不是
+    # 一次性铺满。块数与间隔共同决定观感（总时长约 0.36 秒）；行数不足阈值
+    # 的短正文没有流式价值，直接显示。
+    STREAM_BODY_CHUNKS = 12
+    STREAM_BODY_INTERVAL = 0.03
+    STREAM_BODY_MIN_LINES = 6
+
     # 提示行是唯一保留鼠标交互的正文元素：悬停点亮表示可点击，点击交给
     # 卡片的 expand_body；正文与标题仍不参与点击（点击卡片其余部分是
     # 展开态的收起动作）。
@@ -1054,6 +1061,11 @@ class ToolDisclosure(Vertical):
         self._title_text = Text()
         self._body_source = Text()
         self._display_text = Text()
+        # 流式渲染状态：终态正文分块释放，释放完毕后 _stream_full_source 清空。
+        self._stream_full_source: Text | None = None
+        self._stream_shown_lines = 0
+        self._stream_step_lines = 0
+        self._stream_timer: Any = None
         self._title_line = Static("", markup=False)
         self._body_line = Static("", markup=False)
         self._hint_line = _ToolBodyHint()
@@ -1077,7 +1089,20 @@ class ToolDisclosure(Vertical):
 
         return self._display_text
 
-    def finish(self, *, ok: bool, output: str, finished_at: float) -> None:
+    @property
+    def body_streaming(self) -> bool:
+        """终态正文是否仍在分块释放（供调用方在释放结束后恢复滚动）。"""
+
+        return self._stream_full_source is not None
+
+    def finish(
+        self,
+        *,
+        ok: bool,
+        output: str,
+        finished_at: float,
+        stream: bool = False,
+    ) -> None:
         if self.tool_name == ASK_USER_TOOL_NAME:
             self.status = "已收到回复" if ok else "已取消"
         else:
@@ -1086,12 +1111,84 @@ class ToolDisclosure(Vertical):
         self.result_text = output
         self._apply_status_class()
         self._refresh_display()
+        if stream:
+            self._start_body_stream()
         # 终态已渲染进子组件，此后 refresh_elapsed 直接 return 不再重绘；
         # 清空参数与结果原文，避免 read 全文/write_file 大 content/bash 大
         # 输出随历时长滞留（单卡可省数 KB~MB）。展开/收起只重绘正文区，
         # 正文源已在 _body_source 中缓存，不受释放影响。
         self.arguments = None
         self.result_text = ""
+
+    def _start_body_stream(self) -> None:
+        """把终态正文改为分块释放（显示层流式）。
+
+        正文源此时已由 ``_refresh_display`` 整体算好；这里先只渲染第一块，
+        再按 ``STREAM_BODY_INTERVAL`` 逐步补齐，让编辑内容与长输出逐行出现。
+        短正文没有流式价值，直接保持完整显示。
+        """
+
+        full = self._body_source
+        total = len(full.split("\n"))
+        if not full.plain.strip() or total <= self.STREAM_BODY_MIN_LINES:
+            return
+        self._stream_full_source = full
+        self._stream_shown_lines = 0
+        self._stream_step_lines = max(1, -(-total // self.STREAM_BODY_CHUNKS))
+        self._render_body_stream_step()
+        self._arm_body_stream_timer()
+
+    def _arm_body_stream_timer(self) -> None:
+        if not self.is_mounted or self._stream_timer is not None:
+            return
+        self._stream_timer = self.set_interval(
+            self.STREAM_BODY_INTERVAL,
+            self._advance_body_stream,
+        )
+
+    def _advance_body_stream(self) -> None:
+        self._render_body_stream_step()
+
+    def _render_body_stream_step(self) -> None:
+        """按已释放块数切出正文前缀重绘；补齐后收口为完整正文。"""
+
+        full = self._stream_full_source
+        if full is None:
+            return
+        lines = full.split("\n")
+        self._stream_shown_lines = min(
+            len(lines),
+            self._stream_shown_lines + self._stream_step_lines,
+        )
+        if self._stream_shown_lines >= len(lines):
+            self._finish_body_stream()
+            return
+        self._body_source = Text("\n").join(lines[: self._stream_shown_lines])
+        self._render_body()
+
+    def _cancel_body_stream(self) -> None:
+        """放弃未完成的流式释放；调用方随后写入完整正文。"""
+
+        timer = self._stream_timer
+        self._stream_timer = None
+        self._stream_full_source = None
+        self._stream_shown_lines = 0
+        self._stream_step_lines = 0
+        if timer is not None:
+            timer.stop()
+
+    def _finish_body_stream(self) -> None:
+        """结束流式释放并把正文恢复为完整源（展开或补齐时调用）。"""
+
+        full = self._stream_full_source
+        self._cancel_body_stream()
+        if full is not None:
+            self._body_source = full
+            self._render_body()
+
+    def on_mount(self) -> None:
+        # finish 早于挂载（工具结果先于组件入列）时在此补上定时器。
+        self._arm_body_stream_timer()
 
     def update_body(self, output: str) -> None:
         """替换正文区文本，保留已渲染的标题与状态。
@@ -1103,6 +1200,7 @@ class ToolDisclosure(Vertical):
 
         if self.tool_name.rsplit(".", 1)[-1] in FILE_CHANGE_TOOLS:
             return
+        self._cancel_body_stream()
         self._body_source = tool_disclosure_body(
             tool_name=self.tool_name,
             arguments=None,
@@ -1138,6 +1236,7 @@ class ToolDisclosure(Vertical):
         if self._expanded:
             return
         self._expanded = True
+        self._finish_body_stream()
         self._render_body()
 
     def on_click(self, event: Click) -> None:

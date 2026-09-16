@@ -429,11 +429,10 @@ class CommandRegistry:
         options: list[dict[str, Any]] = []
         for command in self.commands(include_hidden=include_hidden):
             for display in (command.display, *command.completions):
-                takes_argument = display == command.display and command.takes_argument
                 options.append(
                     {
                         "command": display,
-                        "insert": f"{display} " if takes_argument else display,
+                        "insert": display,
                         "title": display,
                         "description": command.description or "执行斜杠命令。",
                         "category": "命令",

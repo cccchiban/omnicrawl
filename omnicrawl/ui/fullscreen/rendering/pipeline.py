@@ -652,11 +652,20 @@ class RenderingMixin:
             ok=bool(result.ok),
             output=output,
             finished_at=completed_at if completed_at is not None else time.perf_counter(),
+            stream=True,
         )
         self._refresh_trailing_message_marker()
         self._remember_finished_tool_card(key, tool_message)
         self._append_conversation_text(f"结果  {tool_message.status}\n{output}\n")
         self._scroll_conversation_if_following(conversation, follow_latest)
+        # 正文分块释放期间卡片持续长高，释放结束后再贴回底部，否则最后出现的
+        # 内容会落在视口下方。
+        if follow_latest and tool_message.body_streaming:
+            self.set_timer(
+                (ToolDisclosure.STREAM_BODY_CHUNKS + 1)
+                * ToolDisclosure.STREAM_BODY_INTERVAL,
+                lambda: self._scroll_conversation_if_following(conversation, True),
+            )
         self._set_runtime_status("正在思考", "working")
 
 

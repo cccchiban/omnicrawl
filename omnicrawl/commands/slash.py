@@ -1480,7 +1480,7 @@ def build_slash_command_options(agent: LocalToolAgent) -> list[dict[str, Any]]:
             options.append(
                 {
                     "command": command,
-                    "insert": f"{command} ",
+                    "insert": command,
                     "title": meta.name,
                     "description": meta.description,
                     "category": "Skill",
