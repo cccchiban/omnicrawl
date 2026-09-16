@@ -24,10 +24,7 @@ from textual.widgets import Static, TextArea
 
 from ....agent import AskUserRequest, LocalToolAgent
 from ....config_chat.service import ConfigChatService
-from ..conversation.view import (
-    CONVERSATION_DISPLAY_MAX_LOGICAL_LINES as _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES,
-    ConversationViewMixin,
-)
+from ..conversation.view import ConversationViewMixin
 from ..input.composer import Composer
 from ..input.editing import InputMixin
 from ..input.menu import CommandMenuMixin
@@ -370,9 +367,6 @@ class OmniCrawlApp(
     # 全量重绘（保留增量渲染结果），只在回合结束/工具边界等收口处重绘，
     # 避免一次停顿触发数百毫秒的同步重解析。
     STREAM_FULL_RENDER_LIMIT = 30_000
-    # 对话区只渲染最近的逻辑文本行；被隐藏的旧消息组件保留在 DOM 中，
-    # 以便 /undo 后重新计算窗口并恢复显示。
-    CONVERSATION_DISPLAY_MAX_LOGICAL_LINES = _CONVERSATION_DISPLAY_MAX_LOGICAL_LINES
     # 统计平均生成速率（t/s）的待机判定阈值：相邻输出增量间隔超过该值
     # 视为"待机"（工具执行、模型停顿、回合间隙），不计入输出时长；
     # 间隔内的时长才累计为输出时间，避免空闲等待稀释平均速率。
@@ -420,9 +414,6 @@ class OmniCrawlApp(
         self.startup = startup
         self.is_generating = False
         self.conversation_text = ""
-        self._conversation_visibility_dirty = True
-        self._conversation_visibility_refresh_pending = False
-        self._conversation_visible_logical_lines = 0
         self._pending_inputs: deque[str] = deque()
         # 排队预览条是否展开全部（超过可见上限时默认折叠，点击提示行切换）。
         self._pending_queue_expanded = False

@@ -82,11 +82,6 @@ class RenderingMixin:
         return conversation.is_vertical_scroll_end
 
 
-    def _stream_logical_lines(self) -> int:
-        """当前流式消息的逻辑行数（增量累计，避免逐分片 splitlines）。"""
-
-        return self._stream_nl_count + (0 if self._stream_ends_newline else 1)
-
     def _reset_stream_state(self) -> None:
         """复位流式渲染的状态字段（收口/封口/清空后必须保持一致）。
 
@@ -96,8 +91,6 @@ class RenderingMixin:
 
         self._stream_markdown = ""
         self._stream_render_buffer = ""
-        self._stream_nl_count = 0
-        self._stream_ends_newline = True
         self._stream_last_delta_at = 0.0
         self._stream_render_pending = False
 
@@ -111,8 +104,7 @@ class RenderingMixin:
 
         缓冲只在遇到换行（或超过 STREAM_CHUNK_LIMIT）时落盘，且只落盘到
         最后一个换行为止的完整行，未换行的尾部留在缓冲中等待后续分片，
-        避免同一行文本被切成多段分片渲染而错行。行数/可见性与滚动由
-        调用方统一处理。
+        避免同一行文本被切成多段分片渲染而错行。滚动由调用方统一处理。
         """
 
         if not self._stream_render_buffer:
@@ -293,7 +285,7 @@ class RenderingMixin:
                 widget = ToolDisclosure(tool_name, arguments, event_time)
                 conversation = self.query_one("#conversation", VerticalScroll)
                 conversation.mount(widget)
-                self._register_conversation_widget(widget, tool_name)
+                self._refresh_trailing_message_marker()
                 self._append_conversation_text(f"{tool_name}\n")
                 call_id = str(payload.get("tool_call_id") or "").strip()
                 if call_id:
@@ -324,14 +316,14 @@ class RenderingMixin:
                     tool_name = str(payload.get("tool") or "未知工具")
                     widget = ToolDisclosure(tool_name, {}, event_time)
                     self.query_one("#conversation", VerticalScroll).mount(widget)
-                    self._register_conversation_widget(widget, tool_name)
+                    self._refresh_trailing_message_marker()
                 output = self._replay_tool_output(payload)
                 widget.finish(
                     ok=bool(payload.get("ok", False)),
                     output=output,
                     finished_at=max(event_time, widget.started_at),
                 )
-                self._register_conversation_widget(widget)
+                self._refresh_trailing_message_marker()
                 remove_pending(widget)
                 continue
 
@@ -381,8 +373,7 @@ class RenderingMixin:
             )
             remove_pending(widget)
 
-        self._conversation_visibility_batching = False
-        self._request_conversation_visibility_refresh()
+        self._refresh_trailing_message_marker()
 
 
     def _handle_status(self, message: str) -> None:
@@ -432,14 +423,14 @@ class RenderingMixin:
             tree = SubAgentProgressTree(batch_id)
             self._subagent_trees[batch_id] = tree
             conversation.mount(tree)
-            self._register_conversation_widget(tree, "◇ 子任务进度")
+            self._refresh_trailing_message_marker()
         tree.update_task(
             task_id=task_id,
             agent_type=str(payload.get("agent_type") or "subagent"),
             description=str(payload.get("description") or task_id),
             status=status,
         )
-        self._register_conversation_widget(tree, tree.render_text().plain)
+        self._refresh_trailing_message_marker()
         # 运行状态始终保持为消息流末项；树新增或增高后需恢复这一顺序。
         if self._runtime_status_message is not None:
             self._render_status_indicator(follow_latest=follow_latest)
@@ -466,7 +457,7 @@ class RenderingMixin:
             panel = SubAgentConversation(batch_id, agent_type)
             self._subagent_conversations[batch_id] = panel
             conversation.mount(panel)
-            self._register_conversation_widget(panel, panel.logical_text)
+            self._refresh_trailing_message_marker()
 
         if event_name == "subagent.tool.started":
             panel.append(
@@ -522,8 +513,7 @@ class RenderingMixin:
                 panel.finish(failure_line)
             self._set_runtime_status("完成", "complete")
 
-        self._set_conversation_widget_line_count(panel, panel.logical_text)
-        self._request_conversation_visibility_refresh()
+        self._refresh_trailing_message_marker()
         if self._runtime_status_message is not None:
             self._render_status_indicator(follow_latest=follow_latest)
         self._scroll_conversation_if_following(
@@ -595,7 +585,7 @@ class RenderingMixin:
         )
         self._tool_messages[self._tool_call_key(tool_call)] = tool_message
         conversation.mount(tool_message)
-        self._register_conversation_widget(tool_message, tool_name)
+        self._refresh_trailing_message_marker()
         self._append_conversation_text(f"{tool_name}\n")
         # ask_user 提问期间底部状态同样显示「等待回复」，与工具卡上的
         # 「↘ 等待回复...」一致；回答后由 _handle_tool_result 恢复。
@@ -626,7 +616,7 @@ class RenderingMixin:
                     time.perf_counter(),
                 )
                 self.query_one("#conversation", VerticalScroll).mount(tool_message)
-                self._register_conversation_widget(tool_message, tool_name)
+                self._refresh_trailing_message_marker()
             completed_at = getattr(result, "completed_at", None)
             output = str(
                 getattr(result, "full_output", "") or result.output or "无输出"
@@ -638,7 +628,7 @@ class RenderingMixin:
                     completed_at if completed_at is not None else time.perf_counter()
                 ),
             )
-            self._register_conversation_widget(tool_message)
+            self._refresh_trailing_message_marker()
             self._set_runtime_status("正在思考", "working")
             return
         conversation = self.query_one("#conversation", VerticalScroll)
@@ -654,7 +644,7 @@ class RenderingMixin:
                 time.perf_counter(),
             )
             self.query_one("#conversation", VerticalScroll).mount(tool_message)
-            self._register_conversation_widget(tool_message, str(tool_call.name))
+            self._refresh_trailing_message_marker()
         # 优先用 Agent 层记录的真实完成时刻（快工具提前完成、整批等待慢工具
         # 时也能显示各自真实耗时）；缺省时退回到当前时刻。
         completed_at = getattr(result, "completed_at", None)
@@ -663,7 +653,7 @@ class RenderingMixin:
             output=output,
             finished_at=completed_at if completed_at is not None else time.perf_counter(),
         )
-        self._register_conversation_widget(tool_message)
+        self._refresh_trailing_message_marker()
         self._remember_finished_tool_card(key, tool_message)
         self._append_conversation_text(f"结果  {tool_message.status}\n{output}\n")
         self._scroll_conversation_if_following(conversation, follow_latest)
@@ -684,7 +674,7 @@ class RenderingMixin:
         if not output:
             return
         tool_message.update_body(output)
-        self._register_conversation_widget(tool_message)
+        self._refresh_trailing_message_marker()
 
     def _remember_finished_tool_card(self, key: str, widget: ToolDisclosure) -> None:
         """记住最近收口的工具卡；超出上限时淘汰最早的卡片。"""
@@ -800,14 +790,9 @@ class RenderingMixin:
         if show_thinking and self._reasoning_message is None:
             self._reasoning_message = ReasoningDisclosure()
             conversation.mount(self._reasoning_message)
+            self._refresh_trailing_message_marker()
         if self._reasoning_message is not None:
             self._reasoning_message.append_delta(delta)
-            # 行数由组件增量累计，避免逐分片对完整思考文本 splitlines。
-            self._set_conversation_widget_lines(
-                self._reasoning_message,
-                self._reasoning_message._line_count,
-            )
-            self._request_conversation_visibility_refresh()
         self._record_generation_delta(delta)
         self._set_runtime_status("正在思考", "working")
         self._scroll_conversation_if_following(
@@ -823,11 +808,6 @@ class RenderingMixin:
         if self._reasoning_message is not None:
             # 思考阶段结束，同步补齐未完成行，保证推理内容展示完整。
             self._reasoning_message.flush_tail()
-            self._set_conversation_widget_lines(
-                self._reasoning_message,
-                self._reasoning_message._line_count,
-            )
-            self._request_conversation_visibility_refresh()
         self._reasoning_message = None
         conversation = self.query_one("#conversation", VerticalScroll)
         follow_latest = self._is_conversation_at_end(conversation)
@@ -836,10 +816,8 @@ class RenderingMixin:
             self._stream_start_text_len = self._conversation_text_len
             self._stream_message = AssistantMessage()
             conversation.mount(self._stream_message)
-            self._register_conversation_widget(self._stream_message, "")
+            self._refresh_trailing_message_marker()
         self._stream_chunks.append(delta)
-        self._stream_nl_count += delta.count("\n")
-        self._stream_ends_newline = delta.endswith("\n")
         self._stream_last_delta_at = time.monotonic()
         # 换行边界缓冲：只增量渲染已就绪的完整行，避免逐分片全量重解析
         # 整条消息的 Markdown（长消息数百毫秒/次）。
@@ -848,8 +826,6 @@ class RenderingMixin:
             self._stream_render_buffer
         ) >= self.STREAM_CHUNK_LIMIT:
             self._flush_stream_buffer(self._stream_message)
-        self._set_conversation_widget_lines(self._stream_message, self._stream_logical_lines())
-        self._request_conversation_visibility_refresh()
         self._append_conversation_text(f"{delta}\n")
         self._record_generation_delta(delta)
         if not self._stream_render_pending:
@@ -898,8 +874,6 @@ class RenderingMixin:
                 # 长消息停顿：不做全量重绘，但要把残留的未换行缓冲落盘，
                 # 避免尾部文本停在不可见状态。
                 self._flush_stream_buffer(message)
-        self._set_conversation_widget_lines(message, self._stream_logical_lines())
-        self._request_conversation_visibility_refresh()
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,
@@ -928,8 +902,7 @@ class RenderingMixin:
                 pass
             self._stream_message = None
         self._reset_stream_state()
-        self._mark_conversation_visibility_dirty()
-        self._request_conversation_visibility_refresh()
+        self._refresh_trailing_message_marker()
         if self._stream_start_text_len is not None:
             self._truncate_conversation_text(self._stream_start_text_len)
             self._stream_start_text_len = None
@@ -968,14 +941,11 @@ class RenderingMixin:
         follow_latest = self._is_conversation_at_end(conversation)
         follow_with_runtime_status = self._runtime_status_message is not None
         if merge_with_previous and self._stream_message is not None:
-            # 合并路径不常用：直接全量收口，保证内容与行数一致。
+            # 合并路径不常用：直接全量收口，保证渲染内容与已收文本一致。
             self._stream_markdown += text
             self._stream_render_buffer = ""
-            self._stream_nl_count = self._stream_markdown.count("\n")
-            self._stream_ends_newline = self._stream_markdown.endswith("\n")
             self._stream_message.update(self._stream_markdown)
-            self._set_conversation_widget_line_count(self._stream_message, self._stream_markdown)
-            self._request_conversation_visibility_refresh()
+            self._refresh_trailing_message_marker()
         else:
             if kind == "user":
                 # 用户消息：去掉 $ 前缀，改为顶部灰色斜体 user： 标签行
@@ -1014,7 +984,7 @@ class RenderingMixin:
                 self._reset_stream_state()
                 self._stream_start_text_len = None
             conversation.mount(widget)
-            self._register_conversation_widget(widget, text)
+            self._refresh_trailing_message_marker()
             if track_tool:
                 self._tool_messages[f"legacy:{id(widget)}"] = widget
         self._append_conversation_text(f"{text}\n")
@@ -1091,7 +1061,7 @@ class RenderingMixin:
         if status is not None:
             status.remove()
             # 状态行移除后末项回到最后一条消息：重算 trailing 标记。
-            self._request_conversation_visibility_refresh()
+            self._refresh_trailing_message_marker()
 
 
     def _tick_status_indicator(self) -> None:
@@ -1134,7 +1104,7 @@ class RenderingMixin:
             self._runtime_status_message = status
             conversation.mount(status)
             # 末条消息标记跟随消息序列末项：状态行成为末项后需要重算。
-            self._request_conversation_visibility_refresh()
+            self._refresh_trailing_message_marker()
         spinner_frame = self.STATUS_SPINNER_FRAMES[self._status_spinner_index]
         # 所有活动中的回合状态都支持 Esc 取消；在状态行尾固定显示提示，
         # 让“正在思考/回复/调用”等同类状态的中断入口清晰可见。
@@ -1148,7 +1118,7 @@ class RenderingMixin:
             and conversation.children[-1] is not status
         ):
             conversation.move_child(status, after=conversation.children[-1])
-            self._request_conversation_visibility_refresh()
+            self._refresh_trailing_message_marker()
         self._scroll_conversation_if_following(
             conversation,
             follow_latest,

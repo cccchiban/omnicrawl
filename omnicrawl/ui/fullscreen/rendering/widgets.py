@@ -1070,10 +1070,9 @@ class ToolDisclosure(Vertical):
 
     @property
     def content(self) -> Text:
-        """当前显示内容（标题 + 正文区 + 省略提示行），供会话显示窗口按逻辑行数计预算。
+        """当前显示内容（标题 + 正文区 + 省略提示行）。
 
-        与 ``Static.content`` 同口径：工具卡改为容器后，整卡文本改由本属性
-        提供给 ``conversation_widget_line_count``。
+        与 ``Static.content`` 同口径：工具卡改为容器后，整块内容改由本属性提供。
         """
 
         return self._display_text
