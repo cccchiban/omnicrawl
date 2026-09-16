@@ -24,6 +24,7 @@ from .hud import (
     status_summary_text,
     token_telemetry_text,
 )
+from ..rendering.widgets import update_static_line
 from ..terminal.theme import ACCENT_AMBER, TEXT_MUTED
 
 
@@ -262,7 +263,7 @@ class StatusMixin:
         self._carousel_settled_text = self._carousel_build_page_text(
             self._carousel_page
         )
-        widget.update(self._carousel_settled_text)
+        update_static_line(widget, self._carousel_settled_text)
 
     def _carousel_start(self) -> None:
         """启动底部轮播：先渲染当前页并安排第一次切换。"""
@@ -344,7 +345,10 @@ class StatusMixin:
             rand_source=self._carousel_rand,
         )
         try:
-            self.query_one("#carousel-display", Static).update(frame)
+            update_static_line(
+                self.query_one("#carousel-display", Static),
+                frame,
+            )
         except Exception:  # noqa: BLE001 - 轮播组件可能尚未挂载，动画帧渲染失败不中断
             pass
 
@@ -363,8 +367,9 @@ class StatusMixin:
             self._carousel_page
         )
         try:
-            self.query_one("#carousel-display", Static).update(
-                self._carousel_settled_text
+            update_static_line(
+                self.query_one("#carousel-display", Static),
+                self._carousel_settled_text,
             )
         except Exception:  # noqa: BLE001 - 轮播组件可能尚未挂载，失败不中断动画收口
             pass

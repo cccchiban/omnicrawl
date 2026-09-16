@@ -41,6 +41,30 @@ _SUBAGENT_STATUS_PRESENTATION = {
 }
 
 
+def update_static_line(widget: Static, text: Text) -> bool:
+    """只重绘高度固定为单行的组件，尺寸不变时不请求重排。
+
+    状态行 spinner、工具行与底部轮播都只换一行文本，而 ``Static.update`` 默认
+    ``layout=True``：每次调用都会让 Textual 重排整块消息区，长会话下每次重排的
+    成本随已挂载组件数线性增长。这些组件高度恒为一行、宽度由内容决定，因此只在
+    显示宽度改变（可能折行）时才请求布局，其余情况只重绘本行；内容与样式跨度都
+    未变时连重绘也跳过。返回是否写入了新内容。
+    """
+
+    plain = text.plain
+    spans = tuple(text.spans)
+    if plain == getattr(widget, "_static_line_plain", None) and spans == getattr(
+        widget, "_static_line_spans", None
+    ):
+        return False
+    same_width = text.cell_len == getattr(widget, "_static_line_cell_len", -1)
+    widget._static_line_plain = plain
+    widget._static_line_spans = spans
+    widget._static_line_cell_len = text.cell_len
+    widget.update(text, layout=not same_width)
+    return True
+
+
 def _apply_selection_style(
     strip: Strip,
     selection: Selection | None,
@@ -292,6 +316,7 @@ class SubAgentProgressTree(Static):
         self._tasks: dict[str, _SubAgentProgressItem] = {}
         self._task_order: list[str] = []
         self._last_rendered_at = time.perf_counter()
+        self._rendered_plain = ""
         self._refresh_display(self._last_rendered_at)
 
     @property
@@ -392,7 +417,13 @@ class SubAgentProgressTree(Static):
 
     def _refresh_display(self, now: float) -> None:
         self._last_rendered_at = now
-        self.update(self.render_text(now))
+        rendered = self.render_text(now)
+        if rendered.plain == self._rendered_plain:
+            # 80ms 一次的耗时 tick 大多只有秒级文本会变：渲染结果一致时跳过
+            # 重绘，避免长会话下每帧一次的消息区重排。
+            return
+        self._rendered_plain = rendered.plain
+        self.update(rendered)
 
     @staticmethod
     def _format_elapsed(seconds: float) -> str:
@@ -927,14 +958,15 @@ class RuntimeStatus(Horizontal):
         """更新状态文本（spinner + 状态文字），[ ESC ] 子组件保持不变。
 
         文本与上一帧一致时直接跳过：``Static.update`` 会使组件布局失效，
-        而 spinner 帧由宿主按固定节奏推进，同一帧内的流式分片无需重复重绘。
+        而 spinner 帧由宿主按固定节奏推进，同一帧内的流式分片无需重复重绘；
+        文本宽度未变（仅 Braille 帧轮换）时只重绘本行，不重新布局。
         """
 
         plain = label_text.plain
         if plain == self._last_label_plain:
             return
         self._last_label_plain = plain
-        self._label.update(label_text)
+        update_static_line(self._label, label_text)
 
     def on_click(self, event: Click) -> None:
         """点击 [ ESC ] 与键盘 ESC 等价：交给宿主统一的取消/聚焦动作。"""
@@ -1061,6 +1093,8 @@ class ToolDisclosure(Vertical):
         self._title_text = Text()
         self._body_source = Text()
         self._display_text = Text()
+        # 最近一次真正渲染进组件的标题纯文本（None 表示尚未渲染过）。
+        self._shown_title_plain: str | None = None
         # 流式渲染状态：终态正文分块释放，释放完毕后 _stream_full_source 清空。
         self._stream_full_source: Text | None = None
         self._stream_shown_lines = 0
@@ -1262,12 +1296,17 @@ class ToolDisclosure(Vertical):
             expanded=True,
             result_text=self.result_text,
         )
+        if self._title_text.plain == self._shown_title_plain:
+            # 80ms 一次的工具耗时 tick 只在秒位跨秒时才改变标题：标题未变即
+            # 整卡内容未变，跳过正文重建与重绘，避免长会话下的消息区重排。
+            return
+        self._shown_title_plain = self._title_text.plain
         self._body_source = tool_disclosure_body(
             tool_name=self.tool_name,
             arguments=self.arguments,
             result_text=self.result_text,
         )
-        self._title_line.update(self._title_text)
+        update_static_line(self._title_line, self._title_text)
         self._render_body()
 
     def _render_body(self) -> None:
