@@ -12,7 +12,9 @@
 
 结束行为：
 - ``apply_on_exit``：进程退出 / 会话归档时把隔离区变更应用回主工作区
-  （worktree 走 patch，local 走目录镜像）。
+  （worktree 走 patch，local 走目录镜像）。隔离区提交已被主工作区分支
+  包含（模型主动把成果同步到主仓库）时以两者的共同祖先为基线，已同步的
+  提交不再重复应用，也不会误报冲突。
 - ``cleanup_on_exit``：auto（四层门禁过滤后可安全自动清理，见下）/ keep / never。
 
 自动清理（``cleanup_on_exit=auto``）统一按四层门禁过滤，四层全部通过的

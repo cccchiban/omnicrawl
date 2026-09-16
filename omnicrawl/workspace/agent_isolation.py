@@ -22,7 +22,10 @@ worktree 目录已存在（上一进程 / 上次运行的残留）且纯文件�
 
 结束时可把隔离区相对基线的变更生成 patch 应用回主工作区；冲突时
 ``git apply --3way`` 写入标准冲突标记并将文件标记为 Unmerged，用户
-在 IDE 中按常规 Git 冲突流程解决。
+在 IDE 中按常规 Git 冲突流程解决。隔离区提交若已被主工作区分支包含
+（模型主动把成果同步到主仓库，例如 ``git merge --ff-only <隔离区提交>``），
+应用基线改取隔离区 HEAD 与主工作区 HEAD 的共同祖先，已同步的提交不再
+重复应用——否则重命名 / 新增文件的三方应用会整批失败并误报冲突。
 
 自动清理统一按四层门禁过滤（``cleanup_eligible``），四层全部通过
 的 worktree 才是可安全自动清理的：
@@ -748,6 +751,38 @@ def _apply_local_isolation_changes(session: IsolationSession) -> tuple[int, list
     return copied, []
 
 
+def _effective_apply_base(session: IsolationSession) -> str:
+    """解析把隔离区变更应用回主工作区时的有效基线。
+
+    隔离区提交可能已被主工作区分支包含——模型会主动把｛Desensitized:400｝同步到主仓库（如
+    ``git merge --ff-only <隔离区提交>``），此时 ``base_ref..HEAD`` 会把已进入
+    主分支的提交再回放一遍：三方应用对已存在的重命名 / 新增文件直接失败。
+    取隔离区 HEAD 与主工作区 HEAD 的共同祖先作为候选基线，只接受比
+    ``base_ref`` 更近（``base_ref`` 是其祖先）的候选：既跳过已同步的提交，
+    又不会把基线退回到 ``_sync_uncommitted`` 内部基线之前，重复应用隔离区
+    创建前主工作区就有的改动。
+    """
+
+    base = session.base_ref or "HEAD"
+    source_head = _run_git(
+        ["rev-parse", "HEAD"], cwd=session.worktree_path, check=False
+    ).stdout.strip()
+    if not source_head:
+        return base
+    common = _run_git(
+        ["merge-base", source_head, "HEAD"], cwd=session.repo_root, check=False
+    )
+    candidate = common.stdout.strip() if common.returncode == 0 else ""
+    if not candidate or candidate == base:
+        return base
+    ancestor = _run_git(
+        ["merge-base", "--is-ancestor", base, candidate],
+        cwd=session.worktree_path,
+        check=False,
+    )
+    return candidate if ancestor.returncode == 0 else base
+
+
 def apply_isolation_changes(
     session: IsolationSession,
     *,
@@ -755,9 +790,11 @@ def apply_isolation_changes(
 ) -> tuple[int, list[str]]:
     """把隔离区变更安全应用到主工作区。
 
-    生成相对基线的 patch，在主工作区 ``git apply --3way --check`` 预检；
+    生成相对有效基线的 patch，在主工作区 ``git apply --3way --check`` 预检；
     冲突时写入冲突标记（Unmerged），用户按标准 Git 冲突流程解决。
-    返回 (变更文件数, 冲突文件列表)。
+    返回 (实际应用的文件数, 冲突文件列表)；应用失败时应用文件数为 0（三方
+    应用不是原子操作，已写入的文件不计入「应用」口径），冲突文件列表优先取
+    真正处于未合并状态的文件。
     """
 
     if not session.worktree_path.exists():
@@ -772,11 +809,15 @@ def apply_isolation_changes(
         cwd=session.worktree_path,
         check=False,
     )
-    base = session.base_ref or "HEAD"
+    base = _effective_apply_base(session)
     diff = _run_git(
         ["diff", base, "HEAD"], cwd=session.worktree_path, check=False
     ).stdout
     if not diff.strip():
+        if base != (session.base_ref or "HEAD"):
+            LOGGER.info(
+                "隔离区变更已包含在主工作区，跳过应用：%s", session.worktree_path.name
+            )
         return 0, []
 
     patch_file = (
@@ -799,13 +840,13 @@ def apply_isolation_changes(
         check=False,
     )
     if result.returncode != 0:
-        conflicts = _conflict_files_from_patch(diff)
+        conflicts = _unmerged_conflicts(diff, session.repo_root)
         LOGGER.warning(
             "隔离区变更应用冲突：%d 个文件需要手动解决，patch 保留在 %s",
             len(conflicts),
             patch_file,
         )
-        return len(conflicts), conflicts
+        return 0, conflicts
 
     changed = _count_changed(diff)
     patch_file.unlink(missing_ok=True)
@@ -822,8 +863,8 @@ def _count_changed(diff: str) -> int:
     return count
 
 
-def _conflict_files_from_patch(diff: str) -> list[str]:
-    """从 patch 中提取涉及的文件路径（冲突时用）。"""
+def _patch_files(diff: str) -> list[str]:
+    """从 patch 中提取涉及的文件路径。"""
 
     files: list[str] = []
     for line in diff.splitlines():
@@ -833,6 +874,22 @@ def _conflict_files_from_patch(diff: str) -> list[str]:
             if len(parts) == 2:
                 files.append(parts[1].strip())
     return files
+
+
+def _unmerged_conflicts(diff: str, repo_root: Path) -> list[str]:
+    """报告三方应用失败后的冲突文件：优先取真正处于未合并状态的文件。
+
+    三方应用不是原子操作：能合并的文件已写入主工作区，只有真正分叉的文件
+    会留下未合并条目（UU / AA）。未产生未合并条目（如新增 / 重命名目标已
+    存在）时退回补丁涉及的全部文件，交由用户按保留的 patch 处理。
+    """
+
+    files = _patch_files(diff)
+    output = _run_git(
+        ["diff", "--name-only", "--diff-filter=U"], cwd=repo_root, check=False
+    ).stdout
+    unmerged = {line.strip() for line in output.splitlines() if line.strip()}
+    return [path for path in files if path in unmerged] or files
 
 
 def cleanup_eligible(
