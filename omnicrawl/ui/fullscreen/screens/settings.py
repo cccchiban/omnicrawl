@@ -88,6 +88,19 @@ _APPROVAL_LABELS = {mode: approval_mode_label(mode) for mode in _APPROVAL_OPTION
 _CONTEXT_WINDOW_OPTIONS_K = (32, 64, 128, 256, 512, 1024, 2048)
 _CONTEXT_COMPACTION_PERCENT_OPTIONS = tuple(range(5, 100, 5))
 
+
+def _nearest_context_window_tokens(window_tokens: int) -> int:
+    """把任意上下文窗口值折算到候选档位，取最接近的一档（单位 Token）。"""
+
+    return (
+        min(
+            _CONTEXT_WINDOW_OPTIONS_K,
+            key=lambda option: abs(option * 1000 - window_tokens),
+        )
+        * 1000
+    )
+
+
 _SUBAGENT_ADVANCED_LABELS = {
     "max_concurrency": "最大并发数",
     "max_tasks_per_batch": "每批最大任务数",
@@ -130,7 +143,6 @@ _SETTING_ORDER = (
     "memory",
     "plugins",
     "subagents",
-    "context_compaction_threshold",
     "show_thinking",
 )
 
@@ -333,7 +345,7 @@ class SettingsScreen(ModalScreen[Any]):
             "channels": "模型渠道",
             "advisor": "顾问设置",
             "tool_output_compression": "工具输出压缩",
-            "context": "上下文长度",
+            "context": "上下文",
             "reasoning": "推理强度",
             "tools": "工具设置",
             "vision": "视觉",
@@ -345,7 +357,6 @@ class SettingsScreen(ModalScreen[Any]):
             "memory": "记忆功能",
             "plugins": "插件功能",
             "subagents": "子任务设置",
-            "context_compaction_threshold": "上下文压缩阈值",
             "show_thinking": "思考显示",
             "config_chat": "通过对话修改设置",
         }
@@ -556,11 +567,26 @@ class SettingsScreen(ModalScreen[Any]):
         if key == "tool_output_compression":
             return self._build_tool_output_compression_pane()
         if key == "context":
-            current_k = int(getattr(self._agent, "context_window_tokens", 128_000)) // 1000
-            return SelectPane(
-                [(f"{k}K", k * 1000) for k in _CONTEXT_WINDOW_OPTIONS_K],
-                current_k * 1000,
-                lambda value: self._apply_simple(key, value),
+            from .context_settings import ContextSettingsPane
+
+            return ContextSettingsPane(
+                [
+                    (
+                        "context",
+                        "上下文长度",
+                        [(f"{k}K", k * 1000) for k in _CONTEXT_WINDOW_OPTIONS_K],
+                        _nearest_context_window_tokens(
+                            int(getattr(self._agent, "context_window_tokens", 128_000))
+                        ),
+                    ),
+                    (
+                        "context_compaction_threshold",
+                        "上下文压缩阈值",
+                        [(f"{p}%", p) for p in _CONTEXT_COMPACTION_PERCENT_OPTIONS],
+                        self._context_compaction_percent(),
+                    ),
+                ],
+                self._apply_simple,
                 agent=self._agent,
             )
         if key == "reasoning":
@@ -575,14 +601,6 @@ class SettingsScreen(ModalScreen[Any]):
             return self._build_tools_pane()
         if key == "subagents":
             return self._build_subagents_pane()
-        if key == "context_compaction_threshold":
-            current = self._context_compaction_percent()
-            return SelectPane(
-                [(f"{p}%", p) for p in _CONTEXT_COMPACTION_PERCENT_OPTIONS],
-                current,
-                lambda value: self._apply_simple(key, value),
-                agent=self._agent,
-            )
         if key == "show_thinking":
             return SelectPane(
                 [("开启", True), ("关闭", False)],
