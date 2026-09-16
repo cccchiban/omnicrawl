@@ -21,7 +21,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Mapping, Sequence
 
-from omnicrawl.web_search import _BROWSER_HEADERS, _detect_windows_proxy, _strip_tags
+from .web_search import _BROWSER_HEADERS, _detect_windows_proxy, _strip_tags
 
 try:
     from curl_cffi import requests as _cffi_requests

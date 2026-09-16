@@ -21,7 +21,7 @@ from typing import Any, Callable, Protocol
 
 import httpx
 
-from ..http_client import connection_limits
+from ..net.http_client import connection_limits
 from .audit import MCPAuditLogger
 from .config import (
     MCPConfig,

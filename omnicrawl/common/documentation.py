@@ -13,7 +13,7 @@ class BundledDocumentationError(ValueError):
 def bundled_docs_dir() -> Path:
     """返回随 OmniCrawl Python 包发布的只读文档目录。"""
 
-    return Path(__file__).resolve().parent / "docs"
+    return Path(__file__).resolve().parent.parent / "docs"
 
 
 def bundled_doc_names() -> list[str]:

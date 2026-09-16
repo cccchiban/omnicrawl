@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from ..documentation import (
+from ..common.documentation import (
     BUNDLED_DOC_URI_PREFIX,
     BundledDocumentationError,
     resolve_bundled_doc_uri,

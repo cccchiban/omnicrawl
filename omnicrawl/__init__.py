@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
 
 _COMPAT_MODULES = {
@@ -28,3 +29,45 @@ for _old_name, _new_name in _COMPAT_MODULES.items():
 
 # 确保真实 llm 包可被 `import omnicrawl.llm` 与兼容路径同时使用。
 from . import llm as llm  # noqa: E402
+
+# 迁移到子包的模块保留旧路径别名（``omnicrawl.fetcher`` 等）。它们带 curl_cffi/bs4
+# 等重依赖，或本就按需加载，故用惰性查找器替代上面的急切导入，避免每次导入本包时
+# 都把它们拉起来。
+_LAZY_COMPAT_MODULES = {
+    f"{__name__}.fetcher": f"{__name__}.net.fetcher",
+    f"{__name__}.web_search": f"{__name__}.net.web_search",
+    f"{__name__}.http_client": f"{__name__}.net.http_client",
+    f"{__name__}.image_gen": f"{__name__}.media.image_gen",
+    f"{__name__}.paths": f"{__name__}.common.paths",
+    f"{__name__}.redaction": f"{__name__}.common.redaction",
+    f"{__name__}.documentation": f"{__name__}.common.documentation",
+    f"{__name__}.updater": f"{__name__}.maintenance.updater",
+    f"{__name__}.version_check": f"{__name__}.maintenance.version_check",
+}
+
+
+class _CompatAliasLoader:
+    """把旧模块名解析为已加载的新模块对象。"""
+
+    def __init__(self, module):
+        self._module = module
+
+    def create_module(self, spec):
+        return self._module
+
+    def exec_module(self, module):
+        pass
+
+
+class _CompatAliasFinder:
+    """让 ``omnicrawl.<旧名>`` 仍可导入，且不产生额外导入开销。"""
+
+    def find_spec(self, fullname, path=None, target=None):
+        target_name = _LAZY_COMPAT_MODULES.get(fullname)
+        if target_name is None:
+            return None
+        module = importlib.import_module(target_name)
+        return importlib.util.spec_from_loader(fullname, _CompatAliasLoader(module))
+
+
+sys.meta_path.insert(0, _CompatAliasFinder())

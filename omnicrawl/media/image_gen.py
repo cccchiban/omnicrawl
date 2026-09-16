@@ -18,11 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-from .config.features.image_gen import (
+from ..config.features.image_gen import (
     ImageGenConfiguration,
     load_image_gen_configuration,
 )
-from .http_client import create_direct_client
+from ..net.http_client import create_direct_client
 
 DEFAULT_OUTPUT_DIR = Path(".omnicrawl") / ".agent_tmp" / "images"
 _DEFAULT_OUTPUT_FORMAT = "png"

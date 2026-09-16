@@ -337,7 +337,7 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     # 说明并自动 pip 升级，成功后以子进程重新拉起 TUI 并返回其退出码；跳过、
     # 无新版本或升级失败均返回 None 继续正常启动（失败策略：用当前版本启动）。
     try:
-        from omnicrawl.updater import run_startup_update_if_due
+        from omnicrawl.maintenance.updater import run_startup_update_if_due
 
         update_exit_code = run_startup_update_if_due(raw_argv)
         if update_exit_code is not None:

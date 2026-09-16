@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, Mapping
 
-from ...http_client import create_direct_client
+from ...net.http_client import create_direct_client
 from ..errors import ModelError, ModelErrorCode, map_openai_exception
 from ..protocol import ToolSpec
 from ..registry import ProviderProfile

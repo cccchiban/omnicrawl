@@ -250,7 +250,7 @@ class ToolImplementationsMixin:
         """使用 Bing/DuckDuckGo/雅虎搜索公开网页（见 omnicrawl/web_search.py）。"""
 
         try:
-            from omnicrawl.web_search import WebSearch
+            from omnicrawl.net.web_search import WebSearch
 
             return ToolResult(ok=True, output=WebSearch().search(arguments))
         except RuntimeError as exc:
@@ -260,7 +260,7 @@ class ToolImplementationsMixin:
         """模拟浏览器指纹抓取网页（见 omnicrawl/fetcher.py）。"""
 
         try:
-            from omnicrawl.fetcher import Fetcher
+            from omnicrawl.net.fetcher import Fetcher
 
             return ToolResult(ok=True, output=Fetcher().fetch(arguments))
         except RuntimeError as exc:
@@ -270,7 +270,7 @@ class ToolImplementationsMixin:
         """生成/编辑图片（见 omnicrawl/image_gen.py，配置见 config/image_gen.py）。"""
 
         try:
-            from omnicrawl.image_gen import ImageGenerator
+            from omnicrawl.media.image_gen import ImageGenerator
 
             configuration = getattr(getattr(self, "config", None), "image_gen", None)
             if configuration is not None:

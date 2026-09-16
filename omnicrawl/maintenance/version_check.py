@@ -13,8 +13,8 @@ from typing import Callable
 
 import httpx
 
-from .config.core.runtime import user_config_dir
-from .extensions.plugin_models import OMNICRAWL_VERSION
+from ..config.core.runtime import user_config_dir
+from ..extensions.plugin_models import OMNICRAWL_VERSION
 
 
 PYPI_RELEASES_RSS_URL = (

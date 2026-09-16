@@ -8,11 +8,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-# 路径判断与凭据脱敏的统一实现位于包根；这里以 ``X as X`` 形式再导出，
+# 路径判断与凭据脱敏的统一实现位于 omnicrawl.common；这里以 ``X as X`` 形式再导出，
 # 既有调用方（agent / api / connectors / state 等 20+ 处）无需改导入路径。
-from ..paths import is_relative_to
-from ..redaction import redact_sensitive_text as redact_sensitive_text
-from ..redaction import redact_sensitive_values as redact_sensitive_values
+from ..common.paths import is_relative_to
+from ..common.redaction import redact_sensitive_text as redact_sensitive_text
+from ..common.redaction import redact_sensitive_values as redact_sensitive_values
 from .session_locking import atomic_write_text
 from .session_models import SessionStoreError, clean_title
 

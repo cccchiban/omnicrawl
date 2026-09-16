@@ -15,7 +15,7 @@ from functools import partial
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
-from ....http_client import create_direct_client
+from ....net.http_client import create_direct_client
 from ...toolkit.host_tools import (
     HostToolCatalog,
     INVOKE_TOOL_NAME,

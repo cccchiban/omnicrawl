@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Iterable
 
-from ...http_client import create_direct_client
+from ...net.http_client import create_direct_client
 from .llm import (
     KNOWN_AVAILABLE_MODELS,
     LLMConfig,

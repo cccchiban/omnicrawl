@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ....version_check import current_version as _current_version
+from ....maintenance.version_check import current_version as _current_version
 
 
 @dataclass(frozen=True)

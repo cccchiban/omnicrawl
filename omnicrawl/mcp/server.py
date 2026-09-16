@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..documentation import (
+from ..common.documentation import (
     BUNDLED_DOC_URI_PREFIX,
     BundledDocumentationError,
     bundled_doc_names,

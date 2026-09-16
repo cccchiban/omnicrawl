@@ -3,7 +3,7 @@
 流程（仅在 TUI 启动路径、pip 正常安装的环境中执行）：
 
 1. 读取本地配置 ``[update].enabled``（缺省启用），并检查环境变量跳过开关；
-2. 复用 :mod:`omnicrawl.version_check` 的 PyPI RSS 检测与 24h 本地缓存；
+2. 复用 :mod:`omnicrawl.maintenance.version_check` 的 PyPI RSS 检测与 24h 本地缓存；
 3. 本地版本落后时打印升级说明，用当前解释器执行
    ``python -m pip install --upgrade omnicrawl-agent==<latest>``；
 4. 升级成功后重新探测安装版本，与目标一致才重新拉起 TUI
@@ -26,8 +26,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import version_check as _version_check
-from .config.core.settings import load_feature_enabled
+from ..config.core.settings import load_feature_enabled
 from .version_check import VersionCheckResult, check_latest_version, current_version, is_newer_version
 
 PACKAGE_NAME = "omnicrawl-agent"
@@ -48,7 +47,7 @@ def is_source_checkout(package_dir: Path | None = None) -> bool:
     """
 
     if package_dir is None:
-        package_dir = Path(_version_check.__file__).resolve().parent
+        package_dir = Path(__file__).resolve().parent.parent
     env_root = package_dir.parent
     return (env_root / "pyproject.toml").is_file() and (env_root / ".git").is_dir()
 
