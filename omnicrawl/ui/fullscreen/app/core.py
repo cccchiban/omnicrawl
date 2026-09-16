@@ -53,8 +53,6 @@ from ..support.turns import AgentTurnController
 from ..terminal.handling import (
     OmniCrawlWindowsDriver,
     TerminalHandlingMixin,
-    _restore_windows_raw_input_mode_if_needed,
-    _restore_windows_vt_input_mode_if_needed,
 )
 from ..terminal.theme import TERMINAL_THEME, THEME_NAME, terminal_css
 from ..turn.execution import TurnExecutionMixin
@@ -599,6 +597,9 @@ class OmniCrawlApp(
         if callable(set_ask_user_handler):
             set_ask_user_handler(self._ask_user)
         self.query_one("#composer", TextArea).focus()
+        # 关闭终端的「滚轮→上下键」回退：滚轮必须始终作为鼠标事件投递，
+        # 否则鼠标模式被外部重置时滚轮会变成上下键、触发输入框的历史回看。
+        self._reassert_terminal_mouse_reporting()
         self._resize_composer_to_text()
         self.set_interval(self.STATUS_SPINNER_INTERVAL_SECONDS, self._tick_status_indicator)
         self.set_interval(
@@ -699,17 +700,8 @@ class OmniCrawlApp(
         self.call_after_refresh(self._resize_composer_to_text)
         # 缩放窗口时 conhost 可能重置控制台输入模式（鼠标记录因此消失）；
         # 立即核对并恢复，不等看门狗周期，避免缩小窗口后点击失效。
-        driver = self._driver
-        if not driver.is_headless:
-            restore_input_mode = (
-                _restore_windows_raw_input_mode_if_needed
-                if isinstance(driver, OmniCrawlWindowsDriver)
-                else _restore_windows_vt_input_mode_if_needed
-            )
-            try:
-                restore_input_mode()
-            except Exception:  # noqa: BLE001
-                pass
+        self._restore_terminal_input_mode()
+        self._reassert_terminal_mouse_reporting()
 
 
 __all__ = ["OmniCrawlApp"]

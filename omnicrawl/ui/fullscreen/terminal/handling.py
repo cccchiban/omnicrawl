@@ -12,6 +12,7 @@ P1 重构从 ``ui/fullscreen/__init__.py`` 拆出的独立模块（2026-08-11）
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from typing import Any, Callable
@@ -27,6 +28,8 @@ if sys.platform == "win32":
 else:
     _textual_win32 = None
     _TextualWindowsDriver = object
+
+LOGGER = logging.getLogger(__name__)
 
 # 输入流开头的控制字符（ASCII < 0x20 且非 \t\r\n）。
 # conhost 在某些配置下会把 Ctrl+V 等快捷键透传为 \x16 之类的控制字符记录，
@@ -44,8 +47,21 @@ _MOUSE_REPORTING_DISABLE_SEQUENCE = (
     "\x1b[?1006l"
 )
 
+# 滚轮由应用自己处理（每刻度滚动消息区 5 行），因此额外关闭终端的
+# 「滚轮→上下键」回退（alternate scroll，DECSET 1007）：鼠标模式被外部重置的
+# 窗口里，滚轮不能退化成方向键——输入框会把上下键当历史回看，冒出上一条提问。
+_MOUSE_REPORTING_ENABLE_SEQUENCE = (
+    "\x1b[?1000h"
+    "\x1b[?1003h"
+    "\x1b[?1015h"
+    "\x1b[?1006h"
+    "\x1b[?1007l"
+)
+_ALTERNATE_SCROLL_RESTORE_SEQUENCE = "\x1b[?1007h"
+
+
 def _disable_terminal_mouse_reporting(output_stream: Any | None = None) -> None:
-    """在 Textual Driver 停止后兜底关闭所有可能启用的鼠标报告模式。"""
+    """在 Textual Driver 停止后兜底关闭鼠标报告，并还原终端 alternate scroll。"""
 
     output_stream = sys.__stdout__ if output_stream is None else output_stream
     if output_stream is None:
@@ -54,6 +70,7 @@ def _disable_terminal_mouse_reporting(output_stream: Any | None = None) -> None:
         # 退出阶段不能继续使用 Driver.write：Windows WriterThread 此时已经停止，
         # 写入只会滞留在无人消费的队列中，因此必须直接写回真实控制台流。
         output_stream.write(_MOUSE_REPORTING_DISABLE_SEQUENCE)
+        output_stream.write(_ALTERNATE_SCROLL_RESTORE_SEQUENCE)
         output_stream.flush()
     except (AttributeError, OSError, ValueError):
         # 关闭窗口或重定向流已提前失效时，不应让兜底清理覆盖原始退出结果。
@@ -778,21 +795,53 @@ class TerminalHandlingMixin:
         self.mouse_position = Offset(event.screen_x, event.screen_y)
         scrollbar.action_grab()
 
+    def _restore_terminal_input_mode(self) -> bool:
+        """核对并恢复控制台输入模式；返回是否真的恢复过。
+
+        工具子进程（cmd / python 等）会把共享控制台的鼠标输入位清掉，鼠标
+        记录随之消失；工具一结束就立刻核对，不等周期看门狗。终端状态短暂
+        不可读时按未恢复处理，不把异常抛给调用方。
+        """
+
+        try:
+            driver = self._driver
+            if driver.is_headless:
+                return False
+            restore_input_mode = (
+                _restore_windows_raw_input_mode_if_needed
+                if isinstance(driver, OmniCrawlWindowsDriver)
+                else _restore_windows_vt_input_mode_if_needed
+            )
+            return bool(restore_input_mode())
+        except Exception:  # noqa: BLE001 - 自愈边界，读取失败只跳过本次
+            return False
+
+    def _reassert_terminal_mouse_reporting(self) -> None:
+        """重｛Desensitized:764｝终端鼠标报告，并保持 alternate scroll 关闭。"""
+
+        try:
+            driver = self._driver
+            if driver.is_headless:
+                return
+            write = getattr(driver, "write", None)
+            if not callable(write):
+                return
+            write(_MOUSE_REPORTING_ENABLE_SEQUENCE)
+            flush = getattr(driver, "flush", None)
+            if callable(flush):
+                flush()
+        except Exception:  # noqa: BLE001 - Driver 退出瞬间不可写时忽略
+            return
+
     def _recover_stale_mouse_interaction(self) -> None:
         """周期核对控制台/终端输入模式；被系统重置时恢复。"""
 
         try:
-            driver = self._driver
-            if not driver.is_headless:
-                restore_input_mode = (
-                    _restore_windows_raw_input_mode_if_needed
-                    if isinstance(driver, OmniCrawlWindowsDriver)
-                    else _restore_windows_vt_input_mode_if_needed
-                )
-                if restore_input_mode():
-                    # 控制台模式被系统重置后不会再产生 Textual 可识别的
-                    # AppFocus，因此必须由周期看门狗主动恢复终端协议。
-                    self._reset_mouse_interaction_state(rearm_terminal_protocols=True)
+            if self._restore_terminal_input_mode():
+                # 控制台模式被系统重置后不会再产生 Textual 可识别的
+                # AppFocus，因此必须由周期看门狗主动恢复终端协议。
+                LOGGER.warning("控制台输入模式被外部重置，已恢复终端鼠标与键盘协议。")
+                self._reset_mouse_interaction_state(rearm_terminal_protocols=True)
         except Exception as exc:  # noqa: BLE001
             # 这是周期自愈边界，而不是业务主流程。锁屏恢复、窗口关闭或 Driver
             # 正在停止时，私有终端状态可能短暂不可读；异常若逃逸，Textual 会
@@ -838,6 +887,9 @@ class TerminalHandlingMixin:
             if callable(write):
                 write("\033[?1004h")
                 write(OmniCrawlWindowsDriver.KEYBOARD_PROTOCOL)
+                # Textual 的 _enable_mouse_support 只写它自己的鼠标模式；这里
+                # 补齐并关闭终端的「滚轮→上下键」回退（alternate scroll）。
+                write(_MOUSE_REPORTING_ENABLE_SEQUENCE)
             enable_bracketed_paste = getattr(driver, "_enable_bracketed_paste", None)
             if callable(enable_bracketed_paste):
                 enable_bracketed_paste()

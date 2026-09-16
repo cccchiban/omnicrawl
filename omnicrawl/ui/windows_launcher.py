@@ -18,11 +18,12 @@ def _powershell_terminal_cleanup() -> str:
     # 由仍然存活的父 PowerShell 执行。Windows PowerShell 5.1 不支持 `\e` 转义，
     # 使用 [char]27 兼容系统自带版本；短暂等待后清空已经排队的 VT 输入，
     # 避免鼠标移动序列被后续 Read-Host 当成普通文字回显。
+    # `?1007h` 还原应用运行期关闭的终端「滚轮→上下键」alternate scroll。
     return (
         "$esc=[char]27; "
         "[Console]::Write("
         '"${esc}[?1000l${esc}[?1002l${esc}[?1003l${esc}[?1015l${esc}[?1006l'
-        '${esc}[?1004l${esc}[?2004l${esc}[<u${esc}[?1049l${esc}[?25h"); '
+        '${esc}[?1004l${esc}[?2004l${esc}[?1007h${esc}[<u${esc}[?1049l${esc}[?25h"); '
         "[Console]::Out.Flush(); "
         "Start-Sleep -Milliseconds 50; "
         "try { $Host.UI.RawUI.FlushInputBuffer() } catch {}; "

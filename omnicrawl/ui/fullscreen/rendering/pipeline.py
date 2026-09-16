@@ -598,6 +598,10 @@ class RenderingMixin:
 
 
     def _handle_tool_result(self, tool_call: Any, result: Any) -> None:
+        # 工具子进程（cmd / python 等）会把共享控制台的鼠标输入位清掉，鼠标
+        # 记录随之消失；工具一结束就立刻核对恢复，不等周期看门狗。
+        self._restore_terminal_input_mode()
+        self._reassert_terminal_mouse_reporting()
         tool_name = str(getattr(tool_call, "name", ""))
         if tool_name == TODO_TOOL_NAME:
             self._tool_messages.pop(self._tool_call_key(tool_call), None)

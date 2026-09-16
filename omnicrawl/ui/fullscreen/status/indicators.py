@@ -42,7 +42,7 @@ class QueueDelete(Static):
         super().__init__(" [ DELETE ]", markup=False)
 
     def on_click(self, event: events.Click) -> None:
-        if event.chain != 1:
+        if event.chain != 1 or event.button != 1:
             return
         action = getattr(self.app, "_withdraw_pending_input", None)
         if action is not None:
@@ -63,7 +63,7 @@ class QueueToggle(Static):
         super().__init__(label, markup=False)
 
     def on_click(self, event: events.Click) -> None:
-        if event.chain != 1:
+        if event.chain != 1 or event.button != 1:
             return
         action = getattr(self.app, "_toggle_pending_queue_expanded", None)
         if action is not None:
