@@ -33,7 +33,6 @@ ARGUMENTS_PREVIEW_CHARS = 600
 MAX_PARALLEL_COMPRESSIONS = 4
 # 超出模型请求超时后的宽限，避免线程池回收阻塞本回合。
 COMPACTION_GRACE_SECONDS = 5.0
-RAW_OUTPUT_SEPARATOR = "—— 原始输出（未压缩）——"
 # 压缩作用域：只有这几类会产生大段原始输出的工具参与压缩，其余工具一律保留原文。
 COMPACTABLE_TOOLS = frozenset({"bash", "powershell", "git", "grep"})
 
@@ -198,13 +197,11 @@ def _compress_one(
         # 模型没有真正压缩（复述原文或更长）：不采纳，避免用更差的文本替换原文。
         LOGGER.info("工具输出压缩未缩小结果，保留原始输出：%s", tool_call.name)
         return None
-    raw_display = result.full_output or result.output
     return replace(
         result,
         output=outcome.text,
         full_output=_compacted_display(
             outcome.text,
-            raw_display,
             compressed_chars=len(outcome.text),
             raw_chars=len(result.output),
             model=outcome.model,
@@ -214,20 +211,14 @@ def _compress_one(
 
 def _compacted_display(
     compressed: str,
-    raw_display: str,
     *,
     compressed_chars: int,
     raw_chars: int,
     model: str,
 ) -> str:
-    """TUI/会话显示文本：压缩结果在前，原始输出随后，便于展开核对。"""
+    """TUI/会话显示文本：只呈现压缩结果，不再附原始输出。"""
 
-    return (
-        f"（已压缩：{raw_chars} → {compressed_chars} 字符，模型 {model}）\n"
-        f"{compressed}\n\n"
-        f"{RAW_OUTPUT_SEPARATOR}\n"
-        f"{raw_display}"
-    )
+    return f"（已压缩：{raw_chars} → {compressed_chars} 字符，模型 {model}）\n{compressed}"
 
 
 def _arguments_summary(arguments: object) -> str:
