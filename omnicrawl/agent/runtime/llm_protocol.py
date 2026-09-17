@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterable, Mapping
 from ..types import AgentModelReply, ToolCall, ToolDefinition
 from ...llm import OpenAIResponseLLM, VALID_REASONING_EFFORTS
 from ...llm.stream_registry import registered_stream_events, stream_owner_for
+from ...llm.stream_reader import interruptible_stream_events
 from .run_guard import (
     ConfiguredAutoRetryError,
     GuardRetryState,
@@ -555,10 +556,15 @@ class AgentLLMProtocol:
         cancellation_error: Exception | None = None
         finish_reason = "stop"
 
+        # owner 由调用线程解析：注册发生在读取线程里，那里取不到回合 scope。
+        stream_owner = stream_owner_for(cancel_check)
         try:
-            for event in registered_stream_events(
-                stream,
-                owner=stream_owner_for(cancel_check),
+            for event in interruptible_stream_events(
+                lambda _abandoned: registered_stream_events(
+                    stream,
+                    owner=stream_owner,
+                ),
+                cancel_check=cancel_check,
             ):
                 if cancel_check is not None:
                     try:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
@@ -34,6 +35,7 @@ from ..protocol import (
 )
 from ..registry import DiscoveryModel, DiscoveryResult, ModelDescriptor, ProviderProfile
 from ..stream_registry import registered_stream_events, stream_owner_for
+from ..stream_reader import interruptible_stream_events
 from ..usage import usage_from_openai_payload
 from .openai_common import (
     build_prompt_cache_key,
@@ -161,6 +163,26 @@ class OpenAIResponsesRuntime:
         *,
         cancel_check: Callable[[], None] | None = None,
     ) -> Iterator[ModelStreamEvent]:
+        """把建连与事件读取交给可放弃的读取线程（取消不必等网络返回）。"""
+
+        owner = stream_owner_for(cancel_check)
+        yield from interruptible_stream_events(
+            lambda abandoned: self._stream_turn_events(
+                request,
+                cancel_check,
+                owner,
+                abandoned,
+            ),
+            cancel_check=cancel_check,
+        )
+
+    def _stream_turn_events(
+        self,
+        request: ModelTurnRequest,
+        cancel_check: Callable[[], None] | None,
+        owner: Any,
+        abandoned: threading.Event,
+    ) -> Iterator[ModelStreamEvent]:
         if self._closed:
             raise ModelError(
                 code=ModelErrorCode.CONFIGURATION_ERROR,
@@ -180,6 +202,12 @@ class OpenAIResponsesRuntime:
             kwargs,
             input_items=input_items,
         )
+        if abandoned.is_set():
+            # 取消发生在建连期间：本轮已无人消费，立即关闭刚建立的响应。
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+            return
 
         call_buffers: dict[str, dict[str, str]] = {}
         emitted_call_ids: set[str] = set()
@@ -191,7 +219,7 @@ class OpenAIResponsesRuntime:
         try:
             for event in registered_stream_events(
                 stream,
-                owner=stream_owner_for(cancel_check),
+                owner=owner,
             ):
                 if cancel_check is not None:
                     cancel_check()

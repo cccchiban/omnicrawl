@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator
 
@@ -38,6 +39,7 @@ from ..stream_registry import (
     stream_owner_for,
     unregister_stream,
 )
+from ..stream_reader import interruptible_stream_events
 from ..usage import usage_from_openai_payload
 from .openai_common import (
     build_prompt_cache_key,
@@ -69,6 +71,31 @@ class OpenAIChatCompletionsRuntime:
         request: ModelTurnRequest,
         *,
         cancel_check: Callable[[], None] | None = None,
+    ) -> Iterator[ModelStreamEvent]:
+        """把建连与 SSE 读取交给可放弃的读取线程。
+
+        HTTP/2 下关闭单个 stream 不会中断阻塞在 socket 读上的迭代，直接在本线程
+        迭代会让取消后的回合一直卡到下一个数据包；读取线程 + 队列转发让取消在
+        一个轮询周期内返回。
+        """
+
+        owner = stream_owner_for(cancel_check)
+        yield from interruptible_stream_events(
+            lambda abandoned: self._stream_turn_events(
+                request,
+                cancel_check,
+                owner,
+                abandoned,
+            ),
+            cancel_check=cancel_check,
+        )
+
+    def _stream_turn_events(
+        self,
+        request: ModelTurnRequest,
+        cancel_check: Callable[[], None] | None,
+        owner: Any,
+        abandoned: threading.Event,
     ) -> Iterator[ModelStreamEvent]:
         if self._closed:
             raise ModelError(
@@ -155,11 +182,18 @@ class OpenAIChatCompletionsRuntime:
                     protocol=PROTOCOL_OPENAI_CHAT_COMPLETIONS,
                 ) from exc
 
+        if abandoned.is_set():
+            # 取消发生在建连期间：本轮已无人消费，立即关闭刚建立的响应。
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+            return
+
         buffers: dict[int, dict[str, Any]] = {}
         started: set[int] = set()
         finish_reason = "stop"
         try:
-            for event in _iter_stream_events(stream, cancel_check):
+            for event in _iter_stream_events(stream, cancel_check, owner):
                 if cancel_check is not None:
                     cancel_check()
                 usage = usage_from_openai_payload(event)
@@ -451,6 +485,7 @@ def _to_openai_messages(
 def _iter_stream_events(
     stream: Any,
     cancel_check: Callable[[], None] | None,
+    owner: Any = None,
 ) -> Iterator[Any]:
     """迭代模型流事件，优先走跳过 pydantic 建模的原始 SSE 路径。
 
@@ -463,17 +498,19 @@ def _iter_stream_events(
 
     ``Stream._iter_events`` 是 SDK 私有 API：缺失时自动回退到 SDK 自身迭代路径，
     只损失性能、不影响正确性。
+
+    ``owner`` 由调用线程解析后传入：注册发生在读取线程里，那里取不到回合的
+    stream scope；未显式传入时按调用线程上下文回退。
     """
 
+    if owner is None:
+        owner = stream_owner_for(cancel_check)
     if not _raw_sse_available(stream):
-        yield from registered_stream_events(
-            stream,
-            owner=stream_owner_for(cancel_check),
-        )
+        yield from registered_stream_events(stream, owner=owner)
         return
     # 注册真实 Stream（而非包装后的迭代器）：取消时 close_active_streams 要关闭的
     # 是底层 HTTP 连接。
-    register_stream(stream, owner=stream_owner_for(cancel_check))
+    register_stream(stream, owner=owner)
     try:
         yield from _iter_raw_sse_events(stream)
     finally:
