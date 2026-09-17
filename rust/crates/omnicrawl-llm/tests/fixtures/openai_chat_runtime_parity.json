@@ -1,0 +1,680 @@
+{
+  "source": [
+    "omnicrawl/llm/providers/openai_chat.py",
+    "omnicrawl/net/http_client.py"
+  ],
+  "cases": [
+    {
+      "name": "text_reasoning_usage",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 200,
+          "body": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先想一下\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":4},\"completion_tokens_details\":{\"reasoning_tokens\":2}}}\n\ndata: [DONE]\n\n"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "kind": "text",
+            "text": "你"
+          },
+          {
+            "kind": "text",
+            "text": "好"
+          },
+          {
+            "kind": "reasoning",
+            "text": "先想一下"
+          },
+          {
+            "kind": "usage",
+            "input_tokens": 11,
+            "output_tokens": 3,
+            "cached_input_tokens": 4,
+            "reasoning_tokens": 2
+          },
+          {
+            "kind": "finished",
+            "finish_reason": "stop"
+          }
+        ],
+        "error": null,
+        "retryable": null,
+        "reply": {
+          "content": "你好",
+          "reasoning": "先想一下",
+          "finish_reason": "stop",
+          "content_streamed": true,
+          "usage": {
+            "input_tokens": 11,
+            "output_tokens": 3,
+            "cached_input_tokens": 4,
+            "reasoning_tokens": 2
+          },
+          "tool_calls": []
+        },
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "tool_call_stream",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 200,
+          "body": "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"read_file\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\"\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"a.py\\\"}\"}}]}}]}\n\ndata: [DONE]\n\n"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "kind": "tool_started",
+            "call_id": "call_a",
+            "name": "read_file"
+          },
+          {
+            "kind": "tool_arguments",
+            "call_id": "call_a",
+            "delta": "{\"path\""
+          },
+          {
+            "kind": "tool_arguments",
+            "call_id": "call_a",
+            "delta": ":\"a.py\"}"
+          },
+          {
+            "kind": "tool_completed",
+            "call_id": "call_a",
+            "name": "read_file",
+            "arguments": {
+              "path": "a.py"
+            }
+          },
+          {
+            "kind": "finished",
+            "finish_reason": "stop"
+          }
+        ],
+        "error": null,
+        "retryable": null,
+        "reply": {
+          "content": "",
+          "reasoning": "",
+          "finish_reason": "stop",
+          "content_streamed": false,
+          "usage": null,
+          "tool_calls": [
+            {
+              "call_id": "call_a",
+              "name": "read_file",
+              "arguments": {
+                "path": "a.py"
+              }
+            }
+          ]
+        },
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "truncated_arguments",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 200,
+          "body": "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"function\":{\"name\":\"read_file\"}}]}}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"path\\\"\"}}]}}]}\n\ndata: [DONE]\n\n"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "kind": "tool_started",
+            "call_id": "call_a",
+            "name": "read_file"
+          },
+          {
+            "kind": "tool_arguments",
+            "call_id": "call_a",
+            "delta": "{\"path\""
+          }
+        ],
+        "error": "Chat Completions 流在工具调用参数完整到达前结束，疑似连接被网关截断。",
+        "retryable": true,
+        "reply": null,
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "truncated_name",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 200,
+          "body": "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\"}]}}]}\n\ndata: [DONE]\n\n"
+        }
+      ],
+      "expected": {
+        "events": [],
+        "error": "Chat Completions 流在工具调用名称完整到达前结束，疑似连接被网关截断。",
+        "retryable": true,
+        "reply": null,
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty_stream",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 200,
+          "body": "data: [DONE]\n\n"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "kind": "finished",
+            "finish_reason": "stop"
+          }
+        ],
+        "error": null,
+        "retryable": null,
+        "reply": {
+          "content": "",
+          "reasoning": "",
+          "finish_reason": "stop",
+          "content_streamed": false,
+          "usage": null,
+          "tool_calls": []
+        },
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "stream_error_payload",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 200,
+          "body": "data: {\"choices\":[{\"delta\":{\"content\":\"半\"}}]}\n\ndata: {\"error\":{\"message\":\"boom\"}}\n\n"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "kind": "text",
+            "text": "半"
+          }
+        ],
+        "error": "Agent 流式回复中断：模型请求失败，但未能识别具体原因。请检查网络、模型服务地址和本地配置。错误类型：APIError。",
+        "retryable": false,
+        "reply": null,
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "http_401",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 401,
+          "body": "{\"error\":{\"message\":\"bad key\"}}"
+        }
+      ],
+      "expected": {
+        "events": [],
+        "error": "Agent 请求失败：模型服务鉴权失败（HTTP 401）。请检查 API Key 是否正确、是否过期，以及当前网关是否接受该 Key。",
+        "retryable": false,
+        "reply": null,
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "http_503",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "replies": [
+        {
+          "status": 503,
+          "body": "{\"error\":{\"message\":\"upstream down\"}}"
+        }
+      ],
+      "expected": {
+        "events": [],
+        "error": "Agent 请求失败：模型服务网关暂时不可用（HTTP 503）。请稍后重试；如果持续出现，请检查网关或上游模型服务状态。",
+        "retryable": true,
+        "reply": null,
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          },
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          },
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "qwen3.6-plus",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "prompt_cache_rejected",
+      "input": {
+        "model": "gpt-5.2",
+        "system_prompt": "",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 30.0,
+        "prompt_cache_capable": true,
+        "prompt_cache_identity": {
+          "profile_id": "p1",
+          "provider": "openai"
+        }
+      },
+      "replies": [
+        {
+          "status": 400,
+          "body": "{\"error\":{\"message\":\"Unrecognized request argument supplied: prompt_cache_key\"}}"
+        },
+        {
+          "status": 200,
+          "body": "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先想一下\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3,\"prompt_tokens_details\":{\"cached_tokens\":4},\"completion_tokens_details\":{\"reasoning_tokens\":2}}}\n\ndata: [DONE]\n\n"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "kind": "warning",
+            "code": "prompt_cache_unsupported",
+            "message": "当前网关不支持 prompt_cache_key，已自动移除后重试。"
+          },
+          {
+            "kind": "text",
+            "text": "你"
+          },
+          {
+            "kind": "text",
+            "text": "好"
+          },
+          {
+            "kind": "reasoning",
+            "text": "先想一下"
+          },
+          {
+            "kind": "usage",
+            "input_tokens": 11,
+            "output_tokens": 3,
+            "cached_input_tokens": 4,
+            "reasoning_tokens": 2
+          },
+          {
+            "kind": "finished",
+            "finish_reason": "stop"
+          }
+        ],
+        "error": null,
+        "retryable": null,
+        "reply": {
+          "content": "你好",
+          "reasoning": "先想一下",
+          "finish_reason": "stop",
+          "content_streamed": true,
+          "usage": {
+            "input_tokens": 11,
+            "output_tokens": 3,
+            "cached_input_tokens": 4,
+            "reasoning_tokens": 2
+          },
+          "tool_calls": []
+        },
+        "requests": [
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "gpt-5.2",
+            "prompt_cache_key": "local-agent-bcb44e89fbdf260edf0ec62bce0eb39d",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          },
+          {
+            "messages": [
+              {
+                "role": "user",
+                "content": "你好"
+              }
+            ],
+            "model": "gpt-5.2",
+            "stream": true,
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

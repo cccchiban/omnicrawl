@@ -4,16 +4,16 @@
 //!（messages 转换、工具声明、生成选项、prompt_cache_key）、provider_options 校验、
 //! GPT 系列判定、prompt_cache_key 计算、工具调用参数串的书写形式、浮点写法。
 
+mod common;
+
 use std::collections::BTreeMap;
 
+use common::CaseInput;
 use omnicrawl_llm::{
     build_chat_request, build_prompt_cache_key, is_openai_gpt_model, sanitize_provider_options,
-    to_openai_messages, ChatRequest, ChatRequestInput, RequestError,
+    to_openai_messages, ChatRequest, RequestError,
 };
-use omnicrawl_protocol::{
-    ConversationMessage, GenerationOptions, MessageBlock, Role, ToolCallBlock, ToolSpec,
-};
-use serde::Deserialize;
+use omnicrawl_protocol::{ConversationMessage, MessageBlock, Role, ToolCallBlock};
 use serde_json::{json, Map, Value};
 
 const FIXTURE: &str = include_str!("fixtures/openai_chat_request_parity.json");
@@ -22,35 +22,8 @@ fn fixture() -> Value {
     serde_json::from_str(FIXTURE).expect("fixture 不是合法 JSON")
 }
 
-/// 与 `ChatRequestInput` 同形；借由它把 fixture 里的输入反序列化成内核类型。
-#[derive(Debug, Deserialize)]
-struct CaseInput {
-    model: String,
-    system_prompt: String,
-    #[serde(default)]
-    messages: Vec<ConversationMessage>,
-    #[serde(default)]
-    tools: Vec<ToolSpec>,
-    #[serde(default)]
-    options: GenerationOptions,
-    profile_request_timeout_seconds: f64,
-    #[serde(default)]
-    prompt_cache_capable: bool,
-    #[serde(default)]
-    prompt_cache_identity: BTreeMap<String, String>,
-}
-
 fn build(input: &CaseInput) -> Result<ChatRequest, RequestError> {
-    build_chat_request(&ChatRequestInput {
-        model: &input.model,
-        system_prompt: &input.system_prompt,
-        messages: &input.messages,
-        tools: &input.tools,
-        options: &input.options,
-        profile_request_timeout_seconds: input.profile_request_timeout_seconds,
-        prompt_cache_capable: input.prompt_cache_capable,
-        prompt_cache_identity: &input.prompt_cache_identity,
-    })
+    build_chat_request(&input.chat_input())
 }
 
 /// 把一条 assistant 工具调用消息交给 messages 转换，取回参数串。
@@ -94,6 +67,21 @@ fn canonicalize_arguments(body: &Value) -> Value {
     body
 }
 
+/// Python 的请求参数用 SDK 的 `extra_body` 传扩展字段，SDK 会把它们并进请求体顶层；
+/// 内核直接发 HTTP，因此比对前把期望值摊平成线上形态（与内核输出同形）。
+fn flatten_extra_body(value: &Value) -> Value {
+    let mut value = value.clone();
+    let Some(body) = value.as_object_mut() else {
+        return value;
+    };
+    if let Some(Value::Object(extra)) = body.remove("extra_body") {
+        for (key, item) in extra {
+            body.insert(key, item);
+        }
+    }
+    value
+}
+
 #[test]
 fn chat_request_matches_python() {
     for case in fixture()["requests"].as_array().expect("缺少 requests") {
@@ -109,7 +97,7 @@ fn chat_request_matches_python() {
                 );
                 assert_eq!(
                     canonicalize_arguments(&request.body),
-                    canonicalize_arguments(&case["expected"]["body"]),
+                    canonicalize_arguments(&flatten_extra_body(&case["expected"]["body"])),
                     "用例 {name} 请求体不一致"
                 );
                 assert_eq!(

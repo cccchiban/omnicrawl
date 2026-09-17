@@ -12,7 +12,7 @@ pub mod message;
 
 pub use aggregate::aggregate_stream_events;
 pub use codec::{
-    blocks_from_openai_content_parts, conversation_from_openai_messages,
+    blocks_from_openai_content_parts, conversation_from_openai_messages, parse_arguments_object,
     tool_spec_from_openai_item, tools_from_conversation_messages,
 };
 pub use event::{

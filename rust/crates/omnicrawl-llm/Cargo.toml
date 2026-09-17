@@ -1,6 +1,6 @@
 [package]
 name = "omnicrawl-llm"
-description = "Provider 流解析层（Python 侧 omnicrawl/llm/providers/openai_chat.py 的 Rust 内核移植）"
+description = "Provider 运行时（Python 侧 omnicrawl/llm/ 的 Rust 内核移植）：请求构建、流解析、用量归一化与 HTTP 传输"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,3 +11,4 @@ omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+ureq = { workspace = true }

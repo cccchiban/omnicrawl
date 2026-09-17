@@ -324,6 +324,8 @@ pub fn build_chat_request(input: &ChatRequestInput<'_>) -> Result<ChatRequest, R
         body.insert("temperature".to_string(), json!(temperature));
     }
 
+    // Python 是把这些扩展键放进 SDK 的 `extra_body` 传的，SDK 再把它们并进请求体的顶层；
+    // 内核直接发 HTTP，所以这里就按线上形态摊平，绝不能出现 `extra_body` 这个非标准字段。
     let mut extra_body = sanitize_provider_options(&input.options.provider_options)?;
     let reasoning_effort = input.options.reasoning_effort.as_str();
     if !reasoning_effort.is_empty() && !matches!(reasoning_effort, "none" | "disabled") {
@@ -336,8 +338,8 @@ pub fn build_chat_request(input: &ChatRequestInput<'_>) -> Result<ChatRequest, R
     } else if !extra_body.contains_key("thinking") {
         extra_body.insert("thinking".to_string(), json!({"type": "disabled"}));
     }
-    if !extra_body.is_empty() {
-        body.insert("extra_body".to_string(), Value::Object(extra_body));
+    for (key, value) in extra_body {
+        body.insert(key, value);
     }
 
     let cache_key = build_prompt_cache_key(input.prompt_cache_identity, input.model);

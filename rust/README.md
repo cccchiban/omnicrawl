@@ -30,14 +30,17 @@ rust/
 │   ├── tests/turn_loop_parity.rs           # 与 Python 循环的对照测试
 │   ├── tests/fixtures/turn_loop_parity.json# 由 Python 侧生成的对照数据集
 │   └── README.md                           # 状态转移清单、边界与已知差异
-├── crates/omnicrawl-llm/                   # Provider 运行时 crate
+├── crates/omnicrawl-llm/                   # Provider 运行时 crate（含 HTTP 传输）
 │   ├── src/openai_chat.rs                  # 分片归并、参数完整性、首选项
-│   ├── src/sse.rs                          # SSE 负载解码与消费
+│   ├── src/sse.rs                          # SSE 负载解码与逐条语义
 │   ├── src/request.rs                      # 会话消息 → 请求体、工具声明、provider_options、prompt_cache_key
 │   ├── src/usage.rs                        # Responses / Chat Completions 负载 → TokenUsage
-│   ├── tests/stream_parity.rs              # 与 Python 实现的对照测试
-│   ├── tests/request_parity.rs             # 请求体组装的对照测试
-│   ├── tests/usage_parity.rs               # 用量归一化的对照测试
+│   ├── src/errors.rs                       # 运行时错误面与 HTTP 状态码阶梯文案
+│   ├── src/transport.rs                    # 阻塞式 HTTP 往返（ureq + rustls）与超时映射
+│   ├── src/runtime.rs                      # 一次回合：请求 → 流事件 → 工具收尾 → ModelReply
+│   ├── tests/*_parity.rs                   # 与 Python 实现的对照测试（流/请求/用量/端到端）
+│   ├── tests/runtime_loopback.rs           # 本机回环服务端上的内核行为测试
+│   ├── tests/common/mod.rs                 # 测试脚手架（fixture 输入、回环服务端、事件接收端）
 │   └── tests/fixtures/openai_chat_*_parity.json
 ├── crates/omnicrawl-ipc/                   # 宿主桥接（协议 v1）
 │   ├── src/frame.rs                        # NDJSON 帧、形状校验、错误码
@@ -57,6 +60,7 @@ rust/
     ├── gen_llm_stream_fixture.py           # Provider 流解析对照数据集生成脚本
     ├── gen_llm_request_fixture.py          # 请求构建对照数据集生成脚本
     ├── gen_llm_usage_fixture.py            # 用量归一化对照数据集生成脚本
+    ├── gen_llm_runtime_fixture.py          # 端到端回合对照数据集生成脚本（内建回环服务端）
     └── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
 ```
 
@@ -141,6 +145,17 @@ cd rust && cargo test -p omnicrawl-llm        # 同输入跑 Rust 实现逐字�
 `timeout` 两部分记录，因此消息转换、动态工具去重、生成选项合并、prompt_cache_key 都是照真跑结果对照；
 用量组（`openai_chat_usage_parity.json`）覆盖输入/输出字段名、缓存命中写法与推理 token 的三种来源。
 
+端到端回合同理：
+
+```bash
+python rust/tools/gen_llm_runtime_fixture.py  # 内建回环服务端，喂真 runtime 固定 SSE
+cd rust && cargo test -p omnicrawl-llm --test runtime_parity
+```
+
+`openai_chat_runtime_parity.json` 记录 Python 真实现收到的事件序列、它实际发出的**线上请求体**与失败文案；
+Rust 侧用同一份 SSE 重放后逐字段比对事件、请求体、归并结果与错误文案。这一组把「SDK 参数」和「线上请求」
+的差别逼了出来（`extra_body` 必须摊平进请求体顶层，否则会给上游发一个非标准字段）。
+
 宿主桥接同理：
 
 ```bash
@@ -161,6 +176,8 @@ cd rust && cargo test -p omnicrawl-ipc        # 校验回调↔方法一一对�
 5. 工具调用参数串的键序不同（Python 保留 dict 插入序，Rust 的 `serde_json::Map` 是字典序），
    浮点写法也不同（`1e+20` vs `1e20`）：语义一致，字节不一致，逐项说明见
    `crates/omnicrawl-llm/README.md` 的「已知差异」。
+6. 重试位置不同：Python 的 SDK 自己会重试 5xx/超时（内置 2 次），内核不内置这一层，
+   只把 `retryable` 交给调用方；`prompt_cache_key` 不受支持时的摘字段重发在内核内部完成。
 
 ## 内核进程：`omnicrawl-cli`
 
@@ -180,13 +197,12 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 插件侧按用户决策改用 Cordis 本体，宿主骨架在 `packages/plugin-host`（不再自研插件框架）；npm 分发骨架在
 `packages/cli`（启动器 + 三个平台分包，发布产物由 `scripts/prepare.mjs` 暂存到 `dist/npm`）。继续推进：
 `packages/plugin-host` 已接上协议 v1（`tool.batch` 的宿主对端、钩子挂到回合事件）；`omnicrawl-llm` 的
-请求构建已落地，接下来是 HTTP 传输与重试（凑齐内核自带 provider runtime），再把 Python 编排壳
+请求构建、传输与回合运行已落地，接下来是把 `omnicrawl-cli` 的回合切到内核自带 runtime，再把 Python 编排壳
 （会话落盘、压缩触发）收到内核侧。
 分发路线见知识库「分发路线与内核宿主边界决策」：主程序最终走 npm，内核与宿主的边界以
 「进程 + NDJSON JSON-RPC / 平台二进制」为一等公民，PyO3 内联不再是路线图项。
 
-`omnicrawl-llm` 已落地流解析、请求构建与用量归一化三片（参数完整性、分片归并、SSE 解码与消费、
-`messages`/工具声明/生成选项/`prompt_cache_key` 组装、`TokenUsage` 归一化），三者各有 parity 数据集；
-**待迁**：HTTP 传输与重试（内核自带 provider runtime 的最后一片），随后 `model.reply` 的宿主代答退役。
-`omnicrawl/agent/controllers/turn/loop.py` 的编排壳（插件钩子、会话落盘、压缩触发、run_guard 续跑、
-上下文溢出恢复）仍留在 Python，待 cli 入口阶段再收。
+`omnicrawl-llm` 已落地流解析、请求构建、用量归一化、HTTP 传输与端到端回合（`OpenAiChatRuntime::run_turn`），
+四类断言各有 parity 数据集，**内核已能自己独立跑完一次模型请求**。接下来是把 `omnicrawl-cli` 的回合循环从
+「`model.reply` 交宿主代答」切到内核自带 runtime，让该协议方法退役；随后把 Python 编排壳
+（插件钩子、会话落盘、压缩触发、run_guard 续跑、上下文溢出恢复）收到内核侧——那部分目前仍留在 Python。

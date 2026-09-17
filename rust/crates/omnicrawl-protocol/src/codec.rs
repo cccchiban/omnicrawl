@@ -191,7 +191,7 @@ pub fn blocks_from_openai_content_parts(parts: &[Value]) -> Vec<MessageBlock> {
 }
 
 /// Python 侧只接受能解析成对象的 JSON 参数，其余（数组、标量、语法错误）都退化为空对象。
-pub(crate) fn parse_arguments_object(raw: &str) -> Map<String, Value> {
+pub fn parse_arguments_object(raw: &str) -> Map<String, Value> {
     if raw.trim().is_empty() {
         return Map::new();
     }
