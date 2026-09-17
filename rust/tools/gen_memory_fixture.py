@@ -32,7 +32,7 @@ if not Path(M.__file__).resolve().is_relative_to(ROOT):
 
 TIMESTAMP = datetime(2026, 9, 18, 3, 5, 29, 123456, tzinfo=timezone.utc)
 TIMESTAMP_UTC_TEXT = TIMESTAMP.astimezone(timezone.utc).isoformat(timespec="seconds")
-TIMESTAMP_UTC_SLOT = "｛Desensitized:122｝"
+TIMESTAMP_UTC_SLOT = "<timestamp>"
 
 
 def attempt(func, value):

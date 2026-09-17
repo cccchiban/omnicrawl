@@ -3,7 +3,7 @@
     "omnicrawl/state/memory.py"
   ],
   "timestamp": "2026-09-18T03:05:29+00:00",
-  "timestamp_slot": "｛Desensitized:122｝",
+  "timestamp_slot": "<timestamp>",
   "directories": [
     {
       "input": "code-knowledge/general",
@@ -166,7 +166,7 @@
         "code-knowledge/general"
       ],
       "content": "正文第一行\n正文第二行",
-      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n  - \"code-knowledge/general\"\n---\n\n正文第一行\n正文第二行\n"
+      "expected": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"code-knowledge/general\"\n---\n\n正文第一行\n正文第二行\n"
     },
     {
       "name": "with_quotes",
@@ -175,14 +175,14 @@
         "a/b"
       ],
       "content": "正文里带 \"引号\" 与 \\ 反斜杠",
-      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n  - \"a/b\"\n---\n\n正文里带 \"引号\" 与 \\ 反斜杠\n"
+      "expected": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"a/b\"\n---\n\n正文里带 \"引号\" 与 \\ 反斜杠\n"
     },
     {
       "name": "no_related",
       "timestamp": "2026-09-18T03:05:29+00:00",
       "related_directories": [],
       "content": "无关联目录",
-      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n---\n\n无关联目录\n"
+      "expected": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n---\n\n无关联目录\n"
     },
     {
       "name": "trailing_blank",
@@ -191,7 +191,7 @@
         "x"
       ],
       "content": "正文末尾有空行\n\n",
-      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n  - \"x\"\n---\n\n正文末尾有空行\n"
+      "expected": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"x\"\n---\n\n正文末尾有空行\n"
     }
   ],
   "bodies": [
