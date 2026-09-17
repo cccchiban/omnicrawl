@@ -11,6 +11,7 @@ pub mod history;
 pub mod index;
 pub mod locking;
 pub mod memory;
+pub mod memory_ranking;
 pub mod naming;
 pub mod projection;
 pub mod store;
@@ -31,6 +32,11 @@ pub use memory::{
     body_of, dedupe_directories, dedupe_strings, format_memory_datetime, format_memory_markdown,
     normalize_content, normalize_directory, parse_memory_datetime, read_markdown_body,
     MemoryIndexEntry,
+};
+pub use memory_ranking::{
+    classify_storage_directory, directories_overlap, directory_match_score, extract_search_tokens,
+    local_now, make_summary, merge_memory_content, normalize_for_compare, score_related_entry,
+    score_search_entry, DEFAULT_STORAGE_DIRECTORIES,
 };
 pub use naming::{
     clean_title, event_type_from_json, new_session_id, normalize_event_type,

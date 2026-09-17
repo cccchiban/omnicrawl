@@ -1,0 +1,956 @@
+{
+  "source": [
+    "omnicrawl/state/memory_ranking.py"
+  ],
+  "now": "2026-09-18T03:05:29.123456+00:00",
+  "classify": [
+    {
+      "input": "用户偏好是回答要简短",
+      "expected": "user-preferences/communication-style"
+    },
+    {
+      "input": "这个仓库的架构约束是分层",
+      "expected": "project-context/general"
+    },
+    {
+      "input": "实现了一个函数用来解析配置",
+      "expected": "project-context/general"
+    },
+    {
+      "input": "踩坑：这个 bug 是编码问题",
+      "expected": "error-lessons/general"
+    },
+    {
+      "input": "外部服务的 token 放在环境变量里",
+      "expected": "external-context/general"
+    },
+    {
+      "input": "本次任务完成了三件事",
+      "expected": "task-history/general"
+    },
+    {
+      "input": "plan 里写了跟进事项",
+      "expected": "task-history/general"
+    },
+    {
+      "input": "毫不相关的普通句子",
+      "expected": "task-history/general"
+    },
+    {
+      "input": "PREFER 大写的偏好关键词",
+      "expected": "user-preferences/communication-style"
+    },
+    {
+      "input": "",
+      "expected": "task-history/general"
+    }
+  ],
+  "summaries": [
+    {
+      "input": "第一句。第二句。",
+      "expected": "第一句。"
+    },
+    {
+      "input": "```python\nprint('x')\n```\n正文在这里。",
+      "expected": "正文在这里。"
+    },
+    {
+      "input": "- 列表项一\n- 列表项二\n# 标题\n> 引用\n正文",
+      "expected": "列表项一 列表项二 标题 引用 正文"
+    },
+    {
+      "input": "很长的正文很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长",
+      "expected": "很长的正文很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长很长…"
+    },
+    {
+      "input": "   \n\n   ",
+      "expected": ""
+    },
+    {
+      "input": "没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句",
+      "expected": "没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整句没有句末标记也没有换行的一整…"
+    },
+    {
+      "input": "短句！后面还有内容。",
+      "expected": "短句！"
+    },
+    {
+      "input": "只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容只有一个分号；这是后面的内容",
+      "expected": "只有一个分号；"
+    },
+    {
+      "input": "```未闭合的围栏\n正文",
+      "expected": "```未闭合的围栏 正文"
+    },
+    {
+      "input": "前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前。尾巴",
+      "expected": "前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前前。"
+    }
+  ],
+  "merges": [
+    {
+      "old": "旧内容。",
+      "new": "新内容。",
+      "expected": "旧内容。\n\n补充：新内容。"
+    },
+    {
+      "old": "",
+      "new": "新内容。",
+      "expected": "新内容。"
+    },
+    {
+      "old": "旧内容包含关键词。",
+      "new": "内容包含关键词",
+      "expected": "旧内容包含关键词。"
+    },
+    {
+      "old": "旧内容。",
+      "new": "完全不同的新内容。",
+      "expected": "旧内容。\n\n补充：完全不同的新内容。"
+    },
+    {
+      "old": "旧内容。",
+      "new": "  旧内容。  ",
+      "expected": "旧内容。"
+    },
+    {
+      "old": "旧内容。",
+      "new": "",
+      "expected": "旧内容。"
+    }
+  ],
+  "directory_scores": [
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directory": "task-history/general",
+      "expected": 3.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directory": "task-history",
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directory": "task-history/general/deep",
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directory": "project-context/general",
+      "expected": 1.5
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directory": "user-preferences/communication-style",
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directory": "user-preferences",
+      "expected": 2.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directory": "code-knowledge/general",
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directory": "unrelated/dir",
+      "expected": 0.0
+    }
+  ],
+  "overlaps": [
+    {
+      "left": [
+        "a/b",
+        "c"
+      ],
+      "right": [
+        "c/d"
+      ],
+      "expected": true
+    },
+    {
+      "left": [
+        "a/b"
+      ],
+      "right": [
+        "a/b/c"
+      ],
+      "expected": true
+    },
+    {
+      "left": [
+        "a/b"
+      ],
+      "right": [
+        "x/y"
+      ],
+      "expected": false
+    },
+    {
+      "left": [],
+      "right": [
+        "x"
+      ],
+      "expected": false
+    },
+    {
+      "left": [
+        "a/b"
+      ],
+      "right": [],
+      "expected": false
+    }
+  ],
+  "tokens": [
+    {
+      "input": "Hello_World 版本2",
+      "expected": [
+        "hello_world",
+        "版本"
+      ]
+    },
+    {
+      "input": "中文分词测试一下",
+      "expected": [
+        "一下",
+        "中文",
+        "中文分",
+        "中文分词测试一下",
+        "分词",
+        "分词测",
+        "文分",
+        "文分词",
+        "测试",
+        "测试一",
+        "词测",
+        "词测试",
+        "试一",
+        "试一下"
+      ]
+    },
+    {
+      "input": "混合 mixed 内容 abc",
+      "expected": [
+        "abc",
+        "mixed",
+        "内容",
+        "混合"
+      ]
+    },
+    {
+      "input": "a b c",
+      "expected": []
+    },
+    {
+      "input": "",
+      "expected": []
+    },
+    {
+      "input": "超长的中文片段需要切成若干元组",
+      "expected": [
+        "中文",
+        "中文片",
+        "元组",
+        "切成",
+        "切成若",
+        "干元",
+        "干元组",
+        "成若",
+        "成若干",
+        "文片",
+        "文片段",
+        "段需",
+        "段需要",
+        "片段",
+        "片段需",
+        "的中",
+        "的中文",
+        "若干",
+        "若干元",
+        "要切",
+        "要切成",
+        "超长",
+        "超长的",
+        "长的",
+        "长的中",
+        "需要",
+        "需要切"
+      ]
+    }
+  ],
+  "normalize": [
+    {
+      "input": "Hello, World!",
+      "expected": "helloworld"
+    },
+    {
+      "input": "中文，标点。",
+      "expected": "中文标点"
+    },
+    {
+      "input": "a_b-c",
+      "expected": "abc"
+    },
+    {
+      "input": "   ",
+      "expected": ""
+    },
+    {
+      "input": "TASK-history",
+      "expected": "taskhistory"
+    }
+  ],
+  "search_scores": [
+    {
+      "query": "任务",
+      "candidate_directories": [],
+      "entries": [
+        15.25,
+        0.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "任务",
+      "candidate_directories": [
+        "task-history/general"
+      ],
+      "entries": [
+        24.25,
+        0.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "任务",
+      "candidate_directories": [
+        "code-knowledge"
+      ],
+      "entries": [
+        15.25,
+        6.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "配置解析",
+      "candidate_directories": [],
+      "entries": [
+        0.25,
+        3.433333333333333,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "配置解析",
+      "candidate_directories": [
+        "task-history/general"
+      ],
+      "entries": [
+        9.25,
+        3.433333333333333,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "配置解析",
+      "candidate_directories": [
+        "code-knowledge"
+      ],
+      "entries": [
+        0.25,
+        9.433333333333332,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "",
+      "candidate_directories": [],
+      "entries": [
+        0.25,
+        0.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "",
+      "candidate_directories": [
+        "task-history/general"
+      ],
+      "entries": [
+        9.25,
+        0.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "",
+      "candidate_directories": [
+        "code-knowledge"
+      ],
+      "entries": [
+        0.25,
+        6.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "TASK",
+      "candidate_directories": [],
+      "entries": [
+        15.25,
+        0.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "TASK",
+      "candidate_directories": [
+        "task-history/general"
+      ],
+      "entries": [
+        24.25,
+        0.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "TASK",
+      "candidate_directories": [
+        "code-knowledge"
+      ],
+      "entries": [
+        15.25,
+        6.1,
+        0.45000000000000007
+      ]
+    },
+    {
+      "query": "沟通偏好",
+      "candidate_directories": [],
+      "entries": [
+        0.25,
+        0.1,
+        15.45
+      ]
+    },
+    {
+      "query": "沟通偏好",
+      "candidate_directories": [
+        "task-history/general"
+      ],
+      "entries": [
+        9.25,
+        0.1,
+        15.45
+      ]
+    },
+    {
+      "query": "沟通偏好",
+      "candidate_directories": [
+        "code-knowledge"
+      ],
+      "entries": [
+        0.25,
+        6.1,
+        15.45
+      ]
+    }
+  ],
+  "related_scores": [
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 0,
+      "expected": 3.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 1,
+      "expected": 1.5
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 2,
+      "expected": 1.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 0,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 1,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 2,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [],
+      "depth": 0,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [],
+      "depth": 1,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030529",
+        "storage_directory": "task-history/general",
+        "related_directories": [
+          "task-history/general",
+          "project-context/general"
+        ],
+        "summary": "任务完成情况与待办",
+        "touch_count": 3
+      },
+      "directories": [],
+      "depth": 2,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 0,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 1,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 2,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 0,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 1,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 2,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [],
+      "depth": 0,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [],
+      "depth": 1,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030530",
+        "storage_directory": "code-knowledge/general",
+        "related_directories": [
+          "code-knowledge/general"
+        ],
+        "summary": "解析配置的实现",
+        "touch_count": 0
+      },
+      "directories": [],
+      "depth": 2,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 0,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 1,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [
+        "task-history/general"
+      ],
+      "depth": 2,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 0,
+      "expected": 1.5
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 1,
+      "expected": 0.75
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [
+        "user-preferences/communication-style"
+      ],
+      "depth": 2,
+      "expected": 0.5
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [],
+      "depth": 0,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [],
+      "depth": 1,
+      "expected": 0.0
+    },
+    {
+      "entry": {
+        "id": "20260918-030531",
+        "storage_directory": "user-preferences/general",
+        "related_directories": [
+          "user-preferences/communication-style"
+        ],
+        "summary": "沟通偏好",
+        "touch_count": 7
+      },
+      "directories": [],
+      "depth": 2,
+      "expected": 0.0
+    }
+  ]
+}
