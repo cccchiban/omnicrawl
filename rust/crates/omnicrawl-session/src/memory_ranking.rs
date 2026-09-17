@@ -3,11 +3,10 @@
 //! 语义基准是 Python `omnicrawl/state/memory_ranking.py`。`MemoryStore` 负责 Markdown 与
 //! index 的持久化，并在需要时调用这里的选择策略；本模块不反向依赖存储层。
 //!
-//! 未搬：`text_similarity`（Python 用 `difflib.SequenceMatcher.ratio()` 的
-//! Ratcliff-Obershelp 匹配）。它是「近似重复记忆合并」的判定依据，必须逐位一致，
-//! 留作单独一片照搬算法并对照验证，这里不提供近似替代。
+//! 这里包含 `text_similarity`：Python 用 `difflib.SequenceMatcher.ratio()` 的
+//! Ratcliff-Obershelp 匹配判断近似重复，本模块按同一算法（含 autojunk 规则）逐位复刻。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use chrono::{DateTime, FixedOffset, Local};
 
@@ -284,6 +283,127 @@ pub fn score_related_entry(
         return 0.0;
     }
     best / (depth as f64 + 1.0)
+}
+
+/// 两条文本的相似度：对齐 Python `difflib.SequenceMatcher(a=左, b=右).ratio()`。
+///
+/// 两侧先做比较用归一化；任一侧为空时 Python 直接返回 0.0。
+pub fn text_similarity(left: &str, right: &str) -> f64 {
+    let left_norm: Vec<char> = normalize_for_compare(left).chars().collect();
+    let right_norm: Vec<char> = normalize_for_compare(right).chars().collect();
+    if left_norm.is_empty() || right_norm.is_empty() {
+        return 0.0;
+    }
+    sequence_ratio(&left_norm, &right_norm)
+}
+
+/// Ratcliff-Obershelp 相似度：匹配块总长 × 2 / 两侧总长。
+fn sequence_ratio(a: &[char], b: &[char]) -> f64 {
+    let index_of_b = index_elements(b);
+    let mut matching: Vec<(usize, usize, usize)> = Vec::new();
+    let mut queue = vec![(0usize, a.len(), 0usize, b.len())];
+    while let Some((alo, ahi, blo, bhi)) = queue.pop() {
+        let (i, j, k) = find_longest_match(a, b, &index_of_b, alo, ahi, blo, bhi);
+        if k > 0 {
+            matching.push((i, j, k));
+            if alo < i && blo < j {
+                queue.push((alo, i, blo, j));
+            }
+            if i + k < ahi && j + k < bhi {
+                queue.push((i + k, ahi, j + k, bhi));
+            }
+        }
+    }
+    matching.sort_unstable();
+
+    // 相邻（左侧接续）的匹配块合并成一块，最后补一个尾块把长度对齐。
+    let mut blocks: Vec<(usize, usize, usize)> = Vec::new();
+    let mut current = (0usize, 0usize, 0usize);
+    for (i2, j2, k2) in matching {
+        if current.0 + current.2 == i2 && current.1 + current.2 == j2 {
+            current.2 += k2;
+        } else {
+            if current.2 > 0 {
+                blocks.push(current);
+            }
+            current = (i2, j2, k2);
+        }
+    }
+    if current.2 > 0 {
+        blocks.push(current);
+    }
+
+    let matches: usize = blocks.iter().map(|(_, _, size)| *size).sum();
+    let length = a.len() + b.len();
+    if length == 0 {
+        1.0
+    } else {
+        2.0 * matches as f64 / length as f64
+    }
+}
+
+/// `b` 中每个元素出现的下标（升序）；长度 ≥200 时按 autojunk 规则剔除高频元素。
+fn index_elements(b: &[char]) -> HashMap<char, Vec<usize>> {
+    let mut index_of_b: HashMap<char, Vec<usize>> = HashMap::new();
+    for (index, element) in b.iter().enumerate() {
+        index_of_b.entry(*element).or_default().push(index);
+    }
+    if b.len() >= 200 {
+        let threshold = b.len() / 100 + 1;
+        index_of_b.retain(|_, indices| indices.len() <= threshold);
+    }
+    index_of_b
+}
+
+/// 在给定区间内找最长匹配块（对应 `SequenceMatcher.find_longest_match`）。
+fn find_longest_match(
+    a: &[char],
+    b: &[char],
+    index_of_b: &HashMap<char, Vec<usize>>,
+    alo: usize,
+    ahi: usize,
+    blo: usize,
+    bhi: usize,
+) -> (usize, usize, usize) {
+    let mut best = (alo, blo, 0usize);
+    let mut previous: HashMap<usize, usize> = HashMap::new();
+    for (i, element) in a.iter().enumerate().take(ahi).skip(alo) {
+        let mut current: HashMap<usize, usize> = HashMap::new();
+        if let Some(indices) = index_of_b.get(element) {
+            for &j in indices {
+                if j < blo {
+                    continue;
+                }
+                if j >= bhi {
+                    break;
+                }
+                // Python 用 j2len.get(j-1, 0)：j 为 0 时越界下标查不到、结果为 0，
+                // 不能用 saturating_sub 退化成查 key 0，否则连击长度会无界增长。
+                let run = if j == 0 {
+                    1
+                } else {
+                    *previous.get(&(j - 1)).unwrap_or(&0) + 1
+                };
+                current.insert(j, run);
+                if run > best.2 {
+                    best = (i + 1 - run, j + 1 - run, run);
+                }
+            }
+        }
+        previous = current;
+    }
+
+    // 再向两侧吃掉「非垃圾」元素（本工程不传 isjunk，因此全部元素都算非垃圾）。
+    // 这一步也能捞回被 autojunk 剔除的高频元素——它们不在索引里，只能靠这里找回，
+    // 否则两条完全相同的长文本会被算成 0 相似度。
+    while best.0 > alo && best.1 > blo && a[best.0 - 1] == b[best.1 - 1] {
+        best = (best.0 - 1, best.1 - 1, best.2 + 1);
+    }
+    while best.0 + best.2 < ahi && best.1 + best.2 < bhi && a[best.0 + best.2] == b[best.1 + best.2]
+    {
+        best.2 += 1;
+    }
+    best
 }
 
 /// 比较用归一化：去掉所有非字母数字字符（含下划线）并小写。

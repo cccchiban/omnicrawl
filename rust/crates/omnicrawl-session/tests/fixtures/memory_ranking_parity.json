@@ -371,6 +371,208 @@
       "expected": "taskhistory"
     }
   ],
+  "similarity": [
+    {
+      "left": "完全相同的内容。",
+      "right": "完全相同的内容。",
+      "expected": 1.0
+    },
+    {
+      "left": "内容 A",
+      "right": "内容 B",
+      "expected": 0.6666666666666666
+    },
+    {
+      "left": "",
+      "right": "有内容",
+      "expected": 0.0
+    },
+    {
+      "left": "有内容",
+      "right": "",
+      "expected": 0.0
+    },
+    {
+      "left": "",
+      "right": "",
+      "expected": 0.0
+    },
+    {
+      "left": "abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabc",
+      "right": "abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabc",
+      "expected": 1.0
+    },
+    {
+      "left": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "right": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": 1.0
+    },
+    {
+      "left": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "right": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": 1.0
+    },
+    {
+      "left": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "right": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": 1.0
+    },
+    {
+      "left": "abcabcabcabc",
+      "right": "abcabcabc",
+      "expected": 0.8571428571428571
+    },
+    {
+      "left": "旧内容包含关键词。",
+      "right": "内容包含关键词",
+      "expected": 0.9333333333333333
+    },
+    {
+      "left": "这次任务完成了三件事：一、二、三。",
+      "right": "这次任务完成了三件事：一、二、三",
+      "expected": 1.0
+    },
+    {
+      "left": "代码实现细节说明",
+      "right": "代码实现细节说明补充",
+      "expected": 0.8888888888888888
+    },
+    {
+      "left": "很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述",
+      "right": "很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述很长的中文描述",
+      "expected": 1.0
+    },
+    {
+      "left": "qwertyuiopasdfghjkl",
+      "right": "poiuytrewqlkjhgfdsa",
+      "expected": 0.10526315789473684
+    },
+    {
+      "left": "beaedcfcfbcfaeecaabbacbfecbefdfcebfedeaebbbbfebadcdcaceebbcaeeebabaabefaadaecfcdbafdcfdabdddfabcbadcfffcceeefdaaacddecbddbdebececbbdceffbffccccbbcdffccbaaded",
+      "right": "deaaaceafedbabacbfefebeebbaadccccecd",
+      "expected": 0.29015544041450775
+    },
+    {
+      "left": "cecacdcebaabdafcaebcffbfdbbdbaeafbccacafeffeebfabacefeebdbecabbcceabeffddbaffbdccbebedcdbdeccccfdeedffdebafedecbcceabddbdcdfbcfaafecbecedffaeebddabeff",
+      "right": "bdffcccdaeceffcfebeadaedbefcdfdabbbfeefdbaabbbfdfacdbbdabddffdabaffccafacaaecfbcbdebbdabebccbfdceaabbacadafecdecfdcbefbefadefacfedebcafffeffcdebbdedbeddacecddfbefcfcc",
+      "expected": 0.2848101265822785
+    },
+    {
+      "left": "fbbddffffdaceeecdbdadeadfadccffbddfaafcacaababcbbdccbdecdaebbadeaceabbdbbddebecbfbfacbeccbdddabaddaaeeebdfedfbdddfffdbeabbaddbaefdcedecffaddcfdeeebbcd",
+      "right": "beaacdbfdbfefebddacdfadbfadcdbcbbfecceefabfbfdcaabafcacccafdeeceffefacfbddbcecbfdcddbcfdeddbccbfaafcdafecefcffcfefeaaedcaabafeafcbefbcabddaaaebdfddcdeadceacfccdaeddcbaeabacfbedecfbabacbcdabeedeefdadfdedbcbfcedacbcecfaffabdfdebab",
+      "expected": 0.0
+    },
+    {
+      "left": "fabcbcfebcecdffecafcfecfafdefefebaafcfcbbaafceefdffddbfcdbafdcedaefdbffedcdbfacdbfdacbcfdacfebceeebbfebfe",
+      "right": "dffaccdabeecbcfb",
+      "expected": 0.1322314049586777
+    },
+    {
+      "left": "dabaadbebaafedcdfeafbdebbcaadcbfddbdbffbbfbcbeefdcbfbabfbaaedffcefaabcadcbecdcddaebbccfebffafeebbeeecbdbbcddcdfacfaaabdfcffcd",
+      "right": "edcfcffddeeedfbdddfbeabbebbffedcababfbcaefcebbabdfdfbfcbaffadebfceebcebfcaacbafaeedfefccbbcadfbbadcabcaadfbfbaacfebdfadcfcabfaddbebcbbbceebceeaaccbbeffcabcefbdbcefdfafbdefeaafaaebabaabcacbccdddacaedaaacedabcdbcfbbfdafebacefcfcfabfeaf",
+      "expected": 0.0
+    },
+    {
+      "left": "bdddeaefbdfbcedfcbfacfbafecaeeabafeddcdadefffaedfdfcbbacbdefabedefdadeebdfacedebbabfaddaddaebdefafdcdaecaefbdfcdccebcffdecbadadcdbbefcecedaaedfaedcabdddafdaeecbdddcabcbecdbdfacebbeaeeadffbebdcbafecbabfaeefaacffbaffbdfeefaedbeddabdaadc",
+      "right": "cadfaefbbafadcaacdbbaacdaeacdaedeeefcfefaeafaadbfddcfefccfdbfddbefdfacceaedbbcdffaceaccddcbdefcdcabaebebfacfcafdefebcbcebfd",
+      "expected": 0.16806722689075632
+    },
+    {
+      "left": "afeadbedcceafafcfcaebdababecfaadacdbadcebaaacbdfbeceddbbcfaccdbcfcdacfecaaccdfbdfefdfcedecdeffeaffaccbfcddeceffabaddfbddfaecfceffadaacfdbefcaaedaa",
+      "right": "bdbeadaaedbcdcadacefeefbbfaacfcfdbeeececfddccaaaddfdaffbffacbdcaaeedeaaafbbcbdecaadbeeaacceeaabbfafdbeeaedcddcfacedefebcadfaaccfcdbdde",
+      "expected": 0.21428571428571427
+    },
+    {
+      "left": "dcdefcebbddcdbdbdceadefbbdbfddbbbdfdeeceefafddcdacfafffcacbbebb",
+      "right": "aaeccdcadaebabbebbbfdaeacdaedbfdacffededccceffdcffcabdabbccb",
+      "expected": 0.17886178861788618
+    },
+    {
+      "left": "aaadfeafbafedafdbcdebebaabcecdfdceeeefdeefeeaecdbcccbcafdffeaffefbcbdfadceadadcfcbacacbccdcfefacbbdfedddddbffceefeadecaedafadddeadfdcebaccdabbacdefbcefceab",
+      "right": "eefcdffdfefdbfcfceecdecffdbeedadcdcbebfdfcfbecccbafacaeeffeddcfbdcddefeaacbccccececfedccccfdceacefaeaebffcdacebdeabceefafbaaaabfbcdaedbcecefaecafbeacfabbfbcebdeefebbcbbbfadebccadaaffafbcfeafedfedffbddaabfacafcaabc",
+      "expected": 0.0
+    },
+    {
+      "left": "baabedecbacfdadfaecbcdacbfffcfeedfcdfadaadebfdbcaafdeedcdfeebeadfacfddbffbaafcdcbbecdcbeacfdcedabfefdccbbddccdfaabdabbcabddfbcfbbfecaaefedcdecdfdfeefddaaefdbcbfddcccdbfafebccccaffdaebbcfffeaabfcaadaaabdebddabffcbbfedadcdadedfbbcafdbcf",
+      "right": "ccaeaeeacaacfabadfbfabddbbfadebffebfddbbdcaeabcabaebaefcadbaffdaacccefddadabafeabaacefadefaecafadabfbdaebdbeeddbbccfcaaffaafcebebfacafa",
+      "expected": 0.42276422764227645
+    },
+    {
+      "left": "ffaafccfeacaadafdfafacaecbffbacaefdcefbaeceadbacadfddabfadabaebdaebefcfafbfcabababbebfcfdafbefdafcfedaadcfbccfaebfdacededafeadbdcdffbdeabfcbaefebecabeaafebbcfeaececceeebdcedfcf",
+      "right": "beebadedf",
+      "expected": 0.08648648648648649
+    },
+    {
+      "left": "dbdefdccadfcccfedaaadacdbfebeccdacbcebfbbeeabaddeaceddebdcfefecbdaaedfebbbbadbdecbcdcbeaedaadcceeedfbddbffefbdaeecffbceabecdfdbfcaaabdbfbeffdfaca",
+      "right": "caeeedbdaaeaaeebbaaebacebddbdafebeffaafdfffafaceeebeffbabacfecdeeacdcaceeeea",
+      "expected": 0.25339366515837103
+    },
+    {
+      "left": "dfecbfefbcbdedeaefdfdafacfccdadbefbeeaabafaddbbfffcfcceecebefbfdbcfcdcfccdeacbebceebafddeedcbfdbbcfdebebdfbdcdecfadbbbecfdcdaedadbceaecddebcfcfbdddaeccedbb",
+      "right": "cbededdbfbeccafcabadddabdfbedbceedacfecaffdceebcddeefcdbfcacdcdeaaefbcaaafbbaebcfdeddcbabbbcacaadebbeebacbbbaceadccdccaabdebaafedbbeaacbcbceeacacffabfbeaafeebebbccaedcafccfeefafdbbaacacebfaedbebfebbbbcafdfe",
+      "expected": 0.0
+    },
+    {
+      "left": "cebfafdabcfcedddebdffdcbbfebafccbffdcdeeedaeefbcefdacdadffdaccacbaadbafcaecffdfdcabcedbcbefcbbaeecddabeedbcbedecfcbcecfcecdadcaafadaeeddfcfcfacdbeabcacfcefdabaafeaddcfedcfcfbdebcfbfbfbeaabacbcdfbbfebde",
+      "right": "edcaafaddbdfbdfbecaabdfcaabdeefacabadcaabfddfecfbfcceeceebdebefadeddfbfdccbcdbfcaaacdfbcccaf",
+      "expected": 0.17064846416382254
+    },
+    {
+      "left": "abfeaafceebebddbabcdebeadcdffbfcfeabcefbfeffccfbcdbdbddffeffebfafbfdcffcafeabadbececfdfdddcdacaffcbcbfabebebcdecebdeedadfcaffdeffddcdfcdffacdbfacbfedebdefbfdfcaabcddbdbadfebafaecdbbbbcbeabbbbfeabefbcfdebfadfeeeafacdbf",
+      "right": "ebeebcfeebbacdaaccffdcccaebaabfcccebcfadcddecffcfbabaaabfdabbcdfceffeaedacecdddbafbbabefcacc",
+      "expected": 0.16181229773462782
+    },
+    {
+      "left": "aafdfffffaadfddaeeefcaacdaffdbcdbacfcfdbbddcdcedefffedaccabdcddefcadfaafeacfffcadfeadbcfafefdefecacacffbeadaaaccdaadfedbfacfdebeccfdcdddbccefadabfaaccbfcaccafbaefeadcbbfbbaaedcceccfeeaaeaadcfbaabbcdeccadbefbb",
+      "right": "bdaeaacdcdffcfadacfbcbccaabfdeaaeeeddaaddcffdfceedcbcdadfacdbaaaeebafaefddcbdfedbfeddcdaafcfcdaaabacacdcbceaccecfdecfdabecefffabfbabfffdacffbeeaedbbfd",
+      "expected": 0.15083798882681565
+    },
+    {
+      "left": "cafaddffecaceebccdefdbdecfdccdcfdeeceacddabffdfccdbdbaeefabfccfdcbfcbeffbbebbdadbfdfabafefccdcbdcdafccfaaebfafdbdfaabcaedccccbcccfadccbfeeecbeffafbebdffbccebaaeeadcddbdbacebbb",
+      "right": "ffbaadcfbbaabbeefcaaffecafececfabecdeceeedbbdedecfeecadcbeafbebeeaecbaffbebcdefbdbabdaaacffebeaefffddbeaaaacfbffecedfcffbcbcbfbcffcfbabecbaeafdfecbcdfbadcdefddfcdaadafcbfddedcdfbadaacedcbdadefbcbbeaeeacfbacfacebdaadeefcfec",
+      "expected": 0.0
+    },
+    {
+      "left": "aedfdfabfaaaabffccdabeaeaedddaeacbabc",
+      "right": "fbaaeefdababcdbaeadaffcdadbcffaaadffadbcddbaffebcbfddbcdcbafdbeba",
+      "expected": 0.37254901960784315
+    },
+    {
+      "left": "ceddbcacebfcfdcbedcfedebbadeacbecabbeefcffdbbdebdbabdfcdfccfccebcebbdeeeacdeaffceccfcfefcbdcfcafbfbecadafbfbafffeeefadbcacafedfecaecbeabbdcfcffbfdcddbfadffdcbdfdfeadcfcbd",
+      "right": "adbfdbfbaccddacdbacadefcccbcaeefffeeedcabafbebcdfbafacfcdedbaaaeefbabebdadbefcdbeacdabdabdcfddbcdbcdeebdcbeeaefaaebabcfcaeebddcbbdeacafaebfdadfaadbcefcabaefbffdccbedebaceffffaabedccfaddbeebfaecfdffedfbdbfeeaeafbefdfffcbdfceeff",
+      "expected": 0.0
+    },
+    {
+      "left": "bfcaeeefebbdcabeeabafdabfaafecbaecadeabbeebbefafecdbfbccddbedcedcedfdcadbbdbebcaebaaadffbfaaaccdafebfdfddbbaecbffbfeaaaedfabdfcacffaaecedacdafabacedefdeeeccececcccccdda",
+      "right": "dedaccbfdadfcededcddeecdcdacbbefdefddbcacbaebfccecadaedecdeecdaeaabbeeccbfcfecaaddeadbbbcddcbeffafbebfbfaeccccfeccafaafdcdbfcfecbedebabcdaebbfabaacfefaaeceecfcbdeefbdddddedafbcbfdecfdeadddabfbafbfbdaefccdeebdedabeaaeeb",
+      "expected": 0.0
+    },
+    {
+      "left": "adfhggcgahbaccdahgfffaeehggcffahgeecca",
+      "right": "adfhggcgahbcccdahgfffaeehggcbfahgeecca",
+      "expected": 0.9473684210526315
+    },
+    {
+      "left": "gdgbefcfhcedcfbhbdfacaebgdhfddgebeeedahafdchebagahhdeffahgbgdfdhfhhcdfhefhcbeghggghcdcfghfbcgfhfbhabgehfadcfaabdehgdgdbaabfhdccgcaaahchdbdgbcfdcdbecfcgafffdchcbabddfcghaaahcccaeeaccf",
+      "right": "gdgbefcfhcedcfbhbdfacaebgdhfddgebeeedahafdchecagahhdeffahgbgdfdhfhhcdfhefhcbeghggghcdcfghfbcgfhfbhabgehfadcfaabdehgdgdbaabfhdccgcaaahchdbdgbcfdcdbecfcgafffdchcbabddfcghaaahcccaeeaccf",
+      "expected": 0.9945054945054945
+    },
+    {
+      "left": "bacccefbhhgdcgefaeecaahhdgcbhfegcadccahahefgacgdafbeabbfdfcfggafeaeadddgeaceadbfdfcfhbbbhacbddbgeceahafbhcbdcc",
+      "right": "bacccefbhhgdcgefaeecaahedgcbhfedcadccahahefgacgdafbeabbfdfcfggafeaeadddgeaceadbfdfcahbbbhacbddcfeceahafbhcbbcc",
+      "expected": 0.9454545454545454
+    },
+    {
+      "left": "fdcdacgcdecfcbdababbfhcchdaaedgheaeceafcdffbgghdccedafcbehfcehhdhhec",
+      "right": "fdcdacgcdecfcbdababbfhcchdaaedgheaeceafcdffbgghhccedafcbehfcehhdhhec",
+      "expected": 0.9852941176470589
+    },
+    {
+      "left": "hgheahcfhbagaaeecdeadchfbghddceafgehedbbccceeacbdahgbaceefgddbegccdhdfdghabfhfbfefchbcfehcdgfaebcadcegdfhdfbecfhehagdbbgcbehhcaceheeaebgchhdacebheafeafcfcgacegccacdageadffcaacfcfffgchbfgdbbhcbbdbebgbbbefbcedaechgdehafaggachgadge",
+      "right": "hgheahcehbagaaeecdeadchfbghddceafgehedbbccceeacbdahgbaceefgddbegccdhdfdghacfhfbfefchbcfehcdgfaebcadcegdfhdfbecfhehagdbbgcbehhcaceheeaebgchhdacebheafeafcfcgacegccacdageadffcaacfcfffgchbfgdbbhcbbdbebgbbbefbcedaechgdehafdggachgadge",
+      "expected": 0.03070175438596491
+    }
+  ],
   "search_scores": [
     {
       "query": "任务",

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use omnicrawl_session::{
     classify_storage_directory, directories_overlap, directory_match_score, extract_search_tokens,
     make_summary, merge_memory_content, normalize_for_compare, parse_memory_datetime,
-    score_related_entry, score_search_entry, MemoryIndexEntry,
+    score_related_entry, score_search_entry, text_similarity, MemoryIndexEntry,
 };
 use serde_json::{json, Value};
 
@@ -187,6 +187,19 @@ fn related_scores_match_python() {
             score_related_entry(&entry, &directories, depth),
             &case["expected"],
             &format!("关联分 {case}"),
+        );
+    }
+}
+
+#[test]
+fn similarity_matches_python() {
+    for case in cases(&fixture(), "similarity") {
+        let left = case["left"].as_str().expect("left");
+        let right = case["right"].as_str().expect("right");
+        assert_close(
+            text_similarity(left, right),
+            &case["expected"],
+            &format!("相似度 {case}"),
         );
     }
 }

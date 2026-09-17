@@ -36,7 +36,7 @@ pub use memory::{
 pub use memory_ranking::{
     classify_storage_directory, directories_overlap, directory_match_score, extract_search_tokens,
     local_now, make_summary, merge_memory_content, normalize_for_compare, score_related_entry,
-    score_search_entry, DEFAULT_STORAGE_DIRECTORIES,
+    score_search_entry, text_similarity, DEFAULT_STORAGE_DIRECTORIES,
 };
 pub use naming::{
     clean_title, event_type_from_json, new_session_id, normalize_event_type,
