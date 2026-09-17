@@ -1,0 +1,432 @@
+{
+  "source": [
+    "omnicrawl/state/memory.py"
+  ],
+  "timestamp": "2026-09-18T03:05:29+00:00",
+  "timestamp_slot": "｛Desensitized:122｝",
+  "directories": [
+    {
+      "input": "code-knowledge/general",
+      "expected": "code-knowledge/general"
+    },
+    {
+      "input": "  Code-Knowledge//General  ",
+      "expected": "code-knowledge/general"
+    },
+    {
+      "input": "多 个 空白/目录",
+      "expected": "多-个-空白/目录"
+    },
+    {
+      "input": "中文目录/子目录",
+      "expected": "中文目录/子目录"
+    },
+    {
+      "input": "a/../../escape",
+      "error": "记忆目录不能包含上级跳转：a/../../escape"
+    },
+    {
+      "input": "../escape",
+      "error": "记忆目录不能包含上级跳转：../escape"
+    },
+    {
+      "input": "/absolute/path",
+      "expected": "absolute/path"
+    },
+    {
+      "input": "C:/drive/path",
+      "error": "记忆目录必须是相对路径：C:/drive/path"
+    },
+    {
+      "input": "",
+      "error": "记忆目录不能为空或为相对跳转目录。"
+    },
+    {
+      "input": "   ",
+      "error": "记忆目录不能为空或为相对跳转目录。"
+    },
+    {
+      "input": ".",
+      "error": "记忆目录不能为空或为相对跳转目录。"
+    },
+    {
+      "input": "..",
+      "error": "记忆目录不能为空或为相对跳转目录。"
+    },
+    {
+      "input": "---",
+      "error": "记忆目录无有效片段：---"
+    },
+    {
+      "input": "a.b-c_d/e",
+      "expected": "a.b-c_d/e"
+    }
+  ],
+  "paths": [
+    {
+      "input": "code-knowledge/general/20260918-030529.md",
+      "expected": "code-knowledge/general/20260918-030529.md"
+    },
+    {
+      "input": "Dir/Sub/My File.md",
+      "expected": "dir/sub/My-File.md"
+    },
+    {
+      "input": "dir/sub/x.txt",
+      "error": "记忆文件必须是 Markdown：dir/sub/x.txt"
+    },
+    {
+      "input": "记录.md",
+      "error": "记忆目录不能为空或为相对跳转目录。"
+    },
+    {
+      "input": ".md",
+      "error": "记忆目录不能为空或为相对跳转目录。"
+    },
+    {
+      "input": "dir//x.md",
+      "expected": "dir/x.md"
+    },
+    {
+      "input": "A/B/C.MD",
+      "error": "记忆文件必须是 Markdown：A/B/C.MD"
+    },
+    {
+      "input": "dir/../x.md",
+      "error": "记忆目录不能包含上级跳转：dir/.."
+    }
+  ],
+  "dedupe_directories": [
+    {
+      "input": [
+        "Code-Knowledge/General",
+        "code-knowledge/general",
+        ".",
+        " ",
+        5,
+        "src"
+      ],
+      "expected": [
+        "code-knowledge/general",
+        "src"
+      ]
+    },
+    {
+      "input": [],
+      "expected": []
+    }
+  ],
+  "dedupe_strings": [
+    {
+      "input": [
+        "  一  ",
+        "一",
+        "",
+        "   ",
+        5,
+        "二"
+      ],
+      "expected": [
+        "一",
+        "二"
+      ]
+    },
+    {
+      "input": [],
+      "expected": []
+    }
+  ],
+  "contents": [
+    {
+      "input": "第一行\n第二行",
+      "expected": "第一行\n第二行"
+    },
+    {
+      "input": "第一行\r\n第二行",
+      "expected": "第一行\n第二行"
+    },
+    {
+      "input": "第一行\r第二行",
+      "expected": "第一行\n第二行"
+    },
+    {
+      "input": "  带空白  ",
+      "expected": "带空白"
+    },
+    {
+      "input": "",
+      "expected": ""
+    }
+  ],
+  "markdown": [
+    {
+      "name": "plain",
+      "timestamp": "2026-09-18T03:05:29+00:00",
+      "related_directories": [
+        "code-knowledge/general"
+      ],
+      "content": "正文第一行\n正文第二行",
+      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n  - \"code-knowledge/general\"\n---\n\n正文第一行\n正文第二行\n"
+    },
+    {
+      "name": "with_quotes",
+      "timestamp": "2026-09-18T03:05:29+00:00",
+      "related_directories": [
+        "a/b"
+      ],
+      "content": "正文里带 \"引号\" 与 \\ 反斜杠",
+      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n  - \"a/b\"\n---\n\n正文里带 \"引号\" 与 \\ 反斜杠\n"
+    },
+    {
+      "name": "no_related",
+      "timestamp": "2026-09-18T03:05:29+00:00",
+      "related_directories": [],
+      "content": "无关联目录",
+      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n---\n\n无关联目录\n"
+    },
+    {
+      "name": "trailing_blank",
+      "timestamp": "2026-09-18T03:05:29+00:00",
+      "related_directories": [
+        "x"
+      ],
+      "content": "正文末尾有空行\n\n",
+      "expected": "---\ntimestamp: \"｛Desensitized:122｝\"\nrelated_directories:\n  - \"x\"\n---\n\n正文末尾有空行\n"
+    }
+  ],
+  "bodies": [
+    {
+      "name": "frontmatter",
+      "text": "---\ntimestamp: \"x\"\nrelated_directories:\n---\n\n正文\n",
+      "expected": "正文"
+    },
+    {
+      "name": "frontmatter_crlf",
+      "text": "---\r\ntimestamp: \"x\"\r\n---\r\n\r\n正文\r\n",
+      "expected": "正文"
+    },
+    {
+      "name": "no_frontmatter",
+      "text": "  正文  ",
+      "expected": "正文"
+    },
+    {
+      "name": "unterminated",
+      "text": "---\ntimestamp: \"x\"\n正文",
+      "expected": "---\ntimestamp: \"x\"\n正文"
+    },
+    {
+      "name": "empty",
+      "text": "",
+      "expected": ""
+    }
+  ],
+  "index_entries": [
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 3,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "touch_count": 3,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆索引缺少字段：timestamp。"
+    },
+    {
+      "input": {
+        "id": "  ",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 3,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆索引字段 id 必须是非空字符串。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "not-markdown.txt",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 3,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "/abs",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 3,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "不是时间",
+        "touch_count": 3,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 3,
+        "related_directories": "不是列表",
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 3,
+        "related_directories": [
+          "a/b",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": -1,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": true,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": "  摘要  "
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 3,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": 5
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    },
+    {
+      "input": {
+        "id": "20260918-030529",
+        "path": "code-knowledge/General/记录.md",
+        "storage_directory": "code-knowledge/general",
+        "timestamp": "2026-09-18T03:05:29+00:00",
+        "touch_count": 0,
+        "related_directories": [
+          "Code-Knowledge/General",
+          "src//lib",
+          ".",
+          "../逃逸",
+          5
+        ],
+        "summary": ""
+      },
+      "error": "记忆 20260918-030529 的 related_directories 必须是字符串列表。"
+    }
+  ]
+}

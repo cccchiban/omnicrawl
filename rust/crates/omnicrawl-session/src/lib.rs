@@ -10,6 +10,7 @@ pub mod event;
 pub mod history;
 pub mod index;
 pub mod locking;
+pub mod memory;
 pub mod naming;
 pub mod projection;
 pub mod store;
@@ -25,6 +26,11 @@ pub use index::SessionIndexEntry;
 pub use locking::{
     append_text_line, atomic_write_text, process_lock_for_root, DurableWritePolicy,
     ProcessFileLock, DEFAULT_LOCK_POLL_SECONDS, DEFAULT_LOCK_TIMEOUT_SECONDS, LOCK_FILE_NAME,
+};
+pub use memory::{
+    body_of, dedupe_directories, dedupe_strings, format_memory_datetime, format_memory_markdown,
+    normalize_content, normalize_directory, parse_memory_datetime, read_markdown_body,
+    MemoryIndexEntry,
 };
 pub use naming::{
     clean_title, event_type_from_json, new_session_id, normalize_event_type,
