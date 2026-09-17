@@ -269,6 +269,8 @@ version = "0.0.1"
 dependencies = [
  "omnicrawl-core",
  "omnicrawl-ipc",
+ "omnicrawl-llm",
+ "omnicrawl-protocol",
  "serde_json",
 ]
 

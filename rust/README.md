@@ -224,13 +224,15 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 分发路线见知识库「分发路线与内核宿主边界决策」：主程序最终走 npm，内核与宿主的边界以
 「进程 + NDJSON JSON-RPC / 平台二进制」为一等公民，PyO3 内联不再是路线图项。
 
-`omnicrawl-llm` 已落地流解析、请求构建、用量归一化、HTTP 传输与端到端回合（`OpenAiChatRuntime::run_turn`），
-四类断言各有 parity 数据集，**内核已能自己独立跑完一次模型请求**；但 `omnicrawl-cli` 的回合目前仍把模型请求
-经 `model.reply` 交给宿主（`packages/plugin-host/src/agent-host.js` 应答），这一步接线是内核收尾的最后一件事。
+`omnicrawl-llm` 与内核接线都已落地：宿主在 `initialize` 里给出可选的 `model` 块，内核就自己发模型请求，
+增量经 `turn.delta` / `turn.reasoning_delta` / `turn.token_usage` 外发，重试与文案按 `request_retry_count`
+保持与 Python 一致；没有该块时退回 `model.reply` 代答，新旧宿主可以同时存在。这条链由
+`crates/omnicrawl-cli/tests/kernel_model_e2e.rs` 钉住（真拉起内核进程 + 本机回环服务端，
+断言全程不出现 `model.reply`、请求体里带上了系统提示词与工具声明）。
 
 `omnicrawl-session` 已落地会话层的数据契约（事件/索引模型、命名与时间校验、转录行字节布局，107 用例对照），
 **文件读写尚未搬**：追加转录、`index.json` 维护、锁、归档、导出、一致性诊断、以及会话投影
 （从事件恢复模型消息与待办）都在 Python 侧。再往后是记忆层（`omnicrawl/state/memory.py`）。
 
-先把内核接到自带 runtime（让 `model.reply` 退役），
-再按「会话存储 I/O → 会话投影 → 记忆」的顺序推进附属功能。
+接下来按「会话存储 I/O → 会话投影 → 记忆」推进；模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置
+（Python 侧的 models 配置 / 启动器）接进 `initialize.model`，以及全部宿主迁移后让 `model.reply` 退役。

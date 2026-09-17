@@ -41,13 +41,30 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 | 方法 | 类型 | params | result |
 | --- | --- | --- | --- |
-| `initialize` | 请求 | `{protocol_version, client?}` | `{protocol_version}` |
+| `initialize` | 请求 | `{protocol_version, client?, model?}` | `{protocol_version}` |
 | `turn.submit` | 请求 | `{turn_id, user_text}` | `{}`（回合已结束） |
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
 | `shutdown` | 请求 | `{}` | `{}` |
 
 - 回合结果只经由 `turn.finished` 通知传递，`turn.submit` 的响应不重复结果，避免两处真相。
 - `turn.cancel` 是建议性的：内核在下一个模型或工具批次边界检查取消。若某一批工具已经交给宿主，
+
+`initialize` 的 `model` 是可选块：**给了它，内核就自己发模型请求**（工具仍由宿主执行），宿主不必再应答
+`model.reply`；不给则维持代答路径，旧宿主不受影响。凭据不进帧——`api_key_env` 只给环境变量名。
+
+```json
+{"model": {"model": "gpt-5.2", "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
+           "user_agent": "omnicrawl/0.1.0", "system_prompt": "你是助手。",
+           "tools": [{"type": "function", "function": {"name": "read_file"}}],
+           "options": {"temperature": 0.2}, "request_timeout_seconds": 180,
+           "prompt_cache_capable": true, "prompt_cache_identity": {"profile": "main"},
+           "request_retry_count": 1}}
+```
+
+- `model` 必填；`base_url` 空则用运行时默认（OpenAI 官方地址）。
+- `tools` 是 OpenAI functions 形状的静态声明；历史里出现的工具声明不重复下发。
+- `options` 用 `GenerationOptions` 的 JSON 形状。
+- `request_retry_count` 是空响应与可重试错误的最大请求次数（默认 1），语义与 Python 侧同名配置一致。
   内核等该批次返回后再收尾，不会中断宿主正在执行的工具。
 
 ## 内核 → 宿主
@@ -80,7 +97,10 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `subagent.event` | `{name, payload}` | `on_subagent_event` |
 | `todo.update` | `{todos}` | `on_todo_update` |
 
-宿主 → 内核的 `turn.cancel` 对应宿主侧的 `cancel_check`；`omnicrawl-core` 的 `request_reply` 在过渡期
+宿主 → 内核的 `turn.cancel` 对应宿主侧的 `cancel_check`；`stop_check` 由内核判定、不是协议方法。
+`request_reply` 有两条实现：宿主给了 `initialize.model` 时，内核经 `omnicrawl-llm` 自己发请求
+（增量用上面的 `turn.delta` 等通知外发）；没给时才经 `model.reply` 由宿主代答——那是过渡形态，
+新旧宿主因此可以同时存在。
 经 `model.reply` 由宿主代答（Python 侧本来就把模型客户端放在宿主），`stop_check` 由内核判定、
 不是协议方法。内核自带 provider runtime（`omnicrawl-llm`）后 `model.reply` 不再被使用。
 

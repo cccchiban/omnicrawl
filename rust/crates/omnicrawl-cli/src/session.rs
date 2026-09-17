@@ -21,11 +21,20 @@ use omnicrawl_core::{
 };
 use omnicrawl_ipc::bridge::{
     initialize_result, method, unsupported_version_error, BridgeError, Command, HostEvent,
-    InitializeParams, ModelRequest, ToolBatch, ToolBatchResult, TurnCancelParams,
-    TurnFinishedPayload, TurnSubmitParams,
+    InitializeParams, KernelModelConfig, MessagePayload, ModelRequest, TextPayload,
+    TokenUsagePayload, ToolBatch, ToolBatchResult, TurnCancelParams, TurnFinishedPayload,
+    TurnSubmitParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
+use omnicrawl_llm::{
+    to_openai_messages, ChatEndpoint, ChatRequestInput, OpenAiChatRuntime, RuntimeErrorKind,
+    SinkFlow, TurnSink,
+};
+use omnicrawl_protocol::{
+    conversation_from_openai_messages, tool_spec_from_openai_item, GenerationOptions, ModelReply,
+    ModelStreamEvent, ToolSpec,
+};
 use serde_json::{json, Value};
 
 /// 入站消息：解析好的帧，或读取端已关闭。
@@ -80,6 +89,8 @@ struct Conn {
     handshaken: bool,
     exit_requested: bool,
     next_id: i64,
+    /// 宿主交来的模型配置：有它内核自己发模型请求，没有则退回 `model.reply` 代答。
+    model: Option<KernelModelConfig>,
 }
 
 impl Conn {
@@ -178,6 +189,9 @@ impl Conn {
             }
             (Some(id), method::INITIALIZE) => {
                 let host_version = protocol_version_of(frame.params.as_ref());
+                if let Some(config) = model_config_of(frame.params.as_ref()) {
+                    self.model = Some(*config);
+                }
                 self.handshake(id, &host_version);
                 None
             }
@@ -196,7 +210,7 @@ impl Conn {
     }
 }
 
-/// 模型端口：过渡期把模型请求交给宿主代答。
+/// 模型端口（兼容路径）：把模型请求交给宿主代答，供未提供模型配置的宿主使用。
 struct RemoteModelPort {
     conn: Rc<RefCell<Conn>>,
     turn_id: String,
@@ -218,6 +232,219 @@ impl ReplySource for RemoteModelPort {
         serde_json::from_value(value)
             .map_err(|error| LoopError::ReplySource(format!("宿主返回的模型回复无法解析：{error}")))
     }
+}
+
+/// 模型端口（内核自带）：由 `omnicrawl-llm` 自己发请求，增量与用量经协议外发。
+///
+/// 重试位置在这里而不是循环里：Python 侧同样把 `request_retry_count` 施加在主循环，
+/// 有界重试空响应与可重试错误；文案与重试节奏保持与 Python 一致。
+struct KernelModelPort {
+    conn: Rc<RefCell<Conn>>,
+    config: KernelModelConfig,
+}
+
+impl ReplySource for KernelModelPort {
+    fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
+        let runtime = self.runtime()?;
+        let options = parse_options(&self.config)?;
+        let tools = parse_tools(&self.config);
+        let conversation = conversation_from_openai_messages(messages);
+        let identity = self.config.prompt_cache_identity.clone();
+        let input = ChatRequestInput {
+            model: &self.config.model,
+            system_prompt: &self.config.system_prompt,
+            messages: &conversation,
+            tools: &tools,
+            options: &options,
+            profile_request_timeout_seconds: self
+                .config
+                .request_timeout_seconds
+                .filter(|seconds| *seconds > 0.0)
+                .unwrap_or_default(),
+            prompt_cache_capable: self.config.prompt_cache_capable,
+            prompt_cache_identity: &identity,
+        };
+        let limit = self.config.request_retry_count.max(1);
+        let mut attempt = 0;
+
+        loop {
+            let mut sink = ProtocolSink {
+                conn: Rc::clone(&self.conn),
+            };
+            match runtime.run_turn(&input, &mut sink) {
+                Ok(reply) => {
+                    if is_empty_reply(&reply) {
+                        attempt += 1;
+                        if attempt < limit {
+                            self.notify_retry(format!("正在重试(第{attempt}次)"));
+                            continue;
+                        }
+                        return Err(LoopError::ReplySource(format!(
+                            "Agent 连续 {limit} 次返回空响应，已停止本轮请求。"
+                        )));
+                    }
+                    return to_agent_reply(reply);
+                }
+                Err(error) => {
+                    if error.kind == RuntimeErrorKind::Cancelled {
+                        return Err(LoopError::Cancelled(error.message));
+                    }
+                    attempt += 1;
+                    if error.retryable && attempt < limit {
+                        // 已经推给界面的半截流要先撤销，否则重试会叠在旧文本上。
+                        if error.kind == RuntimeErrorKind::StreamInterrupted {
+                            self.conn.borrow_mut().notify(HostEvent::StreamRollback);
+                        }
+                        self.notify_retry(format!("请求失败，正在自动重试（第{attempt}次）"));
+                        continue;
+                    }
+                    if error.retryable {
+                        return Err(LoopError::ReplySource(format!(
+                            "上游错误已达到本回合自动重试上限，已停止本次请求。{}",
+                            error.message
+                        )));
+                    }
+                    return Err(LoopError::ReplySource(error.message));
+                }
+            }
+        }
+    }
+}
+
+impl KernelModelPort {
+    /// 凭据只从环境读；端点缺省时用运行时默认值。
+    fn runtime(&self) -> Result<OpenAiChatRuntime, LoopError> {
+        let endpoint = ChatEndpoint {
+            base_url: endpoint_base_url(&self.config),
+            api_key: read_api_key(&self.config)?,
+            user_agent: self.config.user_agent.clone(),
+        };
+        Ok(OpenAiChatRuntime::new(endpoint))
+    }
+
+    fn notify_retry(&self, message: String) {
+        self.conn
+            .borrow_mut()
+            .notify(HostEvent::RetryStatus(MessagePayload { message }));
+    }
+}
+
+/// 内核流事件 → 协议通知。
+///
+/// 工具生命周期事件由宿主在执行 `tool.batch` 时自行产生，这里只发模型侧的信息，
+/// 避免同一件事在协议上出现两份。
+struct ProtocolSink {
+    conn: Rc<RefCell<Conn>>,
+}
+
+impl TurnSink for ProtocolSink {
+    fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
+        let mut connection = self.conn.borrow_mut();
+        match event {
+            ModelStreamEvent::TextDelta(delta) => {
+                connection.notify(HostEvent::Delta(TextPayload { text: delta.text }));
+            }
+            ModelStreamEvent::ReasoningDelta(delta) => {
+                connection.notify(HostEvent::ReasoningDelta(TextPayload { text: delta.text }));
+            }
+            ModelStreamEvent::UsageReported(usage) => {
+                connection.notify(HostEvent::TokenUsage(TokenUsagePayload {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
+                }));
+            }
+            ModelStreamEvent::ProviderWarning(warning) => {
+                connection.notify(HostEvent::Status(MessagePayload {
+                    message: warning.message,
+                }));
+            }
+            _ => {}
+        }
+        SinkFlow::Continue
+    }
+
+    fn cancelled(&self) -> bool {
+        self.conn.borrow().cancel.load(Ordering::SeqCst)
+    }
+}
+
+/// 端点地址：宿主没给就用运行时默认。
+fn endpoint_base_url(config: &KernelModelConfig) -> String {
+    if config.base_url.trim().is_empty() {
+        ChatEndpoint::default().base_url
+    } else {
+        config.base_url.clone()
+    }
+}
+
+/// 凭据只从环境读：帧里出现的只是环境变量名。
+fn read_api_key(config: &KernelModelConfig) -> Result<String, LoopError> {
+    let name = config.api_key_env.trim();
+    if name.is_empty() {
+        return Ok(String::new());
+    }
+    std::env::var(name).map_err(|error| {
+        LoopError::ReplySource(format!(
+            "读取环境变量 {name} 失败：{error}；模型请求无法鉴权。"
+        ))
+    })
+}
+
+fn parse_options(config: &KernelModelConfig) -> Result<GenerationOptions, LoopError> {
+    if config.options.is_null() {
+        return Ok(GenerationOptions::default());
+    }
+    serde_json::from_value(config.options.clone())
+        .map_err(|error| LoopError::ReplySource(format!("模型配置里的 options 无法解析：{error}")))
+}
+
+fn parse_tools(config: &KernelModelConfig) -> Vec<ToolSpec> {
+    config
+        .tools
+        .iter()
+        .filter_map(tool_spec_from_openai_item)
+        .collect()
+}
+
+fn is_empty_reply(reply: &ModelReply) -> bool {
+    reply.content.trim().is_empty() && reply.tool_calls.is_empty()
+}
+
+/// 归并后的回复 → 循环要的形状；assistant 消息按 OpenAI 形状回填进上下文。
+fn to_agent_reply(reply: ModelReply) -> Result<AgentModelReply, LoopError> {
+    let mut assistant = to_openai_messages("", std::slice::from_ref(&reply.assistant_message));
+    let message = assistant
+        .pop()
+        .unwrap_or_else(|| json!({"role": "assistant", "content": reply.content}));
+    let tool_calls = reply
+        .tool_calls
+        .iter()
+        .map(|call| ToolCall {
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            id: call.call_id.clone(),
+            function_name: call.name.clone(),
+        })
+        .collect();
+    Ok(AgentModelReply {
+        message,
+        content: reply.content,
+        tool_calls,
+        reasoning: reply.reasoning,
+        content_streamed: reply.content_streamed,
+    })
+}
+
+/// 从 `initialize` 参数里取模型配置；给了就给，缺字段或形状不对按「没给」处理。
+fn model_config_of(params: Option<&Value>) -> Option<Box<KernelModelConfig>> {
+    let value = params?.get("model")?;
+    if value.is_null() {
+        return None;
+    }
+    serde_json::from_value::<KernelModelConfig>(value.clone())
+        .ok()
+        .map(Box::new)
 }
 
 /// 工具端口：整批交给宿主执行，按调用顺序取回观察。
@@ -256,13 +483,20 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     conn.borrow().cancel.store(false, Ordering::SeqCst);
 
     let mut messages = vec![json!({"role": "user", "content": params.user_text})];
-    let mut model = RemoteModelPort {
-        conn: Rc::clone(conn),
-        turn_id: turn_id.clone(),
+    // 宿主给了模型配置就由内核自己发请求；没给则维持 model.reply 代答的兼容路径。
+    let mut model: Box<dyn ReplySource> = match conn.borrow().model.clone() {
+        Some(config) => Box::new(KernelModelPort {
+            conn: Rc::clone(conn),
+            config,
+        }),
+        None => Box::new(RemoteModelPort {
+            conn: Rc::clone(conn),
+            turn_id: turn_id.clone(),
+        }),
     };
     let mut tools = RemoteTools {
         conn: Rc::clone(conn),
-        turn_id,
+        turn_id: turn_id.clone(),
     };
     let cancel_source = Rc::clone(conn);
     let mut cancel_check = move || {
@@ -281,7 +515,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     // 主 Agent 的预算是无限的：与 Python 侧一致，靠取消与停止检查来收敛。
     let outcome = runner.run(
         &mut messages,
-        &mut model,
+        &mut *model,
         &mut tools,
         AgentLoopLimits::default(),
         guards,
@@ -291,7 +525,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     match outcome {
         Ok(result) => {
             connection.notify(HostEvent::TurnFinished(TurnFinishedPayload {
-                turn_id: model.turn_id.clone(),
+                turn_id: turn_id.clone(),
                 final_text: result.final_text,
                 reasoning: result.reasoning,
                 model_turns: result.model_turns,
@@ -352,8 +586,13 @@ fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
     let (id, command) = (pending.id, pending.command);
     match command {
         Command::Initialize(InitializeParams {
-            protocol_version, ..
+            protocol_version,
+            model,
+            ..
         }) => {
+            if let Some(config) = model {
+                conn.borrow_mut().model = Some(*config);
+            }
             conn.borrow_mut().handshake(id, &protocol_version);
             false
         }
@@ -424,6 +663,7 @@ pub fn run_stdio() -> Result<(), String> {
         cancel: Arc::new(AtomicBool::new(false)),
         handshaken: false,
         exit_requested: false,
+        model: None,
         next_id: 0,
     }));
 

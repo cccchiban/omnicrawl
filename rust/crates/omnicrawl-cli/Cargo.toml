@@ -14,4 +14,6 @@ path = "src/main.rs"
 [dependencies]
 omnicrawl-core = { path = "../omnicrawl-core" }
 omnicrawl-ipc = { path = "../omnicrawl-ipc" }
+omnicrawl-llm = { path = "../omnicrawl-llm" }
+omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 serde_json = { workspace = true }

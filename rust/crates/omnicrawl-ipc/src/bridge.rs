@@ -3,6 +3,8 @@
 //! 方法名与负载字段是协议的一部分；改动即破坏性变更，必须同步 `docs/protocol-v1.md`
 //! 与宿主实现。
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -235,6 +237,51 @@ pub struct InitializeParams {
     /// 宿主自报的客户端信息，内核不解释，只用于日志与诊断。
     #[serde(default)]
     pub client: Value,
+    /// 可选的模型配置：给了就由内核自己发模型请求，不给则退回 `model.reply` 代答。
+    ///
+    /// 装箱是因为它比同枚举里其他命令大一个量级，内联会让 Channel 每次投递都搬整块配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<Box<KernelModelConfig>>,
+}
+
+/// 宿主交给内核的模型配置，内核据此自己发起 Chat Completions 请求。
+///
+/// 凭据不进帧：这里只给环境变量名，内核在发请求时读环境。
+/// 这样帧、日志与诊断输出里都不会出现 Key，Python 侧的 `api_key_env` 也是同一套约定。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KernelModelConfig {
+    pub model: String,
+    /// 空则用运行时的默认地址。
+    #[serde(default)]
+    pub base_url: String,
+    /// 存放 API Key 的环境变量名。
+    #[serde(default)]
+    pub api_key_env: String,
+    #[serde(default)]
+    pub user_agent: String,
+    /// 系统提示词。请求改由内核组装后，这份文本必须由宿主交进来。
+    #[serde(default)]
+    pub system_prompt: String,
+    /// 静态工具声明（OpenAI functions 形状）；工具仍由宿主执行，内核只负责声明。
+    #[serde(default)]
+    pub tools: Vec<Value>,
+    /// 生成选项，`GenerationOptions` 的 JSON 形状；缺省用默认值。
+    #[serde(default)]
+    pub options: Value,
+    /// 单次请求的超时秒数；缺省或非正数时用运行时默认。
+    #[serde(default)]
+    pub request_timeout_seconds: Option<f64>,
+    #[serde(default)]
+    pub prompt_cache_capable: bool,
+    #[serde(default)]
+    pub prompt_cache_identity: BTreeMap<String, String>,
+    /// 空响应与可重试错误的最大请求次数，默认 1（与 Python 侧主循环的默认一致）。
+    #[serde(default = "default_request_retry_count")]
+    pub request_retry_count: u32,
+}
+
+fn default_request_retry_count() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
