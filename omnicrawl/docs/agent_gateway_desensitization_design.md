@@ -167,7 +167,7 @@ OmniCrawl 以「本地 Agent + 模型服务」形态工作：宿主把对话消�
 候选判定（`is_entropy_candidate`，参数均可配置）：
 
 1. 长度 ≥ `entropy_min_length`（默认 20）；
-2. 单类令牌开关（默认关闭）：`entropy_pure_letters` 开启后纯字母长度达标即候选（含 a-f 的十六进制字母串仍跳过，`Desensitized` 字样跳过）；`entropy_pure_digits` 同理处理纯数字；
+2. 单类令牌开关（默认关闭）：`entropy_pure_letters` 开启后纯字母长度达标即候选（含 a-f 的十六进制字母串、`Desensitized` 字样、词形标识符仍跳过）；`entropy_pure_digits` 同理处理纯数字。词形豁免按 camelCase / PascalCase / 下划线切段，各段须落在 2–20 字符之间且至少半数段含元音，避免类型名、函数名与普通单词被当作秘密；
 3. 形态白名单（`is_entropy_exempt`）跳过：UUID、全十六进制（含纯数字）、十六进制+冒号（MAC/IPv6 类）、前缀哈希（`sha256:…`）、语义化版本、日期时间、URL 与文件路径（含 Windows）、代码/序列化片段（含 `()[]{}'";,<>` 等标点）、命名链（蛇形/点分/命名空间/枚举）、赋值等号片段、短分段词形、无数字标识符；
 4. 字符类混合：至少同时具备「字母 + 数字/符号」两类且总数 ≥ 2 类；
 5. 香农熵 ≥ `entropy_min_bits`（默认 3.5 bit/char）。
@@ -436,7 +436,7 @@ exempt_keys = []               # 豁免键名（优先）
 entropy_enabled = true         # 熵兜底开关（关闭则仅键名 / 结构匹配）
 entropy_min_length = 20        # 熵兜底：长度下限
 entropy_min_bits = 3.5         # 熵兜底：熵阈值
-entropy_pure_letters = false   # 纯字母令牌：长度达标即脱敏（默认关闭）
+entropy_pure_letters = false   # 纯字母令牌：长度达标即脱敏，词形标识符仍跳过（默认关闭）
 entropy_pure_digits = false    # 纯数字令牌：长度达标即脱敏（默认关闭）
 # 值类型规则层（高危默认开、泛化类默认关）
 detect_pem_private_key = true         # PEM 私钥

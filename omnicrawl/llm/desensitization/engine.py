@@ -153,6 +153,16 @@ ENTROPY_TOKEN_STRIP_CHARS = "\"'`()[]{}<>,;!?*.:"
 # 组合词），保证 `utf8_encode_value_longer` 类高熵词形不误报。
 _ENTROPY_SEGMENT_MAX_LENGTH = 10
 
+# 纯字母词的词段边界（camelCase / PascalCase / 下划线）与段长区间：单类开关开启时，
+# 普通类型名 / 函数名 / 单词按词形跳过，只有切段后形态不像词的随机串仍进候选（§5.2 扩展）。
+_WORD_BOUNDARY_PATTERN = re.compile(
+    r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|_+"
+)
+_WORD_SEGMENT_MIN_LENGTH = 2
+_WORD_SEGMENT_MAX_LENGTH = 20
+# 词段须含元音：随机串的段常为无元音辅音簇（`Ghb` / `Zkq`）。
+_VOWEL_CHARS = frozenset("aeiou")
+
 _UUID_FULL_PATTERN = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
@@ -253,6 +263,30 @@ def _is_naming_chain(token: str) -> bool:
     )
 
 
+def is_word_shaped_letters(token: str) -> bool:
+    """纯字母 token 是否为词形标识符（camelCase / PascalCase / 下划线分词 / 单词）。
+
+    随机串在大小写边界上切出的段普遍只有 1–2 字符、整段远超词长、或段内普遍凑不出元音；
+    词形标识符的段长都落在词长区间内，且至少半数段含元音（缩写段如 `Http` / `Rpc` 允许
+    少数无元音）。命中词形即按代码标识符跳过，避免类型名、函数名与普通单词被当作秘密。
+    """
+
+    segments = [segment for segment in _WORD_BOUNDARY_PATTERN.split(token) if segment]
+    if not segments:
+        return False
+    if any(
+        len(segment) < _WORD_SEGMENT_MIN_LENGTH or len(segment) > _WORD_SEGMENT_MAX_LENGTH
+        for segment in segments
+    ):
+        return False
+    vowel_segments = sum(
+        1
+        for segment in segments
+        if any(character in _VOWEL_CHARS for character in segment.casefold())
+    )
+    return vowel_segments * 2 >= len(segments)
+
+
 def is_entropy_candidate(
     token: str,
     *,
@@ -264,8 +298,8 @@ def is_entropy_candidate(
     """熵兜底候选判定：长度 + 单类开关 + 形态白名单 + 字符类混合 + 香农熵（§5.2）。
 
     纯字母 / 纯数字（``pure_letters`` / ``pure_digits`` 开启时）不受字符类混合与
-    熵阈值约束：长度达标即视为候选；仍跳过十六进制字母串（哈希 / 编号语义）与
-    含 ``Desensitized`` 字样的占位符残留。
+    熵阈值约束：长度达标即视为候选；仍跳过十六进制字母串（哈希 / 编号语义）、
+    含 ``Desensitized`` 字样的占位符残留与词形标识符（类型名 / 函数名 / 单词）。
     """
 
     if len(token) < min_length:
@@ -274,6 +308,8 @@ def is_entropy_candidate(
         return True
     if pure_letters and _PURE_LETTERS_FULL_PATTERN.fullmatch(token):
         if _HEX_FULL_PATTERN.fullmatch(token) or "esensitized" in token.lower():
+            return False
+        if is_word_shaped_letters(token):
             return False
         return True
     if is_entropy_exempt(token):
