@@ -293,21 +293,63 @@ def normalize_transcript(text: str) -> str:
     return "".join(line + chr(10) for line in lines)
 
 
+def normalize_pids(value):
+    """锁文件记的是持有者 pid，跨进程天然不同，落库前替换成占位。"""
+
+    if isinstance(value, str):
+        return re.sub(r"pid=" + r"\d+", "pid=<pid>", value)
+    if isinstance(value, list):
+        return [normalize_pids(item) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_pids(item) for key, item in value.items()}
+    return value
+
+
+def normalize_runtime(value):
+    """session_started 载荷里的运行时身份依赖解释器环境，落库前替换成占位。"""
+
+    if isinstance(value, dict):
+        return {
+            key: (RUNTIME_SLOT if key == "runtime" else normalize_runtime(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [normalize_runtime(item) for item in value]
+    return value
+
+
 def main() -> None:
     scenarios = []
     for name, steps in SCENARIOS:
         result = run_scenario(name, steps)
         raw = json.dumps(result, ensure_ascii=False)
-        session_ids = re.findall(r"20260918-030529-[a-f0-9]{6}", raw)
-        event_ids = re.findall(r"｛Desensitized:104｝", raw)
+        # 会话 id 的编号按“创建顺序”定：outputs 里 start_session 的先后是确定的，
+        # 而文件名里带随机后缀，按文件名排序会让编号在两次生成之间漂移。
+        session_ids = re.findall(
+            r"20260918-030529-[a-f0-9]{6}",
+            json.dumps(result["outputs"], ensure_ascii=False),
+        )
+        event_ids = re.findall(r"\b[0-9a-f]{24}\b", raw)
         mapping = {}
         mapping.update(indexed_mapping(list(dict.fromkeys(session_ids)), "session-id"))
-        mapping.update(indexed_mapping(list(dict.fromkeys(event_ids)), "event-id"))
-        result["outputs"] = apply_mapping(result["outputs"], mapping)
-        result["files"] = apply_mapping(
-            {path: normalize_transcript(text) for path, text in result["files"].items()},
-            mapping,
-        )
+        mapping.update({value: "<event-id>" for value in dict.fromkeys(event_ids)})
+
+        result["outputs"] = normalize_runtime(apply_mapping(result["outputs"], mapping))
+        # 键按“映射后的相对路径”排序：文件名里带随机后缀，按原名排序会让
+        # 两次生成的键序漂移（值本身一致，但 fixture 应当逐字节可复现）。
+        files = {
+            key: value
+            for key, value in sorted(
+                apply_mapping(
+                    {
+                        path: normalize_transcript(text)
+                        for path, text in result["files"].items()
+                    },
+                    mapping,
+                ).items()
+            )
+        }
+        result["files"] = normalize_pids(normalize_runtime(files))
         scenarios.append(result)
 
     fixture = {

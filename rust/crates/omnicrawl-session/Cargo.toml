@@ -11,3 +11,15 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+
+# 跨进程写锁要 OS 级文件锁：Windows 字节区间锁、POSIX flock。
+# 两者都已在依赖图里（rustls/ring 带进来的），提为直接依赖不引入新的供应链面。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

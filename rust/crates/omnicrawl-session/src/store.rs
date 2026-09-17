@@ -9,10 +9,9 @@
 //! 载荷脱敏与 artifact 改写、归档/导出/一致性诊断、以及从事件恢复上下文的投影。
 
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
@@ -20,6 +19,10 @@ use serde_json::{json, Map, Value};
 use crate::error::SessionStoreError;
 use crate::event::SessionEvent;
 use crate::index::SessionIndexEntry;
+use crate::locking::{
+    append_text_line, atomic_write_text, process_lock_for_root, DurableWritePolicy,
+    ProcessFileLock, ProcessLockGuard,
+};
 use crate::naming::{
     clean_title, new_session_id, normalize_relative_file_path, normalize_session_id,
 };
@@ -49,19 +52,31 @@ pub struct SessionStore {
     index_path: PathBuf,
     sessions_dir: PathBuf,
     history_path: PathBuf,
-    lock_path: PathBuf,
     write_lock: Mutex<()>,
+    process_lock: Arc<ProcessFileLock>,
+    policy: DurableWritePolicy,
+}
+
+/// 写路径的持锁凭据：先进程内锁、再跨进程文件锁（顺序固定，避免交叉死锁）。
+struct WriteAccess<'a> {
+    _thread: MutexGuard<'a, ()>,
+    _process: ProcessLockGuard<'a>,
 }
 
 impl SessionStore {
     pub fn open(root: impl Into<PathBuf>) -> Self {
+        Self::open_with_policy(root, DurableWritePolicy::default())
+    }
+
+    pub fn open_with_policy(root: impl Into<PathBuf>, policy: DurableWritePolicy) -> Self {
         let root = root.into();
         Self {
             index_path: root.join("index.json"),
             sessions_dir: root.join("sessions"),
             history_path: root.join("history.jsonl"),
-            lock_path: root.join(".session_store.lock"),
+            process_lock: process_lock_for_root(&root),
             write_lock: Mutex::new(()),
+            policy,
             root,
         }
     }
@@ -100,9 +115,8 @@ impl SessionStore {
         title: &str,
         now: DateTime<Utc>,
     ) -> Result<CreatedSession, SessionStoreError> {
-        let _guard = self.lock_write();
+        let _access = self.exclusive_write()?;
         self.ensure()?;
-        self.touch_lock_file()?;
 
         let entries = self.load_entries()?;
         let session_id = self.allocate_session_id(&entries, now)?;
@@ -161,9 +175,8 @@ impl SessionStore {
         parent_id: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<SessionEvent, SessionStoreError> {
-        let _guard = self.lock_write();
+        let _access = self.exclusive_write()?;
         self.ensure()?;
-        self.touch_lock_file()?;
         self.append_event_locked(session_id, event_type, payload, parent_id, now)
     }
 
@@ -183,7 +196,7 @@ impl SessionStore {
 
         let path = self.session_path(&entries[index].path)?;
         let line = format!("{}\n", event.to_json_line());
-        append_line(&path, &line).map_err(|error| {
+        append_text_line(&path, &line, self.policy.fsync).map_err(|error| {
             SessionStoreError::new(format!("写入会话转录失败：{}，{error}", path.display()))
         })?;
 
@@ -270,7 +283,12 @@ impl SessionStore {
             "{}\n",
             serde_json::to_string(&value).expect("索引条目均可序列化")
         );
-        write_atomically(&self.index_path, &text)
+        atomic_write_text(&self.index_path, &text, self.policy.fsync).map_err(|error| {
+            SessionStoreError::new(format!(
+                "原子写入失败：{}，{error}",
+                self.index_path.display()
+            ))
+        })
     }
 
     fn entry_index(
@@ -317,27 +335,22 @@ impl SessionStore {
         Err(SessionStoreError::new("无法分配会话 id：连续撞车。"))
     }
 
-    /// 锁文件记录持有者 pid（Python `.session_store.lock` 的同一约定）。
+    /// 写路径统一入口：先进程内串行，再取跨进程文件锁；顺序固定，避免交叉死锁。
     ///
-    /// 真正的跨进程互斥（超时、抢占失效锁）还没搬；这里先保证文件存在且内容一致。
-    fn touch_lock_file(&self) -> Result<(), SessionStoreError> {
-        let content = format!(
-            "pid={}
-",
-            std::process::id()
-        );
-        if fs::read_to_string(&self.lock_path).ok().as_deref() == Some(content.as_str()) {
-            return Ok(());
-        }
-        fs::write(&self.lock_path, content)
-            .map_err(|error| io_error("写会话锁文件", &self.lock_path, &error))
-    }
-
-    /// 同进程串行；跨进程互斥待搬 `session_locking.py` 的语义。
-    fn lock_write(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.write_lock
+    /// 不可重入：内部步骤一律走 `*_locked` 方法，不要在持锁期间再调公开写方法。
+    fn exclusive_write(&self) -> Result<WriteAccess<'_>, SessionStoreError> {
+        let thread = self
+            .write_lock
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let process = self.process_lock.acquire(
+            self.policy.lock_timeout_seconds,
+            self.policy.lock_poll_seconds,
+        )?;
+        Ok(WriteAccess {
+            _thread: thread,
+            _process: process,
+        })
     }
 }
 
@@ -411,26 +424,6 @@ fn update_entry_after_event(entry: &mut SessionIndexEntry, event: &SessionEvent)
 
 fn as_object(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
-}
-
-/// 追加一行并 flush（对应 Python `_append_text_line`）。
-fn append_line(path: &Path, line: &str) -> Result<(), String> {
-    let mut handle = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| error.to_string())?;
-    handle
-        .write_all(line.as_bytes())
-        .and_then(|()| handle.flush())
-        .map_err(|error| error.to_string())
-}
-
-/// 原子替换文件内容（对应 Python `atomic_write_text`）：先写临时文件再改名。
-fn write_atomically(path: &Path, text: &str) -> Result<(), SessionStoreError> {
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, text).map_err(|error| io_error("写入临时文件", &temporary, &error))?;
-    fs::rename(&temporary, path).map_err(|error| io_error("替换文件", path, &error))
 }
 
 fn io_error(action: &str, path: &Path, error: &std::io::Error) -> SessionStoreError {

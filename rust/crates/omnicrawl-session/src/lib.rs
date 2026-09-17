@@ -8,6 +8,7 @@
 pub mod error;
 pub mod event;
 pub mod index;
+pub mod locking;
 pub mod naming;
 pub mod store;
 pub mod time;
@@ -15,6 +16,10 @@ pub mod time;
 pub use error::SessionStoreError;
 pub use event::SessionEvent;
 pub use index::SessionIndexEntry;
+pub use locking::{
+    append_text_line, atomic_write_text, process_lock_for_root, DurableWritePolicy,
+    ProcessFileLock, DEFAULT_LOCK_POLL_SECONDS, DEFAULT_LOCK_TIMEOUT_SECONDS, LOCK_FILE_NAME,
+};
 pub use naming::{
     clean_title, event_type_from_json, new_session_id, normalize_event_type,
     normalize_relative_file_path, normalize_session_id, path_from_json,

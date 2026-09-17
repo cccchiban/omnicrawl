@@ -61,10 +61,10 @@
         }
       ],
       "files": {
-        ".session_store.lock": "pid=10348\n",
+        ".session_store.lock": "pid=<pid>\n",
         "history.jsonl": "",
         "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"多轮 任务\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:29.123456+00:00\",\"event_count\":1,\"message_count\":0,\"last_event_type\":\"session_started\",\"archived_at\":null}]}\n",
-        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"82f2070cef1f027cfac7af73\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"多轮 任务\",\"runtime\":{\"<normalized>\":true}}}\n"
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"多轮 任务\",\"runtime\":{\"<normalized>\":true}}}\n"
       },
       "dirs": [
         "archive",
@@ -93,10 +93,10 @@
         }
       ],
       "files": {
-        ".session_store.lock": "pid=10348\n",
+        ".session_store.lock": "pid=<pid>\n",
         "history.jsonl": "",
         "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"新会话\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:29.123456+00:00\",\"event_count\":1,\"message_count\":0,\"last_event_type\":\"session_started\",\"archived_at\":null}]}\n",
-        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"f0056d7b10f4102ef76b57d8\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"新会话\",\"runtime\":{\"<normalized>\":true}}}\n"
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"新会话\",\"runtime\":{\"<normalized>\":true}}}\n"
       },
       "dirs": [
         "archive",
@@ -162,7 +162,7 @@
           "event": {
             "version": 1,
             "session_id": "<session-id-1>",
-            "event_id": "7358a88cb03e5c11c1b66a71",
+            "event_id": "<event-id>",
             "parent_id": null,
             "type": "user_message",
             "created_at": "2026-09-18T03:05:30.123456+00:00",
@@ -176,7 +176,7 @@
           "event": {
             "version": 1,
             "session_id": "<session-id-1>",
-            "event_id": "8b09c5f3407fd6cecf5d21b2",
+            "event_id": "<event-id>",
             "parent_id": null,
             "type": "assistant_message",
             "created_at": "2026-09-18T03:05:31.123456+00:00",
@@ -191,7 +191,7 @@
           "event": {
             "version": 1,
             "session_id": "<session-id-1>",
-            "event_id": "710e2a35b758510a9a5068d3",
+            "event_id": "<event-id>",
             "parent_id": null,
             "type": "tool_result",
             "created_at": "2026-09-18T03:05:32.123456+00:00",
@@ -210,7 +210,7 @@
             {
               "version": 1,
               "session_id": "<session-id-1>",
-              "event_id": "43d10d429388899c1330fb02",
+              "event_id": "<event-id>",
               "parent_id": null,
               "type": "session_started",
               "created_at": "2026-09-18T03:05:29.123456+00:00",
@@ -218,35 +218,14 @@
                 "workspace_root": "D:\\work\\demo",
                 "title": "任务",
                 "runtime": {
-                  "version": "0.1.66",
-                  "process_started_at": "2026-09-17T19:51:33.959535+00:00",
-                  "source_fingerprint": "0872b804334b848b",
-                  "source_files": {
-                    "omnicrawl/state/session.py": {
-                      "size": 48666,
-                      "mtime_ns": 1789669019372454600
-                    },
-                    "omnicrawl/agent/core.py": {
-                      "size": 19791,
-                      "mtime_ns": 1789669019029957100
-                    },
-                    "omnicrawl/agent/subagents/coordinator.py": {
-                      "size": 69401,
-                      "mtime_ns": 1789669019041955700
-                    }
-                  },
-                  "loaded_modules": [
-                    "omnicrawl/agent/core.py",
-                    "omnicrawl/agent/subagents/coordinator.py",
-                    "omnicrawl/state/session.py"
-                  ]
+                  "<normalized>": true
                 }
               }
             },
             {
               "version": 1,
               "session_id": "<session-id-1>",
-              "event_id": "7358a88cb03e5c11c1b66a71",
+              "event_id": "<event-id>",
               "parent_id": null,
               "type": "user_message",
               "created_at": "2026-09-18T03:05:30.123456+00:00",
@@ -257,7 +236,7 @@
             {
               "version": 1,
               "session_id": "<session-id-1>",
-              "event_id": "8b09c5f3407fd6cecf5d21b2",
+              "event_id": "<event-id>",
               "parent_id": null,
               "type": "assistant_message",
               "created_at": "2026-09-18T03:05:31.123456+00:00",
@@ -269,7 +248,7 @@
             {
               "version": 1,
               "session_id": "<session-id-1>",
-              "event_id": "710e2a35b758510a9a5068d3",
+              "event_id": "<event-id>",
               "parent_id": null,
               "type": "tool_result",
               "created_at": "2026-09-18T03:05:32.123456+00:00",
@@ -285,10 +264,10 @@
         }
       ],
       "files": {
-        ".session_store.lock": "pid=10348\n",
+        ".session_store.lock": "pid=<pid>\n",
         "history.jsonl": "",
         "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"帮我看看 README 的排版\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:32.123456+00:00\",\"event_count\":4,\"message_count\":2,\"last_event_type\":\"tool_result\",\"archived_at\":null}]}\n",
-        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"43d10d429388899c1330fb02\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"任务\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"7358a88cb03e5c11c1b66a71\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"帮我看看 README 的排版\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"8b09c5f3407fd6cecf5d21b2\",\"parent_id\":null,\"type\":\"assistant_message\",\"created_at\":\"2026-09-18T03:05:31.123456+00:00\",\"payload\":{\"content\":\"好的，先读文件。\",\"reasoning\":\"先确认路径\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"710e2a35b758510a9a5068d3\",\"parent_id\":null,\"type\":\"tool_result\",\"created_at\":\"2026-09-18T03:05:32.123456+00:00\",\"payload\":{\"call_id\":\"call_1\",\"output\":\"第一行\\n第二行\",\"output_sha256\":\"61f8655a9b219b9ce122c6c7cd59ad09feac38240699cfec8d0c9b1e81a748ab\",\"output_size_chars\":7,\"storage\":\"inline\"}}\n"
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"任务\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"帮我看看 README 的排版\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"assistant_message\",\"created_at\":\"2026-09-18T03:05:31.123456+00:00\",\"payload\":{\"content\":\"好的，先读文件。\",\"reasoning\":\"先确认路径\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"tool_result\",\"created_at\":\"2026-09-18T03:05:32.123456+00:00\",\"payload\":{\"call_id\":\"call_1\",\"output\":\"第一行\\n第二行\",\"output_sha256\":\"61f8655a9b219b9ce122c6c7cd59ad09feac38240699cfec8d0c9b1e81a748ab\",\"output_size_chars\":7,\"storage\":\"inline\"}}\n"
       },
       "dirs": [
         "archive",
@@ -324,7 +303,7 @@
         }
       ],
       "files": {
-        ".session_store.lock": "pid=10348\n",
+        ".session_store.lock": "pid=<pid>\n",
         "history.jsonl": "",
         "index.json": "{\"schema_version\":1,\"sessions\":[]}\n"
       },
@@ -381,7 +360,7 @@
           "event": {
             "version": 1,
             "session_id": "<session-id-1>",
-            "event_id": "9b3281b12a484f5f249f5e44",
+            "event_id": "<event-id>",
             "parent_id": null,
             "type": "user_message",
             "created_at": "2026-09-18T03:05:30.123456+00:00",
@@ -404,7 +383,7 @@
             {
               "version": 1,
               "session_id": "<session-id-1>",
-              "event_id": "928d84a44e83f9bc133308db",
+              "event_id": "<event-id>",
               "parent_id": null,
               "type": "session_started",
               "created_at": "2026-09-18T03:05:29.123456+00:00",
@@ -412,35 +391,14 @@
                 "workspace_root": "D:\\work\\demo",
                 "title": "坏行",
                 "runtime": {
-                  "version": "0.1.66",
-                  "process_started_at": "2026-09-17T19:51:33.959535+00:00",
-                  "source_fingerprint": "0872b804334b848b",
-                  "source_files": {
-                    "omnicrawl/state/session.py": {
-                      "size": 48666,
-                      "mtime_ns": 1789669019372454600
-                    },
-                    "omnicrawl/agent/core.py": {
-                      "size": 19791,
-                      "mtime_ns": 1789669019029957100
-                    },
-                    "omnicrawl/agent/subagents/coordinator.py": {
-                      "size": 69401,
-                      "mtime_ns": 1789669019041955700
-                    }
-                  },
-                  "loaded_modules": [
-                    "omnicrawl/agent/core.py",
-                    "omnicrawl/agent/subagents/coordinator.py",
-                    "omnicrawl/state/session.py"
-                  ]
+                  "<normalized>": true
                 }
               }
             },
             {
               "version": 1,
               "session_id": "<session-id-1>",
-              "event_id": "9b3281b12a484f5f249f5e44",
+              "event_id": "<event-id>",
               "parent_id": null,
               "type": "user_message",
               "created_at": "2026-09-18T03:05:30.123456+00:00",
@@ -452,10 +410,10 @@
         }
       ],
       "files": {
-        ".session_store.lock": "pid=10348\n",
+        ".session_store.lock": "pid=<pid>\n",
         "history.jsonl": "",
         "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"正常一轮\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:30.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n",
-        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"928d84a44e83f9bc133308db\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"坏行\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"9b3281b12a484f5f249f5e44\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"正常一轮\"}}\n{\"version\":1,\"session_id\":\"bad\"\nnot json at all\n"
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"坏行\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"正常一轮\"}}\n{\"version\":1,\"session_id\":\"bad\"\nnot json at all\n"
       },
       "dirs": [
         "archive",
@@ -529,11 +487,11 @@
         }
       ],
       "files": {
-        ".session_store.lock": "pid=10348\n",
+        ".session_store.lock": "pid=<pid>\n",
         "history.jsonl": "",
         "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"甲\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:29.123456+00:00\",\"event_count\":1,\"message_count\":0,\"last_event_type\":\"session_started\",\"archived_at\":null},{\"session_id\":\"<session-id-2>\",\"title\":\"乙\",\"workspace_root\":\"D:\\\\work\\\\other\",\"path\":\"sessions/<session-id-2>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:29.123456+00:00\",\"event_count\":1,\"message_count\":0,\"last_event_type\":\"session_started\",\"archived_at\":null}]}\n",
-        "sessions/<session-id-2>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-2>\",\"event_id\":\"fc8a6414f7b5459afe818b8f\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\other\",\"title\":\"乙\",\"runtime\":{\"<normalized>\":true}}}\n",
-        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"a3d7fe589eef1609c63f710f\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"甲\",\"runtime\":{\"<normalized>\":true}}}\n"
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"甲\",\"runtime\":{\"<normalized>\":true}}}\n",
+        "sessions/<session-id-2>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-2>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\other\",\"title\":\"乙\",\"runtime\":{\"<normalized>\":true}}}\n"
       },
       "dirs": [
         "archive",

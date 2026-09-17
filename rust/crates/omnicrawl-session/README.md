@@ -28,6 +28,22 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - `read_events`：坏行记为诊断（stderr）并跳过；`list_sessions` 按更新时间倒序（稳定排序保证同刻按创建顺序）。
 - 路径边界：转录路径必须落在根目录内，越界拒绝（索引可能被外部改写，不能当可信输入）。
 
+## 跨进程锁与耐久写（`locking.rs`）
+
+对齐 Python `omnicrawl/state/session_locking.py`：同一个会话目录允许多进程访问，写路径靠 OS 级文件锁互斥。
+
+- **锁原语**：Windows 用字节区间锁（`LockFileEx`，与 Python `msvcrt.locking` 同一个机制）、POSIX 用 `flock`。
+  两个实现锁的是同一个文件、同一个区间，所以能互相排斥；进程退出时 OS 自动释放，不存在需要抢占的残留锁。
+- **锁文件**：`.session_store.lock`，内容 `pid=<进程号>`；打开时**不**截断，截断发生在拿到锁之后。
+- **两层串行**：先进程内互斥（线程之间不去争 OS 锁），再取跨进程文件锁；顺序固定避免交叉死锁。
+- **超时**：默认 30s 轮询 50ms，文案与 Python 一致（`获取会话存储写锁超时（30.0s）：<锁文件路径>：<最后一次错误>`）。
+- **耐久写**：追加转录与替换索引默认 fsync；索引走「同目录临时文件 + 原子替换」，Windows 上目标被短暂占用
+  （拒绝访问）时按线性退避重试 8 次，替换后尽量 fsync 目录（Windows 目录句柄不支持则忽略）。
+- **读路径不加锁**：与 Python 一致，`read_events` / `list_sessions` 是无锁读者。
+
+读路径与写路径的取舍是有意的：会话读多写少，读锁会拖慢恢复；代价是读者可能看到「索引已更新、转录刚写完」
+之间的瞬时状态，这与 Python 侧行为一致。
+
 ## 边界要求
 
 - 只做纯逻辑，不碰文件系统：磁盘读写（追加转录、维护索引、锁、归档、导出、一致性诊断）在后续切片。
@@ -51,8 +67,11 @@ fixture `tests/fixtures/session_models_parity.json` 共 107 个用例：会话 i
 - **非对象输入**：给事件/索引传一个 JSON 数组时，Python 会抛 `TypeError`（`data["version"]` 直接炸），
   内核统一收敛成 `SessionStoreError`，文案按「缺少字段：version。」给出。
 - **超出 `u64` 的整数**：载荷计数在 Python 里是任意精度整数，内核按 `u64` 处理，溢出的值按无效算 0。
-- **跨进程锁尚未搬**：`.session_store.lock` 只保证文件存在与内容（`pid=<pid>`）一致，同进程用互斥量串行；
-  `session_locking.py` 的超时与失效锁抢占留待后续切片。
+- **锁不可重入**：Python 的 `ProcessFileLock` 在同一线程内可重入（`start_session` 持锁后再调 `append_event`），
+  内核用「公开写方法 + `*_locked` 内部方法」替代，持锁期间不得再调公开写方法。
+- **锁超时按调用传入**：Python 把同一根目录上的超时取 max、轮询取 min 后粘在共享实例上；内核每次调用都按策略走。
+- **IO 错误文案不逐字对齐**：Python 会把系统错误包成两层路径（`写入会话转录失败：<p>，写入文件失败：<p>，…`），
+  内核只保留一层；底层 OS 错误文本本身也不同（`[Errno 13]` vs `Access is denied. (os error 5)`）。
 - **载荷整理只搬了 inline 分支**：`tool_result` 会补 `output_sha256`/`output_size_chars`/`storage=inline`；
   超长输出转 artifact 文件、以及敏感值脱敏（`_redact_sensitive_values`）尚未移植。
 - **`session_started` 的 runtime 身份**：Python 记源码指纹与已加载模块，内核记实现名与版本；该字段不参与跨实现比对。

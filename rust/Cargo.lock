@@ -316,9 +316,11 @@ name = "omnicrawl-session"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "libc",
  "serde",
  "serde_json",
  "sha2",
+ "windows-sys",
 ]
 
 [[package]]

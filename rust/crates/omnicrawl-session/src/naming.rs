@@ -196,7 +196,7 @@ fn is_jsonl_name(path: &Path) -> bool {
 ///
 /// 这里不是密码学随机源：事件 id 与会话 id 只需要在一台机器上不撞车，
 /// 所以用时间戳 + 进程 id + 计数器做散列。凭据绝不走这条路径。
-fn random_suffix() -> String {
+pub(crate) fn random_suffix() -> String {
     let mut digest = random_digest();
     digest.truncate(3);
     hex(&digest)
