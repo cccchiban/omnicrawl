@@ -1,0 +1,2424 @@
+{
+  "source": "omnicrawl/agent/runtime/execution.py",
+  "cases": [
+    {
+      "name": "empty_reply",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 1,
+        "tool_calls": 0,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [],
+        "clock_calls": 1,
+        "boundary_calls": 1
+      }
+    },
+    {
+      "name": "padded_text_is_stripped",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "  答案  "
+          },
+          "content": "  答案  ",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "答案",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 1,
+        "tool_calls": 0,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [],
+        "clock_calls": 1,
+        "boundary_calls": 1
+      }
+    },
+    {
+      "name": "reasoning_is_joined",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "think-1",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "done"
+          },
+          "content": "done",
+          "tool_calls": [],
+          "reasoning": "think-2",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "done",
+        "reasoning": "think-1\nthink-2",
+        "content_streamed": false,
+        "model_turns": 2,
+        "tool_calls": 1,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 4
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 3
+      }
+    },
+    {
+      "name": "single_tool_round_orders_messages",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            {
+              "name": "grep",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "plan",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "final"
+          },
+          "content": "final",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          },
+          {
+            "tool_call": {
+              "name": "grep",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "grep-output-1",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_1",
+              "content": "grep-output-1"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "final",
+        "reasoning": "plan",
+        "content_streamed": false,
+        "model_turns": 2,
+        "tool_calls": 2,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "grep-output-1"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 5
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read",
+              "grep"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 3
+      }
+    },
+    {
+      "name": "followups_come_after_all_tool_messages",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "shot",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "final"
+          },
+          "content": "final",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "shot",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "shot-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "shot-output-0"
+            },
+            "followup_messages": [
+              {
+                "role": "user",
+                "content": "image-a"
+              },
+              {
+                "role": "user",
+                "content": "image-b"
+              }
+            ]
+          },
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-1",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_1",
+              "content": "read-output-1"
+            },
+            "followup_messages": [
+              {
+                "role": "user",
+                "content": "image-c"
+              }
+            ]
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "final",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 2,
+        "tool_calls": 2,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "shot-output-0"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "read-output-1"
+          },
+          {
+            "role": "user",
+            "content": "image-a"
+          },
+          {
+            "role": "user",
+            "content": "image-b"
+          },
+          {
+            "role": "user",
+            "content": "image-c"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 8
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "shot",
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 3
+      }
+    },
+    {
+      "name": "second_round_keeps_call_counting",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 2
+              },
+              "id": "call_2",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "final"
+          },
+          "content": "final",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          },
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-1",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_1",
+              "content": "read-output-1"
+            },
+            "followup_messages": []
+          }
+        ],
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 2
+              },
+              "id": "call_2",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-2",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_2",
+              "content": "read-output-2"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "final",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 3,
+        "tool_calls": 3,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "read-output-1"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_2",
+            "content": "read-output-2"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 5
+          },
+          {
+            "messages_len": 7
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read",
+              "read"
+            ]
+          },
+          {
+            "first_step": 3,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 5
+      }
+    },
+    {
+      "name": "observation_count_mismatch",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "observation_mismatch",
+          "message": "工具批次观察数量与模型调用数量不一致：期望 2，实际 1。"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read",
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 1
+      }
+    },
+    {
+      "name": "cancel_before_first_request",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": 1,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "unused"
+          },
+          "content": "unused",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "cancelled",
+          "message": "宿主取消"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "request_log": [],
+        "batch_log": [],
+        "clock_calls": 1,
+        "boundary_calls": 1
+      }
+    },
+    {
+      "name": "cancel_after_first_batch",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": 2,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "unused"
+          },
+          "content": "unused",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "cancelled",
+          "message": "宿主取消"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 2
+      }
+    },
+    {
+      "name": "max_model_turns_exceeded",
+      "limits": {
+        "max_model_turns": 1
+      },
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "unused"
+          },
+          "content": "unused",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "budget_exceeded",
+          "message": "Agent Loop 已达到模型回合预算 1。"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 3
+      }
+    },
+    {
+      "name": "max_tool_calls_exceeded_before_append",
+      "limits": {
+        "max_tool_calls": 1
+      },
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "budget_exceeded",
+          "message": "Agent Loop 工具调用预算为 1，当前批次将使调用数达到 2。"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [],
+        "clock_calls": 1,
+        "boundary_calls": 1
+      }
+    },
+    {
+      "name": "timeout_exceeded_after_batch",
+      "limits": {
+        "timeout_seconds": 5
+      },
+      "clock": [
+        0.0,
+        0.0,
+        6.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "unused"
+          },
+          "content": "unused",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "budget_exceeded",
+          "message": "Agent Loop 已超过时间预算 5 秒。"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 3,
+        "boundary_calls": 2
+      }
+    },
+    {
+      "name": "timeout_not_exceeded_uses_deadline",
+      "limits": {
+        "timeout_seconds": 5
+      },
+      "clock": [
+        0.0,
+        0.0,
+        4.9,
+        4.9
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "final"
+          },
+          "content": "final",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "final",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 2,
+        "tool_calls": 1,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 4
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 4,
+        "boundary_calls": 3
+      }
+    },
+    {
+      "name": "invalid_budget_zero_model_turns",
+      "limits": {
+        "max_model_turns": 0
+      },
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "答案"
+          },
+          "content": "答案",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": true
+        }
+      ],
+      "batches": [],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "invalid_budget",
+          "message": "max_model_turns 必须是正整数或 None。"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "request_log": [],
+        "batch_log": [],
+        "clock_calls": 0,
+        "boundary_calls": 0
+      }
+    },
+    {
+      "name": "invalid_budget_zero_timeout",
+      "limits": {
+        "timeout_seconds": 0
+      },
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "答案"
+          },
+          "content": "答案",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": true
+        }
+      ],
+      "batches": [],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "invalid_budget",
+          "message": "timeout_seconds 必须是正数或 None。"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "request_log": [],
+        "batch_log": [],
+        "clock_calls": 0,
+        "boundary_calls": 0
+      }
+    },
+    {
+      "name": "reply_error_first_request",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": 1,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "答案"
+          },
+          "content": "答案",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": true
+        }
+      ],
+      "batches": [],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "reply_source",
+          "message": "模型请求失败"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [],
+        "clock_calls": 1,
+        "boundary_calls": 1
+      }
+    },
+    {
+      "name": "reply_error_second_request",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": 2,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "unused"
+          },
+          "content": "unused",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "reply_source",
+          "message": "模型请求失败"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 4
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 3
+      }
+    },
+    {
+      "name": "batch_error_after_assistant_message",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": 1,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        []
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": false,
+        "error": {
+          "tag": "tool_batch",
+          "message": "工具批次失败"
+        },
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 1
+      }
+    },
+    {
+      "name": "failed_tool_result_is_not_fatal",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": null,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "recovered"
+          },
+          "content": "recovered",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": false,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "recovered",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 2,
+        "tool_calls": 1,
+        "paused": false,
+        "has_last_reply": true,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 4
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 3
+      }
+    },
+    {
+      "name": "stop_after_first_batch_pauses",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": 1,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "unused"
+          },
+          "content": "unused",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          },
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-1",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_1",
+              "content": "read-output-1"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 1,
+        "tool_calls": 2,
+        "paused": true,
+        "has_last_reply": false,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "read-output-1"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read",
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 2
+      }
+    },
+    {
+      "name": "stop_check_after_second_batch",
+      "limits": null,
+      "clock": [
+        0.0
+      ],
+      "cancel_at": null,
+      "stop_after_batch": 2,
+      "reply_error_at": null,
+      "tool_error_at": null,
+      "replies": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": ""
+          },
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            }
+          ],
+          "reasoning": "",
+          "content_streamed": false
+        },
+        {
+          "message": {
+            "role": "assistant",
+            "content": "unused"
+          },
+          "content": "unused",
+          "tool_calls": [],
+          "reasoning": "",
+          "content_streamed": false
+        }
+      ],
+      "batches": [
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 0
+              },
+              "id": "call_0",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-0",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_0",
+              "content": "read-output-0"
+            },
+            "followup_messages": []
+          }
+        ],
+        [
+          {
+            "tool_call": {
+              "name": "read",
+              "arguments": {
+                "i": 1
+              },
+              "id": "call_1",
+              "function_name": ""
+            },
+            "result": {
+              "ok": true,
+              "output": "read-output-1",
+              "full_output": "",
+              "error_code": null,
+              "retryable": false
+            },
+            "message": {
+              "role": "tool",
+              "tool_call_id": "call_1",
+              "content": "read-output-1"
+            },
+            "followup_messages": []
+          }
+        ]
+      ],
+      "seed_messages": [
+        {
+          "role": "system",
+          "content": "sys"
+        },
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ],
+      "expected": {
+        "ok": true,
+        "final_text": "",
+        "reasoning": "",
+        "content_streamed": false,
+        "model_turns": 2,
+        "tool_calls": 2,
+        "paused": true,
+        "has_last_reply": false,
+        "messages": [
+          {
+            "role": "system",
+            "content": "sys"
+          },
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": "read-output-0"
+          },
+          {
+            "role": "assistant",
+            "content": ""
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "read-output-1"
+          }
+        ],
+        "request_log": [
+          {
+            "messages_len": 2
+          },
+          {
+            "messages_len": 4
+          }
+        ],
+        "batch_log": [
+          {
+            "first_step": 1,
+            "calls": [
+              "read"
+            ]
+          },
+          {
+            "first_step": 2,
+            "calls": [
+              "read"
+            ]
+          }
+        ],
+        "clock_calls": 1,
+        "boundary_calls": 4
+      }
+    }
+  ]
+}

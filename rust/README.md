@@ -7,9 +7,9 @@ OmniCrawl 的 Rust 内核从这里起步，目标是两件事：
    安全裁决留在内核，不下放给插件）。
 
 当前落地三层内核：**协议内核层**（Provider 无关的消息块、工具调用、流事件与归并）、
-**回合循环**（模型回复 → 整批工具观察 → 下一次模型请求）、**Provider 流解析**
-（分片与 SSE 负载 → 内核流事件），外加**宿主桥接**（协议 v1 的 NDJSON 帧、版本协商与
-事件/命令映射）。四者都是纯逻辑、无 I/O、零 Python 依赖，可单独单测。
+**回合循环**（模型回复 → 整批工具观察 → 下一次模型请求）、**Provider 运行时**
+（请求体组装、分片与 SSE 负载 → 内核流事件、用量归一化），外加**宿主桥接**（协议 v1 的
+NDJSON 帧、版本协商与事件/命令映射）。四者都是纯逻辑、无 I/O、零 Python 依赖，可单独单测。
 
 ## 目录
 
@@ -30,11 +30,15 @@ rust/
 │   ├── tests/turn_loop_parity.rs           # 与 Python 循环的对照测试
 │   ├── tests/fixtures/turn_loop_parity.json# 由 Python 侧生成的对照数据集
 │   └── README.md                           # 状态转移清单、边界与已知差异
-├── crates/omnicrawl-llm/                   # Provider 流解析 crate
+├── crates/omnicrawl-llm/                   # Provider 运行时 crate
 │   ├── src/openai_chat.rs                  # 分片归并、参数完整性、首选项
 │   ├── src/sse.rs                          # SSE 负载解码与消费
+│   ├── src/request.rs                      # 会话消息 → 请求体、工具声明、provider_options、prompt_cache_key
+│   ├── src/usage.rs                        # Responses / Chat Completions 负载 → TokenUsage
 │   ├── tests/stream_parity.rs              # 与 Python 实现的对照测试
-│   └── tests/fixtures/openai_chat_stream_parity.json
+│   ├── tests/request_parity.rs             # 请求体组装的对照测试
+│   ├── tests/usage_parity.rs               # 用量归一化的对照测试
+│   └── tests/fixtures/openai_chat_*_parity.json
 ├── crates/omnicrawl-ipc/                   # 宿主桥接（协议 v1）
 │   ├── src/frame.rs                        # NDJSON 帧、形状校验、错误码
 │   ├── src/version.rs                      # 版本常量与主版本协商
@@ -51,6 +55,8 @@ rust/
     ├── gen_parity_fixture.py               # 协议层对照数据集生成脚本
     ├── gen_core_parity_fixture.py          # 回合循环对照数据集生成脚本
     ├── gen_llm_stream_fixture.py           # Provider 流解析对照数据集生成脚本
+    ├── gen_llm_request_fixture.py          # 请求构建对照数据集生成脚本
+    ├── gen_llm_usage_fixture.py            # 用量归一化对照数据集生成脚本
     └── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
 ```
 
@@ -123,6 +129,18 @@ cd rust && cargo test -p omnicrawl-llm        # 同输入跑 Rust 实现逐字�
 `crates/omnicrawl-llm/tests/fixtures/openai_chat_stream_parity.json` 覆盖参数完整性、分片归并、
 SSE 解码与 SSE 流消费；边界与已知差异见 `crates/omnicrawl-llm/README.md`。
 
+请求构建与用量归一化同理：
+
+```bash
+python rust/tools/gen_llm_request_fixture.py  # 拦下 openai_chat.py 的 chat.completions.create 取真实 kwargs
+python rust/tools/gen_llm_usage_fixture.py    # 用 omnicrawl/llm/usage.py 生成期望值
+cd rust && cargo test -p omnicrawl-llm        # 同输入跑 Rust 实现逐字段比对
+```
+
+请求组的 fixture（`openai_chat_request_parity.json`）把 Python 交给 SDK 的 kwargs 拆成请求体与传输层
+`timeout` 两部分记录，因此消息转换、动态工具去重、生成选项合并、prompt_cache_key 都是照真跑结果对照；
+用量组（`openai_chat_usage_parity.json`）覆盖输入/输出字段名、缓存命中写法与推理 token 的三种来源。
+
 宿主桥接同理：
 
 ```bash
@@ -140,6 +158,9 @@ cd rust && cargo test -p omnicrawl-ipc        # 校验回调↔方法一一对�
    （整体锚定、媒体类型取 `png`/`jpeg`/`webp`/`gif`、payload 限 base64 字符集且非空）。
 4. `Role` 是闭集加 `Other(String)` 透传：OpenAI Chat 分支会把未知角色原样写进请求体，
    透传语义与 Python 一致。
+5. 工具调用参数串的键序不同（Python 保留 dict 插入序，Rust 的 `serde_json::Map` 是字典序），
+   浮点写法也不同（`1e+20` vs `1e20`）：语义一致，字节不一致，逐项说明见
+   `crates/omnicrawl-llm/README.md` 的「已知差异」。
 
 ## 内核进程：`omnicrawl-cli`
 
@@ -158,11 +179,14 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 **协议 v1 与内核进程均已落地**（`docs/protocol-v1.md`、`crates/omnicrawl-ipc`、`crates/omnicrawl-cli`）；
 插件侧按用户决策改用 Cordis 本体，宿主骨架在 `packages/plugin-host`（不再自研插件框架）；npm 分发骨架在
 `packages/cli`（启动器 + 三个平台分包，发布产物由 `scripts/prepare.mjs` 暂存到 `dist/npm`）。继续推进：
-`packages/plugin-host` 已接上协议 v1（`tool.batch` 的宿主对端、钩子挂到回合事件）；接下来是内核自带
-provider runtime（`omnicrawl-llm` 的请求构建），再把 Python 编排壳（会话落盘、压缩触发）收到内核侧。
+`packages/plugin-host` 已接上协议 v1（`tool.batch` 的宿主对端、钩子挂到回合事件）；`omnicrawl-llm` 的
+请求构建已落地，接下来是 HTTP 传输与重试（凑齐内核自带 provider runtime），再把 Python 编排壳
+（会话落盘、压缩触发）收到内核侧。
 分发路线见知识库「分发路线与内核宿主边界决策」：主程序最终走 npm，内核与宿主的边界以
 「进程 + NDJSON JSON-RPC / 平台二进制」为一等公民，PyO3 内联不再是路线图项。
 
-`omnicrawl-llm` 已落地流解析第一片（参数完整性、分片归并、SSE 解码与消费）；请求构建、Provider 适配
-与用量统计待迁。`omnicrawl/agent/controllers/turn/loop.py` 的编排壳（插件钩子、会话落盘、压缩触发、
-run_guard 续跑、上下文溢出恢复）仍留在 Python，待 cli 入口阶段再收。
+`omnicrawl-llm` 已落地流解析、请求构建与用量归一化三片（参数完整性、分片归并、SSE 解码与消费、
+`messages`/工具声明/生成选项/`prompt_cache_key` 组装、`TokenUsage` 归一化），三者各有 parity 数据集；
+**待迁**：HTTP 传输与重试（内核自带 provider runtime 的最后一片），随后 `model.reply` 的宿主代答退役。
+`omnicrawl/agent/controllers/turn/loop.py` 的编排壳（插件钩子、会话落盘、压缩触发、run_guard 续跑、
+上下文溢出恢复）仍留在 Python，待 cli 入口阶段再收。

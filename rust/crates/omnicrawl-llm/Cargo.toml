@@ -10,3 +10,4 @@ license.workspace = true
 omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }

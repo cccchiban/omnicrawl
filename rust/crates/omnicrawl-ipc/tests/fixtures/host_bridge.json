@@ -1,0 +1,32 @@
+{
+  "source": {
+    "run_stream": "omnicrawl/agent/controllers/turn/loop.py",
+    "loop_run": "omnicrawl/agent/runtime/execution.py"
+  },
+  "run_stream": {
+    "callbacks": [
+      "cancel_check",
+      "on_delta",
+      "on_protocol_wait",
+      "on_reasoning_delta",
+      "on_retry_status",
+      "on_status",
+      "on_stream_rollback",
+      "on_subagent_event",
+      "on_todo_update",
+      "on_token_usage",
+      "on_tool_output_update",
+      "on_tool_result",
+      "on_tool_start"
+    ],
+    "other_params": [
+      "user_text"
+    ]
+  },
+  "loop_ports": [
+    "cancel_check",
+    "execute_tool_batch",
+    "request_reply",
+    "stop_check"
+  ]
+}

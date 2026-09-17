@@ -28,6 +28,8 @@ designs/
 .omnicrawl/
 logs/
 tests/
+# 例外：Rust 内核的 parity 测试与 fixture 是内核的一部分，必须入库
+!rust/crates/*/tests/
 generated_audio/
 
 CLAUDE.md

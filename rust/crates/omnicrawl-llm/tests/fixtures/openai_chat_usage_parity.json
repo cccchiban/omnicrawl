@@ -1,0 +1,419 @@
+{
+  "source": "omnicrawl/llm/usage.py",
+  "usage": [
+    {
+      "payload": {},
+      "expected": null
+    },
+    {
+      "payload": {
+        "usage": null
+      },
+      "expected": null
+    },
+    {
+      "payload": {
+        "usage": {}
+      },
+      "expected": null
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 10,
+          "completion_tokens": 5
+        }
+      },
+      "expected": {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "input_tokens": 3,
+          "output_tokens": 4
+        }
+      },
+      "expected": {
+        "input_tokens": 3,
+        "output_tokens": 4,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 10
+        }
+      },
+      "expected": {
+        "input_tokens": 10,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "completion_tokens": 5
+        }
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 5,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "choices": [],
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "response": {
+          "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 2
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "response": {
+          "usage": null
+        }
+      },
+      "expected": null
+    },
+    {
+      "payload": {
+        "response": "not-an-object"
+      },
+      "expected": null
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_cache_hit_tokens": 4,
+          "prompt_cache_miss_tokens": 6,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "cached_input_tokens": 4,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_cache_hit_tokens": 4,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 2,
+        "cached_input_tokens": 4,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 1,
+          "cached_tokens": 5
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 1,
+        "cached_input_tokens": 5,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 1,
+          "cached_input_tokens": 5
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 1,
+        "cached_input_tokens": 5,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 1,
+          "input_cached_tokens": 5
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 1,
+        "cached_input_tokens": 5,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 1,
+          "prompt_cache_hit_tokens": 6
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 1,
+        "cached_input_tokens": 6,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 1,
+          "prompt_tokens_details": {
+            "cached_tokens": 3
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 1,
+        "cached_input_tokens": 3,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 1,
+          "input_tokens_details": {
+            "cached_tokens": 2
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 1,
+        "cached_input_tokens": 2,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "reasoning_tokens": 9
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 9
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "output_reasoning_tokens": 4
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 4
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 8
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 8
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "completion_tokens_details": {
+            "reasoning_tokens": 6
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 6
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "output_tokens_details": null,
+          "completion_tokens_details": {
+            "reasoning_tokens": 7
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 7
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "output_tokens_details": {},
+          "completion_tokens_details": {
+            "reasoning_tokens": 3
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 3
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 3
+          }
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": true,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1.0,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": "10",
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": null,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    }
+  ]
+}

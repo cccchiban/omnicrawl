@@ -1,0 +1,673 @@
+{
+  "source": "omnicrawl/llm/providers/openai_chat.py",
+  "args_complete": [
+    {
+      "value": "",
+      "expected": true
+    },
+    {
+      "value": "   ",
+      "expected": true
+    },
+    {
+      "value": "{}",
+      "expected": true
+    },
+    {
+      "value": "{\"a\": 1}",
+      "expected": true
+    },
+    {
+      "value": "{\"a\":",
+      "expected": false
+    },
+    {
+      "value": "{oops",
+      "expected": false
+    },
+    {
+      "value": "[]",
+      "expected": true
+    },
+    {
+      "value": "null",
+      "expected": true
+    },
+    {
+      "value": "123",
+      "expected": true
+    },
+    {
+      "value": "{\"路径\": \"中文\"}",
+      "expected": true
+    },
+    {
+      "value": "  {\"a\": 1}  ",
+      "expected": true
+    },
+    {
+      "value": 123,
+      "expected": true
+    },
+    {
+      "value": 0,
+      "expected": true
+    },
+    {
+      "value": null,
+      "expected": true
+    },
+    {
+      "value": {
+        "a": 1
+      },
+      "expected": true
+    },
+    {
+      "value": [],
+      "expected": true
+    }
+  ],
+  "tool_call_deltas": [
+    {
+      "name": "name_then_arguments",
+      "deltas": [
+        {
+          "index": 0,
+          "id": "call_a",
+          "function": {
+            "name": "read_file",
+            "arguments": ""
+          }
+        },
+        {
+          "index": 0,
+          "function": {
+            "arguments": "{\"path\""
+          }
+        },
+        {
+          "index": 0,
+          "function": {
+            "arguments": ": \"a.py\"}"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_a",
+          "name": "read_file"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "call_a",
+          "delta": "{\"path\""
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "call_a",
+          "delta": ": \"a.py\"}"
+        }
+      ],
+      "buffers": {
+        "0": {
+          "id": "call_a",
+          "name": "read_file",
+          "arguments": "{\"path\": \"a.py\"}"
+        }
+      },
+      "started": [
+        0
+      ]
+    },
+    {
+      "name": "missing_index_defaults_to_zero",
+      "deltas": [
+        {
+          "function": {
+            "name": "grep"
+          }
+        },
+        {
+          "function": {
+            "arguments": "{\"q\": 1}"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_0",
+          "name": "grep"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "call_0",
+          "delta": "{\"q\": 1}"
+        }
+      ],
+      "buffers": {
+        "0": {
+          "id": "",
+          "name": "grep",
+          "arguments": "{\"q\": 1}"
+        }
+      },
+      "started": [
+        0
+      ]
+    },
+    {
+      "name": "id_arrives_after_started",
+      "deltas": [
+        {
+          "index": 0,
+          "function": {
+            "name": "read_file"
+          }
+        },
+        {
+          "index": 0,
+          "id": "call_late",
+          "function": {
+            "arguments": "{}"
+          }
+        },
+        {
+          "index": 0,
+          "function": {
+            "arguments": " "
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_0",
+          "name": "read_file"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "call_late",
+          "delta": "{}"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "call_late",
+          "delta": " "
+        }
+      ],
+      "buffers": {
+        "0": {
+          "id": "call_late",
+          "name": "read_file",
+          "arguments": "{} "
+        }
+      },
+      "started": [
+        0
+      ]
+    },
+    {
+      "name": "parallel_interleaved_calls",
+      "deltas": [
+        {
+          "index": 0,
+          "id": "c0",
+          "function": {
+            "name": "a"
+          }
+        },
+        {
+          "index": 1,
+          "id": "c1",
+          "function": {
+            "name": "b"
+          }
+        },
+        {
+          "index": 0,
+          "function": {
+            "arguments": "{\"x\""
+          }
+        },
+        {
+          "index": 1,
+          "function": {
+            "arguments": "{\"y\": 1}"
+          }
+        },
+        {
+          "index": 0,
+          "function": {
+            "arguments": ": 2}"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "c0",
+          "name": "a"
+        },
+        {
+          "kind": "tool_call_started",
+          "call_id": "c1",
+          "name": "b"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "c0",
+          "delta": "{\"x\""
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "c1",
+          "delta": "{\"y\": 1}"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "c0",
+          "delta": ": 2}"
+        }
+      ],
+      "buffers": {
+        "0": {
+          "id": "c0",
+          "name": "a",
+          "arguments": "{\"x\": 2}"
+        },
+        "1": {
+          "id": "c1",
+          "name": "b",
+          "arguments": "{\"y\": 1}"
+        }
+      },
+      "started": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "arguments_without_name",
+      "deltas": [
+        {
+          "index": 2,
+          "function": {
+            "arguments": "{\"z\": 3}"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "call_2",
+          "delta": "{\"z\": 3}"
+        }
+      ],
+      "buffers": {
+        "2": {
+          "id": "",
+          "name": "",
+          "arguments": "{\"z\": 3}"
+        }
+      },
+      "started": []
+    },
+    {
+      "name": "falsy_fields_are_ignored",
+      "deltas": [
+        {
+          "index": 0,
+          "id": "",
+          "function": {}
+        },
+        {
+          "index": 0,
+          "id": 0,
+          "function": {
+            "name": "",
+            "arguments": ""
+          }
+        },
+        {
+          "index": 0,
+          "function": {
+            "name": "read",
+            "arguments": "{}"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_0",
+          "name": "read"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "call_0",
+          "delta": "{}"
+        }
+      ],
+      "buffers": {
+        "0": {
+          "id": "",
+          "name": "read",
+          "arguments": "{}"
+        }
+      },
+      "started": [
+        0
+      ]
+    },
+    {
+      "name": "numeric_id_is_stringified",
+      "deltas": [
+        {
+          "index": 3,
+          "id": 12345,
+          "function": {
+            "name": "bash"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "12345",
+          "name": "bash"
+        }
+      ],
+      "buffers": {
+        "3": {
+          "id": "12345",
+          "name": "bash",
+          "arguments": ""
+        }
+      },
+      "started": [
+        3
+      ]
+    },
+    {
+      "name": "non_object_function_is_ignored",
+      "deltas": [
+        {
+          "index": 0,
+          "id": "c0",
+          "function": "read_file"
+        },
+        {
+          "index": 0,
+          "id": "c0",
+          "function": null
+        },
+        {
+          "index": 0,
+          "id": "c0",
+          "function": {
+            "name": "read_file"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "c0",
+          "name": "read_file"
+        }
+      ],
+      "buffers": {
+        "0": {
+          "id": "c0",
+          "name": "read_file",
+          "arguments": ""
+        }
+      },
+      "started": [
+        0
+      ]
+    }
+  ],
+  "sse_decode": [
+    {
+      "payload": "{\"choices\": []}",
+      "expected": {
+        "choices": []
+      }
+    },
+    {
+      "payload": "  {\"a\": 1}  ",
+      "expected": {
+        "a": 1
+      }
+    },
+    {
+      "payload": "[1, 2]",
+      "expected": [
+        1,
+        2
+      ]
+    },
+    {
+      "payload": "\"text\"",
+      "expected": "text"
+    },
+    {
+      "payload": "null",
+      "expected": null
+    },
+    {
+      "payload": "123",
+      "expected": 123
+    },
+    {
+      "payload": "not json",
+      "expected": null
+    },
+    {
+      "payload": "",
+      "expected": null
+    },
+    {
+      "payload": "   ",
+      "expected": null
+    },
+    {
+      "payload": "{\"error\": {\"message\": \"boom\"}}",
+      "expected": {
+        "error": {
+          "message": "boom"
+        }
+      }
+    }
+  ],
+  "sse_stream": [
+    {
+      "name": "stops_at_done",
+      "payloads": [
+        "{\"choices\": []}",
+        "[DONE]",
+        "{\"choices\": [1]}"
+      ],
+      "events": [
+        {
+          "choices": []
+        }
+      ],
+      "closed": true,
+      "error": null
+    },
+    {
+      "name": "done_with_trailing_suffix",
+      "payloads": [
+        "{\"ok\": true}",
+        "[DONE]extra"
+      ],
+      "events": [
+        {
+          "ok": true
+        }
+      ],
+      "closed": true,
+      "error": null
+    },
+    {
+      "name": "skips_non_object_payloads",
+      "payloads": [
+        "[1, 2]",
+        "\"text\"",
+        "{\"ok\": true}",
+        "null"
+      ],
+      "events": [
+        {
+          "ok": true
+        }
+      ],
+      "closed": true,
+      "error": null
+    },
+    {
+      "name": "skips_unparseable_payloads",
+      "payloads": [
+        "not json",
+        "",
+        "{\"ok\": true}"
+      ],
+      "events": [
+        {
+          "ok": true
+        }
+      ],
+      "closed": true,
+      "error": null
+    },
+    {
+      "name": "empty_stream",
+      "payloads": [],
+      "events": [],
+      "closed": true,
+      "error": null
+    },
+    {
+      "name": "error_payload_raises",
+      "payloads": [
+        "{\"ok\": true}",
+        "{\"error\": {\"message\": \"boom\", \"type\": \"x\"}}"
+      ],
+      "events": [],
+      "closed": true,
+      "error": {
+        "type": "APIError",
+        "message": "boom",
+        "body": {
+          "message": "boom",
+          "type": "x"
+        }
+      }
+    },
+    {
+      "name": "error_without_message",
+      "payloads": [
+        "{\"error\": {\"type\": \"x\"}}"
+      ],
+      "events": [],
+      "closed": true,
+      "error": {
+        "type": "APIError",
+        "message": "An error occurred during streaming",
+        "body": {
+          "type": "x"
+        }
+      }
+    },
+    {
+      "name": "error_message_not_string",
+      "payloads": [
+        "{\"error\": {\"message\": 500}}"
+      ],
+      "events": [],
+      "closed": true,
+      "error": {
+        "type": "APIError",
+        "message": "An error occurred during streaming",
+        "body": {
+          "message": 500
+        }
+      }
+    },
+    {
+      "name": "error_not_object",
+      "payloads": [
+        "{\"error\": \"plain\"}"
+      ],
+      "events": [],
+      "closed": true,
+      "error": {
+        "type": "APIError",
+        "message": "An error occurred during streaming",
+        "body": "plain"
+      }
+    }
+  ],
+  "first_choice": [
+    {
+      "chunk": {
+        "choices": [
+          {
+            "delta": {
+              "content": "a"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "delta": {
+          "content": "a"
+        }
+      }
+    },
+    {
+      "chunk": {
+        "choices": []
+      },
+      "expected": null
+    },
+    {
+      "chunk": {},
+      "expected": null
+    },
+    {
+      "chunk": {
+        "choices": "not a list"
+      },
+      "expected": null
+    },
+    {
+      "chunk": {
+        "choices": [
+          null,
+          {
+            "x": 1
+          }
+        ]
+      },
+      "expected": null
+    },
+    {
+      "chunk": {
+        "choices": [
+          {
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expected": {
+        "finish_reason": "stop"
+      }
+    }
+  ]
+}

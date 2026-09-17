@@ -1,0 +1,697 @@
+{
+  "source": "omnicrawl/llm/protocol.py",
+  "conversation": [
+    {
+      "name": "text_and_tool_loop",
+      "messages": [
+        {
+          "role": "system",
+          "content": "系统提示"
+        },
+        {
+          "role": "user",
+          "content": "你好"
+        },
+        {
+          "role": "user",
+          "content": ""
+        },
+        {},
+        {
+          "role": "assistant",
+          "reasoning_content": "先看一眼",
+          "content": "开始读文件",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "function": {
+                "name": "read",
+                "arguments": "{\"path\": \"a.py\"}"
+              }
+            },
+            {
+              "id": "call_2",
+              "function": {
+                "name": "noop",
+                "arguments": {
+                  "x": 1
+                }
+              }
+            },
+            {
+              "id": "call_3",
+              "function": {
+                "name": "",
+                "arguments": "{}"
+              }
+            },
+            {
+              "id": "call_4",
+              "function": {
+                "name": "bad_json",
+                "arguments": "{not json"
+              }
+            },
+            "not-a-dict"
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "file body"
+        },
+        {
+          "role": "tool",
+          "content": [
+            {
+              "type": "text",
+              "text": "ignored"
+            }
+          ]
+        },
+        {
+          "role": "developer",
+          "content": "自定义角色"
+        },
+        {
+          "role": "assistant",
+          "content": ""
+        }
+      ],
+      "expected": [
+        {
+          "role": "system",
+          "text": "系统提示",
+          "reasoning": "",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "系统提示"
+            }
+          ],
+          "tools": []
+        },
+        {
+          "role": "user",
+          "text": "你好",
+          "reasoning": "",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "你好"
+            }
+          ],
+          "tools": []
+        },
+        {
+          "role": "user",
+          "text": "",
+          "reasoning": "",
+          "blocks": [],
+          "tools": []
+        },
+        {
+          "role": "user",
+          "text": "",
+          "reasoning": "",
+          "blocks": [],
+          "tools": []
+        },
+        {
+          "role": "assistant",
+          "text": "开始读文件",
+          "reasoning": "先看一眼",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "开始读文件"
+            },
+            {
+              "kind": "tool_call",
+              "call_id": "call_1",
+              "name": "read",
+              "arguments": {
+                "path": "a.py"
+              }
+            },
+            {
+              "kind": "tool_call",
+              "call_id": "call_2",
+              "name": "noop",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "kind": "tool_call",
+              "call_id": "call_4",
+              "name": "bad_json",
+              "arguments": {}
+            }
+          ],
+          "tools": []
+        },
+        {
+          "role": "tool",
+          "text": "",
+          "reasoning": "",
+          "blocks": [
+            {
+              "kind": "tool_result",
+              "call_id": "call_1",
+              "ok": true,
+              "content": "file body"
+            }
+          ],
+          "tools": []
+        },
+        {
+          "role": "tool",
+          "text": "",
+          "reasoning": "",
+          "blocks": [
+            {
+              "kind": "tool_result",
+              "call_id": "",
+              "ok": true,
+              "content": ""
+            }
+          ],
+          "tools": []
+        },
+        {
+          "role": "developer",
+          "text": "自定义角色",
+          "reasoning": "",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "自定义角色"
+            }
+          ],
+          "tools": []
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "reasoning": "",
+          "blocks": [],
+          "tools": []
+        }
+      ],
+      "expected_tools": []
+    },
+    {
+      "name": "content_parts_and_images",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "看这张图"
+            },
+            {
+              "type": "input_text",
+              "text": "还有这张"
+            },
+            {
+              "type": "text",
+              "text": ""
+            },
+            {
+              "type": "input_image",
+              "image_url": {
+                "url": "data:image/PNG;base64,QUJD",
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": " data:image/jpeg;base64,//4A ",
+                "detail": "low"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.com/a.png"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/svg+xml;base64,QUJD"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/gif;base64,****"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "detail": "high"
+              }
+            },
+            {
+              "type": "image_url",
+              "image_url": "data:image/webp;base64,QUJD",
+              "detail": "weird"
+            },
+            {
+              "type": "unknown_part",
+              "text": "skip me"
+            },
+            "not-a-dict"
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "text": "看这张图还有这张",
+          "reasoning": "",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "看这张图"
+            },
+            {
+              "kind": "text",
+              "text": "还有这张"
+            },
+            {
+              "kind": "image",
+              "media_type": "image/png",
+              "data_base64": "QUJD",
+              "detail": "high"
+            },
+            {
+              "kind": "image",
+              "media_type": "image/jpeg",
+              "data_base64": "//4A",
+              "detail": "low"
+            },
+            {
+              "kind": "image",
+              "media_type": "image/webp",
+              "data_base64": "QUJD",
+              "detail": "auto"
+            }
+          ],
+          "tools": []
+        }
+      ],
+      "expected_tools": []
+    },
+    {
+      "name": "system_tools",
+      "messages": [
+        {
+          "role": "system",
+          "content": "",
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "grep",
+                "description": "搜索",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "pattern": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "no_params"
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "  "
+              }
+            },
+            {
+              "type": "function",
+              "description": "缺少函数体"
+            },
+            "not-a-dict"
+          ]
+        },
+        {
+          "role": "system",
+          "content": "再来一遍",
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "grep",
+                "description": "重复"
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "glob",
+                "description": "找文件"
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "role": "system",
+          "text": "",
+          "reasoning": "",
+          "blocks": [],
+          "tools": [
+            {
+              "name": "grep",
+              "description": "搜索",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "pattern": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "name": "no_params",
+              "description": "",
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ]
+        },
+        {
+          "role": "system",
+          "text": "再来一遍",
+          "reasoning": "",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "再来一遍"
+            }
+          ],
+          "tools": [
+            {
+              "name": "grep",
+              "description": "重复",
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            },
+            {
+              "name": "glob",
+              "description": "找文件",
+              "parameters": {
+                "type": "object",
+                "properties": {}
+              }
+            }
+          ]
+        }
+      ],
+      "expected_tools": [
+        {
+          "name": "grep",
+          "description": "搜索",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "no_params",
+          "description": "",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "glob",
+          "description": "找文件",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    }
+  ],
+  "aggregate": [
+    {
+      "name": "text_reasoning_tool_and_usage",
+      "events": [
+        {
+          "kind": "text_delta",
+          "text": "你好"
+        },
+        {
+          "kind": "text_delta",
+          "text": ""
+        },
+        {
+          "kind": "reasoning_delta",
+          "text": " 想想 "
+        },
+        {
+          "kind": "reasoning_delta",
+          "text": "再想想 "
+        },
+        {
+          "kind": "tool_call_started",
+          "call_id": "c1",
+          "name": "read"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "c1",
+          "delta": "{\"path\":"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "c1",
+          "delta": " \"a.py\"}"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "c1",
+          "name": "read",
+          "arguments": {
+            "path": "a.py"
+          }
+        },
+        {
+          "kind": "usage",
+          "input_tokens": 120,
+          "output_tokens": 30,
+          "cached_input_tokens": 64,
+          "reasoning_tokens": 7
+        },
+        {
+          "kind": "warning",
+          "code": "rate_limit",
+          "message": "被限流"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "expected": {
+        "content": "你好",
+        "reasoning": "想想 再想想",
+        "finish_reason": "tool_calls",
+        "content_streamed": true,
+        "usage": {
+          "input_tokens": 120,
+          "output_tokens": 30,
+          "cached_input_tokens": 64,
+          "reasoning_tokens": 7
+        },
+        "tool_calls": [
+          {
+            "call_id": "c1",
+            "name": "read",
+            "arguments": {
+              "path": "a.py"
+            }
+          }
+        ],
+        "warnings": [
+          {
+            "code": "rate_limit",
+            "message": "被限流"
+          }
+        ],
+        "blocks": [
+          {
+            "kind": "text",
+            "text": "你好"
+          },
+          {
+            "kind": "tool_call",
+            "call_id": "c1",
+            "name": "read",
+            "arguments": {
+              "path": "a.py"
+            }
+          }
+        ],
+        "assistant_role": "assistant",
+        "message_reasoning": "",
+        "message_tool_count": 0
+      }
+    },
+    {
+      "name": "unfinished_tool_calls_are_recovered",
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "pending_ok",
+          "name": "read"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "pending_ok",
+          "delta": "{\"path\": \"b.py\"}"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "orphan",
+          "delta": "{\"x\": 1}"
+        },
+        {
+          "kind": "tool_call_started",
+          "call_id": "empty_name",
+          "name": "   "
+        },
+        {
+          "kind": "tool_call_started",
+          "call_id": "bad_json",
+          "name": "read"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "bad_json",
+          "delta": "{oops"
+        },
+        {
+          "kind": "tool_call_started",
+          "call_id": "overwritten",
+          "name": "first"
+        },
+        {
+          "kind": "tool_call_started",
+          "call_id": "overwritten",
+          "name": "second"
+        },
+        {
+          "kind": "tool_call_arguments_delta",
+          "call_id": "overwritten",
+          "delta": "{\"n\": 2}"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": ""
+        }
+      ],
+      "expected": {
+        "content": "",
+        "reasoning": "",
+        "finish_reason": "stop",
+        "content_streamed": false,
+        "usage": null,
+        "tool_calls": [
+          {
+            "call_id": "pending_ok",
+            "name": "read",
+            "arguments": {
+              "path": "b.py"
+            }
+          },
+          {
+            "call_id": "bad_json",
+            "name": "read",
+            "arguments": {}
+          },
+          {
+            "call_id": "overwritten",
+            "name": "second",
+            "arguments": {
+              "n": 2
+            }
+          }
+        ],
+        "warnings": [],
+        "blocks": [
+          {
+            "kind": "tool_call",
+            "call_id": "pending_ok",
+            "name": "read",
+            "arguments": {
+              "path": "b.py"
+            }
+          },
+          {
+            "kind": "tool_call",
+            "call_id": "bad_json",
+            "name": "read",
+            "arguments": {}
+          },
+          {
+            "kind": "tool_call",
+            "call_id": "overwritten",
+            "name": "second",
+            "arguments": {
+              "n": 2
+            }
+          }
+        ],
+        "assistant_role": "assistant",
+        "message_reasoning": "",
+        "message_tool_count": 0
+      }
+    },
+    {
+      "name": "empty_stream",
+      "events": [],
+      "expected": {
+        "content": "",
+        "reasoning": "",
+        "finish_reason": "stop",
+        "content_streamed": false,
+        "usage": null,
+        "tool_calls": [],
+        "warnings": [],
+        "blocks": [],
+        "assistant_role": "assistant",
+        "message_reasoning": "",
+        "message_tool_count": 0
+      }
+    }
+  ]
+}

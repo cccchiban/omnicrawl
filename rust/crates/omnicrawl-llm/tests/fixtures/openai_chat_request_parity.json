@@ -1,0 +1,2372 @@
+{
+  "source": [
+    "omnicrawl/llm/providers/openai_chat.py",
+    "omnicrawl/llm/providers/openai_common.py"
+  ],
+  "requests": [
+    {
+      "name": "text_only_default_options",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "你好"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "你好"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "blank_system_prompt",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "   ",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "assistant_tool_round_trip",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "读一下 a.py"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          },
+          {
+            "role": "assistant",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "我来读。"
+                }
+              },
+              {
+                "ToolCall": {
+                  "call_id": "call_1",
+                  "name": "read_file",
+                  "arguments": {
+                    "path": "a.py"
+                  },
+                  "provider_call_id": ""
+                }
+              }
+            ],
+            "reasoning": "先看文件",
+            "tools": []
+          },
+          {
+            "role": "tool",
+            "blocks": [
+              {
+                "ToolResult": {
+                  "call_id": "call_1",
+                  "ok": true,
+                  "content": "print(1)"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "读取文件内容",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          }
+        ],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "读一下 a.py"
+            },
+            {
+              "role": "assistant",
+              "content": "我来读。",
+              "reasoning_content": "先看文件",
+              "tool_calls": [
+                {
+                  "id": "call_1",
+                  "type": "function",
+                  "function": {
+                    "name": "read_file",
+                    "arguments": "{\"path\": \"a.py\"}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "call_1",
+              "content": "print(1)"
+            }
+          ],
+          "stream": true,
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "description": "读取文件内容",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "assistant_tool_calls_without_reasoning",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "assistant",
+            "blocks": [
+              {
+                "ToolCall": {
+                  "call_id": "call_2",
+                  "name": "read_file",
+                  "arguments": {
+                    "path": "b.py"
+                  },
+                  "provider_call_id": ""
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "读取文件内容",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          }
+        ],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "reasoning_content": "",
+              "tool_calls": [
+                {
+                  "id": "call_2",
+                  "type": "function",
+                  "function": {
+                    "name": "read_file",
+                    "arguments": "{\"path\": \"b.py\"}"
+                  }
+                }
+              ]
+            }
+          ],
+          "stream": true,
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "description": "读取文件内容",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              }
+            }
+          ],
+          "tool_choice": "auto",
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "assistant_text_with_reasoning",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "assistant",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "结论"
+                }
+              }
+            ],
+            "reasoning": "想过一遍",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "assistant",
+              "content": "结论",
+              "reasoning_content": "想过一遍"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "assistant_empty_blocks",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "assistant",
+            "blocks": [],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "assistant",
+              "content": null
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "user_image_and_text",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "看这张图"
+                }
+              },
+              {
+                "Image": {
+                  "media_type": "image/jpeg",
+                  "data_base64": "aGk=",
+                  "detail": "high"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "看这张图"
+                },
+                {
+                  "type": "image_url",
+                  "image_url": {
+                    "url": "data:image/jpeg;base64,aGk=",
+                    "detail": "high"
+                  }
+                }
+              ]
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "user_image_only",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Image": {
+                  "media_type": "image/png",
+                  "data_base64": "aGk=",
+                  "detail": "auto"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": [
+                {
+                  "type": "image_url",
+                  "image_url": {
+                    "url": "data:image/png;base64,aGk=",
+                    "detail": "auto"
+                  }
+                }
+              ]
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "user_empty_text_block",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": ""
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": ""
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "user_no_blocks",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": ""
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "tool_message_with_text_block",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "tool",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "被忽略"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "dynamic_tools_dedup",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "system",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "按需加载"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": [
+              {
+                "name": "read_file",
+                "description": "读取文件内容",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "blocks": [],
+            "reasoning": "",
+            "tools": [
+              {
+                "name": "read_file",
+                "description": "读取文件内容",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              },
+              {
+                "name": "list_dir",
+                "description": "列出目录",
+                "parameters": {}
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "继续"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "system",
+              "tools": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "read_file",
+                    "description": "读取文件内容",
+                    "parameters": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "path"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "role": "system",
+              "tools": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "list_dir",
+                    "description": "列出目录",
+                    "parameters": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": "继续"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "dynamic_tools_all_duplicate",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "system",
+            "blocks": [],
+            "reasoning": "",
+            "tools": [
+              {
+                "name": "list_dir",
+                "description": "列出目录",
+                "parameters": {}
+              }
+            ]
+          },
+          {
+            "role": "system",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "整条被丢弃"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": [
+              {
+                "name": "list_dir",
+                "description": "列出目录",
+                "parameters": {}
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "继续"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "system",
+              "tools": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "list_dir",
+                    "description": "列出目录",
+                    "parameters": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "role": "user",
+              "content": "继续"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "dynamic_tools_drop_blocks",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "system",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "不能带 content"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": [
+              {
+                "name": "list_dir",
+                "description": "列出目录",
+                "parameters": {}
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "system",
+              "tools": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "list_dir",
+                    "description": "列出目录",
+                    "parameters": {
+                      "type": "object",
+                      "properties": {}
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "unknown_role_passthrough",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "developer",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "developer",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "tool_call_id_fallback_to_provider_id",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "assistant",
+            "blocks": [
+              {
+                "ToolCall": {
+                  "call_id": "",
+                  "name": "read_file",
+                  "arguments": {
+                    "path": "c.py"
+                  },
+                  "provider_call_id": "provider_call_9"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "reasoning_content": "",
+              "tool_calls": [
+                {
+                  "id": "provider_call_9",
+                  "type": "function",
+                  "function": {
+                    "name": "read_file",
+                    "arguments": "{\"path\": \"c.py\"}"
+                  }
+                }
+              ]
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "tools_with_explicit_tool_choice",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "列目录"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [
+          {
+            "name": "read_file",
+            "description": "读取文件内容",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ]
+            }
+          },
+          {
+            "name": "list_dir",
+            "description": "列出目录",
+            "parameters": {}
+          }
+        ],
+        "options": {
+          "tool_choice": "required"
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "列目录"
+            }
+          ],
+          "stream": true,
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "read_file",
+                "description": "读取文件内容",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "list_dir",
+                "description": "列出目录",
+                "parameters": {
+                  "type": "object",
+                  "properties": {}
+                }
+              }
+            }
+          ],
+          "tool_choice": "required",
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "zero_max_tokens_and_zero_temperature",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "max_output_tokens": 0,
+          "temperature": 0.0
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "temperature": 0.0,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "max_tokens_and_temperature_set",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "max_output_tokens": 4096,
+          "temperature": 0.2
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "max_tokens": 4096,
+          "temperature": 0.2,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "timeout_falls_back_to_profile",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "request_timeout_seconds": 0.0
+        },
+        "profile_request_timeout_seconds": 90.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 90.0
+      },
+      "error": null
+    },
+    {
+      "name": "timeout_from_options",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "request_timeout_seconds": 45.5
+        },
+        "profile_request_timeout_seconds": 90.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 45.5
+      },
+      "error": null
+    },
+    {
+      "name": "reasoning_effort_enables_thinking",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "reasoning_effort": "high"
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "enabled"
+            },
+            "reasoning_effort": "high"
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "reasoning_effort_disabled",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "reasoning_effort": "disabled"
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "reasoning_effort_none",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "reasoning_effort": "none"
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "provider_options_preset_thinking",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "reasoning_effort": "low",
+          "provider_options": {
+            "thinking": {
+              "type": "enabled"
+            },
+            "top_p": 0.9,
+            "seed": 7
+          }
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "enabled"
+            },
+            "top_p": 0.9,
+            "seed": 7,
+            "reasoning_effort": "low"
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "prompt_cache_gpt_capable",
+      "input": {
+        "model": "gpt-5.2",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": true,
+        "prompt_cache_identity": {
+          "profile_id": "course-gateway",
+          "provider": "openai",
+          "protocol": "openai_chat_completions",
+          "model_id": "gpt-5.2"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "gpt-5.2",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          },
+          "prompt_cache_key": "local-agent-f0a4aaca0b88b9d20aec7f7d0b1f03c7"
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "prompt_cache_gpt_without_capability",
+      "input": {
+        "model": "gpt-5.2",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {
+          "profile_id": "course-gateway",
+          "provider": "openai",
+          "protocol": "openai_chat_completions",
+          "model_id": "gpt-5.2"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "gpt-5.2",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          },
+          "prompt_cache_key": "local-agent-f0a4aaca0b88b9d20aec7f7d0b1f03c7"
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "prompt_cache_non_gpt_with_capability",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": true,
+        "prompt_cache_identity": {
+          "profile_id": "course-gateway",
+          "provider": "openai",
+          "protocol": "openai_chat_completions",
+          "model_id": "gpt-5.2"
+        }
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "hi"
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "nested_and_unicode_arguments",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "算一下"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          },
+          {
+            "role": "assistant",
+            "blocks": [
+              {
+                "ToolCall": {
+                  "call_id": "call_3",
+                  "name": "calc",
+                  "arguments": {
+                    "路径": "中文/文件.py",
+                    "n": 3,
+                    "f": 1.5,
+                    "ok": true,
+                    "none": null,
+                    "列表": [
+                      1,
+                      {
+                        "k": "v"
+                      }
+                    ]
+                  },
+                  "provider_call_id": ""
+                }
+              }
+            ],
+            "reasoning": "需要计算",
+            "tools": []
+          },
+          {
+            "role": "tool",
+            "blocks": [
+              {
+                "ToolResult": {
+                  "call_id": "call_3",
+                  "ok": false,
+                  "content": ""
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {},
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": {
+          "model": "qwen3.6-plus",
+          "messages": [
+            {
+              "role": "system",
+              "content": "你是助手。"
+            },
+            {
+              "role": "user",
+              "content": "算一下"
+            },
+            {
+              "role": "assistant",
+              "content": null,
+              "reasoning_content": "需要计算",
+              "tool_calls": [
+                {
+                  "id": "call_3",
+                  "type": "function",
+                  "function": {
+                    "name": "calc",
+                    "arguments": "{\"路径\": \"中文/文件.py\", \"n\": 3, \"f\": 1.5, \"ok\": true, \"none\": null, \"列表\": [1, {\"k\": \"v\"}]}"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "tool",
+              "tool_call_id": "call_3",
+              "content": ""
+            }
+          ],
+          "stream": true,
+          "extra_body": {
+            "thinking": {
+              "type": "disabled"
+            }
+          }
+        },
+        "timeout_seconds": 180.0
+      },
+      "error": null
+    },
+    {
+      "name": "forbidden_option_model",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "provider_options": {
+            "model": "gpt-5.2"
+          }
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": null,
+        "timeout_seconds": null
+      },
+      "error": "provider_options 不允许覆盖 Host 字段：model"
+    },
+    {
+      "name": "forbidden_option_timeout",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "provider_options": {
+            "timeout": 30
+          }
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": null,
+        "timeout_seconds": null
+      },
+      "error": "provider_options 不允许覆盖 Host 字段：timeout"
+    },
+    {
+      "name": "forbidden_option_tools",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "provider_options": {
+            "tools": []
+          }
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": null,
+        "timeout_seconds": null
+      },
+      "error": "provider_options 不允许覆盖 Host 字段：tools"
+    },
+    {
+      "name": "unknown_option_key",
+      "input": {
+        "model": "qwen3.6-plus",
+        "system_prompt": "你是助手。",
+        "messages": [
+          {
+            "role": "user",
+            "blocks": [
+              {
+                "Text": {
+                  "text": "hi"
+                }
+              }
+            ],
+            "reasoning": "",
+            "tools": []
+          }
+        ],
+        "tools": [],
+        "options": {
+          "provider_options": {
+            "verbosity": "high"
+          }
+        },
+        "profile_request_timeout_seconds": 120.0,
+        "prompt_cache_capable": false,
+        "prompt_cache_identity": {}
+      },
+      "expected": {
+        "body": null,
+        "timeout_seconds": null
+      },
+      "error": "OpenAI provider_options 不支持字段：verbosity"
+    }
+  ],
+  "provider_options": [
+    {
+      "options": {},
+      "ok": true,
+      "sanitized": {},
+      "message": null
+    },
+    {
+      "options": {
+        "top_p": 0.9
+      },
+      "ok": true,
+      "sanitized": {
+        "top_p": 0.9
+      },
+      "message": null
+    },
+    {
+      "options": {
+        "thinking": {
+          "type": "enabled"
+        }
+      },
+      "ok": true,
+      "sanitized": {
+        "thinking": {
+          "type": "enabled"
+        }
+      },
+      "message": null
+    },
+    {
+      "options": {
+        "reasoning_effort": "high",
+        "seed": 1,
+        "service_tier": "flex"
+      },
+      "ok": true,
+      "sanitized": {
+        "reasoning_effort": "high",
+        "seed": 1,
+        "service_tier": "flex"
+      },
+      "message": null
+    },
+    {
+      "options": {
+        "model": "gpt-5.2"
+      },
+      "ok": false,
+      "sanitized": null,
+      "message": "provider_options 不允许覆盖 Host 字段：model"
+    },
+    {
+      "options": {
+        "stream": true
+      },
+      "ok": false,
+      "sanitized": null,
+      "message": "provider_options 不允许覆盖 Host 字段：stream"
+    },
+    {
+      "options": {
+        "temperature": 0.5
+      },
+      "ok": false,
+      "sanitized": null,
+      "message": "OpenAI provider_options 不支持字段：temperature"
+    },
+    {
+      "options": {
+        "base_url": "https://example.invalid"
+      },
+      "ok": false,
+      "sanitized": null,
+      "message": "provider_options 不允许覆盖 Host 字段：base_url"
+    }
+  ],
+  "gpt_model": [
+    {
+      "model": "gpt-5.2",
+      "expected": true
+    },
+    {
+      "model": "chatgpt-4o-latest",
+      "expected": true
+    },
+    {
+      "model": "o3-mini",
+      "expected": true
+    },
+    {
+      "model": "o1",
+      "expected": true
+    },
+    {
+      "model": "o4",
+      "expected": true
+    },
+    {
+      "model": "o",
+      "expected": false
+    },
+    {
+      "model": "gpt",
+      "expected": false
+    },
+    {
+      "model": "openai",
+      "expected": false
+    },
+    {
+      "model": "O3",
+      "expected": false
+    },
+    {
+      "model": " gpt-5.2",
+      "expected": false
+    },
+    {
+      "model": "gpt5",
+      "expected": false
+    },
+    {
+      "model": "qwen3.6-plus",
+      "expected": false
+    },
+    {
+      "model": "deepseek-v4-flash",
+      "expected": false
+    }
+  ],
+  "prompt_cache_key": [
+    {
+      "model": "gpt-5.2",
+      "identity": {
+        "profile_id": "course-gateway",
+        "provider": "openai",
+        "protocol": "openai_chat_completions",
+        "model_id": "gpt-5.2"
+      },
+      "expected": "local-agent-f0a4aaca0b88b9d20aec7f7d0b1f03c7"
+    },
+    {
+      "model": " GPT-5.2 ",
+      "identity": {
+        "profile_id": "course-gateway",
+        "provider": "openai",
+        "protocol": "openai_chat_completions",
+        "model_id": "gpt-5.2"
+      },
+      "expected": "local-agent-3369a2b643cd0555e7555a2864d248d9"
+    },
+    {
+      "model": "chatgpt-4o",
+      "identity": {
+        "教师": "王",
+        "profile_id": "p2"
+      },
+      "expected": "local-agent-1cce57c1c4072607eaf1cff061d96dcb"
+    },
+    {
+      "model": "o3-mini",
+      "identity": {},
+      "expected": "local-agent-6884f290f519902e477937ecc7a326b4"
+    },
+    {
+      "model": "qwen3.6-plus",
+      "identity": {
+        "profile_id": "course-gateway",
+        "provider": "openai",
+        "protocol": "openai_chat_completions",
+        "model_id": "gpt-5.2"
+      },
+      "expected": ""
+    }
+  ],
+  "argument_string": [
+    {
+      "arguments": {},
+      "expected": "{}"
+    },
+    {
+      "arguments": {
+        "path": "a.py"
+      },
+      "expected": "{\"path\": \"a.py\"}"
+    },
+    {
+      "arguments": {
+        "n": 0
+      },
+      "expected": "{\"n\": 0}"
+    },
+    {
+      "arguments": {
+        "n": -3
+      },
+      "expected": "{\"n\": -3}"
+    },
+    {
+      "arguments": {
+        "n": 12345678901234567890
+      },
+      "expected": "{\"n\": 12345678901234567890}"
+    },
+    {
+      "arguments": {
+        "f": 0.1
+      },
+      "expected": "{\"f\": 0.1}"
+    },
+    {
+      "arguments": {
+        "f": -0.0
+      },
+      "expected": "{\"f\": -0.0}"
+    },
+    {
+      "arguments": {
+        "s": "中文/文件.py"
+      },
+      "expected": "{\"s\": \"中文/文件.py\"}"
+    },
+    {
+      "arguments": {
+        "s": "行\n制表\t\"引号\"\\反斜杠"
+      },
+      "expected": "{\"s\": \"行\\n制表\\t\\\"引号\\\"\\\\反斜杠\"}"
+    },
+    {
+      "arguments": {
+        "s": ""
+      },
+      "expected": "{\"s\": \"\"}"
+    },
+    {
+      "arguments": {
+        "b": true
+      },
+      "expected": "{\"b\": true}"
+    },
+    {
+      "arguments": {
+        "z": null
+      },
+      "expected": "{\"z\": null}"
+    },
+    {
+      "arguments": {
+        "obj": {
+          "k": "v"
+        }
+      },
+      "expected": "{\"obj\": {\"k\": \"v\"}}"
+    },
+    {
+      "arguments": {
+        "arr": []
+      },
+      "expected": "{\"arr\": []}"
+    },
+    {
+      "arguments": {
+        "arr": [
+          1,
+          2
+        ]
+      },
+      "expected": "{\"arr\": [1, 2]}"
+    },
+    {
+      "arguments": {
+        "arr": [
+          {
+            "k": "v"
+          }
+        ]
+      },
+      "expected": "{\"arr\": [{\"k\": \"v\"}]}"
+    }
+  ],
+  "float_notation": [
+    {
+      "value": 1e+20,
+      "python": "1e+20"
+    },
+    {
+      "value": 1e-07,
+      "python": "1e-07"
+    },
+    {
+      "value": 1e-05,
+      "python": "1e-05"
+    },
+    {
+      "value": 1e+16,
+      "python": "1e+16"
+    },
+    {
+      "value": 1e+17,
+      "python": "1e+17"
+    },
+    {
+      "value": 0.1,
+      "python": "0.1"
+    }
+  ]
+}
