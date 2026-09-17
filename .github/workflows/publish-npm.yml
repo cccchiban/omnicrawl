@@ -1,0 +1,59 @@
+name: 发布 npm 包
+
+# 触发：推 npm-v* tag，或手动触发。
+# 认证：OpenID Connect（Trusted Publishing），不需要任何 npm token 或 OTP。
+# 前置（在 npmjs.com 上为每个包各配一次）：
+#   包设置 → Trusted publishing → GitHub Actions
+#   仓库：cccchiban/omnicrawl
+#   Workflow 文件名：publish-npm.yml
+#   environment：留空
+#   动作：勾选允许直接 npm publish（新连接默认只允许 staged publish）
+on:
+  push:
+    tags:
+      - "npm-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # 必需：让工作流能取 OIDC token 换短期发布凭据。
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      # Trusted Publishing 需要 npm CLI 11.5.1 以上。
+      - name: 升级 npm
+        run: npm install -g npm@latest
+
+      - name: 构建内核
+        working-directory: rust
+        run: |
+          cargo build --release -p omnicrawl-cli
+          cargo test --workspace
+
+      - name: 安装工作区依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 暂存发布产物
+        run: node packages/cli/scripts/prepare.mjs
+
+      - name: 测试
+        run: npm test --workspaces --if-present
+
+      - name: 发布平台分包
+        run: npm publish dist/npm/cli-win32-x64 --access public
+
+      - name: 发布启动器
+        run: npm publish dist/npm/cli --access public

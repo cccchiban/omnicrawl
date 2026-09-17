@@ -62,6 +62,12 @@ function stagePlatform(target, source, version) {
     name: target.name,
     version,
     description: target.description,
+    // Trusted Publishing 要求 repository.url 与 GitHub 仓库完全一致。
+    repository: {
+      type: 'git',
+      url: 'git+https://github.com/cccchiban/omnicrawl.git',
+      directory: `packages/${target.name.replace('@omnicrawl/', '')}`,
+    },
     os: [target.os],
     cpu: [target.cpu],
     files: ['bin'],
