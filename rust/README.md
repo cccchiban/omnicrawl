@@ -42,6 +42,15 @@ rust/
 │   ├── tests/runtime_loopback.rs           # 本机回环服务端上的内核行为测试
 │   ├── tests/common/mod.rs                 # 测试脚手架（fixture 输入、回环服务端、事件接收端）
 │   └── tests/fixtures/openai_chat_*_parity.json
+├── crates/omnicrawl-session/               # 会话存储 crate（先落数据契约，文件读写待搬）
+│   ├── src/event.rs                        # 转录事件：create / from_dict / to_dict / to_json_line
+│   ├── src/index.rs                        # index.json 索引条目
+│   ├── src/naming.rs                       # 会话 id、事件类型、转录路径校验与标题折叠
+│   ├── src/time.rs                         # 时间戳 ISO-8601（UTC、微秒）解析与格式化
+│   ├── src/error.rs                        # 与 Python 同文案的会话错误
+│   ├── tests/models_parity.rs              # 与 Python 的对照测试（107 用例）
+│   ├── tests/round_trip.rs                 # 写入方自洽性（读回、再写字节一致）
+│   └── tests/fixtures/session_models_parity.json
 ├── crates/omnicrawl-ipc/                   # 宿主桥接（协议 v1）
 │   ├── src/frame.rs                        # NDJSON 帧、形状校验、错误码
 │   ├── src/version.rs                      # 版本常量与主版本协商
@@ -61,6 +70,7 @@ rust/
     ├── gen_llm_request_fixture.py          # 请求构建对照数据集生成脚本
     ├── gen_llm_usage_fixture.py            # 用量归一化对照数据集生成脚本
     ├── gen_llm_runtime_fixture.py          # 端到端回合对照数据集生成脚本（内建回环服务端）
+    ├── gen_session_fixture.py              # 会话层模型对照数据集生成脚本
     └── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
 ```
 
@@ -156,6 +166,17 @@ cd rust && cargo test -p omnicrawl-llm --test runtime_parity
 Rust 侧用同一份 SSE 重放后逐字段比对事件、请求体、归并结果与错误文案。这一组把「SDK 参数」和「线上请求」
 的差别逼了出来（`extra_body` 必须摊平进请求体顶层，否则会给上游发一个非标准字段）。
 
+会话层的模型/校验同理：
+
+```bash
+python rust/tools/gen_session_fixture.py     # 期望值来自 session_models.py 真实现
+cd rust && cargo test -p omnicrawl-session
+```
+
+`session_models_parity.json` 共 107 个用例（会话 id / 事件类型 / 相对路径 / 标题折叠 / 时间戳 /
+事件与索引条目校验 / 载荷计数 / 事件创建 / 转录行），其中转录行一组是**字节级**比对：
+会话文件是两个实现共享的长期格式，一侧多一个空格或换一个键序都必须被抓住。
+
 宿主桥接同理：
 
 ```bash
@@ -173,9 +194,10 @@ cd rust && cargo test -p omnicrawl-ipc        # 校验回调↔方法一一对�
    （整体锚定、媒体类型取 `png`/`jpeg`/`webp`/`gif`、payload 限 base64 字符集且非空）。
 4. `Role` 是闭集加 `Other(String)` 透传：OpenAI Chat 分支会把未知角色原样写进请求体，
    透传语义与 Python 一致。
-5. 工具调用参数串的键序不同（Python 保留 dict 插入序，Rust 的 `serde_json::Map` 是字典序），
-   浮点写法也不同（`1e+20` vs `1e20`）：语义一致，字节不一致，逐项说明见
-   `crates/omnicrawl-llm/README.md` 的「已知差异」。
+5. 请求体的键序可能不同：两侧都保留插入序（workspace 开了 `serde_json/preserve_order`），但 Python 侧的顺序
+   由 SDK 按其签名序列化决定，内核按自己的组装序。请求体是临时报文，不追字节一致；需要逐字节一致的长期格式
+   （会话文件）另有字节级对照，见 `crates/omnicrawl-session/README.md`。浮点写法也不同（`1e+20` vs `1e20`），
+   逐项说明见 `crates/omnicrawl-llm/README.md` 的「已知差异」。
 6. 重试位置不同：Python 的 SDK 自己会重试 5xx/超时（内置 2 次），内核不内置这一层，
    只把 `retryable` 交给调用方；`prompt_cache_key` 不受支持时的摘字段重发在内核内部完成。
 
@@ -203,6 +225,12 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 「进程 + NDJSON JSON-RPC / 平台二进制」为一等公民，PyO3 内联不再是路线图项。
 
 `omnicrawl-llm` 已落地流解析、请求构建、用量归一化、HTTP 传输与端到端回合（`OpenAiChatRuntime::run_turn`），
-四类断言各有 parity 数据集，**内核已能自己独立跑完一次模型请求**。接下来是把 `omnicrawl-cli` 的回合循环从
-「`model.reply` 交宿主代答」切到内核自带 runtime，让该协议方法退役；随后把 Python 编排壳
-（插件钩子、会话落盘、压缩触发、run_guard 续跑、上下文溢出恢复）收到内核侧——那部分目前仍留在 Python。
+四类断言各有 parity 数据集，**内核已能自己独立跑完一次模型请求**；但 `omnicrawl-cli` 的回合目前仍把模型请求
+经 `model.reply` 交给宿主（`packages/plugin-host/src/agent-host.js` 应答），这一步接线是内核收尾的最后一件事。
+
+`omnicrawl-session` 已落地会话层的数据契约（事件/索引模型、命名与时间校验、转录行字节布局，107 用例对照），
+**文件读写尚未搬**：追加转录、`index.json` 维护、锁、归档、导出、一致性诊断、以及会话投影
+（从事件恢复模型消息与待办）都在 Python 侧。再往后是记忆层（`omnicrawl/state/memory.py`）。
+
+先把内核接到自带 runtime（让 `model.reply` 退役），
+再按「会话存储 I/O → 会话投影 → 记忆」的顺序推进附属功能。

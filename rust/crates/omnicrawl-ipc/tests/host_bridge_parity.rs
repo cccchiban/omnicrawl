@@ -90,12 +90,12 @@ fn finished_event_comes_from_the_turn_result_not_a_callback() {
 
 #[test]
 fn method_spaces_do_not_overlap() {
-    // 需要宿主响应的请求、单向｛Desensitized:1444｝、宿主命令三者方法名不得重叠，
-    // 否则两侧会｛Desensitized:1445｝同一条帧理解成不同方向的消息。
+    // 需要宿主响应的请求、单向通知、宿主命令三者方法名不得重叠，
+    // 否则两侧会把同一条帧理解成不同方向的消息。
     for request in [method::TOOL_BATCH, method::MODEL_REPLY] {
         assert!(
             !HostEvent::METHODS.contains(&request),
-            "{request} 需要宿主响应，不能同时是｛Desensitized:1444｝"
+            "{request} 需要宿主响应，不能同时是单向通知"
         );
         assert!(
             !Command::METHODS.contains(&request),
@@ -105,7 +105,7 @@ fn method_spaces_do_not_overlap() {
     for event in HostEvent::METHODS {
         assert!(
             !Command::METHODS.contains(event),
-            "｛Desensitized:1444｝ {event} 与宿主命令重名"
+            "单向通知 {event} 与宿主命令重名"
         );
     }
 }

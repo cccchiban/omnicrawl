@@ -77,10 +77,10 @@ fixture：
   （不是整个响应体的总时限，否则长回复会被拦腰截断）。
 - **未配置 User-Agent 时**用 ureq 默认 UA（Python 侧是 httpx 默认 UA）；配置了 `user_agent` 时两侧一致。
 - **错误分类只搬了状态码阶梯**：`errors.py` 里基于错误文案的启发式（配额、鉴权、上下文超限等关键词）尚未移植。
-- **工具调用参数串的键序不同**：Python 的 `json.dumps` 保留 dict 插入序，Rust 的 `serde_json::Map` 是字典序。
-  语义等价（Provider 按 JSON 解析），但同一段历史在两侧的请求字节不同——过渡期切到内核后，
-  上层网关的提示前缀缓存可能不命中一次。书写形式（`", "` / `": "` 分隔符、转义、整数写法）由 parity 的
-  「参数串」组逐字节钉住，键序差异由「请求」组在比对前规范化。
+- **工具调用参数串的键序不同**：Python 的 `json.dumps` 与 `serde_json` 现在都保留插入序（workspace 开了
+  `preserve_order`），但两侧的插入序来源不同：Python 侧由 SDK 按其签名顺序序列化请求体，内核按自己的组装顺序。
+  语义等价（Provider 按 JSON 解析），比较前已规范化。会话文件那种长期存续的格式另有要求，
+  见 `crates/omnicrawl-session/README.md`。
 - **浮点写法不同**：Python 用 `repr`（`1e+20`、`1e-07`），Rust 用 ryu（`1e20`、`1e-7`），`1e-5` 这类还会写成小数。
   语义等价，「浮点写法」组只校验解析回 `f64` 后相等。
 - **provider_options 多处违规时报哪一条**：Python 按调用方插入序、Rust 按字典序，两者都拒绝。

@@ -1,0 +1,13 @@
+[package]
+name = "omnicrawl-session"
+description = "会话存储（Python 侧 omnicrawl/state/ 的 Rust 内核移植）：事件与索引模型、命名与时间校验"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

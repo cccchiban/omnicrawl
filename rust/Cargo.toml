@@ -5,6 +5,7 @@ members = [
     "crates/omnicrawl-ipc",
     "crates/omnicrawl-llm",
     "crates/omnicrawl-protocol",
+    "crates/omnicrawl-session",
 ]
 resolver = "2"
 
@@ -16,11 +17,14 @@ license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# 保序：会话转录行与请求体都要跟着 Python 的 dict 插入序走，字典序会让两个实现写出的文件字节不同。
+serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 # 内核自带传输：阻塞式 HTTP/1.1 + rustls，不引入异步运行时；
 # 只要 TLS 与连接超时，gzip 等我们不发 Accept-Encoding 就用不上。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# 会话时间戳：对齐 Python datetime 的 ISO-8601（UTC、微秒）。只要解析/格式化与取当前时间。
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [profile.release]
 lto = "thin"

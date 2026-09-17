@@ -90,6 +90,10 @@ fn runtime_matches_python() {
             rust_bodies[0], python_bodies[0],
             "用例 {name} 的首个请求体不一致"
         );
+        // 键序故意不比对：请求体是临时报文，Python 侧的顺序由 SDK 内部序列化决定，
+        // 内核按自己的插入序组装；两侧都保序（preserve_order），但排布来源不同。
+        // 需要逐字节一致的是**会话文件**（长期存续、两个实现共享），那部分由
+        // `omnicrawl-session` 的转录行对照钉住。
     }
 }
 

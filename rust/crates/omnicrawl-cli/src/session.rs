@@ -29,8 +29,11 @@ use omnicrawl_ipc::version::negotiate_version;
 use serde_json::{json, Value};
 
 /// 入站消息：解析好的帧，或读取端已关闭。
+///
+/// 帧走箱装指针：`Frame` 装着 JSON 载荷，直接内联会让每次通道投递都搬几百字节，
+/// 也会让枚举尺寸被最大的变体拖大。
 enum Inbound {
-    Frame(Frame),
+    Frame(Box<Frame>),
     Closed,
 }
 
@@ -130,7 +133,7 @@ impl Conn {
     fn await_response(&mut self, id: &Id) -> Result<Value, PortFailure> {
         loop {
             let frame = match self.inbound.recv() {
-                Ok(Inbound::Frame(frame)) => frame,
+                Ok(Inbound::Frame(frame)) => *frame,
                 Ok(Inbound::Closed) | Err(_) => return Err(PortFailure::Disconnected),
             };
             let is_response = frame.method().is_none() && frame.id().is_some();
@@ -392,7 +395,7 @@ fn spawn_reader(sender: Sender<Inbound>) {
                     }
                     match Frame::parse(&line) {
                         Ok(frame) => {
-                            if sender.send(Inbound::Frame(frame)).is_err() {
+                            if sender.send(Inbound::Frame(Box::new(frame))).is_err() {
                                 break;
                             }
                         }
@@ -432,7 +435,7 @@ pub fn run_stdio() -> Result<(), String> {
     loop {
         let inbound = conn.borrow().inbound.recv();
         let frame = match inbound {
-            Ok(Inbound::Frame(frame)) => frame,
+            Ok(Inbound::Frame(frame)) => *frame,
             Ok(Inbound::Closed) | Err(_) => break,
         };
         if dispatch(&conn, frame) {
