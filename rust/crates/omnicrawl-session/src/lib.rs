@@ -9,6 +9,7 @@ pub mod error;
 pub mod event;
 pub mod index;
 pub mod naming;
+pub mod store;
 pub mod time;
 
 pub use error::SessionStoreError;
@@ -21,4 +22,5 @@ pub use naming::{
     EMPTY_SESSION_EVENT_TYPES, MESSAGE_EVENT_TYPES, MODEL_CONTEXT_EVENT_TYPES,
     SESSION_EVENT_VERSION, SUBAGENT_EVENT_TYPES,
 };
+pub use store::{kernel_runtime_identity, CreatedSession, SessionStore};
 pub use time::{datetime_from_json, datetime_to_millis, format_datetime, parse_datetime, utc_now};

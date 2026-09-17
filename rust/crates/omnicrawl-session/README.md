@@ -18,6 +18,16 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - `time`：时间戳解析与格式化，对齐 Python `datetime` 的 ISO-8601 语义（UTC、微秒）。
 - `SessionStoreError`：错误文案与 Python `SessionStoreError` 逐字一致。
 
+## 存储层（`store.rs`）
+
+- `SessionStore`：目录骨架（`sessions/`、`artifacts/`、`summaries/`、`exports/`、`archive/compacted/`）、
+  `index.json`（`{"schema_version":1,"sessions":[…]}` + 换行）、`history.jsonl`、锁文件 `.session_store.lock`（记持有者 pid）。
+- `start_session`：按时间戳分配会话 id（撞车重试）、写索引条目、追加 `session_started` 事件。
+- `append_event`：读索引 → 找条目（`未找到会话：<id>`）→ 生成事件 → 追加一行到 `sessions/<id>.jsonl`
+  → 更新索引（计数、标题、`last_event_type`、`updated_at`）→ 原子替换 `index.json`。
+- `read_events`：坏行记为诊断（stderr）并跳过；`list_sessions` 按更新时间倒序（稳定排序保证同刻按创建顺序）。
+- 路径边界：转录路径必须落在根目录内，越界拒绝（索引可能被外部改写，不能当可信输入）。
+
 ## 边界要求
 
 - 只做纯逻辑，不碰文件系统：磁盘读写（追加转录、维护索引、锁、归档、导出、一致性诊断）在后续切片。
@@ -41,6 +51,12 @@ fixture `tests/fixtures/session_models_parity.json` 共 107 个用例：会话 i
 - **非对象输入**：给事件/索引传一个 JSON 数组时，Python 会抛 `TypeError`（`data["version"]` 直接炸），
   内核统一收敛成 `SessionStoreError`，文案按「缺少字段：version。」给出。
 - **超出 `u64` 的整数**：载荷计数在 Python 里是任意精度整数，内核按 `u64` 处理，溢出的值按无效算 0。
+- **跨进程锁尚未搬**：`.session_store.lock` 只保证文件存在与内容（`pid=<pid>`）一致，同进程用互斥量串行；
+  `session_locking.py` 的超时与失效锁抢占留待后续切片。
+- **载荷整理只搬了 inline 分支**：`tool_result` 会补 `output_sha256`/`output_size_chars`/`storage=inline`；
+  超长输出转 artifact 文件、以及敏感值脱敏（`_redact_sensitive_values`）尚未移植。
+- **`session_started` 的 runtime 身份**：Python 记源码指纹与已加载模块，内核记实现名与版本；该字段不参与跨实现比对。
+- **索引顶层异常路径未覆盖**：Python 在索引不是对象时会重写索引文件，机制未确认，本片未实现也未纳入对照。
 - **`is_relative_to` 尚未搬**：这一层没有出现路径包含判断，等存储读写切片需要时再补（注意 Windows 上
   Python 的路径比较是大小写不敏感的）。
 
