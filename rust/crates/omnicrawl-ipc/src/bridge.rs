@@ -343,10 +343,7 @@ impl Command {
         if !frame.is_request() {
             return Err(BridgeError::NotARequest);
         }
-        let id = frame
-            .id()
-            .cloned()
-            .expect("is_request 已确认 id 存在");
+        let id = frame.id().cloned().expect("is_request 已确认 id 存在");
         let params = frame.params.clone().unwrap_or_else(|| json!({}));
         let command = match frame.method().unwrap_or_default() {
             method::INITIALIZE => Command::Initialize(from_params(params)?),

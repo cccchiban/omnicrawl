@@ -208,9 +208,7 @@ impl Frame {
         }
         if self.method.is_some() {
             if self.result.is_some() || self.error.is_some() {
-                return Err(FrameError::Invalid(
-                    "请求/通知不得携带 result 或 error",
-                ));
+                return Err(FrameError::Invalid("请求/通知不得携带 result 或 error"));
             }
             return Ok(());
         }
