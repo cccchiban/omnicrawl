@@ -45,3 +45,6 @@ omnicrawl/_ocsearch.h
 # Editor lock files (auto-created by omnicrawl edit tooling)
 *.omnicrawl.edit.lock
 *.omnicrawl.replace.lock
+
+# 编辑工具在文档旁生成的锁文件，不随仓库分发
+*.edit.lock
