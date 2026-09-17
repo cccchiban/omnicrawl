@@ -14,7 +14,7 @@ Cordis 之上的 OmniCrawl 契约层：钩子白名单、Handler 模式约束、
 | `isCustomHook(hook)` | 是否自定义钩子（须以 `plugin.` 开头） |
 | `isAllowed(hook, mode)` / `assertHookRegistration(hook, mode)` | 契约校验 |
 | `onHook(ctx, hook, mode, listener, options?)` | 按契约注册钩子，含超时包装 |
-| `dispatchHook(ctx, hook, mode, payload, options?)` | 宿主｛Desensitized:1362｝派发（通常不必直接调用） |
+| `dispatchHook(ctx, hook, mode, payload, options?)` | 宿主钩子派发（通常不必直接调用） |
 
 ## 四种 Handler 模式
 

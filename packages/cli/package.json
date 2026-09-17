@@ -1,6 +1,6 @@
 {
-  "name": "@omnicrawl/cli",
-  "version": "0.1.67",
+  "name": "omnicrawl-cli",
+  "version": "0.1.68",
   "description": "OmniCrawl 启动器：按平台选择内核二进制并转交 stdio",
   "repository": {
     "type": "git",
@@ -9,7 +9,7 @@
   },
   "type": "module",
   "bin": {
-    "omnicrawl": "./bin/omnicrawl.mjs"
+    "omnicrawl": "bin/omnicrawl.mjs"
   },
   "files": [
     "bin",

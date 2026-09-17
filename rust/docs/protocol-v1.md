@@ -35,7 +35,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 {"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"不支持宿主协议版本 2.0。","data":{"supported":"1.0","host":"2.0"}}}
 ```
 
-未完成握手前，内核对其｛Desensitized:1177｝请求回 `-32600`。
+未完成握手前，内核对其其余请求回 `-32600`。
 
 ## 宿主 → 内核
 
@@ -46,7 +46,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
 | `shutdown` | 请求 | `{}` | `{}` |
 
-- 回合结果只经由 `turn.finished` ｛Desensitized:1178｝传递，`turn.submit` 的响应不重复结果，避免两处真相。
+- 回合结果只经由 `turn.finished` 通知传递，`turn.submit` 的响应不重复结果，避免两处真相。
 - `turn.cancel` 是建议性的：内核在下一个模型或工具批次边界检查取消。若某一批工具已经交给宿主，
   内核等该批次返回后再收尾，不会中断宿主正在执行的工具。
 
@@ -60,9 +60,9 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `model.reply` | `{turn_id, messages: [Value]}` | AgentModelReply：`{message, content, tool_calls, reasoning, content_streamed}` |
 
 `tool.batch` 是刻意保留的批次边界：宿主必须先完成整批规范化与审批，再按 `calls` 顺序返回**同数量**
-的观察。数量不符时内核按｛Desensitized:1179｝处理并终止该回合（不变式已在 `omnicrawl-core` 内校验）。
+的观察。数量不符时内核按协议错误处理并终止该回合（不变式已在 `omnicrawl-core` 内校验）。
 
-### ｛Desensitized:1178｝
+### 通知
 
 | 方法 | params | Python 侧来源（`loop.py`） |
 | --- | --- | --- |
@@ -102,10 +102,10 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 ## 顺序与并发
 
 - 同一流内的帧顺序即事件顺序。
-- 内核等待 `tool.batch` 响应期间仍可发｛Desensitized:1178｝（`tool.started` 可能先于响应到达宿主）；
+- 内核等待 `tool.batch` 响应期间仍可发通知（`tool.started` 可能先于响应到达宿主）；
   同一 `call_id` 的 `tool.started` 必然先于 `tool.finished`。
 - 一个连接同时只跑一个回合；第二个 `turn.submit` 回 `-32002`。
-- ｛Desensitized:1178｝不带 `id`；响应必须｛Desensitized:1180｝对应请求的 `id`，`id` 允许整数或字符串。
+- 通知不带 `id`；响应必须带回对应请求的 `id`，`id` 允许整数或字符串。
 
 ## 错误码
 

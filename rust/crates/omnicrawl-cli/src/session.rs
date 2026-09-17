@@ -1,8 +1,8 @@
 //! 会话：在一条 NDJSON 流上承载协议 v1。
 //!
 //! 内核自己拥有回合循环（`omnicrawl-core`），把两个宿主端口经协议外发：`model.reply` 代模型回复、
-//! `tool.batch` 代工具批次。｛Desensitized:1505｝是过渡形态——内核自带 provider runtime 后只需换掉
-//! [`｛Desensitized:1506｝`] 一个实现，协议与循环都不动。
+//! `tool.batch` 代工具批次。宿主端口是过渡形态——内核自带 provider runtime 后只需换掉
+//! [宿主端口实现] 一个实现，协议与循环都不动。
 //!
 //! 一个回合只跑一个（第二个 `turn.submit` 回 `-32002`）；回合进行中到达的 `turn.cancel` / `shutdown`
 //! 会立即中止当前端口调用，其余请求照常应答，不阻塞宿主。
@@ -186,7 +186,7 @@ impl Conn {
                 None
             }
             (None, other) => {
-                eprintln!("[kernel] 忽略宿主的｛Desensitized:1178｝：{other}");
+                eprintln!("[kernel] 忽略宿主的通知：{other}");
                 None
             }
         }
@@ -206,7 +206,7 @@ impl ReplySource for RemoteModelPort {
             messages: messages.clone(),
         };
         let params = serde_json::to_value(&request)
-            .expect("model.reply 负载是｛Desensitized:1149｝字段，必须可序列化");
+            .expect("model.reply 负载是serde_json::Value字段，必须可序列化");
         let value = self
             .conn
             .borrow_mut()
@@ -235,7 +235,7 @@ impl ToolBatchHost for RemoteTools {
             calls: calls.to_vec(),
         };
         let params = serde_json::to_value(&batch)
-            .expect("tool.batch 负载是｛Desensitized:1149｝字段，必须可序列化");
+            .expect("tool.batch 负载是serde_json::Value字段，必须可序列化");
         let value = self
             .conn
             .borrow_mut()
@@ -275,7 +275,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     };
     let runner = AgentLoopRunner::new(Box::new(SystemClock::new()));
 
-    // 主 Agent 的预算是无限的：与 Python 侧一致，靠取消与停止检｛Desensitized:1507｝口。
+    // 主 Agent 的预算是无限的：与 Python 侧一致，靠取消与停止检查来收敛。
     let outcome = runner.run(
         &mut messages,
         &mut model,
@@ -315,7 +315,7 @@ fn turn_error(error: &LoopError) -> ErrorObject {
 fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
     let Some(id) = frame.id().cloned() else {
         eprintln!(
-            "[kernel] 忽略宿主的｛Desensitized:1178｝：{}",
+            "[kernel] 忽略宿主的通知：{}",
             frame.method().unwrap_or("<无方法>")
         );
         return false;

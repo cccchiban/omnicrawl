@@ -23,7 +23,7 @@ pub mod method {
     /// 过渡期：内核把模型请求转交宿主代答；内核自带 provider runtime 后不再使用。
     pub const MODEL_REPLY: &str = "model.reply";
 
-    // 内核 → 宿主（｛Desensitized:1144｝，宿主不需要回响应）
+    // 内核 → 宿主（通知，宿主不需要回响应）
     pub const TURN_DELTA: &str = "turn.delta";
     pub const TURN_REASONING_DELTA: &str = "turn.reasoning_delta";
     pub const TURN_STATUS: &str = "turn.status";
@@ -42,9 +42,9 @@ pub mod method {
 /// 桥接层错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeError {
-    /// 该方法要求带 `id` 的请求，收到的却是｛Desensitized:1144｝。
+    /// 该方法要求带 `id` 的请求，收到的却是通知。
     NotARequest,
-    /// 该方法要求｛Desensitized:1144｝，收到的却是带 `id` 的请求。
+    /// 该方法要求通知，收到的却是带 `id` 的请求。
     NotANotification,
     /// 方法名不在协议 v1 里。
     UnknownMethod(String),
@@ -56,7 +56,7 @@ impl std::fmt::Display for BridgeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotARequest => write!(formatter, "该方法必须是带 id 的请求。"),
-            Self::NotANotification => write!(formatter, "该方法必须是｛Desensitized:1144｝。"),
+            Self::NotANotification => write!(formatter, "该方法必须是通知。"),
             Self::UnknownMethod(method) => write!(formatter, "未知方法：{method}"),
             Self::InvalidParams(detail) => write!(formatter, "负载字段不符：{detail}"),
         }
@@ -150,7 +150,7 @@ pub enum HostEvent {
 }
 
 impl HostEvent {
-    /// 协议 v1 里内核可能发出的全部｛Desensitized:1144｝方法名。
+    /// 协议 v1 里内核可能发出的全部通知方法名。
     pub const METHODS: &'static [&'static str] = &[
         method::TURN_DELTA,
         method::TURN_REASONING_DELTA,
@@ -291,7 +291,7 @@ impl Command {
         Frame::request(id, self.method(), self.params())
     }
 
-    /// 解帧；返回 `id` 便于内核把响应｛Desensitized:1147｝原始请求。
+    /// 解帧；返回 `id` 便于内核把响应关联回原始请求。
     pub fn from_frame(frame: &Frame) -> Result<PendingCommand, BridgeError> {
         if !frame.is_request() {
             return Err(BridgeError::NotARequest);
@@ -299,7 +299,7 @@ impl Command {
         let id = frame
             .id()
             .cloned()
-            .expect("is_request 已｛Desensitized:1148｝ id 存在");
+            .expect("is_request 已确认 id 存在");
         let params = frame.params.clone().unwrap_or_else(|| json!({}));
         let command = match frame.method().unwrap_or_default() {
             method::INITIALIZE => Command::Initialize(from_params(params)?),
@@ -409,7 +409,7 @@ pub fn unsupported_version_error(host_version: &str) -> ErrorObject {
 }
 
 fn payload_value<T: Serialize>(payload: &T) -> Value {
-    serde_json::to_value(payload).expect("负载是｛Desensitized:1149｝字段，必须可序列化")
+    serde_json::to_value(payload).expect("负载是serde_json::Value字段，必须可序列化")
 }
 
 fn from_params<T: for<'de> Deserialize<'de>>(params: Value) -> Result<T, BridgeError> {

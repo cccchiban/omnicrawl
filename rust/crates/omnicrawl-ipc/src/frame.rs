@@ -5,7 +5,7 @@ use serde_json::Value;
 
 pub const JSONRPC_VERSION: &str = "2.0";
 
-/// 请求与响应的关联标识；整数与字符串都合法，缺失即｛Desensitized:1146｝。
+/// 请求与响应的关联标识；整数与字符串都合法，缺失即通知。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Id {
@@ -128,7 +128,7 @@ impl Frame {
         }
     }
 
-    /// ｛Desensitized:1144｝：不带 `id`，对方不需要回响应。
+    /// 通知：不带 `id`，对方不需要回响应。
     pub fn notification(method: impl Into<String>, params: Value) -> Self {
         Self {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -209,7 +209,7 @@ impl Frame {
         if self.method.is_some() {
             if self.result.is_some() || self.error.is_some() {
                 return Err(FrameError::Invalid(
-                    "请求/｛Desensitized:1144｝不得携带 result 或 error",
+                    "请求/通知不得携带 result 或 error",
                 ));
             }
             return Ok(());

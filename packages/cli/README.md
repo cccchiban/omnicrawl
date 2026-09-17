@@ -1,13 +1,13 @@
-# @omnicrawl/cli
+# omnicrawl-cli
 
-OmniCrawl 启动器：按 `platform-arch` 选包里｛Desensitized:1514｝里的内核二进制，把 stdio 转交给它。
+OmniCrawl 启动器：按 `platform-arch` 选包node_modules的内核二进制，把 stdio 转交给它。
 它不做协议转换——宿主直接与内核进程对话（协议见 `rust/docs/protocol-v1.md`）。
 
 ## 分发形态
 
 | npm 包 | 内容 |
 | --- | --- |
-| `@omnicrawl/cli` | JS 启动器（`bin/omnicrawl.mjs`） |
+| `omnicrawl-cli` | JS 启动器（`bin/omnicrawl.mjs`） |
 | `@omnicrawl/cli-linux-x64` | 内核二进制（Linux x64，musl 静态） |
 | `@omnicrawl/cli-linux-arm64-musl` | 内核二进制（Linux arm64，嵌入式目标） |
 | `@omnicrawl/cli-win32-x64` | 内核二进制（Windows x64） |
@@ -21,7 +21,7 @@ OmniCrawl 启动器：按 `platform-arch` 选包里｛Desensitized:1514｝里的
 ```bash
 cargo build --release -p omnicrawl-cli      # 产物：rust/target/release/omnicrawl[.exe]
 node packages/cli/scripts/prepare.mjs       # 暂存发布产物（缺的平台只警告）
-npm test -w @omnicrawl/cli                  # e2e：真二进制 + 协议 v1
+npm test -w omnicrawl-cli                  # e2e：真二进制 + 协议 v1
 OMNICRAWL_BINARY=/path/to/omnicrawl node packages/cli/bin/omnicrawl.mjs --version
 ```
 

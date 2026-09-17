@@ -2,7 +2,7 @@
 """生成回合循环对照数据集，供 Rust 侧 `omnicrawl-core` 的 parity 测试使用。
 
 期望值全部由 Python 实现（``omnicrawl/agent/runtime/execution.py`` 的循环执行器）直接产出，
-Rust 侧只做同构投影后逐字段比对。侧重放｛Desensitized:881｝脚本化：模型回复、
+Rust 侧只做同构投影后逐字段比对。侧重放事件脚本化：模型回复、
 工具批次、取消与停止触发点、时钟序列都来自用例定义，两侧跑同一份输入。
 
 用法：``python rust/tools/gen_core_parity_fixture.py``
@@ -46,7 +46,7 @@ class _BatchBoom(Exception):
 
 
 class _FakeClock:
-    """按序列｛Desensitized:879｝时刻的单调时钟，并记录取时刻次数。"""
+    """按序列推进时刻的单调时钟，并记录取时刻次数。"""
 
     def __init__(self, values: list) -> None:
         self._values = list(values)

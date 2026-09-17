@@ -3,7 +3,8 @@ node_modules/
 npm-debug.log*
 *.tgz
 packages/cli-*/bin/
-packages/cli/bin/omnicrawl*
+packages/cli/bin/omnicrawl
+packages/cli/bin/omnicrawl.exe
 *.py[cod]
 *$py.class
 *.egg-info/

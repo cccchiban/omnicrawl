@@ -107,7 +107,7 @@ cd rust && cargo test                     # tests/parity.rs 用同一份输入�
 
 ```bash
 python rust/tools/gen_core_parity_fixture.py   # 用 omnicrawl/agent/runtime/execution.py 生成期望值
-cd rust && cargo test -p omnicrawl-core        # 同输入｛Desensitized:909｝并逐字段比对
+cd rust && cargo test -p omnicrawl-core        # 同输入重放并逐字段比对
 ```
 
 `crates/omnicrawl-core/tests/fixtures/turn_loop_parity.json` 覆盖工具派发顺序、取消、超时、

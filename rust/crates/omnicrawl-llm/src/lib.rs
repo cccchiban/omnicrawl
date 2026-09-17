@@ -1,10 +1,10 @@
 //! Provider 流解析（Rust 内核）。
 //!
 //! 语义基准是 Python 侧 `omnicrawl/llm/providers/openai_chat.py`：把 Provider 的分片
-//! 与 SSE 负载映射成｛Desensitized:1020｝的流事件和工具调用缓冲。全部为纯逻辑、无 I/O，
+//! 与 SSE 负载映射成统一形式的流事件和工具调用缓冲。全部为纯逻辑、无 I/O，
 //! 传输层（HTTP、连接关闭、重试）由宿主负责。
 //!
-//! 边界要求：产出的每个事件都必须能独立序列化为一行 NDJSON，供跨进｛Desensitized:1015｝主增量消费。
+//! 边界要求：产出的每个事件都必须能独立序列化为一行 NDJSON，供进程主增量消费。
 
 mod json;
 mod openai_chat;

@@ -26,6 +26,14 @@ const TARGETS = [
     description: 'OmniCrawl 内核二进制（Windows x64）',
   },
   {
+    name: '@omnicrawl/cli-win32-ia32',
+    file: 'omnicrawl.exe',
+    triple: 'i686-pc-windows-msvc',
+    os: 'win32',
+    cpu: 'ia32',
+    description: 'OmniCrawl 内核二进制（Windows 32 位）',
+  },
+  {
     name: '@omnicrawl/cli-linux-x64',
     file: 'omnicrawl',
     triple: 'x86_64-unknown-linux-musl',
@@ -48,10 +56,12 @@ function writeJson(path, value) {
 }
 
 function sourceCandidates(target) {
-  return [
-    join(repoRoot, 'rust', 'target', target.triple, 'release', target.file),
-    join(repoRoot, 'rust', 'target', 'release', target.file),
-  ]
+  const candidates = [join(repoRoot, 'rust', 'target', target.triple, 'release', target.file)]
+  // 无 --target 的构建产物只属于宿主机架构：回退到它会把别架构的包发成错架构。
+  if (target.os === process.platform && target.cpu === process.arch) {
+    candidates.push(join(repoRoot, 'rust', 'target', 'release', target.file))
+  }
+  return candidates
 }
 
 function stagePlatform(target, source, version) {
@@ -75,7 +85,7 @@ function stagePlatform(target, source, version) {
   })
   // 二进制目录在仓库里是 gitignore 的；发布产物必须绕过 .gitignore 过滤，靠 files 决定内容。
   writeFileSync(join(packageDir, '.npmignore'), '# 发布内容由 package.json 的 files 决定。\n')
-  writeFileSync(join(packageDir, 'README.md'), `# ${target.name}\n\n${target.description}。\n\n由 \`@omnicrawl/cli\` 按平台自动安装，不要直接依赖。\n`)
+  writeFileSync(join(packageDir, 'README.md'), `# ${target.name}\n\n${target.description}。\n\n由 \`omnicrawl-cli\` 按平台自动安装，不要直接依赖。\n`)
   const kilobytes = Math.round(statSync(join(packageDir, 'bin', target.file)).size / 1024)
   return `${target.name}（${kilobytes} KB）`
 }
@@ -94,7 +104,7 @@ function stageLauncher(version, platformNames) {
     version,
     optionalDependencies: Object.fromEntries(platformNames.map((name) => [name, version])),
   })
-  return '@omnicrawl/cli'
+  return 'omnicrawl-cli'
 }
 
 function main() {

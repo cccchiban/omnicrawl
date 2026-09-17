@@ -1,13 +1,13 @@
 # omnicrawl-ipc
 
 宿主桥接协议的实现：NDJSON 帧、版本协商，以及宿主事件/命令到方法的映射。
-协议｛Desensitized:1181｝见 [`rust/docs/protocol-v1.md`](../../docs/protocol-v1.md)。
+协议规范见 [`rust/docs/protocol-v1.md`](../../docs/protocol-v1.md)。
 
 ## 本片范围
 
 - `frame`：一行一个 JSON-RPC 2.0 帧的解析与序列化、形状校验、id 保真、错误码常量。
 - `version`：协议版本常量与主版本协商。
-- `bridge`：`HostEvent`（内核 → 宿主｛Desensitized:1178｝）、`Command`（宿主 → 内核命令）、
+- `bridge`：`HostEvent`（内核 → 宿主通知）、`Command`（宿主 → 内核命令）、
   `ToolBatch` / `ToolBatchResult`（工具批次往返），以及方法名常量与错误对象工厂。
 
 纯逻辑、无 I/O、无全局状态：读construction与写管道由宿主或 `omnicrawl-cli` 负责。
