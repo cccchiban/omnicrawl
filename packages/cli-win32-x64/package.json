@@ -1,0 +1,9 @@
+{
+  "name": "@omnicrawl/cli-win32-x64",
+  "version": "0.1.67",
+  "description": "OmniCrawl 内核二进制（Windows x64）",
+  "files": [
+    "bin"
+  ],
+  "license": "MIT"
+}

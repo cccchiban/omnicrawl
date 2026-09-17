@@ -1,0 +1,14 @@
+{
+  "name": "@omnicrawl/plugin-sdk",
+  "version": "0.1.67",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.js",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

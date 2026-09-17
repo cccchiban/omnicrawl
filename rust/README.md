@@ -1,0 +1,168 @@
+# Rust 内核工程
+
+OmniCrawl 的 Rust 内核从这里起步，目标是两件事：
+
+1. 能把核心内核编到嵌入式 Linux 上跑（musl 静态二进制，不带 CPython 运行时）；
+2. 给 TypeScript 插件生态留出稳定、版本化的进程边界（插件侧继续走 NDJSON JSON-RPC，
+   安全裁决留在内核，不下放给插件）。
+
+当前落地三层内核：**协议内核层**（Provider 无关的消息块、工具调用、流事件与归并）、
+**回合循环**（模型回复 → 整批工具观察 → 下一次模型请求）、**Provider 流解析**
+（分片与 SSE 负载 → 内核流事件），外加**宿主桥接**（协议 v1 的 NDJSON 帧、版本协商与
+事件/命令映射）。四者都是纯逻辑、无 I/O、零 Python 依赖，可单独单测。
+
+## 目录
+
+```
+rust/
+├── Cargo.toml                              # workspace 定义
+├── crates/omnicrawl-protocol/              # 协议内核 crate
+│   ├── src/identity.rs                     # Provider / 协议闭集、模型身份
+│   ├── src/message.rs                      # 消息块、工具调用、消息、生成选项、Token 用量
+│   ├── src/event.rs                        # 流事件与归并结果
+│   ├── src/aggregate.rs                    # 流事件归并
+│   ├── src/codec.rs                        # OpenAI 风格历史 ⇄ 会话消息、工具声明编解码
+│   ├── tests/parity.rs                     # 与 Python 实现的对照测试
+│   └── tests/fixtures/protocol_parity.json # 由 Python 侧生成的对照数据集
+├── crates/omnicrawl-core/                  # 回合循环 crate
+│   ├── src/types.rs                        # 循环的数据契约（工具调用/结果、回复、预算、错误）
+│   ├── src/runner.rs                       # 模型循环执行器与注入式时钟
+│   ├── tests/turn_loop_parity.rs           # 与 Python 循环的对照测试
+│   ├── tests/fixtures/turn_loop_parity.json# 由 Python 侧生成的对照数据集
+│   └── README.md                           # 状态转移清单、边界与已知差异
+├── crates/omnicrawl-llm/                   # Provider 流解析 crate
+│   ├── src/openai_chat.rs                  # 分片归并、参数完整性、首选项
+│   ├── src/sse.rs                          # SSE 负载解码与消费
+│   ├── tests/stream_parity.rs              # 与 Python 实现的对照测试
+│   └── tests/fixtures/openai_chat_stream_parity.json
+├── crates/omnicrawl-ipc/                   # 宿主桥接（协议 v1）
+│   ├── src/frame.rs                        # NDJSON 帧、形状校验、错误码
+│   ├── src/version.rs                      # 版本常量与主版本协商
+│   ├── src/bridge.rs                       # 宿主事件、命令与工具批次映射
+│   ├── tests/frame_codec.rs                # 帧层行为
+│   ├── tests/bridge_round_trip.rs          # 方法与负载样本往返
+│   └── tests/host_bridge_parity.rs         # 与 Python 宿主接口的契约对照
+├── crates/omnicrawl-cli/                   # 内核进程（stdio 上的协议 v1 服务端）
+│   ├── src/main.rs                         # 入口：--version / --help
+│   ├── src/session.rs                      # 会话：握手、回合、两个宿主端口、取消守卫
+│   └── README.md                           # 端口与错误映射、当前发出的事件
+├── docs/protocol-v1.md                     # 协议 v1 规格（方法、负载、错误、版本）
+└── tools/
+    ├── gen_parity_fixture.py               # 协议层对照数据集生成脚本
+    ├── gen_core_parity_fixture.py          # 回合循环对照数据集生成脚本
+    ├── gen_llm_stream_fixture.py           # Provider 流解析对照数据集生成脚本
+    └── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
+```
+
+## 构建与验证
+
+```bash
+cd rust
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+嵌入式 Linux 交叉编译（产物静态链接，便于塞进镜像）：
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+cargo build --release --target aarch64-unknown-linux-musl
+```
+
+## 与 Python 的对应关系
+
+语义基准是 `omnicrawl/llm/protocol.py`。除下表标注处，Rust 侧类型名与 Python 同名：
+
+| Python | Rust |
+| --- | --- |
+| `ModelIdentity` | `ModelIdentity`（`triple()` 保留、`as_ref()` 改名 `reference()`） |
+| `MessageBlock` 联合类型 | `MessageBlock` 枚举 |
+| `TextBlock` / `ImageBlock` / `ToolCallBlock` / `ToolResultBlock` | 同名 |
+| `ConversationMessage` | `ConversationMessage`（`role` 为 `Role` 枚举） |
+| `ToolSpec` / `GenerationOptions` / `TokenUsage` | 同名 |
+| `ModelStreamEvent` 联合类型 | `ModelStreamEvent` 枚举 |
+| `TextDelta` / `ReasoningDelta` / `ToolCallStarted` / `ToolCallArgumentsDelta` / `ToolCallCompleted` / `UsageReported` / `ProviderWarning` | 同名 |
+| 完成事件类 | 在内核里改为枚举的内联变体 `ModelStreamEvent::Finished { finish_reason }` |
+| `aggregate_stream_events` 的返回类型 | `ModelReply` |
+| `conversation_from_openai_messages` / `tools_from_conversation_messages` / `tool_spec_from_openai_item` / `_blocks_from_openai_content_parts` | 同名（最后一个去掉下划线前缀） |
+
+Provider 与协议都是闭集：`openai` / `anthropic` / `gemini`，以及四种协议；未知取值解析为
+`None`，与 Python 侧 `SUPPORTED_PROTOCOLS`、`PROVIDER_DEFAULT_PROTOCOL` 的判定一致。
+
+## 对照（parity）工作流
+
+Python 侧是语义基准，不靠人读代码对齐：
+
+```bash
+python rust/tools/gen_parity_fixture.py   # 用 omnicrawl/llm/protocol.py 生成期望值
+cd rust && cargo test                     # tests/parity.rs 用同一份输入跑 Rust 实现逐字段比对
+```
+
+`tests/fixtures/protocol_parity.json` 随仓库提交，覆盖三类用例：消息转换、动态工具声明去重、
+流事件归并（含未收到 Completed 的工具调用补全顺序、空流、告警与用量）。改了任一侧的协议
+实现，都要重跑生成脚本再跑测试。
+
+回合循环同理：
+
+```bash
+python rust/tools/gen_core_parity_fixture.py   # 用 omnicrawl/agent/runtime/execution.py 生成期望值
+cd rust && cargo test -p omnicrawl-core        # 同输入｛Desensitized:909｝并逐字段比对
+```
+
+`crates/omnicrawl-core/tests/fixtures/turn_loop_parity.json` 覆盖工具派发顺序、取消、超时、
+空回复、模型错误、工具错误六类转移；状态转移清单与边界见 `crates/omnicrawl-core/README.md`。
+
+流解析同理：
+
+```bash
+python rust/tools/gen_llm_stream_fixture.py   # 用 omnicrawl/llm/providers/openai_chat.py 生成期望值
+cd rust && cargo test -p omnicrawl-llm        # 同输入跑 Rust 实现逐字段比对
+```
+
+`crates/omnicrawl-llm/tests/fixtures/openai_chat_stream_parity.json` 覆盖参数完整性、分片归并、
+SSE 解码与 SSE 流消费；边界与已知差异见 `crates/omnicrawl-llm/README.md`。
+
+宿主桥接同理：
+
+```bash
+python rust/tools/gen_host_bridge_fixture.py  # 反射 loop.py 的 run_stream 与循环 run 的签名
+cd rust && cargo test -p omnicrawl-ipc        # 校验回调↔方法一一对应与负载往返
+```
+
+## 已知与 Python 的差异
+
+1. 非字符串字段（`role`、`tool_call_id`、工具名、`description` 等）不再走 Python 的 `str()`
+   转换，一律回落默认值；实际模型请求里这些字段恒为字符串。
+2. JSON 参数解析用 `serde_json`：不接受 `NaN`/`Infinity`（Python `json.loads` 接受），
+   非法输入同样退化为空对象。
+3. data URL 解析改为手写大小写不敏感解析，不引入 `regex` 依赖；判定条件与 Python 正则一致
+   （整体锚定、媒体类型取 `png`/`jpeg`/`webp`/`gif`、payload 限 base64 字符集且非空）。
+4. `Role` 是闭集加 `Other(String)` 透传：OpenAI Chat 分支会把未知角色原样写进请求体，
+   透传语义与 Python 一致。
+
+## 内核进程：`omnicrawl-cli`
+
+`crates/omnicrawl-cli` 产出 `omnicrawl` 二进制：在 stdin/stdout 上跑协议 v1，自己持有 `omnicrawl-core`
+的回合循环，把两个宿主端口经协议外发——`tool.batch` 交宿主执行、`model.reply` 在过渡期由宿主代答模型。
+npm 侧分发骨架在 `packages/cli`（启动器 + 三个平台分包）。
+
+```bash
+cargo build --release -p omnicrawl-cli
+node packages/cli/scripts/prepare.mjs        # 暂存发布产物到 dist/npm
+npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 协议 v1
+```
+
+## 后续 crate 规划
+
+**协议 v1 与内核进程均已落地**（`docs/protocol-v1.md`、`crates/omnicrawl-ipc`、`crates/omnicrawl-cli`）；
+插件侧按用户决策改用 Cordis 本体，宿主骨架在 `packages/plugin-host`（不再自研插件框架）；npm 分发骨架在
+`packages/cli`（启动器 + 三个平台分包，发布产物由 `scripts/prepare.mjs` 暂存到 `dist/npm`）。继续推进：
+`packages/plugin-host` 已接上协议 v1（`tool.batch` 的宿主对端、钩子挂到回合事件）；接下来是内核自带
+provider runtime（`omnicrawl-llm` 的请求构建），再把 Python 编排壳（会话落盘、压缩触发）收到内核侧。
+分发路线见知识库「分发路线与内核宿主边界决策」：主程序最终走 npm，内核与宿主的边界以
+「进程 + NDJSON JSON-RPC / 平台二进制」为一等公民，PyO3 内联不再是路线图项。
+
+`omnicrawl-llm` 已落地流解析第一片（参数完整性、分片归并、SSE 解码与消费）；请求构建、Provider 适配
+与用量统计待迁。`omnicrawl/agent/controllers/turn/loop.py` 的编排壳（插件钩子、会话落盘、压缩触发、
+run_guard 续跑、上下文溢出恢复）仍留在 Python，待 cli 入口阶段再收。

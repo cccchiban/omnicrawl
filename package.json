@@ -1,0 +1,11 @@
+{
+  "name": "omnicrawl-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

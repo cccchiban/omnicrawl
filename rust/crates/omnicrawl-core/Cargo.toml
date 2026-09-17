@@ -1,0 +1,11 @@
+[package]
+name = "omnicrawl-core"
+description = "Provider 无关的 Agent 回合循环（Python 侧 omnicrawl/agent/runtime/execution.py 的 Rust 内核移植）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

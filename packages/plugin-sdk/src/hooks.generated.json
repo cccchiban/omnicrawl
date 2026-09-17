@@ -1,0 +1,208 @@
+{
+  "api_version": "1",
+  "handler_modes": [
+    "guard",
+    "notify",
+    "observe",
+    "transform"
+  ],
+  "hooks": {
+    "app.start.after": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "app.start.before": {
+      "modes": [
+        "guard",
+        "observe"
+      ],
+      "patch": []
+    },
+    "app.stop.after": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "app.stop.before": {
+      "modes": [
+        "observe"
+      ],
+      "patch": []
+    },
+    "context.build.after": {
+      "modes": [
+        "observe"
+      ],
+      "patch": []
+    },
+    "context.build.before": {
+      "modes": [
+        "transform"
+      ],
+      "patch": [
+        "/payload/additionalContext"
+      ]
+    },
+    "context.compaction.after_turn": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "model.request.before": {
+      "modes": [
+        "guard",
+        "transform"
+      ],
+      "patch": [
+        "/payload/max_tokens",
+        "/payload/messages/*/content",
+        "/payload/temperature",
+        "/payload/top_p"
+      ]
+    },
+    "model.request.error": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "model.response.after": {
+      "modes": [
+        "observe"
+      ],
+      "patch": []
+    },
+    "session.close.after": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "session.close.before": {
+      "modes": [
+        "observe"
+      ],
+      "patch": []
+    },
+    "session.resume.after": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "session.resume.before": {
+      "modes": [
+        "guard"
+      ],
+      "patch": []
+    },
+    "session.resume.error": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "session.start.after": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "tool.approval.after": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "tool.approval.before": {
+      "modes": [
+        "guard",
+        "observe"
+      ],
+      "patch": []
+    },
+    "tool.call.before": {
+      "modes": [
+        "guard",
+        "transform"
+      ],
+      "patch": [
+        "/payload/arguments",
+        "/payload/arguments/*"
+      ]
+    },
+    "tool.execute.after": {
+      "modes": [
+        "observe",
+        "transform"
+      ],
+      "patch": [
+        "/payload/annotations",
+        "/payload/displayText"
+      ]
+    },
+    "tool.execute.before": {
+      "modes": [
+        "guard"
+      ],
+      "patch": []
+    },
+    "tool.execute.error": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "turn.cancelled": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "turn.end": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "turn.error": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "turn.start": {
+      "modes": [
+        "guard",
+        "transform"
+      ],
+      "patch": [
+        "/payload/tags",
+        "/payload/tags/-",
+        "/payload/userText"
+      ]
+    },
+    "workspace.switch.after": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    },
+    "workspace.switch.before": {
+      "modes": [
+        "guard"
+      ],
+      "patch": []
+    },
+    "workspace.switch.error": {
+      "modes": [
+        "notify"
+      ],
+      "patch": []
+    }
+  }
+}

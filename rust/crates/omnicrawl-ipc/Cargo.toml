@@ -1,0 +1,13 @@
+[package]
+name = "omnicrawl-ipc"
+description = "宿主桥接协议：NDJSON 帧、版本协商与宿主事件/命令映射"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+omnicrawl-core = { path = "../omnicrawl-core" }
+omnicrawl-protocol = { path = "../omnicrawl-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }

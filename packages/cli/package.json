@@ -1,0 +1,21 @@
+{
+  "name": "@omnicrawl/cli",
+  "version": "0.1.67",
+  "description": "OmniCrawl 启动器：按平台选择内核二进制并转交 stdio",
+  "type": "module",
+  "bin": {
+    "omnicrawl": "./bin/omnicrawl.mjs"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "prepare:binaries": "node scripts/prepare.mjs"
+  },
+  "license": "MIT"
+}

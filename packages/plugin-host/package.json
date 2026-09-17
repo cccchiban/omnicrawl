@@ -1,0 +1,20 @@
+{
+  "name": "@omnicrawl/plugin-host",
+  "version": "0.1.67",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "omnicrawl-plugin-host": "./src/main.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@omnicrawl/plugin-sdk": "^0.1.67",
+    "cordis": "4.0.0-rc.10"
+  },
+  "license": "MIT"
+}
