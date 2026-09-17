@@ -1,0 +1,245 @@
+{
+  "source": [
+    "omnicrawl/common/redaction.py"
+  ],
+  "texts": [
+    {
+      "input": "api_key=abcdef123456",
+      "expected": "api_key=***"
+    },
+    {
+      "input": "API-KEY: \"abcdef123456\"",
+      "expected": "API-KEY: \"***\""
+    },
+    {
+      "input": "apikey = abcdef123456",
+      "expected": "apikey = ***"
+    },
+    {
+      "input": "token: abcdef123456",
+      "expected": "token: ***"
+    },
+    {
+      "input": "password='abcdef123456'",
+      "expected": "password='***'"
+    },
+    {
+      "input": "secret=abcdef123456",
+      "expected": "secret=***"
+    },
+    {
+      "input": "cookie=abcdef123456",
+      "expected": "cookie=***"
+    },
+    {
+      "input": "access_token=abcdef123456",
+      "expected": "access_token=***"
+    },
+    {
+      "input": "refresh-token: abcdef123456",
+      "expected": "refresh-token: ***"
+    },
+    {
+      "input": "id_token=abcdef123456",
+      "expected": "id_token=***"
+    },
+    {
+      "input": "keyboard=abcdef123456",
+      "expected": "keyboard=abcdef123456"
+    },
+    {
+      "input": "monkey=abcdef123456",
+      "expected": "monkey=abcdef123456"
+    },
+    {
+      "input": "key_count=5",
+      "expected": "key_count=5"
+    },
+    {
+      "input": "tokenizer=abcdef123456",
+      "expected": "tokenizer=abcdef123456"
+    },
+    {
+      "input": "authorization: Bearer abcdef1234567890",
+      "expected": "authorization: Bearer ***"
+    },
+    {
+      "input": "Authorization=\"abcdef123456\"",
+      "expected": "Authorization=\"Bearer ***\""
+    },
+    {
+      "input": "authorization=Bearer abcdef1234567890",
+      "expected": "authorization=Bearer ***"
+    },
+    {
+      "input": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+      "expected": "Bearer ***"
+    },
+    {
+      "input": "bearer abcdefgh",
+      "expected": "Bearer ***"
+    },
+    {
+      "input": "Bearer short",
+      "expected": "Bearer short"
+    },
+    {
+      "input": "provider sk-aaaaaaaaaaaaaaaaaaaaaaaa end",
+      "expected": "provider *** end"
+    },
+    {
+      "input": "provider sk-aaaaaaaaaaaaaaaaaaaaaaa end",
+      "expected": "provider sk-aaaaaaaaaaaaaaaaaaaaaaa end"
+    },
+    {
+      "input": "github ghp_bbbbbbbbbbbbbbbbbbbb end",
+      "expected": "github *** end"
+    },
+    {
+      "input": "github github_pat_cccccccccccccccccccc end",
+      "expected": "github *** end"
+    },
+    {
+      "input": "aws AKIADDDDDDDDDDDDDDDD end",
+      "expected": "aws *** end"
+    },
+    {
+      "input": "aws akiadddddddddddddddd end",
+      "expected": "aws akiadddddddddddddddd end"
+    },
+    {
+      "input": "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----",
+      "expected": "*** PRIVATE KEY REDACTED ***"
+    },
+    {
+      "input": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+      "expected": "*** PRIVATE KEY REDACTED ***"
+    },
+    {
+      "input": "-----BEGIN PRIVATE KEY-----\n没有结束标记",
+      "expected": "-----BEGIN PRIVATE KEY-----\n没有结束标记"
+    },
+    {
+      "input": "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----\n-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+      "expected": "*** PRIVATE KEY REDACTED ***\n*** PRIVATE KEY REDACTED ***"
+    },
+    {
+      "input": "混合文本：api_key=sk-aaaaaaaaaaaaaaaaaaaaaaaa 且 Bearer ghp_bbbbbbbbbbbbbbbbbbbb 还有 AKIADDDDDDDDDDDDDDDD",
+      "expected": "混合文本：api_key=*** 且 Bearer *** 还有 ***"
+    },
+    {
+      "input": "没有秘密的普通文本，包含 key 这个词",
+      "expected": "没有秘密的普通文本，包含 key 这个词"
+    },
+    {
+      "input": "",
+      "expected": ""
+    }
+  ],
+  "values": [
+    {
+      "input": {
+        "api_key": "abc",
+        "nested": {
+          "password": "p",
+          "keep": "v"
+        }
+      },
+      "expected": {
+        "api_key": "***",
+        "nested": {
+          "password": "***",
+          "keep": "v"
+        }
+      }
+    },
+    {
+      "input": {
+        "API-KEY": "abc",
+        "x-auth-token": "abc",
+        "x_api_key": "abc"
+      },
+      "expected": {
+        "API-KEY": "***",
+        "x-auth-token": "abc",
+        "x_api_key": "***"
+      }
+    },
+    {
+      "input": {
+        "keyboard": "abc",
+        "id": "abc",
+        "tokens": "abc"
+      },
+      "expected": {
+        "keyboard": "abc",
+        "id": "abc",
+        "tokens": "abc"
+      }
+    },
+    {
+      "input": {
+        "text": "api_key=abcdef123456"
+      },
+      "expected": {
+        "text": "api_key=***"
+      }
+    },
+    {
+      "input": [
+        {
+          "token": "abc"
+        },
+        "plain",
+        5,
+        null
+      ],
+      "expected": [
+        {
+          "token": "***"
+        },
+        "plain",
+        5,
+        null
+      ]
+    },
+    {
+      "input": {
+        "list": [
+          {
+            "password": "p"
+          }
+        ],
+        "deep": {
+          "a": {
+            "b": {
+              "secret": "s"
+            }
+          }
+        }
+      },
+      "expected": {
+        "list": [
+          {
+            "password": "***"
+          }
+        ],
+        "deep": {
+          "a": {
+            "b": {
+              "secret": "***"
+            }
+          }
+        }
+      }
+    },
+    {
+      "input": "Bearer abcdefghijklmnop",
+      "expected": "Bearer ***"
+    }
+  ],
+  "long_list": {
+    "length": 150,
+    "expected_length": 100
+  }
+}

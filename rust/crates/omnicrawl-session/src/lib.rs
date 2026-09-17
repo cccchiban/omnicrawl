@@ -5,6 +5,7 @@
 //! 本片只有纯逻辑、无文件 I/O：磁盘读写（追加转录、维护索引、锁与归档）在后续切片，
 //! 但对外的字段名、错误文案与 JSONL 行字节都与 Python 侧对齐，避免两个实现互相读不懂对方的会话。
 
+pub mod artifact;
 pub mod error;
 pub mod event;
 pub mod history;
@@ -15,9 +16,14 @@ pub mod memory_ranking;
 pub mod memory_store;
 pub mod naming;
 pub mod projection;
+pub mod redaction;
 pub mod store;
 pub mod time;
 
+pub use artifact::{
+    normalize_relative_artifact_path, preview_text, redact_sensitive_html, tool_output_summary,
+    SessionArtifactStore, TOOL_RESULT_INLINE_OUTPUT_CHARS, TOOL_RESULT_PREVIEW_CHARS,
+};
 pub use error::SessionStoreError;
 pub use event::SessionEvent;
 pub use history::{
@@ -58,5 +64,6 @@ pub use projection::{
     RUN_GUARD_TODO_TOOL_NAME, TOOL_CALL_CONTEXT_PREFIX, TOOL_RESULT_CONTEXT_PREFIX,
     TURN_UNDONE_EVENT_TYPE,
 };
+pub use redaction::{redact_sensitive_text, redact_sensitive_values};
 pub use store::{kernel_runtime_identity, CreatedSession, SessionStore};
 pub use time::{datetime_from_json, datetime_to_millis, format_datetime, parse_datetime, utc_now};
