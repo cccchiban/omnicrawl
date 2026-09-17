@@ -6,6 +6,7 @@
 //!
 //! 未搬：`write` / `search` / `expand_related` / `clean_expired_memories` 与旧目录迁移。
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, FixedOffset, Local};
@@ -19,7 +20,7 @@ use crate::memory::{
 };
 use crate::memory_ranking::{
     classify_storage_directory, directories_overlap, make_summary, merge_memory_content,
-    normalize_for_compare, text_similarity,
+    normalize_for_compare, score_related_entry, score_search_entry, text_similarity,
 };
 
 /// 候选记忆摘要，供模型先低成本判断是否需要读取全文。
@@ -220,6 +221,116 @@ impl MemoryStore {
             related_directories: entry.related_directories.clone(),
             timestamp: entry.timestamp,
         }
+    }
+
+    /// 按查询文本和候选目录返回摘要，不读取完整记忆正文。
+    ///
+    /// 没有查询文本也没有候选目录时返回全部候选（按新鲜度与使用次数排序），
+    /// 便于调用方先看一眼有哪些记忆。
+    pub fn search(
+        &self,
+        query: &str,
+        candidate_directories: &[Value],
+        max_results: u32,
+    ) -> Result<Vec<MemorySearchResult>, SessionStoreError> {
+        let entries = self.load_entries()?;
+        let cleaned_query = query.trim().to_string();
+        let directories = dedupe_directories(candidate_directories);
+        let limit = clamp_limit(max_results, 20) as usize;
+
+        let now = Local::now().fixed_offset();
+        let mut scored: Vec<(f64, MemoryIndexEntry)> = Vec::new();
+        for entry in entries {
+            if !self.memory_path(&entry)?.is_file() {
+                continue;
+            }
+            let score = score_search_entry(&entry, &cleaned_query, &directories, now);
+            if score > 0.0 || (cleaned_query.is_empty() && directories.is_empty()) {
+                scored.push((score, entry));
+            }
+        }
+
+        // 稳定排序：分数、时间戳、使用次数依次降序，完全并列时保持索引顺序。
+        scored.sort_by(|left, right| {
+            right
+                .0
+                .partial_cmp(&left.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.1.timestamp.cmp(&left.1.timestamp))
+                .then_with(|| right.1.touch_count.cmp(&left.1.touch_count))
+        });
+        Ok(scored
+            .into_iter()
+            .take(limit)
+            .map(|(_, entry)| self.to_search_result(&entry))
+            .collect())
+    }
+
+    /// 沿关联目录扩展候选摘要，默认只展开一层关系。
+    pub fn expand_related(
+        &self,
+        memory_ids: &[Value],
+        max_depth: u32,
+        max_results: u32,
+    ) -> Result<Vec<MemorySearchResult>, SessionStoreError> {
+        let ids = crate::memory::dedupe_strings(memory_ids);
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let entries = self.load_entries()?;
+        let mut frontier: BTreeSet<String> = BTreeSet::new();
+        for memory_id in &ids {
+            let Some(entry) = entries.iter().find(|entry| &entry.id == memory_id) else {
+                continue;
+            };
+            frontier.insert(entry.storage_directory.clone());
+            frontier.extend(entry.related_directories.iter().cloned());
+        }
+        if frontier.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let limit = clamp_limit(max_results, 20) as usize;
+        let depth_limit = clamp_limit(max_depth, 3) as usize;
+        let mut seen: BTreeSet<String> = ids.iter().cloned().collect();
+        let mut found: Vec<(String, f64, MemoryIndexEntry)> = Vec::new();
+
+        for depth in 0..depth_limit {
+            let mut next_frontier: BTreeSet<String> = BTreeSet::new();
+            for entry in &entries {
+                if seen.contains(&entry.id) || !self.memory_path(entry)?.is_file() {
+                    continue;
+                }
+                let score = score_related_entry(entry, &frontier, depth);
+                if score <= 0.0 {
+                    continue;
+                }
+                found.push((entry.id.clone(), score, entry.clone()));
+                seen.insert(entry.id.clone());
+                next_frontier.extend(entry.related_directories.iter().cloned());
+                next_frontier.insert(entry.storage_directory.clone());
+            }
+
+            if next_frontier.is_empty() || found.len() >= limit {
+                break;
+            }
+            frontier = next_frontier;
+        }
+
+        found.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.2.timestamp.cmp(&left.2.timestamp))
+                .then_with(|| right.2.touch_count.cmp(&left.2.touch_count))
+        });
+        Ok(found
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, entry)| self.to_search_result(&entry))
+            .collect())
     }
 
     /// 写入或合并长期记忆，并在写入后执行一次过期清理。
@@ -593,6 +704,11 @@ impl MemoryStore {
     pub fn render_timestamp(timestamp: DateTime<FixedOffset>) -> String {
         format_memory_datetime(timestamp)
     }
+}
+
+/// 条数上限：非法值按 1 处理，合法值夹在 [1, maximum] 内（对应 Python `_clamp`）。
+fn clamp_limit(value: u32, maximum: u32) -> u32 {
+    value.clamp(1, maximum)
 }
 
 /// 折叠 `.` 与 `..` 得到绝对路径（不要求路径已存在）。

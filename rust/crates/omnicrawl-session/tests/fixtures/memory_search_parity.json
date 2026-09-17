@@ -1,0 +1,540 @@
+{
+  "source": [
+    "omnicrawl/state/memory.py"
+  ],
+  "timestamp": "2025-01-02T03:04:05+00:00",
+  "entries": [
+    {
+      "id": "20250102-030405",
+      "path": "task-history/general/20250102-030405.md",
+      "storage_directory": "task-history/general",
+      "timestamp": "2025-01-02T03:04:05+00:00",
+      "touch_count": 3,
+      "related_directories": [
+        "task-history/general",
+        "project-context/general"
+      ],
+      "summary": "任务完成情况与待办事项"
+    },
+    {
+      "id": "20250102-030406",
+      "path": "code-knowledge/general/20250102-030406.md",
+      "storage_directory": "code-knowledge/general",
+      "timestamp": "2025-01-02T03:04:05+00:00",
+      "touch_count": 0,
+      "related_directories": [
+        "code-knowledge/general"
+      ],
+      "summary": "解析配置的实现细节"
+    },
+    {
+      "id": "20250102-030407",
+      "path": "user-preferences/general/20250102-030407.md",
+      "storage_directory": "user-preferences/general",
+      "timestamp": "2025-01-02T03:04:05+00:00",
+      "touch_count": 7,
+      "related_directories": [
+        "user-preferences/communication-style"
+      ],
+      "summary": "沟通偏好：回答简短"
+    },
+    {
+      "id": "20250102-030408",
+      "path": "error-lessons/general/20250102-030408.md",
+      "storage_directory": "error-lessons/general",
+      "timestamp": "2025-01-02T03:04:05+00:00",
+      "touch_count": 1,
+      "related_directories": [
+        "error-lessons/general"
+      ],
+      "summary": "踩坑记录：编码问题"
+    },
+    {
+      "id": "20250102-030409",
+      "path": "project-context/general/20250102-030409.md",
+      "storage_directory": "project-context/general",
+      "timestamp": "2025-01-02T03:04:05+00:00",
+      "touch_count": 2,
+      "related_directories": [
+        "project-context/general",
+        "code-knowledge/general"
+      ],
+      "summary": "项目架构分层说明"
+    }
+  ],
+  "initial_files": {
+    "code-knowledge/general/20250102-030406.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"code-knowledge/general\"\n---\n\n配置解析：先读环境变量，再做校验。\n",
+    "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20250102-030405\",\n      \"path\": \"task-history/general/20250102-030405.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 3,\n      \"related_directories\": [\n        \"task-history/general\",\n        \"project-context/general\"\n      ],\n      \"summary\": \"任务完成情况与待办事项\"\n    },\n    {\n      \"id\": \"20250102-030406\",\n      \"path\": \"code-knowledge/general/20250102-030406.md\",\n      \"storage_directory\": \"code-knowledge/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"code-knowledge/general\"\n      ],\n      \"summary\": \"解析配置的实现细节\"\n    },\n    {\n      \"id\": \"20250102-030407\",\n      \"path\": \"user-preferences/general/20250102-030407.md\",\n      \"storage_directory\": \"user-preferences/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 7,\n      \"related_directories\": [\n        \"user-preferences/communication-style\"\n      ],\n      \"summary\": \"沟通偏好：回答简短\"\n    },\n    {\n      \"id\": \"20250102-030408\",\n      \"path\": \"error-lessons/general/20250102-030408.md\",\n      \"storage_directory\": \"error-lessons/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 1,\n      \"related_directories\": [\n        \"error-lessons/general\"\n      ],\n      \"summary\": \"踩坑记录：编码问题\"\n    },\n    {\n      \"id\": \"20250102-030409\",\n      \"path\": \"project-context/general/20250102-030409.md\",\n      \"storage_directory\": \"project-context/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 2,\n      \"related_directories\": [\n        \"project-context/general\",\n        \"code-knowledge/general\"\n      ],\n      \"summary\": \"项目架构分层说明\"\n    }\n  ]\n}",
+    "project-context/general/20250102-030409.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"project-context/general\"\n  - \"code-knowledge/general\"\n---\n\n架构正文：入口、控制器、运行时三层。\n",
+    "task-history/general/20250102-030405.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"task-history/general\"\n  - \"project-context/general\"\n---\n\n任务正文：完成了三件事，待办两件。\n",
+    "user-preferences/general/20250102-030407.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"user-preferences/communication-style\"\n---\n\n偏好正文：回答要简短。\n"
+  },
+  "steps": [
+    {
+      "kind": "search",
+      "query": "配置",
+      "candidate_directories": []
+    },
+    {
+      "kind": "search",
+      "query": "任务",
+      "candidate_directories": [
+        "task-history/general"
+      ]
+    },
+    {
+      "kind": "search",
+      "query": "架构",
+      "candidate_directories": [
+        "project-context"
+      ]
+    },
+    {
+      "kind": "search",
+      "query": "",
+      "candidate_directories": []
+    },
+    {
+      "kind": "search",
+      "query": "",
+      "candidate_directories": [
+        "code-knowledge"
+      ]
+    },
+    {
+      "kind": "search",
+      "query": "不存在的词",
+      "candidate_directories": []
+    },
+    {
+      "kind": "search",
+      "query": "偏好",
+      "candidate_directories": [],
+      "max_results": 1
+    },
+    {
+      "kind": "search",
+      "query": "配置",
+      "candidate_directories": [],
+      "max_results": 0
+    },
+    {
+      "kind": "search",
+      "query": "配置",
+      "candidate_directories": [],
+      "max_results": 99
+    },
+    {
+      "kind": "expand_related",
+      "ids": [
+        "20250102-030406"
+      ],
+      "max_depth": 1
+    },
+    {
+      "kind": "expand_related",
+      "ids": [
+        "20250102-030405"
+      ],
+      "max_depth": 2,
+      "max_results": 3
+    },
+    {
+      "kind": "expand_related",
+      "ids": [
+        "不存在"
+      ],
+      "max_depth": 1
+    },
+    {
+      "kind": "expand_related",
+      "ids": [],
+      "max_depth": 1
+    },
+    {
+      "kind": "expand_related",
+      "ids": [
+        "20250102-030407"
+      ],
+      "max_depth": 99
+    },
+    {
+      "kind": "expand_related",
+      "ids": [
+        "20250102-030406"
+      ],
+      "max_depth": 1,
+      "max_results": 0
+    }
+  ],
+  "expected_outputs": [
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030406",
+          "summary": "解析配置的实现细节",
+          "storage_directory": "code-knowledge/general",
+          "related_directories": [
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030405",
+          "summary": "任务完成情况与待办事项",
+          "storage_directory": "task-history/general",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030405",
+          "summary": "任务完成情况与待办事项",
+          "storage_directory": "task-history/general",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030405",
+          "summary": "任务完成情况与待办事项",
+          "storage_directory": "task-history/general",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030405",
+          "summary": "任务完成情况与待办事项",
+          "storage_directory": "task-history/general",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030406",
+          "summary": "解析配置的实现细节",
+          "storage_directory": "code-knowledge/general",
+          "related_directories": [
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030406",
+          "summary": "解析配置的实现细节",
+          "storage_directory": "code-knowledge/general",
+          "related_directories": [
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030405",
+          "summary": "任务完成情况与待办事项",
+          "storage_directory": "task-history/general",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030405",
+          "summary": "任务完成情况与待办事项",
+          "storage_directory": "task-history/general",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030406",
+          "summary": "解析配置的实现细节",
+          "storage_directory": "code-knowledge/general",
+          "related_directories": [
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "search",
+      "results": [
+        {
+          "id": "20250102-030406",
+          "summary": "解析配置的实现细节",
+          "storage_directory": "code-knowledge/general",
+          "related_directories": [
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030407",
+          "summary": "沟通偏好：回答简短",
+          "storage_directory": "user-preferences/general",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030405",
+          "summary": "任务完成情况与待办事项",
+          "storage_directory": "task-history/general",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "expand_related",
+      "results": [
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "expand_related",
+      "results": [
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        },
+        {
+          "id": "20250102-030406",
+          "summary": "解析配置的实现细节",
+          "storage_directory": "code-knowledge/general",
+          "related_directories": [
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "kind": "expand_related",
+      "results": []
+    },
+    {
+      "kind": "expand_related",
+      "results": []
+    },
+    {
+      "kind": "expand_related",
+      "results": []
+    },
+    {
+      "kind": "expand_related",
+      "results": [
+        {
+          "id": "20250102-030409",
+          "summary": "项目架构分层说明",
+          "storage_directory": "project-context/general",
+          "related_directories": [
+            "project-context/general",
+            "code-knowledge/general"
+          ],
+          "timestamp": "2025-01-02T03:04:05+00:00"
+        }
+      ]
+    }
+  ]
+}
