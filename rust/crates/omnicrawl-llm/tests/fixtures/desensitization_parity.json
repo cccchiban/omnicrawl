@@ -1,0 +1,189 @@
+{
+  "source": [
+    "omnicrawl/llm/desensitization/registry.py"
+  ],
+  "formatted": [
+    "｛Desensitized:1｝",
+    "｛Desensitized:12｝",
+    "｛Desensitized:999｝"
+  ],
+  "placeholders": [
+    {
+      "text": "HTML+Paged.js",
+      "found": []
+    },
+    {
+      "text": "前缀 半角 &input.system_prompt 后缀",
+      "found": []
+    },
+    {
+      "text": "大写 123456789012345678901234567890",
+      "found": []
+    },
+    {
+      "text": "全角冒号 self.context_window_tokens,",
+      "found": []
+    },
+    {
+      "text": "半角冒号 self.context_window_tokens,",
+      "found": []
+    },
+    {
+      "text": "序号带空格 &self.session_id,",
+      "found": []
+    },
+    {
+      "text": "畸形 ｛Desensitized: 未闭合",
+      "found": []
+    },
+    {
+      "text": "疑似前缀 { desensitized",
+      "found": []
+    },
+    {
+      "text": "普通文本 {括号} 与 Desensitized",
+      "found": []
+    },
+    {
+      "text": "多个 text+tool_calls+reasoning 与 int = 0",
+      "found": []
+    },
+    {
+      "text": "",
+      "found": []
+    }
+  ],
+  "prefixes": [
+    false,
+    false,
+    false,
+    false,
+    false,
+    false,
+    true,
+    true,
+    false,
+    false,
+    false
+  ],
+  "collected": [],
+  "fingerprints": {
+    "same": true,
+    "different": true,
+    "length": 64
+  },
+  "index_steps": [
+    {
+      "value": "甲",
+      "reserved": [],
+      "seq": 100,
+      "reused": false
+    },
+    {
+      "value": "甲",
+      "reserved": [],
+      "seq": 100,
+      "reused": true
+    },
+    {
+      "value": "乙",
+      "reserved": [
+        100,
+        101,
+        102
+      ],
+      "seq": 103,
+      "reused": false
+    },
+    {
+      "value": "丙",
+      "reserved": [],
+      "seq": 104,
+      "reused": false
+    },
+    {
+      "value": "乙",
+      "reserved": [],
+      "seq": 103,
+      "reused": true
+    }
+  ],
+  "index_state": {
+    "size": 3,
+    "assigned_102": false
+  },
+  "cycle_steps": [
+    {
+      "value": "值一",
+      "seq": 1,
+      "first": true
+    },
+    {
+      "value": "值一",
+      "seq": 1,
+      "first": false
+    },
+    {
+      "value": "值二",
+      "seq": 2,
+      "first": true
+    }
+  ],
+  "cycle_close": {
+    "reused": false,
+    "stable_reuses": 1,
+    "lookup_known": "值三",
+    "lookup_unknown": null,
+    "pairs_from_1": [
+      [
+        2,
+        "值二"
+      ],
+      [
+        777,
+        "值三"
+      ]
+    ]
+  },
+  "cycle_after_close": {
+    "closed": true,
+    "pairs": [
+      [
+        1,
+        "值一"
+      ],
+      [
+        2,
+        "值二"
+      ],
+      [
+        777,
+        "值三"
+      ]
+    ]
+  },
+  "cache": {
+    "after_unknown": [
+      [
+        1,
+        "原文一"
+      ]
+    ],
+    "after_change": [],
+    "after_clear": []
+  },
+  "registry": {
+    "cycle_ids_equal_on_reuse": true,
+    "first_reused": false,
+    "second_reused": true,
+    "third_reused": false,
+    "third_cycle_distinct": true,
+    "open_after_switch": 1,
+    "open_after_close": 0,
+    "open_after_drop": 0,
+    "stats": {
+      "cycles_started": 2,
+      "cycles_reused": 1
+    }
+  }
+}

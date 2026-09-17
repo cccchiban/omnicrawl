@@ -5,6 +5,7 @@
 //! `OpenAiChatRuntime` 把一次回合从请求串到归并回复。
 //! 传输之外没有别的 I/O；通用重试与能力门禁留在调用方。
 
+pub mod desensitization;
 mod errors;
 mod json;
 mod openai_chat;
