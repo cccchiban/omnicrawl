@@ -44,6 +44,29 @@ Python 侧 `omnicrawl/state/session_models.py`。
 读路径与写路径的取舍是有意的：会话读多写少，读锁会拖慢恢复；代价是读者可能看到「索引已更新、转录刚写完」
 之间的瞬时状态，这与 Python 侧行为一致。
 
+## 投影（`projection.rs`）
+
+把事件流还原成模型上下文，对齐 Python `omnicrawl/state/session_projection.py` 的**纯函数**部分：
+
+- `active_session_events`：回退过滤——`turn_undone` 自身不参与投影，它列出的 id 也被隐藏，
+  让恢复、会话列表与客户端转录共享同一个逻辑视图。
+- `session_title_from_events`：标题按「session_started → 首条 user_message → session_renamed」演进。
+- `recover_run_guard_state` / `apply_run_guard_event`：运行护栏的待续文本与最后一份待办；
+  增量版本与整体恢复共用规则，避免每个工具事件都重扫整份 JSONL。
+- `event_to_model_message`：一条事件对应哪条模型消息（含 `tool_call_requested` / `tool_call_denied` /
+  `tool_result` 的上下文文案、`compact_summary` 前缀、取消与暂停的兜底摘要）。
+- `tool_result_message` / `interrupted_tool_result_message` / `format_tool_result_content`：工具结果的
+  模型可见正文（运行时代理与恢复投影共用，保证逐字一致）。
+- `complete_tool_pairing`：为缺失结果的 `tool_calls` 补「已中断」占位、丢弃孤儿或错配的 tool 消息，
+  保证协议配对合法。
+- `tool_result_output_text` / `function_tool_call`：输出优先级与 OpenAI 形状的 tool_call 构造。
+
+> 有状态的那一层 `TurnHistoryProjector`（压缩边界、子任务结果、增量投影）尚未搬运。
+
+工具参数的上下文文案是 `json.dumps(..., ensure_ascii=False, sort_keys=True)` 的等价物：键按字典序、
+分隔符带空格、非 ASCII 原样输出——所以内核自己实现了一个小的 Python 风格序列化器，而不是直接用
+`serde_json::to_string`（后者是紧凑分隔符且不排序）。
+
 ## 边界要求
 
 - 只做纯逻辑，不碰文件系统：磁盘读写（追加转录、维护索引、锁、归档、导出、一致性诊断）在后续切片。
@@ -76,6 +99,11 @@ fixture `tests/fixtures/session_models_parity.json` 共 107 个用例：会话 i
   超长输出转 artifact 文件、以及敏感值脱敏（`_redact_sensitive_values`）尚未移植。
 - **`session_started` 的 runtime 身份**：Python 记源码指纹与已加载模块，内核记实现名与版本；该字段不参与跨实现比对。
 - **索引顶层异常路径未覆盖**：Python 在索引不是对象时会重写索引文件，机制未确认，本片未实现也未纳入对照。
+- **投影只搬了纯函数**：`TurnHistoryProjector`（压缩边界、子任务结果、增量投影）与
+  `project_session_history` 还没搬。
+- **工具参数里的浮点写法**：Python 的 `json.dumps` 用 `repr`（`1e+20`），内核用 `ryu`（`1e20`），
+  `1e-5` 这类还会写成小数——只在参数含极端浮点数时影响上下文正文，语义等价。
+- **`casefold()` 用 `to_lowercase()` 近似**：待办状态值（ASCII）一致，非 ASCII 大小写折叠可能有差异。
 - **`is_relative_to` 尚未搬**：这一层没有出现路径包含判断，等存储读写切片需要时再补（注意 Windows 上
   Python 的路径比较是大小写不敏感的）。
 

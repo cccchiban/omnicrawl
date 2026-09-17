@@ -10,6 +10,7 @@ pub mod event;
 pub mod index;
 pub mod locking;
 pub mod naming;
+pub mod projection;
 pub mod store;
 pub mod time;
 
@@ -26,6 +27,14 @@ pub use naming::{
     read_payload_non_negative_int, session_id_from_json, COMPACT_SUMMARY_PREFIX,
     EMPTY_SESSION_EVENT_TYPES, MESSAGE_EVENT_TYPES, MODEL_CONTEXT_EVENT_TYPES,
     SESSION_EVENT_VERSION, SUBAGENT_EVENT_TYPES,
+};
+pub use projection::{
+    active_session_events, apply_run_guard_event, complete_tool_pairing, event_to_model_message,
+    format_tool_result_content, function_tool_call, interrupted_tool_result_message,
+    recover_run_guard_state, session_title_from_events, tool_result_message,
+    tool_result_output_text, CANCELLED_TURN_DEFAULT_SUMMARY, INTERRUPTED_TOOL_RESULT_TEXT,
+    RUN_GUARD_TODO_TOOL_NAME, TOOL_CALL_CONTEXT_PREFIX, TOOL_RESULT_CONTEXT_PREFIX,
+    TURN_UNDONE_EVENT_TYPE,
 };
 pub use store::{kernel_runtime_identity, CreatedSession, SessionStore};
 pub use time::{datetime_from_json, datetime_to_millis, format_datetime, parse_datetime, utc_now};
