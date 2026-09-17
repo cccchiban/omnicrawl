@@ -67,6 +67,24 @@ Python 侧 `omnicrawl/state/session_models.py`。
 分隔符带空格、非 ASCII 原样输出——所以内核自己实现了一个小的 Python 风格序列化器，而不是直接用
 `serde_json::to_string`（后者是紧凑分隔符且不排序）。
 
+## 有状态投影（`history.rs`）
+
+`TurnHistoryProjector` 是运行期与恢复期**共用**的状态机：运行期把每条新落盘事件喂进去，
+轮次收尾取走本轮新增的协议消息；重启恢复用同一份实现投影整份事件流。两条路径共用唯一实现，
+同一会话内的历史与重启后的历史才会逐字一致——前缀缓存因此不会失效。
+
+- **工具批合并**：一批连续的工具调用合并成一条 `assistant` 消息（锚点取该批最后一次调用事件，
+  `content` 原样保留、可能是 `null`；`reasoning_content` 只取该批首次调用事件里那份，避免逐条覆盖导致抖动）。
+- **结果与补位**：每个结果各一条 `tool` 消息（锚点自身事件）；批次结束时仍未返回结果的调用补
+  「已中断」占位；没有配对来源的孤立结果被丢弃；`tool_call_id` 缺失时按工具名回退配对
+  （取最近的同名未完成调用）。
+- **参数原文优先级**：先用落盘的 `arguments_json`，回退到 `json.dumps(..., ensure_ascii=False)` 的默认分隔符写法。
+- **压缩边界**：带 `remaining_event_ids` 的摘要把历史替换成「摘要 + 窗口」；只带
+  `remaining_message_count` 的旧摘要走按数量的兼容分支。`project_session_history` 只认最后一个边界，
+  边界之后的全部事件完整保留（恢复指令、后续工具调用与最终回复都不能丢），边界之前只留窗口。
+- **`project_compaction_boundary_history`**：用投影专用临时事件（形状合法的全零会话 id、
+  固定 `projection-only-` 前缀的锚点 id）重建运行期历史，保证压缩前后两份上下文一致。
+
 ## 边界要求
 
 - 只做纯逻辑，不碰文件系统：磁盘读写（追加转录、维护索引、锁、归档、导出、一致性诊断）在后续切片。
@@ -99,8 +117,9 @@ fixture `tests/fixtures/session_models_parity.json` 共 107 个用例：会话 i
   超长输出转 artifact 文件、以及敏感值脱敏（`_redact_sensitive_values`）尚未移植。
 - **`session_started` 的 runtime 身份**：Python 记源码指纹与已加载模块，内核记实现名与版本；该字段不参与跨实现比对。
 - **索引顶层异常路径未覆盖**：Python 在索引不是对象时会重写索引文件，机制未确认，本片未实现也未纳入对照。
-- **投影只搬了纯函数**：`TurnHistoryProjector`（压缩边界、子任务结果、增量投影）与
-  `project_session_history` 还没搬。
+- **运行期参数原文提供者未搬**：Python 的投影器可以注入一个「已发往 Provider 的 arguments 原文」回调
+  （只在内存里、不落盘）；内核侧等运行时代理接进来时再补，现在只走落盘参数的投影。
+- **子任务结果的投影未搬**：`subagent.event` 一类事件目前不参与投影（Python 侧也主要由运行期聚合）。
 - **工具参数里的浮点写法**：Python 的 `json.dumps` 用 `repr`（`1e+20`），内核用 `ryu`（`1e20`），
   `1e-5` 这类还会写成小数——只在参数含极端浮点数时影响上下文正文，语义等价。
 - **`casefold()` 用 `to_lowercase()` 近似**：待办状态值（ASCII）一致，非 ASCII 大小写折叠可能有差异。

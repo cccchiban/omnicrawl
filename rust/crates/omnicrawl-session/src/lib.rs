@@ -7,6 +7,7 @@
 
 pub mod error;
 pub mod event;
+pub mod history;
 pub mod index;
 pub mod locking;
 pub mod naming;
@@ -16,6 +17,10 @@ pub mod time;
 
 pub use error::SessionStoreError;
 pub use event::SessionEvent;
+pub use history::{
+    project_compaction_boundary_history, project_history_messages, project_session_history,
+    projection_only_event, TurnHistoryProjector, PROJECTION_ONLY_EVENT_ID_PREFIX,
+};
 pub use index::SessionIndexEntry;
 pub use locking::{
     append_text_line, atomic_write_text, process_lock_for_root, DurableWritePolicy,

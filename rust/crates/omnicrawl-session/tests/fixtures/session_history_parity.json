@@ -1,0 +1,1274 @@
+{
+  "source": [
+    "omnicrawl/state/session_projection.py"
+  ],
+  "session_id": "20260918-030529-abcdef",
+  "history": [
+    {
+      "name": "plain_messages",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "第一个问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "第一个回答",
+            "reasoning_content": "思考"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {}
+        }
+      ],
+      "expected": [
+        [
+          "e1",
+          {
+            "role": "user",
+            "content": "第一个问题"
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "assistant",
+            "content": "第一个回答",
+            "reasoning_content": "思考"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "tool_batch_then_reply",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "看一下文件"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "function_name": "read_file",
+            "arguments": {
+              "path": "a.py"
+            },
+            "assistant_content": "",
+            "assistant_reasoning_content": "先读"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "grep",
+            "tool_call_id": "c2",
+            "function_name": "grep",
+            "arguments": {
+              "pattern": "todo"
+            }
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e4",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "ok": true,
+            "output": "内容"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e5",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "grep",
+            "tool_call_id": "c2",
+            "ok": false,
+            "output": "没找到"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e6",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "读完了"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e1",
+          {
+            "role": "user",
+            "content": "看一下文件"
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "先读",
+            "tool_calls": [
+              {
+                "id": "c1",
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\": \"a.py\"}"
+                }
+              },
+              {
+                "id": "c2",
+                "type": "function",
+                "function": {
+                  "name": "grep",
+                  "arguments": "{\"pattern\": \"todo\"}"
+                }
+              }
+            ]
+          }
+        ],
+        [
+          "e4",
+          {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "状态：成功\n工具：read_file\n结果：\n内容"
+          }
+        ],
+        [
+          "e5",
+          {
+            "role": "tool",
+            "tool_call_id": "c2",
+            "content": "状态：失败\n工具：grep\n结果：\n没找到"
+          }
+        ],
+        [
+          "e6",
+          {
+            "role": "assistant",
+            "content": "读完了"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "missing_result_becomes_interrupted",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "function_name": "read_file",
+            "arguments": {
+              "path": "a.py"
+            }
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "grep",
+            "tool_call_id": "c2",
+            "function_name": "grep",
+            "arguments": {
+              "pattern": "x"
+            }
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "ok": true,
+            "output": "内容"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e4",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "下一个问题"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e2",
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "c1",
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\": \"a.py\"}"
+                }
+              },
+              {
+                "id": "c2",
+                "type": "function",
+                "function": {
+                  "name": "grep",
+                  "arguments": "{\"pattern\": \"x\"}"
+                }
+              }
+            ]
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "状态：成功\n工具：read_file\n结果：\n内容"
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "tool",
+            "tool_call_id": "c2",
+            "content": "状态：失败\n工具：grep\n结果：\n（已中断：回合结束前未返回结果，执行状态未知。）"
+          }
+        ],
+        [
+          "e4",
+          {
+            "role": "user",
+            "content": "下一个问题"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "result_without_call_id_falls_back_to_tool_name",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "function_name": "read_file",
+            "arguments": {
+              "path": "a.py"
+            }
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "ok": true,
+            "output": "内容"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e1",
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "c1",
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\": \"a.py\"}"
+                }
+              }
+            ]
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "tool",
+            "tool_call_id": "read_file",
+            "content": "状态：成功\n工具：read_file\n结果：\n内容"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "orphan_result_is_skipped",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c9",
+            "ok": true,
+            "output": "孤儿"
+          }
+        }
+      ],
+      "expected": []
+    },
+    {
+      "name": "new_batch_after_flush",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "function_name": "read_file",
+            "arguments": {
+              "path": "a.py"
+            }
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "ok": true,
+            "output": "内容"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "grep",
+            "tool_call_id": "c2",
+            "function_name": "grep",
+            "arguments": {
+              "pattern": "x"
+            }
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e4",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "grep",
+            "tool_call_id": "c2",
+            "ok": true,
+            "output": "结果"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e1",
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "c1",
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\": \"a.py\"}"
+                }
+              }
+            ]
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "状态：成功\n工具：read_file\n结果：\n内容"
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "c2",
+                "type": "function",
+                "function": {
+                  "name": "grep",
+                  "arguments": "{\"pattern\": \"x\"}"
+                }
+              }
+            ]
+          }
+        ],
+        [
+          "e4",
+          {
+            "role": "tool",
+            "tool_call_id": "c2",
+            "content": "状态：成功\n工具：grep\n结果：\n结果"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "denied_and_interrupted",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "tool_call_denied",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "rm",
+            "reason": "不允许"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "function_name": "read_file",
+            "arguments": {
+              "path": "a.py"
+            }
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "session_interrupted",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {}
+        }
+      ],
+      "expected": [
+        [
+          "e2",
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "c1",
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\": \"a.py\"}"
+                }
+              }
+            ]
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "状态：失败\n工具：read_file\n结果：\n（已中断：回合结束前未返回结果，执行状态未知。）"
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "assistant",
+            "content": "（上一回合因异常中断，未生成最终回复）"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "cancel_and_pause",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "turn_cancelled",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "summary": "被取消"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "run_guard_paused",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "message": "暂停中"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "恢复后继续"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e1",
+          {
+            "role": "assistant",
+            "content": "被取消"
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "assistant",
+            "content": "暂停中"
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "assistant",
+            "content": "恢复后继续"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "arguments_json_preferred_and_content_null",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "tool_call_requested",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "function_name": "read_file",
+            "arguments": {
+              "path": "a.py"
+            },
+            "arguments_json": "{\"path\":\"a.py\"}"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "tool": "read_file",
+            "tool_call_id": "c1",
+            "ok": true,
+            "output": "内容"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e1",
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "c1",
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{\"path\":\"a.py\"}"
+                }
+              }
+            ]
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "状态：成功\n工具：read_file\n结果：\n内容"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "compact_summary_with_remaining_ids",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧回答"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "保留的问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e4",
+          "parent_id": null,
+          "type": "compact_summary",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "摘要",
+            "remaining_event_ids": [
+              "e3"
+            ]
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e5",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "压缩后的新问题"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e4",
+          {
+            "role": "assistant",
+            "content": "会话压缩摘要：\n摘要"
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "user",
+            "content": "保留的问题"
+          }
+        ],
+        [
+          "e5",
+          {
+            "role": "user",
+            "content": "压缩后的新问题"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "compact_summary_with_remaining_count",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧回答"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "保留的问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e4",
+          "parent_id": null,
+          "type": "compact_summary",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "摘要",
+            "remaining_message_count": 1
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e4",
+          {
+            "role": "assistant",
+            "content": "会话压缩摘要：\n摘要"
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "user",
+            "content": "保留的问题"
+          }
+        ]
+      ]
+    }
+  ],
+  "session_history": [
+    {
+      "name": "session_history_with_boundary",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "被压缩掉的问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "被压缩掉的回答"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "保留窗口里的问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e4",
+          "parent_id": null,
+          "type": "compact_summary",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "摘要",
+            "remaining_event_ids": [
+              "e3"
+            ]
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e5",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "压缩后的回答"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e6",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "压缩后的新问题"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e4",
+          {
+            "role": "assistant",
+            "content": "会话压缩摘要：\n摘要"
+          }
+        ],
+        [
+          "e3",
+          {
+            "role": "user",
+            "content": "保留窗口里的问题"
+          }
+        ],
+        [
+          "e5",
+          {
+            "role": "assistant",
+            "content": "压缩后的回答"
+          }
+        ],
+        [
+          "e6",
+          {
+            "role": "user",
+            "content": "压缩后的新问题"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "session_history_without_boundary",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "回答"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e1",
+          {
+            "role": "user",
+            "content": "问题"
+          }
+        ],
+        [
+          "e2",
+          {
+            "role": "assistant",
+            "content": "回答"
+          }
+        ]
+      ]
+    },
+    {
+      "name": "session_history_ignores_older_boundary",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "第一轮"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "compact_summary",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧摘要",
+            "remaining_event_ids": [
+              "e1"
+            ]
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "第二轮"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e4",
+          "parent_id": null,
+          "type": "compact_summary",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "新摘要"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e5",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "第三轮回答"
+          }
+        }
+      ],
+      "expected": [
+        [
+          "e4",
+          {
+            "role": "assistant",
+            "content": "会话压缩摘要：\n新摘要"
+          }
+        ],
+        [
+          "e5",
+          {
+            "role": "assistant",
+            "content": "第三轮回答"
+          }
+        ]
+      ]
+    }
+  ],
+  "boundary": [
+    {
+      "name": "with_remaining_ids",
+      "payload": {
+        "content": "摘要",
+        "remaining_event_ids": [
+          "e3"
+        ]
+      },
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧回答"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "保留的问题"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "role": "assistant",
+          "content": "会话压缩摘要：\n摘要"
+        },
+        {
+          "role": "user",
+          "content": "保留的问题"
+        }
+      ]
+    },
+    {
+      "name": "with_remaining_count",
+      "payload": {
+        "content": "摘要",
+        "remaining_message_count": 2
+      },
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧回答"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "保留的问题"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "role": "assistant",
+          "content": "会话压缩摘要：\n摘要"
+        },
+        {
+          "role": "user",
+          "content": "旧问题"
+        },
+        {
+          "role": "assistant",
+          "content": "旧回答"
+        },
+        {
+          "role": "user",
+          "content": "保留的问题"
+        }
+      ]
+    },
+    {
+      "name": "without_window",
+      "payload": {
+        "content": "摘要"
+      },
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e1",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧问题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e2",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "旧回答"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "e3",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "content": "保留的问题"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "role": "assistant",
+          "content": "会话压缩摘要：\n摘要"
+        },
+        {
+          "role": "user",
+          "content": "旧问题"
+        },
+        {
+          "role": "assistant",
+          "content": "旧回答"
+        },
+        {
+          "role": "user",
+          "content": "保留的问题"
+        }
+      ]
+    }
+  ]
+}
