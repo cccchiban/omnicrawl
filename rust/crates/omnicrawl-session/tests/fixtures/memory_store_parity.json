@@ -1,0 +1,115 @@
+{
+  "source": [
+    "omnicrawl/state/memory.py"
+  ],
+  "timestamp_slot": "<timestamp>",
+  "initial_files": {
+    "code-knowledge/general/20260918-030530.md": "---\ntimestamp: \"2026-09-18T03:05:29+00:00\"\nrelated_directories:\n  - \"code-knowledge/general\"\n---\n\n第二件事的正文\n",
+    "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20260918-030529\",\n      \"path\": \"task-history/general/20260918-030529.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2026-09-18T03:05:29+00:00\",\n      \"touch_count\": 2,\n      \"related_directories\": [\n        \"task-history/general\",\n        \"project-context/general\"\n      ],\n      \"summary\": \"第一件事的摘要\"\n    },\n    {\n      \"id\": \"20260918-030530\",\n      \"path\": \"code-knowledge/general/20260918-030530.md\",\n      \"storage_directory\": \"code-knowledge/general\",\n      \"timestamp\": \"2026-09-18T03:05:29+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"code-knowledge/general\"\n      ],\n      \"summary\": \"第二件事的摘要\"\n    },\n    {\n      \"id\": \"20260918-030531\",\n      \"path\": \"error-lessons/general/20260918-030531.md\",\n      \"storage_directory\": \"error-lessons/general\",\n      \"timestamp\": \"2026-09-18T03:05:29+00:00\",\n      \"touch_count\": 5,\n      \"related_directories\": [\n        \"error-lessons/general\"\n      ],\n      \"summary\": \"索引里有但文件不在\"\n    }\n  ]\n}",
+    "task-history/general/20260918-030529.md": "---\ntimestamp: \"2026-09-18T03:05:29+00:00\"\nrelated_directories:\n  - \"task-history/general\"\n  - \"project-context/general\"\n---\n\n第一件事的正文\n"
+  },
+  "steps": [
+    {
+      "kind": "read",
+      "ids": [
+        "20260918-030529",
+        "20260918-030530"
+      ]
+    },
+    {
+      "kind": "read",
+      "ids": [
+        "20260918-030529",
+        "20260918-030529",
+        "   ",
+        "不存在"
+      ]
+    },
+    {
+      "kind": "read",
+      "ids": []
+    },
+    {
+      "kind": "read",
+      "ids": [
+        "20260918-030531"
+      ]
+    },
+    {
+      "kind": "load_ids"
+    }
+  ],
+  "expected_outputs": [
+    {
+      "kind": "read",
+      "ids": [
+        "20260918-030529",
+        "20260918-030530"
+      ],
+      "records": [
+        {
+          "id": "20260918-030529",
+          "timestamp": "<timestamp>",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "content": "第一件事的正文"
+        },
+        {
+          "id": "20260918-030530",
+          "timestamp": "<timestamp>",
+          "related_directories": [
+            "code-knowledge/general"
+          ],
+          "content": "第二件事的正文"
+        }
+      ]
+    },
+    {
+      "kind": "read",
+      "ids": [
+        "20260918-030529",
+        "20260918-030529",
+        "   ",
+        "不存在"
+      ],
+      "records": [
+        {
+          "id": "20260918-030529",
+          "timestamp": "<timestamp>",
+          "related_directories": [
+            "task-history/general",
+            "project-context/general"
+          ],
+          "content": "第一件事的正文"
+        }
+      ]
+    },
+    {
+      "kind": "read",
+      "ids": [],
+      "records": []
+    },
+    {
+      "kind": "read",
+      "ids": [
+        "20260918-030531"
+      ],
+      "records": []
+    },
+    {
+      "kind": "load_ids",
+      "ids": [
+        "20260918-030530",
+        "20260918-030531",
+        "20260918-030529"
+      ]
+    }
+  ],
+  "expected_files": {
+    "code-knowledge/general/20260918-030530.md": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"code-knowledge/general\"\n---\n\n第二件事的正文\n",
+    "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20260918-030530\",\n      \"path\": \"code-knowledge/general/20260918-030530.md\",\n      \"storage_directory\": \"code-knowledge/general\",\n      \"timestamp\": \"<timestamp>\",\n      \"touch_count\": 1,\n      \"related_directories\": [\n        \"code-knowledge/general\"\n      ],\n      \"summary\": \"第二件事的摘要\"\n    },\n    {\n      \"id\": \"20260918-030531\",\n      \"path\": \"error-lessons/general/20260918-030531.md\",\n      \"storage_directory\": \"error-lessons/general\",\n      \"timestamp\": \"<timestamp>\",\n      \"touch_count\": 5,\n      \"related_directories\": [\n        \"error-lessons/general\"\n      ],\n      \"summary\": \"索引里有但文件不在\"\n    },\n    {\n      \"id\": \"20260918-030529\",\n      \"path\": \"task-history/general/20260918-030529.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"<timestamp>\",\n      \"touch_count\": 4,\n      \"related_directories\": [\n        \"task-history/general\",\n        \"project-context/general\"\n      ],\n      \"summary\": \"第一件事的摘要\"\n    }\n  ]\n}",
+    "task-history/general/20260918-030529.md": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"task-history/general\"\n  - \"project-context/general\"\n---\n\n第一件事的正文\n"
+  }
+}
