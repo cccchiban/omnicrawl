@@ -76,6 +76,7 @@ class StableSequenceIndex:
         self._lock = threading.Lock()
         self._sequence_source = sequence_source or next_sequence_number
         self._entries: dict[str, int] = {}
+        self._assigned: set[int] = set()
 
     def sequence_for(
         self,
@@ -99,7 +100,14 @@ class StableSequenceIndex:
             while seq in reserved:
                 seq = self._sequence_source()
             self._entries[fingerprint] = seq
+            self._assigned.add(seq)
             return seq, False
+
+    def assigned(self, seq: int) -> bool:
+        """序号是否由本进程分配过（识别「本层分配过、但映射已丢失」的占位符）。"""
+
+        with self._lock:
+            return seq in self._assigned
 
     @property
     def size(self) -> int:
@@ -130,6 +138,9 @@ class SessionSequenceCache:
     def rebind(self, session_id: str) -> None:
         """会话标识变化 → 丢弃上一会话的映射（会话隔离，§7.2）。"""
 
+        if not session_id:
+            # 会话标识未知（会话系统未就绪）不等于会话变更：清空会让已发出的序号永久无法还原。
+            return
         if session_id != self.session_id:
             self.entries.clear()
             self.session_id = session_id

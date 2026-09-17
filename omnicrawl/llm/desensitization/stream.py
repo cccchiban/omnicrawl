@@ -60,6 +60,21 @@ class StreamRestorer:
     def feed_reasoning(self, text: str) -> str:
         return self._feed("reasoning", text)
 
+    def feed_tool_arguments(self, call_id: str, text: str) -> str:
+        """工具参数增量：与文本同一套尾部挂起缓冲，跨分片的占位符同样要还原。"""
+
+        return self._feed(f"args:{call_id or ''}", text)
+
+    def flush_tool_arguments(self) -> dict[str, str]:
+        """流结束：冲刷各工具参数的挂起缓冲，返回 ``{call_id: 需补发的文本}``。"""
+
+        tails: dict[str, str] = {}
+        for channel in [name for name in self._buffers if name.startswith("args:")]:
+            emitted, _ = self._fold(self._buffers.pop(channel), flush=True)
+            if emitted:
+                tails[channel[len("args:") :]] = emitted
+        return tails
+
     def flush(self) -> tuple[str, str]:
         """流结束：冲刷两路挂起缓冲（未闭合前缀按原样保留 + 告警）。"""
 
@@ -72,7 +87,7 @@ class StreamRestorer:
     def _feed(self, channel: str, chunk: str) -> str:
         if not chunk:
             return ""
-        emit, hold = self._fold(self._buffers[channel] + chunk, flush=False)
+        emit, hold = self._fold(self._buffers.get(channel, "") + chunk, flush=False)
         self._buffers[channel] = hold
         return emit
 

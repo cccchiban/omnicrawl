@@ -754,7 +754,7 @@ def _apply_local_isolation_changes(session: IsolationSession) -> tuple[int, list
 def _effective_apply_base(session: IsolationSession) -> str:
     """解析把隔离区变更应用回主工作区时的有效基线。
 
-    隔离区提交可能已被主工作区分支包含——模型会主动把｛Desensitized:400｝同步到主仓库（如
+    隔离区提交可能已被主工作区分支包含——模型会主动把改动同步到主仓库（如
     ``git merge --ff-only <隔离区提交>``），此时 ``base_ref..HEAD`` 会把已进入
     主分支的提交再回放一遍：三方应用对已存在的重命名 / 新增文件直接失败。
     取隔离区 HEAD 与主工作区 HEAD 的共同祖先作为候选基线，只接受比

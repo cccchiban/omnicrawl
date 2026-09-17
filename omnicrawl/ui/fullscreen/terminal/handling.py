@@ -817,7 +817,7 @@ class TerminalHandlingMixin:
             return False
 
     def _reassert_terminal_mouse_reporting(self) -> None:
-        """重｛Desensitized:764｝终端鼠标报告，并保持 alternate scroll 关闭。"""
+        """重新开启终端鼠标报告，并保持 alternate scroll 关闭。"""
 
         try:
             driver = self._driver

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
 from dataclasses import replace
@@ -33,6 +34,7 @@ from ..protocol import (
     TextBlock,
     TextDelta,
     ToolCallBlock,
+    ToolCallArgumentsDelta,
     ToolCallCompleted,
     ToolResultBlock,
 )
@@ -48,6 +50,9 @@ from .registry import (
 )
 from .rules import PatternRule, build_enabled_rules
 from .stream import StreamRestorer
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DesensitizationError(ModelError):
@@ -147,6 +152,7 @@ class DesensitizationRuntime:
             for mapped in self._map_event(event, restorer):
                 yield mapped
             for warning in restorer.take_warnings():
+                _log_restore_warning(warning)
                 yield warning
         # 流正常结束：冲刷挂起缓冲；回复可用时按成功注销（§7.3/§9.1）。
         text_tail, reasoning_tail = restorer.flush()
@@ -154,7 +160,10 @@ class DesensitizationRuntime:
             yield TextDelta(text=text_tail)
         if reasoning_tail:
             yield ReasoningDelta(text=reasoning_tail)
+        for call_id, tail in restorer.flush_tool_arguments().items():
+            yield ToolCallArgumentsDelta(call_id=call_id, delta=tail)
         for warning in restorer.take_warnings():
+            _log_restore_warning(warning)
             yield warning
         if restorer.reply_usable:
             self._registry.close_cycle(cycle)
@@ -172,14 +181,24 @@ class DesensitizationRuntime:
             restorer.note_reasoning(event.text)
             text = restorer.feed_reasoning(event.text)
             return [ReasoningDelta(text=text)] if text else []
+        if isinstance(event, ToolCallArgumentsDelta):
+            text = restorer.feed_tool_arguments(event.call_id, event.delta)
+            return [replace(event, delta=text)] if text else []
         if isinstance(event, ToolCallCompleted):
             restorer.note_tool_call()
             arguments = restorer.restore_arguments(event.arguments)
+            leaked = _assigned_but_unresolved(self._registry, arguments)
+            if leaked:
+                raise DesensitizationError(
+                    "工具参数里出现本进程分配过、但已无法还原的脱敏占位符"
+                    f"（序号 {', '.join(str(item) for item in leaked)}）；"
+                    "已按 fail-closed 中止，避免把占位符写进文件。"
+                )
             return [replace(event, arguments=arguments)]
         if isinstance(event, ResponseCompleted):
             restorer.note_completed(event.finish_reason)
             return [event]
-        # ToolCallStarted / ToolCallArgumentsDelta / UsageUpdated / ProviderWarning 原样透传。
+        # ToolCallStarted / UsageUpdated / ProviderWarning 原样透传（不含文本内容）。
         return [event]
 
 
@@ -490,6 +509,41 @@ def _iter_message_texts(message: ConversationMessage):
             yield block.content or ""
         elif isinstance(block, ToolCallBlock):
             yield _json_text(block.arguments)
+
+
+def _log_restore_warning(warning: ProviderWarning) -> None:
+    """还原类告警同时落日志：只带序号，不带原文（§10.2）。"""
+
+    if warning.code in ("desensitization_unresolved", "desensitization_malformed"):
+        LOGGER.warning("%s", warning.message)
+
+
+def _iter_arg_strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_arg_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_arg_strings(item)
+
+
+def _assigned_but_unresolved(registry: SequenceRegistry, value: Any) -> tuple[int, ...]:
+    """工具参数里「本进程分配过、但当前映射已无法还原」的占位符序号。
+
+    未注册序号默认原样保留（§6.2）；这类占位符一旦落盘就是被改坏的内容，因此写路径
+    单独取 fail-closed。只统计本进程确实分配过的序号，避免拦下文档里本就存在的示例文本。
+    """
+
+    index = registry.stable_index
+    found: list[int] = []
+    for text in _iter_arg_strings(value):
+        for match in PLACEHOLDER_PATTERN.finditer(text):
+            seq = int(match.group(1))
+            if index.assigned(seq) and seq not in found:
+                found.append(seq)
+    return tuple(found)
 
 
 __all__ = [
