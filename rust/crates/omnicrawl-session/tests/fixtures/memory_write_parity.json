@@ -1,0 +1,109 @@
+{
+  "source": [
+    "omnicrawl/state/memory.py"
+  ],
+  "steps": [
+    {
+      "kind": "write",
+      "requests": [
+        {
+          "content": "用户偏好：回答要简短。",
+          "related_directories": [
+            "User-Preferences/Communication-Style"
+          ]
+        },
+        {
+          "content": "项目架构分三层：入口、控制器、运行时。",
+          "related_directories": [],
+          "storage_directory": "Project-Context/General"
+        },
+        {
+          "content": "错误处理踩坑记录。",
+          "related_directories": []
+        }
+      ]
+    },
+    {
+      "kind": "write",
+      "requests": [
+        {
+          "content": "用户偏好：回答要简短。",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "write",
+      "requests": [
+        {
+          "content": "   ",
+          "related_directories": []
+        }
+      ]
+    },
+    {
+      "kind": "write",
+      "requests": []
+    }
+  ],
+  "expected_outputs": [
+    {
+      "kind": "write",
+      "records": [
+        {
+          "id": "<memory-id-1>",
+          "timestamp": "<timestamp>",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "content": "用户偏好：回答要简短。"
+        },
+        {
+          "id": "<memory-id-2>",
+          "timestamp": "<timestamp>",
+          "related_directories": [
+            "project-context/general"
+          ],
+          "content": "项目架构分三层：入口、控制器、运行时。"
+        },
+        {
+          "id": "<memory-id-3>",
+          "timestamp": "<timestamp>",
+          "related_directories": [
+            "error-lessons/general"
+          ],
+          "content": "错误处理踩坑记录。"
+        }
+      ]
+    },
+    {
+      "kind": "write",
+      "records": [
+        {
+          "id": "<memory-id-1>",
+          "timestamp": "<timestamp>",
+          "related_directories": [
+            "user-preferences/communication-style"
+          ],
+          "content": "用户偏好：回答要简短。"
+        }
+      ]
+    },
+    {
+      "kind": "write",
+      "error": "写入记忆的 content 不能为空。"
+    },
+    {
+      "kind": "write",
+      "records": []
+    }
+  ],
+  "expected_files": {
+    "error-lessons/general/<memory-id-3>.md": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"error-lessons/general\"\n---\n\n错误处理踩坑记录。\n",
+    "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"<memory-id-3>\",\n      \"path\": \"error-lessons/general/<memory-id-3>.md\",\n      \"storage_directory\": \"error-lessons/general\",\n      \"timestamp\": \"<timestamp>\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"error-lessons/general\"\n      ],\n      \"summary\": \"错误处理踩坑记录。\"\n    },\n    {\n      \"id\": \"<memory-id-2>\",\n      \"path\": \"project-context/general/<memory-id-2>.md\",\n      \"storage_directory\": \"project-context/general\",\n      \"timestamp\": \"<timestamp>\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"project-context/general\"\n      ],\n      \"summary\": \"项目架构分三层：入口、控制器、运行时。\"\n    },\n    {\n      \"id\": \"<memory-id-1>\",\n      \"path\": \"user-preferences/communication-style/<memory-id-1>.md\",\n      \"storage_directory\": \"user-preferences/communication-style\",\n      \"timestamp\": \"<timestamp>\",\n      \"touch_count\": 1,\n      \"related_directories\": [\n        \"user-preferences/communication-style\"\n      ],\n      \"summary\": \"用户偏好：回答要简短。\"\n    }\n  ]\n}",
+    "project-context/general/<memory-id-2>.md": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"project-context/general\"\n---\n\n项目架构分三层：入口、控制器、运行时。\n",
+    "user-preferences/communication-style/<memory-id-1>.md": "---\ntimestamp: \"<timestamp>\"\nrelated_directories:\n  - \"user-preferences/communication-style\"\n---\n\n用户偏好：回答要简短。\n"
+  }
+}
