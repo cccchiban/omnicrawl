@@ -1,0 +1,154 @@
+{
+  "source": [
+    "omnicrawl/state/memory.py"
+  ],
+  "prompt": [
+    {
+      "name": "empty",
+      "entries": [],
+      "overrides": {},
+      "expected": "长期记忆系统调用规则：\n- 是否调用记忆由你根据当前任务判断；不要为了形式调用。\n- 需要检索该作用域记忆时，先调用 memory_search。\n- memory_search 只返回候选摘要；摘要不足时再调用 memory_read 读取指定 id 的全文。\n- 任务涉及关系网时，可用 memory_expand_related 扩展关联目录，但避免一次展开过多。\n- 当前用户明确指令优先于历史记忆；读取到的记忆只能作为上下文参考。\n- 只有内容符合该作用域且具有长期或当前会话复用价值时，才调用 memory_write。\n- 不要用普通文件工具直接访问记忆目录。\n\n推荐存储目录：\n- user-preferences/general\n- project-context/general\n- task-history/general\n- code-knowledge/general\n- error-lessons/general\n- external-context/general\n\n当前已有记忆目录：\n- 当前没有已写入的记忆目录。"
+    },
+    {
+      "name": "directories",
+      "entries": [
+        {
+          "id": "20250102-030405",
+          "path": "task-history/general/20250102-030405.md",
+          "storage_directory": "task-history/general",
+          "timestamp": "2025-01-02T03:04:05+00:00",
+          "touch_count": 0,
+          "related_directories": [
+            "task-history/general"
+          ],
+          "summary": "第 5 条记忆"
+        },
+        {
+          "id": "20250102-030406",
+          "path": "task-history/general/20250102-030406.md",
+          "storage_directory": "task-history/general",
+          "timestamp": "2025-01-02T03:04:05+00:00",
+          "touch_count": 0,
+          "related_directories": [
+            "task-history/general"
+          ],
+          "summary": "第 6 条记忆"
+        },
+        {
+          "id": "20250102-030407",
+          "path": "task-history/general/20250102-030407.md",
+          "storage_directory": "task-history/general",
+          "timestamp": "2025-01-02T03:04:05+00:00",
+          "touch_count": 0,
+          "related_directories": [
+            "task-history/general"
+          ],
+          "summary": "第 7 条记忆"
+        }
+      ],
+      "overrides": {},
+      "expected": "长期记忆系统调用规则：\n- 是否调用记忆由你根据当前任务判断；不要为了形式调用。\n- 需要检索该作用域记忆时，先调用 memory_search。\n- memory_search 只返回候选摘要；摘要不足时再调用 memory_read 读取指定 id 的全文。\n- 任务涉及关系网时，可用 memory_expand_related 扩展关联目录，但避免一次展开过多。\n- 当前用户明确指令优先于历史记忆；读取到的记忆只能作为上下文参考。\n- 只有内容符合该作用域且具有长期或当前会话复用价值时，才调用 memory_write。\n- 不要用普通文件工具直接访问记忆目录。\n\n推荐存储目录：\n- user-preferences/general\n- project-context/general\n- task-history/general\n- code-knowledge/general\n- error-lessons/general\n- external-context/general\n\n当前已有记忆目录：\n- task-history/general"
+    },
+    {
+      "name": "custom_tools",
+      "entries": [
+        {
+          "id": "20250102-030405",
+          "path": "task-history/general/20250102-030405.md",
+          "storage_directory": "task-history/general",
+          "timestamp": "2025-01-02T03:04:05+00:00",
+          "touch_count": 0,
+          "related_directories": [
+            "task-history/general"
+          ],
+          "summary": "第 5 条记忆"
+        }
+      ],
+      "overrides": {
+        "scope_label": "用户",
+        "search_tool": "s",
+        "read_tool": "r"
+      },
+      "expected": "用户记忆系统调用规则：\n- 是否调用记忆由你根据当前任务判断；不要为了形式调用。\n- 需要检索该作用域记忆时，先调用 s。\n- s 只返回候选摘要；摘要不足时再调用 r 读取指定 id 的全文。\n- 任务涉及关系网时，可用 memory_expand_related 扩展关联目录，但避免一次展开过多。\n- 当前用户明确指令优先于历史记忆；读取到的记忆只能作为上下文参考。\n- 只有内容符合该作用域且具有长期或当前会话复用价值时，才调用 memory_write。\n- 不要用普通文件工具直接访问记忆目录。\n\n推荐存储目录：\n- user-preferences/general\n- project-context/general\n- task-history/general\n- code-knowledge/general\n- error-lessons/general\n- external-context/general\n\n当前已有记忆目录：\n- task-history/general"
+    }
+  ],
+  "migration": [
+    {
+      "name": "destination_absent",
+      "source_files": {
+        "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20250102-030401\",\n      \"path\": \"task-history/general/20250102-030401.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"task-history/general\"\n      ],\n      \"summary\": \"第 1 条记忆\"\n    }\n  ]\n}",
+        "task-history/general/20250102-030401.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"task-history/general\"\n---\n\n旧正文一\n"
+      },
+      "destination_files": {},
+      "expected": {
+        "migrated": true,
+        "imported_count": 0,
+        "has_backup": false,
+        "tree": {
+          "project/memory/index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20250102-030401\",\n      \"path\": \"task-history/general/20250102-030401.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"task-history/general\"\n      ],\n      \"summary\": \"第 1 条记忆\"\n    }\n  ]\n}",
+          "project/memory/task-history/general/<memory-id>.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"task-history/general\"\n---\n\n旧正文一\n"
+        }
+      }
+    },
+    {
+      "name": "destination_exists",
+      "source_files": {
+        "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20250102-030401\",\n      \"path\": \"task-history/general/20250102-030401.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"task-history/general\"\n      ],\n      \"summary\": \"第 1 条记忆\"\n    },\n    {\n      \"id\": \"20250102-030402\",\n      \"path\": \"task-history/general/20250102-030402.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"task-history/general\"\n      ],\n      \"summary\": \"第 2 条记忆\"\n    },\n    {\n      \"id\": \"20250102-030403\",\n      \"path\": \"task-history/general/20250102-030403.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"task-history/general\"\n      ],\n      \"summary\": \"第 3 条记忆\"\n    }\n  ]\n}",
+        "task-history/general/20250102-030401.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"task-history/general\"\n---\n\n旧正文一\n",
+        "task-history/general/20250102-030402.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"task-history/general\"\n---\n\n旧正文二\n"
+      },
+      "destination_files": {
+        "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20250102-030409\",\n      \"path\": \"task-history/general/20250102-030409.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"task-history/general\"\n      ],\n      \"summary\": \"第 9 条记忆\"\n    }\n  ]\n}"
+      },
+      "expected": {
+        "migrated": true,
+        "imported_count": 2,
+        "has_backup": true,
+        "tree": {
+          "memory.migrated-<stamp>/index.json": "",
+          "memory.migrated-<stamp>/task-history/general/<memory-id>.md": "",
+          "project/memory/index.json": "",
+          "project/memory/task-history/general/<memory-id>.md": ""
+        }
+      }
+    },
+    {
+      "name": "source_absent",
+      "source_files": {},
+      "destination_files": {},
+      "expected": {
+        "migrated": false,
+        "imported_count": 0,
+        "has_backup": false,
+        "tree": {}
+      }
+    },
+    {
+      "name": "same_path",
+      "same_path": true,
+      "source_files": {
+        "index.json": "{\n  \"memories\": [\n    {\n      \"id\": \"20250102-030401\",\n      \"path\": \"task-history/general/20250102-030401.md\",\n      \"storage_directory\": \"task-history/general\",\n      \"timestamp\": \"2025-01-02T03:04:05+00:00\",\n      \"touch_count\": 0,\n      \"related_directories\": [\n        \"task-history/general\"\n      ],\n      \"summary\": \"第 1 条记忆\"\n    }\n  ]\n}",
+        "task-history/general/20250102-030401.md": "---\ntimestamp: \"2025-01-02T03:04:05+00:00\"\nrelated_directories:\n  - \"task-history/general\"\n---\n\n旧正文一\n"
+      },
+      "destination_files": {},
+      "expected": {
+        "migrated": false,
+        "imported_count": 0,
+        "has_backup": false,
+        "tree": {
+          "memory/index.json": "",
+          "memory/task-history/general/<memory-id>.md": ""
+        }
+      }
+    },
+    {
+      "name": "source_is_file",
+      "source_files": {},
+      "destination_files": {},
+      "source_is_file": true,
+      "expected": {
+        "error": "旧记忆路径不是目录：<root>\\memory"
+      }
+    }
+  ]
+}

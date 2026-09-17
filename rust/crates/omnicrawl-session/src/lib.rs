@@ -39,7 +39,10 @@ pub use memory_ranking::{
     local_now, make_summary, merge_memory_content, normalize_for_compare, score_related_entry,
     score_search_entry, text_similarity, DEFAULT_STORAGE_DIRECTORIES,
 };
-pub use memory_store::{MemoryRecord, MemorySearchResult, MemoryStore, MemoryWriteRequest};
+pub use memory_store::{
+    migrate_legacy_memory, MemoryMigrationResult, MemoryRecord, MemorySearchResult, MemoryStore,
+    MemoryWriteRequest,
+};
 pub use naming::{
     clean_title, event_type_from_json, new_session_id, normalize_event_type,
     normalize_relative_file_path, normalize_session_id, path_from_json,
