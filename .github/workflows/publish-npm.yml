@@ -8,6 +8,10 @@ name: 发布 npm 包
 #   Workflow 文件名：publish-npm.yml
 #   environment：留空
 #   动作：勾选允许直接 npm publish（新连接默认只允许 staged publish）
+#
+# 宿主载荷里是 CPython 运行时与原生扩展，只能在该平台的原生 runner 上构建：矩阵里每个平台
+# 各自构建内核（+ 宿主）并上传暂存产物，发布任务把所有平台下载齐、跑安装冒烟后才逐一发布。
+# 没有宿主载荷的平台（32 位 Windows、armv7 嵌入式）只发内核，启动器会退回协议直连。
 on:
   push:
     tags:
@@ -20,12 +24,104 @@ permissions:
   id-token: write
 
 jobs:
-  publish:
-    runs-on: windows-latest
+  platform:
+    name: 平台包（${{ matrix.package }}）
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: cli-win32-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            host: true
+          - package: cli-win32-ia32
+            runner: windows-latest
+            target: i686-pc-windows-msvc
+            host: false
+          - package: cli-linux-x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            host: true
+          - package: cli-linux-arm-musl
+            runner: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+            host: false
+            zigbuild: true
+          - package: cli-linux-arm64-musl
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            host: true
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - uses: actions/setup-python@v5
+        if: matrix.host
+        with:
+          python-version: "3.11"
+
+      - name: musl 工具链
+        if: runner.os == 'Linux' && !matrix.zigbuild
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # armv7 只做静态链接内核：本机没有 musl 的 arm 链接器，用 zig 交叉。
+      - name: zig 交叉工具链（armv7）
+        if: matrix.zigbuild
+        run: |
+          python3 -m pip install --user ziglang
+          cargo install cargo-zigbuild --locked --force
+
+      - name: 构建内核
+        working-directory: rust
+        shell: bash
+        run: |
+          cargo test --workspace
+          if [ "${{ matrix.zigbuild }}" = "true" ]; then
+            cargo zigbuild --release -p omnicrawl-cli --target ${{ matrix.target }}
+          else
+            cargo build --release -p omnicrawl-cli --target ${{ matrix.target }}
+          fi
+
+      - name: 安装宿主依赖
+        if: matrix.host
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: 构建宿主载荷
+        if: matrix.host
+        run: node packages/cli/scripts/build-host.mjs
+
+      - name: 宿主冒烟（无终端提示）
+        if: matrix.host
+        run: node packages/cli/scripts/host-smoke.mjs
+
+      - name: 暂存平台包
+        run: node packages/cli/scripts/prepare.mjs
+
+      - name: 上传暂存产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.package }}
+          path: dist/npm/${{ matrix.package }}
+          if-no-files-found: error
+          # 载荷已是二进制与已压缩轮子，再压缩只花时间。
+          compression-level: 0
+
+  publish:
+    name: 发布
+    needs: platform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
@@ -37,23 +133,33 @@ jobs:
       - name: 升级 npm
         run: npm install -g npm@latest
 
-      - name: 构建内核
-        working-directory: rust
+      - name: 校验 tag 与包版本一致
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
-          cargo build --release -p omnicrawl-cli
-          cargo test --workspace
+          version=$(node -p "require('./packages/cli/package.json').version")
+          test "npm-v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "tag ${GITHUB_REF_NAME} 与包版本 npm-v${version} 不一致。"
+            exit 1
+          }
 
-      - name: 安装工作区依赖
-        run: npm install --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: npm-*
+          path: dist/npm
+          merge-multiple: true
 
-      - name: 暂存发布产物
-        run: node packages/cli/scripts/prepare.mjs
+      - name: 暂存启动器
+        run: node packages/cli/scripts/prepare.mjs --launcher-only
 
-      - name: 测试
-        run: npm test --workspaces --if-present
+      - name: 安装冒烟（干净前缀真装真跑）
+        run: node packages/cli/scripts/install-smoke.mjs
 
+      # 平台包在前、启动器在后：启动器的 optionalDependencies 是精确版本，顺序反了会装不到。
       - name: 发布平台分包
-        run: npm publish dist/npm/cli-win32-x64 --access public
+        run: |
+          for package in cli-win32-ia32 cli-win32-x64 cli-linux-x64 cli-linux-arm-musl cli-linux-arm64-musl; do
+            npm publish "dist/npm/${package}" --access public
+          done
 
       - name: 发布启动器
         run: npm publish dist/npm/cli --access public

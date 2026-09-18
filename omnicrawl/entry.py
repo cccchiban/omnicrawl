@@ -102,6 +102,29 @@ def run_plugin_cli(argv: Sequence[str]) -> int | None:
     return run_plugin_command(args)
 
 
+def _has_interactive_terminal() -> bool:
+    """判断当前是否连着真正的终端；服务、管道与 CI 等无头环境返回 False。"""
+
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def run_api_cli(argv: Sequence[str]) -> int | None:
+    """若 argv 以 api 开头则起本地 HTTP/SSE 服务并返回退出码；否则返回 None。
+
+    监听地址、端口与 worker 数都来自配置（``load_api_config``），这里只认模式。
+    """
+
+    if not argv or argv[0] != "api":
+        return None
+    from omnicrawl.api.__main__ import main as api_main
+
+    api_main()
+    return 0
+
+
 def _log_startup(
     sink: Any,
     message: str,
@@ -317,10 +340,22 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     configure_console_encoding()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
 
-    # 插件管理必须在 LLM 配置和 UI 加载之前完成。
+    # 插件管理与 API 服务不需要终端，必须在交互式检查之前分流。
     plugin_exit = run_plugin_cli(raw_argv)
     if plugin_exit is not None:
         return int(plugin_exit)
+    api_exit = run_api_cli(raw_argv)
+    if api_exit is not None:
+        return api_exit
+
+    if not _has_interactive_terminal():
+        print(
+            "当前没有交互式终端，无法启动工作台。\n"
+            "  无头/服务器场景请改用：omnicrawl api\n"
+            "  或从 Telegram / 飞书连接器远程接入。",
+            file=sys.stderr,
+        )
+        return 2
 
     args = _parse_args(raw_argv)
     setup = initialize_user_configuration(
@@ -336,10 +371,13 @@ def run_application(argv: Sequence[str] | None = None) -> int:
     # 启动自动更新：联网比对 PyPI 最新版，版本落后且为 pip 安装环境时先打印
     # 说明并自动 pip 升级，成功后以子进程重新拉起 TUI 并返回其退出码；跳过、
     # 无新版本或升级失败均返回 None 继续正常启动（失败策略：用当前版本启动）。
+    # npm 分发的宿主是冻结产物（升级走 npm），不再探测 PyPI。
     try:
         from omnicrawl.maintenance.updater import run_startup_update_if_due
 
-        update_exit_code = run_startup_update_if_due(raw_argv)
+        update_exit_code = (
+            None if getattr(sys, "frozen", False) else run_startup_update_if_due(raw_argv)
+        )
         if update_exit_code is not None:
             return update_exit_code
     except Exception:  # noqa: BLE001 - 更新链路异常不能阻止 TUI 启动

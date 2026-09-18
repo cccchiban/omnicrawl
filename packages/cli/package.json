@@ -1,7 +1,7 @@
 {
   "name": "omnicrawl-cli",
-  "version": "0.1.72",
-  "description": "OmniCrawl 启动器：按平台选择内核二进制并转交 stdio",
+  "version": "0.2.0",
+  "description": "OmniCrawl 启动器：按平台启动完整宿主（工作台 / api / 插件）",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cccchiban/omnicrawl.git",
@@ -20,6 +20,7 @@
   },
   "scripts": {
     "test": "node --test",
+    "build:host": "node scripts/build-host.mjs",
     "prepare:binaries": "node scripts/prepare.mjs"
   },
   "license": "MIT"

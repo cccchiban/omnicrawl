@@ -236,3 +236,43 @@ test('启动器转交参数：--version', { skip: SKIP }, async () => {
   })
   assert.match(output, /^omnicrawl \d+\.\d+\.\d+$/)
 })
+
+test('启动器路由：默认启宿主，kernel 子命令走内核', { skip: SKIP }, async (t) => {
+  // 用内核二进制扮演宿主（两者都以 stderr 记日志），把内核目标指向不存在的路径，
+  // 于是「谁被启动」在断言里是可区分的。
+  const env = {
+    ...process.env,
+    OMNICRAWL_HOST: binary,
+    OMNICRAWL_BINARY: join(repoRoot, 'rust', 'target', 'release', 'does-not-exist'),
+  }
+
+  const failed = spawn(process.execPath, [launcher, 'kernel', '--version'], { env })
+  t.after(() => failed.kill())
+  const failure = await new Promise((resolve) => {
+    let text = ''
+    failed.stderr.setEncoding('utf8')
+    failed.stderr.on('data', (chunk) => {
+      text += chunk
+    })
+    failed.on('close', (code) => resolve({ code, text }))
+  })
+  assert.equal(failure.code, 1, 'kernel 子命令应把控制权交给内核目标')
+  assert.match(failure.text, /找不到可执行文件/)
+
+  const hosted = spawn(process.execPath, [launcher], { env })
+  t.after(() => hosted.kill())
+  const banner = await new Promise((resolve, reject) => {
+    let text = ''
+    const timer = setTimeout(() => resolve(text), 3000)
+    hosted.stderr.setEncoding('utf8')
+    hosted.stderr.on('data', (chunk) => {
+      text += chunk
+      if (text.includes('[kernel]')) {
+        clearTimeout(timer)
+        resolve(text)
+      }
+    })
+    hosted.on('error', reject)
+  })
+  assert.match(banner, /\[kernel\]/, '无子命令时应启动宿主（这里由内核扮演）')
+})
