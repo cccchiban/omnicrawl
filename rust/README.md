@@ -40,7 +40,7 @@ rust/
 │   ├── src/runtime.rs                      # 一次回合：请求 → 流事件 → 工具收尾 → ModelReply
 │   ├── src/desensitization.rs              # 消息脱敏模块根：子系统错误面 + 序号注册表（占位符协议、稳定序号）
 │   ├── src/desensitization/stream.rs       # 消息脱敏：流式还原（尾部挂起缓冲、结构化还原、严格模式）
-│   ├── src/desensitization/rules.rs        # 消息脱敏：值类型规则层（手写匹配器：网址/邮箱/银行卡/MAC/车牌）
+│   ├── src/desensitization/rules.rs        # 消息脱敏：值类型规则层（手写匹配器：PEM/连接串/网址/邮箱/车牌/银行卡/MAC/IP）
 │   ├── tests/*_parity.rs                   # 与 Python 实现的对照测试（流/请求/用量/端到端）
 │   ├── tests/runtime_loopback.rs           # 本机回环服务端上的内核行为测试
 │   ├── tests/common/mod.rs                 # 测试脚手架（fixture 输入、回环服务端、事件接收端）
@@ -254,9 +254,9 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照。未搬：归档、导出、一致性诊断、
 运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
 
-`omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层的五类
-（网址 / 邮箱 / 银行卡 / MAC / 车牌，手写匹配器）；规则层余下 PEM、连接串、内外网 IP 与 gitleaks，
-以及引擎、NER、middleware、oneshot。
+`omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层全部 11 条规则
+（PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）；余下 gitleaks 规则表、
+locality 与扫描缓存、引擎、NER、middleware、oneshot。
 
 接下来：规则层补 PEM / 连接串 / IP → 引擎（键名 / 结构 / 熵兜底 / 优先级编排）→ middleware 接线；
 会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置

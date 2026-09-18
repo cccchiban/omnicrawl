@@ -1,11 +1,13 @@
 //! 消息脱敏「值类型规则层」的跨语言 parity：期望值来自 Python `omnicrawl/llm/desensitization/rules.py`。
 //!
-//! 覆盖内核已搬的五类规则（网址 / 邮箱 / 银行卡 / MAC / 车牌）与整套规则语义：逐条规则的候选区间
-//! （含熵 / 豁免 / 校验 / 尾部收缩）、按优先级的整段扫描（重叠去重、按起点排序）、香农熵、Luhn
-//! 校验、邮箱豁免。数据集自带每条文本的期望命中，测试同时校验它，避免语料被写成空转。
+//! 覆盖全部 11 条内置规则（PEM 私钥 / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP）与整套
+//! 规则语义：逐条规则的候选区间（含熵 / 豁免 / 校验 / 尾部收缩）、按优先级的整段扫描（重叠去重、
+//! 按起点排序）、香农熵、Luhn 校验、邮箱豁免、内外网判定。数据集自带每条文本的期望命中，测试同时
+//! 校验它，避免语料被写成空转。
 
 use omnicrawl_llm::desensitization::rules::{
-    is_example_domain, is_luhn_valid, PatternRule, RuleMatch, TRAILING_TRIM_CHARS,
+    is_example_domain, is_external_ip, is_internal_ip, is_luhn_valid, PatternRule, RuleMatch,
+    TRAILING_TRIM_CHARS,
 };
 use omnicrawl_llm::desensitization::{builtin_rules, scan_pattern_rules, shannon_entropy_bits};
 use serde_json::{json, Value};
@@ -50,33 +52,31 @@ fn texts(fixture: &Value) -> &Vec<Value> {
 }
 
 #[test]
-fn ported_rules_match_python_declaration() {
+fn builtin_rules_match_python_declaration() {
     let fixture = fixture();
     let rules = builtin_rules();
     let ids: Vec<&str> = rules.iter().map(|rule| rule.rule_id).collect();
-    assert_eq!(json!(ids), fixture["rule_ids"], "已搬规则清单与顺序");
-
-    // 已搬的五类在 Python 的优先级序列里保持同样的相对顺序。
-    let declared: Vec<&str> = fixture["builtin_rule_ids"]
-        .as_array()
-        .expect("builtin_rule_ids")
-        .iter()
-        .map(|item| item.as_str().expect("rule id"))
-        .collect();
-    let mut cursor = 0;
-    for id in &ids {
-        let position = declared[cursor..]
-            .iter()
-            .position(|item| item == id)
-            .unwrap_or_else(|| panic!("{id} 在 Python 的内置规则里找不到"));
-        cursor += position + 1;
-    }
-
+    assert_eq!(json!(ids), fixture["rule_ids"], "内置规则清单与顺序");
+    assert_eq!(
+        json!(rules.len()),
+        fixture["rule_ids"].as_array().expect("rule_ids").len(),
+        "规则条数"
+    );
     assert_eq!(
         json!(TRAILING_TRIM_CHARS),
         fixture["trailing_trim_chars"],
         "尾部剪裁字符集"
     );
+}
+
+#[test]
+fn categories_match_python_declaration() {
+    let fixture = fixture();
+    let ours: Vec<Value> = omnicrawl_llm::desensitization::rules::CATEGORY_CONFIG_FLAGS
+        .iter()
+        .map(|(category, flag)| json!([category, flag]))
+        .collect();
+    assert_eq!(json!(ours), fixture["categories"], "类别与配置字段映射");
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn entropy_matches_python() {
 }
 
 #[test]
-fn validators_and_allowlist_match_python() {
+fn validators_match_python() {
     let fixture = fixture();
     for case in fixture["luhn"].as_array().expect("luhn") {
         let value = case["value"].as_str().expect("value");
@@ -167,6 +167,24 @@ fn validators_and_allowlist_match_python() {
             json!(is_example_domain(value)),
             case["allowlisted"],
             "邮箱豁免（{value:?}）"
+        );
+    }
+}
+
+#[test]
+fn ip_classification_matches_python() {
+    let fixture = fixture();
+    for case in fixture["ip_classification"].as_array().expect("ip") {
+        let value = case["value"].as_str().expect("value");
+        assert_eq!(
+            json!(is_internal_ip(value)),
+            case["internal"],
+            "内网判定（{value:?}）"
+        );
+        assert_eq!(
+            json!(is_external_ip(value)),
+            case["external"],
+            "外网判定（{value:?}）"
         );
     }
 }

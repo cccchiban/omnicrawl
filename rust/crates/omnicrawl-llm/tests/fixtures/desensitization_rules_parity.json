@@ -3,11 +3,17 @@
     "omnicrawl/llm/desensitization/rules.py"
   ],
   "rule_ids": [
+    "pem-private-key",
+    "pem-private-key-body",
+    "db-connection-uri",
+    "db-connection-kv",
     "url",
     "email",
     "license-plate-cn",
     "bank-card",
-    "mac-address"
+    "mac-address",
+    "ip-internal",
+    "ip-external"
   ],
   "categories": [
     [
@@ -46,19 +52,6 @@
       "license_plate",
       "detect_license_plate"
     ]
-  ],
-  "builtin_rule_ids": [
-    "pem-private-key",
-    "pem-private-key-body",
-    "db-connection-uri",
-    "db-connection-kv",
-    "url",
-    "email",
-    "license-plate-cn",
-    "bank-card",
-    "mac-address",
-    "ip-internal",
-    "ip-external"
   ],
   "trailing_trim_chars": " \t\r\n　\"'`.,;:!?)]}>,、。；：！？",
   "entropy": [
@@ -205,6 +198,288 @@
     {
       "value": "",
       "allowlisted": false
+    }
+  ],
+  "ip_classification": [
+    {
+      "value": "",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "0.0.0.0",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "0.1.2.3",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "01.2.3.4",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "0:0:0:0:0:0:0:1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "1.1.1.1",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "1.2.3",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "1.2.3.4.5",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "10.1.2.3",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "10.255.255.254",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "100.127.255.255",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "100.128.0.1",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "100.64.0.1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "12345::1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "127.0.0.1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "127.255.255.255",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "169.253.0.1",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "169.254.1.1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "172.15.0.1",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "172.16.0.1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "172.31.255.254",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "192.0.0.9",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "192.0.2.5",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "192.168.0.1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "192.168.255.254",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "192.169.0.1",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "198.18.0.1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "198.51.100.7",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "1:2:3:4:5:6:7:",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "1:2:3:4:5:6:7:8:",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "1::2::3",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "1:::2",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "2001:4860:4860::8888",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "2001:db8:1234::1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "2001:db8::1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "2001:db8::abcd",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "2002::1",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "203.0.113.7",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "223.5.5.5",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "224.0.0.1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "239.255.255.255",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "240.0.0.1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "255.255.255.255",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "256.1.1.1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "2a00:1450:4001:800::200e",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "64:ff9b::1",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "8.8.8.8",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "93.184.216.34",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "::",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "::1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "::2",
+      "internal": false,
+      "external": true
+    },
+    {
+      "value": "::ffff:1.2.3.4",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "fd00:1234::1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "fe80::1",
+      "internal": true,
+      "external": false
+    },
+    {
+      "value": "ff02::1",
+      "internal": false,
+      "external": false
+    },
+    {
+      "value": "not-an-ip",
+      "internal": false,
+      "external": false
     }
   ],
   "texts": [
@@ -986,6 +1261,1165 @@
       "scan": []
     },
     {
+      "text": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----",
+      "expected": [
+        "pem-private-key"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 175,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----"
+        },
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 145,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 175,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----"
+        }
+      ]
+    },
+    {
+      "text": "-----BEGIN PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END PRIVATE KEY-----",
+      "expected": [
+        "pem-private-key"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 167,
+          "value": "-----BEGIN PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END PRIVATE KEY-----"
+        },
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 141,
+          "value": "-----BEGIN PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 167,
+          "value": "-----BEGIN PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END PRIVATE KEY-----"
+        }
+      ]
+    },
+    {
+      "text": "-----begin rsa private key-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\n-----end rsa private key-----",
+      "expected": [
+        "pem-private-key"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 117,
+          "value": "-----begin rsa private key-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\n-----end rsa private key-----"
+        },
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 87,
+          "value": "-----begin rsa private key-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 117,
+          "value": "-----begin rsa private key-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\n-----end rsa private key-----"
+        }
+      ]
+    },
+    {
+      "text": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+",
+      "expected": [
+        "pem-private-key-body"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 145,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 145,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+"
+        }
+      ]
+    },
+    {
+      "text": "-----BEGIN RSA PRIVATE KEY-----\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": [
+        "pem-private-key-body"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 108,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 108,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "text": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq",
+      "expected": [
+        "pem-private-key-body"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 87,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 87,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq"
+        }
+      ]
+    },
+    {
+      "text": "前缀 -----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY----- 后缀",
+      "expected": [
+        "pem-private-key"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 3,
+          "end": 178,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----"
+        },
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 3,
+          "end": 148,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 3,
+          "end": 178,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----"
+        }
+      ]
+    },
+    {
+      "text": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----\n-----\n-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\n-----END RSA PRIVATE KEY-----",
+      "expected": [
+        "pem-private-key",
+        "pem-private-key"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 175,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----"
+        },
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 182,
+          "end": 299,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\n-----END RSA PRIVATE KEY-----"
+        },
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 145,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+"
+        },
+        {
+          "rule": "pem-private-key-body",
+          "category": "pem_private_key",
+          "start": 182,
+          "end": 269,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 175,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\nsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+\n-----END RSA PRIVATE KEY-----"
+        },
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 182,
+          "end": 299,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/aBcDeFgHiJkLmNoPq\n-----END RSA PRIVATE KEY-----"
+        }
+      ]
+    },
+    {
+      "text": "-----BEGIN RSA PRIVATE KEY-----\naaaaaaaa\n-----END RSA PRIVATE KEY-----",
+      "expected": [
+        "pem-private-key"
+      ],
+      "rule_matches": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 70,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naaaaaaaa\n-----END RSA PRIVATE KEY-----"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "pem-private-key",
+          "category": "pem_private_key",
+          "start": 0,
+          "end": 70,
+          "value": "-----BEGIN RSA PRIVATE KEY-----\naaaaaaaa\n-----END RSA PRIVATE KEY-----"
+        }
+      ]
+    },
+    {
+      "text": "-----BEGIN RSA PRIVATE KEY-----\nMIIE",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "-----BEGIN CERTIFICATE-----\nQUJDRA==\n-----END CERTIFICATE-----",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "postgresql://app:pgpass@db1.corp.local:5432/appdb",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 49,
+          "value": "postgresql://app:pgpass@db1.corp.local:5432/appdb"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 17,
+          "end": 38,
+          "value": "pgpass@db1.corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 49,
+          "value": "postgresql://app:pgpass@db1.corp.local:5432/appdb"
+        }
+      ]
+    },
+    {
+      "text": "mysql://root:mysqlpw@db2.corp.local/appdb",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 41,
+          "value": "mysql://root:mysqlpw@db2.corp.local/appdb"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 13,
+          "end": 35,
+          "value": "mysqlpw@db2.corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 41,
+          "value": "mysql://root:mysqlpw@db2.corp.local/appdb"
+        }
+      ]
+    },
+    {
+      "text": "mongodb+srv://app:mongopw@cluster0.corp.local/admin",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 51,
+          "value": "mongodb+srv://app:mongopw@cluster0.corp.local/admin"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 18,
+          "end": 45,
+          "value": "mongopw@cluster0.corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 51,
+          "value": "mongodb+srv://app:mongopw@cluster0.corp.local/admin"
+        }
+      ]
+    },
+    {
+      "text": "jdbc:postgresql://db3.corp.local:5432/appdb",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 43,
+          "value": "jdbc:postgresql://db3.corp.local:5432/appdb"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 43,
+          "value": "jdbc:postgresql://db3.corp.local:5432/appdb"
+        }
+      ]
+    },
+    {
+      "text": "r2dbc:mysql://db4.corp.local:3306/appdb",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 39,
+          "value": "r2dbc:mysql://db4.corp.local:3306/appdb"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 39,
+          "value": "r2dbc:mysql://db4.corp.local:3306/appdb"
+        }
+      ]
+    },
+    {
+      "text": "redis://cache.corp.local:6379/0",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 31,
+          "value": "redis://cache.corp.local:6379/0"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 31,
+          "value": "redis://cache.corp.local:6379/0"
+        }
+      ]
+    },
+    {
+      "text": "POSTGRESQL://DB6.CORP.LOCAL/appdb",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 33,
+          "value": "POSTGRESQL://DB6.CORP.LOCAL/appdb"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 33,
+          "value": "POSTGRESQL://DB6.CORP.LOCAL/appdb"
+        }
+      ]
+    },
+    {
+      "text": "配置 \"postgresql://app:pgpass@db1.corp.local:5432/appdb\" 结束",
+      "expected": [
+        "db-connection-uri"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 4,
+          "end": 53,
+          "value": "postgresql://app:pgpass@db1.corp.local:5432/appdb"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 21,
+          "end": 42,
+          "value": "pgpass@db1.corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 4,
+          "end": 53,
+          "value": "postgresql://app:pgpass@db1.corp.local:5432/appdb"
+        }
+      ]
+    },
+    {
+      "text": "notadb://x/y",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "Server=db1.corp.local;Database=app;User=sa;password=pwA",
+      "expected": [
+        "db-connection-kv"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 55,
+          "value": "Server=db1.corp.local;Database=app;User=sa;password=pwA"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 55,
+          "value": "Server=db1.corp.local;Database=app;User=sa;password=pwA"
+        }
+      ]
+    },
+    {
+      "text": "Server=db2.corp.local;User=sa;pwd=pwB",
+      "expected": [
+        "db-connection-kv"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 37,
+          "value": "Server=db2.corp.local;User=sa;pwd=pwB"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 37,
+          "value": "Server=db2.corp.local;User=sa;pwd=pwB"
+        }
+      ]
+    },
+    {
+      "text": "data source = db3.corp.local ;uid=sa; password = pwC",
+      "expected": [
+        "db-connection-kv"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 52,
+          "value": "data source = db3.corp.local ;uid=sa; password = pwC"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 52,
+          "value": "data source = db3.corp.local ;uid=sa; password = pwC"
+        }
+      ]
+    },
+    {
+      "text": "Server=db4.corp.local;uid=sa;pwd=pwD)",
+      "expected": [
+        "db-connection-kv"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 36,
+          "value": "Server=db4.corp.local;uid=sa;pwd=pwD"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-kv",
+          "category": "db_connection_string",
+          "start": 0,
+          "end": 36,
+          "value": "Server=db4.corp.local;uid=sa;pwd=pwD"
+        }
+      ]
+    },
+    {
+      "text": "Server=db5.corp.local;Database=app;User=sa",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "Server=db6.corp.local;Database=app\npassword=pwE",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "Server=db7.corp.local;filler=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx;password=pwF",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "password=pwG;Server=db8.corp.local",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "xServer=db9.corp.local;Pwd=pwH",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "内网 10.1.2.3 与公网 8.8.8.8 结束",
+      "expected": [
+        "ip-internal",
+        "ip-external"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 11,
+          "value": "10.1.2.3"
+        },
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 16,
+          "end": 23,
+          "value": "8.8.8.8"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 11,
+          "value": "10.1.2.3"
+        },
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 16,
+          "end": 23,
+          "value": "8.8.8.8"
+        }
+      ]
+    },
+    {
+      "text": "私网 172.16.0.1 与 192.168.0.1 结束",
+      "expected": [
+        "ip-internal",
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 13,
+          "value": "172.16.0.1"
+        },
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 16,
+          "end": 27,
+          "value": "192.168.0.1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 13,
+          "value": "172.16.0.1"
+        },
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 16,
+          "end": 27,
+          "value": "192.168.0.1"
+        }
+      ]
+    },
+    {
+      "text": "链路本地 169.254.1.1 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 5,
+          "end": 16,
+          "value": "169.254.1.1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 5,
+          "end": 16,
+          "value": "169.254.1.1"
+        }
+      ]
+    },
+    {
+      "text": "环回 127.0.0.1 与未指定 0.0.0.0 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "组播 224.0.0.1 与保留 240.0.0.1 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 17,
+          "end": 26,
+          "value": "240.0.0.1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 17,
+          "end": 26,
+          "value": "240.0.0.1"
+        }
+      ]
+    },
+    {
+      "text": "共享地址 100.64.0.1 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "测试网 192.0.2.5 与基准 198.18.0.1 结束",
+      "expected": [
+        "ip-internal",
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 4,
+          "end": 13,
+          "value": "192.0.2.5"
+        },
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 18,
+          "end": 28,
+          "value": "198.18.0.1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 4,
+          "end": 13,
+          "value": "192.0.2.5"
+        },
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 18,
+          "end": 28,
+          "value": "198.18.0.1"
+        }
+      ]
+    },
+    {
+      "text": "文档 198.51.100.7 与 203.0.113.7 结束",
+      "expected": [
+        "ip-internal",
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 15,
+          "value": "198.51.100.7"
+        },
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 18,
+          "end": 29,
+          "value": "203.0.113.7"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 15,
+          "value": "198.51.100.7"
+        },
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 18,
+          "end": 29,
+          "value": "203.0.113.7"
+        }
+      ]
+    },
+    {
+      "text": "零网段 0.1.2.3 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 4,
+          "end": 11,
+          "value": "0.1.2.3"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 4,
+          "end": 11,
+          "value": "0.1.2.3"
+        }
+      ]
+    },
+    {
+      "text": "广播 255.255.255.255 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 18,
+          "value": "255.255.255.255"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 3,
+          "end": 18,
+          "value": "255.255.255.255"
+        }
+      ]
+    },
+    {
+      "text": "IPv6 链路本地 fe80::1 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 10,
+          "end": 17,
+          "value": "fe80::1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 10,
+          "end": 17,
+          "value": "fe80::1"
+        }
+      ]
+    },
+    {
+      "text": "IPv6 ULA fd00:1234::1 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 9,
+          "end": 21,
+          "value": "fd00:1234::1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 9,
+          "end": 21,
+          "value": "fd00:1234::1"
+        }
+      ]
+    },
+    {
+      "text": "IPv6 文档 2001:db8::1 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 8,
+          "end": 19,
+          "value": "2001:db8::1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 8,
+          "end": 19,
+          "value": "2001:db8::1"
+        }
+      ]
+    },
+    {
+      "text": "IPv6 NAT64 64:ff9b::1 结束",
+      "expected": [
+        "ip-external"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 11,
+          "end": 21,
+          "value": "64:ff9b::1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 11,
+          "end": 21,
+          "value": "64:ff9b::1"
+        }
+      ]
+    },
+    {
+      "text": "IPv6 公网 2001:4860:4860::8888 结束",
+      "expected": [
+        "ip-external"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 8,
+          "end": 28,
+          "value": "2001:4860:4860::8888"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 8,
+          "end": 28,
+          "value": "2001:4860:4860::8888"
+        }
+      ]
+    },
+    {
+      "text": "IPv6 六 2002::1 结束",
+      "expected": [
+        "ip-external"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 7,
+          "end": 14,
+          "value": "2002::1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 7,
+          "end": 14,
+          "value": "2002::1"
+        }
+      ]
+    },
+    {
+      "text": "IPv6 环回 ::1 与未指定 :: 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "IPv6 组播 ff02::1 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "IPv6 完整 0:0:0:0:0:0:0:1 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "IPv6 压缩段 ::2 结束",
+      "expected": [
+        "ip-external"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 9,
+          "end": 12,
+          "value": "::2"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-external",
+          "category": "external_ip",
+          "start": 9,
+          "end": 12,
+          "value": "::2"
+        }
+      ]
+    },
+    {
+      "text": "带端口 10.0.0.6:8080 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "方括号 [2001:db8:1234::1]:443 结束",
+      "expected": [
+        "ip-internal"
+      ],
+      "rule_matches": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 5,
+          "end": 21,
+          "value": "2001:db8:1234::1"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "ip-internal",
+          "category": "internal_ip",
+          "start": 5,
+          "end": 21,
+          "value": "2001:db8:1234::1"
+        }
+      ]
+    },
+    {
+      "text": "非法 256.1.1.1 与 01.2.3.4 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "短 1.2.3 与长 1.2.3.4.5 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "映射 ::ffff:1.2.3.4 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "网址里的 http://10.0.0.5:8080/a 结束",
+      "expected": [
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 5,
+          "end": 27,
+          "value": "http://10.0.0.5:8080/a"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 5,
+          "end": 27,
+          "value": "http://10.0.0.5:8080/a"
+        }
+      ]
+    },
+    {
       "text": "https://user@example.net/x 结束",
       "expected": [
         "url"
@@ -1122,6 +2556,52 @@
           "start": 45,
           "end": 66,
           "value": "https://z.corp.local/"
+        }
+      ]
+    },
+    {
+      "text": "连接 postgresql://app:pgpass@db1.corp.local:5432/appdb 与卡号 4111111111111111 结束",
+      "expected": [
+        "db-connection-uri",
+        "bank-card"
+      ],
+      "rule_matches": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 3,
+          "end": 52,
+          "value": "postgresql://app:pgpass@db1.corp.local:5432/appdb"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 20,
+          "end": 41,
+          "value": "pgpass@db1.corp.local"
+        },
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 57,
+          "end": 73,
+          "value": "4111111111111111"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "db-connection-uri",
+          "category": "db_connection_string",
+          "start": 3,
+          "end": 52,
+          "value": "postgresql://app:pgpass@db1.corp.local:5432/appdb"
+        },
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 57,
+          "end": 73,
+          "value": "4111111111111111"
         }
       ]
     },

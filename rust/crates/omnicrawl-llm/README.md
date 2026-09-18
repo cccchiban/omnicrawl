@@ -51,7 +51,7 @@ fixture：
 
 - `tests/fixtures/desensitization_parity.json`：占位符用例 11 条、稳定索引 5 步、周期 / 会话缓存 / 注册表生命周期。
 - `tests/fixtures/desensitization_stream_parity.json`：13 个场景、71 步操作（分片还原、通道隔离、结构化还原、告警、严格模式、截断判定）。
-- `tests/fixtures/desensitization_rules_parity.json`：42 条语料（逐条候选 40、扫描命中 38）、熵 10 例、Luhn 13 例、邮箱豁免 10 例。
+- `tests/fixtures/desensitization_rules_parity.json`：98 条语料（逐条候选 96、扫描命中 83）、熵 10 例、Luhn 13 例、邮箱豁免 12 例、IP 判定 50 例。
 - `tests/fixtures/openai_chat_stream_parity.json`：参数完整性 16、分片归并 8、SSE 解码 10、SSE 流 9、首选项 6。
 - `tests/fixtures/openai_chat_request_parity.json`：请求 33、provider_options 8、GPT 判定 13、prompt_cache_key 5、
   参数串 16、浮点写法 6。
@@ -124,14 +124,17 @@ fixture：
   `restore_arguments` 递归还原参数里的字符串值（键与结构件不动），`reply_usable` 按
   `TRUNCATED_FINISH_REASONS`（截断类 finish_reason 不按成功注销周期）判定回复是否可用。
 - **值类型规则层**（`PatternRule` / `scan_pattern_rules`）：识别「形态确定、随机性低」的敏感值，
-  已搬**网址、邮箱、银行卡（Luhn）、MAC 地址、大陆车牌**五类，以及整套规则语义——关键字预过滤、
+  11 条内置规则全部落地——**PEM 私钥（完整块 / 无 END 的截断正文）、数据库连接串（URI / ADO 键值）、
+  网址、邮箱、银行卡（Luhn）、MAC 地址、大陆车牌、内外网 IP**，以及整套规则语义——关键字预过滤、
   熵下限（`shannon_entropy_bits`，求和顺序对齐 Python `Counter`，浮点逐位可比）、校验器、值级
   豁免表、停用词、尾部标点留在原文、重叠区间先命中先占位、结果按起点稳定排序。
   内核**不引入正则依赖**（项目决定）：每条规则的正则等价物都是手写匹配器，含环视、交替分支各自的
-  尾部环视、以及贪婪量词与回溯（域名「尽量多标签再退让」、本地部分 64 字符上界叠加左侧环视）。
+  尾部环视、贪婪量词与回溯（PEM 头尾的类字符段、域名「尽量多标签再退让」、本地部分 64 字符上界
+  叠加左侧环视、ADO 键值里的惰性扫描）；IP 的私有 / 链路本地 / 公网判定按 Python `ipaddress`
+  的常量表逐条对齐（IPv4 14 条私有网段 + 共享段 100.64/10，IPv6 10 条私有网段 + 链路本地 + 组播）。
 
-尚未搬运：规则层的 PEM 私钥 / 数据库连接串 / 内外网 IP（多行懒匹配与 `ipaddress` 分类表）、
-gitleaks 规则表、`locality` 局部化扫描与扫描结果缓存（纯性能优化，不影响语义）、
+尚未搬运：gitleaks 规则表（221 条正则与「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照）、
+`locality` 局部化扫描与扫描结果缓存（纯性能优化，不影响语义）、
 引擎（键名 / 结构 / 熵兜底 / NER 兜底与优先级编排）、NER、middleware、oneshot。
 
 三份数据集的占位符与号牌一类「占位符形状」的字面量一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：

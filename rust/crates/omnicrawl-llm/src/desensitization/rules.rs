@@ -5,16 +5,33 @@
 //! 的类型。内核**不引入正则依赖**（项目决定）：每条规则的正则等价物都是手写匹配器，逐条用
 //! 对照数据集验证（`tests/desensitization_rules_parity.rs`）。
 //!
-//! 已搬：网址、邮箱、银行卡（Luhn）、MAC 地址、大陆车牌，以及整套规则语义——关键字预过滤、
-//! 熵下限、校验器、豁免表、停用词、尾部标点留在原文、重叠区间先命中先占位、结果按起点排序。
+//! 已搬：全部 11 条内置规则——PEM 私钥（完整块 / 截断正文）、数据库连接串（URI / ADO 键值）、
+//! 网址、邮箱、银行卡（Luhn）、MAC 地址、大陆车牌、内外网 IP（对齐 Python `ipaddress` 分类表），
+//! 以及整套规则语义——关键字预过滤、熵下限、校验器、豁免表、停用词、尾部标点留在原文、
+//! 重叠区间先命中先占位、结果按起点排序。
 //!
-//! 未搬：PEM 私钥、数据库连接串、内外网 IP（这三类要做多行懒匹配与 `ipaddress` 分类表，
-//! 另行一片）、gitleaks 规则表（`secret_group` / 整段豁免要等它一起补）、`locality` 局部化
+//! 未搬：gitleaks 规则表（221 条正则，与「不引入 `regex`」的决定冲突）、`locality` 局部化
 //! 扫描与扫描结果缓存（纯性能优化，不影响语义）。
 
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use super::char_offsets;
+
+fn find_candidates(matcher: RuleMatcher, characters: &[char]) -> Vec<(usize, usize)> {
+    match matcher {
+        RuleMatcher::PemBlock => find_pem_block(characters),
+        RuleMatcher::PemBody => find_pem_body(characters),
+        RuleMatcher::DbUri => find_db_uri(characters),
+        RuleMatcher::DbKeyValue => find_db_key_value(characters),
+        RuleMatcher::Url => find_url(characters),
+        RuleMatcher::Email => find_email(characters),
+        RuleMatcher::LicensePlate => find_license_plate(characters),
+        RuleMatcher::BankCard => find_bank_card(characters),
+        RuleMatcher::MacAddress => find_mac_address(characters),
+        RuleMatcher::IpAddress => find_ip_address(characters),
+    }
+}
 
 // ── 规则类别（与 [desensitization] 的 detect_* 开关一一对应） ──────────────
 
@@ -86,11 +103,16 @@ pub struct RuleMatch {
 /// 手写匹配器：Python 侧是正则，内核侧是等价实现（不引入 `regex` 依赖）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleMatcher {
+    PemBlock,
+    PemBody,
+    DbUri,
+    DbKeyValue,
     Url,
     Email,
+    LicensePlate,
     BankCard,
     MacAddress,
-    LicensePlate,
+    IpAddress,
 }
 
 /// 值级豁免 / 校验谓词（Python 侧是正则与函数对象）。
@@ -169,9 +191,57 @@ impl PatternRule {
     }
 }
 
-/// 内置值类型规则（顺序即优先级；重叠区间由先者占位）。**仅含已搬的类别**。
+/// 内置值类型规则（顺序即优先级；重叠区间由先者占位）。
 pub fn builtin_rules() -> Vec<PatternRule> {
     vec![
+        PatternRule {
+            rule_id: "pem-private-key",
+            category: CATEGORY_PEM_PRIVATE_KEY,
+            matcher: RuleMatcher::PemBlock,
+            description: "PEM 私钥块（BEGIN/END … PRIVATE KEY）",
+            keywords: &["private key"],
+            min_entropy: None,
+            validator: None,
+            allowlist: &[],
+            stopwords: &[],
+            trim_trailing: true,
+        },
+        PatternRule {
+            rule_id: "pem-private-key-body",
+            category: CATEGORY_PEM_PRIVATE_KEY,
+            matcher: RuleMatcher::PemBody,
+            description: "PEM 私钥头与 base64 正文（无 END 的截断场景）",
+            keywords: &["private key"],
+            min_entropy: None,
+            validator: None,
+            allowlist: &[],
+            stopwords: &[],
+            trim_trailing: true,
+        },
+        PatternRule {
+            rule_id: "db-connection-uri",
+            category: CATEGORY_DB_CONNECTION_STRING,
+            matcher: RuleMatcher::DbUri,
+            description: "数据库连接串（URI 形态）",
+            keywords: &[],
+            min_entropy: None,
+            validator: None,
+            allowlist: &[],
+            stopwords: &[],
+            trim_trailing: true,
+        },
+        PatternRule {
+            rule_id: "db-connection-kv",
+            category: CATEGORY_DB_CONNECTION_STRING,
+            matcher: RuleMatcher::DbKeyValue,
+            description: "数据库连接串（ADO / .NET 键值形态）",
+            keywords: &["password", "pwd"],
+            min_entropy: None,
+            validator: None,
+            allowlist: &[],
+            stopwords: &[],
+            trim_trailing: true,
+        },
         PatternRule {
             rule_id: "url",
             category: CATEGORY_URL,
@@ -228,6 +298,30 @@ pub fn builtin_rules() -> Vec<PatternRule> {
             keywords: &[],
             min_entropy: None,
             validator: None,
+            allowlist: &[],
+            stopwords: &[],
+            trim_trailing: true,
+        },
+        PatternRule {
+            rule_id: "ip-internal",
+            category: CATEGORY_INTERNAL_IP,
+            matcher: RuleMatcher::IpAddress,
+            description: "内网 IP（私有 / 链路本地）",
+            keywords: &[],
+            min_entropy: None,
+            validator: Some(is_internal_ip),
+            allowlist: &[],
+            stopwords: &[],
+            trim_trailing: true,
+        },
+        PatternRule {
+            rule_id: "ip-external",
+            category: CATEGORY_EXTERNAL_IP,
+            matcher: RuleMatcher::IpAddress,
+            description: "外网 IP（公网可路由）",
+            keywords: &[],
+            min_entropy: None,
+            validator: Some(is_external_ip),
             allowlist: &[],
             stopwords: &[],
             trim_trailing: true,
@@ -354,16 +448,6 @@ pub fn is_example_domain(value: &str) -> bool {
 }
 
 // ── 手写匹配器 ────────────────────────────────────────────────────────────
-
-fn find_candidates(matcher: RuleMatcher, characters: &[char]) -> Vec<(usize, usize)> {
-    match matcher {
-        RuleMatcher::Url => find_url(characters),
-        RuleMatcher::Email => find_email(characters),
-        RuleMatcher::BankCard => find_bank_card(characters),
-        RuleMatcher::MacAddress => find_mac_address(characters),
-        RuleMatcher::LicensePlate => find_license_plate(characters),
-    }
-}
 
 /// `\b(?:https?|ftp)://[^\s"'<>`\\]+`（大小写不敏感）的等价实现。
 fn find_url(characters: &[char]) -> Vec<(usize, usize)> {
@@ -700,6 +784,567 @@ fn plate_tail_boundary(characters: &[char], end: usize) -> bool {
     !characters
         .get(end)
         .is_some_and(|c| c.is_ascii_alphanumeric())
+}
+
+// ── PEM 私钥 ──────────────────────────────────────────────────────────────
+
+/// PEM 头/尾里的类字符：`[ A-Z0-9_-]`（大小写不敏感）。
+fn is_pem_class(character: char) -> bool {
+    character == ' ' || character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+}
+
+fn is_base64_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '+' | '/' | '=')
+}
+
+fn is_line_break(character: char) -> bool {
+    matches!(character, '\r' | '\n')
+}
+
+fn is_db_kv_value_char(character: char) -> bool {
+    character != ';' && !is_line_break(character)
+}
+
+fn is_ipv6_char(character: char) -> bool {
+    character.is_ascii_hexdigit() || character == ':'
+}
+
+fn is_db_uri_stop(character: char) -> bool {
+    character.is_whitespace() || matches!(character, '"' | '\'' | '`' | '<' | '>')
+}
+
+fn is_ascii_word_char(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_'
+}
+
+/// 从 `from` 起连续满足 `accepts` 的字符段末位（下标语义同 Python 的切片）。
+fn class_run_end(characters: &[char], from: usize, accepts: fn(char) -> bool) -> usize {
+    let mut index = from;
+    while characters.get(index).is_some_and(|value| accepts(*value)) {
+        index += 1;
+    }
+    index
+}
+
+/// `[ A-Z0-9_-]*PRIVATE KEY[ A-Z0-9_-]*-----`：两段贪婪前缀各自从最长往短回退。
+fn pem_key_tail_end(characters: &[char], from: usize) -> Option<usize> {
+    let run_end = class_run_end(characters, from, is_pem_class);
+    let marker = "PRIVATE KEY";
+    let mut candidate = run_end as isize - marker.len() as isize;
+    while candidate >= from as isize {
+        let start = candidate as usize;
+        if starts_with_ignore_case(characters, start, marker) {
+            let tail = start + marker.len();
+            let mut dashes = run_end as isize;
+            while dashes >= tail as isize + 5 {
+                let position = dashes as usize - 5;
+                if (0..5).all(|offset| characters.get(position + offset) == Some(&'-')) {
+                    return Some(position + 5);
+                }
+                dashes -= 1;
+            }
+        }
+        candidate -= 1;
+    }
+    None
+}
+
+/// `-----BEGIN[ A-Z0-9_-]*PRIVATE KEY[ A-Z0-9_-]*-----` 的结束位置。
+fn pem_header_end(characters: &[char], start: usize) -> Option<usize> {
+    if !starts_with_ignore_case(characters, start, "-----BEGIN") {
+        return None;
+    }
+    pem_key_tail_end(characters, start + 10)
+}
+
+/// PEM 私钥块：BEGIN 头 + 惰性任意内容 + 最早的 END 尾。
+fn find_pem_block(characters: &[char]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        if let Some(header_end) = pem_header_end(characters, index) {
+            let mut cursor = header_end;
+            while cursor < characters.len() {
+                if starts_with_ignore_case(characters, cursor, "-----END") {
+                    if let Some(end) = pem_key_tail_end(characters, cursor + 8) {
+                        found.push((index, end));
+                        index = end;
+                        break;
+                    }
+                }
+                cursor += 1;
+            }
+            if cursor < characters.len() {
+                continue;
+            }
+        }
+        index += 1;
+    }
+    found
+}
+
+/// PEM 私钥头 + 后续 base64 正文行（无 END 的截断场景）。
+fn find_pem_body(characters: &[char]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        if let Some(header_end) = pem_header_end(characters, index) {
+            let mut cursor = header_end;
+            let mut matched = false;
+            loop {
+                let line_start = class_run_end(characters, cursor, is_line_break);
+                if line_start == cursor {
+                    break;
+                }
+                let line_end = class_run_end(characters, line_start, is_base64_char);
+                let length = line_end - line_start;
+                if length < 16 {
+                    break;
+                }
+                cursor = line_start + length.min(76);
+                matched = true;
+            }
+            if matched {
+                found.push((index, cursor));
+                index = cursor;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    found
+}
+
+// ── 数据库连接串 ──────────────────────────────────────────────────────────
+
+/// 顺序即正则里的分支顺序（先命中先算）。
+const DB_URI_SCHEMES: [&str; 25] = [
+    "postgresql",
+    "postgres",
+    "pgsql",
+    "mysql",
+    "mariadb",
+    "mongodb+srv",
+    "mongodb",
+    "redis",
+    "rediss",
+    "amqps",
+    "amqp",
+    "mssql",
+    "sqlserver",
+    "oracle",
+    "clickhouse",
+    "elasticsearch",
+    "cassandra",
+    "neo4j",
+    "sqlite",
+    "cockroachdb",
+    "db2",
+    "h2",
+    "influxdb",
+    "memcached",
+    "etcd",
+];
+
+/// `(?:jdbc|r2dbc):` 可选前缀 + 协议名 + 可选 `+驱动` + `://` + 非空白体。
+fn find_db_uri(characters: &[char]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        let mut matched = None;
+        // 可选的协议前缀是贪婪组：先试 `jdbc:`，再 `r2dbc:`，最后不带前缀。
+        for prefix in [Some("jdbc:"), Some("r2dbc:"), None] {
+            let start = match prefix {
+                Some(text) => {
+                    if !starts_with_ignore_case(characters, index, text) {
+                        continue;
+                    }
+                    index + text.len()
+                }
+                None => index,
+            };
+            if let Some(end) = db_uri_after_protocol(characters, start) {
+                matched = Some(end);
+                break;
+            }
+        }
+        if let Some(end) = matched {
+            found.push((index, end));
+            index = end;
+            continue;
+        }
+        index += 1;
+    }
+    found
+}
+
+fn db_uri_after_protocol(characters: &[char], start: usize) -> Option<usize> {
+    for scheme in DB_URI_SCHEMES {
+        if !starts_with_ignore_case(characters, start, scheme) {
+            continue;
+        }
+        let after_scheme = start + scheme.len();
+        let mut ends = Vec::new();
+        if characters.get(after_scheme) == Some(&'+') {
+            let driver_end = class_run_end(characters, after_scheme + 1, is_ascii_word_char);
+            if driver_end > after_scheme + 1 {
+                ends.push(driver_end);
+            }
+        }
+        ends.push(after_scheme);
+        for end in ends {
+            if !starts_with_ignore_case(characters, end, "://") {
+                continue;
+            }
+            let body_start = end + 3;
+            let body_end = class_run_end(characters, body_start, |character| {
+                !is_db_uri_stop(character)
+            });
+            if body_end > body_start {
+                return Some(body_end);
+            }
+        }
+    }
+    None
+}
+
+/// ADO / .NET 键值连接串：`key = value; … password = value`。
+fn find_db_key_value(characters: &[char]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        if let Some(end) = db_key_value_at(characters, index) {
+            found.push((index, end));
+            index = end;
+            continue;
+        }
+        index += 1;
+    }
+    found
+}
+
+fn db_key_value_at(characters: &[char], start: usize) -> Option<usize> {
+    // `\b(?:server|data\s*source|host|addr|address)`。
+    if start > 0 && is_word(characters[start - 1]) {
+        return None;
+    }
+    if !characters
+        .get(start)
+        .is_some_and(|character| is_word(*character))
+    {
+        return None;
+    }
+    for key in ["server", "host", "addr", "address", "datasource"] {
+        let after_key = if key == "datasource" {
+            if !starts_with_ignore_case(characters, start, "data") {
+                continue;
+            }
+            let source_start =
+                class_run_end(characters, start + 4, |character| character.is_whitespace());
+            if !starts_with_ignore_case(characters, source_start, "source") {
+                continue;
+            }
+            source_start + 6
+        } else {
+            if !starts_with_ignore_case(characters, start, key) {
+                continue;
+            }
+            start + key.len()
+        };
+        if let Some(end) = db_kv_after_key(characters, after_key) {
+            return Some(end);
+        }
+    }
+    None
+}
+
+/// `\s*=\s*[^;\r\n]{1,200};[^\r\n]{0,400}?(?:password|pwd)\s*=\s*[^;\r\n]{1,200}`。
+fn db_kv_after_key(characters: &[char], after_key: usize) -> Option<usize> {
+    let equals = class_run_end(characters, after_key, |character| character.is_whitespace());
+    if characters.get(equals) != Some(&'=') {
+        return None;
+    }
+    let value_start = class_run_end(characters, equals + 1, |character| {
+        character.is_whitespace()
+    });
+    let value_end = class_run_end(characters, value_start, is_db_kv_value_char);
+    let length = value_end - value_start;
+    if length == 0 || length > 200 || characters.get(value_end) != Some(&';') {
+        return None;
+    }
+    db_kv_password_end(characters, value_end + 1)
+}
+
+fn db_kv_password_end(characters: &[char], from: usize) -> Option<usize> {
+    let mut cursor = from;
+    while cursor <= from + 400 && cursor < characters.len() {
+        if is_line_break(characters[cursor]) {
+            return None;
+        }
+        for key in ["password", "pwd"] {
+            if !starts_with_ignore_case(characters, cursor, key) {
+                continue;
+            }
+            let equals = class_run_end(characters, cursor + key.len(), |character| {
+                character.is_whitespace()
+            });
+            if characters.get(equals) != Some(&'=') {
+                continue;
+            }
+            let value_start = class_run_end(characters, equals + 1, |character| {
+                character.is_whitespace()
+            });
+            let value_end = class_run_end(characters, value_start, is_db_kv_value_char);
+            if value_end > value_start {
+                return Some(value_start + (value_end - value_start).min(200));
+            }
+        }
+        cursor += 1;
+    }
+    None
+}
+
+// ── IP 地址 ───────────────────────────────────────────────────────────────
+
+// 下列表逐条对齐 Python 3.9 `ipaddress` 的常量（`_private_networks` 等），
+// 判定语义与 Python 一致：内网 = 私有或链路本地（排除环回 / 未指定 / 组播）；
+// 外网 = 全球可达（IPv4 还要排除 100.64/10 这一非全球段）。
+
+/// `IPv4Address._private_networks`：(网络地址, 前缀长度)。
+const V4_PRIVATE: [(u32, u8); 14] = [
+    (0, 8),
+    (167772160, 8),
+    (2130706432, 8),
+    (2851995648, 16),
+    (2886729728, 12),
+    (3221225472, 29),
+    (3221225642, 31),
+    (3221225984, 24),
+    (3232235520, 16),
+    (3323068416, 15),
+    (3325256704, 24),
+    (3405803776, 24),
+    (4026531840, 4),
+    (4294967295, 32),
+];
+const V4_SHARED: (u32, u8) = (1681915904, 10);
+const V4_LINK_LOCAL: (u32, u8) = (2851995648, 16);
+const V4_LOOPBACK: (u32, u8) = (2130706432, 8);
+const V4_MULTICAST: (u32, u8) = (3758096384, 4);
+
+/// `IPv6Address._private_networks`：(网络地址, 前缀长度)。
+const V6_PRIVATE: [(u128, u8); 10] = [
+    (0x00000000000000000000000000000001, 128),
+    (0x00000000000000000000000000000000, 128),
+    (0x00000000000000000000ffff00000000, 96),
+    (0x01000000000000000000000000000000, 64),
+    (0x20010000000000000000000000000000, 23),
+    (0x20010002000000000000000000000000, 48),
+    (0x20010db8000000000000000000000000, 32),
+    (0x20010010000000000000000000000000, 28),
+    (0xfc000000000000000000000000000000, 7),
+    (0xfe800000000000000000000000000000, 10),
+];
+const V6_LINK_LOCAL: (u128, u8) = (0xfe800000000000000000000000000000, 10);
+const V6_MULTICAST: (u128, u8) = (0xff000000000000000000000000000000, 8);
+
+fn v4_in(network: (u32, u8), value: u32) -> bool {
+    let mask = if network.1 == 0 {
+        0
+    } else {
+        u32::MAX << (32 - network.1)
+    };
+    (value & mask) == network.0
+}
+
+fn v6_in(network: (u128, u8), value: u128) -> bool {
+    let mask = if network.1 == 0 {
+        0
+    } else {
+        u128::MAX << (128 - network.1)
+    };
+    (value & mask) == network.0
+}
+
+struct IpFlags {
+    loopback: bool,
+    unspecified: bool,
+    multicast: bool,
+    private: bool,
+    link_local: bool,
+    global: bool,
+}
+
+fn classify_ip(value: &str) -> Option<IpFlags> {
+    if let Ok(address) = value.parse::<Ipv4Addr>() {
+        // `to_bits()` 要到 Rust 1.80；工程声明的 MSRV 是 1.75，用 From 转换（1.26 起稳定）。
+        let bits = u32::from(address);
+        let private = V4_PRIVATE.iter().any(|network| v4_in(*network, bits));
+        return Some(IpFlags {
+            loopback: v4_in(V4_LOOPBACK, bits),
+            unspecified: bits == 0,
+            multicast: v4_in(V4_MULTICAST, bits),
+            private,
+            link_local: v4_in(V4_LINK_LOCAL, bits),
+            global: !v4_in(V4_SHARED, bits) && !private,
+        });
+    }
+    let address: Ipv6Addr = value.parse().ok()?;
+    let bits = u128::from(address);
+    let private = V6_PRIVATE.iter().any(|network| v6_in(*network, bits));
+    Some(IpFlags {
+        loopback: bits == 1,
+        unspecified: bits == 0,
+        multicast: v6_in(V6_MULTICAST, bits),
+        private,
+        link_local: v6_in(V6_LINK_LOCAL, bits),
+        global: !private,
+    })
+}
+
+/// 内网 / 链路本地（排除环回、未指定、组播）。
+pub fn is_internal_ip(value: &str) -> bool {
+    let Some(flags) = classify_ip(value) else {
+        return false;
+    };
+    if flags.loopback || flags.unspecified || flags.multicast {
+        return false;
+    }
+    flags.private || flags.link_local
+}
+
+/// 公网可路由（排除私有 / 环回 / 链路本地 / 组播）。
+pub fn is_external_ip(value: &str) -> bool {
+    let Some(flags) = classify_ip(value) else {
+        return false;
+    };
+    if flags.loopback || flags.unspecified || flags.multicast {
+        return false;
+    }
+    flags.global
+}
+
+/// `(?<![\w.:])`：左侧不能是单词字符、`.`、`:`。
+fn ip_lookbehind_ok(characters: &[char], start: usize) -> bool {
+    match start.checked_sub(1).and_then(|index| characters.get(index)) {
+        Some(character) => !is_word(*character) && !matches!(character, '.' | ':'),
+        None => true,
+    }
+}
+
+/// `(?![\w:])(?!\.\d)`：右侧不能是单词字符 / `:`，也不能是「点 + 数字」。
+fn ip_lookahead_ok(characters: &[char], end: usize) -> bool {
+    match characters.get(end) {
+        Some(character) => {
+            if is_word(*character) || *character == ':' {
+                return false;
+            }
+            !(*character == '.'
+                && characters
+                    .get(end + 1)
+                    .is_some_and(|next| next.is_ascii_digit()))
+        }
+        None => true,
+    }
+}
+
+/// 点分十进制 IPv4（先于 IPv6 分支尝试）。
+fn ipv4_end(characters: &[char], start: usize) -> Option<usize> {
+    let mut cursor = start;
+    for octet in 0..4 {
+        let octet_end = ipv4_octet_end(characters, cursor)?;
+        cursor = octet_end;
+        if octet < 3 {
+            if characters.get(cursor) != Some(&'.') {
+                return None;
+            }
+            cursor += 1;
+        }
+    }
+    ip_lookahead_ok(characters, cursor).then_some(cursor)
+}
+
+/// `(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)`：1–3 位、无前导零、数值 ≤ 255。
+fn ipv4_octet_end(characters: &[char], start: usize) -> Option<usize> {
+    let run_end = class_run_end(characters, start, |character| character.is_ascii_digit());
+    let length = run_end - start;
+    if length == 0 || length > 3 {
+        return None;
+    }
+    let digits: String = characters[start..run_end].iter().collect();
+    if length > 1 && digits.starts_with('0') {
+        return None;
+    }
+    (digits.parse::<u32>().ok()? <= 255).then_some(run_end)
+}
+
+/// IPv6：`[0-9A-Fa-f:]+` 段整体套用正则的九个分支形态。
+///
+/// 段内字符只可能是 hex 或 `:`，而两个尾部环视都禁止「后面紧跟 hex 或 `:`」，
+/// 所以命中终点只能是该段的末尾——不必逐个终点评分支。
+fn ipv6_end(characters: &[char], start: usize) -> Option<usize> {
+    let run_end = class_run_end(characters, start, is_ipv6_char);
+    if run_end == start {
+        return None;
+    }
+    let token: String = characters[start..run_end].iter().collect();
+    if !is_ipv6_shape(&token) {
+        return None;
+    }
+    ip_lookahead_ok(characters, run_end).then_some(run_end)
+}
+
+fn is_ipv6_shape(token: &str) -> bool {
+    if let Some((left, right)) = token.split_once("::") {
+        if right.contains("::") {
+            return false;
+        }
+        let left_groups = match group_count(left) {
+            Some(count) => count,
+            None => return false,
+        };
+        let right_groups = match group_count(right) {
+            Some(count) => count,
+            None => return false,
+        };
+        return left_groups + right_groups <= 7;
+    }
+    if let Some(body) = token.strip_suffix(':') {
+        return matches!(group_count(body), Some(count) if (1..=7).contains(&count));
+    }
+    group_count(token) == Some(8)
+}
+
+/// `hex(:hex)*` 的组数；任一组成空或不是 1–4 位十六进制时返回 `None`。
+fn group_count(body: &str) -> Option<usize> {
+    if body.is_empty() {
+        return Some(0);
+    }
+    let mut count = 0;
+    for group in body.split(':') {
+        if group.is_empty() || group.len() > 4 || !group.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        count += 1;
+    }
+    Some(count)
+}
+
+fn find_ip_address(characters: &[char]) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        if ip_lookbehind_ok(characters, index) {
+            let matched = ipv4_end(characters, index).or_else(|| ipv6_end(characters, index));
+            if let Some(end) = matched {
+                found.push((index, end));
+                index = end;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    found
 }
 
 // ── 字符判定工具 ──────────────────────────────────────────────────────────
