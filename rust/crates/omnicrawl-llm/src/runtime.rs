@@ -21,13 +21,13 @@ use omnicrawl_protocol::{
 };
 use serde_json::Value;
 
-use crate::errors::RuntimeError;
+use crate::errors::{map_exception, ExceptionView, RuntimeError};
 use crate::openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,
 };
 use crate::request::{build_chat_request, ChatRequestInput};
 use crate::sse::{payload_of_line, step_payload, SseStep};
-use crate::transport::{self, HttpRequest, HttpResponse};
+use crate::transport::{self, HttpRequest, HttpResponse, TransportFailure};
 use crate::usage::usage_from_openai_payload;
 
 /// 取消检查与流消费共用的轮询节奏：决定取消后的最坏感知延迟。
@@ -161,7 +161,7 @@ impl OpenAiChatRuntime {
                 timeout_seconds,
             },
         )
-        .map_err(|error| RuntimeError::transport(error.message))
+        .map_err(transport_error)
     }
 
     fn consume_stream(
@@ -258,6 +258,18 @@ impl OpenAiChatRuntime {
         }
         Ok(aggregate_stream_events(events.iter().cloned()))
     }
+}
+
+/// 传输失败 → 内核错误面：先用 SDK 等价文案走分类阶梯（Python 侧是 SDK 异常 →
+/// `map_openai_exception`），再套上 Python 的失败前缀。
+fn transport_error(failure: TransportFailure) -> RuntimeError {
+    let (message, type_name) = failure.sdk_view();
+    let view = ExceptionView {
+        message,
+        type_name,
+        ..ExceptionView::default()
+    };
+    RuntimeError::from_model_error(map_exception(&view, &[]))
 }
 
 fn emit(

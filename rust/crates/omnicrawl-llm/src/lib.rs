@@ -15,7 +15,10 @@ mod sse;
 mod transport;
 mod usage;
 
-pub use errors::{RuntimeError, RuntimeErrorKind};
+pub use errors::{
+    http_status_error, map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError,
+    RuntimeErrorKind,
+};
 pub use openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,
 };

@@ -203,6 +203,17 @@ cd rust && cargo test -p omnicrawl-llm
 解析用例却全变成「命中为空」的假绿（`desensitization_parity.json` 的 11 条解析用例曾因此失效）。
 规则语料还自带每条文本的期望命中，生成器当场断言，避免语料被豁免表静默吃掉。
 
+错误分类同理：
+
+```bash
+python rust/tools/gen_llm_errors_fixture.py              # 期望值来自 errors.py 真实现
+cd rust && cargo test -p omnicrawl-llm --test llm_errors_parity
+```
+
+`llm_errors_parity.json` 有 55 个用例，覆盖全部 10 个分类码。数据集记录的是分类函数真正读到的字段
+（`str(exc).strip()`、类型名、`exc.body`、`exc.response.json()`、两个状态码属性）与它给出的
+码 / 文案 / 可重试标记 / 状态码——内核没有 SDK 异常对象，只能照这些字段等价重建。
+
 ## 已知与 Python 的差异
 
 1. 非字符串字段（`role`、`tool_call_id`、工具名、`description` 等）不再走 Python 的 `str()`
@@ -219,6 +230,9 @@ cd rust && cargo test -p omnicrawl-llm
    逐项说明见 `crates/omnicrawl-llm/README.md` 的「已知差异」。
 6. 重试位置不同：Python 的 SDK 自己会重试 5xx/超时（内置 2 次），内核不内置这一层，
    只把 `retryable` 交给调用方；`prompt_cache_key` 不受支持时的摘字段重发在内核内部完成。
+7. 错误分类的分支判定已与 `errors.py` 对齐（含传输层：内核只给失败类型与 SDK 等价文案）；
+   但**流内 `error` 负载**仍按「未能识别」处理——它的分类取决于 SDK 对这类负载的 `str(exc)` 形状，
+   尚未钉住，见 `crates/omnicrawl-llm/README.md`。
 
 ## 内核进程：`omnicrawl-cli`
 

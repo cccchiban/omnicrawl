@@ -84,7 +84,15 @@ fixture：
 - **超时语义**：映射 Python 的 `timeout` 为建连、等响应头、以及**每次**读取响应体的空闲超时
   （不是整个响应体的总时限，否则长回复会被拦腰截断）。
 - **未配置 User-Agent 时**用 ureq 默认 UA（Python 侧是 httpx 默认 UA）；配置了 `user_agent` 时两侧一致。
-- **错误分类只搬了状态码阶梯**：`errors.py` 里基于错误文案的启发式（配额、鉴权、上下文超限等关键词）尚未移植。
+- **错误分类**（`errors.rs`）：状态码阶梯（`http_status_error`）与基于错误文案的启发式（`map_exception`）
+  都已落地，分支顺序与关键词表逐条对齐 `errors.py` 的 `map_openai_exception`——模型不存在、HTML 错误页、
+  限流 / 配额、上下文超限、连接提前断开、超时、鉴权、权限、连接、TLS，最后才是「未能识别」兜底。
+  内核没有 SDK 异常对象，输入用 `ExceptionView` 描述：错误文本、`type(exc).__name__`、`exc.body`、
+  `exc.response.json()`、两个状态码属性；结构化错误体按 Python 口径只取 `message` / `type` / `code` /
+  `error` / `detail` 五个字段（深度 ≤ 4、最多 12 段、每段 512 字符）。传输层不再自己编文案：
+  `TransportFailure` 只给类型与 SDK 等价文案（`Request timed out.` / `Connection error.`），
+  分支判定仍走同一张阶梯，免得两处各写一套「什么算超时、什么算连接失败」。
+  未搬：流内 `error` 负载的分类——它取决于 SDK 对这类负载的 `str(exc)` 形状，当前按「未能识别」处理。
 - **工具调用参数串的键序不同**：Python 的 `json.dumps` 与 `serde_json` 现在都保留插入序（workspace 开了
   `preserve_order`），但两侧的插入序来源不同：Python 侧由 SDK 按其签名顺序序列化请求体，内核按自己的组装顺序。
   语义等价（Provider 按 JSON 解析），比较前已规范化。会话文件那种长期存续的格式另有要求，

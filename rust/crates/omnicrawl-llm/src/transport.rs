@@ -38,8 +38,28 @@ impl HttpResponse {
     }
 }
 
-pub struct TransportError {
-    pub message: String,
+/// 传输层失败的类型（对应的 SDK 异常与文案由 [`TransportFailure::sdk_view`] 给出）。
+pub enum TransportFailure {
+    /// 超时。
+    Timeout,
+    /// 域名解析或建连失败。
+    Connection,
+    /// 读取期中断：带上底层文本，交给同一张分类阶梯。
+    Io(String),
+    /// 其他传输失败（含 TLS）：带上原始文本。
+    Other(String),
+}
+
+impl TransportFailure {
+    /// SDK 等价文案与类型名：内核只提供类型，分支判定仍走 Python 那张关键词阶梯，
+    /// 免得两处各写一套「什么算超时、什么算连接失败」。
+    pub fn sdk_view(&self) -> (&str, &str) {
+        match self {
+            Self::Timeout => ("Request timed out.", "APITimeoutError"),
+            Self::Connection => ("Connection error.", "APIConnectionError"),
+            Self::Io(text) | Self::Other(text) => (text.as_str(), "APIConnectionError"),
+        }
+    }
 }
 
 /// 复用同一份连接池与 TLS 配置；状态码不转错误，好让 runtime 读到错误正文。
@@ -53,7 +73,7 @@ pub fn build_agent() -> ureq::Agent {
 pub fn send(
     agent: &ureq::Agent,
     request: &HttpRequest<'_>,
-) -> Result<HttpResponse, TransportError> {
+) -> Result<HttpResponse, TransportFailure> {
     let timeout = Duration::from_secs_f64(request.timeout_seconds.max(1.0));
     let mut builder = agent
         .post(request.url)
@@ -71,9 +91,7 @@ pub fn send(
 
     match builder.send(request.body) {
         Ok(response) => Ok(split(response)),
-        Err(error) => Err(TransportError {
-            message: describe(&error, timeout),
-        }),
+        Err(error) => Err(classify(&error)),
     }
 }
 
@@ -85,12 +103,11 @@ fn split(response: Response<Body>) -> HttpResponse {
     }
 }
 
-fn describe(error: &ureq::Error, timeout: Duration) -> String {
+fn classify(error: &ureq::Error) -> TransportFailure {
     match error {
-        ureq::Error::Timeout(_) => format!("请求超时（{} 秒内无响应）。", timeout.as_secs()),
-        ureq::Error::HostNotFound => "域名解析失败。".to_string(),
-        ureq::Error::ConnectionFailed => "无法建立连接。".to_string(),
-        ureq::Error::Io(error) => format!("连接中断：{error}"),
-        other => format!("传输失败：{other}"),
+        ureq::Error::Timeout(_) => TransportFailure::Timeout,
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => TransportFailure::Connection,
+        ureq::Error::Io(error) => TransportFailure::Io(error.to_string()),
+        other => TransportFailure::Other(other.to_string()),
     }
 }
