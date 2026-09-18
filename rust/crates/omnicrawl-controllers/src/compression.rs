@@ -52,36 +52,10 @@ pub fn arguments_summary(arguments: &Value) -> String {
     if map.is_empty() {
         return String::new();
     }
-    let text = python_json_dumps(arguments);
+    let text = crate::json::python_dumps(arguments, 0);
     if text.chars().count() <= ARGUMENTS_PREVIEW_CHARS {
         return text;
     }
     let head: String = text.chars().take(ARGUMENTS_PREVIEW_CHARS).collect();
     format!("{head}…")
-}
-
-/// `json.dumps(value, ensure_ascii=False)` 的可用子集：Python 默认分隔符带空格。
-fn python_json_dumps(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            let entries: Vec<String> = map
-                .iter()
-                .map(|(key, item)| {
-                    format!("{}: {}", python_json_string(key), python_json_dumps(item))
-                })
-                .collect();
-            format!("{{{}}}", entries.join(", "))
-        }
-        Value::Array(items) => {
-            let entries: Vec<String> = items.iter().map(python_json_dumps).collect();
-            format!("[{}]", entries.join(", "))
-        }
-        Value::String(text) => python_json_string(text),
-        other => other.to_string(),
-    }
-}
-
-fn python_json_string(text: &str) -> String {
-    serde_json::to_string(&Value::String(text.to_string()))
-        .unwrap_or_else(|_| format!("\"{text}\""))
 }

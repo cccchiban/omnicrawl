@@ -64,13 +64,22 @@ rust/
 │   └── tests/host_bridge_parity.rs         # 与 Python 宿主接口的契约对照
 ├── crates/omnicrawl-controllers/           # Agent 控制器域（判定、校验、文案、预算）
 │   ├── src/shared.rs                       # 常量表、整数配置校验、未知工具/超时文案、哈希名反查
+│   ├── src/settings.rs                     # 审批模式/推理强度归一化、压缩阈值换算、工具与 SubAgent 开关校验
+│   ├── src/control.rs                      # 插件状态文案、退出收尾动作、关闭/停用前的排空决策
+│   ├── src/approval.rs                     # 审批归属、shell 分流、git 风险分级、删除意图、审查结论解析
+│   ├── src/advisor.rs                      # 顾问可用性、消息分支、工具清单、结果信封
+│   ├── src/plugins.rs                      # Hook fail-closed 判定、拒绝事实与文案、分发结局
+│   ├── src/tool_args.rs                    # 工具名/参数名归一化、参数投影、Schema 压缩与校验、结果信封
+│   ├── src/tool_catalog.rs                 # 工具目录与注册规则（数据由 gen_agent_tools_data.py 导出）
+│   ├── src/context_compaction/             # Token 估算、回合预算测量、压缩批次、触发决策、摘要校验、投影
+│   ├── src/json.rs                         # Python 风格 json.dumps / repr 子集（信封与摘要共用）
 │   ├── src/undo.rs                         # undo 安全性判定、副作用账本、快照事件与恢复预检
 │   ├── src/workspace.rs                    # 工作区切换校验与拒绝文案、内部目录保护
 │   ├── src/memory.rs                       # 三类作用域记忆目录解析与会话级清理
 │   ├── src/output.rs                       # 输出预算与落盘预览、工具结果消息、视觉旁路
 │   ├── src/compression.rs                  # 工具输出压缩的选取与文案
 │   ├── src/building.rs                     # 模式模板装载与 system prompt 组装
-│   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（153 用例）
+│   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（752 用例）
 ├── crates/omnicrawl-cli/                   # 内核进程（stdio 上的协议 v1 服务端）
 │   ├── src/main.rs                         # 入口：--version / --help
 │   ├── src/session.rs                      # 会话：握手、回合、两个宿主端口、取消守卫
@@ -288,12 +297,16 @@ python rust/tools/gen_controllers_fixture.py   # 期望值来自 omnicrawl/agent
 cd rust && cargo test -p omnicrawl-controllers
 ```
 
-`controllers_parity.json` 覆盖 153 个用例：整数配置读取与区间校验、未知工具文案（含哈希名
+`controllers_parity.json` 覆盖 752 个用例：整数配置读取与区间校验、未知工具文案（含哈希名
 反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与恢复预检 16 例、快照路径防穿越
 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、压缩 13 例、模式与
-system prompt 19 例。多数用例的期望值由最小探针对象驱动真实现取得（只补上方法真正读到的
-宿主属性），不改写被测逻辑；模板装载一组需要读仓库内 `omnicrawl/templates/`，因此按仓库
-布局定位模板目录。边界与已知差异见 `crates/omnicrawl-controllers/README.md`。
+system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更判定、命令分流、
+删除意图、审查结论解析与审批归属）、会话侧 92 例（设置层归一化/阈值换算/开关校验、
+控制面状态文案与排空决策），顾问 23 例与插件 49 例（Hook fail-closed、拒绝文案、分发结局），
+工具参数层 73 例、工具目录 14 例与上下文压缩 79 例。多数用例的期望值由最小探针对象驱动真实现取得
+（只补上方法真正读到的宿主属性），不改写被测逻辑；模板装载一组需要读仓库内
+`omnicrawl/templates/`，因此按仓库布局定位模板目录。边界与已知差异见
+`crates/omnicrawl-controllers/README.md`。
 
 ## 已知与 Python 的差异
 
@@ -362,11 +375,12 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 
 接下来：Provider 逐个落地——OpenAI Responses 的**请求构建**已落地，下一步是它的流事件映射与回合运行，
 随后 Anthropic 与 Gemini；之后是 adapter 注册表与 `build_runtime` 工厂；脱敏侧接
-`DesensitizationRuntime` 装饰器（trait 已就位）；会话侧补归档、导出与一致性诊断。`omnicrawl-controllers` 已起步：`agent/controllers/` 的判定层（`shared`、`undo`、`workspace`、
-`memory`，以及 `tools/` 的 `output`／`compression`／`building`）已落地并有 153 例对照；
-`tools/approval`（判定件在 `agent/toolkit/approval_policy.py`）、`_build_tools` 的工具表构建、
-`session/*`、`turn/*`、`subagents/*`、`advisor`、`plugins` 依赖 `toolkit`／`session`／`core`
-的既有实现，随工具层与会话层批次收口。
+`DesensitizationRuntime` 装饰器（trait 已就位）；会话侧补归档、导出与一致性诊断。`omnicrawl-controllers` 已推进到第四批：`agent/controllers/` 的判定层（`shared`、`approval`、
+`undo`、`workspace`、`memory`、`settings`、`control`、`advisor`、`plugins`、`tool_args`、`tool_catalog`、`context_compaction`，以及
+`tools/` 的 `output`／`compression`／`building`）已落地并有 726 例对照；setter 事务与资源关闭、`approval` 编排段、
+插件 Runtime 与顾问模型面、`_build_tools` 工具表构建、`turn/{loop,compaction}`（依赖
+`agent/context_compaction/`）、`subagents/*` 依赖 `toolkit`／`session`／`core`／
+`context_compaction` 的既有实现，随后续批次收口。
 
 模型这条链上还剩两件宿主侧的事：
 把真实的 Provider 配置（Python 侧的 models 配置 / 启动器）接进 `initialize.model`，

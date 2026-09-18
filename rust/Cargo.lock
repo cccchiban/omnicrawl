@@ -293,6 +293,7 @@ dependencies = [
 name = "omnicrawl-controllers"
 version = "0.0.1"
 dependencies = [
+ "omnicrawl-session",
  "serde",
  "serde_json",
  "sha2",

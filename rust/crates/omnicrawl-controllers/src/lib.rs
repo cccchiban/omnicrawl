@@ -10,13 +10,22 @@
 //!
 //! 与 Python 的对应关系、尚未搬的宿主粘合层见 `README.md`。
 
+pub mod advisor;
+pub mod approval;
 pub mod building;
 pub mod compression;
+pub mod context_compaction;
+pub mod control;
 pub mod error;
+pub mod json;
 pub mod memory;
 pub mod output;
+pub mod plugins;
+pub mod settings;
 pub mod sha1;
 pub mod shared;
+pub mod tool_args;
+pub mod tool_catalog;
 pub mod types;
 pub mod undo;
 pub mod workspace;

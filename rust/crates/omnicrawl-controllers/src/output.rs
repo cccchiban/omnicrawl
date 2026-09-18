@@ -82,35 +82,10 @@ pub fn format_archived_output_preview(output: &str, path: &str) -> String {
     format!("{preview}\n输出太大（{size_kb}KB），完整内容未能保存到磁盘。")
 }
 
-/// `omnicrawl/state/session_artifacts.py` 的 `preview_text`：超长时保留头尾。
-pub fn preview_text(text: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max_chars {
-        return text.to_string();
-    }
-    let head_chars = max_chars / 2;
-    let tail_chars = max_chars - head_chars;
-    let head: String = chars[..head_chars].iter().collect();
-    let tail: String = chars[chars.len() - tail_chars..].iter().collect();
-    format!("{head}\n... 中间内容已省略 ...\n{tail}")
-}
-
-/// `omnicrawl/state/session_projection.py` 的工具结果正文格式。
-pub fn format_tool_result_content(tool: &str, ok: bool, output: &str) -> String {
-    format!(
-        "状态：{}\n工具：{tool}\n结果：\n{output}",
-        if ok { "成功" } else { "失败" }
-    )
-}
-
-/// 工具结果协议消息；与恢复投影共用同一构造器，保证逐字一致。
-pub fn tool_result_message(tool: &str, ok: bool, output: &str, tool_call_id: &str) -> Value {
-    json!({
-        "role": "tool",
-        "tool_call_id": tool_call_id,
-        "content": format_tool_result_content(tool, ok, output),
-    })
-}
+// 这三件是 `omnicrawl-session` 已经落地的内核实现（同一语义基准），这里只做再导出，
+// 避免两份实现漂移。
+pub use omnicrawl_session::artifact::preview_text;
+pub use omnicrawl_session::projection::{format_tool_result_content, tool_result_message};
 
 /// 独立视觉模型分析结果的展示文本。
 pub fn vision_display_text(original: &str, model: &str, text: &str) -> String {

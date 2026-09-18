@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+omnicrawl-session = { path = "../omnicrawl-session" }
 serde_json = { workspace = true }
 
 [dev-dependencies]

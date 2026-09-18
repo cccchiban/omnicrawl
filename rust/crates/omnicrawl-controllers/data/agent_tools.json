@@ -1,0 +1,384 @@
+{
+  "source": "omnicrawl/agent/toolkit/tools.py",
+  "groups": {
+    "core": [
+      {
+        "name": "list",
+        "description": "是什么：列出工作区指定路径下的文件和目录。怎么做：需要了解目录结构时使用；只需文件内容时不用，单文件路径会直接返回路径。怎样做：成功按行返回相对路径，目录末尾带 /；空目录返回‘目录为空’，超限追加截断提示；失败返回文本错误。建议：先非递归定位，再按需递归；结果超限时缩小范围。",
+        "argument_schema": "{\"path\": \".\", \"recursive\": false}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "find",
+        "description": "是什么：按名称或相对路径查找工作区文件和目录，不读取内容。怎么做：不知道目标路径、需要 glob 模式或筛选 kind 时使用；已知精确路径或要搜内容时不用；path 只能指向工作区内，工作区外会被拒绝。怎样做：pattern 按文件名或工作区相对路径匹配（如 `*.py`、`omnicrawl/ui/**/*.py`）；成功按行返回路径，目录末尾带 /；无结果返回‘未找到匹配结果’；超限保留前 max_results 并给出完整结果路径；失败返回文本错误。建议：先用具体 path/pattern 缩小范围，再用 read 读取内容；不要用 find 替代 grep。",
+        "argument_schema": "{\"pattern\":\"agent\",\"path\":\".\",\"kind\":\"all|file|directory\",\"case_sensitive\":false,\"max_results\":50}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "find"
+      },
+      {
+        "name": "read",
+        "description": "是什么：读取工作区或内置文档中的 UTF-8 文本，并支持按行、函数或片段定位。怎么做：需要查看内容、实现或上下文时使用；只想按名称定位时不用；function_name 与 text 不可同时传。怎样做：普通读取返回‘行号: 内容’及 End of file 或 Showing lines X-Y of Z footer；函数/片段定位返回定位标题和带行号内容，超限追加续读提示；超长行标记截断，失败返回文本错误。建议：先读小范围，按普通读取的 footer 用 start_line 续读；用 function_name/text 缩小上下文，降低无关输出。",
+        "argument_schema": "{\"path\":\"main.py\",\"start_line\":1,\"max_lines\":200,\"function_name\":\"Class.method\",\"text\":\"目标片段\",\"context_lines\":20}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "read_image",
+        "description": "是什么：读取本机 PNG、JPEG、WebP 或 GIF 图片，并将 prompt 与图片一起交给视觉模型分析。怎么做：需要分析图片内容时使用；只需文件名或图片 URL 时不用；path 可使用工作区相对路径或本机绝对路径，不支持 URL；prompt 必须明确说明需要识别的内容；detail 可按模型能力选择。怎样做：成功返回 JSON：path、media_type、bytes、detail、vision_attachment；同时附加图片；失败返回文本错误。建议：超大文件可能造成明显内存占用和模型请求延迟。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"需要视觉模型重点识别的内容。\"}, \"detail\": {\"type\": \"string\", \"enum\": [\"auto\", \"low\", \"high\"]}}, \"required\": [\"path\", \"prompt\"], \"additionalProperties\": false}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "read_image"
+      },
+      {
+        "name": "grep",
+        "description": "是什么：在工作区文本中按正则或精确子串搜索内容。怎么做：需要查找代码、配置或引用位置时使用；只按文件名查找时用 find；path 不要指向用户目录或文件系统根。怎样做：普通模式返回 path:line: text；count 返回文件计数，files_with_matches 只返回路径；长行标记截断，超限给出完整结果路径；失败返回文本错误。建议：优先限定 path、include 和 pattern；用 context_lines 查看邻近代码，宽泛正则会增加输出和耗时。",
+        "argument_schema": "{\"pattern\": \"class Agent\", \"path\": \".\", \"use_regex\": true, \"case_sensitive\": false, \"context_lines\": 0, \"count\": false, \"files_with_matches\": false, \"include\": \"*.py\", \"exclude\": \"*.min.js\", \"max_results\": 50}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "web_search",
+        "description": "是什么：在 Bing、DuckDuckGo 或雅虎搜索公开网页。怎么做：需要发现公开资料时使用；已知 URL 要读页面时用 fetcher；遇验证码或异常流量不继续尝试。怎样做：成功返回来源、查询、耗时、数量，以及编号标题、URL 和可选摘要；失败返回文本错误。建议：用具体关键词和合适 engine/language；搜索结果是线索，需用 fetcher 获取正文并核实来源。",
+        "argument_schema": "{\"query\": \"关键词\", \"engine\": \"bing|duckduckgo|yahoo\", \"max_results\": 5, \"language\": \"zh-CN\"}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "web_search"
+      },
+      {
+        "name": "fetcher",
+        "description": "是什么：使用浏览器指纹抓取用户指定的一个或多个 URL，并提取正文或返回 HTML。怎么做：已有明确 URL 且需要页面内容时使用；需要发现 URL 时用 web_search；不执行 JS、不绕过验证码。怎样做：每个 URL 返回 url、状态、最终地址、可选标题和内容；失败条目返回 url 与 error；结果按输入顺序，内容受 max_chars 限制。建议：默认正文最省上下文；仅在需要源码时用 max_html；insecure 只用于可信内网自签名证书，避免削弱 TLS 校验。",
+        "argument_schema": "{\"urls\": \"https://a.example,https://b.example\", \"insecure\": false, \"parallel\": true, \"timeout\": 15, \"max_chars\": 8000, \"max_html\": false, \"impersonate\": \"chrome\"}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "fetcher"
+      },
+      {
+        "name": "image_gen",
+        "description": "是什么：按 prompt 生成图片，或用本地 image 作为参考图编辑图片。怎么做：需要创建或修改图像资产时使用；只需分析已有图片时用 read_image；prompt 必填，image 非空即进入编辑。怎样做：成功返回生成数量、模型、每张图片保存路径和字节数；失败返回文本错误；图片写入 path 或默认临时目录。建议：prompt 明确主体、风格和约束；n、size、quality、output_format 可覆盖设置，参数会影响耗时、成本和画质。",
+        "argument_schema": "{\"prompt\": \"图像描述\", \"image\": \"编辑时传入的本地图片路径\", \"n\": 1, \"size\": \"auto\", \"quality\": \"auto\", \"output_format\": \"png\", \"path\": \"可选保存路径\"}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "image_gen"
+      },
+      {
+        "name": "tts_synthesize",
+        "description": "是什么：把文本合成为 WAV 语音，支持设置中的内置音色或参考音频克隆。怎么做：需要生成语音文件时使用；只需文字分析或朗读建议时不用；先在 /settings → TTS 启用并准备模型。怎样做：成功返回 JSON：ok、audio_path、sample_rate、duration_seconds、voice、text_chunks；失败返回 JSON：ok=false、error。建议：text 传最终朗读稿，长文本可自动分块；prompt_audio 会改变音色来源，path 决定文件位置，配置可控制自动播放。",
+        "argument_schema": "{\"text\": \"要朗读的文本\", \"prompt_audio\": \"参考音频路径（可选，语音克隆）\", \"path\": \"输出 wav 路径（可选）\"}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "tts"
+      },
+      {
+        "name": "Edit_file",
+        "description": "是什么：在单个 UTF-8 文本文件中按字面替换 old_text。怎么做：需要小范围、明确目标的编辑时使用；不适合大范围重写或不确定匹配内容时使用；old_text 必须非空。怎样做：成功返回‘已修改 path，替换 N 处’，并附首个替换位置前后各 2 行的带行号上下文（仅供模型核对；TUI 只显示‘替换 N 处’摘要与 diff 预览，且旁注行号为文件真实行号）；省略 count 时必须恰好匹配 1 处，匹配 0 处或多处均返回错误码、原因和调整建议且不写入；显式 count=1 替换第 1 处，count=0 替换全部。建议：先 read 确认原文并保留足够上下文；多处匹配时提供 count 或补充上下文使其唯一，错误码可指导重试。",
+        "argument_schema": "{\"path\": \"main.py\", \"old_text\": \"...\", \"new_text\": \"...\", \"count\": 1}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "write_file",
+        "description": "是什么：以 overwrite 或 append 模式写入 UTF-8 文本文件。怎么做：需要创建、覆盖或追加文本文件时使用；只修改局部内容时用 Edit_file；临时文件优先放 .omnicrawl/.agent_tmp。怎样做：成功返回‘已写入/追加 path，字符数：N’；失败返回文本错误；overwrite 会替换原内容，append 保留原内容。建议：覆盖前先 read 核对目标；明确使用 mode，path 使用工作区相对路径以减少误写范围。",
+        "argument_schema": "{\"path\": \".omnicrawl/.agent_tmp/files/notes.md\", \"content\": \"...\", \"mode\": \"overwrite\"}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "bash",
+        "description": "是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "powershell",
+        "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\", \"minLength\": 1}, \"diagnostic_command\": {\"type\": \"string\", \"minLength\": 0}, \"timeout_seconds\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 360, \"default\": 360}}, \"required\": [\"command\"], \"additionalProperties\": false}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "monitor",
+        "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+        "argument_schema": "{\"action\":\"start\",\"command\":\"python -m http.server\",\"shell\":\"powershell\",\"monitor_id\":\"monitor-...\",\"cursor\":0,\"max_events\":100}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "git",
+        "description": "是什么：在当前工作区直接执行受约束的结构化 Git 子命令。怎么做：需要查看状态、差异、日志或提交变更时使用；不要用 bash 拼 Git；push、merge、reset --hard、clean 等高危动作需额外审查。怎样做：成功返回有界的 Git stdout 文本；失败返回错误文本和退出原因；不返回固定 JSON；paths 必须在工作区内。建议：优先 status/diff 确认范围，再执行变更；commit 提供 message；禁止 --git-dir、--work-tree、--no-verify 及全局/系统配置参数。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"add\", \"archive\", \"blame\", \"branch\", \"cat-file\", \"check-attr\", \"check-ignore\", \"checkout\", \"cherry-pick\", \"clean\", \"clone\", \"commit\", \"config\", \"describe\", \"diff\", \"fetch\", \"for-each-ref\", \"fsck\", \"grep\", \"help\", \"init\", \"log\", \"ls-files\", \"ls-remote\", \"ls-tree\", \"merge\", \"mv\", \"name-rev\", \"pull\", \"push\", \"rebase\", \"remote\", \"reset\", \"restore\", \"revert\", \"rev-list\", \"rev-parse\", \"rm\", \"show\", \"show-ref\", \"shortlog\", \"status\", \"stash\", \"submodule\", \"switch\", \"symbolic-ref\", \"tag\", \"var\", \"verify-commit\", \"verify-tag\", \"whatchanged\", \"worktree\"], \"description\": \"git 子命令（见描述）。\"}, \"args\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"description\": \"子命令参数：标志（--short/--oneline/-n 20）与位置参数（分支名、引用名等）；stash 的list/push/pop/drop 等子动词也放在这里。\"}, \"message\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"commit（或 annotated tag）提交信息。\"}, \"paths\": {\"type\": \"array\", \"items\": {\"type\": \"string\", \"minLength\": 1}, \"description\": \"工作区内相对路径，追加在命令末尾。\"}}, \"required\": [\"action\"], \"additionalProperties\": false}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": true,
+        "run_in_subprocess": true,
+        "runner": "git"
+      }
+    ],
+    "knowledge": [
+      {
+        "name": "kb_search",
+        "description": "是什么：搜索独立于当前项目的工作知识库笔记摘要。怎么做：需要跨项目查找工作记录、决策或研究线索时使用；只查当前项目代码或完整笔记时不用，先搜摘要再 kb_read。怎样做：成功返回 JSON 数组，每项含 path、title、project、type、status、tags、snippet、score；空结果为 []，失败返回文本错误。建议：用 project/tags/type/status 缩小范围；摘要只用于筛选，命中后用 kb_read 读取全文，避免无关内容污染上下文。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"minLength\": 1}, \"project\": {\"type\": \"string\"}, \"tags\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"type\": {\"type\": \"string\", \"enum\": [\"note\", \"meeting\", \"decision\", \"log\", \"research\", \"reference\"]}, \"status\": {\"type\": \"string\", \"enum\": [\"draft\", \"done\", \"archived\"]}, \"max_results\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 50, \"default\": 10}}, \"required\": [\"query\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "kb_search"
+      },
+      {
+        "name": "kb_read",
+        "description": "是什么：读取工作知识库中的一篇 Markdown 笔记全文。怎么做：kb_search 命中后需要完整正文时使用；只需定位笔记时不用；path 必须是知识库内相对路径，可省略 .md。怎样做：成功返回原始 Markdown 文本；超过 max_chars 时追加‘已截断’提示；不存在、越界或非 UTF-8 时返回文本错误。建议：先 kb_search 再 kb_read，并按需要设置 max_chars；不要把知识库路径当作工作区路径使用。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\", \"minLength\": 1}, \"max_chars\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 200000, \"default\": 50000}}, \"required\": [\"path\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "kb_search"
+      },
+      {
+        "name": "kb_write",
+        "description": "是什么：新建或更新知识库 Markdown 笔记，并维护 frontmatter 与索引。怎么做：需要长期保存已确认的工作记录时使用；临时内容或项目代码不要写入知识库；create 仅新建，overwrite 覆盖正文，append 追加正文。怎样做：成功返回 JSON：note（path、title、created、updated、project、type、status、tags）和 mode；失败返回文本错误。建议：正文短而可独立理解，补充 project/tags/type/status 便于检索；overwrite 前先 kb_read，避免覆盖有价值内容。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\", \"minLength\": 1}, \"content\": {\"type\": \"string\"}, \"mode\": {\"type\": \"string\", \"enum\": [\"create\", \"overwrite\", \"append\"], \"default\": \"overwrite\"}, \"title\": {\"type\": \"string\"}, \"project\": {\"type\": \"string\"}, \"tags\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"type\": {\"type\": \"string\", \"enum\": [\"note\", \"meeting\", \"decision\", \"log\", \"research\", \"reference\"]}, \"status\": {\"type\": \"string\", \"enum\": [\"draft\", \"done\", \"archived\"]}}, \"required\": [\"path\", \"content\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "kb_search"
+      },
+      {
+        "name": "kb_append",
+        "description": "是什么：向已有知识库笔记追加正文。怎么做：需要补充同一笔记的新信息时使用；新建笔记用 kb_write；不需要修改 frontmatter 时使用。怎样做：成功返回 JSON：note 元数据和 mode=append；失败返回文本错误；只更新 updated，不改其他 frontmatter 字段。建议：追加独立、简短且已确认的内容；追加前先 kb_read 确认目标，避免把不同主题混入同一笔记。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\", \"minLength\": 1}, \"content\": {\"type\": \"string\"}}, \"required\": [\"path\", \"content\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "kb_search"
+      },
+      {
+        "name": "kb_list",
+        "description": "是什么：列出知识库笔记或按元数据筛选笔记。怎么做：需要浏览目录、核对元数据或批量定位笔记时使用；只需按关键词搜索时用 kb_search；不返回正文。怎样做：成功返回 JSON 数组，每项含 path、title、created、updated、project、type、status、tags；无结果为 []，失败返回文本错误。建议：优先用 project/tags/type/status/path 过滤并控制 max_results；找到目标后用 kb_read 获取正文。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"project\": {\"type\": \"string\"}, \"tags\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"type\": {\"type\": \"string\", \"enum\": [\"note\", \"meeting\", \"decision\", \"log\", \"research\", \"reference\"]}, \"status\": {\"type\": \"string\", \"enum\": [\"draft\", \"done\", \"archived\"]}, \"max_results\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 200, \"default\": 100}}, \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "kb_search"
+      }
+    ],
+    "meta": [
+      {
+        "name": "update_todos",
+        "description": "是什么：维护当前任务的紧凑执行清单。怎么做：多步骤任务开始和每步完成时使用；单步任务或无需展示进度时不用；todos 为空表示清除计划。怎样做：成功返回 JSON：updated 和 todos 数组，每项含 id、step、completed；最多保留 20 项，非法项会被忽略；参数错误返回文本错误。建议：首次提交完整列表，之后只更新 completed；step 短而可验证，避免把计划正文重复写入回复。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"todos\": {\"type\": \"array\", \"maxItems\": 20, \"items\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\", \"maxLength\": 80}, \"step\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 240}, \"completed\": {\"type\": \"boolean\"}}, \"required\": [\"step\", \"completed\"], \"additionalProperties\": false}}}, \"required\": [\"todos\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "update_todos"
+      },
+      {
+        "name": "ask_user",
+        "description": "是什么：通过工具向用户提出一个问题并等待回答（阻塞）。怎么做：question、select、confirm 三种 kind 都必须同时提供 question 和非空 options；kind=select 由用户从 options 中单选，question/confirm 默认也从 options 中选择，用户仍可输入自定义文本作为答案；每次调用只问一个问题。怎样做：成功返回 JSON：kind、question、options、answer。建议：需要用户补充信息、选择方案或确认操作时必须调用本工具，不要在普通回复中输出任何提问控制标记；多个问题应多次调用本工具。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"kind\": {\"type\": \"string\", \"enum\": [\"question\", \"select\", \"confirm\"]}, \"question\": {\"type\": \"string\", \"minLength\": 1}, \"options\": {\"type\": \"array\", \"minItems\": 1, \"items\": {\"type\": \"string\", \"minLength\": 1}}}, \"required\": [\"kind\", \"question\", \"options\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "ask_user"
+      },
+      {
+        "name": "pause_work",
+        "description": "是什么：主动暂停当前 Agent 的自动续跑和后续模型请求。怎么做：当任务需要用户检查、补充信息或稍后继续时调用；调用后当前工具批次完成，系统不会自动重试或继续。怎样做：无需参数，成功返回暂停状态；用户发送‘继续’即可恢复。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {}, \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "pause_work"
+      },
+      {
+        "name": "recall_session_evidence",
+        "description": "是什么：按当前有效摘要授权的事件 ID 恢复本会话的精确证据。怎么做：摘要缺少细节且已知 source event ID 时使用；没有有效摘要、只想浏览历史或不知道 ID 时不用；不接受 Session ID 或任意 artifact 路径。怎样做：成功或部分成功返回 JSON：schema_version、ok、summary_event_id、requested_count、items、diagnostics、truncated、budget、estimated_tokens；未授权/缺失返回诊断项。建议：先从摘要读取已引用 ID，单次少量恢复；结果可能按 token 预算截断，按 diagnostics 和 truncated 决定是否分批重试。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"event_ids\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 8, \"items\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 128}}}, \"required\": [\"event_ids\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": true,
+        "run_in_subprocess": true,
+        "runner": "evidence_recall"
+      },
+      {
+        "name": "advisor",
+        "description": "是什么：把当前整段工作上下文（任务 + 工具调用 + 结果）转发给已配置的顾问模型（更强的第二意见），返回 plan / correction / stop 三类纯文本指导。怎么做：零参数调用；适合在重大实质工作之前、卡住、换方向或声明完成之前需要更强判断时使用；短任务且下一步由刚读到的工具输出决定时不调用。怎样做：成功返回以 plan/correction/stop 开头的纯文本指导；失败返回错误文案。建议：给指导实质权重；与自己的证据冲突时可用一次 advisor 做 reconcile，不盲从也不盲弃；调用后应在下一条可见回复中转述关键指导。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {}, \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": true,
+        "run_in_subprocess": true,
+        "runner": "advisor"
+      }
+    ],
+    "windows": [
+      {
+        "name": "windows_window",
+        "description": "是什么：在 Windows 枚举、读取或激活顶层窗口。怎么做：需要发现窗口或确认窗口状态时使用；非 Windows、只需控件定位或不应改变前台窗口时不用；activate 不绕过焦点保护。怎样做：list 返回 JSON：action、matched_count、truncated、windows；get/activate 返回 action、window（含 handle、title、class_name、process_id、状态和 bounds）；失败返回文本错误。建议：先 list 取得稳定的 window_handle，再 get 或 activate；用标题/类名过滤减少误选，激活失败应由用户手动切换。",
+        "argument_schema": "{\"action\":\"list|get|activate\",\"window_handle\":\"0x...\",\"title_contains\":\"可选标题片段\",\"class_name_contains\":\"可选类名片段\",\"visible_only\":true,\"include_untitled\":false,\"max_results\":50}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "windows_window"
+      },
+      {
+        "name": "windows_control",
+        "description": "是什么：在 Windows 窗口内发现 UI Automation 控件并执行语义化操作。怎么做：需要操作按钮、输入框或选择控件时使用；非 Windows 或只需鼠标坐标时不用；非 list 必须提供定位条件，多匹配需 index。怎样做：list 返回 JSON：action、matched_count、truncated、controls；其他动作返回 action、index、target；失败返回文本错误，不返回控件外的任意脚本结果。建议：先 list 再用 name/automation_id/control_type 精确定位，优先语义定位而非坐标；set_value 仅用于字符串值。",
+        "argument_schema": "{\"action\":\"list|invoke|set_value|select|toggle|focus\",\"window_handle\":\"0x...\",\"name\":\"精确名称\",\"automation_id\":\"自动化ID\",\"class_name\":\"类名\",\"control_type\":\"button|edit|...\",\"index\":0,\"value\":\"仅 set_value\",\"max_results\":30}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "windows_window"
+      },
+      {
+        "name": "windows_input",
+        "description": "是什么：在 Windows 发送受限的鼠标、滚轮、按键、组合键或 Unicode 文本输入。怎么做：目标应用明确且需要真实输入时使用；能用 UI Automation 时优先不用坐标输入；click/move 必须有虚拟桌面坐标。怎样做：成功返回 JSON，按动作包含 action、坐标、按键、clicks、keys 或 text_length；type_text 不回显文本；失败返回文本错误。建议：先确认前台窗口和坐标，再执行最小动作；敏感文本不回显但仍会进入目标应用，输入后不要重复发送。",
+        "argument_schema": "{\"action\":\"move|click|scroll|key|hotkey|type_text\",\"x\":100,\"y\":200,\"button\":\"left|right|middle\",\"clicks\":1,\"wheel_delta\":-120,\"key\":\"enter\",\"keys\":[\"ctrl\",\"s\"],\"presses\":1,\"text\":\"Unicode 文本\"}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "windows_window"
+      },
+      {
+        "name": "windows_clipboard",
+        "description": "是什么：读取、写入或清空 Windows Unicode 文本剪贴板。怎么做：需要在应用间传递文本时使用；只需控件内设置值时优先用 windows_control；read_text 之外不要假设有二进制剪贴板支持。怎样做：read_text 返回 JSON：action、text、total_chars、truncated；write_text 返回 action、text_length；clear 仅返回 action；失败返回文本错误。建议：读取时设置合理 max_chars；写入内容不会回显到结果或会话参数，但会改变用户剪贴板，执行前确认目标。",
+        "argument_schema": "{\"action\":\"read_text|write_text|clear\",\"text\":\"仅 write_text\",\"max_chars\":8000}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "windows_window"
+      },
+      {
+        "name": "windows_screenshot",
+        "description": "是什么：用 Windows GDI 截取整个桌面、区域或指定窗口，并提供 PNG 视觉附件。怎么做：需要观察桌面或窗口画面时使用；只需窗口元数据时用 windows_window；window 截图先取得 handle，最小化、越界或受保护内容可能失败。怎样做：成功返回 JSON：target、path、source_bounds、image（media_type、width、height、bytes、scaled），并附加 PNG；失败返回文本错误。建议：优先截取最小必要区域并设置合理 max_dimension；截图会保存到临时目录且可能含敏感画面，提供给模型前确认范围。",
+        "argument_schema": "{\"target\":\"desktop|region|window\",\"window_handle\":\"0x...\",\"x\":0,\"y\":0,\"width\":1280,\"height\":720,\"max_dimension\":2048}",
+        "requires_confirmation": true,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "windows_window"
+      }
+    ],
+    "memory": [
+      {
+        "name": "memory_search",
+        "description": "是什么：搜索长期记忆摘要。怎么做：需要恢复项目背景、会话进度或用户偏好时使用；只需完整正文时不用，先搜索再按 id 读取；scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；空结果为 []，失败返回文本错误。建议：query 写具体主题并提供 reason；用 scope 与 candidate_directories 缩小范围，命中后再 memory_read，减少上下文。",
+        "argument_schema": "{\"query\":\"要检索的主题\",\"reason\":\"为什么当前需要该记忆\",\"scope\":\"project\",\"candidate_directories\":[\"project-context/general\"],\"max_results\":5}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "memory_read",
+        "description": "是什么：按记忆 ID 读取完整正文并加深实际读取项。怎么做：已通过 memory_search 命中且需要细节时使用；只有模糊主题时不用；memory_ids 必须来自同一 scope。scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；缺失 ID 不出现在数组中，失败返回文本错误。建议：只读取与当前决策相关的 ID，避免一次加载过多正文；读取后再决定是否 expand_related。",
+        "argument_schema": "{\"memory_ids\":[\"20260603-164500\"],\"scope\":\"project\"}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "memory_expand_related",
+        "description": "是什么：沿关联目录扩展记忆的候选摘要。怎么做：初次搜索未覆盖相关背景、且已有 memory_ids 时使用；没有已知 ID 或需要全文时不用。scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。怎样做：成功返回 JSON 数组，每项含 id、summary、storage_directory、related_directories、timestamp；按 max_depth/max_results 限制，失败返回文本错误。建议：默认一层、少量结果即可；先 expand_related 找候选，再按需 memory_read，扩展过深会增加噪声。",
+        "argument_schema": "{\"memory_ids\":[\"20260603-164500\"],\"scope\":\"project\",\"max_depth\":1,\"max_results\":5}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      },
+      {
+        "name": "memory_write",
+        "description": "是什么：写入或合并长期记忆。怎么做：只有信息已确认且具有长期复用价值时使用；临时进度、完整对话、凭据不用写。scope 取 project/session/user：project=当前项目的技术事实（绑定工作区）；session=当前会话的目标、约束、决策、状态与后续事项（禁止跨会话读取）；user=跨项目跨会话的稳定习惯、偏好与明确纠错。缺省 project。怎样做：成功返回 JSON 数组，每项含 id、timestamp、related_directories、content；memories 为空或字段类型错误时返回文本错误。建议：content 短小、准确、可独立理解，补充 related_directories；批量写入前去重，避免污染后续检索。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"scope\": {\"type\": \"string\", \"enum\": [\"project\", \"session\", \"user\"], \"description\": \"记忆作用域：project=当前项目；session=当前会话；user=跨会话偏好。缺省 project。\"}, \"memories\": {\"type\": \"array\", \"minItems\": 1, \"description\": \"待写入或合并的记忆对象列表。\", \"items\": {\"type\": \"object\", \"properties\": {\"content\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"简洁、可独立理解且已经确认的记忆正文。\"}, \"related_directories\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"description\": \"与该记忆相关的分类目录，可省略或传空数组。\"}, \"storage_directory\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"可选存储分类目录；省略时由后端自动分类。\"}, \"source_event\": {\"type\": \"string\", \"minLength\": 1, \"description\": \"可选来源标识，例如本轮对话或上下文压缩。\"}}, \"required\": [\"content\"], \"additionalProperties\": false}}}, \"required\": [\"memories\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": null
+      }
+    ],
+    "subagent": [
+      {
+        "name": "subagent",
+        "description": "是什么：按受限 profile 调度 SubAgent，支持同步/后台任务、查询取消和 worktree 控制。怎么做：任务可独立拆分、需要并行分析或隔离修改时使用；简单问题不用；模型不能指定模型，写回主工作区必须显式 apply。怎样做：成功返回 JSON；run 含 batch_id/status/results，spawn 含 batch_id/task_ids/status，list/get/cancel/worktree 返回对应安全摘要；discard_worktree 有未处理变更时默认拒绝，需 force=true 强制丢弃；失败含 error.code/message。建议：description 说明目标，prompt 写完整任务，合理限制并发；默认只读，优先 worktree 隔离，先检查结果再 apply/discard。",
+        "argument_schema": "{\"type\": \"object\", \"properties\": {\"action\": {\"type\": \"string\", \"enum\": [\"run\", \"spawn\", \"list\", \"get\", \"cancel\", \"apply_worktree\", \"discard_worktree\", \"list_worktrees\"]}, \"task_id\": {\"type\": \"string\"}, \"batch_id\": {\"type\": \"string\"}, \"branch\": {\"type\": \"string\", \"minLength\": 1, \"maxLength\": 200}, \"strategy\": {\"type\": \"string\", \"enum\": [\"checkout\", \"merge\"]}, \"cleanup\": {\"type\": \"boolean\"}, \"remove_branch\": {\"type\": \"boolean\"}, \"force\": {\"type\": \"boolean\"}, \"tasks\": {\"type\": \"array\", \"minItems\": 1, \"maxItems\": 4, \"items\": {\"type\": \"object\", \"properties\": {\"description\": {\"type\": \"string\", \"minLength\": 1}, \"prompt\": {\"type\": \"string\", \"minLength\": 1}, \"subagent_type\": {\"type\": \"string\", \"enum\": [\"__subagent_types__\"]}, \"context\": {\"type\": \"string\", \"enum\": [\"fresh\", \"fork\"]}}, \"required\": [\"description\", \"prompt\", \"subagent_type\"], \"additionalProperties\": false}}, \"max_concurrency\": {\"type\": \"integer\", \"minimum\": 1, \"maximum\": 4}, \"fail_fast\": {\"type\": \"boolean\"}}, \"required\": [\"action\"], \"additionalProperties\": false}",
+        "requires_confirmation": false,
+        "model_output_is_bounded": false,
+        "run_in_subprocess": true,
+        "runner": "subagent"
+      }
+    ]
+  },
+  "group_rules": {
+    "knowledge_all_or_nothing": true,
+    "windows_all_or_nothing": true,
+    "subagent_requires_types": true,
+    "memory_requires_flag": true,
+    "errors": {
+      "knowledge_partial": "知识库工具必须作为完整工具组注册。",
+      "windows_partial": "Windows 桌面工具必须作为完整工具组注册。",
+      "subagent_without_types": "注册 SubAgent 工具时必须提供至少一个可用角色。"
+    }
+  },
+  "mcp": {
+    "tool": {
+      "name": "{logical_name}",
+      "description": "{description}（MCP Server：{server_name}）",
+      "argument_schema": "{argument_schema}",
+      "requires_confirmation": "{requires_confirmation}"
+    },
+    "resource": {
+      "name": "mcp_read_resource__{logical_uri}",
+      "description": "读取 MCP Resource：{logical_uri}（MCP Server：{server_name}）",
+      "argument_schema": "{}",
+      "requires_confirmation": false
+    },
+    "prompt": {
+      "name": "mcp_get_prompt__{logical_name}",
+      "description": "获取 MCP Prompt：{logical_name}（MCP Server：{server_name}）",
+      "argument_schema": "{\"arguments\": {}}",
+      "requires_confirmation": false
+    }
+  },
+  "disabled_rule": "disabled_tools 中的名称不出现在结果表里（含 MCP 动态工具）。",
+  "mcp_samples": [
+    {
+      "name": "srv.tool",
+      "description": "工具说明（MCP Server：srv）",
+      "argument_schema": "{\"a\": 1}",
+      "requires_confirmation": true
+    },
+    {
+      "name": "mcp_read_resource__file://x",
+      "description": "读取 MCP Resource：file://x（MCP Server：srv）",
+      "argument_schema": "{}",
+      "requires_confirmation": false
+    },
+    {
+      "name": "mcp_get_prompt__srv.prompt",
+      "description": "获取 MCP Prompt：srv.prompt（MCP Server：srv）",
+      "argument_schema": "{\"arguments\": {}}",
+      "requires_confirmation": false
+    }
+  ]
+}
