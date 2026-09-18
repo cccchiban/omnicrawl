@@ -15,6 +15,7 @@ use omnicrawl_connectors::agent::{
     AgentDriver, AgentStatus, AskUserHandler, ConfirmHandler, TurnError, TurnEvent, TurnOutcome,
     WorkspaceSwitch,
 };
+use omnicrawl_connectors::feishu::{check_config, load_feishu_config, ConfigSource, FeishuApi, FeishuBot};
 use omnicrawl_connectors::http::{HttpTransport, UreqTransport};
 use omnicrawl_connectors::telegram::{load_telegram_config, TelegramBot};
 use omnicrawl_core::{
@@ -29,6 +30,12 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 内核里的助手，回答保持简洁。";
 /// 工具批次在连接器模式下的错误码：调用方据此区分「工具失败」与「本模式没有执行器」。
 const TOOL_UNAVAILABLE: &str = "tool_unavailable";
+
+/// 内核连接器模式自持的工具名，与 Python 侧 `omnicrawl/agent/toolkit/tools.py` 的常量一致。
+/// 文件、shell、git、知识库与记忆等工具仍由宿主与插件侧提供，内核只挂不需要额外执行器的三个。
+const TODO_TOOL_NAME: &str = "update_todos";
+const ASK_USER_TOOL_NAME: &str = "ask_user";
+const PAUSE_WORK_TOOL_NAME: &str = "pause_work";
 
 /// 模型端点设置。连接器模式没有宿主来交接 `initialize`，因此只从环境变量取。
 struct ModelSettings {
@@ -128,8 +135,10 @@ impl ReplySource for KernelReplySource {
     }
 }
 
-/// 工具端口：连接器进程没有工具执行器，整批回「不可用」观察。
-struct UnavailableTools;
+/// 工具端口：内核自持工具就地执行，其余一律回「不可用」观察。
+struct UnavailableTools {
+    shared: Arc<SharedState>,
+}
 
 impl ToolBatchHost for UnavailableTools {
     fn execute_tool_batch(
@@ -137,55 +146,144 @@ impl ToolBatchHost for UnavailableTools {
         calls: &[ToolCall],
         _first_step: usize,
     ) -> Result<Vec<AgentLoopObservation>, LoopError> {
-        Ok(calls
-            .iter()
-            .map(|call| {
-                let detail = format!(
-                    "工具 {} 在当前模式下不可用：内核连接器进程没有挂载工具执行器。",
-                    call.name
-                );
-                AgentLoopObservation {
-                    tool_call: call.clone(),
-                    result: ToolResult {
-                        ok: false,
-                        output: detail.clone(),
-                        full_output: detail.clone(),
-                        error_code: Some(TOOL_UNAVAILABLE.to_string()),
-                        retryable: false,
-                    },
-                    message: json!({
-                        "role": "tool",
-                        "tool_call_id": call.id.clone(),
-                        "content": detail,
-                    }),
-                    followup_messages: Vec::new(),
-                }
-            })
-            .collect())
+        Ok(calls.iter().map(|call| self.run_tool(call)).collect())
+    }
+}
+
+impl UnavailableTools {
+    fn run_tool(&self, call: &ToolCall) -> AgentLoopObservation {
+        match call.name.as_str() {
+            TODO_TOOL_NAME => self.update_todos(call),
+            ASK_USER_TOOL_NAME => self.ask_user(call),
+            PAUSE_WORK_TOOL_NAME => self.pause_work(call),
+            _ => unavailable_observation(call),
+        }
+    }
+
+    fn update_todos(&self, call: &ToolCall) -> AgentLoopObservation {
+        let todos = call.arguments.get("todos").cloned().unwrap_or(Value::Null);
+        let (ok, summary) = match &todos {
+            Value::Array(items) => (true, format!("已更新 {} 项待办。", items.len())),
+            _ => (false, "待办未更新：参数里没有 todos 数组。".to_string()),
+        };
+        if let Ok(mut slot) = self.shared.todos.lock() {
+            *slot = Some(todos);
+        }
+        tool_observation(call, ok, summary, None)
+    }
+
+    fn ask_user(&self, call: &ToolCall) -> AgentLoopObservation {
+        let handler = self
+            .shared
+            .ask_user
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        let Some(handler) = handler else {
+            return tool_observation(
+                call,
+                false,
+                "当前连接器没有绑定提问桥，无法向用户提问。".to_string(),
+                Some("ask_user_unavailable"),
+            );
+        };
+        let request = Value::Object(call.arguments.clone());
+        match handler.ask(&request) {
+            Some(answer) => tool_observation(call, true, answer, None),
+            None => tool_observation(
+                call,
+                false,
+                "提问没有取得答案（用户未回答或已超时）。".to_string(),
+                Some("ask_user_no_answer"),
+            ),
+        }
+    }
+
+    fn pause_work(&self, call: &ToolCall) -> AgentLoopObservation {
+        self.shared.paused.store(true, Ordering::SeqCst);
+        tool_observation(
+            call,
+            true,
+            "已请求暂停：本回合结束后不再自动继续。".to_string(),
+            None,
+        )
+    }
+}
+
+fn unavailable_observation(call: &ToolCall) -> AgentLoopObservation {
+    tool_observation(
+        call,
+        false,
+        format!(
+            "工具 {} 在当前模式下不可用：内核连接器进程只挂了内核自持工具（{}、{}、{}）。",
+            call.name, TODO_TOOL_NAME, ASK_USER_TOOL_NAME, PAUSE_WORK_TOOL_NAME
+        ),
+        Some(TOOL_UNAVAILABLE),
+    )
+}
+
+fn tool_observation(
+    call: &ToolCall,
+    ok: bool,
+    output: String,
+    error_code: Option<&str>,
+) -> AgentLoopObservation {
+    AgentLoopObservation {
+        tool_call: call.clone(),
+        result: ToolResult {
+            ok,
+            output: output.clone(),
+            full_output: output.clone(),
+            error_code: error_code.map(|value| value.to_string()),
+            retryable: false,
+        },
+        message: json!({
+            "role": "tool",
+            "tool_call_id": call.id.clone(),
+            "content": output,
+        }),
+        followup_messages: Vec::new(),
     }
 }
 
 /// 连接器宿主：状态、命令与回合驱动。
 struct KernelDriver {
     settings: Arc<ModelSettings>,
+    shared: Arc<SharedState>,
     workspace: Mutex<PathBuf>,
     history: Mutex<Vec<Value>>,
     session_id: Mutex<String>,
     cancel: Arc<AtomicBool>,
+}
+
+/// 工具执行器与宿主共享的状态：待办、暂停标志与两条处理桥。
+struct SharedState {
+    todos: Mutex<Option<Value>>,
+    paused: AtomicBool,
     confirm: Mutex<Option<Arc<dyn ConfirmHandler>>>,
     ask_user: Mutex<Option<Arc<dyn AskUserHandler>>>,
+}
+
+impl SharedState {
+    fn new() -> SharedState {
+        SharedState {
+            todos: Mutex::new(None),
+            paused: AtomicBool::new(false),
+            confirm: Mutex::new(None),
+            ask_user: Mutex::new(None),
+        }
+    }
 }
 
 impl KernelDriver {
     fn new(settings: Arc<ModelSettings>, workspace: PathBuf) -> KernelDriver {
         KernelDriver {
             settings,
+            shared: Arc::new(SharedState::new()),
             workspace: Mutex::new(workspace),
             history: Mutex::new(Vec::new()),
             session_id: Mutex::new(new_session_id()),
             cancel: Arc::new(AtomicBool::new(false)),
-            confirm: Mutex::new(None),
-            ask_user: Mutex::new(None),
         }
     }
 
@@ -285,6 +383,7 @@ impl AgentDriver for KernelDriver {
 
     fn run_turn(&self, text: &str, events: &mut dyn FnMut(TurnEvent)) -> Result<String, TurnError> {
         self.cancel.store(false, Ordering::SeqCst);
+        self.shared.paused.store(false, Ordering::SeqCst);
         let mut messages = self
             .history
             .lock()
@@ -296,7 +395,9 @@ impl AgentDriver for KernelDriver {
             settings: Arc::clone(&self.settings),
             cancel: Arc::clone(&self.cancel),
         };
-        let mut tools = UnavailableTools;
+        let mut tools = UnavailableTools {
+            shared: Arc::clone(&self.shared),
+        };
         let runner = AgentLoopRunner::new(Box::new(SystemClock::new()));
         let mut cancel_check = || {
             if self.cancel.load(Ordering::SeqCst) {
@@ -327,12 +428,16 @@ impl AgentDriver for KernelDriver {
         }
 
         (events)(TurnEvent::Delta(outcome.final_text.clone()));
+        if let Some(todos) = self.shared.todos.lock().ok().and_then(|slot| slot.clone()) {
+            (events)(TurnEvent::TodoUpdate { todos });
+        }
+        let paused = outcome.paused || self.shared.paused.load(Ordering::SeqCst);
         (events)(TurnEvent::Finished(TurnOutcome {
             final_text: outcome.final_text.clone(),
             reasoning: outcome.reasoning.clone(),
             model_turns: outcome.model_turns as u64,
             tool_calls: outcome.tool_calls as u64,
-            paused: outcome.paused,
+            paused,
         }));
         Ok(outcome.final_text)
     }
@@ -349,13 +454,13 @@ impl AgentDriver for KernelDriver {
     }
 
     fn set_confirm_handler(&self, handler: Arc<dyn ConfirmHandler>) {
-        if let Ok(mut slot) = self.confirm.lock() {
+        if let Ok(mut slot) = self.shared.confirm.lock() {
             *slot = Some(handler);
         }
     }
 
     fn set_ask_user_handler(&self, handler: Arc<dyn AskUserHandler>) {
-        if let Ok(mut slot) = self.ask_user.lock() {
+        if let Ok(mut slot) = self.shared.ask_user.lock() {
             *slot = Some(handler);
         }
     }
@@ -376,7 +481,8 @@ fn new_session_id() -> String {
 pub fn run(name: &str) -> Result<(), String> {
     match name {
         "telegram" => run_telegram(),
-        other => Err(format!("未知连接器：{other}；当前支持 telegram。")),
+        "feishu" => run_feishu(),
+        other => Err(format!("未知连接器：{other}；当前支持 telegram、feishu。")),
     }
 }
 
@@ -389,6 +495,34 @@ fn run_telegram() -> Result<(), String> {
     let transport: Arc<dyn HttpTransport> = Arc::new(UreqTransport::new());
     let bot = Arc::new(TelegramBot::new(&config, transport, Arc::clone(&driver))?);
     eprintln!("[kernel] telegram 连接器已启动，等待平台消息。");
+    bot.run().map_err(|error| error.to_string())
+}
+
+fn run_feishu() -> Result<(), String> {
+    let env = |key: &str| std::env::var(key).ok();
+    let settings = Arc::new(ModelSettings::from_env(&env)?);
+    // [feishu] 配置段通常来自 config.toml；内核没有配置读取层，这里只认环境变量。
+    let data = Value::Object(serde_json::Map::new());
+    let config = load_feishu_config(ConfigSource {
+        environment: &env,
+        data: &data,
+    })?;
+    if check_config(&config).get("ready").and_then(Value::as_bool) != Some(true) {
+        return Err(
+            "飞书连接器还没有就绪：请设置 FEISHU_APP_ID 与 FEISHU_APP_SECRET（可选 FEISHU_ALLOWED_USER_IDS）。"
+                .to_string(),
+        );
+    }
+    let workspace = std::env::current_dir().map_err(|error| error.to_string())?;
+    let driver = Arc::new(KernelDriver::new(settings, workspace));
+    let api = Arc::new(FeishuApi::with_ureq(&config.app_id, &config.app_secret));
+    let bot = Arc::new(FeishuBot::new(
+        api,
+        Arc::clone(&driver),
+        config.allowed_user_ids.clone(),
+        config.confirmation_timeout_seconds,
+    ));
+    eprintln!("[kernel] feishu 连接器已启动，等待平台消息。");
     bot.run().map_err(|error| error.to_string())
 }
 
@@ -476,18 +610,23 @@ mod tests {
         assert!(temp_root.ends_with(".omnicrawl/.agent_tmp") || temp_root.ends_with(".omnicrawl\\.agent_tmp"));
     }
 
+    fn tools_with(shared: Arc<SharedState>) -> UnavailableTools {
+        UnavailableTools { shared }
+    }
+
+    fn call(name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            name: name.to_string(),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+            id: "call-1".to_string(),
+            function_name: name.to_string(),
+        }
+    }
+
     #[test]
     fn tool_batch_reports_unavailable_instead_of_silently_dropping() {
-        let mut tools = UnavailableTools;
-        let calls = vec![ToolCall {
-            name: "read_file".to_string(),
-            arguments: json!({"path": "a.txt"})
-                .as_object()
-                .cloned()
-                .unwrap_or_default(),
-            id: "call-1".to_string(),
-            function_name: "read_file".to_string(),
-        }];
+        let mut tools = tools_with(Arc::new(SharedState::new()));
+        let calls = vec![call("read_file", json!({"path": "a.txt"}))];
         let observations = tools.execute_tool_batch(&calls, 1).expect("批次应可执行");
         assert_eq!(observations.len(), 1);
         assert_eq!(
@@ -495,6 +634,64 @@ mod tests {
             Some(TOOL_UNAVAILABLE)
         );
         assert!(observations[0].result.output.contains("read_file"));
+    }
+
+    #[test]
+    fn update_todos_records_its_state() {
+        let shared = Arc::new(SharedState::new());
+        let mut tools = tools_with(Arc::clone(&shared));
+        let calls = vec![call(
+            TODO_TOOL_NAME,
+            json!({"todos": [{"id": "a", "step": "写测试", "completed": false}]}),
+        )];
+        let observations = tools.execute_tool_batch(&calls, 1).expect("批次应可执行");
+        assert!(observations[0].result.ok);
+        assert!(observations[0].result.output.contains("1 项待办"));
+        let todos = shared.todos.lock().unwrap().clone().expect("待办应被记录");
+        assert_eq!(todos.as_array().map(|items| items.len()), Some(1));
+    }
+
+    #[test]
+    fn ask_user_uses_the_connector_bridge() {
+        struct Fixed;
+        impl AskUserHandler for Fixed {
+            fn ask(&self, _request: &Value) -> Option<String> {
+                Some("选 A".to_string())
+            }
+        }
+
+        let shared = Arc::new(SharedState::new());
+        *shared.ask_user.lock().unwrap() = Some(Arc::new(Fixed));
+        let mut tools = tools_with(Arc::clone(&shared));
+        let observations = tools
+            .execute_tool_batch(&[call(ASK_USER_TOOL_NAME, json!({"question": "选哪个"}))], 1)
+            .expect("批次应可执行");
+        assert!(observations[0].result.ok);
+        assert_eq!(observations[0].result.output, "选 A");
+    }
+
+    #[test]
+    fn ask_user_without_bridge_reports_unavailable() {
+        let mut tools = tools_with(Arc::new(SharedState::new()));
+        let observations = tools
+            .execute_tool_batch(&[call(ASK_USER_TOOL_NAME, json!({"question": "在吗"}))], 1)
+            .expect("批次应可执行");
+        assert!(!observations[0].result.ok);
+        assert_eq!(
+            observations[0].result.error_code.as_deref(),
+            Some("ask_user_unavailable")
+        );
+    }
+
+    #[test]
+    fn pause_work_marks_the_shared_flag() {
+        let shared = Arc::new(SharedState::new());
+        let mut tools = tools_with(Arc::clone(&shared));
+        let observations = tools
+            .execute_tool_batch(&[call(PAUSE_WORK_TOOL_NAME, json!({}))], 1)
+            .expect("批次应可执行");
+        assert!(observations[0].result.ok);
+        assert!(shared.paused.load(Ordering::SeqCst));
     }
 
     #[test]
