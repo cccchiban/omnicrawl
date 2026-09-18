@@ -275,6 +275,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omnicrawl-connectors"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "chrono",
+ "omnicrawl-session",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
+ "webpki-roots",
+]
+
+[[package]]
 name = "omnicrawl-core"
 version = "0.0.1"
 dependencies = [

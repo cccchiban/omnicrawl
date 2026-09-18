@@ -66,6 +66,12 @@ rust/
 │   ├── src/main.rs                         # 入口：--version / --help
 │   ├── src/session.rs                      # 会话：握手、回合、两个宿主端口、取消守卫
 │   └── README.md                           # 端口与错误映射、当前发出的事件
+├── crates/omnicrawl-connectors/            # 消息平台连接器（Telegram Bot 与飞书自建应用）
+│   ├── src/agent.rs                        # 连接器 ↔ 宿主边界：回合事件、驱动 trait、确认/提问桥
+│   ├── src/telegram/                       # 配置、分段与裁剪、文件接收、更新路由、Bot API、轮询服务
+│   ├── src/feishu/                         # 配置、文本、卡片渲染、资源、去重、时间线条目
+│   ├── tests/*_parity.rs                   # 与 Python 连接器的对照测试
+│   └── README.md                           # 模块分工、对照工作流、尚未移植清单
 ├── docs/protocol-v1.md                     # 协议 v1 规格（方法、负载、错误、版本）
 └── tools/
     ├── gen_parity_fixture.py               # 协议层对照数据集生成脚本
@@ -75,6 +81,8 @@ rust/
     ├── gen_llm_usage_fixture.py            # 用量归一化对照数据集生成脚本
     ├── gen_llm_runtime_fixture.py          # 端到端回合对照数据集生成脚本（内建回环服务端）
     ├── gen_session_fixture.py              # 会话层模型对照数据集生成脚本
+    ├── gen_connectors_telegram_fixture.py  # Telegram 连接器对照数据集生成脚本
+    ├── gen_connectors_feishu_fixture.py    # 飞书连接器对照数据集生成脚本
     └── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
 ```
 
@@ -247,6 +255,22 @@ cd rust && cargo test -p omnicrawl-llm --test openai_responses_stream_parity
 两条分支、`item_id` 与 `call_id` 别名、`completed` 的 output 扫描、usage、`status=failed`、
 以及三类截断（半截参数、空流、只给名字）。负载用「属性可读的 dict」仿 SDK 对象——
 否则 `response.status` 用 `getattr` 读不到，`finish_reason` 会永远是 `stop`（只在 dict 载荷下成立的假行为）。
+
+连接器同理：
+
+```bash
+python rust/tools/gen_connectors_telegram_fixture.py   # 期望值来自 connectors/telegram.py
+python rust/tools/gen_connectors_feishu_fixture.py     # 期望值来自 connectors/fsapp.py
+cd rust && cargo test -p omnicrawl-connectors
+```
+
+`telegram_parity.json` 覆盖分段与裁剪、流式收尾的**消息调用序列**、文件提取/分类/落盘命名
+（含重名逐轮递进）、配置解析（TOML 数组与全角逗号、错误文案）、更新路由（未授权不回复）、
+`/thinking` 与 `/workspace` 判定；`feishu_parity.json` 覆盖标签清理与空行折叠、长文分段、
+工具摘要与正文、`difflib.SequenceMatcher` 的 `+N -M` 与变更预览、计划与思考面板、子任务进度树、
+卡片 JSON（键序与 `json.dumps` 分隔符是契约）、配置解析与掩码、去重键，以及时间线条目
+（正文/工具/思考/计划）真正发出的消息序列。连接器的边界与尚未移植清单见
+`crates/omnicrawl-connectors/README.md`。
 
 ## 已知与 Python 的差异
 

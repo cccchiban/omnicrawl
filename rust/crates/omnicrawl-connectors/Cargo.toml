@@ -1,0 +1,18 @@
+[package]
+name = "omnicrawl-connectors"
+description = "消息平台连接器（Python 侧 omnicrawl/connectors/ 的 Rust 内核移植）：Telegram Bot 轮询与飞书自建应用长连接"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.23"
+chrono = { workspace = true }
+omnicrawl-session = { path = "../omnicrawl-session" }
+rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
+sha2 = { workspace = true }
+webpki-roots = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { workspace = true }
