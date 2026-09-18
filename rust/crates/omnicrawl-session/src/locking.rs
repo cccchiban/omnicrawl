@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use crate::error::SessionStoreError;
@@ -145,7 +145,7 @@ impl Drop for ProcessLockGuard<'_> {
     }
 }
 
-static ROOT_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<ProcessFileLock>>>> = OnceLock::new();
+static ROOT_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<ProcessFileLock>>>> = OnceLock::new();
 
 /// 同一会话根目录共享一份锁实例：线程之间靠它串行，跨进程靠同一个锁文件。
 pub fn process_lock_for_root(root: &Path) -> Arc<ProcessFileLock> {
@@ -153,11 +153,15 @@ pub fn process_lock_for_root(root: &Path) -> Arc<ProcessFileLock> {
     let mut locks = registry
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    Arc::clone(
-        locks
-            .entry(root.to_path_buf())
-            .or_insert_with(|| Arc::new(ProcessFileLock::new(root.join(LOCK_FILE_NAME)))),
-    )
+    // 只复用仍被持有的实例；会话根目录会随会话累积，所以顺手清掉已释放的条目。
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let key = root.to_path_buf();
+    if let Some(existing) = locks.get(&key).and_then(Weak::upgrade) {
+        return existing;
+    }
+    let lock = Arc::new(ProcessFileLock::new(root.join(LOCK_FILE_NAME)));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
 }
 
 /// 向 JSONL 追加一行并可选 fsync；行尾统一补换行。

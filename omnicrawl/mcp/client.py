@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-import httpx
-
 from ..net.http_client import connection_limits
 from .audit import MCPAuditLogger
 from .config import (
@@ -733,6 +731,9 @@ class _StreamableHTTPMCPConnection:
 
     def __init__(self, server: MCPServerConfig) -> None:
         self.server = server
+        # httpx 只在实际建立连接时导入：未配置 MCP Server 时启动链不加载它。
+        import httpx
+
         # 长 keepalive：MCP 每次工具调用都是一次 POST，默认 5 秒空闲断连会让
         # 相邻回合反复重做 TLS 握手。见 omnicrawl/http_client.py。
         self._client = httpx.Client(
@@ -836,6 +837,8 @@ class _StreamableHTTPMCPConnection:
                     if existing_name.lower() == name.lower():
                         del headers[existing_name]
                 headers[name] = value
+
+            import httpx
 
             if not self.server.url:
                 raise MCPClientError("streamable_http MCP Server 缺少 url。")

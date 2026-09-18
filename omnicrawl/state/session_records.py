@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
+import mmap
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .session_artifacts import redact_sensitive_text
 from .session_models import (
@@ -37,6 +38,22 @@ DIAG_PROMPT_INVALID = "invalid_prompt_history"
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
 SEVERITY_INFO = "info"
+
+# 转录达到这个体量后逐行读取：不再把整份文本与行列表同时放进内存。
+TRANSCRIPT_MMAP_THRESHOLD_BYTES = 1 << 20
+
+# str.splitlines() 认的换行符比 "\n" 多；转录里出现这些字节时按行切分不再等价。
+_SPLITLINES_EXTRA_BYTES = (
+    b"\r",
+    b"\x0b",
+    b"\x0c",
+    b"\x1c",
+    b"\x1d",
+    b"\x1e",
+    b"\xc2\x85",
+    b"\xe2\x80\xa8",
+    b"\xe2\x80\xa9",
+)
 
 # 索引 schema 版本与事件版本独立演进。
 SESSION_INDEX_SCHEMA_VERSION = 1
@@ -268,6 +285,40 @@ def decode_session_event_line(
     )
 
 
+def _transcript_lines(path: Path) -> tuple[Iterator[str], bool]:
+    """返回转录的行迭代器与「文件以换行结尾」判定。
+
+    大转录走只读内存映射逐行产出，整份文本不复制进堆；小转录、以及含
+    str.splitlines() 才认的换行符的转录整份读取，逐行语义因此不变。
+    """
+
+    if path.stat().st_size >= TRANSCRIPT_MMAP_THRESHOLD_BYTES:
+        handle = path.open("rb")
+        mapped = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        if not any(marker in mapped for marker in _SPLITLINES_EXTRA_BYTES):
+            return _iter_mapped_lines(mapped, handle), mapped[-1:] == b"\n"
+        mapped.close()
+        handle.close()
+
+    text = path.read_text(encoding="utf-8")
+    return iter(text.splitlines()), text.endswith("\n") or text == ""
+
+
+def _iter_mapped_lines(mapped: mmap.mmap, handle: Any) -> Iterator[str]:
+    """逐行解码内存映射的转录；行尾换行按 str.splitlines() 的语义去掉。"""
+
+    try:
+        while True:
+            raw = mapped.readline()
+            if not raw:
+                break
+            line = raw.decode("utf-8")
+            yield line[:-1] if line.endswith("\n") else line
+    finally:
+        mapped.close()
+        handle.close()
+
+
 def read_session_events_with_diagnostics(
     path: Path,
     *,
@@ -279,34 +330,43 @@ def read_session_events_with_diagnostics(
     if not path.exists():
         return SessionEventReadResult(events=(), diagnostics=())
 
+    display_path = relative_path or str(path)
     try:
-        raw_text = path.read_text(encoding="utf-8")
+        lines, file_ends_with_newline = _transcript_lines(path)
     except UnicodeDecodeError as exc:
         raise SessionStoreError(f"会话转录不是 UTF-8 文本：{path}") from exc
     except OSError as exc:
         raise SessionStoreError(f"读取会话转录失败：{path}，{exc}") from exc
 
-    lines = raw_text.splitlines()
-    file_ends_with_newline = raw_text.endswith("\n") or raw_text == ""
-    display_path = relative_path or str(path)
-    nonempty_indexes = [index for index, line in enumerate(lines) if line.strip()]
-    last_nonempty = nonempty_indexes[-1] if nonempty_indexes else None
-
     events: list[SessionEvent] = []
     diagnostics: list[SessionRecordDiagnostic] = []
-    for index, line in enumerate(lines):
-        line_no = index + 1
+
+    def _decode_line(line: str, index: int, *, is_last_nonempty: bool) -> None:
         event, line_diagnostics = decode_session_event_line(
             line,
             path=display_path,
-            line_no=line_no,
+            line_no=index + 1,
             expected_session_id=session_id,
-            is_last_nonempty_line=index == last_nonempty,
+            is_last_nonempty_line=is_last_nonempty,
             file_ends_with_newline=file_ends_with_newline,
         )
         diagnostics.extend(line_diagnostics)
         if event is not None:
             events.append(event)
+
+    # 末行是否"最后一个非空行"要读到下一行才知道，因此延后一拍处理。
+    pending: tuple[int, str] | None = None
+    try:
+        for index, line in enumerate(lines):
+            if not line.strip():
+                continue
+            if pending is not None:
+                _decode_line(pending[1], pending[0], is_last_nonempty=False)
+            pending = (index, line)
+    except UnicodeDecodeError as exc:
+        raise SessionStoreError(f"会话转录不是 UTF-8 文本：{path}") from exc
+    if pending is not None:
+        _decode_line(pending[1], pending[0], is_last_nonempty=True)
 
     log_record_diagnostics(diagnostics)
     return SessionEventReadResult(events=tuple(events), diagnostics=tuple(diagnostics))

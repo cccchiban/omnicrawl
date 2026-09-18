@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -26,6 +27,8 @@ MODEL_LIST_TIMEOUT_SECONDS = 10
 MAX_MODEL_LIST_BYTES = 2 * 1024 * 1024
 MAX_MODELS_PER_PROFILE = 500
 DEFAULT_DISCOVERY_CACHE_TTL_SECONDS = 300
+# 条目上限：渠道 / 自定义模型目录频繁变化时不让发现缓存无界增长。
+MAX_DISCOVERY_CACHE_ENTRIES = 32
 
 
 class ModelCatalogError(RuntimeError):
@@ -80,7 +83,7 @@ class _DiscoveryCacheEntry:
     fetched_at: float
 
 
-_discovery_cache: dict[str, _DiscoveryCacheEntry] = {}
+_discovery_cache: OrderedDict[str, _DiscoveryCacheEntry] = OrderedDict()
 _discovery_lock = threading.Lock()
 
 
@@ -445,6 +448,7 @@ def _discover_for_profile(
     with _discovery_lock:
         cached = _discovery_cache.get(profile.id)
         if cached is not None and not refresh and (now - cached.fetched_at) < ttl:
+            _discovery_cache.move_to_end(profile.id)
             return cached.result
     try:
         adapter = get_adapter(profile.resolve_protocol())
@@ -461,6 +465,9 @@ def _discover_for_profile(
                 result=result,
                 fetched_at=now,
             )
+            _discovery_cache.move_to_end(profile.id)
+            while len(_discovery_cache) > MAX_DISCOVERY_CACHE_ENTRIES:
+                _discovery_cache.popitem(last=False)
         else:
             # 网络或网关故障通常是短暂的；缓存失败会让服务恢复后仍持续
             # 展示旧诊断，直到 TTL 到期或用户手动刷新。

@@ -92,7 +92,7 @@ fn precedence_order_matches_python() {
         .iter()
         .map(|item| {
             let text = item["text"].as_str().expect("text");
-            json!(scan_pattern_rules(text, &builtin_rules())
+            json!(scan_pattern_rules(text, builtin_rules())
                 .iter()
                 .map(|hit| hit.rule_id)
                 .collect::<Vec<&str>>())
@@ -111,7 +111,7 @@ fn rule_candidates_match_python() {
         let text = item["text"].as_str().expect("text");
         let expected = item["rule_matches"].as_array().expect("rule_matches");
         for rule in builtin_rules() {
-            let ours = candidates_json(&rule, text);
+            let ours = candidates_json(rule, text);
             let theirs: Vec<&Value> = expected
                 .iter()
                 .filter(|hit| hit["rule"].as_str() == Some(rule.rule_id))
@@ -131,7 +131,7 @@ fn scan_matches_python() {
     let fixture = fixture();
     for item in texts(&fixture) {
         let text = item["text"].as_str().expect("text");
-        let ours = scan_json(&scan_pattern_rules(text, &builtin_rules()), text);
+        let ours = scan_json(&scan_pattern_rules(text, builtin_rules()), text);
         assert_eq!(json!(ours), item["scan"], "整段扫描（{text:?}）");
     }
 }

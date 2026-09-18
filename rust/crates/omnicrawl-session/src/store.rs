@@ -14,6 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
+use memmap2::Mmap;
 use serde_json::{json, Map, Value};
 
 use crate::error::SessionStoreError;
@@ -211,19 +212,30 @@ impl SessionStore {
         let entries = self.load_entries()?;
         let index = self.entry_index(&entries, &session_id)?;
         let path = self.session_path(&entries[index].path)?;
-        let text =
-            fs::read_to_string(&path).map_err(|error| io_error("读取会话转录", &path, &error))?;
+
+        let file = File::open(&path).map_err(|error| io_error("读取会话转录", &path, &error))?;
+        let size = file
+            .metadata()
+            .map_err(|error| io_error("读取会话转录", &path, &error))?
+            .len();
 
         let mut events = Vec::new();
-        for (number, line) in text.lines().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
-                eprintln!("[kernel] 会话转录 JSON 损坏：第 {} 行。", number + 1);
-                continue;
-            };
-            events.push(SessionEvent::from_dict(&value)?);
+        if size >= TRANSCRIPT_MMAP_THRESHOLD_BYTES {
+            // 只读映射：整份转录不复制进堆，逐行解析只借用映射内的切片。
+            let mapped = unsafe { Mmap::map(&file) }
+                .map_err(|error| io_error("读取会话转录", &path, &error))?;
+            let text = std::str::from_utf8(&mapped).map_err(|error| {
+                io_error(
+                    "读取会话转录",
+                    &path,
+                    &std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                )
+            })?;
+            collect_events(text, &mut events)?;
+        } else {
+            let text = fs::read_to_string(&path)
+                .map_err(|error| io_error("读取会话转录", &path, &error))?;
+            collect_events(&text, &mut events)?;
         }
         Ok(events)
     }
@@ -547,6 +559,24 @@ fn update_entry_after_event(entry: &mut SessionIndexEntry, event: &SessionEvent)
 
 fn as_object(value: Value) -> Map<String, Value> {
     value.as_object().cloned().unwrap_or_default()
+}
+
+/// 超过该体量的转录走只读内存映射，避免整份内容复制进内核堆。
+const TRANSCRIPT_MMAP_THRESHOLD_BYTES: u64 = 1 << 20;
+
+/// 逐行解析转录文本：空白行跳过，坏行只留一行 stderr 诊断（与 Python 一致）。
+fn collect_events(text: &str, events: &mut Vec<SessionEvent>) -> Result<(), SessionStoreError> {
+    for (number, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            eprintln!("[kernel] 会话转录 JSON 损坏：第 {} 行。", number + 1);
+            continue;
+        };
+        events.push(SessionEvent::from_dict(&value)?);
+    }
+    Ok(())
 }
 
 fn io_error(action: &str, path: &Path, error: &std::io::Error) -> SessionStoreError {

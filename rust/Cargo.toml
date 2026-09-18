@@ -28,6 +28,8 @@ sha2 = "0.10"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 # 会话时间戳：对齐 Python datetime 的 ISO-8601（UTC、微秒）。只要解析/格式化与取当前时间。
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# 读取大转录：只读内存映射，整份内容不再复制进内核堆（Windows 与 POSIX 都走 OS 映射）。
+memmap2 = "0.9"
 
 [profile.release]
 lto = "thin"

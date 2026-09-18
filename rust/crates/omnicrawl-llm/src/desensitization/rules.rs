@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
 
 use super::char_offsets;
 
@@ -119,6 +120,7 @@ pub enum RuleMatcher {
 pub type ValuePredicate = fn(&str) -> bool;
 
 /// 单条值类型规则：手写匹配器 + 关键字 / 熵 / 校验器 / 豁免表。
+#[derive(Clone)]
 pub struct PatternRule {
     pub rule_id: &'static str,
     pub category: &'static str,
@@ -191,8 +193,16 @@ impl PatternRule {
     }
 }
 
+static BUILTIN_RULES: OnceLock<Vec<PatternRule>> = OnceLock::new();
+
 /// 内置值类型规则（顺序即优先级；重叠区间由先者占位）。
-pub fn builtin_rules() -> Vec<PatternRule> {
+///
+/// 规则集合是常量：只构造一次并常驻（Python 侧对应 `@lru_cache(maxsize=1)`）。
+pub fn builtin_rules() -> &'static [PatternRule] {
+    BUILTIN_RULES.get_or_init(build_builtin_rules)
+}
+
+fn build_builtin_rules() -> Vec<PatternRule> {
     vec![
         PatternRule {
             rule_id: "pem-private-key",
@@ -333,8 +343,9 @@ pub fn builtin_rules() -> Vec<PatternRule> {
 /// 给类别集合，gitleaks 追加留到 gitleaks 片。
 pub fn build_enabled_rules(categories: &[&str]) -> Vec<PatternRule> {
     builtin_rules()
-        .into_iter()
+        .iter()
         .filter(|rule| categories.contains(&rule.category))
+        .cloned()
         .collect()
 }
 

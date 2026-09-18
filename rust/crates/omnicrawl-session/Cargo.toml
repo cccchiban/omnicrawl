@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+memmap2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
