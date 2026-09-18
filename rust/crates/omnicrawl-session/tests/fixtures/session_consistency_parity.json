@@ -1,0 +1,612 @@
+{
+  "source": "omnicrawl/state/session_consistency.py",
+  "cases": [
+    {
+      "name": "活跃会话一致",
+      "session_id": "20260918-030529-abcdef",
+      "relative_path": "sessions/20260918-030529-abcdef.jsonl",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000001",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "workspace_root": "/work/demo",
+            "title": "起点标题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000002",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:06:00.000000+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000003",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:06:05.500000+00:00",
+          "payload": {
+            "text": "在"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000004",
+          "parent_id": null,
+          "type": "tool_result",
+          "created_at": "2026-09-18T03:06:09.000000+00:00",
+          "payload": {
+            "tool_name": "read_file"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000005",
+          "parent_id": null,
+          "type": "session_renamed",
+          "created_at": "2026-09-18T03:07:00.000000+00:00",
+          "payload": {
+            "title": "改名后的标题"
+          }
+        }
+      ],
+      "current_index": {
+        "session_id": "20260918-030529-abcdef",
+        "title": "改名后的标题",
+        "workspace_root": "/work/demo",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "updated_at": "2026-09-18T03:07:00+00:00",
+        "event_count": 5,
+        "message_count": 2,
+        "last_event_type": "session_renamed",
+        "archived_at": null
+      },
+      "expected": {
+        "rebuilt": {
+          "session_id": "20260918-030529-abcdef",
+          "title": "改名后的标题",
+          "workspace_root": "/work/demo",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "updated_at": "2026-09-18T03:07:00+00:00",
+          "event_count": 5,
+          "message_count": 2,
+          "last_event_type": "session_renamed",
+          "archived_at": null
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "路径与计数与最后事件类型不一致",
+      "session_id": "20260918-030529-abcdef",
+      "relative_path": "sessions/20260918-030529-abcdef.jsonl",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000001",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "workspace_root": "/work/demo",
+            "title": "起点标题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000002",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:06:00.000000+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000003",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:06:05.500000+00:00",
+          "payload": {
+            "text": "在"
+          }
+        }
+      ],
+      "current_index": {
+        "session_id": "20260918-030529-abcdef",
+        "title": "起点标题",
+        "workspace_root": "/work/demo",
+        "path": "sessions/20260918-030529-aaaaaa.jsonl",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "updated_at": "2026-09-18T03:06:05.500000+00:00",
+        "event_count": 1,
+        "message_count": 0,
+        "last_event_type": "session_started",
+        "archived_at": null
+      },
+      "expected": {
+        "rebuilt": {
+          "session_id": "20260918-030529-abcdef",
+          "title": "起点标题",
+          "workspace_root": "/work/demo",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "updated_at": "2026-09-18T03:06:05.500000+00:00",
+          "event_count": 3,
+          "message_count": 2,
+          "last_event_type": "assistant_message",
+          "archived_at": null
+        },
+        "issues": [
+          {
+            "code": "path_mismatch",
+            "severity": "error",
+            "message": "会话路径不一致：索引为 sessions/20260918-030529-aaaaaa.jsonl，转录位于 sessions/20260918-030529-abcdef.jsonl。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-aaaaaa.jsonl",
+            "details": {
+              "current": "sessions/20260918-030529-aaaaaa.jsonl",
+              "expected": "sessions/20260918-030529-abcdef.jsonl"
+            },
+            "repairable": true
+          },
+          {
+            "code": "event_count_mismatch",
+            "severity": "error",
+            "message": "事件数不一致：索引 1，转录 3。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-aaaaaa.jsonl",
+            "details": {
+              "current": 1,
+              "expected": 3
+            },
+            "repairable": true
+          },
+          {
+            "code": "message_count_mismatch",
+            "severity": "error",
+            "message": "消息数不一致：索引 0，转录 2。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-aaaaaa.jsonl",
+            "details": {
+              "current": 0,
+              "expected": 2
+            },
+            "repairable": true
+          },
+          {
+            "code": "last_event_type_mismatch",
+            "severity": "error",
+            "message": "最后事件类型不一致：索引为 'session_started'，转录为 'assistant_message'。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-aaaaaa.jsonl",
+            "details": {
+              "current": "session_started",
+              "expected": "assistant_message"
+            },
+            "repairable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "标题不一致（警告）",
+      "session_id": "20260918-030529-abcdef",
+      "relative_path": "sessions/20260918-030529-abcdef.jsonl",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000001",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "workspace_root": "/work/demo",
+            "title": "起点标题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000002",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:06:00.000000+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000003",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:06:05.500000+00:00",
+          "payload": {
+            "text": "在"
+          }
+        }
+      ],
+      "current_index": {
+        "session_id": "20260918-030529-abcdef",
+        "title": "手工改过的标题",
+        "workspace_root": "/work/demo",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "updated_at": "2026-09-18T03:06:05.500000+00:00",
+        "event_count": 3,
+        "message_count": 2,
+        "last_event_type": "assistant_message",
+        "archived_at": null
+      },
+      "expected": {
+        "rebuilt": {
+          "session_id": "20260918-030529-abcdef",
+          "title": "起点标题",
+          "workspace_root": "/work/demo",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "updated_at": "2026-09-18T03:06:05.500000+00:00",
+          "event_count": 3,
+          "message_count": 2,
+          "last_event_type": "assistant_message",
+          "archived_at": null
+        },
+        "issues": [
+          {
+            "code": "title_mismatch",
+            "severity": "warning",
+            "message": "标题不一致：索引为 '手工改过的标题'，转录推导为 '起点标题'。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-abcdef.jsonl",
+            "details": {
+              "current": "手工改过的标题",
+              "expected": "起点标题"
+            },
+            "repairable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "更新时间与工作区不一致（警告）",
+      "session_id": "20260918-030529-abcdef",
+      "relative_path": "sessions/20260918-030529-abcdef.jsonl",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000001",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "workspace_root": "/work/demo",
+            "title": "起点标题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000002",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:06:00.000000+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000003",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:06:05.500000+00:00",
+          "payload": {
+            "text": "在"
+          }
+        }
+      ],
+      "current_index": {
+        "session_id": "20260918-030529-abcdef",
+        "title": "起点标题",
+        "workspace_root": "/work/other",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "updated_at": "2026-09-18T00:00:00.000000+00:00",
+        "event_count": 3,
+        "message_count": 2,
+        "last_event_type": "assistant_message",
+        "archived_at": null
+      },
+      "expected": {
+        "rebuilt": {
+          "session_id": "20260918-030529-abcdef",
+          "title": "起点标题",
+          "workspace_root": "/work/demo",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "updated_at": "2026-09-18T03:06:05.500000+00:00",
+          "event_count": 3,
+          "message_count": 2,
+          "last_event_type": "assistant_message",
+          "archived_at": null
+        },
+        "issues": [
+          {
+            "code": "updated_at_mismatch",
+            "severity": "warning",
+            "message": "更新时间与转录最后事件时间不一致。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-abcdef.jsonl",
+            "details": {
+              "current": "2026-09-18T00:00:00+00:00",
+              "expected": "2026-09-18T03:06:05.500000+00:00"
+            },
+            "repairable": true
+          },
+          {
+            "code": "workspace_root_mismatch",
+            "severity": "warning",
+            "message": "工作区路径与 session_started 事件不一致。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-abcdef.jsonl",
+            "details": {
+              "current": "/work/other",
+              "expected": "/work/demo"
+            },
+            "repairable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "归档目录决定归档状态",
+      "session_id": "20260918-030529-abcdef",
+      "relative_path": "archive/20260918-030529-abcdef.jsonl",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000001",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "workspace_root": "/work/demo",
+            "title": "起点标题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000002",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:06:00.000000+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000003",
+          "parent_id": null,
+          "type": "assistant_message",
+          "created_at": "2026-09-18T03:06:05.500000+00:00",
+          "payload": {
+            "text": "在"
+          }
+        }
+      ],
+      "current_index": {
+        "session_id": "20260918-030529-abcdef",
+        "title": "起点标题",
+        "workspace_root": "/work/demo",
+        "path": "archive/20260918-030529-abcdef.jsonl",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "updated_at": "2026-09-18T03:06:05.500000+00:00",
+        "event_count": 3,
+        "message_count": 2,
+        "last_event_type": "assistant_message",
+        "archived_at": "2026-09-18T03:06:05.500000+00:00"
+      },
+      "expected": {
+        "rebuilt": {
+          "session_id": "20260918-030529-abcdef",
+          "title": "起点标题",
+          "workspace_root": "/work/demo",
+          "path": "archive/20260918-030529-abcdef.jsonl",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "updated_at": "2026-09-18T03:06:05.500000+00:00",
+          "event_count": 3,
+          "message_count": 2,
+          "last_event_type": "assistant_message",
+          "archived_at": "2026-09-18T03:06:05.500000+00:00"
+        },
+        "issues": []
+      }
+    },
+    {
+      "name": "活跃目录里的历史归档事件不算归档",
+      "session_id": "20260918-030529-abcdef",
+      "relative_path": "sessions/20260918-030529-abcdef.jsonl",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000001",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "workspace_root": "/work/demo",
+            "title": "起点标题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000006",
+          "parent_id": null,
+          "type": "session_archived",
+          "created_at": "2026-09-18T04:00:00.000000+00:00",
+          "payload": {}
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000005",
+          "parent_id": null,
+          "type": "session_renamed",
+          "created_at": "2026-09-18T03:07:00.000000+00:00",
+          "payload": {
+            "title": "改名后的标题"
+          }
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000007",
+          "parent_id": null,
+          "type": "session_unarchived",
+          "created_at": "2026-09-18T05:00:00.000000+00:00",
+          "payload": {}
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000002",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:06:00.000000+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        }
+      ],
+      "current_index": {
+        "session_id": "20260918-030529-abcdef",
+        "title": "改名后的标题",
+        "workspace_root": "/work/demo",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "updated_at": "2026-09-18T03:06:00+00:00",
+        "event_count": 5,
+        "message_count": 1,
+        "last_event_type": "user_message",
+        "archived_at": "2026-09-18T04:00:00.000000+00:00"
+      },
+      "expected": {
+        "rebuilt": {
+          "session_id": "20260918-030529-abcdef",
+          "title": "改名后的标题",
+          "workspace_root": "/work/demo",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "updated_at": "2026-09-18T03:06:00+00:00",
+          "event_count": 5,
+          "message_count": 1,
+          "last_event_type": "user_message",
+          "archived_at": null
+        },
+        "issues": [
+          {
+            "code": "archived_at_mismatch",
+            "severity": "error",
+            "message": "归档状态与转录路径/事件不一致。",
+            "session_id": "20260918-030529-abcdef",
+            "path": "sessions/20260918-030529-abcdef.jsonl",
+            "details": {
+              "current": "2026-09-18T04:00:00+00:00",
+              "expected": null
+            },
+            "repairable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "缺少工作区时用占位值",
+      "session_id": "20260918-030529-abcdef",
+      "relative_path": "sessions/20260918-030529-abcdef.jsonl",
+      "events": [
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000008",
+          "parent_id": null,
+          "type": "session_started",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {}
+        },
+        {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "000000000000000000000002",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:06:00.000000+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        }
+      ],
+      "current_index": {
+        "session_id": "20260918-030529-abcdef",
+        "title": "新会话",
+        "workspace_root": "(unknown)",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "updated_at": "2026-09-18T03:06:00+00:00",
+        "event_count": 2,
+        "message_count": 1,
+        "last_event_type": "user_message",
+        "archived_at": null
+      },
+      "expected": {
+        "rebuilt": {
+          "session_id": "20260918-030529-abcdef",
+          "title": "新会话",
+          "workspace_root": "(unknown)",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "updated_at": "2026-09-18T03:06:00+00:00",
+          "event_count": 2,
+          "message_count": 1,
+          "last_event_type": "user_message",
+          "archived_at": null
+        },
+        "issues": []
+      }
+    }
+  ],
+  "empty_events": {
+    "session_id": "20260918-030529-abcdef",
+    "relative_path": "sessions/20260918-030529-abcdef.jsonl",
+    "message": "无法从空转录重建索引：20260918-030529-abcdef"
+  }
+}

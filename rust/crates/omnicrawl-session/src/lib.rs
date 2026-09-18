@@ -6,6 +6,7 @@
 //! 但对外的字段名、错误文案与 JSONL 行字节都与 Python 侧对齐，避免两个实现互相读不懂对方的会话。
 
 pub mod artifact;
+pub mod consistency;
 pub mod error;
 pub mod event;
 pub mod history;
@@ -23,6 +24,12 @@ pub mod time;
 pub use artifact::{
     normalize_relative_artifact_path, preview_text, redact_sensitive_html, tool_output_summary,
     SessionArtifactStore, TOOL_RESULT_INLINE_OUTPUT_CHARS, TOOL_RESULT_PREVIEW_CHARS,
+};
+pub use consistency::{
+    build_index_entry_from_events, compare_index_entry, SessionConsistencyIssue,
+    ISSUE_ARCHIVED_MISMATCH, ISSUE_EVENT_COUNT_MISMATCH, ISSUE_LAST_EVENT_MISMATCH,
+    ISSUE_MESSAGE_COUNT_MISMATCH, ISSUE_PATH_MISMATCH, ISSUE_TITLE_MISMATCH,
+    ISSUE_UPDATED_AT_MISMATCH, ISSUE_WORKSPACE_MISMATCH, SEVERITY_ERROR, SEVERITY_WARNING,
 };
 pub use error::SessionStoreError;
 pub use event::SessionEvent;
