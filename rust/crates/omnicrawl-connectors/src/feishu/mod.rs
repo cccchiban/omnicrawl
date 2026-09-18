@@ -3,13 +3,20 @@
 //! 与 Telegram 侧同构：只做平台 I/O 与显示映射（卡片时间线、工具摘要、执行计划、子任务进度、
 //! 提问卡片与工具审批），回合驱动由宿主侧（[`crate::agent::AgentDriver`]）负责。
 
+pub mod api;
+pub mod bot;
 pub mod config;
 pub mod dedupe;
 pub mod files;
 pub mod render;
 pub mod text;
 pub mod timeline;
+pub mod ws;
 
+pub use api::{
+    ClientConfig, FeishuApi, FeishuApiError, WsEndpoint, DEFAULT_BASE_URL, WS_ENDPOINT_PATH,
+};
+pub use bot::{ActiveTask, FeishuBot, STREAM_PATCH_INTERVAL_SECONDS};
 pub use config::{check_config, load_feishu_config, mask_secret, ConfigSource, FeishuConfig};
 pub use dedupe::{inbox_dedupe_key, SeenMessages, DEDUP_MAX_ENTRIES, DEDUP_TTL_SECONDS};
 pub use files::{
@@ -29,3 +36,4 @@ pub use timeline::{
     MessagePort, PlanMessage, ReasoningMessage, SubAgentMessage, TextMessage, TimelineMessage,
     ToolMessage, ToolRecord,
 };
+pub use ws::{ping_interval_seconds, ReconnectPolicy};

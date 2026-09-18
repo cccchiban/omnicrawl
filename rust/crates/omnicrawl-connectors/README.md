@@ -4,15 +4,16 @@
 `omnicrawl/connectors/fsapp.py` 与 `omnicrawl/connectors/feishu_inbox.py`。
 
 连接器只做**平台 I/O 与显示映射**：轮询/长连接、消息收发、命令分发、审批与提问桥、
-文件接收与分类、时间线展示。回合、斜杠命令与配置持久化由宿主侧承担（边界见 `src/agent.rs`
-的 `AgentDriver`），最终形态是 Rust 内核的协议 v1 宿主对端（`rust/docs/protocol-v1.md`）。
+文件接收与分类、时间线展示。回合、斜杠命令、运行期配置同步（推理强度/审批模式/工作区）
+与配置持久化由宿主侧承担（边界见 `src/agent.rs` 的 `AgentDriver`），最终形态是 Rust 内核的
+协议 v1 宿主对端（`rust/docs/protocol-v1.md`）。
 
 ## 目录
 
 ```
 src/
 ├── agent.rs                # 连接器 ↔ 宿主的边界：TurnEvent、AgentDriver、确认/提问桥
-├── http.rs                 # 共用阻塞式 HTTP 传输（ureq + rustls）与表单编码
+├── http.rs                 # 共用阻塞式 HTTP 传输（ureq + rustls）、表单与百分号编码
 ├── json.rs                 # Python json.dumps 等价序列化（卡片与提示负载的字节形状）
 ├── telegram/
 │   ├── config.rs           # 环境变量 > [telegram] 段的配置解析与校验
@@ -27,7 +28,10 @@ src/
     ├── render.rs           # 工具摘要/正文、文件变更预览、计划与子任务文本、卡片 JSON
     ├── files.rs            # 资源分类、临时目录落盘、post 富文本与 [FILE:] 标记
     ├── dedupe.rs           # 进程内去重与跨重启指纹（sha256 前 32 位）
-    └── timeline.rs         # 时间线条目：正文/工具/思考/计划/子任务各自独立成消息
+    ├── timeline.rs         # 时间线条目：正文/工具/思考/计划/子任务各自独立成消息
+    ├── api.rs              # 开放接口：租户令牌缓存、消息创建/更新、资源下载、长连接端点
+    ├── ws.rs               # 长连接：pbbp2 帧编解码、WebSocket 握手与帧收发、重连退避
+    └── bot.rs              # 事件接入、命令分发、任务时间线装配、审批与提问桥、长连接主循环
 ```
 
 ## 对照（parity）工作流
@@ -48,19 +52,24 @@ cd rust && cargo test -p omnicrawl-connectors
 - 飞书（`tests/fixtures/feishu_parity.json`）：清理标签与折叠空行、长文分段与卡片切分、
   工具摘要与正文（隐藏正文/文件变更预览）、`difflib.SequenceMatcher` 的 `+N -M` 统计、
   计划与思考面板、子任务进度树、卡片 JSON（键序与 `json.dumps` 分隔符）、配置解析与掩码、
-  去重键，以及时间线条目真正发出的消息序列。
+  去重键、时间线条目真正发出的消息序列，以及用 `lark-oapi` 的 `pbbp2` 生成器编出的
+  帧字节（Rust 解码逐字段比对、重编码按规范形态逐字节比对）。
+
+`tests/feishu_bot.rs` 另外用桩件跑编排：白名单、消息去重、命令分发、正文/工具卡片序列、
+审批与取消的等待语义、提问卡片与文本回答的唤醒。
 
 改任一侧实现都要重跑生成脚本再跑测试；卡片负载按**字符串**比对，缩进与分隔符也是契约。
 
 ## 尚未移植
 
-- 飞书 HTTP 接口层（租户令牌、消息创建/更新、资源下载与文件上传）与 WebSocket 长连接
-  （`pbbp2` 帧、握手端点、心跳与重连退避）：`api.rs` / `ws.rs` 待落地。
-- 飞书事件接入与任务执行编排（`handle_message` / `_dispatch` / `_execute_task` / `ask_user` /
-  审批 / `/cancel`）：`bot.rs` 待落地；Telegram 侧编排已落地。
-- `feishu_inbox.py` 的**持久**入站队列（pending 重放、`done.jsonl` 紧凑化、24 小时窗口）：
-  当前只有进程内去重与跨重启指纹。
-- `connectors/autostart.py` 的子进程自动启动与单例锁：与 TUI 生命周期绑定，等宿主侧编排迁移
-  后一并处理。
+- `feishu_inbox.py` 的**持久**入站队列（`pending.jsonl` 跨重启重放、`done.jsonl` 紧凑化、
+  24 小时窗口去重）：当前只有进程内去重、跨重启指纹与进程内排队。
+- 飞书文件上传与 `[FILE:...]` 标记发文件（`_upload_image` / `_upload_file` /
+  `_send_local_file` / `_send_generated_files`）：出站只发文本与卡片。
+- `connectors/autostart.py` 的子进程自动启动与单例锁：与 TUI 生命周期绑定，等宿主侧编排
+  迁移后一并处理。
+- 飞书 SDK 的 `Content-Disposition` 文件名解析：缺文件名时回落成 `file_key`，
+  由资源类型补扩展名（`.jpg`/`.opus`/`.bin`）。
 - Telegram 的 HTTP 错误文案无法逐字复刻 `requests` 的异常文本，`TelegramApiError::Network`
-  只保证分类与中文前缀一致。
+  只保证分类与中文前缀一致；飞书侧同理（`FeishuApiError::Transport`）。
+- 飞书 `_prewarm_agent`（Agent 预热线程）：宿主构建好 Agent 后交给连接器即可，不再单独预热。

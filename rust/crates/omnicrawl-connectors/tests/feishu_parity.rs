@@ -14,6 +14,7 @@ use omnicrawl_connectors::feishu::render::{
     read_result_line_range, sample_output_lines, MAX_SUBAGENT_LINES, REASONING_PREVIEW_LINES,
     TOOL_BODY_MAX_LINES,
 };
+use omnicrawl_connectors::feishu::ws::pbbp2;
 use omnicrawl_connectors::feishu::{
     check_config, classify_filename, clean_text, display_text, file_marker_paths, format_elapsed,
     inbox_dedupe_key, load_feishu_config, mask_secret, normalize_todos, parse_json_object,
@@ -589,6 +590,68 @@ fn dedupe_matches_python() {
         );
         assert_eq!(json!(key), case["expected"], "去重键 {case}");
     }
+}
+
+#[test]
+fn ws_frames_match_python_protobuf() {
+    for case in fixture()["ws_frames"].as_array().expect("ws_frames") {
+        let encoded = hex_to_bytes(case["encoded_hex"].as_str().expect("encoded_hex"));
+        let frame = pbbp2::decode(&encoded).expect("可解码");
+        assert_eq!(json!(frame.seq_id), case["seq_id"], "seq {case}");
+        assert_eq!(json!(frame.log_id), case["log_id"], "log_id {case}");
+        assert_eq!(json!(frame.service), case["service"], "service {case}");
+        assert_eq!(json!(frame.method), case["method"], "method {case}");
+        assert_eq!(
+            json!(frame.payload_encoding),
+            case["payload_encoding"],
+            "payload_encoding {case}"
+        );
+        assert_eq!(
+            json!(frame.payload_type),
+            case["payload_type"],
+            "payload_type {case}"
+        );
+        assert_eq!(
+            json!(frame.log_id_new),
+            case["log_id_new"],
+            "log_id_new {case}"
+        );
+        assert_eq!(
+            json!(hex_of(&frame.payload)),
+            case["payload_hex"],
+            "payload {case}"
+        );
+        let headers: Vec<Value> = case["headers"].as_array().expect("headers").to_vec();
+        assert_eq!(
+            json!(frame
+                .headers
+                .iter()
+                .map(|header| json!({"key": header.key, "value": header.value}))
+                .collect::<Vec<Value>>()),
+            json!(headers),
+            "帧头 {case}"
+        );
+        // 重编码与 Python 的**规范形态**逐字节一致：required 字段一律写出、可选项
+        // 只在非默认值时写出（proto2 的存在性信息在解码后已经丢失）。
+        assert_eq!(
+            hex_of(&pbbp2::encode(&frame)),
+            case["canonical_hex"],
+            "重编码 {case}"
+        );
+    }
+}
+
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    hex.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).expect("十六进制"), 16).expect("字节")
+        })
+        .collect()
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[test]

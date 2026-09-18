@@ -545,6 +545,101 @@ def dedupe_cases() -> dict:
     return {"claim": claimed, "keys": keys}
 
 
+def ws_frame_cases() -> list[dict]:
+    """用 lark-oapi 的 pbbp2 生成器编帧，供 Rust 侧解码/重编码双向比对。"""
+
+    from lark_oapi.ws.pb.pbbp2_pb2 import Frame
+
+    samples = [
+        {
+            "seq_id": 7,
+            "log_id": 0,
+            "service": 3,
+            "method": 1,
+            "headers": [("type", "event"), ("message_id", "m-1"), ("sum", "1"), ("seq", "0"), ("trace_id", "t1")],
+            "payload_encoding": "",
+            "payload_type": "",
+            "payload": "{\"schema\": \"2.0\"}".encode("utf-8"),
+            "log_id_new": "",
+        },
+        {
+            "seq_id": 0,
+            "log_id": 42,
+            "service": 12,
+            "method": 0,
+            "headers": [("type", "ping")],
+            "payload_encoding": "",
+            "payload_type": "",
+            "payload": b"",
+            "log_id_new": "log-new",
+        },
+        {
+            "seq_id": 123456789,
+            "log_id": 0,
+            "service": 1,
+            "method": 1,
+            "headers": [("type", "card"), ("message_id", "m-2"), ("sum", "3"), ("seq", "2")],
+            "payload_encoding": "json",
+            "payload_type": "card",
+            "payload": b"\x00\x01\xff",
+            "log_id_new": "",
+        },
+    ]
+    recorded = []
+    for sample in samples:
+        frame = Frame()
+        frame.SeqID = sample["seq_id"]
+        frame.LogID = sample["log_id"]
+        frame.service = sample["service"]
+        frame.method = sample["method"]
+        for key, value in sample["headers"]:
+            header = frame.headers.add()
+            header.key = key
+            header.value = value
+        frame.payload_encoding = sample["payload_encoding"]
+        frame.payload_type = sample["payload_type"]
+        frame.payload = sample["payload"]
+        frame.LogIDNew = sample["log_id_new"]
+
+        # 规范形态：proto2 的 required 字段一律写出，可选项只在非默认值时写出。
+        # Python 的生成器保留字段存在性（显式赋空串也会写出来），解码后无法区分
+        # 「未设置」与「设成默认值」，Rust 侧的重编码以这条规则为准。
+        canonical = Frame()
+        canonical.SeqID = sample["seq_id"]
+        canonical.LogID = sample["log_id"]
+        canonical.service = sample["service"]
+        canonical.method = sample["method"]
+        for key, value in sample["headers"]:
+            header = canonical.headers.add()
+            header.key = key
+            header.value = value
+        if sample["payload_encoding"]:
+            canonical.payload_encoding = sample["payload_encoding"]
+        if sample["payload_type"]:
+            canonical.payload_type = sample["payload_type"]
+        if sample["payload"]:
+            canonical.payload = sample["payload"]
+        if sample["log_id_new"]:
+            canonical.LogIDNew = sample["log_id_new"]
+
+        recorded.append(
+            {
+                "seq_id": sample["seq_id"],
+                "log_id": sample["log_id"],
+                "service": sample["service"],
+                "method": sample["method"],
+                "headers": [{"key": key, "value": value} for key, value in sample["headers"]],
+                "payload_encoding": sample["payload_encoding"],
+                "payload_type": sample["payload_type"],
+                "payload_hex": sample["payload"].hex(),
+                "log_id_new": sample["log_id_new"],
+                "encoded_hex": frame.SerializeToString().hex(),
+                "canonical_hex": canonical.SerializeToString().hex(),
+            }
+        )
+    return recorded
+
+
 def main() -> int:
     fixture = {
         "constants": constants_case(),
@@ -557,6 +652,7 @@ def main() -> int:
         "config": config_cases(),
         "mask": mask_cases(),
         "dedupe": dedupe_cases(),
+        "ws_frames": ws_frame_cases(),
     }
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE_PATH.write_text(json.dumps(fixture, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -2,6 +2,9 @@
 //!
 //! 两个连接器都只做「发一次、拿回状态码与响应体」：错误分类、重试与脱敏由各自的
 //! API 层决定。测试用记录型实现替换 [`HttpTransport`]，不必起网络。
+//!
+//! 用单一 [`HttpTransport::request`] 承载任意方法：飞书接口要带 `Authorization` 头，
+//! Get 与 Patch 都要用；表单与 JSON 只是它的语法糖。
 
 use std::io::Read;
 use std::time::Duration;
@@ -20,34 +23,63 @@ impl HttpReply {
 
 /// HTTP 传输抽象：失败只回报文本，分类留给上层。
 pub trait HttpTransport: Send + Sync {
+    fn request(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(String, String)],
+        body: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<HttpReply, String>;
+
     fn post_form(
         &self,
         url: &str,
         query: &[(String, String)],
         form: &[(String, String)],
         timeout: Duration,
-    ) -> Result<HttpReply, String>;
+    ) -> Result<HttpReply, String> {
+        let target = with_query(url, query);
+        let headers = [(
+            "Content-Type".to_string(),
+            "application/x-www-form-urlencoded".to_string(),
+        )];
+        self.request(
+            "POST",
+            &target,
+            &headers,
+            Some(encode_form(form).as_bytes()),
+            timeout,
+        )
+    }
 
-    /// `application/json` 的 POST（飞书长连接端点与开放接口都用它）。
-    fn post_json(&self, url: &str, json_body: &str, timeout: Duration)
-        -> Result<HttpReply, String>;
+    fn post_json(
+        &self,
+        url: &str,
+        json_body: &str,
+        timeout: Duration,
+    ) -> Result<HttpReply, String> {
+        let headers = [(
+            "Content-Type".to_string(),
+            "application/json; charset=utf-8".to_string(),
+        )];
+        self.request("POST", url, &headers, Some(json_body.as_bytes()), timeout)
+    }
 
-    fn get(&self, url: &str, timeout: Duration) -> Result<HttpReply, String>;
+    fn get(&self, url: &str, timeout: Duration) -> Result<HttpReply, String> {
+        self.request("GET", url, &[], None, timeout)
+    }
 }
 
 /// 真实传输：ureq + rustls；状态码不转错误（分类要看响应体）。
-pub struct UreqTransport {
-    agent: ureq::Agent,
-}
+///
+/// 每个请求按自己的超时建一个 agent：连接器同时存在长轮询（秒级等待）与文件传输
+/// （百秒级读取）两种量级，共用一份默认超时会互相牵制。
+pub struct UreqTransport;
 
 impl UreqTransport {
     pub fn new() -> UreqTransport {
-        UreqTransport {
-            agent: ureq::Agent::config_builder()
-                .http_status_as_error(false)
-                .build()
-                .into(),
-        }
+        UreqTransport
     }
 }
 
@@ -58,71 +90,37 @@ impl Default for UreqTransport {
 }
 
 impl HttpTransport for UreqTransport {
-    fn post_form(
+    fn request(
         &self,
+        method: &str,
         url: &str,
-        query: &[(String, String)],
-        form: &[(String, String)],
+        headers: &[(String, String)],
+        body: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<HttpReply, String> {
-        let target = with_query(url, query);
-        let response = self
-            .agent
-            .post(&target)
-            .config()
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
             .timeout_connect(Some(timeout))
             .timeout_recv_response(Some(timeout))
             .timeout_recv_body(Some(timeout))
             .build()
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .send(encode_form(form));
-        finish(response)
-    }
-
-    fn post_json(
-        &self,
-        url: &str,
-        json_body: &str,
-        timeout: Duration,
-    ) -> Result<HttpReply, String> {
-        let response = self
-            .agent
-            .post(url)
-            .config()
-            .timeout_connect(Some(timeout))
-            .timeout_recv_response(Some(timeout))
-            .timeout_recv_body(Some(timeout))
-            .build()
-            .header("Content-Type", "application/json; charset=utf-8")
-            .send(json_body);
-        finish(response)
-    }
-
-    fn get(&self, url: &str, timeout: Duration) -> Result<HttpReply, String> {
-        let response = self
-            .agent
-            .get(url)
-            .config()
-            .timeout_connect(Some(timeout))
-            .timeout_recv_response(Some(timeout))
-            .timeout_recv_body(Some(timeout))
-            .build()
-            .call();
-        finish(response)
-    }
-}
-
-fn finish(
-    response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-) -> Result<HttpReply, String> {
-    match response {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            let mut body = Vec::new();
-            let _ = response.into_body().into_reader().read_to_end(&mut body);
-            Ok(HttpReply { status, body })
+            .into();
+        let mut builder = ureq::http::Request::builder().method(method).uri(url);
+        for (key, value) in headers {
+            builder = builder.header(key.as_str(), value.as_str());
         }
-        Err(error) => Err(error.to_string()),
+        let request = builder
+            .body(body.unwrap_or(&[]).to_vec())
+            .map_err(|error| error.to_string())?;
+        match agent.run(request) {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let mut raw = Vec::new();
+                let _ = response.into_body().into_reader().read_to_end(&mut raw);
+                Ok(HttpReply { status, body: raw })
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 

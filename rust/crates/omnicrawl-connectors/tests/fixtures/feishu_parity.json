@@ -2026,5 +2026,89 @@
         "expected": "text:unknown"
       }
     ]
-  }
+  },
+  "ws_frames": [
+    {
+      "seq_id": 7,
+      "log_id": 0,
+      "service": 3,
+      "method": 1,
+      "headers": [
+        {
+          "key": "type",
+          "value": "event"
+        },
+        {
+          "key": "message_id",
+          "value": "m-1"
+        },
+        {
+          "key": "sum",
+          "value": "1"
+        },
+        {
+          "key": "seq",
+          "value": "0"
+        },
+        {
+          "key": "trace_id",
+          "value": "t1"
+        }
+      ],
+      "payload_encoding": "",
+      "payload_type": "",
+      "payload_hex": "7b22736368656d61223a2022322e30227d",
+      "log_id_new": "",
+      "encoded_hex": "08071000180320012a0d0a047479706512056576656e742a110a0a6d6573736167655f696412036d2d312a080a0373756d1201312a080a037365711201302a0e0a0874726163655f69641202743132003a0042117b22736368656d61223a2022322e30227d4a00",
+      "canonical_hex": "08071000180320012a0d0a047479706512056576656e742a110a0a6d6573736167655f696412036d2d312a080a0373756d1201312a080a037365711201302a0e0a0874726163655f69641202743142117b22736368656d61223a2022322e30227d"
+    },
+    {
+      "seq_id": 0,
+      "log_id": 42,
+      "service": 12,
+      "method": 0,
+      "headers": [
+        {
+          "key": "type",
+          "value": "ping"
+        }
+      ],
+      "payload_encoding": "",
+      "payload_type": "",
+      "payload_hex": "",
+      "log_id_new": "log-new",
+      "encoded_hex": "0800102a180c20002a0c0a0474797065120470696e6732003a0042004a076c6f672d6e6577",
+      "canonical_hex": "0800102a180c20002a0c0a0474797065120470696e674a076c6f672d6e6577"
+    },
+    {
+      "seq_id": 123456789,
+      "log_id": 0,
+      "service": 1,
+      "method": 1,
+      "headers": [
+        {
+          "key": "type",
+          "value": "card"
+        },
+        {
+          "key": "message_id",
+          "value": "m-2"
+        },
+        {
+          "key": "sum",
+          "value": "3"
+        },
+        {
+          "key": "seq",
+          "value": "2"
+        }
+      ],
+      "payload_encoding": "json",
+      "payload_type": "card",
+      "payload_hex": "0001ff",
+      "log_id_new": "",
+      "encoded_hex": "08959aef3a1000180120012a0c0a04747970651204636172642a110a0a6d6573736167655f696412036d2d322a080a0373756d1201332a080a0373657112013232046a736f6e3a046361726442030001ff4a00",
+      "canonical_hex": "08959aef3a1000180120012a0c0a04747970651204636172642a110a0a6d6573736167655f696412036d2d322a080a0373756d1201332a080a0373657112013232046a736f6e3a046361726442030001ff"
+    }
+  ]
 }
