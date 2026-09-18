@@ -21,10 +21,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `agent/context_compaction/*.py` | `src/context_compaction/` | 上下文 Token 估算、回合预算测量、压缩批次与超限恢复批次、自动压缩决策、结构化摘要校验、投影、测量账本、摘要授权的事件证据恢复、结构化摘要生成与压缩编排 |
 | `controllers/advisor.py` | `src/advisor.rs` | 顾问可用性判定、消息分支（剥孤儿调用 + user 尾）、工具清单、结果信封与错误文案 |
 | `controllers/plugins.py` | `src/plugins.rs` | Hook fail-closed 判定、拒绝事实与文案、分发结局归一化、会话生命周期 Hook 名 |
-<<<<<<< ours
-=======
 | `controllers/turn/loop.py`（接线面） | `src/turn/turn_loop.rs` | 13 回调面与缺省回落（重试提示回落状态回调）、`request_reply` / `execute_tool_batch` 两个循环端口与守门回调、进入循环前的取消检查、最终回复的收尾补发、用量累计与失败分类 |
->>>>>>> theirs
 | `controllers/subagents/worktrees.py`、`orchestration.py`（判定面） | `src/subagents/` | worktree 登记键与查找归一化、会话去重投影、产物摘要渲染、丢弃保护判定、失败描述、Fork 上下文冻结、公开结果投影、后台通知注入、结果校验与定义缺失文案 |
 | `agent/toolkit/tools.py`（目录与注册） | `src/tool_catalog.rs` + `data/agent_tools.json` | 目录数据由 `rust/tools/gen_agent_tools_data.py` 导出；注册规则（可选 runner 省略、知识库/Windows 整组、记忆开关、SubAgent 角色枚举、禁用过滤）在 Rust 重放 |
 | `agent/toolkit/tools.py`、`host_tools.py` | `src/tool_args.rs` | 工具名/参数名归一化、参数投影（Session/确认页/SSE）、紧凑 Schema、Schema 校验与结果信封 |
@@ -49,19 +46,12 @@ git 快照能力由宿主实现，crate 内不起子进程。
 - `tools/implementations.py`：工具实现本体（属 `agent/toolkit/`）。
 - `toolkit/tools.py` 的**执行函数绑定**：目录与注册规则已搬（`src/tool_catalog.rs` + 导出的
   `data/agent_tools.json`），但各工具的实现本体（`agent/toolkit/*`、`workspace/`、`mcp/`…）仍在 Python。
-<<<<<<< ours
-- `turn/{loop,compaction}.py`：回合循环与压缩编排；其判定依赖的 `context_compaction`
-  **预算/批次/决策 + 摘要校验 + 投影**已搬（`src/context_compaction/`），仍未搬的是同目录的
-  `service.py`（摘要模型调用编排）、`summary.py`（结构化摘要生成）、`evidence.py`（证据检索），
-  以及 `omnicrawl-core` runner 与 `omnicrawl-ipc` 回调面的接线。
-=======
 - `turn/loop.py` 的编排壳：插件钩子、会话事件与历史落盘、回合快照、压缩触发、
   run_guard 续跑与上下文超限恢复；接线面（13 回调面、两个循环端口与守卫、收尾补发、
   失败分类）已搬（`src/turn/turn_loop.rs`）。
 - `turn/compaction.py` 的**会话与模型编排**已搬到 `omnicrawl-compaction`（`driver.rs` 落事件、
   归档、写记忆、自动召回、重建历史；`adapter.rs` 走内核运行时发摘要请求），判定面留在
   `src/turn/compaction.rs`；仍未接线的是内核进程侧（会话归属与回合结束后触发）。
->>>>>>> theirs
 - `subagents/{orchestration,worktrees}.py` 的进程面：Coordinator/TaskManager 生命周期、
   模型运行时引导（`_create_subagent_runtime_manager` / `_run_subagent_task_loop` /
   `_prepare_subagent_execution`）、worktree 的 git 创建/应用/清理、`_refresh_subagent_definitions`
@@ -85,11 +75,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-<<<<<<< ours
-`tests/fixtures/controllers_parity.json` 覆盖 811 个用例：整数配置读取与区间校验、未知工具
-=======
 `tests/fixtures/controllers_parity.json` 覆盖 825 个用例：整数配置读取与区间校验、未知工具
->>>>>>> theirs
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -98,17 +84,11 @@ cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐�
 （`HOOK_POLICIES` 全表 fail-closed、拒绝事实与文案、分发结局），以及工具参数层 73 例
 （标识符/工具名/参数名归一化、参数投影、Schema 压缩与校验、结果信封、MCP 结果文本、读取助手），
 工具目录 14 例（11 组 runner/开关组合的注册结果 + MCP 三类名称与说明模板），上下文压缩 79 例（Token 估算、用量累计、预算快照与校验、触发决策、批次选择、事件投影），
-<<<<<<< ours
-含结构化摘要校验 26 例与摘要/原文投影 11 例，以及子代理域 59 例（登记键与查找归一化、会话去重投影、
-worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描述、Fork 上下文冻结与任务指令、
-公开结果本地投影、后台通知注入、结果校验与定义缺失文案）。
-=======
 编排层另有 13 例（`tests/compaction_orchestration_parity.rs`：测量账本、证据恢复、摘要解析/分块/生成、压缩编排、回合判定面），
 含结构化摘要校验 26 例与摘要/原文投影 11 例，以及子代理域 59 例（登记键与查找归一化、会话去重投影、
 worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描述、Fork 上下文冻结与任务指令、
 公开结果本地投影、后台通知注入、结果校验与定义缺失文案），以及回合接线 14 例（回调轨迹、
 两个端口的形参与批次步号、循环收到的消息、最终回复补发、用量累计、失败分类与取消检查点）。
->>>>>>> theirs
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内

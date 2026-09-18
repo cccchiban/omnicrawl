@@ -5015,8 +5015,6 @@ def subagents_cases() -> dict:
     }
 
 
-<<<<<<< ours
-=======
 # ---------------------------------------------------------------------------
 # turn/loop.py 的接线面：回调轨迹、端口入参、收尾与失败分类
 # ---------------------------------------------------------------------------
@@ -6579,7 +6577,6 @@ def compaction_orchestration_cases() -> dict:
         "turn": _turn_compaction_cases(),
     }
 
->>>>>>> theirs
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -6600,13 +6597,9 @@ def main() -> None:
             "tool_args": tool_args_cases(),
             "tool_catalog": tool_catalog_cases(),
             "context_compaction": context_compaction_cases(),
-<<<<<<< ours
-            "subagents": subagents_cases(),
-=======
             "compaction_orchestration": compaction_orchestration_cases(),
             "subagents": subagents_cases(),
         "turn_loop": turn_loop_cases(),
->>>>>>> theirs
         }
 
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
