@@ -1,0 +1,1135 @@
+{
+  "source": [
+    "omnicrawl/llm/desensitization/rules.py"
+  ],
+  "rule_ids": [
+    "url",
+    "email",
+    "license-plate-cn",
+    "bank-card",
+    "mac-address"
+  ],
+  "categories": [
+    [
+      "pem_private_key",
+      "detect_pem_private_key"
+    ],
+    [
+      "db_connection_string",
+      "detect_db_connection_string"
+    ],
+    [
+      "email",
+      "detect_email"
+    ],
+    [
+      "bank_card",
+      "detect_bank_card"
+    ],
+    [
+      "internal_ip",
+      "detect_internal_ip"
+    ],
+    [
+      "external_ip",
+      "detect_external_ip"
+    ],
+    [
+      "url",
+      "detect_url"
+    ],
+    [
+      "mac_address",
+      "detect_mac_address"
+    ],
+    [
+      "license_plate",
+      "detect_license_plate"
+    ]
+  ],
+  "builtin_rule_ids": [
+    "pem-private-key",
+    "pem-private-key-body",
+    "db-connection-uri",
+    "db-connection-kv",
+    "url",
+    "email",
+    "license-plate-cn",
+    "bank-card",
+    "mac-address",
+    "ip-internal",
+    "ip-external"
+  ],
+  "trailing_trim_chars": " \t\r\n　\"'`.,;:!?)]}>,、。；：！？",
+  "entropy": [
+    {
+      "text": "",
+      "bits": 0.0
+    },
+    {
+      "text": "a",
+      "bits": 0.0
+    },
+    {
+      "text": "aa",
+      "bits": -0.0
+    },
+    {
+      "text": "ab",
+      "bits": 1.0
+    },
+    {
+      "text": "aaa",
+      "bits": -0.0
+    },
+    {
+      "text": "abcd",
+      "bits": 2.0
+    },
+    {
+      "text": "aA1!",
+      "bits": 2.0
+    },
+    {
+      "text": "aaaaaaaaaaaaaaaa",
+      "bits": -0.0
+    },
+    {
+      "text": "aB3$xY9-",
+      "bits": 3.0
+    },
+    {
+      "text": "中文中文中文",
+      "bits": 1.0
+    }
+  ],
+  "luhn": [
+    {
+      "value": "123456789015",
+      "valid": true
+    },
+    {
+      "value": "378282246310005",
+      "valid": true
+    },
+    {
+      "value": "4111111111111111",
+      "valid": true
+    },
+    {
+      "value": "6011111111111111110",
+      "valid": true
+    },
+    {
+      "value": "4111111111111112",
+      "valid": false
+    },
+    {
+      "value": "4111 1111 1111 1111",
+      "valid": true
+    },
+    {
+      "value": "4111-1111-1111-1111",
+      "valid": true
+    },
+    {
+      "value": "4444444444444444",
+      "valid": false
+    },
+    {
+      "value": "1111111111111111",
+      "valid": false
+    },
+    {
+      "value": "1234567890123456",
+      "valid": false
+    },
+    {
+      "value": "123456789012",
+      "valid": false
+    },
+    {
+      "value": "",
+      "valid": false
+    },
+    {
+      "value": "not-a-number",
+      "valid": false
+    }
+  ],
+  "email_allowlist": [
+    {
+      "value": "demo@example.com",
+      "allowlisted": true
+    },
+    {
+      "value": "ops@example.org",
+      "allowlisted": true
+    },
+    {
+      "value": "dev@example.net",
+      "allowlisted": true
+    },
+    {
+      "value": "ops@localhost",
+      "allowlisted": true
+    },
+    {
+      "value": "x@example.com.cn",
+      "allowlisted": true
+    },
+    {
+      "value": "x@exampl.com",
+      "allowlisted": false
+    },
+    {
+      "value": "admin@localhost.localdomain",
+      "allowlisted": true
+    },
+    {
+      "value": "x@sub.example.com",
+      "allowlisted": false
+    },
+    {
+      "value": "demo@corp.local",
+      "allowlisted": false
+    },
+    {
+      "value": "first@second@example.com",
+      "allowlisted": true
+    },
+    {
+      "value": "-user@example.com",
+      "allowlisted": true
+    },
+    {
+      "value": "",
+      "allowlisted": false
+    }
+  ],
+  "texts": [
+    {
+      "text": "联系 alice@corp.local 结束",
+      "expected": [
+        "email"
+      ],
+      "rule_matches": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 3,
+          "end": 19,
+          "value": "alice@corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 3,
+          "end": 19,
+          "value": "alice@corp.local"
+        }
+      ]
+    },
+    {
+      "text": "用户 <bob@team.corp.local>, 抄送 carol@dept.corp.local。",
+      "expected": [
+        "email",
+        "email"
+      ],
+      "rule_matches": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 4,
+          "end": 23,
+          "value": "bob@team.corp.local"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 29,
+          "end": 50,
+          "value": "carol@dept.corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 4,
+          "end": 23,
+          "value": "bob@team.corp.local"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 29,
+          "end": 50,
+          "value": "carol@dept.corp.local"
+        }
+      ]
+    },
+    {
+      "text": "模式 demo@example.com 与 ops@localhost 判为误报",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "超长本地部分 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@corp.local 与 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@corp.local",
+      "expected": [
+        "email"
+      ],
+      "rule_matches": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 7,
+          "end": 82,
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 7,
+          "end": 82,
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@corp.local"
+        }
+      ]
+    },
+    {
+      "text": "短 TLD user@b.c.d 与 user@corp.c 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "非法标签 user@-corp.local 与 user@corp-.local 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "尾点 user@mail.corp. 与退让 user@mail.corp.c 结束",
+      "expected": [
+        "email",
+        "email"
+      ],
+      "rule_matches": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 3,
+          "end": 17,
+          "value": "user@mail.corp"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 23,
+          "end": 37,
+          "value": "user@mail.corp"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 3,
+          "end": 17,
+          "value": "user@mail.corp"
+        },
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 23,
+          "end": 37,
+          "value": "user@mail.corp"
+        }
+      ]
+    },
+    {
+      "text": "点段 user@sub.corp.local 与清单 demo@example.org 结束",
+      "expected": [
+        "email"
+      ],
+      "rule_matches": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 3,
+          "end": 22,
+          "value": "user@sub.corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 3,
+          "end": 22,
+          "value": "user@sub.corp.local"
+        }
+      ]
+    },
+    {
+      "text": "邮箱前后是中文字符邮箱dave@corp.local好",
+      "expected": [
+        "email"
+      ],
+      "rule_matches": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 11,
+          "end": 26,
+          "value": "dave@corp.local"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 11,
+          "end": 26,
+          "value": "dave@corp.local"
+        }
+      ]
+    },
+    {
+      "text": "访问 https://example.com/path?q=1#frag。",
+      "expected": [
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 3,
+          "end": 36,
+          "value": "https://example.com/path?q=1#frag"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 3,
+          "end": 36,
+          "value": "https://example.com/path?q=1#frag"
+        }
+      ]
+    },
+    {
+      "text": "用 http://10.0.0.5:8080/a_b-c 和 ftp://files.corp.local/dir/ 结束",
+      "expected": [
+        "url",
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 2,
+          "end": 28,
+          "value": "http://10.0.0.5:8080/a_b-c"
+        },
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 31,
+          "end": 58,
+          "value": "ftp://files.corp.local/dir/"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 2,
+          "end": 28,
+          "value": "http://10.0.0.5:8080/a_b-c"
+        },
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 31,
+          "end": 58,
+          "value": "ftp://files.corp.local/dir/"
+        }
+      ]
+    },
+    {
+      "text": "带引号 \"https://a.corp.local/x\" 与尖括号 <https://b.corp.local/y>",
+      "expected": [
+        "url",
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 5,
+          "end": 27,
+          "value": "https://a.corp.local/x"
+        },
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 35,
+          "end": 57,
+          "value": "https://b.corp.local/y"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 5,
+          "end": 27,
+          "value": "https://a.corp.local/x"
+        },
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 35,
+          "end": 57,
+          "value": "https://b.corp.local/y"
+        }
+      ]
+    },
+    {
+      "text": "反斜杠 https://c.corp.local/a\\b 结束",
+      "expected": [
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 4,
+          "end": 26,
+          "value": "https://c.corp.local/a"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 4,
+          "end": 26,
+          "value": "https://c.corp.local/a"
+        }
+      ]
+    },
+    {
+      "text": "伪前缀 httpx://not-a-url 与 xhttps://nope.corp.local 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "中文路径 https://例子.corp.local/路径 结束",
+      "expected": [
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 5,
+          "end": 29,
+          "value": "https://例子.corp.local/路径"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 5,
+          "end": 29,
+          "value": "https://例子.corp.local/路径"
+        }
+      ]
+    },
+    {
+      "text": "大小写 HTTPS://ExAmPlE.com/A 结束",
+      "expected": [
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 4,
+          "end": 25,
+          "value": "HTTPS://ExAmPlE.com/A"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 4,
+          "end": 25,
+          "value": "HTTPS://ExAmPlE.com/A"
+        }
+      ]
+    },
+    {
+      "text": "卡号 4111111111111111 结束",
+      "expected": [
+        "bank-card"
+      ],
+      "rule_matches": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 19,
+          "value": "4111111111111111"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 19,
+          "value": "4111111111111111"
+        }
+      ]
+    },
+    {
+      "text": "卡号 4111 1111 1111 1111 结束",
+      "expected": [
+        "bank-card"
+      ],
+      "rule_matches": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 22,
+          "value": "4111 1111 1111 1111"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 22,
+          "value": "4111 1111 1111 1111"
+        }
+      ]
+    },
+    {
+      "text": "卡号 4111-1111-1111-1111 结束",
+      "expected": [
+        "bank-card"
+      ],
+      "rule_matches": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 22,
+          "value": "4111-1111-1111-1111"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 22,
+          "value": "4111-1111-1111-1111"
+        }
+      ]
+    },
+    {
+      "text": "短卡 123456789015 与长卡 6011111111111111110 结束",
+      "expected": [
+        "bank-card",
+        "bank-card"
+      ],
+      "rule_matches": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 15,
+          "value": "123456789015"
+        },
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 20,
+          "end": 39,
+          "value": "6011111111111111110"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 3,
+          "end": 15,
+          "value": "123456789015"
+        },
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 20,
+          "end": 39,
+          "value": "6011111111111111110"
+        }
+      ]
+    },
+    {
+      "text": "十五位 378282246310005 结束",
+      "expected": [
+        "bank-card"
+      ],
+      "rule_matches": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 4,
+          "end": 19,
+          "value": "378282246310005"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 4,
+          "end": 19,
+          "value": "378282246310005"
+        }
+      ]
+    },
+    {
+      "text": "校验失败 4111111111111112 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "全同数字 4444444444444444 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "位数不足 12345678901 与位数过多 41111111111111111111 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "紧贴字母 a4111111111111111b 与紧贴小数 4111111111111111.5 结束",
+      "expected": [
+        "bank-card"
+      ],
+      "rule_matches": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 6,
+          "end": 22,
+          "value": "4111111111111111"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 6,
+          "end": 22,
+          "value": "4111111111111111"
+        }
+      ]
+    },
+    {
+      "text": "网卡 00:1A:2B:3C:4D:5E 结束",
+      "expected": [
+        "mac-address"
+      ],
+      "rule_matches": [
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 3,
+          "end": 20,
+          "value": "00:1A:2B:3C:4D:5E"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 3,
+          "end": 20,
+          "value": "00:1A:2B:3C:4D:5E"
+        }
+      ]
+    },
+    {
+      "text": "网卡 AA-BB-CC-DD-EE-FF 与混合 00:1a-2b:3c-4d:5e 结束",
+      "expected": [
+        "mac-address",
+        "mac-address"
+      ],
+      "rule_matches": [
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 3,
+          "end": 20,
+          "value": "AA-BB-CC-DD-EE-FF"
+        },
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 25,
+          "end": 42,
+          "value": "00:1a-2b:3c-4d:5e"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 3,
+          "end": 20,
+          "value": "AA-BB-CC-DD-EE-FF"
+        },
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 25,
+          "end": 42,
+          "value": "00:1a-2b:3c-4d:5e"
+        }
+      ]
+    },
+    {
+      "text": "思科 0011.2233.4455 结束",
+      "expected": [
+        "mac-address"
+      ],
+      "rule_matches": [
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 3,
+          "end": 17,
+          "value": "0011.2233.4455"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 3,
+          "end": 17,
+          "value": "0011.2233.4455"
+        }
+      ]
+    },
+    {
+      "text": "残缺 00:1A:2B:3C:4D:5 与超长 00:1A:2B:3C:4D:5E:6F 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "点分残缺 0011.2233.445 与 0011.2233.44556 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "车牌 沪A12345 结束",
+      "expected": [
+        "license-plate-cn"
+      ],
+      "rule_matches": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 3,
+          "end": 10,
+          "value": "沪A12345"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 3,
+          "end": 10,
+          "value": "沪A12345"
+        }
+      ]
+    },
+    {
+      "text": "车辆 京B12345 与 粤BD12345 上路",
+      "expected": [
+        "license-plate-cn",
+        "license-plate-cn"
+      ],
+      "rule_matches": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 3,
+          "end": 10,
+          "value": "京B12345"
+        },
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 13,
+          "end": 21,
+          "value": "粤BD12345"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 3,
+          "end": 10,
+          "value": "京B12345"
+        },
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 13,
+          "end": 21,
+          "value": "粤BD12345"
+        }
+      ]
+    },
+    {
+      "text": "车辆 沪A1234学 上路",
+      "expected": [
+        "license-plate-cn"
+      ],
+      "rule_matches": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 3,
+          "end": 10,
+          "value": "沪A1234学"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 3,
+          "end": 10,
+          "value": "沪A1234学"
+        }
+      ]
+    },
+    {
+      "text": "紧贴字母 AB沪A12345 与紧贴中文 车沪A12345牌 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "非法字母 沪I12345 与位数不足 沪A1234 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "新能源 沪BD12345 上路",
+      "expected": [
+        "license-plate-cn"
+      ],
+      "rule_matches": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 4,
+          "end": 12,
+          "value": "沪BD12345"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "license-plate-cn",
+          "category": "license_plate",
+          "start": 4,
+          "end": 12,
+          "value": "沪BD12345"
+        }
+      ]
+    },
+    {
+      "text": "超长号牌 沪A12345678 结束",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    },
+    {
+      "text": "https://user@example.net/x 结束",
+      "expected": [
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 0,
+          "end": 26,
+          "value": "https://user@example.net/x"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 0,
+          "end": 26,
+          "value": "https://user@example.net/x"
+        }
+      ]
+    },
+    {
+      "text": "https://host.corp.local/00:1A:2B:3C:4D:5E 结束",
+      "expected": [
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 0,
+          "end": 41,
+          "value": "https://host.corp.local/00:1A:2B:3C:4D:5E"
+        },
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 24,
+          "end": 41,
+          "value": "00:1A:2B:3C:4D:5E"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 0,
+          "end": 41,
+          "value": "https://host.corp.local/00:1A:2B:3C:4D:5E"
+        }
+      ]
+    },
+    {
+      "text": "4111111111111111@bank.corp.local 结束",
+      "expected": [
+        "email"
+      ],
+      "rule_matches": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 0,
+          "end": 32,
+          "value": "4111111111111111@bank.corp.local"
+        },
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 0,
+          "end": 16,
+          "value": "4111111111111111"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "email",
+          "category": "email",
+          "start": 0,
+          "end": 32,
+          "value": "4111111111111111@bank.corp.local"
+        }
+      ]
+    },
+    {
+      "text": "混合段 00:1A:2B:3C:4D:5E 与卡号 4111111111111111 与 https://z.corp.local/ 结束",
+      "expected": [
+        "mac-address",
+        "bank-card",
+        "url"
+      ],
+      "rule_matches": [
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 45,
+          "end": 66,
+          "value": "https://z.corp.local/"
+        },
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 26,
+          "end": 42,
+          "value": "4111111111111111"
+        },
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 4,
+          "end": 21,
+          "value": "00:1A:2B:3C:4D:5E"
+        }
+      ],
+      "scan": [
+        {
+          "rule": "mac-address",
+          "category": "mac_address",
+          "start": 4,
+          "end": 21,
+          "value": "00:1A:2B:3C:4D:5E"
+        },
+        {
+          "rule": "bank-card",
+          "category": "bank_card",
+          "start": 26,
+          "end": 42,
+          "value": "4111111111111111"
+        },
+        {
+          "rule": "url",
+          "category": "url",
+          "start": 45,
+          "end": 66,
+          "value": "https://z.corp.local/"
+        }
+      ]
+    },
+    {
+      "text": "",
+      "expected": [],
+      "rule_matches": [],
+      "scan": []
+    }
+  ]
+}

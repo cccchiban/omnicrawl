@@ -40,6 +40,7 @@ rust/
 │   ├── src/runtime.rs                      # 一次回合：请求 → 流事件 → 工具收尾 → ModelReply
 │   ├── src/desensitization.rs              # 消息脱敏模块根：子系统错误面 + 序号注册表（占位符协议、稳定序号）
 │   ├── src/desensitization/stream.rs       # 消息脱敏：流式还原（尾部挂起缓冲、结构化还原、严格模式）
+│   ├── src/desensitization/rules.rs        # 消息脱敏：值类型规则层（手写匹配器：网址/邮箱/银行卡/MAC/车牌）
 │   ├── tests/*_parity.rs                   # 与 Python 实现的对照测试（流/请求/用量/端到端）
 │   ├── tests/runtime_loopback.rs           # 本机回环服务端上的内核行为测试
 │   ├── tests/common/mod.rs                 # 测试脚手架（fixture 输入、回环服务端、事件接收端）
@@ -191,13 +192,15 @@ cd rust && cargo test -p omnicrawl-ipc        # 校验回调↔方法一一对�
 ```bash
 python rust/tools/gen_desensitization_fixture.py         # 期望值来自 registry.py 真实现
 python rust/tools/gen_desensitization_stream_fixture.py  # 期望值来自 stream.py 真实现
+python rust/tools/gen_desensitization_rules_fixture.py   # 期望值来自 rules.py 真实现
 cd rust && cargo test -p omnicrawl-llm
 ```
 
-脱敏组的期望值是把同一串操作喂给 Python 真实现后记下的（返回值、严格模式错误文案、三路还原计数）；
-两侧都注入自增计数器让占位符序号确定。两份数据集里的占位符都是**拼接构造**的：本仓库自己就是宿主，
+脱敏组的期望值是把同一串操作喂给 Python 真实现后记下的（返回值、严格模式错误文案、三路还原计数、
+逐条规则候选与整段扫描的区间）。两份数据集里的占位符都是**拼接构造**的：本仓库自己就是宿主，
 在启用了消息脱敏的会话里写完整占位符字面量会被还原成会话原文，数据集照旧生成、测试照常通过，
 解析用例却全变成「命中为空」的假绿（`desensitization_parity.json` 的 11 条解析用例曾因此失效）。
+规则语料还自带每条文本的期望命中，生成器当场断言，避免语料被豁免表静默吃掉。
 
 ## 已知与 Python 的差异
 
@@ -251,9 +254,10 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照。未搬：归档、导出、一致性诊断、
 运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
 
-`omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）与流式还原；规则层、引擎、gitleaks、
-NER、middleware、oneshot 尚未搬运。
+`omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层的五类
+（网址 / 邮箱 / 银行卡 / MAC / 车牌，手写匹配器）；规则层余下 PEM、连接串、内外网 IP 与 gitleaks，
+以及引擎、NER、middleware、oneshot。
 
-接下来：消息脱敏的匹配引擎与规则层（值类型规则、gitleaks 规则表、熵兜底、NER 兜底）→ middleware 接线；
+接下来：规则层补 PEM / 连接串 / IP → 引擎（键名 / 结构 / 熵兜底 / 优先级编排）→ middleware 接线；
 会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置
 （Python 侧的 models 配置 / 启动器）接进 `initialize.model`，以及全部宿主迁移后让 `model.reply` 退役。

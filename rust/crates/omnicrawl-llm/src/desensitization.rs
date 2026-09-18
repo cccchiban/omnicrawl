@@ -7,8 +7,9 @@
 //! 逐字一致，从而命中提供方前缀缓存。
 //!
 //! 已落地：`registry`（占位符协议、序号分配、周期与会话映射，Python `registry.py`）、
-//! `stream`（流式还原状态机，Python `stream.py`）。规则层、引擎、gitleaks、NER、
-//! middleware、oneshot 尚未搬运。
+//! `stream`（流式还原状态机，Python `stream.py`）、`rules`（值类型规则层，Python `rules.py`，
+//! 已搬网址 / 邮箱 / 银行卡 / MAC / 车牌与整套规则语义）。引擎、gitleaks、NER、middleware、
+//! oneshot 尚未搬运。
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -17,8 +18,13 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use sha2::{Digest, Sha256};
 
+pub mod rules;
 pub mod stream;
 
+pub use rules::{
+    build_enabled_rules, builtin_rules, scan_pattern_rules, shannon_entropy_bits, PatternRule,
+    RuleMatch, RuleMatcher,
+};
 pub use stream::{StreamRestorer, TRUNCATED_FINISH_REASONS};
 
 pub const PLACEHOLDER_MARKER: &str = "Desensitized";

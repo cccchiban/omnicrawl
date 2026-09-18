@@ -43,6 +43,7 @@ python rust/tools/gen_llm_usage_fixture.py     # 用量归一化
 python rust/tools/gen_llm_runtime_fixture.py   # 端到端回合
 python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位符协议与序号注册表
 python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
+python rust/tools/gen_desensitization_rules_fixture.py   # 消息脱敏：值类型规则层
 cd rust && cargo test -p omnicrawl-llm
 ```
 
@@ -50,6 +51,7 @@ fixture：
 
 - `tests/fixtures/desensitization_parity.json`：占位符用例 11 条、稳定索引 5 步、周期 / 会话缓存 / 注册表生命周期。
 - `tests/fixtures/desensitization_stream_parity.json`：13 个场景、71 步操作（分片还原、通道隔离、结构化还原、告警、严格模式、截断判定）。
+- `tests/fixtures/desensitization_rules_parity.json`：42 条语料（逐条候选 40、扫描命中 38）、熵 10 例、Luhn 13 例、邮箱豁免 10 例。
 - `tests/fixtures/openai_chat_stream_parity.json`：参数完整性 16、分片归并 8、SSE 解码 10、SSE 流 9、首选项 6。
 - `tests/fixtures/openai_chat_request_parity.json`：请求 33、provider_options 8、GPT 判定 13、prompt_cache_key 5、
   参数串 16、浮点写法 6。
@@ -101,11 +103,11 @@ fixture：
 `ureq`（阻塞式 HTTP/1.1 + rustls）是唯一的传输依赖：内核的回合循环本来就是阻塞的，不需要异步运行时。
 交叉编译到 musl 时需要目标平台的 C 工具链（rustls 的 ring 组件）。
 
-## 消息脱敏：序号注册表（`desensitization.rs`）与流式还原（`desensitization/stream.rs`）
+## 消息脱敏：序号注册表（`desensitization.rs`）、流式还原（`desensitization/stream.rs`）、值类型规则层（`desensitization/rules.rs`）
 
 对齐 Python `omnicrawl/llm/desensitization/`。原文只进内存注册表：**不落盘、不进日志、
-不进会话事件**；可观测信息只到「计数 / 规则 ID / 序号」粒度。本文件是模块根（子系统错误面 +
-序号注册表，对应 `registry.py`），`desensitization/stream.rs` 对应 `stream.py`。
+不进会话事件**；可观测信息只到「计数 / 规则 ID / 序号」粒度。`desensitization.rs` 是模块根
+（子系统错误面 + 序号注册表，对应 `registry.py`）。
 
 - **占位符协议**：生成端唯一规范是全角 `｛Desensitized:n｝`（序号无前导零）；还原端宽松兼容半角花括号、
   全角/半角冒号、大小写与序号两侧空白。另有「疑似前缀」识别，用于把半截/畸形占位符保留原文并告警。
@@ -121,9 +123,18 @@ fixture：
   未注册序号保留原样 + 告警（`strict` 时中止），畸形前缀同样保留 + 告警，告警按类别各报一次；
   `restore_arguments` 递归还原参数里的字符串值（键与结构件不动），`reply_usable` 按
   `TRUNCATED_FINISH_REASONS`（截断类 finish_reason 不按成功注销周期）判定回复是否可用。
+- **值类型规则层**（`PatternRule` / `scan_pattern_rules`）：识别「形态确定、随机性低」的敏感值，
+  已搬**网址、邮箱、银行卡（Luhn）、MAC 地址、大陆车牌**五类，以及整套规则语义——关键字预过滤、
+  熵下限（`shannon_entropy_bits`，求和顺序对齐 Python `Counter`，浮点逐位可比）、校验器、值级
+  豁免表、停用词、尾部标点留在原文、重叠区间先命中先占位、结果按起点稳定排序。
+  内核**不引入正则依赖**（项目决定）：每条规则的正则等价物都是手写匹配器，含环视、交替分支各自的
+  尾部环视、以及贪婪量词与回溯（域名「尽量多标签再退让」、本地部分 64 字符上界叠加左侧环视）。
 
-尚未搬运：规则层（PEM/连接串/邮箱/银行卡/IP/URL/MAC/车牌/gitleaks）、引擎、NER、middleware、oneshot。
+尚未搬运：规则层的 PEM 私钥 / 数据库连接串 / 内外网 IP（多行懒匹配与 `ipaddress` 分类表）、
+gitleaks 规则表、`locality` 局部化扫描与扫描结果缓存（纯性能优化，不影响语义）、
+引擎（键名 / 结构 / 熵兜底 / NER 兜底与优先级编排）、NER、middleware、oneshot。
 
-两份数据集的占位符一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：本仓库自己
-就是宿主，在启用了消息脱敏的会话里写完整占位符字面量会被还原成会话注册表里的原文——数据集照旧生成、
-测试照常通过，但解析用例全变成「命中为空」的假绿。
+三份数据集的占位符与号牌一类「占位符形状」的字面量一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：
+本仓库自己就是宿主，在启用了消息脱敏的会话里写这类完整字面量会被还原成会话注册表里的原文——数据集照旧生成、
+测试照常通过，但解析用例全变成「命中为空」的假绿。规则语料还自带每条文本的**期望命中**，
+生成器当场断言：语料被写错、被豁免表静默吃掉或优先级不符时立即失败。
