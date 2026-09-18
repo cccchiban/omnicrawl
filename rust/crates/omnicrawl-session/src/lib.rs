@@ -26,10 +26,11 @@ pub use artifact::{
     SessionArtifactStore, TOOL_RESULT_INLINE_OUTPUT_CHARS, TOOL_RESULT_PREVIEW_CHARS,
 };
 pub use consistency::{
-    build_index_entry_from_events, compare_index_entry, SessionConsistencyIssue,
-    ISSUE_ARCHIVED_MISMATCH, ISSUE_EVENT_COUNT_MISMATCH, ISSUE_LAST_EVENT_MISMATCH,
-    ISSUE_MESSAGE_COUNT_MISMATCH, ISSUE_PATH_MISMATCH, ISSUE_TITLE_MISMATCH,
-    ISSUE_UPDATED_AT_MISMATCH, ISSUE_WORKSPACE_MISMATCH, SEVERITY_ERROR, SEVERITY_WARNING,
+    build_index_entry_from_events, compare_index_entry, discover_artifact_session_ids,
+    discover_transcripts, SessionConsistencyIssue, TranscriptLocation, ISSUE_ARCHIVED_MISMATCH,
+    ISSUE_EVENT_COUNT_MISMATCH, ISSUE_LAST_EVENT_MISMATCH, ISSUE_MESSAGE_COUNT_MISMATCH,
+    ISSUE_PATH_MISMATCH, ISSUE_TITLE_MISMATCH, ISSUE_UPDATED_AT_MISMATCH, ISSUE_WORKSPACE_MISMATCH,
+    SEVERITY_ERROR, SEVERITY_WARNING,
 };
 pub use error::SessionStoreError;
 pub use event::SessionEvent;

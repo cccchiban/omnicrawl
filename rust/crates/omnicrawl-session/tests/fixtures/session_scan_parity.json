@@ -1,0 +1,39 @@
+{
+  "source": "omnicrawl/state/session_consistency.py",
+  "tree": [
+    "sessions/20260918-030529-abcdef.jsonl",
+    "sessions/20260916-030529-abcdef.jsonl",
+    "sessions/20260915-030529-ABCDEF.jsonl",
+    "archive/20260917-010101-012345.jsonl",
+    "sessions/20260918-030529-abcde.jsonl",
+    "sessions/2026-09-18-030529-abcdef.jsonl",
+    "sessions/export-20260918-030529-abcdef.jsonl",
+    "sessions/notes.txt",
+    "archive/nested/20260918-030529-abcdef.jsonl",
+    "artifacts/20260918-030529-abcdef/",
+    "artifacts/20260915-030529-ABCDEF/",
+    "artifacts/20260918-030529-abcde/",
+    "artifacts/not-a-session-id/",
+    "artifacts/20260918-030529-abcdef.txt",
+    "artifacts/nested/deeper/"
+  ],
+  "expected": {
+    "transcripts": [
+      {
+        "session_id": "20260916-030529-abcdef",
+        "relative_path": "sessions/20260916-030529-abcdef.jsonl"
+      },
+      {
+        "session_id": "20260918-030529-abcdef",
+        "relative_path": "sessions/20260918-030529-abcdef.jsonl"
+      },
+      {
+        "session_id": "20260917-010101-012345",
+        "relative_path": "archive/20260917-010101-012345.jsonl"
+      }
+    ],
+    "artifact_session_ids": [
+      "20260918-030529-abcdef"
+    ]
+  }
+}

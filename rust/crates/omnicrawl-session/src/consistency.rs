@@ -283,3 +283,91 @@ fn archived_value(value: Option<DateTime<Utc>>) -> Value {
         None => Value::Null,
     }
 }
+
+// ---------------------------------------------------------------------------
+// 目录扫描：一致性报告的两块地基（磁盘转录发现、artifact 目录发现）。
+// ---------------------------------------------------------------------------
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// 磁盘上发现的一份会话转录。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TranscriptLocation {
+    pub session_id: String,
+    pub relative_path: String,
+    pub absolute_path: PathBuf,
+}
+
+/// 从文件名取出会话 id：`<会话 id>.jsonl`。
+///
+/// Python 侧文件名正则带 `IGNORECASE`，但紧接着用会话 id 规则（区分大小写）规范化，
+/// 所以大写十六进制的文件名最终会被丢弃；这里保持同样的两步语义。
+fn transcript_id_from_file_name(file_name: &str) -> Option<String> {
+    let stem_len = file_name.len().checked_sub(".jsonl".len())?;
+    if !file_name.is_char_boundary(stem_len) {
+        return None;
+    }
+    if !file_name[stem_len..].eq_ignore_ascii_case(".jsonl") {
+        return None;
+    }
+    normalize_session_id(&file_name[..stem_len]).ok()
+}
+
+/// 扫描 `sessions/` 与 `archive/` 下的 JSONL 转录。
+///
+/// 只认符合会话 id 命名规则的文件名，忽略导出、临时文件与其他非会话数据；目录按
+/// `sessions`、`archive` 顺序，目录内按文件名升序，保证结果可复现。
+pub fn discover_transcripts(root: &Path) -> Vec<TranscriptLocation> {
+    let mut found = Vec::new();
+    for relative_dir in ["sessions", "archive"] {
+        let directory = root.join(relative_dir);
+        if !directory.is_dir() {
+            continue;
+        }
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.path().is_file())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        names.sort();
+
+        for name in names {
+            let Some(session_id) = transcript_id_from_file_name(&name) else {
+                continue;
+            };
+            let absolute = directory.join(&name);
+            found.push(TranscriptLocation {
+                session_id,
+                relative_path: format!("{relative_dir}/{name}"),
+                // Python 用 Path.resolve()；这里用 canonicalize，Windows 上会带 \\?\ 前缀。
+                // 对外契约是「会话 id + 相对路径」，绝对路径不进对照数据集。
+                absolute_path: fs::canonicalize(&absolute).unwrap_or(absolute),
+            });
+        }
+    }
+    found
+}
+
+/// 列出 artifact 目录下看起来像 session_id 的一级子目录（按名字升序）。
+pub fn discover_artifact_session_ids(artifacts_dir: &Path) -> Vec<String> {
+    if !artifacts_dir.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(artifacts_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .filter_map(|name| normalize_session_id(name).ok())
+        .collect()
+}
