@@ -214,6 +214,17 @@ cd rust && cargo test -p omnicrawl-llm --test llm_errors_parity
 （`str(exc).strip()`、类型名、`exc.body`、`exc.response.json()`、两个状态码属性）与它给出的
 码 / 文案 / 可重试标记 / 状态码——内核没有 SDK 异常对象，只能照这些字段等价重建。
 
+模型能力与协议解析同理：
+
+```bash
+python rust/tools/gen_llm_registry_fixture.py             # 期望值来自 capabilities.py / registry.py
+cd rust && cargo test -p omnicrawl-llm --test registry_parity
+```
+
+`llm_registry_parity.json` 覆盖能力解析（含非法值与窗口值边界）、合并优先级、四个保守默认值，
+以及协议解析的 18 个用例与 `protocol_for_provider` 的 5 个用例（含三条报错文案）。
+对象一律按**序列化后的字符串**比对：workspace 开了 `preserve_order`，键序也是契约的一部分。
+
 ## 已知与 Python 的差异
 
 1. 非字符串字段（`role`、`tool_call_id`、工具名、`description` 等）不再走 Python 的 `str()`
@@ -274,6 +285,12 @@ artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照。未搬：
 （结构层 / 键名规则 / 熵兜底 / 占位符分配）、middleware 编排件与 oneshot 一次性脱敏器（对照已转正，
 3 例全绿）；余下运行时装饰器、gitleaks 规则表、locality 与扫描缓存、NER（torch 依赖）。
 
-接下来：规则层补 PEM / 连接串 / IP → 引擎（键名 / 结构 / 熵兜底 / 优先级编排）→ middleware 接线；
-会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置
+`omnicrawl-llm` 的运行时契约也已落地：`ModelCapabilities` / `merge_capabilities`（能力解析、合并优先级、
+四个保守默认值）、`resolve_protocol` / `protocol_for_provider` / `validate_protocol_matches_provider`
+（协议选取与一致性校验），以及 `ModelRuntime` trait——`omnicrawl-cli` 经 trait 对象持有运行时，
+Provider 实现与出网脱敏装饰器都从这里换入。
+
+接下来：按 Provider 逐个落地运行时（OpenAI Responses → Anthropic → Gemini，各自单独 parity），
+随后是 adapter 注册表与 `build_runtime` 工厂；脱敏侧接 `DesensitizationRuntime` 装饰器
+（trait 已就位）；会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置
 （Python 侧的 models 配置 / 启动器）接进 `initialize.model`，以及全部宿主迁移后让 `model.reply` 退役。

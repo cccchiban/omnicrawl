@@ -28,8 +28,8 @@ use omnicrawl_ipc::bridge::{
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
 use omnicrawl_llm::{
-    to_openai_messages, ChatEndpoint, ChatRequestInput, OpenAiChatRuntime, RuntimeErrorKind,
-    SinkFlow, TurnSink,
+    to_openai_messages, ChatEndpoint, ChatRequestInput, ModelRuntime, OpenAiChatRuntime,
+    RuntimeErrorKind, SinkFlow, TurnSink,
 };
 use omnicrawl_protocol::{
     conversation_from_openai_messages, tool_spec_from_openai_item, GenerationOptions, ModelReply,
@@ -313,13 +313,15 @@ impl ReplySource for KernelModelPort {
 
 impl KernelModelPort {
     /// 凭据只从环境读；端点缺省时用运行时默认值。
-    fn runtime(&self) -> Result<OpenAiChatRuntime, LoopError> {
+    ///
+    /// 返回 trait 对象：Provider 实现与将来的装饰器（出网脱敏）都从这里换入。
+    fn runtime(&self) -> Result<Box<dyn ModelRuntime>, LoopError> {
         let endpoint = ChatEndpoint {
             base_url: endpoint_base_url(&self.config),
             api_key: read_api_key(&self.config)?,
             user_agent: self.config.user_agent.clone(),
         };
-        Ok(OpenAiChatRuntime::new(endpoint))
+        Ok(Box::new(OpenAiChatRuntime::new(endpoint)))
     }
 
     fn notify_retry(&self, message: String) {

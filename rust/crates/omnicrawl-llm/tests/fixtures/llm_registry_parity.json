@@ -1,0 +1,992 @@
+{
+  "source": [
+    "omnicrawl/llm/capabilities.py",
+    "omnicrawl/llm/registry.py"
+  ],
+  "mapping": [
+    {
+      "label": "不是映射（None）",
+      "raw": null,
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "不是映射（列表）",
+      "raw": [
+        1,
+        2
+      ],
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "不是映射（字符串）",
+      "raw": "streaming=true",
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "空映射",
+      "raw": {},
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "显式全真",
+      "raw": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": true,
+        "vision": true,
+        "model_discovery": true,
+        "prompt_cache": true
+      },
+      "parsed": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": true,
+        "vision": true,
+        "model_discovery": true,
+        "prompt_cache": true,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": true,
+        "vision": true,
+        "model_discovery": true,
+        "prompt_cache": true,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "显式全假",
+      "raw": {
+        "streaming": false,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false
+      },
+      "parsed": {
+        "streaming": false,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": false,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "部分声明",
+      "raw": {
+        "streaming": false,
+        "reasoning": true
+      },
+      "parsed": {
+        "streaming": false,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": true,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": false,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": true,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "布尔位给整数",
+      "raw": {
+        "streaming": 1,
+        "tools": 0
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "布尔位给字符串",
+      "raw": {
+        "streaming": "true"
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "布尔位给 None",
+      "raw": {
+        "tools": null
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "窗口值为正",
+      "raw": {
+        "context_window_tokens": 128000,
+        "max_output_tokens": 4096
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 128000,
+        "max_output_tokens": 4096
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 128000,
+        "max_output_tokens": 4096
+      }
+    },
+    {
+      "label": "窗口值为零",
+      "raw": {
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "窗口值为负",
+      "raw": {
+        "context_window_tokens": -1,
+        "max_output_tokens": -100
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "窗口值为浮点",
+      "raw": {
+        "context_window_tokens": 128000.0
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "窗口值为布尔",
+      "raw": {
+        "context_window_tokens": true
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "窗口值为字符串",
+      "raw": {
+        "max_output_tokens": "4096"
+      },
+      "parsed": {
+        "streaming": null,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "未知字段忽略",
+      "raw": {
+        "streaming": true,
+        "unknown_field": 7
+      },
+      "parsed": {
+        "streaming": true,
+        "tools": null,
+        "parallel_tool_calls": null,
+        "reasoning": null,
+        "vision": null,
+        "model_discovery": null,
+        "prompt_cache": null,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      },
+      "to_dict": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    }
+  ],
+  "merge": [
+    {
+      "label": "单层",
+      "layers": [
+        {
+          "streaming": false,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        }
+      ],
+      "merged": {
+        "streaming": false,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "空层被跳过",
+      "layers": [
+        null,
+        {
+          "streaming": null,
+          "tools": true,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        },
+        null
+      ],
+      "merged": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "后者覆盖前者",
+      "layers": [
+        {
+          "streaming": null,
+          "tools": true,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": true,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        },
+        {
+          "streaming": null,
+          "tools": false,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        }
+      ],
+      "merged": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": true,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "未声明不覆盖",
+      "layers": [
+        {
+          "streaming": null,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": true,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        },
+        {
+          "streaming": null,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": true,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        }
+      ],
+      "merged": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": true,
+        "vision": true,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "显式假可覆盖真",
+      "layers": [
+        {
+          "streaming": null,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": true,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        },
+        {
+          "streaming": null,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": false,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        }
+      ],
+      "merged": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "窗口值只被正数覆盖",
+      "layers": [
+        {
+          "streaming": null,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 100,
+          "max_output_tokens": 0
+        },
+        {
+          "streaming": null,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        }
+      ],
+      "merged": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 100,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "保守默认 + 发现 + 用户配置",
+      "layers": [
+        {
+          "streaming": true,
+          "tools": true,
+          "parallel_tool_calls": true,
+          "reasoning": true,
+          "vision": true,
+          "model_discovery": true,
+          "prompt_cache": true,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        },
+        {
+          "streaming": null,
+          "tools": null,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": false,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 200000,
+          "max_output_tokens": 0
+        },
+        {
+          "streaming": null,
+          "tools": true,
+          "parallel_tool_calls": null,
+          "reasoning": null,
+          "vision": null,
+          "model_discovery": null,
+          "prompt_cache": null,
+          "context_window_tokens": 0,
+          "max_output_tokens": 0
+        }
+      ],
+      "merged": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": true,
+        "vision": false,
+        "model_discovery": true,
+        "prompt_cache": true,
+        "context_window_tokens": 200000,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "全部为 None",
+      "layers": [
+        null,
+        null
+      ],
+      "merged": {
+        "streaming": true,
+        "tools": false,
+        "parallel_tool_calls": false,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": false,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    }
+  ],
+  "defaults": [
+    {
+      "label": "openai_chat",
+      "to_dict": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": false,
+        "vision": false,
+        "model_discovery": true,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "openai_responses",
+      "to_dict": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": true,
+        "vision": false,
+        "model_discovery": true,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "anthropic",
+      "to_dict": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": true,
+        "vision": true,
+        "model_discovery": true,
+        "prompt_cache": true,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    },
+    {
+      "label": "gemini",
+      "to_dict": {
+        "streaming": true,
+        "tools": true,
+        "parallel_tool_calls": true,
+        "reasoning": false,
+        "vision": true,
+        "model_discovery": true,
+        "prompt_cache": false,
+        "context_window_tokens": 0,
+        "max_output_tokens": 0
+      }
+    }
+  ],
+  "protocols": [
+    {
+      "label": "openai 默认",
+      "provider": "openai",
+      "default_protocol": "",
+      "requested": "",
+      "protocol": "openai_chat_completions"
+    },
+    {
+      "label": "anthropic 默认",
+      "provider": "anthropic",
+      "default_protocol": "",
+      "requested": "",
+      "protocol": "anthropic_messages"
+    },
+    {
+      "label": "gemini 默认",
+      "provider": "gemini",
+      "default_protocol": "",
+      "requested": "",
+      "protocol": "gemini_generate_content"
+    },
+    {
+      "label": "显式指定协议",
+      "provider": "openai",
+      "default_protocol": "",
+      "requested": "openai_responses",
+      "protocol": "openai_responses"
+    },
+    {
+      "label": "取 Profile 默认",
+      "provider": "openai",
+      "default_protocol": "openai_responses",
+      "requested": "",
+      "protocol": "openai_responses"
+    },
+    {
+      "label": "显式覆盖 Profile 默认",
+      "provider": "openai",
+      "default_protocol": "openai_responses",
+      "requested": "openai_chat_completions",
+      "protocol": "openai_chat_completions"
+    },
+    {
+      "label": "纯空白指定退到 Provider 默认",
+      "provider": "openai",
+      "default_protocol": "",
+      "requested": "   ",
+      "protocol": "openai_chat_completions"
+    },
+    {
+      "label": "纯空白指定忽略 Profile 默认",
+      "provider": "openai",
+      "default_protocol": "anthropic_messages",
+      "requested": " ",
+      "protocol": "openai_chat_completions"
+    },
+    {
+      "label": "协议带空白会被裁剪",
+      "provider": "openai",
+      "default_protocol": " openai_responses ",
+      "requested": "",
+      "protocol": "openai_responses"
+    },
+    {
+      "label": "anthropic 正常",
+      "provider": "anthropic",
+      "default_protocol": "",
+      "requested": "anthropic_messages",
+      "protocol": "anthropic_messages"
+    },
+    {
+      "label": "gemini 正常",
+      "provider": "gemini",
+      "default_protocol": "",
+      "requested": "gemini_generate_content",
+      "protocol": "gemini_generate_content"
+    },
+    {
+      "label": "协议与 Provider 不匹配",
+      "provider": "anthropic",
+      "default_protocol": "",
+      "requested": "openai_chat_completions",
+      "error": "协议 openai_chat_completions 与 Provider anthropic 不匹配。"
+    },
+    {
+      "label": "gemini 用了 anthropic 协议",
+      "provider": "gemini",
+      "default_protocol": "",
+      "requested": "anthropic_messages",
+      "error": "协议 anthropic_messages 与 Provider gemini 不匹配。"
+    },
+    {
+      "label": "未知 Provider（空协议）",
+      "provider": "unknown-provider",
+      "default_protocol": "",
+      "requested": "",
+      "error": "未知 Provider：unknown-provider"
+    },
+    {
+      "label": "未知 Provider（带协议）",
+      "provider": "unknown-provider",
+      "default_protocol": "",
+      "requested": "openai_chat_completions",
+      "error": "未知 Provider：unknown-provider"
+    },
+    {
+      "label": "Provider 大小写敏感",
+      "provider": "OpenAI",
+      "default_protocol": "",
+      "requested": "",
+      "error": "未知 Provider：OpenAI"
+    },
+    {
+      "label": "不支持的协议",
+      "provider": "openai",
+      "default_protocol": "",
+      "requested": "made_up_protocol",
+      "error": "不支持的协议：made_up_protocol"
+    },
+    {
+      "label": "不支持的协议（来自默认层）",
+      "provider": "openai",
+      "default_protocol": " made_up ",
+      "requested": "",
+      "error": "不支持的协议：made_up"
+    }
+  ],
+  "provider_defaults": [
+    {
+      "label": "openai 首选 responses",
+      "provider": "openai",
+      "preferred": "openai_responses",
+      "protocol": "openai_responses"
+    },
+    {
+      "label": "anthropic 首选自身协议",
+      "provider": "anthropic",
+      "preferred": "anthropic_messages",
+      "protocol": "anthropic_messages"
+    },
+    {
+      "label": "无首选",
+      "provider": "gemini",
+      "preferred": "",
+      "protocol": "gemini_generate_content"
+    },
+    {
+      "label": "首选与 Provider 不匹配",
+      "provider": "openai",
+      "preferred": "anthropic_messages",
+      "error": "协议 anthropic_messages 与 Provider openai 不匹配。"
+    },
+    {
+      "label": "未知 Provider",
+      "provider": "nope",
+      "preferred": "",
+      "error": "未知 Provider：nope"
+    }
+  ]
+}

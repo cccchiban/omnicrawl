@@ -5,16 +5,19 @@
 //! `OpenAiChatRuntime` 把一次回合从请求串到归并回复。
 //! 传输之外没有别的 I/O；通用重试与能力门禁留在调用方。
 
+mod capabilities;
 pub mod desensitization;
 mod errors;
 mod json;
 mod openai_chat;
+mod registry;
 mod request;
 mod runtime;
 mod sse;
 mod transport;
 mod usage;
 
+pub use capabilities::{merge_capabilities, ModelCapabilities};
 pub use errors::{
     http_status_error, map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError,
     RuntimeErrorKind,
@@ -22,12 +25,13 @@ pub use errors::{
 pub use openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,
 };
+pub use registry::{protocol_for_provider, resolve_protocol, validate_protocol_matches_provider};
 pub use request::{
     build_chat_request, build_prompt_cache_key, is_openai_gpt_model, sanitize_provider_options,
     should_send_prompt_cache_key, to_openai_messages, tool_specs_to_openai_functions, ChatRequest,
     ChatRequestInput, RequestError,
 };
-pub use runtime::{ChatEndpoint, DiscardSink, OpenAiChatRuntime, SinkFlow, TurnSink};
+pub use runtime::{ChatEndpoint, DiscardSink, ModelRuntime, OpenAiChatRuntime, SinkFlow, TurnSink};
 pub use sse::{
     decode_sse_data, iter_raw_sse_events, payload_of_line, step_payload, SseError, SseStep,
 };

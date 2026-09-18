@@ -23,9 +23,18 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
 - `ChatEndpoint` ＋ `OpenAiChatRuntime::run_turn`：一次回合从请求体组装、HTTP 往返、流事件回调、
   工具调用收尾校验到 `ModelReply` 归并；建连与读取放在可放弃的后台线程里，取消按 50ms 轮询生效。
 - `RuntimeError` / `RuntimeErrorKind`：`retryable` 标记与 HTTP 状态码阶梯文案。
+- `ModelCapabilities` / `merge_capabilities`：模型能力（流式 / 工具 / 并行工具 / 推理 / 视觉 / 模型发现 /
+  prompt_cache + 两个窗口值）的解析与合并。bool 用 `None` 表示「本层未声明」，合并时后者只覆盖**已声明**的字段
+  （可显式写 `false`），整数只在正数时覆盖；读取一律先 `resolved()`（`streaming` 缺省为真，其余为假），
+  另有四个 Adapter 的保守默认值。
+- `resolve_protocol` / `protocol_for_provider` / `validate_protocol_matches_provider`：生效协议的选取
+  （调用方指定 > Profile 默认 > Provider 默认）与一致性校验，报错文案与 Python 逐字一致
+  （未知 Provider / 不支持的协议 / 协议与 Provider 不匹配）。
+- `ModelRuntime`：一次回合的执行入口（`run_turn(input, sink)`），`OpenAiChatRuntime` 是当前唯一实现；
+  多这一层是为了让 Provider 实现与装饰器（出网脱敏）可互换。
 
-不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、Provider 注册与能力表、
-会话落盘、上下文压缩触发。
+不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、
+adapter 注册表与 `build_runtime` 工厂、会话落盘、上下文压缩触发。
 
 ## 边界要求
 

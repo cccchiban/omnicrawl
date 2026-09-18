@@ -110,7 +110,7 @@ impl RuntimeError {
     }
 }
 
-/// Python `ModelErrorCode` 里由错误分类产出的取值（其余取值由别的模块负责，不在此列）。
+/// Python `ModelErrorCode` 里由错误分类与配置校验产出的取值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelErrorCode {
     ModelNotFound,
@@ -122,6 +122,7 @@ pub enum ModelErrorCode {
     AuthenticationFailed,
     PermissionDenied,
     InvalidRequest,
+    ConfigurationError,
     Unknown,
 }
 
@@ -138,6 +139,7 @@ impl ModelErrorCode {
             Self::AuthenticationFailed => "AUTHENTICATION_FAILED",
             Self::PermissionDenied => "PERMISSION_DENIED",
             Self::InvalidRequest => "INVALID_REQUEST",
+            Self::ConfigurationError => "CONFIGURATION_ERROR",
             Self::Unknown => "UNKNOWN",
         }
     }
@@ -150,6 +152,18 @@ pub struct ModelError {
     pub message: String,
     pub retryable: bool,
     pub status_code: Option<u16>,
+}
+
+impl ModelError {
+    /// 配置类错误（Python 侧 `code=CONFIGURATION_ERROR` 的那些分支）。
+    pub fn configuration(message: impl Into<String>) -> Self {
+        Self {
+            code: ModelErrorCode::ConfigurationError,
+            message: message.into(),
+            retryable: false,
+            status_code: None,
+        }
+    }
 }
 
 /// 内核没有 SDK 异常对象：这里给出 `map_openai_exception` 用到的等价字段。

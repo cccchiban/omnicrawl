@@ -80,6 +80,30 @@ pub struct OpenAiChatRuntime {
     agent: ureq::Agent,
 }
 
+/// 内核侧的模型运行时契约：一次回合的执行入口。
+///
+/// 语义基准是 Python `omnicrawl/llm/protocol.py` 的 `ModelRuntime` 协议（`stream_turn` + `close`）：
+/// 内核用「sink + 取消」表达同一件事——增量经 [`TurnSink`] 外发，取消由 sink 回答，
+/// 归并后的回复作为返回值。多一层 trait 是为了让 Provider 实现与装饰器（脱敏）能互换。
+pub trait ModelRuntime {
+    /// 跑完一次模型请求：请求体 → HTTP → 流事件 → 归并回复。
+    fn run_turn(
+        &self,
+        input: &ChatRequestInput<'_>,
+        sink: &mut dyn TurnSink,
+    ) -> Result<ModelReply, RuntimeError>;
+}
+
+impl ModelRuntime for OpenAiChatRuntime {
+    fn run_turn(
+        &self,
+        input: &ChatRequestInput<'_>,
+        sink: &mut dyn TurnSink,
+    ) -> Result<ModelReply, RuntimeError> {
+        OpenAiChatRuntime::run_turn(self, input, sink)
+    }
+}
+
 impl OpenAiChatRuntime {
     pub fn new(endpoint: ChatEndpoint) -> Self {
         Self {
