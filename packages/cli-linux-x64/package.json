@@ -1,6 +1,6 @@
 {
   "name": "@omnicrawl/cli-linux-x64",
-  "version": "0.1.70",
+  "version": "0.1.71",
   "description": "OmniCrawl 内核二进制（Linux x64，musl 静态）",
   "files": [
     "bin"

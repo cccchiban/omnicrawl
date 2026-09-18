@@ -88,6 +88,9 @@ function stagePlatform(target, source, version) {
     },
     os: [target.os],
     cpu: [target.cpu],
+    // npm 打包时会把 bin 指向的文件写成 0755。不声明 bin，Windows 上打出的
+    // tarball 里内核二进制就是 0644，Linux/macOS 安装后 spawn 会 EACCES。
+    bin: { omnicrawl: `bin/${target.file}` },
     files: ['bin'],
     license: 'MIT',
   })
