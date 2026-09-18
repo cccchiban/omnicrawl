@@ -257,9 +257,8 @@ artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照。未搬：
 
 `omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层全部 11 条规则
 （PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）、匹配引擎
-（结构层 / 键名规则 / 熵兜底 / 占位符分配）、middleware 编排件与 oneshot 一次性脱敏器
-（parity 待核对）；余下运行时装饰器、gitleaks 规则表、
-locality 与扫描缓存、NER（torch 依赖）。
+（结构层 / 键名规则 / 熵兜底 / 占位符分配）、middleware 编排件与 oneshot 一次性脱敏器（对照已转正，
+3 例全绿）；余下运行时装饰器、gitleaks 规则表、locality 与扫描缓存、NER（torch 依赖）。
 
 接下来：规则层补 PEM / 连接串 / IP → 引擎（键名 / 结构 / 熵兜底 / 优先级编排）→ middleware 接线；
 会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置

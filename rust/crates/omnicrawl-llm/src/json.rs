@@ -21,3 +21,44 @@ pub(crate) fn text_of(value: &Value) -> String {
         other => other.to_string(),
     }
 }
+
+/// Python `json.dumps(value, ensure_ascii=False)` 的等价写法：分隔符带空格、非 ASCII 原样输出、
+/// 键保持插入序（workspace 开了 `serde_json/preserve_order`）。
+///
+/// 浮点写法与 Python `repr` 不同（`1e20` vs `1e+20`），差异见 README 的「已知差异」。
+pub(crate) fn dumps(value: &Value) -> String {
+    let mut out = String::new();
+    write_value(&mut out, value);
+    out
+}
+
+fn write_value(out: &mut String, value: &Value) {
+    match value {
+        Value::Null => out.push_str("null"),
+        Value::Bool(flag) => out.push_str(if *flag { "true" } else { "false" }),
+        Value::Number(number) => out.push_str(&number.to_string()),
+        Value::String(text) => out.push_str(&Value::String(text.clone()).to_string()),
+        Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_value(out, item);
+            }
+            out.push(']');
+        }
+        Value::Object(entries) => {
+            out.push('{');
+            for (index, (key, item)) in entries.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_value(out, &Value::String(key.clone()));
+                out.push_str(": ");
+                write_value(out, item);
+            }
+            out.push('}');
+        }
+    }
+}

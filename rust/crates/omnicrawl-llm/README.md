@@ -147,13 +147,18 @@ fixture：
   工具结果 / 思考内容；system 文本、工具声明与图片块豁免）、碰撞扫描的文本收集、工具参数里
   「已分配但无法还原」序号的 fail-closed 检查、事件逐条还原（`map_event`），以及单次
   「屏蔽 → 还原 → 注销」的 `OneShotMasker`。
+  **parity 已转正**（`tests/desensitization_middleware_parity.rs`，3 例全绿）。核对抓出三处：
+  工具参数的文本收集此前用紧凑 JSON，Python 是 `json.dumps(..., ensure_ascii=False)`（分隔符带空格、
+  键按插入序）；规则集合必须**跟着数据走**——Python 侧由 `build_enabled_rules(config)` 按
+  `[desensitization]` 的 `detect_*` 开关裁剪（邮箱 / 外网 IP / 网址默认关闭），内核侧收同一组类别，
+  否则邮箱会被多屏蔽一次；泄露检查必须在**独立注册表**上生成，否则期望值的序号依赖前六条消息的
+  处理顺序，无法独立重放。
   **未完成**：`DesensitizationRuntime` 装饰器本体需要 Rust 侧的运行时抽象（内核当前只有
-  `OpenAiChatRuntime`），`_MessageMaskMemo`（性能缓存）与 `_referenced_sequences` 同理未搬；
-  middleware / oneshot 的 parity 数据集已生成但序号分配顺序与真实现不符，测试先标记
-  `#[ignore]`（见 `tests/desensitization_middleware_parity.rs`），下一片补齐。
+  `OpenAiChatRuntime`），`_MessageMaskMemo`（性能缓存）与 `_referenced_sequences` 同理未搬。
 
-尚未搬运：gitleaks 规则表（221 条正则与
-「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照）、`locality` 局部化扫描与扫描结果缓存
+尚未搬运：gitleaks 规则表（221 条正则与「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照。
+出厂配置里 `gitleaks_enabled = true`，因此**当前内核的默认规则集与 Python 出厂默认并不等价**，
+对照片按显式关掉 gitleaks 的裁剪结果对照）、`locality` 局部化扫描与扫描结果缓存
 （纯性能优化，不影响语义）、NER 语义兜底层（torch 依赖）。
 
 三份数据集的占位符与号牌一类「占位符形状」的字面量一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：

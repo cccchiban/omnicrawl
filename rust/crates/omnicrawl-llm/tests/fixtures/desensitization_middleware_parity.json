@@ -9,6 +9,14 @@
   "exempt_keys": [
     "example"
   ],
+  "enabled_categories": [
+    "bank_card",
+    "db_connection_string",
+    "internal_ip",
+    "license_plate",
+    "mac_address",
+    "pem_private_key"
+  ],
   "messages": [
     {
       "note": "user 文本",
@@ -29,7 +37,7 @@
         "blocks": [
           {
             "Text": {
-              "text": "联系 ｛Desensitized:2｝ 与内网 ｛Desensitized:1｝ 结束"
+              "text": "联系 worker@corp.local 与内网 ｛Desensitized:1｝ 结束"
             }
           }
         ],
@@ -93,11 +101,11 @@
         "blocks": [
           {
             "Text": {
-              "text": "回复正文，｛Desensitized:3｝ 会被屏蔽"
+              "text": "回复正文，｛Desensitized:2｝ 会被屏蔽"
             }
           }
         ],
-        "reasoning": "思考里的 ｛Desensitized:4｝",
+        "reasoning": "思考里的 ｛Desensitized:3｝",
         "tools": []
       },
       "texts": [
@@ -141,10 +149,10 @@
               "call_id": "call_1",
               "name": "write_file",
               "arguments": {
-                "password": "｛Desensitized:5｝",
-                "note": "联系 ｛Desensitized:2｝ 结束",
+                "password": "｛Desensitized:4｝",
+                "note": "联系 worker@corp.local 结束",
                 "nested": {
-                  "team-token": "｛Desensitized:6｝",
+                  "team-token": "｛Desensitized:5｝",
                   "list": [
                     "plain",
                     "｛Desensitized:1｝"
@@ -170,11 +178,10 @@
         "role": "tool",
         "blocks": [
           {
-            "ToolCall": {
+            "ToolResult": {
               "call_id": "call_1",
-              "name": "write_file",
-              "arguments": "结果 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 与 00:1A:2B:3C:4D:5E",
-              "provider_call_id": ""
+              "ok": true,
+              "content": "结果 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 与 00:1A:2B:3C:4D:5E"
             }
           }
         ],
@@ -185,11 +192,10 @@
         "role": "tool",
         "blocks": [
           {
-            "ToolCall": {
+            "ToolResult": {
               "call_id": "call_1",
-              "name": "write_file",
-              "arguments": "结果 ｛Desensitized:7｝ 与 ｛Desensitized:3｝",
-              "provider_call_id": ""
+              "ok": true,
+              "content": "结果 ｛Desensitized:6｝ 与 ｛Desensitized:2｝"
             }
           }
         ],
@@ -198,7 +204,7 @@
       },
       "texts": [
         "",
-        "\"结果 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 与 00:1A:2B:3C:4D:5E\""
+        "结果 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 与 00:1A:2B:3C:4D:5E"
       ],
       "referenced": []
     },
@@ -255,7 +261,7 @@
       "blocks": [
         {
           "Text": {
-            "text": "token ｛Desensitized:7｝"
+            "text": "token ｛Desensitized:1｝"
           }
         }
       ],

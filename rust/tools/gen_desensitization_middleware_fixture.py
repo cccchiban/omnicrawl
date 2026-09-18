@@ -58,6 +58,34 @@ MASKER_OPTIONS = dict(
     entropy_pure_digits=False,
 )
 
+#: 值类型规则层的开关：取 ``[desensitization]`` 的出厂默认值，并显式关掉 gitleaks。
+#: 内核侧没有 gitleaks 规则表（221 条正则与「不引入 regex」的决定冲突），
+#: 因此两侧按同一份裁剪结果对照；出厂默认里 gitleaks 是开启的，差异记在
+#: ``rust/crates/omnicrawl-llm/README.md`` 的已知缺口里。
+RULE_TOGGLES = dict(
+    detect_pem_private_key=True,
+    detect_db_connection_string=True,
+    detect_email=False,
+    detect_bank_card=True,
+    detect_internal_ip=True,
+    detect_external_ip=False,
+    detect_url=False,
+    detect_mac_address=True,
+    detect_license_plate=True,
+    gitleaks_enabled=False,
+)
+
+
+def build_config(**overrides) -> DesensitizationConfig:
+    """与内核同源的一份配置：屏蔽路径只关心规则开关与熵参数。"""
+
+    return DesensitizationConfig(
+        enabled=True,
+        extra_sensitive_keys=tuple(EXTRA_KEYS),
+        exempt_keys=tuple(EXEMPT_KEYS),
+        **{**RULE_TOGGLES, **overrides},
+    )
+
 ONESHOT_TEXTS = [
     "联系 " + FAKE_EMAIL + " 与卡号 " + FAKE_CARD + " 结束",
     "token " + MIXED_SECRET + " 结束",
@@ -80,7 +108,7 @@ MESSAGE_SPECS = [
             "nested": {"team-token": "abc' + BACKSLASH + '", "list": ["plain", FAKE_IP]},
         },
     ),
-    ("tool", [], "", "工具结果文本", "结果 " + MIXED_SECRET + " 与 " + FAKE_MAC),
+    ("tool", [], "", "工具结果文本", None, "结果 " + MIXED_SECRET + " 与 " + FAKE_MAC),
     ("user", ["已有 " + R.format_placeholder(7) + " 与 " + FAKE_IP], "", "已有占位符"),
 ]
 
@@ -88,7 +116,8 @@ MESSAGE_SPECS = [
 def build_message(spec) -> P.ConversationMessage:
     role, texts, reasoning, _note = spec[0], spec[1], spec[2], spec[3]
     blocks: list[object] = [P.TextBlock(text=text) for text in texts]
-    if len(spec) > 4:
+    # 第 5 位是工具调用参数：协议里恒为对象，None 表示这条消息没有调用块（只有结果块）。
+    if len(spec) > 4 and spec[4] is not None:
         blocks.append(
             P.ToolCallBlock(call_id="call_1", name="write_file", arguments=spec[4])
         )
@@ -133,20 +162,24 @@ def to_json(message: P.ConversationMessage) -> dict:
     }
 
 
-def make_context(registry: R.SequenceRegistry, cycle: R.PlaceholderCycle) -> E.MaskContext:
+def make_context(
+    config: DesensitizationConfig, registry: R.SequenceRegistry, cycle: R.PlaceholderCycle
+) -> E.MaskContext:
     return E.MaskContext(
         matcher=E.SensitiveMatcher(extra_keys=EXTRA_KEYS, exempt_keys=EXEMPT_KEYS),
         cycle=cycle,
         stats=registry.stats,
-        pattern_rules=tuple(rules_module.builtin_rules()),
+        pattern_rules=tuple(rules_module.build_enabled_rules(config)),
         **MASKER_OPTIONS,
     )
 
 
-def run_messages():
+def run_messages(config: DesensitizationConfig):
+    """六条消息在同一注册表上依次屏蔽：序号按处理顺序分配。"""
+
     registry = R.SequenceRegistry(sequence_source=itertools.count(1).__next__)
     cycle, _ = registry.begin_cycle("middleware 对照")
-    ctx = make_context(registry, cycle)
+    ctx = make_context(config, registry, cycle)
     results = []
     for spec in MESSAGE_SPECS:
         message = build_message(spec)
@@ -160,7 +193,16 @@ def run_messages():
                 "referenced": list(M._referenced_sequences(message)),
             }
         )
-    # 参数泄露检查：先屏蔽一条含秘密的文本（登记序号），再用同一注册表扫参数。
+    return results
+
+
+def run_leak(config: DesensitizationConfig):
+    """参数泄露检查单独一份注册表：序号从 1 开始，内核侧才能独立重放。"""
+
+    registry = R.SequenceRegistry(sequence_source=itertools.count(1).__next__)
+    cycle, _ = registry.begin_cycle("middleware 泄露检查")
+    ctx = make_context(config, registry, cycle)
+    # 先屏蔽一条含秘密的文本（登记序号），再用同一注册表扫参数。
     secret_message = P.ConversationMessage(
         role="user",
         blocks=(P.TextBlock(text="token " + MIXED_SECRET),),
@@ -168,7 +210,7 @@ def run_messages():
     secret_masked = M._mask_message(secret_message, ctx)
     placeholder_text = R.format_placeholder(1)
     leak_value = {"note": "值 " + placeholder_text, "list": [3, True, None]}
-    return results, {
+    return {
         "secret_message": to_json(secret_message),
         "secret_masked": to_json(secret_masked),
         "value": leak_value,
@@ -179,12 +221,7 @@ def run_messages():
 
 def run_oneshot(strict: bool):
     masker = O.OneShotMasker(
-        DesensitizationConfig(
-            enabled=True,
-            strict_restore=strict,
-            extra_sensitive_keys=tuple(EXTRA_KEYS),
-            exempt_keys=tuple(EXEMPT_KEYS),
-        ),
+        build_config(strict_restore=strict),
         matcher=E.SensitiveMatcher(extra_keys=EXTRA_KEYS, exempt_keys=EXEMPT_KEYS),
         sequence_source=itertools.count(1).__next__,
     )
@@ -221,7 +258,9 @@ def run_oneshot(strict: bool):
 
 
 def main() -> None:
-    messages, leak = run_messages()
+    messages_config = build_config()
+    messages = run_messages(messages_config)
+    leak = run_leak(build_config())
     fixture = {
         "source": [
             "omnicrawl/llm/desensitization/middleware.py",
@@ -229,6 +268,9 @@ def main() -> None:
         ],
         "extra_keys": EXTRA_KEYS,
         "exempt_keys": EXEMPT_KEYS,
+        "enabled_categories": sorted(
+            {rule.category for rule in rules_module.build_enabled_rules(messages_config)}
+        ),
         "messages": messages,
         "leak": leak,
         "oneshot": [run_oneshot(False), run_oneshot(True)],

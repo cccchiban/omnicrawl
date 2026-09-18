@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use omnicrawl_llm::desensitization::{
-    assigned_but_unresolved, builtin_rules, iter_message_texts, mask_message, DesensitizationStats,
-    MaskContext, OneShotMasker, OneshotOptions, SensitiveMatcher, SequenceRegistry,
+    assigned_but_unresolved, build_enabled_rules, iter_message_texts, mask_message,
+    DesensitizationStats, MaskContext, OneShotMasker, OneshotOptions, PatternRule,
+    SensitiveMatcher, SequenceRegistry,
 };
 use omnicrawl_protocol::ConversationMessage;
 use serde_json::{json, Value};
@@ -37,14 +38,24 @@ fn string_list(fixture: &Value, field: &str) -> Vec<String> {
         .collect()
 }
 
+/// 规则集合跟着 fixture 走：Python 侧按 `[desensitization]` 的开关裁剪，内核侧收同一组类别。
+fn enabled_rules(fixture: &Value) -> Vec<PatternRule> {
+    let categories: Vec<&str> = fixture["enabled_categories"]
+        .as_array()
+        .expect("enabled_categories")
+        .iter()
+        .map(|item| item.as_str().expect("enabled_categories"))
+        .collect();
+    build_enabled_rules(&categories)
+}
+
 #[test]
-#[ignore = "parity 数据集待核对：序号分配顺序与真实现不一致，见提交说明"]
 fn message_masking_matches_python() {
     let fixture = fixture();
     let extras = string_list(&fixture, "extra_keys");
     let exempts = string_list(&fixture, "exempt_keys");
     let matcher = SensitiveMatcher::new(&extras, &exempts);
-    let rules = builtin_rules();
+    let rules = enabled_rules(&fixture);
     let mut registry = SequenceRegistry::with_sequence_source(source(counter(0)));
     let (mut cycle, _) = registry.begin_cycle("middleware 对照");
     let mut stats = DesensitizationStats::default();
@@ -81,13 +92,12 @@ fn message_masking_matches_python() {
 }
 
 #[test]
-#[ignore = "parity 数据集待核对：序号分配顺序与真实现不一致，见提交说明"]
 fn unreadable_placeholder_scan_matches_python() {
     let fixture = fixture();
     let extras = string_list(&fixture, "extra_keys");
     let exempts = string_list(&fixture, "exempt_keys");
     let matcher = SensitiveMatcher::new(&extras, &exempts);
-    let rules = builtin_rules();
+    let rules = enabled_rules(&fixture);
     let leak = &fixture["leak"];
     let secret_message: ConversationMessage =
         serde_json::from_value(leak["secret_message"].clone()).expect("消息反序列化");
@@ -117,7 +127,6 @@ fn unreadable_placeholder_scan_matches_python() {
 }
 
 #[test]
-#[ignore = "parity 数据集待核对：序号分配顺序与真实现不一致，见提交说明"]
 fn oneshot_matches_python() {
     let fixture = fixture();
     let extras = string_list(&fixture, "extra_keys");
@@ -129,8 +138,13 @@ fn oneshot_matches_python() {
             ..OneshotOptions::default()
         };
         let registry = SequenceRegistry::with_sequence_source(source(counter(0)));
-        let mut masker =
-            OneShotMasker::with_registry(options, builtin_rules(), &extras, &exempts, registry);
+        let mut masker = OneShotMasker::with_registry(
+            options,
+            enabled_rules(&fixture),
+            &extras,
+            &exempts,
+            registry,
+        );
         for step in scenario["steps"].as_array().expect("steps") {
             let text = step["text"].as_str().expect("text");
             if step.get("masked").is_some() {

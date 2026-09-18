@@ -150,9 +150,10 @@ fn push_tool_spec_texts(texts: &mut Vec<String>, spec: &ToolSpec) {
     texts.push(json_text(&Value::Object(spec.parameters.clone())));
 }
 
-/// Python `json.dumps(value, ensure_ascii=False, default=str)` 的等价实现（失败给空串）。
+/// Python `json.dumps(value, ensure_ascii=False, default=str)` 的等价写法：文本收集与碰撞扫描
+/// 逐字节比对，分隔符与键序都要一致。
 fn json_text(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_default()
+    crate::json::dumps(value)
 }
 
 /// 工具参数里「本进程分配过、但已无法还原」的占位符序号（写路径的 fail-closed 依据）。
