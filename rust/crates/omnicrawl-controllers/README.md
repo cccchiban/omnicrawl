@@ -21,6 +21,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `agent/context_compaction/{models,policy,validation,projection}.py` | `src/context_compaction/` | 上下文 Token 估算、回合预算测量、压缩批次与超限恢复批次、自动压缩决策、结构化摘要校验、摘要在前/原文在后的模型上下文投影 |
 | `controllers/advisor.py` | `src/advisor.rs` | 顾问可用性判定、消息分支（剥孤儿调用 + user 尾）、工具清单、结果信封与错误文案 |
 | `controllers/plugins.py` | `src/plugins.rs` | Hook fail-closed 判定、拒绝事实与文案、分发结局归一化、会话生命周期 Hook 名 |
+| `controllers/subagents/worktrees.py`、`orchestration.py`（判定面） | `src/subagents/` | worktree 登记键与查找归一化、会话去重投影、产物摘要渲染、丢弃保护判定、失败描述、Fork 上下文冻结、公开结果投影、后台通知注入、结果校验与定义缺失文案 |
 | `agent/toolkit/tools.py`（目录与注册） | `src/tool_catalog.rs` + `data/agent_tools.json` | 目录数据由 `rust/tools/gen_agent_tools_data.py` 导出；注册规则（可选 runner 省略、知识库/Windows 整组、记忆开关、SubAgent 角色枚举、禁用过滤）在 Rust 重放 |
 | `agent/toolkit/tools.py`、`host_tools.py` | `src/tool_args.rs` | 工具名/参数名归一化、参数投影（Session/确认页/SSE）、紧凑 Schema、Schema 校验与结果信封 |
 | Python `json.dumps` 子集 | `src/json.rs` | Python 风格 JSON 文本与 `repr`（工具结果信封、审查指令、参数摘要共用） |
@@ -48,8 +49,10 @@ git 快照能力由宿主实现，crate 内不起子进程。
   **预算/批次/决策 + 摘要校验 + 投影**已搬（`src/context_compaction/`），仍未搬的是同目录的
   `service.py`（摘要模型调用编排）、`summary.py`（结构化摘要生成）、`evidence.py`（证据检索），
   以及 `omnicrawl-core` runner 与 `omnicrawl-ipc` 回调面的接线。
-- `subagents/{orchestration,worktrees}.py`：子代理编排与 worktree 生命周期，依赖
-  `agent/subagents/`（4,239 行）。
+- `subagents/{orchestration,worktrees}.py` 的进程面：Coordinator/TaskManager 生命周期、
+  模型运行时引导（`_create_subagent_runtime_manager` / `_run_subagent_task_loop` /
+  `_prepare_subagent_execution`）、worktree 的 git 创建/应用/清理、`_refresh_subagent_definitions`
+  与事件观察者转发；判定与投影已在 `src/subagents/`。
 - `advisor.py` 的模型面：`apply_model_selection` + 独立 Runtime 引导 + 协议单轮补全 +
   用量回调；判定、消息分支与信封已在 `src/advisor.rs`。
 - `plugins.py` 的进程面：Plugin Runtime / Worker 生命周期、`HOOK_POLICIES` 表本身与
@@ -69,16 +72,18 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 752 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 811 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
 判定、命令分流、删除意图、审查结论解析与审批归属）、会话侧 92 例（设置层 76 例与控制面
 16 例），以及顾问 23 例（消息分支、工具清单、黑名单、调用与信封）与插件 49 例
-（`HOOK_POLICIES` 全表 fail-closed、拒绝事实与文案、分发结局），以及工具参数层 69 例
+（`HOOK_POLICIES` 全表 fail-closed、拒绝事实与文案、分发结局），以及工具参数层 73 例
 （标识符/工具名/参数名归一化、参数投影、Schema 压缩与校验、结果信封、MCP 结果文本、读取助手），
 工具目录 14 例（11 组 runner/开关组合的注册结果 + MCP 三类名称与说明模板），上下文压缩 79 例（Token 估算、用量累计、预算快照与校验、触发决策、批次选择、事件投影），
-含结构化摘要校验 26 例与摘要/原文投影 11 例。
+含结构化摘要校验 26 例与摘要/原文投影 11 例，以及子代理域 59 例（登记键与查找归一化、会话去重投影、
+worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描述、Fork 上下文冻结与任务指令、
+公开结果本地投影、后台通知注入、结果校验与定义缺失文案）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内

@@ -11,12 +11,15 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = (
@@ -38,6 +41,9 @@ from omnicrawl.agent.runtime.vision_proxy import VisionProxyError  # noqa: E402
 from omnicrawl.agent.types import ToolCall, ToolResult, ToolImageAttachment  # noqa: E402
 from omnicrawl.config.models.vision import VisionConfiguration  # noqa: E402
 from omnicrawl.state.session_artifacts import preview_text  # noqa: E402
+from omnicrawl.agent.controllers.subagents import orchestration as orchestration_module  # noqa: E402
+from omnicrawl.agent.controllers.subagents import worktrees as subagent_worktrees_module  # noqa: E402
+from omnicrawl.agent.subagents import worktree as subagent_worktree_module  # noqa: E402
 
 for module in (shared_module, output_module, compression_module):
     if not Path(module.__file__).resolve().is_relative_to(ROOT):
@@ -4389,6 +4395,637 @@ def _projection_cases():
     return projection_cases
 
 
+# ------------------------------------------------------------------------- subagents
+
+
+def _subagent_worktree_classes():
+    """按字段名定位子包里的两个结果 dataclass（导出名与类名可能不同）。"""
+
+    artifacts = None
+    summary = None
+    for obj in vars(subagent_worktree_module).values():
+        fields = getattr(obj, "__dataclass_fields__", None)
+        if not fields:
+            continue
+        if "changed_files" in fields:
+            artifacts = obj
+        elif "new_commits" in fields:
+            summary = obj
+    if artifacts is None or summary is None:
+        raise SystemExit("找不到 worktree 结果 dataclass")
+    return artifacts, summary
+
+
+def _module_error(module):
+    """定位模块自身声明的异常类（类名不便在生成器里硬编码）。"""
+
+    for obj in vars(module).values():
+        if (
+            isinstance(obj, type)
+            and issubclass(obj, Exception)
+            and obj is not Exception
+            and getattr(obj, "__module__", "") == module.__name__
+        ):
+            return obj
+    raise SystemExit("找不到模块异常类：%s" % module.__name__)
+
+
+def _describe_parameter(callable_):
+    """取签名里除已知名外的描述参数名。"""
+
+    for name in inspect.signature(callable_).parameters:
+        if name not in {"self", "agent_type", "prompt", "on_subagent_event"}:
+            return name
+    raise SystemExit("找不到描述参数名")
+
+
+def _session_view(session) -> dict:
+    return {
+        "task_id": session.task_id,
+        "branch_name": session.branch_name,
+        "worktree_path": session.worktree_path,
+        "base_ref": session.base_ref,
+        "repo_root": session.repo_root,
+    }
+
+
+def _artifacts_view(artifacts) -> dict | None:
+    if artifacts is None:
+        return None
+    return {
+        "branch_name": artifacts.branch_name,
+        "worktree_path": artifacts.worktree_path,
+        "base_ref": artifacts.base_ref,
+        "has_changes": artifacts.has_changes,
+        "changed_files": list(artifacts.changed_files),
+        "diff_stat": artifacts.diff_stat,
+        "diff_text": artifacts.diff_text,
+    }
+
+
+ORCHESTRATION_MIXIN = _mixin_class(
+    orchestration_module,
+    "_describe_subagent_run_failure",
+    "_prepare_subagent_public_result",
+    "_inject_subagent_notifications",
+    "run_subagent_task",
+)
+WORKTREES_MIXIN = _mixin_class(
+    subagent_worktrees_module,
+    "list_subagent_worktrees",
+    "discard_subagent_worktree",
+    "_collect_subagent_worktree_artifacts",
+)
+
+
+class WorktreeSessionStub:
+    """worktree 会话的数据载体；真实现只按属性名读取。"""
+
+    def __init__(self, task_id, branch_name, worktree_path="", base_ref="", repo_root=""):
+        self.task_id = task_id
+        self.branch_name = branch_name
+        self.worktree_path = worktree_path
+        self.base_ref = base_ref
+        self.repo_root = repo_root
+
+
+class WorktreesProbe(WORKTREES_MIXIN):
+    """只补 worktree 方法读取的宿主属性：会话表与锁。"""
+
+    def __init__(self, sessions=()):
+        self._subagent_worktree_sessions = {}
+        for session in sessions:
+            for key in (session.branch_name, session.task_id):
+                self._subagent_worktree_sessions[key] = session
+        self._subagent_worktree_lock = None
+
+
+class RunRecordingCoordinator:
+    """`run` 的调用记录器；结果与通知由用例给定。"""
+
+    def __init__(self, *, result=None, notifications=()):
+        self.calls = []
+        self.result = ToolResult(ok=False, output="stub") if result is None else result
+        self.notifications = list(notifications)
+        self.session_id = None
+
+    def run(self, arguments, keep_full_text=False):
+        self.calls.append({"keep_full_text": keep_full_text})
+        return self.result
+
+    def drain_notifications(self, session_id):
+        self.session_id = session_id
+        return list(self.notifications)
+
+
+class TaskRunCoordinator:
+    """`run_subagent_task` 的协调器替身：定义查询、可用类型与固定结果。"""
+
+    def __init__(self, *, definition=None, available=(), result=None):
+        self.registry = SimpleNamespace(get=lambda name: definition)
+        self.result = ToolResult(ok=False, output="stub") if result is None else result
+        self._available = list(available)
+        self.calls = []
+
+    def available_agent_types(self):
+        return list(self._available)
+
+    def run(self, arguments, keep_full_text=False):
+        self.calls.append({"keep_full_text": keep_full_text})
+        return self.result
+
+
+class OrchestrationProbe(ORCHESTRATION_MIXIN):
+    """只补子任务投影方法读取的宿主属性。"""
+
+    def __init__(self, *, summary_chars=4000, coordinator=None, session_id="s1"):
+        self.config = SimpleNamespace(
+            subagents=SimpleNamespace(result_summary_chars=summary_chars)
+        )
+        self._session_store = None
+        self._session_state = None
+        self._subagent_coordinator = coordinator
+        self.current_session_id = session_id
+        self._subagent_event_callback = None
+        self._stream_subagent_conversation = False
+
+
+def subagents_cases() -> dict:
+    artifacts_class, summary_class = _subagent_worktree_classes()
+    worktree_error = _module_error(subagent_worktree_module)
+
+    session_one = WorktreeSessionStub("task-1", "feat/one", "C:/wt/one", "main", "C:/repo")
+    session_two = WorktreeSessionStub("task-2", "feat/two", "C:/wt/two", "HEAD", "C:/repo")
+    session_blank = WorktreeSessionStub("task-3", "", "C:/wt/three", "main", "C:/repo")
+
+    lookup_cases = []
+    for label, key in [
+        ("分支名带空白", " feat/one "),
+        ("任务号", "task-2"),
+        ("未登记", "missing"),
+        ("空键", ""),
+        ("None 键", None),
+    ]:
+        probe = WorktreesProbe([session_one])
+        observed = outcome(probe._lookup_subagent_worktree_session, key)
+        found = observed["value"]
+        lookup_cases.append(
+            {
+                "label": label,
+                "key": key,
+                "ok": observed["ok"],
+                "branch": getattr(found, "branch_name", None),
+            }
+        )
+
+    probe = WorktreesProbe()
+    probe._register_subagent_worktree_session(session_one)
+    registration_cases = [
+        {"label": "登记两个键", "keys": list(probe._subagent_worktree_sessions.keys())}
+    ]
+
+    items_cases = []
+    for label, sessions in [
+        ("去重与空分支", [session_one, session_one, session_two, session_blank]),
+        ("空表", []),
+    ]:
+        probe = WorktreesProbe(sessions)
+        observed = outcome(probe.list_subagent_worktrees)
+        items_cases.append(
+            {
+                "label": label,
+                "sessions": [_session_view(item) for item in sessions],
+                "ok": observed["ok"],
+                "value": observed["value"],
+            }
+        )
+
+    artifact_cases = []
+    artifact_inputs = [
+        (
+            "完整产物",
+            artifacts_class(
+                branch_name="feat/x",
+                worktree_path="C:/wt",
+                base_ref="main",
+                has_changes=True,
+                changed_files=["a.py", "b.py"],
+                diff_stat="1 file changed",
+                diff_text="diff --git a/a.py\n@@\n",
+            ),
+        ),
+        (
+            "无变更",
+            artifacts_class(
+                branch_name="feat/y",
+                worktree_path="C:/wt2",
+                base_ref="main",
+                has_changes=False,
+                changed_files=[],
+                diff_stat="",
+                diff_text="",
+            ),
+        ),
+        ("无会话", None),
+        (
+            "文件超二十条",
+            artifacts_class(
+                branch_name="feat/z",
+                worktree_path="C:/wt3",
+                base_ref="main",
+                has_changes=True,
+                changed_files=["f%d.py" % index for index in range(23)],
+                diff_stat="23 files changed",
+                diff_text="",
+            ),
+        ),
+        (
+            "超长 diff",
+            artifacts_class(
+                branch_name="feat/l",
+                worktree_path="C:/wt4",
+                base_ref="main",
+                has_changes=True,
+                changed_files=["a.py"],
+                diff_stat="",
+                diff_text="x" * 4100,
+            ),
+        ),
+    ]
+    for label, artifacts in artifact_inputs:
+        probe = WorktreesProbe()
+        context = (
+            None if artifacts is None else SimpleNamespace(worktree_session=session_one)
+        )
+        with mock.patch.object(
+            subagent_worktrees_module,
+            "collect_worktree_artifacts",
+            lambda session: artifacts,
+        ):
+            observed = outcome(probe._collect_subagent_worktree_artifacts, context)
+        artifact_cases.append(
+            {
+                "label": label,
+                "artifacts": _artifacts_view(artifacts),
+                "ok": observed["ok"],
+                "value": list(observed["value"] or ()),
+                "error": observed["error"],
+            }
+        )
+
+    probe = WorktreesProbe()
+    with mock.patch.object(
+        subagent_worktrees_module,
+        "collect_worktree_artifacts",
+        side_effect=worktree_error("boom"),
+    ):
+        observed = outcome(
+            probe._collect_subagent_worktree_artifacts,
+            SimpleNamespace(worktree_session=session_one),
+        )
+    artifact_error_cases = [
+        {"label": "收集失败", "value": list(observed["value"] or ())}
+    ]
+
+    discard_cases = []
+    for label, uncommitted_count, new_commits in [
+        ("无变更", 0, 0),
+        ("未提交文件", 2, 0),
+        ("新提交", 0, 3),
+        ("两者都有", 1, 2),
+    ]:
+        summary = summary_class(uncommitted=uncommitted_count, new_commits=new_commits)
+        cleanup_calls = []
+        probe = WorktreesProbe([session_one])
+        with mock.patch.object(
+            subagent_worktrees_module,
+            "summarize_worktree_changes",
+            lambda session: summary,
+        ), mock.patch.object(
+            subagent_worktrees_module,
+            "cleanup_worktree_session",
+            lambda session, remove_branch=True: cleanup_calls.append(remove_branch),
+        ):
+            observed = outcome(probe.discard_subagent_worktree, "task-1", force=False)
+        discard_cases.append(
+            {
+                "label": label,
+                "uncommitted": uncommitted_count,
+                "new_commits": new_commits,
+                "ok": observed["ok"],
+                "value": observed["value"],
+                "error": observed["error"],
+                "cleanup_called": bool(cleanup_calls),
+            }
+        )
+
+    probe = WorktreesProbe([session_one])
+    with mock.patch.object(
+        subagent_worktrees_module,
+        "summarize_worktree_changes",
+        side_effect=worktree_error("git failed"),
+    ):
+        observed = outcome(probe.discard_subagent_worktree, "task-1", force=False)
+    guard_error_cases = [
+        {
+            "label": "变更检查失败",
+            "ok": observed["ok"],
+            "value": observed["value"],
+            "error": observed["error"],
+        }
+    ]
+
+    observed = outcome(WorktreesProbe().discard_subagent_worktree, "missing")
+    missing_cases = [
+        {
+            "label": "未登记",
+            "ok": observed["ok"],
+            "value": observed["value"],
+            "error": observed["error"],
+        }
+    ]
+
+    apply_cases = []
+    probe = WorktreesProbe([session_one])
+    with mock.patch.object(
+        subagent_worktrees_module,
+        "apply_worktree_to_main",
+        lambda session, strategy="checkout": "已应用 %s（%s）"
+        % (session.branch_name, strategy),
+    ):
+        observed = outcome(probe.apply_subagent_worktree, "feat/one")
+    apply_cases.append(
+        {
+            "label": "应用成功",
+            "ok": observed["ok"],
+            "value": observed["value"],
+            "error": observed["error"],
+        }
+    )
+    with mock.patch.object(
+        subagent_worktrees_module,
+        "apply_worktree_to_main",
+        side_effect=worktree_error("nope"),
+    ):
+        observed = outcome(probe.apply_subagent_worktree, "feat/one")
+    apply_cases.append(
+        {
+            "label": "应用失败",
+            "ok": observed["ok"],
+            "value": observed["value"],
+            "error": observed["error"],
+        }
+    )
+    observed = outcome(WorktreesProbe().apply_subagent_worktree, "missing")
+    apply_cases.append(
+        {
+            "label": "未登记",
+            "ok": observed["ok"],
+            "value": observed["value"],
+            "error": observed["error"],
+        }
+    )
+
+    run_failure_cases = []
+    for label, payload, task in [
+        (
+            "任务错误带诊断",
+            {
+                "results": [
+                    {
+                        "status": "failed",
+                        "error": {
+                            "message": "模型超时",
+                            "code": "timeout",
+                            "diagnostic": {"category": "llm", "detail": "上游 504"},
+                        },
+                    }
+                ]
+            },
+            None,
+        ),
+        (
+            "任务错误仅 message",
+            {"results": [{"status": "failed", "error": {"message": "子任务异常"}}]},
+            None,
+        ),
+        (
+            "顶层错误",
+            {"status": "failed", "error": {"message": "批次校验失败", "code": "invalid"}},
+            None,
+        ),
+        ("全部缺失", {"status": "failed"}, None),
+        (
+            "指定任务",
+            {"status": "failed", "results": []},
+            {"status": "failed", "error": {"message": "指定任务错误", "code": "boom"}},
+        ),
+    ]:
+        observed = outcome(
+            ORCHESTRATION_MIXIN._describe_subagent_run_failure, payload, task=task
+        )
+        run_failure_cases.append(
+            {"label": label, "payload": payload, "task": task, "value": observed["value"]}
+        )
+
+    fork_cases = []
+    for label, description, prompt in [("常规", "看看", "做事"), ("空值", "", "")]:
+        observed = outcome(ORCHESTRATION_MIXIN._fork_task_message, description, prompt)
+        fork_cases.append(
+            {
+                "label": label,
+                "description": description,
+                "prompt": prompt,
+                "value": observed["value"],
+            }
+        )
+
+    snapshot_cases = []
+    for label, messages in [
+        ("普通消息", [{"role": "user", "content": "hi"}]),
+        ("混合项", [{"role": "user", "content": "hi"}, "junk", 3, None]),
+        ("空表", []),
+    ]:
+        observed = outcome(ORCHESTRATION_MIXIN._freeze_fork_context_messages, messages)
+        snapshot_cases.append(
+            {
+                "label": label,
+                "messages": messages,
+                "ok": observed["ok"],
+                "value": observed["value"],
+            }
+        )
+
+    public_result_cases = []
+    for label, text, chars in [
+        ("普通结果", "结果文本", 100),
+        ("超限截断", "x" * 30, 10),
+        ("带 worktree 产物", "摘要[worktree]\n  产物正文  ", 100),
+        ("产物正文为空", "摘要[worktree]   ", 100),
+        ("空文本", "", 100),
+        ("零预算", "文本", 0),
+    ]:
+        probe = OrchestrationProbe(summary_chars=chars)
+        observed = outcome(
+            probe._prepare_subagent_public_result, "task-1", "review", "描述", text
+        )
+        value = observed["value"]
+        public_result_cases.append(
+            {
+                "label": label,
+                "text": text,
+                "summary_chars": chars,
+                "summary": None if value is None else value.summary,
+                "artifacts": None if value is None else list(value.artifacts),
+                "error": observed["error"],
+            }
+        )
+
+    notification_rows = [
+        {"status": "completed", "summary": "完成", "task_id": "t1"},
+        {"status": "failed", "summary": "失败", "task_id": "t2"},
+    ]
+    inject_cases = []
+    for label, messages, drained in [
+        ("追加到尾部 user 消息", [{"role": "user", "content": "问题"}], notification_rows),
+        (
+            "跳过非 user 消息",
+            [{"role": "user", "content": "问题"}, {"role": "assistant", "content": "答"}],
+            notification_rows,
+        ),
+        ("无 user 消息时新增", [{"role": "assistant", "content": "答"}], notification_rows),
+        ("空通知不改动", [{"role": "user", "content": "问题"}], []),
+        ("空文本 content", [{"role": "user", "content": ""}], notification_rows),
+    ]:
+        coordinator = RunRecordingCoordinator(notifications=drained)
+        probe = OrchestrationProbe(coordinator=coordinator)
+        before = json.loads(json.dumps(messages))
+        observed = outcome(probe._inject_subagent_notifications, messages)
+        inject_cases.append(
+            {
+                "label": label,
+                "messages": before,
+                "notifications": list(drained),
+                "value": messages,
+                "changed": messages != before,
+                "error": observed["error"],
+            }
+        )
+
+    wants_review_cases = []
+    for label, arguments in [
+        ("命中 review", {"tasks": [{"subagent_type": "review", "prompt": "做事"}]}),
+        ("大小写混合", {"tasks": [{"subagent_type": " Review "}]}),
+        ("其他类型", {"tasks": [{"subagent_type": "plan"}]}),
+        ("空任务表", {"tasks": []}),
+        ("无 tasks", {}),
+        ("非 dict 入参", "not-a-dict"),
+        ("任务项非 dict", {"tasks": ["junk"]}),
+    ]:
+        coordinator = RunRecordingCoordinator()
+        probe = OrchestrationProbe(coordinator=coordinator)
+        observed = outcome(probe._tool_subagent, arguments)
+        wants_review_cases.append(
+            {
+                "label": label,
+                "arguments": arguments,
+                "ok": observed["ok"],
+                "keep_full_text": (
+                    coordinator.calls[0]["keep_full_text"] if coordinator.calls else None
+                ),
+            }
+        )
+
+    completed_output = json.dumps(
+        {
+            "status": "completed",
+            "results": [
+                {"status": "completed", "full_text": "完整全文", "summary": "摘要"}
+            ],
+        },
+        ensure_ascii=False,
+    )
+    summary_only_output = json.dumps(
+        {"status": "completed", "results": [{"status": "completed", "summary": "摘要"}]},
+        ensure_ascii=False,
+    )
+    blank_full_text_output = json.dumps(
+        {
+            "status": "completed",
+            "results": [{"status": "completed", "full_text": "   ", "summary": "摘要"}],
+        },
+        ensure_ascii=False,
+    )
+    failed_task_output = json.dumps(
+        {
+            "status": "failed",
+            "results": [{"status": "failed", "error": {"message": "子任务失败"}}],
+        },
+        ensure_ascii=False,
+    )
+    empty_results_output = json.dumps(
+        {"status": "completed", "results": []}, ensure_ascii=False
+    )
+    batch_failed_output = json.dumps(
+        {"status": "failed", "error": {"message": "批次失败"}}, ensure_ascii=False
+    )
+
+    describe_param = _describe_parameter(ORCHESTRATION_MIXIN.run_subagent_task)
+    run_task_cases = []
+    for label, has_definition, available, result_ok, output in [
+        ("成功返回全文", True, ["review", "plan"], True, completed_output),
+        ("回退摘要", True, ["review"], True, summary_only_output),
+        ("空白全文回退摘要", True, ["review"], True, blank_full_text_output),
+        ("任务未完成", True, ["review"], True, failed_task_output),
+        ("无结果", True, ["review"], True, empty_results_output),
+        ("结果不可解析", True, ["review"], True, "not-json"),
+        ("整批失败", True, ["review"], False, batch_failed_output),
+        ("未找到定义", False, [], True, completed_output),
+    ]:
+        coordinator = TaskRunCoordinator(
+            definition=SimpleNamespace(name="review") if has_definition else None,
+            available=available,
+            result=ToolResult(ok=result_ok, output=output),
+        )
+        probe = OrchestrationProbe(coordinator=coordinator)
+        observed = outcome(
+            probe.run_subagent_task,
+            agent_type="review",
+            prompt="做事",
+            **{describe_param: "描述"},
+        )
+        run_task_cases.append(
+            {
+                "label": label,
+                "has_definition": has_definition,
+                "available": list(available),
+                "result_ok": result_ok,
+                "output": output,
+                "value": observed["value"],
+                "error": observed["error"],
+            }
+        )
+
+    return {
+        "worktree_lookup": lookup_cases,
+        "worktree_registration": registration_cases,
+        "worktree_items": items_cases,
+        "worktree_artifact_lines": artifact_cases,
+        "worktree_artifact_error": artifact_error_cases,
+        "worktree_discard": discard_cases,
+        "worktree_discard_guard_error": guard_error_cases,
+        "worktree_discard_missing": missing_cases,
+        "worktree_apply": apply_cases,
+        "run_failure": run_failure_cases,
+        "fork_task_message": fork_cases,
+        "fork_snapshot": snapshot_cases,
+        "public_result": public_result_cases,
+        "notifications": inject_cases,
+        "wants_review": wants_review_cases,
+        "run_task": run_task_cases,
+    }
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -4409,6 +5046,7 @@ def main() -> None:
             "tool_args": tool_args_cases(),
             "tool_catalog": tool_catalog_cases(),
             "context_compaction": context_compaction_cases(),
+            "subagents": subagents_cases(),
         }
 
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)

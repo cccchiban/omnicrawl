@@ -24,6 +24,7 @@ pub mod plugins;
 pub mod settings;
 pub mod sha1;
 pub mod shared;
+pub mod subagents;
 pub mod tool_args;
 pub mod tool_catalog;
 pub mod types;

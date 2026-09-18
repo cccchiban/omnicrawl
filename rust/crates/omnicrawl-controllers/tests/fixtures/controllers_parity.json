@@ -680,7 +680,7 @@
       {
         "label": "无快照无副作用",
         "events": [],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -695,7 +695,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：context_compaction"
@@ -712,7 +712,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -736,7 +736,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -762,7 +762,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：bash"
@@ -786,7 +786,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：Edit_file"
@@ -803,7 +803,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：bash"
@@ -816,7 +816,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpsjy4eshl\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpoadf7kqd\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -832,7 +832,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpsjy4eshl\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpoadf7kqd\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -844,7 +844,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "当前轮次包含多个 Git 快照事件，无法安全回退。"
@@ -857,7 +857,7 @@
             "payload": {
               "version": 1,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpsjy4eshl\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpoadf7kqd\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -869,7 +869,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮次使用旧版影子对象库快照（version 1），已随 git diff 重构移除，无法自动回退；请手工还原文件后重试。"
@@ -882,7 +882,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpsjy4eshl\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpoadf7kqd\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -894,7 +894,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "轮次快照的不可逆工具账本格式无效。"
@@ -907,7 +907,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpsjy4eshl\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpoadf7kqd\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -923,7 +923,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮执行了无法由 Git 证明可逆的操作，已拒绝整轮回退：bash"
@@ -936,7 +936,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpsjy4eshl\\other",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpoadf7kqd\\other",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -948,7 +948,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮次的工作区与当前工作区不一致，已拒绝回退。"
@@ -958,31 +958,31 @@
       {
         "label": "正常相对路径",
         "relative": "undo/begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/undo/begin.patch",
         "error": null
       },
       {
         "label": "前后多余斜杠",
         "relative": "/undo/end.patch/",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/undo/end.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/undo/end.patch",
         "error": null
       },
       {
         "label": "反斜杠分隔",
         "relative": "undo\\begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/undo/begin.patch",
         "error": null
       },
       {
         "label": "空路径",
         "relative": "",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效："
@@ -990,7 +990,7 @@
       {
         "label": "仅斜杠",
         "relative": "///",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：///"
@@ -998,7 +998,7 @@
       {
         "label": "穿越到上一级",
         "relative": "../secret.txt",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：../secret.txt"
@@ -1006,7 +1006,7 @@
       {
         "label": "中间穿越",
         "relative": "undo/../../secret.txt",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：undo/../../secret.txt"
@@ -1014,43 +1014,43 @@
       {
         "label": "绝对路径",
         "relative": "/etc/passwd",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/etc/passwd",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/etc/passwd",
         "error": null
       },
       {
         "label": "当前目录段",
         "relative": "./undo/begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/undo/begin.patch",
         "error": null
       }
     ],
     "is_relative_to": [
       {
         "label": "子路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/a/b",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/a",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/a/b",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/a",
         "expected": true
       },
       {
         "label": "等值",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/a",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/a",
         "expected": true
       },
       {
         "label": "父路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/a/b",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/a/b",
         "expected": false
       },
       {
         "label": "根路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/artifacts",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/artifacts",
         "expected": true
       }
     ]
@@ -1059,12 +1059,12 @@
     "switch_workspace": [
       {
         "label": "目标就是当前工作区",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws",
         "compare": "exact",
         "error_prefix": null,
         "error_suffix": null,
@@ -1072,36 +1072,36 @@
       },
       {
         "label": "目标不是目录",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/plain.txt",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/plain.txt",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws",
         "ok": false,
         "value": null,
         "compare": "suffix",
         "error_prefix": null,
         "error_suffix": " 不是目录。",
-        "error": "工作区切换失败：C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpsjy4eshl\\plain.txt 不是目录。"
+        "error": "工作区切换失败：C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpoadf7kqd\\plain.txt 不是目录。"
       },
       {
         "label": "路径不存在",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/nope",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/nope",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws",
         "ok": false,
         "value": null,
         "compare": "prefix",
         "error_prefix": "工作区切换失败：",
         "error_suffix": "无法解析，",
-        "error": "工作区切换失败：C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/nope 无法解析，[WinError 2] 系统找不到指定的文件。: 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\tmpsjy4eshl\\\\nope'"
+        "error": "工作区切换失败：C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/nope 无法解析，[WinError 2] 系统找不到指定的文件。: 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\tmpoadf7kqd\\\\nope'"
       },
       {
         "label": "子任务未在期限内退出",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/other",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/other",
         "worktrees": [],
         "draining": true,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws",
         "ok": false,
         "value": null,
         "compare": "exact",
@@ -1111,7 +1111,7 @@
       },
       {
         "label": "有待处理 worktree",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/other",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/other",
         "worktrees": [
           {
             "branch": "feat/a",
@@ -1131,7 +1131,7 @@
           }
         ],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws",
         "ok": false,
         "value": null,
         "compare": "exact",
@@ -1166,20 +1166,20 @@
     "path_membership": [
       {
         "label": "根自身",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/memory-root",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/memory-root",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/memory-root",
         "expected": true
       },
       {
         "label": "子路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/memory-root/sub/m.md",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/memory-root/sub/m.md",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/memory-root",
         "expected": true
       },
       {
         "label": "外部路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/elsewhere.md",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/elsewhere.md",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/memory-root",
         "expected": false
       }
     ]
@@ -1189,27 +1189,27 @@
       {
         "label": "工作区内相对目录",
         "directory": ".omnicrawl/.oclmemory",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws-mem",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws-mem",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws-mem/.omnicrawl/.oclmemory",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws-mem/.omnicrawl/.oclmemory",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata/User_memory",
         "error": null
       },
       {
         "label": "工作区内绝对目录",
-        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws-mem/inside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws-mem",
+        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws-mem/inside",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws-mem",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws-mem/inside",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws-mem/inside",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata/User_memory",
         "error": null
       },
       {
         "label": "工作区外相对目录",
         "directory": "../outside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws-mem",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws-mem",
         "ok": false,
         "root": null,
         "session_store_is_none": null,
@@ -1218,13 +1218,13 @@
       },
       {
         "label": "工作区外绝对目录",
-        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/outside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/ws-mem",
+        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/outside",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/ws-mem",
         "ok": false,
         "root": null,
         "session_store_is_none": null,
         "user_root": null,
-        "error": "项目级记忆目录必须位于工作区内：C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/outside"
+        "error": "项目级记忆目录必须位于工作区内：C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/outside"
       }
     ],
     "session_store": [
@@ -1232,25 +1232,25 @@
         "label": "合法 ID",
         "session_id": "abc-1_2",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata/Session_memory/abc-1_2",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata/Session_memory/abc-1_2",
         "error": null
       },
       {
         "label": "带空格",
         "session_id": " abc ",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata/Session_memory/abc",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata/Session_memory/abc",
         "error": null
       },
       {
         "label": "含非法字符",
         "session_id": "bad id!",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录：bad id!"
@@ -1259,7 +1259,7 @@
         "label": "以连字符开头",
         "session_id": "-abc",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录：-abc"
@@ -1268,7 +1268,7 @@
         "label": "空 ID",
         "session_id": "",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录："
@@ -1277,7 +1277,7 @@
         "label": "未启用会话",
         "session_id": "abc",
         "session_state": false,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "ok": true,
         "root": null,
         "error": null
@@ -1288,7 +1288,7 @@
         "label": "删除已存在目录",
         "session_id": "session-a",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "existed_before": true,
         "exists_after": false,
         "ok": true,
@@ -1298,7 +1298,7 @@
         "label": "目录不存在",
         "session_id": "session-missing",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "existed_before": false,
         "exists_after": false,
         "ok": true,
@@ -1308,7 +1308,7 @@
         "label": "记忆未启用",
         "session_id": "session-b",
         "memory_enabled": false,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "existed_before": true,
         "exists_after": true,
         "ok": true,
@@ -1318,7 +1318,7 @@
         "label": "ID 非法",
         "session_id": "bad id",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata",
         "existed_before": false,
         "exists_after": false,
         "ok": true,
@@ -1343,7 +1343,7 @@
         "error": "记忆系统未启用。"
       }
     ],
-    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmpsjy4eshl/userdata/User_memory"
+    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmpoadf7kqd/userdata/User_memory"
   },
   "output": {
     "batch_budget": [
@@ -2167,7 +2167,7 @@
         "prompt_sha256": null,
         "compare": "prefix",
         "error_prefix": "读取模式模板 sub-agent.md 失败：",
-        "error": "读取模式模板 sub-agent.md 失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\Administrator\\\\.omnicrawl\\\\agent-worktrees\\\\aw-w93ae5-6aacf08c\\\\omnicrawl\\\\templates\\\\sub-agent.md'"
+        "error": "读取模式模板 sub-agent.md 失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\Administrator\\\\.omnicrawl\\\\agent-worktrees\\\\aw-w7d480-6aad4f75\\\\omnicrawl\\\\templates\\\\sub-agent.md'"
       },
       {
         "label": "带下划线",
@@ -2244,7 +2244,7 @@
         "prompt_sha256": null,
         "compare": "prefix",
         "error_prefix": "读取模式模板 missing-mode-xyz.md 失败：",
-        "error": "读取模式模板 missing-mode-xyz.md 失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\Administrator\\\\.omnicrawl\\\\agent-worktrees\\\\aw-w93ae5-6aacf08c\\\\omnicrawl\\\\templates\\\\missing-mode-xyz.md'"
+        "error": "读取模式模板 missing-mode-xyz.md 失败：[Errno 2] No such file or directory: 'C:\\\\Users\\\\Administrator\\\\.omnicrawl\\\\agent-worktrees\\\\aw-w7d480-6aad4f75\\\\omnicrawl\\\\templates\\\\missing-mode-xyz.md'"
       }
     ],
     "system_prompt": [
@@ -16502,5 +16502,811 @@
     "constants": {
       "summary_prefix": "会话压缩摘要：\n"
     }
+  },
+  "subagents": {
+    "worktree_lookup": [
+      {
+        "label": "分支名带空白",
+        "key": " feat/one ",
+        "ok": true,
+        "branch": "feat/one"
+      },
+      {
+        "label": "任务号",
+        "key": "task-2",
+        "ok": true,
+        "branch": null
+      },
+      {
+        "label": "未登记",
+        "key": "missing",
+        "ok": true,
+        "branch": null
+      },
+      {
+        "label": "空键",
+        "key": "",
+        "ok": true,
+        "branch": null
+      },
+      {
+        "label": "None 键",
+        "key": null,
+        "ok": true,
+        "branch": null
+      }
+    ],
+    "worktree_registration": [
+      {
+        "label": "登记两个键",
+        "keys": [
+          "feat/one",
+          "task-1"
+        ]
+      }
+    ],
+    "worktree_items": [
+      {
+        "label": "去重与空分支",
+        "sessions": [
+          {
+            "task_id": "task-1",
+            "branch_name": "feat/one",
+            "worktree_path": "C:/wt/one",
+            "base_ref": "main",
+            "repo_root": "C:/repo"
+          },
+          {
+            "task_id": "task-1",
+            "branch_name": "feat/one",
+            "worktree_path": "C:/wt/one",
+            "base_ref": "main",
+            "repo_root": "C:/repo"
+          },
+          {
+            "task_id": "task-2",
+            "branch_name": "feat/two",
+            "worktree_path": "C:/wt/two",
+            "base_ref": "HEAD",
+            "repo_root": "C:/repo"
+          },
+          {
+            "task_id": "task-3",
+            "branch_name": "",
+            "worktree_path": "C:/wt/three",
+            "base_ref": "main",
+            "repo_root": "C:/repo"
+          }
+        ],
+        "ok": true,
+        "value": [
+          {
+            "task_id": "task-1",
+            "branch": "feat/one",
+            "worktree_path": "C:/wt/one",
+            "base_ref": "main",
+            "repo_root": "C:/repo"
+          },
+          {
+            "task_id": "task-2",
+            "branch": "feat/two",
+            "worktree_path": "C:/wt/two",
+            "base_ref": "HEAD",
+            "repo_root": "C:/repo"
+          }
+        ]
+      },
+      {
+        "label": "空表",
+        "sessions": [],
+        "ok": true,
+        "value": []
+      }
+    ],
+    "worktree_artifact_lines": [
+      {
+        "label": "完整产物",
+        "artifacts": {
+          "branch_name": "feat/x",
+          "worktree_path": "C:/wt",
+          "base_ref": "main",
+          "has_changes": true,
+          "changed_files": [
+            "a.py",
+            "b.py"
+          ],
+          "diff_stat": "1 file changed",
+          "diff_text": "diff --git a/a.py\n@@\n"
+        },
+        "ok": true,
+        "value": [
+          "branch=feat/x",
+          "worktree=C:/wt",
+          "base_ref=main",
+          "has_changes=True",
+          "changed_files=a.py, b.py",
+          "diff_stat=1 file changed",
+          "diff_preview:",
+          "diff --git a/a.py\n@@\n"
+        ],
+        "error": null
+      },
+      {
+        "label": "无变更",
+        "artifacts": {
+          "branch_name": "feat/y",
+          "worktree_path": "C:/wt2",
+          "base_ref": "main",
+          "has_changes": false,
+          "changed_files": [],
+          "diff_stat": "",
+          "diff_text": ""
+        },
+        "ok": true,
+        "value": [
+          "branch=feat/y",
+          "worktree=C:/wt2",
+          "base_ref=main",
+          "has_changes=False"
+        ],
+        "error": null
+      },
+      {
+        "label": "无会话",
+        "artifacts": null,
+        "ok": true,
+        "value": [],
+        "error": null
+      },
+      {
+        "label": "文件超二十条",
+        "artifacts": {
+          "branch_name": "feat/z",
+          "worktree_path": "C:/wt3",
+          "base_ref": "main",
+          "has_changes": true,
+          "changed_files": [
+            "f0.py",
+            "f1.py",
+            "f2.py",
+            "f3.py",
+            "f4.py",
+            "f5.py",
+            "f6.py",
+            "f7.py",
+            "f8.py",
+            "f9.py",
+            "f10.py",
+            "f11.py",
+            "f12.py",
+            "f13.py",
+            "f14.py",
+            "f15.py",
+            "f16.py",
+            "f17.py",
+            "f18.py",
+            "f19.py",
+            "f20.py",
+            "f21.py",
+            "f22.py"
+          ],
+          "diff_stat": "23 files changed",
+          "diff_text": ""
+        },
+        "ok": true,
+        "value": [
+          "branch=feat/z",
+          "worktree=C:/wt3",
+          "base_ref=main",
+          "has_changes=True",
+          "changed_files=f0.py, f1.py, f2.py, f3.py, f4.py, f5.py, f6.py, f7.py, f8.py, f9.py, f10.py, f11.py, f12.py, f13.py, f14.py, f15.py, f16.py, f17.py, f18.py, f19.py ...(+3)",
+          "diff_stat=23 files changed"
+        ],
+        "error": null
+      },
+      {
+        "label": "超长 diff",
+        "artifacts": {
+          "branch_name": "feat/l",
+          "worktree_path": "C:/wt4",
+          "base_ref": "main",
+          "has_changes": true,
+          "changed_files": [
+            "a.py"
+          ],
+          "diff_stat": "",
+          "diff_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        },
+        "ok": true,
+        "value": [
+          "branch=feat/l",
+          "worktree=C:/wt4",
+          "base_ref=main",
+          "has_changes=True",
+          "changed_files=a.py",
+          "diff_preview:",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n... diff 已截断 ..."
+        ],
+        "error": null
+      }
+    ],
+    "worktree_artifact_error": [
+      {
+        "label": "收集失败",
+        "value": [
+          "worktree 产物收集失败：boom"
+        ]
+      }
+    ],
+    "worktree_discard": [
+      {
+        "label": "无变更",
+        "uncommitted": 0,
+        "new_commits": 0,
+        "ok": true,
+        "value": "已清理 worktree 会话：feat/one",
+        "error": null,
+        "cleanup_called": true
+      },
+      {
+        "label": "未提交文件",
+        "uncommitted": 2,
+        "new_commits": 0,
+        "ok": false,
+        "value": null,
+        "error": "worktree 仍有未处理的变更，拒绝丢弃：2 个未提交/未跟踪文件；如需强制丢弃请设置 force=true。",
+        "cleanup_called": false
+      },
+      {
+        "label": "新提交",
+        "uncommitted": 0,
+        "new_commits": 3,
+        "ok": false,
+        "value": null,
+        "error": "worktree 仍有未处理的变更，拒绝丢弃：3 个新提交（尚未 apply 回主工作区）；如需强制丢弃请设置 force=true。",
+        "cleanup_called": false
+      },
+      {
+        "label": "两者都有",
+        "uncommitted": 1,
+        "new_commits": 2,
+        "ok": false,
+        "value": null,
+        "error": "worktree 仍有未处理的变更，拒绝丢弃：1 个未提交/未跟踪文件、2 个新提交（尚未 apply 回主工作区）；如需强制丢弃请设置 force=true。",
+        "cleanup_called": false
+      }
+    ],
+    "worktree_discard_guard_error": [
+      {
+        "label": "变更检查失败",
+        "ok": false,
+        "value": null,
+        "error": "worktree 变更检查失败（可传 force=true 强制丢弃）：git failed"
+      }
+    ],
+    "worktree_discard_missing": [
+      {
+        "label": "未登记",
+        "ok": false,
+        "value": null,
+        "error": "未找到 SubAgent worktree 会话：missing"
+      }
+    ],
+    "worktree_apply": [
+      {
+        "label": "应用成功",
+        "ok": true,
+        "value": "已应用 feat/one（checkout）",
+        "error": null
+      },
+      {
+        "label": "应用失败",
+        "ok": false,
+        "value": null,
+        "error": "应用 worktree 失败：nope"
+      },
+      {
+        "label": "未登记",
+        "ok": false,
+        "value": null,
+        "error": "未找到 SubAgent worktree 会话：missing"
+      }
+    ],
+    "run_failure": [
+      {
+        "label": "任务错误带诊断",
+        "payload": {
+          "results": [
+            {
+              "status": "failed",
+              "error": {
+                "message": "模型超时",
+                "code": "timeout",
+                "diagnostic": {
+                  "category": "llm",
+                  "detail": "上游 504"
+                }
+              }
+            }
+          ]
+        },
+        "task": null,
+        "value": "上游 504（timeout，llm）"
+      },
+      {
+        "label": "任务错误仅 message",
+        "payload": {
+          "results": [
+            {
+              "status": "failed",
+              "error": {
+                "message": "子任务异常"
+              }
+            }
+          ]
+        },
+        "task": null,
+        "value": "子任务异常"
+      },
+      {
+        "label": "顶层错误",
+        "payload": {
+          "status": "failed",
+          "error": {
+            "message": "批次校验失败",
+            "code": "invalid"
+          }
+        },
+        "task": null,
+        "value": "批次校验失败（invalid）"
+      },
+      {
+        "label": "全部缺失",
+        "payload": {
+          "status": "failed"
+        },
+        "task": null,
+        "value": "子任务执行失败。"
+      },
+      {
+        "label": "指定任务",
+        "payload": {
+          "status": "failed",
+          "results": []
+        },
+        "task": {
+          "status": "failed",
+          "error": {
+            "message": "指定任务错误",
+            "code": "boom"
+          }
+        },
+        "value": "指定任务错误（boom）"
+      }
+    ],
+    "fork_task_message": [
+      {
+        "label": "常规",
+        "description": "看看",
+        "prompt": "做事",
+        "value": {
+          "role": "user",
+          "content": "<subagent_task context=\"fork\">\n描述：看看\n任务：\n做事\n</subagent_task>"
+        }
+      },
+      {
+        "label": "空值",
+        "description": "",
+        "prompt": "",
+        "value": {
+          "role": "user",
+          "content": "<subagent_task context=\"fork\">\n描述：\n任务：\n\n</subagent_task>"
+        }
+      }
+    ],
+    "fork_snapshot": [
+      {
+        "label": "普通消息",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ],
+        "ok": true,
+        "value": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      {
+        "label": "混合项",
+        "messages": [
+          {
+            "role": "user",
+            "content": "hi"
+          },
+          "junk",
+          3,
+          null
+        ],
+        "ok": true,
+        "value": [
+          {
+            "role": "user",
+            "content": "hi"
+          }
+        ]
+      },
+      {
+        "label": "空表",
+        "messages": [],
+        "ok": true,
+        "value": []
+      }
+    ],
+    "public_result": [
+      {
+        "label": "普通结果",
+        "text": "结果文本",
+        "summary_chars": 100,
+        "summary": "结果文本",
+        "artifacts": [],
+        "error": null
+      },
+      {
+        "label": "超限截断",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "summary_chars": 10,
+        "summary": "xxxxxxxxxx\n... 子任务结果已截断。",
+        "artifacts": [],
+        "error": null
+      },
+      {
+        "label": "带 worktree 产物",
+        "text": "摘要[worktree]\n  产物正文  ",
+        "summary_chars": 100,
+        "summary": "摘要",
+        "artifacts": [
+          {
+            "type": "worktree",
+            "content": "产物正文"
+          }
+        ],
+        "error": null
+      },
+      {
+        "label": "产物正文为空",
+        "text": "摘要[worktree]   ",
+        "summary_chars": 100,
+        "summary": "摘要",
+        "artifacts": [],
+        "error": null
+      },
+      {
+        "label": "空文本",
+        "text": "",
+        "summary_chars": 100,
+        "summary": "",
+        "artifacts": [],
+        "error": null
+      },
+      {
+        "label": "零预算",
+        "text": "文本",
+        "summary_chars": 0,
+        "summary": "\n... 子任务结果已截断。",
+        "artifacts": [],
+        "error": null
+      }
+    ],
+    "notifications": [
+      {
+        "label": "追加到尾部 user 消息",
+        "messages": [
+          {
+            "role": "user",
+            "content": "问题"
+          }
+        ],
+        "notifications": [
+          {
+            "status": "completed",
+            "summary": "完成",
+            "task_id": "t1"
+          },
+          {
+            "status": "failed",
+            "summary": "失败",
+            "task_id": "t2"
+          }
+        ],
+        "value": [
+          {
+            "role": "user",
+            "content": "问题\n\n<subagent-notifications>\n[{\"status\": \"completed\", \"summary\": \"完成\", \"task_id\": \"t1\"}, {\"status\": \"failed\", \"summary\": \"失败\", \"task_id\": \"t2\"}]\n</subagent-notifications>"
+          }
+        ],
+        "changed": true,
+        "error": null
+      },
+      {
+        "label": "跳过非 user 消息",
+        "messages": [
+          {
+            "role": "user",
+            "content": "问题"
+          },
+          {
+            "role": "assistant",
+            "content": "答"
+          }
+        ],
+        "notifications": [
+          {
+            "status": "completed",
+            "summary": "完成",
+            "task_id": "t1"
+          },
+          {
+            "status": "failed",
+            "summary": "失败",
+            "task_id": "t2"
+          }
+        ],
+        "value": [
+          {
+            "role": "user",
+            "content": "问题\n\n<subagent-notifications>\n[{\"status\": \"completed\", \"summary\": \"完成\", \"task_id\": \"t1\"}, {\"status\": \"failed\", \"summary\": \"失败\", \"task_id\": \"t2\"}]\n</subagent-notifications>"
+          },
+          {
+            "role": "assistant",
+            "content": "答"
+          }
+        ],
+        "changed": true,
+        "error": null
+      },
+      {
+        "label": "无 user 消息时新增",
+        "messages": [
+          {
+            "role": "assistant",
+            "content": "答"
+          }
+        ],
+        "notifications": [
+          {
+            "status": "completed",
+            "summary": "完成",
+            "task_id": "t1"
+          },
+          {
+            "status": "failed",
+            "summary": "失败",
+            "task_id": "t2"
+          }
+        ],
+        "value": [
+          {
+            "role": "assistant",
+            "content": "答"
+          },
+          {
+            "role": "user",
+            "content": "<subagent-notifications>\n[{\"status\": \"completed\", \"summary\": \"完成\", \"task_id\": \"t1\"}, {\"status\": \"failed\", \"summary\": \"失败\", \"task_id\": \"t2\"}]\n</subagent-notifications>"
+          }
+        ],
+        "changed": true,
+        "error": null
+      },
+      {
+        "label": "空通知不改动",
+        "messages": [
+          {
+            "role": "user",
+            "content": "问题"
+          }
+        ],
+        "notifications": [],
+        "value": [
+          {
+            "role": "user",
+            "content": "问题"
+          }
+        ],
+        "changed": false,
+        "error": null
+      },
+      {
+        "label": "空文本 content",
+        "messages": [
+          {
+            "role": "user",
+            "content": ""
+          }
+        ],
+        "notifications": [
+          {
+            "status": "completed",
+            "summary": "完成",
+            "task_id": "t1"
+          },
+          {
+            "status": "failed",
+            "summary": "失败",
+            "task_id": "t2"
+          }
+        ],
+        "value": [
+          {
+            "role": "user",
+            "content": "\n\n<subagent-notifications>\n[{\"status\": \"completed\", \"summary\": \"完成\", \"task_id\": \"t1\"}, {\"status\": \"failed\", \"summary\": \"失败\", \"task_id\": \"t2\"}]\n</subagent-notifications>"
+          }
+        ],
+        "changed": true,
+        "error": null
+      }
+    ],
+    "wants_review": [
+      {
+        "label": "命中 review",
+        "arguments": {
+          "tasks": [
+            {
+              "subagent_type": "review",
+              "prompt": "做事"
+            }
+          ]
+        },
+        "ok": true,
+        "keep_full_text": true
+      },
+      {
+        "label": "大小写混合",
+        "arguments": {
+          "tasks": [
+            {
+              "subagent_type": " Review "
+            }
+          ]
+        },
+        "ok": true,
+        "keep_full_text": true
+      },
+      {
+        "label": "其他类型",
+        "arguments": {
+          "tasks": [
+            {
+              "subagent_type": "plan"
+            }
+          ]
+        },
+        "ok": true,
+        "keep_full_text": false
+      },
+      {
+        "label": "空任务表",
+        "arguments": {
+          "tasks": []
+        },
+        "ok": true,
+        "keep_full_text": false
+      },
+      {
+        "label": "无 tasks",
+        "arguments": {},
+        "ok": true,
+        "keep_full_text": false
+      },
+      {
+        "label": "非 dict 入参",
+        "arguments": "not-a-dict",
+        "ok": true,
+        "keep_full_text": false
+      },
+      {
+        "label": "任务项非 dict",
+        "arguments": {
+          "tasks": [
+            "junk"
+          ]
+        },
+        "ok": true,
+        "keep_full_text": false
+      }
+    ],
+    "run_task": [
+      {
+        "label": "成功返回全文",
+        "has_definition": true,
+        "available": [
+          "review",
+          "plan"
+        ],
+        "result_ok": true,
+        "output": "{\"status\": \"completed\", \"results\": [{\"status\": \"completed\", \"full_text\": \"完整全文\", \"summary\": \"摘要\"}]}",
+        "value": "完整全文",
+        "error": null
+      },
+      {
+        "label": "回退摘要",
+        "has_definition": true,
+        "available": [
+          "review"
+        ],
+        "result_ok": true,
+        "output": "{\"status\": \"completed\", \"results\": [{\"status\": \"completed\", \"summary\": \"摘要\"}]}",
+        "value": "摘要",
+        "error": null
+      },
+      {
+        "label": "空白全文回退摘要",
+        "has_definition": true,
+        "available": [
+          "review"
+        ],
+        "result_ok": true,
+        "output": "{\"status\": \"completed\", \"results\": [{\"status\": \"completed\", \"full_text\": \"   \", \"summary\": \"摘要\"}]}",
+        "value": "摘要",
+        "error": null
+      },
+      {
+        "label": "任务未完成",
+        "has_definition": true,
+        "available": [
+          "review"
+        ],
+        "result_ok": true,
+        "output": "{\"status\": \"failed\", \"results\": [{\"status\": \"failed\", \"error\": {\"message\": \"子任务失败\"}}]}",
+        "value": null,
+        "error": "子任务失败"
+      },
+      {
+        "label": "无结果",
+        "has_definition": true,
+        "available": [
+          "review"
+        ],
+        "result_ok": true,
+        "output": "{\"status\": \"completed\", \"results\": []}",
+        "value": null,
+        "error": "子任务未返回结果。"
+      },
+      {
+        "label": "结果不可解析",
+        "has_definition": true,
+        "available": [
+          "review"
+        ],
+        "result_ok": true,
+        "output": "not-json",
+        "value": null,
+        "error": "子任务返回结果无法解析。"
+      },
+      {
+        "label": "整批失败",
+        "has_definition": true,
+        "available": [
+          "review"
+        ],
+        "result_ok": false,
+        "output": "{\"status\": \"failed\", \"error\": {\"message\": \"批次失败\"}}",
+        "value": null,
+        "error": "批次失败"
+      },
+      {
+        "label": "未找到定义",
+        "has_definition": false,
+        "available": [],
+        "result_ok": true,
+        "output": "{\"status\": \"completed\", \"results\": [{\"status\": \"completed\", \"full_text\": \"完整全文\", \"summary\": \"摘要\"}]}",
+        "value": null,
+        "error": "未找到 SubAgent 定义：review。当前可用：无。"
+      }
+    ]
   }
 }
