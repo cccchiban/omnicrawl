@@ -121,8 +121,9 @@ cargo test
 嵌入式 Linux 交叉编译（产物静态链接，便于塞进镜像）：
 
 ```bash
-rustup target add aarch64-unknown-linux-musl
+rustup target add aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
 cargo build --release --target aarch64-unknown-linux-musl
+cargo build --release --target armv7-unknown-linux-musleabihf
 ```
 
 ## 与 Python 的对应关系

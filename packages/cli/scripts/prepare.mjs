@@ -42,6 +42,14 @@ const TARGETS = [
     description: 'OmniCrawl 内核二进制（Linux x64，musl 静态）',
   },
   {
+    name: '@omnicrawl/cli-linux-arm-musl',
+    file: 'omnicrawl',
+    triple: 'armv7-unknown-linux-musleabihf',
+    os: 'linux',
+    cpu: 'arm',
+    description: 'OmniCrawl 内核二进制（Linux armv7，musl 静态，嵌入式目标）',
+  },
+  {
     name: '@omnicrawl/cli-linux-arm64-musl',
     file: 'omnicrawl',
     triple: 'aarch64-unknown-linux-musl',

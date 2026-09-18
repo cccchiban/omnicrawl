@@ -10,6 +10,7 @@ import process from 'node:process'
 
 const PLATFORM_PACKAGES = {
   'linux-x64': '@omnicrawl/cli-linux-x64',
+  'linux-arm': '@omnicrawl/cli-linux-arm-musl',
   'linux-arm64': '@omnicrawl/cli-linux-arm64-musl',
   'win32-x64': '@omnicrawl/cli-win32-x64',
   'win32-ia32': '@omnicrawl/cli-win32-ia32',

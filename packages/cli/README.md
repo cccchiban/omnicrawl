@@ -9,6 +9,7 @@ OmniCrawl 启动器：按 `platform-arch` 选包node_modules的内核二进制�
 | --- | --- |
 | `omnicrawl-cli` | JS 启动器（`bin/omnicrawl.mjs`） |
 | `@omnicrawl/cli-linux-x64` | 内核二进制（Linux x64，musl 静态） |
+| `@omnicrawl/cli-linux-arm-musl` | 内核二进制（Linux armv7，musl 静态，嵌入式目标） |
 | `@omnicrawl/cli-linux-arm64-musl` | 内核二进制（Linux arm64，嵌入式目标） |
 | `@omnicrawl/cli-win32-x64` | 内核二进制（Windows x64） |
 
@@ -31,12 +32,22 @@ OMNICRAWL_BINARY=/path/to/omnicrawl node packages/cli/bin/omnicrawl.mjs --versio
 
 ## 发布
 
-1. 交叉编译三个平台（Linux 走 musl 静态，嵌入式目标优先）：
+手动发布前先 `npm login`（CI 走 Trusted Publishing，无需登录与 token）。
+
+1. 交叉编译各平台（Linux 走 musl 静态，嵌入式目标优先）：
 
    ```bash
    cargo build --release -p omnicrawl-cli --target x86_64-pc-windows-msvc
    cargo build --release -p omnicrawl-cli --target x86_64-unknown-linux-musl
    cargo build --release -p omnicrawl-cli --target aarch64-unknown-linux-musl
+   cargo build --release -p omnicrawl-cli --target armv7-unknown-linux-musleabihf
+   ```
+
+   非 Linux 宿主没有 musl 链接器，Linux 目标改用 `cargo zigbuild`（需 `zig` 与
+   `rustup target add <triple>`）：
+
+   ```bash
+   cargo zigbuild --release -p omnicrawl-cli --target armv7-unknown-linux-musleabihf
    ```
 
 2. 门槛检查（缺任何平台会失败并列出缺失平台）：
@@ -49,6 +60,7 @@ OMNICRAWL_BINARY=/path/to/omnicrawl node packages/cli/bin/omnicrawl.mjs --versio
 
    ```bash
    npm publish dist/npm/cli-linux-x64
+   npm publish dist/npm/cli-linux-arm-musl
    npm publish dist/npm/cli-linux-arm64-musl
    npm publish dist/npm/cli-win32-x64
    npm publish dist/npm/cli
@@ -56,7 +68,7 @@ OMNICRAWL_BINARY=/path/to/omnicrawl node packages/cli/bin/omnicrawl.mjs --versio
 
    脚本跑完会把这几行命令直接打出来。
 
-4. 版本reproducibility：四个包同版本；平台包只装二进制，升级它们就是换内核。
+4. 版本reproducibility：平台分包与启动器同版本；平台包只装二进制，升级它们就是换内核。
 
 ## 发布前自检
 
