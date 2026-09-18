@@ -15,27 +15,36 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
+use omnicrawl_controllers::context_compaction::TokenUsageSample;
+use omnicrawl_controllers::context_compaction::RECALL_SESSION_EVIDENCE_TOOL_NAME;
+use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_ERROR_MARKERS;
 use omnicrawl_core::{
     AgentLoopLimits, AgentLoopObservation, AgentLoopRunner, AgentModelReply, LoopError, LoopGuards,
-    ReplySource, SystemClock, ToolBatchHost, ToolCall,
+    ReplySource, SystemClock, ToolBatchHost, ToolCall, ToolResult,
 };
 use omnicrawl_ipc::bridge::{
     initialize_result, method, unsupported_version_error, BridgeError, Command, HostEvent,
-    InitializeParams, KernelModelConfig, MessagePayload, ModelRequest, TextPayload,
-    TokenUsagePayload, ToolBatch, ToolBatchResult, TurnCancelParams, TurnFinishedPayload,
-    TurnSubmitParams,
+    InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload, ModelRequest,
+    TextPayload, TokenUsagePayload, ToolBatch, ToolBatchResult, TurnCancelParams,
+    TurnFinishedPayload, TurnSubmitParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
 use omnicrawl_llm::{
     to_openai_messages, ChatEndpoint, ChatRequestInput, ModelRuntime, OpenAiChatRuntime,
-    RuntimeErrorKind, SinkFlow, TurnSink,
+    RuntimeErrorKind, SinkFlow, TurnSink, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 use omnicrawl_protocol::{
     conversation_from_openai_messages, tool_spec_from_openai_item, GenerationOptions, ModelReply,
     ModelStreamEvent, ToolSpec,
 };
 use serde_json::{json, Value};
+
+use omnicrawl_session::tool_result_message;
+
+use crate::compaction::{
+    compact_after_turn, recall_session_evidence, recover_after_overflow, KernelSession,
+};
 
 /// 入站消息：解析好的帧，或读取端已关闭。
 ///
@@ -91,6 +100,42 @@ struct Conn {
     next_id: i64,
     /// 宿主交来的模型配置：有它内核自己发模型请求，没有则退回 `model.reply` 代答。
     model: Option<KernelModelConfig>,
+    /// 宿主交来的会话配置：有它内核自己持有会话（多轮历史、转录落盘与回合结束后的压缩）。
+    session: Option<KernelSession>,
+    /// 本回合模型请求的用量累计与最近一次请求消息（压缩判定与前缀复用都要用）。
+    usage: Rc<RefCell<TurnUsage>>,
+}
+
+/// 一个回合内的模型用量累计与最近一次请求的逐字消息。
+#[derive(Debug, Clone, Default)]
+struct TurnUsage {
+    input_tokens: i64,
+    output_tokens: i64,
+    cached_input_tokens: i64,
+    last_request_input_tokens: i64,
+    last_request_messages: Vec<Value>,
+    /// 本回合是否被上游判定为上下文超限：命中即走压缩恢复再重试一次。
+    context_overflow: bool,
+}
+
+impl TurnUsage {
+    fn snapshot(&self) -> TokenUsageSample {
+        TokenUsageSample::new(
+            self.input_tokens,
+            self.output_tokens,
+            self.cached_input_tokens,
+        )
+        .unwrap_or_default()
+    }
+
+    fn reset(&mut self) {
+        self.input_tokens = 0;
+        self.output_tokens = 0;
+        self.cached_input_tokens = 0;
+        self.last_request_input_tokens = 0;
+        self.last_request_messages.clear();
+        self.context_overflow = false;
+    }
 }
 
 impl Conn {
@@ -192,6 +237,21 @@ impl Conn {
                 if let Some(config) = model_config_of(frame.params.as_ref()) {
                     self.model = Some(*config);
                 }
+                if let Some(settings) = session_config_of(frame.params.as_ref()) {
+                    match KernelSession::open(*settings) {
+                        Ok(opened) => self.session = Some(opened),
+                        Err(detail) => {
+                            self.respond_error(
+                                id,
+                                ErrorObject::new(
+                                    error_code::INVALID_PARAMS,
+                                    format!("会话初始化失败：{detail}"),
+                                ),
+                            );
+                            return None;
+                        }
+                    }
+                }
                 self.handshake(id, &host_version);
                 None
             }
@@ -241,10 +301,17 @@ impl ReplySource for RemoteModelPort {
 struct KernelModelPort {
     conn: Rc<RefCell<Conn>>,
     config: KernelModelConfig,
+    usage: Rc<RefCell<TurnUsage>>,
 }
 
 impl ReplySource for KernelModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
+        {
+            // 摘要请求要逐字复用最近一次主请求：这里记下它真正发出的消息。
+            let mut usage = self.usage.borrow_mut();
+            usage.last_request_messages = messages.clone();
+            usage.last_request_input_tokens = 0;
+        }
         let runtime = self.runtime()?;
         let options = parse_options(&self.config)?;
         let tools = parse_tools(&self.config);
@@ -270,6 +337,7 @@ impl ReplySource for KernelModelPort {
         loop {
             let mut sink = ProtocolSink {
                 conn: Rc::clone(&self.conn),
+                usage: Rc::clone(&self.usage),
             };
             match runtime.run_turn(&input, &mut sink) {
                 Ok(reply) => {
@@ -288,6 +356,9 @@ impl ReplySource for KernelModelPort {
                 Err(error) => {
                     if error.kind == RuntimeErrorKind::Cancelled {
                         return Err(LoopError::Cancelled(error.message));
+                    }
+                    if error.message.contains(CONTEXT_LENGTH_EXCEEDED_MESSAGE) {
+                        self.usage.borrow_mut().context_overflow = true;
                     }
                     attempt += 1;
                     if error.retryable && attempt < limit {
@@ -337,6 +408,7 @@ impl KernelModelPort {
 /// 避免同一件事在协议上出现两份。
 struct ProtocolSink {
     conn: Rc<RefCell<Conn>>,
+    usage: Rc<RefCell<TurnUsage>>,
 }
 
 impl TurnSink for ProtocolSink {
@@ -350,6 +422,20 @@ impl TurnSink for ProtocolSink {
                 connection.notify(HostEvent::ReasoningDelta(TextPayload { text: delta.text }));
             }
             ModelStreamEvent::UsageReported(usage) => {
+                if let Ok(input) = i64::try_from(usage.input_tokens) {
+                    let mut totals = self.usage.borrow_mut();
+                    totals.last_request_input_tokens = input;
+                }
+                if let (Ok(input), Ok(output), Ok(cached)) = (
+                    i64::try_from(usage.input_tokens),
+                    i64::try_from(usage.output_tokens),
+                    i64::try_from(usage.cached_input_tokens),
+                ) {
+                    let mut totals = self.usage.borrow_mut();
+                    totals.input_tokens += input;
+                    totals.output_tokens += output;
+                    totals.cached_input_tokens += cached;
+                }
                 connection.notify(HostEvent::TokenUsage(TokenUsagePayload {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
@@ -372,7 +458,7 @@ impl TurnSink for ProtocolSink {
 }
 
 /// 端点地址：宿主没给就用运行时默认。
-fn endpoint_base_url(config: &KernelModelConfig) -> String {
+pub(crate) fn endpoint_base_url(config: &KernelModelConfig) -> String {
     if config.base_url.trim().is_empty() {
         ChatEndpoint::default().base_url
     } else {
@@ -381,7 +467,7 @@ fn endpoint_base_url(config: &KernelModelConfig) -> String {
 }
 
 /// 凭据只从环境读：帧里出现的只是环境变量名。
-fn read_api_key(config: &KernelModelConfig) -> Result<String, LoopError> {
+pub(crate) fn read_api_key(config: &KernelModelConfig) -> Result<String, LoopError> {
     let name = config.api_key_env.trim();
     if name.is_empty() {
         return Ok(String::new());
@@ -393,7 +479,7 @@ fn read_api_key(config: &KernelModelConfig) -> Result<String, LoopError> {
     })
 }
 
-fn parse_options(config: &KernelModelConfig) -> Result<GenerationOptions, LoopError> {
+pub(crate) fn parse_options(config: &KernelModelConfig) -> Result<GenerationOptions, LoopError> {
     if config.options.is_null() {
         return Ok(GenerationOptions::default());
     }
@@ -438,6 +524,17 @@ fn to_agent_reply(reply: ModelReply) -> Result<AgentModelReply, LoopError> {
     })
 }
 
+/// 从 `initialize` 参数里取会话配置；给了就给，缺字段或形状不对按「没给」处理。
+fn session_config_of(params: Option<&Value>) -> Option<Box<KernelSessionConfig>> {
+    let value = params?.get("session")?;
+    if value.is_null() {
+        return None;
+    }
+    serde_json::from_value::<KernelSessionConfig>(value.clone())
+        .ok()
+        .map(Box::new)
+}
+
 /// 从 `initialize` 参数里取模型配置；给了就给，缺字段或形状不对按「没给」处理。
 fn model_config_of(params: Option<&Value>) -> Option<Box<KernelModelConfig>> {
     let value = params?.get("model")?;
@@ -461,21 +558,84 @@ impl ToolBatchHost for RemoteTools {
         calls: &[ToolCall],
         first_step: usize,
     ) -> Result<Vec<AgentLoopObservation>, LoopError> {
-        let batch = ToolBatch {
-            turn_id: self.turn_id.clone(),
-            step: first_step,
-            calls: calls.to_vec(),
+        // 内核自己持有会话时，「只读当前会话」的工具由内核直接答，不占宿主的批次；
+        // 其余工具照旧整批交给宿主执行。
+        let mut answers: Vec<Option<AgentLoopObservation>> =
+            (0..calls.len()).map(|_| None).collect();
+        let mut remote_calls: Vec<ToolCall> = Vec::new();
+        let mut remote_slots: Vec<usize> = Vec::new();
+        for (index, call) in calls.iter().enumerate() {
+            if let Some(observation) = self.local_tool(call) {
+                answers[index] = Some(observation);
+                continue;
+            }
+            remote_calls.push(call.clone());
+            remote_slots.push(index);
+        }
+
+        if !remote_calls.is_empty() {
+            let batch = ToolBatch {
+                turn_id: self.turn_id.clone(),
+                step: first_step,
+                calls: remote_calls,
+            };
+            let params = serde_json::to_value(&batch)
+                .expect("tool.batch 负载是serde_json::Value字段，必须可序列化");
+            let value = self
+                .conn
+                .borrow_mut()
+                .request(method::TOOL_BATCH, params)
+                .map_err(PortFailure::into_tool_error)?;
+            let observations = ToolBatchResult::from_result(&value)
+                .map(|parsed| parsed.observations)
+                .map_err(|error| {
+                    LoopError::ToolBatch(format!("宿主返回的观察无法解析：{error}"))
+                })?;
+            for (slot, observation) in remote_slots.into_iter().zip(observations) {
+                answers[slot] = Some(observation);
+            }
+        }
+
+        let mut ordered: Vec<AgentLoopObservation> = Vec::with_capacity(answers.len());
+        for answer in answers {
+            match answer {
+                Some(observation) => ordered.push(observation),
+                None => {
+                    return Err(LoopError::ToolBatch(format!(
+                        "工具批次缺少第 {} 个调用的观察。",
+                        ordered.len() + 1
+                    )))
+                }
+            }
+        }
+        Ok(ordered)
+    }
+}
+
+impl RemoteTools {
+    /// 内核侧工具：命中即本地作答；返回 None 表示交给宿主。
+    fn local_tool(&self, call: &ToolCall) -> Option<AgentLoopObservation> {
+        if call.name != RECALL_SESSION_EVIDENCE_TOOL_NAME {
+            return None;
+        }
+        let (ok, output) = {
+            let conn = self.conn.borrow();
+            conn.session.as_ref()?;
+            let arguments = Value::Object(call.arguments.clone());
+            recall_session_evidence(conn.session.as_ref(), &arguments)
         };
-        let params = serde_json::to_value(&batch)
-            .expect("tool.batch 负载是serde_json::Value字段，必须可序列化");
-        let value = self
-            .conn
-            .borrow_mut()
-            .request(method::TOOL_BATCH, params)
-            .map_err(PortFailure::into_tool_error)?;
-        ToolBatchResult::from_result(&value)
-            .map(|parsed| parsed.observations)
-            .map_err(|error| LoopError::ToolBatch(format!("宿主返回的观察无法解析：{error}")))
+        Some(AgentLoopObservation {
+            tool_call: call.clone(),
+            result: ToolResult {
+                ok,
+                output: output.clone(),
+                full_output: output.clone(),
+                error_code: None,
+                retryable: false,
+            },
+            message: tool_result_message(&call.name, ok, &output, &call.id),
+            followup_messages: Vec::new(),
+        })
     }
 }
 
@@ -484,12 +644,24 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     let turn_id = params.turn_id.clone();
     conn.borrow().cancel.store(false, Ordering::SeqCst);
 
-    let mut messages = vec![json!({"role": "user", "content": params.user_text})];
+    let user_text = params.user_text.clone();
+    let usage = Rc::clone(&conn.borrow().usage);
+    usage.borrow_mut().reset();
+    // 有会话就从转录恢复的运行期历史接着走；没有会话维持「一回合一条 user 消息」的旧行为。
+    let mut messages = conn
+        .borrow()
+        .session
+        .as_ref()
+        .map(|session| session.history.clone())
+        .unwrap_or_default();
+    messages.push(json!({"role": "user", "content": user_text.clone()}));
     // 宿主给了模型配置就由内核自己发请求；没给则维持 model.reply 代答的兼容路径。
-    let mut model: Box<dyn ReplySource> = match conn.borrow().model.clone() {
+    let model_config = conn.borrow().model.clone();
+    let mut model: Box<dyn ReplySource> = match model_config.clone() {
         Some(config) => Box::new(KernelModelPort {
             conn: Rc::clone(conn),
             config,
+            usage: Rc::clone(&usage),
         }),
         None => Box::new(RemoteModelPort {
             conn: Rc::clone(conn),
@@ -500,43 +672,211 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         conn: Rc::clone(conn),
         turn_id: turn_id.clone(),
     };
-    let cancel_source = Rc::clone(conn);
-    let mut cancel_check = move || {
-        if cancel_source.borrow().cancel.load(Ordering::SeqCst) {
-            Err(LoopError::Cancelled("回合已取消。".to_string()))
-        } else {
-            Ok(())
+    let build_cancel_check = || {
+        let cancel_source = Rc::clone(conn);
+        move || {
+            if cancel_source.borrow().cancel.load(Ordering::SeqCst) {
+                Err(LoopError::Cancelled("回合已取消。".to_string()))
+            } else {
+                Ok(())
+            }
         }
-    };
-    let guards = LoopGuards {
-        cancel_check: Some(&mut cancel_check),
-        stop_check: None,
     };
     let runner = AgentLoopRunner::new(Box::new(SystemClock::new()));
 
     // 主 Agent 的预算是无限的：与 Python 侧一致，靠取消与停止检查来收敛。
-    let outcome = runner.run(
-        &mut messages,
-        &mut *model,
-        &mut tools,
-        AgentLoopLimits::default(),
-        guards,
-    );
+    // 上下文超限时压缩当前未完成回合，用返回的投影重试一次（与 Python 的恢复路径同口径）。
+    let mut recovered = false;
+    let outcome = loop {
+        let mut cancel_check = build_cancel_check();
+        let guards = LoopGuards {
+            cancel_check: Some(&mut cancel_check),
+            stop_check: None,
+        };
+        let attempt = runner.run(
+            &mut messages,
+            &mut *model,
+            &mut tools,
+            AgentLoopLimits::default(),
+            guards,
+        );
+        match attempt {
+            Err(LoopError::ReplySource(message))
+                if !recovered
+                    && (usage.borrow().context_overflow || is_context_overflow(&message)) =>
+            {
+                recovered = true;
+                let recovered_history = model_config
+                    .clone()
+                    .and_then(|config| recover_context_overflow(conn, &messages, &config));
+                match recovered_history {
+                    Some(projection) => {
+                        messages = projection;
+                        continue;
+                    }
+                    None => break Err(LoopError::ReplySource(message)),
+                }
+            }
+            other => break other,
+        }
+    };
 
     let mut connection = conn.borrow_mut();
     match outcome {
         Ok(result) => {
             connection.notify(HostEvent::TurnFinished(TurnFinishedPayload {
                 turn_id: turn_id.clone(),
-                final_text: result.final_text,
+                final_text: result.final_text.clone(),
                 reasoning: result.reasoning,
                 model_turns: result.model_turns,
                 tool_calls: result.tool_calls,
                 paused: result.paused,
             }));
-            connection.respond(request_id, json!({}));
+            let session = connection.session.take();
+            drop(connection);
+            if let Some(mut session) = session {
+                run_session_tail(
+                    conn,
+                    &mut session,
+                    &user_text,
+                    &messages,
+                    &result.final_text,
+                );
+                conn.borrow_mut().session = Some(session);
+            }
+            conn.borrow_mut().respond(request_id, json!({}));
         }
-        Err(error) => connection.respond_error(request_id, turn_error(&error)),
+        Err(error) => {
+            eprintln!("[kernel] 回合失败：{}", error.message());
+            connection.respond_error(request_id, turn_error(&error))
+        }
+    }
+}
+
+/// 上下文超限的错误判定：与 Python 侧 `_CONTEXT_OVERFLOW_ERROR_MARKERS` 同源。
+fn is_context_overflow(message: &str) -> bool {
+    CONTEXT_OVERFLOW_ERROR_MARKERS
+        .iter()
+        .any(|marker| message.contains(marker))
+}
+
+/// 上下文超限后的恢复：压缩当前未完成回合，返回可继续的历史投影。
+fn recover_context_overflow(
+    conn: &Rc<RefCell<Conn>>,
+    previous_history: &[Value],
+    model_config: &KernelModelConfig,
+) -> Option<Vec<Value>> {
+    let mut session = conn.borrow_mut().session.take()?;
+    let api_key = read_api_key(model_config).unwrap_or_default();
+    let last_request_messages = conn.borrow().usage.borrow().last_request_messages.clone();
+    let projection = match recover_after_overflow(
+        &session,
+        model_config,
+        &api_key,
+        &last_request_messages,
+        previous_history,
+    ) {
+        Ok(report) => {
+            if let Some(notice) = report.notice.as_deref() {
+                conn.borrow_mut().notify(HostEvent::Status(MessagePayload {
+                    message: format!(
+                        "{notice}（检测到上下文超限，已压缩当前任务上下文并自动继续。）"
+                    ),
+                }));
+            }
+            if !report.compacted {
+                eprintln!("[kernel] 上下文超限后的模型压缩失败：{}", report.diagnostic);
+            }
+            report.history
+        }
+        Err(detail) => {
+            eprintln!("[kernel] 上下文超限后的模型压缩失败：{detail}");
+            None
+        }
+    };
+    match projection.as_ref() {
+        Some(history) => session.history = history.clone(),
+        None => {
+            if let Err(detail) = session.reload_history() {
+                eprintln!("[kernel] 重建运行期历史失败：{detail}");
+            }
+        }
+    }
+    conn.borrow_mut().session = Some(session);
+    projection
+}
+
+/// 回合收尾：落会话事件（用户消息与最终回复）→ 跑一次压缩 → 通知提示并更新运行期历史。
+fn run_session_tail(
+    conn: &Rc<RefCell<Conn>>,
+    session: &mut KernelSession,
+    user_text: &str,
+    working_messages: &[Value],
+    final_text: &str,
+) {
+    if let Err(detail) = session.append("user_message", json!({"content": user_text})) {
+        eprintln!("[kernel] 会话写入用户消息失败：{detail}");
+    }
+    let trimmed = final_text.trim();
+    if !trimmed.is_empty() {
+        if let Err(detail) = session.append("assistant_message", json!({"content": trimmed})) {
+            eprintln!("[kernel] 会话写入助手回复失败：{detail}");
+        }
+    }
+
+    let model = conn.borrow().model.clone();
+    let Some(model) = model else {
+        // 没有模型配置就没有可发的摘要请求：保留转录，历史按转录重建。
+        if let Err(detail) = session.reload_history() {
+            eprintln!("[kernel] 重建运行期历史失败：{detail}");
+        }
+        return;
+    };
+    let api_key = read_api_key(&model).unwrap_or_default();
+    let (usage, last_request_input_tokens, last_request_messages) = {
+        let connection = conn.borrow();
+        let totals = connection.usage.borrow();
+        (
+            totals.snapshot(),
+            totals.last_request_input_tokens,
+            totals.last_request_messages.clone(),
+        )
+    };
+    match compact_after_turn(
+        session,
+        &model,
+        &api_key,
+        usage,
+        last_request_input_tokens,
+        &last_request_messages,
+        working_messages,
+    ) {
+        Ok(report) => {
+            if !report.compacted && !report.diagnostic.is_empty() {
+                eprintln!(
+                    "[kernel] 模型摘要未通过校验，已跳过本回合压缩：{}",
+                    report.diagnostic
+                );
+            }
+            if let Some(notice) = report.notice {
+                conn.borrow_mut()
+                    .notify(HostEvent::Status(MessagePayload { message: notice }));
+            }
+            match report.history {
+                Some(history) => session.history = history,
+                None => {
+                    if let Err(detail) = session.reload_history() {
+                        eprintln!("[kernel] 重建运行期历史失败：{detail}");
+                    }
+                }
+            }
+        }
+        Err(detail) => {
+            eprintln!("[kernel] 上下文压缩失败，已跳过本回合：{detail}");
+            if let Err(detail) = session.reload_history() {
+                eprintln!("[kernel] 重建运行期历史失败：{detail}");
+            }
+        }
     }
 }
 
@@ -590,10 +930,29 @@ fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
         Command::Initialize(InitializeParams {
             protocol_version,
             model,
+            session,
             ..
         }) => {
             if let Some(config) = model {
                 conn.borrow_mut().model = Some(*config);
+            }
+            if let Some(settings) = session {
+                match KernelSession::open(*settings) {
+                    Ok(opened) => {
+                        eprintln!("[kernel] 会话已就绪：{}", opened.session_id);
+                        conn.borrow_mut().session = Some(opened);
+                    }
+                    Err(detail) => {
+                        conn.borrow_mut().respond_error(
+                            id,
+                            ErrorObject::new(
+                                error_code::INVALID_PARAMS,
+                                format!("会话初始化失败：{detail}"),
+                            ),
+                        );
+                        return false;
+                    }
+                }
             }
             conn.borrow_mut().handshake(id, &protocol_version);
             false
@@ -666,6 +1025,8 @@ pub fn run_stdio() -> Result<(), String> {
         handshaken: false,
         exit_requested: false,
         model: None,
+        session: None,
+        usage: Rc::new(RefCell::new(TurnUsage::default())),
         next_id: 0,
     }));
 

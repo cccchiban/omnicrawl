@@ -125,6 +125,10 @@ Anthropic 组的请求 kwargs 同样由替身客户端在 `client.messages.creat
 
 ## 已知差异
 
+HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error_with_body`）：Python 的 SDK 异常
+`str(exc)` 里带着正文，只传状态码会让「上下文超限」这类话术被丢掉；正文进阶梯后，
+429 这类响应可能先命中关键词分支（如限流），文案随之不同。
+
 - **SDK 对象分支不搬**：Python `_decode_sse_data` 的 `.json()` 快捷分支、`_emit_tool_call_deltas` 的
   `getattr(func, ...)` 对象分支、usage 系列的 `getattr` / `model_dump` 分支，都依赖 Python SDK 的对象形态；
   跨进程边界上只有 JSON。

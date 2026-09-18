@@ -267,10 +267,26 @@ dependencies = [
 name = "omnicrawl-cli"
 version = "0.0.1"
 dependencies = [
+ "chrono",
+ "omnicrawl-compaction",
+ "omnicrawl-controllers",
  "omnicrawl-core",
  "omnicrawl-ipc",
  "omnicrawl-llm",
  "omnicrawl-protocol",
+ "omnicrawl-session",
+ "serde_json",
+]
+
+[[package]]
+name = "omnicrawl-compaction"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "omnicrawl-controllers",
+ "omnicrawl-llm",
+ "omnicrawl-protocol",
+ "omnicrawl-session",
  "serde_json",
 ]
 
@@ -293,6 +309,8 @@ dependencies = [
 name = "omnicrawl-controllers"
 version = "0.0.1"
 dependencies = [
+ "omnicrawl-core",
+ "omnicrawl-ipc",
  "omnicrawl-session",
  "serde",
  "serde_json",

@@ -228,6 +228,120 @@ impl SessionStore {
         Ok(events)
     }
 
+    /// 把被压缩窗口的原始事件写入二级归档，返回 archive_id。
+    ///
+    /// 归档目录为 `archive/compacted/<session_id>/<archive_id>.jsonl`，与整会话归档隔离；
+    /// 每条事件一行 JSON，调用方传入与 Session 事件同构的 dict。归档失败不阻塞压缩主流程，
+    /// 由调用方按 warning 处理。
+    pub fn archive_compacted_events(
+        &self,
+        session_id: &str,
+        events: &[Value],
+        archive_id: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<String, SessionStoreError> {
+        let _access = self.exclusive_write()?;
+        self.ensure()?;
+        let session_id = normalize_session_id(session_id)?;
+        let entries = self.load_entries()?;
+        // 不存在时抛错：归档只允许落在已有会话名下。
+        self.entry_index(&entries, &session_id)?;
+
+        let safe_archive_id = match archive_id {
+            None => generated_archive_id(now),
+            Some("") => generated_archive_id(now),
+            Some(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return Err(SessionStoreError::new("archive_id 必须是非空字符串。"));
+                }
+                if trimmed.contains('/')
+                    || trimmed.contains(char::from(92))
+                    || trimmed.contains(char::from(0))
+                {
+                    return Err(SessionStoreError::new("archive_id 不能包含路径分隔符。"));
+                }
+                trimmed.to_string()
+            }
+        };
+
+        let compacted_dir = self.root.join("archive").join("compacted");
+        let session_dir = compacted_dir.join(&session_id);
+        if !is_within(&session_dir, &compacted_dir) {
+            return Err(SessionStoreError::new(format!(
+                "会话归档目录越界：{session_id}"
+            )));
+        }
+        fs::create_dir_all(&session_dir)
+            .map_err(|error| io_error("创建压缩归档目录", &session_dir, &error))?;
+        let path = session_dir.join(format!("{safe_archive_id}.jsonl"));
+        if !is_within(&path, &session_dir) {
+            return Err(SessionStoreError::new("归档路径越界。"));
+        }
+
+        let lines: Vec<String> = events
+            .iter()
+            .map(|event| serde_json::to_string(event).unwrap_or_default())
+            .collect();
+        append_text_line(
+            &path,
+            &lines.join(
+                "
+",
+            ),
+            self.policy.fsync,
+        )
+        .map_err(|error| {
+            SessionStoreError::new(format!("写入压缩事件归档失败：{}，{error}", path.display()))
+        })?;
+        Ok(safe_archive_id)
+    }
+
+    /// 读取该会话全部压缩归档事件，按 archive_id 字典序合并。
+    ///
+    /// 返回的事件 dict 与 `SessionEvent::to_dict()` 同构，可转回 SourceEvent
+    /// 供精确证据恢复使用；不含归档则返回空列表。
+    pub fn read_compacted_events(&self, session_id: &str) -> Result<Vec<Value>, SessionStoreError> {
+        self.ensure()?;
+        let session_id = normalize_session_id(session_id)?;
+        let compacted_dir = self.root.join("archive").join("compacted");
+        let session_dir = compacted_dir.join(&session_id);
+        if !is_within(&session_dir, &compacted_dir) {
+            return Err(SessionStoreError::new(format!(
+                "会话归档目录越界：{session_id}"
+            )));
+        }
+        if !session_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut paths: Vec<PathBuf> = fs::read_dir(&session_dir)
+            .map_err(|error| io_error("读取压缩归档目录", &session_dir, &error))?
+            .filter_map(|item| item.ok())
+            .map(|item| item.path())
+            .filter(|path| path.extension().map(|ext| ext == "jsonl").unwrap_or(false))
+            .collect();
+        paths.sort();
+
+        let mut events: Vec<Value> = Vec::new();
+        for path in paths {
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in text.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(parsed) = serde_json::from_str::<Value>(line) {
+                    if parsed.is_object() {
+                        events.push(parsed);
+                    }
+                }
+            }
+        }
+        Ok(events)
+    }
+
     /// 列出索引里的会话：按更新时间倒序（同刻按创建时间倒序）。
     pub fn list_sessions(&self) -> Result<Vec<SessionIndexEntry>, SessionStoreError> {
         let mut entries = self.load_entries()?;
@@ -352,6 +466,15 @@ impl SessionStore {
             _process: process,
         })
     }
+}
+
+/// 归档 id：`compact-<UTC 时间戳>-<随机后缀>`；随机后缀复用会话 id 的熵源。
+fn generated_archive_id(now: DateTime<Utc>) -> String {
+    format!(
+        "compact-{}-{}",
+        now.format("%Y%m%d-%H%M%S"),
+        crate::naming::random_suffix()
+    )
 }
 
 /// 索引信封版本；与 Python 侧一致，读的时候只认 sessions 数组。

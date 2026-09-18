@@ -147,6 +147,25 @@ pub fn python_dumps_compact_sorted(value: &Value) -> String {
     }
 }
 
+/// 渲染为 Python `json.dumps(value, ensure_ascii=False, separators=(",", ":"))`：
+/// 紧凑分隔符且保留插入序。
+pub fn python_dumps_compact(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let entries: Vec<String> = map
+                .iter()
+                .map(|(key, item)| format!("{}:{}", json_string(key), python_dumps_compact(item)))
+                .collect();
+            format!("{{{}}}", entries.join(","))
+        }
+        Value::Array(items) => {
+            let entries: Vec<String> = items.iter().map(python_dumps_compact).collect();
+            format!("[{}]", entries.join(","))
+        }
+        other => python_dumps(other, 0),
+    }
+}
+
 /// 渲染为 Python `json.dumps(value, ensure_ascii=False, sort_keys=True)`：
 /// 默认分隔符（`, ` 与 `: `）且键按字典序排列。
 pub fn python_dumps_sorted(value: &Value) -> String {

@@ -3973,17 +3973,6 @@ def context_compaction_cases() -> dict:
             emergency_ratio_reached=False,
             cache_hit_ratio=0.0,
         )
-        batch = parts["batch"](events=(), recent_events=()) if has_batch else None
-        decision = manager_class.decide_auto_compaction(snapshot, batch)
-        decision_cases.append(
-            {
-                "label": label,
-                "trigger_reached": trigger_reached,
-                "has_batch": has_batch,
-                "should_compact": decision.should_compact,
-                "reason": decision.reason,
-            }
-        )
 
     batch_cases = []
     for case in BATCH_EVENT_CASES:
@@ -5026,6 +5015,1571 @@ def subagents_cases() -> dict:
     }
 
 
+<<<<<<< ours
+=======
+# ---------------------------------------------------------------------------
+# turn/loop.py 的接线面：回调轨迹、端口入参、收尾与失败分类
+# ---------------------------------------------------------------------------
+
+import threading  # noqa: E402
+
+import omnicrawl.agent.controllers.turn.loop as turn_loop_module  # noqa: E402
+import omnicrawl.agent.runtime.execution as execution_module  # noqa: E402
+from omnicrawl.agent.runtime.run_guard import (  # noqa: E402
+    activate_pause_event,
+    reset_pause_event,
+)
+from omnicrawl.agent.runtime.execution import AgentLoopObservation  # noqa: E402
+from omnicrawl.agent.types import AgentModelReply  # noqa: E402
+
+
+def _turn_loop_mixin():
+    return _mixin_class(
+        turn_loop_module,
+        "run_stream",
+        "_execute_tool_batch",
+        "_request_agent_reply",
+    )
+
+
+def _cancel_error_types():
+    """按类名动态定位取消异常：不把被脱敏的类名写进 fixture 生成器。"""
+
+    found = []
+    for module in (turn_loop_module, execution_module):
+        for value in vars(module).values():
+            if not isinstance(value, type) or not issubclass(value, Exception):
+                continue
+            if value.__name__ == "Exception":
+                continue
+            if "cancel" in value.__name__.casefold():
+                found.append(value)
+    return found
+
+
+TURN_LOOP_MIXIN = _turn_loop_mixin()
+CANCEL_ERROR_TYPES = _cancel_error_types()
+
+
+def _call_view(tool_call):
+    return {
+        "name": tool_call.name,
+        "arguments": dict(tool_call.arguments),
+        "id": tool_call.id,
+        "function_name": tool_call.function_name,
+    }
+
+
+def _observation_view(item):
+    return {
+        "tool_call": _call_view(item.tool_call),
+        "result": result_view(item.result),
+        "message": dict(item.message),
+        "followup_messages": [dict(message) for message in item.followup_messages],
+    }
+
+
+def _trace_args(args):
+    view = []
+    for value in args:
+        if isinstance(value, ToolCall):
+            view.append(_call_view(value))
+        elif isinstance(value, ToolResult):
+            view.append(result_view(value))
+        elif value is None or isinstance(value, (str, int, float, bool)):
+            view.append(value)
+        else:
+            view.append(repr(value))
+    return view
+
+
+class TurnLoopProbe(TURN_LOOP_MIXIN):
+    """只补 `run_stream` 读到的宿主属性与编排方法：副作用一律记录，不执行。
+
+    两个端口按脚本应答：`_request_agent_reply` 调用接线传进来的报告回调，
+    `_execute_tool_batch` 记录接线传进来的端口参数并返回脚本化观察。循环本体、收尾
+    与失败分类都走 `run_stream`。
+    """
+
+    def __init__(
+        self,
+        *,
+        context_messages=(),
+        history=(),
+        replies=(),
+        batches=(),
+        config=None,
+    ):
+        self.config = config if config is not None else SimpleNamespace()
+        self._history = [dict(item) for item in history]
+        self._context_fixed = [dict(item) for item in context_messages]
+        self.replies = [dict(item) for item in replies]
+        self.batches = [dict(item) for item in batches]
+        self.events = []
+        self.appends = []
+        self.hooks = []
+        self.commits = 0
+        self.compaction = None
+        self.recovery_gate = None
+        self.runner_messages = None
+        self.reply_port = None
+        self.batch_port = None
+
+    def _ensure_mcp_tools_ready(self, status):
+        return None
+
+    def _apply_skill_command(self, text, status):
+        return text
+
+    def _resolve_continue_request(self, text):
+        return text
+
+    def _plugin_begin_turn(self):
+        return None
+
+    def _plugin_end_turn(self):
+        return None
+
+    def _dispatch_plugin_hook(self, name, payload, turn_id=None):
+        self.hooks.append(name)
+        if name == "turn.start":
+            return {"userText": payload.get("userText")}
+        return None
+
+    def _append_session_event(self, event_type, payload):
+        self.events.append([event_type, payload])
+
+    def _append_prompt_history(self, text):
+        self.appends.append(["prompt_history", text])
+
+    def _begin_turn_snapshot(self):
+        return None
+
+    def _complete_turn_snapshot(self, snapshot):
+        self.appends.append(["complete_snapshot"])
+
+    def _finalize_turn_snapshot_safely(self, snapshot):
+        return None
+
+    def _append_history(self, *args):
+        self.appends.append(["history", list(args)])
+
+    def _commit_turn_history(self):
+        self.commits += 1
+
+    def _trigger_context_compaction_after_turn(self, **kwargs):
+        self.compaction = {
+            key: value for key, value in kwargs.items() if key != "context_messages"
+        }
+
+    def _context_messages(self, turn_id=None):
+        return [dict(item) for item in self._context_fixed]
+
+    def _raw_tool_call_arguments(self, tool_call):
+        return {}
+
+    def _inject_subagent_notifications(self, messages):
+        return None
+
+    def _record_turn_tool_execution(self, snapshot, tool_call):
+        return None
+
+    def _restore_stream_turn_state(self, **kwargs):
+        return None
+
+    def _freeze_fork_context_messages(self, messages):
+        return [dict(item) for item in messages]
+
+    def _can_recover_context_overflow(self, exc, *, visible_output_seen):
+        # 桩只记录接线传进来的判定入参（`visible_output_seen or tool_execution_seen`）；
+        # 恒返回 False，让回合照「不可恢复」走完取消/错误收尾。
+        self.recovery_gate = {
+            "error": str(exc),
+            "visible_output_seen": bool(visible_output_seen),
+        }
+        return False
+
+    def _request_agent_reply(
+        self,
+        messages,
+        on_delta,
+        on_token_usage,
+        on_protocol_wait,
+        on_retry_status,
+        on_stream_rollback=None,
+    ):
+        self.runner_messages = [dict(item) for item in messages]
+        self.reply_port = {
+            "params": [
+                "messages",
+                "on_delta",
+                "on_token_usage",
+                "on_protocol_wait",
+                "on_retry_status",
+                "on_stream_rollback",
+            ],
+            "rollback_available": on_stream_rollback is not None,
+        }
+        script = self.replies.pop(0) if self.replies else {"content": ""}
+        if script.get("error"):
+            raise RuntimeError(script["error"])
+        for text in script.get("deltas", ()):
+            on_delta(text)
+        for usage in script.get("usages", ()):
+            on_token_usage(*usage)
+        if script.get("protocol_wait"):
+            on_protocol_wait()
+        if script.get("retry") is not None:
+            on_retry_status(script["retry"])
+        if script.get("rollback") and on_stream_rollback is not None:
+            on_stream_rollback()
+        if script.get("error_after"):
+            raise RuntimeError(script["error_after"])
+        content = script.get("content", "")
+        return AgentModelReply(
+            message=script.get("message") or {"role": "assistant", "content": content},
+            content=content,
+            tool_calls=[ToolCall(**item) for item in script.get("tool_calls", ())],
+            reasoning=script.get("reasoning", ""),
+            content_streamed=bool(script.get("content_streamed")),
+        )
+
+    def _execute_tool_batch(
+        self,
+        raw_tool_calls,
+        first_step,
+        *,
+        report_tool_start=None,
+        report_tool_result=None,
+        report_tool_output_update=None,
+        check_cancelled=None,
+        status=None,
+        prompt="",
+        tools=None,
+        active_runtime_snapshot=None,
+        vision_base_llm=None,
+        on_token_usage=None,
+        execution_cache=None,
+        persist_session_events=True,
+        record_tool_execution=None,
+        tool_timeout_seconds=None,
+    ):
+        self.batch_port = {
+            "params": [
+                name
+                for name, value in (
+                    ("report_tool_start", report_tool_start),
+                    ("report_tool_result", report_tool_result),
+                    ("report_tool_output_update", report_tool_output_update),
+                    ("status", status),
+                    ("prompt", prompt),
+                    ("record_tool_execution", record_tool_execution),
+                )
+                if value is not None
+            ],
+            "cancelled_check_available": check_cancelled is not None,
+            "active_runtime_snapshot": active_runtime_snapshot,
+            "vision_base_llm": vision_base_llm,
+            "first_step": first_step,
+            "prompt": prompt,
+            "calls": [_call_view(call) for call in raw_tool_calls],
+        }
+        script = self.batches.pop(0) if self.batches else {"observations": []}
+        if script.get("error"):
+            raise RuntimeError(script["error"])
+        for name in script.get("reports", ()):
+            if name == "start" and report_tool_start is not None:
+                report_tool_start(first_step, raw_tool_calls[0])
+            if name == "result" and report_tool_result is not None:
+                report_tool_result(
+                    raw_tool_calls[0],
+                    ToolResult(ok=True, output="工具完成"),
+                )
+        return [
+            AgentLoopObservation(
+                tool_call=ToolCall(**item["tool_call"]),
+                result=ToolResult(**item["result"]),
+                message=dict(item["message"]),
+                followup_messages=tuple(
+                    dict(message) for message in item.get("followup_messages", ())
+                ),
+            )
+            for item in script.get("observations", ())
+        ]
+
+
+def turn_loop_cases():
+    """`run_stream` 的接线：回调轨迹、端口入参、收尾与失败分类。"""
+
+    assert CANCEL_ERROR_TYPES, "未定位到取消异常类"
+
+    def record(trace, name):
+        def recorder(*args):
+            trace.append([name, _trace_args(args)])
+
+        return recorder
+
+    def run_case(
+        label,
+        *,
+        user_text="做事",
+        context_messages=(),
+        history=(),
+        replies=(),
+        batches=(),
+        with_status=False,
+        with_retry=False,
+        cancel_at=None,
+        pause=False,
+    ):
+        trace = []
+        probe = TurnLoopProbe(
+            context_messages=context_messages,
+            history=history,
+            replies=replies,
+            batches=batches,
+        )
+        callbacks = {
+            "on_delta": record(trace, "on_delta"),
+            "on_tool_start": record(trace, "on_tool_start"),
+            "on_tool_result": record(trace, "on_tool_result"),
+            "on_tool_output_update": record(trace, "on_tool_output_update"),
+            "on_token_usage": record(trace, "on_token_usage"),
+            "on_protocol_wait": record(trace, "on_protocol_wait"),
+            "on_stream_rollback": record(trace, "on_stream_rollback"),
+            "on_reasoning_delta": record(trace, "on_reasoning_delta"),
+            "on_subagent_event": record(trace, "on_subagent_event"),
+            "on_todo_update": record(trace, "on_todo_update"),
+        }
+        if with_status:
+            callbacks["on_status"] = record(trace, "on_status")
+        if with_retry:
+            callbacks["on_retry_status"] = record(trace, "on_retry_status")
+
+        checks = {"count": 0}
+
+        def cancel_check():
+            checks["count"] += 1
+            if cancel_at is not None and checks["count"] == cancel_at:
+                raise CANCEL_ERROR_TYPES[0]("用户取消")
+
+        token = None
+        if pause:
+            event = threading.Event()
+            event.set()
+            token = activate_pause_event(event)
+        try:
+            value = probe.run_stream(
+                user_text,
+                cancel_check=cancel_check,
+                **callbacks,
+            )
+            ok = True
+            error = None
+        except Exception as exc:  # noqa: BLE001 - 对照要记录真实异常
+            ok = False
+            value = None
+            error = {
+                "message": str(exc),
+                "cancelled": bool(probe._is_turn_cancel_exception(exc)),
+            }
+        finally:
+            if token is not None:
+                reset_pause_event(token)
+
+        event_types = [item[0] for item in probe.events]
+        usage = probe.compaction.get("usage") if probe.compaction else None
+        return {
+            "label": label,
+            "user_text": user_text,
+            "context_messages": [dict(item) for item in context_messages],
+            "history": [dict(item) for item in history],
+            "with_status": with_status,
+            "with_retry": with_retry,
+            "pause": pause,
+            "cancel_at": cancel_at,
+            "replies": [dict(item) for item in replies],
+            "batches": [dict(item) for item in batches],
+            "ok": ok,
+            "final_text": value,
+            "error": error,
+            "trace": trace,
+            "runner_messages": probe.runner_messages,
+            "event_types": event_types,
+            "terminal_event": event_types[-1] if event_types else None,
+            "turn_usage": usage.to_dict() if usage is not None else None,
+            "last_request_input_tokens": (
+                probe.compaction.get("last_request_input_tokens")
+                if probe.compaction
+                else None
+            ),
+            "recovery_gate": probe.recovery_gate,
+            "reply_port": probe.reply_port,
+            "batch_port": probe.batch_port,
+        }
+
+    tool_call_one = {
+        "name": "read_file",
+        "arguments": {"path": "a.py"},
+        "id": "c1",
+        "function_name": "read_file",
+    }
+    observation_one = {
+        "tool_call": tool_call_one,
+        "result": {
+            "ok": True,
+            "output": "文件内容",
+            "full_output": "",
+            "error_code": None,
+            "retryable": False,
+        },
+        "message": {"role": "tool", "content": "文件内容"},
+    }
+
+    cases = [
+        run_case("空输入", user_text="   "),
+        run_case(
+            "纯文本回复（未流式：收尾补发）",
+            user_text="  你好  ",
+            context_messages=({"role": "system", "content": "S"},),
+            history=({"role": "user", "content": "旧"},),
+            replies=({"content": "done"},),
+        ),
+        run_case(
+            "已流式回复（不补发）",
+            replies=({"content": "done", "content_streamed": True, "deltas": ("do", "ne")},),
+        ),
+        run_case("空增量不算可见输出", replies=({"content": "x", "deltas": ("",)},)),
+        run_case(
+            "重试提示回落到状态回调",
+            with_status=True,
+            replies=({"content": "ok", "retry": "重试中"},),
+        ),
+        run_case(
+            "重试提示走专用回调",
+            with_status=True,
+            with_retry=True,
+            replies=({"content": "ok", "retry": "重试中"},),
+        ),
+        run_case(
+            "用量累计与等待、回滚提示",
+            replies=(
+                {
+                    "content": "ok",
+                    "usages": ((10, 2, 3), (4, 5, 6)),
+                    "protocol_wait": True,
+                    "rollback": True,
+                },
+            ),
+        ),
+        run_case("负用量按 0 计", replies=({"content": "ok", "usages": ((-5, -1, -2),)},)),
+        run_case(
+            "一整批工具后继续",
+            replies=(
+                {"content": "", "tool_calls": (tool_call_one,)},
+                {"content": "ok"},
+            ),
+            batches=({"observations": (observation_one,), "reports": ("start", "result")},),
+        ),
+        run_case(
+            "批次失败",
+            replies=({"content": "", "tool_calls": (tool_call_one,)},),
+            batches=({"error": "批次炸了"},),
+        ),
+        run_case("模型回复来源失败", replies=({"error": "上游炸了"},)),
+        run_case(
+            "可见输出后的失败",
+            replies=({"content": "", "deltas": ("半截",), "error_after": "上游炸了"},),
+        ),
+        run_case(
+            "取消（第二次检查点）",
+            replies=(
+                {"content": "", "tool_calls": (tool_call_one,)},
+                {"content": "ok"},
+            ),
+            batches=({"observations": (observation_one,)},),
+            cancel_at=2,
+        ),
+        run_case(
+            "暂停后收尾",
+            replies=({"content": "", "tool_calls": (tool_call_one,)},),
+            batches=({"observations": (observation_one,)},),
+            pause=True,
+        ),
+    ]
+
+    return {"cases": cases}
+
+
+
+# ------------------------------------------- context_compaction 编排（ledger / evidence / summary / service / turn）
+
+
+def _compaction_orchestration_parts():
+    import dataclasses
+    import inspect
+
+    import omnicrawl.agent.context_compaction.evidence as evidence
+    import omnicrawl.agent.context_compaction.ledger as ledger
+    import omnicrawl.agent.context_compaction.models as models
+    import omnicrawl.agent.context_compaction.service as service
+    import omnicrawl.agent.context_compaction.summary as summary
+
+    def dataclass_with(*fields):
+        for obj in vars(models).values():
+            if dataclasses.is_dataclass(obj) and all(
+                field in getattr(obj, "__dataclass_fields__", {}) for field in fields
+            ):
+                return obj
+        raise SystemExit("找不到 dataclass")
+
+    def module_class(module, method):
+        for obj in vars(module).values():
+            if inspect.isclass(obj) and hasattr(obj, method):
+                return obj
+        raise SystemExit("找不到带 %s 的类" % method)
+
+    return {
+        "models": models,
+        "modules": {
+            "evidence": evidence,
+            "ledger": ledger,
+            "service": service,
+            "summary": summary,
+        },
+        "source": dataclass_with("event_id", "type", "payload"),
+        "usage": dataclass_with("input_tokens", "output_tokens", "cached_input_tokens"),
+        "snapshot": dataclass_with(
+            "stable_context_tokens",
+            "existing_summary_tokens",
+            "cold_history_tokens",
+            "target_summary_tokens",
+            "provider_input_tokens",
+        ),
+        "batch": dataclass_with(
+            "events", "recent_events", "previous_summary", "previous_covered_event_ids"
+        ),
+        "recall": module_class(evidence, "recall"),
+        "ledger_class": module_class(ledger, "measurement_payload"),
+        "compactor": module_class(summary, "compact"),
+        "service_class": module_class(service, "after_complete_turn"),
+        "generation_error": _summary_generation_error(summary),
+        "completion": dataclass_with("content", "usage", "profile", "provider", "tool_calls"),
+        "generation": dataclass_with(
+            "structured", "usage", "profile", "provider", "attempts"
+        ),
+    }
+
+
+
+def _summary_generation_error(summary):
+    try:
+        summary.parse_structured_summary("{not json}")
+    except Exception as exc:  # noqa: BLE001 - 取解析失败真正抛出的类型
+        return type(exc)
+    raise SystemExit("解析非法 JSON 应当失败")
+
+
+def _compaction_events(source_class, artifact_metadata=False):
+    events = _summary_events(source_class)
+    if artifact_metadata:
+        events.append(
+            _source_event(
+                source_class,
+                "e7",
+                "tool_result",
+                {
+                    "tool": "bash",
+                    "tool_call_id": "c3",
+                    "ok": True,
+                    "artifact_path": "artifacts/e7.txt",
+                    "type": "text",
+                    "size_chars": 42,
+                    "sha256": "deadbeef",
+                    "nested": {"artifact_path": "artifacts/deep.txt", "truncated": True},
+                    "ignored": ["不是标量"],
+                },
+            )
+        )
+    return events
+
+
+def _summary_event(source_class, event_id, covered, structured=None):
+    payload = {"covered_event_ids": list(covered)}
+    if structured is not None:
+        payload["structured"] = structured
+    return _source_event(source_class, event_id, "compact_summary", payload)
+
+
+def _ledger_cases():
+    parts = _compaction_orchestration_parts()
+    ledger_class = parts["ledger_class"]
+    usage_class = parts["usage"]
+    snapshot_class = parts["snapshot"]
+    snapshot = snapshot_class(
+        stable_context_tokens=1000,
+        existing_summary_tokens=200,
+        cold_history_tokens=300,
+        recent_history_tokens=400,
+        next_user_reserve_tokens=150,
+        target_summary_tokens=1500,
+        estimated_next_input_tokens=2050,
+        post_turn_context_tokens=1900,
+        simulated_compacted_input_tokens=550,
+        potential_retired_tokens=1500,
+        trigger_context_tokens=1200,
+        context_window_tokens=200000,
+        trigger_reached=True,
+        emergency_ratio_reached=False,
+        cache_hit_ratio=0.25,
+        provider_input_tokens=800,
+    )
+    return {
+        "schema_version": ledger_class.schema_version,
+        "snapshot": snapshot.to_dict(),
+        "usage": [100, 20, 50],
+        "payload": ledger_class().measurement_payload(snapshot, usage_class(100, 20, 50)),
+        "empty_usage": ledger_class().measurement_payload(snapshot, usage_class()),
+    }
+
+
+def _evidence_cases():
+    parts = _compaction_orchestration_parts()
+    source_class = parts["source"]
+    recall_class = parts["recall"]
+    plain = _compaction_events(source_class)
+    with_artifacts = _compaction_events(source_class, artifact_metadata=True)
+    summary_event = _summary_event(source_class, "s1", ["e1", "e2", "e3", "e7"])
+    nested_summary = _summary_event(
+        source_class,
+        "s2",
+        [],
+        {
+            "decisions": [
+                {"text": "决策", "source_event_ids": ["e3", "e9"]},
+                {"text": "嵌套", "source_event_ids": ["e7"]},
+            ]
+        },
+    )
+    stream = [*with_artifacts, summary_event, nested_summary]
+
+    def text_reader(text):
+        return lambda path: text
+
+    def failing(error):
+        def reader(path):
+            raise error
+
+        return reader
+
+    def run(
+        label,
+        events,
+        event_ids,
+        reader=None,
+        reader_kind="text",
+        reader_text="artifact 正文",
+        max_items=8,
+        max_output_tokens=4000,
+    ):
+        observed = outcome(
+            recall_class(max_items=max_items, max_output_tokens=max_output_tokens).recall,
+            events=events,
+            event_ids=event_ids,
+            artifact_reader=reader or text_reader(reader_text),
+        )
+        entry = {
+            "label": label,
+            "event_ids": event_ids,
+            "events": _event_view(events),
+            "reader": {"kind": reader_kind, "text": reader_text},
+            "max_items": max_items,
+            "max_output_tokens": max_output_tokens,
+            "ok": observed["ok"],
+            "error": observed["error"],
+        }
+        if observed["ok"]:
+            entry["result"] = observed["value"]
+        return entry
+
+    cases = [
+        run("没有有效摘要", plain, ["e1"]),
+        run("摘要未引用事件", stream, ["e4"]),
+        run("摘要引用的前置事件缺失", stream, ["e9"]),
+        run("正常恢复三个事件", stream, ["e1", "e2", "e3"]),
+        run("嵌套引用授权", stream, ["e7"]),
+        run("event_ids 非数组", stream, "e1"),
+        run("条目非法与合法混合", stream, [123, "", "   ", "e1"]),
+        run("事件 ID 超长", stream, ["x" * 129, "e1"]),
+        run("重复条目与条数上限", stream, ["e1", "e1", "e2", "e3", "e4"], max_items=2),
+        run("总预算收紧", stream, ["e1", "e2"], max_output_tokens=260),
+        run(
+            "artifact 非文本",
+            stream,
+            ["e7"],
+            reader=failing(UnicodeDecodeError("utf-8", bytes([255]), 0, 1, "invalid")),
+            reader_kind="not_text",
+        ),
+        run(
+            "artifact 不可读",
+            stream,
+            ["e7"],
+            reader=failing(OSError("no such file")),
+            reader_kind="unreadable",
+        ),
+        run(
+            "仅元数据摘要",
+            with_artifacts,
+            ["e7"],
+            reader=text_reader("A" * 400),
+            reader_text="A" * 400,
+        ),
+    ]
+    invalid = outcome(recall_class, max_items=0, max_output_tokens=4000)
+    cases.append(
+        {
+            "label": "max_items 非法",
+            "event_ids": [],
+            "max_items": 0,
+            "max_output_tokens": 4000,
+            "ok": invalid["ok"],
+            "error": invalid["error"],
+        }
+    )
+    return {
+        "cases": cases,
+        "tool_name": parts["modules"]["evidence"].RECALL_SESSION_EVIDENCE_TOOL_NAME,
+    }
+
+
+def _parse_cases(summary_module):
+    payloads = [
+        '{"objective": ["目标"]}',
+        '  {"a": 1}  ',
+        '```json\n{"a": 1}\n```',
+        '```\n{"a": 1}\n```\n',
+        '```json\n{"a": 1}',
+        "[]",
+        '"text"',
+        "",
+        "{not json}",
+        '{"a": 1} trailing',
+        '{"a": 1, "b": [1, 2, "中文"]}',
+    ]
+    cases = []
+    for content in payloads:
+        observed = outcome(summary_module.parse_structured_summary, content)
+        entry = {
+            "label": content if len(content) <= 40 else content[:40] + "…",
+            "content": content,
+            "ok": observed["ok"],
+            "error": observed["error"],
+        }
+        if observed["ok"]:
+            entry["value"] = observed["value"]
+        elif "不是合法 JSON" in str(observed["error"]):
+            entry["compare"] = "prefix"
+            entry["error_prefix"] = "摘要响应不是合法 JSON："
+        cases.append(entry)
+    return cases
+
+
+def _chunk_cases(summary_module, source_class):
+    events = [
+        _source_event(source_class, "c1", "user_message", {"content": "短"}),
+        _source_event(source_class, "c2", "assistant_message", {"content": "x" * 400}),
+        _source_event(source_class, "c3", "tool_result", {"output": "y" * 400}),
+    ]
+    cases = []
+    for label, budget in [("默认预算", 64000), ("小预算分块", 120), ("零预算", 0)]:
+        chunks = summary_module._chunk_events(events, budget)
+        cases.append(
+            {
+                "label": label,
+                "max_input_tokens": budget,
+                "events": [
+                    {
+                        "event_id": event.event_id,
+                        "type": event.type,
+                        "payload": dict(event.payload),
+                    }
+                    for event in events
+                ],
+                "chunks": [[event.event_id for event in chunk] for chunk in chunks],
+            }
+        )
+    return cases
+
+
+def _event_view(events):
+    return [
+        {"event_id": event.event_id, "type": event.type, "payload": dict(event.payload)}
+        for event in events
+    ]
+
+
+def _record_prompt(text):
+    # JSON 解析失败文案两侧不同（Python json.JSONDecodeError.msg vs serde），
+    # 提示词里的该字段按占位符归一化后再对照。
+    text = normalize_parse_error(text)
+    return {
+        "len": len(text),
+        "sha256": digest(text),
+        "text": text if len(text) <= 400 else None,
+    }
+
+
+def normalize_parse_error(text):
+    # 每条提示词最多带一个 response_error。
+    marker = '"response_error":"'
+    start = text.find(marker)
+    if start < 0:
+        return text
+    start += len(marker)
+    end = text.find('"', start)
+    if end < 0:
+        return text
+    return text[:start] + "<parse_error>" + text[end:]
+
+
+def _prompt_payload(prompt):
+    if "输入：" not in prompt:
+        return None
+    return prompt.split("输入：", 1)[1].lstrip()
+
+
+def _summary_compactor_cases():
+    parts = _compaction_orchestration_parts()
+    summary_module = parts["modules"]["summary"]
+    source_class = parts["source"]
+    usage_class = parts["usage"]
+    batch_class = parts["batch"]
+    compactor_class = parts["compactor"]
+    generation_error = parts["generation_error"]
+    completion_class = parts["completion"]
+
+    valid = '{"objective": ["目标"], "current_state": ["状态"]}'
+
+    def make_batch(events, **overrides):
+        values = {"events": tuple(events), "recent_events": ()}
+        values.update(overrides)
+        return batch_class(**values)
+
+    def compact_case(label, contents, budget, target_tokens=1500, tool_calls=0):
+        script = []
+        for item in contents:
+            if isinstance(item, Exception) or item == "raise":
+                script.append({"error": "模型炸了"})
+            elif isinstance(item, tuple):
+                script.append({"content": item[0], "tool_calls": item[1]})
+            else:
+                script.append({"content": item, "tool_calls": tool_calls})
+        scripted = [
+            generation_error(entry["error"])
+            if "error" in entry
+            else completion_class(
+                content=entry["content"],
+                usage=usage_class(),
+                tool_calls=entry["tool_calls"],
+            )
+            for entry in script
+        ]
+        prompts = []
+
+        def call_model(messages):
+            prompts.append(messages[0]["content"])
+            item = scripted.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        compactor = compactor_class(call_model, max_input_tokens=budget)
+        events = _compaction_events(source_class)[:3]
+        observed = outcome(
+            compactor.compact,
+            make_batch(events),
+            target_summary_tokens=target_tokens,
+            validation_feedback=["上次不行"],
+        )
+        entry = {
+            "label": label,
+            "max_input_tokens": budget,
+            "target_summary_tokens": target_tokens,
+            "validation_feedback": ["上次不行"],
+            "events": _event_view(events),
+            "responses": script,
+            "payloads": [_prompt_payload(text) for text in prompts],
+            "ok": observed["ok"],
+            "error": observed["error"],
+            "prompts": [_record_prompt(text) for text in prompts],
+        }
+        if not observed["ok"] and "不是合法 JSON" in str(observed["error"]):
+            entry["compare"] = "prefix"
+            entry["error_prefix"] = "摘要模型连续返回无效结构："
+        if observed["ok"]:
+            result = observed["value"]
+            entry["structured"] = dict(result.structured)
+            entry["usage"] = result.usage.to_dict()
+            entry["profile"] = result.profile
+            entry["provider"] = result.provider
+            entry["attempts"] = result.attempts
+        return entry
+
+    compact_cases = [
+        compact_case("单块成功", [valid], 64000),
+        compact_case("分块合并", [valid, valid, valid], 60),
+        compact_case("解析失败后重试", ["{not json}", valid], 64000),
+        compact_case("工具调用后重试", [("工具调用", 1), valid], 64000),
+        compact_case("两次都非法", ["nope", "still nope"], 64000),
+        compact_case("模型调用失败", ["raise"], 64000),
+        compact_case("无摘要预算上限", [valid], 64000, target_tokens=0),
+    ]
+
+    def budget_case(label, extra):
+        prompts = []
+        scripted = [
+            completion_class(content=valid, usage=usage_class())
+        ]
+
+        def call_model(messages, prompts=prompts, scripted=scripted):
+            prompts.append(messages[0]["content"])
+            return scripted.pop(0)
+
+        if extra == "raise":
+
+            def provider():
+                raise ValueError("预算不可用")
+
+            compactor = compactor_class(
+                call_model, max_input_tokens=64000, budget_provider=provider
+            )
+        elif extra is None:
+            compactor = compactor_class(call_model, max_input_tokens=64000)
+        else:
+            compactor = compactor_class(
+                call_model, max_input_tokens=64000, budget_provider=lambda: extra
+            )
+        events = _compaction_events(source_class)[:3]
+        observed = outcome(
+            compactor.compact,
+            make_batch(events),
+            target_summary_tokens=1500,
+            validation_feedback=[],
+        )
+        return {
+            "label": label,
+            "budget_provider": "raise" if extra == "raise" else extra,
+            "target_summary_tokens": 1500,
+            "max_input_tokens": 64000,
+            "events": _event_view(events),
+            "responses": [{"content": valid, "tool_calls": 0}],
+            "ok": observed["ok"],
+            "error": observed["error"],
+            "prompts": [_record_prompt(text) for text in prompts],
+            "payloads": [_prompt_payload(text) for text in prompts],
+            "structured": dict(observed["value"].structured) if observed["ok"] else None,
+        }
+
+    budget_cases = [
+        budget_case("未给余额", None),
+        budget_case("余额放大", 200000),
+        budget_case("余额不足", 10),
+        budget_case("余额解析失败", "raise"),
+    ]
+
+    def previous_case(label, previous):
+        prompts = []
+        scripted = [completion_class(content=valid, usage=usage_class())]
+
+        def call_model(messages, prompts=prompts, scripted=scripted):
+            prompts.append(messages[0]["content"])
+            return scripted.pop(0)
+
+        compactor = compactor_class(call_model, max_input_tokens=64000)
+        events = _compaction_events(source_class)[:3]
+        observed = outcome(
+            compactor.compact,
+            make_batch(events, previous_summary=previous, previous_covered_event_ids=("e9",)),
+            target_summary_tokens=1500,
+            validation_feedback=[],
+        )
+        return {
+            "label": label,
+            "previous_summary": previous,
+            "target_summary_tokens": 1500,
+            "previous_covered_event_ids": ["e9"],
+            "events": _event_view(events),
+            "responses": [{"content": valid, "tool_calls": 0}],
+            "ok": observed["ok"],
+            "error": observed["error"],
+            "prompts": [_record_prompt(text) for text in prompts],
+            "payloads": [_prompt_payload(text) for text in prompts],
+            "structured": dict(observed["value"].structured) if observed["ok"] else None,
+        }
+
+    previous_cases = [
+        previous_case("结构化上次摘要", {"structured": {"objective": ["旧目标"]}}),
+        previous_case("旧版文本上次摘要", {"content": "  旧的确定性摘要  "}),
+        previous_case("空上次摘要", {}),
+    ]
+
+    invalid_ctor = outcome(compactor_class, lambda _messages: None, max_input_tokens=0)
+    return {
+        "parse": _parse_cases(summary_module),
+        "chunks": _chunk_cases(summary_module, source_class),
+        "compact": compact_cases,
+        "budget": budget_cases,
+        "previous_summary": previous_cases,
+        "invalid_constructor": {"ok": invalid_ctor["ok"], "error": invalid_ctor["error"]},
+        "tool_choice": summary_module._SUMMARY_TOOL_CHOICE,
+        "prompt_text": {
+            "len": len(summary_module.load_summary_prompt()),
+            "sha256": digest(summary_module.load_summary_prompt()),
+            "head": summary_module.load_summary_prompt()[:60],
+            "tail": summary_module.load_summary_prompt()[-60:],
+        },
+        "max_index_chunk_tokens": summary_module._MAX_INDEX_CHUNK_TOKENS,
+        "summary_output_reserve_tokens": summary_module._SUMMARY_OUTPUT_RESERVE_TOKENS,
+    }
+
+
+def _service_cases():
+    from types import SimpleNamespace
+
+    parts = _compaction_orchestration_parts()
+    service_class = parts["service_class"]
+    generation_class = parts["generation"]
+    usage_class = parts["usage"]
+    source_class = parts["source"]
+    generation_error = parts["generation_error"]
+
+    events = _compaction_events(source_class)
+
+    def measure_kwargs(**overrides):
+        values = {
+            "system_prompt": "系统提示词",
+            "context_messages": [{"role": "system", "content": "上下文块"}],
+            "history_messages": [
+                {"role": "user", "content": "第一轮"},
+                {"role": "assistant", "content": "回答"},
+            ],
+            "tool_schemas": [{"type": "function", "function": {"name": "bash"}}],
+            "recent_turns": 1,
+            "target_summary_tokens": 1500,
+            "next_user_reserve_tokens": 200,
+            "trigger_context_tokens": 100000,
+            "context_window_tokens": 200000,
+            "emergency_context_ratio": 0.9,
+            "usage": usage_class(100, 20, 50),
+            "provider_input_tokens": 0,
+        }
+        values.update(overrides)
+        return values
+
+    def jsonable_measure(kwargs):
+        view = dict(kwargs)
+        view["usage"] = kwargs["usage"].to_dict()
+        return view
+
+    class FakeCompactor:
+        def __init__(self, items):
+            self.items = list(items)
+            self.calls = []
+
+        def compact(self, batch, *, target_summary_tokens, validation_feedback):
+            self.calls.append(
+                {
+                    "target_summary_tokens": target_summary_tokens,
+                    "feedback": list(validation_feedback),
+                }
+            )
+            item = self.items.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    def generation(structured, attempts=1):
+        return generation_class(
+            structured=structured,
+            usage=usage_class(1000, 100, 200),
+            profile="cheap",
+            provider="openai",
+            attempts=attempts,
+        )
+
+    def outcome_view(value):
+        compact_payload = getattr(value, "compact_payload", None)
+        projection = getattr(value, "history_projection", None)
+        return {
+            "measurement_payload": dict(value.measurement_payload),
+            "compact_payload": dict(compact_payload) if compact_payload is not None else None,
+            "history_projection": list(projection) if projection is not None else None,
+            "fallback_required": value.fallback_required,
+            "diagnostic": value.diagnostic,
+        }
+
+    cases = []
+
+    parts_map = parts
+    measured = outcome(
+        service_class().measure_after_complete_turn,
+        **measure_kwargs(),
+    )
+    cases.append(
+        {
+            "label": "只测量不压缩",
+            "kind": "measure",
+            "measure": jsonable_measure(measure_kwargs()),
+            "source_events": _event_view(events),
+            "ok": measured["ok"],
+            "error": measured["error"],
+        }
+    )
+    if measured["ok"]:
+        cases[-1]["snapshot"] = measured["value"].snapshot.to_dict()
+        cases[-1]["event_payload"] = dict(measured["value"].event_payload)
+
+    def after_turn_case(label, *, source_events=None, compactor=None, guard=None, **overrides):
+        guard_view = None
+        if guard is not None:
+            guard_view = list(guard({"structured": {}}))
+        compactor_view = None
+        if compactor is not None:
+            compactor_view = {
+                "items": [
+                    {"error": item.args[0]}
+                    if isinstance(item, Exception)
+                    else {
+                        "structured": dict(item.structured),
+                        "attempts": item.attempts,
+                    }
+                    for item in compactor.items
+                ]
+            }
+        service = service_class()
+        if compactor is not None:
+            service = service_class(compactor=compactor)
+        if guard is not None:
+            service = service_class(compactor=compactor, placeholder_guard=guard)
+        kwargs = measure_kwargs(**overrides)
+        raw_events = source_events if source_events is not None else events
+        observed = outcome(
+            service.after_complete_turn,
+            source_events=raw_events,
+            reasoning_effort="medium",
+            preserve_exact_evidence=True,
+            **kwargs,
+        )
+        entry = {
+            "label": label,
+            "kind": "after_turn",
+            "compactor": compactor_view,
+            "guard": guard_view,
+            "measure": jsonable_measure(kwargs),
+            "source_events": _event_view(source_events if source_events is not None else events),
+            "reasoning_effort": "medium",
+            "preserve_exact_evidence": True,
+            "ok": observed["ok"],
+            "error": observed["error"],
+        }
+        if observed["ok"]:
+            entry["outcome"] = outcome_view(observed["value"])
+        if compactor is not None:
+            entry["compactor_calls"] = compactor.calls
+        return entry
+
+    cases.append(after_turn_case("未达触发阈值"))
+    cases.append(
+        after_turn_case(
+            "达到阈值但无完整批次",
+            source_events=[
+                _source_event(source_class, "x1", "assistant_message", {"content": "只有半轮"})
+            ],
+            trigger_context_tokens=1,
+        )
+    )
+    cases.append(
+        after_turn_case(
+            "达到阈值并完成压缩",
+            compactor=FakeCompactor([generation(_structured())]),
+            trigger_context_tokens=1,
+        )
+    )
+    cases.append(
+        after_turn_case(
+            "摘要调用失败",
+            compactor=FakeCompactor([generation_error("摘要失败")]),
+            trigger_context_tokens=1,
+        )
+    )
+    broken = _structured(decisions=[{"text": "决策一", "source_event_ids": ["nope"]}])
+    cases.append(
+        after_turn_case(
+            "校验失败重试两次",
+            compactor=FakeCompactor([generation(broken), generation(broken)]),
+            trigger_context_tokens=1,
+        )
+    )
+    cases.append(
+        after_turn_case(
+            "占位符守卫拒绝",
+            compactor=FakeCompactor([generation(_structured())]),
+            guard=lambda payload: (3, 7),
+            trigger_context_tokens=1,
+        )
+    )
+    cases.append(
+        after_turn_case(
+            "占位符守卫放行",
+            compactor=FakeCompactor([generation(_structured())]),
+            guard=lambda payload: (),
+            trigger_context_tokens=1,
+        )
+    )
+
+    def manual_case(label, *, compactor=None, source_events=None):
+        service = service_class()
+        if compactor is not None:
+            service = service_class(compactor=compactor)
+        manual_view = None
+        if compactor is not None:
+            manual_view = {
+                "items": [
+                    {"error": item.args[0]}
+                    if isinstance(item, Exception)
+                    else {
+                        "structured": dict(item.structured),
+                        "attempts": item.attempts,
+                    }
+                    for item in compactor.items
+                ]
+            }
+        observed = outcome(
+            service.manual_compact,
+            source_events=(source_events if source_events is not None else events),
+            target_summary_tokens=1500,
+            reasoning_effort="medium",
+            preserve_exact_evidence=True,
+        )
+        entry = {
+            "label": label,
+            "kind": "manual",
+            "compactor": manual_view,
+            "source_events": _event_view(source_events if source_events is not None else events),
+            "target_summary_tokens": 1500,
+            "reasoning_effort": "medium",
+            "preserve_exact_evidence": True,
+            "ok": observed["ok"],
+            "error": observed["error"],
+        }
+        if observed["ok"]:
+            entry["outcome"] = outcome_view(observed["value"])
+        if compactor is not None:
+            entry["compactor_calls"] = compactor.calls
+        return entry
+
+    cases.append(manual_case("手动压缩无批次", source_events=[
+        _source_event(source_class, "x1", "assistant_message", {"content": "只有半轮"})
+    ]))
+    cases.append(
+        manual_case("手动压缩成功", compactor=FakeCompactor([generation(_structured())]))
+    )
+
+    recovery = outcome(
+        service_class(compactor=FakeCompactor([])).recover_from_context_overflow,
+        source_events=events,
+        target_summary_tokens=1500,
+        reasoning_effort="medium",
+        preserve_exact_evidence=True,
+    )
+    cases.append(
+        {
+            "label": "超限恢复无回合",
+            "kind": "recovery",
+            "source_events": _event_view(events),
+            "target_summary_tokens": 1500,
+            "reasoning_effort": "medium",
+            "preserve_exact_evidence": True,
+            "ok": recovery["ok"],
+            "error": recovery["error"],
+            "outcome": outcome_view(recovery["value"]) if recovery["ok"] else None,
+        }
+    )
+
+    invalid_measure = outcome(
+        service_class().measure_after_complete_turn,
+        **measure_kwargs(recent_turns=0),
+    )
+    cases.append(
+        {
+            "label": "测量参数非法",
+            "kind": "measure",
+            "measure": jsonable_measure(measure_kwargs(recent_turns=0)),
+            "source_events": _event_view(events),
+            "ok": invalid_measure["ok"],
+            "error": invalid_measure["error"],
+        }
+    )
+
+    return {"cases": cases, "structured": _structured()}
+
+
+def _turn_compaction_cases():
+    import inspect
+
+    from omnicrawl.agent.controllers.turn import compaction as turn_compaction
+
+    mixin = next(
+        obj
+        for obj in vars(turn_compaction).values()
+        if inspect.isclass(obj) and hasattr(obj, "_write_compaction_memories")
+    )
+
+    class Probe(mixin):
+        pass
+
+    def notice_case(before, after):
+        return {
+            "before": before,
+            "after": after,
+            "notice": Probe._format_compaction_notice(before, after),
+        }
+
+    notice_cases = [
+        notice_case(None, None),
+        notice_case(0, 100),
+        notice_case(100, 0),
+        notice_case(1500, 2500),
+        notice_case(999, 1000),
+        notice_case(12345, 62000),
+        notice_case(-5, 10),
+        notice_case(1, 1),
+    ]
+
+    class Store:
+        def __init__(self):
+            self.requests = []
+
+        def write(self, requests):
+            self.requests.extend(requests)
+
+    def memory_case(label, payload):
+        store = Store()
+        probe = Probe()
+        probe._session_memory_store = store
+        observed = outcome(probe._write_compaction_memories, payload)
+        return {
+            "label": label,
+            "payload": payload,
+            "ok": observed["ok"],
+            "error": observed["error"],
+            "requests": [
+                {
+                    "content": request.content,
+                    "related_directories": list(request.related_directories),
+                    "storage_directory": request.storage_directory,
+                    "source_event": request.source_event,
+                }
+                for request in store.requests
+            ],
+        }
+
+    memory_cases = [
+        memory_case("结构化摘要", {"structured": _structured()}),
+        memory_case(
+            "确定性摘要",
+            {
+                "content": "\n".join(
+                    [
+                        "会话压缩摘要：",
+                        "- 既有摘要：旧的",
+                        "- 原始目标：目标",
+                        "- 已压缩的用户后续要求：要求",
+                        "- 已完成/已回复要点：要点",
+                        "- 压缩前状态：状态",
+                        "- 下一步：下一步",
+                        "- 其它行：忽略",
+                    ]
+                )
+            },
+        ),
+        memory_case("空结构化摘要", {"structured": {}}),
+        memory_case("无内容载荷", {}),
+        memory_case(
+            "条目形态混合",
+            {
+                "structured": {
+                    "objective": ["目标", {"text": "带文本"}, {"path": "src/a.py"}],
+                    "decisions": ["  ", None, "", "决策"],
+                }
+            },
+        ),
+    ]
+
+    class Result:
+        def __init__(self, memory_id, storage_directory, summary):
+            self.id = memory_id
+            self.storage_directory = storage_directory
+            self.summary = summary
+
+    class SearchStore:
+        def __init__(self, results):
+            self.results = results
+            self.calls = []
+
+        def search(self, query, max_results=3):
+            self.calls.append({"query": query, "max_results": max_results})
+            return self.results
+
+    def recall_case(label, payload, results):
+        store = SearchStore(results)
+        probe = Probe()
+        probe._session_memory_store = store
+        probe._history = [{"role": "assistant", "content": "摘要"}]
+        appended = []
+        probe._append_session_event = lambda kind, body: appended.append(
+            {"type": kind, "payload": body}
+        )
+        observed = outcome(probe._auto_recall_compaction_memory, payload)
+        return {
+            "label": label,
+            "payload": payload,
+            "results": [
+                {
+                    "id": result.id,
+                    "storage_directory": result.storage_directory,
+                    "summary": result.summary,
+                }
+                for result in results
+            ],
+            "ok": observed["ok"],
+            "error": observed["error"],
+            "search_calls": store.calls,
+            "events": appended,
+            "history": probe._history,
+        }
+
+    recall_cases = [
+        recall_case(
+            "查询超长截断",
+            {"structured": {"objective": ["目标" * 200], "current_state": ["状态"]}},
+            [Result("m1", "project-context/general", "记忆")],
+        ),
+        recall_case(
+            "注入文本超长截断",
+            {"structured": {"objective": ["目标"], "current_state": ["状态"]}},
+            [
+                Result("m1", "project-context/general", "长" * 900),
+                Result("m2", "task-history/general", "更长" * 900),
+            ],
+        ),
+        recall_case(
+            "命中两条",
+            {"structured": _structured()},
+            [
+                Result("m1", "project-context/general", "第一条记忆"),
+                Result("m2", "task-history/general", "第二条记忆"),
+            ],
+        ),
+        recall_case("没有命中", {"structured": _structured()}, []),
+        recall_case(
+            "摘要为空字符串",
+            {"structured": _structured()},
+            [Result("m1", "project-context/general", "")],
+        ),
+        recall_case("无结构化摘要", {"content": "旧摘要"}, [Result("m1", "d", "内容")]),
+    ]
+
+    class Event:
+        def __init__(self, event_id, event_type, payload):
+            self.event_id = event_id
+            self.type = event_type
+            self.payload = payload
+
+        def to_dict(self):
+            return {
+                "event_id": self.event_id,
+                "type": self.type,
+                "payload": dict(self.payload),
+            }
+
+    class ArchiveStore:
+        def __init__(self, events, archive_id="archive-1"):
+            self.events = events
+            self.archive_id = archive_id
+            self.archived = None
+
+        def read_session_events(self, session_id):
+            return self.events
+
+        def archive_compacted_events(self, session_id, raw_events):
+            self.archived = {"session_id": session_id, "raw": list(raw_events)}
+            return self.archive_id
+
+    from types import SimpleNamespace
+
+    def archive_case(label, payload, enabled=True, events=None, archive_id="archive-1"):
+        store = ArchiveStore(
+            events if events is not None else [Event("e1", "user_message", {"content": "一"})],
+            archive_id=archive_id,
+        )
+        probe = Probe()
+        probe._session_store = store
+        probe._session_state = SimpleNamespace(session_id="s1")
+        probe.config = SimpleNamespace(
+            context_compaction=SimpleNamespace(archive_compacted_events=enabled)
+        )
+        observed = outcome(probe._archive_compacted_events, payload)
+        return {
+            "label": label,
+            "payload": payload,
+            "events": [event.to_dict() for event in store.events],
+            "archive_enabled": enabled,
+            "ok": observed["ok"],
+            "error": observed["error"],
+            "archive_id": observed["value"] if observed["ok"] else None,
+            "archived": store.archived,
+        }
+
+    archive_cases = [
+        archive_case("归档两个事件", {"compacted_event_ids": ["e2", "e1"]}, events=[
+            Event("e1", "user_message", {"content": "一"}),
+            Event("e2", "assistant_message", {"content": "二"}),
+            Event("e3", "user_message", {"content": "三"}),
+        ]),
+        archive_case("归档未启用", {"compacted_event_ids": ["e1"]}, enabled=False),
+        archive_case("没有事件 ID", {}),
+        archive_case("事件 ID 为空数组", {"compacted_event_ids": []}),
+        archive_case("事件流里找不到目标", {"compacted_event_ids": ["e9"]}),
+    ]
+
+    return {
+        "mixin": mixin.__name__,
+        "constants": {
+            "source_event": "context_compaction",
+            "project_directory": "project-context/general",
+            "task_directory": "task-history/general",
+            "recall_query_chars": 200,
+            "recall_text_limit": 1200,
+            "recall_max_results": 3,
+        },
+        "notices": notice_cases,
+        "memory": memory_cases,
+        "recall": recall_cases,
+        "archive": archive_cases,
+    }
+
+
+def compaction_orchestration_cases() -> dict:
+    return {
+        "ledger": _ledger_cases(),
+        "evidence": _evidence_cases(),
+        "summary": _summary_compactor_cases(),
+        "service": _service_cases(),
+        "turn": _turn_compaction_cases(),
+    }
+
+>>>>>>> theirs
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -5046,7 +6600,13 @@ def main() -> None:
             "tool_args": tool_args_cases(),
             "tool_catalog": tool_catalog_cases(),
             "context_compaction": context_compaction_cases(),
+<<<<<<< ours
             "subagents": subagents_cases(),
+=======
+            "compaction_orchestration": compaction_orchestration_cases(),
+            "subagents": subagents_cases(),
+        "turn_loop": turn_loop_cases(),
+>>>>>>> theirs
         }
 
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)

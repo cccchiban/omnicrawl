@@ -24,7 +24,10 @@ use serde_json::Value;
 use crate::anthropic::{
     build_anthropic_request, format_anthropic_error, AnthropicStreamState, ANTHROPIC_VERSION,
 };
-use crate::errors::{map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError};
+use crate::errors::{
+    http_status_error_with_body, map_exception, ExceptionView, ModelError, ModelErrorCode,
+    RuntimeError,
+};
 use crate::openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,
 };
@@ -143,8 +146,10 @@ impl OpenAiChatRuntime {
         let mut body = plan.body;
         let mut response = self.post(&url, api_key, &body, plan.timeout_seconds)?;
 
+        let mut error_text = String::new();
         if response.status >= 400 {
-            let text = response.read_text();
+            error_text = response.read_text();
+            let text = error_text.clone();
             // prompt_cache_key 只是缓存优化：网关不认就摘掉重发一次，并把这件事报给调用方。
             if body.get("prompt_cache_key").is_some()
                 && RuntimeError::is_unsupported_prompt_cache_error(&text)
@@ -163,7 +168,10 @@ impl OpenAiChatRuntime {
             }
         }
         if response.status >= 400 {
-            return Err(RuntimeError::http_status(response.status));
+            return Err(RuntimeError::from_model_error(http_status_error_with_body(
+                response.status,
+                &error_text,
+            )));
         }
 
         self.consume_stream(response, sink, &mut events)

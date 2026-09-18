@@ -41,7 +41,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 | 方法 | 类型 | params | result |
 | --- | --- | --- | --- |
-| `initialize` | 请求 | `{protocol_version, client?, model?}` | `{protocol_version}` |
+| `initialize` | 请求 | `{protocol_version, client?, model?, session?}` | `{protocol_version}` |
 | `turn.submit` | 请求 | `{turn_id, user_text}` | `{}`（回合已结束） |
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
 | `shutdown` | 请求 | `{}` | `{}` |
@@ -60,6 +60,27 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
            "prompt_cache_capable": true, "prompt_cache_identity": {"profile": "main"},
            "request_retry_count": 1}}
 ```
+
+`initialize` 的 `session` 也是可选块：给了它，内核自己持有会话——回合消息落进转录、
+下一轮上下文由转录恢复、回合结束后按阈值跑一次压缩（摘要请求走同一个 `model` 配置）。
+不给则维持「无会话」行为，宿主仍可用 `model.reply` 代答。
+
+```json
+{"session": {"root": "/path/to/.agent_sessions", "session_id": "20260919-011424-abcdef",
+             "memory_root": "/path/to/.omnicrawl",
+             "compaction": {"trigger_context_tokens": 120000, "target_summary_tokens": 2000,
+                            "context_window_tokens": 128000, "preserve_exact_evidence": true,
+                            "archive_compacted_events": true, "auto_memory_recall": true}}}
+```
+
+- `root` 必填，目录布局与 Python 侧 `.agent_sessions` 一致（`sessions/`、`archive/compacted/` 等）。
+- `session_id` 空则由内核新建一条会话。
+- `memory_root` 是会话级记忆的用户数据根；空则不做记忆回写与自动召回。
+- `compaction` 缺字段一律用内核默认值；阈值取自「回合结束后实际上下文」的估算与供应商回报的较大值。
+- 压缩发生后，内核发出的下一轮请求只带「摘要 + 保留窗口 + 当前输入」，被摘要取代的旧消息不再进上下文。
+- 上游判定上下文超限时，内核压缩当前未完成回合、把续接指令（`请依据上方的结构化工作摘要继续完成当前任务。`）
+  写进会话并重试同一回合；恢复失败则把原错误返回给宿主。
+
 
 - `model` 必填；`base_url` 空则用运行时默认（OpenAI 官方地址）。
 - `tools` 是 OpenAI functions 形状的静态声明；历史里出现的工具声明不重复下发。

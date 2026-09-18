@@ -184,7 +184,8 @@ fn maps_http_status_like_python() {
         (400, false, "HTTP 400"),
         (401, false, "HTTP 401"),
         (404, false, "HTTP 404"),
-        (429, true, "HTTP 429"),
+        // 429 的正文同样进了分类阶梯，先命中「限流」分支（与 Python 同一张阶梯）。
+        (429, true, "限流"),
         (503, true, "HTTP 503"),
     ] {
         let server = StubServer::spawn(vec![Reply::sse(status, "{\"error\":\"boom\"}")]);

@@ -232,3 +232,63 @@ fn parse_python_int(text: &str) -> Option<i64> {
     }
     cleaned.parse::<i64>().ok().map(|value| value * sign)
 }
+
+/// Python `round(value)`：二进制最近值、半值取偶，结果取整。
+pub fn python_round_to_int(value: f64) -> i64 {
+    let floor = value.floor();
+    let remainder = value - floor;
+    let round_up = remainder > 0.5 || (remainder == 0.5 && (floor as i64) % 2 != 0);
+    floor as i64 + i64::from(round_up)
+}
+
+/// Python `round(value, digits)`：二进制最近值、半值取偶。
+pub fn python_round(value: f64, digits: i32) -> f64 {
+    let factor = 10f64.powi(digits);
+    python_round_to_int(value * factor) as f64 / factor
+}
+
+/// Python `str.splitlines()` 的可用子集：覆盖 `\n` / `\r\n` / `\r` 与 Unicode 行界。
+pub fn python_split_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\n' | '\u{000b}' | '\u{000c}' | '\u{001c}' | '\u{001d}' | '\u{001e}' | '\u{0085}'
+            | '\u{2028}' | '\u{2029}' => lines.push(std::mem::take(&mut current)),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                lines.push(std::mem::take(&mut current));
+            }
+            other => current.push(other),
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Python 真值判定：空串、零、`None` 与空容器为假。
+pub fn python_truthy(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(flag) => *flag,
+        serde_json::Value::Number(number) => {
+            number.as_f64().map(|item| item != 0.0).unwrap_or(true)
+        }
+        serde_json::Value::String(text) => !text.is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        serde_json::Value::Object(map) => !map.is_empty(),
+    }
+}
+
+/// Python `str()` 的可用子集：字符串原样，其余走 `repr` 形态。
+pub fn python_str(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => crate::json::python_repr(other),
+    }
+}

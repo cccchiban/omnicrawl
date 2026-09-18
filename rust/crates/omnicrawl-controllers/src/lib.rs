@@ -27,6 +27,7 @@ pub mod shared;
 pub mod subagents;
 pub mod tool_args;
 pub mod tool_catalog;
+pub mod turn;
 pub mod types;
 pub mod undo;
 pub mod workspace;

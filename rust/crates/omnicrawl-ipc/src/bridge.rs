@@ -242,6 +242,50 @@ pub struct InitializeParams {
     /// 装箱是因为它比同枚举里其他命令大一个量级，内联会让 Channel 每次投递都搬整块配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<Box<KernelModelConfig>>,
+    /// 可选的会话配置：给了就让内核自己持有会话（多轮历史、转录落盘与回合结束后的压缩）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Box<KernelSessionConfig>>,
+}
+
+/// 内核自己持有会话时需要的配置（与 Python 侧 `.agent_sessions` 同一套布局）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KernelSessionConfig {
+    /// 会话目录。
+    pub root: String,
+    /// 续跑已有会话；空则由内核新建。
+    #[serde(default)]
+    pub session_id: String,
+    /// 会话级记忆目录；空则不写记忆、不自动召回。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_root: Option<String>,
+    /// 压缩策略；缺省用内核默认值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<KernelCompactionConfig>,
+}
+
+/// 压缩策略（对应 Python 侧 `config.context_compaction` 的关键字段）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct KernelCompactionConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_turns: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_summary_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_user_reserve_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_context_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emergency_context_ratio: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_exact_evidence: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_compacted_events: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_memory_recall: Option<bool>,
 }
 
 /// 宿主交给内核的模型配置，内核据此自己发起 Chat Completions 请求。

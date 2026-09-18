@@ -1,23 +1,14 @@
 [package]
-name = "omnicrawl-cli"
-description = "OmniCrawl 内核：在 stdio 上提供协议 v1"
+name = "omnicrawl-compaction"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
-
-[[bin]]
-name = "omnicrawl"
-path = "src/main.rs"
 
 [dependencies]
-omnicrawl-compaction = { path = "../omnicrawl-compaction" }
+chrono = { workspace = true }
 omnicrawl-controllers = { path = "../omnicrawl-controllers" }
-omnicrawl-core = { path = "../omnicrawl-core" }
-omnicrawl-ipc = { path = "../omnicrawl-ipc" }
 omnicrawl-llm = { path = "../omnicrawl-llm" }
 omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 omnicrawl-session = { path = "../omnicrawl-session" }
-chrono = { workspace = true }
 serde_json = { workspace = true }

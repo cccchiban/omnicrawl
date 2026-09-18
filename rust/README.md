@@ -79,7 +79,12 @@ rust/
 │   ├── src/output.rs                       # 输出预算与落盘预览、工具结果消息、视觉旁路
 │   ├── src/compression.rs                  # 工具输出压缩的选取与文案
 │   ├── src/building.rs                     # 模式模板装载与 system prompt 组装
-│   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（752 用例）
+│   ├── src/turn/turn_loop.rs               # 回合接线：13 回调面、两个循环端口与守卫、收尾补发、失败分类
+│   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（825 用例）
+├── crates/omnicrawl-compaction/            # 上下文压缩的会话/记忆编排与摘要模型适配器
+│   ├── src/adapter.rs                      # 摘要请求：复用主请求前缀与工具面、tool_choice=none、用量累计
+│   ├── src/driver.rs                       # 回合边界：测量落盘、压缩触发、归档、记忆回写与召回、历史重建
+│   └── tests/{driver_round_trip,summary_adapter}.rs
 ├── crates/omnicrawl-cli/                   # 内核进程（stdio 上的协议 v1 服务端）
 │   ├── src/main.rs                         # 入口：--version / --help
 │   ├── src/session.rs                      # 会话：握手、回合、两个宿主端口、取消守卫
@@ -297,13 +302,13 @@ python rust/tools/gen_controllers_fixture.py   # 期望值来自 omnicrawl/agent
 cd rust && cargo test -p omnicrawl-controllers
 ```
 
-`controllers_parity.json` 覆盖 752 个用例：整数配置读取与区间校验、未知工具文案（含哈希名
+`controllers_parity.json` 覆盖 825 个用例：整数配置读取与区间校验、未知工具文案（含哈希名
 反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与恢复预检 16 例、快照路径防穿越
 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、压缩 13 例、模式与
 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更判定、命令分流、
 删除意图、审查结论解析与审批归属）、会话侧 92 例（设置层归一化/阈值换算/开关校验、
 控制面状态文案与排空决策），顾问 23 例与插件 49 例（Hook fail-closed、拒绝文案、分发结局），
-工具参数层 73 例、工具目录 14 例与上下文压缩 79 例。多数用例的期望值由最小探针对象驱动真实现取得
+工具参数层 73 例、工具目录 14 例、上下文压缩 79 例与子代理域 59 例，以及回合接线 14 例（回调轨迹、端口形参与批次步号、循环收到的消息、收尾补发、用量累计、失败分类与取消检查点）。多数用例的期望值由最小探针对象驱动真实现取得
 （只补上方法真正读到的宿主属性），不改写被测逻辑；模板装载一组需要读仓库内
 `omnicrawl/templates/`，因此按仓库布局定位模板目录。边界与已知差异见
 `crates/omnicrawl-controllers/README.md`。
@@ -375,10 +380,28 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 
 接下来：Provider 逐个落地——OpenAI Responses 的**请求构建**已落地，下一步是它的流事件映射与回合运行，
 随后 Anthropic 与 Gemini；之后是 adapter 注册表与 `build_runtime` 工厂；脱敏侧接
-`DesensitizationRuntime` 装饰器（trait 已就位）；会话侧补归档、导出与一致性诊断。`omnicrawl-controllers` 已推进到第四批：`agent/controllers/` 的判定层（`shared`、`approval`、
+`DesensitizationRuntime` 装饰器（trait 已就位）；会话侧补归档、导出与一致性诊断。上下文压缩这条链已在 Rust 侧补齐到「除内核接线外」的全部：`omnicrawl-controllers` 的
+`context_compaction`（账本、证据恢复、结构化摘要生成、压缩编排）与 `turn/compaction` 的判定面共有
+13 例对照；`omnicrawl-compaction` 提供会话/记忆编排（测量事件落盘、压缩触发、二级归档、
+记忆回写与自动召回、历史重建）与摘要模型适配器（复用主请求前缀与工具面、`tool_choice=none`），
+由 `omnicrawl-session` 的 `archive_compacted_events` / `read_compacted_events` 支撑二级归档。
+**已接线**：`initialize` 可以带一个可选的 `session` 块（会话根、会话 id、记忆根、压缩策略）。
+内核据此自己持有转录与多轮历史：回合结束把用户消息与最终回复落盘，按阈值跑一次压缩
+（摘要请求复用主请求前缀与工具面、`tool_choice=none`），把 `context_compaction_measurement` /
+`compact_summary` / `context_compaction_failed` 写进会话，并把「已压缩」提示经协议外发；
+下一轮上下文由压缩后的历史给出。端到端用例见 `crates/omnicrawl-cli/tests/compaction_e2e.rs`
+（真二进制 + 本机回环服务端）。
+
+上下文超限时内核压缩当前未完成回合并自动续接同一个回合：恢复提示（
+`请依据上方的结构化工作摘要继续完成当前任务。`）随事件落盘，重试上下文只含摘要与续接指令。
+
+`recall_session_evidence` 也已在核心里闭环：内核自己持有会话时，这个「只读当前会话」的工具由内核
+直接作答（读转录 + `archive/compacted/` 归档 + 摘要授权校验），不占用宿主的 `tool.batch`。
+
+`omnicrawl-controllers` 已覆盖判定层与回合接线：`agent/controllers/` 的判定层（`shared`、`approval`、
 `undo`、`workspace`、`memory`、`settings`、`control`、`advisor`、`plugins`、`tool_args`、`tool_catalog`、`context_compaction`，以及
-`tools/` 的 `output`／`compression`／`building`）已落地并有 726 例对照；setter 事务与资源关闭、`approval` 编排段、
-插件 Runtime 与顾问模型面、`_build_tools` 工具表构建、`turn/{loop,compaction}`（依赖
+`tools/` 的 `output`／`compression`／`building`）已落地并有 825 例对照；回合计线（`src/turn/turn_loop.rs`）已把宿主的模型请求与工具批次接到 `omnicrawl-core` 的循环，并把过程报告接到 `omnicrawl-ipc` 的回调面；setter 事务与资源关闭、`approval` 编排段、
+插件 Runtime 与顾问模型面、`_build_tools` 工具表构建、`turn/compaction` 与 `turn/loop.py` 的编排壳（依赖
 `agent/context_compaction/`）、`subagents/*` 依赖 `toolkit`／`session`／`core`／
 `context_compaction` 的既有实现，随后续批次收口。
 

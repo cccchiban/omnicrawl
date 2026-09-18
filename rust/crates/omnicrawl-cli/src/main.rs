@@ -3,6 +3,7 @@
 //! 协议规格见 `rust/docs/protocol-v1.md`；宿主（启动器、TUI、过渡期的 Python 宿主）启动本进程，
 //! 用 NDJSON JSON-RPC 2.0 帧驱动它。
 
+mod compaction;
 mod session;
 
 use std::process::ExitCode;

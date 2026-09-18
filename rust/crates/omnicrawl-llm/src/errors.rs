@@ -249,6 +249,30 @@ pub fn http_status_error(status: u16) -> ModelError {
 
 /// 把一次失败映射成统一错误（Python `map_openai_exception`）：分支顺序与关键词逐条对齐，
 /// 「先文案后状态码」的先后也一致——文案分支优先，认不出才落到状态码阶梯。
+/// HTTP 错误响应 → 内核错误面：状态码与响应正文一起交给分类阶梯。
+///
+/// Python 的 SDK 异常 `str(exc)` 里带着响应正文，分类阶梯（含「上下文超限」判定）都依赖它；
+/// 只传状态码会把正文里的话术（如 `maximum context length`）丢掉。
+pub fn http_status_error_with_body(status: u16, body: &str) -> ModelError {
+    let trimmed = body.trim();
+    let message = if trimmed.is_empty() {
+        format!("Error code: {status}")
+    } else {
+        format!("Error code: {status} - {trimmed}")
+    };
+    let view = ExceptionView {
+        message: &message,
+        type_name: "APIError",
+        status_code: Some(i64::from(status)),
+        ..ExceptionView::default()
+    };
+    map_exception(&view, &[])
+}
+
+/// 上下文超限的归类文案：内核用它识别「本回合被上下文撑爆」，宿主也据此决定是否走恢复路径。
+pub const CONTEXT_LENGTH_EXCEEDED_MESSAGE: &str =
+    "模型服务拒绝请求：输入上下文超过该模型的容量上限。";
+
 pub fn map_exception(view: &ExceptionView<'_>, known_models: &[&str]) -> ModelError {
     let message = view.message.trim();
     let detail = structured_error_text(view);
@@ -327,7 +351,7 @@ pub fn map_exception(view: &ExceptionView<'_>, known_models: &[&str]) -> ModelEr
     ) {
         return ModelError {
             code: ModelErrorCode::ContextLengthExceeded,
-            message: "模型服务拒绝请求：输入上下文超过该模型的容量上限。".to_string(),
+            message: CONTEXT_LENGTH_EXCEEDED_MESSAGE.to_string(),
             retryable: false,
             status_code,
         };

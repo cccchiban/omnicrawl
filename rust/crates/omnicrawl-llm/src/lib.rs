@@ -25,8 +25,8 @@ pub use anthropic::{
 };
 pub use capabilities::{merge_capabilities, ModelCapabilities};
 pub use errors::{
-    http_status_error, map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError,
-    RuntimeErrorKind,
+    http_status_error, http_status_error_with_body, map_exception, ExceptionView, ModelError,
+    ModelErrorCode, RuntimeError, RuntimeErrorKind, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 pub use openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,

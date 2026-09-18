@@ -15,8 +15,9 @@ pub mod frame;
 pub mod version;
 
 pub use bridge::{
-    method, BridgeError, Command, HostEvent, InitializeParams, ModelRequest, PendingCommand,
-    ToolBatch, ToolBatchResult, TurnCancelParams, TurnSubmitParams,
+    method, BridgeError, Command, HostEvent, InitializeParams, KernelCompactionConfig,
+    KernelSessionConfig, ModelRequest, PendingCommand, ToolBatch, ToolBatchResult,
+    TurnCancelParams, TurnSubmitParams,
 };
 pub use frame::{error_code, ErrorObject, Frame, FrameError, Id, JSONRPC_VERSION};
 pub use version::{negotiate_version, VersionError, PROTOCOL_VERSION, SUPPORTED_MAJOR};
