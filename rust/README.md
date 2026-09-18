@@ -40,6 +40,7 @@ rust/
 │   ├── src/runtime.rs                      # 一次回合：请求 → 流事件 → 工具收尾 → ModelReply
 │   ├── src/desensitization.rs              # 消息脱敏模块根：子系统错误面 + 序号注册表（占位符协议、稳定序号）
 │   ├── src/desensitization/stream.rs       # 消息脱敏：流式还原（尾部挂起缓冲、结构化还原、严格模式）
+│   ├── src/desensitization/engine.rs       # 消息脱敏：匹配引擎（结构层 / 键名 / 熵兜底 / 占位符分配）
 │   ├── src/desensitization/rules.rs        # 消息脱敏：值类型规则层（手写匹配器：PEM/连接串/网址/邮箱/车牌/银行卡/MAC/IP）
 │   ├── tests/*_parity.rs                   # 与 Python 实现的对照测试（流/请求/用量/端到端）
 │   ├── tests/runtime_loopback.rs           # 本机回环服务端上的内核行为测试
@@ -255,8 +256,9 @@ artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照。未搬：
 运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
 
 `omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层全部 11 条规则
-（PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）；余下 gitleaks 规则表、
-locality 与扫描缓存、引擎、NER、middleware、oneshot。
+（PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）、匹配引擎
+（结构层 / 键名规则 / 熵兜底 / 占位符分配）；余下 middleware 与 oneshot、gitleaks 规则表、
+locality 与扫描缓存、NER（torch 依赖）。
 
 接下来：规则层补 PEM / 连接串 / IP → 引擎（键名 / 结构 / 熵兜底 / 优先级编排）→ middleware 接线；
 会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置

@@ -1,0 +1,889 @@
+{
+  "source": [
+    "omnicrawl/llm/desensitization/engine.py"
+  ],
+  "extra_keys": [
+    "MyCustomSecret",
+    "team-token"
+  ],
+  "exempt_keys": [
+    "internal_example",
+    "public-example-key"
+  ],
+  "texts": [
+    {
+      "text": "API_KEY=A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+      "note": "env 赋值",
+      "masked": "API_KEY=｛Desensitized:1｝",
+      "stats": {
+        "values_masked": 1,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "export DB_PASSWORD = 'hunter2000!!'",
+      "note": "env 带 export 与引号",
+      "masked": "export DB_PASSWORD = '｛Desensitized:2｝'",
+      "stats": {
+        "values_masked": 2,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "TOKEN=abc123  # 行内注释保留",
+      "note": "env 无引号带注释",
+      "masked": "TOKEN=｛Desensitized:3｝  # 行内注释保留",
+      "stats": {
+        "values_masked": 3,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "SECRET=\"abc123\" # 引号外注释保留",
+      "note": "env 引号外注释",
+      "masked": "SECRET=\"｛Desensitized:3｝\" # 引号外注释保留",
+      "stats": {
+        "values_masked": 3,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "TOKEN=abc123 # 注释",
+      "note": "env 无引号单注释",
+      "masked": "TOKEN=｛Desensitized:3｝ # 注释",
+      "stats": {
+        "values_masked": 3,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "password: hunter2000!!",
+      "note": "kv 形态",
+      "masked": "password: ｛Desensitized:2｝",
+      "stats": {
+        "values_masked": 3,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "db.password: hunter2000!!",
+      "note": "kv 点分键",
+      "masked": "db.password: hunter2000!!",
+      "stats": {
+        "values_masked": 3,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "PWD : hunter2000!!",
+      "note": "kv 冒号前空格",
+      "masked": "PWD : ｛Desensitized:2｝",
+      "stats": {
+        "values_masked": 3,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "{\"api_key\": \"hunter2000!!\", \"name\": \"zhang\"}",
+      "note": "json 串键敏感",
+      "masked": "{\"api_key\": \"｛Desensitized:2｝\", \"name\": \"zhang\"}",
+      "stats": {
+        "values_masked": 3,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "{\"password\": \"abc\\\"123\", \"name\": \"zhang\"}",
+      "note": "json 串含转义引号",
+      "masked": "{\"password\": \"｛Desensitized:4｝\", \"name\": \"zhang\"}",
+      "stats": {
+        "values_masked": 4,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "{\"note\": \"plain\", \"count\": 3}",
+      "note": "json 串键不敏感",
+      "masked": "{\"note\": \"plain\", \"count\": 3}",
+      "stats": {
+        "values_masked": 4,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "联系 worker@corp.local 与卡号 4111111111111111 结束",
+      "note": "规则层邮箱与银行卡",
+      "masked": "联系 ｛Desensitized:6｝ 与卡号 ｛Desensitized:5｝ 结束",
+      "stats": {
+        "values_masked": 6,
+        "skipped_values": 0,
+        "rules_masked": 2,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "内网 10.20.30.40 与网卡 00:1A:2B:3C:4D:5E 结束",
+      "note": "规则层 IP 与 MAC",
+      "masked": "内网 ｛Desensitized:8｝ 与网卡 ｛Desensitized:7｝ 结束",
+      "stats": {
+        "values_masked": 8,
+        "skipped_values": 0,
+        "rules_masked": 4,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "网址 https://db.corp.local/app 与车牌 沪BD12345 结束",
+      "note": "规则层网址与车牌",
+      "masked": "网址 ｛Desensitized:10｝ 与车牌 ｛Desensitized:9｝ 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "普通文本 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
+      "note": "熵兜底裸值",
+      "masked": "普通文本 ｛Desensitized:1｝ 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "已经是 *** 与 ｛Desensitized:7｝ 结束",
+      "note": "跳过已脱敏与占位符",
+      "masked": "已经是 *** 与 ｛Desensitized:7｝ 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "UUID 550e8400-e29b-41d4-a716-446655440000 结束",
+      "note": "白名单 UUID",
+      "masked": "UUID 550e8400-e29b-41d4-a716-446655440000 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "哈希 8f14e45fceea167a5a36dedd4bea2543 结束",
+      "note": "白名单十六进制",
+      "masked": "哈希 8f14e45fceea167a5a36dedd4bea2543 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "路径 /usr/local/share/app/config.toml 结束",
+      "note": "白名单路径",
+      "masked": "路径 /usr/local/share/app/config.toml 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "版本 v1.2.3-beta.4 结束",
+      "note": "白名单版本号",
+      "masked": "版本 v1.2.3-beta.4 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "时间 2026-09-18T03:05:00.123Z 结束",
+      "note": "白名单时间戳",
+      "masked": "时间 2026-09-18T03:05:00.123Z 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "标识符 utf8_encode_value_longer 结束",
+      "note": "白名单词形",
+      "masked": "标识符 utf8_encode_value_longer 结束",
+      "stats": {
+        "values_masked": 10,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "Authorization=Bearer A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+      "note": "凭据键 + 熵兜底",
+      "masked": "Authorization=｛Desensitized:11｝",
+      "stats": {
+        "values_masked": 11,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "",
+      "note": "空串",
+      "masked": "",
+      "stats": {
+        "values_masked": 11,
+        "skipped_values": 0,
+        "rules_masked": 6,
+        "entropy_masked": 0
+      }
+    }
+  ],
+  "pure_texts": [
+    {
+      "text": "纯字母 GhbZkqXmnpRsTuVwXyZ 结束",
+      "note": "纯字母开关",
+      "masked": "纯字母 GhbZkqXmnpRsTuVwXyZ 结束",
+      "stats": {
+        "values_masked": 0,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 0
+      }
+    },
+    {
+      "text": "纯数字 98765432109876543210 结束",
+      "note": "纯数字开关",
+      "masked": "纯数字 ｛Desensitized:1｝ 结束",
+      "stats": {
+        "values_masked": 1,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 1
+      }
+    },
+    {
+      "text": "混合 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
+      "note": "混合仍走熵判定",
+      "masked": "混合 ｛Desensitized:2｝ 结束",
+      "stats": {
+        "values_masked": 2,
+        "skipped_values": 0,
+        "rules_masked": 0,
+        "entropy_masked": 2
+      }
+    }
+  ],
+  "structured": [
+    {
+      "value": {
+        "api_key": "hunter2000!!",
+        "user": {
+          "password": "hunter2000!!",
+          "name": "zhang"
+        },
+        "list": [
+          "secret_token",
+          {
+            "nested_token": "hunter2000!!"
+          },
+          42,
+          true,
+          null
+        ]
+      },
+      "masked": {
+        "api_key": "｛Desensitized:1｝",
+        "user": {
+          "password": "｛Desensitized:1｝",
+          "name": "zhang"
+        },
+        "list": [
+          "secret_token",
+          {
+            "nested_token": "｛Desensitized:1｝"
+          },
+          42,
+          true,
+          null
+        ]
+      }
+    },
+    {
+      "value": {
+        "name": "zhang",
+        "note": "联系 worker@corp.local 与 10.20.30.40 结束",
+        "public_key": "not-secret",
+        "example": "not-secret",
+        "team-token": "hunter2000!!"
+      },
+      "masked": {
+        "name": "zhang",
+        "note": "联系 ｛Desensitized:3｝ 与 ｛Desensitized:2｝ 结束",
+        "public_key": "not-secret",
+        "example": "not-secret",
+        "team-token": "｛Desensitized:1｝"
+      }
+    },
+    {
+      "value": {
+        "items": [
+          [
+            "deep_password",
+            "hunter2000!!"
+          ],
+          {
+            "ok": "plain"
+          }
+        ],
+        "empty": {}
+      },
+      "masked": {
+        "items": [
+          [
+            "deep_password",
+            "hunter2000!!"
+          ],
+          {
+            "ok": "plain"
+          }
+        ],
+        "empty": {}
+      }
+    }
+  ],
+  "normalize_key": [
+    {
+      "key": "api_key",
+      "normalized": "api_key"
+    },
+    {
+      "key": "API-Key",
+      "normalized": "api_key"
+    },
+    {
+      "key": " api key ",
+      "normalized": "api_key"
+    },
+    {
+      "key": "DB__PASSWORD",
+      "normalized": "db_password"
+    },
+    {
+      "key": "X-Token",
+      "normalized": "x_token"
+    },
+    {
+      "key": "apiKey",
+      "normalized": "apikey"
+    },
+    {
+      "key": "access_token",
+      "normalized": "access_token"
+    },
+    {
+      "key": "tokens",
+      "normalized": "tokens"
+    },
+    {
+      "key": "public_key",
+      "normalized": "public_key"
+    },
+    {
+      "key": "example",
+      "normalized": "example"
+    },
+    {
+      "key": "my_public_key",
+      "normalized": "my_public_key"
+    },
+    {
+      "key": "internal_example",
+      "normalized": "internal_example"
+    },
+    {
+      "key": "team-token",
+      "normalized": "team_token"
+    },
+    {
+      "key": "MyCustomSecret",
+      "normalized": "mycustomsecret"
+    },
+    {
+      "key": "credentials",
+      "normalized": "credentials"
+    },
+    {
+      "key": "csrf",
+      "normalized": "csrf"
+    },
+    {
+      "key": "session",
+      "normalized": "session"
+    },
+    {
+      "key": "密码",
+      "normalized": "密码"
+    },
+    {
+      "key": "用户密码字段",
+      "normalized": "用户密码字段"
+    },
+    {
+      "key": "cookie",
+      "normalized": "cookie"
+    },
+    {
+      "key": "user",
+      "normalized": "user"
+    },
+    {
+      "key": "note",
+      "normalized": "note"
+    },
+    {
+      "key": "",
+      "normalized": ""
+    },
+    {
+      "key": "   ",
+      "normalized": ""
+    }
+  ],
+  "is_sensitive": [
+    {
+      "key": "api_key",
+      "sensitive": true
+    },
+    {
+      "key": "API-Key",
+      "sensitive": true
+    },
+    {
+      "key": " api key ",
+      "sensitive": true
+    },
+    {
+      "key": "DB__PASSWORD",
+      "sensitive": true
+    },
+    {
+      "key": "X-Token",
+      "sensitive": true
+    },
+    {
+      "key": "apiKey",
+      "sensitive": true
+    },
+    {
+      "key": "access_token",
+      "sensitive": true
+    },
+    {
+      "key": "tokens",
+      "sensitive": true
+    },
+    {
+      "key": "public_key",
+      "sensitive": false
+    },
+    {
+      "key": "example",
+      "sensitive": false
+    },
+    {
+      "key": "my_public_key",
+      "sensitive": false
+    },
+    {
+      "key": "internal_example",
+      "sensitive": false
+    },
+    {
+      "key": "team-token",
+      "sensitive": true
+    },
+    {
+      "key": "MyCustomSecret",
+      "sensitive": true
+    },
+    {
+      "key": "credentials",
+      "sensitive": true
+    },
+    {
+      "key": "csrf",
+      "sensitive": true
+    },
+    {
+      "key": "session",
+      "sensitive": true
+    },
+    {
+      "key": "密码",
+      "sensitive": true
+    },
+    {
+      "key": "用户密码字段",
+      "sensitive": true
+    },
+    {
+      "key": "cookie",
+      "sensitive": true
+    },
+    {
+      "key": "user",
+      "sensitive": false
+    },
+    {
+      "key": "note",
+      "sensitive": false
+    },
+    {
+      "key": "",
+      "sensitive": false
+    },
+    {
+      "key": "   ",
+      "sensitive": false
+    }
+  ],
+  "should_skip": [
+    {
+      "value": "",
+      "skip": true
+    },
+    {
+      "value": "   ",
+      "skip": true
+    },
+    {
+      "value": "***",
+      "skip": true
+    },
+    {
+      "value": "****",
+      "skip": true
+    },
+    {
+      "value": "***abc",
+      "skip": false
+    },
+    {
+      "value": "｛Desensitized:3｝",
+      "skip": true
+    },
+    {
+      "value": "x ｛Desensitized:3｝",
+      "skip": false
+    },
+    {
+      "value": "plain",
+      "skip": false
+    }
+  ],
+  "entropy_exempt": [
+    {
+      "token": "550e8400-e29b-41d4-a716-446655440000",
+      "exempt": true
+    },
+    {
+      "token": "8f14e45fceea167a5a36dedd4bea2543",
+      "exempt": true
+    },
+    {
+      "token": "00:1A:2B:3C:4D:5E",
+      "exempt": true
+    },
+    {
+      "token": "sha256:8f14e45fceea167a5a36dedd4bea2543",
+      "exempt": true
+    },
+    {
+      "token": "v1.2.3-beta.4",
+      "exempt": true
+    },
+    {
+      "token": "2026-09-18T03:05:00.123Z",
+      "exempt": true
+    },
+    {
+      "token": "2026-09-18",
+      "exempt": true
+    },
+    {
+      "token": "/usr/local/bin/app",
+      "exempt": true
+    },
+    {
+      "token": "C:\\Users\\app\\config.toml",
+      "exempt": true
+    },
+    {
+      "token": "say(\"hello\")",
+      "exempt": true
+    },
+    {
+      "token": "self.config.value",
+      "exempt": true
+    },
+    {
+      "token": "hook:topic-name",
+      "exempt": true
+    },
+    {
+      "token": "utf8_encode_value_longer",
+      "exempt": true
+    },
+    {
+      "token": "some_identifier_name",
+      "exempt": true
+    },
+    {
+      "token": "$HOME_VAR",
+      "exempt": true
+    },
+    {
+      "token": "_private_name",
+      "exempt": true
+    },
+    {
+      "token": "name=",
+      "exempt": false
+    },
+    {
+      "token": "a=b",
+      "exempt": true
+    },
+    {
+      "token": "｛Desensitized:31｝",
+      "exempt": true
+    },
+    {
+      "token": "abcdef",
+      "exempt": true
+    },
+    {
+      "token": "12345678",
+      "exempt": true
+    },
+    {
+      "token": "",
+      "exempt": false
+    }
+  ],
+  "entropy_candidate": [
+    {
+      "token": "A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": true
+    },
+    {
+      "token": "GhbZkqXmnpRsTuVwXyZ",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": true,
+      "pure_digits": false,
+      "candidate": false
+    },
+    {
+      "token": "GhbZkqXmnpRsTuVwXyZ",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": false
+    },
+    {
+      "token": "98765432109876543210",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": true,
+      "candidate": true
+    },
+    {
+      "token": "98765432109876543210",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": false
+    },
+    {
+      "token": "8f14e45fceea167a5a36dedd4bea2543",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": true,
+      "pure_digits": false,
+      "candidate": false
+    },
+    {
+      "token": "utf8_encode_value_longer",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": false
+    },
+    {
+      "token": "short",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": false
+    },
+    {
+      "token": "中文中文中文中文中文中文",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": false
+    },
+    {
+      "token": "A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+      "min_length": 5,
+      "min_bits": 3.5,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": true
+    },
+    {
+      "token": "aB3",
+      "min_length": 4,
+      "min_bits": 1.0,
+      "pure_letters": false,
+      "pure_digits": false,
+      "candidate": false
+    }
+  ],
+  "word_shaped": [
+    {
+      "token": "camelCaseValue",
+      "word_shaped": true
+    },
+    {
+      "token": "PascalCaseName",
+      "word_shaped": true
+    },
+    {
+      "token": "snake_case_name",
+      "word_shaped": true
+    },
+    {
+      "token": "lowercaseword",
+      "word_shaped": true
+    },
+    {
+      "token": "GhbZkqXmnpRsTuVwXyZ",
+      "word_shaped": false
+    },
+    {
+      "token": "AAAAAAAAAAAA",
+      "word_shaped": true
+    },
+    {
+      "token": "aB",
+      "word_shaped": false
+    },
+    {
+      "token": "",
+      "word_shaped": false
+    }
+  ],
+  "spans": [
+    {
+      "text": "前缀 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 后缀",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "spans": [
+        [
+          3,
+          31
+        ]
+      ]
+    },
+    {
+      "text": "地址 550e8400-e29b-41d4-a716-446655440000 结束",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "spans": []
+    },
+    {
+      "text": "两个 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 与 98765432109876543210 结束",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "spans": [
+        [
+          3,
+          31
+        ]
+      ]
+    },
+    {
+      "text": "无候选 plain text here 结束",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "spans": []
+    },
+    {
+      "text": "A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+      "min_length": 5,
+      "min_bits": 3.5,
+      "spans": [
+        [
+          0,
+          28
+        ]
+      ]
+    },
+    {
+      "text": "",
+      "min_length": 20,
+      "min_bits": 3.5,
+      "spans": []
+    }
+  ]
+}

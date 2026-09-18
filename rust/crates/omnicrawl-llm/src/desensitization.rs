@@ -18,9 +18,14 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use sha2::{Digest, Sha256};
 
+pub mod engine;
 pub mod rules;
 pub mod stream;
 
+pub use engine::{
+    find_entropy_spans, is_entropy_candidate, is_entropy_exempt, mask_structured_value, mask_text,
+    normalize_key, should_skip_value, MaskContext, SensitiveMatcher,
+};
 pub use rules::{
     build_enabled_rules, builtin_rules, scan_pattern_rules, shannon_entropy_bits, PatternRule,
     RuleMatch, RuleMatcher,

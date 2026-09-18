@@ -44,6 +44,7 @@ python rust/tools/gen_llm_runtime_fixture.py   # 端到端回合
 python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位符协议与序号注册表
 python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
 python rust/tools/gen_desensitization_rules_fixture.py   # 消息脱敏：值类型规则层
+python rust/tools/gen_desensitization_engine_fixture.py  # 消息脱敏：匹配引擎
 cd rust && cargo test -p omnicrawl-llm
 ```
 
@@ -52,6 +53,7 @@ fixture：
 - `tests/fixtures/desensitization_parity.json`：占位符用例 11 条、稳定索引 5 步、周期 / 会话缓存 / 注册表生命周期。
 - `tests/fixtures/desensitization_stream_parity.json`：13 个场景、71 步操作（分片还原、通道隔离、结构化还原、告警、严格模式、截断判定）。
 - `tests/fixtures/desensitization_rules_parity.json`：98 条语料（逐条候选 96、扫描命中 83）、熵 10 例、Luhn 13 例、邮箱豁免 12 例、IP 判定 50 例。
+- `tests/fixtures/desensitization_engine_parity.json`：文本 24 + 3 条（两套熵参数）、结构用例 3、键名 24、跳过 8、形态 22、候选 11、词形 8、扫描 6。
 - `tests/fixtures/openai_chat_stream_parity.json`：参数完整性 16、分片归并 8、SSE 解码 10、SSE 流 9、首选项 6。
 - `tests/fixtures/openai_chat_request_parity.json`：请求 33、provider_options 8、GPT 判定 13、prompt_cache_key 5、
   参数串 16、浮点写法 6。
@@ -103,7 +105,7 @@ fixture：
 `ureq`（阻塞式 HTTP/1.1 + rustls）是唯一的传输依赖：内核的回合循环本来就是阻塞的，不需要异步运行时。
 交叉编译到 musl 时需要目标平台的 C 工具链（rustls 的 ring 组件）。
 
-## 消息脱敏：序号注册表（`desensitization.rs`）、流式还原（`desensitization/stream.rs`）、值类型规则层（`desensitization/rules.rs`）
+## 消息脱敏：序号注册表（`desensitization.rs`）、流式还原（`stream.rs`）、规则层（`rules.rs`）、匹配引擎（`engine.rs`）
 
 对齐 Python `omnicrawl/llm/desensitization/`。原文只进内存注册表：**不落盘、不进日志、
 不进会话事件**；可观测信息只到「计数 / 规则 ID / 序号」粒度。`desensitization.rs` 是模块根
@@ -133,9 +135,17 @@ fixture：
   叠加左侧环视、ADO 键值里的惰性扫描）；IP 的私有 / 链路本地 / 公网判定按 Python `ipaddress`
   的常量表逐条对齐（IPv4 14 条私有网段 + 共享段 100.64/10，IPv6 10 条私有网段 + 链路本地 + 组播）。
 
-尚未搬运：gitleaks 规则表（221 条正则与「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照）、
-`locality` 局部化扫描与扫描结果缓存（纯性能优化，不影响语义）、
-引擎（键名 / 结构 / 熵兜底 / NER 兜底与优先级编排）、NER、middleware、oneshot。
+- **匹配引擎**（`MaskContext` / `mask_text` / `mask_structured_value`）：三层顺序与设计稿一致——
+  结构层（行首 `.env` 赋值含 `export` 与前缀空白、`key: value`、JSON 字符串值对，均为手写扫描器；
+  已解析结构体按敏感键递归，敏感键之下的字符串叶子整体替换）→ 值类型规则层 → 熵兜底
+  （长度下限 + 单类开关 + 形态白名单 + 字符类混合 + 香农熵；白名单含 UUID / 十六进制 / 前缀哈希 /
+  版本号 / 时间戳 / 路径 / 代码片段 / 命名链 / 词形标识符）。命中值统一走 `placeholder_for`
+  分配占位符，空串 / 已脱敏（`***`）/ 整串恰为占位符的值按跳过规则处理并计数。
+  未搬：NER 语义兜底层（Python 侧可选依赖 torch + 5MB 权重，默认关闭）。
+
+尚未搬运：middleware 运行时装饰器与 oneshot 旁路脱敏器、gitleaks 规则表（221 条正则与
+「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照）、`locality` 局部化扫描与扫描结果缓存
+（纯性能优化，不影响语义）、NER 语义兜底层（torch 依赖）。
 
 三份数据集的占位符与号牌一类「占位符形状」的字面量一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：
 本仓库自己就是宿主，在启用了消息脱敏的会话里写这类完整字面量会被还原成会话注册表里的原文——数据集照旧生成、
