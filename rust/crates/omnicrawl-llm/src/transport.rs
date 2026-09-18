@@ -12,13 +12,14 @@ use std::time::Duration;
 use ureq::http::Response;
 use ureq::Body;
 
-/// 一次请求：URL、凭据、请求体与超时。
+/// 一次请求：URL、凭据与协议头、请求体与超时。
 pub struct HttpRequest<'a> {
     pub url: &'a str,
-    pub api_key: &'a str,
     pub user_agent: &'a str,
     pub body: &'a str,
     pub timeout_seconds: f64,
+    /// 凭据与协议头：OpenAI 兼容侧给 `Authorization: Bearer …`，Anthropic 给 `x-api-key`。
+    pub headers: &'a [(&'a str, &'a str)],
 }
 
 /// 一次响应：状态码 + 可增量读取的响应体。
@@ -82,9 +83,11 @@ pub fn send(
         .timeout_recv_response(Some(timeout))
         .timeout_recv_body(Some(timeout))
         .build()
-        .header("Authorization", format!("Bearer {}", request.api_key))
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream");
+    for (name, value) in request.headers {
+        builder = builder.header(*name, *value);
+    }
     if !request.user_agent.trim().is_empty() {
         builder = builder.header("User-Agent", request.user_agent);
     }

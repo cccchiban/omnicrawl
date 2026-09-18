@@ -21,7 +21,10 @@ use omnicrawl_protocol::{
 };
 use serde_json::Value;
 
-use crate::errors::{map_exception, ExceptionView, RuntimeError};
+use crate::anthropic::{
+    build_anthropic_request, format_anthropic_error, AnthropicStreamState, ANTHROPIC_VERSION,
+};
+use crate::errors::{map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError};
 use crate::openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,
 };
@@ -175,14 +178,16 @@ impl OpenAiChatRuntime {
     ) -> Result<HttpResponse, RuntimeError> {
         let body = serde_json::to_string(body)
             .map_err(|error| RuntimeError::configuration(format!("请求体无法序列化：{error}")))?;
+        let authorization = format!("Bearer {api_key}");
+        let headers = [("Authorization", authorization.as_str())];
         transport::send(
             &self.agent,
             &HttpRequest {
                 url,
-                api_key,
                 user_agent: &self.endpoint.user_agent,
                 body: &body,
                 timeout_seconds,
+                headers: &headers,
             },
         )
         .map_err(transport_error)
@@ -282,6 +287,151 @@ impl OpenAiChatRuntime {
         }
         Ok(aggregate_stream_events(events.iter().cloned()))
     }
+}
+
+/// Anthropic Claude Messages 运行时：与 OpenAI Chat 共用「传输 + 可放弃读取」骨架，
+/// 差异只在请求体、鉴权头与流映射（见 [`crate::anthropic`]）。
+///
+/// 与 `OpenAiChatRuntime` 一样，能力门禁与通用重试不在这一层，由调用方负责。
+pub struct AnthropicRuntime {
+    endpoint: ChatEndpoint,
+    /// 模型描述里的输出上限；仅在生成选项未声明 `max_output_tokens` 时参与兜底。
+    descriptor_max_output_tokens: Option<u32>,
+    agent: ureq::Agent,
+}
+
+impl ModelRuntime for AnthropicRuntime {
+    fn run_turn(
+        &self,
+        input: &ChatRequestInput<'_>,
+        sink: &mut dyn TurnSink,
+    ) -> Result<ModelReply, RuntimeError> {
+        AnthropicRuntime::run_turn(self, input, sink)
+    }
+}
+
+impl AnthropicRuntime {
+    pub fn new(endpoint: ChatEndpoint, descriptor_max_output_tokens: Option<u32>) -> Self {
+        Self {
+            endpoint,
+            descriptor_max_output_tokens,
+            agent: transport::build_agent(),
+        }
+    }
+
+    pub fn endpoint(&self) -> &ChatEndpoint {
+        &self.endpoint
+    }
+
+    /// 跑完一次模型请求：请求体 → HTTP → SSE → 内核事件 → 归并回复。
+    pub fn run_turn(
+        &self,
+        input: &ChatRequestInput<'_>,
+        sink: &mut dyn TurnSink,
+    ) -> Result<ModelReply, RuntimeError> {
+        let api_key = self.endpoint.api_key.trim();
+        if api_key.is_empty() {
+            return Err(RuntimeError::configuration(
+                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+            ));
+        }
+
+        let plan = build_anthropic_request(input, self.descriptor_max_output_tokens)
+            .map_err(|error| RuntimeError::configuration(error.message))?;
+        let body = serde_json::to_string(&plan.body)
+            .map_err(|error| RuntimeError::configuration(format!("请求体无法序列化：{error}")))?;
+        let url = format!(
+            "{}/v1/messages",
+            self.endpoint.base_url.trim_end_matches('/')
+        );
+        let headers = [
+            ("x-api-key", api_key),
+            ("anthropic-version", ANTHROPIC_VERSION),
+        ];
+
+        let mut response = transport::send(
+            &self.agent,
+            &HttpRequest {
+                url: &url,
+                user_agent: self.endpoint.user_agent.as_str(),
+                body: &body,
+                timeout_seconds: plan.timeout_seconds,
+                headers: &headers,
+            },
+        )
+        .map_err(|failure| anthropic_create_error(failure.sdk_view()))?;
+
+        if response.status >= 400 {
+            let text = response.read_text();
+            return Err(anthropic_create_error((text.as_str(), "APIStatusError")));
+        }
+
+        let mut events: Vec<ModelStreamEvent> = Vec::new();
+        self.consume_stream(response, sink, &mut events)
+    }
+
+    fn consume_stream(
+        &self,
+        response: HttpResponse,
+        sink: &mut dyn TurnSink,
+        events: &mut Vec<ModelStreamEvent>,
+    ) -> Result<ModelReply, RuntimeError> {
+        let mut stream = StreamReader::spawn(response.body);
+        let mut state = AnthropicStreamState::new();
+
+        loop {
+            if sink.cancelled() {
+                return Err(RuntimeError::cancelled());
+            }
+            match stream.next(CANCEL_POLL) {
+                StreamOutcome::Idle => continue,
+                StreamOutcome::End => break,
+                StreamOutcome::ProviderError => {
+                    return Err(RuntimeError::provider_error_stream());
+                }
+                StreamOutcome::Io(message) => {
+                    return Err(RuntimeError::stream_interrupted(format!(
+                        "Claude 流式回复中断：{}",
+                        format_anthropic_error(&message, "APIConnectionError")
+                    )));
+                }
+                StreamOutcome::Step(SseStep::Terminated) => break,
+                StreamOutcome::Step(SseStep::Skip) => continue,
+                StreamOutcome::Step(SseStep::Payload(value)) => {
+                    let mut produced: Vec<ModelStreamEvent> = Vec::new();
+                    state.handle_event(&value, &mut produced);
+                    for event in produced {
+                        if emit(events, sink, event) == SinkFlow::Cancel {
+                            return Err(RuntimeError::cancelled());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut tail: Vec<ModelStreamEvent> = Vec::new();
+        state.finish(&mut tail);
+        for event in tail {
+            if emit(events, sink, event) == SinkFlow::Cancel {
+                return Err(RuntimeError::cancelled());
+            }
+        }
+        Ok(aggregate_stream_events(events.iter().cloned()))
+    }
+}
+
+/// 建连或状态码失败：Python 侧 `messages.create` 的异常被包成 `INVALID_REQUEST`，
+/// 文案走 `_format_anthropic_error`。
+fn anthropic_create_error((message, type_name): (&str, &str)) -> RuntimeError {
+    RuntimeError::from_model_error(ModelError {
+        code: ModelErrorCode::InvalidRequest,
+        message: format!(
+            "Claude 请求失败：{}",
+            format_anthropic_error(message, type_name)
+        ),
+        retryable: false,
+        status_code: None,
+    })
 }
 
 /// 传输失败 → 内核错误面：先用 SDK 等价文案走分类阶梯（Python 侧是 SDK 异常 →

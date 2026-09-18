@@ -5,6 +5,7 @@
 //! `OpenAiChatRuntime` 把一次回合从请求串到归并回复。
 //! 传输之外没有别的 I/O；通用重试与能力门禁留在调用方。
 
+mod anthropic;
 mod capabilities;
 pub mod desensitization;
 mod errors;
@@ -18,6 +19,10 @@ mod sse;
 mod transport;
 mod usage;
 
+pub use anthropic::{
+    build_anthropic_request, format_anthropic_error, sanitize_anthropic_options,
+    to_anthropic_messages, AnthropicRequest, AnthropicStreamState, ANTHROPIC_VERSION,
+};
 pub use capabilities::{merge_capabilities, ModelCapabilities};
 pub use errors::{
     http_status_error, map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError,
@@ -37,8 +42,11 @@ pub use responses::{
     is_tool_history_rejection, messages_to_responses_input, tools_for_responses,
     ResponsesStreamState,
 };
-pub use runtime::{ChatEndpoint, DiscardSink, ModelRuntime, OpenAiChatRuntime, SinkFlow, TurnSink};
+pub use runtime::{
+    AnthropicRuntime, ChatEndpoint, DiscardSink, ModelRuntime, OpenAiChatRuntime, SinkFlow,
+    TurnSink,
+};
 pub use sse::{
     decode_sse_data, iter_raw_sse_events, payload_of_line, step_payload, SseError, SseStep,
 };
-pub use usage::usage_from_openai_payload;
+pub use usage::{usage_from_anthropic_payload, usage_from_openai_payload};

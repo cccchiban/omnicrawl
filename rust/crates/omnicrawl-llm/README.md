@@ -30,8 +30,8 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
 - `resolve_protocol` / `protocol_for_provider` / `validate_protocol_matches_provider`：生效协议的选取
   （调用方指定 > Profile 默认 > Provider 默认）与一致性校验，报错文案与 Python 逐字一致
   （未知 Provider / 不支持的协议 / 协议与 Provider 不匹配）。
-- `ModelRuntime`：一次回合的执行入口（`run_turn(input, sink)`），`OpenAiChatRuntime` 是当前唯一实现；
-  多这一层是为了让 Provider 实现与装饰器（出网脱敏）可互换。
+- `ModelRuntime`：一次回合的执行入口（`run_turn(input, sink)`），实现有 `OpenAiChatRuntime` 与
+  `AnthropicRuntime`；多这一层是为了让 Provider 实现与装饰器（出网脱敏）可互换。
 - Responses 请求构建（`responses.rs`）：`messages_to_responses_input`（会话消息 → `input` items——
   system 带工具声明时整条跳过、tool 结果是 `function_call_output`、assistant 文本 + 带工具历史时**必带**的
   reasoning item（id 为 `rs_` + SHA-1 前 16 位，内核手写 SHA-1 以免新增依赖，空 reasoning 用 `…` 兜底）、
@@ -48,6 +48,21 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   与缓冲冲刷（名称 / 参数不完整也报错，空参数视为完整）。
   未搬：回合运行（`stream_turn`）与降级重试编排（`_create_stream_with_retries`：`prompt_cache_key`
   摘字段重试、工具历史 400 展平重试与两条告警）、`discover_models`、流内异常的错误包装（`format_openai_error`）。
+- Anthropic Claude Messages 请求构建（`anthropic.rs`）：`sanitize_anthropic_options`（白名单 `top_p` /
+  `top_k` / `metadata` / `stop_sequences` / `thinking`，Host 字段与白名单外字段都直接拒绝）、
+  `to_anthropic_messages`（system 带工具声明时整条跳过、tool_result 与紧随其后的用户内容合并成同一条 user、
+  assistant 空内容补空文本块、空 content 退化为空串、图片走原生 Base64 image source）、
+  `build_anthropic_request`（请求级 `tools` = 顶层声明 + system 动态声明合并、`system` 非空白才下发、
+  `max_tokens` 三级兜底：生成选项 → 模型描述 → 4096（0 视为未声明）、provider_options 摊平进顶层）。
+- Anthropic 流事件映射（`AnthropicStreamState`）：`message_start` 出用量、`content_block_start` 的 tool_use
+  进缓冲并补 `ToolCallStarted`（id 缺失回落 `toolu_{index}`、名称为空不发该事件）、
+  text / thinking / input_json 三类增量（非字符串与空串一律忽略）、`content_block_stop` 产出完成事件、
+  `message_delta` 更新 stop_reason 与用量、流收尾把没等到 stop 的工具调用按缓冲顺序补齐。
+- `AnthropicRuntime`：与 `OpenAiChatRuntime` 共用「传输 + 可放弃读取」骨架；鉴权头是 `x-api-key` +
+  `anthropic-version: 2023-06-01`，路径 `{base_url}/v1/messages`；建连与状态码失败按 `_format_anthropic_error`
+  包成 `Claude 请求失败：…`（`INVALID_REQUEST`），流中断包成 `Claude 流式回复中断：…`。
+- `usage_from_anthropic_payload`：`usage.input_tokens` / `output_tokens` / `cache_read_input_tokens`
+  （兼容 `cached_input_tokens`），只认整数、缺字段按 0，有 `usage` 就产出。
 
 不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、
 adapter 注册表与 `build_runtime` 工厂、会话落盘、上下文压缩触发。
@@ -76,6 +91,7 @@ python rust/tools/gen_llm_stream_fixture.py    # 流解析
 python rust/tools/gen_llm_request_fixture.py   # 请求构建
 python rust/tools/gen_llm_usage_fixture.py     # 用量归一化
 python rust/tools/gen_llm_runtime_fixture.py   # 端到端回合
+python rust/tools/gen_llm_anthropic_fixture.py # Anthropic：请求构建、流映射、用量与错误文案
 python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位符协议与序号注册表
 python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
 python rust/tools/gen_desensitization_rules_fixture.py   # 消息脱敏：值类型规则层
@@ -94,6 +110,10 @@ fixture：
   参数串 16、浮点写法 6。
 - `tests/fixtures/openai_chat_usage_parity.json`：用量 30。
 - `tests/fixtures/openai_chat_runtime_parity.json`：端到端 9 个用例。
+- `tests/fixtures/anthropic_parity.json`：消息 8、provider_options 9、请求 7、流 12、用量 6、错误文案 10。
+
+Anthropic 组的请求 kwargs 同样由替身客户端在 `client.messages.create` 处拦下；流组把 fixture 里的 JSON
+负载转成属性可读的对象再喂给真实现，两侧读的是同一份字节。
 
 请求组的期望值是 Python 真实现的 SDK 调用参数：生成器用替身客户端在 `chat.completions.create` 处拦下 kwargs，
 再把传输层的 `timeout` 拆出来，因此消息转换、动态工具去重、选项合并、prompt_cache_key 都是照真跑结果对照的。
@@ -142,6 +162,23 @@ fixture：
 - **消息脱敏的两处字符类差异**：Python 的 `\s` / `str.isspace()` 含 `\x1c`–`\x1f` 这类控制分隔符，
   Rust 的 `char::is_whitespace` 不含；占位符里的序号只认 ASCII 数字，Python 的 `\d` 还认 Unicode 数字。
   两者都不出现在真实语料里。
+
+### Anthropic（未搬与差异）
+
+- **未搬**（按设计或留待后续批次）：`close()` 与 `_closed` 关闭态（Rust 运行时无关闭态，取消由 sink 表达）；
+  能力门禁（`request.tools && !capabilities.tools` → `UNSUPPORTED_CAPABILITY`）与其他门禁一样留在调用方；
+  `discover_models`（属 adapter 注册表 / `build_runtime` 批次）；`stream_registry` /
+  `interruptible_stream_events`（内核用可放弃读取线程 + 50ms 轮询表达同一件事）；
+  SDK 客户端级配置（`default_headers` / 客户端超时由 `ChatEndpoint` 承载）；
+  `_sanitize_options` 的「provider_options 必须是对象」分支（类型系统下不可达）；
+  `reasoning_effort` → `thinking` 的那个分支（Python 侧本身就是 no-op 空分支）。
+- **`index` 的读法**：Python 走 SDK 对象的 `event.index`，内核读负载里的 `index` 字段；真实链路上两者同源同值，
+  驱动 Python 的对照片因此用带 `index` 的对象，而不是裸 dict（裸 dict 会让 `getattr` 恒取默认 0）。
+- **缺凭据文案**：沿用内核既有的配置错误文案（Python 是 `Profile {id} 缺少 Anthropic API Key。`）。
+- **超时来源**：`timeout_seconds` 取 Profile 值——Python 把超时挂在 SDK 客户端上，不是每请求参数。
+- **流内 `error` 负载**：内核走通用 `provider_error_stream` 文案（Python 是 SDK 抛 `APIError` →
+  `STREAM_INTERRUPTED`）；错误码一致，`retryable` 标记不同。
+- 用量负数按无符号归零（与 OpenAI 一路同口径）。
 
 ## 依赖
 

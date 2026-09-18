@@ -97,3 +97,21 @@ fn read_cached_input_tokens(usage: &Value) -> Option<i64> {
 fn non_negative(value: Option<i64>) -> u64 {
     value.unwrap_or(0).max(0) as u64
 }
+
+/// Anthropic Messages 的用量：`message_start.message.usage` 与 `message_delta.usage` 同形，
+/// 缓存字段两种写法都认（`cache_read_input_tokens` / `cached_input_tokens`）。
+///
+/// 与 `usage_from_openai_payload` 不同：这里没有「两路都缺失就返回 None」的判定，
+/// 只要负载带 `usage` 就产出（缺失字段按 0），与 Python 侧一致。
+pub fn usage_from_anthropic_payload(payload: &Value) -> Option<TokenUsage> {
+    let usage = payload.get("usage").filter(|value| !value.is_null())?;
+    Some(TokenUsage {
+        input_tokens: non_negative(read_usage_int(usage, &["input_tokens"])),
+        output_tokens: non_negative(read_usage_int(usage, &["output_tokens"])),
+        cached_input_tokens: non_negative(read_usage_int(
+            usage,
+            &["cache_read_input_tokens", "cached_input_tokens"],
+        )),
+        reasoning_tokens: 0,
+    })
+}
