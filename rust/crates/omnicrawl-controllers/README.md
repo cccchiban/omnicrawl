@@ -49,7 +49,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 152 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 153 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例。

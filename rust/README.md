@@ -70,7 +70,7 @@ rust/
 │   ├── src/output.rs                       # 输出预算与落盘预览、工具结果消息、视觉旁路
 │   ├── src/compression.rs                  # 工具输出压缩的选取与文案
 │   ├── src/building.rs                     # 模式模板装载与 system prompt 组装
-│   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（152 用例）
+│   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（153 用例）
 ├── crates/omnicrawl-cli/                   # 内核进程（stdio 上的协议 v1 服务端）
 │   ├── src/main.rs                         # 入口：--version / --help
 │   ├── src/session.rs                      # 会话：握手、回合、两个宿主端口、取消守卫
@@ -288,7 +288,7 @@ python rust/tools/gen_controllers_fixture.py   # 期望值来自 omnicrawl/agent
 cd rust && cargo test -p omnicrawl-controllers
 ```
 
-`controllers_parity.json` 覆盖 152 个用例：整数配置读取与区间校验、未知工具文案（含哈希名
+`controllers_parity.json` 覆盖 153 个用例：整数配置读取与区间校验、未知工具文案（含哈希名
 反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与恢复预检 16 例、快照路径防穿越
 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、压缩 13 例、模式与
 system prompt 19 例。多数用例的期望值由最小探针对象驱动真实现取得（只补上方法真正读到的
@@ -363,7 +363,7 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 接下来：Provider 逐个落地——OpenAI Responses 的**请求构建**已落地，下一步是它的流事件映射与回合运行，
 随后 Anthropic 与 Gemini；之后是 adapter 注册表与 `build_runtime` 工厂；脱敏侧接
 `DesensitizationRuntime` 装饰器（trait 已就位）；会话侧补归档、导出与一致性诊断。`omnicrawl-controllers` 已起步：`agent/controllers/` 的判定层（`shared`、`undo`、`workspace`、
-`memory`，以及 `tools/` 的 `output`／`compression`／`building`）已落地并有 152 例对照；
+`memory`，以及 `tools/` 的 `output`／`compression`／`building`）已落地并有 153 例对照；
 `tools/approval`（判定件在 `agent/toolkit/approval_policy.py`）、`_build_tools` 的工具表构建、
 `session/*`、`turn/*`、`subagents/*`、`advisor`、`plugins` 依赖 `toolkit`／`session`／`core`
 的既有实现，随工具层与会话层批次收口。
