@@ -1,0 +1,2517 @@
+{
+  "source": "omnicrawl/llm/providers/openai_responses.py（请求构建部分）",
+  "messages": [
+    {
+      "label": "用户文本",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "你好"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "你好"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "system 无工具声明",
+      "messages": [
+        {
+          "role": "system",
+          "blocks": [
+            {
+              "Text": {
+                "text": "系统提示"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "system",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "系统提示"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "system 带工具声明（跳过）",
+      "messages": [
+        {
+          "role": "system",
+          "blocks": [
+            {
+              "Text": {
+                "text": "系统提示"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": [
+            {
+              "name": "dynamic",
+              "description": "动态声明",
+              "parameters": {
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ],
+      "items": []
+    },
+    {
+      "label": "用户图片",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Image": {
+                "media_type": "image/png",
+                "data_base64": "iVBORw0KGgo=",
+                "detail": "low"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_image",
+              "image_url": "data:image/png;base64,iVBORw0KGgo=",
+              "detail": "low"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "空 blocks",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "空文本块被过滤",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": ""
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "未知角色回落 user",
+      "messages": [
+        {
+          "role": "developer",
+          "blocks": [
+            {
+              "Text": {
+                "text": "自定义角色"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "自定义角色"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "assistant 纯文本",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "Text": {
+                "text": "回复"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "回复"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "assistant 文本 + 工具调用（带 reasoning）",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "Text": {
+                "text": "先说一句"
+              }
+            },
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "思考中",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "先说一句"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_138d5364bb0bc486",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "思考中"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "assistant 工具调用（reasoning 为空）",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_df316e17de9c3685",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "…"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "assistant 工具调用（call_id 回落 provider_call_id）",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": "resp_call_9"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_df316e17de9c3685",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "…"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "resp_call_9",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "assistant 工具调用（嵌套参数）",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "nested": {
+                    "a": [
+                      1,
+                      2
+                    ]
+                  },
+                  "文本": "值"
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_df316e17de9c3685",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "…"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"nested\": {\"a\": [1, 2]}, \"文本\": \"值\"}"
+        }
+      ]
+    },
+    {
+      "label": "reasoning 长度 55",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_cef734ba81a02447",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "reasoning 长度 56",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_901305367c259952",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "reasoning 长度 63",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_0ddc4e0cccd9a128",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "reasoning 长度 64",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_bb2fa3ee7afb9f54",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "reasoning 长度 200（多块）",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "reasoning",
+          "id": "rs_e84371bbef6dae87",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长长"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        }
+      ]
+    },
+    {
+      "label": "工具结果（多块）",
+      "messages": [
+        {
+          "role": "tool",
+          "blocks": [
+            {
+              "ToolResult": {
+                "call_id": "call_1",
+                "ok": true,
+                "content": "结果一"
+              }
+            },
+            {
+              "ToolResult": {
+                "call_id": "call_2",
+                "ok": true,
+                "content": "结果二"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "结果一"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_2",
+          "output": "结果二"
+        }
+      ]
+    },
+    {
+      "label": "工具结果（无结果块）",
+      "messages": [
+        {
+          "role": "tool",
+          "blocks": [],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": []
+    },
+    {
+      "label": "一问一答一工具链",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "开始"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "Text": {
+                "text": "调用工具"
+              }
+            },
+            {
+              "ToolCall": {
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": {
+                  "path": "a.txt",
+                  "内容": true
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "理由",
+          "tools": []
+        },
+        {
+          "role": "tool",
+          "blocks": [
+            {
+              "ToolResult": {
+                "call_id": "call_1",
+                "ok": true,
+                "content": "完成"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "开始"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "调用工具"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_a207006f195175f4",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "理由"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\", \"内容\": true}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "完成"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "label": "仅请求 tools",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "request_tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "name": "no_args",
+          "description": "",
+          "parameters": {}
+        }
+      ],
+      "expected": [
+        {
+          "type": "function",
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "function",
+          "name": "no_args",
+          "description": "",
+          "parameters": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    },
+    {
+      "label": "请求 tools + 消息携带",
+      "messages": [
+        {
+          "role": "system",
+          "blocks": [
+            {
+              "Text": {
+                "text": "系统"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": [
+            {
+              "name": "dynamic",
+              "description": "动态声明",
+              "parameters": {
+                "type": "object"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "request_tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "expected": [
+        {
+          "type": "function",
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "type": "function",
+          "name": "dynamic",
+          "description": "动态声明",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "label": "空 tools",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "request_tools": [],
+      "expected": []
+    },
+    {
+      "label": "仅消息携带",
+      "messages": [
+        {
+          "role": "system",
+          "blocks": [
+            {
+              "Text": {
+                "text": "系统"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": [
+            {
+              "name": "dynamic",
+              "description": "动态声明",
+              "parameters": {
+                "type": "object"
+              }
+            },
+            {
+              "name": "write_file",
+              "description": "写文件",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "request_tools": [],
+      "expected": [
+        {
+          "type": "function",
+          "name": "dynamic",
+          "description": "动态声明",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        {
+          "type": "function",
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "flatten": [
+    {
+      "label": "无前置 assistant",
+      "items": [
+        {
+          "type": "function_call",
+          "name": "f",
+          "arguments": "{}"
+        }
+      ],
+      "expected": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "[工具调用: f({})]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "追加到最近 assistant",
+      "items": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "先说"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "name": "f",
+          "arguments": "{\"a\":1}"
+        }
+      ],
+      "expected": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "先说\n[工具调用: f({\"a\":1})]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "隔着 reasoning 仍找 assistant",
+      "items": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "先说"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_x",
+          "summary": []
+        },
+        {
+          "type": "function_call",
+          "name": "f",
+          "arguments": "{}"
+        }
+      ],
+      "expected": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "先说\n[工具调用: f({})]"
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_x",
+          "summary": []
+        }
+      ]
+    },
+    {
+      "label": "工具结果独立成 user 消息",
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "指令"
+            }
+          ]
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c1",
+          "output": "输出"
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "指令"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "[工具结果: 输出]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "混合序列",
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "开始"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "调用"
+            }
+          ]
+        },
+        {
+          "type": "function_call",
+          "name": "f",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "c1",
+          "output": "o1"
+        },
+        {
+          "type": "function_call",
+          "name": "g",
+          "arguments": "{}"
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "开始"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "调用\n[工具调用: f({})]\n[工具调用: g({})]"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "[工具结果: o1]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "非工具 item 原样保留",
+      "items": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "x"
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "history_detection": [
+    {
+      "label": "含工具历史 + 400",
+      "items": [
+        {
+          "type": "function_call"
+        }
+      ],
+      "status": 400,
+      "has_tool_history": true,
+      "is_rejection": true
+    },
+    {
+      "label": "含工具历史 + 500",
+      "items": [
+        {
+          "type": "function_call_output"
+        }
+      ],
+      "status": 500,
+      "has_tool_history": true,
+      "is_rejection": false
+    },
+    {
+      "label": "含工具历史 + 无状态码",
+      "items": [
+        {
+          "type": "function_call"
+        }
+      ],
+      "status": null,
+      "has_tool_history": true,
+      "is_rejection": false
+    },
+    {
+      "label": "无工具历史 + 400",
+      "items": [
+        {
+          "role": "user"
+        }
+      ],
+      "status": 400,
+      "has_tool_history": false,
+      "is_rejection": false
+    }
+  ],
+  "kwargs": [
+    {
+      "label": "基础",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "reasoning_effort=high",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "high",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "high"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "reasoning_effort=none",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "none",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "reasoning_effort=disabled",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "disabled",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "provider_options 清洗（thinking / reasoning_effort 被剔除）",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {
+          "thinking": {
+            "type": "enabled"
+          },
+          "reasoning_effort": "low",
+          "top_p": 0.9,
+          "store": false
+        }
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "top_p": 0.9,
+        "store": false,
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "provider_options 保留白名单字段",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {
+          "top_p": 0.5,
+          "metadata": {
+            "k": "v"
+          }
+        }
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "top_p": 0.5,
+        "metadata": {
+          "k": "v"
+        },
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "max_output_tokens=0",
+      "options": {
+        "max_output_tokens": 0,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "max_output_tokens=4096",
+      "options": {
+        "max_output_tokens": 4096,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "max_output_tokens": 4096,
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "temperature=0.0",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": 0.0,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "temperature": 0.0,
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "timeout=0 回落 Profile",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 0.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "timeout=30",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 30.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 30.0
+    }
+  ],
+  "kwargs_extra": [
+    {
+      "label": "非 GPT 模型不带缓存键",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "deepseek-chat",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "deepseek-chat",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "空身份不带缓存键",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {},
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-a906781556312f37225283b97b433e3f",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "无工具不写 tool_choice",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "有工具且指定 tool_choice",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "auto",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "系统提示",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "系统提示",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    },
+    {
+      "label": "空系统提示词",
+      "options": {
+        "max_output_tokens": null,
+        "temperature": null,
+        "reasoning_effort": "",
+        "tool_choice": "",
+        "request_timeout_seconds": 180.0,
+        "provider_options": {}
+      },
+      "model": "gpt-5-codex",
+      "system_prompt": "",
+      "tools": [
+        {
+          "name": "write_file",
+          "description": "写文件",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "prompt_cache_identity": {
+        "workspace": "ws-1"
+      },
+      "body": {
+        "model": "gpt-5-codex",
+        "instructions": "",
+        "input": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "stream": true,
+        "tools": [
+          {
+            "type": "function",
+            "name": "write_file",
+            "description": "写文件",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "prompt_cache_key": "local-agent-0c5465bd7bcb8917b8b15a72b2ca2d06",
+        "reasoning": {
+          "effort": "none"
+        }
+      },
+      "timeout_seconds": 180.0
+    }
+  ]
+}

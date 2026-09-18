@@ -32,9 +32,25 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   （未知 Provider / 不支持的协议 / 协议与 Provider 不匹配）。
 - `ModelRuntime`：一次回合的执行入口（`run_turn(input, sink)`），`OpenAiChatRuntime` 是当前唯一实现；
   多这一层是为了让 Provider 实现与装饰器（出网脱敏）可互换。
+- Responses 请求构建（`responses.rs`）：`messages_to_responses_input`（会话消息 → `input` items——
+  system 带工具声明时整条跳过、tool 结果是 `function_call_output`、assistant 文本 + 带工具历史时**必带**的
+  reasoning item（id 为 `rs_` + SHA-1 前 16 位，内核手写 SHA-1 以免新增依赖，空 reasoning 用 `…` 兜底）、
+  user / system 的 `input_text` 与 `input_image`、空 content 补占位）、`tools_for_responses`（请求 tools
+  在前、消息携带的动态声明在后，空 parameters 补空对象模式）、`build_responses_request`（`extra_body`
+  照线上形态摊平进请求体顶层、`reasoning.effort` 由 `reasoning_effort` 归一化、timeout 归传输层）、
+  `flatten_tool_history_to_text` 与 `has_tool_history_items` / `is_tool_history_rejection`
+  （网关不支持工具历史时的 400 降级判定）。
+  未搬：流事件映射（`_stream_turn_events` 的 item 别名与参数分片）、回合运行（`stream_turn`）、
+  `_create_stream_with_retries` 的降级重试编排、`discover_models`。
 
 不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、
 adapter 注册表与 `build_runtime` 工厂、会话落盘、上下文压缩触发。
+
+## 已知差异（Responses 请求构建）
+
+- **`flatten_tool_history_to_text` 不就地改写入参**：Python 的实现会把工具调用直接追加进入参里那条
+  assistant 消息（调用方传的正是自己要发出去的 items）；内核返回新数组、不改入参。对照片因此两侧都用副本。
+- 请求体的键序由 SDK 决定：对照片按**键集合 + 逐字段值**比对，不追键序（与 `chat.completions` 同口径）。
 
 ## 边界要求
 

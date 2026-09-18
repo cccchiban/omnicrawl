@@ -12,6 +12,7 @@ mod json;
 mod openai_chat;
 mod registry;
 mod request;
+mod responses;
 mod runtime;
 mod sse;
 mod transport;
@@ -30,6 +31,10 @@ pub use request::{
     build_chat_request, build_prompt_cache_key, is_openai_gpt_model, sanitize_provider_options,
     should_send_prompt_cache_key, to_openai_messages, tool_specs_to_openai_functions, ChatRequest,
     ChatRequestInput, RequestError,
+};
+pub use responses::{
+    build_responses_request, flatten_tool_history_to_text, has_tool_history_items,
+    is_tool_history_rejection, messages_to_responses_input, tools_for_responses,
 };
 pub use runtime::{ChatEndpoint, DiscardSink, ModelRuntime, OpenAiChatRuntime, SinkFlow, TurnSink};
 pub use sse::{

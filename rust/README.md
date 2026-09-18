@@ -225,6 +225,17 @@ cd rust && cargo test -p omnicrawl-llm --test registry_parity
 以及协议解析的 18 个用例与 `protocol_for_provider` 的 5 个用例（含三条报错文案）。
 对象一律按**序列化后的字符串**比对：workspace 开了 `preserve_order`，键序也是契约的一部分。
 
+OpenAI Responses 的请求构建同理：
+
+```bash
+python rust/tools/gen_llm_responses_fixture.py              # 期望值来自 providers/openai_responses.py
+cd rust && cargo test -p omnicrawl-llm --test openai_responses_request_parity
+```
+
+`openai_responses_request_parity.json`：`input` items 20 例（含 reasoning item 的 SHA-1 id 与 55/56/63/64 的
+分块边界）、请求级 tools 4 例、历史展平 6 例、工具历史判定 4 例、`create()` 参数 16 例。
+`input` items 与 tools **逐字节**比对（键序也是契约），请求体按键集合与逐字段值比对（键序由 SDK 决定）。
+
 ## 已知与 Python 的差异
 
 1. 非字符串字段（`role`、`tool_call_id`、工具名、`description` 等）不再走 Python 的 `str()`
@@ -290,7 +301,8 @@ artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照。未搬：
 （协议选取与一致性校验），以及 `ModelRuntime` trait——`omnicrawl-cli` 经 trait 对象持有运行时，
 Provider 实现与出网脱敏装饰器都从这里换入。
 
-接下来：按 Provider 逐个落地运行时（OpenAI Responses → Anthropic → Gemini，各自单独 parity），
-随后是 adapter 注册表与 `build_runtime` 工厂；脱敏侧接 `DesensitizationRuntime` 装饰器
-（trait 已就位）；会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置
-（Python 侧的 models 配置 / 启动器）接进 `initialize.model`，以及全部宿主迁移后让 `model.reply` 退役。
+接下来：Provider 逐个落地——OpenAI Responses 的**请求构建**已落地，下一步是它的流事件映射与回合运行，
+随后 Anthropic 与 Gemini；之后是 adapter 注册表与 `build_runtime` 工厂；脱敏侧接
+`DesensitizationRuntime` 装饰器（trait 已就位）；会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：
+把真实的 Provider 配置（Python 侧的 models 配置 / 启动器）接进 `initialize.model`，
+以及全部宿主迁移后让 `model.reply` 退役。
