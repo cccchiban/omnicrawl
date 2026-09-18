@@ -1,6 +1,6 @@
 {
   "name": "@omnicrawl/cli-linux-arm-musl",
-  "version": "0.1.71",
+  "version": "0.1.72",
   "description": "OmniCrawl 内核二进制（Linux armv7，musl 静态，嵌入式目标）",
   "files": [
     "bin"

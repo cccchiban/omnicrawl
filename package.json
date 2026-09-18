@@ -9,6 +9,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "omnicrawl-cli": "^0.1.71"
+    "omnicrawl-cli": "^0.1.72"
   }
 }

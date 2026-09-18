@@ -278,6 +278,7 @@ version = "0.0.1"
 dependencies = [
  "chrono",
  "omnicrawl-compaction",
+ "omnicrawl-connectors",
  "omnicrawl-controllers",
  "omnicrawl-core",
  "omnicrawl-ipc",
