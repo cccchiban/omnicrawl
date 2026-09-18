@@ -1,0 +1,14 @@
+[package]
+name = "omnicrawl-controllers"
+description = "Agent 控制器域（Python 侧 omnicrawl/agent/controllers/ 的 Rust 移植）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }

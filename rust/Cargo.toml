@@ -2,6 +2,7 @@
 members = [
     "crates/omnicrawl-cli",
     "crates/omnicrawl-connectors",
+    "crates/omnicrawl-controllers",
     "crates/omnicrawl-core",
     "crates/omnicrawl-ipc",
     "crates/omnicrawl-llm",

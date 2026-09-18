@@ -290,6 +290,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omnicrawl-controllers"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "omnicrawl-core"
 version = "0.0.1"
 dependencies = [
