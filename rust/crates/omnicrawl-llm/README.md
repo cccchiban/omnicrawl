@@ -143,7 +143,16 @@ fixture：
   分配占位符，空串 / 已脱敏（`***`）/ 整串恰为占位符的值按跳过规则处理并计数。
   未搬：NER 语义兜底层（Python 侧可选依赖 torch + 5MB 权重，默认关闭）。
 
-尚未搬运：middleware 运行时装饰器与 oneshot 旁路脱敏器、gitleaks 规则表（221 条正则与
+- **编排件与一次性脱敏器**（`middleware.rs` / `oneshot.rs`）：逐消息屏蔽（文本块 / 工具调用参数 /
+  工具结果 / 思考内容；system 文本、工具声明与图片块豁免）、碰撞扫描的文本收集、工具参数里
+  「已分配但无法还原」序号的 fail-closed 检查、事件逐条还原（`map_event`），以及单次
+  「屏蔽 → 还原 → 注销」的 `OneShotMasker`。
+  **未完成**：`DesensitizationRuntime` 装饰器本体需要 Rust 侧的运行时抽象（内核当前只有
+  `OpenAiChatRuntime`），`_MessageMaskMemo`（性能缓存）与 `_referenced_sequences` 同理未搬；
+  middleware / oneshot 的 parity 数据集已生成但序号分配顺序与真实现不符，测试先标记
+  `#[ignore]`（见 `tests/desensitization_middleware_parity.rs`），下一片补齐。
+
+尚未搬运：gitleaks 规则表（221 条正则与
 「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照）、`locality` 局部化扫描与扫描结果缓存
 （纯性能优化，不影响语义）、NER 语义兜底层（torch 依赖）。
 

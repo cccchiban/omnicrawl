@@ -1,0 +1,360 @@
+{
+  "source": [
+    "omnicrawl/llm/desensitization/middleware.py",
+    "omnicrawl/llm/desensitization/oneshot.py"
+  ],
+  "extra_keys": [
+    "team-token"
+  ],
+  "exempt_keys": [
+    "example"
+  ],
+  "messages": [
+    {
+      "note": "user 文本",
+      "message": {
+        "role": "user",
+        "blocks": [
+          {
+            "Text": {
+              "text": "联系 worker@corp.local 与内网 10.20.30.40 结束"
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "masked": {
+        "role": "user",
+        "blocks": [
+          {
+            "Text": {
+              "text": "联系 ｛Desensitized:2｝ 与内网 ｛Desensitized:1｝ 结束"
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "texts": [
+        "",
+        "联系 worker@corp.local 与内网 10.20.30.40 结束"
+      ],
+      "referenced": []
+    },
+    {
+      "note": "system 文本不参与",
+      "message": {
+        "role": "system",
+        "blocks": [
+          {
+            "Text": {
+              "text": "系统提示词里的 worker@corp.local 不动"
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "masked": {
+        "role": "system",
+        "blocks": [
+          {
+            "Text": {
+              "text": "系统提示词里的 worker@corp.local 不动"
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "texts": [
+        "",
+        "系统提示词里的 worker@corp.local 不动"
+      ],
+      "referenced": []
+    },
+    {
+      "note": "助手文本与思考",
+      "message": {
+        "role": "assistant",
+        "blocks": [
+          {
+            "Text": {
+              "text": "回复正文，00:1A:2B:3C:4D:5E 会被屏蔽"
+            }
+          }
+        ],
+        "reasoning": "思考里的 4111111111111111",
+        "tools": []
+      },
+      "masked": {
+        "role": "assistant",
+        "blocks": [
+          {
+            "Text": {
+              "text": "回复正文，｛Desensitized:3｝ 会被屏蔽"
+            }
+          }
+        ],
+        "reasoning": "思考里的 ｛Desensitized:4｝",
+        "tools": []
+      },
+      "texts": [
+        "思考里的 4111111111111111",
+        "回复正文，00:1A:2B:3C:4D:5E 会被屏蔽"
+      ],
+      "referenced": []
+    },
+    {
+      "note": "工具调用参数（敏感键 + 自由文本）",
+      "message": {
+        "role": "user",
+        "blocks": [
+          {
+            "ToolCall": {
+              "call_id": "call_1",
+              "name": "write_file",
+              "arguments": {
+                "password": "hunter2000!!",
+                "note": "联系 worker@corp.local 结束",
+                "nested": {
+                  "team-token": "abc' + BACKSLASH + '",
+                  "list": [
+                    "plain",
+                    "10.20.30.40"
+                  ]
+                }
+              },
+              "provider_call_id": ""
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "masked": {
+        "role": "user",
+        "blocks": [
+          {
+            "ToolCall": {
+              "call_id": "call_1",
+              "name": "write_file",
+              "arguments": {
+                "password": "｛Desensitized:5｝",
+                "note": "联系 ｛Desensitized:2｝ 结束",
+                "nested": {
+                  "team-token": "｛Desensitized:6｝",
+                  "list": [
+                    "plain",
+                    "｛Desensitized:1｝"
+                  ]
+                }
+              },
+              "provider_call_id": ""
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "texts": [
+        "",
+        "{\"password\": \"hunter2000!!\", \"note\": \"联系 worker@corp.local 结束\", \"nested\": {\"team-token\": \"abc' + BACKSLASH + '\", \"list\": [\"plain\", \"10.20.30.40\"]}}"
+      ],
+      "referenced": []
+    },
+    {
+      "note": "工具结果文本",
+      "message": {
+        "role": "tool",
+        "blocks": [
+          {
+            "ToolCall": {
+              "call_id": "call_1",
+              "name": "write_file",
+              "arguments": "结果 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 与 00:1A:2B:3C:4D:5E",
+              "provider_call_id": ""
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "masked": {
+        "role": "tool",
+        "blocks": [
+          {
+            "ToolCall": {
+              "call_id": "call_1",
+              "name": "write_file",
+              "arguments": "结果 ｛Desensitized:7｝ 与 ｛Desensitized:3｝",
+              "provider_call_id": ""
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "texts": [
+        "",
+        "\"结果 A1b2C3d4E5f6G7h8I9j0K1l2M3n4 与 00:1A:2B:3C:4D:5E\""
+      ],
+      "referenced": []
+    },
+    {
+      "note": "已有占位符",
+      "message": {
+        "role": "user",
+        "blocks": [
+          {
+            "Text": {
+              "text": "已有 ｛Desensitized:7｝ 与 10.20.30.40"
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "masked": {
+        "role": "user",
+        "blocks": [
+          {
+            "Text": {
+              "text": "已有 ｛Desensitized:7｝ 与 ｛Desensitized:1｝"
+            }
+          }
+        ],
+        "reasoning": "",
+        "tools": []
+      },
+      "texts": [
+        "",
+        "已有 ｛Desensitized:7｝ 与 10.20.30.40"
+      ],
+      "referenced": [
+        7
+      ]
+    }
+  ],
+  "leak": {
+    "secret_message": {
+      "role": "user",
+      "blocks": [
+        {
+          "Text": {
+            "text": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4"
+          }
+        }
+      ],
+      "reasoning": "",
+      "tools": []
+    },
+    "secret_masked": {
+      "role": "user",
+      "blocks": [
+        {
+          "Text": {
+            "text": "token ｛Desensitized:7｝"
+          }
+        }
+      ],
+      "reasoning": "",
+      "tools": []
+    },
+    "value": {
+      "note": "值 ｛Desensitized:1｝",
+      "list": [
+        3,
+        true,
+        null
+      ]
+    },
+    "leaked": [
+      1
+    ],
+    "assigned_placeholder": "｛Desensitized:1｝"
+  },
+  "oneshot": [
+    {
+      "strict": false,
+      "steps": [
+        {
+          "text": "联系 worker@corp.local 与卡号 4111111111111111 结束",
+          "masked": "联系 worker@corp.local 与卡号 ｛Desensitized:1｝ 结束",
+          "restored": "联系 worker@corp.local 与卡号 4111111111111111 结束"
+        },
+        {
+          "text": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
+          "masked": "token ｛Desensitized:2｝ 结束",
+          "restored": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束"
+        },
+        {
+          "text": "普通文本没有秘密",
+          "masked": "普通文本没有秘密",
+          "restored": "普通文本没有秘密"
+        },
+        {
+          "text": "",
+          "masked": "",
+          "restored": ""
+        },
+        {
+          "text": "｛Desensitized:999｝",
+          "restored": "｛Desensitized:999｝"
+        }
+      ],
+      "stats": {
+        "values_masked": 2,
+        "skipped_values": 0,
+        "rules_masked": 1,
+        "entropy_masked": 1,
+        "sequence_reuses": 0
+      },
+      "after_close": {
+        "text": "｛Desensitized:1｝",
+        "restored": "｛Desensitized:1｝"
+      }
+    },
+    {
+      "strict": true,
+      "steps": [
+        {
+          "text": "联系 worker@corp.local 与卡号 4111111111111111 结束",
+          "masked": "联系 worker@corp.local 与卡号 ｛Desensitized:1｝ 结束",
+          "restored": "联系 worker@corp.local 与卡号 4111111111111111 结束"
+        },
+        {
+          "text": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束",
+          "masked": "token ｛Desensitized:2｝ 结束",
+          "restored": "token A1b2C3d4E5f6G7h8I9j0K1l2M3n4 结束"
+        },
+        {
+          "text": "普通文本没有秘密",
+          "masked": "普通文本没有秘密",
+          "restored": "普通文本没有秘密"
+        },
+        {
+          "text": "",
+          "masked": "",
+          "restored": ""
+        },
+        {
+          "text": "｛Desensitized:999｝",
+          "error": "还原遇到未注册的脱敏占位符（序号 999）。"
+        }
+      ],
+      "stats": {
+        "values_masked": 2,
+        "skipped_values": 0,
+        "rules_masked": 1,
+        "entropy_masked": 1,
+        "sequence_reuses": 0
+      },
+      "after_close": {
+        "text": "｛Desensitized:1｝",
+        "restored": "｛Desensitized:1｝"
+      }
+    }
+  ]
+}
