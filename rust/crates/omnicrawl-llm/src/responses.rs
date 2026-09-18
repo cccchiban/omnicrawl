@@ -8,14 +8,19 @@
 //! `_create_stream_with_retries` 的降级重试编排、`discover_models`。
 
 use omnicrawl_protocol::{
-    tools_from_conversation_messages, ConversationMessage, MessageBlock, Role, ToolSpec,
+    parse_arguments_object, tools_from_conversation_messages, ConversationMessage, MessageBlock,
+    ModelStreamEvent, ReasoningDelta, Role, TextDelta, ToolCallCompleted, ToolCallStarted,
+    ToolSpec, UsageReported,
 };
 use serde_json::{json, Map, Value};
 
+use crate::errors::RuntimeError;
 use crate::json::dumps;
+use crate::openai_chat::arguments_json_complete;
 use crate::request::{
     build_prompt_cache_key, sanitize_provider_options, ChatRequest, ChatRequestInput, RequestError,
 };
+use crate::usage::usage_from_openai_payload;
 
 /// 会话消息 → `input` items（Python `messages_to_responses_input`）。
 pub fn messages_to_responses_input(messages: &[ConversationMessage]) -> Vec<Value> {
@@ -275,6 +280,411 @@ pub fn build_responses_request(input: &ChatRequestInput<'_>) -> Result<ChatReque
         body: Value::Object(body),
         timeout_seconds,
     })
+}
+
+/// 一条工具调用的流式缓冲（Python 侧是 `dict[str, dict[str, str]]` 的值）。
+#[derive(Debug, Clone, Default)]
+struct CallBuffer {
+    name: String,
+    arguments: String,
+}
+
+/// Python `_arguments_json_complete` 的字符串入口：空串视为完整，非空必须能解析成 JSON。
+///
+/// 半截 JSON 不能当正常调用收尾，否则会被静默降级成空参数误执行。
+fn arguments_text_complete(raw: &str) -> bool {
+    arguments_json_complete(&Value::String(raw.to_string()))
+}
+
+/// Responses 流事件的状态机（Python `_stream_turn_events` 的循环体与收尾）。
+///
+/// 每个事件负载按 `type` 分流：文本 / 推理增量直接外发；工具调用只累进缓冲，
+/// 直到 `arguments.done`、`output_item.done` 或 `response.completed` 才产出完成事件——
+/// 参数分片不对外发增量（与 Chat Completions 的路径不同）。
+#[derive(Debug, Default)]
+pub struct ResponsesStreamState {
+    /// 插入序即冲刷顺序，用 Vec 而不是映射（工具调用数量很小）。
+    call_buffers: Vec<(String, CallBuffer)>,
+    call_id_aliases: std::collections::BTreeMap<String, String>,
+    emitted_call_ids: std::collections::BTreeSet<String>,
+    started_call_ids: std::collections::BTreeSet<String>,
+    finish_reason: String,
+    stream_completed_seen: bool,
+    output_text_delta_seen: bool,
+}
+
+impl ResponsesStreamState {
+    pub fn new() -> Self {
+        Self {
+            finish_reason: "stop".to_string(),
+            ..Self::default()
+        }
+    }
+
+    /// 处理一个事件负载（Python 循环体）。
+    pub fn handle_event(&mut self, event: &Value, events: &mut Vec<ModelStreamEvent>) {
+        if let Some(usage) = usage_from_openai_payload(event) {
+            events.push(ModelStreamEvent::UsageReported(UsageReported {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cached_input_tokens: usage.cached_input_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+            }));
+        }
+
+        let event_type = event
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let delta = event.get("delta").and_then(Value::as_str);
+        match event_type {
+            "response.output_text.delta" => {
+                if let Some(text) = delta {
+                    self.output_text_delta_seen = true;
+                    events.push(ModelStreamEvent::TextDelta(TextDelta {
+                        text: text.to_string(),
+                    }));
+                }
+            }
+            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+                if let Some(text) = delta {
+                    events.push(ModelStreamEvent::ReasoningDelta(ReasoningDelta {
+                        text: text.to_string(),
+                    }));
+                }
+            }
+            // 部分兼容网关只在 added 事件里携带函数名，之后直接给参数 delta；
+            // 忽略它会让完整工具调用被误判成「名称截断」。
+            "response.output_item.added" => {
+                self.capture_function_call_added(event.get("item"), events);
+            }
+            "response.function_call_arguments.delta" => {
+                let item_id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let provider_call_id = event
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let call_id = self.canonical_call_id(&item_id, &provider_call_id);
+                if call_id.is_empty() {
+                    return;
+                }
+                let Some(text) = delta else {
+                    return;
+                };
+                if !self.call_buffers.iter().any(|(id, _)| *id == call_id) {
+                    self.call_buffers
+                        .push((call_id.clone(), CallBuffer::default()));
+                }
+                let name_from_event = event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let started = self.started_call_ids.contains(&call_id);
+                if let Some((_, buffer)) =
+                    self.call_buffers.iter_mut().find(|(id, _)| *id == call_id)
+                {
+                    if buffer.name.is_empty() && !name_from_event.is_empty() {
+                        buffer.name = name_from_event;
+                    }
+                    if !buffer.name.is_empty() && !started {
+                        self.started_call_ids.insert(call_id.clone());
+                        events.push(ModelStreamEvent::ToolCallStarted(ToolCallStarted {
+                            call_id: call_id.clone(),
+                            name: buffer.name.clone(),
+                        }));
+                    }
+                    buffer.arguments.push_str(text);
+                }
+            }
+            // 标准事件在该事件顶层携带 name + 最终 arguments，且没有 item 字段。
+            "response.function_call_arguments.done" => {
+                if let Some(item) = event.get("item").filter(|value| !value.is_null()) {
+                    self.emit_function_call_item(item, events);
+                    return;
+                }
+                let item_id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let provider_call_id = event
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let call_id = self.canonical_call_id(&item_id, &provider_call_id);
+                let name = event
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let arguments = event
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if call_id.is_empty() {
+                    return;
+                }
+                if !self.call_buffers.iter().any(|(id, _)| *id == call_id) {
+                    self.call_buffers
+                        .push((call_id.clone(), CallBuffer::default()));
+                }
+                let started = self.started_call_ids.contains(&call_id);
+                let emitted = self.emitted_call_ids.contains(&call_id);
+                if let Some((_, buffer)) =
+                    self.call_buffers.iter_mut().find(|(id, _)| *id == call_id)
+                {
+                    if !name.is_empty() {
+                        if buffer.name.is_empty() && !started {
+                            self.started_call_ids.insert(call_id.clone());
+                            events.push(ModelStreamEvent::ToolCallStarted(ToolCallStarted {
+                                call_id: call_id.clone(),
+                                name: name.clone(),
+                            }));
+                        }
+                        buffer.name = name.clone();
+                    }
+                    if !arguments.is_empty() {
+                        buffer.arguments = arguments.clone();
+                    }
+                    let final_name = if name.is_empty() {
+                        buffer.name.clone()
+                    } else {
+                        name.clone()
+                    };
+                    let final_args = if arguments.is_empty() {
+                        buffer.arguments.clone()
+                    } else {
+                        arguments.clone()
+                    };
+                    if !final_name.is_empty() && !emitted && arguments_text_complete(&final_args) {
+                        events.push(ModelStreamEvent::ToolCallCompleted(ToolCallCompleted {
+                            call_id: call_id.clone(),
+                            name: final_name,
+                            arguments: parse_arguments_object(&final_args),
+                        }));
+                        self.emitted_call_ids.insert(call_id.clone());
+                        // 该事件已宣告调用完整：清掉缓冲，允许网关随后 EOF 丢 completed 时照样执行。
+                        self.call_buffers.retain(|(id, _)| *id != call_id);
+                    }
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item) = event.get("item").filter(|value| !value.is_null()) {
+                    self.emit_function_call_item(item, events);
+                }
+            }
+            "response.completed" => {
+                self.stream_completed_seen = true;
+                let response = event.get("response").filter(|value| !value.is_null());
+                if let Some(status) = response
+                    .and_then(|value| value.get("status"))
+                    .and_then(Value::as_str)
+                {
+                    if !status.is_empty() {
+                        self.finish_reason = status.to_string();
+                    }
+                }
+                let output = response
+                    .and_then(|value| value.get("output"))
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                for item in &output {
+                    self.emit_function_call_item(item, events);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 流结束后的收尾（Python 循环之后的截断判定、缓冲冲刷与 `ResponseCompleted`）。
+    ///
+    /// 降级告警（`prompt_cache_unsupported` / `tool_history_flattened`）属于重试编排，不在这里发。
+    pub fn finish(&mut self, events: &mut Vec<ModelStreamEvent>) -> Result<(), RuntimeError> {
+        let complete_buffered_calls = !self.call_buffers.is_empty()
+            && self.call_buffers.iter().all(|(_, buffer)| {
+                !buffer.name.is_empty() && arguments_text_complete(&buffer.arguments)
+            });
+        let eof_has_complete_output = (self.call_buffers.is_empty()
+            && (self.output_text_delta_seen || !self.emitted_call_ids.is_empty()))
+            || complete_buffered_calls;
+        if !self.stream_completed_seen && !eof_has_complete_output {
+            return Err(RuntimeError::stream_interrupted(
+                "Responses 流在收到 response.completed 前提前耗尽，疑似连接被网关截断。",
+            ));
+        }
+        for (call_id, buffer) in std::mem::take(&mut self.call_buffers) {
+            if self.emitted_call_ids.contains(&call_id) {
+                continue;
+            }
+            if buffer.name.is_empty() {
+                return Err(RuntimeError::stream_interrupted(
+                    "Responses 流在工具调用名称完整到达前结束，疑似连接被网关截断。",
+                ));
+            }
+            if !arguments_text_complete(&buffer.arguments) {
+                return Err(RuntimeError::stream_interrupted(
+                    "Responses 流在工具调用参数完整到达前结束，疑似连接被网关截断。",
+                ));
+            }
+            events.push(ModelStreamEvent::ToolCallCompleted(ToolCallCompleted {
+                call_id: call_id.clone(),
+                name: buffer.name,
+                arguments: parse_arguments_object(&buffer.arguments),
+            }));
+            self.emitted_call_ids.insert(call_id);
+        }
+        events.push(ModelStreamEvent::Finished {
+            finish_reason: self.finish_reason.clone(),
+        });
+        Ok(())
+    }
+
+    /// 统一 `item_id` 与 Provider `call_id` 的别名（Python `_canonical_call_id`）。
+    fn canonical_call_id(&mut self, item_id: &str, provider_call_id: &str) -> String {
+        let item_id = item_id.to_string();
+        let provider_call_id = provider_call_id.to_string();
+        if !item_id.is_empty() && !provider_call_id.is_empty() && item_id != provider_call_id {
+            self.call_id_aliases
+                .insert(item_id.clone(), provider_call_id.clone());
+            if let Some(index) = self.call_buffers.iter().position(|(id, _)| *id == item_id) {
+                let (_, existing) = self.call_buffers.remove(index);
+                match self
+                    .call_buffers
+                    .iter_mut()
+                    .find(|(id, _)| *id == provider_call_id)
+                {
+                    Some((_, current)) => {
+                        if current.name.is_empty() {
+                            current.name = existing.name;
+                        }
+                        if current.arguments.is_empty() {
+                            current.arguments = existing.arguments;
+                        }
+                    }
+                    None => self.call_buffers.push((provider_call_id.clone(), existing)),
+                }
+            }
+            if self.started_call_ids.contains(&item_id) {
+                self.started_call_ids.remove(&item_id);
+                self.started_call_ids.insert(provider_call_id.clone());
+            }
+            return provider_call_id;
+        }
+        let candidate = if provider_call_id.is_empty() {
+            item_id
+        } else {
+            provider_call_id
+        };
+        self.call_id_aliases
+            .get(&candidate)
+            .cloned()
+            .unwrap_or(candidate)
+    }
+
+    /// 从 `output_item.added` 里抓函数名并开缓冲（Python `_capture_function_call_added`）。
+    fn capture_function_call_added(
+        &mut self,
+        item: Option<&Value>,
+        events: &mut Vec<ModelStreamEvent>,
+    ) {
+        let Some(item) = item.filter(|value| value.is_object()) else {
+            return;
+        };
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            return;
+        }
+        let call_id = item
+            .get("id")
+            .or_else(|| item.get("call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if call_id.is_empty() || name.is_empty() {
+            return;
+        }
+        if !self.call_buffers.iter().any(|(id, _)| *id == call_id) {
+            self.call_buffers
+                .push((call_id.clone(), CallBuffer::default()));
+        }
+        let started = self.started_call_ids.contains(&call_id);
+        if let Some((_, buffer)) = self.call_buffers.iter_mut().find(|(id, _)| *id == call_id) {
+            if buffer.name.is_empty() {
+                buffer.name = name;
+            }
+            let arguments = item
+                .get("arguments")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !arguments.is_empty() && buffer.arguments.is_empty() {
+                buffer.arguments = arguments;
+            }
+            if !started {
+                self.started_call_ids.insert(call_id.clone());
+                events.push(ModelStreamEvent::ToolCallStarted(ToolCallStarted {
+                    call_id,
+                    name: buffer.name.clone(),
+                }));
+            }
+        }
+    }
+
+    /// 从完整 item 产出工具调用（Python `_emit_function_call_item`）。
+    fn emit_function_call_item(&mut self, item: &Value, events: &mut Vec<ModelStreamEvent>) {
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            return;
+        }
+        let raw_call_id = item
+            .get("call_id")
+            .or_else(|| item.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let call_id = self.canonical_call_id(&raw_call_id, "");
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let arguments = item
+            .get("arguments")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if call_id.is_empty() || name.is_empty() || self.emitted_call_ids.contains(&call_id) {
+            return;
+        }
+        self.call_buffers.retain(|(id, _)| *id != call_id);
+        if !self.started_call_ids.contains(&call_id) {
+            self.started_call_ids.insert(call_id.clone());
+            events.push(ModelStreamEvent::ToolCallStarted(ToolCallStarted {
+                call_id: call_id.clone(),
+                name: name.clone(),
+            }));
+        }
+        events.push(ModelStreamEvent::ToolCallCompleted(ToolCallCompleted {
+            call_id: call_id.clone(),
+            name,
+            arguments: parse_arguments_object(&arguments),
+        }));
+        self.emitted_call_ids.insert(call_id);
+    }
 }
 
 /// SHA-1 十六进制摘要：Python 侧用 `hashlib.sha1` 生成 reasoning item 的 id。

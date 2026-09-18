@@ -35,6 +35,7 @@ pub use request::{
 pub use responses::{
     build_responses_request, flatten_tool_history_to_text, has_tool_history_items,
     is_tool_history_rejection, messages_to_responses_input, tools_for_responses,
+    ResponsesStreamState,
 };
 pub use runtime::{ChatEndpoint, DiscardSink, ModelRuntime, OpenAiChatRuntime, SinkFlow, TurnSink};
 pub use sse::{

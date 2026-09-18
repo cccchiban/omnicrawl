@@ -40,8 +40,14 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   照线上形态摊平进请求体顶层、`reasoning.effort` 由 `reasoning_effort` 归一化、timeout 归传输层）、
   `flatten_tool_history_to_text` 与 `has_tool_history_items` / `is_tool_history_rejection`
   （网关不支持工具历史时的 400 降级判定）。
-  未搬：流事件映射（`_stream_turn_events` 的 item 别名与参数分片）、回合运行（`stream_turn`）、
-  `_create_stream_with_retries` 的降级重试编排、`discover_models`。
+- Responses 流事件映射（`ResponsesStreamState`）：按 `type` 分流事件负载——文本 / 推理增量直接外发，
+  工具调用只累进缓冲（**参数分片不发增量**，与 Chat Completions 不同），在 `arguments.done`、
+  `output_item.done` 或 `response.completed` 时产出完成事件；`item_id` 与 `call_id` 的别名统一、
+  `output_item.added` 里的函数名捕获、`arguments.done` 顶层 name/arguments 的回退分支、
+  「已发出的调用不重复产出」，以及流结束时的截断判定（缺 `response.completed` 且没有完整输出 → 报错）
+  与缓冲冲刷（名称 / 参数不完整也报错，空参数视为完整）。
+  未搬：回合运行（`stream_turn`）与降级重试编排（`_create_stream_with_retries`：`prompt_cache_key`
+  摘字段重试、工具历史 400 展平重试与两条告警）、`discover_models`、流内异常的错误包装（`format_openai_error`）。
 
 不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、
 adapter 注册表与 `build_runtime` 工厂、会话落盘、上下文压缩触发。
@@ -51,6 +57,10 @@ adapter 注册表与 `build_runtime` 工厂、会话落盘、上下文压缩触�
 - **`flatten_tool_history_to_text` 不就地改写入参**：Python 的实现会把工具调用直接追加进入参里那条
   assistant 消息（调用方传的正是自己要发出去的 items）；内核返回新数组、不改入参。对照片因此两侧都用副本。
 - 请求体的键序由 SDK 决定：对照片按**键集合 + 逐字段值**比对，不追键序（与 `chat.completions` 同口径）。
+- **流事件负载要仿 SDK 对象**：Python 侧先 `getattr(event, "type")`、再 `isinstance(event, dict)` 回退，
+  真实链路拿到的是 SDK 的 pydantic 对象。驱动同一份 Python 代码的对照片必须用「属性可读的 dict」
+  （生成器里的 `DotDict`），否则 `response.status` 读不到，`finish_reason` 会永远是 `stop`——
+  那是个只在 dict 载荷下成立的假行为。内核按 JSON 键读取，等价于真实链路的属性访问。
 
 ## 边界要求
 

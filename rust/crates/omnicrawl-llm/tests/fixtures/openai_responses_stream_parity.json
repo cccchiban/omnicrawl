@@ -1,0 +1,672 @@
+{
+  "source": "omnicrawl/llm/providers/openai_responses.py（流事件映射部分）",
+  "cases": [
+    {
+      "label": "纯文本 + completed",
+      "payloads": [
+        {
+          "type": "response.output_text.delta",
+          "delta": "你"
+        },
+        {
+          "type": "response.output_text.delta",
+          "delta": "好"
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": []
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "text_delta",
+          "text": "你"
+        },
+        {
+          "kind": "text_delta",
+          "text": "好"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "推理增量（两种事件名）",
+      "payloads": [
+        {
+          "type": "response.reasoning_summary_text.delta",
+          "delta": "想"
+        },
+        {
+          "type": "response.reasoning_text.delta",
+          "delta": "考"
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": []
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "reasoning_delta",
+          "text": "想"
+        },
+        {
+          "kind": "reasoning_delta",
+          "text": "考"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "标准工具调用（added + delta + done 带 item）",
+      "payloads": [
+        {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "function_call",
+            "id": "call_1",
+            "call_id": "call_1",
+            "name": "write_file"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "{\"path\": ",
+          "item_id": "call_1"
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "\"a.txt\"}",
+          "item_id": "call_1"
+        },
+        {
+          "type": "response.function_call_arguments.done",
+          "item": {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "write_file",
+            "arguments": "{\"path\": \"a.txt\"}"
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": [
+              {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": "{\"path\": \"a.txt\"}"
+              }
+            ]
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "added 只带名字 + 参数 delta + EOF（无 completed）",
+      "payloads": [
+        {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "function_call",
+            "id": "call_1",
+            "call_id": "call_1",
+            "name": "write_file"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "{\"path\": \"a.txt\"}",
+          "item_id": "call_1"
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "arguments.done 顶层带 name 与最终参数",
+      "payloads": [
+        {
+          "type": "response.function_call_arguments.done",
+          "item_id": "call_1",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\"}"
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": []
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "item_id 与 call_id 别名统一",
+      "payloads": [
+        {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "function_call",
+            "id": "item_1",
+            "call_id": "item_1",
+            "name": "write_file"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "{\"path\": ",
+          "item_id": "item_1",
+          "call_id": "call_9"
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "\"a.txt\"}",
+          "item_id": "item_1",
+          "call_id": "call_9"
+        },
+        {
+          "type": "response.function_call_arguments.done",
+          "item_id": "item_1",
+          "call_id": "call_9",
+          "name": "write_file",
+          "arguments": "{\"path\": \"a.txt\"}"
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": []
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "item_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_9",
+          "name": "write_file",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "output_item.done 直接给完整 item",
+      "payloads": [
+        {
+          "type": "response.output_item.done",
+          "item": {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "write_file",
+            "arguments": "{\"path\": \"a.txt\"}"
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": []
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "只在 completed 的 output 里出现调用",
+      "payloads": [
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": [
+              {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": "{\"path\": \"a.txt\"}"
+              }
+            ]
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "截断：只有名字、无参数",
+      "payloads": [
+        {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "function_call",
+            "id": "call_1",
+            "call_id": "call_1",
+            "name": "write_file"
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": {}
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "截断：参数半截",
+      "payloads": [
+        {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "function_call",
+            "id": "call_1",
+            "call_id": "call_1",
+            "name": "write_file"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "{\"path\":",
+          "item_id": "call_1"
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        }
+      ],
+      "error": "Responses 流在收到 response.completed 前提前耗尽，疑似连接被网关截断。",
+      "retryable": true,
+      "code": "STREAM_INTERRUPTED"
+    },
+    {
+      "label": "截断：完全空流",
+      "payloads": [],
+      "events": [],
+      "error": "Responses 流在收到 response.completed 前提前耗尽，疑似连接被网关截断。",
+      "retryable": true,
+      "code": "STREAM_INTERRUPTED"
+    },
+    {
+      "label": "只有文本 delta、无 completed（EOF 判定为真）",
+      "payloads": [
+        {
+          "type": "response.output_text.delta",
+          "delta": "半截也算完成"
+        }
+      ],
+      "events": [
+        {
+          "kind": "text_delta",
+          "text": "半截也算完成"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "usage 事件",
+      "payloads": [
+        {
+          "type": "response.output_text.delta",
+          "delta": "x"
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": [],
+            "usage": {
+              "input_tokens": 12,
+              "output_tokens": 3,
+              "input_tokens_details": {
+                "cached_tokens": 5
+              },
+              "output_tokens_details": {
+                "reasoning_tokens": 2
+              }
+            }
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "text_delta",
+          "text": "x"
+        },
+        {
+          "kind": "usage",
+          "input_tokens": 12,
+          "output_tokens": 3,
+          "cached_input_tokens": 5,
+          "reasoning_tokens": 2
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "completed status=failed",
+      "payloads": [
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "failed",
+            "output": []
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "finished",
+          "finish_reason": "failed"
+        }
+      ]
+    },
+    {
+      "label": "非 function_call 的 item 被忽略",
+      "payloads": [
+        {
+          "type": "response.output_item.done",
+          "item": {
+            "type": "message",
+            "id": "m1"
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": [
+              {
+                "type": "reasoning",
+                "id": "rs_1"
+              }
+            ]
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "arguments.delta 无 id 被忽略",
+      "payloads": [
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "{}"
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": []
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "已发出的调用不重复产出",
+      "payloads": [
+        {
+          "type": "response.output_item.done",
+          "item": {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "write_file",
+            "arguments": "{\"path\": \"a.txt\"}"
+          }
+        },
+        {
+          "type": "response.output_item.done",
+          "item": {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "write_file",
+            "arguments": "{\"path\": \"a.txt\"}"
+          }
+        },
+        {
+          "type": "response.completed",
+          "response": {
+            "status": "completed",
+            "output": [
+              {
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "write_file",
+                "arguments": "{\"path\": \"a.txt\"}"
+              }
+            ]
+          }
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_1",
+          "name": "write_file"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_1",
+          "name": "write_file",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "completed"
+        }
+      ]
+    },
+    {
+      "label": "多个调用按插入序冲刷",
+      "payloads": [
+        {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "function_call",
+            "id": "call_a",
+            "call_id": "call_a",
+            "name": "first"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "{\"a\": 1}",
+          "item_id": "call_a"
+        },
+        {
+          "type": "response.output_item.added",
+          "item": {
+            "type": "function_call",
+            "id": "call_b",
+            "call_id": "call_b",
+            "name": "second"
+          }
+        },
+        {
+          "type": "response.function_call_arguments.delta",
+          "delta": "{\"b\": 2}",
+          "item_id": "call_b"
+        }
+      ],
+      "events": [
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_a",
+          "name": "first"
+        },
+        {
+          "kind": "tool_call_started",
+          "call_id": "call_b",
+          "name": "second"
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_a",
+          "name": "first",
+          "arguments": {
+            "a": 1
+          }
+        },
+        {
+          "kind": "tool_call_completed",
+          "call_id": "call_b",
+          "name": "second",
+          "arguments": {
+            "b": 2
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    }
+  ]
+}

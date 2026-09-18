@@ -236,6 +236,18 @@ cd rust && cargo test -p omnicrawl-llm --test openai_responses_request_parity
 分块边界）、请求级 tools 4 例、历史展平 6 例、工具历史判定 4 例、`create()` 参数 16 例。
 `input` items 与 tools **逐字节**比对（键序也是契约），请求体按键集合与逐字段值比对（键序由 SDK 决定）。
 
+Responses 的流事件映射同理：
+
+```bash
+python rust/tools/gen_llm_responses_stream_fixture.py         # 假客户端 + 假流驱动真实现
+cd rust && cargo test -p omnicrawl-llm --test openai_responses_stream_parity
+```
+
+`openai_responses_stream_parity.json` 18 个场景：文本 / 推理增量、added 抓名、参数分片与 `arguments.done`
+两条分支、`item_id` 与 `call_id` 别名、`completed` 的 output 扫描、usage、`status=failed`、
+以及三类截断（半截参数、空流、只给名字）。负载用「属性可读的 dict」仿 SDK 对象——
+否则 `response.status` 用 `getattr` 读不到，`finish_reason` 会永远是 `stop`（只在 dict 载荷下成立的假行为）。
+
 ## 已知与 Python 的差异
 
 1. 非字符串字段（`role`、`tool_call_id`、工具名、`description` 等）不再走 Python 的 `str()`
