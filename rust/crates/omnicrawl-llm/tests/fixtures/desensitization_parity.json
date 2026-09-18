@@ -9,28 +9,58 @@
   ],
   "placeholders": [
     {
-      "text": "HTML+Paged.js",
-      "found": []
+      "text": "｛Desensitized:1｝",
+      "found": [
+        {
+          "text": "｛Desensitized:1｝",
+          "seq": 1
+        }
+      ]
     },
     {
-      "text": "前缀 半角 &input.system_prompt 后缀",
-      "found": []
+      "text": "前缀 ｛Desensitized:13｝ 后缀",
+      "found": [
+        {
+          "text": "｛Desensitized:13｝",
+          "seq": 13
+        }
+      ]
     },
     {
-      "text": "大写 123456789012345678901234567890",
-      "found": []
+      "text": "大写 ｛DESENSITIZED:12｝",
+      "found": [
+        {
+          "text": "｛DESENSITIZED:12｝",
+          "seq": 12
+        }
+      ]
     },
     {
-      "text": "全角冒号 self.context_window_tokens,",
-      "found": []
+      "text": "全角冒号 ｛Desensitized：7｝",
+      "found": [
+        {
+          "text": "｛Desensitized：7｝",
+          "seq": 7
+        }
+      ]
     },
     {
-      "text": "半角冒号 self.context_window_tokens,",
-      "found": []
+      "text": "半角冒号 {Desensitized:7}",
+      "found": [
+        {
+          "text": "{Desensitized:7}",
+          "seq": 7
+        }
+      ]
     },
     {
-      "text": "序号带空格 &self.session_id,",
-      "found": []
+      "text": "序号带空格 ｛Desensitized : 8 ｝",
+      "found": [
+        {
+          "text": "｛Desensitized : 8 ｝",
+          "seq": 8
+        }
+      ]
     },
     {
       "text": "畸形 ｛Desensitized: 未闭合",
@@ -45,8 +75,13 @@
       "found": []
     },
     {
-      "text": "多个 text+tool_calls+reasoning 与 int = 0",
-      "found": []
+      "text": "多个 ｛Desensitized:11｝ 与 int = 0",
+      "found": [
+        {
+          "text": "｛Desensitized:11｝",
+          "seq": 11
+        }
+      ]
     },
     {
       "text": "",
@@ -54,19 +89,26 @@
     }
   ],
   "prefixes": [
-    false,
-    false,
-    false,
-    false,
-    false,
-    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
     true,
     true,
     false,
-    false,
+    true,
     false
   ],
-  "collected": [],
+  "collected": [
+    1,
+    7,
+    8,
+    11,
+    12,
+    13
+  ],
   "fingerprints": {
     "same": true,
     "different": true,

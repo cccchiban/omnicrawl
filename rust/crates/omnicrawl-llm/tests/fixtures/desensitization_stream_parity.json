@@ -1,0 +1,1082 @@
+{
+  "source": [
+    "omnicrawl/llm/desensitization/stream.py",
+    "omnicrawl/llm/desensitization/registry.py"
+  ],
+  "values": [
+    "值一",
+    "值二",
+    "值三"
+  ],
+  "truncated_finish_reasons": [
+    "content_filter",
+    "failed",
+    "incomplete",
+    "length",
+    "max_tokens"
+  ],
+  "scenarios": [
+    {
+      "name": "跨分片占位符",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "前缀 ｛Desens",
+          "result": "前缀 ",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": "itized",
+          "result": "",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": ":1｝ 后缀",
+          "result": "值一 后缀",
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "flush",
+          "result": {
+            "text": "",
+            "reasoning": ""
+          },
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [],
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "还原变体与多个占位符",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "ａ｛Desensitized:1｝ｂ",
+          "result": "ａ值一ｂ",
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": "｛Desensitized:2｝| {Desensitized: 3 } {Desensitized： 19 } ｛DESENSITIZED:20｝",
+          "result": "值二| 值三 {Desensitized： 19 } ｛DESENSITIZED:20｝",
+          "stats": {
+            "hits": 3,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": "普通 {括号} 与 Desensitized 文本",
+          "result": "普通 {括号} 与 Desensitized 文本",
+          "stats": {
+            "hits": 3,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "flush",
+          "result": {
+            "text": "",
+            "reasoning": ""
+          },
+          "stats": {
+            "hits": 3,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [
+            {
+              "code": "desensitization_unresolved",
+              "message": "模型返回了未注册的脱敏占位符（序号 19），已按原样保留。"
+            }
+          ],
+          "stats": {
+            "hits": 3,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "未注册序号与告警去重",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "未知 ｛Desensitized:99｝",
+          "result": "未知 ｛Desensitized:99｝",
+          "stats": {
+            "hits": 0,
+            "unresolved": 1,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": " 又一个 ｛Desensitized:88｝",
+          "result": " 又一个 ｛Desensitized:88｝",
+          "stats": {
+            "hits": 0,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [
+            {
+              "code": "desensitization_unresolved",
+              "message": "模型返回了未注册的脱敏占位符（序号 99），已按原样保留。"
+            }
+          ],
+          "stats": {
+            "hits": 0,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [],
+          "stats": {
+            "hits": 0,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "畸形与半截前缀",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "畸形 ｛Desensitized: 未闭合",
+          "result": "畸形 ｛Desensitized: 未闭合",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 1
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": " 半截 ｛Dese",
+          "result": " 半截 ",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 1
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [
+            {
+              "code": "desensitization_malformed",
+              "message": "检测到 1 处疑似畸形脱敏占位符，已按原样保留。"
+            }
+          ],
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 1
+          }
+        },
+        {
+          "op": "flush",
+          "result": {
+            "text": "｛Dese",
+            "reasoning": ""
+          },
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 1
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [],
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 1
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "挂起上限",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "{                                                               ",
+          "result": "",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": "x",
+          "result": "{                                                               x",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": "{                                                                ",
+          "result": "{                                                                ",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [],
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "文本与推理通道隔离",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "A｛Dese",
+          "result": "A",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_reasoning",
+          "text": "R｛Desensitized:2｝",
+          "result": "R值二",
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_text",
+          "text": "nsitized:1｝B",
+          "result": "值一B",
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_reasoning",
+          "text": "R2",
+          "result": "R2",
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "flush",
+          "result": {
+            "text": "",
+            "reasoning": ""
+          },
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [],
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "工具参数通道",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_tool_arguments",
+          "call_id": "call_1",
+          "text": "{\"key\":\"｛Dese",
+          "result": "{\"key\":\"",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_tool_arguments",
+          "call_id": "call_1",
+          "text": "nsitized:1｝\"}",
+          "result": "值一\"}",
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_tool_arguments",
+          "call_id": "call_2",
+          "text": "｛Desensitized:2｝",
+          "result": "值二",
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "feed_tool_arguments",
+          "call_id": "",
+          "text": "尾部｛Dese",
+          "result": "尾部",
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "flush_tool_arguments",
+          "result": [
+            [
+              "",
+              "｛Dese"
+            ]
+          ],
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [],
+          "stats": {
+            "hits": 2,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "结构化还原",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "restore_string",
+          "text": "｛Desensitized:18｝｛Desensitized:99｝-尾",
+          "result": "｛Desensitized:18｝｛Desensitized:99｝-尾",
+          "stats": {
+            "hits": 0,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "restore_arguments",
+          "value": {
+            "path": "workspace/notes.txt",
+            "｛Desensitized:2｝": "键不动",
+            "nested": {
+              "list": [
+                "｛Desensitized:3｝",
+                7,
+                true,
+                null
+              ],
+              "empty": {}
+            },
+            "plain": "无占位符",
+            "number": 12.5
+          },
+          "result": {
+            "path": "workspace/notes.txt",
+            "｛Desensitized:2｝": "键不动",
+            "nested": {
+              "list": [
+                "值三",
+                7,
+                true,
+                null
+              ],
+              "empty": {}
+            },
+            "plain": "无占位符",
+            "number": 12.5
+          },
+          "stats": {
+            "hits": 1,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [
+            {
+              "code": "desensitization_unresolved",
+              "message": "模型返回了未注册的脱敏占位符（序号 18），已按原样保留。"
+            }
+          ],
+          "stats": {
+            "hits": 1,
+            "unresolved": 2,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "生命周期与可用性",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_text",
+          "text": "",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_tool_call",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": true,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "content_filter",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": true,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_reasoning",
+          "text": "r",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": true,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": true,
+      "saw_tool_call": true
+    },
+    {
+      "name": "截断 finish_reason 全表",
+      "strict": false,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "note_text",
+          "text": "x",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "length",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "incomplete",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "max_tokens",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "content_filter",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "failed",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": false,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "stop",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": true,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "tool_calls",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": true,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "note_completed",
+          "finish_reason": "",
+          "result": null,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "reply_usable",
+          "result": true,
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": true,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "严格模式未注册序号",
+      "strict": true,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "｛Desensitized:99｝",
+          "error": "还原遇到未注册的脱敏占位符（序号 99）。",
+          "stats": {
+            "hits": 0,
+            "unresolved": 1,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "严格模式畸形前缀",
+      "strict": true,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "畸形 ｛Desensitized: 未闭合",
+          "error": "还原遇到畸形脱敏占位符（strict_restore）。",
+          "stats": {
+            "hits": 0,
+            "unresolved": 0,
+            "malformed": 1
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    },
+    {
+      "name": "严格模式正常路径",
+      "strict": true,
+      "values": [
+        [
+          "值一",
+          1
+        ],
+        [
+          "值二",
+          2
+        ],
+        [
+          "值三",
+          3
+        ]
+      ],
+      "ops": [
+        {
+          "op": "feed_text",
+          "text": "｛Desensitized:1｝",
+          "result": "值一",
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "flush",
+          "result": {
+            "text": "",
+            "reasoning": ""
+          },
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        },
+        {
+          "op": "take_warnings",
+          "result": [],
+          "stats": {
+            "hits": 1,
+            "unresolved": 0,
+            "malformed": 0
+          }
+        }
+      ],
+      "finish_reason": "stop",
+      "saw_text": false,
+      "saw_reasoning": false,
+      "saw_tool_call": false
+    }
+  ]
+}

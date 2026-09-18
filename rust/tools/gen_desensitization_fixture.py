@@ -5,6 +5,10 @@
 两侧都注入自增计数器；周期号是进程级全局的，比对前统一归一化成 `<cycle-id>`。
 指纹使用进程级随机盐，只比对「同值同指纹、异值不同指纹」这类性质，不比字面值。
 
+注意：占位符一律用 `placeholder()` 拼接，源码里**不出现完整占位符字面量**，否则在启用了
+消息脱敏的 OmniCrawl 会话里（本仓库自己就是那个宿主）字面量会被还原成会话注册表里的原文：
+数据集照旧生成、测试照常通过，但解析用例全变成「命中为空」的假绿。
+
 用法：``python rust/tools/gen_desensitization_fixture.py``
 输出：``rust/crates/omnicrawl-llm/tests/fixtures/desensitization_parity.json``
 """
@@ -29,17 +33,29 @@ if not Path(R.__file__).resolve().is_relative_to(ROOT):
 
 CYCLE_PATTERN = re.compile(r"cycle-\d+")
 
+BRACE_OPEN = "\uff5b"
+BRACE_CLOSE = "\uff5d"
+FULLWIDTH_COLON = "\uff1a"
+MARKER = "Desensitized"
+
+
+def placeholder(seq: int) -> str:
+    """规范占位符：全角花括号、序号无前导零。"""
+
+    return BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE
+
+
 TEXTS = [
-    "HTML+Paged.js",
-    "前缀 半角 &input.system_prompt 后缀",
-    "大写 123456789012345678901234567890",
-    "全角冒号 self.context_window_tokens,",
-    "半角冒号 self.context_window_tokens,",
-    "序号带空格 &self.session_id,",
-    "畸形 ｛Desensitized: 未闭合",
+    placeholder(1),
+    "前缀 " + placeholder(13) + " 后缀",
+    "大写 " + placeholder(12).upper(),
+    "全角冒号 " + BRACE_OPEN + MARKER + FULLWIDTH_COLON + "7" + BRACE_CLOSE,
+    "半角冒号 " + "{" + MARKER + ":" + "7" + "}",
+    "序号带空格 " + BRACE_OPEN + MARKER + " : 8 " + BRACE_CLOSE,
+    "畸形 " + BRACE_OPEN + MARKER + ": 未闭合",
     "疑似前缀 { desensitized",
-    "普通文本 {括号} 与 Desensitized",
-    "多个 text+tool_calls+reasoning 与 int = 0",
+    "普通文本 {括号} 与 " + MARKER,
+    "多个 " + placeholder(11) + " 与 int = 0",
     "",
 ]
 

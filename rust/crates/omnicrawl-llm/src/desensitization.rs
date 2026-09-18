@@ -1,20 +1,59 @@
-//! 序号注册表：占位符协议、序号分配、发送-接收周期登记与还原查询。
+//! 消息脱敏（可逆占位符 `｛Desensitized:n｝`）：本文件是模块根，放子系统错误面与序号注册表。
 //!
-//! 语义基准是 Python `omnicrawl/llm/desensitization/registry.py`。原文只进内存注册表：
+//! 语义基准是 Python `omnicrawl/llm/desensitization/`。原文只进内存注册表：
 //! 不落盘、不进日志、不进会话事件；可观测信息只到「计数 / 规则 ID / 序号」粒度。
 //!
 //! 序号按「值的指纹」稳定分配：同一值在连续请求中始终复用同一序号，使未变历史脱敏后
 //! 逐字一致，从而命中提供方前缀缓存。
+//!
+//! 已落地：`registry`（占位符协议、序号分配、周期与会话映射，Python `registry.py`）、
+//! `stream`（流式还原状态机，Python `stream.py`）。规则层、引擎、gitleaks、NER、
+//! middleware、oneshot 尚未搬运。
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use sha2::{Digest, Sha256};
 
+pub mod stream;
+
+pub use stream::{StreamRestorer, TRUNCATED_FINISH_REASONS};
+
 pub const PLACEHOLDER_MARKER: &str = "Desensitized";
 pub const FULLWIDTH_OPEN_BRACE: char = '\u{ff5b}';
 pub const FULLWIDTH_CLOSE_BRACE: char = '\u{ff5d}';
+
+/// 脱敏层中止请求（fail-closed / 严格还原）；不向模型发送原文。
+///
+/// 语义基准是 Python 的 `DesensitizationError`（定义在 `middleware.py`，继承 `ModelError`，
+/// 错误码 `UNKNOWN`、不可重试）。内核侧暂不并入运行时错误面 `RuntimeError`：本层只报
+/// 「正文 + 不可重试」，映射到哪个运行时错误留到 middleware 接线时决定。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesensitizationError {
+    message: String,
+}
+
+impl DesensitizationError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for DesensitizationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DesensitizationError {}
 
 static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static CYCLE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);

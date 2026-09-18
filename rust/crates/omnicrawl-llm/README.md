@@ -41,11 +41,15 @@ python rust/tools/gen_llm_stream_fixture.py    # 流解析
 python rust/tools/gen_llm_request_fixture.py   # 请求构建
 python rust/tools/gen_llm_usage_fixture.py     # 用量归一化
 python rust/tools/gen_llm_runtime_fixture.py   # 端到端回合
+python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位符协议与序号注册表
+python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
 cd rust && cargo test -p omnicrawl-llm
 ```
 
 fixture：
 
+- `tests/fixtures/desensitization_parity.json`：占位符用例 11 条、稳定索引 5 步、周期 / 会话缓存 / 注册表生命周期。
+- `tests/fixtures/desensitization_stream_parity.json`：13 个场景、71 步操作（分片还原、通道隔离、结构化还原、告警、严格模式、截断判定）。
 - `tests/fixtures/openai_chat_stream_parity.json`：参数完整性 16、分片归并 8、SSE 解码 10、SSE 流 9、首选项 6。
 - `tests/fixtures/openai_chat_request_parity.json`：请求 33、provider_options 8、GPT 判定 13、prompt_cache_key 5、
   参数串 16、浮点写法 6。
@@ -88,16 +92,20 @@ fixture：
   （Python 用任意精度整数）。
 - JSON 解析用 `serde_json`：不接受 `NaN`/`Infinity`（Python 的 `json.loads` 接受）。
 - 数值/布尔的 str 化按 JSON 写法（`true`），Python `str(True)` 给出 `True`；实际模型请求里这些字段恒为字符串。
+- **消息脱敏的两处字符类差异**：Python 的 `\s` / `str.isspace()` 含 `\x1c`–`\x1f` 这类控制分隔符，
+  Rust 的 `char::is_whitespace` 不含；占位符里的序号只认 ASCII 数字，Python 的 `\d` 还认 Unicode 数字。
+  两者都不出现在真实语料里。
 
 ## 依赖
 
 `ureq`（阻塞式 HTTP/1.1 + rustls）是唯一的传输依赖：内核的回合循环本来就是阻塞的，不需要异步运行时。
 交叉编译到 musl 时需要目标平台的 C 工具链（rustls 的 ring 组件）。
 
-## 消息脱敏：序号注册表（`desensitization.rs`）
+## 消息脱敏：序号注册表（`desensitization.rs`）与流式还原（`desensitization/stream.rs`）
 
-对齐 Python `omnicrawl/llm/desensitization/registry.py`。原文只进内存注册表：**不落盘、不进日志、
-不进会话事件**；可观测信息只到「计数 / 规则 ID / 序号」粒度。
+对齐 Python `omnicrawl/llm/desensitization/`。原文只进内存注册表：**不落盘、不进日志、
+不进会话事件**；可观测信息只到「计数 / 规则 ID / 序号」粒度。本文件是模块根（子系统错误面 +
+序号注册表，对应 `registry.py`），`desensitization/stream.rs` 对应 `stream.py`。
 
 - **占位符协议**：生成端唯一规范是全角 `｛Desensitized:n｝`（序号无前导零）；还原端宽松兼容半角花括号、
   全角/半角冒号、大小写与序号两侧空白。另有「疑似前缀」识别，用于把半截/畸形占位符保留原文并告警。
@@ -108,6 +116,14 @@ fixture：
   会话共享（`SessionSequenceCache`），周期结束只释放周期自身状态，会话切换才丢弃原文。
 - **注册表**：`SequenceRegistry` 管理周期生命周期——紧邻的同一请求重试会复用同一周期，
   请求一旦换新就地注销（避免原文与屏蔽副本随失败/取消无限累积）。
+- **流式还原**（`StreamRestorer`）：文本 / 推理 / 各工具参数通道各有独立缓冲；只挂起「可能是占位符
+  前缀」的尾串（≤64 字符，超过就按普通文本输出），其余照常输出，分片把占位符切在中间也能正确还原。
+  未注册序号保留原样 + 告警（`strict` 时中止），畸形前缀同样保留 + 告警，告警按类别各报一次；
+  `restore_arguments` 递归还原参数里的字符串值（键与结构件不动），`reply_usable` 按
+  `TRUNCATED_FINISH_REASONS`（截断类 finish_reason 不按成功注销周期）判定回复是否可用。
 
-本片只搬「协议 + 序号 + 映射」这层地基；规则层（PEM/连接串/邮箱/银行卡/IP/URL/MAC/车牌/gitleaks）、
-引擎、NER 与流式还原尚未搬运。
+尚未搬运：规则层（PEM/连接串/邮箱/银行卡/IP/URL/MAC/车牌/gitleaks）、引擎、NER、middleware、oneshot。
+
+两份数据集的占位符一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：本仓库自己
+就是宿主，在启用了消息脱敏的会话里写完整占位符字面量会被还原成会话注册表里的原文——数据集照旧生成、
+测试照常通过，但解析用例全变成「命中为空」的假绿。

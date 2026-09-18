@@ -38,11 +38,13 @@ rust/
 │   ├── src/errors.rs                       # 运行时错误面与 HTTP 状态码阶梯文案
 │   ├── src/transport.rs                    # 阻塞式 HTTP 往返（ureq + rustls）与超时映射
 │   ├── src/runtime.rs                      # 一次回合：请求 → 流事件 → 工具收尾 → ModelReply
+│   ├── src/desensitization.rs              # 消息脱敏模块根：子系统错误面 + 序号注册表（占位符协议、稳定序号）
+│   ├── src/desensitization/stream.rs       # 消息脱敏：流式还原（尾部挂起缓冲、结构化还原、严格模式）
 │   ├── tests/*_parity.rs                   # 与 Python 实现的对照测试（流/请求/用量/端到端）
 │   ├── tests/runtime_loopback.rs           # 本机回环服务端上的内核行为测试
 │   ├── tests/common/mod.rs                 # 测试脚手架（fixture 输入、回环服务端、事件接收端）
-│   └── tests/fixtures/openai_chat_*_parity.json
-├── crates/omnicrawl-session/               # 会话存储 crate（先落数据契约，文件读写待搬）
+│   └── tests/fixtures/*_parity.json        # 由 Python 侧生成的对照数据集
+├── crates/omnicrawl-session/               # 会话与记忆 crate（数据契约、存储 I/O、锁、投影、记忆、artifact）
 │   ├── src/event.rs                        # 转录事件：create / from_dict / to_dict / to_json_line
 │   ├── src/index.rs                        # index.json 索引条目
 │   ├── src/naming.rs                       # 会话 id、事件类型、转录路径校验与标题折叠
@@ -184,6 +186,19 @@ python rust/tools/gen_host_bridge_fixture.py  # 反射 loop.py 的 run_stream �
 cd rust && cargo test -p omnicrawl-ipc        # 校验回调↔方法一一对应与负载往返
 ```
 
+消息脱敏同理：
+
+```bash
+python rust/tools/gen_desensitization_fixture.py         # 期望值来自 registry.py 真实现
+python rust/tools/gen_desensitization_stream_fixture.py  # 期望值来自 stream.py 真实现
+cd rust && cargo test -p omnicrawl-llm
+```
+
+脱敏组的期望值是把同一串操作喂给 Python 真实现后记下的（返回值、严格模式错误文案、三路还原计数）；
+两侧都注入自增计数器让占位符序号确定。两份数据集里的占位符都是**拼接构造**的：本仓库自己就是宿主，
+在启用了消息脱敏的会话里写完整占位符字面量会被还原成会话原文，数据集照旧生成、测试照常通过，
+解析用例却全变成「命中为空」的假绿（`desensitization_parity.json` 的 11 条解析用例曾因此失效）。
+
 ## 已知与 Python 的差异
 
 1. 非字符串字段（`role`、`tool_call_id`、工具名、`description` 等）不再走 Python 的 `str()`
@@ -230,9 +245,15 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 `crates/omnicrawl-cli/tests/kernel_model_e2e.rs` 钉住（真拉起内核进程 + 本机回环服务端，
 断言全程不出现 `model.reply`、请求体里带上了系统提示词与工具声明）。
 
-`omnicrawl-session` 已落地会话层的数据契约（事件/索引模型、命名与时间校验、转录行字节布局，107 用例对照），
-**文件读写尚未搬**：追加转录、`index.json` 维护、锁、归档、导出、一致性诊断、以及会话投影
-（从事件恢复模型消息与待办）都在 Python 侧。再往后是记忆层（`omnicrawl/state/memory.py`）。
+`omnicrawl-session` 已覆盖会话与记忆两条链：数据契约（事件 / 索引模型、命名与时间校验、转录行字节布局）、
+存储 I/O（目录初始化、新建、追加、读回、索引维护）、跨进程写锁与耐久写、会话投影与有状态投影、
+记忆层（格式、排序与相似度、索引与读写、检索入口、写入清理、提示词段落、旧目录迁移）、
+artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照。未搬：归档、导出、一致性诊断、
+运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
 
-接下来按「会话存储 I/O → 会话投影 → 记忆」推进；模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置
+`omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）与流式还原；规则层、引擎、gitleaks、
+NER、middleware、oneshot 尚未搬运。
+
+接下来：消息脱敏的匹配引擎与规则层（值类型规则、gitleaks 规则表、熵兜底、NER 兜底）→ middleware 接线；
+会话侧补归档、导出与一致性诊断。模型这条链上还剩两件宿主侧的事：把真实的 Provider 配置
 （Python 侧的 models 配置 / 启动器）接进 `initialize.model`，以及全部宿主迁移后让 `model.reply` 退役。
