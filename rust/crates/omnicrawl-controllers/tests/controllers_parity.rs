@@ -30,10 +30,29 @@ fn norm(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// 数据集里的绝对路径是在 Windows 上生成的：重放前先按本地规则绝对化，
+/// 数据集里的临时目录前缀是在 Windows 上生成的：重放前整体换成本机等价路径，
 /// 否则同一份用例在别的平台上会落进「相对路径」分支，与期望值不符。
+const FIXTURE_TMP_PREFIX: &str = "C:/Users/Administrator/AppData/Local/Temp/tmp2v6l_cwx";
+
 fn localize(value: &str) -> String {
-    norm(&undo::resolve_path(Path::new(value)))
+    value.replace(
+        FIXTURE_TMP_PREFIX,
+        &norm(&std::env::temp_dir().join("omnicrawl-parity")),
+    )
+}
+
+/// 把一条用例里的所有字符串都本地化后再重放：输入与期望值同步替换，语义不变。
+fn localized_case(case: &Value) -> Value {
+    match case {
+        Value::String(text) => Value::String(localize(text)),
+        Value::Array(items) => Value::Array(items.iter().map(localized_case).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), localized_case(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 fn object(value: &Value) -> Map<String, Value> {
@@ -502,15 +521,16 @@ fn undo_restore_precheck_matches_python() {
 fn undo_artifact_path_matches_python() {
     let data = fixture();
     for case in data["undo"]["artifact_path"].as_array().expect("cases") {
+        let case = localized_case(case);
         let label = case["label"].as_str().expect("label");
-        let root = undo::resolve_path(Path::new(case["root"].as_str().expect("root")));
+        let root = PathBuf::from(case["root"].as_str().expect("root"));
         let result =
             undo::resolve_artifact_path(&root, case["relative"].as_str().expect("relative"))
                 .map_err(AgentError::from);
-        if let Some(path) = expect_outcome(result, case, label) {
+        if let Some(path) = expect_outcome(result, &case, label) {
             assert_eq!(
                 norm(&path),
-                localize(case["value"].as_str().expect("value")),
+                case["value"].as_str().expect("value"),
                 "解析路径（{label}）"
             );
         }
@@ -688,15 +708,15 @@ impl memory::ExpiredMemoryStore for FakeExpiredStore {
 fn memory_project_root_matches_python() {
     let data = fixture();
     for case in data["memory"]["project_root"].as_array().expect("cases") {
+        let case = localized_case(case);
         let label = case["label"].as_str().expect("label");
-        let workspace =
-            undo::resolve_path(Path::new(case["workspace"].as_str().expect("workspace")));
+        let workspace = PathBuf::from(case["workspace"].as_str().expect("workspace"));
         let result =
             memory::project_memory_root(&workspace, case["directory"].as_str().expect("directory"));
-        if let Some(root) = expect_outcome(result, case, label) {
+        if let Some(root) = expect_outcome(result, &case, label) {
             assert_eq!(
                 norm(&root),
-                localize(case["root"].as_str().expect("root")),
+                case["root"].as_str().expect("root"),
                 "项目级记忆根（{label}）"
             );
         }
