@@ -178,9 +178,15 @@ fn migration_matches_python() {
 
         if let Some(error) = expected.get("error").and_then(Value::as_str) {
             let message = outcome.expect_err("该用例应当报错").message().to_string();
-            let normalized =
-                normalize_ids(&message).replace(&root.to_string_lossy().to_string(), "<root>");
-            assert_eq!(normalized, error, "迁移用例 {name} 的错误文案");
+            let normalized = normalize_ids(&message)
+                .replace(&root.to_string_lossy().to_string(), "<root>")
+                // 数据集在 Windows 上生成，路径分隔符是平台产物：两侧统一成 `/` 再比。
+                .replace('\\', "/");
+            assert_eq!(
+                normalized,
+                error.replace('\\', "/"),
+                "迁移用例 {name} 的错误文案"
+            );
             std::fs::remove_dir_all(&root).ok();
             continue;
         }
