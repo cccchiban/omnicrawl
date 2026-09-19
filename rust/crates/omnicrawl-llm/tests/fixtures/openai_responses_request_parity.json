@@ -2513,5 +2513,127 @@
       },
       "timeout_seconds": 180.0
     }
+  ],
+  "retry": [
+    {
+      "label": "429 状态码",
+      "message": "boom",
+      "status_code": 429,
+      "expected": true
+    },
+    {
+      "label": "500 状态码",
+      "message": "boom",
+      "status_code": 500,
+      "expected": true
+    },
+    {
+      "label": "503 状态码",
+      "message": "boom",
+      "status_code": 503,
+      "expected": true
+    },
+    {
+      "label": "408 状态码",
+      "message": "boom",
+      "status_code": 408,
+      "expected": true
+    },
+    {
+      "label": "400 状态码不算可重试",
+      "message": "boom",
+      "status_code": 400,
+      "expected": false
+    },
+    {
+      "label": "404 状态码不算可重试",
+      "message": "boom",
+      "status_code": 404,
+      "expected": false
+    },
+    {
+      "label": "无状态码但文案带 503",
+      "message": "Error code: 503 - Service Unavailable",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "无状态码但文案带 429",
+      "message": "Error code: 429 - too many requests",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "无状态码但文案带 500",
+      "message": "upstream said HTTP 500",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "连接被重置",
+      "message": "connection reset by peer",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "对端提前关闭",
+      "message": "peer closed connection without sending complete message body",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "分块读取中断",
+      "message": "incomplete chunked read",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "读取超时",
+      "message": "readtimeout",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "远程协议错误",
+      "message": "remote protocol error",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "服务端断开",
+      "message": "server disconnected",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "限流文案",
+      "message": "rate limit exceeded",
+      "status_code": null,
+      "expected": true
+    },
+    {
+      "label": "400 文案不算可重试",
+      "message": "Error code: 400 - Bad Request: invalid input",
+      "status_code": null,
+      "expected": false
+    },
+    {
+      "label": "无关失败不可重试",
+      "message": "unexpected upstream failure",
+      "status_code": null,
+      "expected": false
+    },
+    {
+      "label": "长数字里的 503 不算状态码",
+      "message": "order 5039 rejected",
+      "status_code": null,
+      "expected": false
+    },
+    {
+      "label": "无关数字 404 命中状态码",
+      "message": "trace id 404",
+      "status_code": null,
+      "expected": false
+    }
   ]
 }

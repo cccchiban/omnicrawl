@@ -110,6 +110,67 @@ impl RuntimeError {
     }
 }
 
+/// 请求建立阶段可直接重试的模型服务错误（Python `is_retryable_model_request_error`）。
+///
+/// 400 不算：它通常是确定性的参数/协议问题，重试同一个请求只会放大问题
+/// （`prompt_cache_key` 与工具历史的兼容重试由运行时的降级编排单独处理）。
+pub fn is_retryable_model_request_error(message: &str, status_code: Option<u16>) -> bool {
+    const RETRYABLE_STATUSES: [u16; 7] = [408, 409, 429, 500, 502, 503, 504];
+    // Python 先读异常属性，属性没有才从消息里抓状态码；内核没有异常对象，
+    // 因此状态码由调用方传入，缺失时按同一张表扫文案。
+    if let Some(code) = status_code.or_else(|| http_status_code_of(message)) {
+        if RETRYABLE_STATUSES.contains(&code) {
+            return true;
+        }
+    }
+    let lowered = message.to_lowercase();
+    [
+        "peer closed connection",
+        "incomplete chunked read",
+        "remote protocol error",
+        "server disconnected",
+        "connection reset",
+        "connection aborted",
+        "broken pipe",
+        "timeout",
+        "timed out",
+        "readtimeout",
+        "connecttimeout",
+        "rate limit",
+        "too many requests",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
+}
+
+/// Python `\b([45]\d{2})\b` 的手写等价物：三位状态码 + 两侧词边界。
+fn http_status_code_of(message: &str) -> Option<u16> {
+    let bytes = message.as_bytes();
+    for start in 0..bytes.len().saturating_sub(2) {
+        let head = bytes[start];
+        if head != b'4' && head != b'5' {
+            continue;
+        }
+        if !bytes[start + 1].is_ascii_digit() || !bytes[start + 2].is_ascii_digit() {
+            continue;
+        }
+        let before_ok = start == 0 || !is_word_byte(bytes[start - 1]);
+        let after_ok = start + 3 >= bytes.len() || !is_word_byte(bytes[start + 3]);
+        if before_ok && after_ok {
+            return Some(
+                u16::from(head - b'0') * 100
+                    + u16::from(bytes[start + 1] - b'0') * 10
+                    + u16::from(bytes[start + 2] - b'0'),
+            );
+        }
+    }
+    None
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
 /// Python `ModelErrorCode` 里由错误分类与配置校验产出的取值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelErrorCode {

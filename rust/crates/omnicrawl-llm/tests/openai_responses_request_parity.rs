@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use omnicrawl_llm::{
     build_responses_request, flatten_tool_history_to_text, has_tool_history_items,
-    is_tool_history_rejection, messages_to_responses_input, tools_for_responses, ChatRequestInput,
+    is_retryable_model_request_error, is_tool_history_rejection, messages_to_responses_input,
+    tools_for_responses, ChatRequestInput,
 };
 use omnicrawl_protocol::{ConversationMessage, GenerationOptions, ToolSpec};
 use serde_json::Value;
@@ -207,4 +208,21 @@ fn request_body_matches_python() {
         }
     }
     assert!(checked > 0, "数据集为空");
+}
+
+#[test]
+fn retry_judgement_matches_python() {
+    let fixture = fixture();
+    let cases = fixture["retry"].as_array().expect("retry");
+    assert!(!cases.is_empty(), "数据集为空");
+    for case in cases {
+        let label = case["label"].as_str().unwrap_or("");
+        let message = case["message"].as_str().expect("message");
+        let status_code = case["status_code"].as_u64().map(|value| value as u16);
+        assert_eq!(
+            is_retryable_model_request_error(message, status_code),
+            case["expected"].as_bool().expect("expected"),
+            "可重试判定（{label}）"
+        );
+    }
 }

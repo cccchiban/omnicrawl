@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 from omnicrawl.llm import protocol as P  # noqa: E402
 from omnicrawl.llm import registry as R  # noqa: E402
+from omnicrawl.llm.providers.openai_common import is_retryable_model_request_error  # noqa: E402
 from omnicrawl.llm.providers.openai_responses import (  # noqa: E402
     OpenAIResponsesAdapter,
     _flatten_tool_history_to_text,
@@ -255,6 +256,30 @@ REJECTION_CASES = [
     ("无工具历史 + 400", [{"role": "user"}], 400),
 ]
 
+# (label, message, status_code)：状态码与文案关键字两条判定路径都要覆盖。
+RETRY_CASES = [
+    ("429 状态码", "boom", 429),
+    ("500 状态码", "boom", 500),
+    ("503 状态码", "boom", 503),
+    ("408 状态码", "boom", 408),
+    ("400 状态码不算可重试", "boom", 400),
+    ("404 状态码不算可重试", "boom", 404),
+    ("无状态码但文案带 503", "Error code: 503 - Service Unavailable", None),
+    ("无状态码但文案带 429", "Error code: 429 - too many requests", None),
+    ("无状态码但文案带 500", "upstream said HTTP 500", None),
+    ("连接被重置", "connection reset by peer", None),
+    ("对端提前关闭", "peer closed connection without sending complete message body", None),
+    ("分块读取中断", "incomplete chunked read", None),
+    ("读取超时", "readtimeout", None),
+    ("远程协议错误", "remote protocol error", None),
+    ("服务端断开", "server disconnected", None),
+    ("限流文案", "rate limit exceeded", None),
+    ("400 文案不算可重试", "Error code: 400 - Bad Request: invalid input", None),
+    ("无关失败不可重试", "unexpected upstream failure", None),
+    ("长数字里的 503 不算状态码", "order 5039 rejected", None),
+    ("无关数字 404 命中状态码", "trace id 404", None),
+]
+
 KWARGS_CASES = [
     ("基础", {}),
     ("reasoning_effort=high", {"reasoning_effort": "high"}),
@@ -424,6 +449,17 @@ def main() -> None:
             ),
             kwargs_entry("空系统提示词", {}, system_prompt=""),
         ],
+        "retry": [
+            {
+                "label": label,
+                "message": message,
+                "status_code": status_code,
+                "expected": is_retryable_model_request_error(
+                    _retry_exc(message, status_code)
+                ),
+            }
+            for label, message, status_code in RETRY_CASES
+        ],
     }
 
     FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -431,7 +467,7 @@ def main() -> None:
         json.dumps(fixture, ensure_ascii=False, indent=2) + chr(10), encoding="utf-8"
     )
     print(
-        "已写入 %s：消息 %d、tools %d、展平 %d、历史判定 %d、kwargs %d"
+        "已写入 %s：消息 %d、tools %d、展平 %d、历史判定 %d、kwargs %d、重试判定 %d"
         % (
             FIXTURE_PATH.relative_to(ROOT),
             len(fixture["messages"]),
@@ -439,6 +475,7 @@ def main() -> None:
             len(fixture["flatten"]),
             len(fixture["history_detection"]),
             len(fixture["kwargs"]) + len(fixture["kwargs_extra"]),
+            len(fixture["retry"]),
         )
     )
 
@@ -448,6 +485,15 @@ class _FakeExc(Exception):
         super().__init__("fake")
         if status_code is not None:
             self.status_code = status_code
+
+
+def _retry_exc(message: str, status_code):
+    """带可选状态码属性的普通异常：Python 判定先读属性、再扫文案。"""
+
+    exc = Exception(message)
+    if status_code is not None:
+        exc.status_code = status_code
+    return exc
 
 
 if __name__ == "__main__":

@@ -26,8 +26,9 @@ pub use anthropic::{
 };
 pub use capabilities::{merge_capabilities, ModelCapabilities};
 pub use errors::{
-    http_status_error, http_status_error_with_body, map_exception, ExceptionView, ModelError,
-    ModelErrorCode, RuntimeError, RuntimeErrorKind, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
+    http_status_error, http_status_error_with_body, is_retryable_model_request_error,
+    map_exception, ExceptionView, ModelError, ModelErrorCode, RuntimeError, RuntimeErrorKind,
+    CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 pub use gemini::{
     build_generate_content_request, format_gemini_error, gemini_model_path, generate_content_body,
@@ -43,13 +44,13 @@ pub use request::{
     ChatRequestInput, RequestError,
 };
 pub use responses::{
-    build_responses_request, flatten_tool_history_to_text, has_tool_history_items,
-    is_tool_history_rejection, messages_to_responses_input, tools_for_responses,
-    ResponsesStreamState,
+    build_responses_request, build_responses_request_with_items, flatten_tool_history_to_text,
+    has_tool_history_items, is_tool_history_rejection, messages_to_responses_input,
+    tools_for_responses, ResponsesStreamState,
 };
 pub use runtime::{
     AnthropicRuntime, ChatEndpoint, DiscardSink, GeminiRuntime, ModelRuntime, OpenAiChatRuntime,
-    SinkFlow, TurnSink,
+    ResponsesRuntime, SinkFlow, TurnSink,
 };
 pub use sse::{
     decode_sse_data, iter_raw_sse_events, payload_of_line, step_payload, SseError, SseStep,

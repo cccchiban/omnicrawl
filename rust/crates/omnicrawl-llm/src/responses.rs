@@ -224,6 +224,18 @@ fn append_message_text(message: &mut Value, text: &str, block_type: &str) {
 
 /// `create()` 参数 → 线上请求体（Python `_build_responses_kwargs`）。
 pub fn build_responses_request(input: &ChatRequestInput<'_>) -> Result<ChatRequest, RequestError> {
+    let input_items = messages_to_responses_input(input.messages);
+    build_responses_request_with_items(input, &input_items)
+}
+
+/// 用给定的 input items 组装请求体。
+///
+/// 降级重试（把工具历史展平成纯文本）要换掉 items 再发同一份参数，因此与
+/// [`build_responses_request`] 拆开；两条路径的其余组装完全一致。
+pub fn build_responses_request_with_items(
+    input: &ChatRequestInput<'_>,
+    input_items: &[Value],
+) -> Result<ChatRequest, RequestError> {
     let options = input.options;
     let mut extra_body = sanitize_provider_options(&options.provider_options)?;
     let effort = if options.reasoning_effort.is_empty()
@@ -241,12 +253,11 @@ pub fn build_responses_request(input: &ChatRequestInput<'_>) -> Result<ChatReque
     }
 
     let tools = tools_for_responses(input);
-    let input_items = messages_to_responses_input(input.messages);
 
     let mut body = Map::new();
     body.insert("model".to_string(), json!(input.model));
     body.insert("instructions".to_string(), json!(input.system_prompt));
-    body.insert("input".to_string(), Value::Array(input_items));
+    body.insert("input".to_string(), Value::Array(input_items.to_vec()));
     body.insert("stream".to_string(), Value::Bool(true));
     // `extra_body` 是 SDK 参数：SDK 会把它里面的键并进请求体顶层，这里照线上形态摊平。
     for (key, value) in extra_body {
@@ -508,8 +519,17 @@ impl ResponsesStreamState {
 
     /// 流结束后的收尾（Python 循环之后的截断判定、缓冲冲刷与 `ResponseCompleted`）。
     ///
-    /// 降级告警（`prompt_cache_unsupported` / `tool_history_flattened`）属于重试编排，不在这里发。
+    /// 降级告警（`prompt_cache_unsupported` / `tool_history_flattened`）属于重试编排，不在这里发；
+    /// 但 Python 把告警夹在「截断判定」与「缓冲冲刷」之间，所以运行时要用下面三步分开调用。
     pub fn finish(&mut self, events: &mut Vec<ModelStreamEvent>) -> Result<(), RuntimeError> {
+        self.check_completeness()?;
+        self.flush_buffers(events)?;
+        self.push_finished(events);
+        Ok(())
+    }
+
+    /// 收尾第 1 步：`response.completed` 缺席时的完整性判定。
+    pub fn check_completeness(&self) -> Result<(), RuntimeError> {
         let complete_buffered_calls = !self.call_buffers.is_empty()
             && self.call_buffers.iter().all(|(_, buffer)| {
                 !buffer.name.is_empty() && arguments_text_complete(&buffer.arguments)
@@ -522,6 +542,14 @@ impl ResponsesStreamState {
                 "Responses 流在收到 response.completed 前提前耗尽，疑似连接被网关截断。",
             ));
         }
+        Ok(())
+    }
+
+    /// 收尾第 2 步：把没等到完成事件的工具调用补齐。
+    pub fn flush_buffers(
+        &mut self,
+        events: &mut Vec<ModelStreamEvent>,
+    ) -> Result<(), RuntimeError> {
         for (call_id, buffer) in std::mem::take(&mut self.call_buffers) {
             if self.emitted_call_ids.contains(&call_id) {
                 continue;
@@ -543,10 +571,14 @@ impl ResponsesStreamState {
             }));
             self.emitted_call_ids.insert(call_id);
         }
+        Ok(())
+    }
+
+    /// 收尾第 3 步：补结束事件。
+    pub fn push_finished(&mut self, events: &mut Vec<ModelStreamEvent>) {
         events.push(ModelStreamEvent::Finished {
             finish_reason: self.finish_reason.clone(),
         });
-        Ok(())
     }
 
     /// 统一 `item_id` 与 Provider `call_id` 的别名（Python `_canonical_call_id`）。

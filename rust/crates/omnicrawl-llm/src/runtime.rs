@@ -25,8 +25,8 @@ use crate::anthropic::{
     build_anthropic_request, format_anthropic_error, AnthropicStreamState, ANTHROPIC_VERSION,
 };
 use crate::errors::{
-    http_status_error_with_body, map_exception, ExceptionView, ModelError, ModelErrorCode,
-    RuntimeError,
+    http_status_error_with_body, is_retryable_model_request_error, map_exception, ExceptionView,
+    ModelError, ModelErrorCode, RuntimeError, RuntimeErrorKind,
 };
 use crate::gemini::{
     build_generate_content_request, format_gemini_error, gemini_model_path, generate_content_body,
@@ -36,6 +36,10 @@ use crate::openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,
 };
 use crate::request::{build_chat_request, ChatRequestInput};
+use crate::responses::{
+    build_responses_request_with_items, flatten_tool_history_to_text, has_tool_history_items,
+    is_tool_history_rejection, messages_to_responses_input, ResponsesStreamState,
+};
 use crate::sse::{payload_of_line, step_payload, SseStep};
 use crate::transport::{self, HttpRequest, HttpResponse, TransportFailure};
 use crate::usage::usage_from_openai_payload;
@@ -430,6 +434,303 @@ impl AnthropicRuntime {
         }
         Ok(aggregate_stream_events(events.iter().cloned()))
     }
+}
+
+/// 一次失败请求的等价 SDK 视图（内核没有 SDK 异常对象，只有状态码与等价文案）。
+struct SdkFailure {
+    message: String,
+    type_name: String,
+    status_code: Option<u16>,
+}
+
+impl SdkFailure {
+    fn http(message: String, status: u16) -> Self {
+        Self {
+            message,
+            type_name: "APIStatusError".to_string(),
+            status_code: Some(status),
+        }
+    }
+
+    fn transport(failure: TransportFailure) -> Self {
+        let (message, type_name) = failure.sdk_view();
+        Self {
+            message: message.to_string(),
+            type_name: type_name.to_string(),
+            status_code: None,
+        }
+    }
+}
+
+/// OpenAI Responses 运行时：与另外三路共用「传输 + 可放弃读取」骨架，
+/// 差异在请求体（`responses.rs`）、两路降级重试与流收尾顺序。
+///
+/// 降级重试照 Python `_create_stream_with_retries`：网关不认 `prompt_cache_key` 时摘字段重发一次；
+/// 网关不支持工具调用历史 item（HTTP 400，部分兼容网关对个别模型的已知限制）时把工具历史展平为
+/// 纯文本重发一次，并记住这个组合（后续请求直接展平，不再先发一次必然 400 的请求）。
+/// 两条降级都在流正常收尾时补发一条告警，顺序与 Python 一致：截断判定之后、缓冲冲刷之前。
+pub struct ResponsesRuntime {
+    endpoint: ChatEndpoint,
+    agent: ureq::Agent,
+    tool_history_unsupported: AtomicBool,
+}
+
+impl ModelRuntime for ResponsesRuntime {
+    fn run_turn(
+        &self,
+        input: &ChatRequestInput<'_>,
+        sink: &mut dyn TurnSink,
+    ) -> Result<ModelReply, RuntimeError> {
+        ResponsesRuntime::run_turn(self, input, sink)
+    }
+}
+
+impl ResponsesRuntime {
+    pub fn new(endpoint: ChatEndpoint) -> Self {
+        Self {
+            endpoint,
+            agent: transport::build_agent(),
+            tool_history_unsupported: AtomicBool::new(false),
+        }
+    }
+
+    pub fn endpoint(&self) -> &ChatEndpoint {
+        &self.endpoint
+    }
+
+    /// 跑完一次模型请求：请求体 → HTTP →（可降级重发）→ SSE → 内核事件 → 归并回复。
+    pub fn run_turn(
+        &self,
+        input: &ChatRequestInput<'_>,
+        sink: &mut dyn TurnSink,
+    ) -> Result<ModelReply, RuntimeError> {
+        let api_key = self.endpoint.api_key.trim();
+        if api_key.is_empty() {
+            return Err(RuntimeError::configuration(
+                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+            ));
+        }
+
+        let mut input_items = messages_to_responses_input(input.messages);
+        if self.tool_history_unsupported.load(Ordering::Relaxed)
+            && has_tool_history_items(&input_items)
+        {
+            input_items = flatten_tool_history_to_text(&input_items);
+        }
+        let plan = build_responses_request_with_items(input, &input_items)
+            .map_err(|error| RuntimeError::configuration(error.message))?;
+        let url = format!("{}/responses", self.endpoint.base_url.trim_end_matches('/'));
+        let mut body = plan.body;
+
+        let mut prompt_cache_warning = false;
+        let mut tool_history_warning = false;
+        let mut failure: Option<SdkFailure> = None;
+        let mut response = match self.post(&url, api_key, &body, plan.timeout_seconds) {
+            Ok(mut item) => {
+                if item.status >= 400 {
+                    let text = item.read_text();
+                    failure = Some(SdkFailure::http(text, item.status));
+                    None
+                } else {
+                    Some(item)
+                }
+            }
+            Err(transport_failure) => {
+                failure = Some(SdkFailure::transport(transport_failure));
+                None
+            }
+        };
+
+        // 策略 1：网关不认 prompt_cache_key → 摘掉该字段重发一次。
+        let cache_rejected = failure.as_ref().is_some_and(|current| {
+            body.get("prompt_cache_key").is_some()
+                && RuntimeError::is_unsupported_prompt_cache_error(&current.message)
+        });
+        if cache_rejected {
+            if let Value::Object(map) = &mut body {
+                map.remove("prompt_cache_key");
+            }
+            match self.post(&url, api_key, &body, plan.timeout_seconds) {
+                Ok(item) if item.status < 400 => {
+                    response = Some(item);
+                    prompt_cache_warning = true;
+                    failure = None;
+                }
+                Ok(mut item) => {
+                    let text = item.read_text();
+                    failure = Some(SdkFailure::http(text, item.status));
+                }
+                Err(transport_failure) => {
+                    failure = Some(SdkFailure::transport(transport_failure));
+                }
+            }
+        }
+
+        // 策略 2：网关不支持工具调用历史 item（400）→ 展平成纯文本重发一次，并记住该组合。
+        let history_rejected = failure
+            .as_ref()
+            .is_some_and(|current| is_tool_history_rejection(&input_items, current.status_code));
+        if history_rejected {
+            let flattened = flatten_tool_history_to_text(&input_items);
+            if let Value::Object(map) = &mut body {
+                map.insert("input".to_string(), Value::Array(flattened));
+            }
+            match self.post(&url, api_key, &body, plan.timeout_seconds) {
+                Ok(item) if item.status < 400 => {
+                    response = Some(item);
+                    self.tool_history_unsupported.store(true, Ordering::Relaxed);
+                    tool_history_warning = true;
+                    failure = None;
+                }
+                Ok(mut item) => {
+                    let text = item.read_text();
+                    failure = Some(SdkFailure::http(text, item.status));
+                }
+                Err(transport_failure) => {
+                    failure = Some(SdkFailure::transport(transport_failure));
+                }
+            }
+        }
+
+        if let Some(current) = failure {
+            return Err(responses_failure_error(&current));
+        }
+        let response = response.expect("失败分支已经返回");
+        self.consume_stream(response, sink, prompt_cache_warning, tool_history_warning)
+    }
+
+    fn post(
+        &self,
+        url: &str,
+        api_key: &str,
+        body: &Value,
+        timeout_seconds: f64,
+    ) -> Result<HttpResponse, TransportFailure> {
+        let Ok(body) = serde_json::to_string(body) else {
+            // serde_json 对 Value 恒可序列化；这里只是不引入 panic 的兜底。
+            return Err(TransportFailure::Other("请求体无法序列化。".to_string()));
+        };
+        let authorization = format!("Bearer {api_key}");
+        let headers = [("Authorization", authorization.as_str())];
+        transport::send(
+            &self.agent,
+            &HttpRequest {
+                url,
+                user_agent: self.endpoint.user_agent.as_str(),
+                body: &body,
+                timeout_seconds,
+                headers: &headers,
+            },
+        )
+    }
+
+    fn consume_stream(
+        &self,
+        response: HttpResponse,
+        sink: &mut dyn TurnSink,
+        prompt_cache_warning: bool,
+        tool_history_warning: bool,
+    ) -> Result<ModelReply, RuntimeError> {
+        let mut stream = StreamReader::spawn(response.body);
+        let mut state = ResponsesStreamState::new();
+        let mut events: Vec<ModelStreamEvent> = Vec::new();
+
+        loop {
+            if sink.cancelled() {
+                return Err(RuntimeError::cancelled());
+            }
+            match stream.next(CANCEL_POLL) {
+                StreamOutcome::Idle => continue,
+                StreamOutcome::End => break,
+                StreamOutcome::ProviderError => {
+                    return Err(RuntimeError::provider_error_stream());
+                }
+                StreamOutcome::Io(message) => {
+                    return Err(responses_stream_error(&SdkFailure {
+                        message,
+                        type_name: "APIConnectionError".to_string(),
+                        status_code: None,
+                    }));
+                }
+                StreamOutcome::Step(SseStep::Terminated) => break,
+                StreamOutcome::Step(SseStep::Skip) => continue,
+                StreamOutcome::Step(SseStep::Payload(value)) => {
+                    let mut produced: Vec<ModelStreamEvent> = Vec::new();
+                    state.handle_event(&value, &mut produced);
+                    for event in produced {
+                        if emit(&mut events, sink, event) == SinkFlow::Cancel {
+                            return Err(RuntimeError::cancelled());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Python 的收尾顺序：截断判定 → 降级告警 → 缓冲冲刷 → 结束事件。
+        state.check_completeness()?;
+        if prompt_cache_warning {
+            let warning = ModelStreamEvent::ProviderWarning(ProviderWarning::new(
+                "prompt_cache_unsupported",
+                "当前网关不支持 prompt_cache_key，已自动移除后重试。",
+            ));
+            if emit(&mut events, sink, warning) == SinkFlow::Cancel {
+                return Err(RuntimeError::cancelled());
+            }
+        }
+        if tool_history_warning {
+            let warning = ModelStreamEvent::ProviderWarning(ProviderWarning::new(
+                "tool_history_flattened",
+                "当前网关不支持工具调用历史 item（HTTP 400），已自动转为纯文本后重试；后续请求将直接使用该适配。",
+            ));
+            if emit(&mut events, sink, warning) == SinkFlow::Cancel {
+                return Err(RuntimeError::cancelled());
+            }
+        }
+        let mut tail: Vec<ModelStreamEvent> = Vec::new();
+        state.flush_buffers(&mut tail)?;
+        state.push_finished(&mut tail);
+        for event in tail {
+            if emit(&mut events, sink, event) == SinkFlow::Cancel {
+                return Err(RuntimeError::cancelled());
+            }
+        }
+        Ok(aggregate_stream_events(events))
+    }
+}
+
+/// 建连（含降级重发）失败：Python 侧 `responses.create` 的异常被包成
+/// `Responses 请求失败：{format_openai_error(exc)}`，可重试标记由异常本身决定。
+fn responses_failure_error(failure: &SdkFailure) -> RuntimeError {
+    let mapped = mapped_failure(failure);
+    RuntimeError {
+        kind: RuntimeErrorKind::RequestFailed,
+        message: format!("Responses 请求失败：{}", mapped.message),
+        retryable: is_retryable_model_request_error(&failure.message, failure.status_code),
+        status_code: mapped.status_code,
+    }
+}
+
+/// 流中断：`Responses 流式回复中断：{format_openai_error(exc)}`。
+fn responses_stream_error(failure: &SdkFailure) -> RuntimeError {
+    let mapped = mapped_failure(failure);
+    RuntimeError {
+        kind: RuntimeErrorKind::StreamInterrupted,
+        message: format!("Responses 流式回复中断：{}", mapped.message),
+        retryable: is_retryable_model_request_error(&failure.message, failure.status_code),
+        status_code: None,
+    }
+}
+
+fn mapped_failure(failure: &SdkFailure) -> ModelError {
+    map_exception(
+        &ExceptionView {
+            message: failure.message.as_str(),
+            type_name: failure.type_name.as_str(),
+            status_code: failure.status_code.map(i64::from),
+            ..ExceptionView::default()
+        },
+        &[],
+    )
 }
 
 /// Google Gemini Generate Content 运行时：与另外两路共用「传输 + 可放弃读取」骨架，

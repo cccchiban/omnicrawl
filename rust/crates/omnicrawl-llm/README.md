@@ -1,9 +1,8 @@
 # omnicrawl-llm
 
 Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，以及把一次回合从请求串到
-`ModelReply` 的装配。语义基准是 `omnicrawl/llm/providers/openai_chat.py`、
-`omnicrawl/llm/providers/openai_common.py`、`omnicrawl/llm/providers/anthropic.py`、
-`omnicrawl/llm/providers/gemini.py`、`omnicrawl/llm/usage.py`，
+`ModelReply` 的装配。语义基准是 `omnicrawl/llm/providers/` 下的 `openai_chat.py`、
+`openai_common.py`、`openai_responses.py`、`anthropic.py`、`gemini.py` 与 `omnicrawl/llm/usage.py`，
 错误文案基准是 `omnicrawl/llm/errors.py` 的状态码阶梯。
 
 ## 本片范围
@@ -47,8 +46,15 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   `output_item.added` 里的函数名捕获、`arguments.done` 顶层 name/arguments 的回退分支、
   「已发出的调用不重复产出」，以及流结束时的截断判定（缺 `response.completed` 且没有完整输出 → 报错）
   与缓冲冲刷（名称 / 参数不完整也报错，空参数视为完整）。
-  未搬：回合运行（`stream_turn`）与降级重试编排（`_create_stream_with_retries`：`prompt_cache_key`
-  摘字段重试、工具历史 400 展平重试与两条告警）、`discover_models`、流内异常的错误包装（`format_openai_error`）。
+- Responses 运行时（`ResponsesRuntime`）：一次回合从请求体、HTTP、SSE 到归并回复。两路降级重试照
+  `_create_stream_with_retries`——网关不认 `prompt_cache_key` 就摘字段重发一次；网关对工具调用历史
+  item 回 400 时把工具历史展平成纯文本重发一次，并记住该组合（后续请求直接展平，不再先发一次必然 400
+  的请求）。两条降级都在流收尾时补发告警，顺序与 Python 一致：截断判定 → 告警 → 缓冲冲刷 → 结束事件；
+  为此 `ResponsesStreamState` 的收尾拆成 `check_completeness` / `flush_buffers` / `push_finished`
+  三步（`finish` 仍是三步串联）。错误包装同在这一层：`is_retryable_model_request_error`
+  （可重试状态码表 + 文案关键字，含 `\b([45]\d{2})\b` 的手写等价物）与
+  `Responses 请求失败：/Responses 流式回复中断：{format_openai_error}`。
+  未搬：`discover_models`（属 adapter 注册表 / `build_runtime` 批次）。
 - Anthropic Claude Messages 请求构建（`anthropic.rs`）：`sanitize_anthropic_options`（白名单 `top_p` /
   `top_k` / `metadata` / `stop_sequences` / `thinking`，Host 字段与白名单外字段都直接拒绝）、
   `to_anthropic_messages`（system 带工具声明时整条跳过、tool_result 与紧随其后的用户内容合并成同一条 user、
@@ -131,6 +137,8 @@ fixture：
   参数串 16、浮点写法 6。
 - `tests/fixtures/openai_chat_usage_parity.json`：用量 30。
 - `tests/fixtures/openai_chat_runtime_parity.json`：端到端 9 个用例。
+- `tests/fixtures/openai_responses_request_parity.json`：input items 20、请求级 tools 4、历史展平 6、
+  工具历史判定 4、`create()` 参数 16、可重试判定 20。
 - `tests/fixtures/anthropic_parity.json`：消息 8、provider_options 9、请求 7、流 12、用量 6、错误文案 10。
 - `tests/fixtures/gemini_parity.json`：contents 8、provider_options 11、请求 kwargs 6、真 SDK 线上体 4、
   流 14、用量 7、错误文案 12。
