@@ -18,6 +18,7 @@ pub mod memory_store;
 pub mod naming;
 pub mod project;
 pub mod projection;
+pub mod prompt_history;
 pub mod records;
 pub mod redaction;
 pub mod store;
@@ -78,6 +79,9 @@ pub use projection::{
     tool_result_output_text, CANCELLED_TURN_DEFAULT_SUMMARY, INTERRUPTED_TOOL_RESULT_TEXT,
     RUN_GUARD_TODO_TOOL_NAME, TOOL_CALL_CONTEXT_PREFIX, TOOL_RESULT_CONTEXT_PREFIX,
     TURN_UNDONE_EVENT_TYPE,
+};
+pub use prompt_history::{
+    clean_prompt_display, PromptHistoryEntry, PromptHistoryStore, MAX_PROMPT_HISTORY_DISPLAY_CHARS,
 };
 pub use records::{
     build_index_document, decode_session_event_dict, decode_session_event_line,

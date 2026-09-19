@@ -219,6 +219,7 @@ Python 用正则表达，这里全部用**手写匹配器**实现（字符类与
 python rust/tools/gen_session_fixture.py      # 期望值来自 session_models.py 真实现
 python rust/tools/gen_project_fixture.py      # 项目列表存储：纯函数 + ProjectStore 流程轨迹
 python rust/tools/gen_session_records_fixture.py  # 记录解码与诊断：迁移 / 解码 / 转录读取 / 索引文档 / 切行
+python rust/tools/gen_prompt_history_fixture.py   # 提示历史：展示清洗 / 条目构造与解析 / 存储轨迹
 cd rust && cargo test -p omnicrawl-session
 ```
 
@@ -256,6 +257,20 @@ v0 / 缺 version 的遗留格式，只做内存迁移不改写磁盘）、事件
 
 fixture `tests/fixtures/session_records_parity.json`：迁移 8、字典解码 8、单行解码 6、转录读取 6
 （真实临时文件，含空行、中间坏行、尾部半行、会话不一致）、索引解析 9、索引构造 2、切行 7。
+
+## 提示历史（`prompt_history.rs`）
+
+对齐 Python `omnicrawl/state/prompt_history.py`：`.agent_sessions/history.jsonl` 的数据模型与追加语义
+（`append` 空提示返回 `None`；`search` 按时间倒序去重、支持项目 / 会话 / 关键词过滤与 1–100 的条数上限）、
+整份读取的结构化诊断（坏行不阻断，尾部半行降级 warning）、展示清洗（换行统一、4000 字符截断）。
+条目字段与落盘行字节与 Python 一致（紧凑 JSON + 保留插入序）；`pasted_contents` 与展示文本都过脱敏。
+
+与 Python 的一处差异：`json_error` 明细是各自 JSON 库的错误文本（对照片两侧替换成占位符再比对）；
+`log_record_diagnostics` 在 Python 侧直接写 logging，内核由调用方决定怎么记。
+
+fixture `tests/fixtures/prompt_history_parity.json`：展示清洗 6、条目构造 5、条目解析 10，
+另加 3 条存储轨迹（追加与查询、坏行文件、空提示被忽略）——轨迹在真实临时目录上跑，
+追加传固定时刻，逐例比对每步返回值与最终 `history.jsonl` 字节。
 
 ## 已知差异
 
