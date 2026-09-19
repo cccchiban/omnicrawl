@@ -680,7 +680,7 @@
       {
         "label": "无快照无副作用",
         "events": [],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -695,7 +695,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：context_compaction"
@@ -712,7 +712,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -736,7 +736,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -762,7 +762,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：bash"
@@ -786,7 +786,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：Edit_file"
@@ -803,7 +803,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：bash"
@@ -816,7 +816,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmptz207a7j\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpdcjhos66\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -832,7 +832,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmptz207a7j\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpdcjhos66\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -844,7 +844,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "当前轮次包含多个 Git 快照事件，无法安全回退。"
@@ -857,7 +857,7 @@
             "payload": {
               "version": 1,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmptz207a7j\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpdcjhos66\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -869,7 +869,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮次使用旧版影子对象库快照（version 1），已随 git diff 重构移除，无法自动回退；请手工还原文件后重试。"
@@ -882,7 +882,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmptz207a7j\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpdcjhos66\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -894,7 +894,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "轮次快照的不可逆工具账本格式无效。"
@@ -907,7 +907,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmptz207a7j\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpdcjhos66\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -923,7 +923,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮执行了无法由 Git 证明可逆的操作，已拒绝整轮回退：bash"
@@ -936,7 +936,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmptz207a7j\\other",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpdcjhos66\\other",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -948,7 +948,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮次的工作区与当前工作区不一致，已拒绝回退。"
@@ -958,31 +958,31 @@
       {
         "label": "正常相对路径",
         "relative": "undo/begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/undo/begin.patch",
         "error": null
       },
       {
         "label": "前后多余斜杠",
         "relative": "/undo/end.patch/",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/undo/end.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/undo/end.patch",
         "error": null
       },
       {
         "label": "反斜杠分隔",
         "relative": "undo\\begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/undo/begin.patch",
         "error": null
       },
       {
         "label": "空路径",
         "relative": "",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效："
@@ -990,7 +990,7 @@
       {
         "label": "仅斜杠",
         "relative": "///",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：///"
@@ -998,7 +998,7 @@
       {
         "label": "穿越到上一级",
         "relative": "../secret.txt",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：../secret.txt"
@@ -1006,7 +1006,7 @@
       {
         "label": "中间穿越",
         "relative": "undo/../../secret.txt",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：undo/../../secret.txt"
@@ -1014,43 +1014,43 @@
       {
         "label": "绝对路径",
         "relative": "/etc/passwd",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/etc/passwd",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/etc/passwd",
         "error": null
       },
       {
         "label": "当前目录段",
         "relative": "./undo/begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/undo/begin.patch",
         "error": null
       }
     ],
     "is_relative_to": [
       {
         "label": "子路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/a/b",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/a",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/a/b",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/a",
         "expected": true
       },
       {
         "label": "等值",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/a",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/a",
         "expected": true
       },
       {
         "label": "父路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/a/b",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/a/b",
         "expected": false
       },
       {
         "label": "根路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/artifacts",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/artifacts",
         "expected": true
       }
     ]
@@ -1059,12 +1059,12 @@
     "switch_workspace": [
       {
         "label": "目标就是当前工作区",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws",
         "compare": "exact",
         "error_prefix": null,
         "error_suffix": null,
@@ -1072,36 +1072,36 @@
       },
       {
         "label": "目标不是目录",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/plain.txt",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/plain.txt",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws",
         "ok": false,
         "value": null,
         "compare": "suffix",
         "error_prefix": null,
         "error_suffix": " 不是目录。",
-        "error": "工作区切换失败：C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmptz207a7j\\plain.txt 不是目录。"
+        "error": "工作区切换失败：C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpdcjhos66\\plain.txt 不是目录。"
       },
       {
         "label": "路径不存在",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/nope",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/nope",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws",
         "ok": false,
         "value": null,
         "compare": "prefix",
         "error_prefix": "工作区切换失败：",
         "error_suffix": "无法解析，",
-        "error": "工作区切换失败：C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/nope 无法解析，[WinError 2] 系统找不到指定的文件。: 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\tmptz207a7j\\\\nope'"
+        "error": "工作区切换失败：C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/nope 无法解析，[WinError 2] 系统找不到指定的文件。: 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\tmpdcjhos66\\\\nope'"
       },
       {
         "label": "子任务未在期限内退出",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/other",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/other",
         "worktrees": [],
         "draining": true,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws",
         "ok": false,
         "value": null,
         "compare": "exact",
@@ -1111,7 +1111,7 @@
       },
       {
         "label": "有待处理 worktree",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/other",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/other",
         "worktrees": [
           {
             "branch": "feat/a",
@@ -1131,7 +1131,7 @@
           }
         ],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws",
         "ok": false,
         "value": null,
         "compare": "exact",
@@ -1166,20 +1166,20 @@
     "path_membership": [
       {
         "label": "根自身",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/memory-root",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/memory-root",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/memory-root",
         "expected": true
       },
       {
         "label": "子路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/memory-root/sub/m.md",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/memory-root/sub/m.md",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/memory-root",
         "expected": true
       },
       {
         "label": "外部路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/elsewhere.md",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/elsewhere.md",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/memory-root",
         "expected": false
       }
     ]
@@ -1189,27 +1189,27 @@
       {
         "label": "工作区内相对目录",
         "directory": ".omnicrawl/.oclmemory",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws-mem",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws-mem",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws-mem/.omnicrawl/.oclmemory",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws-mem/.omnicrawl/.oclmemory",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata/User_memory",
         "error": null
       },
       {
         "label": "工作区内绝对目录",
-        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws-mem/inside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws-mem",
+        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws-mem/inside",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws-mem",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws-mem/inside",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws-mem/inside",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata/User_memory",
         "error": null
       },
       {
         "label": "工作区外相对目录",
         "directory": "../outside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws-mem",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws-mem",
         "ok": false,
         "root": null,
         "session_store_is_none": null,
@@ -1218,13 +1218,13 @@
       },
       {
         "label": "工作区外绝对目录",
-        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/outside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/ws-mem",
+        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/outside",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/ws-mem",
         "ok": false,
         "root": null,
         "session_store_is_none": null,
         "user_root": null,
-        "error": "项目级记忆目录必须位于工作区内：C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/outside"
+        "error": "项目级记忆目录必须位于工作区内：C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/outside"
       }
     ],
     "session_store": [
@@ -1232,25 +1232,25 @@
         "label": "合法 ID",
         "session_id": "abc-1_2",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata/Session_memory/abc-1_2",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata/Session_memory/abc-1_2",
         "error": null
       },
       {
         "label": "带空格",
         "session_id": " abc ",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata/Session_memory/abc",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata/Session_memory/abc",
         "error": null
       },
       {
         "label": "含非法字符",
         "session_id": "bad id!",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录：bad id!"
@@ -1259,7 +1259,7 @@
         "label": "以连字符开头",
         "session_id": "-abc",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录：-abc"
@@ -1268,7 +1268,7 @@
         "label": "空 ID",
         "session_id": "",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录："
@@ -1277,7 +1277,7 @@
         "label": "未启用会话",
         "session_id": "abc",
         "session_state": false,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "ok": true,
         "root": null,
         "error": null
@@ -1288,7 +1288,7 @@
         "label": "删除已存在目录",
         "session_id": "session-a",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "existed_before": true,
         "exists_after": false,
         "ok": true,
@@ -1298,7 +1298,7 @@
         "label": "目录不存在",
         "session_id": "session-missing",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "existed_before": false,
         "exists_after": false,
         "ok": true,
@@ -1308,7 +1308,7 @@
         "label": "记忆未启用",
         "session_id": "session-b",
         "memory_enabled": false,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "existed_before": true,
         "exists_after": true,
         "ok": true,
@@ -1318,7 +1318,7 @@
         "label": "ID 非法",
         "session_id": "bad id",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata",
         "existed_before": false,
         "exists_after": false,
         "ok": true,
@@ -1343,7 +1343,7 @@
         "error": "记忆系统未启用。"
       }
     ],
-    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmptz207a7j/userdata/User_memory"
+    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmpdcjhos66/userdata/User_memory"
   },
   "output": {
     "batch_budget": [
@@ -24802,6 +24802,763 @@
         }
       ]
     }
+  },
+  "tool_impl": {
+    "todos": [
+      {
+        "label": "非数组",
+        "input": "不是数组",
+        "ok": true,
+        "output": "todos 必须是数组。",
+        "active": [],
+        "notified": []
+      },
+      {
+        "label": "标准三条",
+        "input": [
+          {
+            "id": "1",
+            "step": "读取",
+            "completed": false
+          },
+          {
+            "id": "2",
+            "step": "修改",
+            "completed": true
+          },
+          {
+            "id": "3",
+            "step": "验证",
+            "status": "done"
+          }
+        ],
+        "ok": true,
+        "output": "{\"updated\": 3, \"todos\": [{\"id\": \"1\", \"step\": \"读取\", \"completed\": false}, {\"id\": \"2\", \"step\": \"修改\", \"completed\": true}, {\"id\": \"3\", \"step\": \"验证\", \"completed\": true}]}",
+        "active": [
+          {
+            "id": "1",
+            "step": "读取",
+            "completed": false
+          },
+          {
+            "id": "2",
+            "step": "修改",
+            "completed": true
+          },
+          {
+            "id": "3",
+            "step": "验证",
+            "completed": true
+          }
+        ],
+        "notified": [
+          {
+            "todos": [
+              {
+                "id": "1",
+                "step": "读取",
+                "completed": false
+              },
+              {
+                "id": "2",
+                "step": "修改",
+                "completed": true
+              },
+              {
+                "id": "3",
+                "step": "验证",
+                "completed": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "别名字段",
+        "input": [
+          {
+            "description": "用 description 兜底"
+          },
+          {
+            "title": "用 title 兜底"
+          },
+          {
+            "step": "   "
+          },
+          {
+            "step": 7,
+            "completed": 1
+          },
+          "不是对象",
+          {}
+        ],
+        "ok": true,
+        "output": "{\"updated\": 3, \"todos\": [{\"id\": \"1\", \"step\": \"用 description 兜底\", \"completed\": false}, {\"id\": \"2\", \"step\": \"用 title 兜底\", \"completed\": false}, {\"id\": \"4\", \"step\": \"7\", \"completed\": true}]}",
+        "active": [
+          {
+            "id": "1",
+            "step": "用 description 兜底",
+            "completed": false
+          },
+          {
+            "id": "2",
+            "step": "用 title 兜底",
+            "completed": false
+          },
+          {
+            "id": "4",
+            "step": "7",
+            "completed": true
+          }
+        ],
+        "notified": [
+          {
+            "todos": [
+              {
+                "id": "1",
+                "step": "用 description 兜底",
+                "completed": false
+              },
+              {
+                "id": "2",
+                "step": "用 title 兜底",
+                "completed": false
+              },
+              {
+                "id": "4",
+                "step": "7",
+                "completed": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "状态词表",
+        "input": [
+          {
+            "step": "a",
+            "status": "COMPLETED"
+          },
+          {
+            "step": "b",
+            "status": " complete "
+          },
+          {
+            "step": "c",
+            "status": "进行中"
+          }
+        ],
+        "ok": true,
+        "output": "{\"updated\": 3, \"todos\": [{\"id\": \"1\", \"step\": \"a\", \"completed\": true}, {\"id\": \"2\", \"step\": \"b\", \"completed\": true}, {\"id\": \"3\", \"step\": \"c\", \"completed\": false}]}",
+        "active": [
+          {
+            "id": "1",
+            "step": "a",
+            "completed": true
+          },
+          {
+            "id": "2",
+            "step": "b",
+            "completed": true
+          },
+          {
+            "id": "3",
+            "step": "c",
+            "completed": false
+          }
+        ],
+        "notified": [
+          {
+            "todos": [
+              {
+                "id": "1",
+                "step": "a",
+                "completed": true
+              },
+              {
+                "id": "2",
+                "step": "b",
+                "completed": true
+              },
+              {
+                "id": "3",
+                "step": "c",
+                "completed": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "截断与兜底 ID",
+        "input": [
+          {
+            "id": "  ",
+            "step": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          },
+          {
+            "id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+            "step": "短"
+          },
+          {
+            "step": "无 ID 用序号"
+          }
+        ],
+        "ok": true,
+        "output": "{\"updated\": 3, \"todos\": [{\"id\": \"1\", \"step\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\", \"completed\": false}, {\"id\": \"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\", \"step\": \"短\", \"completed\": false}, {\"id\": \"3\", \"step\": \"无 ID 用序号\", \"completed\": false}]}",
+        "active": [
+          {
+            "id": "1",
+            "step": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "completed": false
+          },
+          {
+            "id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+            "step": "短",
+            "completed": false
+          },
+          {
+            "id": "3",
+            "step": "无 ID 用序号",
+            "completed": false
+          }
+        ],
+        "notified": [
+          {
+            "todos": [
+              {
+                "id": "1",
+                "step": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "completed": false
+              },
+              {
+                "id": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+                "step": "短",
+                "completed": false
+              },
+              {
+                "id": "3",
+                "step": "无 ID 用序号",
+                "completed": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "超过 20 条",
+        "input": [
+          {
+            "step": "步骤 0"
+          },
+          {
+            "step": "步骤 1"
+          },
+          {
+            "step": "步骤 2"
+          },
+          {
+            "step": "步骤 3"
+          },
+          {
+            "step": "步骤 4"
+          },
+          {
+            "step": "步骤 5"
+          },
+          {
+            "step": "步骤 6"
+          },
+          {
+            "step": "步骤 7"
+          },
+          {
+            "step": "步骤 8"
+          },
+          {
+            "step": "步骤 9"
+          },
+          {
+            "step": "步骤 10"
+          },
+          {
+            "step": "步骤 11"
+          },
+          {
+            "step": "步骤 12"
+          },
+          {
+            "step": "步骤 13"
+          },
+          {
+            "step": "步骤 14"
+          },
+          {
+            "step": "步骤 15"
+          },
+          {
+            "step": "步骤 16"
+          },
+          {
+            "step": "步骤 17"
+          },
+          {
+            "step": "步骤 18"
+          },
+          {
+            "step": "步骤 19"
+          },
+          {
+            "step": "步骤 20"
+          },
+          {
+            "step": "步骤 21"
+          },
+          {
+            "step": "步骤 22"
+          },
+          {
+            "step": "步骤 23"
+          },
+          {
+            "step": "步骤 24"
+          }
+        ],
+        "ok": true,
+        "output": "{\"updated\": 20, \"todos\": [{\"id\": \"1\", \"step\": \"步骤 0\", \"completed\": false}, {\"id\": \"2\", \"step\": \"步骤 1\", \"completed\": false}, {\"id\": \"3\", \"step\": \"步骤 2\", \"completed\": false}, {\"id\": \"4\", \"step\": \"步骤 3\", \"completed\": false}, {\"id\": \"5\", \"step\": \"步骤 4\", \"completed\": false}, {\"id\": \"6\", \"step\": \"步骤 5\", \"completed\": false}, {\"id\": \"7\", \"step\": \"步骤 6\", \"completed\": false}, {\"id\": \"8\", \"step\": \"步骤 7\", \"completed\": false}, {\"id\": \"9\", \"step\": \"步骤 8\", \"completed\": false}, {\"id\": \"10\", \"step\": \"步骤 9\", \"completed\": false}, {\"id\": \"11\", \"step\": \"步骤 10\", \"completed\": false}, {\"id\": \"12\", \"step\": \"步骤 11\", \"completed\": false}, {\"id\": \"13\", \"step\": \"步骤 12\", \"completed\": false}, {\"id\": \"14\", \"step\": \"步骤 13\", \"completed\": false}, {\"id\": \"15\", \"step\": \"步骤 14\", \"completed\": false}, {\"id\": \"16\", \"step\": \"步骤 15\", \"completed\": false}, {\"id\": \"17\", \"step\": \"步骤 16\", \"completed\": false}, {\"id\": \"18\", \"step\": \"步骤 17\", \"completed\": false}, {\"id\": \"19\", \"step\": \"步骤 18\", \"completed\": false}, {\"id\": \"20\", \"step\": \"步骤 19\", \"completed\": false}]}",
+        "active": [
+          {
+            "id": "1",
+            "step": "步骤 0",
+            "completed": false
+          },
+          {
+            "id": "2",
+            "step": "步骤 1",
+            "completed": false
+          },
+          {
+            "id": "3",
+            "step": "步骤 2",
+            "completed": false
+          },
+          {
+            "id": "4",
+            "step": "步骤 3",
+            "completed": false
+          },
+          {
+            "id": "5",
+            "step": "步骤 4",
+            "completed": false
+          },
+          {
+            "id": "6",
+            "step": "步骤 5",
+            "completed": false
+          },
+          {
+            "id": "7",
+            "step": "步骤 6",
+            "completed": false
+          },
+          {
+            "id": "8",
+            "step": "步骤 7",
+            "completed": false
+          },
+          {
+            "id": "9",
+            "step": "步骤 8",
+            "completed": false
+          },
+          {
+            "id": "10",
+            "step": "步骤 9",
+            "completed": false
+          },
+          {
+            "id": "11",
+            "step": "步骤 10",
+            "completed": false
+          },
+          {
+            "id": "12",
+            "step": "步骤 11",
+            "completed": false
+          },
+          {
+            "id": "13",
+            "step": "步骤 12",
+            "completed": false
+          },
+          {
+            "id": "14",
+            "step": "步骤 13",
+            "completed": false
+          },
+          {
+            "id": "15",
+            "step": "步骤 14",
+            "completed": false
+          },
+          {
+            "id": "16",
+            "step": "步骤 15",
+            "completed": false
+          },
+          {
+            "id": "17",
+            "step": "步骤 16",
+            "completed": false
+          },
+          {
+            "id": "18",
+            "step": "步骤 17",
+            "completed": false
+          },
+          {
+            "id": "19",
+            "step": "步骤 18",
+            "completed": false
+          },
+          {
+            "id": "20",
+            "step": "步骤 19",
+            "completed": false
+          }
+        ],
+        "notified": [
+          {
+            "todos": [
+              {
+                "id": "1",
+                "step": "步骤 0",
+                "completed": false
+              },
+              {
+                "id": "2",
+                "step": "步骤 1",
+                "completed": false
+              },
+              {
+                "id": "3",
+                "step": "步骤 2",
+                "completed": false
+              },
+              {
+                "id": "4",
+                "step": "步骤 3",
+                "completed": false
+              },
+              {
+                "id": "5",
+                "step": "步骤 4",
+                "completed": false
+              },
+              {
+                "id": "6",
+                "step": "步骤 5",
+                "completed": false
+              },
+              {
+                "id": "7",
+                "step": "步骤 6",
+                "completed": false
+              },
+              {
+                "id": "8",
+                "step": "步骤 7",
+                "completed": false
+              },
+              {
+                "id": "9",
+                "step": "步骤 8",
+                "completed": false
+              },
+              {
+                "id": "10",
+                "step": "步骤 9",
+                "completed": false
+              },
+              {
+                "id": "11",
+                "step": "步骤 10",
+                "completed": false
+              },
+              {
+                "id": "12",
+                "step": "步骤 11",
+                "completed": false
+              },
+              {
+                "id": "13",
+                "step": "步骤 12",
+                "completed": false
+              },
+              {
+                "id": "14",
+                "step": "步骤 13",
+                "completed": false
+              },
+              {
+                "id": "15",
+                "step": "步骤 14",
+                "completed": false
+              },
+              {
+                "id": "16",
+                "step": "步骤 15",
+                "completed": false
+              },
+              {
+                "id": "17",
+                "step": "步骤 16",
+                "completed": false
+              },
+              {
+                "id": "18",
+                "step": "步骤 17",
+                "completed": false
+              },
+              {
+                "id": "19",
+                "step": "步骤 18",
+                "completed": false
+              },
+              {
+                "id": "20",
+                "step": "步骤 19",
+                "completed": false
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "空数组",
+        "input": [],
+        "ok": true,
+        "output": "{\"updated\": 0, \"todos\": []}",
+        "active": [],
+        "notified": [
+          {
+            "todos": []
+          }
+        ]
+      }
+    ],
+    "ask_user": [
+      {
+        "label": "缺省 kind",
+        "arguments": {
+          "question": "选哪个",
+          "options": [
+            "a",
+            "b"
+          ]
+        },
+        "answer": "a",
+        "ok": true,
+        "output": "{\"kind\": \"question\", \"question\": \"选哪个\", \"options\": [\"a\", \"b\"], \"answer\": \"a\"}",
+        "request": {
+          "kind": "question",
+          "question": "选哪个",
+          "options": [
+            "a",
+            "b"
+          ],
+          "request_id": ""
+        }
+      },
+      {
+        "label": "显式 select",
+        "arguments": {
+          "kind": " SELECT ",
+          "question": " 问题 ",
+          "options": [
+            " a ",
+            "b",
+            "",
+            "  "
+          ]
+        },
+        "answer": "b",
+        "ok": true,
+        "output": "{\"kind\": \"select\", \"question\": \"问题\", \"options\": [\"a\", \"b\"], \"answer\": \"b\"}",
+        "request": {
+          "kind": "select",
+          "question": "问题",
+          "options": [
+            "a",
+            "b"
+          ],
+          "request_id": ""
+        }
+      },
+      {
+        "label": "非法 kind",
+        "arguments": {
+          "kind": "poll",
+          "question": "x",
+          "options": [
+            "a"
+          ]
+        },
+        "answer": null,
+        "ok": true,
+        "output": "kind 必须是 question、select 或 confirm。",
+        "request": null
+      },
+      {
+        "label": "缺问题",
+        "arguments": {
+          "kind": "confirm",
+          "options": [
+            "a"
+          ]
+        },
+        "answer": null,
+        "ok": true,
+        "output": "question 不能为空。",
+        "request": null
+      },
+      {
+        "label": "问题空白",
+        "arguments": {
+          "question": "   ",
+          "options": [
+            "a"
+          ]
+        },
+        "answer": null,
+        "ok": true,
+        "output": "question 不能为空。",
+        "request": null
+      },
+      {
+        "label": "options 非数组",
+        "arguments": {
+          "question": "x",
+          "options": "a"
+        },
+        "answer": null,
+        "ok": true,
+        "output": "options 必须是数组。",
+        "request": null
+      },
+      {
+        "label": "options 全空",
+        "arguments": {
+          "question": "x",
+          "options": [
+            "",
+            "  "
+          ]
+        },
+        "answer": null,
+        "ok": true,
+        "output": "ask_user 必须提供至少一个非空 options 选项。",
+        "request": null
+      },
+      {
+        "label": "缺 options",
+        "arguments": {
+          "question": "x"
+        },
+        "answer": null,
+        "ok": true,
+        "output": "ask_user 必须提供至少一个非空 options 选项。",
+        "request": null
+      },
+      {
+        "label": "用户未回答",
+        "arguments": {
+          "question": "x",
+          "options": [
+            "a"
+          ]
+        },
+        "answer": null,
+        "ok": true,
+        "output": "用户未回答该问题。",
+        "request": {
+          "kind": "question",
+          "question": "x",
+          "options": [
+            "a"
+          ],
+          "request_id": ""
+        }
+      },
+      {
+        "label": "带 request_id",
+        "arguments": {
+          "question": "x",
+          "options": [
+            "a"
+          ],
+          "request_id": " req-1 "
+        },
+        "answer": "答",
+        "ok": true,
+        "output": "{\"kind\": \"question\", \"question\": \"x\", \"options\": [\"a\"], \"answer\": \"答\"}",
+        "request": {
+          "kind": "question",
+          "question": "x",
+          "options": [
+            "a"
+          ],
+          "request_id": "req-1"
+        }
+      }
+    ],
+    "memory_scope": [
+      {
+        "label": "缺省 project",
+        "arguments": {},
+        "ok": true,
+        "store": "project-store",
+        "error": null
+      },
+      {
+        "label": "显式 user",
+        "arguments": {
+          "scope": " USER "
+        },
+        "ok": true,
+        "store": "user-store",
+        "error": null
+      },
+      {
+        "label": "显式 session",
+        "arguments": {
+          "scope": "session"
+        },
+        "ok": false,
+        "store": null,
+        "error": "session 级记忆系统未启用。"
+      },
+      {
+        "label": "非法取值",
+        "arguments": {
+          "scope": "global"
+        },
+        "ok": false,
+        "store": null,
+        "error": "scope 仅支持 project、session、user；收到：global。"
+      },
+      {
+        "label": "数字取值",
+        "arguments": {
+          "scope": 5
+        },
+        "ok": false,
+        "store": null,
+        "error": "scope 仅支持 project、session、user；收到：5。"
+      }
+    ]
   },
   "turn_loop": {
     "cases": [

@@ -7027,6 +7027,135 @@ def lifecycle_cases() -> dict:
     }
 
 
+# ---------------------------------------------------------------------- tool_impl
+
+
+def tool_impl_cases() -> dict:
+    """工具实现层的判定面：todos 投影、ask_user 入参、记忆作用域。"""
+
+    from omnicrawl.agent.controllers.tools.implementations import ToolImplementationsMixin
+    from omnicrawl.agent.controllers.tools import implementations as impl_module
+
+    class _TodoProbe(ToolImplementationsMixin):
+        pass
+
+    def run_todos(raw, with_callback: bool = True) -> dict:
+        probe = _TodoProbe()
+        probe._active_todo_items = []
+        notified: list[dict] = []
+        probe._todo_update_callback = (lambda payload: notified.append(payload)) if with_callback else None
+        result = outcome(probe._tool_update_todos, {"todos": raw})
+        return {
+            "ok": result["ok"],
+            "output": result["value"].output if result["ok"] else result["error"],
+            "active": list(probe._active_todo_items),
+            "notified": notified,
+        }
+
+    todo_inputs = [
+        ("非数组", "不是数组"),
+        ("标准三条", [
+            {"id": "1", "step": "读取", "completed": False},
+            {"id": "2", "step": "修改", "completed": True},
+            {"id": "3", "step": "验证", "status": "done"},
+        ]),
+        ("别名字段", [
+            {"description": "用 description 兜底"},
+            {"title": "用 title 兜底"},
+            {"step": "   "},
+            {"step": 7, "completed": 1},
+            "不是对象",
+            {},
+        ]),
+        ("状态词表", [
+            {"step": "a", "status": "COMPLETED"},
+            {"step": "b", "status": " complete "},
+            {"step": "c", "status": "进行中"},
+        ]),
+        ("截断与兜底 ID", [
+            {"id": "  ", "step": "x" * 300},
+            {"id": "y" * 100, "step": "短"},
+            {"step": "无 ID 用序号"},
+        ]),
+        ("超过 20 条", [{"step": "步骤 %d" % index} for index in range(25)]),
+        ("空数组", []),
+    ]
+    todos = [{"label": label, "input": raw, **run_todos(raw)} for label, raw in todo_inputs]
+
+    class _AskProbe(ToolImplementationsMixin):
+        pass
+
+    ask_cases = []
+    for label, arguments, answer in [
+        ("缺省 kind", {"question": "选哪个", "options": ["a", "b"]}, "a"),
+        ("显式 select", {"kind": " SELECT ", "question": " 问题 ", "options": [" a ", "b", "", "  "]}, "b"),
+        ("非法 kind", {"kind": "poll", "question": "x", "options": ["a"]}, None),
+        ("缺问题", {"kind": "confirm", "options": ["a"]}, None),
+        ("问题空白", {"question": "   ", "options": ["a"]}, None),
+        ("options 非数组", {"question": "x", "options": "a"}, None),
+        ("options 全空", {"question": "x", "options": ["", "  "]}, None),
+        ("缺 options", {"question": "x"}, None),
+        ("用户未回答", {"question": "x", "options": ["a"]}, None),
+        ("带 request_id", {"question": "x", "options": ["a"], "request_id": " req-1 "}, "答"),
+    ]:
+        probe = _AskProbe()
+        probe.config = SimpleNamespace(tool_timeout_seconds=30)
+        probe._seen_request = None
+
+        def handler(request, _probe=probe, _answer=answer):
+            _probe._seen_request = {
+                "kind": request.kind,
+                "question": request.question,
+                "options": list(request.options),
+                "request_id": request.request_id,
+            }
+            return _answer
+
+        probe._ask_user_handler = handler
+        probe._ask_user_in_terminal = lambda request, _answer=answer: _answer
+        # advisor 提示属于顾问子系统的判定，这里只测 ask_user 自己的文案与信封。
+        with mock.patch.object(impl_module, "ask_user_advisor_hint", lambda owner: ""):
+            result = outcome(probe._tool_ask_user, arguments)
+        ask_cases.append(
+            {
+                "label": label,
+                "arguments": arguments,
+                "answer": answer,
+                "ok": result["ok"],
+                "output": result["value"].output if result["ok"] else result["error"],
+                "request": probe._seen_request,
+            }
+        )
+
+    class _ScopeProbe(ToolImplementationsMixin):
+        pass
+
+    scope_cases = []
+    for label, arguments in [
+        ("缺省 project", {}),
+        ("显式 user", {"scope": " USER "}),
+        ("显式 session", {"scope": "session"}),
+        ("非法取值", {"scope": "global"}),
+        ("数字取值", {"scope": 5}),
+    ]:
+        probe = _ScopeProbe()
+        probe._project_memory_store = "project-store"
+        probe._session_memory_store = None
+        probe._user_memory_store = "user-store"
+        result = outcome(probe._require_memory_store_for_arguments, arguments)
+        scope_cases.append(
+            {
+                "label": label,
+                "arguments": arguments,
+                "ok": result["ok"],
+                "store": result["value"] if result["ok"] else None,
+                "error": result["error"],
+            }
+        )
+
+    return {"todos": todos, "ask_user": ask_cases, "memory_scope": scope_cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7051,6 +7180,7 @@ def main() -> None:
             "subagents": subagents_cases(),
             "store": store_cases(),
             "lifecycle": lifecycle_cases(),
+            "tool_impl": tool_impl_cases(),
         "turn_loop": turn_loop_cases(),
         }
 

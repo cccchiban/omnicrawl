@@ -29,6 +29,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/tools/output.py` | `src/output.rs` | 批次输出预算与落盘预览、工具结果消息、视觉旁路文案 |
 | `controllers/tools/compression.py` | `src/compression.rs` | 压缩选取、展示文本、参数摘要 |
 | `controllers/tools/building.py` | `src/building.rs` | 模式模板装载与 system prompt 组装 |
+| `controllers/tools/implementations.py`（判定面） | `src/tool_impl.rs` | `update_todos` 的清单投影与输出信封、`ask_user` 入参校验与回答信封、记忆工具 `scope` 解析（实现本体是 I/O，仍在宿主） |
 | `agent/runtime/llm_protocol.py`（一函数） | `src/shared.rs` | `resolve_tool_name_from_hashed_function_name` |
 | `agent/types.py` | `src/types.rs` | `ToolCall` / `ToolResult` / `ToolImageAttachment` |
 | `state/session_artifacts.py`、`state/session_projection.py`（各一函数） | `src/output.rs` | 复用 `omnicrawl-session` 的 `preview_text` / `tool_result_message`（不再重复实现） |
@@ -44,7 +45,8 @@ git 快照能力由宿主实现，crate 内不起子进程。
   判定件（`agent/toolkit/approval_policy.py` 的全部规则）已在 `src/approval.rs`。
 - `tools/building.py` 的 `_build_tools` / `_build_mcp_tools`：工具表构建，依赖
   `agent/toolkit/tools.py`。
-- `tools/implementations.py`：工具实现本体（属 `agent/toolkit/`）。
+- `tools/implementations.py`：工具实现本体（属 `agent/toolkit/`）。判定面（清单投影、`ask_user` 入参、
+  记忆 `scope`）已在 `src/tool_impl.rs`；文件系统 / HTTP / 子进程 / MCP / TTS 的调用仍在 Python。
 - `toolkit/tools.py` 的**执行函数绑定**：目录与注册规则已搬（`src/tool_catalog.rs` + 导出的
   `data/agent_tools.json`），但各工具的实现本体（`agent/toolkit/*`、`workspace/`、`mcp/`…）仍在 Python。
 - `turn/loop.py` 的编排壳：插件钩子、会话事件与历史落盘、回合快照、压缩触发、
@@ -77,7 +79,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 851 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 873 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -94,7 +96,8 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 以及会话事件投影编排 6 例（`tests/store_parity.rs`：内存事件的逐字段形状与序号推进、
 落盘与未落盘事件各自的投影方式），以及会话生命周期编排 20 例（`tests/lifecycle_parity.rs`：
 用探针真跑 `close()` 得到的阶段轨迹、关闭回调处置、隔离收尾摘要与回调条件、父 Session 切换排空、
-`set_model` 选择串、undo 回退的失败包装文案）。
+`set_model` 选择串、undo 回退的失败包装文案），以及工具实现判定面 22 例（`tests/tool_impl_parity.rs`：
+清单投影与输出文本、`ask_user` 三条拒绝文案与回答信封、记忆 `scope` 解析与未启用文案）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内
