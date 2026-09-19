@@ -7481,6 +7481,94 @@ def plugin_runtime_cases() -> dict:
     return {"context": context_cases, "turn": turn_cases, "session": session_cases}
 
 
+# --------------------------------------------------------------------- turn text
+
+
+def turn_text_cases() -> dict:
+    """回合文本判定与收尾消息：继续识别、任务还原、取消摘要、助手消息。"""
+
+    from omnicrawl.agent.controllers.turn.loop import TurnLoopMixin
+
+    continue_cases = [
+        {"text": text, "expected": TurnLoopMixin._is_continue_last_task_request(text)}
+        for text in [
+            "继续",
+            "继续。",
+            " 继续！！ ",
+            "Continue",
+            "continue.",
+            "接着来",
+            "重 试",
+            "再试一次",
+            "retry",
+            "继续吧",
+            "继续上轮",
+            "",
+            "随便说说",
+            "CONTINUE",
+            "继续，。！？",
+        ]
+    ]
+
+    resolve_cases = []
+    for text, pending in [
+        ("继续", "把 controllers 全部搬到 rust"),
+        ("继续", None),
+        ("继续", "   "),
+        ("不继续", "任务 A"),
+        ("重试", "修复 parity 失败"),
+    ]:
+        probe = object.__new__(TurnLoopMixin)
+        probe._pending_user_text = pending
+        resolve_cases.append(
+            {
+                "text": text,
+                "pending": pending,
+                "resolved": probe._resolve_continue_request(text),
+            }
+        )
+
+    summary_cases = []
+    for label, tools in [
+        ("没有快照", None),
+        ("快照无工具", []),
+        ("单次执行", ["read"]),
+        ("重复执行", ["read", "read", "grep"]),
+        ("混合重复", ["a", "b", "a", "b", "a"]),
+    ]:
+        snapshot = None if tools is None else SimpleNamespace(executed_tools=tools)
+        summary_cases.append(
+            {
+                "label": label,
+                "has_snapshot": tools is not None,
+                "executed_tools": tools,
+                "summary": TurnLoopMixin._cancelled_turn_summary(snapshot),
+            }
+        )
+
+    message_cases = []
+    for label, content, reasoning in [
+        ("无推理", "答案", ""),
+        ("带推理", "答案", "先想一下"),
+        ("只有推理", "", "只有推理文本"),
+    ]:
+        message_cases.append(
+            {
+                "label": label,
+                "content": content,
+                "reasoning": reasoning,
+                "message": TurnLoopMixin._assistant_message(content, reasoning),
+            }
+        )
+
+    return {
+        "continue": continue_cases,
+        "resolve": resolve_cases,
+        "summary": summary_cases,
+        "message": message_cases,
+    }
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7508,6 +7596,7 @@ def main() -> None:
             "tool_impl": tool_impl_cases(),
             "approval_flow": approval_flow_cases(),
             "plugin_runtime": plugin_runtime_cases(),
+            "turn_text": turn_text_cases(),
         "turn_loop": turn_loop_cases(),
         }
 
