@@ -1,0 +1,1047 @@
+{
+  "source": "omnicrawl/state/session_records.py",
+  "json_error_placeholder": "<json_error>",
+  "migrate": [
+    {
+      "label": "current_version",
+      "input": {
+        "version": 1,
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "ok": true,
+      "value": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "tag": null
+      }
+    },
+    {
+      "label": "prototype_with_id",
+      "input": {
+        "version": 0,
+        "id": "0123456789abcdef01234567",
+        "session_id": "20260918-030529-abcdef",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "ok": true,
+      "value": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          },
+          "event_id": "0123456789abcdef01234567"
+        },
+        "tag": "v0"
+      }
+    },
+    {
+      "label": "prototype_with_event_id",
+      "input": {
+        "version": 0,
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "ok": true,
+      "value": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "tag": "v0"
+      }
+    },
+    {
+      "label": "unversioned_complete",
+      "input": {
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "ok": true,
+      "value": {
+        "data": {
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          },
+          "version": 1
+        },
+        "tag": "unversioned"
+      }
+    },
+    {
+      "label": "unversioned_incomplete",
+      "input": {
+        "session_id": "20260918-030529-abcdef"
+      },
+      "ok": false,
+      "error": "会话事件缺少 version，且不具备可迁移的遗留字段。"
+    },
+    {
+      "label": "future_version",
+      "input": {
+        "version": 2,
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "ok": false,
+      "error": "暂不支持的会话事件版本：2。"
+    },
+    {
+      "label": "string_version",
+      "input": {
+        "version": "1",
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "ok": false,
+      "error": "暂不支持的会话事件版本：1。"
+    },
+    {
+      "label": "not_object",
+      "input": [
+        1,
+        2
+      ],
+      "ok": false,
+      "error": "会话事件必须是 JSON 对象。"
+    }
+  ],
+  "decode_dict": [
+    {
+      "label": "good",
+      "input": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": null
+      },
+      "event": {
+        "version": 1,
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "diagnostics": []
+    },
+    {
+      "label": "good_with_match",
+      "input": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": "20260918-030529-abcdef"
+      },
+      "event": {
+        "version": 1,
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "diagnostics": []
+    },
+    {
+      "label": "session_mismatch",
+      "input": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": "20260918-030529-abcdea"
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "session_id_mismatch",
+          "severity": "warning",
+          "message": "事件 session_id 与转录归属不一致：事件为 20260918-030529-abcdef，期望为 20260918-030529-abcdea。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 3,
+          "session_id": "20260918-030529-abcdef",
+          "recoverable": true,
+          "details": {
+            "event_session_id": "20260918-030529-abcdef",
+            "expected_session_id": "20260918-030529-abcdea"
+          }
+        }
+      ]
+    },
+    {
+      "label": "not_object",
+      "input": {
+        "data": [
+          1,
+          2
+        ],
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": null
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "not_object",
+          "severity": "error",
+          "message": "会话事件 JSON 顶层必须是对象。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 3,
+          "session_id": null,
+          "recoverable": true,
+          "details": {}
+        }
+      ]
+    },
+    {
+      "label": "unsupported_version",
+      "input": {
+        "data": {
+          "version": 2,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": null
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "unsupported_event_version",
+          "severity": "error",
+          "message": "暂不支持的会话事件版本：2。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 3,
+          "session_id": "20260918-030529-abcdef",
+          "recoverable": true,
+          "details": {
+            "raw_version": 2
+          }
+        }
+      ]
+    },
+    {
+      "label": "missing_type",
+      "input": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": null
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "invalid_fields",
+          "severity": "error",
+          "message": "会话事件缺少字段：type。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 3,
+          "session_id": "20260918-030529-abcdef",
+          "recoverable": true,
+          "details": {
+            "raw_version": 1
+          }
+        }
+      ]
+    },
+    {
+      "label": "legacy_migrated",
+      "input": {
+        "data": {
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": {
+            "text": "你好"
+          }
+        },
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": null
+      },
+      "event": {
+        "version": 1,
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "diagnostics": [
+        {
+          "code": "legacy_event_migrated",
+          "severity": "info",
+          "message": "已将遗留事件格式迁移到 version=1（仅内存，未改写磁盘）。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 3,
+          "session_id": "20260918-030529-abcdef",
+          "recoverable": true,
+          "details": {
+            "migration": "unversioned",
+            "from_version": null
+          }
+        }
+      ]
+    },
+    {
+      "label": "bad_payload",
+      "input": {
+        "data": {
+          "version": 1,
+          "session_id": "20260918-030529-abcdef",
+          "event_id": "0123456789abcdef01234567",
+          "parent_id": null,
+          "type": "user_message",
+          "created_at": "2026-09-18T03:05:29.123456+00:00",
+          "payload": "nope"
+        },
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 3,
+        "expected_session_id": null
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "invalid_fields",
+          "severity": "error",
+          "message": "会话事件 payload 必须是 JSON 对象。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 3,
+          "session_id": "20260918-030529-abcdef",
+          "recoverable": true,
+          "details": {
+            "raw_version": 1
+          }
+        }
+      ]
+    }
+  ],
+  "decode_line": [
+    {
+      "label": "empty",
+      "input": {
+        "line": "",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 7,
+        "expected_session_id": null,
+        "is_last_nonempty_line": false,
+        "file_ends_with_newline": true
+      },
+      "event": null,
+      "diagnostics": []
+    },
+    {
+      "label": "blank",
+      "input": {
+        "line": "   ",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 7,
+        "expected_session_id": null,
+        "is_last_nonempty_line": false,
+        "file_ends_with_newline": true
+      },
+      "event": null,
+      "diagnostics": []
+    },
+    {
+      "label": "good",
+      "input": {
+        "line": "{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234567\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 7,
+        "expected_session_id": null,
+        "is_last_nonempty_line": true,
+        "file_ends_with_newline": true
+      },
+      "event": {
+        "version": 1,
+        "session_id": "20260918-030529-abcdef",
+        "event_id": "0123456789abcdef01234567",
+        "parent_id": null,
+        "type": "user_message",
+        "created_at": "2026-09-18T03:05:29.123456+00:00",
+        "payload": {
+          "text": "你好"
+        }
+      },
+      "diagnostics": []
+    },
+    {
+      "label": "broken_middle",
+      "input": {
+        "line": "{not json",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 7,
+        "expected_session_id": null,
+        "is_last_nonempty_line": false,
+        "file_ends_with_newline": true
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "invalid_json",
+          "severity": "error",
+          "message": "会话转录 JSON 损坏：第 7 行。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 7,
+          "session_id": null,
+          "recoverable": true,
+          "details": {
+            "json_error": "<json_error>",
+            "snippet": "{not json",
+            "trailing": false
+          }
+        }
+      ]
+    },
+    {
+      "label": "broken_trailing",
+      "input": {
+        "line": "{\"version\": 1, \"session",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 7,
+        "expected_session_id": null,
+        "is_last_nonempty_line": true,
+        "file_ends_with_newline": false
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "trailing_incomplete",
+          "severity": "warning",
+          "message": "转录末尾存在未完成的 JSON 行，可能由写入中断导致。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 7,
+          "session_id": null,
+          "recoverable": true,
+          "details": {
+            "json_error": "<json_error>",
+            "snippet": "{\"version\": 1, \"session",
+            "trailing": true
+          }
+        }
+      ]
+    },
+    {
+      "label": "top_level_array",
+      "input": {
+        "line": "[1,2]",
+        "path": "sessions/20260918-030529-abcdef.jsonl",
+        "line_no": 7,
+        "expected_session_id": null,
+        "is_last_nonempty_line": false,
+        "file_ends_with_newline": true
+      },
+      "event": null,
+      "diagnostics": [
+        {
+          "code": "not_object",
+          "severity": "error",
+          "message": "会话事件 JSON 顶层必须是对象。",
+          "path": "sessions/20260918-030529-abcdef.jsonl",
+          "line_no": 7,
+          "session_id": null,
+          "recoverable": true,
+          "details": {}
+        }
+      ]
+    }
+  ],
+  "read_file": [
+    {
+      "label": "missing",
+      "session_id": null,
+      "path_exists": false,
+      "text": null,
+      "result": {
+        "event_count": 0,
+        "diagnostic_count": 0,
+        "has_errors": false,
+        "diagnostics": [],
+        "events": []
+      }
+    },
+    {
+      "label": "clean",
+      "session_id": null,
+      "path_exists": true,
+      "text": "{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234567\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}\n{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234568\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}\n",
+      "result": {
+        "event_count": 2,
+        "diagnostic_count": 0,
+        "has_errors": false,
+        "diagnostics": [],
+        "events": [
+          {
+            "version": 1,
+            "session_id": "20260918-030529-abcdef",
+            "event_id": "0123456789abcdef01234567",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:29.123456+00:00",
+            "payload": {
+              "text": "你好"
+            }
+          },
+          {
+            "version": 1,
+            "session_id": "20260918-030529-abcdef",
+            "event_id": "0123456789abcdef01234568",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:29.123456+00:00",
+            "payload": {
+              "text": "你好"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "blank_lines",
+      "session_id": null,
+      "path_exists": true,
+      "text": "\n{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234567\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}\n\n{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234568\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}\n",
+      "result": {
+        "event_count": 2,
+        "diagnostic_count": 0,
+        "has_errors": false,
+        "diagnostics": [],
+        "events": [
+          {
+            "version": 1,
+            "session_id": "20260918-030529-abcdef",
+            "event_id": "0123456789abcdef01234567",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:29.123456+00:00",
+            "payload": {
+              "text": "你好"
+            }
+          },
+          {
+            "version": 1,
+            "session_id": "20260918-030529-abcdef",
+            "event_id": "0123456789abcdef01234568",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:29.123456+00:00",
+            "payload": {
+              "text": "你好"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "no_trailing_newline",
+      "session_id": null,
+      "path_exists": true,
+      "text": "{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234567\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}\n{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234568\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}",
+      "result": {
+        "event_count": 2,
+        "diagnostic_count": 0,
+        "has_errors": false,
+        "diagnostics": [],
+        "events": [
+          {
+            "version": 1,
+            "session_id": "20260918-030529-abcdef",
+            "event_id": "0123456789abcdef01234567",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:29.123456+00:00",
+            "payload": {
+              "text": "你好"
+            }
+          },
+          {
+            "version": 1,
+            "session_id": "20260918-030529-abcdef",
+            "event_id": "0123456789abcdef01234568",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:29.123456+00:00",
+            "payload": {
+              "text": "你好"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "broken_middle_then_trailing",
+      "session_id": null,
+      "path_exists": true,
+      "text": "{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234567\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}\n{not json\n{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234568\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": ",
+      "result": {
+        "event_count": 1,
+        "diagnostic_count": 2,
+        "has_errors": true,
+        "diagnostics": [
+          {
+            "code": "invalid_json",
+            "severity": "error",
+            "message": "会话转录 JSON 损坏：第 2 行。",
+            "path": "sessions/20260918-030529-abcdef.jsonl",
+            "line_no": 2,
+            "session_id": null,
+            "recoverable": true,
+            "details": {
+              "json_error": "<json_error>",
+              "snippet": "{not json",
+              "trailing": false
+            }
+          },
+          {
+            "code": "trailing_incomplete",
+            "severity": "warning",
+            "message": "转录末尾存在未完成的 JSON 行，可能由写入中断导致。",
+            "path": "sessions/20260918-030529-abcdef.jsonl",
+            "line_no": 3,
+            "session_id": null,
+            "recoverable": true,
+            "details": {
+              "json_error": "<json_error>",
+              "snippet": "{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234568\", \"parent_id\": null, \"type\"",
+              "trailing": true
+            }
+          }
+        ],
+        "events": [
+          {
+            "version": 1,
+            "session_id": "20260918-030529-abcdef",
+            "event_id": "0123456789abcdef01234567",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:29.123456+00:00",
+            "payload": {
+              "text": "你好"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "mismatch",
+      "session_id": "20260918-030529-abcdea",
+      "path_exists": true,
+      "text": "{\"version\": 1, \"session_id\": \"20260918-030529-abcdef\", \"event_id\": \"0123456789abcdef01234567\", \"parent_id\": null, \"type\": \"user_message\", \"created_at\": \"2026-09-18T03:05:29.123456+00:00\", \"payload\": {\"text\": \"你好\"}}\n",
+      "result": {
+        "event_count": 0,
+        "diagnostic_count": 1,
+        "has_errors": false,
+        "diagnostics": [
+          {
+            "code": "session_id_mismatch",
+            "severity": "warning",
+            "message": "事件 session_id 与转录归属不一致：事件为 20260918-030529-abcdef，期望为 20260918-030529-abcdea。",
+            "path": "sessions/20260918-030529-abcdef.jsonl",
+            "line_no": 1,
+            "session_id": "20260918-030529-abcdef",
+            "recoverable": true,
+            "details": {
+              "event_session_id": "20260918-030529-abcdef",
+              "expected_session_id": "20260918-030529-abcdea"
+            }
+          }
+        ],
+        "events": []
+      }
+    }
+  ],
+  "parse_index": [
+    {
+      "label": "with_version",
+      "input": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ]
+      },
+      "ok": true,
+      "value": {
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ],
+        "version": 1
+      }
+    },
+    {
+      "label": "legacy_no_version",
+      "input": {
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ]
+      },
+      "ok": true,
+      "value": {
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ],
+        "version": 1
+      }
+    },
+    {
+      "label": "not_object",
+      "input": [
+        1
+      ],
+      "ok": false,
+      "error": "会话索引顶层必须是 JSON 对象。"
+    },
+    {
+      "label": "string_version",
+      "input": {
+        "schema_version": "1",
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ]
+      },
+      "ok": false,
+      "error": "会话索引 schema_version 必须是整数。"
+    },
+    {
+      "label": "bool_version",
+      "input": {
+        "schema_version": true,
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ]
+      },
+      "ok": false,
+      "error": "会话索引 schema_version 必须是整数。"
+    },
+    {
+      "label": "future_version",
+      "input": {
+        "schema_version": 2,
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ]
+      },
+      "ok": false,
+      "error": "暂不支持的会话索引 schema 版本：2。当前支持版本：1。"
+    },
+    {
+      "label": "sessions_not_list",
+      "input": {
+        "schema_version": 1,
+        "sessions": 3
+      },
+      "ok": false,
+      "error": "会话索引顶层字段 sessions 必须是列表。"
+    },
+    {
+      "label": "mixed_sessions",
+      "input": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          },
+          5,
+          "x"
+        ]
+      },
+      "ok": true,
+      "value": {
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一",
+            "updated_at": "2026-09-18T03:05:29.123456+00:00"
+          }
+        ],
+        "version": 1
+      }
+    },
+    {
+      "label": "empty",
+      "input": {
+        "schema_version": 1,
+        "sessions": []
+      },
+      "ok": true,
+      "value": {
+        "sessions": [],
+        "version": 1
+      }
+    }
+  ],
+  "build_index": [
+    {
+      "label": "empty",
+      "input": [],
+      "expected": {
+        "schema_version": 1,
+        "sessions": []
+      }
+    },
+    {
+      "label": "two",
+      "input": [
+        {
+          "session_id": "20260918-030529-abcdef",
+          "title": "一"
+        },
+        {
+          "session_id": "20260918-030529-abcdea",
+          "title": "二"
+        }
+      ],
+      "expected": {
+        "schema_version": 1,
+        "sessions": [
+          {
+            "session_id": "20260918-030529-abcdef",
+            "title": "一"
+          },
+          {
+            "session_id": "20260918-030529-abcdea",
+            "title": "二"
+          }
+        ]
+      }
+    }
+  ],
+  "splitlines": [
+    {
+      "input": "",
+      "expected": []
+    },
+    {
+      "input": "a",
+      "expected": [
+        "a"
+      ]
+    },
+    {
+      "input": "a\n",
+      "expected": [
+        "a"
+      ]
+    },
+    {
+      "input": "\n",
+      "expected": [
+        ""
+      ]
+    },
+    {
+      "input": "a\n\n",
+      "expected": [
+        "a",
+        ""
+      ]
+    },
+    {
+      "input": "a\nb\r\nc\rd\u000be\ff\u001cg\u001dh\u001eij k l",
+      "expected": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+        "g",
+        "h",
+        "i",
+        "j",
+        "k",
+        "l"
+      ]
+    },
+    {
+      "input": "a\r\nb\r\n",
+      "expected": [
+        "a",
+        "b"
+      ]
+    }
+  ]
+}

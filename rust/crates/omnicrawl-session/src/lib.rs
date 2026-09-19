@@ -18,6 +18,7 @@ pub mod memory_store;
 pub mod naming;
 pub mod project;
 pub mod projection;
+pub mod records;
 pub mod redaction;
 pub mod store;
 pub mod time;
@@ -77,6 +78,15 @@ pub use projection::{
     tool_result_output_text, CANCELLED_TURN_DEFAULT_SUMMARY, INTERRUPTED_TOOL_RESULT_TEXT,
     RUN_GUARD_TODO_TOOL_NAME, TOOL_CALL_CONTEXT_PREFIX, TOOL_RESULT_CONTEXT_PREFIX,
     TURN_UNDONE_EVENT_TYPE,
+};
+pub use records::{
+    build_index_document, decode_session_event_dict, decode_session_event_line,
+    log_record_diagnostics, migrate_event_dict, parse_index_document,
+    read_session_events_with_diagnostics, split_lines_python, SessionEventReadResult,
+    SessionRecordDiagnostic, DIAG_INVALID_FIELDS, DIAG_INVALID_JSON, DIAG_LEGACY_MIGRATED,
+    DIAG_NOT_OBJECT, DIAG_PROMPT_INVALID, DIAG_SESSION_ID_MISMATCH, DIAG_TRAILING_INCOMPLETE,
+    DIAG_UNSUPPORTED_VERSION, SESSION_INDEX_SCHEMA_VERSION, SEVERITY_INFO,
+    SUPPORTED_EVENT_VERSIONS, TRANSCRIPT_MMAP_THRESHOLD_BYTES,
 };
 pub use redaction::{redact_sensitive_text, redact_sensitive_values};
 pub use store::{kernel_runtime_identity, CreatedSession, SessionStore};

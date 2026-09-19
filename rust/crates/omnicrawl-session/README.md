@@ -218,6 +218,7 @@ Python 用正则表达，这里全部用**手写匹配器**实现（字符类与
 ```bash
 python rust/tools/gen_session_fixture.py      # 期望值来自 session_models.py 真实现
 python rust/tools/gen_project_fixture.py      # 项目列表存储：纯函数 + ProjectStore 流程轨迹
+python rust/tools/gen_session_records_fixture.py  # 记录解码与诊断：迁移 / 解码 / 转录读取 / 索引文档 / 切行
 cd rust && cargo test -p omnicrawl-session
 ```
 
@@ -240,6 +241,21 @@ Windows 上剥掉 `\\?\` 前缀。
 三处已知差异：`casefold()` 用 `to_lowercase()` 近似；`os.path.expandvars` 只实现
 `$VAR` / `${VAR}` /（Windows）`%VAR%` 这个子集，未定义变量原样保留；落盘用的临时文件名与
 Python 的 `<file>.json.tmp` 不同（走 `locking::atomic_write_text` 约定），最终文件字节一致。
+
+## 记录解码与诊断（`records.rs`）
+
+对齐 Python `omnicrawl/state/session_records.py`：按版本分发解码（`migrate_event_dict` 支持 v1 /
+v0 / 缺 version 的遗留格式，只做内存迁移不改写磁盘）、事件解码（字典与 JSONL 单行）、转录整份读取
+（坏行不阻断其余有效事件，尾部半行降级为 warning）、索引文档解析与构造；诊断码与严重级保持稳定
+（`DIAG_*` / `SEVERITY_*`，严重级沿用 `consistency.rs` 的同一套取值）。
+
+两处已知差异：诊断明细里的 `json_error` 是各自 JSON 库的错误文本（对照片两侧都替换成占位符再比对）；
+大转录的只读内存映射快路径未搬，一律整份读取后按 Python `splitlines()` 的规则切行（`split_lines_python`
+覆盖 `\r`、`\r\n`、`\v`、`\f`、`\x1c`–`\x1e`、`\u{85}`、`\u{2028}`、`\u{2029}`）。
+`log_record_diagnostics` 保留入口但由调用方提供 sink：内核没有 Python 的 logging 设施。
+
+fixture `tests/fixtures/session_records_parity.json`：迁移 8、字典解码 8、单行解码 6、转录读取 6
+（真实临时文件，含空行、中间坏行、尾部半行、会话不一致）、索引解析 9、索引构造 2、切行 7。
 
 ## 已知差异
 
