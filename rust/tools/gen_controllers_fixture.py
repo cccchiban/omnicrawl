@@ -7808,6 +7808,68 @@ def tool_event_field_cases() -> dict:
     return {"cases": cases}
 
 
+# --------------------------------------------------------------- skill commands
+
+
+def skill_command_cases() -> dict:
+    """`/skill:` 手动技能命令的解析、加载与提示文案。"""
+
+    from omnicrawl.agent.controllers.turn.loop import TurnLoopMixin
+
+    class _Manager:
+        def __init__(self, names) -> None:
+            self._names = list(names)
+
+        def match_by_name(self, name):
+            for candidate in self._names:
+                if candidate == name:
+                    return SimpleNamespace(name=name)
+            return None
+
+        def list_all(self):
+            return [SimpleNamespace(name=name) for name in self._names]
+
+    cases = []
+    for label, names, manager_present, text in [
+        ("无技能管理器", ["alpha"], False, "/skill:alpha 做点事"),
+        ("普通文本", ["alpha"], True, "随便说说"),
+        ("命中并带任务", ["alpha"], True, "/skill:alpha 做点事"),
+        ("命中无任务", ["alpha"], True, "/skill:alpha"),
+        ("命中且多空白分隔", ["alpha"], True, "/skill:alpha   做点事"),
+        ("未命中", ["alpha", "beta"], True, "/skill:gamma 做点事"),
+        ("无可用技能", [], True, "/skill:gamma"),
+        ("空技能名", ["alpha"], True, "/skill: 做点事"),
+        ("前导空白不算命令", ["alpha"], True, " /skill:alpha 做点事"),
+    ]:
+        probe = object.__new__(TurnLoopMixin)
+        probe._skill_manager = _Manager(names) if manager_present else None
+        probe._active_skills = []
+        statuses: list[str] = []
+        returned = probe._apply_skill_command(
+            text, lambda message: statuses.append(message)
+        )
+        cases.append(
+            {
+                "label": label,
+                "text": text,
+                "manager_present": manager_present,
+                "available": names,
+                "returned": returned,
+                "statuses": statuses,
+                "active_skills": [
+                    {
+                        "name": item.skill.name,
+                        "score": item.score,
+                        "reason": item.reason,
+                    }
+                    for item in probe._active_skills
+                ],
+            }
+        )
+
+    return {"cases": cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7839,6 +7901,7 @@ def main() -> None:
             "vision_capability": vision_capability_cases(),
             "context_messages": context_message_cases(),
             "tool_events": tool_event_field_cases(),
+            "skill_command": skill_command_cases(),
         "turn_loop": turn_loop_cases(),
         }
 

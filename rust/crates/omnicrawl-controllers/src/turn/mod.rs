@@ -6,12 +6,14 @@
 
 pub mod compaction;
 pub mod context_messages;
+pub mod skill_command;
 pub mod tool_events;
 pub mod turn_loop;
 pub mod turn_text;
 
 pub use compaction::*;
 pub use context_messages::*;
+pub use skill_command::*;
 pub use tool_events::*;
 pub use turn_loop::*;
 pub use turn_text::*;
