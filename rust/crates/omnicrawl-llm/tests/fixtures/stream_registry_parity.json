@@ -1,0 +1,692 @@
+{
+  "source": "omnicrawl/llm/stream_registry.py",
+  "cases": [
+    {
+      "label": "register_close_unregister_cycle",
+      "handles": {
+        "s1": "close"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "close",
+          "target": "streams"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "close",
+          "value": 1
+        },
+        {
+          "op": "count",
+          "value": 0
+        }
+      ],
+      "log": [
+        "s1"
+      ],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "handle_without_close_is_not_counted",
+      "handles": {
+        "s1": "bare"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "close",
+          "target": "streams"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "close",
+          "value": 0
+        },
+        {
+          "op": "count",
+          "value": 0
+        }
+      ],
+      "log": [],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "none_handle_is_ignored",
+      "handles": {},
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": null
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "count",
+          "target": "resources"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 0
+        },
+        {
+          "op": "count",
+          "value": 0
+        }
+      ],
+      "log": [],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "scope_owner_is_inherited_and_kept",
+      "handles": {
+        "s1": "bare"
+      },
+      "ops": [
+        {
+          "op": "enter_scope",
+          "owner": "turnA"
+        },
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "count",
+          "target": "streams",
+          "owner": "turnA"
+        },
+        {
+          "op": "exit_scope"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "count",
+          "target": "streams",
+          "owner": "turnA"
+        },
+        {
+          "op": "close",
+          "target": "streams",
+          "owner": "turnA"
+        }
+      ],
+      "results": [
+        {
+          "op": "enter_scope",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "exit_scope",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "close",
+          "value": 0
+        }
+      ],
+      "log": [],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "explicit_owner_beats_current_scope",
+      "handles": {
+        "s1": "bare",
+        "s2": "bare"
+      },
+      "ops": [
+        {
+          "op": "enter_scope",
+          "owner": "turnA"
+        },
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1",
+          "owner": "turnB"
+        },
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s2"
+        },
+        {
+          "op": "count",
+          "target": "streams",
+          "owner": "turnA"
+        },
+        {
+          "op": "count",
+          "target": "streams",
+          "owner": "turnB"
+        },
+        {
+          "op": "exit_scope"
+        }
+      ],
+      "results": [
+        {
+          "op": "enter_scope",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "exit_scope",
+          "value": null
+        }
+      ],
+      "log": [],
+      "final": {
+        "streams": 2,
+        "resources": 0
+      }
+    },
+    {
+      "label": "close_by_owner_keeps_other_owner",
+      "handles": {
+        "s1": "close",
+        "s2": "close"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1",
+          "owner": "turnA"
+        },
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s2",
+          "owner": "turnB"
+        },
+        {
+          "op": "close",
+          "target": "streams",
+          "owner": "turnA"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "close",
+          "target": "streams"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "close",
+          "value": 1
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "close",
+          "value": 1
+        },
+        {
+          "op": "count",
+          "value": 0
+        }
+      ],
+      "log": [
+        "s1",
+        "s2"
+      ],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "close_all_closes_every_owner",
+      "handles": {
+        "s1": "close",
+        "s2": "close",
+        "r1": "close"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1",
+          "owner": "turnA"
+        },
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s2",
+          "owner": "turnB"
+        },
+        {
+          "op": "register",
+          "target": "resources",
+          "handle": "r1"
+        },
+        {
+          "op": "close",
+          "target": "streams"
+        },
+        {
+          "op": "close",
+          "target": "resources"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "close",
+          "value": 2
+        },
+        {
+          "op": "close",
+          "value": 1
+        }
+      ],
+      "log": [
+        "s1",
+        "s2",
+        "r1"
+      ],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "explicit_callback_wins_over_resource_close",
+      "handles": {
+        "s1": "close"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1",
+          "callback": true
+        },
+        {
+          "op": "close",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "close",
+          "value": 1
+        }
+      ],
+      "log": [
+        "cb:s1"
+      ],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "duplicate_registration_keeps_one_entry",
+      "handles": {
+        "s1": "close"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "close",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "close",
+          "value": 1
+        }
+      ],
+      "log": [
+        "s1"
+      ],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "unregister_removes_all_matches",
+      "handles": {
+        "s1": "close"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1",
+          "owner": "turnA"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "unregister",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "close",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "unregister",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 0
+        },
+        {
+          "op": "close",
+          "value": 0
+        }
+      ],
+      "log": [],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    },
+    {
+      "label": "resources_tracked_separately",
+      "handles": {
+        "s1": "close",
+        "r1": "close",
+        "r2": "bare"
+      },
+      "ops": [
+        {
+          "op": "register",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "register",
+          "target": "resources",
+          "handle": "r1"
+        },
+        {
+          "op": "register",
+          "target": "resources",
+          "handle": "r2"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        },
+        {
+          "op": "count",
+          "target": "resources"
+        },
+        {
+          "op": "close",
+          "target": "resources"
+        },
+        {
+          "op": "count",
+          "target": "resources"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "register",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 1
+        },
+        {
+          "op": "count",
+          "value": 2
+        },
+        {
+          "op": "close",
+          "value": 1
+        },
+        {
+          "op": "count",
+          "value": 0
+        },
+        {
+          "op": "count",
+          "value": 1
+        }
+      ],
+      "log": [
+        "r1"
+      ],
+      "final": {
+        "streams": 1,
+        "resources": 0
+      }
+    },
+    {
+      "label": "unregister_unknown_handle_is_noop",
+      "handles": {
+        "s1": "bare"
+      },
+      "ops": [
+        {
+          "op": "unregister",
+          "target": "streams",
+          "handle": "s1"
+        },
+        {
+          "op": "count",
+          "target": "streams"
+        }
+      ],
+      "results": [
+        {
+          "op": "unregister",
+          "value": null
+        },
+        {
+          "op": "count",
+          "value": 0
+        }
+      ],
+      "log": [],
+      "final": {
+        "streams": 0,
+        "resources": 0
+      }
+    }
+  ]
+}

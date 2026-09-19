@@ -136,6 +136,7 @@ python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位
 python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
 python rust/tools/gen_desensitization_rules_fixture.py   # 消息脱敏：值类型规则层
 python rust/tools/gen_desensitization_engine_fixture.py  # 消息脱敏：匹配引擎
+python rust/tools/gen_stream_registry_fixture.py         # 回合资源注册表：注册 / 注销 / 计数 / 关闭轨迹
 cd rust && cargo test -p omnicrawl-llm
 ```
 
@@ -155,6 +156,8 @@ fixture：
 - `tests/fixtures/anthropic_parity.json`：消息 8、provider_options 9、请求 7、流 12、用量 6、错误文案 10。
 - `tests/fixtures/gemini_parity.json`：contents 8、provider_options 11、请求 kwargs 6、真 SDK 线上体 4、
   流 14、用量 7、错误文案 12。
+- `tests/fixtures/stream_registry_parity.json`：12 条操作轨迹（注册 / 注销 / 计数 / 关闭 / 作用域进出），
+  逐例比对每步返回值、关闭顺序与收尾计数。
 
 Anthropic 组的请求 kwargs 同样由替身客户端在 `client.messages.create` 处拦下；流组把 fixture 里的 JSON
 负载转成属性可读的对象再喂给真实现，两侧读的是同一份字节。
@@ -215,8 +218,8 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 
 - **未搬**（按设计或留待后续批次）：`close()` 与 `_closed` 关闭态（Rust 运行时无关闭态，取消由 sink 表达）；
   能力门禁（`request.tools && !capabilities.tools` → `UNSUPPORTED_CAPABILITY`）与其他门禁一样留在调用方；
-  `discover_models`（属 adapter 注册表 / `build_runtime` 批次）；`stream_registry` /
-  `interruptible_stream_events`（内核用可放弃读取线程 + 50ms 轮询表达同一件事）；
+  `discover_models`（属 adapter 注册表 / `build_runtime` 批次）；`interruptible_stream_events`
+  （内核用可放弃读取线程 + 50ms 轮询表达同一件事；`stream_registry` 本身已搬，见上文模块，运行时未接线）；
   SDK 客户端级配置（`default_headers` / 客户端超时由 `ChatEndpoint` 承载）；
   `_sanitize_options` 的「provider_options 必须是对象」分支（类型系统下不可达）；
   `reasoning_effort` → `thinking` 的那个分支（Python 侧本身就是 no-op 空分支）。
@@ -232,8 +235,9 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 
 - **未搬**（按设计或留待后续批次）：`close()` 与 `_closed` 关闭态、能力门禁
   （`request.tools && !capabilities.tools` → `UNSUPPORTED_CAPABILITY`）、`discover_models`
-  （属 adapter 注册表 / `build_runtime` 批次）、`stream_registry` / `interruptible_stream_events`
-  （内核用可放弃读取线程 + 50ms 轮询表达同一件事）、`_create_gemini_client` 的
+  （属 adapter 注册表 / `build_runtime` 批次）、`interruptible_stream_events`
+  （内核用可放弃读取线程 + 50ms 轮询表达同一件事；`stream_registry` 本身已搬，运行时未接线）、
+  `_create_gemini_client` 的
   「缺少 google-genai 依赖」分支（内核不带 SDK）、`_sanitize_options` 的
   「provider_options 必须是对象」分支（类型系统下不可达）。
 - **`wire` 组的基准是真 SDK**：生成器起本机回环服务端，让 google-genai 1.47 实际发一次请求，
@@ -253,6 +257,23 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 - **错误文案的两处不可对齐**：`_format_gemini_error` 的兜底分支用 `type(exc).__name__`，
   内核只能拿到等价类型名（`APIStatusError` / `APIConnectionError`）；流内 `error` 负载与另外两路一样
   走通用文案。
+
+## 回合资源注册表（`stream_registry.rs`）
+
+对齐 Python `omnicrawl/llm/stream_registry.py`：注册进来的模型流与外部资源按「对象身份」归属到
+某个可独立取消的回合，取消或关停时只关闭该回合的注册项。
+
+- **身份与归属**：Python 用 `is` 比对象、`ContextVar` 存当前回合；内核用 `Arc` 指针身份（`ScopeOwner`
+  令牌）与线程局部作用域栈（`stream_scope` 守卫，离开作用域恢复上一层）。
+- **关闭语义**：显式 `close_callback` 优先，其次资源自带的关闭动作；两者都没有的句柄（对应 Python 里
+  `object()` 这类没有 `close` 的对象）注册照常、但不计入成功关闭数，且关闭后一律注销。
+- **守卫**：`registered_stream_events`（迭代器丢弃即注销，正常结束与提前退出都算）与
+  `registered_resource`（RAII 守卫）。
+- 计数与关闭都支持按归属过滤，`None` 表示全部；同一个句柄重复注册只保留一条。
+
+两处已知差异：作用域是线程局部的——跨线程注册要像 Python 侧「owner 由调用线程解析」那样显式传
+`owner`（没有 `copy_context` 的等价物）；关闭动作 panic 不会被吞掉（Python 用 `except Exception`
+兜住并继续回收其余资源）。**运行时尚未接线**：内核现有的取消仍由可放弃读取线程 + 50ms 轮询表达。
 
 ## 依赖
 

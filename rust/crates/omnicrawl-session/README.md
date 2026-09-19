@@ -217,12 +217,29 @@ Python 用正则表达，这里全部用**手写匹配器**实现（字符类与
 
 ```bash
 python rust/tools/gen_session_fixture.py      # 期望值来自 session_models.py 真实现
+python rust/tools/gen_project_fixture.py      # 项目列表存储：纯函数 + ProjectStore 流程轨迹
 cd rust && cargo test -p omnicrawl-session
 ```
 
 fixture `tests/fixtures/session_models_parity.json` 共 107 个用例：会话 id 9、事件类型 13、
 相对路径 12、标题 7、时间戳 17、事件校验 15、索引条目 17、载荷计数 9、事件创建 5、转录行 3。
 转录行一组是字节级比对：一侧多一个空格或换一个键序就会被抓到。
+
+fixture `tests/fixtures/project_parity.json`：纯函数 11 组（展示名清洗与报错、路径键、隔离工作树判定、
+路径归一与报错、条目解析与报错、扫描排除、git 根、变量展开）加 5 条 ProjectStore 轨迹
+（CRUD 往返、扫描入库、总览聚合、非 JSON 文件、顶层形状错误）。轨迹在真实临时目录上跑，
+逐例比对每步返回值与最终 `projects.json` 字节；两侧用固定时刻，落盘时间戳逐字一致。
+
+## 项目列表存储（`project.rs`）
+
+对齐 Python `omnicrawl/state/project.py`：读写 `<session_root>/projects.json`、扫描会话索引得到项目
+路径、创建与导入目录，以及只读聚合的项目总览（按 git 仓库根归并子目录会话、排除隔离工作树与
+临时残留）。路径归一化对齐 `Path.resolve(strict=False)`（存在时解析真实路径、不存在时词法归一），
+Windows 上剥掉 `\\?\` 前缀。
+
+三处已知差异：`casefold()` 用 `to_lowercase()` 近似；`os.path.expandvars` 只实现
+`$VAR` / `${VAR}` /（Windows）`%VAR%` 这个子集，未定义变量原样保留；落盘用的临时文件名与
+Python 的 `<file>.json.tmp` 不同（走 `locking::atomic_write_text` 约定），最终文件字节一致。
 
 ## 已知差异
 

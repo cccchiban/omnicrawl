@@ -18,6 +18,7 @@ mod request;
 mod responses;
 mod runtime;
 mod sse;
+mod stream_registry;
 mod transport;
 mod usage;
 
@@ -59,6 +60,13 @@ pub use runtime::{
 };
 pub use sse::{
     decode_sse_data, iter_raw_sse_events, payload_of_line, step_payload, SseError, SseStep,
+};
+pub use stream_registry::{
+    active_resource_count, active_stream_count, close_active_resources, close_active_streams,
+    current_stream_scope, global as global_stream_registry, register_resource, register_stream,
+    registered_resource, registered_stream_events, stream_owner_for, stream_scope,
+    unregister_resource, unregister_stream, CancelHandle, CloseAction, RegisteredResource,
+    RegisteredStreamEvents, ScopeOwner, StreamOwnerCarrier, StreamRegistry, StreamScope,
 };
 pub use usage::{
     usage_from_anthropic_payload, usage_from_gemini_payload, usage_from_openai_payload,

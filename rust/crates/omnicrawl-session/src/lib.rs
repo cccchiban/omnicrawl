@@ -16,6 +16,7 @@ pub mod memory;
 pub mod memory_ranking;
 pub mod memory_store;
 pub mod naming;
+pub mod project;
 pub mod projection;
 pub mod redaction;
 pub mod store;
@@ -63,6 +64,11 @@ pub use naming::{
     read_payload_non_negative_int, session_id_from_json, COMPACT_SUMMARY_PREFIX,
     EMPTY_SESSION_EVENT_TYPES, MESSAGE_EVENT_TYPES, MODEL_CONTEXT_EVENT_TYPES,
     SESSION_EVENT_VERSION, SUBAGENT_EVENT_TYPES,
+};
+pub use project::{
+    clean_project_name, expand_vars, git_root, is_scan_excluded, normalize_project_path, path_key,
+    under_agent_worktrees, OverviewSession, OverviewSessionEntry, ProjectEntry, ProjectOverview,
+    ProjectStore, AGENT_WORKTREES_DIR_NAME, PROJECTS_FILE_NAME,
 };
 pub use projection::{
     active_session_events, apply_run_guard_event, complete_tool_pairing, event_to_model_message,

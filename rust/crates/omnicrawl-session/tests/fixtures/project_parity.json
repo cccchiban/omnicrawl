@@ -1,0 +1,817 @@
+{
+  "source": "omnicrawl/state/project.py",
+  "pure": {
+    "clean_name": [
+      {
+        "input": "  我的 项目 ",
+        "expected": "我的 项目"
+      },
+      {
+        "input": "\t alpha \n",
+        "expected": "alpha"
+      },
+      {
+        "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa..."
+      },
+      {
+        "input": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中",
+        "expected": "中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中中..."
+      }
+    ],
+    "clean_name_errors": [
+      {
+        "input": "",
+        "error": "项目名称不能为空。"
+      },
+      {
+        "input": "   ",
+        "error": "项目名称不能为空。"
+      },
+      {
+        "input": "\t\n",
+        "error": "项目名称不能为空。"
+      }
+    ],
+    "path_key": [
+      {
+        "input": "C:\\Users\\Someone\\Proj",
+        "expected": "c:\\users\\someone\\proj"
+      },
+      {
+        "input": "c:/users/someone/proj",
+        "expected": "c:\\users\\someone\\proj"
+      },
+      {
+        "input": "/tmp/MixedCase",
+        "expected": "\\tmp\\mixedcase"
+      },
+      {
+        "input": "relative/Dir",
+        "expected": "relative\\dir"
+      }
+    ],
+    "under_agent_worktrees": [
+      {
+        "input": "C:\\Users\\Administrator\\.omnicrawl\\agent-worktrees\\aw-123",
+        "expected": true
+      },
+      {
+        "input": "C:\\Users\\Administrator\\.omnicrawl\\agent-worktrees",
+        "expected": true
+      },
+      {
+        "input": "C:\\Users\\Administrator\\.omnicrawl\\other",
+        "expected": false
+      },
+      {
+        "input": "C:\\Users\\Administrator",
+        "expected": false
+      },
+      {
+        "input": "<ROOT>",
+        "expected": false
+      }
+    ],
+    "normalize_path": [
+      {
+        "input": "<ROOT>",
+        "expected": "<ROOT>"
+      },
+      {
+        "input": "<ROOT>\\data",
+        "expected": "<ROOT>\\data"
+      },
+      {
+        "input": "<ROOT>\\data\\..\\data\\x",
+        "expected": "<ROOT>\\data\\x"
+      }
+    ],
+    "normalize_path_errors": [
+      {
+        "input": "   ",
+        "error": "项目路径必须是非空字符串。"
+      }
+    ],
+    "entry_from_dict": [
+      {
+        "input": {
+          "name": "alpha",
+          "path": "<ROOT>\\data",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00",
+          "pinned": true,
+          "source": "created"
+        },
+        "expected": {
+          "name": "alpha",
+          "path": "<ROOT>\\data",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00",
+          "pinned": true,
+          "source": "created"
+        }
+      },
+      {
+        "input": {
+          "name": "  spaced  name ",
+          "path": "<ROOT>\\data",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00"
+        },
+        "expected": {
+          "name": "spaced name",
+          "path": "<ROOT>\\data",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00",
+          "pinned": false,
+          "source": "manual"
+        }
+      },
+      {
+        "input": {
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "path": "<ROOT>\\data",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00",
+          "source": "imported"
+        },
+        "expected": {
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
+          "path": "<ROOT>\\data",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00",
+          "pinned": false,
+          "source": "imported"
+        }
+      }
+    ],
+    "entry_from_dict_errors": [
+      {
+        "input": {},
+        "error": "项目名称必须是非空字符串。"
+      },
+      {
+        "input": {
+          "name": "a",
+          "path": "",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00"
+        },
+        "error": "项目路径必须是非空字符串。"
+      },
+      {
+        "input": {
+          "name": "",
+          "path": "<ROOT>",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00"
+        },
+        "error": "项目名称必须是非空字符串。"
+      },
+      {
+        "input": {
+          "name": "a",
+          "path": "<ROOT>",
+          "created_at": "2026-01-02T03:04:05+00:00",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00",
+          "source": "  "
+        },
+        "error": "项目来源必须是非空字符串。"
+      },
+      {
+        "input": {
+          "name": "a",
+          "path": "<ROOT>",
+          "created_at": "",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00"
+        },
+        "error": "项目时间戳必须是非空字符串。"
+      },
+      {
+        "input": {
+          "name": "a",
+          "path": "<ROOT>",
+          "created_at": "not-a-date",
+          "updated_at": "2026-01-02T03:04:05.123456+00:00"
+        },
+        "error": "项目时间戳格式无效：not-a-date"
+      }
+    ],
+    "scan_excluded": [
+      {
+        "input": "<ROOT>\\data",
+        "expected": false
+      },
+      {
+        "input": "<ROOT>\\missing-dir",
+        "expected": true
+      },
+      {
+        "input": "<TEMP>\\tmp-project-parity-30664",
+        "expected": true
+      },
+      {
+        "input": "<TEMP>",
+        "expected": true
+      },
+      {
+        "input": "C:\\Users\\Administrator\\site-packages\\pkg",
+        "expected": true
+      },
+      {
+        "input": "<ROOT>\\repo",
+        "expected": false
+      },
+      {
+        "input": "<ROOT>\\broken",
+        "expected": false
+      }
+    ],
+    "git_root": [
+      {
+        "input": "<ROOT>\\repo",
+        "expected": "<ROOT>\\repo"
+      },
+      {
+        "input": "<ROOT>\\repo\\sub\\deep",
+        "expected": "<ROOT>\\repo"
+      },
+      {
+        "input": "<ROOT>\\broken",
+        "expected": null
+      },
+      {
+        "input": "<ROOT>\\wt",
+        "expected": "<ROOT>\\wt"
+      },
+      {
+        "input": "<ROOT>\\wt\\sub",
+        "expected": "<ROOT>\\wt"
+      },
+      {
+        "input": "<ROOT>\\plain",
+        "expected": null
+      }
+    ],
+    "expand_vars": [
+      {
+        "input": "plain/path",
+        "expected": "plain/path"
+      },
+      {
+        "input": "$__OMNICRAWL_MISSING__/x",
+        "expected": "$__OMNICRAWL_MISSING__/x"
+      },
+      {
+        "input": "${__OMNICRAWL_MISSING__}/x",
+        "expected": "${__OMNICRAWL_MISSING__}/x"
+      },
+      {
+        "input": "%__OMNICRAWL_MISSING__%/x",
+        "expected": "%__OMNICRAWL_MISSING__%/x"
+      }
+    ]
+  },
+  "store": [
+    {
+      "label": "crud_cycle",
+      "ops": [
+        {
+          "op": "create_project",
+          "name": "  我的 项目 ",
+          "path": "<ROOT>/data/alpha"
+        },
+        {
+          "op": "list_projects"
+        },
+        {
+          "op": "rename_project",
+          "path": "<ROOT>/data/alpha",
+          "name": "改过的名字"
+        },
+        {
+          "op": "pin_project",
+          "path": "<ROOT>/data/alpha",
+          "pinned": true
+        },
+        {
+          "op": "toggle_project_pin",
+          "path": "<ROOT>/data/alpha"
+        },
+        {
+          "op": "import_project",
+          "name": "beta",
+          "path": "<ROOT>/data/beta"
+        },
+        {
+          "op": "create_project",
+          "name": "已存在的文件",
+          "path": "<ROOT>/data/plain.txt"
+        },
+        {
+          "op": "rename_project",
+          "path": "<ROOT>/data/missing",
+          "name": "x"
+        },
+        {
+          "op": "pin_project",
+          "path": "<ROOT>/data/missing",
+          "pinned": true
+        },
+        {
+          "op": "toggle_project_pin",
+          "path": "<ROOT>/data/missing"
+        },
+        {
+          "op": "remove_project",
+          "path": "<ROOT>/data/missing"
+        },
+        {
+          "op": "import_project",
+          "name": "nope",
+          "path": "<ROOT>/data/missing"
+        },
+        {
+          "op": "remove_project",
+          "path": "<ROOT>/data/beta"
+        },
+        {
+          "op": "list_projects"
+        }
+      ],
+      "results": [
+        {
+          "op": "create_project",
+          "ok": true,
+          "value": {
+            "name": "我的 项目",
+            "path": "<ROOT>\\data\\alpha",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": false,
+            "source": "created"
+          }
+        },
+        {
+          "op": "list_projects",
+          "ok": true,
+          "value": [
+            {
+              "name": "我的 项目",
+              "path": "<ROOT>\\data\\alpha",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "created"
+            }
+          ]
+        },
+        {
+          "op": "rename_project",
+          "ok": true,
+          "value": {
+            "name": "改过的名字",
+            "path": "<ROOT>\\data\\alpha",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": false,
+            "source": "created"
+          }
+        },
+        {
+          "op": "pin_project",
+          "ok": true,
+          "value": {
+            "name": "改过的名字",
+            "path": "<ROOT>\\data\\alpha",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": true,
+            "source": "created"
+          }
+        },
+        {
+          "op": "toggle_project_pin",
+          "ok": true,
+          "value": {
+            "name": "改过的名字",
+            "path": "<ROOT>\\data\\alpha",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": false,
+            "source": "created"
+          }
+        },
+        {
+          "op": "import_project",
+          "ok": true,
+          "value": {
+            "name": "beta",
+            "path": "<ROOT>\\data\\beta",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": false,
+            "source": "imported"
+          }
+        },
+        {
+          "op": "create_project",
+          "ok": false,
+          "error": "项目路径已存在但不是目录：<ROOT>\\data\\plain.txt"
+        },
+        {
+          "op": "rename_project",
+          "ok": false,
+          "error": "未找到项目：<ROOT>\\data\\missing"
+        },
+        {
+          "op": "pin_project",
+          "ok": false,
+          "error": "未找到项目：<ROOT>\\data\\missing"
+        },
+        {
+          "op": "toggle_project_pin",
+          "ok": false,
+          "error": "未找到项目：<ROOT>\\data\\missing"
+        },
+        {
+          "op": "remove_project",
+          "ok": false,
+          "error": "未找到项目：<ROOT>\\data\\missing"
+        },
+        {
+          "op": "import_project",
+          "ok": false,
+          "error": "导入项目路径不存在：<ROOT>\\data\\missing"
+        },
+        {
+          "op": "remove_project",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "list_projects",
+          "ok": true,
+          "value": [
+            {
+              "name": "改过的名字",
+              "path": "<ROOT>\\data\\alpha",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "created"
+            }
+          ]
+        }
+      ],
+      "file": "{\n  \"projects\": [\n    {\n      \"name\": \"改过的名字\",\n      \"path\": \"<ROOT>\\\\data\\\\alpha\",\n      \"created_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"updated_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"pinned\": false,\n      \"source\": \"created\"\n    }\n  ]\n}\n"
+    },
+    {
+      "label": "scan_projects",
+      "ops": [
+        {
+          "op": "create_project",
+          "name": "显式项目",
+          "path": "<ROOT>/data/explicit"
+        },
+        {
+          "op": "scan_projects",
+          "roots": [
+            "<ROOT>/data/scanned-a"
+          ],
+          "current": "<ROOT>/data/scanned-b"
+        },
+        {
+          "op": "scan_projects",
+          "roots": [
+            "<ROOT>/data/scanned-a"
+          ],
+          "current": null
+        },
+        {
+          "op": "list_projects"
+        }
+      ],
+      "results": [
+        {
+          "op": "create_project",
+          "ok": true,
+          "value": {
+            "name": "显式项目",
+            "path": "<ROOT>\\data\\explicit",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": false,
+            "source": "created"
+          }
+        },
+        {
+          "op": "scan_projects",
+          "ok": true,
+          "value": [
+            {
+              "name": "scanned-a",
+              "path": "<ROOT>\\data\\scanned-a",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "scanned"
+            },
+            {
+              "name": "scanned-b",
+              "path": "<ROOT>\\data\\scanned-b",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "scanned"
+            },
+            {
+              "name": "显式项目",
+              "path": "<ROOT>\\data\\explicit",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "created"
+            }
+          ]
+        },
+        {
+          "op": "scan_projects",
+          "ok": true,
+          "value": [
+            {
+              "name": "scanned-a",
+              "path": "<ROOT>\\data\\scanned-a",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "scanned"
+            },
+            {
+              "name": "scanned-b",
+              "path": "<ROOT>\\data\\scanned-b",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "scanned"
+            },
+            {
+              "name": "显式项目",
+              "path": "<ROOT>\\data\\explicit",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "created"
+            }
+          ]
+        },
+        {
+          "op": "list_projects",
+          "ok": true,
+          "value": [
+            {
+              "name": "scanned-a",
+              "path": "<ROOT>\\data\\scanned-a",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "scanned"
+            },
+            {
+              "name": "scanned-b",
+              "path": "<ROOT>\\data\\scanned-b",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "scanned"
+            },
+            {
+              "name": "显式项目",
+              "path": "<ROOT>\\data\\explicit",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "created"
+            }
+          ]
+        }
+      ],
+      "file": "{\n  \"projects\": [\n    {\n      \"name\": \"显式项目\",\n      \"path\": \"<ROOT>\\\\data\\\\explicit\",\n      \"created_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"updated_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"pinned\": false,\n      \"source\": \"created\"\n    },\n    {\n      \"name\": \"scanned-b\",\n      \"path\": \"<ROOT>\\\\data\\\\scanned-b\",\n      \"created_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"updated_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"pinned\": false,\n      \"source\": \"scanned\"\n    },\n    {\n      \"name\": \"scanned-a\",\n      \"path\": \"<ROOT>\\\\data\\\\scanned-a\",\n      \"created_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"updated_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"pinned\": false,\n      \"source\": \"scanned\"\n    }\n  ]\n}\n"
+    },
+    {
+      "label": "project_overview",
+      "ops": [
+        {
+          "op": "create_project",
+          "name": "仓库项目",
+          "path": "<ROOT>/repo"
+        },
+        {
+          "op": "import_project",
+          "name": "外部项目",
+          "path": "<ROOT>/plain"
+        },
+        {
+          "op": "scan_projects",
+          "roots": [
+            "<ROOT>/data/scanned-empty"
+          ],
+          "current": null
+        },
+        {
+          "op": "overview",
+          "recent_limit": 2,
+          "sessions": [
+            {
+              "workspace_root": "<ROOT>/repo/sub/deep",
+              "session_id": "s1",
+              "title": "一",
+              "updated_at": "2026-01-02T03:04:05+00:00"
+            },
+            {
+              "workspace_root": "<ROOT>/repo",
+              "session_id": "s2",
+              "title": "",
+              "updated_at": null
+            },
+            {
+              "workspace_root": "<ROOT>/repo/sub",
+              "session_id": "s3",
+              "title": "三",
+              "updated_at": "2026-03-04T05:06:07.500000+00:00"
+            },
+            {
+              "workspace_root": "<ROOT>/plain",
+              "session_id": "s4",
+              "title": "四",
+              "updated_at": "2026-02-02T00:00:00+00:00"
+            },
+            {
+              "workspace_root": "<ROOT>/data/scanned-empty",
+              "session_id": "s5",
+              "title": "五",
+              "updated_at": "2026-02-02T00:00:00+00:00"
+            },
+            {
+              "workspace_root": "",
+              "session_id": "s6",
+              "title": "空目录",
+              "updated_at": null
+            },
+            {
+              "workspace_root": "<ROOT>/missing-dir",
+              "session_id": "s7",
+              "title": "已删目录",
+              "updated_at": null
+            }
+          ]
+        }
+      ],
+      "results": [
+        {
+          "op": "create_project",
+          "ok": true,
+          "value": {
+            "name": "仓库项目",
+            "path": "<ROOT>\\repo",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": false,
+            "source": "created"
+          }
+        },
+        {
+          "op": "import_project",
+          "ok": true,
+          "value": {
+            "name": "外部项目",
+            "path": "<ROOT>\\plain",
+            "created_at": "2026-01-02T03:04:05.123456+00:00",
+            "updated_at": "2026-01-02T03:04:05.123456+00:00",
+            "pinned": false,
+            "source": "imported"
+          }
+        },
+        {
+          "op": "scan_projects",
+          "ok": true,
+          "value": [
+            {
+              "name": "仓库项目",
+              "path": "<ROOT>\\repo",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "created"
+            },
+            {
+              "name": "外部项目",
+              "path": "<ROOT>\\plain",
+              "created_at": "2026-01-02T03:04:05.123456+00:00",
+              "updated_at": "2026-01-02T03:04:05.123456+00:00",
+              "pinned": false,
+              "source": "imported"
+            }
+          ]
+        },
+        {
+          "op": "overview",
+          "ok": true,
+          "value": [
+            {
+              "name": "仓库项目",
+              "path": "<ROOT>\\repo",
+              "source": "created",
+              "pinned": false,
+              "session_count": 3,
+              "recent_at": "2026-03-04T05:06:07.500000+00:00",
+              "recent_sessions": [
+                {
+                  "session_id": "s3",
+                  "title": "三",
+                  "updated_at": "2026-03-04T05:06:07.500000+00:00"
+                },
+                {
+                  "session_id": "s1",
+                  "title": "一",
+                  "updated_at": "2026-01-02T03:04:05+00:00"
+                }
+              ]
+            },
+            {
+              "name": "外部项目",
+              "path": "<ROOT>\\plain",
+              "source": "imported",
+              "pinned": false,
+              "session_count": 1,
+              "recent_at": "2026-02-02T00:00:00+00:00",
+              "recent_sessions": [
+                {
+                  "session_id": "s4",
+                  "title": "四",
+                  "updated_at": "2026-02-02T00:00:00+00:00"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "file": "{\n  \"projects\": [\n    {\n      \"name\": \"仓库项目\",\n      \"path\": \"<ROOT>\\\\repo\",\n      \"created_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"updated_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"pinned\": false,\n      \"source\": \"created\"\n    },\n    {\n      \"name\": \"外部项目\",\n      \"path\": \"<ROOT>\\\\plain\",\n      \"created_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"updated_at\": \"2026-01-02T03:04:05.123456+00:00\",\n      \"pinned\": false,\n      \"source\": \"imported\"\n    }\n  ]\n}\n"
+    },
+    {
+      "label": "broken_file",
+      "ops": [
+        {
+          "op": "write_file",
+          "text": "{not json"
+        },
+        {
+          "op": "list_projects"
+        }
+      ],
+      "results": [
+        {
+          "op": "write_file",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "list_projects",
+          "ok": false,
+          "error": "项目列表不是合法 JSON：<ROOT>\\broken_file\\projects.json"
+        }
+      ],
+      "file": "{not json"
+    },
+    {
+      "label": "wrong_top_level",
+      "ops": [
+        {
+          "op": "write_file",
+          "text": "{\"projects\": 3}"
+        },
+        {
+          "op": "list_projects"
+        }
+      ],
+      "results": [
+        {
+          "op": "write_file",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "list_projects",
+          "ok": false,
+          "error": "项目列表顶层字段 projects 必须是列表。"
+        }
+      ],
+      "file": "{\"projects\": 3}"
+    }
+  ]
+}
