@@ -15,20 +15,17 @@ use serde_json::{json, Map, Value};
 
 const FIXTURE: &str = include_str!("fixtures/session_store_parity.json");
 
-/// 数据集里的工作区路径是 Windows 形式（`D:\work\demo`）：重放前换成本机等价路径，
-/// 三种书写形态（含文件内容里的转义形态）都要跟着换，否则非 Windows 上会被当成相对路径。
+/// 数据集里的工作区都在 `D:\work` 下（Windows 形式）：整体换成本机临时目录。
+/// 三种书写形态各有出处——输入是正斜杠、结构化期望是原生分隔符、文件内容里是 JSON 转义形态。
 fn workspace_mapping() -> BTreeMap<String, String> {
     let native = std::env::temp_dir()
         .join("omnicrawl-parity-workspace")
         .to_string_lossy()
         .to_string();
     BTreeMap::from([
-        (
-            "D:\\\\work\\\\demo".to_string(),
-            native.replace('\\', "\\\\"),
-        ),
-        ("D:\\work\\demo".to_string(), native.clone()),
-        ("D:/work/demo".to_string(), native),
+        ("D:\\\\work".to_string(), native.replace('\\', "\\\\")),
+        ("D:\\work".to_string(), native.clone()),
+        ("D:/work".to_string(), native.replace('\\', "/")),
     ])
 }
 
