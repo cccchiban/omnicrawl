@@ -1,0 +1,16 @@
+[package]
+name = "omnicrawl-config"
+description = "配置域（Python 侧 omnicrawl/config/ 的 Rust 移植）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+omnicrawl-llm = { path = "../omnicrawl-llm" }
+omnicrawl-protocol = { path = "../omnicrawl-protocol" }
+serde_json = { workspace = true }
+toml = { version = "0.8", features = ["preserve_order"] }
+
+[dev-dependencies]
+serde = { workspace = true }

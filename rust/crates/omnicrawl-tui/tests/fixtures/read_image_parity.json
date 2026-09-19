@@ -1,0 +1,376 @@
+{
+  "source": "omnicrawl/agent/toolkit/image_tools.py",
+  "workspace_placeholder": "{WORKSPACE}",
+  "files": [
+    {
+      "path": "pic.png",
+      "base64": "iVBORw0KGgowMDAw"
+    },
+    {
+      "path": "photo.jpg",
+      "base64": "/9j/4GRhdGE="
+    },
+    {
+      "path": "anim.gif",
+      "base64": "R0lGODlhLi4uLg=="
+    },
+    {
+      "path": "shot.webp",
+      "base64": "UklGRgAAAABXRUJQVlA4IA=="
+    },
+    {
+      "path": "notes.txt",
+      "base64": "cGxhaW4gdGV4dA=="
+    }
+  ],
+  "cases": [
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "描述图片"
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "photo.jpg",
+        "prompt": "描述图片",
+        "detail": "low"
+      },
+      "ok": true,
+      "output": "{\"path\":\"photo.jpg\",\"media_type\":\"image/jpeg\",\"bytes\":8,\"detail\":\"low\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/jpeg",
+          "filename": "photo.jpg",
+          "detail": "low",
+          "data_base64": "/9j/4GRhdGE="
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "anim.gif",
+        "prompt": "x",
+        "detail": "high"
+      },
+      "ok": true,
+      "output": "{\"path\":\"anim.gif\",\"media_type\":\"image/gif\",\"bytes\":10,\"detail\":\"high\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/gif",
+          "filename": "anim.gif",
+          "detail": "high",
+          "data_base64": "R0lGODlhLi4uLg=="
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "shot.webp",
+        "prompt": "x",
+        "detail": "AUTO"
+      },
+      "ok": true,
+      "output": "{\"path\":\"shot.webp\",\"media_type\":\"image/webp\",\"bytes\":16,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/webp",
+          "filename": "shot.webp",
+          "detail": "auto",
+          "data_base64": "UklGRgAAAABXRUJQVlA4IA=="
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": "huge"
+      },
+      "ok": false,
+      "output": "detail 仅支持 auto、low 或 high。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": 5
+      },
+      "ok": false,
+      "output": "detail 仅支持 auto、low 或 high。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": false
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": 0
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": ""
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": []
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": {}
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": null
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": [
+          1
+        ]
+      },
+      "ok": false,
+      "output": "detail 仅支持 auto、low 或 high。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": {
+          "a": 1
+        }
+      },
+      "ok": false,
+      "output": "detail 仅支持 auto、low 或 high。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "x",
+        "detail": "LOW"
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"low\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "low",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    },
+    {
+      "arguments": {
+        "path": "pic.png"
+      },
+      "ok": false,
+      "output": "prompt 必须是非空的图片分析提示词。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "pic.png",
+        "prompt": "   "
+      },
+      "ok": false,
+      "output": "prompt 必须是非空的图片分析提示词。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {},
+      "ok": false,
+      "output": "path 必须是非空的本地图片路径。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": 5,
+        "prompt": "x"
+      },
+      "ok": false,
+      "output": "path 必须是非空的本地图片路径。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "https://example.com/a.png",
+        "prompt": "x"
+      },
+      "ok": false,
+      "output": "read_image 只支持本机文件路径，不支持 URL 或 data URI。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "DATA:image/png;base64,AAAA",
+        "prompt": "x"
+      },
+      "ok": false,
+      "output": "read_image 只支持本机文件路径，不支持 URL 或 data URI。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "missing.png",
+        "prompt": "x"
+      },
+      "ok": false,
+      "output": "图片路径不是文件：missing.png",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "../outside.png",
+        "prompt": "x"
+      },
+      "ok": false,
+      "output": "相对图片路径不能越出当前工作区；请使用明确的本机绝对路径。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "notes.txt",
+        "prompt": "x"
+      },
+      "ok": false,
+      "output": "文件不是受支持的图片格式：{WORKSPACE}\\notes.txt。支持的 MIME 类型：image/gif、image/jpeg、image/png、image/webp。",
+      "compare": "exact",
+      "images": []
+    },
+    {
+      "arguments": {
+        "path": "{WORKSPACE}/pic.png",
+        "prompt": "绝对路径"
+      },
+      "ok": true,
+      "output": "{\"path\":\"pic.png\",\"media_type\":\"image/png\",\"bytes\":12,\"detail\":\"auto\",\"vision_attachment\":true}",
+      "compare": "exact",
+      "images": [
+        {
+          "media_type": "image/png",
+          "filename": "pic.png",
+          "detail": "auto",
+          "data_base64": "iVBORw0KGgowMDAw"
+        }
+      ]
+    }
+  ]
+}

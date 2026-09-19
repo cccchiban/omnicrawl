@@ -1,0 +1,38 @@
+[package]
+name = "omnicrawl-tui"
+description = "OmniCrawl 全屏终端工作台：内核协议 v1 的 Rust 宿主前端"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "omnicrawl-tui"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.23"
+# 截图编码：GDI 抓到的是 BGRA 位图，用纯 Rust 的 PNG 编码器落盘。
+png = "0.17"
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-controllers = { path = "../omnicrawl-controllers" }
+omnicrawl-core = { path = "../omnicrawl-core" }
+omnicrawl-ipc = { path = "../omnicrawl-ipc" }
+omnicrawl-llm = { path = "../omnicrawl-llm" }
+omnicrawl-protocol = { path = "../omnicrawl-protocol" }
+omnicrawl-session = { path = "../omnicrawl-session" }
+chrono = { workspace = true }
+crossterm = { workspace = true }
+ignore = { workspace = true }
+regex = { workspace = true }
+# TTS 文本归一化：Python 侧模式含 lookbehind/lookahead，标准 regex 不支持。
+fancy-regex = "0.14"
+# 归一化管道按 Unicode General_Category 判定控制符与标点。
+unicode-general-category = "1"
+ratatui = { workspace = true }
+scraper = { workspace = true }
+ureq = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+unicode-width = { workspace = true }

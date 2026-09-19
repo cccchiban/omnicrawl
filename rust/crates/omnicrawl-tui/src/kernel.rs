@@ -1,0 +1,274 @@
+//! 内核进程客户端：起内核子进程，在它的 stdin/stdout 上收发协议 v1 的 NDJSON 帧。
+//!
+//! 读取放在独立线程里，主线程只在事件循环里 `try_recv` 取帧；写入由主线程独占，
+//! 因此同一连接上「谁在什么时候写了哪一帧」是确定的。
+
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use omnicrawl_ipc::{error_code, ErrorObject, Frame, Id};
+
+pub struct KernelClient {
+    writer: Box<dyn Write + Send>,
+    frames: Receiver<Frame>,
+    child: Option<Child>,
+    next_id: i64,
+    closed: bool,
+}
+
+impl KernelClient {
+    /// 起内核进程：stdout 交给读线程，stderr 直接继承（内核只在那里写日志）。
+    pub fn spawn(program: &Path) -> io::Result<Self> {
+        let mut child = Command::new(program)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("无法启动内核进程 {}：{error}", program.display()),
+                )
+            })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("内核进程没有可读的 stdout"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("内核进程没有可写的 stdin"))?;
+        let mut client = Self::from_streams(Box::new(BufReader::new(stdout)), Box::new(stdin));
+        client.child = Some(child);
+        Ok(client)
+    }
+
+    /// 以任意一对输入输出流构造；回环与单测用它替代真子进程。
+    pub fn from_streams(reader: Box<dyn BufRead + Send>, writer: Box<dyn Write + Send>) -> Self {
+        let (sender, frames) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = reader;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => match Frame::parse(&line) {
+                        Ok(frame) => {
+                            if sender.send(frame).is_err() {
+                                break;
+                            }
+                        }
+                        // 协议约定：非法行丢弃并记日志，不断开连接。
+                        Err(error) => eprintln!("[tui] 丢弃内核发出的非法帧：{error}"),
+                    },
+                    Err(error) => {
+                        eprintln!("[tui] 读取内核输出失败：{error}");
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            writer,
+            frames,
+            child: None,
+            next_id: 1,
+            closed: false,
+        }
+    }
+
+    /// 取下一个已到达的帧；内核退出且缓冲耗尽后返回 `None` 并把连接标记为已关闭。
+    pub fn try_recv(&mut self) -> Option<Frame> {
+        match self.frames.try_recv() {
+            Ok(frame) => Some(frame),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.closed = true;
+                None
+            }
+        }
+    }
+
+    /// 等待一个帧，最多等 `timeout`；握手期用它拿 `initialize` 的响应。
+    pub fn recv_timeout(&mut self, timeout: Duration) -> Option<Frame> {
+        self.frames.recv_timeout(timeout).ok()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    pub fn next_id(&mut self) -> Id {
+        let id = self.next_id;
+        self.next_id += 1;
+        Id::Number(id)
+    }
+
+    pub fn send_frame(&mut self, frame: &Frame) -> io::Result<()> {
+        let mut line = frame.to_line();
+        line.push('\n');
+        self.writer.write_all(line.as_bytes())?;
+        self.writer.flush()
+    }
+
+    /// 回一个成功响应。
+    pub fn respond(&mut self, id: &Id, result: serde_json::Value) -> io::Result<()> {
+        self.send_frame(&Frame::response(id.clone(), result))
+    }
+
+    /// 回一个失败响应；宿主不解的请求一律回 `-32601`，不让内核干等。
+    pub fn respond_error(&mut self, id: &Id, code: i64, message: &str) -> io::Result<()> {
+        self.send_frame(&Frame::error_response(
+            id.clone(),
+            ErrorObject::new(code, message),
+        ))
+    }
+
+    /// 回「这个方法宿主没实现」。
+    pub fn respond_unsupported(&mut self, id: &Id, method: &str) -> io::Result<()> {
+        self.respond_error(
+            id,
+            error_code::METHOD_NOT_FOUND,
+            &format!("宿主未实现协议方法 {method}。"),
+        )
+    }
+
+    /// 收尾：等内核自己退出，超时没退就强杀，避免留下孤儿进程。
+    pub fn wait_or_kill(&mut self, timeout: Duration) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(20)),
+                Err(_) => break,
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedWriter {
+        fn lines(&self) -> Vec<String> {
+            let bytes = self.0.lock().expect("写入缓冲未被毒化").clone();
+            String::from_utf8(bytes)
+                .expect("帧是 UTF-8")
+                .lines()
+                .map(|line| line.to_string())
+                .collect()
+        }
+    }
+
+    impl Write for SharedWriter {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .expect("写入缓冲未被毒化")
+                .extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn client_with_script(script: &str) -> (KernelClient, SharedWriter) {
+        let writer = SharedWriter::default();
+        let client = KernelClient::from_streams(
+            Box::new(BufReader::new(Cursor::new(script.as_bytes().to_vec()))),
+            Box::new(writer.clone()),
+        );
+        (client, writer)
+    }
+
+    #[test]
+    fn frames_are_parsed_and_bad_lines_are_skipped() {
+        let script = concat!(
+            "{\"jsonrpc\":\"2.0\",\"method\":\"turn.delta\",\"params\":{\"text\":\"hi\"}}\n",
+            "这不是 JSON\n",
+            "\n",
+            "{\"jsonrpc\":\"2.0\",\"method\":\"turn.finished\",\"params\":{\"turn_id\":\"t1\"}}\n"
+        );
+        let (mut client, _) = client_with_script(script);
+        let first = wait_for_frame(&mut client);
+        assert_eq!(first.method(), Some("turn.delta"));
+        let second = wait_for_frame(&mut client);
+        assert_eq!(second.method(), Some("turn.finished"));
+        // 流结束：连接标记为已关闭，且不再有新帧。
+        assert!(client.try_recv().is_none());
+        assert!(client.is_closed());
+    }
+
+    #[test]
+    fn written_frames_are_single_line_ndjson() {
+        let (mut client, writer) = client_with_script("");
+        let id = client.next_id();
+        client
+            .send_frame(&Frame::request(
+                id,
+                omnicrawl_ipc::method::TURN_SUBMIT,
+                serde_json::json!({"turn_id": "t1", "user_text": "第一行\n第二行"}),
+            ))
+            .expect("写帧应当成功");
+        let lines = writer.lines();
+        assert_eq!(lines.len(), 1, "一帧一行：{lines:?}");
+        let frame = Frame::parse(&lines[0]).expect("写出的帧应当可解析");
+        assert_eq!(frame.method(), Some("turn.submit"));
+        assert_eq!(frame.id(), Some(&Id::Number(1)));
+        assert!(
+            lines[0].contains("第一行\\n第二行"),
+            "换行必须被转义：{}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn responses_and_errors_are_written_as_responses() {
+        let (mut client, writer) = client_with_script("");
+        client
+            .respond(&Id::Number(7), serde_json::json!({"ok": true}))
+            .expect("回响应应当成功");
+        client
+            .respond_unsupported(&Id::Text("abc".to_string()), "model.reply")
+            .expect("回错误应当成功");
+        let lines = writer.lines();
+        let success = Frame::parse(&lines[0]).expect("响应可解析");
+        assert!(success.is_response());
+        assert_eq!(success.id(), Some(&Id::Number(7)));
+        let failure = Frame::parse(&lines[1]).expect("错误响应可解析");
+        assert_eq!(failure.id(), Some(&Id::Text("abc".to_string())));
+        assert_eq!(
+            failure.error.as_ref().map(|error| error.code),
+            Some(error_code::METHOD_NOT_FOUND)
+        );
+    }
+
+    fn wait_for_frame(client: &mut KernelClient) -> Frame {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(frame) = client.try_recv() {
+                return frame;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("等待内核帧超时");
+    }
+}

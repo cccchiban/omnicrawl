@@ -1,0 +1,305 @@
+[
+ {
+  "name": "未初始化就取回合",
+  "steps": [
+   {
+    "op": "acquire",
+    "error": "模型运行时尚未初始化。",
+    "state": {
+     "generation": 0,
+     "model_id": "",
+     "context_window": 0,
+     "has_active_turn": false,
+     "has_snapshot": false
+    }
+   }
+  ]
+ },
+ {
+  "name": "启动与回合占用",
+  "steps": [
+   {
+    "op": "bootstrap",
+    "model_id": "gpt-5",
+    "context_window": 1000,
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "acquire",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": true,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": true,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "release",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "switch",
+    "model_id": "claude",
+    "context_window": 0,
+    "capabilities_window": 200,
+    "state": {
+     "generation": 2,
+     "model_id": "claude",
+     "context_window": 200,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 2,
+     "model_id": "claude",
+     "context_window": 200,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   }
+  ]
+ },
+ {
+  "name": "回合进行中拒绝切换",
+  "steps": [
+   {
+    "op": "bootstrap",
+    "model_id": "gpt-5",
+    "context_window": 1000,
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "acquire",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": true,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "switch",
+    "model_id": "claude",
+    "context_window": 0,
+    "error": "当前仍有进行中的模型回合，请等待本轮结束后再切换模型。",
+    "error_code": "INVALID_REQUEST",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": true,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": true,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "switch",
+    "model_id": "claude",
+    "context_window": 0,
+    "allow_during_turn": true,
+    "state": {
+     "generation": 2,
+     "model_id": "claude",
+     "context_window": 0,
+     "has_active_turn": true,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 2,
+     "model_id": "claude",
+     "context_window": 0,
+     "has_active_turn": true,
+     "has_snapshot": true
+    }
+   }
+  ]
+ },
+ {
+  "name": "持久化失败保留旧模型",
+  "steps": [
+   {
+    "op": "bootstrap",
+    "model_id": "gpt-5",
+    "context_window": 1000,
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "switch",
+    "model_id": "claude",
+    "context_window": 2048,
+    "persist_fails": true,
+    "error": "保存模型选择失败。",
+    "error_code": "CONFIGURATION_ERROR",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   }
+  ]
+ },
+ {
+  "name": "窗口写回与关闭",
+  "steps": [
+   {
+    "op": "bootstrap",
+    "model_id": "gpt-5",
+    "context_window": 1000,
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 1000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "set_window",
+    "tokens": 4000,
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 4000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 4000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "set_window",
+    "tokens": 0,
+    "error": "上下文长度必须是正整数 Token。",
+    "state": {
+     "generation": 1,
+     "model_id": "gpt-5",
+     "context_window": 4000,
+     "has_active_turn": false,
+     "has_snapshot": true
+    }
+   },
+   {
+    "op": "close",
+    "state": {
+     "generation": 1,
+     "model_id": "",
+     "context_window": 0,
+     "has_active_turn": false,
+     "has_snapshot": false
+    }
+   },
+   {
+    "op": "observe",
+    "state": {
+     "generation": 1,
+     "model_id": "",
+     "context_window": 0,
+     "has_active_turn": false,
+     "has_snapshot": false
+    }
+   },
+   {
+    "op": "acquire",
+    "error": "模型运行时尚未初始化。",
+    "state": {
+     "generation": 1,
+     "model_id": "",
+     "context_window": 0,
+     "has_active_turn": false,
+     "has_snapshot": false
+    }
+   }
+  ]
+ }
+]

@@ -1,0 +1,1017 @@
+{
+ "advisor_load": [
+  {
+   "name": "缺段",
+   "config": {},
+   "result": {
+    "enabled": false,
+    "model_key": "",
+    "effort": "high",
+    "disabled_for_models": [],
+    "active": false,
+    "display_effort": "high"
+   }
+  },
+  {
+   "name": "全字段",
+   "config": {
+    "advisor": {
+     "enabled": true,
+     "model_key": " deepseek-v4-flash ",
+     "effort": "xhigh",
+     "disabled_for_models": [
+      "gpt-5",
+      " ",
+      "claude"
+     ]
+    }
+   },
+   "result": {
+    "enabled": true,
+    "model_key": "deepseek-v4-flash",
+    "effort": "xhigh",
+    "disabled_for_models": [
+     "gpt-5",
+     "claude"
+    ],
+    "active": true,
+    "display_effort": "xhigh"
+   }
+  },
+  {
+   "name": "推理档位为空",
+   "config": {
+    "advisor": {
+     "effort": ""
+    }
+   },
+   "result": {
+    "enabled": false,
+    "model_key": "",
+    "effort": "high",
+    "disabled_for_models": [],
+    "active": false,
+    "display_effort": "high"
+   }
+  },
+  {
+   "name": "推理档位非法",
+   "config": {
+    "advisor": {
+     "effort": "ultra"
+    }
+   },
+   "error": "advisor.effort 仅支持 high, low, max, medium, none, xhigh，当前值：ultra。"
+  },
+  {
+   "name": "启用但未选模型",
+   "config": {
+    "advisor": {
+     "enabled": true
+    }
+   },
+   "result": {
+    "enabled": true,
+    "model_key": "",
+    "effort": "high",
+    "disabled_for_models": [],
+    "active": false,
+    "display_effort": "high"
+   }
+  },
+  {
+   "name": "enabled 非布尔",
+   "config": {
+    "advisor": {
+     "enabled": "yes"
+    }
+   },
+   "error": "advisor.enabled 必须是布尔值。"
+  },
+  {
+   "name": "黑名单是字符串",
+   "config": {
+    "advisor": {
+     "disabled_for_models": "gpt"
+    }
+   },
+   "error": "advisor.disabled_for_models 必须是字符串数组。"
+  },
+  {
+   "name": "黑名单是空串",
+   "config": {
+    "advisor": {
+     "disabled_for_models": ""
+    }
+   },
+   "result": {
+    "enabled": false,
+    "model_key": "",
+    "effort": "high",
+    "disabled_for_models": [],
+    "active": false,
+    "display_effort": "high"
+   }
+  },
+  {
+   "name": "model_key 非字符串",
+   "config": {
+    "advisor": {
+     "model_key": 5
+    }
+   },
+   "result": {
+    "enabled": false,
+    "model_key": "5",
+    "effort": "high",
+    "disabled_for_models": [],
+    "active": false,
+    "display_effort": "high"
+   }
+  },
+  {
+   "name": "段不是对象",
+   "config": {
+    "advisor": 5
+   },
+   "error": "配置项 advisor 必须是对象。"
+  }
+ ],
+ "advisor_save": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[advisor]\nenabled = true\nmodel_key = \"gpt-5\"\neffort = \"max\"\ndisabled_for_models = [\n    \"x\",\n]\n"
+  }
+ ],
+ "advisor_clear": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[advisor]\nenabled = false\nmodel_key = \"\"\neffort = \"high\"\ndisabled_for_models = []\n"
+  }
+ ],
+ "tts_load": [
+  {
+   "name": "缺段",
+   "config": {},
+   "result": {
+    "enabled": false,
+    "model_dir": "",
+    "voice": "Junhao",
+    "auto_play": true,
+    "thread_count": 4,
+    "device": "auto",
+    "streaming": true,
+    "output_dir": ".omnicrawl/.agent_tmp/tts"
+   }
+  },
+  {
+   "name": "全字段",
+   "config": {
+    "tts": {
+     "enabled": true,
+     "model_dir": " D:\\tts\\models ",
+     "voice": " Xiaoyu ",
+     "auto_play": false,
+     "thread_count": 8,
+     "device": " CUDA ",
+     "streaming": false,
+     "output_dir": " out\\tts "
+    }
+   },
+   "result": {
+    "enabled": true,
+    "model_dir": "D:\\tts\\models",
+    "voice": "Xiaoyu",
+    "auto_play": false,
+    "thread_count": 8,
+    "device": "cuda",
+    "streaming": false,
+    "output_dir": "out\\tts"
+   }
+  },
+  {
+   "name": "线程数非法",
+   "config": {
+    "tts": {
+     "thread_count": 3
+    }
+   },
+   "error": "tts.thread_count 必须是 1/2/4/8。"
+  },
+  {
+   "name": "线程数是字符串",
+   "config": {
+    "tts": {
+     "thread_count": "4"
+    }
+   },
+   "result": {
+    "enabled": false,
+    "model_dir": "",
+    "voice": "Junhao",
+    "auto_play": true,
+    "thread_count": 4,
+    "device": "auto",
+    "streaming": true,
+    "output_dir": ".omnicrawl/.agent_tmp/tts"
+   }
+  },
+  {
+   "name": "线程数不可解析",
+   "config": {
+    "tts": {
+     "thread_count": "abc"
+    }
+   },
+   "error": "配置段 tts 数值字段无效：invalid literal for int() with base 10: 'abc'"
+  },
+  {
+   "name": "设备非法",
+   "config": {
+    "tts": {
+     "device": "tpu"
+    }
+   },
+   "error": "tts.device 必须是 auto/cpu/cuda 之一。"
+  },
+  {
+   "name": "音色为空",
+   "config": {
+    "tts": {
+     "voice": "   "
+    }
+   },
+   "error": "tts.voice 不能为空。"
+  },
+  {
+   "name": "输出目录为空",
+   "config": {
+    "tts": {
+     "output_dir": ""
+    }
+   },
+   "result": {
+    "enabled": false,
+    "model_dir": "",
+    "voice": "Junhao",
+    "auto_play": true,
+    "thread_count": 4,
+    "device": "auto",
+    "streaming": true,
+    "output_dir": ".omnicrawl/.agent_tmp/tts"
+   }
+  },
+  {
+   "name": "段不是对象",
+   "config": {
+    "tts": 5
+   },
+   "error": "配置段 tts 必须是对象。"
+  },
+  {
+   "name": "空串段",
+   "config": {
+    "tts": ""
+   },
+   "result": {
+    "enabled": false,
+    "model_dir": "",
+    "voice": "Junhao",
+    "auto_play": true,
+    "thread_count": 4,
+    "device": "auto",
+    "streaming": true,
+    "output_dir": ".omnicrawl/.agent_tmp/tts"
+   }
+  }
+ ],
+ "tts_save": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nenabled = true\nmodel_dir = \"\"\nvoice = \"Junhao\"\nauto_play = true\nthread_count = 4\ndevice = \"auto\"\nstreaming = true\noutput_dir = \".omnicrawl/.agent_tmp/tts\"\n"
+  }
+ ],
+ "agent_workspace_load": [
+  {
+   "name": "缺段",
+   "config": {},
+   "result": {
+    "enabled": true,
+    "mode": "worktree",
+    "base_branch": "",
+    "base_ref": "HEAD",
+    "detached": true,
+    "apply_on_exit": true,
+    "cleanup_on_exit": "auto",
+    "sync_uncommitted": true,
+    "copy_dirs": [],
+    "env_scripts": []
+   }
+  },
+  {
+   "name": "全字段",
+   "config": {
+    "agent_workspace": {
+     "enabled": false,
+     "mode": "local",
+     "base_branch": "main",
+     "base_ref": "origin/main",
+     "detached": false,
+     "apply_on_exit": false,
+     "cleanup_on_exit": "never",
+     "sync_uncommitted": false,
+     "copy_dirs": [
+      ".env",
+      "data"
+     ],
+     "env_scripts": [
+      "setup.ps1"
+     ]
+    }
+   },
+   "result": {
+    "enabled": false,
+    "mode": "local",
+    "base_branch": "main",
+    "base_ref": "origin/main",
+    "detached": false,
+    "apply_on_exit": false,
+    "cleanup_on_exit": "never",
+    "sync_uncommitted": false,
+    "copy_dirs": [
+     ".env",
+     "data"
+    ],
+    "env_scripts": [
+     "setup.ps1"
+    ]
+   }
+  },
+  {
+   "name": "模式非法",
+   "config": {
+    "agent_workspace": {
+     "mode": "docker"
+    }
+   },
+   "error": "agent_workspace.mode 必须是 worktree 或 local，当前值：docker"
+  },
+  {
+   "name": "清理策略非法",
+   "config": {
+    "agent_workspace": {
+     "cleanup_on_exit": "sometimes"
+    }
+   },
+   "error": "agent_workspace.cleanup_on_exit 必须是 auto/keep/never，当前值：sometimes"
+  },
+  {
+   "name": "开关非布尔",
+   "config": {
+    "agent_workspace": {
+     "enabled": 1
+    }
+   },
+   "error": "配置项 agent_workspace.enabled 必须是布尔值。"
+  },
+  {
+   "name": "复制目录非数组",
+   "config": {
+    "agent_workspace": {
+     "copy_dirs": ".env"
+    }
+   },
+   "error": "配置项 agent_workspace.copy_dirs 必须是字符串数组。"
+  },
+  {
+   "name": "复制目录含非字符串",
+   "config": {
+    "agent_workspace": {
+     "copy_dirs": [
+      ".env",
+      3
+     ]
+    }
+   },
+   "error": "配置项 agent_workspace.copy_dirs 必须是字符串数组。"
+  },
+  {
+   "name": "段不是对象",
+   "config": {
+    "agent_workspace": 5
+   },
+   "error": "配置项 agent_workspace 必须是表（table）。"
+  }
+ ],
+ "agent_workspace_save": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[agent_workspace]\nenabled = true\nmode = \"local\"\nbase_branch = \"\"\nbase_ref = \"HEAD\"\ndetached = true\napply_on_exit = true\ncleanup_on_exit = \"auto\"\nsync_uncommitted = true\ncopy_dirs = [\n    \".env\",\n]\nenv_scripts = []\n"
+  }
+ ],
+ "image_gen_load": [
+  {
+   "name": "缺段",
+   "config": {},
+   "result": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-image-2",
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "n": 1,
+    "timeout_seconds": 120
+   }
+  },
+  {
+   "name": "全字段",
+   "config": {
+    "image_gen": {
+     "enabled": true,
+     "base_url": " https://api.example.com/v1/ ",
+     "api_key": " sk-test ",
+     "api_key_env": " MY_KEY ",
+     "model": " gpt-image-3 ",
+     "size": "1536x1024",
+     "quality": "high",
+     "output_format": "webp",
+     "n": 4,
+     "timeout_seconds": 300
+    }
+   },
+   "result": {
+    "enabled": true,
+    "base_url": "https://api.example.com/v1",
+    "api_key": "sk-test",
+    "api_key_env": "MY_KEY",
+    "model": "gpt-image-3",
+    "size": "1536x1024",
+    "quality": "high",
+    "output_format": "webp",
+    "n": 4,
+    "timeout_seconds": 300
+   }
+  },
+  {
+   "name": "地址为空",
+   "config": {
+    "image_gen": {
+     "base_url": ""
+    }
+   },
+   "result": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-image-2",
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "n": 1,
+    "timeout_seconds": 120
+   }
+  },
+  {
+   "name": "地址缺协议",
+   "config": {
+    "image_gen": {
+     "base_url": "api.example.com"
+    }
+   },
+   "error": "image_gen.base_url 必须以 http:// 或 https:// 开头。"
+  },
+  {
+   "name": "模型为空",
+   "config": {
+    "image_gen": {
+     "model": " "
+    }
+   },
+   "error": "image_gen.model 不能为空。"
+  },
+  {
+   "name": "尺寸非法",
+   "config": {
+    "image_gen": {
+     "size": "1x1"
+    }
+   },
+   "error": "image_gen.size 必须是 auto 或 宽x高 形式（例如 1024x1024、1536x1024）。"
+  },
+  {
+   "name": "尺寸 auto",
+   "config": {
+    "image_gen": {
+     "size": "auto"
+    }
+   },
+   "result": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-image-2",
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "n": 1,
+    "timeout_seconds": 120
+   }
+  },
+  {
+   "name": "质量非法",
+   "config": {
+    "image_gen": {
+     "quality": "ultra"
+    }
+   },
+   "error": "image_gen.quality 仅支持 auto、low、medium、high。"
+  },
+  {
+   "name": "格式非法",
+   "config": {
+    "image_gen": {
+     "output_format": "gif"
+    }
+   },
+   "error": "image_gen.output_format 仅支持 png、jpeg、webp。"
+  },
+  {
+   "name": "张数为零",
+   "config": {
+    "image_gen": {
+     "n": 0
+    }
+   },
+   "result": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-image-2",
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "n": 1,
+    "timeout_seconds": 120
+   }
+  },
+  {
+   "name": "张数超限",
+   "config": {
+    "image_gen": {
+     "n": 11
+    }
+   },
+   "error": "image_gen.n 必须是 1~10 的整数。"
+  },
+  {
+   "name": "超时超限",
+   "config": {
+    "image_gen": {
+     "timeout_seconds": 601
+    }
+   },
+   "error": "image_gen.timeout_seconds 必须是 1~600 的整数。"
+  },
+  {
+   "name": "凭据环境变量为空",
+   "config": {
+    "image_gen": {
+     "api_key_env": " "
+    }
+   },
+   "result": {
+    "enabled": false,
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "api_key_env": "OPENAI_API_KEY",
+    "model": "gpt-image-2",
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "n": 1,
+    "timeout_seconds": 120
+   }
+  },
+  {
+   "name": "段不是对象",
+   "config": {
+    "image_gen": 5
+   },
+   "error": "配置段 image_gen 必须是对象。"
+  }
+ ],
+ "image_gen_save": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[image_gen]\nenabled = true\nbase_url = \"https://api.openai.com/v1\"\napi_key = \"\"\napi_key_env = \"OPENAI_API_KEY\"\nmodel = \"gpt-image-2\"\nsize = \"1024x1024\"\nquality = \"auto\"\noutput_format = \"png\"\nn = 2\ntimeout_seconds = 120\n"
+  }
+ ],
+ "tool_output_compression_load": [
+  {
+   "name": "缺段",
+   "config": {},
+   "result": {
+    "enabled": false,
+    "model_key": "",
+    "thinking_enabled": false,
+    "reasoning_effort": "low",
+    "min_chars": 1200,
+    "max_input_chars": 24000,
+    "max_output_chars": 1500,
+    "timeout_seconds": 60,
+    "active": false
+   }
+  },
+  {
+   "name": "全字段",
+   "config": {
+    "tool_output_compression": {
+     "enabled": true,
+     "model_key": " qwen2.5-3b-instruct ",
+     "thinking_enabled": true,
+     "reasoning_effort": " xhigh ",
+     "min_chars": 800,
+     "max_input_chars": 12000,
+     "max_output_chars": 900,
+     "timeout_seconds": 30
+    }
+   },
+   "result": {
+    "enabled": true,
+    "model_key": "qwen2.5-3b-instruct",
+    "thinking_enabled": true,
+    "reasoning_effort": "xhigh",
+    "min_chars": 800,
+    "max_input_chars": 12000,
+    "max_output_chars": 900,
+    "timeout_seconds": 30,
+    "active": true
+   }
+  },
+  {
+   "name": "思考档位为空",
+   "config": {
+    "tool_output_compression": {
+     "reasoning_effort": ""
+    }
+   },
+   "result": {
+    "enabled": false,
+    "model_key": "",
+    "thinking_enabled": false,
+    "reasoning_effort": "low",
+    "min_chars": 1200,
+    "max_input_chars": 24000,
+    "max_output_chars": 1500,
+    "timeout_seconds": 60,
+    "active": false
+   }
+  },
+  {
+   "name": "思考档位为 none",
+   "config": {
+    "tool_output_compression": {
+     "reasoning_effort": "none"
+    }
+   },
+   "error": "tool_output_compression.reasoning_effort 仅支持 low, medium, high, xhigh, max，当前值：none；关闭思考请设 thinking_enabled = false。"
+  },
+  {
+   "name": "下限为零",
+   "config": {
+    "tool_output_compression": {
+     "min_chars": 0
+    }
+   },
+   "error": "tool_output_compression.min_chars 必须是正整数。"
+  },
+  {
+   "name": "超时为负",
+   "config": {
+    "tool_output_compression": {
+     "timeout_seconds": -1
+    }
+   },
+   "error": "tool_output_compression.timeout_seconds 必须是正整数。"
+  },
+  {
+   "name": "启用但未选模型",
+   "config": {
+    "tool_output_compression": {
+     "enabled": true
+    }
+   },
+   "result": {
+    "enabled": true,
+    "model_key": "",
+    "thinking_enabled": false,
+    "reasoning_effort": "low",
+    "min_chars": 1200,
+    "max_input_chars": 24000,
+    "max_output_chars": 1500,
+    "timeout_seconds": 60,
+    "active": false
+   }
+  },
+  {
+   "name": "开关非布尔",
+   "config": {
+    "tool_output_compression": {
+     "enabled": 1
+    }
+   },
+   "error": "tool_output_compression.enabled 必须是布尔值。"
+  },
+  {
+   "name": "段不是对象",
+   "config": {
+    "tool_output_compression": 5
+   },
+   "error": "配置项 tool_output_compression 必须是对象。"
+  }
+ ],
+ "tool_output_compression_save": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[tool_output_compression]\nenabled = true\nmodel_key = \"qwen2.5-3b-instruct\"\nthinking_enabled = false\nreasoning_effort = \"low\"\nmin_chars = 1200\nmax_input_chars = 24000\nmax_output_chars = 1500\ntimeout_seconds = 60\n"
+  }
+ ],
+ "tool_output_compression_clear": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[tool_output_compression]\nenabled = false\nmodel_key = \"\"\nthinking_enabled = false\nreasoning_effort = \"low\"\nmin_chars = 1200\nmax_input_chars = 24000\nmax_output_chars = 1500\ntimeout_seconds = 60\n"
+  }
+ ],
+ "desensitization_load": [
+  {
+   "name": "缺段",
+   "config": {},
+   "result": {
+    "enabled": false,
+    "fail_closed": true,
+    "strict_restore": false,
+    "extra_sensitive_keys": [],
+    "exempt_keys": [],
+    "entropy_enabled": true,
+    "entropy_min_length": 20,
+    "entropy_min_bits": 3.5,
+    "entropy_pure_letters": false,
+    "entropy_pure_digits": false,
+    "detect_pem_private_key": true,
+    "detect_db_connection_string": true,
+    "detect_email": false,
+    "detect_bank_card": true,
+    "detect_internal_ip": true,
+    "detect_external_ip": false,
+    "detect_url": false,
+    "detect_mac_address": true,
+    "detect_license_plate": true,
+    "gitleaks_enabled": true,
+    "gitleaks_config_path": "",
+    "ner_enabled": false,
+    "ner_model_path": "",
+    "ner_device": "auto",
+    "ner_entity_types": [
+     "PER",
+     "ORG",
+     "LOC"
+    ],
+    "ner_min_entity_chars": 2,
+    "ner_cache_size": 2048
+   }
+  },
+  {
+   "name": "全字段",
+   "config": {
+    "desensitization": {
+     "enabled": true,
+     "fail_closed": false,
+     "strict_restore": true,
+     "extra_sensitive_keys": [
+      " secret ",
+      "",
+      "token"
+     ],
+     "exempt_keys": [
+      "public_key"
+     ],
+     "entropy_enabled": false,
+     "entropy_min_length": 12,
+     "entropy_min_bits": 4,
+     "entropy_pure_letters": true,
+     "entropy_pure_digits": true,
+     "detect_pem_private_key": false,
+     "detect_db_connection_string": false,
+     "detect_email": true,
+     "detect_bank_card": false,
+     "detect_internal_ip": false,
+     "detect_external_ip": true,
+     "detect_url": true,
+     "detect_mac_address": false,
+     "detect_license_plate": false,
+     "gitleaks_enabled": false,
+     "gitleaks_config_path": " D:\\gitleaks.toml ",
+     "ner_enabled": true,
+     "ner_model_path": " D:\\ner.pt ",
+     "ner_device": " CPU ",
+     "ner_entity_types": [
+      "per",
+      " loc "
+     ],
+     "ner_min_entity_chars": 3,
+     "ner_cache_size": 16
+    }
+   },
+   "result": {
+    "enabled": true,
+    "fail_closed": false,
+    "strict_restore": true,
+    "extra_sensitive_keys": [
+     "secret",
+     "token"
+    ],
+    "exempt_keys": [
+     "public_key"
+    ],
+    "entropy_enabled": false,
+    "entropy_min_length": 12,
+    "entropy_min_bits": 4.0,
+    "entropy_pure_letters": true,
+    "entropy_pure_digits": true,
+    "detect_pem_private_key": false,
+    "detect_db_connection_string": false,
+    "detect_email": true,
+    "detect_bank_card": false,
+    "detect_internal_ip": false,
+    "detect_external_ip": true,
+    "detect_url": true,
+    "detect_mac_address": false,
+    "detect_license_plate": false,
+    "gitleaks_enabled": false,
+    "gitleaks_config_path": "D:\\gitleaks.toml",
+    "ner_enabled": true,
+    "ner_model_path": "D:\\ner.pt",
+    "ner_device": "cpu",
+    "ner_entity_types": [
+     "PER",
+     "LOC"
+    ],
+    "ner_min_entity_chars": 3,
+    "ner_cache_size": 16
+   }
+  },
+  {
+   "name": "熵阈值超界",
+   "config": {
+    "desensitization": {
+     "entropy_min_bits": 9
+    }
+   },
+   "error": "desensitization.entropy_min_bits 必须是 0–8 之间的数。"
+  },
+  {
+   "name": "熵阈值为负",
+   "config": {
+    "desensitization": {
+     "entropy_min_bits": -1
+    }
+   },
+   "error": "desensitization.entropy_min_bits 必须是 0–8 之间的数。"
+  },
+  {
+   "name": "熵长度下限为负",
+   "config": {
+    "desensitization": {
+     "entropy_min_length": -1
+    }
+   },
+   "error": "desensitization.entropy_min_length 必须是非负整数。"
+  },
+  {
+   "name": "熵长度非整数",
+   "config": {
+    "desensitization": {
+     "entropy_min_length": 1.5
+    }
+   },
+   "error": "desensitization.entropy_min_length 必须是非负整数。"
+  },
+  {
+   "name": "设备非法",
+   "config": {
+    "desensitization": {
+     "ner_device": "GPU"
+    }
+   },
+   "error": "desensitization.ner_device 必须是 auto / cpu / cuda 之一。"
+  },
+  {
+   "name": "实体类型非法",
+   "config": {
+    "desensitization": {
+     "ner_entity_types": [
+      "XYZ"
+     ]
+    }
+   },
+   "error": "desensitization.ner_entity_types 只能包含 ['PER', 'ORG', 'LOC']。"
+  },
+  {
+   "name": "实体类型为空",
+   "config": {
+    "desensitization": {
+     "ner_entity_types": []
+    }
+   },
+   "error": "desensitization.ner_entity_types 只能包含 ['PER', 'ORG', 'LOC']。"
+  },
+  {
+   "name": "最小实体长度为零",
+   "config": {
+    "desensitization": {
+     "ner_min_entity_chars": 0
+    }
+   },
+   "error": "desensitization.ner_min_entity_chars 必须是正整数。"
+  },
+  {
+   "name": "缓存容量为负",
+   "config": {
+    "desensitization": {
+     "ner_cache_size": -1
+    }
+   },
+   "error": "desensitization.ner_cache_size 必须是非负整数。"
+  },
+  {
+   "name": "缓存容量为零",
+   "config": {
+    "desensitization": {
+     "ner_cache_size": 0
+    }
+   },
+   "result": {
+    "enabled": false,
+    "fail_closed": true,
+    "strict_restore": false,
+    "extra_sensitive_keys": [],
+    "exempt_keys": [],
+    "entropy_enabled": true,
+    "entropy_min_length": 20,
+    "entropy_min_bits": 3.5,
+    "entropy_pure_letters": false,
+    "entropy_pure_digits": false,
+    "detect_pem_private_key": true,
+    "detect_db_connection_string": true,
+    "detect_email": false,
+    "detect_bank_card": true,
+    "detect_internal_ip": true,
+    "detect_external_ip": false,
+    "detect_url": false,
+    "detect_mac_address": true,
+    "detect_license_plate": true,
+    "gitleaks_enabled": true,
+    "gitleaks_config_path": "",
+    "ner_enabled": false,
+    "ner_model_path": "",
+    "ner_device": "auto",
+    "ner_entity_types": [
+     "PER",
+     "ORG",
+     "LOC"
+    ],
+    "ner_min_entity_chars": 2,
+    "ner_cache_size": 0
+   }
+  },
+  {
+   "name": "敏感键非数组",
+   "config": {
+    "desensitization": {
+     "extra_sensitive_keys": "secret"
+    }
+   },
+   "error": "desensitization.extra_sensitive_keys 必须是字符串数组。"
+  },
+  {
+   "name": "开关非布尔",
+   "config": {
+    "desensitization": {
+     "enabled": 1
+    }
+   },
+   "error": "desensitization.enabled 必须是布尔值。"
+  },
+  {
+   "name": "段不是对象",
+   "config": {
+    "desensitization": 5
+   },
+   "error": "配置项 desensitization 必须是对象。"
+  }
+ ],
+ "desensitization_save": [
+  {
+   "text": "[llm]\nmodel = \"keep-me\"\n\n[tts]\nvoice = \"old\"\n\n[desensitization]\nenabled = true\nfail_closed = true\nstrict_restore = false\nextra_sensitive_keys = [\n    \"secret\",\n]\nexempt_keys = []\nentropy_enabled = true\nentropy_min_length = 20\nentropy_min_bits = 3.5\nentropy_pure_letters = false\nentropy_pure_digits = false\ndetect_pem_private_key = true\ndetect_db_connection_string = true\ndetect_email = false\ndetect_bank_card = true\ndetect_internal_ip = true\ndetect_external_ip = false\ndetect_url = false\ndetect_mac_address = true\ndetect_license_plate = true\ngitleaks_enabled = true\ngitleaks_config_path = \"\"\nner_enabled = false\nner_model_path = \"\"\nner_device = \"auto\"\nner_entity_types = [\n    \"PER\",\n    \"LOC\",\n]\nner_min_entity_chars = 2\nner_cache_size = 2048\n"
+  }
+ ]
+}

@@ -1,0 +1,875 @@
+{
+ "channel_defaults": [
+  {
+   "provider": "openai",
+   "key": null,
+   "result": {
+    "key": "openai-main",
+    "name": "OpenAI 主渠道",
+    "profile_id": "openai-main",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model_id": "gpt-5.2",
+    "enabled": true,
+    "api_key_env": "OPENAI_API_KEY",
+    "user_agent": ""
+   }
+  },
+  {
+   "provider": "anthropic",
+   "key": "claude-main",
+   "result": {
+    "key": "claude-main",
+    "name": "Anthropic 主渠道",
+    "profile_id": "claude-main",
+    "provider": "anthropic",
+    "protocol": "anthropic_messages",
+    "base_url": "https://api.anthropic.com",
+    "api_key": "",
+    "model_id": "claude-sonnet-4-5",
+    "enabled": true,
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "user_agent": ""
+   }
+  },
+  {
+   "provider": "gemini",
+   "key": "",
+   "result": {
+    "key": "gemini-main",
+    "name": "Gemini 主渠道",
+    "profile_id": "gemini-main",
+    "provider": "gemini",
+    "protocol": "gemini_generate_content",
+    "base_url": "https://generativelanguage.googleapis.com",
+    "api_key": "",
+    "model_id": "gemini-2.5-pro",
+    "enabled": true,
+    "api_key_env": "GEMINI_API_KEY",
+    "user_agent": ""
+   }
+  },
+  {
+   "provider": "mistral",
+   "key": null,
+   "error": "不支持的请求方式：mistral"
+  }
+ ],
+ "channel_unique_key": [
+  {
+   "name": "OpenAI 主渠道",
+   "existing": [],
+   "expected": "openai"
+  },
+  {
+   "name": "  GPT 5  ",
+   "existing": [],
+   "expected": "gpt-5"
+  },
+  {
+   "name": "OpenAI 主渠道",
+   "existing": [
+    "openai-主渠道"
+   ],
+   "expected": "openai"
+  },
+  {
+   "name": "!!!",
+   "existing": [],
+   "expected": "channel"
+  },
+  {
+   "name": "a b c",
+   "existing": [
+    "a-b-c"
+   ],
+   "expected": "a-b-c-2"
+  },
+  {
+   "name": "a b c",
+   "existing": [
+    "a-b-c",
+    "a-b-c-2"
+   ],
+   "expected": "a-b-c-3"
+  },
+  {
+   "name": "---",
+   "existing": [],
+   "expected": "channel"
+  }
+ ],
+ "channel_labels": [
+  {
+   "kind": "provider",
+   "value": "openai",
+   "label": "OpenAI"
+  },
+  {
+   "kind": "provider",
+   "value": "anthropic",
+   "label": "Anthropic"
+  },
+  {
+   "kind": "provider",
+   "value": "gemini",
+   "label": "Gemini"
+  },
+  {
+   "kind": "provider",
+   "value": "mistral",
+   "label": "mistral"
+  },
+  {
+   "kind": "protocol",
+   "value": "openai_chat_completions",
+   "label": "Chat Completions"
+  },
+  {
+   "kind": "protocol",
+   "value": "openai_responses",
+   "label": "Responses"
+  },
+  {
+   "kind": "protocol",
+   "value": "anthropic_messages",
+   "label": "Messages"
+  },
+  {
+   "kind": "protocol",
+   "value": "gemini_generate_content",
+   "label": "Generate Content"
+  },
+  {
+   "kind": "protocol",
+   "value": "unknown_protocol",
+   "label": "unknown_protocol"
+  }
+ ],
+ "channel_load": [
+  {
+   "name": "缺文件",
+   "config": {},
+   "models": null,
+   "result": {
+    "channels": [],
+    "default_key": ""
+   }
+  },
+  {
+   "name": "正常配对",
+   "config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai",
+       "api_key": "sk-x",
+       "base_url": "https://api.openai.com/v1",
+       "user_agent": "ua/1.0"
+      }
+     },
+     "active_model": {
+      "key": "gpt-5"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "gpt-5": {
+      "display_name": "GPT-5",
+      "profile": "openai-main",
+      "model_id": "gpt-5",
+      "protocol": "openai_responses"
+     },
+     "orphan": {
+      "display_name": "孤儿",
+      "profile": "missing",
+      "model_id": "x"
+     },
+     "not-a-table": 5
+    }
+   },
+   "result": {
+    "channels": [
+     {
+      "key": "gpt-5",
+      "name": "GPT-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_responses",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-x",
+      "model_id": "gpt-5",
+      "enabled": true,
+      "api_key_env": "OPENAI_API_KEY",
+      "user_agent": "ua/1.0"
+     }
+    ],
+    "default_key": "gpt-5"
+   }
+  },
+  {
+   "name": "protocol 回落到 Provider 默认",
+   "config": {
+    "llm": {
+     "profiles": {
+      "anthropic-main": {
+       "provider": "Anthropic"
+      }
+     },
+     "active_model": {
+      "key": "claude"
+     }
+    }
+   },
+   "models": {
+    "models": {
+     "claude": {
+      "profile": "anthropic-main",
+      "model_id": "claude-sonnet-4-5"
+     }
+    }
+   },
+   "result": {
+    "channels": [
+     {
+      "key": "claude",
+      "name": "claude",
+      "profile_id": "anthropic-main",
+      "provider": "anthropic",
+      "protocol": "anthropic_messages",
+      "base_url": "",
+      "api_key": "",
+      "model_id": "claude-sonnet-4-5",
+      "enabled": true,
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "user_agent": ""
+     }
+    ],
+    "default_key": "claude"
+   }
+  },
+  {
+   "name": "default_protocol 回落",
+   "config": {
+    "llm": {
+     "profiles": {
+      "gem-main": {
+       "provider": "gemini",
+       "default_protocol": "gemini_generate_content"
+      }
+     },
+     "active_model": {
+      "key": "gem"
+     }
+    }
+   },
+   "models": {
+    "models": {
+     "gem": {
+      "profile": "gem-main",
+      "model_id": "gemini-2.5-pro"
+     }
+    }
+   },
+   "result": {
+    "channels": [
+     {
+      "key": "gem",
+      "name": "gem",
+      "profile_id": "gem-main",
+      "provider": "gemini",
+      "protocol": "gemini_generate_content",
+      "base_url": "",
+      "api_key": "",
+      "model_id": "gemini-2.5-pro",
+      "enabled": true,
+      "api_key_env": "GEMINI_API_KEY",
+      "user_agent": ""
+     }
+    ],
+    "default_key": "gem"
+   }
+  },
+  {
+   "name": "关闭条目仍列出",
+   "config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai",
+       "enabled": false
+      }
+     },
+     "active_model": {
+      "key": "gpt-5"
+     }
+    }
+   },
+   "models": {
+    "models": {
+     "gpt-5": {
+      "profile": "openai-main",
+      "model_id": "gpt-5",
+      "enabled": false
+     }
+    }
+   },
+   "result": {
+    "channels": [
+     {
+      "key": "gpt-5",
+      "name": "gpt-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "base_url": "",
+      "api_key": "",
+      "model_id": "gpt-5",
+      "enabled": false,
+      "api_key_env": "OPENAI_API_KEY",
+      "user_agent": ""
+     }
+    ],
+    "default_key": ""
+   }
+  },
+  {
+   "name": "默认 key 回落到首个启用项",
+   "config": {
+    "llm": {
+     "profiles": {
+      "a": {
+       "provider": "openai"
+      },
+      "b": {
+       "provider": "gemini"
+      }
+     },
+     "active_model": {
+      "key": "missing"
+     }
+    }
+   },
+   "models": {
+    "models": {
+     "first": {
+      "profile": "a",
+      "model_id": "gpt-5"
+     },
+     "second": {
+      "profile": "b",
+      "model_id": "gemini-2.5-pro"
+     }
+    }
+   },
+   "result": {
+    "channels": [
+     {
+      "key": "first",
+      "name": "first",
+      "profile_id": "a",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "base_url": "",
+      "api_key": "",
+      "model_id": "gpt-5",
+      "enabled": true,
+      "api_key_env": "OPENAI_API_KEY",
+      "user_agent": ""
+     },
+     {
+      "key": "second",
+      "name": "second",
+      "profile_id": "b",
+      "provider": "gemini",
+      "protocol": "gemini_generate_content",
+      "base_url": "",
+      "api_key": "",
+      "model_id": "gemini-2.5-pro",
+      "enabled": true,
+      "api_key_env": "GEMINI_API_KEY",
+      "user_agent": ""
+     }
+    ],
+    "default_key": "first"
+   }
+  },
+  {
+   "name": "模型条目缺 profile",
+   "config": {
+    "llm": {
+     "profiles": {}
+    }
+   },
+   "models": {
+    "models": {
+     "x": {
+      "display_name": "无 profile"
+     }
+    }
+   },
+   "result": {
+    "channels": [],
+    "default_key": ""
+   }
+  }
+ ],
+ "channel_save": [
+  {
+   "name": "清理被移除渠道",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "gem-main",
+     "name": "Gemini 主渠道",
+     "profile_id": "gem-main",
+     "provider": "gemini",
+     "protocol": "gemini_generate_content",
+     "base_url": "https://generativelanguage.googleapis.com",
+     "api_key": "",
+     "model_id": "gemini-2.5-pro",
+     "enabled": true,
+     "api_key_env": "GEMINI_API_KEY",
+     "user_agent": ""
+    }
+   ],
+   "default_key": "gpt-5",
+   "config_text": "version = 2\n\n[llm.profiles.openai-main]\nprovider = \"openai\"\napi_key = \"sk-x\"\nenabled = true\nbase_url = \"https://api.openai.com/v1\"\napi_key_env = \"OPENAI_API_KEY\"\ndefault_protocol = \"openai_chat_completions\"\nuser_agent = \"ua/1.0\"\n\n[llm.profiles.openai-main.discovery]\nenabled = true\n\n[llm.profiles.gem-main]\nprovider = \"gemini\"\nenabled = true\nbase_url = \"https://generativelanguage.googleapis.com\"\napi_key_env = \"GEMINI_API_KEY\"\ndefault_protocol = \"gemini_generate_content\"\n\n[llm.profiles.gem-main.discovery]\nenabled = true\n\n[llm.active_model]\nsource = \"custom\"\nkey = \"openai-main\"\n",
+   "models_text": "version = 1\n\n[models.openai-main]\nprofile = \"openai-main\"\nmodel_id = \"gpt-5\"\ndisplay_name = \"OpenAI 主渠道\"\nprotocol = \"openai_chat_completions\"\nenabled = true\n\n[models.gem-main]\ndisplay_name = \"Gemini 主渠道\"\nprofile = \"gem-main\"\nmodel_id = \"gemini-2.5-pro\"\nprotocol = \"gemini_generate_content\"\nenabled = true\n"
+  },
+  {
+   "name": "默认 key 回落到启用项",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "gem-main",
+     "name": "Gemini 主渠道",
+     "profile_id": "gem-main",
+     "provider": "gemini",
+     "protocol": "gemini_generate_content",
+     "base_url": "https://generativelanguage.googleapis.com",
+     "api_key": "",
+     "model_id": "gemini-2.5-pro",
+     "enabled": true,
+     "api_key_env": "GEMINI_API_KEY",
+     "user_agent": ""
+    }
+   ],
+   "default_key": "gem-main",
+   "config_text": "version = 2\n\n[llm.profiles.openai-main]\nprovider = \"openai\"\napi_key = \"sk-x\"\nenabled = true\nbase_url = \"https://api.openai.com/v1\"\napi_key_env = \"OPENAI_API_KEY\"\ndefault_protocol = \"openai_chat_completions\"\nuser_agent = \"ua/1.0\"\n\n[llm.profiles.openai-main.discovery]\nenabled = true\n\n[llm.profiles.gem-main]\nprovider = \"gemini\"\nenabled = true\nbase_url = \"https://generativelanguage.googleapis.com\"\napi_key_env = \"GEMINI_API_KEY\"\ndefault_protocol = \"gemini_generate_content\"\n\n[llm.profiles.gem-main.discovery]\nenabled = true\n\n[llm.active_model]\nsource = \"custom\"\nkey = \"gem-main\"\n",
+   "models_text": "version = 1\n\n[models.openai-main]\nprofile = \"openai-main\"\nmodel_id = \"gpt-5\"\ndisplay_name = \"OpenAI 主渠道\"\nprotocol = \"openai_chat_completions\"\nenabled = true\n\n[models.gem-main]\ndisplay_name = \"Gemini 主渠道\"\nprofile = \"gem-main\"\nmodel_id = \"gemini-2.5-pro\"\nprotocol = \"gemini_generate_content\"\nenabled = true\n"
+  }
+ ],
+ "channel_validate": [
+  {
+   "name": "空集合",
+   "channels": [],
+   "default_key": "",
+   "error": "至少需要保留一个模型渠道。"
+  },
+  {
+   "name": "key 非法",
+   "channels": [
+    {
+     "key": "Bad Key",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "Bad Key",
+   "error": "渠道 key 非法：Bad Key"
+  },
+  {
+   "name": "key 重复",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 key 重复：openai-main"
+  },
+  {
+   "name": "缺名称",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "  ",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 openai-main 缺少名称。"
+  },
+  {
+   "name": "请求方式不支持",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "mistral",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 OpenAI 主渠道 的请求方式不支持：mistral"
+  },
+  {
+   "name": "协议不匹配",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "anthropic_messages",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 OpenAI 主渠道 的协议与请求方式不匹配。"
+  },
+  {
+   "name": "Base URL 无效",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "api.openai.com",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 OpenAI 主渠道 的 Base URL 无效。"
+  },
+  {
+   "name": "缺模型 ID",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": " ",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 OpenAI 主渠道 缺少模型 ID。"
+  },
+  {
+   "name": "User-Agent 含换行",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "a\nb"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 OpenAI 主渠道 的 User-Agent 不能包含换行。"
+  },
+  {
+   "name": "全部禁用",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": false,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "至少需要启用一个模型渠道。"
+  },
+  {
+   "name": "Profile 复用冲突",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "other",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "gemini",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    }
+   ],
+   "default_key": "openai-main",
+   "error": "渠道 OpenAI 主渠道 的协议与请求方式不匹配。"
+  }
+ ],
+ "channel_credentials": [
+  {
+   "name": "全部具备",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "gem-main",
+     "name": "Gemini 主渠道",
+     "profile_id": "gem-main",
+     "provider": "gemini",
+     "protocol": "gemini_generate_content",
+     "base_url": "https://generativelanguage.googleapis.com",
+     "api_key": "",
+     "model_id": "gemini-2.5-pro",
+     "enabled": true,
+     "api_key_env": "GEMINI_API_KEY",
+     "user_agent": ""
+    }
+   ],
+   "default_key": "openai-main",
+   "env": {},
+   "missing": [
+    "Gemini 主渠道"
+   ],
+   "usable": true
+  },
+  {
+   "name": "缺环境变量",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "gem-main",
+     "name": "Gemini 主渠道",
+     "profile_id": "gem-main",
+     "provider": "gemini",
+     "protocol": "gemini_generate_content",
+     "base_url": "https://generativelanguage.googleapis.com",
+     "api_key": "",
+     "model_id": "gemini-2.5-pro",
+     "enabled": true,
+     "api_key_env": "GEMINI_API_KEY",
+     "user_agent": ""
+    }
+   ],
+   "default_key": "openai-main",
+   "env": {},
+   "missing": [
+    "Gemini 主渠道"
+   ],
+   "usable": true
+  },
+  {
+   "name": "环境变量补齐",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": true,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "gem-main",
+     "name": "Gemini 主渠道",
+     "profile_id": "gem-main",
+     "provider": "gemini",
+     "protocol": "gemini_generate_content",
+     "base_url": "https://generativelanguage.googleapis.com",
+     "api_key": "",
+     "model_id": "gemini-2.5-pro",
+     "enabled": true,
+     "api_key_env": "GEMINI_API_KEY",
+     "user_agent": ""
+    }
+   ],
+   "default_key": "openai-main",
+   "env": {
+    "GEMINI_API_KEY": "env-key"
+   },
+   "missing": [],
+   "usable": true
+  },
+  {
+   "name": "默认渠道禁用",
+   "channels": [
+    {
+     "key": "openai-main",
+     "name": "OpenAI 主渠道",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "base_url": "https://api.openai.com/v1",
+     "api_key": "sk-x",
+     "model_id": "gpt-5",
+     "enabled": false,
+     "api_key_env": "OPENAI_API_KEY",
+     "user_agent": "ua/1.0"
+    },
+    {
+     "key": "gem-main",
+     "name": "Gemini 主渠道",
+     "profile_id": "gem-main",
+     "provider": "gemini",
+     "protocol": "gemini_generate_content",
+     "base_url": "https://generativelanguage.googleapis.com",
+     "api_key": "",
+     "model_id": "gemini-2.5-pro",
+     "enabled": true,
+     "api_key_env": "GEMINI_API_KEY",
+     "user_agent": ""
+    }
+   ],
+   "default_key": "gem-main",
+   "env": {},
+   "missing": [
+    "Gemini 主渠道"
+   ],
+   "usable": false
+  }
+ ]
+}

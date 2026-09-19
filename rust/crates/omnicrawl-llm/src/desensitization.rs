@@ -22,6 +22,8 @@ pub mod engine;
 pub mod gitleaks;
 pub mod live;
 pub mod middleware;
+pub mod ner;
+pub mod ner_weights;
 pub mod oneshot;
 pub mod rules;
 pub mod stream;

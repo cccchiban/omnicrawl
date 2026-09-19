@@ -1,0 +1,927 @@
+{
+  "source": "omnicrawl/workspace/tools.py + omnicrawl/agent/toolkit/host_tools.py",
+  "declarations": [
+    {
+      "name": "read",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "read",
+          "description": "是什么：读取工作区或内置文档中的 UTF-8 文本，并支持按行、函数或片段定位。怎么做：需要查看内容、实现或上下文时使用；只想按名称定位时不用；function_name 与 text 不可同时传。怎样做：普通读取返回‘行号: 内容’及 End of file 或 Showing lines X-Y of Z footer；函数/片段定位返回定位标题和带行号内容，超限追加续读提示；超长行标记截断，失败返回文本错误。建议：先读小范围，按普通读取的 footer 用 start_line 续读；用 function_name/text 缩小上下文，降低无关输出。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "start_line": {
+                "type": "integer"
+              },
+              "max_lines": {
+                "type": "integer"
+              },
+              "function_name": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "context_lines": {
+                "type": "integer"
+              }
+            },
+            "minProperties": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "write_file",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "write_file",
+          "description": "是什么：以 overwrite 或 append 模式写入 UTF-8 文本文件。怎么做：需要创建、覆盖或追加文本文件时使用；只修改局部内容时用 Edit_file；临时文件优先放 .omnicrawl/.agent_tmp。怎样做：成功返回‘已写入/追加 path，字符数：N’；失败返回文本错误；overwrite 会替换原内容，append 保留原内容。建议：覆盖前先 read 核对目标；明确使用 mode，path 使用工作区相对路径以减少误写范围。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              }
+            },
+            "minProperties": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "Edit_file",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "Edit_file",
+          "description": "是什么：在单个 UTF-8 文本文件中按字面替换 old_text。怎么做：需要小范围、明确目标的编辑时使用；不适合大范围重写或不确定匹配内容时使用；old_text 必须非空。怎样做：成功返回‘已修改 path，替换 N 处’，并附首个替换位置前后各 2 行的带行号上下文（仅供模型核对；TUI 只显示‘替换 N 处’摘要与 diff 预览，且旁注行号为文件真实行号）；省略 count 时必须恰好匹配 1 处，匹配 0 处或多处均返回错误码、原因和调整建议且不写入；显式 count=1 替换第 1 处，count=0 替换全部。建议：先 read 确认原文并保留足够上下文；多处匹配时提供 count 或补充上下文使其唯一，错误码可指导重试。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "old_text": {
+                "type": "string"
+              },
+              "new_text": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer"
+              }
+            },
+            "minProperties": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "bash",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "bash",
+          "description": "是什么：在工作区用 Git Bash 执行 POSIX Shell 命令。怎么做：需要运行测试、构建或 Unix 命令时使用；PowerShell 语法用 powershell，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：裁剪输出便于快速定位，需要完整验证过程时可保留全量输出或读取日志；pipefail 保证管道上游失败不被掩盖。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "diagnostic_command": {
+                "type": "string",
+                "minLength": 0
+              },
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 360
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "name": "powershell",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "powershell",
+          "description": "是什么：在工作区用 PowerShell 执行命令。怎么做：需要 Windows 命令、测试或构建时使用；POSIX Shell 用 bash，结构化 Git 操作用 git；主命令可自行裁剪输出。怎样做：返回退出码、Shell、stdout/stderr；可附 diagnostic_command 的独立结果；超长输出保留首尾并给出日志路径，失败或超时返回错误。建议：只传 PowerShell 语法并保留真实退出码；可自行裁剪输出快速定位，诊断筛选也可放独立 diagnostic_command。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "minLength": 1
+              },
+              "diagnostic_command": {
+                "type": "string",
+                "minLength": 0
+              },
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 360
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "name": "monitor",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "monitor",
+          "description": "是什么：启动、轮询、列出或停止由 Agent 管理的后台命令。怎么做：需要服务持续运行或观察长命令时使用；短命令直接用 bash/powershell；poll/stop 必须使用 start 返回的 monitor_id。怎样做：start 返回 monitor_id、Shell、状态和下一游标；poll/stop 返回状态、退出码、下一游标和事件；list 返回任务摘要；失败返回错误文本。建议：start 后用 poll(cursor) 增量读取并保存下一游标；任务会随 Agent 关闭或工作区切换终止，避免依赖长期存活。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "command": {
+                "type": "string"
+              },
+              "shell": {
+                "type": "string"
+              },
+              "monitor_id": {
+                "type": "string"
+              },
+              "cursor": {
+                "type": "integer"
+              },
+              "max_events": {
+                "type": "integer"
+              }
+            },
+            "minProperties": 1
+          }
+        }
+      }
+    },
+    {
+      "name": "update_todos",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "update_todos",
+          "description": "是什么：维护当前任务的紧凑执行清单。怎么做：多步骤任务开始和每步完成时使用；单步任务或无需展示进度时不用；todos 为空表示清除计划。怎样做：成功返回 JSON：updated 和 todos 数组，每项含 id、step、completed；最多保留 20 项，非法项会被忽略；参数错误返回文本错误。建议：首次提交完整列表，之后只更新 completed；step 短而可验证，避免把计划正文重复写入回复。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "todos": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "step": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    "completed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "step",
+                    "completed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "todos"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "name": "ask_user",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "ask_user",
+          "description": "是什么：通过工具向用户提出一个问题并等待回答（阻塞）。怎么做：question、select、confirm 三种 kind 都必须同时提供 question 和非空 options；kind=select 由用户从 options 中单选，question/confirm 默认也从 options 中选择，用户仍可输入自定义文本作为答案；每次调用只问一个问题。怎样做：成功返回 JSON：kind、question、options、answer。建议：需要用户补充信息、选择方案或确认操作时必须调用本工具，不要在普通回复中输出任何提问控制标记；多个问题应多次调用本工具。",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "question",
+                  "select",
+                  "confirm"
+                ]
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1
+              },
+              "options": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "required": [
+              "kind",
+              "question",
+              "options"
+            ],
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "name": "pause_work",
+      "declaration": {
+        "type": "function",
+        "function": {
+          "name": "pause_work",
+          "description": "是什么：主动暂停当前 Agent 的自动续跑和后续模型请求。怎么做：当任务需要用户检查、补充信息或稍后继续时调用；调用后当前工具批次完成，系统不会自动重试或继续。怎样做：无需参数，成功返回暂停状态；用户发送‘继续’即可恢复。",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  ],
+  "files": {
+    "read": [
+      {
+        "arguments": {
+          "path": "window.txt"
+        },
+        "ok": true,
+        "output": "1: 第一行\n2: 第二行\n3: 第三行\n(End of file - total 3 lines)",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "window.txt",
+          "start_line": 2,
+          "max_lines": 2
+        },
+        "ok": true,
+        "output": "2: 第二行\n3: 第三行\n(End of file - total 3 lines)",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "window.txt",
+          "start_line": 9
+        },
+        "ok": false,
+        "output": "start_line 9 超出文件范围：window.txt（共 3 行）。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "long.txt"
+        },
+        "ok": true,
+        "output": "1: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx... (line truncated to 2000 chars)\n(End of file - total 1 lines)",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "empty.txt"
+        },
+        "ok": true,
+        "output": "文件为空，或指定范围没有内容。\n(End of file - total 0 lines)",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "many.txt",
+          "start_line": 48,
+          "max_lines": 500
+        },
+        "ok": true,
+        "output": "48: 行48\n49: 行49\n50: 行50\n(End of file - total 50 lines)",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "missing.txt"
+        },
+        "ok": false,
+        "output": "不是文件：missing.txt",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": ""
+        },
+        "ok": false,
+        "output": "路径不能为空。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "snippet.txt",
+          "text": "行5",
+          "context_lines": 1,
+          "max_lines": 10
+        },
+        "ok": true,
+        "output": "定位：文字片段首次匹配（第 5-5 行，上下文 1 行）\n4: 行4\n5: 行5\n6: 行6",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "snippet.txt",
+          "text": "不存在"
+        },
+        "ok": false,
+        "output": "未找到指定文字片段（文件：snippet.txt）。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "snippet.txt",
+          "function_name": "f",
+          "text": "行5"
+        },
+        "ok": false,
+        "output": "function_name 和 text 不能同时指定。",
+        "code": null,
+        "retryable": false
+      }
+    ],
+    "write_file": [
+      {
+        "arguments": {
+          "path": "out/new.txt",
+          "content": "你好世界"
+        },
+        "ok": true,
+        "output": "已写入 out\\new.txt，字符数：4。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "out/new.txt",
+          "content": "追加",
+          "mode": "append"
+        },
+        "ok": true,
+        "output": "已追加 out\\new.txt，字符数：2。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "out/new.txt",
+          "content": "覆盖",
+          "mode": ""
+        },
+        "ok": true,
+        "output": "已写入 out\\new.txt，字符数：2。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "out/new.txt",
+          "content": "x",
+          "mode": "patch"
+        },
+        "ok": false,
+        "output": "mode 仅支持 overwrite 或 append。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "config.toml",
+          "content": "x"
+        },
+        "ok": false,
+        "output": "拒绝访问受保护路径：config.toml",
+        "code": null,
+        "retryable": false
+      }
+    ],
+    "edit_file": [
+      {
+        "arguments": {
+          "path": "edit.txt",
+          "old_text": "第二行",
+          "new_text": "改过的行"
+        },
+        "ok": true,
+        "output": "已修改 edit.txt，替换 1 处。\n首个替换位置上下文（第 1-3 行，前后各 2 行）：\n1: 第一行\n2: 改过的行\n3: 第三行",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "edit2.txt",
+          "old_text": "y",
+          "new_text": "z"
+        },
+        "ok": false,
+        "output": "错误码：FS_EDIT_NOT_FOUND；未找到 old_text（匹配到 0 处），文件未修改；请重新读取文件并补充准确上下文。",
+        "code": "FS_EDIT_NOT_FOUND",
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "edit2.txt",
+          "old_text": "x",
+          "new_text": "z"
+        },
+        "ok": false,
+        "output": "错误码：FS_EDIT_AMBIGUOUS；匹配到 2 处 old_text，文件未修改；请提供 count 或补充上下文使其唯一。",
+        "code": "FS_EDIT_AMBIGUOUS",
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "edit2.txt",
+          "old_text": "x",
+          "new_text": "z",
+          "count": 1
+        },
+        "ok": true,
+        "output": "已修改 edit2.txt，替换 1 处。\n首个替换位置上下文（第 1-2 行，前后各 2 行）：\n1: z\n2: x",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "edit2.txt",
+          "old_text": "z",
+          "new_text": "w",
+          "count": 0
+        },
+        "ok": true,
+        "output": "已修改 edit2.txt，替换 1 处。\n首个替换位置上下文（第 1-2 行，前后各 2 行）：\n1: w\n2: x",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "crlf-edit.txt",
+          "old_text": "one\ntwo",
+          "new_text": "three\nfour"
+        },
+        "ok": true,
+        "output": "已修改 crlf-edit.txt，替换 1 处。\n首个替换位置上下文（第 1-2 行，前后各 2 行）：\n1: three\n2: four",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "nope.txt",
+          "old_text": "a",
+          "new_text": "b"
+        },
+        "ok": false,
+        "output": "不是文件：nope.txt",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "crlf-edit.txt",
+          "old_text": "",
+          "new_text": "b"
+        },
+        "ok": false,
+        "output": "old_text 不能为空。",
+        "code": null,
+        "retryable": false
+      }
+    ]
+  },
+  "unsupported_locators": [
+    {
+      "arguments": {
+        "path": "locate.txt",
+        "function_name": "alpha"
+      },
+      "python_output": "未找到函数或方法：alpha（文件：locate.txt）。"
+    }
+  ],
+  "sampling": [
+    {
+      "text": "ok\n12 passed\n",
+      "expected": "ok\n12 passed\n"
+    },
+    {
+      "text": "行0\n行1\n行2\n行3\n行4\n行5\n行6\n行7\n行8\n行9\n行10\n行11\n行12\n行13\n行14\n行15\n行16\n行17\n行18\n行19\n行20\n行21\n行22\n行23\n行24\n行25\n行26\n行27\n行28\n行29\n行30\n行31\n行32\n行33\n行34\n行35\n行36\n行37\n行38\n行39\n行40\n行41\n行42\n行43\n行44\n行45\n行46\n行47\n行48\n行49\n行50\n行51\n行52\n行53\n行54\n行55\n行56\n行57\n行58\n行59\n行60\n行61\n行62\n行63\n行64\n行65\n行66\n行67\n行68\n行69\n行70\n行71\n行72\n行73\n行74\n行75\n行76\n行77\n行78\n行79\n行80\n行81\n行82\n行83\n行84\n行85\n行86\n行87\n行88\n行89\n行90\n行91\n行92\n行93\n行94\n行95\n行96\n行97\n行98\n行99\n行100\n行101\n行102\n行103\n行104\n行105\n行106\n行107\n行108\n行109\n行110\n行111\n行112\n行113\n行114\n行115\n行116\n行117\n行118\n行119\n行120\n行121\n行122\n行123\n行124\n行125\n行126\n行127\n行128\n行129\n行130\n行131\n行132\n行133\n行134\n行135\n行136\n行137\n行138\n行139\n行140\n行141\n行142\n行143\n行144\n行145\n行146\n行147\n行148\n行149\n行150\n行151\n行152\n行153\n行154\n行155\n行156\n行157\n行158\n行159\n行160\n行161\n行162\n行163\n行164\n行165\n行166\n行167\n行168\n行169\n行170\n行171\n行172\n行173\n行174\n行175\n行176\n行177\n行178\n行179\n行180\n行181\n行182\n行183\n行184\n行185\n行186\n行187\n行188\n行189\n行190\n行191\n行192\n行193\n行194\n行195\n行196\n行197\n行198\n行199\n行200\n行201\n行202\n行203\n行204\n行205\n行206\n行207\n行208\n行209\n行210\n行211\n行212\n行213\n行214\n行215\n行216\n行217\n行218\n行219\n行220\n行221\n行222\n行223\n行224\n行225\n行226\n行227\n行228\n行229\n行230\n行231\n行232\n行233\n行234\n行235\n行236\n行237\n行238\n行239\n行240\n行241\n行242\n行243\n行244\n行245\n行246\n行247\n行248\n行249\n行250\n行251\n行252\n行253\n行254\n行255\n行256\n行257\n行258\n行259\n行260\n行261\n行262\n行263\n行264\n行265\n行266\n行267\n行268\n行269\n行270\n行271\n行272\n行273\n行274\n行275\n行276\n行277\n行278\n行279\n行280\n行281\n行282\n行283\n行284\n行285\n行286\n行287\n行288\n行289\n行290\n行291\n行292\n行293\n行294\n行295\n行296\n行297\n行298\n行299\n行300\n行301\n行302\n行303\n行304\n行305\n行306\n行307\n行308\n行309\n行310\n行311\n行312\n行313\n行314\n行315\n行316\n行317\n行318\n行319\n行320\n行321\n行322\n行323\n行324\n行325\n行326\n行327\n行328\n行329\n行330\n行331\n行332\n行333\n行334\n行335\n行336\n行337\n行338\n行339\n行340\n行341\n行342\n行343\n行344\n行345\n行346\n行347\n行348\n行349\n行350\n行351\n行352\n行353\n行354\n行355\n行356\n行357\n行358\n行359\n行360\n行361\n行362\n行363\n行364\n行365\n行366\n行367\n行368\n行369\n行370\n行371\n行372\n行373\n行374\n行375\n行376\n行377\n行378\n行379\n行380\n行381\n行382\n行383\n行384\n行385\n行386\n行387\n行388\n行389\n行390\n行391\n行392\n行393\n行394\n行395\n行396\n行397\n行398\n行399\n行400\n行401\n行402\n行403\n行404\n行405\n行406\n行407\n行408\n行409\n行410\n行411\n行412\n行413\n行414\n行415\n行416\n行417\n行418\n行419\n行420\n行421\n行422\n行423\n行424\n行425\n行426\n行427\n行428\n行429\n行430\n行431\n行432\n行433\n行434\n行435\n行436\n行437\n行438\n行439\n行440\n行441\n行442\n行443\n行444\n行445\n行446\n行447\n行448\n行449\n行450\n行451\n行452\n行453\n行454\n行455\n行456\n行457\n行458\n行459\n行460\n行461\n行462\n行463\n行464\n行465\n行466\n行467\n行468\n行469\n行470\n行471\n行472\n行473\n行474\n行475\n行476\n行477\n行478\n行479\n行480\n行481\n行482\n行483\n行484\n行485\n行486\n行487\n行488\n行489\n行490\n行491\n行492\n行493\n行494\n行495\n行496\n行497\n行498\n行499\n行500\n行501\n行502\n行503\n行504\n行505\n行506\n行507\n行508\n行509\n行510\n行511\n行512\n行513\n行514\n行515\n行516\n行517\n行518\n行519\n行520\n行521\n行522\n行523\n行524\n行525\n行526\n行527\n行528\n行529\n行530\n行531\n行532\n行533\n行534\n行535\n行536\n行537\n行538\n行539\n行540\n行541\n行542\n行543\n行544\n行545\n行546\n行547\n行548\n行549\n行550\n行551\n行552\n行553\n行554\n行555\n行556\n行557\n行558\n行559\n行560\n行561\n行562\n行563\n行564\n行565\n行566\n行567\n行568\n行569\n行570\n行571\n行572\n行573\n行574\n行575\n行576\n行577\n行578\n行579\n行580\n行581\n行582\n行583\n行584\n行585\n行586\n行587\n行588\n行589\n行590\n行591\n行592\n行593\n行594\n行595\n行596\n行597\n行598\n行599\n行600\n行601\n行602\n行603\n行604\n行605\n行606\n行607\n行608\n行609\n行610\n行611\n行612\n行613\n行614\n行615\n行616\n行617\n行618\n行619\n行620\n行621\n行622\n行623\n行624\n行625\n行626\n行627\n行628\n行629\n行630\n行631\n行632\n行633\n行634\n行635\n行636\n行637\n行638\n行639\n行640\n行641\n行642\n行643\n行644\n行645\n行646\n行647\n行648\n行649\n行650\n行651\n行652\n行653\n行654\n行655\n行656\n行657\n行658\n行659\n行660\n行661\n行662\n行663\n行664\n行665\n行666\n行667\n行668\n行669\n行670\n行671\n行672\n行673\n行674\n行675\n行676\n行677\n行678\n行679\n行680\n行681\n行682\n行683\n行684\n行685\n行686\n行687\n行688\n行689\n行690\n行691\n行692\n行693\n行694\n行695\n行696\n行697\n行698\n行699\n行700\n行701\n行702\n行703\n行704\n行705\n行706\n行707\n行708\n行709\n行710\n行711\n行712\n行713\n行714\n行715\n行716\n行717\n行718\n行719\n行720\n行721\n行722\n行723\n行724\n行725\n行726\n行727\n行728\n行729\n行730\n行731\n行732\n行733\n行734\n行735\n行736\n行737\n行738\n行739\n行740\n行741\n行742\n行743\n行744\n行745\n行746\n行747\n行748\n行749\n行750\n行751\n行752\n行753\n行754\n行755\n行756\n行757\n行758\n行759\n行760\n行761\n行762\n行763\n行764\n行765\n行766\n行767\n行768\n行769\n行770\n行771\n行772\n行773\n行774\n行775\n行776\n行777\n行778\n行779\n行780\n行781\n行782\n行783\n行784\n行785\n行786\n行787\n行788\n行789\n行790\n行791\n行792\n行793\n行794\n行795\n行796\n行797\n行798\n行799\n行800\n行801\n行802\n行803\n行804\n行805\n行806\n行807\n行808\n行809\n行810\n行811\n行812\n行813\n行814\n行815\n行816\n行817\n行818\n行819\n行820\n行821\n行822\n行823\n行824\n行825\n行826\n行827\n行828\n行829\n行830\n行831\n行832\n行833\n行834\n行835\n行836\n行837\n行838\n行839\n行840\n行841\n行842\n行843\n行844\n行845\n行846\n行847\n行848\n行849\n行850\n行851\n行852\n行853\n行854\n行855\n行856\n行857\n行858\n行859\n行860\n行861\n行862\n行863\n行864\n行865\n行866\n行867\n行868\n行869\n行870\n行871\n行872\n行873\n行874\n行875\n行876\n行877\n行878\n行879\n行880\n行881\n行882\n行883\n行884\n行885\n行886\n行887\n行888\n行889\n行890\n行891\n行892\n行893\n行894\n行895\n行896\n行897\n行898\n行899\n行900\n行901\n行902\n行903\n行904\n行905\n行906\n行907\n行908\n行909\n行910\n行911\n行912\n行913\n行914\n行915\n行916\n行917\n行918\n行919\n行920\n行921\n行922\n行923\n行924\n行925\n行926\n行927\n行928\n行929\n行930\n行931\n行932\n行933\n行934\n行935\n行936\n行937\n行938\n行939\n行940\n行941\n行942\n行943\n行944\n行945\n行946\n行947\n行948\n行949\n行950\n行951\n行952\n行953\n行954\n行955\n行956\n行957\n行958\n行959\n行960\n行961\n行962\n行963\n行964\n行965\n行966\n行967\n行968\n行969\n行970\n行971\n行972\n行973\n行974\n行975\n行976\n行977\n行978\n行979\n行980\n行981\n行982\n行983\n行984\n行985\n行986\n行987\n行988\n行989\n行990\n行991\n行992\n行993\n行994\n行995\n行996\n行997\n行998\n行999\n行1000\n行1001\n行1002\n行1003\n行1004\n行1005\n行1006\n行1007\n行1008\n行1009\n行1010\n行1011\n行1012\n行1013\n行1014\n行1015\n行1016\n行1017\n行1018\n行1019\n行1020\n行1021\n行1022\n行1023\n行1024\n行1025\n行1026\n行1027\n行1028\n行1029\n行1030\n行1031\n行1032\n行1033\n行1034\n行1035\n行1036\n行1037\n行1038\n行1039\n行1040\n行1041\n行1042\n行1043\n行1044\n行1045\n行1046\n行1047\n行1048\n行1049\n行1050\n行1051\n行1052\n行1053\n行1054\n行1055\n行1056\n行1057\n行1058\n行1059\n行1060\n行1061\n行1062\n行1063\n行1064\n行1065\n行1066\n行1067\n行1068\n行1069\n行1070\n行1071\n行1072\n行1073\n行1074\n行1075\n行1076\n行1077\n行1078\n行1079\n行1080\n行1081\n行1082\n行1083\n行1084\n行1085\n行1086\n行1087\n行1088\n行1089\n行1090\n行1091\n行1092\n行1093\n行1094\n行1095\n行1096\n行1097\n行1098\n行1099\n行1100\n行1101\n行1102\n行1103\n行1104\n行1105\n行1106\n行1107\n行1108\n行1109\n行1110\n行1111\n行1112\n行1113\n行1114\n行1115\n行1116\n行1117\n行1118\n行1119\n行1120\n行1121\n行1122\n行1123\n行1124\n行1125\n行1126\n行1127\n行1128\n行1129\n行1130\n行1131\n行1132\n行1133\n行1134\n行1135\n行1136\n行1137\n行1138\n行1139\n行1140\n行1141\n行1142\n行1143\n行1144\n行1145\n行1146\n行1147\n行1148\n行1149\n行1150\n行1151\n行1152\n行1153\n行1154\n行1155\n行1156\n行1157\n行1158\n行1159\n行1160\n行1161\n行1162\n行1163\n行1164\n行1165\n行1166\n行1167\n行1168\n行1169\n行1170\n行1171\n行1172\n行1173\n行1174\n行1175\n行1176\n行1177\n行1178\n行1179\n行1180\n行1181\n行1182\n行1183\n行1184\n行1185\n行1186\n行1187\n行1188\n行1189\n行1190\n行1191\n行1192\n行1193\n行1194\n行1195\n行1196\n行1197\n行1198\n行1199\n行1200\n行1201\n行1202\n行1203\n行1204\n行1205\n行1206\n行1207\n行1208\n行1209\n行1210\n行1211\n行1212\n行1213\n行1214\n行1215\n行1216\n行1217\n行1218\n行1219\n行1220\n行1221\n行1222\n行1223\n行1224\n行1225\n行1226\n行1227\n行1228\n行1229\n行1230\n行1231\n行1232\n行1233\n行1234\n行1235\n行1236\n行1237\n行1238\n行1239\n行1240\n行1241\n行1242\n行1243\n行1244\n行1245\n行1246\n行1247\n行1248\n行1249\n行1250\n行1251\n行1252\n行1253\n行1254\n行1255\n行1256\n行1257\n行1258\n行1259\n行1260\n行1261\n行1262\n行1263\n行1264\n行1265\n行1266\n行1267\n行1268\n行1269\n行1270\n行1271\n行1272\n行1273\n行1274\n行1275\n行1276\n行1277\n行1278\n行1279\n行1280\n行1281\n行1282\n行1283\n行1284\n行1285\n行1286\n行1287\n行1288\n行1289\n行1290\n行1291\n行1292\n行1293\n行1294\n行1295\n行1296\n行1297\n行1298\n行1299\n行1300\n行1301\n行1302\n行1303\n行1304\n行1305\n行1306\n行1307\n行1308\n行1309\n行1310\n行1311\n行1312\n行1313\n行1314\n行1315\n行1316\n行1317\n行1318\n行1319\n行1320\n行1321\n行1322\n行1323\n行1324\n行1325\n行1326\n行1327\n行1328\n行1329\n行1330\n行1331\n行1332\n行1333\n行1334\n行1335\n行1336\n行1337\n行1338\n行1339\n行1340\n行1341\n行1342\n行1343\n行1344\n行1345\n行1346\n行1347\n行1348\n行1349\n行1350\n行1351\n行1352\n行1353\n行1354\n行1355\n行1356\n行1357\n行1358\n行1359\n行1360\n行1361\n行1362\n行1363\n行1364\n行1365\n行1366\n行1367\n行1368\n行1369\n行1370\n行1371\n行1372\n行1373\n行1374\n行1375\n行1376\n行1377\n行1378\n行1379\n行1380\n行1381\n行1382\n行1383\n行1384\n行1385\n行1386\n行1387\n行1388\n行1389\n行1390\n行1391\n行1392\n行1393\n行1394\n行1395\n行1396\n行1397\n行1398\n行1399\n行1400\n行1401\n行1402\n行1403\n行1404\n行1405\n行1406\n行1407\n行1408\n行1409\n行1410\n行1411\n行1412\n行1413\n行1414\n行1415\n行1416\n行1417\n行1418\n行1419\n行1420\n行1421\n行1422\n行1423\n行1424\n行1425\n行1426\n行1427\n行1428\n行1429\n行1430\n行1431\n行1432\n行1433\n行1434\n行1435\n行1436\n行1437\n行1438\n行1439\n行1440\n行1441\n行1442\n行1443\n行1444\n行1445\n行1446\n行1447\n行1448\n行1449\n行1450\n行1451\n行1452\n行1453\n行1454\n行1455\n行1456\n行1457\n行1458\n行1459\n行1460\n行1461\n行1462\n行1463\n行1464\n行1465\n行1466\n行1467\n行1468\n行1469\n行1470\n行1471\n行1472\n行1473\n行1474\n行1475\n行1476\n行1477\n行1478\n行1479\n行1480\n行1481\n行1482\n行1483\n行1484\n行1485\n行1486\n行1487\n行1488\n行1489\n行1490\n行1491\n行1492\n行1493\n行1494\n行1495\n行1496\n行1497\n行1498\n行1499\n行1500\n行1501\n行1502\n行1503\n行1504\n行1505\n行1506\n行1507\n行1508\n行1509\n行1510\n行1511\n行1512\n行1513\n行1514\n行1515\n行1516\n行1517\n行1518\n行1519\n行1520\n行1521\n行1522\n行1523\n行1524\n行1525\n行1526\n行1527\n行1528\n行1529\n行1530\n行1531\n行1532\n行1533\n行1534\n行1535\n行1536\n行1537\n行1538\n行1539\n行1540\n行1541\n行1542\n行1543\n行1544\n行1545\n行1546\n行1547\n行1548\n行1549\n行1550\n行1551\n行1552\n行1553\n行1554\n行1555\n行1556\n行1557\n行1558\n行1559\n行1560\n行1561\n行1562\n行1563\n行1564\n行1565\n行1566\n行1567\n行1568\n行1569\n行1570\n行1571\n行1572\n行1573\n行1574\n行1575\n行1576\n行1577\n行1578\n行1579\n行1580\n行1581\n行1582\n行1583\n行1584\n行1585\n行1586\n行1587\n行1588\n行1589\n行1590\n行1591\n行1592\n行1593\n行1594\n行1595\n行1596\n行1597\n行1598\n行1599\n行1600\n行1601\n行1602\n行1603\n行1604\n行1605\n行1606\n行1607\n行1608\n行1609\n行1610\n行1611\n行1612\n行1613\n行1614\n行1615\n行1616\n行1617\n行1618\n行1619\n行1620\n行1621\n行1622\n行1623\n行1624\n行1625\n行1626\n行1627\n行1628\n行1629\n行1630\n行1631\n行1632\n行1633\n行1634\n行1635\n行1636\n行1637\n行1638\n行1639\n行1640\n行1641\n行1642\n行1643\n行1644\n行1645\n行1646\n行1647\n行1648\n行1649\n行1650\n行1651\n行1652\n行1653\n行1654\n行1655\n行1656\n行1657\n行1658\n行1659\n行1660\n行1661\n行1662\n行1663\n行1664\n行1665\n行1666\n行1667\n行1668\n行1669\n行1670\n行1671\n行1672\n行1673\n行1674\n行1675\n行1676\n行1677\n行1678\n行1679\n行1680\n行1681\n行1682\n行1683\n行1684\n行1685\n行1686\n行1687\n行1688\n行1689\n行1690\n行1691\n行1692\n行1693\n行1694\n行1695\n行1696\n行1697\n行1698\n行1699\n行1700\n行1701\n行1702\n行1703\n行1704\n行1705\n行1706\n行1707\n行1708\n行1709\n行1710\n行1711\n行1712\n行1713\n行1714\n行1715\n行1716\n行1717\n行1718\n行1719\n行1720\n行1721\n行1722\n行1723\n行1724\n行1725\n行1726\n行1727\n行1728\n行1729\n行1730\n行1731\n行1732\n行1733\n行1734\n行1735\n行1736\n行1737\n行1738\n行1739\n行1740\n行1741\n行1742\n行1743\n行1744\n行1745\n行1746\n行1747\n行1748\n行1749\n行1750\n行1751\n行1752\n行1753\n行1754\n行1755\n行1756\n行1757\n行1758\n行1759\n行1760\n行1761\n行1762\n行1763\n行1764\n行1765\n行1766\n行1767\n行1768\n行1769\n行1770\n行1771\n行1772\n行1773\n行1774\n行1775\n行1776\n行1777\n行1778\n行1779\n行1780\n行1781\n行1782\n行1783\n行1784\n行1785\n行1786\n行1787\n行1788\n行1789\n行1790\n行1791\n行1792\n行1793\n行1794\n行1795\n行1796\n行1797\n行1798\n行1799\n行1800\n行1801\n行1802\n行1803\n行1804\n行1805\n行1806\n行1807\n行1808\n行1809\n行1810\n行1811\n行1812\n行1813\n行1814\n行1815\n行1816\n行1817\n行1818\n行1819\n行1820\n行1821\n行1822\n行1823\n行1824\n行1825\n行1826\n行1827\n行1828\n行1829\n行1830\n行1831\n行1832\n行1833\n行1834\n行1835\n行1836\n行1837\n行1838\n行1839\n行1840\n行1841\n行1842\n行1843\n行1844\n行1845\n行1846\n行1847\n行1848\n行1849\n行1850\n行1851\n行1852\n行1853\n行1854\n行1855\n行1856\n行1857\n行1858\n行1859\n行1860\n行1861\n行1862\n行1863\n行1864\n行1865\n行1866\n行1867\n行1868\n行1869\n行1870\n行1871\n行1872\n行1873\n行1874\n行1875\n行1876\n行1877\n行1878\n行1879\n行1880\n行1881\n行1882\n行1883\n行1884\n行1885\n行1886\n行1887\n行1888\n行1889\n行1890\n行1891\n行1892\n行1893\n行1894\n行1895\n行1896\n行1897\n行1898\n行1899\n行1900\n行1901\n行1902\n行1903\n行1904\n行1905\n行1906\n行1907\n行1908\n行1909\n行1910\n行1911\n行1912\n行1913\n行1914\n行1915\n行1916\n行1917\n行1918\n行1919\n行1920\n行1921\n行1922\n行1923\n行1924\n行1925\n行1926\n行1927\n行1928\n行1929\n行1930\n行1931\n行1932\n行1933\n行1934\n行1935\n行1936\n行1937\n行1938\n行1939\n行1940\n行1941\n行1942\n行1943\n行1944\n行1945\n行1946\n行1947\n行1948\n行1949\n行1950\n行1951\n行1952\n行1953\n行1954\n行1955\n行1956\n行1957\n行1958\n行1959\n行1960\n行1961\n行1962\n行1963\n行1964\n行1965\n行1966\n行1967\n行1968\n行1969\n行1970\n行1971\n行1972\n行1973\n行1974\n行1975\n行1976\n行1977\n行1978\n行1979\n行1980\n行1981\n行1982\n行1983\n行1984\n行1985\n行1986\n行1987\n行1988\n行1989\n行1990\n行1991\n行1992\n行1993\n行1994\n行1995\n行1996\n行1997\n行1998\n行1999\n",
+      "expected": "行0\n行1\n行2\n行3\n行4\n行5\n行6\n行7\n行8\n行9\n行10\n行11\n行12\n行13\n行14\n行15\n行16\n行17\n行18\n行19\n行20\n行21\n行22\n行23\n行24\n行25\n行26\n行27\n行28\n行29\n行30\n行31\n行32\n行33\n行34\n行35\n行36\n行37\n行38\n行39\n行40\n行41\n行42\n行43\n行44\n行45\n行46\n行47\n行48\n行49\n行50\n行51\n行52\n行53\n行54\n行55\n行56\n行57\n行58\n行59\n行60\n行61\n行62\n行63\n行64\n行65\n行66\n行67\n行68\n行69\n行70\n行71\n行72\n行73\n行74\n行75\n行76\n行77\n行78\n行79\n行80\n行81\n行82\n行83\n行84\n行85\n行86\n行87\n行88\n行89\n行90\n行91\n行92\n行93\n行94\n行95\n行96\n行97\n行98\n行99\n行100\n行101\n行102\n行103\n行104\n行105\n行106\n行107\n行108\n行109\n行110\n行111\n行112\n行113\n行114\n行115\n行116\n行117\n行118\n行119\n行120\n行121\n行122\n行123\n行124\n行125\n行126\n行127\n行128\n行129\n行130\n行131\n行132\n行133\n行134\n行135\n行136\n行137\n行138\n行139\n行140\n行141\n行142\n行143\n行144\n行145\n行146\n行147\n行148\n行149\n行150\n行151\n行152\n行153\n行154\n行155\n行156\n行157\n行158\n行159\n行160\n行161\n行162\n行163\n行164\n行165\n行166\n行167\n行168\n行169\n行170\n行171\n行172\n行173\n行174\n行175\n行176\n行177\n行178\n行179\n行180\n行181\n行182\n行183\n行184\n行185\n行186\n行187\n行188\n行189\n行190\n行191\n行192\n行193\n行194\n行195\n行196\n行197\n行198\n行199\n行200\n行201\n行202\n行203\n行204\n行205\n行206\n行207\n行208\n行209\n行210\n行211\n行212\n行213\n行214\n行215\n行216\n行217\n行218\n行219\n行220\n行221\n行222\n行223\n行224\n行225\n行226\n行227\n行228\n行229\n行230\n行231\n行232\n行233\n行234\n行235\n行236\n行237\n行238\n行239\n行240\n行241\n行242\n行243\n行244\n行245\n行246\n行247\n行248\n行249\n行250\n行251\n行252\n行253\n行254\n行255\n行256\n行257\n行258\n行259\n行260\n行261\n行262\n行263\n行264\n行265\n行266\n行267\n行268\n行269\n行270\n行271\n行272\n行273\n行274\n行275\n行276\n行277\n行278\n行279\n行280\n行281\n行282\n行283\n行284\n行285\n行286\n行287\n行288\n行289\n行290\n行291\n行292\n行293\n行294\n行295\n行296\n行297\n行298\n行299\n行300\n行301\n行302\n行303\n行304\n行305\n行306\n行307\n行308\n行309\n行310\n行311\n行312\n行313\n行314\n行315\n行316\n行317\n行318\n行319\n行320\n行321\n行322\n行323\n行324\n行325\n行326\n行327\n行328\n行329\n行330\n行331\n行332\n行333\n行334\n行335\n行336\n行337\n行338\n行339\n行340\n行341\n行342\n行343\n行344\n行345\n行346\n行347\n行348\n行349\n行350\n行351\n行352\n行353\n行354\n行355\n行356\n行357\n行358\n行359\n行360\n行361\n行362\n行363\n行364\n行365\n行366\n行367\n行368\n行369\n行370\n行371\n行372\n行373\n行374\n行375\n行376\n行377\n行378\n行379\n行380\n行381\n行382\n行383\n行384\n行385\n行386\n行387\n行388\n行389\n行390\n行391\n行392\n行393\n行394\n行395\n行396\n行397\n行398\n行399\n行400\n行401\n行402\n行403\n行404\n行405\n行406\n行407\n行408\n行409\n行410\n行411\n行412\n行413\n行414\n行415\n行416\n行417\n行418\n行419\n行420\n行421\n\n… 系统已截断：共 2000 行，仅保留首部 422 行与尾部 1000 行（省略 578 行）。\n行1000\n行1001\n行1002\n行1003\n行1004\n行1005\n行1006\n行1007\n行1008\n行1009\n行1010\n行1011\n行1012\n行1013\n行1014\n行1015\n行1016\n行1017\n行1018\n行1019\n行1020\n行1021\n行1022\n行1023\n行1024\n行1025\n行1026\n行1027\n行1028\n行1029\n行1030\n行1031\n行1032\n行1033\n行1034\n行1035\n行1036\n行1037\n行1038\n行1039\n行1040\n行1041\n行1042\n行1043\n行1044\n行1045\n行1046\n行1047\n行1048\n行1049\n行1050\n行1051\n行1052\n行1053\n行1054\n行1055\n行1056\n行1057\n行1058\n行1059\n行1060\n行1061\n行1062\n行1063\n行1064\n行1065\n行1066\n行1067\n行1068\n行1069\n行1070\n行1071\n行1072\n行1073\n行1074\n行1075\n行1076\n行1077\n行1078\n行1079\n行1080\n行1081\n行1082\n行1083\n行1084\n行1085\n行1086\n行1087\n行1088\n行1089\n行1090\n行1091\n行1092\n行1093\n行1094\n行1095\n行1096\n行1097\n行1098\n行1099\n行1100\n行1101\n行1102\n行1103\n行1104\n行1105\n行1106\n行1107\n行1108\n行1109\n行1110\n行1111\n行1112\n行1113\n行1114\n行1115\n行1116\n行1117\n行1118\n行1119\n行1120\n行1121\n行1122\n行1123\n行1124\n行1125\n行1126\n行1127\n行1128\n行1129\n行1130\n行1131\n行1132\n行1133\n行1134\n行1135\n行1136\n行1137\n行1138\n行1139\n行1140\n行1141\n行1142\n行1143\n行1144\n行1145\n行1146\n行1147\n行1148\n行1149\n行1150\n行1151\n行1152\n行1153\n行1154\n行1155\n行1156\n行1157\n行1158\n行1159\n行1160\n行1161\n行1162\n行1163\n行1164\n行1165\n行1166\n行1167\n行1168\n行1169\n行1170\n行1171\n行1172\n行1173\n行1174\n行1175\n行1176\n行1177\n行1178\n行1179\n行1180\n行1181\n行1182\n行1183\n行1184\n行1185\n行1186\n行1187\n行1188\n行1189\n行1190\n行1191\n行1192\n行1193\n行1194\n行1195\n行1196\n行1197\n行1198\n行1199\n行1200\n行1201\n行1202\n行1203\n行1204\n行1205\n行1206\n行1207\n行1208\n行1209\n行1210\n行1211\n行1212\n行1213\n行1214\n行1215\n行1216\n行1217\n行1218\n行1219\n行1220\n行1221\n行1222\n行1223\n行1224\n行1225\n行1226\n行1227\n行1228\n行1229\n行1230\n行1231\n行1232\n行1233\n行1234\n行1235\n行1236\n行1237\n行1238\n行1239\n行1240\n行1241\n行1242\n行1243\n行1244\n行1245\n行1246\n行1247\n行1248\n行1249\n行1250\n行1251\n行1252\n行1253\n行1254\n行1255\n行1256\n行1257\n行1258\n行1259\n行1260\n行1261\n行1262\n行1263\n行1264\n行1265\n行1266\n行1267\n行1268\n行1269\n行1270\n行1271\n行1272\n行1273\n行1274\n行1275\n行1276\n行1277\n行1278\n行1279\n行1280\n行1281\n行1282\n行1283\n行1284\n行1285\n行1286\n行1287\n行1288\n行1289\n行1290\n行1291\n行1292\n行1293\n行1294\n行1295\n行1296\n行1297\n行1298\n行1299\n行1300\n行1301\n行1302\n行1303\n行1304\n行1305\n行1306\n行1307\n行1308\n行1309\n行1310\n行1311\n行1312\n行1313\n行1314\n行1315\n行1316\n行1317\n行1318\n行1319\n行1320\n行1321\n行1322\n行1323\n行1324\n行1325\n行1326\n行1327\n行1328\n行1329\n行1330\n行1331\n行1332\n行1333\n行1334\n行1335\n行1336\n行1337\n行1338\n行1339\n行1340\n行1341\n行1342\n行1343\n行1344\n行1345\n行1346\n行1347\n行1348\n行1349\n行1350\n行1351\n行1352\n行1353\n行1354\n行1355\n行1356\n行1357\n行1358\n行1359\n行1360\n行1361\n行1362\n行1363\n行1364\n行1365\n行1366\n行1367\n行1368\n行1369\n行1370\n行1371\n行1372\n行1373\n行1374\n行1375\n行1376\n行1377\n行1378\n行1379\n行1380\n行1381\n行1382\n行1383\n行1384\n行1385\n行1386\n行1387\n行1388\n行1389\n行1390\n行1391\n行1392\n行1393\n行1394\n行1395\n行1396\n行1397\n行1398\n行1399\n行1400\n行1401\n行1402\n行1403\n行1404\n行1405\n行1406\n行1407\n行1408\n行1409\n行1410\n行1411\n行1412\n行1413\n行1414\n行1415\n行1416\n行1417\n行1418\n行1419\n行1420\n行1421\n行1422\n行1423\n行1424\n行1425\n行1426\n行1427\n行1428\n行1429\n行1430\n行1431\n行1432\n行1433\n行1434\n行1435\n行1436\n行1437\n行1438\n行1439\n行1440\n行1441\n行1442\n行1443\n行1444\n行1445\n行1446\n行1447\n行1448\n行1449\n行1450\n行1451\n行1452\n行1453\n行1454\n行1455\n行1456\n行1457\n行1458\n行1459\n行1460\n行1461\n行1462\n行1463\n行1464\n行1465\n行1466\n行1467\n行1468\n行1469\n行1470\n行1471\n行1472\n行1473\n行1474\n行1475\n行1476\n行1477\n行1478\n行1479\n行1480\n行1481\n行1482\n行1483\n行1484\n行1485\n行1486\n行1487\n行1488\n行1489\n行1490\n行1491\n行1492\n行1493\n行1494\n行1495\n行1496\n行1497\n行1498\n行1499\n行1500\n行1501\n行1502\n行1503\n行1504\n行1505\n行1506\n行1507\n行1508\n行1509\n行1510\n行1511\n行1512\n行1513\n行1514\n行1515\n行1516\n行1517\n行1518\n行1519\n行1520\n行1521\n行1522\n行1523\n行1524\n行1525\n行1526\n行1527\n行1528\n行1529\n行1530\n行1531\n行1532\n行1533\n行1534\n行1535\n行1536\n行1537\n行1538\n行1539\n行1540\n行1541\n行1542\n行1543\n行1544\n行1545\n行1546\n行1547\n行1548\n行1549\n行1550\n行1551\n行1552\n行1553\n行1554\n行1555\n行1556\n行1557\n行1558\n行1559\n行1560\n行1561\n行1562\n行1563\n行1564\n行1565\n行1566\n行1567\n行1568\n行1569\n行1570\n行1571\n行1572\n行1573\n行1574\n行1575\n行1576\n行1577\n行1578\n行1579\n行1580\n行1581\n行1582\n行1583\n行1584\n行1585\n行1586\n行1587\n行1588\n行1589\n行1590\n行1591\n行1592\n行1593\n行1594\n行1595\n行1596\n行1597\n行1598\n行1599\n行1600\n行1601\n行1602\n行1603\n行1604\n行1605\n行1606\n行1607\n行1608\n行1609\n行1610\n行1611\n行1612\n行1613\n行1614\n行1615\n行1616\n行1617\n行1618\n行1619\n行1620\n行1621\n行1622\n行1623\n行1624\n行1625\n行1626\n行1627\n行1628\n行1629\n行1630\n行1631\n行1632\n行1633\n行1634\n行1635\n行1636\n行1637\n行1638\n行1639\n行1640\n行1641\n行1642\n行1643\n行1644\n行1645\n行1646\n行1647\n行1648\n行1649\n行1650\n行1651\n行1652\n行1653\n行1654\n行1655\n行1656\n行1657\n行1658\n行1659\n行1660\n行1661\n行1662\n行1663\n行1664\n行1665\n行1666\n行1667\n行1668\n行1669\n行1670\n行1671\n行1672\n行1673\n行1674\n行1675\n行1676\n行1677\n行1678\n行1679\n行1680\n行1681\n行1682\n行1683\n行1684\n行1685\n行1686\n行1687\n行1688\n行1689\n行1690\n行1691\n行1692\n行1693\n行1694\n行1695\n行1696\n行1697\n行1698\n行1699\n行1700\n行1701\n行1702\n行1703\n行1704\n行1705\n行1706\n行1707\n行1708\n行1709\n行1710\n行1711\n行1712\n行1713\n行1714\n行1715\n行1716\n行1717\n行1718\n行1719\n行1720\n行1721\n行1722\n行1723\n行1724\n行1725\n行1726\n行1727\n行1728\n行1729\n行1730\n行1731\n行1732\n行1733\n行1734\n行1735\n行1736\n行1737\n行1738\n行1739\n行1740\n行1741\n行1742\n行1743\n行1744\n行1745\n行1746\n行1747\n行1748\n行1749\n行1750\n行1751\n行1752\n行1753\n行1754\n行1755\n行1756\n行1757\n行1758\n行1759\n行1760\n行1761\n行1762\n行1763\n行1764\n行1765\n行1766\n行1767\n行1768\n行1769\n行1770\n行1771\n行1772\n行1773\n行1774\n行1775\n行1776\n行1777\n行1778\n行1779\n行1780\n行1781\n行1782\n行1783\n行1784\n行1785\n行1786\n行1787\n行1788\n行1789\n行1790\n行1791\n行1792\n行1793\n行1794\n行1795\n行1796\n行1797\n行1798\n行1799\n行1800\n行1801\n行1802\n行1803\n行1804\n行1805\n行1806\n行1807\n行1808\n行1809\n行1810\n行1811\n行1812\n行1813\n行1814\n行1815\n行1816\n行1817\n行1818\n行1819\n行1820\n行1821\n行1822\n行1823\n行1824\n行1825\n行1826\n行1827\n行1828\n行1829\n行1830\n行1831\n行1832\n行1833\n行1834\n行1835\n行1836\n行1837\n行1838\n行1839\n行1840\n行1841\n行1842\n行1843\n行1844\n行1845\n行1846\n行1847\n行1848\n行1849\n行1850\n行1851\n行1852\n行1853\n行1854\n行1855\n行1856\n行1857\n行1858\n行1859\n行1860\n行1861\n行1862\n行1863\n行1864\n行1865\n行1866\n行1867\n行1868\n行1869\n行1870\n行1871\n行1872\n行1873\n行1874\n行1875\n行1876\n行1877\n行1878\n行1879\n行1880\n行1881\n行1882\n行1883\n行1884\n行1885\n行1886\n行1887\n行1888\n行1889\n行1890\n行1891\n行1892\n行1893\n行1894\n行1895\n行1896\n行1897\n行1898\n行1899\n行1900\n行1901\n行1902\n行1903\n行1904\n行1905\n行1906\n行1907\n行1908\n行1909\n行1910\n行1911\n行1912\n行1913\n行1914\n行1915\n行1916\n行1917\n行1918\n行1919\n行1920\n行1921\n行1922\n行1923\n行1924\n行1925\n行1926\n行1927\n行1928\n行1929\n行1930\n行1931\n行1932\n行1933\n行1934\n行1935\n行1936\n行1937\n行1938\n行1939\n行1940\n行1941\n行1942\n行1943\n行1944\n行1945\n行1946\n行1947\n行1948\n行1949\n行1950\n行1951\n行1952\n行1953\n行1954\n行1955\n行1956\n行1957\n行1958\n行1959\n行1960\n行1961\n行1962\n行1963\n行1964\n行1965\n行1966\n行1967\n行1968\n行1969\n行1970\n行1971\n行1972\n行1973\n行1974\n行1975\n行1976\n行1977\n行1978\n行1979\n行1980\n行1981\n行1982\n行1983\n行1984\n行1985\n行1986\n行1987\n行1988\n行1989\n行1990\n行1991\n行1992\n行1993\n行1994\n行1995\n行1996\n行1997\n行1998\n行1999\n"
+    },
+    {
+      "text": "",
+      "expected": ""
+    }
+  ],
+  "search": {
+    "list": [
+      {
+        "arguments": {
+          "path": "."
+        },
+        "ok": true,
+        "output": ".gitignore\nnode_modules/\nnotes.md\nREADME.md\nsrc/",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "src"
+        },
+        "ok": true,
+        "output": "src\\agent.py\nsrc\\deep/\nsrc\\helper.py",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "src",
+          "recursive": true
+        },
+        "ok": true,
+        "output": "src\\agent.py\nsrc\\deep/\nsrc\\deep\\tool.py\nsrc\\helper.py",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "README.md"
+        },
+        "ok": true,
+        "output": "README.md",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "nope"
+        },
+        "ok": false,
+        "output": "路径不存在：nope",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "path": "config.toml"
+        },
+        "ok": false,
+        "output": "拒绝访问受保护路径：config.toml",
+        "code": null,
+        "retryable": false
+      }
+    ],
+    "find": [
+      {
+        "arguments": {
+          "pattern": "agent"
+        },
+        "ok": true,
+        "output": "src\\agent.py",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "*.py"
+        },
+        "ok": true,
+        "output": "src\\agent.py\nsrc\\deep\\tool.py\nsrc\\helper.py",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "tool"
+        },
+        "ok": true,
+        "output": "src\\deep\\tool.py",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "AGENT",
+          "case_sensitive": true
+        },
+        "ok": true,
+        "output": "未找到匹配结果。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "src",
+          "kind": "directory"
+        },
+        "ok": true,
+        "output": "src/\nsrc\\deep/",
+        "code": null,
+        "retryable": false,
+        "compare": "lines_sorted"
+      },
+      {
+        "arguments": {
+          "pattern": "*.py",
+          "max_results": 1
+        },
+        "ok": true,
+        "output": "src\\agent.py\n... 已达到 max_results（1），共 3 条。完整结果已保存至：<WORKSPACE>\\.omnicrawl\\.agent_tmp\\files\\find_results_<ID>.txt",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "x",
+          "kind": "symlink"
+        },
+        "ok": false,
+        "output": "kind 仅支持 all、file 或 directory。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": ""
+        },
+        "ok": false,
+        "output": "pattern 不能为空。",
+        "code": null,
+        "retryable": false
+      }
+    ],
+    "grep": [
+      {
+        "arguments": {
+          "pattern": "Agent"
+        },
+        "ok": true,
+        "output": "notes.md:1: Agent 说明\nsrc\\agent.py:1: class Agent:\nsrc\\deep\\tool.py:1: TOOL = 'agent'",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "Agent",
+          "count": true
+        },
+        "ok": true,
+        "output": "notes.md: 1\nsrc\\agent.py: 1\nsrc\\deep\\tool.py: 1",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "Agent",
+          "files_with_matches": true
+        },
+        "ok": true,
+        "output": "notes.md\nsrc\\agent.py\nsrc\\deep\\tool.py",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "def run",
+          "context_lines": 1
+        },
+        "ok": true,
+        "output": "src\\agent.py-1- class Agent:\nsrc\\agent.py:2:     def run(self):\nsrc\\agent.py-3-         return self.tools",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "Agent",
+          "include": "*.py"
+        },
+        "ok": true,
+        "output": "src\\agent.py:1: class Agent:\nsrc\\deep\\tool.py:1: TOOL = 'agent'",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "Agent",
+          "exclude": "*.py"
+        },
+        "ok": true,
+        "output": "notes.md:1: Agent 说明",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "self.tools",
+          "use_regex": false
+        },
+        "ok": true,
+        "output": "src\\agent.py:3:         return self.tools",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "AGENT",
+          "case_sensitive": true
+        },
+        "ok": true,
+        "output": "未找到匹配结果。",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "agent",
+          "path": "src"
+        },
+        "ok": true,
+        "output": "src\\agent.py:1: class Agent:\nsrc\\deep\\tool.py:1: TOOL = 'agent'",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "agent",
+          "path": "src/*.py"
+        },
+        "ok": true,
+        "output": "src\\agent.py:1: class Agent:",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "Agent",
+          "max_results": 1
+        },
+        "ok": true,
+        "output": "notes.md:1: Agent 说明\n... 已达到 max_results（1），共 3 条匹配。完整结果已保存至：<WORKSPACE>\\.omnicrawl\\.agent_tmp\\files\\grep_matches_<ID>.txt",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "Agent",
+          "path": "nope"
+        },
+        "ok": false,
+        "output": "路径不存在：nope",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": "Agent",
+          "path": "*.nope"
+        },
+        "ok": false,
+        "output": "路径不存在或 glob 未匹配：*.nope",
+        "code": null,
+        "retryable": false
+      },
+      {
+        "arguments": {
+          "pattern": ""
+        },
+        "ok": false,
+        "output": "pattern 不能为空。",
+        "code": null,
+        "retryable": false
+      }
+    ]
+  },
+  "git": [
+    {
+      "arguments": {
+        "action": "frobnicate"
+      },
+      "ok": false,
+      "output": "不支持的 git 子命令：frobnicate。"
+    },
+    {
+      "arguments": {
+        "action": "status",
+        "args": [
+          "--git-dir=/tmp/x"
+        ]
+      },
+      "ok": false,
+      "output": "git 工具不允许参数：--git-dir=/tmp/x。"
+    },
+    {
+      "arguments": {
+        "action": "config",
+        "args": [
+          "--global",
+          "user.name",
+          "x"
+        ]
+      },
+      "ok": false,
+      "output": "git config 不允许修改全局/系统配置或指定 --file。"
+    },
+    {
+      "arguments": {
+        "action": "archive",
+        "args": [
+          "-o",
+          "out.zip"
+        ]
+      },
+      "ok": false,
+      "output": "git archive 不允许 -o/--output，输出只能走 stdout。"
+    },
+    {
+      "arguments": {
+        "action": "commit"
+      },
+      "ok": false,
+      "output": "commit 必须提供 message，或显式传入 --no-edit。"
+    },
+    {
+      "arguments": {
+        "action": "commit",
+        "message": 5
+      },
+      "ok": false,
+      "output": "message 必须是字符串。"
+    },
+    {
+      "arguments": {
+        "action": "add",
+        "paths": [
+          "../outside.txt"
+        ]
+      },
+      "ok": false,
+      "output": "路径越界（必须在工作区内）：../outside.txt。"
+    },
+    {
+      "arguments": {
+        "action": "status"
+      },
+      "ok": true,
+      "output": "On branch master\n\nNo commits yet\n\nnothing to commit (create/copy files and use \"git add\" to track)\n"
+    }
+  ]
+}

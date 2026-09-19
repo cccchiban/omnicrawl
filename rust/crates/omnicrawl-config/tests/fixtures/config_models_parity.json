@@ -1,0 +1,3719 @@
+{
+ "reasoning_effort": [
+  {
+   "value": "",
+   "expected": ""
+  },
+  {
+   "value": " ",
+   "expected": ""
+  },
+  {
+   "value": "disabled",
+   "expected": "disabled"
+  },
+  {
+   "value": "off",
+   "expected": "disabled"
+  },
+  {
+   "value": "none",
+   "expected": "none"
+  },
+  {
+   "value": "low",
+   "expected": "low"
+  },
+  {
+   "value": "medium",
+   "expected": "medium"
+  },
+  {
+   "value": "med",
+   "expected": "medium"
+  },
+  {
+   "value": "high",
+   "expected": "high"
+  },
+  {
+   "value": "xhigh",
+   "expected": "xhigh"
+  },
+  {
+   "value": "x_high",
+   "expected": "xhigh"
+  },
+  {
+   "value": "extra_high",
+   "expected": "xhigh"
+  },
+  {
+   "value": "very_high",
+   "expected": "xhigh"
+  },
+  {
+   "value": "max",
+   "expected": "max"
+  },
+  {
+   "value": "maximum",
+   "expected": "max"
+  },
+  {
+   "value": "NONE",
+   "expected": "none"
+  },
+  {
+   "value": " High ",
+   "expected": "high"
+  },
+  {
+   "value": "high-x",
+   "error": "llm.reasoning_effort 仅支持 disabled, high, low, max, medium, none, xhigh，当前值：high-x。"
+  },
+  {
+   "value": "high x",
+   "error": "llm.reasoning_effort 仅支持 disabled, high, low, max, medium, none, xhigh，当前值：high x。"
+  },
+  {
+   "value": "bogus",
+   "error": "llm.reasoning_effort 仅支持 disabled, high, low, max, medium, none, xhigh，当前值：bogus。"
+  },
+  {
+   "value": "極高",
+   "error": "llm.reasoning_effort 仅支持 disabled, high, low, max, medium, none, xhigh，当前值：極高。"
+  }
+ ],
+ "llm_normalize": [
+  {
+   "error": "缺少配置 llm.api_key，请在 config.toml 中填写 llm.api_key，或设置环境变量 OPENAI_API_KEY。",
+   "name": "默认视图",
+   "input": {},
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "env-key",
+    "base_url": "https://env",
+    "model": "env-model",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "凭据从环境取",
+   "input": {},
+   "env": {
+    "OPENAI_API_KEY": "env-key",
+    "OPENAI_BASE_URL": "https://env",
+    "OPENAI_MODEL": "env-model"
+   }
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "gpt-5.2",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "legacy 齐全",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "gpt-5.2"
+   },
+   "env": {}
+  },
+  {
+   "error": "缺少配置 llm.api_key，请在 config.toml 中填写 llm.api_key，或设置环境变量 OPENAI_API_KEY。",
+   "name": "legacy 缺 api_key",
+   "input": {
+    "base_url": "https://api",
+    "model": "m"
+   },
+   "env": {}
+  },
+  {
+   "error": "缺少配置 llm.base_url，请在 config.toml 中填写 llm.base_url，或设置环境变量 OPENAI_BASE_URL。",
+   "name": "legacy 缺 base_url",
+   "input": {
+    "api_key": "k",
+    "model": "m"
+   },
+   "env": {}
+  },
+  {
+   "error": "缺少配置 llm.model，请在 config.toml 中填写 llm.model，或设置环境变量 OPENAI_MODEL。",
+   "name": "legacy 缺 model",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api"
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "custom",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "custom 齐全",
+   "input": {
+    "model_source": "custom",
+    "model": "m",
+    "api_key": "k"
+   },
+   "env": {}
+  },
+  {
+   "error": "缺少当前模型 model_id。",
+   "name": "custom 缺 model",
+   "input": {
+    "model_source": "custom",
+    "api_key": "k"
+   },
+   "env": {}
+  },
+  {
+   "error": "缺少 API Key，请设置环境变量 OPENAI_API_KEY 或在 Profile 中配置 api_key。",
+   "name": "custom 缺 api_key",
+   "input": {
+    "model_source": "custom",
+    "model": "m"
+   },
+   "env": {}
+  },
+  {
+   "error": "缺少 API Key，请设置环境变量 MY_KEY 或在 Profile 中配置 api_key。",
+   "name": "custom 缺 api_key 带 env 名",
+   "input": {
+    "model_source": "custom",
+    "model": "m",
+    "api_key_env": "MY_KEY"
+   },
+   "env": {}
+  },
+  {
+   "error": "配置项 llm.context_window_tokens 必须大于 0。",
+   "name": "窗口为零",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "context_window_tokens": 0
+   },
+   "env": {}
+  },
+  {
+   "error": "配置项 llm.context_window_tokens 必须大于 0。",
+   "name": "窗口为负",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "context_window_tokens": -1
+   },
+   "env": {}
+  },
+  {
+   "error": "配置项 llm.user_agent 不能包含换行。",
+   "name": "用户代理带换行",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "user_agent": "a\nb"
+   },
+   "env": {}
+  },
+  {
+   "error": "配置项 llm.user_agent 不能包含换行。",
+   "name": "用户代理带回车",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "user_agent": "a\rb"
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "思考类型空白",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "  "
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "enabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "思考类型大写",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": " ENABLED "
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "xhigh",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "推理强度别名",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "reasoning_effort": " Extra_High "
+   },
+   "env": {}
+  },
+  {
+   "error": "llm.reasoning_effort 仅支持 disabled, high, low, max, medium, none, xhigh，当前值：bogus。",
+   "name": "推理强度非法",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "reasoning_effort": "bogus"
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "ua",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "字段两端空白",
+   "input": {
+    "api_key": " k ",
+    "base_url": " https://api ",
+    "model": " m ",
+    "user_agent": " ua "
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": false,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "原生视觉显式关闭",
+   "input": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "native_vision": false
+   },
+   "env": {}
+  }
+ ],
+ "thinking_enabled": [
+  {
+   "reasoning_effort": "disabled",
+   "thinking_type": "",
+   "expected": false
+  },
+  {
+   "reasoning_effort": "",
+   "thinking_type": "disabled",
+   "expected": false
+  },
+  {
+   "reasoning_effort": "enabled",
+   "thinking_type": "",
+   "expected": true
+  },
+  {
+   "reasoning_effort": "",
+   "thinking_type": "",
+   "expected": false
+  },
+  {
+   "reasoning_effort": "none",
+   "thinking_type": "enabled",
+   "expected": false
+  },
+  {
+   "reasoning_effort": "high",
+   "thinking_type": "disabled",
+   "expected": true
+  },
+  {
+   "reasoning_effort": "max",
+   "thinking_type": "enabled",
+   "expected": true
+  },
+  {
+   "reasoning_effort": "disabled",
+   "thinking_type": "enabled",
+   "expected": false
+  }
+ ],
+ "active_refs": [
+  {
+   "name": "custom",
+   "input": {
+    "source": "custom",
+    "key": "local-qwen"
+   },
+   "expected": {
+    "source": "custom",
+    "key": "local-qwen"
+   }
+  },
+  {
+   "name": "detected 全字段",
+   "input": {
+    "source": "detected",
+    "profile": "openai",
+    "model_id": "gpt-5.2",
+    "protocol": "openai_chat_completions"
+   },
+   "expected": {
+    "source": "detected",
+    "profile": "openai",
+    "model_id": "gpt-5.2",
+    "protocol": "openai_chat_completions"
+   }
+  },
+  {
+   "name": "detected 空协议",
+   "input": {
+    "source": "detected",
+    "profile": "p",
+    "model_id": "m",
+    "protocol": ""
+   },
+   "expected": {
+    "source": "detected",
+    "profile": "p",
+    "model_id": "m",
+    "protocol": ""
+   }
+  }
+ ],
+ "model_store_parse": [
+  {
+   "expected": {
+    "version": 1,
+    "models": []
+   },
+   "name": "空对象",
+   "data": {}
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": []
+   },
+   "name": "版本缺省",
+   "data": {
+    "models": {}
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": []
+   },
+   "name": "版本为一",
+   "data": {
+    "version": 1,
+    "models": {}
+   }
+  },
+  {
+   "error": "models.toml 的 version 必须是正整数。",
+   "name": "版本为零",
+   "data": {
+    "version": 0,
+    "models": {}
+   }
+  },
+  {
+   "error": "models.toml 的 version 必须是正整数。",
+   "name": "版本为字符串",
+   "data": {
+    "version": "1",
+    "models": {}
+   }
+  },
+  {
+   "error": "models.toml 的 version 必须是正整数。",
+   "name": "版本为浮点",
+   "data": {
+    "version": 1.5,
+    "models": {}
+   }
+  },
+  {
+   "error": "models.toml 的 models 必须是对象。",
+   "name": "models 不是对象",
+   "data": {
+    "version": 1,
+    "models": [
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": []
+   },
+   "name": "models 为空串",
+   "data": {
+    "version": 1,
+    "models": ""
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "a",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 0,
+      "max_output_tokens": 0,
+      "temperature": null,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 0,
+       "max_output_tokens": 0
+      },
+      "provider_options": {},
+      "sort_order": 0
+     }
+    ]
+   },
+   "name": "最小合法条目",
+   "data": {
+    "version": 1,
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "version": 2,
+    "models": [
+     {
+      "key": "local-qwen",
+      "display_name": "本地 Qwen",
+      "profile": "p",
+      "model_id": "qwen3",
+      "protocol": "openai_responses",
+      "enabled": false,
+      "aliases": [
+       "qwen",
+       "本地"
+      ],
+      "description": "说明",
+      "tags": [
+       "a",
+       "b"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 4096,
+      "temperature": 0.7,
+      "native_vision": true,
+      "capabilities": {
+       "streaming": true,
+       "tools": false,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": true,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 32768,
+       "max_output_tokens": 4096
+      },
+      "provider_options": {
+       "top_p": 0.9
+      },
+      "sort_order": 3
+     }
+    ]
+   },
+   "name": "完整条目",
+   "data": {
+    "version": 2,
+    "models": {
+     "local-qwen": {
+      "display_name": " 本地 Qwen ",
+      "profile": " p ",
+      "model_id": " qwen3 ",
+      "protocol": "openai_responses",
+      "enabled": false,
+      "aliases": [
+       " qwen ",
+       "",
+       "本地"
+      ],
+      "description": " 说明 ",
+      "tags": [
+       "a",
+       " b "
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 4096,
+      "temperature": 0.7,
+      "native_vision": true,
+      "capabilities": {
+       "streaming": true,
+       "tools": false,
+       "vision": true
+      },
+      "provider_options": {
+       "top_p": 0.9
+      },
+      "sort_order": 3
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 key 非法：Bad。仅允许小写字母、数字、'-' 与 '_'，且不能包含 '/'。",
+   "name": "key 含大写",
+   "data": {
+    "models": {
+     "Bad": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 key 非法：a/b。仅允许小写字母、数字、'-' 与 '_'，且不能包含 '/'。",
+   "name": "key 含斜杠",
+   "data": {
+    "models": {
+     "a/b": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 key 非法：-a。仅允许小写字母、数字、'-' 与 '_'，且不能包含 '/'。",
+   "name": "key 以连字符开头",
+   "data": {
+    "models": {
+     "-a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a 必须是对象。",
+   "name": "条目不是对象",
+   "data": {
+    "models": {
+     "a": 5
+    }
+   }
+  },
+  {
+   "error": "模型 a 缺少 profile。",
+   "name": "缺 profile",
+   "data": {
+    "models": {
+     "a": {
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a 缺少 model_id。",
+   "name": "缺 model_id",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "protocol": "openai_chat_completions"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a 的 protocol 不支持：bogus",
+   "name": "协议不支持",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "bogus"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a 的 protocol 不支持：",
+   "name": "协议缺失",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a 的 enabled 必须是布尔值。",
+   "name": "enabled 非布尔",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": 1
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a 的 aliases 必须是列表。",
+   "name": "aliases 非列表",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "aliases": "x"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a 的 tags 必须是列表。",
+   "name": "tags 非列表",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "tags": 5
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a.temperature 必须是数字。",
+   "name": "temperature 非数字",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "temperature": "x"
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "a",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 0,
+      "max_output_tokens": 0,
+      "temperature": null,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 0,
+       "max_output_tokens": 0
+      },
+      "provider_options": {},
+      "sort_order": 0
+     }
+    ]
+   },
+   "name": "temperature 空串",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "temperature": ""
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a.sort_order 必须是整数。",
+   "name": "sort_order 非整数",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "sort_order": 1.5
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a.native_vision 必须是布尔值。",
+   "name": "native_vision 非布尔",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "native_vision": "yes"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a.provider_options 必须是对象。",
+   "name": "provider_options 非对象",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "provider_options": 5
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a.context_window_tokens 必须是非负整数。",
+   "name": "窗口负数",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "context_window_tokens": -1
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 a.context_window_tokens 必须是非负整数。",
+   "name": "窗口浮点",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "context_window_tokens": 1.5
+     }
+    }
+   }
+  },
+  {
+   "error": "models.toml 模型 a 不允许包含凭据字段 api_key。",
+   "name": "凭据字段 api_key",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "api_key": "x"
+     }
+    }
+   }
+  },
+  {
+   "error": "models.toml 模型 a 不允许包含凭据字段 token。",
+   "name": "凭据字段 token",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "token": "x"
+     }
+    }
+   }
+  },
+  {
+   "error": "models.toml 别名冲突：x 同时属于 a 与 b。",
+   "name": "别名冲突",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "aliases": [
+       "x"
+      ]
+     },
+     "b": {
+      "profile": "p",
+      "model_id": "n",
+      "protocol": "openai_chat_completions",
+      "aliases": [
+       "x"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "error": "模型 key 非法：Beta。仅允许小写字母、数字、'-' 与 '_'，且不能包含 '/'。",
+   "name": "排序",
+   "data": {
+    "models": {
+     "zeta": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "sort_order": 1
+     },
+     "alpha": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     },
+     "Beta": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "a",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 1000,
+      "max_output_tokens": 500,
+      "temperature": null,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 1000,
+       "max_output_tokens": 500
+      },
+      "provider_options": {},
+      "sort_order": 0
+     }
+    ]
+   },
+   "name": "能力窗口回填",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "context_window_tokens": 1000,
+      "capabilities": {
+       "max_output_tokens": 500
+      }
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "a",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 1000,
+      "max_output_tokens": 128,
+      "temperature": null,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 9999,
+       "max_output_tokens": 128
+      },
+      "provider_options": {},
+      "sort_order": 0
+     }
+    ]
+   },
+   "name": "顶层窗口优先于能力窗口",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "context_window_tokens": 1000,
+      "max_output_tokens": 128,
+      "capabilities": {
+       "context_window_tokens": 9999,
+       "max_output_tokens": 500
+      }
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "a",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 0,
+      "max_output_tokens": 0,
+      "temperature": 0.3,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 0,
+       "max_output_tokens": 0
+      },
+      "provider_options": {
+       "temperature": 0.3
+      },
+      "sort_order": 0
+     }
+    ]
+   },
+   "name": "温度写在 provider_options",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "provider_options": {
+       "temperature": 0.3
+      }
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "a",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 0,
+      "max_output_tokens": 0,
+      "temperature": 0.1,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 0,
+       "max_output_tokens": 0
+      },
+      "provider_options": {
+       "temperature": 0.3
+      },
+      "sort_order": 0
+     }
+    ]
+   },
+   "name": "顶层温度优先",
+   "data": {
+    "models": {
+     "a": {
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "temperature": 0.1,
+      "provider_options": {
+       "temperature": 0.3
+      }
+     }
+    }
+   }
+  }
+ ],
+ "model_store_save": [
+  {
+   "name": "最小条目",
+   "store": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "A",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 0,
+      "max_output_tokens": 0,
+      "temperature": null,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 0,
+       "max_output_tokens": 0
+      },
+      "provider_options": {},
+      "sort_order": 0
+     }
+    ],
+    "path": null
+   },
+   "text": "version = 1\n\n[models.a]\ndisplay_name = \"A\"\nprofile = \"p\"\nmodel_id = \"m\"\nprotocol = \"openai_chat_completions\"\nenabled = true\n\n[models.a.capabilities]\nstreaming = true\ntools = false\nparallel_tool_calls = false\nreasoning = false\nvision = false\n"
+  },
+  {
+   "name": "完整条目",
+   "store": {
+    "version": 2,
+    "models": [
+     {
+      "key": "local-qwen",
+      "display_name": "本地 Qwen",
+      "profile": "p",
+      "model_id": "qwen3",
+      "protocol": "openai_responses",
+      "enabled": false,
+      "aliases": [
+       "qwen",
+       "本地"
+      ],
+      "description": "说明",
+      "tags": [
+       "a"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 4096,
+      "temperature": 0.7,
+      "native_vision": true,
+      "capabilities": {
+       "streaming": null,
+       "tools": null,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": null,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 0,
+       "max_output_tokens": 0
+      },
+      "provider_options": {
+       "top_p": 0.9
+      },
+      "sort_order": 3
+     }
+    ],
+    "path": null
+   },
+   "text": "version = 2\n\n[models.local-qwen]\ndisplay_name = \"本地 Qwen\"\nprofile = \"p\"\nmodel_id = \"qwen3\"\nprotocol = \"openai_responses\"\nenabled = false\naliases = [\n    \"qwen\",\n    \"本地\",\n]\ndescription = \"说明\"\ntags = [\n    \"a\",\n]\ncontext_window_tokens = 32768\nmax_output_tokens = 4096\ntemperature = 0.7\nnative_vision = true\nsort_order = 3\n\n[models.local-qwen.capabilities]\nstreaming = true\ntools = false\nparallel_tool_calls = false\nreasoning = false\nvision = false\n\n[models.local-qwen.provider_options]\ntop_p = 0.9\n"
+  },
+  {
+   "name": "能力只写有意义的键",
+   "store": {
+    "version": 1,
+    "models": [
+     {
+      "key": "a",
+      "display_name": "A",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions",
+      "enabled": true,
+      "aliases": [],
+      "description": "",
+      "tags": [],
+      "context_window_tokens": 0,
+      "max_output_tokens": 0,
+      "temperature": null,
+      "native_vision": null,
+      "capabilities": {
+       "streaming": false,
+       "tools": true,
+       "parallel_tool_calls": null,
+       "reasoning": null,
+       "vision": false,
+       "model_discovery": null,
+       "prompt_cache": null,
+       "context_window_tokens": 0,
+       "max_output_tokens": 0
+      },
+      "provider_options": {},
+      "sort_order": 0
+     }
+    ],
+    "path": null
+   },
+   "text": "version = 1\n\n[models.a]\ndisplay_name = \"A\"\nprofile = \"p\"\nmodel_id = \"m\"\nprotocol = \"openai_chat_completions\"\nenabled = true\n\n[models.a.capabilities]\nstreaming = false\ntools = true\nparallel_tool_calls = false\nreasoning = false\nvision = false\n"
+  },
+  {
+   "name": "空目录",
+   "store": {
+    "version": 1,
+    "models": [],
+    "path": null
+   },
+   "text": "version = 1\n\n[models]\n"
+  }
+ ],
+ "resolve_alias": [
+  {
+   "name": "按 key",
+   "token": "a",
+   "expected": "a"
+  },
+  {
+   "name": "按别名",
+   "token": " x ",
+   "expected": "a"
+  },
+  {
+   "name": "空白",
+   "token": "   ",
+   "expected": null
+  },
+  {
+   "name": "未命中",
+   "token": "zzz",
+   "expected": null
+  },
+  {
+   "name": "多命中",
+   "token": "x",
+   "error": "别名 x 匹配到多个模型：a, b"
+  }
+ ],
+ "llm_load": [
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "legacy 单模型",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "base_url": "https://api",
+     "model": "m"
+    }
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "m",
+    "thinking_type": "enabled",
+    "reasoning_effort": "high",
+    "context_window_tokens": 64000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "ua",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "legacy 全部可选字段",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "base_url": "https://api",
+     "model": "m",
+     "thinking_type": "enabled",
+     "reasoning_effort": "high",
+     "user_agent": "ua",
+     "context_window_tokens": 64000
+    }
+   },
+   "env": {}
+  },
+  {
+   "error": "缺少配置 llm.base_url，请在配置文件中填写 llm.base_url，或设置环境变量 OPENAI_BASE_URL。",
+   "name": "缺 base_url",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "model": "m"
+    }
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "ek",
+    "base_url": "https://env",
+    "model": "em",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "环境变量补齐",
+   "config": {
+    "llm": {}
+   },
+   "env": {
+    "OPENAI_API_KEY": "ek",
+    "OPENAI_BASE_URL": "https://env",
+    "OPENAI_MODEL": "em"
+   }
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "from-env",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "legacy",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "环境变量优先",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "base_url": "https://api",
+     "model": "m"
+    }
+   },
+   "env": {
+    "OPENAI_MODEL": "from-env"
+   }
+  },
+  {
+   "error": "配置项 llm.context_window_tokens 必须是正整数。",
+   "name": "上下文窗口非法",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "base_url": "https://api",
+     "model": "m",
+     "context_window_tokens": 0
+    }
+   },
+   "env": {}
+  },
+  {
+   "error": "配置项 llm 必须是对象。",
+   "name": "llm 段不是对象",
+   "config": {
+    "llm": 5
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "gpt-5.2",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "多模型段",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api",
+       "api_key": "k"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "env": {}
+  }
+ ],
+ "llm_save": [
+  {
+   "text": "[llm]\napi_key = \"k\"\nbase_url = \"https://api\"\nmodel = \"m\"\nreasoning_effort = \"high\"\nthinking_type = \"enabled\"\n",
+   "name": "写推理强度（单模型）",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "base_url": "https://api",
+     "model": "m"
+    }
+   },
+   "action": "save_reasoning_effort",
+   "payload": "high"
+  },
+  {
+   "text": "[llm.profiles.p]\nprovider = \"openai\"\n\n[llm.defaults]\nreasoning_effort = \"none\"\nthinking_type = \"disabled\"\n",
+   "name": "写推理强度（多模型）",
+   "config": {
+    "llm": {
+     "profiles": {
+      "p": {
+       "provider": "openai"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "low"
+     }
+    }
+   },
+   "action": "save_reasoning_effort",
+   "payload": "none"
+  },
+  {
+   "error": "llm.reasoning_effort 仅支持 disabled, high, low, max, medium, none, xhigh，当前值：bogus。",
+   "name": "写推理强度非法",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "base_url": "https://api",
+     "model": "m"
+    }
+   },
+   "action": "save_reasoning_effort",
+   "payload": "bogus"
+  },
+  {
+   "text": "[llm]\napi_key = \"k\"\nbase_url = \"https://api\"\nmodel = \"local-qwen\"\n",
+   "name": "写模型引用（单模型）",
+   "config": {
+    "llm": {
+     "api_key": "k",
+     "base_url": "https://api",
+     "model": "m"
+    }
+   },
+   "action": "save_active_model_ref",
+   "payload": {
+    "source": "custom",
+    "key": "local-qwen",
+    "model_id": ""
+   }
+  },
+  {
+   "text": "[llm.profiles.p]\nprovider = \"openai\"\n\n[llm.active_model]\nsource = \"detected\"\nprofile = \"p\"\nmodel_id = \"gpt-5.2\"\nprotocol = \"openai_chat_completions\"\n",
+   "name": "写模型引用（多模型）",
+   "config": {
+    "llm": {
+     "profiles": {
+      "p": {
+       "provider": "openai"
+      }
+     }
+    }
+   },
+   "action": "save_active_model_ref",
+   "payload": {
+    "source": "detected",
+    "profile": "p",
+    "model_id": "gpt-5.2",
+    "protocol": "openai_chat_completions"
+   }
+  }
+ ],
+ "vision_load": [
+  {
+   "expected": {
+    "enabled": false,
+    "models": []
+   },
+   "name": "缺段",
+   "config": {}
+  },
+  {
+   "expected": {
+    "enabled": false,
+    "models": []
+   },
+   "name": "空段",
+   "config": {
+    "vision": {}
+   }
+  },
+  {
+   "expected": {
+    "enabled": false,
+    "models": []
+   },
+   "name": "段为空串",
+   "config": {
+    "vision": ""
+   }
+  },
+  {
+   "error": "配置段 vision 必须是对象。",
+   "name": "段不是对象",
+   "config": {
+    "vision": []
+   }
+  },
+  {
+   "error": "vision.enabled 必须是布尔值。",
+   "name": "开关非布尔",
+   "config": {
+    "vision": {
+     "enabled": 1
+    }
+   }
+  },
+  {
+   "expected": {
+    "enabled": true,
+    "models": []
+   },
+   "name": "开关打开",
+   "config": {
+    "vision": {
+     "enabled": true
+    }
+   }
+  },
+  {
+   "error": "配置项 vision.models 必须是列表。",
+   "name": "模型引用非列表",
+   "config": {
+    "vision": {
+     "models": 5
+    }
+   }
+  },
+  {
+   "expected": {
+    "enabled": true,
+    "models": [
+     {
+      "source": "custom",
+      "key": "a",
+      "profile": "",
+      "model_id": "",
+      "protocol": ""
+     }
+    ]
+   },
+   "name": "自定义引用",
+   "config": {
+    "vision": {
+     "enabled": true,
+     "models": [
+      {
+       "source": "custom",
+       "key": " a "
+      }
+     ]
+    }
+   }
+  },
+  {
+   "expected": {
+    "enabled": false,
+    "models": [
+     {
+      "source": "detected",
+      "key": "",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": "openai_chat_completions"
+     }
+    ]
+   },
+   "name": "检测引用",
+   "config": {
+    "vision": {
+     "models": [
+      {
+       "source": "detected",
+       "profile": "p",
+       "model_id": "m",
+       "protocol": "openai_chat_completions"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "error": "配置项 vision.models[0] 必须是对象。",
+   "name": "引用项非对象",
+   "config": {
+    "vision": {
+     "models": [
+      "x"
+     ]
+    }
+   }
+  },
+  {
+   "error": "配置项 vision.models[0] 缺少 key。",
+   "name": "自定义缺 key",
+   "config": {
+    "vision": {
+     "models": [
+      {
+       "source": "custom"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "error": "配置项 vision.models[0] 必须包含 profile 和 model_id。",
+   "name": "检测缺 model_id",
+   "config": {
+    "vision": {
+     "models": [
+      {
+       "source": "detected",
+       "profile": "p"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "error": "配置项 vision.models[0].protocol 不支持：bogus",
+   "name": "检测协议非法",
+   "config": {
+    "vision": {
+     "models": [
+      {
+       "source": "detected",
+       "profile": "p",
+       "model_id": "m",
+       "protocol": "bogus"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "error": "配置项 vision.models[0].source 仅支持 custom 或 detected。",
+   "name": "来源非法",
+   "config": {
+    "vision": {
+     "models": [
+      {
+       "source": "other",
+       "key": "a"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "error": "配置项 vision.models[1] 与前面的模型重复。",
+   "name": "重复引用",
+   "config": {
+    "vision": {
+     "models": [
+      {
+       "source": "custom",
+       "key": "a"
+      },
+      {
+       "source": "custom",
+       "key": "a"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "expected": {
+    "enabled": false,
+    "models": [
+     {
+      "source": "custom",
+      "key": "a",
+      "profile": "",
+      "model_id": "",
+      "protocol": ""
+     },
+     {
+      "source": "detected",
+      "key": "",
+      "profile": "p",
+      "model_id": "m",
+      "protocol": ""
+     }
+    ]
+   },
+   "name": "有序引用",
+   "config": {
+    "vision": {
+     "models": [
+      {
+       "source": "custom",
+       "key": "a"
+      },
+      {
+       "source": "detected",
+       "profile": "p",
+       "model_id": "m"
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "native_vision_parse": [
+  {
+   "value": null,
+   "expected": null
+  },
+  {
+   "value": true,
+   "expected": true
+  },
+  {
+   "value": false,
+   "expected": false
+  },
+  {
+   "value": 1,
+   "expected": null
+  },
+  {
+   "value": "yes",
+   "expected": null
+  },
+  {
+   "value": [],
+   "expected": null
+  }
+ ],
+ "native_vision_resolve": [
+  {
+   "name": "模型覆盖渠道",
+   "catalog_key": "a",
+   "profile_id": "q",
+   "expected": {
+    "value": true,
+    "scope": "model",
+    "label": "a",
+    "scope_text": "模型设置（a）"
+   }
+  },
+  {
+   "name": "渠道覆盖",
+   "catalog_key": "",
+   "profile_id": "p",
+   "expected": {
+    "value": true,
+    "scope": "channel",
+    "label": "p",
+    "scope_text": "渠道设置（p）"
+   }
+  },
+  {
+   "name": "渠道显式关闭",
+   "catalog_key": "",
+   "profile_id": "q",
+   "expected": {
+    "value": false,
+    "scope": "channel",
+    "label": "q",
+    "scope_text": "渠道设置（q）"
+   }
+  },
+  {
+   "name": "都未配置",
+   "catalog_key": "",
+   "profile_id": "",
+   "expected": {
+    "value": null,
+    "scope": "",
+    "label": "",
+    "scope_text": "未配置（按模型能力）"
+   }
+  },
+  {
+   "name": "模型不存在回落渠道",
+   "catalog_key": "zzz",
+   "profile_id": "p",
+   "expected": {
+    "value": true,
+    "scope": "channel",
+    "label": "p",
+    "scope_text": "渠道设置（p）"
+   }
+  },
+  {
+   "name": "模型显式关闭",
+   "catalog_key": "b",
+   "profile_id": "p",
+   "expected": {
+    "value": false,
+    "scope": "model",
+    "label": "b",
+    "scope_text": "模型设置（b）"
+   }
+  }
+ ],
+ "native_vision_save": [
+  {
+   "config_text": "[llm.profiles.p]\nprovider = \"openai\"\nnative_vision = true\n",
+   "models_text": "version = 1\n\n[models.a]\ndisplay_name = \"a\"\nprofile = \"p\"\nmodel_id = \"m\"\nprotocol = \"openai_chat_completions\"\nenabled = true\nnative_vision = true\n\n[models.a.capabilities]\nstreaming = true\ntools = false\nparallel_tool_calls = false\nreasoning = false\nvision = false\n",
+   "name": "模型开",
+   "scope": "model",
+   "value": true,
+   "catalog_key": "a",
+   "profile_id": ""
+  },
+  {
+   "config_text": "[llm.profiles.p]\nprovider = \"openai\"\nnative_vision = true\n",
+   "models_text": "version = 1\n\n[models.a]\ndisplay_name = \"a\"\nprofile = \"p\"\nmodel_id = \"m\"\nprotocol = \"openai_chat_completions\"\nenabled = true\n\n[models.a.capabilities]\nstreaming = true\ntools = false\nparallel_tool_calls = false\nreasoning = false\nvision = false\n",
+   "name": "模型清空",
+   "scope": "model",
+   "value": null,
+   "catalog_key": "a",
+   "profile_id": ""
+  },
+  {
+   "error": "models.toml 中没有模型 zzz。",
+   "name": "模型不存在",
+   "scope": "model",
+   "value": true,
+   "catalog_key": "zzz",
+   "profile_id": ""
+  },
+  {
+   "error": "缺少模型 key，无法写入模型原生视觉。",
+   "name": "模型缺 key",
+   "scope": "model",
+   "value": true,
+   "catalog_key": "",
+   "profile_id": ""
+  },
+  {
+   "config_text": "[llm.profiles.p]\nprovider = \"openai\"\nnative_vision = false\n",
+   "models_text": "version = 1\n\n[models.a]\nprofile = \"p\"\nmodel_id = \"m\"\nprotocol = \"openai_chat_completions\"\n",
+   "name": "渠道开",
+   "scope": "channel",
+   "value": false,
+   "catalog_key": "",
+   "profile_id": "p"
+  },
+  {
+   "config_text": "[llm.profiles.p]\nprovider = \"openai\"\n",
+   "models_text": "version = 1\n\n[models.a]\nprofile = \"p\"\nmodel_id = \"m\"\nprotocol = \"openai_chat_completions\"\n",
+   "name": "渠道清空",
+   "scope": "channel",
+   "value": null,
+   "catalog_key": "",
+   "profile_id": "p"
+  },
+  {
+   "error": "config.toml 的 llm.profiles 中没有渠道 zzz。",
+   "name": "渠道不存在",
+   "scope": "channel",
+   "value": true,
+   "catalog_key": "",
+   "profile_id": "zzz"
+  },
+  {
+   "error": "模型原生视觉必须写入范围仅支持 model 或 channel。",
+   "name": "范围非法",
+   "scope": "other",
+   "value": true,
+   "catalog_key": "a",
+   "profile_id": ""
+  }
+ ],
+ "multi_load": [
+  {
+   "expected": {
+    "api_key": "plain-key",
+    "base_url": "https://api.ch1/v1",
+    "model": "gpt-5.2",
+    "thinking_type": "disabled",
+    "reasoning_effort": "medium",
+    "context_window_tokens": 32000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_responses",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "CH1_KEY",
+    "user_agent": "ua1",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "active_model 检测",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "plain-key",
+    "base_url": "https://api.ch1/v1",
+    "model": "qwen3-local",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 32768,
+    "max_output_tokens": 2048,
+    "native_vision": true,
+    "temperature": 0.5,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_responses",
+    "catalog_key": "local-qwen",
+    "model_source": "custom",
+    "api_key_env": "CH1_KEY",
+    "user_agent": "ua1",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "active_model 自定义",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "active_model": {
+      "source": "custom",
+      "key": "local-qwen"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "env": {}
+  },
+  {
+   "error": "多模型配置缺少 llm.profiles。",
+   "name": "缺 profiles",
+   "config": {
+    "llm": {
+     "active_model": {
+      "source": "detected",
+      "profile": "p",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "Profile 不存在或未启用：nope",
+   "name": "Profile 不存在",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "nope",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "Profile 已禁用：ch2",
+   "name": "Profile 已禁用",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch2",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "模型协议与 Profile Provider 不匹配：Profile ch1 为 openai，协议 anthropic_messages 属于 anthropic。",
+   "name": "协议与 Provider 不匹配",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "m",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "active_model 引用了不存在的自定义模型 key：nope。请检查 models.toml，或重新选择模型。",
+   "name": "自定义 key 不存在",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai"
+      }
+     },
+     "active_model": {
+      "source": "custom",
+      "key": "nope"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "llm.active_model.source=custom 时必须提供 key。",
+   "name": "自定义缺 key",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai"
+      }
+     },
+     "active_model": {
+      "source": "custom"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "llm.active_model.source=detected 时必须提供 profile 与 model_id。",
+   "name": "检测缺 model_id",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "Profile 不存在或未启用：",
+   "name": "环境变量指定模型",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "api_key": "k"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {},
+   "env": {
+    "OMNICRAWL_MODEL": "qwen"
+   }
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "",
+    "model": "gpt-4o",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "环境变量 profile/model",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "api_key": "k"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {},
+   "env": {
+    "OPENAI_MODEL": "ch1/gpt-4o"
+   }
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "",
+    "model": "gemini-3",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch3",
+    "provider": "gemini",
+    "protocol": "gemini_generate_content",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "环境变量覆盖 profile",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch3": {
+       "provider": "gemini",
+       "api_key": "k"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch3",
+      "model_id": "gemini-3"
+     }
+    }
+   },
+   "models": {},
+   "env": {
+    "OMNICRAWL_PROFILE": "ch3"
+   }
+  },
+  {
+   "error": "llm.active_model.source=custom 时必须提供 key。",
+   "name": "active_model 非对象",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai"
+      }
+     },
+     "active_model": 5
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "未知 Provider：bogus",
+   "name": "未知 Provider 默认协议",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch9": {
+       "provider": "bogus"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch9",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 96000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "默认窗口回退",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "api_key": "k"
+      }
+     },
+     "defaults": {
+      "context_window_tokens": 96000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "plain-key",
+    "base_url": "https://api.ch1/v1",
+    "model": "qwen3-local",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 32768,
+    "max_output_tokens": 2048,
+    "native_vision": true,
+    "temperature": 0.5,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_responses",
+    "catalog_key": "local-qwen",
+    "model_source": "custom",
+    "api_key_env": "CH1_KEY",
+    "user_agent": "ua1",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "自定义模型窗口不被 defaults 覆盖",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "context_window_tokens": 96000
+     },
+     "active_model": {
+      "source": "custom",
+      "key": "local-qwen"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": false,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "渠道原生视觉",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "api_key": "k",
+       "native_vision": false
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "超时与重试非法回落",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "api_key": "k"
+      }
+     },
+     "defaults": {
+      "request_timeout_seconds": 0,
+      "request_retry_count": -3
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "",
+    "model": "m",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 30,
+    "request_retry_count": 2,
+    "provider_options": {}
+   },
+   "name": "超时与重试生效",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "api_key": "k"
+      }
+     },
+     "defaults": {
+      "request_timeout_seconds": 30,
+      "request_retry_count": 2
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  },
+  {
+   "error": "缺少 API Key，请设置环境变量 OPENAI_API_KEY 或在 Profile 中配置 api_key。",
+   "name": "缺 api_key 报错",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai"
+      }
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "m"
+     }
+    }
+   },
+   "models": {},
+   "env": {}
+  }
+ ],
+ "selection": [
+  {
+   "expected": {
+    "api_key": "plain-key",
+    "base_url": "https://api.ch1/v1",
+    "model": "qwen3-local",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 32768,
+    "max_output_tokens": 2048,
+    "native_vision": true,
+    "temperature": 0.5,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_responses",
+    "catalog_key": "local-qwen",
+    "model_source": "custom",
+    "api_key_env": "CH1_KEY",
+    "user_agent": "ua1",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {
+     "top_p": 0.8
+    }
+   },
+   "name": "自定义 key",
+   "token": "local-qwen",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "api_key": "plain-key",
+    "base_url": "https://api.ch1/v1",
+    "model": "qwen3-local",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 32768,
+    "max_output_tokens": 2048,
+    "native_vision": true,
+    "temperature": 0.5,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_responses",
+    "catalog_key": "local-qwen",
+    "model_source": "custom",
+    "api_key_env": "CH1_KEY",
+    "user_agent": "ua1",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {
+     "top_p": 0.8
+    }
+   },
+   "name": "自定义别名",
+   "token": "qwen",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "api_key": "plain-key",
+    "base_url": "https://api.ch1/v1",
+    "model": "gpt-5.2",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 64000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_responses",
+    "catalog_key": "",
+    "model_source": "detected",
+    "api_key_env": "CH1_KEY",
+    "user_agent": "ua1",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {
+     "top_p": 0.8
+    }
+   },
+   "name": "profile/model",
+   "token": "ch1/gpt-5.2",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  },
+  {
+   "expected": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "gpt-4o-mini",
+    "thinking_type": "disabled",
+    "reasoning_effort": "",
+    "context_window_tokens": 128000,
+    "max_output_tokens": 0,
+    "native_vision": null,
+    "temperature": null,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "catalog_key": "",
+    "model_source": "custom",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "name": "裸模型",
+   "token": "gpt-4o-mini",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  },
+  {
+   "error": "模型选择不能为空。",
+   "name": "空选择",
+   "token": "   ",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  },
+  {
+   "error": "profile/model_id 格式无效。",
+   "name": "格式无效",
+   "token": "/m",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  },
+  {
+   "error": "Profile 不存在或未启用：nope",
+   "name": "profile 不存在",
+   "token": "nope/m",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  },
+  {
+   "error": "自定义模型 broken 引用了不存在或已禁用的 Profile：ch2",
+   "name": "引用了禁用 profile",
+   "token": "broken",
+   "config": {
+    "llm": {
+     "profiles": {
+      "ch1": {
+       "provider": "openai",
+       "base_url": "https://api.ch1/v1",
+       "api_key": "plain-key",
+       "api_key_env": "CH1_KEY",
+       "user_agent": "ua1",
+       "default_protocol": "openai_responses",
+       "default_context_window_tokens": 64000,
+       "discovery": {
+        "enabled": false
+       },
+       "provider_options": {
+        "top_p": 0.8
+       }
+      },
+      "ch2": {
+       "provider": "anthropic",
+       "enabled": false
+      },
+      "ch3": {
+       "provider": "gemini"
+      },
+      "ch4": {
+       "base_url": "https://api.ch4"
+      }
+     },
+     "defaults": {
+      "reasoning_effort": "medium",
+      "context_window_tokens": 32000
+     },
+     "active_model": {
+      "source": "detected",
+      "profile": "ch1",
+      "model_id": "gpt-5.2"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "display_name": "本地 Qwen",
+      "profile": "ch1",
+      "model_id": "qwen3-local",
+      "protocol": "openai_responses",
+      "aliases": [
+       "qwen"
+      ],
+      "context_window_tokens": 32768,
+      "max_output_tokens": 2048,
+      "temperature": 0.5,
+      "native_vision": true
+     },
+     "broken": {
+      "profile": "ch2",
+      "model_id": "x",
+      "protocol": "anthropic_messages"
+     }
+    }
+   }
+  }
+ ],
+ "profiles": [
+  {
+   "name": "解析 profiles",
+   "section": {
+    "profiles": {
+     "ch1": {
+      "provider": "openai",
+      "base_url": "https://api.ch1/v1",
+      "api_key": "plain-key",
+      "api_key_env": "CH1_KEY",
+      "user_agent": "ua1",
+      "default_protocol": "openai_responses",
+      "default_context_window_tokens": 64000,
+      "discovery": {
+       "enabled": false
+      },
+      "provider_options": {
+       "top_p": 0.8
+      }
+     },
+     "ch2": {
+      "provider": "anthropic",
+      "enabled": false
+     },
+     "ch3": {
+      "provider": "gemini"
+     },
+     "ch4": {
+      "base_url": "https://api.ch4"
+     }
+    },
+    "defaults": {
+     "reasoning_effort": "medium",
+     "context_window_tokens": 32000
+    },
+    "active_model": {
+     "source": "detected",
+     "profile": "ch1",
+     "model_id": "gpt-5.2"
+    }
+   },
+   "expected": {
+    "ch1": {
+     "id": "ch1",
+     "provider": "openai",
+     "enabled": true,
+     "base_url": "https://api.ch1/v1",
+     "api_key": "plain-key",
+     "api_key_env": "CH1_KEY",
+     "user_agent": "ua1",
+     "default_protocol": "openai_responses",
+     "discovery_enabled": false,
+     "default_context_window_tokens": 64000,
+     "provider_options": {
+      "top_p": 0.8
+     },
+     "request_timeout_seconds": 180.0,
+     "request_retry_count": 5,
+     "discovery_timeout_seconds": 10.0
+    },
+    "ch3": {
+     "id": "ch3",
+     "provider": "gemini",
+     "enabled": true,
+     "base_url": "",
+     "api_key": "",
+     "api_key_env": "",
+     "user_agent": "",
+     "default_protocol": "",
+     "discovery_enabled": true,
+     "default_context_window_tokens": 0,
+     "provider_options": {},
+     "request_timeout_seconds": 180.0,
+     "request_retry_count": 5,
+     "discovery_timeout_seconds": 10.0
+    }
+   }
+  },
+  {
+   "name": "无 profiles",
+   "section": {
+    "defaults": {}
+   },
+   "expected": {}
+  },
+  {
+   "name": "profiles 非对象",
+   "section": {
+    "profiles": 5
+   },
+   "expected": {}
+  }
+ ],
+ "config_to_profile": [
+  {
+   "name": "视图转 profile 与 descriptor",
+   "config": {
+    "api_key": "k",
+    "base_url": "https://api",
+    "model": "gpt-5.2",
+    "thinking_type": "disabled",
+    "reasoning_effort": "high",
+    "context_window_tokens": 32000,
+    "max_output_tokens": 2048,
+    "native_vision": null,
+    "temperature": 0.4,
+    "system_prompt": "你是一个通过语音和用户对话的中文 AI 助手。回答要自然、简洁、适合被朗读；遇到不确定内容要明确说明。",
+    "max_history_turns": 8,
+    "profile_id": "ch1",
+    "provider": "anthropic",
+    "protocol": "anthropic_messages",
+    "catalog_key": "local-qwen",
+    "model_source": "custom",
+    "api_key_env": "",
+    "user_agent": "",
+    "request_timeout_seconds": 180,
+    "request_retry_count": 5,
+    "provider_options": {}
+   },
+   "profile": {
+    "id": "ch1",
+    "provider": "anthropic",
+    "enabled": true,
+    "base_url": "https://api",
+    "api_key": "k",
+    "api_key_env": "",
+    "user_agent": "",
+    "default_protocol": "anthropic_messages",
+    "discovery_enabled": true,
+    "default_context_window_tokens": 0,
+    "provider_options": {},
+    "request_timeout_seconds": 180.0,
+    "request_retry_count": 5,
+    "discovery_timeout_seconds": 10.0
+   },
+   "descriptor": {
+    "model_id": "gpt-5.2",
+    "profile_id": "ch1",
+    "provider": "anthropic",
+    "protocol": "anthropic_messages",
+    "catalog_key": "local-qwen",
+    "display_name": "local-qwen",
+    "source": "custom",
+    "context_window_tokens": 32000,
+    "max_output_tokens": 2048,
+    "temperature": 0.4,
+    "capabilities": {
+     "streaming": true,
+     "tools": true,
+     "parallel_tool_calls": true,
+     "reasoning": true,
+     "vision": false,
+     "model_discovery": false,
+     "prompt_cache": false,
+     "context_window_tokens": 32000,
+     "max_output_tokens": 2048
+    }
+   }
+  }
+ ]
+}

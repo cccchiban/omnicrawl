@@ -2,6 +2,7 @@
 members = [
     "crates/omnicrawl-cli",
     "crates/omnicrawl-compaction",
+    "crates/omnicrawl-config",
     "crates/omnicrawl-connectors",
     "crates/omnicrawl-controllers",
     "crates/omnicrawl-core",
@@ -9,6 +10,7 @@ members = [
     "crates/omnicrawl-llm",
     "crates/omnicrawl-protocol",
     "crates/omnicrawl-session",
+    "crates/omnicrawl-tui",
 ]
 resolver = "2"
 
@@ -30,6 +32,17 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # 读取大转录：只读内存映射，整份内容不再复制进内核堆（Windows 与 POSIX 都走 OS 映射）。
 memmap2 = "0.9"
+# 全屏终端工作台：ratatui 负责布局与双缓冲渲染，crossterm 负责原始模式与跨平台输入事件。
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
+# 输入框软折行与 HUD 对齐按显示列宽算，CJK 与 emoji 不能按字符数算。
+unicode-width = "0.2"
+# 搜索工具：与随包 Go 扩展（native/ocsearch）同一套语义——ripgrep 用的正则引擎，
+# 以及 ripgrep 的遍历与 .gitignore/.ignore 剪枝（ocsearch 注释里就对齐 ignore crate）。
+regex = "1"
+ignore = "0.4"
+# 网页正文提取：HTML5 容错解析（html5ever 系），比正则去标签更能应对真实站点的畸形标签。
+scraper = "0.20"
 
 [profile.release]
 lto = "thin"

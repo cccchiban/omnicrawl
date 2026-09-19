@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 omnicrawl-compaction = { path = "../omnicrawl-compaction" }
 omnicrawl-connectors = { path = "../omnicrawl-connectors" }
+omnicrawl-config = { path = "../omnicrawl-config" }
 omnicrawl-controllers = { path = "../omnicrawl-controllers" }
 omnicrawl-core = { path = "../omnicrawl-core" }
 omnicrawl-ipc = { path = "../omnicrawl-ipc" }

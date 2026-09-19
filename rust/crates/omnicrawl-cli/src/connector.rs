@@ -15,7 +15,9 @@ use omnicrawl_connectors::agent::{
     AgentDriver, AgentStatus, AskUserHandler, ConfirmHandler, TurnError, TurnEvent, TurnOutcome,
     WorkspaceSwitch,
 };
-use omnicrawl_connectors::feishu::{check_config, load_feishu_config, ConfigSource, FeishuApi, FeishuBot};
+use omnicrawl_connectors::feishu::{
+    check_config, load_feishu_config, ConfigSource, FeishuApi, FeishuBot,
+};
 use omnicrawl_connectors::http::{HttpTransport, UreqTransport};
 use omnicrawl_connectors::telegram::{load_telegram_config, TelegramBot};
 use omnicrawl_core::{
@@ -375,7 +377,8 @@ impl AgentDriver for KernelDriver {
                 Ok(Some("已开启新会话。".to_string()))
             }
             "/help" => Ok(Some(
-                "/status 查看工作区与会话；/new 开启新会话；/workspace <路径> 切换工作区".to_string(),
+                "/status 查看工作区与会话；/new 开启新会话；/workspace <路径> 切换工作区"
+                    .to_string(),
             )),
             _ => Ok(None),
         }
@@ -607,7 +610,10 @@ mod tests {
         let host = driver(workspace.to_str().unwrap());
         let temp_root = host.temp_root();
         assert!(temp_root.starts_with(&workspace));
-        assert!(temp_root.ends_with(".omnicrawl/.agent_tmp") || temp_root.ends_with(".omnicrawl\\.agent_tmp"));
+        assert!(
+            temp_root.ends_with(".omnicrawl/.agent_tmp")
+                || temp_root.ends_with(".omnicrawl\\.agent_tmp")
+        );
     }
 
     fn tools_with(shared: Arc<SharedState>) -> UnavailableTools {
@@ -664,7 +670,10 @@ mod tests {
         *shared.ask_user.lock().unwrap() = Some(Arc::new(Fixed));
         let mut tools = tools_with(Arc::clone(&shared));
         let observations = tools
-            .execute_tool_batch(&[call(ASK_USER_TOOL_NAME, json!({"question": "选哪个"}))], 1)
+            .execute_tool_batch(
+                &[call(ASK_USER_TOOL_NAME, json!({"question": "选哪个"}))],
+                1,
+            )
             .expect("批次应可执行");
         assert!(observations[0].result.ok);
         assert_eq!(observations[0].result.output, "选 A");

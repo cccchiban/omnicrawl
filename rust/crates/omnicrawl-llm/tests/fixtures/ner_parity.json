@@ -1,0 +1,579 @@
+{
+ "spans": [
+  {
+   "text": "张三在北京大学读书，李四在上海工作。",
+   "isolated": "张三在北京大学读书 李四在上海工作 ",
+   "chunks": [
+    "张三在北京大学读书，李四在上海工作。"
+   ],
+   "entities": [
+    [
+     0,
+     2,
+     "PER"
+    ],
+    [
+     3,
+     7,
+     "ORG"
+    ],
+    [
+     10,
+     12,
+     "PER"
+    ],
+    [
+     13,
+     15,
+     "LOC"
+    ]
+   ],
+   "layer_spans": [
+    [
+     0,
+     2
+    ],
+    [
+     3,
+     7
+    ],
+    [
+     10,
+     12
+    ],
+    [
+     13,
+     15
+    ]
+   ]
+  },
+  {
+   "text": "联系人为王小明，邮箱 a@b.com，电话 13800000000。",
+   "isolated": "联系人为王小明 邮箱         电话             ",
+   "chunks": [
+    "联系人为王小明，邮箱 a@b.com，电话 13800000000。"
+   ],
+   "entities": [
+    [
+     4,
+     7,
+     "PER"
+    ],
+    [
+     9,
+     34,
+     "PER"
+    ]
+   ],
+   "layer_spans": [
+    [
+     4,
+     7
+    ]
+   ]
+  },
+  {
+   "text": "the quick brown fox jumps over the lazy dog",
+   "isolated": "                                           ",
+   "chunks": [
+    "the quick brown fox jumps over the lazy dog"
+   ],
+   "entities": [],
+   "layer_spans": []
+  },
+  {
+   "text": "会议由中国科学院主办，地点在杭州。",
+   "isolated": "会议由中国科学院主办 地点在杭州 ",
+   "chunks": [
+    "会议由中国科学院主办，地点在杭州。"
+   ],
+   "entities": [
+    [
+     3,
+     8,
+     "ORG"
+    ],
+    [
+     14,
+     16,
+     "LOC"
+    ]
+   ],
+   "layer_spans": [
+    [
+     3,
+     8
+    ],
+    [
+     14,
+     16
+    ]
+   ]
+  },
+  {
+   "text": "客户编号 A-1024，服务器 10.0.0.1 已重启。",
+   "isolated": "客户编号        服务器          已重启 ",
+   "chunks": [
+    "客户编号 A-1024，服务器 10.0.0.1 已重启。"
+   ],
+   "entities": [
+    [
+     4,
+     25,
+     "PER"
+    ]
+   ],
+   "layer_spans": []
+  },
+  {
+   "text": "赵六",
+   "isolated": "赵六",
+   "chunks": [
+    "赵六"
+   ],
+   "entities": [
+    [
+     0,
+     2,
+     "PER"
+    ]
+   ],
+   "layer_spans": [
+    [
+     0,
+     2
+    ]
+   ]
+  },
+  {
+   "text": "订单详情：收货人 陈七，地址 深圳市南山区。",
+   "isolated": "订单详情 收货人 陈七 地址 深圳市南山区 ",
+   "chunks": [
+    "订单详情：收货人 陈七，地址 深圳市南山区。"
+   ],
+   "entities": [
+    [
+     9,
+     12,
+     "PER"
+    ],
+    [
+     15,
+     18,
+     "LOC"
+    ],
+    [
+     18,
+     21,
+     "LOC"
+    ]
+   ],
+   "layer_spans": [
+    [
+     15,
+     18
+    ],
+    [
+     18,
+     21
+    ]
+   ]
+  },
+  {
+   "text": "｛Desensitized:1｝由 周八 提交。",
+   "isolated": "                由 周八 提交 ",
+   "chunks": [
+    "｛Desensitized:1｝由 周八 提交。"
+   ],
+   "entities": [
+    [
+     0,
+     18,
+     "PER"
+    ],
+    [
+     18,
+     21,
+     "PER"
+    ],
+    [
+     21,
+     24,
+     "PER"
+    ]
+   ],
+   "layer_spans": []
+  },
+  {
+   "text": "报告人：欧阳修、司马迁与诸葛亮。",
+   "isolated": "报告人 欧阳修 司马迁与诸葛亮 ",
+   "chunks": [
+    "报告人：欧阳修、司马迁与诸葛亮。"
+   ],
+   "entities": [
+    [
+     4,
+     9,
+     "ORG"
+    ],
+    [
+     12,
+     15,
+     "PER"
+    ]
+   ],
+   "layer_spans": [
+    [
+     12,
+     15
+    ]
+   ]
+  },
+  {
+   "text": "第一句。第二句里出现 张三丰。",
+   "isolated": "第一句 第二句里出现 张三丰 ",
+   "chunks": [
+    "第一句。第二句里出现 张三丰。"
+   ],
+   "entities": [
+    [
+     11,
+     14,
+     "PER"
+    ]
+   ],
+   "layer_spans": [
+    [
+     11,
+     14
+    ]
+   ]
+  }
+ ],
+ "entities": [
+  {
+   "tags": [
+    "O",
+    "B-PER",
+    "I-PER",
+    "O"
+   ],
+   "characters_len": 8,
+   "expected": [
+    [
+     1,
+     3,
+     "PER"
+    ]
+   ]
+  },
+  {
+   "tags": [
+    "B-ORG",
+    "I-ORG",
+    "I-LOC",
+    "O"
+   ],
+   "characters_len": 8,
+   "expected": [
+    [
+     0,
+     2,
+     "ORG"
+    ],
+    [
+     2,
+     3,
+     "LOC"
+    ]
+   ]
+  },
+  {
+   "tags": [
+    "I-PER",
+    "I-PER",
+    "O"
+   ],
+   "characters_len": 8,
+   "expected": [
+    [
+     0,
+     2,
+     "PER"
+    ]
+   ]
+  },
+  {
+   "tags": [
+    "B-LOC"
+   ],
+   "characters_len": 8,
+   "expected": [
+    [
+     0,
+     8,
+     "LOC"
+    ]
+   ]
+  },
+  {
+   "tags": [
+    "O",
+    "O"
+   ],
+   "characters_len": 8,
+   "expected": []
+  },
+  {
+   "tags": [
+    "B-PER",
+    "I-PER",
+    "B-LOC",
+    "I-LOC"
+   ],
+   "characters_len": 8,
+   "expected": [
+    [
+     0,
+     2,
+     "PER"
+    ],
+    [
+     2,
+     8,
+     "LOC"
+    ]
+   ]
+  }
+ ],
+ "chunks": [
+  {
+   "text": "第一句。第二句！超长句子需要硬切",
+   "max_len": 5,
+   "expected": [
+    "第一句。",
+    "第二句！",
+    "超长句子需",
+    "要硬切"
+   ]
+  },
+  {
+   "text": "没有标点的长文本",
+   "max_len": 3,
+   "expected": [
+    "没有标",
+    "点的长",
+    "文本"
+   ]
+  },
+  {
+   "text": "",
+   "max_len": 4,
+   "expected": []
+  },
+  {
+   "text": "a。b。c",
+   "max_len": 10,
+   "expected": [
+    "a。b。c"
+   ]
+  },
+  {
+   "text": "句末标点结尾。",
+   "max_len": 4,
+   "expected": [
+    "句末标点",
+    "结尾。"
+   ]
+  }
+ ],
+ "batches": [
+  {
+   "lengths": [
+    10,
+    20,
+    30
+   ],
+   "budget": 12000,
+   "expected": [
+    [
+     0,
+     1,
+     2
+    ]
+   ]
+  },
+  {
+   "lengths": [
+    100,
+    100,
+    100
+   ],
+   "budget": 250,
+   "expected": [
+    [
+     0,
+     1
+    ],
+    [
+     2
+    ]
+   ]
+  },
+  {
+   "lengths": [
+    1
+   ],
+   "budget": 1,
+   "expected": [
+    [
+     0
+    ]
+   ]
+  },
+  {
+   "lengths": [
+    5,
+    5,
+    5,
+    5
+   ],
+   "budget": 10,
+   "expected": [
+    [
+     0,
+     1
+    ],
+    [
+     2,
+     3
+    ]
+   ]
+  }
+ ],
+ "misc": {
+  "chinese_isolation": [
+   {
+    "text": "张三 abc 李四",
+    "isolated": "张三     李四"
+   },
+   {
+    "text": "",
+    "isolated": ""
+   },
+   {
+    "text": "hello",
+    "isolated": "     "
+   },
+   {
+    "text": "王·小明的・笔记",
+    "isolated": "王·小明的・笔记"
+   }
+  ],
+  "chinese_spans": [
+   {
+    "text": "张三",
+    "is_chinese_span": true,
+    "has_cjk": true
+   },
+   {
+    "text": "张",
+    "is_chinese_span": true,
+    "has_cjk": true
+   },
+   {
+    "text": "张a",
+    "is_chinese_span": false,
+    "has_cjk": true
+   },
+   {
+    "text": "",
+    "is_chinese_span": false,
+    "has_cjk": false
+   },
+   {
+    "text": "·",
+    "is_chinese_span": false,
+    "has_cjk": false
+   },
+   {
+    "text": "王·五",
+    "is_chinese_span": true,
+    "has_cjk": true
+   }
+  ],
+  "model_paths": [
+   {
+    "configured": null,
+    "env": null,
+    "expected_suffix": "bilstm_crf_best.pt"
+   },
+   {
+    "configured": "D:/x/custom.pt",
+    "env": null,
+    "expected_suffix": "custom.pt"
+   },
+   {
+    "configured": "",
+    "env": " D:/y/env.pt ",
+    "expected_suffix": "env.pt"
+   },
+   {
+    "configured": null,
+    "env": "   ",
+    "expected_suffix": "bilstm_crf_best.pt"
+   }
+  ],
+  "devices": [
+   {
+    "requested": null,
+    "expected": "cpu"
+   },
+   {
+    "requested": "cpu",
+    "expected": "cpu"
+   },
+   {
+    "requested": "cuda",
+    "expected": "cpu"
+   },
+   {
+    "requested": " ATO ",
+    "expected": "cpu"
+   }
+  ],
+  "tags": [
+   "O",
+   "B-PER",
+   "I-PER",
+   "B-ORG",
+   "I-ORG",
+   "B-LOC",
+   "I-LOC"
+  ],
+  "char2idx_size": 3786,
+  "config": {
+   "vocab_size": 3786,
+   "num_tags": 7,
+   "embed_dim": 128,
+   "hidden_dim": 256,
+   "num_layers": 1,
+   "dropout": 0.5,
+   "use_constraints": true
+  }
+ },
+ "weights": {
+  "path": "data/ner_bilstm_crf.bin",
+  "vocab_size": 3786,
+  "tags": [
+   "O",
+   "B-PER",
+   "I-PER",
+   "B-ORG",
+   "I-ORG",
+   "B-LOC",
+   "I-LOC"
+  ],
+  "texts": 10
+ }
+}

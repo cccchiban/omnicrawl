@@ -76,6 +76,7 @@ Token 遥测中的 `IN` 是最近一次模型请求的输入 Token，`OUT` 是�
 - `omnicrawl/ui/tui/`、`stream_turn.py`、`chat_session.py`、`inline_input.py`：旧纯 Python ANSI TUI 已删除，不再提供；纯文本兼容导出仅保留 `omnicrawl.ui.UIStartupError`。
 - 测试：`tests/test_fullscreen_*.py`（turns/scroll_anchor/tool_diff/monitor/carousel/pending_queue/runtime_status/visibility_regression 等）与 `tests/test_fsapp_*.py`、`tests/test_settings_*.py`：全屏工作台与设置面板边界回归。
 - `omnicrawl/docs/TERMINAL_UI.md`：本文档。
+- `rust/crates/omnicrawl-tui/`：Rust 全屏工作台（协议 v1 宿主前端）的分阶段替代实现，边界见该 crate 的 README；Python 侧本目录仍是当前在服役的实现。
 
 ## 兼容范围与限制
 

@@ -1,0 +1,438 @@
+{
+  "source": "omnicrawl/knowledge/__init__.py + omnicrawl/agent/toolkit/knowledge_tools.py",
+  "today_placeholder": "{TODAY}",
+  "initial": [
+    {
+      "path": "projects/示例项目/2001-01-02-Rust改写盘点.md",
+      "text": "---\ntitle: Rust 改写盘点\ncreated: 2026-09-18\nupdated: 2026-09-19\nproject: AI课堂任务/OmniCrawl\ntags: [rust, 盘点]\ntype: research\nstatus: done\n---\n\n## 目的\n\n用户问「继续用 Rust 改写，还有哪些没改写」。检索：Rust 内核。\n"
+    },
+    {
+      "path": "topics/rust/迁移顺序.md",
+      "text": "---\ntitle: 迁移顺序\ncreated: 2026-09-01\nupdated: 2026-09-05\nproject: \ntags: [rust]\ntype: note\nstatus: draft\n---\n\n引擎先搬 protocol，再搬内核循环。Rust 检索命中关键词。\n"
+    },
+    {
+      "path": "daily/2001/01/2001-01-05.md",
+      "text": "---\ntitle: 2026-09-19 工作日志\ncreated: 2026-09-19\nupdated: 2026-09-19\nproject: AI课堂任务/OmniCrawl\ntags: [日志]\ntype: log\nstatus: draft\n---\n\n今天把 controllers 判定层搬进内核。\n"
+    },
+    {
+      "path": "notes/plain.md",
+      "text": "无 frontmatter 的纯正文，包含 Rust 字样。\n"
+    },
+    {
+      "path": "notes/extra.md",
+      "text": "---\ntitle: 未映射字段\ncreated: 2026-09-02\nupdated: 2026-09-03\nproject: \ntags: [杂项]\ntype: note\nstatus: archived\nowner: 示例\n---\n\n自定义 frontmatter 字段在覆盖时应当保留。\n"
+    },
+    {
+      "path": "INDEX.md",
+      "text": "# Knowledge Base Index\n\n手工写入，扫描时应当跳过。\n"
+    },
+    {
+      "path": "README.md",
+      "text": "# 工作知识库\n\n扫描时应当跳过。\n"
+    },
+    {
+      "path": ".hidden/skip.md",
+      "text": "隐藏目录里的笔记不会被扫描。\n"
+    },
+    {
+      "path": "attachments/note.txt",
+      "text": "非 Markdown 文件不会被扫描。\n"
+    }
+  ],
+  "cases": [
+    {
+      "tool": "kb_list",
+      "arguments": {},
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"daily/2001/01/2001-01-05.md\",\n    \"title\": \"2026-09-19 工作日志\",\n    \"created\": \"2026-09-19\",\n    \"updated\": \"2026-09-19\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"log\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"日志\"\n    ]\n  },\n  {\n    \"path\": \"notes/extra.md\",\n    \"title\": \"未映射字段\",\n    \"created\": \"2026-09-02\",\n    \"updated\": \"2026-09-03\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"archived\",\n    \"tags\": [\n      \"杂项\"\n    ]\n  },\n  {\n    \"path\": \"notes/plain.md\",\n    \"title\": \"plain\",\n    \"created\": \"\",\n    \"updated\": \"\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": []\n  },\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"created\": \"2026-09-18\",\n    \"updated\": \"2026-09-19\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ]\n  },\n  {\n    \"path\": \"topics/rust/迁移顺序.md\",\n    \"title\": \"迁移顺序\",\n    \"created\": \"2026-09-01\",\n    \"updated\": \"2026-09-05\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"rust\"\n    ]\n  }\n]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "path": "projects"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"created\": \"2026-09-18\",\n    \"updated\": \"2026-09-19\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ]\n  }\n]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "path": "notes/extra.md"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"notes/extra.md\",\n    \"title\": \"未映射字段\",\n    \"created\": \"2026-09-02\",\n    \"updated\": \"2026-09-03\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"archived\",\n    \"tags\": [\n      \"杂项\"\n    ]\n  }\n]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "path": "missing-dir"
+      },
+      "ok": false,
+      "output": "知识库路径不存在：missing-dir。"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "project": "示例项目"
+      },
+      "ok": true,
+      "output": "[]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "tags": [
+          "rust"
+        ]
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"created\": \"2026-09-18\",\n    \"updated\": \"2026-09-19\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ]\n  },\n  {\n    \"path\": \"topics/rust/迁移顺序.md\",\n    \"title\": \"迁移顺序\",\n    \"created\": \"2026-09-01\",\n    \"updated\": \"2026-09-05\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"rust\"\n    ]\n  }\n]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "tags": [
+          "not-there"
+        ]
+      },
+      "ok": true,
+      "output": "[]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "type": "note"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"notes/extra.md\",\n    \"title\": \"未映射字段\",\n    \"created\": \"2026-09-02\",\n    \"updated\": \"2026-09-03\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"archived\",\n    \"tags\": [\n      \"杂项\"\n    ]\n  },\n  {\n    \"path\": \"notes/plain.md\",\n    \"title\": \"plain\",\n    \"created\": \"\",\n    \"updated\": \"\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": []\n  },\n  {\n    \"path\": \"topics/rust/迁移顺序.md\",\n    \"title\": \"迁移顺序\",\n    \"created\": \"2026-09-01\",\n    \"updated\": \"2026-09-05\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"rust\"\n    ]\n  }\n]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "status": "done"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"created\": \"2026-09-18\",\n    \"updated\": \"2026-09-19\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ]\n  }\n]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "max_results": 2
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"daily/2001/01/2001-01-05.md\",\n    \"title\": \"2026-09-19 工作日志\",\n    \"created\": \"2026-09-19\",\n    \"updated\": \"2026-09-19\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"log\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"日志\"\n    ]\n  },\n  {\n    \"path\": \"notes/extra.md\",\n    \"title\": \"未映射字段\",\n    \"created\": \"2026-09-02\",\n    \"updated\": \"2026-09-03\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"archived\",\n    \"tags\": [\n      \"杂项\"\n    ]\n  }\n]"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "max_results": "3"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"daily/2001/01/2001-01-05.md\",\n    \"title\": \"2026-09-19 工作日志\",\n    \"created\": \"2026-09-19\",\n    \"updated\": \"2026-09-19\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"log\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"日志\"\n    ]\n  },\n  {\n    \"path\": \"notes/extra.md\",\n    \"title\": \"未映射字段\",\n    \"created\": \"2026-09-02\",\n    \"updated\": \"2026-09-03\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"archived\",\n    \"tags\": [\n      \"杂项\"\n    ]\n  },\n  {\n    \"path\": \"notes/plain.md\",\n    \"title\": \"plain\",\n    \"created\": \"\",\n    \"updated\": \"\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": []\n  }\n]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "Rust"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ],\n    \"snippet\": \"## 目的\\n\\n用户问「继续用 Rust 改写，还有哪些没改写」。检索：Rust 内核。\",\n    \"score\": 3\n  },\n  {\n    \"path\": \"topics/rust/迁移顺序.md\",\n    \"title\": \"迁移顺序\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"rust\"\n    ],\n    \"snippet\": \"引擎先搬 protocol，再搬内核循环。Rust 检索命中关键词。\",\n    \"score\": 3\n  },\n  {\n    \"path\": \"notes/plain.md\",\n    \"title\": \"plain\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [],\n    \"snippet\": \"无 frontmatter 的纯正文，包含 Rust 字样。\",\n    \"score\": 1\n  }\n]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "检索 命中"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"topics/rust/迁移顺序.md\",\n    \"title\": \"迁移顺序\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"rust\"\n    ],\n    \"snippet\": \"引擎先搬 protocol，再搬内核循环。Rust 检索命中关键词。\",\n    \"score\": 1\n  }\n]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "内核",
+        "max_results": 1
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"daily/2001/01/2001-01-05.md\",\n    \"title\": \"2026-09-19 工作日志\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"log\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"日志\"\n    ],\n    \"snippet\": \"今天把 controllers 判定层搬进内核。\",\n    \"score\": 1\n  }\n]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "rust",
+        "project": "示例项目"
+      },
+      "ok": true,
+      "output": "[]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "Rust",
+        "tags": [
+          "盘点"
+        ]
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ],\n    \"snippet\": \"## 目的\\n\\n用户问「继续用 Rust 改写，还有哪些没改写」。检索：Rust 内核。\",\n    \"score\": 3\n  }\n]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "Rust",
+        "type": "research"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ],\n    \"snippet\": \"## 目的\\n\\n用户问「继续用 Rust 改写，还有哪些没改写」。检索：Rust 内核。\",\n    \"score\": 3\n  }\n]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "Rust",
+        "status": "draft"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"topics/rust/迁移顺序.md\",\n    \"title\": \"迁移顺序\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"rust\"\n    ],\n    \"snippet\": \"引擎先搬 protocol，再搬内核循环。Rust 检索命中关键词。\",\n    \"score\": 3\n  },\n  {\n    \"path\": \"notes/plain.md\",\n    \"title\": \"plain\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [],\n    \"snippet\": \"无 frontmatter 的纯正文，包含 Rust 字样。\",\n    \"score\": 1\n  }\n]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "zzz-不存在"
+      },
+      "ok": true,
+      "output": "[]"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": ""
+      },
+      "ok": false,
+      "output": "query 不能为空。"
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "Rust",
+        "max_results": 99
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/示例项目/2001-01-02-Rust改写盘点.md\",\n    \"title\": \"Rust 改写盘点\",\n    \"project\": \"AI课堂任务/OmniCrawl\",\n    \"type\": \"research\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"rust\",\n      \"盘点\"\n    ],\n    \"snippet\": \"## 目的\\n\\n用户问「继续用 Rust 改写，还有哪些没改写」。检索：Rust 内核。\",\n    \"score\": 3\n  },\n  {\n    \"path\": \"topics/rust/迁移顺序.md\",\n    \"title\": \"迁移顺序\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [\n      \"rust\"\n    ],\n    \"snippet\": \"引擎先搬 protocol，再搬内核循环。Rust 检索命中关键词。\",\n    \"score\": 3\n  },\n  {\n    \"path\": \"notes/plain.md\",\n    \"title\": \"plain\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": [],\n    \"snippet\": \"无 frontmatter 的纯正文，包含 Rust 字样。\",\n    \"score\": 1\n  }\n]"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "notes/plain.md"
+      },
+      "ok": true,
+      "output": "无 frontmatter 的纯正文，包含 Rust 字样。\n"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "notes/plain"
+      },
+      "ok": true,
+      "output": "无 frontmatter 的纯正文，包含 Rust 字样。\n"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "notes/plain.md",
+        "max_chars": 10
+      },
+      "ok": true,
+      "output": "无 frontmat\n…（已截断，可提高 max_chars 读取更多内容）"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "notes/missing"
+      },
+      "ok": false,
+      "output": "知识库笔记不存在：notes/missing.md。"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": ""
+      },
+      "ok": false,
+      "output": "path 不能为空。"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "../escape"
+      },
+      "ok": false,
+      "output": "知识库路径不允许包含 ..。"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "/notes/plain.md"
+      },
+      "ok": true,
+      "output": "无 frontmatter 的纯正文，包含 Rust 字样。\n"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "",
+        "content": "x"
+      },
+      "ok": false,
+      "output": "path 不能为空。"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "notes/null.md",
+        "content": 5
+      },
+      "ok": false,
+      "output": "content 必须是字符串。"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "notes/mode.md",
+        "content": "x",
+        "mode": "replace"
+      },
+      "ok": false,
+      "output": "mode 必须是 create、overwrite 或 append。"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "notes/type.md",
+        "content": "x",
+        "type": "todo"
+      },
+      "ok": false,
+      "output": "type 必须是 decision, log, meeting, note, reference, research 之一。"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "notes/status.md",
+        "content": "x",
+        "status": "wip"
+      },
+      "ok": false,
+      "output": "status 必须是 archived, done, draft 之一。"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "../escape.md",
+        "content": "x"
+      },
+      "ok": false,
+      "output": "知识库路径不允许包含 ..。"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "projects/demo/内部试用",
+        "content": "第一段正文。\n\n第二段正文。",
+        "title": " 示范笔记 ",
+        "project": "演示/项目",
+        "tags": [
+          " Rust ",
+          "",
+          "示例"
+        ],
+        "type": " LOG ",
+        "status": "DONE",
+        "mode": "create"
+      },
+      "ok": true,
+      "output": "{\n  \"note\": {\n    \"path\": \"projects/demo/内部试用.md\",\n    \"title\": \"示范笔记\",\n    \"created\": \"{TODAY}\",\n    \"updated\": \"{TODAY}\",\n    \"project\": \"演示/项目\",\n    \"type\": \"log\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"Rust\",\n      \"示例\"\n    ]\n  },\n  \"mode\": \"create\"\n}"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "projects/demo/内部试用",
+        "content": "重复创建",
+        "mode": "create"
+      },
+      "ok": false,
+      "output": "笔记已存在：projects/demo/内部试用.md。"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "notes/extra",
+        "content": "覆盖后的正文。",
+        "title": "覆盖标题",
+        "tags": [
+          "覆盖"
+        ]
+      },
+      "ok": true,
+      "output": "{\n  \"note\": {\n    \"path\": \"notes/extra.md\",\n    \"title\": \"覆盖标题\",\n    \"created\": \"2026-09-02\",\n    \"updated\": \"{TODAY}\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"archived\",\n    \"tags\": [\n      \"覆盖\"\n    ]\n  },\n  \"mode\": \"overwrite\"\n}"
+    },
+    {
+      "tool": "kb_write",
+      "arguments": {
+        "path": "notes/append-target.md",
+        "content": "第一次写入。"
+      },
+      "ok": true,
+      "output": "{\n  \"note\": {\n    \"path\": \"notes/append-target.md\",\n    \"title\": \"append-target\",\n    \"created\": \"{TODAY}\",\n    \"updated\": \"{TODAY}\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": []\n  },\n  \"mode\": \"overwrite\"\n}"
+    },
+    {
+      "tool": "kb_append",
+      "arguments": {
+        "path": "notes/append-target",
+        "content": "追加内容。"
+      },
+      "ok": true,
+      "output": "{\n  \"note\": {\n    \"path\": \"notes/append-target.md\",\n    \"title\": \"append-target\",\n    \"created\": \"{TODAY}\",\n    \"updated\": \"{TODAY}\",\n    \"project\": \"\",\n    \"type\": \"note\",\n    \"status\": \"draft\",\n    \"tags\": []\n  },\n  \"mode\": \"append\"\n}"
+    },
+    {
+      "tool": "kb_append",
+      "arguments": {
+        "path": "",
+        "content": "x"
+      },
+      "ok": false,
+      "output": "path 不能为空。"
+    },
+    {
+      "tool": "kb_append",
+      "arguments": {
+        "path": "notes/append-target.md",
+        "content": 7
+      },
+      "ok": false,
+      "output": "content 必须是字符串。"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "notes/append-target.md"
+      },
+      "ok": true,
+      "output": "---\ntitle: append-target\ncreated: {TODAY}\nupdated: {TODAY}\nproject: \"\"\ntags: []\ntype: note\nstatus: draft\n---\n\n\n第一次写入。\n\n追加内容。\n"
+    },
+    {
+      "tool": "kb_read",
+      "arguments": {
+        "path": "notes/extra.md"
+      },
+      "ok": true,
+      "output": "---\ntitle: 覆盖标题\ncreated: 2026-09-02\nupdated: {TODAY}\nproject: \"\"\ntags: [覆盖]\ntype: note\nstatus: archived\nowner: 示例\n---\n\n覆盖后的正文。\n"
+    },
+    {
+      "tool": "kb_list",
+      "arguments": {
+        "path": "projects/demo"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"path\": \"projects/demo/内部试用.md\",\n    \"title\": \"示范笔记\",\n    \"created\": \"{TODAY}\",\n    \"updated\": \"{TODAY}\",\n    \"project\": \"演示/项目\",\n    \"type\": \"log\",\n    \"status\": \"done\",\n    \"tags\": [\n      \"Rust\",\n      \"示例\"\n    ]\n  }\n]"
+    }
+  ]
+}

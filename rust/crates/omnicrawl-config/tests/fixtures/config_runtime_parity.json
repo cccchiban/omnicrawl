@@ -1,0 +1,976 @@
+{
+ "dirs": {
+  "home": "C:\\Users\\Administrator",
+  "user_config_dir": "C:\\Users\\Administrator\\.OmniCrawl",
+  "global_agents": "C:\\Users\\Administrator\\.OmniCrawl\\AGENTS.md",
+  "default_config": "C:\\Users\\Administrator\\.OmniCrawl\\config.toml",
+  "default_models": "C:\\Users\\Administrator\\.OmniCrawl\\models.toml",
+  "default_subagents": "C:\\Users\\Administrator\\.OmniCrawl\\subagents.toml",
+  "default_toml_config": "C:\\Users\\Administrator\\.OmniCrawl\\config.toml"
+ },
+ "legacy_dirs": [
+  {
+   "platform": "win32",
+   "env": {
+    "APPDATA": "C:\\Users\\x\\AppData\\Roaming"
+   },
+   "expected": [
+    "C:\\Users\\x\\AppData\\Roaming\\OmniCrawl",
+    "C:\\Users\\Administrator\\.omnicrawl"
+   ]
+  },
+  {
+   "platform": "win32",
+   "env": {},
+   "expected": [
+    "C:\\Users\\Administrator\\AppData\\Roaming\\OmniCrawl",
+    "C:\\Users\\Administrator\\.omnicrawl"
+   ]
+  },
+  {
+   "platform": "linux",
+   "env": {
+    "XDG_CONFIG_HOME": "/xdg/config"
+   },
+   "expected": [
+    "\\xdg\\config\\omnicrawl",
+    "C:\\Users\\Administrator\\.omnicrawl"
+   ]
+  },
+  {
+   "platform": "linux",
+   "env": {},
+   "expected": [
+    "C:\\Users\\Administrator\\.config\\omnicrawl",
+    "C:\\Users\\Administrator\\.omnicrawl"
+   ]
+  },
+  {
+   "platform": "darwin",
+   "env": {},
+   "expected": [
+    "C:\\Users\\Administrator\\.config\\omnicrawl",
+    "C:\\Users\\Administrator\\.omnicrawl"
+   ]
+  }
+ ],
+ "resolves": [
+  {
+   "expected_path": "C:\\oc-parity\\home\\.OmniCrawl\\config.toml",
+   "name": "默认用户目录",
+   "func": "config",
+   "explicit": null,
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\custom\\my.toml",
+   "name": "环境变量优先",
+   "func": "config",
+   "explicit": null,
+   "env": {
+    "AI_CONFIG_FILE": "C:\\custom\\my.toml"
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\.OmniCrawl\\config.toml",
+   "name": "环境变量空白回退默认",
+   "func": "config",
+   "explicit": null,
+   "env": {
+    "AI_CONFIG_FILE": "   "
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\env.toml",
+   "name": "环境变量波浪号",
+   "func": "config",
+   "explicit": null,
+   "env": {
+    "AI_CONFIG_FILE": "~/env.toml"
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "D:\\explicit\\cfg.toml",
+   "name": "显式优先",
+   "func": "config",
+   "explicit": "D:\\explicit\\cfg.toml",
+   "env": {
+    "AI_CONFIG_FILE": "C:\\custom\\my.toml"
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\rel.toml",
+   "name": "显式波浪号",
+   "func": "config",
+   "explicit": "~/rel.toml",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "rel.toml",
+   "name": "点前缀归一",
+   "func": "config",
+   "explicit": "./rel.toml",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "a\\b\\c.toml",
+   "name": "分隔符归一",
+   "func": "config",
+   "explicit": "a//b/./c.toml",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "error": "运行配置仅支持 .toml 文件：a\\b。JSON 配置已停止支持。",
+   "name": "尾随分隔符去掉后无后缀",
+   "func": "config",
+   "explicit": "a/b/",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "cfg.TOML",
+   "name": "大写后缀允许",
+   "func": "config",
+   "explicit": "cfg.TOML",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "error": "运行配置仅支持 .toml 文件：x.json。JSON 配置已停止支持。",
+   "name": "JSON 后缀拒绝",
+   "func": "config",
+   "explicit": "x.json",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "error": "运行配置仅支持 .toml 文件：noext。JSON 配置已停止支持。",
+   "name": "无后缀拒绝",
+   "func": "config",
+   "explicit": "noext",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "cfg.tar.toml",
+   "name": "双后缀允许",
+   "func": "config",
+   "explicit": "cfg.tar.toml",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\.OmniCrawl\\models.toml",
+   "name": "默认",
+   "func": "models",
+   "explicit": null,
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\m.toml",
+   "name": "环境变量波浪号",
+   "func": "models",
+   "explicit": null,
+   "env": {
+    "AI_MODELS_FILE": "~/m.toml"
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "error": "模型配置仅支持 .toml 文件：m.yaml。JSON 配置已停止支持。",
+   "name": "yaml 拒绝",
+   "func": "models",
+   "explicit": "m.yaml",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\.OmniCrawl\\subagents.toml",
+   "name": "默认",
+   "func": "subagents",
+   "explicit": null,
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "D:\\s.toml",
+   "name": "环境变量",
+   "func": "subagents",
+   "explicit": null,
+   "env": {
+    "AI_SUBAGENTS_FILE": "D:\\s.toml"
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "error": "子代理设置仅支持 .toml 文件：s.JSON。JSON 配置已停止支持。",
+   "name": "大写 JSON 拒绝",
+   "func": "subagents",
+   "explicit": "s.JSON",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\.OmniCrawl\\config.toml",
+   "name": "写路径默认",
+   "func": "config_write",
+   "explicit": null,
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\w.toml",
+   "name": "写路径显式",
+   "func": "config_write",
+   "explicit": "~/w.toml",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\env\\w.toml",
+   "name": "写路径环境变量",
+   "func": "config_write",
+   "explicit": null,
+   "env": {
+    "AI_CONFIG_FILE": "C:\\env\\w.toml"
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "m.toml",
+   "name": "写路径环境变量",
+   "func": "models_write",
+   "explicit": null,
+   "env": {
+    "AI_MODELS_FILE": "m.toml"
+   },
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "error": "模型配置仅支持 .toml 文件：bad.txt。JSON 配置已停止支持。",
+   "name": "写路径后缀拒绝",
+   "func": "models_write",
+   "explicit": "bad.txt",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\s.toml",
+   "name": "写路径显式",
+   "func": "subagents_write",
+   "explicit": "~/s.toml",
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  },
+  {
+   "expected_path": "C:\\oc-parity\\home\\.OmniCrawl\\subagents.toml",
+   "name": "写路径默认",
+   "func": "subagents_write",
+   "explicit": null,
+   "env": {},
+   "managed_home": "C:\\oc-parity\\home"
+  }
+ ],
+ "sections": [
+  {
+   "expected": {},
+   "name": "缺失键",
+   "data": {
+    "other": 1
+   },
+   "key": "mcp"
+  },
+  {
+   "expected": {},
+   "name": "空字符串",
+   "data": {
+    "mcp": ""
+   },
+   "key": "mcp"
+  },
+  {
+   "expected": {},
+   "name": "空表",
+   "data": {
+    "mcp": {}
+   },
+   "key": "mcp"
+  },
+  {
+   "expected": {
+    "enabled": true,
+    "servers": {
+     "a": {
+      "command": "x"
+     }
+    }
+   },
+   "name": "正常表",
+   "data": {
+    "mcp": {
+     "enabled": true,
+     "servers": {
+      "a": {
+       "command": "x"
+      }
+     }
+    }
+   },
+   "key": "mcp"
+  },
+  {
+   "error": "配置项 mcp 必须是对象。",
+   "name": "列表",
+   "data": {
+    "mcp": [
+     1,
+     2
+    ]
+   },
+   "key": "mcp"
+  },
+  {
+   "error": "配置项 mcp 必须是对象。",
+   "name": "字符串",
+   "data": {
+    "mcp": "x"
+   },
+   "key": "mcp"
+  },
+  {
+   "error": "配置项 mcp 必须是对象。",
+   "name": "整数",
+   "data": {
+    "mcp": 1
+   },
+   "key": "mcp"
+  },
+  {
+   "error": "配置项 mcp 必须是对象。",
+   "name": "布尔",
+   "data": {
+    "mcp": false
+   },
+   "key": "mcp"
+  },
+  {
+   "error": "配置项 mcp 必须是对象。",
+   "name": "浮点",
+   "data": {
+    "mcp": 1.5
+   },
+   "key": "mcp"
+  },
+  {
+   "expected": {},
+   "name": "别的键是对象",
+   "data": {
+    "llm": {
+     "model": "x"
+    }
+   },
+   "key": "mcp"
+  }
+ ],
+ "loads": [
+  {
+   "expected": {
+    "llm": {
+     "model": "gpt-5.2",
+     "context_window_tokens": 128000,
+     "temperature": 0.2,
+     "tags": [
+      "a",
+      "b"
+     ]
+    },
+    "ui": {
+     "show_thinking": true
+    }
+   },
+   "name": "正常 TOML",
+   "layout": {
+    "config.toml": "# 注释\n[llm]\nmodel = \"gpt-5.2\"\ncontext_window_tokens = 128000\ntemperature = 0.2\ntags = [\"a\", \"b\"]\n\n[ui]\nshow_thinking = true\n"
+   },
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "expected": {},
+   "name": "空文件",
+   "layout": {
+    "config.toml": ""
+   },
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "expected": {},
+   "name": "只有空白",
+   "layout": {
+    "config.toml": "  \n\t\n"
+   },
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "expected": {},
+   "name": "只有 BOM",
+   "layout": {
+    "config.toml": "﻿"
+   },
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "expected": {
+    "ui": {
+     "show_thinking": false
+    }
+   },
+   "name": "带 BOM 的正常文件",
+   "layout": {
+    "config.toml": "﻿[ui]\nshow_thinking = false\n"
+   },
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "expected": {},
+   "name": "文件不存在",
+   "layout": {},
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "error_prefix": "配置文件 TOML 解析失败：{root}\\config.toml，",
+   "name": "解析失败",
+   "layout": {
+    "config.toml": "[llm\nmodel = 1\n"
+   },
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "error_prefix": "配置文件 TOML 解析失败：{root}\\config.toml，",
+   "name": "顶层不是表",
+   "layout": {
+    "config.toml": "42\n"
+   },
+   "use_default": false,
+   "explicit": "config.toml",
+   "env": {}
+  },
+  {
+   "error": "运行配置仅支持 .toml 文件：{root}\\config.json。JSON 配置已停止支持。",
+   "name": "显式 JSON 后缀",
+   "layout": {
+    "config.json": "{}"
+   },
+   "use_default": false,
+   "explicit": "config.json",
+   "env": {}
+  },
+  {
+   "expected": {
+    "mcp": {
+     "enabled": true
+    }
+   },
+   "name": "默认路径读取",
+   "layout": {
+    "config.toml": "[mcp]\nenabled = true\n"
+   },
+   "use_default": true,
+   "explicit": null,
+   "env": {}
+  },
+  {
+   "expected": {},
+   "name": "默认路径不存在",
+   "layout": {},
+   "use_default": true,
+   "explicit": null,
+   "env": {}
+  },
+  {
+   "error": "检测到不再支持的 config.json，且 config.toml 不存在。请根据 config.example.toml 手工创建 config.toml；程序不会读取或自动迁移 JSON。",
+   "name": "遗留 config.json",
+   "layout": {
+    "config.json": "{}"
+   },
+   "use_default": true,
+   "explicit": null,
+   "env": {}
+  },
+  {
+   "expected": {
+    "ui": {
+     "show_thinking": true
+    }
+   },
+   "name": "遗留 JSON 与 toml 并存",
+   "layout": {
+    "config.json": "{}",
+    "config.toml": "[ui]\nshow_thinking = true\n"
+   },
+   "use_default": true,
+   "explicit": null,
+   "env": {}
+  },
+  {
+   "expected": {},
+   "name": "环境变量指向的文件不存在",
+   "layout": {},
+   "use_default": true,
+   "explicit": null,
+   "env": {
+    "AI_CONFIG_FILE": "C:\\nope\\x.toml"
+   }
+  },
+  {
+   "expected": {
+    "llm": {
+     "model": "custom"
+    }
+   },
+   "name": "环境变量指向的文件存在",
+   "layout": {
+    "env.toml": "[llm]\nmodel = \"custom\"\n"
+   },
+   "use_default": true,
+   "explicit": null,
+   "env": {
+    "AI_CONFIG_FILE": "{root}\\env.toml"
+   }
+  }
+ ],
+ "dumps": [
+  {
+   "name": "真实 config.toml 形状",
+   "data": {
+    "llm": {
+     "provider": "openai",
+     "protocol": "openai_chat",
+     "model": "gpt-5.2",
+     "context_window_tokens": 128000,
+     "reasoning_effort": "high",
+     "temperature": 0.2,
+     "base_url": "https://api.openai.com/v1",
+     "api_key_env": "OPENAI_API_KEY"
+    },
+    "ui": {
+     "show_thinking": true
+    },
+    "approval": {
+     "mode": "review",
+     "review_model": ""
+    },
+    "context_compaction": {
+     "enabled": true,
+     "trigger_context_tokens": 96000,
+     "trigger_context_percent": 75,
+     "keep_recent_messages": 6
+    }
+   },
+   "text": "[llm]\nprovider = \"openai\"\nprotocol = \"openai_chat\"\nmodel = \"gpt-5.2\"\ncontext_window_tokens = 128000\nreasoning_effort = \"high\"\ntemperature = 0.2\nbase_url = \"https://api.openai.com/v1\"\napi_key_env = \"OPENAI_API_KEY\"\n\n[ui]\nshow_thinking = true\n\n[approval]\nmode = \"review\"\nreview_model = \"\"\n\n[context_compaction]\nenabled = true\ntrigger_context_tokens = 96000\ntrigger_context_percent = 75\nkeep_recent_messages = 6\n"
+  },
+  {
+   "name": "真实 models.toml 形状",
+   "data": {
+    "version": 1,
+    "models": {
+     "local-qwen": {
+      "provider": "openai",
+      "protocol": "openai_chat",
+      "model_id": "qwen3-local",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "api_key_env": "LOCAL_API_KEY",
+      "context_window_tokens": 32768,
+      "capabilities": {
+       "streaming": true,
+       "tools": true,
+       "vision": false
+      },
+      "aliases": [
+       "qwen",
+       "本地"
+      ]
+     }
+    }
+   },
+   "text": "version = 1\n\n[models.local-qwen]\nprovider = \"openai\"\nprotocol = \"openai_chat\"\nmodel_id = \"qwen3-local\"\nbase_url = \"http://127.0.0.1:8000/v1\"\napi_key_env = \"LOCAL_API_KEY\"\ncontext_window_tokens = 32768\naliases = [\n    \"qwen\",\n    \"本地\",\n]\n\n[models.local-qwen.capabilities]\nstreaming = true\ntools = true\nvision = false\n"
+  },
+  {
+   "name": "真实 subagents.toml 形状",
+   "data": {
+    "subagents": {
+     "enabled": true,
+     "max_concurrent": 2,
+     "timeout_seconds": 1800,
+     "model_overrides": {
+      "review": "gpt-5.2"
+     }
+    }
+   },
+   "text": "[subagents]\nenabled = true\nmax_concurrent = 2\ntimeout_seconds = 1800\n\n[subagents.model_overrides]\nreview = \"gpt-5.2\"\n"
+  },
+  {
+   "name": "空文档",
+   "data": {},
+   "text": ""
+  },
+  {
+   "name": "只有顶层标量",
+   "data": {
+    "a": 1,
+    "b": "x",
+    "c": true,
+    "d": 1.5
+   },
+   "text": "a = 1\nb = \"x\"\nc = true\nd = 1.5\n"
+  },
+  {
+   "name": "标量在表之前",
+   "data": {
+    "z": 1,
+    "llm": {
+     "model": "x"
+    },
+    "a": 3
+   },
+   "text": "z = 1\na = 3\n\n[llm]\nmodel = \"x\"\n"
+  },
+  {
+   "name": "空表",
+   "data": {
+    "t": {},
+    "u": {
+     "v": {}
+    }
+   },
+   "text": "[t]\n\n[u.v]\n"
+  },
+  {
+   "name": "深层空表",
+   "data": {
+    "a": {
+     "b": {
+      "c": {}
+     }
+    }
+   },
+   "text": "[a.b.c]\n"
+  },
+  {
+   "name": "同名冲突备份字段",
+   "data": {
+    "llm": {
+     "model": "x"
+    },
+    "ui": {
+     "show_thinking": false,
+     "nested": {
+      "deep": true
+     }
+    }
+   },
+   "text": "[llm]\nmodel = \"x\"\n\n[ui]\nshow_thinking = false\n\n[ui.nested]\ndeep = true\n"
+  },
+  {
+   "name": "含 None 的写回",
+   "data": {
+    "llm": {
+     "model": "x",
+     "temperature": null
+    },
+    "extra": null,
+    "list": [
+     1,
+     null,
+     2
+    ]
+   },
+   "text": "list = [\n    1,\n    2,\n]\n\n[llm]\nmodel = \"x\"\n"
+  },
+  {
+   "name": "空字符串与特殊键",
+   "data": {
+    "": 1,
+    "a b": 2,
+    "a.b": 3,
+    "中文键": 4,
+    "a-b": 5
+   },
+   "text": "\"\" = 1\n\"a b\" = 2\n\"a.b\" = 3\n\"中文键\" = 4\na-b = 5\n"
+  },
+  {
+   "name": "控制字符",
+   "data": {
+    "k": "\u0000\u0001\u0007\b\t\n\u000b\f\r\u001f"
+   },
+   "text": "k = \"\\u0000\\u0001\\u0007\\b\t\\n\\u000b\\f\\r\\u001f\\u007f\"\n"
+  },
+  {
+   "name": "引号与反斜杠",
+   "data": {
+    "k": "quote\"here \\ back",
+    "p": "C:\\Users\\x"
+   },
+   "text": "k = \"quote\\\"here \\\\ back\"\np = \"C:\\\\Users\\\\x\"\n"
+  },
+  {
+   "name": "非 ASCII",
+   "data": {
+    "k": "中文 é 😀  ",
+    "emoji": "🚀"
+   },
+   "text": "k = \"中文 é 😀  \"\nemoji = \"🚀\"\n"
+  },
+  {
+   "name": "数组",
+   "data": {
+    "k": [],
+    "one": [
+     "a"
+    ],
+    "many": [
+     1,
+     2,
+     3
+    ],
+    "mixed": [
+     1,
+     "a",
+     true,
+     1.5
+    ]
+   },
+   "text": "k = []\none = [\n    \"a\",\n]\nmany = [\n    1,\n    2,\n    3,\n]\nmixed = [\n    1,\n    \"a\",\n    true,\n    1.5,\n]\n"
+  },
+  {
+   "name": "嵌套数组",
+   "data": {
+    "k": [
+     [
+      1,
+      2
+     ],
+     [
+      3
+     ]
+    ],
+    "deep": [
+     [
+      [
+       1
+      ]
+     ]
+    ],
+    "empty_in": [
+     [],
+     [
+      []
+     ]
+    ]
+   },
+   "text": "k = [\n    [\n        1,\n        2,\n    ],\n    [\n        3,\n    ],\n]\ndeep = [\n    [\n        [\n            1,\n        ],\n    ],\n]\nempty_in = [\n    [],\n    [\n        [],\n    ],\n]\n"
+  },
+  {
+   "name": "数组里的内联表",
+   "data": {
+    "k": [
+     {
+      "a": 1
+     },
+     {
+      "b": {
+       "c": 2
+      }
+     }
+    ],
+    "long": [
+     {
+      "a": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    ]
+   },
+   "text": "k = [\n    { a = 1 },\n    { b = { c = 2 } },\n]\nlong = [\n    { a = \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\" },\n]\n"
+  },
+  {
+   "name": "浮点写法",
+   "data": {
+    "a": 1.0,
+    "b": 0.1,
+    "c": 3.5,
+    "d": 1e-07,
+    "e": 1e+16,
+    "f": -0.0,
+    "g": 1e+100
+   },
+   "text": "a = 1.0\nb = 0.1\nc = 3.5\nd = 1e-07\ne = 1e+16\nf = -0.0\ng = 1e+100\n"
+  },
+  {
+   "name": "大整数",
+   "data": {
+    "a": 9223372036854775807,
+    "b": -9223372036854775808,
+    "c": 0
+   },
+   "text": "a = 9223372036854775807\nb = -9223372036854775808\nc = 0\n"
+  },
+  {
+   "name": "布尔",
+   "data": {
+    "a": true,
+    "b": false
+   },
+   "text": "a = true\nb = false\n"
+  },
+  {
+   "name": "表内数组与子表",
+   "data": {
+    "t": {
+     "k": [
+      1,
+      2
+     ],
+     "inner": {
+      "deep": "x"
+     },
+     "scalar": true
+    }
+   },
+   "text": "[t]\nk = [\n    1,\n    2,\n]\nscalar = true\n\n[t.inner]\ndeep = \"x\"\n"
+  },
+  {
+   "name": "多级表与标量混排",
+   "data": {
+    "outer": {
+     "scalar": 1,
+     "inner": {
+      "deep": "x"
+     }
+    },
+    "top": 2,
+    "other": {
+     "k": "v"
+    }
+   },
+   "text": "top = 2\n\n[outer]\nscalar = 1\n\n[outer.inner]\ndeep = \"x\"\n\n[other]\nk = \"v\"\n"
+  }
+ ],
+ "migrations": [
+  {
+   "name": "搬迁到空目标",
+   "layout": {
+    "legacy/config.toml": "[llm]\nmodel = \"x\"\n",
+    "legacy/models.toml": "version = 1\n"
+   },
+   "target_layout": {},
+   "legacy_names": [
+    "legacy"
+   ],
+   "expected": [
+    ".OmniCrawl/",
+    ".OmniCrawl/config.toml = [llm]\nmodel = \"x\"",
+    ".OmniCrawl/models.toml = version = 1"
+   ]
+  },
+  {
+   "name": "目标有冲突备份",
+   "layout": {
+    "legacy/config.toml": "[llm]\nmodel = \"new\"\n"
+   },
+   "target_layout": {
+    ".OmniCrawl/config.toml": "[llm]\nmodel = \"old\"\n"
+   },
+   "legacy_names": [
+    "legacy"
+   ],
+   "expected": [
+    ".OmniCrawl/",
+    ".OmniCrawl/config.toml = [llm]\nmodel = \"old\"",
+    ".OmniCrawl/config.toml.migrated.bak = [llm]\nmodel = \"new\""
+   ]
+  },
+  {
+   "name": "旧目录不存在",
+   "layout": {},
+   "target_layout": {
+    ".OmniCrawl/config.toml": "x = 1\n"
+   },
+   "legacy_names": [
+    "legacy"
+   ],
+   "expected": [
+    ".OmniCrawl/",
+    ".OmniCrawl/config.toml = x = 1"
+   ]
+  },
+  {
+   "name": "多个旧目录",
+   "layout": {
+    "legacy/config.toml": "a = 1\n",
+    "old2/models.toml": "version = 1\n"
+   },
+   "target_layout": {},
+   "legacy_names": [
+    "legacy",
+    "old2"
+   ],
+   "expected": [
+    ".OmniCrawl/",
+    ".OmniCrawl/config.toml = a = 1",
+    ".OmniCrawl/models.toml = version = 1"
+   ]
+  },
+  {
+   "name": "旧目录里带子目录",
+   "layout": {
+    "legacy/nested/inner.toml": "x = 1\n"
+   },
+   "target_layout": {},
+   "legacy_names": [
+    "legacy"
+   ],
+   "expected": [
+    ".OmniCrawl/",
+    ".OmniCrawl/nested/",
+    ".OmniCrawl/nested/inner.toml = x = 1"
+   ]
+  }
+ ],
+ "conflict_sequences": [
+  {
+   "name": "同名冲突递增",
+   "expected": [
+    [
+     "config.toml = a = 1",
+     "config.toml.migrated.bak = a = 2"
+    ],
+    [
+     "config.toml = a = 1",
+     "config.toml.migrated.1.bak = a = 3",
+     "config.toml.migrated.bak = a = 2"
+    ]
+   ]
+  }
+ ]
+}

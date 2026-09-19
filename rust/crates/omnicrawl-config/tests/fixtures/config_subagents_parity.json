@@ -1,0 +1,645 @@
+{
+  "advanced_keys": [
+    "max_concurrency",
+    "max_tasks_per_batch",
+    "default_timeout_seconds",
+    "model_request_concurrency",
+    "verify_command_timeout_seconds",
+    "task_retention_minutes"
+  ],
+  "advanced": [
+    {
+      "label": "并发下限内",
+      "name": "max_concurrency",
+      "value": 2,
+      "ok": true,
+      "kind": "int",
+      "result": 2,
+      "error": null
+    },
+    {
+      "label": "并发等于下限",
+      "name": "max_concurrency",
+      "value": 1,
+      "ok": true,
+      "kind": "int",
+      "result": 1,
+      "error": null
+    },
+    {
+      "label": "并发等于上限",
+      "name": "max_concurrency",
+      "value": 4,
+      "ok": true,
+      "kind": "int",
+      "result": 4,
+      "error": null
+    },
+    {
+      "label": "并发低于下限",
+      "name": "max_concurrency",
+      "value": 0,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.max_concurrency 必须在 1 到 4 之间，当前值：0。"
+    },
+    {
+      "label": "并发高于上限",
+      "name": "max_concurrency",
+      "value": 5,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.max_concurrency 必须在 1 到 4 之间，当前值：5。"
+    },
+    {
+      "label": "并发布尔值",
+      "name": "max_concurrency",
+      "value": true,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.max_concurrency 必须是整数。"
+    },
+    {
+      "label": "并发浮点",
+      "name": "max_concurrency",
+      "value": 2.5,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.max_concurrency 必须是整数。"
+    },
+    {
+      "label": "并发字符串",
+      "name": "max_concurrency",
+      "value": "2",
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.max_concurrency 必须是整数。"
+    },
+    {
+      "label": "批次上限内",
+      "name": "max_tasks_per_batch",
+      "value": 3,
+      "ok": true,
+      "kind": "int",
+      "result": 3,
+      "error": null
+    },
+    {
+      "label": "超时整数写法",
+      "name": "default_timeout_seconds",
+      "value": 3600,
+      "ok": true,
+      "kind": "number",
+      "result": 3600.0,
+      "error": null
+    },
+    {
+      "label": "超时浮点写法",
+      "name": "default_timeout_seconds",
+      "value": 12.5,
+      "ok": true,
+      "kind": "number",
+      "result": 12.5,
+      "error": null
+    },
+    {
+      "label": "超时等于下限",
+      "name": "default_timeout_seconds",
+      "value": 1,
+      "ok": true,
+      "kind": "number",
+      "result": 1.0,
+      "error": null
+    },
+    {
+      "label": "超时低于下限",
+      "name": "default_timeout_seconds",
+      "value": 0.5,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.default_timeout_seconds 必须在 1 到 3600 之间，当前值：0.5。"
+    },
+    {
+      "label": "超时高于上限",
+      "name": "default_timeout_seconds",
+      "value": 3601,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.default_timeout_seconds 必须在 1 到 3600 之间，当前值：3601。"
+    },
+    {
+      "label": "超时布尔值",
+      "name": "default_timeout_seconds",
+      "value": false,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.default_timeout_seconds 必须是数字。"
+    },
+    {
+      "label": "模型并发内",
+      "name": "model_request_concurrency",
+      "value": 4,
+      "ok": true,
+      "kind": "int",
+      "result": 4,
+      "error": null
+    },
+    {
+      "label": "校验超时内",
+      "name": "verify_command_timeout_seconds",
+      "value": 360,
+      "ok": true,
+      "kind": "int",
+      "result": 360,
+      "error": null
+    },
+    {
+      "label": "保留分钟上限",
+      "name": "task_retention_minutes",
+      "value": 10080,
+      "ok": true,
+      "kind": "int",
+      "result": 10080,
+      "error": null
+    },
+    {
+      "label": "保留分钟越界",
+      "name": "task_retention_minutes",
+      "value": 10081,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "配置项 subagents.task_retention_minutes 必须在 1 到 10080 之间，当前值：10081。"
+    },
+    {
+      "label": "未知配置项",
+      "name": "unknown_setting",
+      "value": 1,
+      "ok": false,
+      "kind": null,
+      "result": null,
+      "error": "设置面板不支持配置项 subagents.unknown_setting。"
+    }
+  ],
+  "load": [
+    {
+      "label": "空配置取默认值",
+      "toml": "",
+      "env": {},
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "全字段生效",
+      "toml": "\n[subagents]\nenabled = true\nmax_depth = 1\nmax_concurrency = 3\nmax_tasks_per_batch = 2\ndefault_timeout_seconds = 120.5\nmodel_request_concurrency = 4\nallow_background = true\nallow_fork = true\nallow_shared_workspace_writes = true\nallow_worktree = true\nallow_standard_agent = true\nenable_verify_agent = true\nverify_command_timeout_seconds = 300\ntask_retention_minutes = 120\nresult_summary_chars = 1234\n",
+      "env": {},
+      "ok": true,
+      "config": {
+        "enabled": true,
+        "max_depth": 1,
+        "max_concurrency": 3,
+        "max_tasks_per_batch": 2,
+        "default_timeout_seconds": 120.5,
+        "model_request_concurrency": 4,
+        "allow_background": true,
+        "allow_fork": true,
+        "allow_shared_workspace_writes": true,
+        "allow_worktree": true,
+        "allow_standard_agent": true,
+        "enable_verify_agent": true,
+        "verify_command_timeout_seconds": 300,
+        "task_retention_minutes": 120,
+        "result_summary_chars": 1234,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "布尔类型错误",
+      "toml": "[subagents]\nenabled = \"yes\"\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.enabled 必须是布尔值。"
+    },
+    {
+      "label": "整数类型错误",
+      "toml": "[subagents]\nmax_concurrency = \"2\"\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.max_concurrency 必须是整数。"
+    },
+    {
+      "label": "整数越界",
+      "toml": "[subagents]\nmax_concurrency = 9\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.max_concurrency 必须在 1 到 4 之间，当前值：9。"
+    },
+    {
+      "label": "数字类型错误",
+      "toml": "[subagents]\ndefault_timeout_seconds = \"600\"\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.default_timeout_seconds 必须是数字。"
+    },
+    {
+      "label": "数字越界",
+      "toml": "[subagents]\ndefault_timeout_seconds = 0.5\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.default_timeout_seconds 必须在 1 到 3600 之间，当前值：0.5。"
+    },
+    {
+      "label": "结果摘要越界",
+      "toml": "[subagents]\nresult_summary_chars = 50\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.result_summary_chars 必须在 100 到 50000 之间，当前值：50。"
+    },
+    {
+      "label": "max_depth 越界",
+      "toml": "[subagents]\nmax_depth = 2\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.max_depth 必须在 1 到 1 之间，当前值：2。"
+    },
+    {
+      "label": "模型覆盖解析",
+      "toml": "\n[subagents]\nenabled = true\n\n[subagents.models.review]\nmodel = \"deepseek-v4\"\n\n[subagents.models.\"  Explore  \"]\nmodel = \"inherit\"\n\n[subagents.models.blank]\nmodel = \"\"\n",
+      "env": {},
+      "ok": true,
+      "config": {
+        "enabled": true,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {
+          "review": "deepseek-v4"
+        }
+      },
+      "error": null
+    },
+    {
+      "label": "模型段非对象",
+      "toml": "[subagents]\nmodels = \"x\"\n",
+      "env": {},
+      "ok": false,
+      "config": null,
+      "error": "配置项 subagents.models 必须是对象。"
+    },
+    {
+      "label": "模型条目非对象",
+      "toml": "[subagents]\n[subagents.models.review]\nmodel = 5\n",
+      "env": {},
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {
+          "review": "5"
+        }
+      },
+      "error": null
+    },
+    {
+      "label": "环境关闭开关",
+      "toml": "[subagents]\nenabled = true\n",
+      "env": {
+        "OMNICRAWL_SUBAGENTS_ENABLED": "0"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "环境布尔为真不放开",
+      "toml": "[subagents]\nenabled = false\n",
+      "env": {
+        "OMNICRAWL_SUBAGENTS_ENABLED": "true"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "环境收紧并发",
+      "toml": "[subagents]\nmax_concurrency = 4\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "1"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 1,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "环境放宽并发无效",
+      "toml": "[subagents]\nmax_concurrency = 2\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "4"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "环境收紧超时",
+      "toml": "[subagents]\ndefault_timeout_seconds = 600\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS": "30"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 30.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "环境收紧校验超时",
+      "toml": "[subagents]\nverify_command_timeout_seconds = 120\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_VERIFY_TIMEOUT_SECONDS": "30"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 30,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "环境关闭 verify",
+      "toml": "[subagents]\nenable_verify_agent = true\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_VERIFY_AGENT_ENABLED": "disabled"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "环境并发非法",
+      "toml": "[subagents]\nmax_concurrency = 2\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "abc"
+      },
+      "ok": false,
+      "config": null,
+      "error": "环境变量 OMNICRAWL_SUBAGENT_MAX_CONCURRENCY 必须是整数，当前值：abc。"
+    },
+    {
+      "label": "环境并发越界",
+      "toml": "[subagents]\nmax_concurrency = 2\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "9"
+      },
+      "ok": false,
+      "config": null,
+      "error": "环境变量 OMNICRAWL_SUBAGENT_MAX_CONCURRENCY 必须在 1 到 4 之间，当前值：9。"
+    },
+    {
+      "label": "环境布尔非法",
+      "toml": "[subagents]\nenabled = true\n",
+      "env": {
+        "OMNICRAWL_SUBAGENTS_ENABLED": "maybe"
+      },
+      "ok": false,
+      "config": null,
+      "error": "环境变量 OMNICRAWL_SUBAGENTS_ENABLED 必须是布尔值，当前值：maybe。"
+    },
+    {
+      "label": "环境超时非法",
+      "toml": "[subagents]\ndefault_timeout_seconds = 600\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS": "abc"
+      },
+      "ok": false,
+      "config": null,
+      "error": "环境变量 OMNICRAWL_SUBAGENT_TIMEOUT_SECONDS 必须是数字，当前值：abc。"
+    },
+    {
+      "label": "环境空串按未设置",
+      "toml": "[subagents]\nmax_concurrency = 3\n",
+      "env": {
+        "OMNICRAWL_SUBAGENT_MAX_CONCURRENCY": "   "
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 3,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    },
+    {
+      "label": "中文布尔取值",
+      "toml": "[subagents]\nenabled = false\n",
+      "env": {
+        "OMNICRAWL_SUBAGENTS_ENABLED": "启用"
+      },
+      "ok": true,
+      "config": {
+        "enabled": false,
+        "max_depth": 1,
+        "max_concurrency": 2,
+        "max_tasks_per_batch": 4,
+        "default_timeout_seconds": 3600.0,
+        "model_request_concurrency": 2,
+        "allow_background": false,
+        "allow_fork": false,
+        "allow_shared_workspace_writes": false,
+        "allow_worktree": false,
+        "allow_standard_agent": false,
+        "enable_verify_agent": false,
+        "verify_command_timeout_seconds": 120,
+        "task_retention_minutes": 60,
+        "result_summary_chars": 6000,
+        "model_overrides": {}
+      },
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,495 @@
+{
+  "source": "omnicrawl/media/image_gen.py + omnicrawl/config/features/image_gen.py",
+  "workspace_placeholder": "{WORKSPACE}",
+  "stamp_placeholder": "{STAMP}",
+  "reference_base64": "iVBORw0KGgpyZWZlcmVuY2U=",
+  "cases": [
+    {
+      "name": "generate-single",
+      "arguments": {
+        "prompt": "一只猫"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [
+        {
+          "b64_json": "cG5nLWJ5dGVzLTE=",
+          "output_format": "png",
+          "url": null
+        }
+      ],
+      "ok": true,
+      "output": "已生成 1 张图片（模型 gpt-image-2）：\n1. .omnicrawl\\.agent_tmp\\images\\image_{STAMP}_gen_1.png（11 字节）",
+      "files": [
+        {
+          "path": ".omnicrawl/.agent_tmp/images/image_{STAMP}_gen_1.png",
+          "base64": "cG5nLWJ5dGVzLTE="
+        }
+      ],
+      "calls": [
+        {
+          "op": "generate",
+          "model": "gpt-image-2",
+          "n": 1,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "png",
+          "response_format": "b64_json",
+          "prompt": "一只猫"
+        }
+      ]
+    },
+    {
+      "name": "generate-two-jpeg",
+      "arguments": {
+        "prompt": "两只猫",
+        "n": 2,
+        "output_format": "jpeg"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [
+        {
+          "b64_json": "cG5nLWJ5dGVzLTE=",
+          "output_format": "jpeg",
+          "url": null
+        },
+        {
+          "b64_json": "anBlZy1ieXRlcy0yMg==",
+          "output_format": "jpeg",
+          "url": null
+        }
+      ],
+      "ok": true,
+      "output": "已生成 2 张图片（模型 gpt-image-2）：\n1. .omnicrawl\\.agent_tmp\\images\\image_{STAMP}_gen_1.jpg（11 字节）\n2. .omnicrawl\\.agent_tmp\\images\\image_{STAMP}_gen_2.jpg（13 字节）",
+      "files": [
+        {
+          "path": ".omnicrawl/.agent_tmp/images/image_{STAMP}_gen_1.jpg",
+          "base64": "cG5nLWJ5dGVzLTE="
+        },
+        {
+          "path": ".omnicrawl/.agent_tmp/images/image_{STAMP}_gen_2.jpg",
+          "base64": "anBlZy1ieXRlcy0yMg=="
+        }
+      ],
+      "calls": [
+        {
+          "op": "generate",
+          "model": "gpt-image-2",
+          "n": 2,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "jpeg",
+          "response_format": "b64_json",
+          "prompt": "两只猫"
+        }
+      ]
+    },
+    {
+      "name": "generate-into-directory",
+      "arguments": {
+        "prompt": "一只猫",
+        "path": "out"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [
+        {
+          "b64_json": "cG5nLWJ5dGVzLTE=",
+          "output_format": "png",
+          "url": null
+        }
+      ],
+      "ok": true,
+      "output": "已生成 1 张图片（模型 gpt-image-2）：\n1. out\\image_{STAMP}_gen_1.png（11 字节）",
+      "files": [
+        {
+          "path": "out/image_{STAMP}_gen_1.png",
+          "base64": "cG5nLWJ5dGVzLTE="
+        }
+      ],
+      "calls": [
+        {
+          "op": "generate",
+          "model": "gpt-image-2",
+          "n": 1,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "png",
+          "response_format": "b64_json",
+          "prompt": "一只猫"
+        }
+      ]
+    },
+    {
+      "name": "generate-explicit-file-name",
+      "arguments": {
+        "prompt": "两只猫",
+        "path": "pic.png",
+        "n": 2
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [
+        {
+          "b64_json": "cG5nLWJ5dGVzLTE=",
+          "output_format": "png",
+          "url": null
+        },
+        {
+          "b64_json": "anBlZy1ieXRlcy0yMg==",
+          "output_format": "png",
+          "url": null
+        }
+      ],
+      "ok": true,
+      "output": "已生成 2 张图片（模型 gpt-image-2）：\n1. pic.png（11 字节）\n2. pic_2.png（13 字节）",
+      "files": [
+        {
+          "path": "pic.png",
+          "base64": "cG5nLWJ5dGVzLTE="
+        },
+        {
+          "path": "pic_2.png",
+          "base64": "anBlZy1ieXRlcy0yMg=="
+        }
+      ],
+      "calls": [
+        {
+          "op": "generate",
+          "model": "gpt-image-2",
+          "n": 2,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "png",
+          "response_format": "b64_json",
+          "prompt": "两只猫"
+        }
+      ]
+    },
+    {
+      "name": "edit-with-reference",
+      "arguments": {
+        "prompt": "把背景涂成蓝色",
+        "image": "{WORKSPACE}/ref.png"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [
+        {
+          "b64_json": "cG5nLWJ5dGVzLTE=",
+          "output_format": "png",
+          "url": null
+        }
+      ],
+      "ok": true,
+      "output": "已生成 1 张图片（模型 gpt-image-2）：\n1. .omnicrawl\\.agent_tmp\\images\\image_{STAMP}_edit_1.png（11 字节）",
+      "files": [
+        {
+          "path": ".omnicrawl/.agent_tmp/images/image_{STAMP}_edit_1.png",
+          "base64": "cG5nLWJ5dGVzLTE="
+        }
+      ],
+      "calls": [
+        {
+          "op": "edit",
+          "model": "gpt-image-2",
+          "n": 1,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "png",
+          "response_format": "b64_json",
+          "prompt": "把背景涂成蓝色",
+          "image_name": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\omnicrawl-image-gen-xew8a941\\ref.png"
+        }
+      ]
+    },
+    {
+      "name": "missing-prompt",
+      "arguments": {
+        "prompt": "   "
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [],
+      "ok": false,
+      "output": "需要提供 prompt。",
+      "files": [],
+      "calls": []
+    },
+    {
+      "name": "disabled",
+      "arguments": {
+        "prompt": "一只猫"
+      },
+      "config": {
+        "enabled": false,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "prefix",
+      "prefix": "图像生成未启用：",
+      "status": 200,
+      "response_body": null,
+      "data": [],
+      "ok": false,
+      "output": "图像生成未启用：请在 TUI 设置面板（/settings → 图像生成）中启用并配置。",
+      "files": [],
+      "calls": []
+    },
+    {
+      "name": "missing-api-key",
+      "arguments": {
+        "prompt": "一只猫"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "prefix",
+      "prefix": "缺少 API Key：",
+      "status": 200,
+      "response_body": null,
+      "data": [],
+      "ok": false,
+      "output": "缺少 API Key：请在设置面板填写 image_gen.api_key，或设置环境变量 OMNICRAWL_TUI_IMAGE_GEN_FIXTURE。",
+      "files": [],
+      "calls": []
+    },
+    {
+      "name": "edit-missing-file",
+      "arguments": {
+        "prompt": "编辑",
+        "image": "missing.png"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [],
+      "ok": false,
+      "output": "图片文件不存在：missing.png",
+      "files": [],
+      "calls": []
+    },
+    {
+      "name": "empty-data",
+      "arguments": {
+        "prompt": "一只猫"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [],
+      "ok": false,
+      "output": "接口未返回任何图片数据。",
+      "files": [],
+      "calls": [
+        {
+          "op": "generate",
+          "model": "gpt-image-2",
+          "n": 1,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "png",
+          "response_format": "b64_json",
+          "prompt": "一只猫"
+        }
+      ]
+    },
+    {
+      "name": "no-base64-no-url",
+      "arguments": {
+        "prompt": "一只猫"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "exact",
+      "prefix": null,
+      "status": 200,
+      "response_body": null,
+      "data": [
+        {
+          "b64_json": null,
+          "output_format": "png",
+          "url": null
+        }
+      ],
+      "ok": false,
+      "output": "第 1 张图片既无 base64 也无 URL。",
+      "files": [],
+      "calls": [
+        {
+          "op": "generate",
+          "model": "gpt-image-2",
+          "n": 1,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "png",
+          "response_format": "b64_json",
+          "prompt": "一只猫"
+        }
+      ]
+    },
+    {
+      "name": "request-failed",
+      "arguments": {
+        "prompt": "一只猫"
+      },
+      "config": {
+        "enabled": true,
+        "base_url": "https://api.example/v1",
+        "api_key": "test-key",
+        "api_key_env": "OMNICRAWL_TUI_IMAGE_GEN_FIXTURE",
+        "model": "gpt-image-2",
+        "size": "auto",
+        "quality": "auto",
+        "output_format": "png",
+        "n": 1
+      },
+      "compare": "prefix",
+      "prefix": "图像生成请求失败：",
+      "status": 500,
+      "response_body": "boom",
+      "data": [],
+      "ok": false,
+      "output": "图像生成请求失败：boom",
+      "files": [],
+      "calls": [
+        {
+          "op": "generate",
+          "model": "gpt-image-2",
+          "n": 1,
+          "size": "auto",
+          "quality": "auto",
+          "output_format": "png",
+          "response_format": "b64_json",
+          "prompt": "一只猫"
+        }
+      ]
+    }
+  ]
+}

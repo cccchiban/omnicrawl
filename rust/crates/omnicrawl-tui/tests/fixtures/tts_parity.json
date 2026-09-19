@@ -1,0 +1,296 @@
+{
+  "source": "omnicrawl/tts/normalize.py",
+  "normalize": [
+    {
+      "text": "你好，世界。",
+      "expected": "你好，世界。"
+    },
+    {
+      "text": "hello world",
+      "expected": "hello world。"
+    },
+    {
+      "text": "启用/禁用",
+      "expected": "启用、禁用。"
+    },
+    {
+      "text": "A/B 测试",
+      "expected": "A B 测试。"
+    },
+    {
+      "text": "路径 foo/bar-baz.py 与 app.js.map",
+      "expected": "路径 foo/bar-baz.py 与 app.js.map。"
+    },
+    {
+      "text": "见 https://example.com/a/b?x=1 与 https://example.com",
+      "expected": "见 https://example.com/a/b?x=1 与 https://example.com。"
+    },
+    {
+      "text": "邮箱 someone@example.com 与 @mention 与 r/rust 与 u/foo",
+      "expected": "邮箱 someone@example.com 与 @mention 与 r/rust 与 u/foo。"
+    },
+    {
+      "text": "日期 2024-05-01 和 2024/05/01 还有 v2.3.1",
+      "expected": "日期 2024-05-01 和 2024/05/01 还有 v2.3.1。"
+    },
+    {
+      "text": "**加粗** 与 `inline code` 与 # 标题",
+      "expected": "加粗与与标题。"
+    },
+    {
+      "text": "😀 表情 🚀 与 ★ 星号与 © 版权与 ■ 方块",
+      "expected": "表情与星号与版权与方块。"
+    },
+    {
+      "text": "don't 与 can’t 缩写",
+      "expected": "don't 与 can't 缩写。"
+    },
+    {
+      "text": "引号 \"双\" 与 '单' 与 “中文”",
+      "expected": "引号双与单与中文。"
+    },
+    {
+      "text": "# 一级标题\n> 引用\n- 列表项\n1. 有序项",
+      "expected": "一级标题。引用。列表项。有序项。"
+    },
+    {
+      "text": "[链接文字](https://example.com/x) 尾部",
+      "expected": "链接文字 https://example.com/x 尾部。"
+    },
+    {
+      "text": "流程 A -> B -> C 与 A=>B 与 中文→中文",
+      "expected": "流程 A，B，C 与 A，B 与中文，中文。"
+    },
+    {
+      "text": "破折号——结束 与 多连字符--继续",
+      "expected": "破折号。结束与多连字符。继续。"
+    },
+    {
+      "text": "感叹号！！！ 与 问号？？？ 与 混合?! 与 省略号......",
+      "expected": "感叹号！与问号？与混合？！与省略号。"
+    },
+    {
+      "text": "【结构括号】与 {花括号} 与 [方括号]",
+      "expected": "结构括号与 花括号 与 方括号。"
+    },
+    {
+      "text": "《书名》后接。 与 嵌入式《书名》文本",
+      "expected": "《书名》后接。与嵌入式《书名》文本。"
+    },
+    {
+      "text": "下划线 some_var_name 与 ___PROT0___ 占位",
+      "expected": "下划线 some var name 与 ___PROT0___ 占位。"
+    },
+    {
+      "text": "第一行\n第二行\n\n第三行",
+      "expected": "第一行。第二行。第三行。"
+    },
+    {
+      "text": "中文与 English 混排 sentence 结束",
+      "expected": "中文与 English 混排 sentence 结束。"
+    },
+    {
+      "text": "数字 123 与中文之间",
+      "expected": "数字123与中文之间。"
+    },
+    {
+      "text": "spaces    多个     空格",
+      "expected": "spaces 多个空格。"
+    },
+    {
+      "text": "尾部没有标点",
+      "expected": "尾部没有标点。"
+    },
+    {
+      "text": "",
+      "expected": ""
+    },
+    {
+      "text": "   ",
+      "expected": ""
+    },
+    {
+      "text": "emoji only 😀😀",
+      "expected": "emoji only。"
+    },
+    {
+      "text": "中文，标点 之间有 空格 。",
+      "expected": "中文，标点之间有空格。"
+    },
+    {
+      "text": "  两端有空白  ",
+      "expected": "两端有空白。"
+    },
+    {
+      "text": "x=-2 与 -3 与 10-3 与 2024-05-01",
+      "expected": "x=-2与 -3与10-3与 2024-05-01。"
+    },
+    {
+      "text": "中文-中文 与 word-word 与 数字-数字",
+      "expected": "中文-中文与 word-word 与数字-数字。"
+    }
+  ],
+  "hyphens": [
+    {
+      "text": "x=-2 与 -3 与 10-3 与 2024-05-01",
+      "expected": "x=-2 与-3 与 10-3 与 2024-05-01"
+    },
+    {
+      "text": "中文-中文 与 word-word 与 数字-数字",
+      "expected": "中文，中文 与 word word 与 数字，数字"
+    },
+    {
+      "text": "没有连字符",
+      "expected": "没有连字符"
+    },
+    {
+      "text": "a - b 与 -- 与 ---",
+      "expected": "a b 与 -- 与 ---"
+    }
+  ],
+  "languages": [
+    {
+      "text": "你好世界",
+      "voice": "Junhao",
+      "expected": "zh"
+    },
+    {
+      "text": "hello world",
+      "voice": "Junhao",
+      "expected": "en"
+    },
+    {
+      "text": "12345",
+      "voice": "Trump",
+      "expected": "en"
+    },
+    {
+      "text": "12345",
+      "voice": "Junhao",
+      "expected": "zh"
+    },
+    {
+      "text": "",
+      "voice": "Ava",
+      "expected": "en"
+    },
+    {
+      "text": "",
+      "voice": "Junhao",
+      "expected": "zh"
+    },
+    {
+      "text": "中文 with English",
+      "voice": "Junhao",
+      "expected": "zh"
+    }
+  ],
+  "pipeline": [
+    {
+      "text": "你好，世界。",
+      "enable_normalize_tts_text": true,
+      "expected": {
+        "text": "你好，世界。",
+        "prompt_text": "",
+        "normalized_text": "你好，世界。",
+        "normalized_prompt_text": "",
+        "normalization_method": "robust",
+        "text_normalization_language": "",
+        "text_normalization_enabled": true,
+        "wetext_processing_enabled": false,
+        "normalize_tts_text_enabled": true
+      }
+    },
+    {
+      "text": "你好，世界。",
+      "enable_normalize_tts_text": false,
+      "expected": {
+        "text": "你好，世界。",
+        "prompt_text": "",
+        "normalized_text": "你好，世界。",
+        "normalized_prompt_text": "",
+        "normalization_method": "none",
+        "text_normalization_language": "",
+        "text_normalization_enabled": false,
+        "wetext_processing_enabled": false,
+        "normalize_tts_text_enabled": false
+      }
+    },
+    {
+      "text": "hello world",
+      "enable_normalize_tts_text": true,
+      "expected": {
+        "text": "hello world。",
+        "prompt_text": "",
+        "normalized_text": "hello world。",
+        "normalized_prompt_text": "",
+        "normalization_method": "robust",
+        "text_normalization_language": "",
+        "text_normalization_enabled": true,
+        "wetext_processing_enabled": false,
+        "normalize_tts_text_enabled": true
+      }
+    },
+    {
+      "text": "hello world",
+      "enable_normalize_tts_text": false,
+      "expected": {
+        "text": "hello world",
+        "prompt_text": "",
+        "normalized_text": "hello world",
+        "normalized_prompt_text": "",
+        "normalization_method": "none",
+        "text_normalization_language": "",
+        "text_normalization_enabled": false,
+        "wetext_processing_enabled": false,
+        "normalize_tts_text_enabled": false
+      }
+    },
+    {
+      "text": "",
+      "enable_normalize_tts_text": true,
+      "expected": {
+        "text": "",
+        "prompt_text": "",
+        "normalized_text": "",
+        "normalized_prompt_text": "",
+        "normalization_method": "robust",
+        "text_normalization_language": "",
+        "text_normalization_enabled": true,
+        "wetext_processing_enabled": false,
+        "normalize_tts_text_enabled": true
+      }
+    },
+    {
+      "text": "",
+      "enable_normalize_tts_text": false,
+      "expected": {
+        "text": "",
+        "prompt_text": "",
+        "normalized_text": "",
+        "normalized_prompt_text": "",
+        "normalization_method": "none",
+        "text_normalization_language": "",
+        "text_normalization_enabled": false,
+        "wetext_processing_enabled": false,
+        "normalize_tts_text_enabled": false
+      }
+    },
+    {
+      "text": "你好",
+      "prompt_text": "参考/文本",
+      "enable_normalize_tts_text": true,
+      "expected": {
+        "text": "你好。",
+        "prompt_text": "参考、文本。",
+        "normalized_text": "你好。",
+        "normalized_prompt_text": "参考、文本。",
+        "normalization_method": "robust",
+        "text_normalization_language": "",
+        "text_normalization_enabled": true,
+        "wetext_processing_enabled": false,
+        "normalize_tts_text_enabled": true
+      }
+    }
+  ]
+}

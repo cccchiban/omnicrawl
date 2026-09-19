@@ -103,11 +103,15 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 | 方法 | params | result |
 | --- | --- | --- |
-| `tool.batch` | `{turn_id, step, calls: [ToolCall]}` | `{observations: [AgentLoopObservation]}` |
+| `tool.batch` | `{turn_id, step, calls: [ToolCall], workspace_root?}` | `{observations: [AgentLoopObservation]}` |
 | `model.reply` | `{turn_id, messages: [Value]}` | AgentModelReply：`{message, content, tool_calls, reasoning, content_streamed}` |
 
 `tool.batch` 是刻意保留的批次边界：宿主必须先完成整批规范化与审批，再按 `calls` 顺序返回**同数量**
 的观察。数量不符时内核按协议错误处理并终止该回合（不变式已在 `omnicrawl-core` 内校验）。
+
+`workspace_root` 是可选字段：带上它表示这批工具要在**隔离根**下执行（当前只有 `subagent` 的
+`isolation=worktree` 子任务会带）——宿主应把工作目录与路径保护都切到该根，缺省则用宿主自己的
+工作区。宿主可以忽略该字段（行为退回共享工作区），但那样隔离就不成立。
 
 ### 通知
 
@@ -195,15 +199,35 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
   `turn.token_usage`、`turn.status`、`turn.retry_status`、`turn.stream_rollback`、`turn.finished`。给了
   `initialize.model` 后模型请求由内核自己发，增量也由内核转出。
 - **宿主发出**（宿主执行 `tool.batch` 时自行产生）：`tool.started` / `tool.finished` / `tool.output_update`，
-  以及 `subagent.event`、`todo.update`。同一件事不在协议上出现两份，所以内核不重复转出工具生命周期事件。
+  以及 `todo.update`。同一件事不在协议上出现两份，所以内核不重复转出工具生命周期事件。
+- **两者都可能发出**：`subagent.event`——子代理由宿主执行时宿主发，由内核自持执行（当前实现）时内核发。
 - **代答路径**：不给 `initialize.model` 时内核只发 `model.reply` 请求，模型侧增量由宿主自己推给界面。
 
 工具批次边界：内核把**整批**调用交宿主（`tool.batch` 的 `{turn_id, step, calls}`），宿主必须先完成整批
-规范化与审批、再按模型调用顺序回 `{observations}`；内核不接受逐工具回调。例外是「只读当前会话」的工具
-（如 `recall_session_evidence`）——内核自己答，不占宿主批次。
+规范化与审批、再按模型调用顺序回 `{observations}`；内核不接受逐工具回调。例外是**内核自持工具**——
+内核自己作答，不占宿主批次：
+
+- `recall_session_evidence`：只读当前会话，信息本来就在内核侧；
+- `subagent`：子任务要跑独立子回合（子模型请求 + 子工具批次），而模型运行时在内核，因此由内核执行；
+  子回合里被允许的工具仍走同一 `tool.batch` 通道，`turn_id` 用子任务号，宿主据此把审批与生命周期分开。
+  子代理的生命周期事件（`subagent.event`）也由内核发出。
+
+`subagent` 的可用角色来自内核读到的 `subagents.toml` 与 Markdown 定义（环境变量 `AI_SUBAGENTS_FILE`
+指定配置文件、`OMNICRAWL_SUBAGENTS_DIR` 指定定义目录）；未启用时工具仍在表里，调用会得到
+`SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`。
+
+`isolation=worktree` 的角色由内核建独立工作树（`~/.omnicrawl/agent-worktrees/sw-<task>`），
+并把隔离根随子任务的 `tool.batch` 下发；成果**不自动写回**，由父 Agent 用 `subagent` 的
+`list_worktrees` / `apply_worktree` / `discard_worktree` 审查处理（`discard` 默认受变更保护，
+需要 `force=true` 才能丢掉未应用的改动）。已知差异：不做目录复用（残留目录会明确报错），
+也没接共享注册表，因此崩溃残留不会被启动清扫自动回收。
 
 ## 尚未实现
 
 - 多连接与多回合并发不支持。
 - 回合内断线不带状态恢复：宿主重连后应重新 `initialize`。
 - `model.reply` 的代答路径没有流式增量：过渡期由宿主自己把增量推给界面。
+- `subagent` 目前只支持 `action=run` 且**逐个**执行任务（`max_concurrency` 未生效）；`action=spawn`
+  回 `SUBAGENT_BACKGROUND_DISABLED`——后台线程池已经在 `controllers/subagents/tasks.rs` 备好，
+  接进来需要把连接从 `Rc<RefCell<Conn>>` 改成可跨线程共享。`fail_fast` 已实现：前序任务失败后
+  停止调度，未跑的任务落成 `cancelled`（原因见 `fail_fast 已在前序任务失败后停止调度该任务。`）。

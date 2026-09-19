@@ -426,6 +426,9 @@ pub struct ToolBatch {
     pub turn_id: String,
     pub step: usize,
     pub calls: Vec<ToolCall>,
+    /// 隔离根：子任务的工具批次要在这个目录下执行（`None` 表示用宿主自己的工作区）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
 }
 
 impl ToolBatch {

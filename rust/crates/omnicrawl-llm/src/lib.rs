@@ -17,6 +17,7 @@ mod registry;
 mod request;
 mod responses;
 mod runtime;
+mod runtime_manager;
 mod sse;
 mod stream_registry;
 mod transport;
@@ -57,6 +58,9 @@ pub use responses::{
 pub use runtime::{
     AnthropicRuntime, ChatEndpoint, DiscardSink, GeminiRuntime, ModelRuntime, OpenAiChatRuntime,
     ResponsesRuntime, SinkFlow, TurnSink,
+};
+pub use runtime_manager::{
+    run_with_snapshot, ModelRuntimeManager, PersistFn, RuntimeFactory, RuntimeSnapshot,
 };
 pub use sse::{
     decode_sse_data, iter_raw_sse_events, payload_of_line, step_payload, SseError, SseStep,

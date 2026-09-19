@@ -1,0 +1,325 @@
+{
+  "source": "omnicrawl/tts/audio.py + omnicrawl/tts/custom_voices.py",
+  "read": [
+    {
+      "name": "pcm8-mono.wav",
+      "base64": "UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACAAH/A",
+      "sample_rate": 8000,
+      "expected": [
+        [
+          0.0,
+          -1.0,
+          -0.007812,
+          0.5
+        ]
+      ]
+    },
+    {
+      "name": "pcm16-mono.wav",
+      "base64": "UklGRi4AAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQoAAAAAAABAAMD/fwCA",
+      "sample_rate": 16000,
+      "expected": [
+        [
+          0.0,
+          0.5,
+          -0.5,
+          0.999969,
+          -1.0
+        ]
+      ]
+    },
+    {
+      "name": "pcm24-mono.wav",
+      "base64": "UklGRjMAAABXQVZFZm10IBAAAAABAAEAwF0AAEAZAQADABgAZGF0YQ8AAAAAAAAAAEAAAMD//38AAIA=",
+      "sample_rate": 24000,
+      "expected": [
+        [
+          0.0,
+          0.5,
+          -0.5,
+          1.0,
+          -1.0
+        ]
+      ]
+    },
+    {
+      "name": "pcm32-mono.wav",
+      "base64": "UklGRjQAAABXQVZFZm10IBAAAAABAAEAAH0AAAD0AQAEACAAZGF0YRAAAAAAAAAAAAAAQAAAAID///9/",
+      "sample_rate": 32000,
+      "expected": [
+        [
+          0.0,
+          0.5,
+          -1.0,
+          1.0
+        ]
+      ]
+    },
+    {
+      "name": "pcm16-stereo.wav",
+      "base64": "UklGRjQAAABXQVZFZm10IBAAAAABAAIARKwAABCxAgAEABAAZGF0YRAAAABkAJz/yAA4/ywB1P6QAXD+",
+      "sample_rate": 44100,
+      "expected": [
+        [
+          0.003052,
+          0.006104,
+          0.009155,
+          0.012207
+        ],
+        [
+          -0.003052,
+          -0.006104,
+          -0.009155,
+          -0.012207
+        ]
+      ]
+    }
+  ],
+  "resample": [
+    {
+      "source_rate": 8000,
+      "target_rate": 16000,
+      "source": [
+        [
+          0.0,
+          1.0,
+          0.0,
+          -1.0,
+          0.5,
+          -0.5
+        ]
+      ],
+      "expected": [
+        [
+          0.0,
+          0.5,
+          1.0,
+          0.5,
+          0.0,
+          -0.5,
+          -1.0,
+          -0.25,
+          0.5,
+          0.0,
+          -0.5,
+          -0.5
+        ]
+      ]
+    },
+    {
+      "source_rate": 16000,
+      "target_rate": 8000,
+      "source": [
+        [
+          0.0,
+          1.0,
+          0.0,
+          -1.0,
+          0.5,
+          -0.5
+        ]
+      ],
+      "expected": [
+        [
+          0.0,
+          0.0,
+          0.5
+        ]
+      ]
+    },
+    {
+      "source_rate": 16000,
+      "target_rate": 16000,
+      "source": [
+        [
+          0.0,
+          1.0,
+          0.0,
+          -1.0,
+          0.5,
+          -0.5
+        ]
+      ],
+      "expected": [
+        [
+          0.0,
+          1.0,
+          0.0,
+          -1.0,
+          0.5,
+          -0.5
+        ]
+      ]
+    },
+    {
+      "source_rate": 22050,
+      "target_rate": 16000,
+      "source": [
+        [
+          0.0,
+          1.0,
+          0.0,
+          -1.0,
+          0.5,
+          -0.5
+        ]
+      ],
+      "expected": [
+        [
+          0.0,
+          0.621875,
+          -0.75625,
+          0.365625
+        ]
+      ]
+    }
+  ],
+  "reference": [
+    {
+      "name": "pcm16-mono.wav",
+      "target_sample_rate": 8000,
+      "target_channels": 2,
+      "expected": [
+        [
+          0.0,
+          -0.5
+        ],
+        [
+          0.0,
+          -0.5
+        ]
+      ]
+    },
+    {
+      "name": "pcm16-stereo.wav",
+      "target_sample_rate": 44100,
+      "target_channels": 1,
+      "expected": [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      ]
+    }
+  ],
+  "write": [
+    {
+      "name": "written-mono.wav",
+      "sample_rate": 16000,
+      "waveform": [
+        [
+          0.0,
+          0.5,
+          -0.5,
+          1.0,
+          -1.0
+        ]
+      ],
+      "base64": "UklGRi4AAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQoAAAAAAABAAMD/fwGA"
+    },
+    {
+      "name": "written-stereo.wav",
+      "sample_rate": 8000,
+      "waveform": [
+        [
+          0.25,
+          -0.25
+        ],
+        [
+          0.75,
+          -0.75
+        ]
+      ],
+      "base64": "UklGRiwAAABXQVZFZm10IBAAAAABAAIAQB8AAAB9AAAEABAAZGF0YQgAAAAAIP9fAOABoA=="
+    }
+  ],
+  "validate": [
+    {
+      "input": "Fairy",
+      "ok": true,
+      "result": "Fairy"
+    },
+    {
+      "input": "  我的音色 1  ",
+      "ok": true,
+      "result": "我的音色 1"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": true,
+      "result": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "input": "",
+      "ok": false,
+      "error": "音色名称不能为空。"
+    },
+    {
+      "input": "   ",
+      "ok": false,
+      "error": "音色名称不能为空。"
+    },
+    {
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ok": false,
+      "error": "音色名称过长（最多 40 个字符）。"
+    },
+    {
+      "input": "bad/name",
+      "ok": false,
+      "error": "音色名称只能包含中文、字母、数字、空格、下划线、连字符或点。"
+    },
+    {
+      "input": "dot.name",
+      "ok": true,
+      "result": "dot.name"
+    }
+  ],
+  "library": [
+    {
+      "op": "add",
+      "entry": {
+        "voice": "Fairy",
+        "display_name": "CN 我的克隆音色",
+        "group": "Custom",
+        "audio_file": "fairy_ref.wav",
+        "prompt_audio_codes": [
+          [
+            1,
+            2,
+            3
+          ],
+          [
+            4,
+            5
+          ]
+        ],
+        "source_audio_path": "source/ref.wav"
+      }
+    },
+    {
+      "op": "overwrite",
+      "names": [
+        "Fairy"
+      ]
+    },
+    {
+      "op": "library_text",
+      "text": "{\n  \"version\": 1,\n  \"voices\": [\n    {\n      \"voice\": \"Fairy\",\n      \"display_name\": \"Fairy\",\n      \"group\": \"Custom\",\n      \"audio_file\": \"Fairy\",\n      \"prompt_audio_codes\": [\n        [\n          9\n        ]\n      ]\n    }\n  ]\n}"
+    },
+    {
+      "op": "delete",
+      "removed": true
+    },
+    {
+      "op": "delete-again",
+      "removed": false
+    },
+    {
+      "op": "names-after-delete",
+      "names": []
+    }
+  ]
+}

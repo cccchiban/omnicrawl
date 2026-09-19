@@ -1,0 +1,568 @@
+{
+  "source": "omnicrawl/net/web_search.py + omnicrawl/net/fetcher.py",
+  "web_search": {
+    "options": {
+      "max_retries": 0,
+      "timeout_seconds": 10.0,
+      "proxy": ""
+    },
+    "cases": [
+      {
+        "arguments": {
+          "query": "rust 工具"
+        },
+        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "requests": [
+          "https://www.bing.com/search?q=rust+%E5%B7%A5%E5%85%B7&count=10&setlang=zh-CN"
+        ],
+        "ok": true,
+        "output": "来源：bing｜查询：rust 工具｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "max_results": 1
+        },
+        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "requests": [
+          "https://www.bing.com/search?q=rust&count=10&setlang=zh-CN"
+        ],
+        "ok": true,
+        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 1 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "engine": "Bing"
+        },
+        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "requests": [
+          "https://www.bing.com/search?q=rust&count=10&setlang=zh-CN"
+        ],
+        "ok": true,
+        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "engine": "unknown"
+        },
+        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "requests": [],
+        "ok": false,
+        "output": "engine 必须是 bing、duckduckgo、yahoo 之一。"
+      },
+      {
+        "arguments": {
+          "query": "  "
+        },
+        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "requests": [],
+        "ok": false,
+        "output": "query 不能为空。"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "max_results": 99
+        },
+        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "requests": [
+          "https://www.bing.com/search?q=rust&count=10&setlang=zh-CN"
+        ],
+        "ok": true,
+        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "max_results": "2"
+        },
+        "html": "<html><body><ol id=\"b_results\">\n<li class=\"b_algo\"><h2><a href=\"https://example.com/1\">标题 &amp; 一</a></h2><p>摘要一</p></li>\n<li class=\"b_algo\"><h2><a href=\"/relative\">相对链接</a></h2><p>摘要二</p></li>\n<li class=\"b_algo\"><h2><a href=\"https://example.com/3\"> 第三条 <b>加粗</b> </a></h2></li>\n</ol></body></html>",
+        "requests": [
+          "https://www.bing.com/search?q=rust&count=10&setlang=zh-CN"
+        ],
+        "ok": true,
+        "output": "来源：bing｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 & 一\n   https://example.com/1\n   摘要一\n2. 第三条 加粗\n   https://example.com/3"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "engine": "duckduckgo"
+        },
+        "html": "<html><body>\n<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg1&rut=abc\">标题 <b>一</b></a>\n<a class=\"result__snippet\" href=\"x\">摘要 &amp; 一</a>\n<a class=\"result__a\" href=\"https://example.com/ddg2\">第二条</a>\n</body></html>",
+        "requests": [
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
+        ],
+        "ok": true,
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "engine": "DuckDuckGo",
+          "language": "zh"
+        },
+        "html": "<html><body>\n<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg1&rut=abc\">标题 <b>一</b></a>\n<a class=\"result__snippet\" href=\"x\">摘要 &amp; 一</a>\n<a class=\"result__a\" href=\"https://example.com/ddg2\">第二条</a>\n</body></html>",
+        "requests": [
+          "https://html.duckduckgo.com/html/?q=rust&kl=cn-zh"
+        ],
+        "ok": true,
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "engine": "duckduckgo",
+          "language": "en-us"
+        },
+        "html": "<html><body>\n<a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg1&rut=abc\">标题 <b>一</b></a>\n<a class=\"result__snippet\" href=\"x\">摘要 &amp; 一</a>\n<a class=\"result__a\" href=\"https://example.com/ddg2\">第二条</a>\n</body></html>",
+        "requests": [
+          "https://html.duckduckgo.com/html/?q=rust&kl=us-en"
+        ],
+        "ok": true,
+        "output": "来源：duckduckgo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 标题 一\n   https://example.com/ddg1\n   摘要 & 一\n2. 第二条\n   https://example.com/ddg2"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "engine": "yahoo"
+        },
+        "html": "<html><body>\n<a class=\"d-ib\" href=\"https://r.search.yahoo.com/_ylt=x/RU=https%3A%2F%2Fexample.com%2Fy1/RK=2\"><h3 class=\"title\">雅虎<b>标题</b></h3></a>\n<div class=\"compText\">雅虎摘要文本</div>\n<a class=\"d-ib\" href=\"https://example.com/y2\"><h3 class=\"title\">雅虎第二条</h3></a>\n</body></html>",
+        "requests": [
+          "https://search.yahoo.com/search?p=rust&n=10"
+        ],
+        "ok": true,
+        "output": "来源：yahoo｜查询：rust｜用时：{ELAPSED}s｜共 2 条\n1. 雅虎 标题\n   https://example.com/y1\n   雅虎摘要文本\n2. 雅虎第二条\n   https://example.com/y2"
+      },
+      {
+        "arguments": {
+          "query": "rust",
+          "engine": "yahoo",
+          "max_results": 1
+        },
+        "html": "<html><body>\n<a class=\"d-ib\" href=\"https://r.search.yahoo.com/_ylt=x/RU=https%3A%2F%2Fexample.com%2Fy1/RK=2\"><h3 class=\"title\">雅虎<b>标题</b></h3></a>\n<div class=\"compText\">雅虎摘要文本</div>\n<a class=\"d-ib\" href=\"https://example.com/y2\"><h3 class=\"title\">雅虎第二条</h3></a>\n</body></html>",
+        "requests": [
+          "https://search.yahoo.com/search?p=rust&n=10"
+        ],
+        "ok": true,
+        "output": "来源：yahoo｜查询：rust｜用时：{ELAPSED}s｜共 1 条\n1. 雅虎 标题\n   https://example.com/y1\n   雅虎摘要文本"
+      },
+      {
+        "arguments": {
+          "query": "rust"
+        },
+        "html": "<html><body>Please verify you're human before continuing.</body></html>",
+        "requests": [
+          "https://www.bing.com/search?q=rust&count=10&setlang=zh-CN"
+        ],
+        "ok": false,
+        "output": "搜索引擎要求人机验证或检测到异常流量，已停止请求（不会绕过验证码）。可稍后重试或换用其他引擎。"
+      },
+      {
+        "arguments": {
+          "query": "rust"
+        },
+        "html": "<html><body><p>没有任何结果块。</p></body></html>",
+        "requests": [
+          "https://www.bing.com/search?q=rust&count=10&setlang=zh-CN"
+        ],
+        "ok": false,
+        "output": "未找到相关搜索结果（或页面结构无法解析）。"
+      }
+    ]
+  },
+  "fetcher": {
+    "urls": [
+      {
+        "input": "https://a.example, https://b.example",
+        "expected": [
+          "https://a.example",
+          "https://b.example"
+        ]
+      },
+      {
+        "input": "[\"https://a.example\", \"https://b.example\"]",
+        "expected": [
+          "https://a.example",
+          "https://b.example"
+        ]
+      },
+      {
+        "input": [
+          "https://a.example",
+          " https://b.example "
+        ],
+        "expected": [
+          "https://a.example",
+          "https://b.example"
+        ]
+      },
+      {
+        "input": "",
+        "expected": []
+      },
+      {
+        "input": "   ",
+        "expected": []
+      },
+      {
+        "input": "{\"a\": 1}",
+        "expected": []
+      },
+      {
+        "input": "https://only.example",
+        "expected": [
+          "https://only.example"
+        ]
+      },
+      {
+        "input": null,
+        "expected": []
+      },
+      {
+        "input": [
+          "",
+          "https://a.example"
+        ],
+        "expected": [
+          "https://a.example"
+        ]
+      }
+    ],
+    "private_hosts": [
+      {
+        "host": "localhost",
+        "expected": true
+      },
+      {
+        "host": "api.localhost",
+        "expected": true
+      },
+      {
+        "host": "printer.local",
+        "expected": true
+      },
+      {
+        "host": "127.0.0.1",
+        "expected": true
+      },
+      {
+        "host": "10.1.2.3",
+        "expected": true
+      },
+      {
+        "host": "192.168.1.10",
+        "expected": true
+      },
+      {
+        "host": "172.16.0.1",
+        "expected": true
+      },
+      {
+        "host": "172.31.255.254",
+        "expected": true
+      },
+      {
+        "host": "example.com",
+        "expected": false
+      },
+      {
+        "host": "172.32.0.1",
+        "expected": false
+      },
+      {
+        "host": "172.15.0.1",
+        "expected": false
+      },
+      {
+        "host": "8.8.8.8",
+        "expected": false
+      },
+      {
+        "host": "999.1.1.1",
+        "expected": false
+      },
+      {
+        "host": "",
+        "expected": false
+      }
+    ],
+    "meta_refresh": [
+      {
+        "html": "<meta http-equiv=\"refresh\" content=\"0; url=/next/page.html\">",
+        "base": "https://example.com/a/x.html",
+        "expected": "https://example.com/next/page.html"
+      },
+      {
+        "html": "<meta http-equiv=\"Refresh\" content=\"5;URL=https://other.example/z\">",
+        "base": "https://example.com/a/x.html",
+        "expected": "https://other.example/z"
+      },
+      {
+        "html": "<meta http-equiv=\"refresh\" content=\"5; url=../up.html\">",
+        "base": "https://example.com/a/b/x.html",
+        "expected": "https://example.com/a/up.html"
+      },
+      {
+        "html": "<META HTTP-EQUIV=\"refresh\" CONTENT=\"1; url='note.html'\">",
+        "base": "https://example.com/a/",
+        "expected": null
+      },
+      {
+        "html": "<html><body>no refresh</body></html>",
+        "base": "https://example.com/",
+        "expected": null
+      },
+      {
+        "html": "<meta http-equiv=\"refresh\" content=\"3\">",
+        "base": "https://example.com/",
+        "expected": null
+      }
+    ],
+    "titles": [
+      {
+        "html": "<html><head><title>\n 标题 &amp; 副标题 \n</title></head></html>",
+        "expected": "标题 & 副标题"
+      },
+      {
+        "html": "<html><head><title></title></head></html>",
+        "expected": ""
+      },
+      {
+        "html": "<html></html>",
+        "expected": ""
+      },
+      {
+        "html": "<html><head><TITLE>大写标签</TITLE></head></html>",
+        "expected": "大写标签"
+      }
+    ],
+    "main_text": [
+      {
+        "html": "<html><head><title>页面</title></head><body><p>body 文本</p><article><p>article 文本</p></article><main><p>main 文本</p></main></body></html>",
+        "max_chars": 8000,
+        "expected": "main 文本"
+      },
+      {
+        "html": "<html><body><p>只有 body</p></body></html>",
+        "max_chars": 8000,
+        "expected": "只有 body"
+      },
+      {
+        "html": "<html><body><script>var x=1;</script><style>p{}</style><p>正文&nbsp;内容</p><noscript>降级文本</noscript><template>模板</template></body></html>",
+        "max_chars": 8000,
+        "expected": "正文 内容"
+      },
+      {
+        "html": "<html><body><p>行一</p><p>行二</p></body></html>",
+        "max_chars": 8000,
+        "expected": "行一行二"
+      },
+      {
+        "html": "<html><body><div>字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字</div></body></html>",
+        "max_chars": 10,
+        "expected": "字字字字字字字字字…"
+      },
+      {
+        "html": "<html><body><main><div>嵌套 <span>元素</span> 文本</div></main></body></html>",
+        "max_chars": 8000,
+        "expected": "嵌套 元素 文本"
+      }
+    ],
+    "truncate": [
+      {
+        "text": "短",
+        "limit": 10,
+        "expected": "短"
+      },
+      {
+        "text": "正好十个字符啊啊啊",
+        "limit": 9,
+        "expected": "正好十个字符啊啊啊"
+      },
+      {
+        "text": "",
+        "limit": 5,
+        "expected": ""
+      }
+    ],
+    "bools": [
+      {
+        "input": true,
+        "default": false,
+        "expected": true
+      },
+      {
+        "input": false,
+        "default": true,
+        "expected": false
+      },
+      {
+        "input": 1,
+        "default": false,
+        "expected": true
+      },
+      {
+        "input": 0,
+        "default": true,
+        "expected": false
+      },
+      {
+        "input": "true",
+        "default": false,
+        "expected": true
+      },
+      {
+        "input": " YES ",
+        "default": false,
+        "expected": true
+      },
+      {
+        "input": "on",
+        "default": false,
+        "expected": true
+      },
+      {
+        "input": "off",
+        "default": true,
+        "expected": false
+      },
+      {
+        "input": "2",
+        "default": true,
+        "expected": false
+      },
+      {
+        "input": null,
+        "default": true,
+        "expected": true
+      },
+      {
+        "input": [],
+        "default": false,
+        "expected": false
+      }
+    ],
+    "clamp_int": [
+      {
+        "input": null,
+        "default": 5,
+        "minimum": 1,
+        "maximum": 10,
+        "expected": 5
+      },
+      {
+        "input": "3",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 10,
+        "expected": 3
+      },
+      {
+        "input": 99,
+        "default": 5,
+        "minimum": 1,
+        "maximum": 10,
+        "expected": 10
+      },
+      {
+        "input": 0,
+        "default": 5,
+        "minimum": 1,
+        "maximum": 10,
+        "expected": 1
+      },
+      {
+        "input": true,
+        "default": 5,
+        "minimum": 1,
+        "maximum": 10,
+        "expected": 1
+      },
+      {
+        "input": "abc",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 10,
+        "expected": 5
+      }
+    ],
+    "clamp_float": [
+      {
+        "input": null,
+        "default": 15.0,
+        "minimum": 1.0,
+        "maximum": 60.0,
+        "expected": 15.0
+      },
+      {
+        "input": "2.5",
+        "default": 15.0,
+        "minimum": 1.0,
+        "maximum": 60.0,
+        "expected": 2.5
+      },
+      {
+        "input": 0.1,
+        "default": 15.0,
+        "minimum": 1.0,
+        "maximum": 60.0,
+        "expected": 1.0
+      },
+      {
+        "input": 999,
+        "default": 15.0,
+        "minimum": 1.0,
+        "maximum": 60.0,
+        "expected": 60.0
+      },
+      {
+        "input": "abc",
+        "default": 15.0,
+        "minimum": 1.0,
+        "maximum": 60.0,
+        "expected": 15.0
+      }
+    ],
+    "format": [
+      {
+        "urls": [
+          "https://a.example/1",
+          "https://b.example/2"
+        ],
+        "entries": [
+          {
+            "url": "https://a.example/1",
+            "status": 200,
+            "final_url": "https://a.example/1",
+            "title": "标题一",
+            "content": "正文一"
+          },
+          {
+            "url": "https://b.example/2",
+            "error": "请求超时。"
+          }
+        ],
+        "elapsed": 1.234,
+        "expected": "网页抓取完成（2 个 URL，用时 1.23s）\n1. https://a.example/1\n   状态: 200｜最终地址: https://a.example/1\n   标题: 标题一\n   内容: 正文一\n2. https://b.example/2\n   失败: 请求超时。"
+      },
+      {
+        "urls": [
+          "https://c.example/3"
+        ],
+        "entries": [
+          {
+            "url": "https://c.example/3",
+            "status": 404,
+            "final_url": "https://c.example/3",
+            "title": "",
+            "content": ""
+          }
+        ],
+        "elapsed": 0.5,
+        "expected": "网页抓取完成（1 个 URL，用时 0.50s）\n1. https://c.example/3\n   状态: 404｜最终地址: https://c.example/3\n   内容: "
+      }
+    ]
+  }
+}

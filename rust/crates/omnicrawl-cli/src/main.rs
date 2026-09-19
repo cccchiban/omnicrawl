@@ -6,6 +6,8 @@
 mod compaction;
 mod connector;
 mod session;
+mod subagent;
+mod worktree;
 
 use std::process::ExitCode;
 

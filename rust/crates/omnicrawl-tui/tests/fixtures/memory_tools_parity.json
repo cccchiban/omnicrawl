@@ -1,0 +1,294 @@
+{
+  "source": "omnicrawl/agent/toolkit/memory_tools.py + omnicrawl/state/memory.py",
+  "seed": {
+    "memories": [
+      {
+        "content": "Rust 客户端需要独立执行工具，不再借用 Python 宿主。",
+        "related_directories": [
+          "rust/crates",
+          "rust/crates/omnicrawl-tui"
+        ],
+        "storage_directory": "code-knowledge/general"
+      },
+      {
+        "content": "知识库工具已经落在 Rust 侧客户端里。",
+        "related_directories": [
+          "rust/crates/omnicrawl-tui/src/tools"
+        ],
+        "storage_directory": "code-knowledge/general"
+      },
+      {
+        "content": "记忆工具的作用域路由：project、session、user 三处。",
+        "related_directories": [
+          "omnicrawl/agent/controllers"
+        ],
+        "storage_directory": "project-context/memory"
+      }
+    ]
+  },
+  "id_placeholder": "{ID}",
+  "timestamp_placeholder": "{TS}",
+  "cases": [
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": []
+      },
+      "ok": false,
+      "output": "memories 必须是非空列表。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": "nope"
+      },
+      "ok": false,
+      "output": "memories 必须是非空列表。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": [
+          "nope"
+        ]
+      },
+      "ok": false,
+      "output": "第 1 条记忆必须是 JSON 对象。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": [
+          {
+            "related_directories": [
+              "a"
+            ]
+          }
+        ]
+      },
+      "ok": false,
+      "output": "第 1 条记忆 content 不能为空。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": [
+          {
+            "content": "x",
+            "related_directories": null
+          }
+        ]
+      },
+      "ok": false,
+      "output": "第 1 条记忆 related_directories 必须是字符串列表。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": [
+          {
+            "content": "x",
+            "related_directories": [
+              1
+            ]
+          }
+        ]
+      },
+      "ok": false,
+      "output": "第 1 条记忆 related_directories 必须是字符串列表。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": [
+          {
+            "content": "x",
+            "source_event": 7
+          }
+        ]
+      },
+      "ok": false,
+      "output": "第 1 条记忆 source_event 必须是字符串或 null。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": [
+          {
+            "content": "x",
+            "storage_directory": 7
+          }
+        ]
+      },
+      "ok": false,
+      "output": "第 1 条记忆 storage_directory 必须是字符串或 null。"
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "memories": [
+          {
+            "content": "新的记忆条目：工具层参数适配已对照。",
+            "related_directories": [
+              "rust/crates/omnicrawl-tui"
+            ],
+            "storage_directory": "code-knowledge/general",
+            "source_event": "turn-1"
+          }
+        ]
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"timestamp\": \"{TS}\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"content\": \"新的记忆条目：工具层参数适配已对照。\"\n  }\n]"
+    },
+    {
+      "tool": "memory_search",
+      "arguments": {
+        "query": "Rust",
+        "reason": "找相关记忆"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"知识库工具已经落在 Rust 侧客户端里。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui/src/tools\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"新的记忆条目：工具层参数适配已对照。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"记忆工具的作用域路由：project、session、user 三处。\",\n    \"storage_directory\": \"project-context/memory\",\n    \"related_directories\": [\n      \"omnicrawl/agent/controllers\",\n      \"project-context/memory\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    },
+    {
+      "tool": "memory_search",
+      "arguments": {
+        "query": "",
+        "reason": "x"
+      },
+      "ok": false,
+      "output": "query 不能为空。"
+    },
+    {
+      "tool": "memory_search",
+      "arguments": {
+        "query": "x",
+        "reason": ""
+      },
+      "ok": false,
+      "output": "reason 不能为空。"
+    },
+    {
+      "tool": "memory_search",
+      "arguments": {
+        "query": "Rust",
+        "reason": "按目录收窄",
+        "candidate_directories": [
+          "rust/crates"
+        ],
+        "max_results": 2
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"知识库工具已经落在 Rust 侧客户端里。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui/src/tools\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    },
+    {
+      "tool": "memory_search",
+      "arguments": {
+        "query": "Rust",
+        "reason": "越界上限",
+        "max_results": 99
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"知识库工具已经落在 Rust 侧客户端里。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui/src/tools\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"新的记忆条目：工具层参数适配已对照。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"记忆工具的作用域路由：project、session、user 三处。\",\n    \"storage_directory\": \"project-context/memory\",\n    \"related_directories\": [\n      \"omnicrawl/agent/controllers\",\n      \"project-context/memory\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    },
+    {
+      "tool": "memory_search",
+      "arguments": {
+        "query": "记忆 作用域",
+        "reason": "多词查询"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"记忆工具的作用域路由：project、session、user 三处。\",\n    \"storage_directory\": \"project-context/memory\",\n    \"related_directories\": [\n      \"omnicrawl/agent/controllers\",\n      \"project-context/memory\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"新的记忆条目：工具层参数适配已对照。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"知识库工具已经落在 Rust 侧客户端里。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui/src/tools\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    },
+    {
+      "tool": "memory_search",
+      "arguments": {
+        "query": "不存在的关键词",
+        "reason": "空结果"
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"知识库工具已经落在 Rust 侧客户端里。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui/src/tools\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"新的记忆条目：工具层参数适配已对照。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"记忆工具的作用域路由：project、session、user 三处。\",\n    \"storage_directory\": \"project-context/memory\",\n    \"related_directories\": [\n      \"omnicrawl/agent/controllers\",\n      \"project-context/memory\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    },
+    {
+      "tool": "memory_read",
+      "arguments": {
+        "memory_ids": []
+      },
+      "ok": false,
+      "output": "memory_ids 不能为空。"
+    },
+    {
+      "tool": "memory_read",
+      "arguments": {
+        "memory_ids": [
+          "missing-memory"
+        ]
+      },
+      "ok": true,
+      "output": "[]"
+    },
+    {
+      "tool": "memory_read",
+      "arguments": {
+        "memory_ids": [
+          "{ID1}"
+        ]
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"timestamp\": \"{TS}\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"content\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\"\n  }\n]"
+    },
+    {
+      "tool": "memory_read",
+      "arguments": {
+        "memory_ids": [
+          "{ID1}",
+          "{ID3}"
+        ]
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"timestamp\": \"{TS}\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"content\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"timestamp\": \"{TS}\",\n    \"related_directories\": [\n      \"omnicrawl/agent/controllers\",\n      \"project-context/memory\"\n    ],\n    \"content\": \"记忆工具的作用域路由：project、session、user 三处。\"\n  }\n]"
+    },
+    {
+      "tool": "memory_expand_related",
+      "arguments": {
+        "memory_ids": []
+      },
+      "ok": false,
+      "output": "memory_ids 不能为空。"
+    },
+    {
+      "tool": "memory_expand_related",
+      "arguments": {
+        "memory_ids": [
+          "{ID1}"
+        ]
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"知识库工具已经落在 Rust 侧客户端里。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui/src/tools\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"新的记忆条目：工具层参数适配已对照。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    },
+    {
+      "tool": "memory_expand_related",
+      "arguments": {
+        "memory_ids": [
+          "{ID1}",
+          "{ID3}"
+        ],
+        "max_depth": 2,
+        "max_results": 3
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"知识库工具已经落在 Rust 侧客户端里。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui/src/tools\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  },\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"新的记忆条目：工具层参数适配已对照。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    },
+    {
+      "tool": "memory_expand_related",
+      "arguments": {
+        "memory_ids": [
+          "{ID2}"
+        ],
+        "max_depth": 9,
+        "max_results": 0
+      },
+      "ok": true,
+      "output": "[\n  {\n    \"id\": \"{ID}\",\n    \"summary\": \"Rust 客户端需要独立执行工具，不再借用 Python 宿主。\",\n    \"storage_directory\": \"code-knowledge/general\",\n    \"related_directories\": [\n      \"rust/crates\",\n      \"rust/crates/omnicrawl-tui\",\n      \"code-knowledge/general\"\n    ],\n    \"timestamp\": \"{TS}\"\n  }\n]"
+    }
+  ]
+}

@@ -275,6 +275,27 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 `owner`（没有 `copy_context` 的等价物）；关闭动作 panic 不会被吞掉（Python 用 `except Exception`
 兜住并继续回收其余资源）。**运行时尚未接线**：内核现有的取消仍由可放弃读取线程 + 50ms 轮询表达。
 
+## 运行时管理器（`runtime_manager.rs`）
+
+对齐 Python `omnicrawl/llm/runtime.py` 的 `ModelRuntimeManager` / `RuntimeSnapshot`：
+不可变快照（代次 + 模型描述 + 运行时 + 能力 + 上下文窗口 + Profile）与回合边界热切换。
+
+- **切换顺序**：造候选运行时 → 持久化 → 原子替换活跃快照；任一步失败都保留旧模型
+  （`persist` 失败时把该错误原样抛出）。`allow_during_turn` 为假且存在活动回合时拒绝切换
+  （`INVALID_REQUEST`，文案与 Python 一致）。
+- **占用与回收**：`acquire_turn` 与 `switch` 共用切换锁，避免「检查无活动回合 → 交换 active」
+  与取快照之间出现竞态；旧快照进退役列表，引用归零后移出。
+- **闭锁**：`close()` 清空活跃与退役快照；`set_context_window_tokens` 只替换快照里的窗口值，
+  不重建运行时。
+- **与 Python 的差异**：内核的 `ModelRuntime` 没有 `close()` 关闭态（取消由 `TurnSink` 表达），
+  所以「退役运行时在引用归零后关闭」在这里等价于**移出退役列表并释放 `Arc`**。
+  `RuntimeSnapshot.capabilities` 取 `descriptor.capabilities`（未声明时为默认值），
+  `context_window_tokens` 仍是「描述值非零则用描述值，否则用能力里的窗口」。
+- 对照：`tests/runtime_manager_parity.rs`，数据集
+  `tests/fixtures/llm_runtime_manager_parity.json`（5 条轨迹：未初始化取回合、启动与占用、
+  回合中拒绝/放行切换、持久化失败保留旧模型、窗口写回与关闭），
+  生成器 `rust/tools/gen_llm_runtime_manager_fixture.py`。
+
 ## 依赖
 
 `ureq`（阻塞式 HTTP/1.1 + rustls）是唯一的传输依赖：内核的回合循环本来就是阻塞的，不需要异步运行时。
@@ -351,3 +372,32 @@ gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快
 本仓库自己就是宿主，在启用了消息脱敏的会话里写这类完整字面量会被还原成会话注册表里的原文——数据集照旧生成、
 测试照常通过，但解析用例全变成「命中为空」的假绿。规则语料还自带每条文本的**期望命中**，
 生成器当场断言：语料被写错、被豁免表静默吃掉或优先级不符时立即失败。
+
+## NER 兜底层（`desensitization/ner.rs` + `ner_weights.rs`）
+
+对齐 Python `omnicrawl/llm/desensitization/ner.py`：BiLSTM-CRF 语义兜底（PER / ORG / LOC）。
+内核侧是**完整实现**，不是接口占位：
+
+- **纯逻辑**：句末标点切句 + 超长硬切（`split_units` / `iter_chunks`）、中文片段等长隔离、
+  BIO 解码、实体过滤（类型 / 最小长度 / 中文区间 / 占位符重叠）、块级 LRU 结果缓存、
+  按 token 预算分批、共享抽取器池、`build_ner_layer` 的静默降级。
+- **真实推理**：`ner_weights.rs` 从 `data/ner_bilstm_crf.bin` 加载权重（Embedding → BiLSTM
+  1 层双向 → Linear → 带约束的 CRF，Viterbi 解码）。
+- **权重来源**：`rust/tools/gen_ner_fixture.py` 把 Python checkpoint（zip + pickle 的 torch
+  存档）转成「魔数 + 头部 JSON + f32 数据块」的自描述二进制；内核不实现 pickle 解析。
+- **对照**：`tests/ner_parity.rs`（6 项）——纯逻辑逐例对照，外加 **10 条文本的端到端实体区间
+  与 Python/torch 逐位一致**。
+- **与 Python 的差异**：设备只有 CPU 实现（`auto` / `cuda` 一律回 CPU，Python 侧优先 CUDA）；
+  `predict` 逐条前向（Python 按 token 预算打包批处理，结果等价）；`extract_entities` 显式接收
+  文本长度参数（Python 收原文本）。
+
+## 掩码记忆与扫描缓存（性能层）
+
+- `middleware.rs` 的 `MessageMaskMemo`：逐消息屏蔽结果缓存 + 本轮新增 (序号, 原文) 对；
+  命中后按引用的序号校验本周期可还原（否则退回重扫并重新登记）。淘汰口径是「最近用过的」
+  而不是 LRU——与 Python 的 `_MessageMaskMemo` 一致（历史是每轮顺序全扫，LRU 会正好淘汰
+  下一轮马上要用的条目）。
+- `rules.rs` 的 `ScanCache`：按 (文本, 规则集合身份) 记忆扫描结果，按字节预算淘汰；
+  `locality` 局部化扫描是 Python 侧重正则的性能优化，内核的手写匹配器没有整段回溯的开销、
+  结果与全量扫描一致。
+- Python 侧的模块级单例在内核里都是**实例**（由调用方持有），便于测试与配置变更后失效。

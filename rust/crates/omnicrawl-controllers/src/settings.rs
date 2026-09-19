@@ -7,49 +7,17 @@
 
 use crate::error::AgentError;
 
-pub const APPROVAL_MODE_AUTO: &str = "auto";
-
-pub const APPROVAL_MODE_REVIEW: &str = "review";
-
-pub const APPROVAL_MODE_MANUAL: &str = "manual";
+// 审批模式与推理强度的别名表只有配置域一份实现（Python 侧同样只有
+// `config/features/approval.py` 与 `config/models/llm.py`），这里改为复用。
+pub use omnicrawl_config::features::approval::{
+    APPROVAL_MODE_AUTO, APPROVAL_MODE_MANUAL, APPROVAL_MODE_REVIEW,
+};
+pub use omnicrawl_config::models::llm::VALID_REASONING_EFFORTS;
 
 pub const VALID_APPROVAL_MODES: [&str; 3] = [
     APPROVAL_MODE_AUTO,
     APPROVAL_MODE_MANUAL,
     APPROVAL_MODE_REVIEW,
-];
-
-const APPROVAL_MODE_ALIASES: [(&str, &str); 11] = [
-    ("ask", APPROVAL_MODE_MANUAL),
-    ("confirm", APPROVAL_MODE_MANUAL),
-    ("manual", APPROVAL_MODE_MANUAL),
-    ("off", APPROVAL_MODE_MANUAL),
-    ("auto", APPROVAL_MODE_AUTO),
-    ("auto_approve", APPROVAL_MODE_AUTO),
-    ("approve", APPROVAL_MODE_AUTO),
-    ("always", APPROVAL_MODE_AUTO),
-    ("review", APPROVAL_MODE_REVIEW),
-    ("auto_review", APPROVAL_MODE_REVIEW),
-    ("reviewed", APPROVAL_MODE_REVIEW),
-];
-
-pub const VALID_REASONING_EFFORTS: [&str; 6] = ["high", "low", "max", "medium", "none", "xhigh"];
-
-const REASONING_EFFORT_ALIASES: [(&str, &str); 14] = [
-    ("", ""),
-    ("disabled", "disabled"),
-    ("off", "disabled"),
-    ("none", "none"),
-    ("low", "low"),
-    ("medium", "medium"),
-    ("med", "medium"),
-    ("high", "high"),
-    ("xhigh", "xhigh"),
-    ("x_high", "xhigh"),
-    ("extra_high", "xhigh"),
-    ("very_high", "xhigh"),
-    ("max", "max"),
-    ("maximum", "max"),
 ];
 
 pub const DEFAULT_CONTEXT_WINDOW_TOKENS: i64 = 128_000;
@@ -104,33 +72,14 @@ pub const SUBAGENT_ADVANCED_SETTING_RULES: [(&str, &str, f64, f64); 6] = [
 
 /// 审批模式归一化：大小写、空格与 `-`/`_` 差异都收敛到闭集取值。
 pub fn normalize_approval_mode(value: &str) -> Result<&'static str, AgentError> {
-    let normalized = value.trim().to_lowercase().replace('-', "_");
-    for (alias, mode) in APPROVAL_MODE_ALIASES {
-        if alias == normalized {
-            return Ok(mode);
-        }
-    }
-    Err(AgentError::new(format!(
-        "approval.mode 仅支持 {}，当前值：{value}。",
-        allowed_values(&VALID_APPROVAL_MODES)
-    )))
+    omnicrawl_config::features::approval::normalize_approval_mode(value)
+        .map_err(|error| AgentError::new(error.message()))
 }
 
 /// 推理强度归一化；空串是合法取值（表示未设置）。
 pub fn normalize_reasoning_effort(value: &str) -> Result<&'static str, AgentError> {
-    let normalized = value.trim().to_lowercase().replace(['-', ' '], "_");
-    for (alias, effort) in REASONING_EFFORT_ALIASES {
-        if alias == normalized {
-            return Ok(effort);
-        }
-    }
-    let mut allowed: Vec<&str> = VALID_REASONING_EFFORTS.to_vec();
-    allowed.push("disabled");
-    allowed.sort_unstable();
-    Err(AgentError::new(format!(
-        "llm.reasoning_effort 仅支持 {}，当前值：{value}。",
-        allowed.join(", ")
-    )))
+    omnicrawl_config::models::llm::normalize_reasoning_effort(value)
+        .map_err(|error| AgentError::new(error.message()))
 }
 
 /// 推理强度归一化后同步的思考类型开关。
@@ -291,12 +240,6 @@ fn format_general(value: f64) -> String {
         return format!("{}", value as i64);
     }
     format!("{value}")
-}
-
-fn allowed_values(values: &[&str]) -> String {
-    let mut sorted: Vec<&str> = values.to_vec();
-    sorted.sort_unstable();
-    sorted.join(", ")
 }
 
 pub const MODEL_ID_REQUIRED: &str = "模型 ID 不能为空。";

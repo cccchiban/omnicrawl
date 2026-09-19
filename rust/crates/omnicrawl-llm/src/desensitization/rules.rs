@@ -10,12 +10,16 @@
 //! 以及整套规则语义——关键字预过滤、熵下限、校验器、豁免表、停用词、尾部标点留在原文、
 //! 重叠区间先命中先占位、结果按起点排序。
 //!
-//! gitleaks 规则表由 `gitleaks.rs` 承接（运行时正则）；未搬：`locality` 局部化
-//! 扫描与扫描结果缓存（纯性能优化，不影响语义）。
+//! gitleaks 规则表由 `gitleaks.rs` 承接（运行时正则）；`locality` 局部化扫描是 Python 侧重正则
+//! 的性能优化（内核的手写匹配器逐条扫描本就没有整段回溯的代价，结果与全量扫描一致），
+//! 扫描结果缓存由 [`ScanCache`] 承接。
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use super::char_offsets;
 
@@ -1426,4 +1430,219 @@ fn starts_with_ignore_case(characters: &[char], index: usize, expected: &str) ->
         }
     }
     true
+}
+
+// ── 扫描结果缓存（长会话里每轮重扫同一批未变历史） ────────────────────────
+//
+// 扫描是纯函数（规则 + 文本 → 区间），可跨请求复用；掩码阶段仍按周期分配占位符，
+// 缓存不参与占位符语义，也不保存原文之外的任何内容。
+
+pub const SCAN_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+pub const SCAN_CACHE_MAX_TEXT_CHARS: usize = 256 * 1024;
+
+/// 扫描缓存计数（不含任何文本）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanCacheStats {
+    pub entries: usize,
+    pub size_bytes: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+}
+
+struct ScanCacheEntry {
+    matches: Vec<RuleMatch>,
+    cost: usize,
+}
+
+#[derive(Default)]
+struct ScanCacheState {
+    order: Vec<(String, u64)>,
+    entries: HashMap<(String, u64), ScanCacheEntry>,
+    size_bytes: usize,
+}
+
+/// 按 (文本, 规则集合) 记忆扫描结果的 LRU，按字节预算淘汰条目。
+pub struct ScanCache {
+    max_bytes: usize,
+    max_text_chars: usize,
+    state: Mutex<ScanCacheState>,
+    hits: AtomicU64,
+    misses: AtomicU64,
+    evictions: AtomicU64,
+}
+
+impl Default for ScanCache {
+    fn default() -> Self {
+        Self::new(SCAN_CACHE_MAX_BYTES, SCAN_CACHE_MAX_TEXT_CHARS)
+    }
+}
+
+impl ScanCache {
+    pub fn new(max_bytes: usize, max_text_chars: usize) -> Self {
+        Self {
+            max_bytes,
+            max_text_chars,
+            state: Mutex::new(ScanCacheState::default()),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+            evictions: AtomicU64::new(0),
+        }
+    }
+
+    pub fn clear(&self) {
+        let mut state = scan_lock(&self.state);
+        state.order.clear();
+        state.entries.clear();
+        state.size_bytes = 0;
+    }
+
+    pub fn stats(&self) -> ScanCacheStats {
+        let state = scan_lock(&self.state);
+        ScanCacheStats {
+            entries: state.entries.len(),
+            size_bytes: state.size_bytes,
+            hits: self.hits.load(Ordering::Relaxed),
+            misses: self.misses.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+        }
+    }
+
+    fn get(&self, text: &str, rules: &[PatternRule]) -> Option<Vec<RuleMatch>> {
+        if text.chars().count() > self.max_text_chars {
+            return None;
+        }
+        let key = (text.to_string(), rules_identity(rules));
+        let mut state = scan_lock(&self.state);
+        if let Some(entry) = state.entries.remove(&key) {
+            let matches = entry.matches.clone();
+            state.order.retain(|item| item != &key);
+            state.order.push(key.clone());
+            state.entries.insert(key, entry);
+            drop(state);
+            self.hits.fetch_add(1, Ordering::Relaxed);
+            return Some(matches);
+        }
+        drop(state);
+        self.misses.fetch_add(1, Ordering::Relaxed);
+        None
+    }
+
+    fn put(&self, text: &str, rules: &[PatternRule], matches: &[RuleMatch]) {
+        if text.chars().count() > self.max_text_chars {
+            return;
+        }
+        let cost = entry_bytes(text, matches.len());
+        if cost > self.max_bytes {
+            return;
+        }
+        let key = (text.to_string(), rules_identity(rules));
+        let mut state = scan_lock(&self.state);
+        if let Some(previous) = state.entries.remove(&key) {
+            state.size_bytes = state.size_bytes.saturating_sub(previous.cost);
+            state.order.retain(|item| item != &key);
+        }
+        state.size_bytes += cost;
+        state.order.push(key.clone());
+        state.entries.insert(
+            key,
+            ScanCacheEntry {
+                matches: matches.to_vec(),
+                cost,
+            },
+        );
+        while state.size_bytes > self.max_bytes && !state.order.is_empty() {
+            let Some(evicted) = state.order.first().cloned() else {
+                break;
+            };
+            state.order.remove(0);
+            if let Some(entry) = state.entries.remove(&evicted) {
+                state.size_bytes = state.size_bytes.saturating_sub(entry.cost);
+                self.evictions.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+fn scan_lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// 规则集合的身份：指针 + 长度 + 首尾规则 id（避免地址复用导致错配）。
+fn rules_identity(rules: &[PatternRule]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (rules.as_ptr() as usize).hash(&mut hasher);
+    rules.len().hash(&mut hasher);
+    if let Some(first) = rules.first() {
+        first.rule_id.hash(&mut hasher);
+    }
+    if let Some(last) = rules.last() {
+        last.rule_id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// 条目占用估算：文本本体 + 每个匹配对象与字符串切片的固定开销。
+fn entry_bytes(text: &str, matches: usize) -> usize {
+    49 + text.chars().count() * 4 + matches * 96 + 64
+}
+
+/// 按规则优先级扫描文本；命中缓存时直接复用区间。
+pub fn scan_pattern_rules_cached(
+    text: &str,
+    rules: &[PatternRule],
+    cache: &ScanCache,
+) -> Vec<RuleMatch> {
+    if text.is_empty() || rules.is_empty() {
+        return Vec::new();
+    }
+    if let Some(cached) = cache.get(text, rules) {
+        return cached;
+    }
+    let matches = scan_pattern_rules(text, rules);
+    cache.put(text, rules, &matches);
+    matches
+}
+
+// ── 扫描缓存的行为测试 ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod scan_cache_tests {
+    use super::*;
+
+    #[test]
+    fn scan_cache_reuses_and_counts() {
+        let cache = ScanCache::new(1024 * 1024, 4096);
+        let rules = builtin_rules();
+        let text = "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----";
+        let first = scan_pattern_rules_cached(text, rules, &cache);
+        assert!(!first.is_empty(), "私钥应命中");
+        let second = scan_pattern_rules_cached(text, rules, &cache);
+        assert_eq!(first, second, "命中缓存后结果一致");
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+    }
+
+    #[test]
+    fn scan_cache_skips_oversized_text() {
+        let cache = ScanCache::new(1024 * 1024, 4);
+        let rules = builtin_rules();
+        let _ = scan_pattern_rules_cached("-----BEGIN RSA PRIVATE KEY-----", rules, &cache);
+        assert_eq!(cache.stats().entries, 0, "超过文本上限不入缓存");
+    }
+
+    #[test]
+    fn scan_cache_evicts_by_budget() {
+        let cache = ScanCache::new(600, 4096);
+        let rules = builtin_rules();
+        for index in 0..4 {
+            let text = format!("user{index}@corp{index}.cn");
+            let _ = scan_pattern_rules_cached(&text, rules, &cache);
+        }
+        let stats = cache.stats();
+        assert!(stats.evictions > 0, "超出预算后应发生淘汰");
+        assert!(stats.size_bytes <= 600, "淘汰后占用回到预算内");
+    }
 }

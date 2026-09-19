@@ -38,6 +38,7 @@ rust/
 │   ├── src/errors.rs                       # 运行时错误面与 HTTP 状态码阶梯文案
 │   ├── src/transport.rs                    # 阻塞式 HTTP 往返（ureq + rustls）与超时映射
 │   ├── src/runtime.rs                      # 一次回合：请求 → 流事件 → 工具收尾 → ModelReply
+│   ├── src/gemini.rs                       # Gemini Generate Content：请求、线上映射、流事件与错误文案
 │   ├── src/desensitization.rs              # 消息脱敏模块根：子系统错误面 + 序号注册表（占位符协议、稳定序号）
 │   ├── src/desensitization/stream.rs       # 消息脱敏：流式还原（尾部挂起缓冲、结构化还原、严格模式）
 │   ├── src/desensitization/engine.rs       # 消息脱敏：匹配引擎（结构层 / 键名 / 熵兜底 / 占位符分配）
@@ -89,6 +90,13 @@ rust/
 │   ├── src/main.rs                         # 入口：--version / --help
 │   ├── src/session.rs                      # 会话：握手、回合、两个宿主端口、取消守卫
 │   └── README.md                           # 端口与错误映射、当前发出的事件
+├── crates/omnicrawl-tui/                   # 全屏终端工作台（协议 v1 的 Rust 宿主前端）
+│   ├── src/main.rs                         # 二进制入口：选内核、握手、进出全屏、事件循环
+│   ├── src/kernel.rs                       # 内核进程客户端：NDJSON 帧读写与请求配对
+│   ├── src/state.rs                        # 界面状态机：消息记录、输入框、遥测
+│   ├── src/host.rs                         # 宿主侧工具批次：观察构造、审批策略、待决面板
+│   ├── src/ui/                             # 渲染：HUD、消息流、输入框、面板
+│   └── README.md                           # 本阶段边界与尚未实现清单
 ├── crates/omnicrawl-connectors/            # 消息平台连接器（Telegram Bot 与飞书自建应用）
 │   ├── src/agent.rs                        # 连接器 ↔ 宿主边界：回合事件、驱动 trait、确认/提问桥
 │   ├── src/telegram/                       # 配置、分段与裁剪、文件接收、更新路由、Bot API、轮询服务
@@ -102,6 +110,7 @@ rust/
     ├── gen_llm_stream_fixture.py           # Provider 流解析对照数据集生成脚本
     ├── gen_llm_request_fixture.py          # 请求构建对照数据集生成脚本
     ├── gen_llm_usage_fixture.py            # 用量归一化对照数据集生成脚本
+    ├── gen_llm_gemini_fixture.py           # Gemini 对照数据集生成脚本（含真 SDK 线上抓取）
     ├── gen_llm_runtime_fixture.py          # 端到端回合对照数据集生成脚本（内建回环服务端）
     ├── gen_session_fixture.py              # 会话层模型对照数据集生成脚本
     ├── gen_connectors_telegram_fixture.py  # Telegram 连接器对照数据集生成脚本
@@ -320,7 +329,7 @@ system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级�
    转换，一律回落默认值；实际模型请求里这些字段恒为字符串。
 2. JSON 参数解析用 `serde_json`：不接受 `NaN`/`Infinity`（Python `json.loads` 接受），
    非法输入同样退化为空对象。
-3. data URL 解析改为手写大小写不敏感解析，不引入 `regex` 依赖；判定条件与 Python 正则一致
+3. data URL 解析是手写的大小写不敏感解析；判定条件与 Python 正则一致
    （整体锚定、媒体类型取 `png`/`jpeg`/`webp`/`gif`、payload 限 base64 字符集且非空）。
 4. `Role` 是闭集加 `Other(String)` 透传：OpenAI Chat 分支会把未知角色原样写进请求体，
    透传语义与 Python 一致。
@@ -381,9 +390,10 @@ artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照，一致性
 （协议选取与一致性校验），以及 `ModelRuntime` trait——`omnicrawl-cli` 经 trait 对象持有运行时，
 Provider 实现与出网脱敏装饰器都从这里换入。
 
-接下来：Provider 逐个落地——OpenAI Responses 的**请求构建**已落地，下一步是它的流事件映射与回合运行，
-随后 Anthropic 与 Gemini；之后是 adapter 注册表与 `build_runtime` 工厂；脱敏侧接
-`DesensitizationRuntime` 装饰器（trait 已就位）；会话侧补归档、导出与一致性诊断。上下文压缩这条链已在 Rust 侧补齐到「除内核接线外」的全部：`omnicrawl-controllers` 的
+接下来：运行时的组装面（`build_runtime` 工厂 + 四路 Provider 的 `discover_models`）已进内核，
+下一批是把 `omnicrawl-cli` 的 `KernelModelPort::runtime()` 从「只造 OpenAiChatRuntime」改成经
+`build_runtime` 按协议选择；脱敏侧接 `DesensitizationRuntime` 装饰器（trait 已就位）；
+会话侧补归档、导出与一致性诊断。上下文压缩这条链已在 Rust 侧补齐到「除内核接线外」的全部：`omnicrawl-controllers` 的
 `context_compaction`（账本、证据恢复、结构化摘要生成、压缩编排）与 `turn/compaction` 的判定面共有
 13 例对照；`omnicrawl-compaction` 提供会话/记忆编排（测量事件落盘、压缩触发、二级归档、
 记忆回写与自动召回、历史重建）与摘要模型适配器（复用主请求前缀与工具面、`tool_choice=none`），
@@ -411,3 +421,24 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 模型这条链上还剩两件宿主侧的事：
 把真实的 Provider 配置（Python 侧的 models 配置 / 启动器）接进 `initialize.model`，
 以及全部宿主迁移后让 `model.reply` 退役。
+
+## 全屏终端工作台：`omnicrawl-tui`
+
+`crates/omnicrawl-tui` 产出 `omnicrawl-tui` 二进制，是协议 v1 的 Rust 宿主前端：起内核进程、
+渲染内核通知（HUD、消息流、思考段、工具卡）、把输入与审批/提问决定回给内核。
+它按「判定留内核、渲染与交互留宿主」分工，因此同一个内核可以同时被启动器、连接器与 TUI 驱动。
+
+已落地：HUD、消息流、输入框、审批面板、提问面板、任务清单、取消/退出收尾，以及**工作区工具执行体**——
+`read` / `write_file` / `Edit_file` / `bash` / `powershell` / `list` / `find` / `grep` / `git` / `monitor` 十个工具按
+`omnicrawl/workspace/tools.py`、`git_tools.py`、`monitor.py` 的语义实现（保护路径、行窗口与 footer、count 语义、
+行尾风格、文件锁 + 原子写、显式解释器与超时回收、ripgrep 同族的遍历与忽略规则、git argv 直调与有界输出、
+后台命令的环形缓冲与游标轮询），
+并由工具表生成 `initialize.model.tools` 声明；工具表、参数归一化与 Schema 校验复用 `omnicrawl-controllers`，
+声明与行为逐字对齐 Python（`tests/workspace_tools_parity.rs`、`tests/search_tools_parity.rs` +
+`rust/tools/gen_tui_tools_fixture.py`）。审批语义与 Python 的 manual 分支一致：只对 shell 命令与非只读 git 操作确认。
+
+仍未搬完：`read_image` / `web_search` / `fetcher` /
+`image_gen` / `tts_synthesize`、知识库、记忆（`omnicrawl-session` 已有 `MemoryStore` 可复用）、Windows 桌面、
+SubAgent、`advisor`，以及 `monitor` 任务的界面轮询展示、`read` 的 `function_name` 定位与 `omnicrawl://docs/` 内置文档
+（当前返回 `FS_UNSUPPORTED_FEATURE`）与工具输出预算归档。
+边界与缺口清单见 `crates/omnicrawl-tui/README.md`；Python 侧 Textual 工作台在迁移完成前仍在服役。

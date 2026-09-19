@@ -1,0 +1,1192 @@
+{
+ "approval_normalize": [
+  {
+   "value": "manual",
+   "expected": "manual"
+  },
+  {
+   "value": " MANUAL ",
+   "expected": "manual"
+  },
+  {
+   "value": "ask",
+   "expected": "manual"
+  },
+  {
+   "value": "confirm",
+   "expected": "manual"
+  },
+  {
+   "value": "off",
+   "expected": "manual"
+  },
+  {
+   "value": "auto",
+   "expected": "auto"
+  },
+  {
+   "value": "auto_approve",
+   "expected": "auto"
+  },
+  {
+   "value": "approve",
+   "expected": "auto"
+  },
+  {
+   "value": "always",
+   "expected": "auto"
+  },
+  {
+   "value": "review",
+   "expected": "review"
+  },
+  {
+   "value": "auto-review",
+   "expected": "review"
+  },
+  {
+   "value": "reviewed",
+   "expected": "review"
+  },
+  {
+   "value": "AUTO",
+   "expected": "auto"
+  },
+  {
+   "value": "bogus",
+   "error": "approval.mode 仅支持 auto, manual, review，当前值：bogus。"
+  },
+  {
+   "value": "",
+   "error": "approval.mode 仅支持 auto, manual, review，当前值：。"
+  }
+ ],
+ "approval_labels": [
+  {
+   "mode": "manual",
+   "expected": "人工确认"
+  },
+  {
+   "mode": "auto",
+   "expected": "完全自动批准"
+  },
+  {
+   "mode": "review",
+   "expected": "自动审查"
+  },
+  {
+   "mode": "bogus",
+   "expected": "bogus"
+  }
+ ],
+ "approval_load": [
+  {
+   "mode": "review",
+   "review_model": "",
+   "name": "缺段",
+   "config": {}
+  },
+  {
+   "mode": "auto",
+   "review_model": "",
+   "name": "显式模式",
+   "config": {
+    "approval": {
+     "mode": "auto"
+    }
+   }
+  },
+  {
+   "mode": "review",
+   "review_model": "",
+   "name": "模式需归一化",
+   "config": {
+    "approval": {
+     "mode": " Auto-Review "
+    }
+   }
+  },
+  {
+   "mode_error": "approval.mode 仅支持 auto, manual, review，当前值：bogus。",
+   "review_model": "",
+   "name": "模式非法",
+   "config": {
+    "approval": {
+     "mode": "bogus"
+    }
+   }
+  },
+  {
+   "mode_error": "配置项 approval.mode 必须是字符串。",
+   "review_model": "",
+   "name": "模式非字符串",
+   "config": {
+    "approval": {
+     "mode": 5
+    }
+   }
+  },
+  {
+   "mode": "review",
+   "review_model": "",
+   "name": "旧开关 auto_review",
+   "config": {
+    "approval": {
+     "auto_review": true
+    }
+   }
+  },
+  {
+   "mode": "auto",
+   "review_model": "",
+   "name": "旧开关 auto_approve",
+   "config": {
+    "approval": {
+     "auto_approve": true
+    }
+   }
+  },
+  {
+   "mode": "review",
+   "review_model": "",
+   "name": "旧开关都关",
+   "config": {
+    "approval": {
+     "auto_review": false,
+     "auto_approve": false
+    }
+   }
+  },
+  {
+   "mode_error": "配置项 approval 必须是对象。",
+   "review_model_error": "配置项 approval 必须是对象。",
+   "name": "段不是对象",
+   "config": {
+    "approval": 5
+   }
+  },
+  {
+   "mode": "review",
+   "review_model": "gpt-5.2",
+   "name": "审查模型",
+   "config": {
+    "approval": {
+     "review_model": " gpt-5.2 "
+    }
+   }
+  },
+  {
+   "mode": "review",
+   "review_model": "",
+   "name": "审查模型为空",
+   "config": {
+    "approval": {
+     "review_model": ""
+    }
+   }
+  },
+  {
+   "mode": "review",
+   "review_model_error": "配置项 approval.review_model 必须是字符串。",
+   "name": "审查模型非字符串",
+   "config": {
+    "approval": {
+     "review_model": 5
+    }
+   }
+  }
+ ],
+ "approval_save": [
+  {
+   "text": "[approval]\nreview_model = \"m\"\nmode = \"auto\"\n\n[ui]\nshow_thinking = true\n",
+   "name": "写回 auto",
+   "mode": "auto"
+  },
+  {
+   "text": "[approval]\nreview_model = \"m\"\nmode = \"review\"\n\n[ui]\nshow_thinking = true\n",
+   "name": "写回 review",
+   "mode": "review"
+  },
+  {
+   "error": "approval.mode 仅支持 auto, manual, review，当前值：bogus。",
+   "name": "写回 bogus",
+   "mode": "bogus"
+  }
+ ],
+ "tools_validate": [
+  {
+   "name": "list",
+   "expected": "list"
+  },
+  {
+   "name": " powershell ",
+   "expected": "powershell"
+  },
+  {
+   "name": "memory_search",
+   "expected": "memory_search"
+  },
+  {
+   "name": "project_memory_search",
+   "expected": "memory_search"
+  },
+  {
+   "name": "user_memory_write",
+   "expected": "memory_write"
+  },
+  {
+   "name": "session_memory_expand_related",
+   "expected": "memory_expand_related"
+  },
+  {
+   "name": "bogus",
+   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。"
+  },
+  {
+   "name": "project_bogus",
+   "error": "tools 配置不支持工具：project_bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。"
+  },
+  {
+   "name": "",
+   "error": "tools 配置不支持工具：。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。"
+  }
+ ],
+ "tools_keys": [
+  "list",
+  "find",
+  "read",
+  "read_image",
+  "grep",
+  "web_search",
+  "fetcher",
+  "image_gen",
+  "tts_synthesize",
+  "Edit_file",
+  "write_file",
+  "bash",
+  "powershell",
+  "monitor",
+  "recall_session_evidence",
+  "windows_window",
+  "windows_control",
+  "windows_input",
+  "windows_clipboard",
+  "windows_screenshot",
+  "subagent",
+  "update_todos",
+  "memory_search",
+  "memory_read",
+  "memory_expand_related",
+  "memory_write"
+ ],
+ "tools_defaults": {
+  "list": true,
+  "find": true,
+  "read": true,
+  "read_image": true,
+  "grep": true,
+  "web_search": true,
+  "fetcher": true,
+  "image_gen": true,
+  "tts_synthesize": true,
+  "Edit_file": true,
+  "write_file": true,
+  "bash": true,
+  "powershell": false,
+  "monitor": true,
+  "recall_session_evidence": true,
+  "windows_window": true,
+  "windows_control": true,
+  "windows_input": true,
+  "windows_clipboard": true,
+  "windows_screenshot": true,
+  "subagent": true,
+  "update_todos": true,
+  "memory_search": true,
+  "memory_read": true,
+  "memory_expand_related": true,
+  "memory_write": true
+ },
+ "tools_labels": {
+  "list": "列出目录内容",
+  "find": "按名称或路径查找文件",
+  "read": "读取文件内容",
+  "read_image": "读取图片",
+  "grep": "在文件中搜索文本（grep）",
+  "web_search": "web_search（Bing/DuckDuckGo/雅虎）",
+  "fetcher": "fetcher（浏览器指纹）",
+  "image_gen": "图像生成（Image API）",
+  "tts_synthesize": "TTS 语音合成（MOSS-TTS-Nano）",
+  "Edit_file": "替换文件中的文本",
+  "write_file": "写入文件",
+  "bash": "执行 Bash 命令",
+  "powershell": "执行 PowerShell 命令",
+  "monitor": "管理后台命令",
+  "recall_session_evidence": "会话证据恢复",
+  "windows_window": "操作 Windows 窗口",
+  "windows_control": "操作 Windows UI 控件",
+  "windows_input": "模拟 Windows 鼠标键盘",
+  "windows_clipboard": "操作 Windows 剪贴板",
+  "windows_screenshot": "截取 Windows 桌面",
+  "subagent": "分发受限子任务",
+  "update_todos": "维护自动执行清单",
+  "memory_search": "搜索长期记忆（scope 选作用域）",
+  "memory_read": "读取长期记忆",
+  "memory_expand_related": "展开相关长期记忆",
+  "memory_write": "写入长期记忆（scope 选作用域）"
+ },
+ "tools_load": [
+  {
+   "switches": {
+    "list": true,
+    "find": true,
+    "read": true,
+    "read_image": true,
+    "grep": true,
+    "web_search": true,
+    "fetcher": true,
+    "image_gen": true,
+    "tts_synthesize": true,
+    "Edit_file": true,
+    "write_file": true,
+    "bash": true,
+    "powershell": false,
+    "monitor": true,
+    "recall_session_evidence": true,
+    "windows_window": true,
+    "windows_control": true,
+    "windows_input": true,
+    "windows_clipboard": true,
+    "windows_screenshot": true,
+    "subagent": true,
+    "update_todos": true,
+    "memory_search": true,
+    "memory_read": true,
+    "memory_expand_related": true,
+    "memory_write": true
+   },
+   "disabled": [
+    "powershell"
+   ],
+   "name": "缺段",
+   "config": {}
+  },
+  {
+   "switches": {
+    "list": false,
+    "find": true,
+    "read": true,
+    "read_image": true,
+    "grep": true,
+    "web_search": true,
+    "fetcher": true,
+    "image_gen": true,
+    "tts_synthesize": true,
+    "Edit_file": true,
+    "write_file": true,
+    "bash": false,
+    "powershell": true,
+    "monitor": true,
+    "recall_session_evidence": true,
+    "windows_window": true,
+    "windows_control": true,
+    "windows_input": true,
+    "windows_clipboard": true,
+    "windows_screenshot": true,
+    "subagent": true,
+    "update_todos": true,
+    "memory_search": true,
+    "memory_read": true,
+    "memory_expand_related": true,
+    "memory_write": true
+   },
+   "disabled": [
+    "bash",
+    "list"
+   ],
+   "name": "全部覆盖",
+   "config": {
+    "tools": {
+     "bash": false,
+     "powershell": true,
+     "list": false
+    }
+   }
+  },
+  {
+   "switches": {
+    "list": true,
+    "find": true,
+    "read": true,
+    "read_image": true,
+    "grep": true,
+    "web_search": true,
+    "fetcher": true,
+    "image_gen": true,
+    "tts_synthesize": true,
+    "Edit_file": true,
+    "write_file": true,
+    "bash": true,
+    "powershell": false,
+    "monitor": true,
+    "recall_session_evidence": true,
+    "windows_window": true,
+    "windows_control": true,
+    "windows_input": true,
+    "windows_clipboard": true,
+    "windows_screenshot": true,
+    "subagent": true,
+    "update_todos": true,
+    "memory_search": false,
+    "memory_read": true,
+    "memory_expand_related": true,
+    "memory_write": false
+   },
+   "disabled": [
+    "memory_search",
+    "memory_write",
+    "powershell"
+   ],
+   "name": "旧记忆开关名",
+   "config": {
+    "tools": {
+     "project_memory_search": false,
+     "user_memory_write": false
+    }
+   }
+  },
+  {
+   "error": "配置项 tools.bash 必须是布尔值。",
+   "name": "非法值",
+   "config": {
+    "tools": {
+     "bash": "yes"
+    }
+   }
+  },
+  {
+   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。",
+   "name": "非法工具名",
+   "config": {
+    "tools": {
+     "bogus": true
+    }
+   }
+  },
+  {
+   "error": "配置项 tools 必须是对象。",
+   "name": "段不是对象",
+   "config": {
+    "tools": []
+   }
+  }
+ ],
+ "tools_save": [
+  {
+   "text": "[tools]\nlist = true\nbash = false\n",
+   "name": "单个开关",
+   "switches": {
+    "bash": false
+   }
+  },
+  {
+   "text": "[tools]\nlist = false\npowershell = true\nmemory_read = false\n",
+   "name": "批量开关",
+   "switches": {
+    "powershell": true,
+    "list": false,
+    "memory_read": false
+   }
+  },
+  {
+   "text": "[tools]\nlist = true\nmemory_search = false\n",
+   "name": "旧名归一化",
+   "switches": {
+    "project_memory_search": false
+   }
+  },
+  {
+   "error": "tools 配置不支持工具：bogus。可用：list, find, read, read_image, grep, web_search, fetcher, image_gen, tts_synthesize, Edit_file, write_file, bash, powershell, monitor, recall_session_evidence, windows_window, windows_control, windows_input, windows_clipboard, windows_screenshot, subagent, update_todos, memory_search, memory_read, memory_expand_related, memory_write。",
+   "text_after": "[tools]\nlist = true\n",
+   "name": "非法名不写盘",
+   "switches": {
+    "bash": false,
+    "bogus": true
+   }
+  }
+ ],
+ "context_compaction": [
+  {
+   "expected": {
+    "trigger_context_percent": 80,
+    "trigger_context_tokens": 100000,
+    "next_user_reserve_tokens": 10240,
+    "emergency_context_ratio": 0.85,
+    "summary_profile": "",
+    "reasoning_effort": "low",
+    "recent_turns": 6,
+    "target_summary_tokens": 6000,
+    "preserve_exact_evidence": true,
+    "archive_compacted_events": true,
+    "auto_memory_recall": true,
+    "allow_cross_provider": false,
+    "failure_fallback": "deterministic"
+   },
+   "name": "缺段",
+   "config": {}
+  },
+  {
+   "expected": {
+    "trigger_context_percent": 80,
+    "trigger_context_tokens": 100000,
+    "next_user_reserve_tokens": 10240,
+    "emergency_context_ratio": 0.85,
+    "summary_profile": "",
+    "reasoning_effort": "low",
+    "recent_turns": 6,
+    "target_summary_tokens": 6000,
+    "preserve_exact_evidence": true,
+    "archive_compacted_events": true,
+    "auto_memory_recall": true,
+    "allow_cross_provider": false,
+    "failure_fallback": "deterministic"
+   },
+   "name": "空段",
+   "config": {
+    "context_compaction": {}
+   }
+  },
+  {
+   "expected": {
+    "trigger_context_percent": 70,
+    "trigger_context_tokens": 50000,
+    "next_user_reserve_tokens": 2048,
+    "emergency_context_ratio": 0.5,
+    "summary_profile": "ch1/gpt-5.2",
+    "reasoning_effort": "medium",
+    "recent_turns": 4,
+    "target_summary_tokens": 0,
+    "preserve_exact_evidence": false,
+    "archive_compacted_events": false,
+    "auto_memory_recall": false,
+    "allow_cross_provider": true,
+    "failure_fallback": "deterministic"
+   },
+   "name": "合法全量",
+   "config": {
+    "context_compaction": {
+     "trigger_context_percent": 70,
+     "trigger_context_tokens": 50000,
+     "next_user_reserve_tokens": 2048,
+     "emergency_context_ratio": 0.5,
+     "summary_profile": "ch1/gpt-5.2",
+     "reasoning_effort": "medium",
+     "recent_turns": 4,
+     "target_summary_tokens": 0,
+     "preserve_exact_evidence": false,
+     "archive_compacted_events": false,
+     "auto_memory_recall": false,
+     "allow_cross_provider": true,
+     "failure_fallback": "deterministic"
+    }
+   }
+  },
+  {
+   "error": "context_compaction.trigger_context_percent 必须是正整数。",
+   "name": "百分比为零",
+   "config": {
+    "context_compaction": {
+     "trigger_context_percent": 0
+    }
+   }
+  },
+  {
+   "error": "context_compaction.trigger_context_percent 必须是正整数。",
+   "name": "百分比非整数",
+   "config": {
+    "context_compaction": {
+     "trigger_context_percent": "70"
+    }
+   }
+  },
+  {
+   "error": "context_compaction.trigger_context_tokens 必须是正整数。",
+   "name": "窗口为零",
+   "config": {
+    "context_compaction": {
+     "trigger_context_tokens": 0
+    }
+   }
+  },
+  {
+   "error": "context_compaction.trigger_context_tokens 必须是正整数。",
+   "name": "窗口为负",
+   "config": {
+    "context_compaction": {
+     "trigger_context_tokens": -5
+    }
+   }
+  },
+  {
+   "error": "context_compaction.next_user_reserve_tokens 必须是正整数。",
+   "name": "预留为零",
+   "config": {
+    "context_compaction": {
+     "next_user_reserve_tokens": 0
+    }
+   }
+  },
+  {
+   "error": "context_compaction.recent_turns 必须是正整数。",
+   "name": "近回合为零",
+   "config": {
+    "context_compaction": {
+     "recent_turns": 0
+    }
+   }
+  },
+  {
+   "error": "context_compaction.target_summary_tokens 必须是非负整数（0 表示无预算限制）。",
+   "name": "摘要预算为负",
+   "config": {
+    "context_compaction": {
+     "target_summary_tokens": -1
+    }
+   }
+  },
+  {
+   "error": "context_compaction.emergency_context_ratio 必须满足 0 < value < 1。",
+   "name": "比值为零",
+   "config": {
+    "context_compaction": {
+     "emergency_context_ratio": 0
+    }
+   }
+  },
+  {
+   "error": "context_compaction.emergency_context_ratio 必须满足 0 < value < 1。",
+   "name": "比值为一",
+   "config": {
+    "context_compaction": {
+     "emergency_context_ratio": 1.0
+    }
+   }
+  },
+  {
+   "error": "context_compaction.emergency_context_ratio 必须满足 0 < value < 1。",
+   "name": "比值过大",
+   "config": {
+    "context_compaction": {
+     "emergency_context_ratio": 1.5
+    }
+   }
+  },
+  {
+   "error": "context_compaction.emergency_context_ratio 必须是数字。",
+   "name": "比值非数字",
+   "config": {
+    "context_compaction": {
+     "emergency_context_ratio": "0.5"
+    }
+   }
+  },
+  {
+   "error": "context_compaction.summary_profile 必须是字符串。",
+   "name": "摘要模型非字符串",
+   "config": {
+    "context_compaction": {
+     "summary_profile": 5
+    }
+   }
+  },
+  {
+   "error": "context_compaction.reasoning_effort 必须是非空字符串。",
+   "name": "推理强度为空",
+   "config": {
+    "context_compaction": {
+     "reasoning_effort": "   "
+    }
+   }
+  },
+  {
+   "error": "context_compaction.reasoning_effort 必须是非空字符串。",
+   "name": "推理强度非字符串",
+   "config": {
+    "context_compaction": {
+     "reasoning_effort": 5
+    }
+   }
+  },
+  {
+   "error": "context_compaction.preserve_exact_evidence 必须是布尔值。",
+   "name": "证据开关非布尔",
+   "config": {
+    "context_compaction": {
+     "preserve_exact_evidence": 1
+    }
+   }
+  },
+  {
+   "error": "context_compaction.archive_compacted_events 必须是布尔值。",
+   "name": "归档开关非布尔",
+   "config": {
+    "context_compaction": {
+     "archive_compacted_events": "yes"
+    }
+   }
+  },
+  {
+   "error": "context_compaction.auto_memory_recall 必须是布尔值。",
+   "name": "召回开关非布尔",
+   "config": {
+    "context_compaction": {
+     "auto_memory_recall": 0
+    }
+   }
+  },
+  {
+   "error": "context_compaction.allow_cross_provider 必须是布尔值。",
+   "name": "跨供应商非布尔",
+   "config": {
+    "context_compaction": {
+     "allow_cross_provider": "y"
+    }
+   }
+  },
+  {
+   "error": "context_compaction.failure_fallback 当前仅支持 deterministic。",
+   "name": "回退策略非法",
+   "config": {
+    "context_compaction": {
+     "failure_fallback": "model"
+    }
+   }
+  },
+  {
+   "error": "context_compaction.failure_fallback 当前仅支持 deterministic。",
+   "name": "回退策略非字符串",
+   "config": {
+    "context_compaction": {
+     "failure_fallback": 5
+    }
+   }
+  },
+  {
+   "error": "context_compaction 包含未知配置项：bogus",
+   "name": "未知字段",
+   "config": {
+    "context_compaction": {
+     "bogus": 1
+    }
+   }
+  },
+  {
+   "error": "context_compaction 包含未知配置项：zzz",
+   "name": "未知字段与废字段",
+   "config": {
+    "context_compaction": {
+     "minimum_turns_between_model_compactions": 3,
+     "zzz": 1
+    }
+   }
+  },
+  {
+   "expected": {
+    "trigger_context_percent": 80,
+    "trigger_context_tokens": 100000,
+    "next_user_reserve_tokens": 10240,
+    "emergency_context_ratio": 0.85,
+    "summary_profile": "",
+    "reasoning_effort": "low",
+    "recent_turns": 6,
+    "target_summary_tokens": 6000,
+    "preserve_exact_evidence": true,
+    "archive_compacted_events": true,
+    "auto_memory_recall": true,
+    "allow_cross_provider": false,
+    "failure_fallback": "deterministic"
+   },
+   "name": "已废弃字段被忽略",
+   "config": {
+    "context_compaction": {
+     "minimum_turns_between_model_compactions": 3
+    }
+   }
+  },
+  {
+   "error": "配置项 context_compaction 必须是对象。",
+   "name": "段不是对象",
+   "config": {
+    "context_compaction": 5
+   }
+  }
+ ],
+ "run_guard": [
+  {
+   "expected": {
+    "enabled": true,
+    "guard": {
+     "enabled": true,
+     "window_chars": 2000,
+     "substr_len": 32,
+     "repeat_ratio": 0.7,
+     "check_every": 50,
+     "max_blocks": 10000,
+     "max_chars": 500000,
+     "max_guard_retries": 2,
+     "auto_retry_errors": [
+      "SERVICE_UNAVAILABLE"
+     ]
+    },
+    "continue": {
+     "enabled": true,
+     "max_auto_followups": 3
+    }
+   },
+   "name": "缺段",
+   "config": {}
+  },
+  {
+   "expected": {
+    "enabled": true,
+    "guard": {
+     "enabled": true,
+     "window_chars": 2000,
+     "substr_len": 32,
+     "repeat_ratio": 0.7,
+     "check_every": 50,
+     "max_blocks": 10000,
+     "max_chars": 500000,
+     "max_guard_retries": 2,
+     "auto_retry_errors": [
+      "SERVICE_UNAVAILABLE"
+     ]
+    },
+    "continue": {
+     "enabled": true,
+     "max_auto_followups": 3
+    }
+   },
+   "name": "空段",
+   "config": {
+    "run_guard": {}
+   }
+  },
+  {
+   "expected": {
+    "enabled": false,
+    "guard": {
+     "enabled": true,
+     "window_chars": 5000,
+     "substr_len": 16,
+     "repeat_ratio": 0.5,
+     "check_every": 10,
+     "max_blocks": 2000,
+     "max_chars": 20000,
+     "max_guard_retries": 3,
+     "auto_retry_errors": [
+      "SERVICE_UNAVAILABLE",
+      "RATE_LIMIT"
+     ]
+    },
+    "continue": {
+     "enabled": false,
+     "max_auto_followups": 5
+    }
+   },
+   "name": "合法全量",
+   "config": {
+    "run_guard": {
+     "enabled": false,
+     "guard": {
+      "enabled": true,
+      "window_chars": 5000,
+      "substr_len": 16,
+      "repeat_ratio": 0.5,
+      "check_every": 10,
+      "max_blocks": 2000,
+      "max_chars": 20000,
+      "max_guard_retries": 3,
+      "auto_retry_errors": [
+       "SERVICE_UNAVAILABLE",
+       " RATE_LIMIT ",
+       "SERVICE_UNAVAILABLE"
+      ]
+     },
+     "continue": {
+      "enabled": false,
+      "max_auto_followups": 5
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.enabled 必须是布尔值。",
+   "name": "总开关非布尔",
+   "config": {
+    "run_guard": {
+     "enabled": 1
+    }
+   }
+  },
+  {
+   "error": "配置项 run_guard.guard 必须是对象。",
+   "name": "guard 段不是对象",
+   "config": {
+    "run_guard": {
+     "guard": 5
+    }
+   }
+  },
+  {
+   "error": "配置项 run_guard.continue 必须是对象。",
+   "name": "continue 段不是对象",
+   "config": {
+    "run_guard": {
+     "continue": []
+    }
+   }
+  },
+  {
+   "error": "run_guard.window_chars 必须是 64 到 1000000 之间的整数。",
+   "name": "guard 窗口过小",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "window_chars": 10
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.window_chars 必须是 64 到 1000000 之间的整数。",
+   "name": "guard 窗口过大",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "window_chars": 2000000
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.substr_len 必须是 8 到 128 之间的整数。",
+   "name": "substr 越界",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "substr_len": 4
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.guard.repeat_ratio 必须满足 0.0 <= value <= 1.0。",
+   "name": "比值越界",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "repeat_ratio": 1.5
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.guard.repeat_ratio 必须是数字。",
+   "name": "比值非数字",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "repeat_ratio": "0.5"
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.check_every 必须是 1 到 100000 之间的整数。",
+   "name": "check_every 越界",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "check_every": 0
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.max_blocks 必须是 100 到 10000000 之间的整数。",
+   "name": "max_blocks 越界",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "max_blocks": 10
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.max_chars 必须是 1000 到 100000000 之间的整数。",
+   "name": "max_chars 越界",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "max_chars": 100
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.max_guard_retries 必须是 0 到 10 之间的整数。",
+   "name": "重试次数越界",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "max_guard_retries": 11
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.guard.auto_retry_errors 必须是字符串数组。",
+   "name": "错误码非数组",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "auto_retry_errors": "x"
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.guard.auto_retry_errors 的每项必须是非空字符串。",
+   "name": "错误码含空项",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "auto_retry_errors": [
+       "a",
+       " "
+      ]
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.guard.auto_retry_errors 的每项必须是非空字符串。",
+   "name": "错误码含非字符串",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "auto_retry_errors": [
+       1
+      ]
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.guard.auto_retry_errors 最多允许 32 个错误码。",
+   "name": "错误码过多",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "auto_retry_errors": [
+       "c0",
+       "c1",
+       "c2",
+       "c3",
+       "c4",
+       "c5",
+       "c6",
+       "c7",
+       "c8",
+       "c9",
+       "c10",
+       "c11",
+       "c12",
+       "c13",
+       "c14",
+       "c15",
+       "c16",
+       "c17",
+       "c18",
+       "c19",
+       "c20",
+       "c21",
+       "c22",
+       "c23",
+       "c24",
+       "c25",
+       "c26",
+       "c27",
+       "c28",
+       "c29",
+       "c30",
+       "c31",
+       "c32"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.continue.enabled 必须是布尔值。",
+   "name": "续跑开关非布尔",
+   "config": {
+    "run_guard": {
+     "continue": {
+      "enabled": "y"
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.max_auto_followups 必须是 1 到 20 之间的整数。",
+   "name": "续跑次数越界",
+   "config": {
+    "run_guard": {
+     "continue": {
+      "max_auto_followups": 0
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard 包含未知配置项：bogus",
+   "name": "未知字段",
+   "config": {
+    "run_guard": {
+     "bogus": 1
+    }
+   }
+  },
+  {
+   "error": "run_guard.guard 包含未知配置项：bogus",
+   "name": "guard 未知字段",
+   "config": {
+    "run_guard": {
+     "guard": {
+      "bogus": 1
+     }
+    }
+   }
+  },
+  {
+   "error": "run_guard.continue 包含未知配置项：bogus",
+   "name": "continue 未知字段",
+   "config": {
+    "run_guard": {
+     "continue": {
+      "bogus": 1
+     }
+    }
+   }
+  }
+ ],
+ "run_guard_save": [
+  {
+   "name": "写回完整段",
+   "text": "[ui]\nshow_thinking = true\n\n[run_guard]\nenabled = false\n\n[run_guard.guard]\nenabled = true\nwindow_chars = 3000\nsubstr_len = 32\nrepeat_ratio = 0.7\ncheck_every = 50\nmax_blocks = 10000\nmax_chars = 500000\nmax_guard_retries = 2\nauto_retry_errors = [\n    \"RATE_LIMIT\",\n]\n\n[run_guard.continue]\nenabled = true\nmax_auto_followups = 7\n"
+  }
+ ]
+}

@@ -1,0 +1,1220 @@
+{
+ "catalog_detect": [
+  {
+   "name": "正常去重",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "{\"data\":[{\"id\":\"gpt-5\"},{\"id\":\"gpt-5\"},{\"id\":\"claude-3\"}]}"
+   },
+   "result": [
+    {
+     "id": "gpt-5",
+     "name": "gpt-5",
+     "provider": "gpt"
+    },
+    {
+     "id": "claude-3",
+     "name": "claude-3",
+     "provider": "claude"
+    }
+   ],
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "顶层数组",
+   "base_url": "https://api.example.com/v1/",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "[\"gpt-5\",\"gemini-2.5-pro\"]"
+   },
+   "result": [
+    {
+     "id": "gpt-5",
+     "name": "gpt-5",
+     "provider": "gpt"
+    },
+    {
+     "id": "gemini-2.5-pro",
+     "name": "gemini-2.5-pro",
+     "provider": "gemini"
+    }
+   ],
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "字段回退",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "{\"data\":[{\"model\":\"glm-4\"},{\"name\":\"qwen3\"},{\"id\":\"\"},{\"id\":\"   \"},7]}"
+   },
+   "result": [
+    {
+     "id": "glm-4",
+     "name": "glm-4",
+     "provider": "glm"
+    },
+    {
+     "id": "qwen3",
+     "name": "qwen3",
+     "provider": "qwen"
+    }
+   ],
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "带 BOM",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "bytes": [
+     239,
+     187,
+     191,
+     123,
+     125
+    ]
+   },
+   "error": "模型列表接口没有返回可用模型。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "错误体",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "{\"error\":{\"message\":\"quota exceeded\"}}"
+   },
+   "error": "模型列表接口返回错误：quota exceeded",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "错误串",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "{\"error\":\"boom\"}"
+   },
+   "error": "模型列表接口返回错误：boom",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "空列表",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "{\"data\":[]}"
+   },
+   "error": "模型列表接口没有返回可用模型。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "非 JSON",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "not json\n"
+   },
+   "error": "模型列表接口返回的内容不是合法 JSON：第 1 行。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "非 UTF-8",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "bytes": [
+     255,
+     254,
+     253
+    ]
+   },
+   "error": "模型列表接口返回的内容不是 UTF-8 JSON。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "缺 base_url",
+   "base_url": "",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "body",
+    "text": "{}"
+   },
+   "error": "缺少 llm.base_url，无法检测模型列表。",
+   "request": {
+    "url": null,
+    "authorization": null,
+    "accept": null,
+    "user_agent": null,
+    "method": null
+   }
+  },
+  {
+   "name": "HTTP 401",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "http",
+    "status": 401
+   },
+   "error": "模型列表接口鉴权失败（HTTP 401），请检查 API Key。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "HTTP 403",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "http",
+    "status": 403
+   },
+   "error": "当前 API Key 没有读取模型列表的权限（HTTP 403）。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "HTTP 404",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "http",
+    "status": 404
+   },
+   "error": "模型列表接口不存在（HTTP 404），请检查 llm.base_url 是否指向 OpenAI 兼容 /v1 地址。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "HTTP 429",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "http",
+    "status": 429
+   },
+   "error": "模型列表接口触发限流（HTTP 429），请稍后重试。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "HTTP 503",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "http",
+    "status": 503
+   },
+   "error": "模型列表服务暂时不可用（HTTP 503）。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "HTTP 418",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "http",
+    "status": 418
+   },
+   "error": "模型列表接口返回错误（HTTP 418）。",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "连接失败",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "urlerror",
+    "cause": "connection refused",
+    "message": "<urlopen error connection refused>"
+   },
+   "error": "无法连接模型列表接口：<urlopen error connection refused>",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  },
+  {
+   "name": "读取失败",
+   "base_url": "https://api.example.com/v1",
+   "api_key": "sk-test",
+   "response": {
+    "kind": "oserror",
+    "message": "read error"
+   },
+   "error": "读取模型列表失败：read error",
+   "request": {
+    "url": "https://api.example.com/v1/models",
+    "authorization": "Bearer sk-test",
+    "accept": "application/json",
+    "user_agent": "ai-voice-agent/1.0",
+    "method": "GET"
+   }
+  }
+ ],
+ "catalog_misc": {
+  "provider_detect": [
+   {
+    "input": "gpt-5",
+    "expected": "gpt"
+   },
+   {
+    "input": "chatgpt-4o",
+    "expected": "gpt"
+   },
+   {
+    "input": "o1-mini",
+    "expected": "gpt"
+   },
+   {
+    "input": "claude-sonnet-4-5",
+    "expected": "claude"
+   },
+   {
+    "input": "anthropic/claude-3",
+    "expected": "claude"
+   },
+   {
+    "input": "gemini-2.5-pro",
+    "expected": "gemini"
+   },
+   {
+    "input": "models/gemini-1.5",
+    "expected": "gemini"
+   },
+   {
+    "input": "deepseek-chat",
+    "expected": "deepseek"
+   },
+   {
+    "input": "deepseek/v3",
+    "expected": "deepseek"
+   },
+   {
+    "input": "qwen3-max",
+    "expected": "qwen"
+   },
+   {
+    "input": "qwq-32b",
+    "expected": "qwen"
+   },
+   {
+    "input": "glm-4",
+    "expected": "glm"
+   },
+   {
+    "input": "chatglm3",
+    "expected": "glm"
+   },
+   {
+    "input": "zhipu-ai",
+    "expected": "glm"
+   },
+   {
+    "input": "unknown-model",
+    "expected": "other"
+   },
+   {
+    "input": "  GPT-5  ",
+    "expected": "gpt"
+   }
+  ],
+  "ensure_current": [
+   {
+    "options": [
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ],
+    "current": "",
+    "expected": [
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ]
+   },
+   {
+    "options": [
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ],
+    "current": "gpt-5",
+    "expected": [
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ]
+   },
+   {
+    "options": [
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ],
+    "current": " gemini-2.5-pro ",
+    "expected": [
+     {
+      "id": "gemini-2.5-pro",
+      "name": "gemini-2.5-pro",
+      "provider": "gemini"
+     },
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ]
+   }
+  ],
+  "format_options": [
+   {
+    "options": [
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ],
+    "current": "gpt-5",
+    "limit": 40,
+    "expected": " 1. gpt-5 *\n 2. claude-sonnet-4-5"
+   },
+   {
+    "options": [
+     {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "gpt"
+     },
+     {
+      "id": "claude-sonnet-4-5",
+      "name": "claude",
+      "provider": "claude"
+     }
+    ],
+    "current": "",
+    "limit": 1,
+    "expected": " 1. gpt-5\n... 还有 1 个模型未显示。"
+   },
+   {
+    "options": [],
+    "current": "",
+    "limit": 40,
+    "expected": ""
+   }
+  ],
+  "env_override": [
+   {
+    "env": {},
+    "expected": false
+   },
+   {
+    "env": {
+     "OMNICRAWL_MODEL": "gpt-5"
+    },
+    "expected": true
+   },
+   {
+    "env": {
+     "OPENAI_MODEL": " gpt-5 "
+    },
+    "expected": true
+   },
+   {
+    "env": {
+     "OMNICRAWL_MODEL": "  "
+    },
+    "expected": false
+   }
+  ]
+ },
+ "catalog_descriptor": [
+  {
+   "name": "custom",
+   "result": {
+    "profile_id": "openai-main",
+    "provider": "openai",
+    "protocol": "openai_responses",
+    "model_id": "gpt-5",
+    "catalog_key": "gpt-5",
+    "display_name": "GPT-5",
+    "context_window_tokens": 200000,
+    "max_output_tokens": 0,
+    "aliases": [
+     "gpt5"
+    ],
+    "tags": [
+     "fast"
+    ],
+    "source": "custom",
+    "sort_order": 3,
+    "enabled": true
+   }
+  },
+  {
+   "name": "detected",
+   "result": {
+    "profile_id": "openai-main",
+    "provider": "openai",
+    "protocol": "openai_chat_completions",
+    "model_id": "gpt-5",
+    "catalog_key": "",
+    "display_name": "",
+    "context_window_tokens": 0,
+    "max_output_tokens": 0,
+    "aliases": [],
+    "tags": [],
+    "source": "detected",
+    "sort_order": 0,
+    "enabled": true
+   }
+  }
+ ],
+ "catalog_save_model": [
+  {
+   "name": "单模型段写回",
+   "model_id": "gemini-2.5-pro",
+   "initial_config": {
+    "llm": {
+     "model": "old",
+     "api_key": "sk"
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "claude": {
+      "display_name": "Claude",
+      "profile": "anthropic-main",
+      "model_id": "claude-sonnet-4-5",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "config_text": "[llm]\nmodel = \"gemini-2.5-pro\"\napi_key = \"sk\"\n"
+  },
+  {
+   "name": "别名命中写回",
+   "model_id": "claude",
+   "initial_config": {
+    "llm": {
+     "profiles": {
+      "p": {
+       "provider": "openai"
+      }
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "claude": {
+      "display_name": "Claude",
+      "profile": "anthropic-main",
+      "model_id": "claude-sonnet-4-5",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "config_text": "[llm.profiles.p]\nprovider = \"openai\"\n\n[llm.active_model]\nsource = \"custom\"\nkey = \"claude\"\n"
+  },
+  {
+   "name": "profile/model 形式",
+   "model_id": "openai-main/gpt-5",
+   "initial_config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai"
+      }
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "claude": {
+      "display_name": "Claude",
+      "profile": "anthropic-main",
+      "model_id": "claude-sonnet-4-5",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "config_text": "[llm.profiles.openai-main]\nprovider = \"openai\"\n\n[llm.active_model]\nsource = \"detected\"\nprofile = \"openai-main\"\nmodel_id = \"gpt-5\"\nprotocol = \"openai_chat_completions\"\n"
+  },
+  {
+   "name": "裸 model 走当前 Profile",
+   "model_id": "gpt-5",
+   "initial_config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai"
+      }
+     },
+     "active_model": {
+      "profile": "openai-main"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "claude": {
+      "display_name": "Claude",
+      "profile": "anthropic-main",
+      "model_id": "claude-sonnet-4-5",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "config_text": "[llm.profiles.openai-main]\nprovider = \"openai\"\n\n[llm.active_model]\nsource = \"detected\"\nprofile = \"openai-main\"\nmodel_id = \"gpt-5\"\nprotocol = \"openai_chat_completions\"\n"
+  },
+  {
+   "name": "空 ID",
+   "model_id": "   ",
+   "initial_config": {
+    "llm": {}
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "claude": {
+      "display_name": "Claude",
+      "profile": "anthropic-main",
+      "model_id": "claude-sonnet-4-5",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "error": "模型 ID 不能为空。"
+  },
+  {
+   "name": "无法解析 Profile",
+   "model_id": "missing/xyz",
+   "initial_config": {
+    "llm": {
+     "profiles": {
+      "p": {
+       "provider": "openai"
+      }
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "claude": {
+      "display_name": "Claude",
+      "profile": "anthropic-main",
+      "model_id": "claude-sonnet-4-5",
+      "protocol": "anthropic_messages"
+     }
+    }
+   },
+   "error": "无法解析 Profile：missing"
+  }
+ ],
+ "catalog_build": [
+  {
+   "name": "命中自定义条目",
+   "include_detected": true,
+   "second_pass": false,
+   "discovery_status": "ok",
+   "config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai",
+       "api_key": "sk-x",
+       "base_url": "https://api.example.com/v1",
+       "discovery_timeout_seconds": 7
+      }
+     },
+     "active_model": {
+      "key": "gpt-5"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "gpt-5": {
+      "display_name": "GPT-5",
+      "profile": "openai-main",
+      "model_id": "gpt-5",
+      "protocol": "openai_chat_completions",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     },
+     "disabled": {
+      "display_name": "关闭的模型",
+      "profile": "openai-main",
+      "model_id": "gpt-4o",
+      "protocol": "openai_chat_completions",
+      "enabled": false
+     }
+    }
+   },
+   "first": {
+    "current": {
+     "source": "custom",
+     "key": "gpt-5",
+     "profile": "openai-main",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-5"
+    },
+    "custom": [
+     {
+      "source": "custom",
+      "key": "gpt-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "context_window_tokens": 0,
+      "availability": "available",
+      "matched_custom_key": "gpt-5",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     }
+    ],
+    "detected": [
+     {
+      "source": "detected",
+      "key": "openai-main/gpt-4.1",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-4.1",
+      "display_name": "gpt-4.1",
+      "context_window_tokens": 0,
+      "availability": "available",
+      "matched_custom_key": "",
+      "tags": [],
+      "aliases": [],
+      "sort_order": 0
+     },
+     {
+      "source": "detected",
+      "key": "openai-main/gpt-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "context_window_tokens": 0,
+      "availability": "available",
+      "matched_custom_key": "gpt-5",
+      "tags": [],
+      "aliases": [],
+      "sort_order": 0
+     }
+    ],
+    "diagnostics": []
+   },
+   "first_calls": 1,
+   "second_calls": 0,
+   "second_detected": [
+    {
+     "source": "detected",
+     "key": "openai-main/gpt-4.1",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-4.1",
+     "display_name": "gpt-4.1",
+     "context_window_tokens": 0,
+     "availability": "available",
+     "matched_custom_key": "",
+     "tags": [],
+     "aliases": [],
+     "sort_order": 0
+    },
+    {
+     "source": "detected",
+     "key": "openai-main/gpt-5",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-5",
+     "display_name": "GPT-5",
+     "context_window_tokens": 0,
+     "availability": "available",
+     "matched_custom_key": "gpt-5",
+     "tags": [],
+     "aliases": [],
+     "sort_order": 0
+    }
+   ]
+  },
+  {
+   "name": "发现失败出诊断",
+   "include_detected": true,
+   "second_pass": false,
+   "discovery_status": "unavailable",
+   "config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai",
+       "api_key": "sk-x",
+       "base_url": "https://api.example.com/v1",
+       "discovery_timeout_seconds": 7
+      }
+     },
+     "active_model": {
+      "key": "gpt-5"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "gpt-5": {
+      "display_name": "GPT-5",
+      "profile": "openai-main",
+      "model_id": "gpt-5",
+      "protocol": "openai_chat_completions",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     },
+     "disabled": {
+      "display_name": "关闭的模型",
+      "profile": "openai-main",
+      "model_id": "gpt-4o",
+      "protocol": "openai_chat_completions",
+      "enabled": false
+     }
+    }
+   },
+   "first": {
+    "current": {
+     "source": "custom",
+     "key": "gpt-5",
+     "profile": "openai-main",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-5"
+    },
+    "custom": [
+     {
+      "source": "custom",
+      "key": "gpt-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "context_window_tokens": 0,
+      "availability": "unknown",
+      "matched_custom_key": "",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     }
+    ],
+    "detected": [],
+    "diagnostics": [
+     {
+      "profile": "openai-main",
+      "status": "unavailable",
+      "message": "模型列表发现失败，自定义模型仍可使用。"
+     }
+    ]
+   },
+   "first_calls": 1,
+   "second_calls": 1,
+   "second_detected": []
+  },
+  {
+   "name": "跳过发现",
+   "include_detected": false,
+   "second_pass": false,
+   "discovery_status": "ok",
+   "config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai",
+       "api_key": "sk-x",
+       "base_url": "https://api.example.com/v1",
+       "discovery_timeout_seconds": 7
+      }
+     },
+     "active_model": {
+      "key": "gpt-5"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "gpt-5": {
+      "display_name": "GPT-5",
+      "profile": "openai-main",
+      "model_id": "gpt-5",
+      "protocol": "openai_chat_completions",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     },
+     "disabled": {
+      "display_name": "关闭的模型",
+      "profile": "openai-main",
+      "model_id": "gpt-4o",
+      "protocol": "openai_chat_completions",
+      "enabled": false
+     }
+    }
+   },
+   "first": {
+    "current": {
+     "source": "custom",
+     "key": "gpt-5",
+     "profile": "openai-main",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-5"
+    },
+    "custom": [
+     {
+      "source": "custom",
+      "key": "gpt-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "context_window_tokens": 0,
+      "availability": "unknown",
+      "matched_custom_key": "",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     }
+    ],
+    "detected": [],
+    "diagnostics": []
+   },
+   "first_calls": 0,
+   "second_calls": 0,
+   "second_detected": []
+  },
+  {
+   "name": "刷新绕过缓存",
+   "include_detected": true,
+   "second_pass": true,
+   "discovery_status": "ok",
+   "config": {
+    "llm": {
+     "profiles": {
+      "openai-main": {
+       "provider": "openai",
+       "api_key": "sk-x",
+       "base_url": "https://api.example.com/v1",
+       "discovery_timeout_seconds": 7
+      }
+     },
+     "active_model": {
+      "key": "gpt-5"
+     }
+    }
+   },
+   "models": {
+    "version": 1,
+    "models": {
+     "gpt-5": {
+      "display_name": "GPT-5",
+      "profile": "openai-main",
+      "model_id": "gpt-5",
+      "protocol": "openai_chat_completions",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     },
+     "disabled": {
+      "display_name": "关闭的模型",
+      "profile": "openai-main",
+      "model_id": "gpt-4o",
+      "protocol": "openai_chat_completions",
+      "enabled": false
+     }
+    }
+   },
+   "first": {
+    "current": {
+     "source": "custom",
+     "key": "gpt-5",
+     "profile": "openai-main",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-5"
+    },
+    "custom": [
+     {
+      "source": "custom",
+      "key": "gpt-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "context_window_tokens": 0,
+      "availability": "available",
+      "matched_custom_key": "gpt-5",
+      "tags": [
+       "fast"
+      ],
+      "aliases": [
+       "gpt5"
+      ],
+      "sort_order": 2
+     }
+    ],
+    "detected": [
+     {
+      "source": "detected",
+      "key": "openai-main/gpt-4.1",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-4.1",
+      "display_name": "gpt-4.1",
+      "context_window_tokens": 0,
+      "availability": "available",
+      "matched_custom_key": "",
+      "tags": [],
+      "aliases": [],
+      "sort_order": 0
+     },
+     {
+      "source": "detected",
+      "key": "openai-main/gpt-5",
+      "profile_id": "openai-main",
+      "provider": "openai",
+      "protocol": "openai_chat_completions",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "context_window_tokens": 0,
+      "availability": "available",
+      "matched_custom_key": "gpt-5",
+      "tags": [],
+      "aliases": [],
+      "sort_order": 0
+     }
+    ],
+    "diagnostics": []
+   },
+   "first_calls": 1,
+   "second_calls": 1,
+   "second_detected": [
+    {
+     "source": "detected",
+     "key": "openai-main/gpt-4.1",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-4.1",
+     "display_name": "gpt-4.1",
+     "context_window_tokens": 0,
+     "availability": "available",
+     "matched_custom_key": "",
+     "tags": [],
+     "aliases": [],
+     "sort_order": 0
+    },
+    {
+     "source": "detected",
+     "key": "openai-main/gpt-5",
+     "profile_id": "openai-main",
+     "provider": "openai",
+     "protocol": "openai_chat_completions",
+     "model_id": "gpt-5",
+     "display_name": "GPT-5",
+     "context_window_tokens": 0,
+     "availability": "available",
+     "matched_custom_key": "gpt-5",
+     "tags": [],
+     "aliases": [],
+     "sort_order": 0
+    }
+   ]
+  }
+ ]
+}
