@@ -7636,6 +7636,98 @@ def vision_capability_cases() -> dict:
     return {"support": support_cases, "native": native_cases}
 
 
+# --------------------------------------------------------------- context messages
+
+
+def context_message_cases() -> dict:
+    """上下文消息装配：项目规范外壳与插件附加上下文注入。"""
+
+    from omnicrawl.agent.context.prompt_context import build_project_instructions_messages
+    from omnicrawl.agent.controllers.plugins import PluginHooksMixin
+    from omnicrawl.agent.controllers.turn import loop as loop_module
+    from omnicrawl.agent.controllers.turn.loop import TurnLoopMixin
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.trace: list[str] = []
+
+        def note(self, label: str) -> None:
+            self.trace.append(label)
+
+    class _Manager:
+        def __init__(self, recorder: _Recorder, payload: dict) -> None:
+            self._recorder = recorder
+            self._payload = payload
+            self.after_payload: dict | None = None
+
+        def dispatch(self, hook_name, data, session_id=None, turn_id=None):
+            self._recorder.note(hook_name)
+            if hook_name == "context.build.before":
+                return SimpleNamespace(denied=False, payload=self._payload)
+            self.after_payload = dict(data)
+            return SimpleNamespace(denied=False, payload=data)
+
+    class _Probe(PluginHooksMixin, TurnLoopMixin):
+        pass
+
+    project_cases = []
+    for label, text in [
+        ("空串", ""),
+        ("只有空白", "   \n  "),
+        ("规则正文", "规则一\n规则二"),
+        ("带首尾空白", "  项目规则  "),
+    ]:
+        project_cases.append(
+            {
+                "label": label,
+                "instructions": text,
+                "messages": build_project_instructions_messages(text),
+            }
+        )
+
+    base = [{"role": "user", "content": "基线消息"}]
+    inject_cases = []
+    for label, payload in [
+        ("无附加", {"additionalContext": []}),
+        ("字符串项", {"additionalContext": ["补充说明", "   ", ""]}),
+        (
+            "字典项",
+            {"additionalContext": [{"role": "system", "content": "系统补充"}, {"content": "无角色"}]},
+        ),
+        (
+            "混合与非法项",
+            {"additionalContext": ["文本", 5, {"content": 7}, {"role": "", "content": "按 user"}]},
+        ),
+        ("非数组", {"additionalContext": "不是数组"}),
+        ("字段缺失", {}),
+    ]:
+        recorder = _Recorder()
+        probe = object.__new__(_Probe)
+        probe.config = SimpleNamespace(workspace_detection_summary="")
+        probe.workspace_root = "D:/probe"
+        probe._plugin_manager = _Manager(recorder, payload)
+        probe._load_agents_instructions = lambda: ""
+        probe._provider_tools = lambda: {}
+        probe._agent_temp_dir_display = lambda: ""
+        with mock.patch.object(
+            loop_module,
+            "build_context_messages",
+            lambda **kwargs: [dict(message) for message in base],
+        ):
+            messages = probe._context_messages(turn_id="turn-1")
+        inject_cases.append(
+            {
+                "label": label,
+                "additional": payload.get("additionalContext"),
+                "messages": messages,
+                "after_payload": probe._plugin_manager.after_payload,
+                "trace": recorder.trace,
+            }
+        )
+
+    return {"project": project_cases, "inject": inject_cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7665,6 +7757,7 @@ def main() -> None:
             "plugin_runtime": plugin_runtime_cases(),
             "turn_text": turn_text_cases(),
             "vision_capability": vision_capability_cases(),
+            "context_messages": context_message_cases(),
         "turn_loop": turn_loop_cases(),
         }
 

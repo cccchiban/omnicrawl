@@ -5,9 +5,11 @@
 //! 上下文超限恢复）与 `compaction.py` 的会话/模型编排——它们需要会话设施、模型调用与其它子系统。
 
 pub mod compaction;
+pub mod context_messages;
 pub mod turn_loop;
 pub mod turn_text;
 
 pub use compaction::*;
+pub use context_messages::*;
 pub use turn_loop::*;
 pub use turn_text::*;
