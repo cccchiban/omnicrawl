@@ -65,6 +65,15 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 下一轮上下文由转录恢复、回合结束后按阈值跑一次压缩（摘要请求走同一个 `model` 配置）。
 不给则维持「无会话」行为，宿主仍可用 `model.reply` 代答。
 
+`session_id` 决定这次是新建还是恢复：不给（或给空串）就新建，新会话的 ID **只经内核 stderr 报出**
+（`[kernel] 会话已就绪：<id>`），帧里不回带；给了就是恢复，且该会话必须已存在，否则 `initialize` 回
+`-32602`（`会话初始化失败：未找到会话：<id>`）。ID 形如 `20260101-000000-abcdef`（日期-时间-6 位十六进制），
+格式不符同样按 `-32602` 拒绝。
+
+落盘保证：`turn.finished` 发出**之前**，本轮的 `user_message` / `assistant_message` 已写入转录并 `fsync`。
+宿主收到 turn.finished 即可认为这一轮可恢复——内核先落盘再通知，宿主此刻退出或被强杀都不会丢已完成回合。
+相应地，压缩提示与摘要请求会出现在 `turn.finished` 之前。
+
 ```json
 {"session": {"root": "/path/to/.agent_sessions", "session_id": "20260919-011424-abcdef",
              "memory_root": "/path/to/.omnicrawl",
@@ -179,8 +188,19 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 
 `rust/crates/omnicrawl-cli` 提供 `omnicrawl` 二进制，已实现握手状态机（未握手前其他请求回 `-32600`）、
 `turn.submit` / `turn.cancel` / `shutdown`，并作为 `tool.batch` 与 `model.reply` 的请求方。
-它当前发出的事件只有 `turn.finished`；`turn.delta` / `turn.token_usage` / `tool.*` 等由**宿主自己在**
-模型流与工具执行处产生（那些信息本来就在宿主侧），等内核自带 provider runtime 后再由内核发出。
+
+事件归属按「信息在哪一侧产生」划分：
+
+- **内核发出**（`omnicrawl-llm` 已接线，内核自带 provider runtime）：`turn.delta`、`turn.reasoning_delta`、
+  `turn.token_usage`、`turn.status`、`turn.retry_status`、`turn.stream_rollback`、`turn.finished`。给了
+  `initialize.model` 后模型请求由内核自己发，增量也由内核转出。
+- **宿主发出**（宿主执行 `tool.batch` 时自行产生）：`tool.started` / `tool.finished` / `tool.output_update`，
+  以及 `subagent.event`、`todo.update`。同一件事不在协议上出现两份，所以内核不重复转出工具生命周期事件。
+- **代答路径**：不给 `initialize.model` 时内核只发 `model.reply` 请求，模型侧增量由宿主自己推给界面。
+
+工具批次边界：内核把**整批**调用交宿主（`tool.batch` 的 `{turn_id, step, calls}`），宿主必须先完成整批
+规范化与审批、再按模型调用顺序回 `{observations}`；内核不接受逐工具回调。例外是「只读当前会话」的工具
+（如 `recall_session_evidence`）——内核自己答，不占宿主批次。
 
 ## 尚未实现
 
