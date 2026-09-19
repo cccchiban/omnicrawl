@@ -26,6 +26,7 @@ src/
     ├── config.rs           # 环境变量 > [feishu] > 根级 fs_* 别名的配置解析与诊断
     ├── text.rs             # 内部标签清理、脱敏、分段与正文定型
     ├── render.rs           # 工具摘要/正文、文件变更预览、计划与子任务文本、卡片 JSON
+    ├── file_send.rs        # [FILE:] 发文件：路径校验、扩展名分流、消息体与提示文案
     ├── files.rs            # 资源分类、临时目录落盘、post 富文本与 [FILE:] 标记
     ├── dedupe.rs           # 进程内去重与跨重启指纹（sha256 前 32 位）
     ├── inbox.rs            # 持久入站队列：pending 落盘与重放、done 去重与紧凑化、纯内存降级
@@ -43,6 +44,7 @@ Python 侧是语义基准，期望值由脚本在**真实现**上跑出来：
 python rust/tools/gen_connectors_telegram_fixture.py
 python rust/tools/gen_connectors_feishu_fixture.py
 python rust/tools/gen_feishu_inbox_fixture.py
+python rust/tools/gen_feishu_file_send_fixture.py
 cd rust && cargo test -p omnicrawl-connectors
 ```
 
@@ -74,12 +76,23 @@ cd rust && cargo test -p omnicrawl-connectors
 `tests/feishu_inbox_parity.json` 共 6 个场景：基本往返（含重投与空键）、重启回放、窗口过期、
 启动紧凑化、纯内存降级、损坏文件（坏行 / 旧版本 / 缺字段 / 过期 / 非对象 payload）。
 
+## `[FILE:...]` 发文件（`feishu/file_send.rs`）
+
+对齐 Python `fsapp.py` 的 `_send_local_file` / `_send_generated_files`：`~` 展开后要求路径存在且是文件
+（两种失败各有固定文案），图片扩展名走 image 通道（消息类型 `image`、消息体 `{"image_key": key}`），
+音视频走 `media`、其余走 `file`（消息体 `{"file_key": key}`）；上传没给出 key 就发失败提示。
+标记扫描复刻 `\[FILE:([^\]]+)\]`：`[FILE:]` 不是标记，`[FILE: ]` 是（路径去空白后为空，
+落到「输出路径不是文件」）。
+
+上传与消息发送经 `FileTransport` 端口由宿主实现；网络层的 multipart 调用尚未搬
+（`tests/feishu_file_send_parity.json`：12 例本地文件 + 6 例标记扫描，对照上传/发送调用序列与结果）。
+
 改任一侧实现都要重跑生成脚本再跑测试；卡片负载按**字符串**比对，缩进与分隔符也是契约。
 
 ## 尚未移植
 
-- 飞书文件上传与 `[FILE:...]` 标记发文件（`_upload_image` / `_upload_file` /
-  `_send_local_file` / `_send_generated_files`）：出站只发文本与卡片。
+- 飞书文件上传的**网络层**（`_upload_image` / `_upload_file` 的 multipart 调用）：判定与编排已在
+  内核（`feishu/file_send.rs`），上传与消息发送经 `FileTransport` 端口由宿主实现。
 - `connectors/autostart.py` 的子进程自动启动与单例锁：与 TUI 生命周期绑定，等宿主侧编排
   迁移后一并处理。
 - 飞书 SDK 的 `Content-Disposition` 文件名解析：缺文件名时回落成 `file_key`，

@@ -7,6 +7,7 @@ pub mod api;
 pub mod bot;
 pub mod config;
 pub mod dedupe;
+pub mod file_send;
 pub mod files;
 pub mod inbox;
 pub mod render;
@@ -20,6 +21,10 @@ pub use api::{
 pub use bot::{ActiveTask, FeishuBot, STREAM_PATCH_INTERVAL_SECONDS};
 pub use config::{check_config, load_feishu_config, mask_secret, ConfigSource, FeishuConfig};
 pub use dedupe::{inbox_dedupe_key, SeenMessages, DEDUP_MAX_ENTRIES, DEDUP_TTL_SECONDS};
+pub use file_send::{
+    file_marker_matches, route_for_suffix, send_generated_files, send_local_file, FileRoute,
+    FileTransport,
+};
 pub use files::{
     classify_filename, file_marker_paths, post_text_and_images, resolve_temp_destination,
     resource_file_key, resource_file_name, FILE_TYPE_MAP, MESSAGE_RESOURCE_TYPES,

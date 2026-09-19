@@ -1,0 +1,336 @@
+{
+  "source": "omnicrawl/connectors/fsapp.py",
+  "receive_id": "ou_receiver",
+  "receive_id_type": "open_id",
+  "local_files": [
+    {
+      "label": "image_ok",
+      "path": "<ROOT>/pic.png",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": true,
+      "calls": [
+        {
+          "call": "upload_image",
+          "name": "pic.png"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"image_key\": \"ik1\"}",
+          "msg_type": "image",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "image_upload_failed",
+      "path": "<ROOT>/pic.png",
+      "image_key": null,
+      "file_key": "fk1",
+      "result": false,
+      "calls": [
+        {
+          "call": "upload_image",
+          "name": "pic.png"
+        },
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 文件发送失败：pic.png",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "audio_ok",
+      "path": "<ROOT>/clip.mp3",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": true,
+      "calls": [
+        {
+          "call": "upload_file",
+          "name": "clip.mp3",
+          "suffix": ".mp3"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"file_key\": \"fk1\"}",
+          "msg_type": "media",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "video_ok",
+      "path": "<ROOT>/clip.mp4",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": true,
+      "calls": [
+        {
+          "call": "upload_file",
+          "name": "clip.mp4",
+          "suffix": ".mp4"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"file_key\": \"fk1\"}",
+          "msg_type": "media",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "document_ok",
+      "path": "<ROOT>/notes.txt",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": true,
+      "calls": [
+        {
+          "call": "upload_file",
+          "name": "notes.txt",
+          "suffix": ".txt"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"file_key\": \"fk1\"}",
+          "msg_type": "file",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "document_failed",
+      "path": "<ROOT>/notes.txt",
+      "image_key": "ik1",
+      "file_key": null,
+      "result": false,
+      "calls": [
+        {
+          "call": "upload_file",
+          "name": "notes.txt",
+          "suffix": ".txt"
+        },
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 文件发送失败：notes.txt",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "empty_key",
+      "path": "<ROOT>/notes.txt",
+      "image_key": "ik1",
+      "file_key": "",
+      "result": false,
+      "calls": [
+        {
+          "call": "upload_file",
+          "name": "notes.txt",
+          "suffix": ".txt"
+        },
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 文件发送失败：notes.txt",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "no_extension",
+      "path": "<ROOT>/README",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": true,
+      "calls": [
+        {
+          "call": "upload_file",
+          "name": "README",
+          "suffix": ""
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"file_key\": \"fk1\"}",
+          "msg_type": "file",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "missing_path",
+      "path": "<ROOT>/nope.txt",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": false,
+      "calls": [
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 文件不存在：<ROOT>/nope.txt",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "directory_path",
+      "path": "<ROOT>",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": false,
+      "calls": [
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 输出路径不是文件：<ROOT>",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "empty_path",
+      "path": "",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": false,
+      "calls": [
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 输出路径不是文件：",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "dot_path",
+      "path": "<ROOT>/sub/..",
+      "image_key": "ik1",
+      "file_key": "fk1",
+      "result": false,
+      "calls": [
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 输出路径不是文件：<ROOT>/sub/..",
+          "receive_id_type": "open_id"
+        }
+      ]
+    }
+  ],
+  "generated_files": [
+    {
+      "label": "text_0",
+      "text": "结果见 [FILE:<ROOT>/pic.png] 与 [FILE:<ROOT>/notes.txt]",
+      "calls": [
+        {
+          "call": "upload_image",
+          "name": "pic.png"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"image_key\": \"ik1\"}",
+          "msg_type": "image",
+          "receive_id_type": "open_id"
+        },
+        {
+          "call": "upload_file",
+          "name": "notes.txt",
+          "suffix": ".txt"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"file_key\": \"fk1\"}",
+          "msg_type": "file",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "text_1",
+      "text": "没有标记",
+      "calls": []
+    },
+    {
+      "label": "text_2",
+      "text": "[FILE:<ROOT>/missing.txt]",
+      "calls": [
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 文件不存在：<ROOT>/missing.txt",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "text_3",
+      "text": "[FILE:]",
+      "calls": []
+    },
+    {
+      "label": "text_4",
+      "text": "[FILE: ]",
+      "calls": [
+        {
+          "call": "send_text",
+          "receive_id": "ou_receiver",
+          "text": "⚠️ 输出路径不是文件：",
+          "receive_id_type": "open_id"
+        }
+      ]
+    },
+    {
+      "label": "text_5",
+      "text": "[FILE:<ROOT>/a.png]\n[FILE:<ROOT>/b.mp3]\n[FILE:<ROOT>/c.pdf]",
+      "calls": [
+        {
+          "call": "upload_image",
+          "name": "a.png"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"image_key\": \"ik1\"}",
+          "msg_type": "image",
+          "receive_id_type": "open_id"
+        },
+        {
+          "call": "upload_file",
+          "name": "b.mp3",
+          "suffix": ".mp3"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"file_key\": \"fk1\"}",
+          "msg_type": "media",
+          "receive_id_type": "open_id"
+        },
+        {
+          "call": "upload_file",
+          "name": "c.pdf",
+          "suffix": ".pdf"
+        },
+        {
+          "call": "send_raw",
+          "receive_id": "ou_receiver",
+          "body": "{\"file_key\": \"fk1\"}",
+          "msg_type": "file",
+          "receive_id_type": "open_id"
+        }
+      ]
+    }
+  ]
+}
