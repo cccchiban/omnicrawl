@@ -8081,6 +8081,94 @@ def read_only_command_cases() -> dict:
     }
 
 
+# ---------------------------------------------------------------- worktree git
+
+
+def worktree_git_cases() -> dict:
+    """worktree 的分支名、脏树门禁与变更统计。"""
+
+    from omnicrawl.agent.subagents import worktree as wt
+
+    fragment_cases = [
+        {"value": value, "expected": wt._sanitize_branch_fragment(value)}
+        for value in [
+            "feat/x",
+            "aw-w123-abc",
+            "a b c",
+            "***",
+            "a/b/c",
+            "  -x-  ",
+            "x" * 60,
+            "",
+            "中文 分支",
+            "a..b",
+            "A_B-C.D/E",
+            "!!!...///",
+            "\ttab\nnewline",
+            "feat/中文 分支!!!",
+        ]
+    ]
+
+    dirty_cases = []
+    for label, status in [
+        ("干净", ""),
+        ("仅空白", "   \n "),
+        ("一行脏", " M a.py"),
+        ("八行脏", "\n".join(" M f%d.py" % index for index in range(8))),
+        ("九行脏", "\n".join(" M f%d.py" % index for index in range(9))),
+    ]:
+        with mock.patch.object(
+            wt,
+            "_run_git",
+            lambda args, cwd=None, check=True, _status=status: SimpleNamespace(stdout=_status),
+        ):
+            error = None
+            try:
+                wt.require_clean_main_tree(Path("."))
+            except Exception as exc:  # noqa: BLE001 - 对照数据集要原样记录失败文案
+                error = str(exc)
+        dirty_cases.append({"label": label, "status": status, "error": error})
+
+    changes_cases = []
+    for label, exists, status, fail, count in [
+        ("目录不存在", False, "", False, "0"),
+        ("无变更", True, "", False, "0"),
+        ("两处未提交三个新提交", True, " M a.py\n?? b.py\n", False, "3"),
+        ("查询失败", True, " M a.py\n", True, "0"),
+        ("计数为空", True, "", False, ""),
+    ]:
+        session = SimpleNamespace(
+            worktree_path=SimpleNamespace(exists=lambda: exists),
+            base_ref="HEAD",
+        )
+        calls = {"count": 0}
+
+        def fake_run(args, cwd=None, check=True, _status=status, _fail=fail, _count=count, _calls=calls):
+            _calls["count"] += 1
+            if args[0] == "status":
+                return SimpleNamespace(stdout=_status)
+            if _fail:
+                raise wt.WorktreeError("rev-list 失败")
+            return SimpleNamespace(stdout=_count)
+
+        with mock.patch.object(wt, "_run_git", fake_run):
+            summary = wt.summarize_worktree_changes(session)
+        changes_cases.append(
+            {
+                "label": label,
+                "directory_exists": exists,
+                "status": status,
+                "query_failed": fail,
+                "raw_count": count,
+                "uncommitted": summary.uncommitted,
+                "new_commits": summary.new_commits,
+                "git_calls": calls["count"],
+            }
+        )
+
+    return {"fragment": fragment_cases, "dirty": dirty_cases, "changes": changes_cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -8114,6 +8202,7 @@ def main() -> None:
             "tool_events": tool_event_field_cases(),
             "skill_command": skill_command_cases(),
             "read_only_commands": read_only_command_cases(),
+            "worktree_git": worktree_git_cases(),
         "turn_loop": turn_loop_cases(),
         }
 

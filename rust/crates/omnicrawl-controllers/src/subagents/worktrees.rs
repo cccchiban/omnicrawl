@@ -177,3 +177,75 @@ fn python_bool_text(value: bool) -> &'static str {
         "False"
     }
 }
+
+/// 分支名片段：非安全字符折成一个 `-`，去掉首尾的 `-`/`.`/`/`，再截到 48 字符。
+pub fn sanitize_branch_fragment(value: &str) -> String {
+    collapse_branch_unsafe(value.trim())
+        .trim_matches(|ch| ch == '-' || ch == '.' || ch == '/')
+        .chars()
+        .take(48)
+        .collect()
+}
+
+/// 与 `_BRANCH_SAFE_RE = [^a-zA-Z0-9._/-]+` 等价：每段不安全字符整体折成一个 `-`。
+fn collapse_branch_unsafe(value: &str) -> String {
+    let mut out = String::new();
+    let mut in_run = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '/' | '-') {
+            out.push(ch);
+            in_run = false;
+        } else if !in_run {
+            out.push('-');
+            in_run = true;
+        }
+    }
+    out
+}
+
+/// 主工作区脏时的拒绝文案；干净（或只有空白）时返回 `None`。
+///
+/// 单写者约束：主树有未提交变更时既不静默创建 worktree，也不静默把子代理结果
+/// checkout/merge 回主树。预览只取前 8 行，多余部分用 `; ...` 收尾。
+pub fn dirty_main_tree_error(status_porcelain: &str) -> Option<String> {
+    let dirty = status_porcelain.trim();
+    if dirty.is_empty() {
+        return None;
+    }
+    let lines: Vec<&str> = dirty.lines().collect();
+    let mut preview = lines.iter().take(8).copied().collect::<Vec<_>>().join("; ");
+    if lines.len() > 8 {
+        preview.push_str("; ...");
+    }
+    Some(format!(
+        "主工作区存在未提交变更，禁止静默创建或应用 worktree。请先提交、暂存或清理后再操作。脏项预览：{preview}"
+    ))
+}
+
+/// worktree 变更统计；目录已不存在时返回 `None`（没有可丢失的内容）。
+///
+/// `query_failed` 对应 `rev-list` 查询失败：按「存在新提交」保守处理，宁可让丢弃多要一次
+/// `force`，也不静默丢数据。
+pub fn worktree_changes(
+    directory_exists: bool,
+    status_porcelain: &str,
+    query_failed: bool,
+    raw_commit_count: &str,
+) -> Option<WorktreeChanges> {
+    if !directory_exists {
+        return None;
+    }
+    let uncommitted = status_porcelain
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    let new_commits = if query_failed {
+        1
+    } else {
+        raw_commit_count.trim().parse::<i64>().unwrap_or(0).max(0) as usize
+    };
+    Some(WorktreeChanges {
+        uncommitted,
+        new_commits,
+    })
+}
