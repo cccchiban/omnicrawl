@@ -295,6 +295,13 @@ pub struct KernelCompactionConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KernelModelConfig {
     pub model: String,
+    /// Provider 名（`openai` / `anthropic` / `gemini`）；留空按 `openai` 处理，兼容旧宿主。
+    #[serde(default)]
+    pub provider: String,
+    /// 协议名（如 `openai_responses` / `anthropic_messages` / `gemini_generate_content`）；
+    /// 留空时用 Provider 的默认协议。
+    #[serde(default)]
+    pub protocol: String,
     /// 空则用运行时的默认地址。
     #[serde(default)]
     pub base_url: String,
@@ -315,6 +322,9 @@ pub struct KernelModelConfig {
     /// 单次请求的超时秒数；缺省或非正数时用运行时默认。
     #[serde(default)]
     pub request_timeout_seconds: Option<f64>,
+    /// 模型声明的上下文窗口；正数时参与能力合并。
+    #[serde(default)]
+    pub context_window_tokens: i64,
     #[serde(default)]
     pub prompt_cache_capable: bool,
     #[serde(default)]

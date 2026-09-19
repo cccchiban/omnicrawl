@@ -16,7 +16,6 @@ use omnicrawl_controllers::context_compaction::{
 use omnicrawl_controllers::json::python_dumps_compact;
 use omnicrawl_controllers::memory::session_memory_root;
 use omnicrawl_ipc::bridge::{KernelCompactionConfig, KernelModelConfig, KernelSessionConfig};
-use omnicrawl_llm::{ChatEndpoint, OpenAiChatRuntime};
 use omnicrawl_session::{
     project_session_history, utc_now, MemoryStore, SessionArtifactStore, SessionStore,
 };
@@ -139,13 +138,13 @@ fn build_driver(
     api_key: &str,
     last_request_messages: &[Value],
 ) -> Result<CompactionDriver, String> {
-    let endpoint = ChatEndpoint {
-        base_url: crate::session::endpoint_base_url(model),
-        api_key: api_key.to_string(),
-        user_agent: model.user_agent.clone(),
+    let runtime = match crate::session::build_model_runtime_with_key(model, api_key.to_string()) {
+        Ok(runtime) => runtime,
+        Err(omnicrawl_core::LoopError::ReplySource(message)) => return Err(message),
+        Err(other) => return Err(format!("{other:?}")),
     };
     let adapter = SummaryModelAdapter::new(SummaryAdapterSettings {
-        runtime: Box::new(OpenAiChatRuntime::new(endpoint)),
+        runtime,
         model: model.model.clone(),
         provider: String::new(),
         system_prompt: model.system_prompt.clone(),

@@ -31,8 +31,8 @@ use omnicrawl_ipc::bridge::{
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
 use omnicrawl_llm::{
-    to_openai_messages, ChatEndpoint, ChatRequestInput, ModelRuntime, OpenAiChatRuntime,
-    RuntimeErrorKind, SinkFlow, TurnSink, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
+    build_runtime, to_openai_messages, ChatRequestInput, ModelDescriptor, ModelRuntime,
+    ProviderProfile, RuntimeErrorKind, SinkFlow, TurnSink, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 use omnicrawl_protocol::{
     conversation_from_openai_messages, tool_spec_from_openai_item, GenerationOptions, ModelReply,
@@ -383,16 +383,11 @@ impl ReplySource for KernelModelPort {
 }
 
 impl KernelModelPort {
-    /// 凭据只从环境读；端点缺省时用运行时默认值。
+    /// 凭据只从环境读；端点与协议缺省时用内核工厂的默认值。
     ///
     /// 返回 trait 对象：Provider 实现与将来的装饰器（出网脱敏）都从这里换入。
     fn runtime(&self) -> Result<Box<dyn ModelRuntime>, LoopError> {
-        let endpoint = ChatEndpoint {
-            base_url: endpoint_base_url(&self.config),
-            api_key: read_api_key(&self.config)?,
-            user_agent: self.config.user_agent.clone(),
-        };
-        Ok(Box::new(OpenAiChatRuntime::new(endpoint)))
+        build_model_runtime(&self.config)
     }
 
     fn notify_retry(&self, message: String) {
@@ -457,13 +452,44 @@ impl TurnSink for ProtocolSink {
     }
 }
 
-/// 端点地址：宿主没给就用运行时默认。
-pub(crate) fn endpoint_base_url(config: &KernelModelConfig) -> String {
-    if config.base_url.trim().is_empty() {
-        ChatEndpoint::default().base_url
+/// 按协议组装模型运行时：Provider 的默认 API 根、能力合并与运行时选择都在内核工厂里做。
+///
+/// 内核没有 Profile id（宿主才有），因此这里的 `profile_id` 留空。
+pub(crate) fn build_model_runtime(
+    config: &KernelModelConfig,
+) -> Result<Box<dyn ModelRuntime>, LoopError> {
+    let api_key = read_api_key(config)?;
+    build_model_runtime_with_key(config, api_key)
+}
+
+/// 同上，但复用调用方已经解析好的凭据（压缩摘要那条链自己读一次环境变量）。
+pub(crate) fn build_model_runtime_with_key(
+    config: &KernelModelConfig,
+    api_key: String,
+) -> Result<Box<dyn ModelRuntime>, LoopError> {
+    let provider = if config.provider.trim().is_empty() {
+        "openai"
     } else {
-        config.base_url.clone()
-    }
+        config.provider.trim()
+    };
+    let profile = ProviderProfile {
+        id: String::new(),
+        provider: provider.to_string(),
+        base_url: config.base_url.clone(),
+        api_key,
+        user_agent: config.user_agent.clone(),
+        default_protocol: config.protocol.clone(),
+    };
+    let descriptor = ModelDescriptor {
+        model_id: config.model.clone(),
+        protocol: config.protocol.clone(),
+        capabilities: None,
+        context_window_tokens: config.context_window_tokens,
+        max_output_tokens: None,
+    };
+    let bundle = build_runtime(&profile, &descriptor)
+        .map_err(|error| LoopError::ReplySource(error.message))?;
+    Ok(bundle.runtime)
 }
 
 /// 凭据只从环境读：帧里出现的只是环境变量名。
@@ -1049,4 +1075,50 @@ pub fn run_stdio() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod runtime_selection_tests {
+    use super::*;
+
+    fn config(provider: &str, protocol: &str) -> KernelModelConfig {
+        KernelModelConfig {
+            model: "m".to_string(),
+            provider: provider.to_string(),
+            protocol: protocol.to_string(),
+            base_url: String::new(),
+            api_key_env: String::new(),
+            user_agent: String::new(),
+            system_prompt: String::new(),
+            tools: Vec::new(),
+            options: Value::Null,
+            request_timeout_seconds: None,
+            context_window_tokens: 0,
+            prompt_cache_capable: false,
+            prompt_cache_identity: std::collections::BTreeMap::new(),
+            request_retry_count: 1,
+        }
+    }
+
+    #[test]
+    fn empty_provider_falls_back_to_openai() {
+        assert!(build_model_runtime(&config("", "")).is_ok());
+        assert!(build_model_runtime(&config("gemini", "")).is_ok());
+    }
+
+    #[test]
+    fn protocol_must_match_provider() {
+        let error = build_model_runtime(&config("gemini", "anthropic_messages"))
+            .err()
+            .expect("协议与 Provider 不匹配必须失败");
+        match error {
+            LoopError::ReplySource(message) => {
+                assert!(
+                    message.contains("anthropic_messages"),
+                    "报错文案：{message}"
+                );
+            }
+            other => panic!("应为 ReplySource，实际 {other:?}"),
+        }
+    }
 }
