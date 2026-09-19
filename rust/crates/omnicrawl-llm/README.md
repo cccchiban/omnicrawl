@@ -2,7 +2,8 @@
 
 Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，以及把一次回合从请求串到
 `ModelReply` 的装配。语义基准是 `omnicrawl/llm/providers/openai_chat.py`、
-`omnicrawl/llm/providers/openai_common.py`、`omnicrawl/llm/usage.py`，
+`omnicrawl/llm/providers/openai_common.py`、`omnicrawl/llm/providers/anthropic.py`、
+`omnicrawl/llm/providers/gemini.py`、`omnicrawl/llm/usage.py`，
 错误文案基准是 `omnicrawl/llm/errors.py` 的状态码阶梯。
 
 ## 本片范围
@@ -63,6 +64,25 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   包成 `Claude 请求失败：…`（`INVALID_REQUEST`），流中断包成 `Claude 流式回复中断：…`。
 - `usage_from_anthropic_payload`：`usage.input_tokens` / `output_tokens` / `cache_read_input_tokens`
   （兼容 `cached_input_tokens`），只认整数、缺字段按 0，有 `usage` 就产出。
+- Gemini Generate Content 请求构建（`gemini.rs`）：`sanitize_gemini_options`（白名单 `top_p` / `top_k` /
+  `candidate_count` / `stop_sequences` / `response_mime_type` / `safety_settings`，Host 字段与白名单外字段都直接拒绝）、
+  `to_gemini_contents`（system 带工具声明时整条跳过、工具结果与紧随的用户内容合并进同一个 user content、
+  assistant 走 `model` 角色、图片走 `inline_data`、空内容退化为不产出条目）、`build_generate_content_request`
+  （system_instruction 非空白才下发、`max_output_tokens` 为 0 视为未声明、请求级 `tools` = 顶层声明 +
+  system 动态声明合并成 `function_declarations`、`automatic_function_calling.disable` 关掉 SDK 自动执行）。
+- Gemini 线上映射（`generate_content_body` / `gemini_model_path`）：kwargs 形态 → MLDev `generateContent`
+  请求体——`systemInstruction`（补 `role: user`）与 `tools` 提升到顶层、`safetySettings` 顶层、
+  生成参数收进 `generationConfig`（`topP` / `topK` / `candidateCount` / `maxOutputTokens` / `stopSequences` /
+  `responseMimeType`）、`automatic_function_calling` 不上行；`function_declarations` → `functionDeclarations`，
+  Schema 的 `type` 大写成 proto 枚举名（`object` → `OBJECT`）；模型名补 `models/` 前缀。
+- Gemini 流事件映射（`GeminiStreamState`）：`usageMetadata` / `usage_metadata` 出用量，文本分片出 `TextDelta`，
+  `function_call`（兼容 `functionCall`）出 `ToolCallStarted` + `ToolCallCompleted`——Gemini 不保证稳定
+  `call_id`，内核按「名称 + 参数（键序无关）」内容指纹去重，再按发出次序编号 `gemini_{n}`；
+  工具参数是 JSON 字符串时解析（非法回落空对象），`finishReason` 更新结束原因（空值保持默认 `stop`）。
+- `GeminiRuntime`：与另外两路共用「传输 + 可放弃读取」骨架；鉴权头 `x-goog-api-key`，
+  路径 `{base_url}/v1beta/models/{model}:streamGenerateContent?alt=sse`；建连与状态码失败按
+  `_format_gemini_error` 包成 `Gemini 请求失败：…`（`INVALID_REQUEST`），流中断包成
+  `Gemini 流式回复中断：…`。
 
 不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、
 adapter 注册表与 `build_runtime` 工厂、会话落盘、上下文压缩触发。
@@ -92,6 +112,7 @@ python rust/tools/gen_llm_request_fixture.py   # 请求构建
 python rust/tools/gen_llm_usage_fixture.py     # 用量归一化
 python rust/tools/gen_llm_runtime_fixture.py   # 端到端回合
 python rust/tools/gen_llm_anthropic_fixture.py # Anthropic：请求构建、流映射、用量与错误文案
+python rust/tools/gen_llm_gemini_fixture.py    # Gemini：contents / config / 线上请求体 / 流映射 / 用量 / 错误文案
 python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位符协议与序号注册表
 python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
 python rust/tools/gen_desensitization_rules_fixture.py   # 消息脱敏：值类型规则层
@@ -111,6 +132,8 @@ fixture：
 - `tests/fixtures/openai_chat_usage_parity.json`：用量 30。
 - `tests/fixtures/openai_chat_runtime_parity.json`：端到端 9 个用例。
 - `tests/fixtures/anthropic_parity.json`：消息 8、provider_options 9、请求 7、流 12、用量 6、错误文案 10。
+- `tests/fixtures/gemini_parity.json`：contents 8、provider_options 11、请求 kwargs 6、真 SDK 线上体 4、
+  流 14、用量 7、错误文案 12。
 
 Anthropic 组的请求 kwargs 同样由替身客户端在 `client.messages.create` 处拦下；流组把 fixture 里的 JSON
 负载转成属性可读的对象再喂给真实现，两侧读的是同一份字节。
@@ -183,6 +206,32 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 - **流内 `error` 负载**：内核走通用 `provider_error_stream` 文案（Python 是 SDK 抛 `APIError` →
   `STREAM_INTERRUPTED`）；错误码一致，`retryable` 标记不同。
 - 用量负数按无符号归零（与 OpenAI 一路同口径）。
+
+### Gemini（未搬与差异）
+
+- **未搬**（按设计或留待后续批次）：`close()` 与 `_closed` 关闭态、能力门禁
+  （`request.tools && !capabilities.tools` → `UNSUPPORTED_CAPABILITY`）、`discover_models`
+  （属 adapter 注册表 / `build_runtime` 批次）、`stream_registry` / `interruptible_stream_events`
+  （内核用可放弃读取线程 + 50ms 轮询表达同一件事）、`_create_gemini_client` 的
+  「缺少 google-genai 依赖」分支（内核不带 SDK）、`_sanitize_options` 的
+  「provider_options 必须是对象」分支（类型系统下不可达）。
+- **`wire` 组的基准是真 SDK**：生成器起本机回环服务端，让 google-genai 1.47 实际发一次请求，
+  记下路径与请求体；喂进去的 contents / config 是本仓库真实现的产物。因此这一组钉住的是
+  「内核的线上体与 SDK 一致」，不是「与 Python 那边的字符串一致」。
+- **Schema 只做大写化**：SDK 还会把 `additionalProperties` 改写成 `additional_properties`、
+  把 `topK` 这类整型生成参数写成浮点；内核不复刻（对照片的 schema 与参数刻意避开这两处）。
+- **`topK` 的数值写法**：proto 里是浮点，SDK 输出 `12.0`；内核按输入原样输出（`12` 或 `12.0`），
+  语义等价。
+- **`functionCall` 只在裸负载下才命中**：Python 侧先读属性 `function_call`、失败才回退字典键，
+  真实 SDK 对象的属性名就是 snake_case；内核跨进程边界只见到 REST 的 camelCase，
+  因此两侧读法天然不同（对照片里这条用例用**裸 dict 负载**驱动，见生成器的 `raw` 标记）。
+- **`index` 一类的 SDK 对象细节不参与映射**：Gemini 的流映射按分片内容而非下标推进，
+  没有 Anthropic 那样的 `content_block_*` 缓冲。
+- **缺凭据文案**：沿用内核既有的配置错误文案（Python 是 `Profile {id} 缺少 Gemini API Key。`）。
+- **超时来源**：`timeout_seconds` 取 Profile 值（Python 把它挂在 SDK 客户端上）。
+- **错误文案的两处不可对齐**：`_format_gemini_error` 的兜底分支用 `type(exc).__name__`，
+  内核只能拿到等价类型名（`APIStatusError` / `APIConnectionError`）；流内 `error` 负载与另外两路一样
+  走通用文案。
 
 ## 依赖
 

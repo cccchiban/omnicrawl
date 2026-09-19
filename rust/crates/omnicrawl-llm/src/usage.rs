@@ -98,6 +98,52 @@ fn non_negative(value: Option<i64>) -> u64 {
     value.unwrap_or(0).max(0) as u64
 }
 
+/// Gemini Generate Content 的用量：`usage_metadata` 与 `usageMetadata` 两种写法都认。
+///
+/// 与另外两路不同的一处是「只有总量」的兜底：`prompt_token_count` 与 `candidates_token_count`
+/// 都为 0 而 `total_token_count` 非 0 时，Python 把总量当输入、输出记 0。
+pub fn usage_from_gemini_payload(payload: &Value) -> Option<TokenUsage> {
+    let meta = payload
+        .get("usage_metadata")
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            payload
+                .get("usageMetadata")
+                .filter(|value| !value.is_null())
+        })?;
+
+    let input_tokens = read_usage_int(
+        meta,
+        &["prompt_token_count", "promptTokenCount", "input_tokens"],
+    )
+    .unwrap_or(0);
+    let output_tokens = read_usage_int(
+        meta,
+        &[
+            "candidates_token_count",
+            "candidatesTokenCount",
+            "output_tokens",
+        ],
+    )
+    .unwrap_or(0);
+    let total_tokens = read_usage_int(meta, &["total_token_count", "totalTokenCount"]);
+
+    if input_tokens == 0 && output_tokens == 0 && total_tokens.is_some_and(|total| total != 0) {
+        return Some(TokenUsage {
+            input_tokens: non_negative(total_tokens),
+            output_tokens: 0,
+            cached_input_tokens: 0,
+            reasoning_tokens: 0,
+        });
+    }
+    Some(TokenUsage {
+        input_tokens: non_negative(Some(input_tokens)),
+        output_tokens: non_negative(Some(output_tokens)),
+        cached_input_tokens: 0,
+        reasoning_tokens: 0,
+    })
+}
+
 /// Anthropic Messages 的用量：`message_start.message.usage` 与 `message_delta.usage` 同形，
 /// 缓存字段两种写法都认（`cache_read_input_tokens` / `cached_input_tokens`）。
 ///

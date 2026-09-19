@@ -9,6 +9,7 @@ mod anthropic;
 mod capabilities;
 pub mod desensitization;
 mod errors;
+mod gemini;
 mod json;
 mod openai_chat;
 mod registry;
@@ -28,6 +29,10 @@ pub use errors::{
     http_status_error, http_status_error_with_body, map_exception, ExceptionView, ModelError,
     ModelErrorCode, RuntimeError, RuntimeErrorKind, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
+pub use gemini::{
+    build_generate_content_request, format_gemini_error, gemini_model_path, generate_content_body,
+    sanitize_gemini_options, to_gemini_contents, GeminiRequest, GeminiStreamState,
+};
 pub use openai_chat::{
     arguments_json_complete, emit_tool_call_deltas, first_choice, ToolCallBuffer,
 };
@@ -43,10 +48,12 @@ pub use responses::{
     ResponsesStreamState,
 };
 pub use runtime::{
-    AnthropicRuntime, ChatEndpoint, DiscardSink, ModelRuntime, OpenAiChatRuntime, SinkFlow,
-    TurnSink,
+    AnthropicRuntime, ChatEndpoint, DiscardSink, GeminiRuntime, ModelRuntime, OpenAiChatRuntime,
+    SinkFlow, TurnSink,
 };
 pub use sse::{
     decode_sse_data, iter_raw_sse_events, payload_of_line, step_payload, SseError, SseStep,
 };
-pub use usage::{usage_from_anthropic_payload, usage_from_openai_payload};
+pub use usage::{
+    usage_from_anthropic_payload, usage_from_gemini_payload, usage_from_openai_payload,
+};

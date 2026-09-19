@@ -1,0 +1,1930 @@
+{
+  "source": "omnicrawl/llm/providers/gemini.py",
+  "contents": [
+    {
+      "label": "纯文本与 system 文本",
+      "messages": [
+        {
+          "role": "system",
+          "blocks": [
+            {
+              "Text": {
+                "text": "你是助手"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "你好"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "你是助手"
+            },
+            {
+              "text": "你好"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "system 携带工具声明时整条跳过",
+      "messages": [
+        {
+          "role": "system",
+          "blocks": [],
+          "reasoning": "",
+          "tools": [
+            {
+              "name": "read_file",
+              "description": "读文件",
+              "parameters": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "读一下"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "读一下"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "assistant 工具调用与结果",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "看下 a.py"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "Text": {
+                "text": "好的"
+              }
+            },
+            {
+              "ToolCall": {
+                "call_id": "gemini_1",
+                "name": "read_file",
+                "arguments": {
+                  "path": "a.py"
+                },
+                "provider_call_id": ""
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "tool",
+          "blocks": [
+            {
+              "ToolResult": {
+                "call_id": "gemini_1",
+                "ok": true,
+                "content": "print(1)"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "继续"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "看下 a.py"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "好的"
+            },
+            {
+              "function_call": {
+                "name": "read_file",
+                "args": {
+                  "path": "a.py"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "parts": [
+            {
+              "function_response": {
+                "name": "read_file",
+                "response": {
+                  "result": "print(1)"
+                }
+              }
+            },
+            {
+              "text": "继续"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "工具结果查不到名字时回落 tool",
+      "messages": [
+        {
+          "role": "tool",
+          "blocks": [
+            {
+              "ToolResult": {
+                "call_id": "unknown",
+                "ok": false,
+                "content": "boom"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "function_response": {
+                "name": "tool",
+                "response": {
+                  "result": "boom",
+                  "error": "boom"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "空 assistant 内容不产出条目",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "user",
+          "blocks": [],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": []
+    },
+    {
+      "label": "空文本块不参与组装",
+      "messages": [
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "Text": {
+                "text": ""
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": ""
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": []
+    },
+    {
+      "label": "图片走 inline_data",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "这是什么"
+              }
+            },
+            {
+              "Image": {
+                "media_type": "image/png",
+                "data_base64": "aGVsbG8=",
+                "detail": "high"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "这是什么"
+            },
+            {
+              "inline_data": {
+                "mime_type": "image/png",
+                "data": "aGVsbG8="
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "连续 user 内容合并成一条",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "第一段"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "第二段"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        },
+        {
+          "role": "assistant",
+          "blocks": [
+            {
+              "Text": {
+                "text": "收到"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "expected": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "第一段"
+            },
+            {
+              "text": "第二段"
+            }
+          ]
+        },
+        {
+          "role": "model",
+          "parts": [
+            {
+              "text": "收到"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "options": [
+    {
+      "label": "允许的字段",
+      "options": {
+        "top_p": 0.9,
+        "top_k": 8.0,
+        "candidate_count": 2,
+        "stop_sequences": [
+          "A"
+        ],
+        "response_mime_type": "application/json",
+        "safety_settings": [
+          {
+            "category": "HARM_CATEGORY_HATE_SPEECH"
+          }
+        ]
+      },
+      "ok": true,
+      "result": {
+        "top_p": 0.9,
+        "top_k": 8.0,
+        "candidate_count": 2,
+        "stop_sequences": [
+          "A"
+        ],
+        "response_mime_type": "application/json",
+        "safety_settings": [
+          {
+            "category": "HARM_CATEGORY_HATE_SPEECH"
+          }
+        ]
+      },
+      "error": null
+    },
+    {
+      "label": "覆盖 model",
+      "options": {
+        "model": "gemini-x"
+      },
+      "ok": false,
+      "result": null,
+      "error": "provider_options 不允许覆盖 Host 字段：model"
+    },
+    {
+      "label": "覆盖 contents",
+      "options": {
+        "contents": []
+      },
+      "ok": false,
+      "result": null,
+      "error": "provider_options 不允许覆盖 Host 字段：contents"
+    },
+    {
+      "label": "覆盖 tools",
+      "options": {
+        "tools": []
+      },
+      "ok": false,
+      "result": null,
+      "error": "provider_options 不允许覆盖 Host 字段：tools"
+    },
+    {
+      "label": "覆盖 system_instruction",
+      "options": {
+        "system_instruction": "x"
+      },
+      "ok": false,
+      "result": null,
+      "error": "provider_options 不允许覆盖 Host 字段：system_instruction"
+    },
+    {
+      "label": "覆盖 stream",
+      "options": {
+        "stream": false
+      },
+      "ok": false,
+      "result": null,
+      "error": "provider_options 不允许覆盖 Host 字段：stream"
+    },
+    {
+      "label": "覆盖 api_key",
+      "options": {
+        "api_key": "x"
+      },
+      "ok": false,
+      "result": null,
+      "error": "provider_options 不允许覆盖 Host 字段：api_key"
+    },
+    {
+      "label": "覆盖 timeout",
+      "options": {
+        "timeout": 1
+      },
+      "ok": false,
+      "result": null,
+      "error": "provider_options 不允许覆盖 Host 字段：timeout"
+    },
+    {
+      "label": "白名单之外",
+      "options": {
+        "temperature": 0.5
+      },
+      "ok": false,
+      "result": null,
+      "error": "Gemini provider_options 不支持字段：temperature"
+    },
+    {
+      "label": "未知字段",
+      "options": {
+        "nope": 1
+      },
+      "ok": false,
+      "result": null,
+      "error": "Gemini provider_options 不支持字段：nope"
+    },
+    {
+      "label": "空",
+      "options": {},
+      "ok": true,
+      "result": {},
+      "error": null
+    }
+  ],
+  "request": [
+    {
+      "label": "最小请求",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "你好"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {},
+      "kwargs": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "你好"
+              }
+            ]
+          }
+        ],
+        "config": {}
+      }
+    },
+    {
+      "label": "系统提示与生成选项",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "你是助手",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "你好"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {
+        "temperature": 0.2,
+        "max_output_tokens": 256
+      },
+      "kwargs": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "你好"
+              }
+            ]
+          }
+        ],
+        "config": {
+          "system_instruction": "你是助手",
+          "max_output_tokens": 256,
+          "temperature": 0.2
+        }
+      }
+    },
+    {
+      "label": "空白系统提示不下发",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "   ",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "你好"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {},
+      "kwargs": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "你好"
+              }
+            ]
+          }
+        ],
+        "config": {}
+      }
+    },
+    {
+      "label": "max_output_tokens 为 0 视为未声明",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {
+        "max_output_tokens": 0
+      },
+      "kwargs": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "config": {}
+      }
+    },
+    {
+      "label": "工具声明与 provider_options 合并",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "s",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "跑一下"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [
+        {
+          "name": "bash",
+          "description": "执行",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "路径"
+              },
+              "count": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "a",
+                  "b"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "nested": {
+                "type": "object",
+                "properties": {
+                  "flag": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "flag"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        {
+          "name": "empty",
+          "description": "",
+          "parameters": {}
+        }
+      ],
+      "options": {
+        "provider_options": {
+          "top_k": 8.0
+        }
+      },
+      "kwargs": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "跑一下"
+              }
+            ]
+          }
+        ],
+        "config": {
+          "system_instruction": "s",
+          "tools": [
+            {
+              "function_declarations": [
+                {
+                  "name": "bash",
+                  "description": "执行",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "description": "路径"
+                      },
+                      "count": {
+                        "type": "integer",
+                        "format": "int32"
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "a",
+                          "b"
+                        ]
+                      },
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "nested": {
+                        "type": "object",
+                        "properties": {
+                          "flag": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "flag"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "path"
+                    ]
+                  }
+                },
+                {
+                  "name": "empty",
+                  "description": "",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {}
+                  }
+                }
+              ]
+            }
+          ],
+          "automatic_function_calling": {
+            "disable": true
+          },
+          "top_k": 8.0
+        }
+      }
+    },
+    {
+      "label": "system 动态声明并入请求级工具",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "s",
+      "messages": [
+        {
+          "role": "system",
+          "blocks": [],
+          "reasoning": "",
+          "tools": [
+            {
+              "name": "dynamic",
+              "description": "动态",
+              "parameters": {
+                "type": "object"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {},
+      "kwargs": {
+        "model": "gemini-2.5-flash",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ]
+          }
+        ],
+        "config": {
+          "system_instruction": "s",
+          "tools": [
+            {
+              "function_declarations": [
+                {
+                  "name": "dynamic",
+                  "description": "动态",
+                  "parameters": {
+                    "type": "object"
+                  }
+                }
+              ]
+            }
+          ],
+          "automatic_function_calling": {
+            "disable": true
+          }
+        }
+      }
+    }
+  ],
+  "wire": [
+    {
+      "label": "最小请求",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "你好"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {},
+      "path": "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "你好"
+              }
+            ],
+            "role": "user"
+          }
+        ]
+      }
+    },
+    {
+      "label": "系统提示与全部生成参数",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "你是助手",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {
+        "temperature": 0.4,
+        "max_output_tokens": 128,
+        "provider_options": {
+          "top_p": 0.8,
+          "top_k": 12.0,
+          "candidate_count": 2,
+          "stop_sequences": [
+            "A",
+            "B"
+          ],
+          "response_mime_type": "application/json"
+        }
+      },
+      "path": "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "你是助手"
+            }
+          ],
+          "role": "user"
+        },
+        "generationConfig": {
+          "temperature": 0.4,
+          "topP": 0.8,
+          "topK": 12.0,
+          "candidateCount": 2,
+          "maxOutputTokens": 128,
+          "stopSequences": [
+            "A",
+            "B"
+          ],
+          "responseMimeType": "application/json"
+        }
+      }
+    },
+    {
+      "label": "安全设置与工具 schema",
+      "model": "gemini-2.5-flash",
+      "system_prompt": "s",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [
+        {
+          "name": "do_thing",
+          "description": "desc",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "路径"
+              },
+              "count": {
+                "type": "integer",
+                "format": "int32"
+              },
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "a",
+                  "b"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "nested": {
+                "type": "object",
+                "properties": {
+                  "flag": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "flag"
+                ]
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      ],
+      "options": {
+        "provider_options": {
+          "safety_settings": [
+            {
+              "category": "HARM_CATEGORY_HATE_SPEECH",
+              "threshold": "BLOCK_LOW_AND_ABOVE"
+            }
+          ]
+        }
+      },
+      "path": "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "s"
+            }
+          ],
+          "role": "user"
+        },
+        "safetySettings": [
+          {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_LOW_AND_ABOVE"
+          }
+        ],
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "description": "desc",
+                "name": "do_thing",
+                "parameters": {
+                  "properties": {
+                    "path": {
+                      "description": "路径",
+                      "type": "STRING"
+                    },
+                    "count": {
+                      "format": "int32",
+                      "type": "INTEGER"
+                    },
+                    "mode": {
+                      "enum": [
+                        "a",
+                        "b"
+                      ],
+                      "type": "STRING"
+                    },
+                    "items": {
+                      "items": {
+                        "type": "STRING"
+                      },
+                      "type": "ARRAY"
+                    },
+                    "nested": {
+                      "properties": {
+                        "flag": {
+                          "type": "BOOLEAN"
+                        }
+                      },
+                      "required": [
+                        "flag"
+                      ],
+                      "type": "OBJECT"
+                    }
+                  },
+                  "required": [
+                    "path"
+                  ],
+                  "type": "OBJECT"
+                }
+              }
+            ]
+          }
+        ],
+        "generationConfig": {}
+      }
+    },
+    {
+      "label": "模型名已带 models 前缀",
+      "model": "models/gemini-2.5-flash",
+      "system_prompt": "",
+      "messages": [
+        {
+          "role": "user",
+          "blocks": [
+            {
+              "Text": {
+                "text": "hi"
+              }
+            }
+          ],
+          "reasoning": "",
+          "tools": []
+        }
+      ],
+      "tools": [],
+      "options": {},
+      "path": "/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+      "body": {
+        "contents": [
+          {
+            "parts": [
+              {
+                "text": "hi"
+              }
+            ],
+            "role": "user"
+          }
+        ]
+      }
+    }
+  ],
+  "stream": [
+    {
+      "label": "文本增量与结束原因",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "text": "你好"
+                  }
+                ]
+              }
+            }
+          ],
+          "usageMetadata": {
+            "promptTokenCount": 3,
+            "candidatesTokenCount": 1
+          }
+        },
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "text": "，世界"
+                  }
+                ]
+              },
+              "finishReason": "STOP"
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "usage",
+          "input_tokens": 3,
+          "output_tokens": 1,
+          "cached_input_tokens": 0,
+          "reasoning_tokens": 0
+        },
+        {
+          "kind": "text",
+          "text": "你好"
+        },
+        {
+          "kind": "text",
+          "text": "，世界"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "STOP"
+        }
+      ]
+    },
+    {
+      "label": "单个工具调用",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "read_file",
+                      "args": {
+                        "path": "a.py"
+                      }
+                    }
+                  }
+                ]
+              },
+              "finishReason": "STOP"
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "read_file"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "read_file",
+          "arguments": {
+            "path": "a.py"
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "STOP"
+        }
+      ]
+    },
+    {
+      "label": "两个不同调用依次编号",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "a",
+                      "args": {
+                        "x": 1
+                      }
+                    }
+                  },
+                  {
+                    "function_call": {
+                      "name": "b",
+                      "args": {
+                        "y": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "a"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "a",
+          "arguments": {
+            "x": 1
+          }
+        },
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_2",
+          "name": "b"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_2",
+          "name": "b",
+          "arguments": {
+            "y": 2
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "内容相同的调用被去重",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "a",
+                      "args": {
+                        "x": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "a",
+                      "args": {
+                        "x": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "a",
+                      "args": {
+                        "x": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "a"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "a",
+          "arguments": {
+            "x": 1
+          }
+        },
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_2",
+          "name": "a"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_2",
+          "name": "a",
+          "arguments": {
+            "x": 2
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "参数键序不同但内容相同视为重复",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "a",
+                      "args": {
+                        "x": 1,
+                        "y": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "a",
+                      "args": {
+                        "y": 2,
+                        "x": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "a"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "a",
+          "arguments": {
+            "x": 1,
+            "y": 2
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "camelCase 的 functionCall（裸负载）",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "functionCall": {
+                      "name": "z",
+                      "args": {}
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "z"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "z",
+          "arguments": {}
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "参数字符串形态",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "x",
+                      "args": "{\"a\": 1}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "x"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "x",
+          "arguments": {
+            "a": 1
+          }
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "参数非法 JSON 字符串回落空对象",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "x",
+                      "args": "{\"a\":"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "x"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "x",
+          "arguments": {}
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "参数非对象回落空对象",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "x",
+                      "args": 5
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "tool_started",
+          "call_id": "gemini_1",
+          "name": "x"
+        },
+        {
+          "kind": "tool_completed",
+          "call_id": "gemini_1",
+          "name": "x",
+          "arguments": {}
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "名称为空跳过",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "function_call": {
+                      "name": "",
+                      "args": {
+                        "a": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "没有 candidates 时读 chunk.text",
+      "payloads": [
+        {
+          "text": "只有文本"
+        }
+      ],
+      "expected": [
+        {
+          "kind": "text",
+          "text": "只有文本"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "结束原因为空时保持默认",
+      "payloads": [
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "text": "x"
+                  }
+                ]
+              },
+              "finishReason": ""
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "text",
+          "text": "x"
+        },
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "空内容与未知分片忽略",
+      "payloads": [
+        {
+          "candidates": []
+        },
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "text": ""
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "candidates": [
+            {
+              "content": {
+                "role": "model",
+                "parts": [
+                  {
+                    "inline_data": {
+                      "mime_type": "image/png",
+                      "data": "aGk="
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "expected": [
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    },
+    {
+      "label": "空流",
+      "payloads": [],
+      "expected": [
+        {
+          "kind": "finished",
+          "finish_reason": "stop"
+        }
+      ]
+    }
+  ],
+  "usage": [
+    {
+      "label": "snake_case 完整字段",
+      "payload": {
+        "usage_metadata": {
+          "prompt_token_count": 10,
+          "candidates_token_count": 4
+        }
+      },
+      "expected": {
+        "input_tokens": 10,
+        "output_tokens": 4,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "label": "camelCase 完整字段",
+      "payload": {
+        "usageMetadata": {
+          "promptTokenCount": 7,
+          "candidatesTokenCount": 2
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "label": "只给总量时算输入",
+      "payload": {
+        "usageMetadata": {
+          "totalTokenCount": 9
+        }
+      },
+      "expected": {
+        "input_tokens": 9,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "label": "零值字段仍算出实体",
+      "payload": {
+        "usage_metadata": {}
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "label": "布尔与字符串不算整数",
+      "payload": {
+        "usage_metadata": {
+          "prompt_token_count": true,
+          "candidates_token_count": "5"
+        }
+      },
+      "expected": {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "label": "无 usage_metadata",
+      "payload": {
+        "candidates": []
+      },
+      "expected": null
+    },
+    {
+      "label": "usage_metadata 为 null",
+      "payload": {
+        "usage_metadata": null
+      },
+      "expected": null
+    }
+  ],
+  "errors": [
+    {
+      "message": "API key not valid. Please pass a valid API key.",
+      "type_name": "ClientError",
+      "expected": "Gemini 鉴权失败。请检查 GEMINI_API_KEY。"
+    },
+    {
+      "message": "401 UNAUTHENTICATED",
+      "type_name": "ClientError",
+      "expected": "Gemini 鉴权失败。请检查 GEMINI_API_KEY。"
+    },
+    {
+      "message": "unauthenticated: missing credentials",
+      "type_name": "ClientError",
+      "expected": "Gemini 鉴权失败。请检查 GEMINI_API_KEY。"
+    },
+    {
+      "message": "403 PERMISSION_DENIED for model",
+      "type_name": "ClientError",
+      "expected": "当前 API Key 没有访问该 Gemini 模型的权限。"
+    },
+    {
+      "message": "permission denied",
+      "type_name": "ClientError",
+      "expected": "当前 API Key 没有访问该 Gemini 模型的权限。"
+    },
+    {
+      "message": "404 NOT_FOUND: model not found",
+      "type_name": "ClientError",
+      "expected": "Gemini 模型不存在或路径错误。"
+    },
+    {
+      "message": "model not found",
+      "type_name": "ClientError",
+      "expected": "Gemini 模型不存在或路径错误。"
+    },
+    {
+      "message": "429 RESOURCE_EXHAUSTED",
+      "type_name": "ClientError",
+      "expected": "Gemini 服务限流或额度不足，请稍后重试。"
+    },
+    {
+      "message": "resource exhausted: quota",
+      "type_name": "ClientError",
+      "expected": "Gemini 服务限流或额度不足，请稍后重试。"
+    },
+    {
+      "message": "quota exceeded",
+      "type_name": "ClientError",
+      "expected": "Gemini 服务限流或额度不足，请稍后重试。"
+    },
+    {
+      "message": "Deadline exceeded: timeout",
+      "type_name": "ClientError",
+      "expected": "Gemini 请求超时，请稍后重试。"
+    },
+    {
+      "message": "internal server error",
+      "type_name": "ServerError",
+      "expected": "Gemini 请求失败：ServerError"
+    }
+  ]
+}
