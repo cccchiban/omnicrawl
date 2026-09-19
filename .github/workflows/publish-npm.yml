@@ -40,7 +40,9 @@ jobs:
             target: i686-pc-windows-msvc
             host: false
           - package: cli-linux-x64
-            runner: ubuntu-latest
+            # 宿主载荷里的 CPython 与原生扩展要求 glibc 不低于构建机：钉在 22.04（glibc 2.35），
+            # 才能跑在 Debian 12 / Raspberry Pi OS Bookworm 这类发行版上。
+            runner: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             host: true
           - package: cli-linux-arm-musl
@@ -49,7 +51,8 @@ jobs:
             host: false
             zigbuild: true
           - package: cli-linux-arm64-musl
-            runner: ubuntu-24.04-arm
+            # 同上：arm64 宿主的 glibc 门槛由构建机决定。
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-musl
             host: true
     steps:

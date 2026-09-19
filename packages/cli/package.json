@@ -1,6 +1,6 @@
 {
   "name": "omnicrawl-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "OmniCrawl 启动器：按平台启动完整宿主（工作台 / api / 插件）",
   "repository": {
     "type": "git",

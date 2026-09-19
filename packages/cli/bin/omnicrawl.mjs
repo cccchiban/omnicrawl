@@ -6,7 +6,7 @@
 //   OMNICRAWL_HOST=<可执行文件>   直接指定宿主，跳过平台分包
 //   OMNICRAWL_BINARY=<可执行文件> 直接指定内核；此时启动器退化为纯透传，便于协议测试
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
@@ -97,11 +97,23 @@ function printHelp() {
   )
 }
 
+/** npm 打包会把未在 bin 里声明的文件权限位归一化成 0644，POSIX 下按需补回可执行位。 */
+function ensureExecutable(path) {
+  if (IS_WINDOWS) return
+  try {
+    const mode = statSync(path).mode
+    if ((mode & 0o111) === 0) chmodSync(path, mode | 0o755)
+  } catch {
+    // 权限改不动（只读文件系统等）时交给 spawn 的错误说明原因。
+  }
+}
+
 /** 把 stdio 交给目标可执行文件，并把它的退出码/信号作为本次退出状态。 */
 function run(executable, args) {
   if (!executable || !existsSync(executable)) {
     fail(`omnicrawl：找不到可执行文件 ${executable ?? '(未解析到)'}。请重装对应的平台包。`)
   }
+  ensureExecutable(executable)
   const child = spawn(executable, args, { stdio: 'inherit' })
 
   child.on('error', (error) => {
