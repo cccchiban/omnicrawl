@@ -77,7 +77,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 847 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 851 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -92,9 +92,9 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 公开结果本地投影、后台通知注入、结果校验与定义缺失文案），以及回合接线 14 例（回调轨迹、
 两个端口的形参与批次步号、循环收到的消息、最终回复补发、用量累计、失败分类与取消检查点），
 以及会话事件投影编排 6 例（`tests/store_parity.rs`：内存事件的逐字段形状与序号推进、
-落盘与未落盘事件各自的投影方式），以及会话生命周期编排 16 例（`tests/lifecycle_parity.rs`：
+落盘与未落盘事件各自的投影方式），以及会话生命周期编排 20 例（`tests/lifecycle_parity.rs`：
 用探针真跑 `close()` 得到的阶段轨迹、关闭回调处置、隔离收尾摘要与回调条件、父 Session 切换排空、
-`set_model` 选择串）。
+`set_model` 选择串、undo 回退的失败包装文案）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内

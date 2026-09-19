@@ -10,6 +10,9 @@ use omnicrawl_controllers::control::{
     CloseCallbackAction, TransitionDrain, CLOSE_PHASES, SESSION_TRANSITION_DRAIN_FAILED,
 };
 use omnicrawl_controllers::settings::model_selection;
+use omnicrawl_controllers::undo::{
+    restore_conflict_failed, restore_load_failed, turn_snapshot_session_required,
+};
 use serde_json::Value;
 
 const FIXTURE: &str = include_str!("fixtures/controllers_parity.json");
@@ -190,5 +193,55 @@ fn model_selection_matches_python() {
                 "模型 ID 文案（{label}）"
             );
         }
+    }
+}
+
+#[test]
+fn undo_restore_messages_match_python() {
+    let data = section();
+    let undo = &data["undo_restore"];
+
+    for case in undo["restore"].as_array().expect("restore") {
+        let label = case["label"].as_str().expect("label");
+        let load_failed = case["load_failed"].as_bool().expect("load_failed");
+        let behavior = case["behavior"].as_str().expect("behavior");
+        let trace = strings(&case["trace"]);
+
+        let produced = if load_failed {
+            Some(restore_load_failed("reading boom").message().to_string())
+        } else if behavior == "raise" {
+            Some(
+                restore_conflict_failed("conflict boom")
+                    .message()
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        assert_eq!(
+            produced.as_deref(),
+            case["error"].as_str(),
+            "回退失败文案（{label}）"
+        );
+        if load_failed {
+            assert!(trace.is_empty(), "读取失败不应进入补丁过渡（{label}）");
+        }
+        if case["ok"].as_bool().expect("ok") {
+            assert!(
+                case["returned_callable"]
+                    .as_bool()
+                    .expect("returned_callable"),
+                "恢复成功应交出反向回滚（{label}）"
+            );
+        }
+    }
+
+    for case in undo["complete"].as_array().expect("complete") {
+        let label = case["label"].as_str().expect("label");
+        assert_eq!(
+            case["error"].as_str(),
+            Some(turn_snapshot_session_required().message()),
+            "无会话时的快照持久化文案（{label}）"
+        );
     }
 }

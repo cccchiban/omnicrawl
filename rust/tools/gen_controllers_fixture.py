@@ -6913,12 +6913,117 @@ def lifecycle_cases() -> dict:
             }
         )
 
+    from omnicrawl.agent.controllers import undo as undo_module
+    from omnicrawl.agent.controllers.undo import UndoMixin
+    from omnicrawl.state import turn_snapshot as turn_snapshot_module
+
+    class _UndoProbe(UndoMixin, SessionControlMixin):
+        pass
+
+    class _FakeStore:
+        def __init__(self, recorder: _Recorder, behavior: str) -> None:
+            self._recorder = recorder
+            self._behavior = behavior
+
+        def transition(self, workspace, *, expected, target):
+            self._recorder.note("transition")
+            if self._behavior == "raise":
+                raise turn_snapshot_module.SnapshotError("conflict boom")
+            return []
+
+    restore_cases = []
+    for label, behavior, load_failed in [
+        ("读取快照失败", "ok", True),
+        ("应用补丁冲突", "raise", False),
+        ("恢复成功", "ok", False),
+    ]:
+        recorder = _Recorder()
+        probe = _UndoProbe()
+        workspace = Path(tempfile.gettempdir()) / ("oc-undo-" + label)
+        probe.workspace_root = workspace
+        probe._agent_session_facade = SimpleNamespace(
+            require_session_store=lambda: SimpleNamespace(
+                artifacts_dir=workspace / "artifacts"
+            )
+        )
+        plan = SimpleNamespace(
+            events=[
+                SimpleNamespace(
+                    type="turn_snapshot",
+                    payload={
+                        "version": 2,
+                        "snapshot_id": "snap-1",
+                        "workspace": str(workspace),
+                        "begin_patch": "undo/begin.patch",
+                        "begin_untracked": "undo/begin.untracked.txt",
+                        "end_patch": "undo/end.patch",
+                        "end_untracked": "undo/end.untracked.txt",
+                        "executed_tools": [],
+                        "irreversible_tools": [],
+                    },
+                )
+            ],
+            session_id="20260102-030405-abc123",
+        )
+        loader = (
+            mock.Mock(side_effect=turn_snapshot_module.SnapshotError("reading boom"))
+            if load_failed
+            else mock.Mock(return_value=object())
+        )
+        with (
+            mock.patch.object(_UndoProbe, "_load_workspace_snapshot", loader),
+            mock.patch.object(
+                undo_module,
+                "WorktreeSnapshotStore",
+                lambda: _FakeStore(recorder, behavior),
+            ),
+        ):
+            result = outcome(probe._restore_turn_side_effects, plan)
+        returnable = bool(result["ok"] and callable(result["value"]))
+        trace = list(recorder.trace)
+        if returnable:
+            result["value"]()
+            trace.append("rollback")
+        restore_cases.append(
+            {
+                "label": label,
+                "load_failed": load_failed,
+                "behavior": behavior,
+                "ok": result["ok"],
+                "error": result["error"],
+                "returned_callable": returnable,
+                "trace": trace,
+            }
+        )
+
+    complete_probe = _UndoProbe()
+    complete_probe._session_store = None
+    complete_probe._session_state = None
+    complete_result = outcome(
+        complete_probe._complete_turn_snapshot,
+        SimpleNamespace(
+            completed=False,
+            before=object(),
+            store=None,
+            workspace=None,
+            snapshot_id="snap-1",
+        ),
+    )
+    complete_cases = [
+        {
+            "label": "无会话时持久化快照",
+            "ok": complete_result["ok"],
+            "error": complete_result["error"],
+        }
+    ]
+
     return {
         "close": close_cases,
         "callback": callback_cases,
         "isolation": isolation_cases,
         "transition": transition_cases,
         "settings": settings_cases,
+        "undo_restore": {"restore": restore_cases, "complete": complete_cases},
     }
 
 

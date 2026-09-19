@@ -550,3 +550,18 @@ pub fn python_str(value: &Value) -> String {
         other => other.to_string(),
     }
 }
+
+/// 读取快照文件失败时的包装文案（`_restore_turn_side_effects` 的读取段）。
+pub fn restore_load_failed(cause: impl fmt::Display) -> AgentError {
+    AgentError::new(format!("副作用回退失败：{cause}"))
+}
+
+/// 应用补丁冲突或失败时的包装文案（`_restore_turn_side_effects` 的过渡段）。
+pub fn restore_conflict_failed(cause: impl fmt::Display) -> AgentError {
+    AgentError::new(format!("副作用回退冲突或失败：{cause}"))
+}
+
+/// 未启用会话时无法持久化轮次快照（`_complete_turn_snapshot` 的前置拒绝）。
+pub fn turn_snapshot_session_required() -> AgentError {
+    AgentError::new("Session 未启用，无法持久化轮次快照。")
+}
