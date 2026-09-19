@@ -7971,6 +7971,47 @@ def read_only_command_cases() -> dict:
             }
         )
 
+    segment_cases = []
+    for label, segment, shell in [
+        ("bash 白名单", "cat a.txt", "bash"),
+        ("bash 非白名单", "rm -rf x", "bash"),
+        ("单引号内空格", "cat 'a b'", "bash"),
+        ("双引号内空格", 'cat "a b"', "bash"),
+        ("双引号内转义引号", 'cat "a\\"b"', "bash"),
+        ("反斜杠转义空格", "cat a\\ b", "bash"),
+        ("git 只读", "git log --oneline", "bash"),
+        ("git 变更", "git commit -m x", "bash"),
+        ("sed -i", "sed -i 's/a/b/' f", "bash"),
+        ("sed --in-place", "sed --in-place 's/a/b/' f", "bash"),
+        ("sed 只读", "sed -n '1p' f", "bash"),
+        ("find -delete", "find . -delete", "bash"),
+        ("find -exec", "find . -exec rm {} ;", "bash"),
+        ("find 只读", "find . -name '*.py'", "bash"),
+        ("curl 只读", "curl -sS https://x", "bash"),
+        ("curl 写文件", "curl -o f https://x", "bash"),
+        ("curl 远端写", "curl -X POST https://x", "bash"),
+        ("browser 允许", "agent-browser-cli snapshot", "bash"),
+        ("browser 未知子命令", "agent-browser-cli nope", "bash"),
+        ("路径可执行名", "/usr/bin/where.exe x", "bash"),
+        ("powershell 白名单", "Get-Content a.txt", "powershell"),
+        ("powershell 非白名单", "Remove-Item a.txt", "powershell"),
+        ("powershell 引号保留", "Get-Content 'a b'", "powershell"),
+        ("powershell OutFile", "Invoke-WebRequest -Uri x -OutFile f", "powershell"),
+        ("powershell Method post", "Invoke-RestMethod -Method Post -Uri x", "powershell"),
+        ("powershell Method get", "Invoke-RestMethod -Method Get -Uri x", "powershell"),
+        ("空片段", "", "bash"),
+        ("解析失败", "cat a\\", "bash"),
+        ("仅引号", "''", "bash"),
+    ]:
+        segment_cases.append(
+            {
+                "label": label,
+                "segment": segment,
+                "shell": shell,
+                "reason": ro._segment_denial_reason(segment, shell=shell),
+            }
+        )
+
     read_only_entry_cases = []
     for label, tool_name, arguments in [
         ("monitor 只读动作", "monitor", {"action": "list"}),
@@ -8013,6 +8054,13 @@ def read_only_command_cases() -> dict:
             "bash",
             {"command": "cat a.txt", "diagnostic_command": "grep x"},
         ),
+        ("段非法命令", "bash", {"command": "rm -rf x"}),
+        ("git 变更命令", "bash", {"command": "git commit -m x"}),
+        (
+            "diagnostic 段非法",
+            "bash",
+            {"command": "cat a.txt", "diagnostic_command": "rm x"},
+        ),
     ]:
         read_only_entry_cases.append(
             {
@@ -8028,6 +8076,7 @@ def read_only_command_cases() -> dict:
         "split": split_cases,
         "curl": curl_cases,
         "browser": browser_cases,
+        "segment": segment_cases,
         "entry": read_only_entry_cases,
     }
 

@@ -384,3 +384,149 @@ fn raw_text(value: Option<&Value>) -> String {
         _ => String::new(),
     }
 }
+
+/// `shlex.split` 的可用子集：`posix` 决定是否剥离引号并解释反斜杠转义。
+///
+/// bash 段走 posix（剥引号、`\x` 转义、双引号内只转义引号与反斜杠），powershell 段走
+/// 非 posix（**保留**引号、反斜杠当普通字符）——与 Python
+/// `shlex.split(segment, posix=shell != "powershell")` 对齐。`#` 不是注释符。
+pub fn shlex_split(segment: &str, posix: bool) -> Result<Vec<String>, String> {
+    let chars: Vec<char> = segment.chars().collect();
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut pending = false;
+    let mut quote: Option<char> = None;
+    let mut index = 0usize;
+    while index < chars.len() {
+        let ch = chars[index];
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+                if !posix {
+                    current.push(ch);
+                }
+                index += 1;
+                continue;
+            }
+            if posix && active == '"' && ch == '\\' {
+                if let Some(next) = chars.get(index + 1).filter(|c| **c == '"' || **c == '\\') {
+                    current.push(*next);
+                    index += 2;
+                    continue;
+                }
+            }
+            current.push(ch);
+            index += 1;
+            continue;
+        }
+        if ch.is_whitespace() {
+            if pending || !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+                pending = false;
+            }
+            index += 1;
+            continue;
+        }
+        if posix && ch == '\\' {
+            let Some(next) = chars.get(index + 1) else {
+                return Err("No escaped character".to_string());
+            };
+            current.push(*next);
+            pending = true;
+            index += 2;
+            continue;
+        }
+        if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            pending = true;
+            if !posix {
+                current.push(ch);
+            }
+            index += 1;
+            continue;
+        }
+        current.push(ch);
+        pending = true;
+        index += 1;
+    }
+    if quote.is_some() {
+        return Err("No closing quotation".to_string());
+    }
+    if pending || !current.is_empty() {
+        tokens.push(current);
+    }
+    Ok(tokens)
+}
+
+/// 单个命令片段的只读判定；返回首个拒绝原因，`None` 表示看着只读。
+///
+/// 按 shell 选白名单（powershell 与 bash 各一张），再对 git/curl/sed/find/浏览器 CLI/
+/// PowerShell Web 请求做专项检查。
+pub fn segment_denial_reason(segment: &str, shell: &str) -> Option<String> {
+    let tokens = match shlex_split(segment, shell != "powershell") {
+        Ok(tokens) => tokens,
+        Err(_) => return Some("命令参数无法可靠解析。".to_string()),
+    };
+    if tokens.is_empty() {
+        return Some("命令片段为空。".to_string());
+    }
+
+    let executable = normalized_executable(&tokens[0]);
+    let allowed: &[&str] = if shell == "powershell" {
+        &POWERSHELL_COMMANDS
+    } else {
+        &BASH_COMMANDS
+    };
+    if !allowed.contains(&executable.as_str()) {
+        return Some(format!("命令 {} 不在只读允许列表中。", tokens[0]));
+    }
+
+    let lowered: Vec<String> = tokens[1..]
+        .iter()
+        .map(|token| token.to_lowercase())
+        .collect();
+    if executable == "git" && crate::approval::command_has_git_mutation_intent(segment) {
+        return Some("Git 子命令会修改工作树、索引、引用、配置或远端。".to_string());
+    }
+    if executable == "curl" || executable == "curl.exe" {
+        if let Some(reason) = curl_denial_reason(&tokens[1..]) {
+            return Some(reason);
+        }
+    }
+    if executable == "sed"
+        && lowered
+            .iter()
+            .any(|token| token == "--in-place" || token.starts_with("-i"))
+    {
+        return Some("sed --in-place/-i 会修改文件。".to_string());
+    }
+    if executable == "find"
+        && lowered
+            .iter()
+            .any(|token| FIND_WRITE_ACTIONS.contains(&token.as_str()))
+    {
+        return Some("find 的写入、删除或 exec 动作不允许。".to_string());
+    }
+    if executable == "agent-browser-cli" {
+        return browser_cli_denial_reason(&tokens[1..]);
+    }
+    if executable == "invoke-webrequest" || executable == "invoke-restmethod" {
+        if lowered
+            .iter()
+            .any(|token| token == "-outfile" || token == "-out-file")
+        {
+            return Some("PowerShell Web 请求的 -OutFile 会写入本地文件。".to_string());
+        }
+        for (index, token) in lowered.iter().enumerate() {
+            if token != "-method" {
+                continue;
+            }
+            if let Some(method) = lowered.get(index + 1) {
+                if CURL_REMOTE_WRITE_METHODS.contains(&method.as_str()) {
+                    return Some("PowerShell Web 请求方法可能修改远端状态。".to_string());
+                }
+            }
+        }
+    }
+    None
+}

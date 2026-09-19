@@ -2,13 +2,14 @@
 //!
 //! 期望值来自 Python 真实现：`python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json` 的 `read_only_commands` 段（直接调私有判定函数）。
-//! 本套件用同一批输入重放 Rust 实现，比对可执行名、命令分段与两类写入判定。
+//! 本套件用同一批输入重放 Rust 实现，比对可执行名、命令分段、两类写入判定、
+//! 单段只读判定与策略入口。
 
 use omnicrawl_controllers::subagents::read_only::{
     browser_cli_denial_reason, curl_denial_reason, normalized_executable,
-    read_only_command_denial_reason, split_shell_segments,
+    read_only_command_denial_reason, segment_denial_reason, split_shell_segments,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 const FIXTURE: &str = include_str!("fixtures/controllers_parity.json");
 
@@ -24,6 +25,24 @@ fn strings(value: &Value) -> Vec<String> {
         .iter()
         .map(|item| item.as_str().expect("字符串").to_string())
         .collect()
+}
+
+/// 与 Python 侧一致的 shell 选择：`monitor` 看 `shell` 参数（缺省 powershell），其余用工具名。
+fn shell_for(tool_name: &str, arguments: &Map<String, Value>) -> String {
+    if tool_name != "monitor" {
+        return tool_name.to_string();
+    }
+    let raw = arguments
+        .get("shell")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    if raw.is_empty() {
+        "powershell".to_string()
+    } else {
+        raw
+    }
 }
 
 #[test]
@@ -87,17 +106,32 @@ fn browser_cli_denial_reason_matches_python() {
 }
 
 #[test]
+fn segment_denial_reason_matches_python() {
+    let data = section();
+    for case in data["segment"].as_array().expect("segment") {
+        let label = case["label"].as_str().expect("label");
+        let segment = case["segment"].as_str().expect("segment");
+        let shell = case["shell"].as_str().expect("shell");
+        assert_eq!(
+            segment_denial_reason(segment, shell).unwrap_or_default(),
+            case["reason"].as_str().expect("reason"),
+            "单段只读判定（{label}）"
+        );
+    }
+}
+
+#[test]
 fn read_only_entry_matches_python() {
     let data = section();
     for case in data["entry"].as_array().expect("entry") {
         let label = case["label"].as_str().expect("label");
         let arguments = case["arguments"].as_object().expect("arguments");
-        // 逐 token 判定依赖 shlex，这里注入「总是放行」的桩；用例都选了段判定会通过的命令。
-        let produced = read_only_command_denial_reason(
-            case["tool_name"].as_str().expect("tool_name"),
-            arguments,
-            |_segment| None,
-        );
+        let tool_name = case["tool_name"].as_str().expect("tool_name");
+        let shell = shell_for(tool_name, arguments);
+        // 逐 token 判定已搬，这里用真实现当闭包。
+        let produced = read_only_command_denial_reason(tool_name, arguments, |segment| {
+            segment_denial_reason(segment, &shell)
+        });
         assert_eq!(
             produced,
             case["reason"].as_str().expect("reason"),
