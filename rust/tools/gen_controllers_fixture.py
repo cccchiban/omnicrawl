@@ -7156,6 +7156,174 @@ def tool_impl_cases() -> dict:
     return {"todos": todos, "ask_user": ask_cases, "memory_scope": scope_cases}
 
 
+# ----------------------------------------------------------------- approval flow
+
+
+def approval_flow_cases() -> dict:
+    """审批与执行编排：阶段轨迹、落盘事件载荷、展示文本、生效模式。"""
+
+    from omnicrawl.agent.controllers.plugins import PluginHooksMixin
+    from omnicrawl.agent.controllers.tools import approval as approval_module
+    from omnicrawl.agent.controllers.tools.approval import ToolApprovalMixin
+    from omnicrawl.agent.types import ToolDefinition, ToolResult
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.trace: list[str] = []
+
+        def note(self, label: str) -> None:
+            self.trace.append(label)
+
+    hook_labels = {
+        "tool.call.before": "plugin_call_before",
+        "tool.approval.before": "plugin_approval_before",
+        "tool.approval.after": "plugin_approval_after",
+        "tool.execute.before": "plugin_execute_before",
+        "tool.execute.after": "plugin_execute_after",
+        "tool.execute.error": "plugin_execute_error",
+    }
+
+    class _Manager:
+        """插件管理器桩：按需让指定 Hook 返回 denied。"""
+
+        def __init__(self, recorder: _Recorder, denied_hook: str | None) -> None:
+            self._recorder = recorder
+            self._denied = denied_hook
+
+        def dispatch(self, hook_name, data, session_id=None, turn_id=None):
+            self._recorder.note(hook_labels.get(hook_name, "plugin_unknown"))
+            if hook_name == self._denied:
+                return SimpleNamespace(denied=True, payload=data)
+            return SimpleNamespace(denied=False, payload=data)
+
+    class _Probe(ToolApprovalMixin, PluginHooksMixin):
+        @staticmethod
+        def _is_turn_cancel_exception(exc):
+            # 取消判定属回合控制流，这里只测执行段的错误路径。
+            return False
+
+        def _confirm(self, tool_name, arguments):
+            self.__dict__.setdefault("_confirm_trace", []).append(tool_name)
+            return bool(self.__dict__.get("_confirm_answer", True))
+
+    def make_tool(
+        recorder: _Recorder, name: str, fail: str | None, full: str = "展示输出"
+    ) -> ToolDefinition:
+        def run(arguments):
+            recorder.note("tool_run")
+            if fail is not None:
+                raise RuntimeError(fail)
+            return ToolResult(ok=True, output="模型可见输出", full_output=full)
+
+        return ToolDefinition(
+            name=name,
+            description="桩工具",
+            argument_schema="{}",
+            requires_confirmation=True,
+            run=run,
+        )
+
+    flow_cases = []
+    for label, mode, tool_name, denied_hook, schema_issues, confirm_ok, run_fail, full_output in [
+        ("auto 放行", "auto", "read", None, [], True, None, "展示输出"),
+        ("call.before 拒绝", "auto", "read", "tool.call.before", [], True, None, "展示输出"),
+        ("schema 失败", "auto", "read", None, [{"path": "arguments", "message": "必填字段缺失"}], True, None, "展示输出"),
+        ("approval.before 拒绝", "auto", "read", "tool.approval.before", [], True, None, "展示输出"),
+        ("manual 确认取消", "manual", "bash", None, [], False, None, "展示输出"),
+        ("执行前拒绝", "auto", "read", "tool.execute.before", [], True, None, "展示输出"),
+        ("执行抛错", "auto", "read", None, [], True, "boom", "展示输出"),
+        ("展示文本回落", "auto", "read", None, [], True, None, ""),
+    ]:
+        recorder = _Recorder()
+        probe = _Probe()
+        probe.config = SimpleNamespace(approval_mode=mode)
+        probe._plugin_manager = _Manager(recorder, denied_hook)
+        probe._mcp_manager = None
+        probe._confirm_answer = confirm_ok
+        events: list[dict] = []
+
+        def record_event(event_type, payload, _events=events, _recorder=recorder):
+            _events.append({"type": event_type, "payload": payload})
+            _recorder.note("event:%s" % event_type)
+
+        probe._append_session_event = record_event
+        arguments = {"command": "rm -rf build"} if tool_name == "bash" else {"path": "a.txt"}
+        tool = make_tool(recorder, tool_name, run_fail, full_output)
+        original_approve = ToolApprovalMixin._approve_tool_call
+
+        def traced_approve(self, tool_definition, tool_arguments, _original=original_approve):
+            recorder.note("decision")
+            return _original(self, tool_definition, tool_arguments)
+
+        with (
+            mock.patch.object(
+                approval_module,
+                "public_tool_arguments",
+                lambda name, args: dict(args),
+            ),
+            mock.patch.object(
+                approval_module,
+                "validate_tool_arguments",
+                lambda tool_definition, args, _issues=schema_issues, _recorder=recorder: (
+                    _recorder.note("schema_validation"),
+                    list(_issues),
+                )[1],
+            ),
+            mock.patch.object(ToolApprovalMixin, "_approve_tool_call", traced_approve),
+        ):
+            rejected = probe._approve_tool_for_batch(tool, dict(arguments))
+            executed = None
+            if rejected is None:
+                executed = probe._execute_approved_tool(tool, dict(arguments))
+        flow_cases.append(
+            {
+                "label": label,
+                "mode": mode,
+                "tool": tool_name,
+                "arguments": arguments,
+                "denied_hook": denied_hook,
+                "schema_issues": list(schema_issues),
+                "confirm_answer": confirm_ok,
+                "run_failure": run_fail,
+                "full_output_input": full_output,
+                "rejected": rejected is not None,
+                "reject_output": rejected.output if rejected is not None else None,
+                "executed": executed is not None,
+                "result_ok": executed.ok if executed is not None else None,
+                "output": executed.output if executed is not None else None,
+                "full_output": executed.full_output if executed is not None else None,
+                "trace": recorder.trace,
+                "events": events,
+            }
+        )
+
+    mode_cases = []
+    for label, override, configured in [
+        ("线程覆盖优先", "auto", "manual"),
+        ("无覆盖用配置", None, "review"),
+        ("空覆盖回落配置", "", "manual"),
+        ("配置缺失回落 review", None, None),
+    ]:
+        probe = _Probe()
+        probe._approval_mode_local = (
+            SimpleNamespace(mode=override) if override is not None else None
+        )
+        config = SimpleNamespace()
+        if configured is not None:
+            config.approval_mode = configured
+        probe.config = config
+        mode_cases.append(
+            {
+                "label": label,
+                "override": override,
+                "configured": configured,
+                "mode": probe._effective_approval_mode(),
+            }
+        )
+
+    return {"flow": flow_cases, "mode": mode_cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7181,6 +7349,7 @@ def main() -> None:
             "store": store_cases(),
             "lifecycle": lifecycle_cases(),
             "tool_impl": tool_impl_cases(),
+            "approval_flow": approval_flow_cases(),
         "turn_loop": turn_loop_cases(),
         }
 

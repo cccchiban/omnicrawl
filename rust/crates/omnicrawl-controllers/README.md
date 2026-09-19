@@ -17,7 +17,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/memory/stores.py` | `src/memory.rs` | 三类作用域记忆目录解析、会话级记忆清理 |
 | `controllers/session/settings.py`、`config/features/{approval,tools,subagents}.py` | `src/settings.rs` | 审批模式与推理强度归一化、压缩阈值换算、工具开关名与禁用集合、SubAgent 资源参数校验、`set_model` 选择串 |
 | `controllers/session/control.py` | `src/control.rs` | 插件子系统状态文案、退出收尾动作、关闭/停用前的排空决策、关闭阶段顺序与关闭回调处置、隔离收尾摘要、父 Session 切换排空 |
-| `controllers/tools/approval.py`、`agent/toolkit/approval_policy.py` | `src/approval.rs` | 审批归属判定、shell 命令分流、git 风险分级、删除意图、审查结论解析与失败文案 |
+| `controllers/tools/approval.py`、`agent/toolkit/approval_policy.py` | `src/approval.rs` | 审批归属判定、shell 命令分流、git 风险分级、删除意图、审查结论解析与失败文案、审批/执行阶段顺序、落盘事件载荷、生效模式与展示文本 |
 | `agent/context_compaction/*.py` | `src/context_compaction/` | 上下文 Token 估算、回合预算测量、压缩批次与超限恢复批次、自动压缩决策、结构化摘要校验、投影、测量账本、摘要授权的事件证据恢复、结构化摘要生成与压缩编排 |
 | `controllers/advisor.py` | `src/advisor.rs` | 顾问可用性判定、消息分支（剥孤儿调用 + user 尾）、工具清单、结果信封与错误文案 |
 | `controllers/plugins.py` | `src/plugins.rs` | Hook fail-closed 判定、拒绝事实与文案、分发结局归一化、会话生命周期 Hook 名 |
@@ -41,8 +41,9 @@ git 快照能力由宿主实现，crate 内不起子进程。
 以下内容依赖宿主对象或多子系统协作，留在 Python 侧；后续批次按依赖顺序收口：
 
 - `tools/approval.py` 的编排段：插件钩子（`tool.call.before` / `tool.approval.before` /
-  `tool.execute.before` 等）、审查模型的 Responses 请求、用户确认面板、会话事件持久化；
-  判定件（`agent/toolkit/approval_policy.py` 的全部规则）已在 `src/approval.rs`。
+  `tool.execute.before` 等）、审查模型的 Responses 请求、用户确认面板、会话事件持久化。
+  判定件（`agent/toolkit/approval_policy.py` 的全部规则）与编排契约（阶段顺序、事件载荷、
+  生效模式、展示文本回落）已在 `src/approval.rs`；剩下的是真实的钩子调用、模型请求与落盘。
 - `tools/building.py` 的 `_build_tools` / `_build_mcp_tools`：工具表构建，依赖
   `agent/toolkit/tools.py`。
 - `tools/implementations.py`：工具实现本体（属 `agent/toolkit/`）。判定面（清单投影、`ask_user` 入参、
@@ -79,7 +80,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 873 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 885 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -97,7 +98,9 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 落盘与未落盘事件各自的投影方式），以及会话生命周期编排 20 例（`tests/lifecycle_parity.rs`：
 用探针真跑 `close()` 得到的阶段轨迹、关闭回调处置、隔离收尾摘要与回调条件、父 Session 切换排空、
 `set_model` 选择串、undo 回退的失败包装文案），以及工具实现判定面 22 例（`tests/tool_impl_parity.rs`：
-清单投影与输出文本、`ask_user` 三条拒绝文案与回答信封、记忆 `scope` 解析与未启用文案）。
+清单投影与输出文本、`ask_user` 三条拒绝文案与回答信封、记忆 `scope` 解析与未启用文案），
+以及审批编排 12 例（`tests/approval_flow_parity.rs`：真跑 `_approve_tool_for_batch` /
+`_execute_approved_tool` 得到的阶段轨迹与短路点、落盘事件载荷、生效模式、展示文本回落）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内
@@ -146,6 +149,8 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 19. 隔离收尾摘要：Python 不返回摘要，只在满足回调条件时把摘要交给 `on_finalized`；因此「不满足
     回调条件」的用例里摘要文本无从观察，`finalize_isolation_summary` 只对照回调条件，摘要按语义
     （会话不参与、子任务为空即空串）成立。
+20. 生效审批模式：Python 的 `getattr(config, "approval_mode", REVIEW)` 在「属性存在但值为 `None`」
+    时会返回 `None`；内核用 `Option<&str>` 表达「未配置」，这种取值未纳入对照。
 
 ## 验证
 

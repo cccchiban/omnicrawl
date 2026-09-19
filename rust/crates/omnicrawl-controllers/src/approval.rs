@@ -1475,3 +1475,114 @@ fn read_subcommand(chars: &[char], from: usize) -> Option<(String, usize)> {
     }
     Some((chars[cursor..end].iter().collect(), end))
 }
+
+// ------------------------------------------------------------------ 审批编排
+
+/// 审批流程的阶段序列：顺序即契约，宿主按此推进并在失败点短路。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalPhase {
+    /// `tool.call.before`：插件可改参数或拒绝。
+    PluginCallBefore,
+    /// Host Schema 校验。
+    SchemaValidation,
+    /// `tool.approval.before`：插件只能拒绝，不能代表用户批准。
+    PluginApprovalBefore,
+    /// 审批结论：自动放行 / 交审查模型 / 人工确认。
+    Decision,
+    /// `tool.approval.after`：通知审批结果（批准与拒绝各一次）。
+    PluginApprovalAfter,
+}
+
+impl ApprovalPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            ApprovalPhase::PluginCallBefore => "plugin_call_before",
+            ApprovalPhase::SchemaValidation => "schema_validation",
+            ApprovalPhase::PluginApprovalBefore => "plugin_approval_before",
+            ApprovalPhase::Decision => "decision",
+            ApprovalPhase::PluginApprovalAfter => "plugin_approval_after",
+        }
+    }
+}
+
+pub const APPROVAL_PHASES: [ApprovalPhase; 5] = [
+    ApprovalPhase::PluginCallBefore,
+    ApprovalPhase::SchemaValidation,
+    ApprovalPhase::PluginApprovalBefore,
+    ApprovalPhase::Decision,
+    ApprovalPhase::PluginApprovalAfter,
+];
+
+/// 已批准工具的执行阶段；工具抛错时在 `ToolRun` 之后插入 `PluginExecuteError`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionPhase {
+    PluginExecuteBefore,
+    ToolRun,
+    PluginExecuteError,
+    PluginExecuteAfter,
+}
+
+impl ExecutionPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            ExecutionPhase::PluginExecuteBefore => "plugin_execute_before",
+            ExecutionPhase::ToolRun => "tool_run",
+            ExecutionPhase::PluginExecuteError => "plugin_execute_error",
+            ExecutionPhase::PluginExecuteAfter => "plugin_execute_after",
+        }
+    }
+}
+
+/// 正常执行路径；异常路径在此之上多一个 `PluginExecuteError`。
+pub const EXECUTION_PHASES: [ExecutionPhase; 3] = [
+    ExecutionPhase::PluginExecuteBefore,
+    ExecutionPhase::ToolRun,
+    ExecutionPhase::PluginExecuteAfter,
+];
+
+/// 当前线程实际生效的审批模式：线程本地覆盖优先，其次配置值，配置缺失回落 review。
+pub fn effective_approval_mode(override_mode: Option<&str>, configured: Option<&str>) -> String {
+    if let Some(mode) = override_mode.filter(|value| !value.is_empty()) {
+        return mode.to_string();
+    }
+    configured
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::settings::APPROVAL_MODE_REVIEW.to_string())
+}
+
+/// 拒绝落盘的事件载荷（`tool_call_denied`）。
+pub fn denied_event_payload(tool: &str, arguments: &Value, reason: &str) -> Value {
+    serde_json::json!({
+        "tool": tool,
+        "arguments": arguments,
+        "reason": reason,
+    })
+}
+
+/// 批准落盘的事件载荷（`tool_call_approved`）。
+pub fn approved_event_payload(tool: &str, arguments: &Value, mode: &str) -> Value {
+    serde_json::json!({
+        "tool": tool,
+        "arguments": arguments,
+        "mode": mode,
+    })
+}
+
+/// `tool.execute.after` 的载荷；插件可用它改写展示文本。
+pub fn execute_after_payload(tool: &str, ok: bool, display_text: &str) -> Value {
+    serde_json::json!({
+        "tool": tool,
+        "ok": ok,
+        "displayText": display_text,
+        "annotations": {},
+    })
+}
+
+/// 展示文本：`full_output` 非空时优先，否则回落模型可见输出。
+pub fn display_text(full_output: &str, output: &str) -> String {
+    if full_output.is_empty() {
+        output.to_string()
+    } else {
+        full_output.to_string()
+    }
+}
