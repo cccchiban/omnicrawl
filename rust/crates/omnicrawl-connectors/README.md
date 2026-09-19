@@ -28,6 +28,7 @@ src/
     ├── render.rs           # 工具摘要/正文、文件变更预览、计划与子任务文本、卡片 JSON
     ├── files.rs            # 资源分类、临时目录落盘、post 富文本与 [FILE:] 标记
     ├── dedupe.rs           # 进程内去重与跨重启指纹（sha256 前 32 位）
+    ├── inbox.rs            # 持久入站队列：pending 落盘与重放、done 去重与紧凑化、纯内存降级
     ├── timeline.rs         # 时间线条目：正文/工具/思考/计划/子任务各自独立成消息
     ├── api.rs              # 开放接口：租户令牌缓存、消息创建/更新、资源下载、长连接端点
     ├── ws.rs               # 长连接：pbbp2 帧编解码、WebSocket 握手与帧收发、重连退避
@@ -41,6 +42,7 @@ Python 侧是语义基准，期望值由脚本在**真实现**上跑出来：
 ```bash
 python rust/tools/gen_connectors_telegram_fixture.py
 python rust/tools/gen_connectors_feishu_fixture.py
+python rust/tools/gen_feishu_inbox_fixture.py
 cd rust && cargo test -p omnicrawl-connectors
 ```
 
@@ -58,12 +60,24 @@ cd rust && cargo test -p omnicrawl-connectors
 `tests/feishu_bot.rs` 另外用桩件跑编排：白名单、消息去重、命令分发、正文/工具卡片序列、
 审批与取消的等待语义、提问卡片与文本回答的唤醒。
 
+## 飞书入站持久队列（`feishu/inbox.rs`）
+
+对齐 Python `omnicrawl/connectors/feishu_inbox.py`：`enqueue` 先落盘（`pending.jsonl`）再登记内存，
+重启后 `recover` 回放尚未确认的事件；去重键走 `done.jsonl`（24 小时窗口，跨进程生效）；
+`confirm` 因 JSONL 追加写而全量重写 pending；启动时 `done` 超过上限就按最新 ts 紧凑化；
+目录不可写或写失败时降级为纯内存模式（进程内仍去重、不再跨重启持久化），绝不阻断消息接收。
+
+与 Python 的差异：日志由调用方决定怎么记（内核连接器没有 logging 设施）；文件句柄按次打开而不是
+常驻（都是追加写 + flush，写失败即降级）；追加行是紧凑 JSON、紧凑化后的 done 行才是默认分隔符，
+两处都与 Python 逐字节对齐（`tests/fixtures/feishu_inbox_parity.json` 会比对落盘字节）。
+
+`tests/feishu_inbox_parity.json` 共 6 个场景：基本往返（含重投与空键）、重启回放、窗口过期、
+启动紧凑化、纯内存降级、损坏文件（坏行 / 旧版本 / 缺字段 / 过期 / 非对象 payload）。
+
 改任一侧实现都要重跑生成脚本再跑测试；卡片负载按**字符串**比对，缩进与分隔符也是契约。
 
 ## 尚未移植
 
-- `feishu_inbox.py` 的**持久**入站队列（`pending.jsonl` 跨重启重放、`done.jsonl` 紧凑化、
-  24 小时窗口去重）：当前只有进程内去重、跨重启指纹与进程内排队。
 - 飞书文件上传与 `[FILE:...]` 标记发文件（`_upload_image` / `_upload_file` /
   `_send_local_file` / `_send_generated_files`）：出站只发文本与卡片。
 - `connectors/autostart.py` 的子进程自动启动与单例锁：与 TUI 生命周期绑定，等宿主侧编排

@@ -8,6 +8,7 @@ pub mod bot;
 pub mod config;
 pub mod dedupe;
 pub mod files;
+pub mod inbox;
 pub mod render;
 pub mod text;
 pub mod timeline;
@@ -22,6 +23,9 @@ pub use dedupe::{inbox_dedupe_key, SeenMessages, DEDUP_MAX_ENTRIES, DEDUP_TTL_SE
 pub use files::{
     classify_filename, file_marker_paths, post_text_and_images, resolve_temp_destination,
     resource_file_key, resource_file_name, FILE_TYPE_MAP, MESSAGE_RESOURCE_TYPES,
+};
+pub use inbox::{
+    FeishuInbox, InboxRecord, DEFAULT_COMPACT_KEEP, DEFAULT_DEDUP_TTL_SECONDS, DEFAULT_MAX_RECORDS,
 };
 pub use render::{
     card_json, format_duration, format_elapsed, markdown_card, normalize_todos, question_card_json,

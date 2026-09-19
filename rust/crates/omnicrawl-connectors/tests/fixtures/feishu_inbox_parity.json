@@ -1,0 +1,732 @@
+[
+  {
+    "label": "basic_cycle",
+    "config": {
+      "ttl": 86400.0,
+      "max_records": 10000,
+      "compact_keep": 2000
+    },
+    "ops": [
+      {
+        "op": "enqueue",
+        "event_id": "e1",
+        "dedupe_key": "k1",
+        "payload": {
+          "text": "一"
+        }
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e2",
+        "dedupe_key": "k1",
+        "payload": {
+          "text": "重投"
+        }
+      },
+      {
+        "op": "enqueue",
+        "event_id": "  ",
+        "dedupe_key": null,
+        "payload": {}
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e3",
+        "dedupe_key": null,
+        "payload": {
+          "text": "三"
+        }
+      },
+      {
+        "op": "pending_count"
+      },
+      {
+        "op": "count_done"
+      },
+      {
+        "op": "recover"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "k1"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "e3"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "  "
+      },
+      {
+        "op": "confirm",
+        "key": "k1"
+      },
+      {
+        "op": "pending_count"
+      },
+      {
+        "op": "recover"
+      },
+      {
+        "op": "close"
+      }
+    ],
+    "results": [
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "enqueue",
+        "value": false
+      },
+      {
+        "op": "enqueue",
+        "value": false
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "pending_count",
+        "value": 2
+      },
+      {
+        "op": "count_done",
+        "value": 2
+      },
+      {
+        "op": "recover",
+        "value": [
+          {
+            "seq": 1,
+            "event_id": "e1",
+            "dedupe_key": "k1",
+            "payload": {
+              "text": "一"
+            },
+            "created_at": 1000.0,
+            "version": 1
+          },
+          {
+            "seq": 2,
+            "event_id": "e3",
+            "dedupe_key": "e3",
+            "payload": {
+              "text": "三"
+            },
+            "created_at": 1000.0,
+            "version": 1
+          }
+        ]
+      },
+      {
+        "op": "is_duplicate",
+        "value": true
+      },
+      {
+        "op": "is_duplicate",
+        "value": true
+      },
+      {
+        "op": "is_duplicate",
+        "value": false
+      },
+      {
+        "op": "confirm",
+        "value": null
+      },
+      {
+        "op": "pending_count",
+        "value": 1
+      },
+      {
+        "op": "recover",
+        "value": [
+          {
+            "seq": 2,
+            "event_id": "e3",
+            "dedupe_key": "e3",
+            "payload": {
+              "text": "三"
+            },
+            "created_at": 1000.0,
+            "version": 1
+          }
+        ]
+      },
+      {
+        "op": "close",
+        "value": null
+      }
+    ],
+    "files": {
+      "pending.jsonl": "{\"version\":1,\"seq\":2,\"event_id\":\"e3\",\"dedupe_key\":\"e3\",\"created_at\":1000.0,\"payload\":{\"text\":\"三\"}}\n",
+      "done.jsonl": "{\"key\":\"k1\",\"ts\":1000.0}\n{\"key\":\"e3\",\"ts\":1000.0}\n",
+      "state.json": "{\"seq\": 2}"
+    }
+  },
+  {
+    "label": "restart_replay",
+    "config": {
+      "ttl": 86400.0,
+      "max_records": 10000,
+      "compact_keep": 2000
+    },
+    "ops": [
+      {
+        "op": "enqueue",
+        "event_id": "e1",
+        "dedupe_key": "k1",
+        "payload": {
+          "text": "一"
+        }
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e2",
+        "dedupe_key": "k2",
+        "payload": {
+          "text": "二"
+        }
+      },
+      {
+        "op": "close"
+      },
+      {
+        "op": "reopen"
+      },
+      {
+        "op": "pending_count"
+      },
+      {
+        "op": "count_done"
+      },
+      {
+        "op": "recover"
+      },
+      {
+        "op": "confirm",
+        "key": "k2"
+      },
+      {
+        "op": "close"
+      }
+    ],
+    "results": [
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "close",
+        "value": null
+      },
+      {
+        "op": "reopen",
+        "value": null
+      },
+      {
+        "op": "pending_count",
+        "value": 2
+      },
+      {
+        "op": "count_done",
+        "value": 2
+      },
+      {
+        "op": "recover",
+        "value": [
+          {
+            "seq": 1,
+            "event_id": "e1",
+            "dedupe_key": "k1",
+            "payload": {
+              "text": "一"
+            },
+            "created_at": 1000.0,
+            "version": 1
+          },
+          {
+            "seq": 2,
+            "event_id": "e2",
+            "dedupe_key": "k2",
+            "payload": {
+              "text": "二"
+            },
+            "created_at": 1000.0,
+            "version": 1
+          }
+        ]
+      },
+      {
+        "op": "confirm",
+        "value": null
+      },
+      {
+        "op": "close",
+        "value": null
+      }
+    ],
+    "files": {
+      "pending.jsonl": "{\"version\":1,\"seq\":1,\"event_id\":\"e1\",\"dedupe_key\":\"k1\",\"created_at\":1000.0,\"payload\":{\"text\":\"一\"}}\n",
+      "done.jsonl": "{\"key\":\"k1\",\"ts\":1000.0}\n{\"key\":\"k2\",\"ts\":1000.0}\n",
+      "state.json": "{\"seq\": 2}"
+    }
+  },
+  {
+    "label": "expiry_window",
+    "config": {
+      "ttl": 100.0,
+      "max_records": 10000,
+      "compact_keep": 2000
+    },
+    "ops": [
+      {
+        "op": "set_now",
+        "value": 1000.0
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e1",
+        "dedupe_key": "k1",
+        "payload": {}
+      },
+      {
+        "op": "set_now",
+        "value": 1050.0
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e2",
+        "dedupe_key": "k2",
+        "payload": {}
+      },
+      {
+        "op": "close"
+      },
+      {
+        "op": "set_now",
+        "value": 1120.0
+      },
+      {
+        "op": "reopen"
+      },
+      {
+        "op": "pending_count"
+      },
+      {
+        "op": "count_done"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "k1"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "k2"
+      },
+      {
+        "op": "close"
+      }
+    ],
+    "results": [
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "close",
+        "value": null
+      },
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "reopen",
+        "value": null
+      },
+      {
+        "op": "pending_count",
+        "value": 1
+      },
+      {
+        "op": "count_done",
+        "value": 1
+      },
+      {
+        "op": "is_duplicate",
+        "value": false
+      },
+      {
+        "op": "is_duplicate",
+        "value": true
+      },
+      {
+        "op": "close",
+        "value": null
+      }
+    ],
+    "files": {
+      "pending.jsonl": "{\"version\":1,\"seq\":1,\"event_id\":\"e1\",\"dedupe_key\":\"k1\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":2,\"event_id\":\"e2\",\"dedupe_key\":\"k2\",\"created_at\":1050.0,\"payload\":{}}\n",
+      "done.jsonl": "{\"key\":\"k1\",\"ts\":1000.0}\n{\"key\":\"k2\",\"ts\":1050.0}\n",
+      "state.json": "{\"seq\": 2}"
+    }
+  },
+  {
+    "label": "compact_on_load",
+    "config": {
+      "ttl": 86400.0,
+      "max_records": 3,
+      "compact_keep": 2
+    },
+    "ops": [
+      {
+        "op": "set_now",
+        "value": 1000.0
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e0",
+        "dedupe_key": "k0",
+        "payload": {}
+      },
+      {
+        "op": "set_now",
+        "value": 1001.0
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e1",
+        "dedupe_key": "k1",
+        "payload": {}
+      },
+      {
+        "op": "set_now",
+        "value": 1002.0
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e2",
+        "dedupe_key": "k2",
+        "payload": {}
+      },
+      {
+        "op": "set_now",
+        "value": 1003.0
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e3",
+        "dedupe_key": "k3",
+        "payload": {}
+      },
+      {
+        "op": "count_done"
+      },
+      {
+        "op": "close"
+      },
+      {
+        "op": "reopen"
+      },
+      {
+        "op": "count_done"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "k3"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "k1"
+      },
+      {
+        "op": "close"
+      }
+    ],
+    "results": [
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "count_done",
+        "value": 4
+      },
+      {
+        "op": "close",
+        "value": null
+      },
+      {
+        "op": "reopen",
+        "value": null
+      },
+      {
+        "op": "count_done",
+        "value": 2
+      },
+      {
+        "op": "is_duplicate",
+        "value": true
+      },
+      {
+        "op": "is_duplicate",
+        "value": false
+      },
+      {
+        "op": "close",
+        "value": null
+      }
+    ],
+    "files": {
+      "pending.jsonl": "{\"version\":1,\"seq\":1,\"event_id\":\"e0\",\"dedupe_key\":\"k0\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":2,\"event_id\":\"e1\",\"dedupe_key\":\"k1\",\"created_at\":1001.0,\"payload\":{}}\n{\"version\":1,\"seq\":3,\"event_id\":\"e2\",\"dedupe_key\":\"k2\",\"created_at\":1002.0,\"payload\":{}}\n{\"version\":1,\"seq\":4,\"event_id\":\"e3\",\"dedupe_key\":\"k3\",\"created_at\":1003.0,\"payload\":{}}\n",
+      "done.jsonl": "{\"key\": \"k3\", \"ts\": 1003.0}\n{\"key\": \"k2\", \"ts\": 1002.0}\n",
+      "state.json": "{\"seq\": 4}"
+    }
+  },
+  {
+    "label": "memory_only",
+    "config": {
+      "ttl": 86400.0,
+      "max_records": 10000,
+      "compact_keep": 2000,
+      "memory": true
+    },
+    "ops": [
+      {
+        "op": "memory_only"
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e1",
+        "dedupe_key": "k1",
+        "payload": {}
+      },
+      {
+        "op": "enqueue",
+        "event_id": "e1",
+        "dedupe_key": "k1",
+        "payload": {}
+      },
+      {
+        "op": "pending_count"
+      },
+      {
+        "op": "recover"
+      },
+      {
+        "op": "close"
+      }
+    ],
+    "results": [
+      {
+        "op": "memory_only",
+        "value": true
+      },
+      {
+        "op": "enqueue",
+        "value": true
+      },
+      {
+        "op": "enqueue",
+        "value": false
+      },
+      {
+        "op": "pending_count",
+        "value": 1
+      },
+      {
+        "op": "recover",
+        "value": [
+          {
+            "seq": 1,
+            "event_id": "e1",
+            "dedupe_key": "k1",
+            "payload": {},
+            "created_at": 1000.0,
+            "version": 1
+          }
+        ]
+      },
+      {
+        "op": "close",
+        "value": null
+      }
+    ],
+    "files": {
+      "pending.jsonl": null,
+      "done.jsonl": null,
+      "state.json": null
+    }
+  },
+  {
+    "label": "corrupted_pending",
+    "config": {
+      "ttl": 86400.0,
+      "max_records": 10000,
+      "compact_keep": 2000
+    },
+    "ops": [
+      {
+        "op": "set_now",
+        "value": 1000.0
+      },
+      {
+        "op": "write_file",
+        "name": "pending.jsonl",
+        "text": "{\"version\":1,\"seq\":1,\"event_id\":\"e1\",\"dedupe_key\":\"k1\",\"created_at\":1000.0,\"payload\":{}}\n{not json\n{\"version\":9,\"seq\":2,\"event_id\":\"e2\",\"dedupe_key\":\"k2\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":3,\"event_id\":\"\",\"dedupe_key\":\"k3\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":4,\"event_id\":\"e4\",\"dedupe_key\":\"\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":5,\"event_id\":\"e5\",\"dedupe_key\":\"k5\",\"created_at\":900.0,\"payload\":{\"text\":\"旧\"}}\n{\"version\":1,\"seq\":6,\"event_id\":\"e6\",\"dedupe_key\":\"k6\",\"created_at\":1000.0,\"payload\":\"不是对象\"}\n"
+      },
+      {
+        "op": "write_file",
+        "name": "done.jsonl",
+        "text": "{\"key\":\"k1\",\"ts\":1000.0}\n{\"key\":\"k1\",\"ts\":900.0}\n{not json\n{\"key\":\"  \",\"ts\":1000.0}\n{\"key\":\"old\",\"ts\":100.0}\n"
+      },
+      {
+        "op": "write_file",
+        "name": "state.json",
+        "text": "{\"seq\": 4}"
+      },
+      {
+        "op": "reopen"
+      },
+      {
+        "op": "pending_count"
+      },
+      {
+        "op": "count_done"
+      },
+      {
+        "op": "recover"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "k1"
+      },
+      {
+        "op": "is_duplicate",
+        "key": "old"
+      },
+      {
+        "op": "close"
+      }
+    ],
+    "results": [
+      {
+        "op": "set_now",
+        "value": null
+      },
+      {
+        "op": "write_file",
+        "value": null
+      },
+      {
+        "op": "write_file",
+        "value": null
+      },
+      {
+        "op": "write_file",
+        "value": null
+      },
+      {
+        "op": "reopen",
+        "value": null
+      },
+      {
+        "op": "pending_count",
+        "value": 2
+      },
+      {
+        "op": "count_done",
+        "value": 2
+      },
+      {
+        "op": "recover",
+        "value": [
+          {
+            "seq": 1,
+            "event_id": "e1",
+            "dedupe_key": "k1",
+            "payload": {},
+            "created_at": 1000.0,
+            "version": 1
+          },
+          {
+            "seq": 5,
+            "event_id": "e5",
+            "dedupe_key": "k5",
+            "payload": {
+              "text": "旧"
+            },
+            "created_at": 900.0,
+            "version": 1
+          }
+        ]
+      },
+      {
+        "op": "is_duplicate",
+        "value": true
+      },
+      {
+        "op": "is_duplicate",
+        "value": true
+      },
+      {
+        "op": "close",
+        "value": null
+      }
+    ],
+    "files": {
+      "pending.jsonl": "{\"version\":1,\"seq\":1,\"event_id\":\"e1\",\"dedupe_key\":\"k1\",\"created_at\":1000.0,\"payload\":{}}\n{not json\n{\"version\":9,\"seq\":2,\"event_id\":\"e2\",\"dedupe_key\":\"k2\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":3,\"event_id\":\"\",\"dedupe_key\":\"k3\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":4,\"event_id\":\"e4\",\"dedupe_key\":\"\",\"created_at\":1000.0,\"payload\":{}}\n{\"version\":1,\"seq\":5,\"event_id\":\"e5\",\"dedupe_key\":\"k5\",\"created_at\":900.0,\"payload\":{\"text\":\"旧\"}}\n{\"version\":1,\"seq\":6,\"event_id\":\"e6\",\"dedupe_key\":\"k6\",\"created_at\":1000.0,\"payload\":\"不是对象\"}\n",
+      "done.jsonl": "{\"key\":\"k1\",\"ts\":1000.0}\n{\"key\":\"k1\",\"ts\":900.0}\n{not json\n{\"key\":\"  \",\"ts\":1000.0}\n{\"key\":\"old\",\"ts\":100.0}\n",
+      "state.json": "{\"seq\": 5}"
+    }
+  }
+]
