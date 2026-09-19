@@ -145,3 +145,156 @@ pub fn subagent_cancel_reason(closing_agent: bool) -> &'static str {
 pub fn subagent_cancel_timeout() -> f64 {
     SUBAGENT_LIFECYCLE_WAIT_SECONDS
 }
+
+/// 关闭入口的守卫：已关闭或正在推迟关闭时直接返回。
+pub fn close_guard(closed: bool, closing: bool) -> bool {
+    closed || closing
+}
+
+/// 关闭流程的阶段序列：顺序即契约。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosePhase {
+    PluginHookBefore,
+    SessionClosedEvent,
+    PluginHookAfter,
+    McpManager,
+    MonitorManager,
+    TempWorkspace,
+    LlmClient,
+    RuntimeManager,
+    CloseCallbacks,
+}
+
+impl ClosePhase {
+    /// 与对照数据集共用的阶段标签。
+    pub fn label(self) -> &'static str {
+        match self {
+            ClosePhase::PluginHookBefore => "plugin_hook_before",
+            ClosePhase::SessionClosedEvent => "session_closed_event",
+            ClosePhase::PluginHookAfter => "plugin_hook_after",
+            ClosePhase::McpManager => "mcp_manager",
+            ClosePhase::MonitorManager => "monitor_manager",
+            ClosePhase::TempWorkspace => "temp_workspace",
+            ClosePhase::LlmClient => "llm_client",
+            ClosePhase::RuntimeManager => "runtime_manager",
+            ClosePhase::CloseCallbacks => "close_callbacks",
+        }
+    }
+}
+
+/// 关闭阶段：插件 Hook 与事件收尾成组，之后逐个关资源，最后跑回调。
+///
+/// 每步失败只记录、不中断后续步骤，全部走完后才把第一个错误抛给调用方。
+pub const CLOSE_PHASES: [ClosePhase; 9] = [
+    ClosePhase::PluginHookBefore,
+    ClosePhase::SessionClosedEvent,
+    ClosePhase::PluginHookAfter,
+    ClosePhase::McpManager,
+    ClosePhase::MonitorManager,
+    ClosePhase::TempWorkspace,
+    ClosePhase::LlmClient,
+    ClosePhase::RuntimeManager,
+    ClosePhase::CloseCallbacks,
+];
+
+/// 注册关闭回调的处置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseCallbackAction {
+    /// 已经关闭：立即执行，不再排队。
+    RunNow,
+    /// 还没关闭：排队，等关闭时执行。
+    Enqueue,
+}
+
+pub fn close_callback_action(closed: bool) -> CloseCallbackAction {
+    if closed {
+        CloseCallbackAction::RunNow
+    } else {
+        CloseCallbackAction::Enqueue
+    }
+}
+
+/// 隔离工作区与 SubAgent worktree 的收尾结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IsolationFinalize {
+    /// 收尾摘要（非空条目用「；」连接）。
+    pub summary: String,
+    /// 是否满足回调条件（宿主另有 `on_finalized` 时才真正回调）。
+    pub notify: bool,
+}
+
+pub const ISOLATION_FINALIZE_FAILED: &str = "隔离工作区收尾失败：";
+
+pub const SUBAGENT_WORKTREE_FINALIZE_FAILED: &str = "SubAgent worktree 收尾失败：";
+
+/// 拼接隔离收尾摘要，并给出是否触发回调。
+///
+/// `isolation` 只在会话存在时参与；`subagents` 的 `Ok` 值同时决定回调条件——
+/// 即使摘要为空，只要有 SubAgent 收尾动作就要通知（Python 用的是原值而非过滤后的摘要）。
+pub fn finalize_isolation_summary(
+    session_present: bool,
+    isolation: Option<Result<String, String>>,
+    subagents: Result<String, String>,
+) -> IsolationFinalize {
+    let mut summaries: Vec<String> = Vec::new();
+    if session_present {
+        match isolation {
+            Some(Ok(text)) => summaries.push(text),
+            Some(Err(message)) => summaries.push(format!("{ISOLATION_FINALIZE_FAILED}{message}")),
+            None => {}
+        }
+    }
+    let mut sub_summary = String::new();
+    match subagents {
+        Ok(text) => {
+            sub_summary = text;
+            if !sub_summary.is_empty() {
+                summaries.push(sub_summary.clone());
+            }
+        }
+        Err(message) => summaries.push(format!("{SUBAGENT_WORKTREE_FINALIZE_FAILED}{message}")),
+    }
+    let summary = summaries
+        .into_iter()
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join("；");
+    IsolationFinalize {
+        summary,
+        notify: session_present || !sub_summary.is_empty(),
+    }
+}
+
+/// 父 Session 切换失败时的固定文案。
+pub const SESSION_TRANSITION_DRAIN_FAILED: &str =
+    "父 Session 切换失败：仍有 SubAgent 子任务未在期限内退出，已保留当前会话和共享资源。";
+
+/// 父 Session 切换前对旧会话子任务的排空处置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionDrain {
+    /// 没有子任务编排器：不做事。
+    Skip,
+    /// 排空成功：恢复接单能力。
+    Resume,
+    /// 取消过程抛异常：先恢复接单，再原样抛出原异常。
+    ResumeAndReraise,
+    /// 未在期限内排空：先恢复接单，再按固定文案拒绝切换。
+    ResumeAndReject,
+}
+
+pub fn session_transition_drain(
+    has_coordinator: bool,
+    cancel_failed: bool,
+    drained: bool,
+) -> TransitionDrain {
+    if !has_coordinator {
+        return TransitionDrain::Skip;
+    }
+    if cancel_failed {
+        return TransitionDrain::ResumeAndReraise;
+    }
+    if !drained {
+        return TransitionDrain::ResumeAndReject;
+    }
+    TransitionDrain::Resume
+}

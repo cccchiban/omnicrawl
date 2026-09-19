@@ -6681,6 +6681,247 @@ def store_cases() -> dict:
     return {"ephemeral": ephemeral, "feed": feeds}
 
 
+# ------------------------------------------------------------------------ lifecycle
+
+
+def lifecycle_cases() -> dict:
+    """会话生命周期编排：关闭流程顺序、回调处置、隔离收尾、切换排空、模型选择。"""
+
+    from omnicrawl.agent.controllers.plugins import PluginHooksMixin
+    from omnicrawl.agent.controllers.session.control import SessionControlMixin
+    from omnicrawl.agent.controllers.session.settings import SessionSettingsMixin
+    from omnicrawl.agent.controllers.session.store import SessionStoreMixin
+    from omnicrawl.workspace import agent_isolation
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.trace: list[str] = []
+
+        def note(self, label: str) -> None:
+            self.trace.append(label)
+
+    class _Resource:
+        def __init__(self, recorder: _Recorder, label: str) -> None:
+            self._recorder = recorder
+            self._label = label
+
+        def close(self) -> None:
+            self._recorder.note(self._label)
+
+    class _Manager:
+        """插件管理器桩：只记录被派发到的生命周期 Hook。"""
+
+        def __init__(self, recorder: _Recorder) -> None:
+            self._recorder = recorder
+            self.enabled = True
+
+        def dispatch(self, hook_name, data, session_id=None, turn_id=None):
+            self._recorder.note(
+                "plugin_hook_before"
+                if hook_name == "session.close.before"
+                else "plugin_hook_after"
+            )
+            return SimpleNamespace(denied=False, payload=data)
+
+    class _Facade:
+        def __init__(self, recorder: _Recorder) -> None:
+            self._recorder = recorder
+
+        def current_session_id(self) -> str:
+            return ""
+
+        def append_session_event(self, event_type, payload):
+            self._recorder.note("session_closed_event")
+            return None
+
+        def discard_current_empty_session(self) -> None:
+            self._recorder.note("discard_empty")
+
+    class _Probe(PluginHooksMixin, SessionControlMixin, SessionStoreMixin):
+        pass
+
+    def run_close(closed: bool, closing: bool) -> dict:
+        recorder = _Recorder()
+        probe = _Probe()
+        probe._closed = closed
+        probe._closing = closing
+        probe.config = SimpleNamespace(agent_workspace=None)
+        probe._plugin_manager = _Manager(recorder)
+        probe._agent_session_facade = _Facade(recorder)
+        probe._session_state = SimpleNamespace(last_event_type="assistant_message")
+        probe._mcp_manager = _Resource(recorder, "mcp_manager")
+        probe._monitor_manager = _Resource(recorder, "monitor_manager")
+        probe._temp_workspace = _Resource(recorder, "temp_workspace")
+        probe._client = _Resource(recorder, "llm_client")
+        probe._runtime_manager = _Resource(recorder, "runtime_manager")
+        probe._close_callbacks = [lambda: recorder.note("close_callbacks")]
+        with mock.patch.object(agent_isolation, "finalize_subagent_worktrees", lambda: ""):
+            error = None
+            try:
+                probe.close()
+            except Exception as exc:  # noqa: BLE001 - 对照数据集要原样记录失败文案
+                error = str(exc)
+        # `discard_empty` 是会话收尾阶段内部的第二步，折叠进阶段标签后再对照。
+        trace = [item for item in recorder.trace if item != "discard_empty"]
+        return {
+            "trace": trace,
+            "closed_after": bool(probe._closed),
+            "closing_after": bool(probe._closing),
+            "client_none": probe._client is None,
+            "runtime_none": probe._runtime_manager is None,
+            "callbacks_cleared": list(probe._close_callbacks) == [],
+            "error": error,
+        }
+
+    close_cases = []
+    for label, closed_in, closing_in in [
+        ("已关闭不再进入", True, False),
+        ("正在推迟关闭不再进入", False, True),
+        ("正常关闭", False, False),
+    ]:
+        close_cases.append(
+            {
+                "label": label,
+                "closed_in": closed_in,
+                "closing_in": closing_in,
+                **run_close(closed_in, closing_in),
+            }
+        )
+
+    callback_cases = []
+    for label, closed in [("未关闭先入队", False), ("已关闭立即执行", True)]:
+        recorder = _Recorder()
+        probe = _Probe()
+        probe._closed = closed
+        probe._close_callbacks = []
+        probe.add_close_callback(lambda: recorder.note("callback"))
+        callback_cases.append(
+            {
+                "label": label,
+                "closed": closed,
+                "trace": recorder.trace,
+                "queued": len(probe._close_callbacks),
+            }
+        )
+
+    isolation_cases = []
+    for label, session_present, isolation_text, isolation_error, subagent_text, subagent_error in [
+        ("两边都成功", True, "隔离摘要", None, "子任务摘要", None),
+        ("隔离失败", True, None, "isolation boom", "", None),
+        ("只有子任务收尾", False, None, None, "子任务摘要", None),
+        ("子任务失败且无会话", False, None, None, None, "worktree boom"),
+        ("都没有内容", False, None, None, "", None),
+    ]:
+        recorder = _Recorder()
+        probe = _Probe()
+        probe.config = SimpleNamespace(
+            agent_workspace=SimpleNamespace(apply_on_exit=True, cleanup_on_exit="auto")
+        )
+        probe._isolation_session = object() if session_present else None
+        probe._isolation_on_finalized = lambda text: recorder.note("notify:%s" % text)
+
+        def fake_isolation(session, *, apply_on_exit, cleanup_on_exit, _text=isolation_text, _error=isolation_error):
+            if _error is not None:
+                raise RuntimeError(_error)
+            return _text
+
+        def fake_subagents(_text=subagent_text, _error=subagent_error):
+            if _error is not None:
+                raise RuntimeError(_error)
+            return _text
+
+        with (
+            mock.patch.object(agent_isolation, "finalize_isolation_session", fake_isolation),
+            mock.patch.object(agent_isolation, "finalize_subagent_worktrees", fake_subagents),
+        ):
+            probe._finalize_attached_isolation()
+        notified = [item[len("notify:") :] for item in recorder.trace if item.startswith("notify:")]
+        isolation_cases.append(
+            {
+                "label": label,
+                "session_present": session_present,
+                "isolation": (
+                    {"ok": True, "value": isolation_text}
+                    if isolation_error is None and isolation_text is not None
+                    else ({"ok": False, "error": isolation_error} if isolation_error else None)
+                ),
+                "subagents": (
+                    {"ok": True, "value": subagent_text}
+                    if subagent_error is None
+                    else {"ok": False, "error": subagent_error}
+                ),
+                "notified": bool(notified),
+                "summary": notified[0] if notified else None,
+            }
+        )
+
+    class _Coordinator:
+        def __init__(self, recorder: _Recorder, behavior: str) -> None:
+            self._recorder = recorder
+            self._behavior = behavior
+
+        def cancel_and_wait(self, *, reason, timeout_seconds, permanent):
+            self._recorder.note("cancel")
+            if self._behavior == "raise":
+                raise RuntimeError("cancel boom")
+            return self._behavior == "drained"
+
+        def resume_accepting_when_idle(self) -> None:
+            self._recorder.note("resume")
+
+    transition_cases = []
+    for label, has_coordinator, behavior in [
+        ("没有编排器", False, "drained"),
+        ("排空成功", True, "drained"),
+        ("取消抛异常", True, "raise"),
+        ("未在期限内排空", True, "pending"),
+    ]:
+        recorder = _Recorder()
+        probe = _Probe()
+        if has_coordinator:
+            probe._subagent_coordinator = _Coordinator(recorder, behavior)
+        error = None
+        try:
+            probe._cancel_subagents_for_session_transition("父 Session 正在切换。")
+        except Exception as exc:  # noqa: BLE001 - 原样记录失败文案
+            error = str(exc)
+        transition_cases.append(
+            {
+                "label": label,
+                "has_coordinator": has_coordinator,
+                "cancel_failed": behavior == "raise",
+                "drained": behavior == "drained",
+                "trace": recorder.trace,
+                "error": error,
+            }
+        )
+
+    class _SettingsProbe(SessionSettingsMixin):
+        pass
+
+    settings_cases = []
+    for label, value in [("空白模型 ID", "   "), ("空串模型 ID", "")]:
+        probe = _SettingsProbe()
+        probe.config = SimpleNamespace()
+        result = outcome(probe.set_model, value)
+        settings_cases.append(
+            {
+                "label": label,
+                "input": value,
+                "ok": result["ok"],
+                "error": result["error"],
+            }
+        )
+
+    return {
+        "close": close_cases,
+        "callback": callback_cases,
+        "isolation": isolation_cases,
+        "transition": transition_cases,
+        "settings": settings_cases,
+    }
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -6704,6 +6945,7 @@ def main() -> None:
             "compaction_orchestration": compaction_orchestration_cases(),
             "subagents": subagents_cases(),
             "store": store_cases(),
+            "lifecycle": lifecycle_cases(),
         "turn_loop": turn_loop_cases(),
         }
 

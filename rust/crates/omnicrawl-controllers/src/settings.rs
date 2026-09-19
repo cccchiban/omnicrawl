@@ -301,6 +301,15 @@ fn allowed_values(values: &[&str]) -> String {
 
 pub const MODEL_ID_REQUIRED: &str = "模型 ID 不能为空。";
 
+/// `set_model` 的选择串：去空白后为空即拒绝；允许 key / alias / `profile/model_id` 形态。
+pub fn model_selection(value: &str) -> Result<String, AgentError> {
+    let selection = value.trim();
+    if selection.is_empty() {
+        return Err(AgentError::new(MODEL_ID_REQUIRED));
+    }
+    Ok(selection.to_string())
+}
+
 pub const NATIVE_VISION_INVALID: &str = "模型原生视觉必须是布尔值或未配置。";
 
 pub const CURRENT_MODEL_MISSING: &str = "当前 Agent 缺少模型配置。";

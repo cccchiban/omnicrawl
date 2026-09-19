@@ -15,8 +15,8 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/undo.py` | `src/undo.rs` | undo 安全性判定、副作用账本、快照事件与恢复预检、快照路径防穿越 |
 | `controllers/workspace/switching.py`、`toolbox.py` | `src/workspace.rs` | 切换目标校验与拒绝文案、内部目录保护提示、截图目录 |
 | `controllers/memory/stores.py` | `src/memory.rs` | 三类作用域记忆目录解析、会话级记忆清理 |
-| `controllers/session/settings.py`、`config/features/{approval,tools,subagents}.py` | `src/settings.rs` | 审批模式与推理强度归一化、压缩阈值换算、工具开关名与禁用集合、SubAgent 资源参数校验 |
-| `controllers/session/control.py` | `src/control.rs` | 插件子系统状态文案、退出收尾动作、关闭/停用前的排空决策 |
+| `controllers/session/settings.py`、`config/features/{approval,tools,subagents}.py` | `src/settings.rs` | 审批模式与推理强度归一化、压缩阈值换算、工具开关名与禁用集合、SubAgent 资源参数校验、`set_model` 选择串 |
+| `controllers/session/control.py` | `src/control.rs` | 插件子系统状态文案、退出收尾动作、关闭/停用前的排空决策、关闭阶段顺序与关闭回调处置、隔离收尾摘要、父 Session 切换排空 |
 | `controllers/tools/approval.py`、`agent/toolkit/approval_policy.py` | `src/approval.rs` | 审批归属判定、shell 命令分流、git 风险分级、删除意图、审查结论解析与失败文案 |
 | `agent/context_compaction/*.py` | `src/context_compaction/` | 上下文 Token 估算、回合预算测量、压缩批次与超限恢复批次、自动压缩决策、结构化摘要校验、投影、测量账本、摘要授权的事件证据恢复、结构化摘要生成与压缩编排 |
 | `controllers/advisor.py` | `src/advisor.rs` | 顾问可用性判定、消息分支（剥孤儿调用 + user 尾）、工具清单、结果信封与错误文案 |
@@ -77,7 +77,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 831 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 847 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -92,7 +92,9 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 公开结果本地投影、后台通知注入、结果校验与定义缺失文案），以及回合接线 14 例（回调轨迹、
 两个端口的形参与批次步号、循环收到的消息、最终回复补发、用量累计、失败分类与取消检查点），
 以及会话事件投影编排 6 例（`tests/store_parity.rs`：内存事件的逐字段形状与序号推进、
-落盘与未落盘事件各自的投影方式）。
+落盘与未落盘事件各自的投影方式），以及会话生命周期编排 16 例（`tests/lifecycle_parity.rs`：
+用探针真跑 `close()` 得到的阶段轨迹、关闭回调处置、隔离收尾摘要与回调条件、父 Session 切换排空、
+`set_model` 选择串）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内
@@ -138,6 +140,9 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
     `None` 时会得到字符串 `"None"`；内核用 `Option<&str>` 表达「属性缺失」，这种取值未纳入对照。
 18. 内存事件序号：Python 的序号是任意精度整数，内核对 `u32` 饱和自增；该序号只在单轮内存事件里
     递增，溢出不可达。
+19. 隔离收尾摘要：Python 不返回摘要，只在满足回调条件时把摘要交给 `on_finalized`；因此「不满足
+    回调条件」的用例里摘要文本无从观察，`finalize_isolation_summary` 只对照回调条件，摘要按语义
+    （会话不参与、子任务为空即空串）成立。
 
 ## 验证
 

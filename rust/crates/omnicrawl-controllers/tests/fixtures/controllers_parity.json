@@ -680,7 +680,7 @@
       {
         "label": "无快照无副作用",
         "events": [],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -695,7 +695,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：context_compaction"
@@ -712,7 +712,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -736,7 +736,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": true,
         "decision": "none",
         "error": null
@@ -762,7 +762,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：bash"
@@ -786,7 +786,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：Edit_file"
@@ -803,7 +803,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "该旧轮次存在副作用但没有 Git 快照，已拒绝回退：bash"
@@ -816,7 +816,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpe9t3iwu_\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpn3zv6xxy\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -832,7 +832,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpe9t3iwu_\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpn3zv6xxy\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -844,7 +844,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "当前轮次包含多个 Git 快照事件，无法安全回退。"
@@ -857,7 +857,7 @@
             "payload": {
               "version": 1,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpe9t3iwu_\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpn3zv6xxy\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -869,7 +869,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮次使用旧版影子对象库快照（version 1），已随 git diff 重构移除，无法自动回退；请手工还原文件后重试。"
@@ -882,7 +882,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpe9t3iwu_\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpn3zv6xxy\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -894,7 +894,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "轮次快照的不可逆工具账本格式无效。"
@@ -907,7 +907,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpe9t3iwu_\\workspace",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpn3zv6xxy\\workspace",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -923,7 +923,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮执行了无法由 Git 证明可逆的操作，已拒绝整轮回退：bash"
@@ -936,7 +936,7 @@
             "payload": {
               "version": 2,
               "snapshot_id": "snap-2",
-              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpe9t3iwu_\\other",
+              "workspace": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpn3zv6xxy\\other",
               "begin_patch": "undo/begin.patch",
               "begin_untracked": "undo/begin.untracked.txt",
               "end_patch": "undo/end.patch",
@@ -948,7 +948,7 @@
             }
           }
         ],
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/workspace",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/workspace",
         "ok": false,
         "decision": null,
         "error": "该轮次的工作区与当前工作区不一致，已拒绝回退。"
@@ -958,31 +958,31 @@
       {
         "label": "正常相对路径",
         "relative": "undo/begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/undo/begin.patch",
         "error": null
       },
       {
         "label": "前后多余斜杠",
         "relative": "/undo/end.patch/",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/undo/end.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/undo/end.patch",
         "error": null
       },
       {
         "label": "反斜杠分隔",
         "relative": "undo\\begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/undo/begin.patch",
         "error": null
       },
       {
         "label": "空路径",
         "relative": "",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效："
@@ -990,7 +990,7 @@
       {
         "label": "仅斜杠",
         "relative": "///",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：///"
@@ -998,7 +998,7 @@
       {
         "label": "穿越到上一级",
         "relative": "../secret.txt",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：../secret.txt"
@@ -1006,7 +1006,7 @@
       {
         "label": "中间穿越",
         "relative": "undo/../../secret.txt",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": false,
         "value": null,
         "error": "快照文件路径无效：undo/../../secret.txt"
@@ -1014,43 +1014,43 @@
       {
         "label": "绝对路径",
         "relative": "/etc/passwd",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/etc/passwd",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/etc/passwd",
         "error": null
       },
       {
         "label": "当前目录段",
         "relative": "./undo/begin.patch",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/undo/begin.patch",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/undo/begin.patch",
         "error": null
       }
     ],
     "is_relative_to": [
       {
         "label": "子路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/a/b",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/a",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/a/b",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/a",
         "expected": true
       },
       {
         "label": "等值",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/a",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/a",
         "expected": true
       },
       {
         "label": "父路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/a/b",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/a/b",
         "expected": false
       },
       {
         "label": "根路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts/a",
-        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/artifacts",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts/a",
+        "parent": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/artifacts",
         "expected": true
       }
     ]
@@ -1059,12 +1059,12 @@
     "switch_workspace": [
       {
         "label": "目标就是当前工作区",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws",
         "ok": true,
-        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws",
+        "value": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws",
         "compare": "exact",
         "error_prefix": null,
         "error_suffix": null,
@@ -1072,36 +1072,36 @@
       },
       {
         "label": "目标不是目录",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/plain.txt",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/plain.txt",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws",
         "ok": false,
         "value": null,
         "compare": "suffix",
         "error_prefix": null,
         "error_suffix": " 不是目录。",
-        "error": "工作区切换失败：C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpe9t3iwu_\\plain.txt 不是目录。"
+        "error": "工作区切换失败：C:\\Users\\Administrator\\AppData\\Local\\Temp\\tmpn3zv6xxy\\plain.txt 不是目录。"
       },
       {
         "label": "路径不存在",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/nope",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/nope",
         "worktrees": [],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws",
         "ok": false,
         "value": null,
         "compare": "prefix",
         "error_prefix": "工作区切换失败：",
         "error_suffix": "无法解析，",
-        "error": "工作区切换失败：C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/nope 无法解析，[WinError 2] 系统找不到指定的文件。: 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\tmpe9t3iwu_\\\\nope'"
+        "error": "工作区切换失败：C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/nope 无法解析，[WinError 2] 系统找不到指定的文件。: 'C:\\\\Users\\\\Administrator\\\\AppData\\\\Local\\\\Temp\\\\tmpn3zv6xxy\\\\nope'"
       },
       {
         "label": "子任务未在期限内退出",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/other",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/other",
         "worktrees": [],
         "draining": true,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws",
         "ok": false,
         "value": null,
         "compare": "exact",
@@ -1111,7 +1111,7 @@
       },
       {
         "label": "有待处理 worktree",
-        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/other",
+        "target": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/other",
         "worktrees": [
           {
             "branch": "feat/a",
@@ -1131,7 +1131,7 @@
           }
         ],
         "draining": false,
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws",
         "ok": false,
         "value": null,
         "compare": "exact",
@@ -1166,20 +1166,20 @@
     "path_membership": [
       {
         "label": "根自身",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/memory-root",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/memory-root",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/memory-root",
         "expected": true
       },
       {
         "label": "子路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/memory-root/sub/m.md",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/memory-root/sub/m.md",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/memory-root",
         "expected": true
       },
       {
         "label": "外部路径",
-        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/elsewhere.md",
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/memory-root",
+        "path": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/elsewhere.md",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/memory-root",
         "expected": false
       }
     ]
@@ -1189,27 +1189,27 @@
       {
         "label": "工作区内相对目录",
         "directory": ".omnicrawl/.oclmemory",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws-mem",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws-mem",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws-mem/.omnicrawl/.oclmemory",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws-mem/.omnicrawl/.oclmemory",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata/User_memory",
         "error": null
       },
       {
         "label": "工作区内绝对目录",
-        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws-mem/inside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws-mem",
+        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws-mem/inside",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws-mem",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws-mem/inside",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws-mem/inside",
         "session_store_is_none": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata/User_memory",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata/User_memory",
         "error": null
       },
       {
         "label": "工作区外相对目录",
         "directory": "../outside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws-mem",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws-mem",
         "ok": false,
         "root": null,
         "session_store_is_none": null,
@@ -1218,13 +1218,13 @@
       },
       {
         "label": "工作区外绝对目录",
-        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/outside",
-        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/ws-mem",
+        "directory": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/outside",
+        "workspace": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/ws-mem",
         "ok": false,
         "root": null,
         "session_store_is_none": null,
         "user_root": null,
-        "error": "项目级记忆目录必须位于工作区内：C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/outside"
+        "error": "项目级记忆目录必须位于工作区内：C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/outside"
       }
     ],
     "session_store": [
@@ -1232,25 +1232,25 @@
         "label": "合法 ID",
         "session_id": "abc-1_2",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata/Session_memory/abc-1_2",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata/Session_memory/abc-1_2",
         "error": null
       },
       {
         "label": "带空格",
         "session_id": " abc ",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "ok": true,
-        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata/Session_memory/abc",
+        "root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata/Session_memory/abc",
         "error": null
       },
       {
         "label": "含非法字符",
         "session_id": "bad id!",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录：bad id!"
@@ -1259,7 +1259,7 @@
         "label": "以连字符开头",
         "session_id": "-abc",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录：-abc"
@@ -1268,7 +1268,7 @@
         "label": "空 ID",
         "session_id": "",
         "session_state": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "ok": false,
         "root": null,
         "error": "会话 ID 不能用于记忆目录："
@@ -1277,7 +1277,7 @@
         "label": "未启用会话",
         "session_id": "abc",
         "session_state": false,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "ok": true,
         "root": null,
         "error": null
@@ -1288,7 +1288,7 @@
         "label": "删除已存在目录",
         "session_id": "session-a",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "existed_before": true,
         "exists_after": false,
         "ok": true,
@@ -1298,7 +1298,7 @@
         "label": "目录不存在",
         "session_id": "session-missing",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "existed_before": false,
         "exists_after": false,
         "ok": true,
@@ -1308,7 +1308,7 @@
         "label": "记忆未启用",
         "session_id": "session-b",
         "memory_enabled": false,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "existed_before": true,
         "exists_after": true,
         "ok": true,
@@ -1318,7 +1318,7 @@
         "label": "ID 非法",
         "session_id": "bad id",
         "memory_enabled": true,
-        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata",
+        "user_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata",
         "existed_before": false,
         "exists_after": false,
         "ok": true,
@@ -1343,7 +1343,7 @@
         "error": "记忆系统未启用。"
       }
     ],
-    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmpe9t3iwu_/userdata/User_memory"
+    "user_memory_root": "C:/Users/Administrator/AppData/Local/Temp/tmpn3zv6xxy/userdata/User_memory"
   },
   "output": {
     "batch_budget": [
@@ -24571,6 +24571,192 @@
             }
           }
         ]
+      }
+    ]
+  },
+  "lifecycle": {
+    "close": [
+      {
+        "label": "已关闭不再进入",
+        "closed_in": true,
+        "closing_in": false,
+        "trace": [],
+        "closed_after": true,
+        "closing_after": false,
+        "client_none": false,
+        "runtime_none": false,
+        "callbacks_cleared": false,
+        "error": null
+      },
+      {
+        "label": "正在推迟关闭不再进入",
+        "closed_in": false,
+        "closing_in": true,
+        "trace": [],
+        "closed_after": false,
+        "closing_after": true,
+        "client_none": false,
+        "runtime_none": false,
+        "callbacks_cleared": false,
+        "error": null
+      },
+      {
+        "label": "正常关闭",
+        "closed_in": false,
+        "closing_in": false,
+        "trace": [
+          "plugin_hook_before",
+          "session_closed_event",
+          "plugin_hook_after",
+          "mcp_manager",
+          "monitor_manager",
+          "temp_workspace",
+          "llm_client",
+          "runtime_manager",
+          "close_callbacks"
+        ],
+        "closed_after": true,
+        "closing_after": false,
+        "client_none": true,
+        "runtime_none": true,
+        "callbacks_cleared": true,
+        "error": null
+      }
+    ],
+    "callback": [
+      {
+        "label": "未关闭先入队",
+        "closed": false,
+        "trace": [],
+        "queued": 1
+      },
+      {
+        "label": "已关闭立即执行",
+        "closed": true,
+        "trace": [
+          "callback"
+        ],
+        "queued": 0
+      }
+    ],
+    "isolation": [
+      {
+        "label": "两边都成功",
+        "session_present": true,
+        "isolation": {
+          "ok": true,
+          "value": "隔离摘要"
+        },
+        "subagents": {
+          "ok": true,
+          "value": "子任务摘要"
+        },
+        "notified": true,
+        "summary": "隔离摘要；子任务摘要"
+      },
+      {
+        "label": "隔离失败",
+        "session_present": true,
+        "isolation": {
+          "ok": false,
+          "error": "isolation boom"
+        },
+        "subagents": {
+          "ok": true,
+          "value": ""
+        },
+        "notified": true,
+        "summary": "隔离工作区收尾失败：isolation boom"
+      },
+      {
+        "label": "只有子任务收尾",
+        "session_present": false,
+        "isolation": null,
+        "subagents": {
+          "ok": true,
+          "value": "子任务摘要"
+        },
+        "notified": true,
+        "summary": "子任务摘要"
+      },
+      {
+        "label": "子任务失败且无会话",
+        "session_present": false,
+        "isolation": null,
+        "subagents": {
+          "ok": false,
+          "error": "worktree boom"
+        },
+        "notified": false,
+        "summary": null
+      },
+      {
+        "label": "都没有内容",
+        "session_present": false,
+        "isolation": null,
+        "subagents": {
+          "ok": true,
+          "value": ""
+        },
+        "notified": false,
+        "summary": null
+      }
+    ],
+    "transition": [
+      {
+        "label": "没有编排器",
+        "has_coordinator": false,
+        "cancel_failed": false,
+        "drained": true,
+        "trace": [],
+        "error": null
+      },
+      {
+        "label": "排空成功",
+        "has_coordinator": true,
+        "cancel_failed": false,
+        "drained": true,
+        "trace": [
+          "cancel",
+          "resume"
+        ],
+        "error": null
+      },
+      {
+        "label": "取消抛异常",
+        "has_coordinator": true,
+        "cancel_failed": true,
+        "drained": false,
+        "trace": [
+          "cancel",
+          "resume"
+        ],
+        "error": "cancel boom"
+      },
+      {
+        "label": "未在期限内排空",
+        "has_coordinator": true,
+        "cancel_failed": false,
+        "drained": false,
+        "trace": [
+          "cancel",
+          "resume"
+        ],
+        "error": "父 Session 切换失败：仍有 SubAgent 子任务未在期限内退出，已保留当前会话和共享资源。"
+      }
+    ],
+    "settings": [
+      {
+        "label": "空白模型 ID",
+        "input": "   ",
+        "ok": false,
+        "error": "模型 ID 不能为空。"
+      },
+      {
+        "label": "空串模型 ID",
+        "input": "",
+        "ok": false,
+        "error": "模型 ID 不能为空。"
       }
     ]
   },
