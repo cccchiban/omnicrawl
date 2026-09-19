@@ -5,7 +5,7 @@
 //! （`rules.rs` 的 11 条规则）→ 熵兜底（长度 / 字符类混合 / 香农熵，形态白名单优先跳过）。
 //! 命中值交给 `MaskContext::placeholder_for` 分配占位符；豁免表优先于命中。
 //!
-//! 内核不引入正则依赖：Python 侧的每条正则在这里都有一份手写等价实现（行首锚定的赋值、
+//! 值类型规则层是手写等价实现：Python 侧的每条正则在这里都有一份等价实现（行首锚定的赋值、
 //! 转义感知的 JSON 串、以及熵兜底的一整组形态判定）。
 //!
 //! 未搬：NER 语义兜底层（Python 侧可选依赖 torch + 5MB 权重，默认关闭）。
@@ -425,6 +425,8 @@ pub struct MaskContext<'a> {
     pub entropy_pure_letters: bool,
     pub entropy_pure_digits: bool,
     pub pattern_rules: &'a [PatternRule],
+    /// gitleaks 规则（运行时正则）：排在值类型规则之后，重叠区间由先命中者占位。
+    pub gitleaks_rules: &'a [super::gitleaks::GitleaksRule],
 }
 
 impl MaskContext<'_> {
@@ -510,22 +512,42 @@ pub fn mask_text(text: &str, ctx: &mut MaskContext<'_>) -> String {
 }
 
 /// 值类型规则层：命中区间替换为占位符（重叠区间由先命中的规则占位）。
+///
+/// 值类型规则（手写匹配器）排在 gitleaks 规则之前：与 Python 的 `build_enabled_rules` 顺序一致，
+/// gitleaks 命中只在不与前者重叠时才登记。
 fn mask_pattern_text(text: &str, ctx: &mut MaskContext<'_>) -> String {
-    let matches = scan_pattern_rules(text, ctx.pattern_rules);
-    if matches.is_empty() {
+    let pattern_hits = scan_pattern_rules(text, ctx.pattern_rules);
+    let mut hits: Vec<(usize, usize, String)> = pattern_hits
+        .iter()
+        .map(|hit| (hit.start, hit.end, hit.value.clone()))
+        .collect();
+    if !ctx.gitleaks_rules.is_empty() {
+        let mut accepted: Vec<(usize, usize)> = pattern_hits
+            .iter()
+            .map(|hit| (hit.start, hit.end))
+            .collect();
+        accepted.sort_by_key(|(start, _)| *start);
+        hits.extend(
+            super::gitleaks::scan_gitleaks_rules(text, ctx.gitleaks_rules, &mut accepted)
+                .into_iter()
+                .map(|hit| (hit.start, hit.end, hit.value)),
+        );
+        hits.sort_by_key(|(start, _, _)| *start);
+    }
+    if hits.is_empty() {
         return text.to_string();
     }
     let mut result = text.to_string();
-    for hit in matches.iter().rev() {
+    for (start, end, value) in hits.iter().rev() {
         let before = ctx.stats.values_masked;
-        let placeholder = match ctx.placeholder_for(&hit.value) {
+        let placeholder = match ctx.placeholder_for(value) {
             Some(placeholder) => placeholder,
             None => continue,
         };
         if ctx.stats.values_masked > before {
             ctx.stats.rules_masked += 1;
         }
-        result.replace_range(hit.start..hit.end, &placeholder);
+        result.replace_range(*start..*end, &placeholder);
     }
     result
 }

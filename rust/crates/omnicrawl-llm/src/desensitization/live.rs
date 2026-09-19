@@ -17,6 +17,7 @@ use omnicrawl_protocol::{
 };
 
 use super::engine::{MaskContext, SensitiveMatcher};
+use super::gitleaks::{load_rules, GitleaksRule};
 use super::rules::{build_enabled_rules, PatternRule};
 use super::stream::StreamRestorer;
 use super::{collect_placeholder_numbers, DesensitizationStats, SequenceRegistry};
@@ -41,6 +42,10 @@ pub struct DesensitizationOptions {
     pub entropy_pure_digits: bool,
     /// 值类型规则层要启用的类别（空集就是不启用该层）。
     pub rule_categories: Vec<String>,
+    /// gitleaks 规则表（Python 出厂默认开启；内核侧默认关，等配置层搬完再对齐）。
+    pub gitleaks_enabled: bool,
+    /// 自定义 gitleaks.toml 路径；`None` 用内嵌快照。
+    pub gitleaks_config_path: Option<String>,
     pub extra_sensitive_keys: Vec<String>,
     pub exempt_keys: Vec<String>,
 }
@@ -57,6 +62,8 @@ impl Default for DesensitizationOptions {
             entropy_pure_letters: false,
             entropy_pure_digits: false,
             rule_categories: Vec::new(),
+            gitleaks_enabled: false,
+            gitleaks_config_path: None,
             extra_sensitive_keys: Vec::new(),
             exempt_keys: Vec::new(),
         }
@@ -69,6 +76,7 @@ pub struct DesensitizationRuntime {
     options: DesensitizationOptions,
     matcher: SensitiveMatcher,
     rules: Vec<PatternRule>,
+    gitleaks_rules: Vec<GitleaksRule>,
     registry: Mutex<SequenceRegistry>,
     stats: Mutex<DesensitizationStats>,
 }
@@ -77,9 +85,15 @@ impl DesensitizationRuntime {
     pub fn new(inner: Box<dyn ModelRuntime>, options: DesensitizationOptions) -> Self {
         let categories: Vec<&str> = options.rule_categories.iter().map(String::as_str).collect();
         let matcher = SensitiveMatcher::new(&options.extra_sensitive_keys, &options.exempt_keys);
+        let gitleaks_rules = if options.gitleaks_enabled {
+            load_rules(options.gitleaks_config_path.as_deref())
+        } else {
+            Vec::new()
+        };
         Self {
             inner,
             rules: build_enabled_rules(&categories),
+            gitleaks_rules,
             matcher,
             registry: Mutex::new(SequenceRegistry::new()),
             stats: Mutex::new(DesensitizationStats::default()),
@@ -130,6 +144,7 @@ impl DesensitizationRuntime {
                 entropy_pure_letters: self.options.entropy_pure_letters,
                 entropy_pure_digits: self.options.entropy_pure_digits,
                 pattern_rules: &self.rules,
+                gitleaks_rules: &self.gitleaks_rules,
             };
             super::middleware::mask_messages(input.messages, &mut context)
         };

@@ -284,7 +284,7 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   网址、邮箱、银行卡（Luhn）、MAC 地址、大陆车牌、内外网 IP**，以及整套规则语义——关键字预过滤、
   熵下限（`shannon_entropy_bits`，求和顺序对齐 Python `Counter`，浮点逐位可比）、校验器、值级
   豁免表、停用词、尾部标点留在原文、重叠区间先命中先占位、结果按起点稳定排序。
-  内核**不引入正则依赖**（项目决定）：每条规则的正则等价物都是手写匹配器，含环视、交替分支各自的
+  本层每条规则的正则等价物都是手写匹配器（不引入运行时依赖），含环视、交替分支各自的
   尾部环视、贪婪量词与回溯（PEM 头尾的类字符段、域名「尽量多标签再退让」、本地部分 64 字符上界
   叠加左侧环视、ADO 键值里的惰性扫描）；IP 的私有 / 链路本地 / 公网判定按 Python `ipaddress`
   的常量表逐条对齐（IPv4 14 条私有网段 + 共享段 100.64/10，IPv6 10 条私有网段 + 链路本地 + 组播）。
@@ -316,10 +316,15 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   代价只是重复扫描）；计数分两层（周期计数在注册表里，屏蔽 / 还原计数在装饰器里）。
   未搬：`_MessageMaskMemo`（性能缓存）与 `_referenced_sequences`。
 
-尚未搬运：gitleaks 规则表（221 条正则与「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照。
-出厂配置里 `gitleaks_enabled = true`，因此**当前内核的默认规则集与 Python 出厂默认并不等价**，
-对照片按显式关掉 gitleaks 的裁剪结果对照）、`locality` 局部化扫描与扫描结果缓存
-（纯性能优化，不影响语义）、NER 语义兜底层（torch 依赖）。
+gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快照 `data/gitleaks.toml`
+（与 Python 侧同名文件逐字节一致，由 `tests/gitleaks_parity.rs` 的 sha256 断言看住），按 Python 语义解析
+`keywords` / `entropy` / `secretGroup` / 规则级与全局 allowlist，并支持自定义 `gitleaks.toml` 按 id 覆盖 / 追加。
+「内核不引入 `regex`」的决定**已由用户取消**：本层用 `regex` crate 编译上游模式，两处实现差异都收在
+编译期适配里（`\Z` → `\z`；非量词的 `{` / `}` 转义），且适配只用于编译不过的模式——能原样编译的一律不动。
+出厂配置里 `gitleaks_enabled = true`，内核侧 `DesensitizationOptions.gitleaks_enabled` 默认仍为关，
+等配置层搬完再对齐出厂默认。
+未搬：`locality` 局部化扫描与扫描结果缓存（纯性能优化，不影响命中集合）、`_MessageMaskMemo` 缓存、
+`oneshot` 旁路尚未接 gitleaks、NER 语义兜底层（torch 依赖）。
 
 三份数据集的占位符与号牌一类「占位符形状」的字面量一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：
 本仓库自己就是宿主，在启用了消息脱敏的会话里写这类完整字面量会被还原成会话注册表里的原文——数据集照旧生成、

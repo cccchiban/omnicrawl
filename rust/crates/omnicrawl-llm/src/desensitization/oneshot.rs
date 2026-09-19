@@ -97,6 +97,7 @@ impl OneShotMasker {
                 entropy_pure_letters: self.options.entropy_pure_letters,
                 entropy_pure_digits: self.options.entropy_pure_digits,
                 pattern_rules: &self.rules,
+                gitleaks_rules: &[],
             };
             mask_text(text, &mut context)
         };

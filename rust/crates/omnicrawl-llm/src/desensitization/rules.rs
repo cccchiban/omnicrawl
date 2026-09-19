@@ -2,7 +2,7 @@
 //!
 //! 语义基准是 Python `omnicrawl/llm/desensitization/rules.py`。结构感知层（键名规则）要求值
 //! 处在有键名的结构里，熵兜底层要求值具备高随机性；本层覆盖两者之间的「形态确定、随机性低」
-//! 的类型。内核**不引入正则依赖**（项目决定）：每条规则的正则等价物都是手写匹配器，逐条用
+//! 的类型。本层每条规则的正则等价物都是手写匹配器，逐条用
 //! 对照数据集验证（`tests/desensitization_rules_parity.rs`）。
 //!
 //! 已搬：全部 11 条内置规则——PEM 私钥（完整块 / 截断正文）、数据库连接串（URI / ADO 键值）、
@@ -10,7 +10,7 @@
 //! 以及整套规则语义——关键字预过滤、熵下限、校验器、豁免表、停用词、尾部标点留在原文、
 //! 重叠区间先命中先占位、结果按起点排序。
 //!
-//! 未搬：gitleaks 规则表（221 条正则，与「不引入 `regex`」的决定冲突）、`locality` 局部化
+//! gitleaks 规则表由 `gitleaks.rs` 承接（运行时正则）；未搬：`locality` 局部化
 //! 扫描与扫描结果缓存（纯性能优化，不影响语义）。
 
 use std::collections::HashMap;
@@ -101,7 +101,7 @@ pub struct RuleMatch {
     pub value: String,
 }
 
-/// 手写匹配器：Python 侧是正则，内核侧是等价实现（不引入 `regex` 依赖）。
+/// 手写匹配器：Python 侧是正则，内核侧是等价的手写实现。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleMatcher {
     PemBlock,

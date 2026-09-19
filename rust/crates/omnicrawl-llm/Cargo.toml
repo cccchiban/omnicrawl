@@ -8,7 +8,10 @@ license.workspace = true
 
 [dependencies]
 omnicrawl-protocol = { path = "../omnicrawl-protocol" }
+regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+# gitleaks 规则接入：读取上游快照与自定义 gitleaks.toml（同一份 TOML，两侧解析语义一致）。
+toml = "0.8"
 ureq = { workspace = true }
