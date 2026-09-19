@@ -488,3 +488,20 @@ impl ToolBatchHost for BatchWiring<'_> {
         execute_tool_batch(calls, first_step, &mut report)
     }
 }
+
+// ------------------------------------------------------------------ 视觉能力
+
+/// 运行时是否具备视觉能力：快照缺失、没有 runtime/capabilities 或未声明时一律为假。
+pub fn model_supports_vision(vision_capability: Option<bool>) -> bool {
+    vision_capability.unwrap_or(false)
+}
+
+/// 是否优先使用原生视觉：显式开关优先，未配置时按运行时能力。
+///
+/// 配置里写 `false` 是「明确关掉」，与「没配置」不是一回事——后者才回落到运行时能力。
+pub fn native_vision_enabled(override_value: Option<bool>, supports_vision: bool) -> bool {
+    match override_value {
+        Some(value) => value,
+        None => supports_vision,
+    }
+}

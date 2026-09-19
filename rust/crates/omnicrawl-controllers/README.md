@@ -21,7 +21,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `agent/context_compaction/*.py` | `src/context_compaction/` | 上下文 Token 估算、回合预算测量、压缩批次与超限恢复批次、自动压缩决策、结构化摘要校验、投影、测量账本、摘要授权的事件证据恢复、结构化摘要生成与压缩编排 |
 | `controllers/advisor.py` | `src/advisor.rs` | 顾问可用性判定、消息分支（剥孤儿调用 + user 尾）、工具清单、结果信封与错误文案 |
 | `controllers/plugins.py` | `src/plugins.rs` | Hook fail-closed 判定、拒绝事实与文案、分发结局归一化、会话生命周期 Hook 名与标识、分发上下文冻结归一化、回合 Hook 处置 |
-| `controllers/turn/loop.py`（接线面） | `src/turn/turn_loop.rs` | 13 回调面与缺省回落（重试提示回落状态回调）、`request_reply` / `execute_tool_batch` 两个循环端口与守门回调、进入循环前的取消检查、最终回复的收尾补发、用量累计与失败分类 |
+| `controllers/turn/loop.py`（接线面） | `src/turn/turn_loop.rs` | 13 回调面与缺省回落（重试提示回落状态回调）、`request_reply` / `execute_tool_batch` 两个循环端口与守门回调、进入循环前的取消检查、最终回复的收尾补发、用量累计与失败分类、运行时视觉能力与原生视觉开关 |
 | `controllers/turn/loop.py`（文本规则） | `src/turn/turn_text.rs` | 短「继续/重试」识别与上一轮任务还原、被取消回合的历史摘要、助手消息的推理字段 |
 | `controllers/subagents/worktrees.py`、`orchestration.py`（判定面） | `src/subagents/` | worktree 登记键与查找归一化、会话去重投影、产物摘要渲染、丢弃保护判定、失败描述、Fork 上下文冻结、公开结果投影、后台通知注入、结果校验与定义缺失文案 |
 | `agent/toolkit/tools.py`（目录与注册） | `src/tool_catalog.rs` + `data/agent_tools.json` | 目录数据由 `rust/tools/gen_agent_tools_data.py` 导出；注册规则（可选 runner 省略、知识库/Windows 整组、记忆开关、SubAgent 角色枚举、禁用过滤）在 Rust 重放 |
@@ -81,7 +81,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 928 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 939 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -106,7 +106,8 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 （标准上下文原样、普通对象归一化、拿不到 freeze 时空上下文）、回合 Hook 处置与异常吞掉、
 会话生命周期 Hook 名与会话标识回落），以及回合文本规则 28 例（`tests/turn_text_parity.rs`：
 短「继续/重试」的标点归一化识别、上一轮任务还原文案、被取消回合的摘要（含工具计数）、
-助手消息的推理字段）。
+助手消息的推理字段），以及视觉能力判定 11 例（`tests/vision_capability_parity.rs`：
+运行时快照缺能力/缺 runtime/缺快照三种退化、显式开关盖过能力、未配置时回落能力）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内

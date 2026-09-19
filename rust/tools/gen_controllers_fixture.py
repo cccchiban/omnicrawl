@@ -7569,6 +7569,73 @@ def turn_text_cases() -> dict:
     }
 
 
+# ------------------------------------------------------------- vision capability
+
+
+def vision_capability_cases() -> dict:
+    """原生视觉开关与运行时视觉能力判定。"""
+
+    from omnicrawl.agent.controllers.turn.loop import TurnLoopMixin
+
+    missing = object()
+
+    def probe_with(native_vision):
+        probe = object.__new__(TurnLoopMixin)
+        llm = SimpleNamespace()
+        if native_vision is not missing:
+            llm.native_vision = native_vision
+        probe.config = SimpleNamespace(llm=llm)
+        return probe
+
+    def snapshot(vision=missing, *, with_runtime=True):
+        if not with_runtime:
+            return SimpleNamespace()
+        capabilities = SimpleNamespace()
+        if vision is not missing:
+            capabilities.vision = vision
+        return SimpleNamespace(runtime=SimpleNamespace(capabilities=capabilities))
+
+    support_cases = []
+    for label, snap, capability in [
+        ("有视觉能力", snapshot(vision=True), True),
+        ("无视觉能力", snapshot(vision=False), False),
+        ("缺能力字段", snapshot(), None),
+        ("缺 capabilities", SimpleNamespace(runtime=SimpleNamespace()), None),
+        ("缺 runtime", snapshot(with_runtime=False), None),
+        ("无快照", None, None),
+    ]:
+        probe = probe_with(missing)
+        support_cases.append(
+            {
+                "label": label,
+                "capability": capability,
+                "expected": probe._model_supports_vision(snap),
+            }
+        )
+
+    native_cases = []
+    for label, override, capability in [
+        ("显式开启盖过能力", True, False),
+        ("显式关闭盖过能力", False, True),
+        ("未配置回落能力", missing, True),
+        ("未配置且无能力", missing, False),
+        ("配置为空回落能力", None, True),
+    ]:
+        probe = probe_with(None if override is missing else override)
+        snap = snapshot(vision=capability)
+        native_cases.append(
+            {
+                "label": label,
+                "override": None if override is missing else override,
+                "capability": capability,
+                "supports_vision": probe._model_supports_vision(snap),
+                "expected": probe._native_vision_enabled(snap),
+            }
+        )
+
+    return {"support": support_cases, "native": native_cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7597,6 +7664,7 @@ def main() -> None:
             "approval_flow": approval_flow_cases(),
             "plugin_runtime": plugin_runtime_cases(),
             "turn_text": turn_text_cases(),
+            "vision_capability": vision_capability_cases(),
         "turn_loop": turn_loop_cases(),
         }
 
