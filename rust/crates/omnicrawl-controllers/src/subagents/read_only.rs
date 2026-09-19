@@ -283,3 +283,104 @@ pub fn browser_cli_denial_reason(arguments: &[String]) -> Option<String> {
     }
     None
 }
+
+use serde_json::{Map, Value};
+
+use crate::shared::{python_str, python_truthy};
+
+/// 命令文本的只读判定：长度、命令替换、PowerShell 脚本块，再逐段交给 `segment_check`。
+///
+/// 逐 token 判定要按 shell 语法切词（依赖 `shlex`），所以由宿主注入：返回首个拒绝原因，
+/// `None` 表示该段看着只读。
+pub fn command_text_denial_reason<F>(command: &str, shell: &str, segment_check: F) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if command.chars().count() > 8_000 {
+        return "命令超过 8000 字符，无法可靠审查。".to_string();
+    }
+    if command.contains('`') || command.contains("$(") {
+        return "不允许命令替换或反引号执行。".to_string();
+    }
+    if shell == "powershell" && (command.contains('{') || command.contains('}')) {
+        return "PowerShell 脚本块无法证明只读。".to_string();
+    }
+    let segments = match split_shell_segments(command) {
+        Ok(segments) => segments,
+        Err(error) => return error,
+    };
+    for segment in segments {
+        if let Some(reason) = segment_check(&segment) {
+            return reason;
+        }
+    }
+    String::new()
+}
+
+/// 只读命令策略主入口：返回空串表示这条调用可以通过。
+///
+/// `monitor` 只放行 start/list/get/poll/stop（其余动作直接拒绝）；`bash`/`powershell`
+/// 以工具名当 shell；其它工具名一律拒绝。`diagnostic_command` 可选，但同样要过只读判定。
+pub fn read_only_command_denial_reason<F>(
+    tool_name: &str,
+    arguments: &Map<String, Value>,
+    segment_check: F,
+) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let shell = if tool_name == "monitor" {
+        let action = raw_text(arguments.get("action")).trim().to_lowercase();
+        if matches!(action.as_str(), "list" | "get" | "poll" | "stop") {
+            return String::new();
+        }
+        if action != "start" {
+            return "monitor 只允许 start/list/get/poll/stop。".to_string();
+        }
+        let shell = raw_text(arguments.get("shell")).trim().to_lowercase();
+        if shell.is_empty() {
+            "powershell".to_string()
+        } else {
+            shell
+        }
+    } else if tool_name == "bash" || tool_name == "powershell" {
+        tool_name.to_string()
+    } else {
+        return format!("不支持的命令工具：{tool_name}。");
+    };
+
+    let command = match arguments.get("command") {
+        Some(Value::String(text)) if !text.trim().is_empty() => text.clone(),
+        _ => return "缺少非空 command。".to_string(),
+    };
+    let reason = command_text_denial_reason(&command, &shell, &segment_check);
+    if !reason.is_empty() {
+        return reason;
+    }
+
+    match arguments.get("diagnostic_command") {
+        None | Some(Value::Null) => String::new(),
+        Some(value) => {
+            let Some(text) = value.as_str() else {
+                return "diagnostic_command 必须是字符串。".to_string();
+            };
+            if text.trim().is_empty() {
+                return String::new();
+            }
+            let reason = command_text_denial_reason(text, &shell, &segment_check);
+            if reason.is_empty() {
+                String::new()
+            } else {
+                format!("diagnostic_command 不符合只读策略：{reason}")
+            }
+        }
+    }
+}
+
+/// Python `str(value or "")`：falsy 一律成空串。
+fn raw_text(value: Option<&Value>) -> String {
+    match value {
+        Some(item) if python_truthy(item) => python_str(item),
+        _ => String::new(),
+    }
+}

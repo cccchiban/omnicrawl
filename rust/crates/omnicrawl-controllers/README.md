@@ -85,7 +85,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 1029 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 1049 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -120,7 +120,9 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 （多空白分隔）、命中无任务给默认提示、未命中带可用列表、空技能名与前导空白不算命令），
 以及只读命令构件 59 例（`tests/read_only_commands_parity.rs`：可执行名归一化（引号/路径/扩展名）、
 命令链分段（`&&`/`||`/`;`/换行、引号内的 `>`、转义的 `>`、重定向与空片段拒绝）、
-curl 的远端写入与本地落盘判定、浏览器 CLI 的子命令与 `--out`/`--file` 判定）。
+curl 的远端写入与本地落盘判定、浏览器 CLI 的子命令与 `--out`/`--file` 判定、
+以及策略入口 20 例（`monitor` 动作白名单与 shell 回落、不支持的工具名、命令缺失/超长/命令替换/
+PowerShell 脚本块/重定向、`diagnostic_command` 的形状与只读复核——逐 token 判定经闭包注入）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内

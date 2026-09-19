@@ -5,7 +5,8 @@
 //! 本套件用同一批输入重放 Rust 实现，比对可执行名、命令分段与两类写入判定。
 
 use omnicrawl_controllers::subagents::read_only::{
-    browser_cli_denial_reason, curl_denial_reason, normalized_executable, split_shell_segments,
+    browser_cli_denial_reason, curl_denial_reason, normalized_executable,
+    read_only_command_denial_reason, split_shell_segments,
 };
 use serde_json::Value;
 
@@ -81,6 +82,26 @@ fn browser_cli_denial_reason_matches_python() {
             browser_cli_denial_reason(&arguments).unwrap_or_default(),
             case["reason"].as_str().expect("reason"),
             "浏览器 CLI 判定（{label}）"
+        );
+    }
+}
+
+#[test]
+fn read_only_entry_matches_python() {
+    let data = section();
+    for case in data["entry"].as_array().expect("entry") {
+        let label = case["label"].as_str().expect("label");
+        let arguments = case["arguments"].as_object().expect("arguments");
+        // 逐 token 判定依赖 shlex，这里注入「总是放行」的桩；用例都选了段判定会通过的命令。
+        let produced = read_only_command_denial_reason(
+            case["tool_name"].as_str().expect("tool_name"),
+            arguments,
+            |_segment| None,
+        );
+        assert_eq!(
+            produced,
+            case["reason"].as_str().expect("reason"),
+            "只读策略入口（{label}）"
         );
     }
 }

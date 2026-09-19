@@ -7971,11 +7971,64 @@ def read_only_command_cases() -> dict:
             }
         )
 
+    read_only_entry_cases = []
+    for label, tool_name, arguments in [
+        ("monitor 只读动作", "monitor", {"action": "list"}),
+        ("monitor 大写动作", "monitor", {"action": " GET "}),
+        ("monitor 非法动作", "monitor", {"action": "bogus"}),
+        ("monitor start 缺命令", "monitor", {"action": "start"}),
+        (
+            "monitor start 带 shell",
+            "monitor",
+            {"action": "start", "shell": "BASH", "command": "cat a.txt"},
+        ),
+        ("不支持的工具", "read", {"command": "cat a.txt"}),
+        ("缺 command（数字）", "bash", {"command": 5}),
+        ("command 空白", "powershell", {"command": "   "}),
+        ("命令过长", "bash", {"command": "x" * 8001}),
+        ("命令恰好 8000", "bash", {"command": "cat " + "x" * 7996}),
+        ("命令含反引号", "bash", {"command": "echo `x`"}),
+        ("命令含命令替换", "bash", {"command": "echo $(x)"}),
+        ("powershell 脚本块", "powershell", {"command": "Get-Item {a}"}),
+        ("重定向", "bash", {"command": "cat a.txt > out"}),
+        ("bash 合法命令", "bash", {"command": "cat a.txt"}),
+        ("powershell 合法命令", "powershell", {"command": "Get-Content a.txt"}),
+        (
+            "diagnostic 非字符串",
+            "bash",
+            {"command": "cat a.txt", "diagnostic_command": 5},
+        ),
+        (
+            "diagnostic 空白",
+            "bash",
+            {"command": "cat a.txt", "diagnostic_command": "   "},
+        ),
+        (
+            "diagnostic 含反引号",
+            "bash",
+            {"command": "cat a.txt", "diagnostic_command": "echo `x`"},
+        ),
+        (
+            "diagnostic 合法",
+            "bash",
+            {"command": "cat a.txt", "diagnostic_command": "grep x"},
+        ),
+    ]:
+        read_only_entry_cases.append(
+            {
+                "label": label,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "reason": ro.read_only_command_denial_reason(tool_name, arguments),
+            }
+        )
+
     return {
         "normalized": normalized_cases,
         "split": split_cases,
         "curl": curl_cases,
         "browser": browser_cases,
+        "entry": read_only_entry_cases,
     }
 
 
