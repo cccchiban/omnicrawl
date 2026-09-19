@@ -185,3 +185,89 @@ pub fn session_hook_payload(session_id: &str) -> Value {
     map.insert("sessionId".to_string(), Value::from(session_id));
     Value::Object(map)
 }
+
+/// 子任务在父线程冻结出来的只读 Hook 分发上下文。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrozenDispatchContext {
+    pub handlers: Vec<String>,
+    /// 上下文来源；缺失或为空一律记为 `none`。
+    pub source: String,
+}
+
+/// 空上下文：PluginManager 不在、不提供 `freeze`，或冻结结果形状不可用时使用。
+///
+/// 它仍要在 worker 内激活，否则子任务会回退到父 Agent 的实时 plan。
+pub fn empty_dispatch_context() -> FrozenDispatchContext {
+    FrozenDispatchContext {
+        handlers: Vec::new(),
+        source: "none".to_string(),
+    }
+}
+
+/// 普通对象形态的归一化：`handlers` 缺失即空，`source` 空即 `none`。
+pub fn normalize_dispatch_context(
+    handlers: Option<&[String]>,
+    source: Option<&str>,
+) -> FrozenDispatchContext {
+    FrozenDispatchContext {
+        handlers: handlers.map(<[String]>::to_vec).unwrap_or_default(),
+        source: source
+            .filter(|value| !value.is_empty())
+            .unwrap_or("none")
+            .to_string(),
+    }
+}
+
+/// 冻结结果的可能形态。
+#[derive(Debug, Clone, Copy)]
+pub enum FrozenShape<'a> {
+    /// 管理器给出的就是标准上下文：原样采用，连空串也保持原样。
+    Standard {
+        handlers: &'a [String],
+        source: &'a str,
+    },
+    /// 普通对象：按字段归一化。
+    Object {
+        handlers: Option<&'a [String]>,
+        source: Option<&'a str>,
+    },
+    /// 没有管理器，或它不提供 `freeze`。
+    Missing,
+}
+
+/// 按冻结结果的形态决定子任务可见的分发上下文。
+pub fn frozen_dispatch_context(shape: FrozenShape<'_>) -> FrozenDispatchContext {
+    match shape {
+        FrozenShape::Standard { handlers, source } => FrozenDispatchContext {
+            handlers: handlers.to_vec(),
+            source: source.to_string(),
+        },
+        FrozenShape::Object { handlers, source } => normalize_dispatch_context(handlers, source),
+        FrozenShape::Missing => empty_dispatch_context(),
+    }
+}
+
+/// 回合级 Hook（`begin_turn` / `end_turn`）的处置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnHookAction {
+    /// 没有 PluginManager，或它不提供这个方法：跳过。
+    Skip,
+    /// 调用；异常由宿主吞掉，不阻断主流程。
+    Call,
+}
+
+pub fn turn_hook_action(manager_present: bool, hook_available: bool) -> TurnHookAction {
+    if manager_present && hook_available {
+        TurnHookAction::Call
+    } else {
+        TurnHookAction::Skip
+    }
+}
+
+/// 会话生命周期 Hook 用的会话标识：状态里的标识为空时回落当前会话标识。
+pub fn session_hook_id(state_session_id: Option<&str>, current_session_id: &str) -> String {
+    match state_session_id {
+        Some(value) if !value.is_empty() => value.to_string(),
+        _ => current_session_id.to_string(),
+    }
+}

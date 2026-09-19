@@ -7324,6 +7324,163 @@ def approval_flow_cases() -> dict:
     return {"flow": flow_cases, "mode": mode_cases}
 
 
+# ----------------------------------------------------------------- plugin runtime
+
+
+def plugin_runtime_cases() -> dict:
+    """插件运行期编排：分发上下文冻结、回合 Hook 处置、会话生命周期 Hook。"""
+
+    from omnicrawl.agent.controllers.plugins import PluginDispatchContext, PluginHooksMixin
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.trace: list[str] = []
+
+        def note(self, label: str) -> None:
+            self.trace.append(label)
+
+    class _FreezeManager:
+        def __init__(self, recorder: _Recorder, context) -> None:
+            self._recorder = recorder
+            self._context = context
+
+        def freeze_dispatch_context(self):
+            self._recorder.note("freeze")
+            return self._context
+
+    class _TurnManager:
+        def __init__(self, recorder: _Recorder, *, with_turn_hooks: bool, fail: bool) -> None:
+            self._recorder = recorder
+            self._fail = fail
+            if with_turn_hooks:
+                self.begin_turn = self._begin
+                self.end_turn = self._end
+
+        def _begin(self) -> None:
+            self._recorder.note("begin_turn")
+            if self._fail:
+                raise RuntimeError("begin boom")
+
+        def _end(self) -> None:
+            self._recorder.note("end_turn")
+            if self._fail:
+                raise RuntimeError("end boom")
+
+    class _HookManager:
+        def __init__(self, recorder: _Recorder) -> None:
+            self._recorder = recorder
+
+        def dispatch(self, hook_name, data, session_id=None, turn_id=None):
+            self._recorder.note("%s|%s" % (hook_name, data.get("sessionId")))
+            return SimpleNamespace(denied=False, payload=data)
+
+    class _Probe(PluginHooksMixin):
+        current_session_id = "current-session"
+
+    context_cases = []
+    for label, manager_kind, context in [
+        ("无管理器", "none", None),
+        ("管理器无 freeze", "none-method", None),
+        ("标准上下文", "freeze", PluginDispatchContext(handlers=("a", "b"), source="plan")),
+        ("上下文源为空", "freeze", PluginDispatchContext(handlers=(), source="")),
+        ("普通对象上下文", "freeze", SimpleNamespace(handlers=("x",), source="live")),
+        ("缺少字段的对象", "freeze", SimpleNamespace()),
+    ]:
+        recorder = _Recorder()
+        probe = _Probe()
+        if manager_kind == "freeze":
+            probe._plugin_manager = _FreezeManager(recorder, context)
+        elif manager_kind == "none-method":
+            probe._plugin_manager = SimpleNamespace()
+        result = outcome(probe._freeze_subagent_plugin_dispatch_context)
+        value = result["value"]
+        raw_handlers = None
+        raw_source = None
+        standard = None
+        if manager_kind == "freeze":
+            standard = isinstance(context, PluginDispatchContext)
+            handlers_attr = getattr(context, "handlers", None)
+            raw_handlers = list(handlers_attr) if handlers_attr is not None else None
+            raw_source = getattr(context, "source", None)
+        context_cases.append(
+            {
+                "label": label,
+                "manager_kind": manager_kind,
+                "standard_context": standard,
+                "raw_handlers": raw_handlers,
+                "raw_source": raw_source,
+                "ok": result["ok"],
+                "handlers": list(getattr(value, "handlers", ()) or ()) if result["ok"] else None,
+                "source": getattr(value, "source", None) if result["ok"] else None,
+                "trace": recorder.trace,
+                "error": result["error"],
+            }
+        )
+
+    turn_cases = []
+    for label, manager_kind, fail in [
+        ("无管理器", "none", False),
+        ("管理器无回合钩子", "empty", False),
+        ("正常调用", "full", False),
+        ("调用抛异常", "full", True),
+    ]:
+        recorder = _Recorder()
+        probe = _Probe()
+        if manager_kind == "empty":
+            probe._plugin_manager = _TurnManager(recorder, with_turn_hooks=False, fail=False)
+        elif manager_kind == "full":
+            probe._plugin_manager = _TurnManager(recorder, with_turn_hooks=True, fail=fail)
+        begin_error = None
+        end_error = None
+        try:
+            probe._plugin_begin_turn()
+        except Exception as exc:  # noqa: BLE001 - 对照数据集要原样记录
+            begin_error = str(exc)
+        try:
+            probe._plugin_end_turn()
+        except Exception as exc:  # noqa: BLE001
+            end_error = str(exc)
+        turn_cases.append(
+            {
+                "label": label,
+                "manager_kind": manager_kind,
+                "hook_available": manager_kind == "full",
+                "trace": recorder.trace,
+                "begin_error": begin_error,
+                "end_error": end_error,
+            }
+        )
+
+    session_cases = []
+    for label, resume_id, state_kind, session_id in [
+        ("无会话状态", "", "none", None),
+        ("新建会话", "", "state", "20260102-030405-abc123"),
+        ("新建会话回落当前会话", "", "state", ""),
+        ("恢复会话", "resume-1", "state", "20260102-030405-abc123"),
+        ("恢复会话回落当前会话", "resume-1", "state", None),
+    ]:
+        recorder = _Recorder()
+        probe = _Probe()
+        probe._plugin_manager = _HookManager(recorder)
+        probe.config = SimpleNamespace(resume_session_id=resume_id)
+        if state_kind == "state":
+            probe._session_state = SimpleNamespace(session_id=session_id)
+        result = outcome(probe._emit_session_lifecycle_hooks)
+        session_cases.append(
+            {
+                "label": label,
+                "resume_session_id": resume_id,
+                "state_present": state_kind == "state",
+                "state_session_id": session_id,
+                "ok": result["ok"],
+                "trace": recorder.trace,
+                "error": result["error"],
+            }
+        )
+
+    return {"context": context_cases, "turn": turn_cases, "session": session_cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7350,6 +7507,7 @@ def main() -> None:
             "lifecycle": lifecycle_cases(),
             "tool_impl": tool_impl_cases(),
             "approval_flow": approval_flow_cases(),
+            "plugin_runtime": plugin_runtime_cases(),
         "turn_loop": turn_loop_cases(),
         }
 
