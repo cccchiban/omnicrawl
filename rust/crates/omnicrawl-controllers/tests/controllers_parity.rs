@@ -30,6 +30,12 @@ fn norm(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+/// 数据集里的绝对路径是在 Windows 上生成的：重放前先按本地规则绝对化，
+/// 否则同一份用例在别的平台上会落进「相对路径」分支，与期望值不符。
+fn localize(value: &str) -> String {
+    norm(&undo::resolve_path(Path::new(value)))
+}
+
 fn object(value: &Value) -> Map<String, Value> {
     value.as_object().cloned().expect("对象参数")
 }
@@ -497,14 +503,14 @@ fn undo_artifact_path_matches_python() {
     let data = fixture();
     for case in data["undo"]["artifact_path"].as_array().expect("cases") {
         let label = case["label"].as_str().expect("label");
-        let root = PathBuf::from(case["root"].as_str().expect("root"));
+        let root = undo::resolve_path(Path::new(case["root"].as_str().expect("root")));
         let result =
             undo::resolve_artifact_path(&root, case["relative"].as_str().expect("relative"))
                 .map_err(AgentError::from);
         if let Some(path) = expect_outcome(result, case, label) {
             assert_eq!(
                 norm(&path),
-                case["value"].as_str().expect("value"),
+                localize(case["value"].as_str().expect("value")),
                 "解析路径（{label}）"
             );
         }
@@ -683,14 +689,14 @@ fn memory_project_root_matches_python() {
     let data = fixture();
     for case in data["memory"]["project_root"].as_array().expect("cases") {
         let label = case["label"].as_str().expect("label");
-        let result = memory::project_memory_root(
-            Path::new(case["workspace"].as_str().expect("workspace")),
-            case["directory"].as_str().expect("directory"),
-        );
+        let workspace =
+            undo::resolve_path(Path::new(case["workspace"].as_str().expect("workspace")));
+        let result =
+            memory::project_memory_root(&workspace, case["directory"].as_str().expect("directory"));
         if let Some(root) = expect_outcome(result, case, label) {
             assert_eq!(
                 norm(&root),
-                case["root"].as_str().expect("root"),
+                localize(case["root"].as_str().expect("root")),
                 "项目级记忆根（{label}）"
             );
         }
