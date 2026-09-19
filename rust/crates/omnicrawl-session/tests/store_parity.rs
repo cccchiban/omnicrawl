@@ -15,12 +15,31 @@ use serde_json::{json, Map, Value};
 
 const FIXTURE: &str = include_str!("fixtures/session_store_parity.json");
 
+/// 数据集里的工作区路径是 Windows 形式（`D:\work\demo`）：重放前换成本机等价路径，
+/// 三种书写形态（含文件内容里的转义形态）都要跟着换，否则非 Windows 上会被当成相对路径。
+fn workspace_mapping() -> BTreeMap<String, String> {
+    let native = std::env::temp_dir()
+        .join("omnicrawl-parity-workspace")
+        .to_string_lossy()
+        .to_string();
+    BTreeMap::from([
+        (
+            "D:\\\\work\\\\demo".to_string(),
+            native.replace('\\', "\\\\"),
+        ),
+        ("D:\\work\\demo".to_string(), native.clone()),
+        ("D:/work/demo".to_string(), native),
+    ])
+}
+
 #[test]
 fn store_matches_python() {
     let fixture: Value = serde_json::from_str(FIXTURE).expect("fixture 不是合法 JSON");
     let base_time = parse_time(fixture["base_time"].as_str().expect("base_time"));
 
     for scenario in fixture["scenarios"].as_array().expect("缺少 scenarios") {
+        // 输入与期望值里的工作区路径一起换成本机等价路径。
+        let scenario = replace(scenario, &workspace_mapping());
         let name = scenario["name"].as_str().expect("场景名");
         let root = temp_root(name);
         let store = SessionStore::open(&root);

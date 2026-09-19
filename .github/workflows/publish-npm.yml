@@ -88,7 +88,8 @@ jobs:
         working-directory: rust
         shell: bash
         run: |
-          cargo test --workspace
+          # --no-fail-fast：一个测试目标失败也要把其余目标的失败一次性报全。
+          cargo test --workspace --no-fail-fast
           if [ "${{ matrix.zigbuild }}" = "true" ]; then
             cargo zigbuild --release -p omnicrawl-cli --target ${{ matrix.target }}
           else
