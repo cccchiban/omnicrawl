@@ -115,7 +115,8 @@ jobs:
       - name: 上传暂存产物
         uses: actions/upload-artifact@v4
         with:
-          name: npm-${{ matrix.package }}
+          # 产物名就是平台包名：发布任务按名解包，直接落到 dist/npm/<平台包>/。
+          name: ${{ matrix.package }}
           path: dist/npm/${{ matrix.package }}
           if-no-files-found: error
           # 载荷已是二进制与已压缩轮子，再压缩只花时间。
@@ -149,9 +150,9 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: npm-*
+          # 产物名就是平台包名：按名解包后即 dist/npm/<平台包>/（不合并，避免平铺相互覆盖）。
+          pattern: cli-*
           path: dist/npm
-          merge-multiple: true
 
       - name: 暂存启动器
         run: node packages/cli/scripts/prepare.mjs --launcher-only

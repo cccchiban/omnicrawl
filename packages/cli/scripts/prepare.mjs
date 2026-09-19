@@ -191,14 +191,15 @@ function main() {
     readFileSync(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
   ).version
 
-  rmSync(staging, { recursive: true, force: true })
-
   // CI 的发布任务只重排启动器：平台包由各平台 runner 单独构建并作为产物上传。
   if (launcherOnly) {
+    rmSync(join(staging, 'cli'), { recursive: true, force: true })
     stageLauncher(version, TARGETS.map((target) => target.name))
     console.log('已暂存 omnicrawl-cli（仅启动器）\n\n发布：\n  npm publish dist/npm/cli')
     return
   }
+
+  rmSync(staging, { recursive: true, force: true })
 
   const staged = []
   const missing = []
