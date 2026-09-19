@@ -23,6 +23,7 @@ pub mod records;
 pub mod redaction;
 pub mod store;
 pub mod time;
+pub mod turn_snapshot;
 
 pub use artifact::{
     normalize_relative_artifact_path, preview_text, redact_sensitive_html, tool_output_summary,
@@ -95,3 +96,6 @@ pub use records::{
 pub use redaction::{redact_sensitive_text, redact_sensitive_values};
 pub use store::{kernel_runtime_identity, CreatedSession, SessionStore};
 pub use time::{datetime_from_json, datetime_to_millis, format_datetime, parse_datetime, utc_now};
+pub use turn_snapshot::{
+    SnapshotError, WorktreeSnapshot, WorktreeSnapshotStore, GIT_COMMAND_TIMEOUT_SECONDS,
+};

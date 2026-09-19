@@ -1,0 +1,517 @@
+{
+  "source": "omnicrawl/state/turn_snapshot.py",
+  "cases": [
+    {
+      "label": "roundtrip",
+      "setup": [
+        {
+          "op": "git",
+          "args": [
+            "init",
+            "-q"
+          ]
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "one\n"
+        },
+        {
+          "op": "write",
+          "path": "keep.txt",
+          "content": "keep\n"
+        },
+        {
+          "op": "git",
+          "args": [
+            "add",
+            "-A"
+          ]
+        },
+        {
+          "op": "git",
+          "args": [
+            "-c",
+            "user.email=parity@example.com",
+            "-c",
+            "user.name=parity",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "op": "capture",
+          "save": "start"
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "two\n"
+        },
+        {
+          "op": "write",
+          "path": "new.txt",
+          "content": "new\n"
+        },
+        {
+          "op": "capture",
+          "save": "end"
+        },
+        {
+          "op": "transition",
+          "expected": "end",
+          "target": "start"
+        },
+        {
+          "op": "read",
+          "path": "a.txt"
+        },
+        {
+          "op": "read",
+          "path": "new.txt"
+        },
+        {
+          "op": "untracked"
+        }
+      ],
+      "results": [
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": true,
+          "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "patch_len": 0,
+          "untracked": []
+        },
+        {
+          "op": "write",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "write",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": true,
+          "patch_sha256": "4b2f1617098de5434c4f3f29b77038c7c5f0654f200ae6e8500af5662d96a1db",
+          "patch_len": 169,
+          "untracked": [
+            "new.txt"
+          ]
+        },
+        {
+          "op": "transition",
+          "ok": true,
+          "value": []
+        },
+        {
+          "op": "read",
+          "path": "a.txt",
+          "content": "one\n"
+        },
+        {
+          "op": "read",
+          "path": "new.txt",
+          "content": null
+        },
+        {
+          "op": "untracked",
+          "value": []
+        }
+      ]
+    },
+    {
+      "label": "conflict_after_end",
+      "setup": [
+        {
+          "op": "git",
+          "args": [
+            "init",
+            "-q"
+          ]
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "one\n"
+        },
+        {
+          "op": "write",
+          "path": "keep.txt",
+          "content": "keep\n"
+        },
+        {
+          "op": "git",
+          "args": [
+            "add",
+            "-A"
+          ]
+        },
+        {
+          "op": "git",
+          "args": [
+            "-c",
+            "user.email=parity@example.com",
+            "-c",
+            "user.name=parity",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "op": "capture",
+          "save": "start"
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "two\n"
+        },
+        {
+          "op": "capture",
+          "save": "end"
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "three\n"
+        },
+        {
+          "op": "transition",
+          "expected": "end",
+          "target": "start"
+        },
+        {
+          "op": "read",
+          "path": "a.txt"
+        }
+      ],
+      "results": [
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": true,
+          "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "patch_len": 0,
+          "untracked": []
+        },
+        {
+          "op": "write",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": true,
+          "patch_sha256": "4b2f1617098de5434c4f3f29b77038c7c5f0654f200ae6e8500af5662d96a1db",
+          "patch_len": 169,
+          "untracked": []
+        },
+        {
+          "op": "write",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "transition",
+          "ok": false,
+          "conflict": true,
+          "error": "工作区在轮次结束后又被修改，拒绝回退。"
+        },
+        {
+          "op": "read",
+          "path": "a.txt",
+          "content": "three\n"
+        }
+      ]
+    },
+    {
+      "label": "not_a_repository",
+      "setup": [
+        {
+          "op": "write",
+          "path": "plain.txt",
+          "content": "plain\n"
+        }
+      ],
+      "steps": [
+        {
+          "op": "capture",
+          "save": "start"
+        },
+        {
+          "op": "transition",
+          "expected": "start",
+          "target": "start"
+        },
+        {
+          "op": "read",
+          "path": "plain.txt"
+        }
+      ],
+      "results": [
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": false,
+          "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "patch_len": 0,
+          "untracked": []
+        },
+        {
+          "op": "transition",
+          "ok": false,
+          "conflict": false,
+          "error": "工作区不是 Git 仓库，无法回退。"
+        },
+        {
+          "op": "read",
+          "path": "plain.txt",
+          "content": "plain\n"
+        }
+      ]
+    },
+    {
+      "label": "deleted_untracked",
+      "setup": [
+        {
+          "op": "git",
+          "args": [
+            "init",
+            "-q"
+          ]
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "one\n"
+        },
+        {
+          "op": "write",
+          "path": "keep.txt",
+          "content": "keep\n"
+        },
+        {
+          "op": "git",
+          "args": [
+            "add",
+            "-A"
+          ]
+        },
+        {
+          "op": "git",
+          "args": [
+            "-c",
+            "user.email=parity@example.com",
+            "-c",
+            "user.name=parity",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "op": "write",
+          "path": "gone.txt",
+          "content": "x\n"
+        },
+        {
+          "op": "capture",
+          "save": "start"
+        },
+        {
+          "op": "delete",
+          "path": "gone.txt"
+        },
+        {
+          "op": "capture",
+          "save": "end"
+        },
+        {
+          "op": "transition",
+          "expected": "end",
+          "target": "start"
+        },
+        {
+          "op": "untracked"
+        },
+        {
+          "op": "read",
+          "path": "gone.txt"
+        }
+      ],
+      "results": [
+        {
+          "op": "write",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": true,
+          "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "patch_len": 0,
+          "untracked": [
+            "gone.txt"
+          ]
+        },
+        {
+          "op": "delete",
+          "ok": true,
+          "value": null
+        },
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": true,
+          "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "patch_len": 0,
+          "untracked": []
+        },
+        {
+          "op": "transition",
+          "ok": true,
+          "value": [
+            "gone.txt"
+          ]
+        },
+        {
+          "op": "untracked",
+          "value": []
+        },
+        {
+          "op": "read",
+          "path": "gone.txt",
+          "content": null
+        }
+      ]
+    },
+    {
+      "label": "clean_workspace",
+      "setup": [
+        {
+          "op": "git",
+          "args": [
+            "init",
+            "-q"
+          ]
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "one\n"
+        },
+        {
+          "op": "write",
+          "path": "keep.txt",
+          "content": "keep\n"
+        },
+        {
+          "op": "git",
+          "args": [
+            "add",
+            "-A"
+          ]
+        },
+        {
+          "op": "git",
+          "args": [
+            "-c",
+            "user.email=parity@example.com",
+            "-c",
+            "user.name=parity",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init"
+          ]
+        },
+        {
+          "op": "write",
+          "path": "a.txt",
+          "content": "second\n"
+        },
+        {
+          "op": "git",
+          "args": [
+            "add",
+            "-A"
+          ]
+        },
+        {
+          "op": "git",
+          "args": [
+            "-c",
+            "user.email=parity@example.com",
+            "-c",
+            "user.name=parity",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "second"
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "op": "capture",
+          "save": "head"
+        },
+        {
+          "op": "transition",
+          "expected": "head",
+          "target": "head"
+        },
+        {
+          "op": "untracked"
+        }
+      ],
+      "results": [
+        {
+          "op": "capture",
+          "ok": true,
+          "has_head": true,
+          "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "patch_len": 0,
+          "untracked": []
+        },
+        {
+          "op": "transition",
+          "ok": true,
+          "value": []
+        },
+        {
+          "op": "untracked",
+          "value": []
+        }
+      ]
+    }
+  ]
+}

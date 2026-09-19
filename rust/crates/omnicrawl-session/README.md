@@ -220,6 +220,7 @@ python rust/tools/gen_session_fixture.py      # 期望值来自 session_models.p
 python rust/tools/gen_project_fixture.py      # 项目列表存储：纯函数 + ProjectStore 流程轨迹
 python rust/tools/gen_session_records_fixture.py  # 记录解码与诊断：迁移 / 解码 / 转录读取 / 索引文档 / 切行
 python rust/tools/gen_prompt_history_fixture.py   # 提示历史：展示清洗 / 条目构造与解析 / 存储轨迹
+python rust/tools/gen_turn_snapshot_fixture.py    # 工作区快照：脚本化 git 场景（捕获 / 回退 / 冲突）
 cd rust && cargo test -p omnicrawl-session
 ```
 
@@ -271,6 +272,22 @@ fixture `tests/fixtures/session_records_parity.json`：迁移 8、字典解码 8
 fixture `tests/fixtures/prompt_history_parity.json`：展示清洗 6、条目构造 5、条目解析 10，
 另加 3 条存储轨迹（追加与查询、坏行文件、空提示被忽略）——轨迹在真实临时目录上跑，
 追加传固定时刻，逐例比对每步返回值与最终 `history.jsonl` 字节。
+
+## 工作区轮次快照（`turn_snapshot.rs`）
+
+对齐 Python `omnicrawl/state/turn_snapshot.py`：只依赖用户仓库自身的 Git 状态，不创建对象库。
+`capture` 跑 `git diff HEAD --binary --full-index`（带 `core.quotepath=false`）与
+`git ls-files --others --exclude-standard`；`transition` 先校验当前状态仍等于轮次终点，
+再 `git reset --hard HEAD`、`git apply --binary --whitespace=nowarn`，最后删掉本轮新增的未跟踪文件，
+返回「轮次中被删除、没有内容副本」的提示列表。`has_head` 带 60 秒 TTL 缓存。
+
+与 Python 的差异：`git` 子进程的超时由内核自己轮询实现（`std::process` 没有内置超时），
+超时文案里的参数表按 Rust 的 `Debug` 形式给出；`SnapshotConflictError` 折成
+`SnapshotError::is_conflict()`。
+
+fixture `tests/fixtures/turn_snapshot_parity.json`：5 个脚本化场景（往返回退、轮次后被改导致冲突、
+非 Git 目录、被删除的未跟踪文件无法恢复、干净工作区），两侧执行同一份脚本，
+比对补丁 sha256、未跟踪清单、回退返回值与错误文案。
 
 ## 已知差异
 
