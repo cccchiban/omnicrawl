@@ -15,6 +15,18 @@ from types import ModuleType
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 
+
+def _force_utf8_output() -> None:
+    """构建环境的控制台编码不一定是 UTF-8（CI 的 Windows runner 是 cp1252）。"""
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8_output()
+
 # 原生扩展的构建脚本（native/build.py），由 build_ext 直接调用。
 NATIVE_BUILD_SCRIPT = Path(__file__).resolve().parent / "native" / "build.py"
 

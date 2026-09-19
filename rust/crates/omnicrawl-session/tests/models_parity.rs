@@ -82,6 +82,17 @@ fn naming_and_validation_matches_python() {
         compare_text(event_type(&case["input"]), &case, "事件类型");
     }
     for case in cases(&fixture, "relative_paths") {
+        // 数据集在 Windows 上生成：`/absolute/x.jsonl` 在那里是「驱动器相对路径」而放行，
+        // 在 POSIX 上是绝对路径会被拒——语义随平台变，POSIX 上改核对「确实拒绝」。
+        if cfg!(not(windows)) && case["input"].as_str().unwrap_or_default().starts_with('/') {
+            let error = relative_path(&case["input"]).expect_err("POSIX 上绝对路径应被拒绝");
+            assert!(
+                error.message().starts_with("会话路径必须是安全相对路径："),
+                "转录路径 用例 {case} 的错误文案：{}",
+                error.message()
+            );
+            continue;
+        }
         compare_text(relative_path(&case["input"]), &case, "转录路径");
     }
     for case in cases(&fixture, "titles") {
