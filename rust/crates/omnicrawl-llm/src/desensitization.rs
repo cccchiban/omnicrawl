@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use sha2::{Digest, Sha256};
 
 pub mod engine;
+pub mod live;
 pub mod middleware;
 pub mod oneshot;
 pub mod rules;
@@ -28,6 +29,7 @@ pub use engine::{
     find_entropy_spans, is_entropy_candidate, is_entropy_exempt, mask_structured_value, mask_text,
     normalize_key, should_skip_value, MaskContext, SensitiveMatcher,
 };
+pub use live::{DesensitizationOptions, DesensitizationRuntime};
 pub use middleware::{
     assigned_but_unresolved, collect_request_texts, iter_message_texts, map_event, mask_message,
     mask_messages,

@@ -307,8 +307,14 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   `[desensitization]` 的 `detect_*` 开关裁剪（邮箱 / 外网 IP / 网址默认关闭），内核侧收同一组类别，
   否则邮箱会被多屏蔽一次；泄露检查必须在**独立注册表**上生成，否则期望值的序号依赖前六条消息的
   处理顺序，无法独立重放。
-  **未完成**：`DesensitizationRuntime` 装饰器本体需要 Rust 侧的运行时抽象（内核当前只有
-  `OpenAiChatRuntime`），`_MessageMaskMemo`（性能缓存）与 `_referenced_sequences` 同理未搬。
+  **运行时装饰器已落地**（`desensitization/live.rs`）：`DesensitizationRuntime` 包住任意
+  `ModelRuntime`——出站请求先屏蔽再发、入站事件逐条还原（工具参数照旧做 fail-closed 检查），
+  `maybe_wrap` 在未启用时零成本原样返回；最外层归并结果由还原后的事件重新聚合，因此调用方拿到的是
+  还原态回复。验收见 `tests/desensitization_runtime.rs`（4 例：屏蔽与还原、未启用透传、
+  未注册序号保留 + 告警、工具参数还原）。
+  两处实现差异（语义等价）：**不复用**上一周期的掩码请求（总是重新脱敏——稳定序号索引保证同值同号，
+  代价只是重复扫描）；计数分两层（周期计数在注册表里，屏蔽 / 还原计数在装饰器里）。
+  未搬：`_MessageMaskMemo`（性能缓存）与 `_referenced_sequences`。
 
 尚未搬运：gitleaks 规则表（221 条正则与「不引入 `regex`」的决定冲突，需要单独定依赖或用精简快照。
 出厂配置里 `gitleaks_enabled = true`，因此**当前内核的默认规则集与 Python 出厂默认并不等价**，
