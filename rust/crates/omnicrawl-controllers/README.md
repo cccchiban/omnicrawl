@@ -27,6 +27,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/turn/loop.py`（工具调用事件） | `src/turn/tool_events.rs` | 原始 assistant 消息里取 `arguments_json`/`function_name`（按 ID 或函数名匹配首个命中）、协议原文不落盘的字段边界 |
 | `controllers/turn/loop.py`（技能命令） | `src/turn/skill_command.rs` | `/skill:<名> [任务]` 的解析与加载文案（未命中带可用列表、命中无任务给默认提示） |
 | `controllers/subagents/worktrees.py`、`orchestration.py`（判定面） | `src/subagents/` | worktree 登记键与查找归一化、会话去重投影、产物摘要渲染、丢弃保护判定、失败描述、Fork 上下文冻结、公开结果投影、后台通知注入、结果校验与定义缺失文案 |
+| `agent/subagents/read_only_commands.py`（判定构件） | `src/subagents/read_only.rs` | 可执行名归一化、命令链分段（重定向/空片段/未闭合引号）、curl 与浏览器 CLI 的写入判定 |
 | `agent/toolkit/tools.py`（目录与注册） | `src/tool_catalog.rs` + `data/agent_tools.json` | 目录数据由 `rust/tools/gen_agent_tools_data.py` 导出；注册规则（可选 runner 省略、知识库/Windows 整组、记忆开关、SubAgent 角色枚举、禁用过滤）在 Rust 重放 |
 | `agent/toolkit/tools.py`、`host_tools.py` | `src/tool_args.rs` | 工具名/参数名归一化、参数投影（Session/确认页/SSE）、紧凑 Schema、Schema 校验与结果信封 |
 | Python `json.dumps` 子集 | `src/json.rs` | Python 风格 JSON 文本与 `repr`（工具结果信封、审查指令、参数摘要共用） |
@@ -84,7 +85,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 970 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 1029 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -116,7 +117,10 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
 以及工具调用事件字段 12 例（`tests/tool_events_parity.rs`：按 ID 或函数名匹配首个命中、
 `arguments` 非字符串时不带协议原文、函数名为空不写字段、以及落盘前剔除协议原文的边界），
 以及技能命令 9 例（`tests/skill_command_parity.rs`：无管理器/非命令原样放行、命中加载并带出任务
-（多空白分隔）、命中无任务给默认提示、未命中带可用列表、空技能名与前导空白不算命令）。
+（多空白分隔）、命中无任务给默认提示、未命中带可用列表、空技能名与前导空白不算命令），
+以及只读命令构件 59 例（`tests/read_only_commands_parity.rs`：可执行名归一化（引号/路径/扩展名）、
+命令链分段（`&&`/`||`/`;`/换行、引号内的 `>`、转义的 `>`、重定向与空片段拒绝）、
+curl 的远端写入与本地落盘判定、浏览器 CLI 的子命令与 `--out`/`--file` 判定）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内

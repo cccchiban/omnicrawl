@@ -5,7 +5,9 @@
 //! Session 落盘与事件观察者转发——它们需要宿主 I/O、线程/进程管理或会话设施。
 
 pub mod orchestration;
+pub mod read_only;
 pub mod worktrees;
 
 pub use orchestration::*;
+pub use read_only::*;
 pub use worktrees::*;

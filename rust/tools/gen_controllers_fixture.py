@@ -7870,6 +7870,115 @@ def skill_command_cases() -> dict:
     return {"cases": cases}
 
 
+# ---------------------------------------------------------------- read-only cmds
+
+
+def read_only_command_cases() -> dict:
+    """只读命令策略的可独立测试构件：可执行名、分段、curl、浏览器 CLI。"""
+
+    from omnicrawl.agent.subagents import read_only_commands as ro
+
+    normalized_cases = [
+        {"token": token, "expected": ro._normalized_executable(token)}
+        for token in [
+            "cat",
+            "  CAT  ",
+            '"curl.exe"',
+            "C:\\bin\\GIT.EXE",
+            ".\\scripts\\foo.cmd",
+            "/usr/bin/where.exe",
+            "python.bat",
+            "Curl.EXE",
+            "a/b/c/dirname",
+            "'grep'",
+            "node.exe",
+            "",
+            "  ",
+        ]
+    ]
+
+    split_cases = []
+    for command in [
+        "cat a.txt",
+        "cat a.txt | grep x",
+        "a && b",
+        "a || b",
+        "a & b",
+        "a ; b",
+        "cat a.txt > out",
+        "cat < in",
+        "a;;b",
+        "cat 'unclosed",
+        "echo 'a > b'",
+        'echo "x" > out',
+        "echo \\> x",
+        "a\nb",
+        "   ",
+        "echo `x`",
+        "cat a.txt&&grep x",
+    ]:
+        segments, error = ro._split_shell_segments(command)
+        split_cases.append({"command": command, "segments": segments, "error": error})
+
+    curl_cases = []
+    for label, arguments in [
+        ("只读简单", ["-sS", "https://x"]),
+        ("输出到文件", ["-o", "f", "https://x"]),
+        ("大写 O", ["-O", "https://x"]),
+        ("短组合含 c", ["-sc", "jar", "https://x"]),
+        ("dump header", ["-D", "h"]),
+        ("显式 POST", ["-X", "POST", "https://x"]),
+        ("短 X 连写", ["-XPOST", "https://x"]),
+        ("request 等号", ["--request=put", "https://x"]),
+        ("request 空格", ["--request", "delete", "https://x"]),
+        ("data", ["--data", "a=1"]),
+        ("短 d", ["-dfoo"]),
+        ("form", ["-F", "a=b"]),
+        ("上传", ["-T", "f"]),
+        ("json", ["--json", "{}"]),
+        ("trace", ["--trace", "f"]),
+        ("cookie jar", ["--cookie-jar", "j"]),
+        ("X 无方法名", ["-X"]),
+        ("request 无值", ["--request"]),
+    ]:
+        curl_cases.append(
+            {
+                "label": label,
+                "arguments": arguments,
+                "reason": ro._curl_denial_reason(list(arguments)),
+            }
+        )
+
+    browser_cases = []
+    for label, arguments in [
+        ("无参数", []),
+        ("help", ["--help"]),
+        ("version", ["--version"]),
+        ("未知选项", ["-x"]),
+        ("允许子命令", ["snapshot"]),
+        ("大写子命令", ["SNAPSHOT"]),
+        ("未知子命令", ["unknown-cmd"]),
+        ("out 空格", ["open", "--out", "f"]),
+        ("out 等号", ["open", "--out=/tmp/f"]),
+        ("file 缺路径", ["open", "--file"]),
+        ("file 有路径", ["open", "--file", "p"]),
+    ]:
+        browser_cases.append(
+            {
+                "label": label,
+                "arguments": arguments,
+                "reason": ro._browser_cli_denial_reason(list(arguments)),
+            }
+        )
+
+    return {
+        "normalized": normalized_cases,
+        "split": split_cases,
+        "curl": curl_cases,
+        "browser": browser_cases,
+    }
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7902,6 +8011,7 @@ def main() -> None:
             "context_messages": context_message_cases(),
             "tool_events": tool_event_field_cases(),
             "skill_command": skill_command_cases(),
+            "read_only_commands": read_only_command_cases(),
         "turn_loop": turn_loop_cases(),
         }
 
