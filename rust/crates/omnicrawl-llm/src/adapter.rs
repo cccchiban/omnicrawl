@@ -5,12 +5,15 @@
 //! 再用「Provider 保守默认 → 模型声明」合并能力、按模型描述覆盖上下文窗口；
 //! Python 侧的 SDK 客户端在内核里换成 [`ChatEndpoint`]，`base_url` 留空时用 Provider 默认 API 根。
 //!
-//! 未搬：`discover_models`（各 Provider 的模型列表发现）与出网脱敏装饰器。
+//! 未搬：出网脱敏装饰器（`DesensitizationRuntime`）。
 
 use omnicrawl_protocol::Protocol;
+use serde_json::Value;
 
+use crate::anthropic::ANTHROPIC_VERSION;
 use crate::capabilities::{merge_capabilities, ModelCapabilities};
 use crate::errors::ModelError;
+use crate::json::text_of;
 use crate::registry::resolve_protocol;
 use crate::runtime::{
     AnthropicRuntime, ChatEndpoint, GeminiRuntime, ModelRuntime, OpenAiChatRuntime,
@@ -74,6 +77,205 @@ pub fn conservative_capabilities(protocol: Protocol) -> ModelCapabilities {
         Protocol::OpenaiResponses => ModelCapabilities::conservative_openai_responses(),
         Protocol::AnthropicMessages => ModelCapabilities::conservative_anthropic(),
         Protocol::GeminiGenerateContent => ModelCapabilities::conservative_gemini(),
+    }
+}
+
+/// 模型发现的结果状态（Python `DiscoveryResult.status`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryStatus {
+    Ok,
+    Unavailable,
+    Unsupported,
+}
+
+/// 发现到的一个模型（Python `DiscoveryModel` 的内核子集）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveryModel {
+    pub profile_id: String,
+    pub provider: String,
+    pub protocol: Protocol,
+    pub model_id: String,
+    pub display_name: String,
+}
+
+/// 一次模型列表发现的结果（Python `DiscoveryResult`）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiscoveryResult {
+    pub profile_id: String,
+    pub status: DiscoveryStatus,
+    pub message: String,
+    pub models: Vec<DiscoveryModel>,
+}
+
+impl DiscoveryResult {
+    fn unavailable(profile_id: &str, message: impl Into<String>) -> Self {
+        Self {
+            profile_id: profile_id.to_string(),
+            status: DiscoveryStatus::Unavailable,
+            message: message.into(),
+            models: Vec::new(),
+        }
+    }
+}
+
+/// Python 侧对列表条目的截断上限。
+const DISCOVERY_LIMIT: usize = 500;
+
+/// 模型列表发现（Python 各 Adapter 的 `discover_models`）。
+///
+/// Python 走 SDK 的 `models.list()`；内核按实测的线上形态直接发 GET——
+/// OpenAI 两协议 `{base}/models` + `Bearer`、Anthropic `{base}/v1/models` +
+/// `x-api-key` / `anthropic-version`、Gemini `{base}/v1beta/models` + `x-goog-api-key`。
+/// 失败一律降级成 `unavailable`（发现模型不是关键路径，不该打断启动）。
+pub fn discover_models(
+    profile: &ProviderProfile,
+    protocol: Protocol,
+    timeout_seconds: f64,
+) -> DiscoveryResult {
+    if profile.api_key.trim().is_empty() {
+        return DiscoveryResult::unavailable(&profile.id, "缺少 API Key，无法发现模型。");
+    }
+
+    let configured = profile.base_url.trim();
+    let base = if configured.is_empty() {
+        default_base_url(protocol).to_string()
+    } else {
+        configured.trim_end_matches('/').to_string()
+    };
+    let agent = crate::transport::build_agent();
+    let user_agent = profile.user_agent.as_str();
+
+    let (url, headers) = match protocol {
+        Protocol::OpenaiChatCompletions | Protocol::OpenaiResponses => {
+            let authorization = format!("Bearer {}", profile.api_key.trim());
+            (
+                format!("{base}/models"),
+                vec![("Authorization", authorization)],
+            )
+        }
+        Protocol::AnthropicMessages => (
+            format!("{base}/v1/models"),
+            vec![
+                ("x-api-key", profile.api_key.trim().to_string()),
+                ("anthropic-version", ANTHROPIC_VERSION.to_string()),
+            ],
+        ),
+        Protocol::GeminiGenerateContent => (
+            format!("{base}/v1beta/models"),
+            vec![("x-goog-api-key", profile.api_key.trim().to_string())],
+        ),
+    };
+    let borrowed: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+
+    let response = match crate::transport::get(&agent, &url, user_agent, timeout_seconds, &borrowed)
+    {
+        Ok(mut response) => {
+            let status = response.status;
+            let text = response.read_text();
+            if status >= 400 {
+                return DiscoveryResult::unavailable(
+                    &profile.id,
+                    discovery_failure_message(protocol, &text, "APIStatusError"),
+                );
+            }
+            text
+        }
+        Err(failure) => {
+            let (message, type_name) = failure.sdk_view();
+            return DiscoveryResult::unavailable(
+                &profile.id,
+                discovery_failure_message(protocol, message, type_name),
+            );
+        }
+    };
+
+    let payload: Value = serde_json::from_str(&response).unwrap_or(Value::Null);
+    let model_ids = match protocol {
+        Protocol::GeminiGenerateContent => gemini_model_ids(&payload),
+        _ => openai_style_model_ids(&payload),
+    };
+
+    let models = model_ids
+        .into_iter()
+        .take(DISCOVERY_LIMIT)
+        .map(|model_id| DiscoveryModel {
+            profile_id: profile.id.clone(),
+            provider: profile.provider.clone(),
+            protocol,
+            display_name: model_id.clone(),
+            model_id,
+        })
+        .collect();
+
+    DiscoveryResult {
+        profile_id: profile.id.clone(),
+        status: DiscoveryStatus::Ok,
+        message: String::new(),
+        models,
+    }
+}
+
+/// `{"data":[{"id": …}]}`（OpenAI / Anthropic）：无 `data` 时按顶层数组读，与 Python 同口径。
+fn openai_style_model_ids(payload: &Value) -> Vec<String> {
+    let items = payload
+        .get("data")
+        .filter(|value| !value.is_null())
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array());
+    collect_model_ids(items, "id")
+}
+
+/// `{"models":[{"name":"models/gemini-x"}]}`：`name` 取最后一段（Python 的 `split("/", 1)[-1]`）。
+fn gemini_model_ids(payload: &Value) -> Vec<String> {
+    let items = payload.get("models").and_then(Value::as_array);
+    let raw = collect_model_ids(items, "name");
+    raw.into_iter()
+        .map(|name| {
+            // Python 是 `name.split("/", 1)[-1]`：从左切第一个 `/`。
+            name.split_once('/')
+                .map(|(_, tail)| tail.to_string())
+                .unwrap_or(name)
+        })
+        .collect()
+}
+
+fn collect_model_ids(items: Option<&Vec<Value>>, key: &str) -> Vec<String> {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut result: Vec<String> = Vec::new();
+    for item in items.into_iter().flatten() {
+        let raw = item.get(key).map(text_of).unwrap_or_default();
+        let model_id = raw.trim();
+        if model_id.is_empty() || !seen.insert(model_id.to_string()) {
+            continue;
+        }
+        result.push(model_id.to_string());
+    }
+    result
+}
+
+/// 发现失败文案：前缀按 Provider，内容走各家的错误阶梯。
+fn discovery_failure_message(protocol: Protocol, message: &str, type_name: &str) -> String {
+    match protocol {
+        Protocol::OpenaiChatCompletions | Protocol::OpenaiResponses => {
+            let view = crate::errors::ExceptionView {
+                message,
+                type_name,
+                ..crate::errors::ExceptionView::default()
+            };
+            let mapped = crate::errors::map_exception(&view, &[]);
+            format!("模型列表发现失败：{}", mapped.message)
+        }
+        Protocol::AnthropicMessages => format!(
+            "Claude 模型列表发现失败：{}",
+            crate::anthropic::format_anthropic_error(message, type_name)
+        ),
+        Protocol::GeminiGenerateContent => format!(
+            "Gemini 模型列表发现失败：{}",
+            crate::gemini::format_gemini_error(message, type_name)
+        ),
     }
 }
 

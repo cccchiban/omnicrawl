@@ -96,8 +96,15 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   API 根（`default_base_url`），最后按协议造出对应的运行时。返回的 `RuntimeBundle` 带上
   `protocol` / `capabilities` / `base_url`：能力门禁留在调用方，所以要一起交出去。
 
+- 模型列表发现（`discover_models`）：按实测的线上形态直接发 GET——`{base}/models`（OpenAI 两协议，
+  `Bearer`）、`{base}/v1/models`（Anthropic，`x-api-key` + `anthropic-version`）、
+  `{base}/v1beta/models`（Gemini，`x-goog-api-key`）；解析 `data[].id` / `models[].name`
+  （Gemini 去掉 `models/` 前缀）、按 `model_id` 去重、截断 500 条。缺凭据与任何失败都降级成
+  `unavailable`（文案前缀分别是「模型列表发现失败：」「Claude 模型列表发现失败：」「Gemini 模型列表发现失败：」），
+  不让发现失败打断启动。
+
 不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、
-`discover_models`（各 Provider 的模型列表发现）、会话落盘、上下文压缩触发。
+出网脱敏装饰器、会话落盘、上下文压缩触发。
 
 ## 已知差异（Responses 请求构建）
 

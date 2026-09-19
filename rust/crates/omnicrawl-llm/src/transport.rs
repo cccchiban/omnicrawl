@@ -98,6 +98,36 @@ pub fn send(
     }
 }
 
+/// GET 往返（模型列表发现用）：状态码同样不转错误，正文留给调用方判断。
+pub fn get(
+    agent: &ureq::Agent,
+    url: &str,
+    user_agent: &str,
+    timeout_seconds: f64,
+    headers: &[(&str, &str)],
+) -> Result<HttpResponse, TransportFailure> {
+    let timeout = Duration::from_secs_f64(timeout_seconds.max(1.0));
+    let mut builder = agent
+        .get(url)
+        .config()
+        .timeout_connect(Some(timeout))
+        .timeout_recv_response(Some(timeout))
+        .timeout_recv_body(Some(timeout))
+        .build()
+        .header("Accept", "application/json");
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    if !user_agent.trim().is_empty() {
+        builder = builder.header("User-Agent", user_agent);
+    }
+
+    match builder.call() {
+        Ok(response) => Ok(split(response)),
+        Err(error) => Err(classify(&error)),
+    }
+}
+
 fn split(response: Response<Body>) -> HttpResponse {
     let status = response.status().as_u16();
     HttpResponse {

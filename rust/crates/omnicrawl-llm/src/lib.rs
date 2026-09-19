@@ -22,8 +22,8 @@ mod transport;
 mod usage;
 
 pub use adapter::{
-    build_runtime, conservative_capabilities, default_base_url, ModelDescriptor, ProviderProfile,
-    RuntimeBundle,
+    build_runtime, conservative_capabilities, default_base_url, discover_models, DiscoveryModel,
+    DiscoveryResult, DiscoveryStatus, ModelDescriptor, ProviderProfile, RuntimeBundle,
 };
 pub use anthropic::{
     build_anthropic_request, format_anthropic_error, sanitize_anthropic_options,
