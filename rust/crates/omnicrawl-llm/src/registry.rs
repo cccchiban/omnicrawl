@@ -4,7 +4,7 @@
 //! `protocol_for_provider`、`_validate_protocol_matches_provider`）：给定 provider、默认协议与调用方
 //! 指定的协议，选出真正生效的协议，并拒绝「未知 Provider / 不支持的协议 / 协议与 Provider 不匹配」。
 //!
-//! 未搬：adapter 注册表与 `build_runtime` 工厂（依赖各 provider 的实现与脱敏装饰器）。
+//! 未搬：`discover_models`（各 Provider 的模型列表发现）；运行时工厂与能力组装见 [`crate::adapter`]。
 
 use omnicrawl_protocol::{Protocol, Provider};
 

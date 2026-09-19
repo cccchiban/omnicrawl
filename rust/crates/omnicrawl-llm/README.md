@@ -90,8 +90,14 @@ Provider 运行时：请求构建、HTTP 传输、流解析、用量归一化，
   `_format_gemini_error` 包成 `Gemini 请求失败：…`（`INVALID_REQUEST`），流中断包成
   `Gemini 流式回复中断：…`。
 
+- 运行时工厂（`adapter.rs`）：`build_runtime(&ProviderProfile, &ModelDescriptor) -> RuntimeBundle`——
+  先解析生效协议（调用方指定 > Profile 默认 > Provider 默认），再按「Provider 保守默认 → 模型声明」
+  合并能力（模型描述的 `context_window_tokens` 只在正数时覆盖），`base_url` 留空时用 Provider 默认
+  API 根（`default_base_url`），最后按协议造出对应的运行时。返回的 `RuntimeBundle` 带上
+  `protocol` / `capabilities` / `base_url`：能力门禁留在调用方，所以要一起交出去。
+
 不搬（留在调用方）：通用重试与能力门禁（`streaming` / `tools` / `prompt_cache` 开关）、
-adapter 注册表与 `build_runtime` 工厂、会话落盘、上下文压缩触发。
+`discover_models`（各 Provider 的模型列表发现）、会话落盘、上下文压缩触发。
 
 ## 已知差异（Responses 请求构建）
 

@@ -5,6 +5,7 @@
 //! `OpenAiChatRuntime` 把一次回合从请求串到归并回复。
 //! 传输之外没有别的 I/O；通用重试与能力门禁留在调用方。
 
+mod adapter;
 mod anthropic;
 mod capabilities;
 pub mod desensitization;
@@ -20,6 +21,10 @@ mod sse;
 mod transport;
 mod usage;
 
+pub use adapter::{
+    build_runtime, conservative_capabilities, default_base_url, ModelDescriptor, ProviderProfile,
+    RuntimeBundle,
+};
 pub use anthropic::{
     build_anthropic_request, format_anthropic_error, sanitize_anthropic_options,
     to_anthropic_messages, AnthropicRequest, AnthropicStreamState, ANTHROPIC_VERSION,
