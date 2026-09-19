@@ -7728,6 +7728,86 @@ def context_message_cases() -> dict:
     return {"project": project_cases, "inject": inject_cases}
 
 
+# ------------------------------------------------------------------ tool events
+
+
+def tool_event_field_cases() -> dict:
+    """工具调用的事件字段：协议原文与函数名的提取。"""
+
+    from omnicrawl.agent.controllers.turn.loop import TurnLoopMixin
+
+    def call(call_id, function_name, arguments):
+        payload = {"id": call_id, "function": {"name": function_name}}
+        if arguments is not None:
+            payload["function"]["arguments"] = arguments
+        return payload
+
+    cases = []
+    for label, message, call_id, tool_name in [
+        ("不是字典", "not-a-dict", "call-1", "read"),
+        ("没有 tool_calls", {"role": "assistant"}, "call-1", "read"),
+        ("tool_calls 不是数组", {"tool_calls": "x"}, "call-1", "read"),
+        ("按 ID 命中", {"tool_calls": [call("call-1", "read", '{"path": "a"}')]}, "call-1", "other"),
+        ("按函数名命中", {"tool_calls": [call("call-9", "read", '{"path": "a"}')]}, "call-1", "read"),
+        ("都不命中", {"tool_calls": [call("call-9", "write", "{}")]}, "call-1", "read"),
+        (
+            "首个命中即返回",
+            {
+                "tool_calls": [
+                    call("call-9", "write", '{"old": 1}'),
+                    call("call-1", "read", '{"path": "a"}'),
+                    call("call-2", "read", '{"path": "b"}'),
+                ]
+            },
+            "call-1",
+            "read",
+        ),
+        (
+            "arguments 非字符串",
+            {"tool_calls": [{"id": "call-1", "function": {"name": "read", "arguments": {"path": "a"}}}]},
+            "call-1",
+            "read",
+        ),
+        (
+            "缺少 function",
+            {"tool_calls": [{"id": "call-1", "type": "function"}]},
+            "call-1",
+            "read",
+        ),
+        (
+            "跳过非字典调用项",
+            {"tool_calls": ["x", 7, call("call-1", "", "{}")]},
+            "call-1",
+            "read",
+        ),
+        (
+            "函数名为空",
+            {"tool_calls": [call("call-1", "", '{"path": "a"}')]},
+            "call-1",
+            "read",
+        ),
+        (
+            "ID 为空按名匹配",
+            {"tool_calls": [call("", "read", "{}")]},
+            "",
+            "read",
+        ),
+    ]:
+        fields = TurnLoopMixin._raw_tool_call_event_fields(message, call_id, tool_name)
+        cases.append(
+            {
+                "label": label,
+                "assistant_message": message,
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "fields": fields,
+                "field_keys": list(fields.keys()),
+            }
+        )
+
+    return {"cases": cases}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -7758,6 +7838,7 @@ def main() -> None:
             "turn_text": turn_text_cases(),
             "vision_capability": vision_capability_cases(),
             "context_messages": context_message_cases(),
+            "tool_events": tool_event_field_cases(),
         "turn_loop": turn_loop_cases(),
         }
 
