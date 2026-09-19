@@ -6577,6 +6577,110 @@ def compaction_orchestration_cases() -> dict:
         "turn": _turn_compaction_cases(),
     }
 
+# ---------------------------------------------------------------------------- store
+
+
+def store_cases() -> dict:
+    """会话事件投影编排：内存事件构造与投影方式选择。"""
+
+    from datetime import datetime, timezone
+
+    from omnicrawl.agent.controllers.session import store as store_module
+    from omnicrawl.agent.controllers.session.control import SessionControlMixin
+    from omnicrawl.state.session_models import SessionEvent
+
+    fixed_now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+    ephemeral: list[dict] = []
+    for label, sequence, session_id, event_type, payload in [
+        ("无会话状态", 0, None, "user_message", {"text": "你好"}),
+        ("带会话标识", 0, "20260102-030405-abc123", "tool_result", {"ok": True}),
+        ("序号已推进", 7, "20260102-030405-abc123", "assistant_message", {}),
+    ]:
+        owner = SimpleNamespace(_ephemeral_event_seq=sequence)
+        if session_id is not None:
+            owner._session_state = SimpleNamespace(session_id=session_id)
+        with mock.patch.object(store_module, "utc_now", lambda: fixed_now):
+            event = store_module._ephemeral_session_event(owner, event_type, payload)
+        ephemeral.append(
+            {
+                "label": label,
+                "sequence": sequence,
+                "session_id": session_id,
+                "event_type": event_type,
+                "payload": dict(payload),
+                "created_at": event.created_at.isoformat(),
+                "next_sequence": int(owner._ephemeral_event_seq),
+                "event": event.to_dict(),
+            }
+        )
+
+    class _Projector:
+        def __init__(self) -> None:
+            self.fed: list[dict] = []
+
+        def feed(self, event) -> None:
+            self.fed.append(
+                {
+                    "event_id": event.event_id,
+                    "type": event.type,
+                    "payload": dict(event.payload),
+                }
+            )
+
+    class _Facade:
+        def __init__(self, event) -> None:
+            self._event = event
+            self.calls: list[dict] = []
+
+        def append_session_event(self, event_type: str, payload: dict):
+            self.calls.append({"event_type": event_type, "payload": dict(payload)})
+            return self._event
+
+    class _Probe(store_module.SessionStoreMixin, SessionControlMixin):
+        pass
+
+    def persisted_event() -> SessionEvent:
+        return SessionEvent.from_dict(
+            {
+                "version": 1,
+                "session_id": "20260102-030405-abc123",
+                "event_id": "evt-1",
+                "type": "tool_result",
+                "created_at": fixed_now.isoformat(),
+                "payload": {"ok": "脱敏后的副本"},
+            }
+        )
+
+    feeds: list[dict] = []
+    for label, has_projector, persisted in [
+        ("无投影器", False, False),
+        ("落盘事件", True, True),
+        ("未落盘事件", True, False),
+    ]:
+        projector = _Projector() if has_projector else None
+        facade = _Facade(persisted_event() if persisted else None)
+        probe = _Probe()
+        probe._agent_session_facade = facade
+        probe._ephemeral_event_seq = 0
+        probe._session_state = SimpleNamespace(session_id="20260102-030405-abc123")
+        if projector is not None:
+            probe._turn_history_projector = projector
+        with mock.patch.object(store_module, "utc_now", lambda: fixed_now):
+            probe._append_session_event("tool_result", {"ok": True})
+        feeds.append(
+            {
+                "label": label,
+                "has_projector": has_projector,
+                "persisted": persisted,
+                "facade_calls": facade.calls,
+                "feed": projector.fed if projector is not None else [],
+            }
+        )
+
+    return {"ephemeral": ephemeral, "feed": feeds}
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_root = Path(tmp).resolve()
@@ -6599,6 +6703,7 @@ def main() -> None:
             "context_compaction": context_compaction_cases(),
             "compaction_orchestration": compaction_orchestration_cases(),
             "subagents": subagents_cases(),
+            "store": store_cases(),
         "turn_loop": turn_loop_cases(),
         }
 

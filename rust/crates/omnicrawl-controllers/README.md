@@ -33,6 +33,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `agent/types.py` | `src/types.rs` | `ToolCall` / `ToolResult` / `ToolImageAttachment` |
 | `state/session_artifacts.py`、`state/session_projection.py`（各一函数） | `src/output.rs` | 复用 `omnicrawl-session` 的 `preview_text` / `tool_result_message`（不再重复实现） |
 | `controllers/__init__.py` 的错误面 | `src/error.rs` | `AgentError`（只承载文案） |
+| `controllers/session/store.py`（事件投影编排） | `src/store.rs` | 落盘事件用未脱敏原始 payload 投影、未落盘事件的等价内存事件构造（序号推进与 ID 形状）、投影方式选择 |
 
 ## 尚未搬的部分（宿主粘合层）
 
@@ -61,8 +62,9 @@ git 快照能力由宿主实现，crate 内不起子进程。
 - `plugins.py` 的进程面：Plugin Runtime / Worker 生命周期、`HOOK_POLICIES` 表本身与
   配置读写；分发后的判定与文案已在 `src/plugins.rs`。
 - `session/settings.py` 的 setter 事务（替换 `config` 字段 → 重建工具表 / Runtime /
-  MCP Manager，失败回滚）、`session/store.py` 的存取门面、`session/control.py` 的资源关闭
-  与隔离区收尾：判定与文案已在 `src/{settings,control}.rs`。
+  MCP Manager，失败回滚）、`session/store.py` 的存取门面（会话/项目/归档转发、`_session_facade`
+  的磁盘入口）、`session/control.py` 的资源关闭与隔离区收尾：判定与文案已在
+  `src/{settings,store,control}.rs`，事件投影编排已搬（`src/store.rs`）。
 - `undo.py` 的 git 应用段（`_restore_turn_side_effects` 的补丁应用、
   `_begin_turn_snapshot` 的 store 构造）：crate 只到「可以安全应用」为止。
 
@@ -75,7 +77,7 @@ python rust/tools/gen_controllers_fixture.py   # 用 omnicrawl/agent/controllers
 cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐字段比对
 ```
 
-`tests/fixtures/controllers_parity.json` 覆盖 825 个用例：整数配置读取与区间校验、未知工具
+`tests/fixtures/controllers_parity.json` 覆盖 831 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
 压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
@@ -88,7 +90,9 @@ cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐�
 含结构化摘要校验 26 例与摘要/原文投影 11 例，以及子代理域 59 例（登记键与查找归一化、会话去重投影、
 worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描述、Fork 上下文冻结与任务指令、
 公开结果本地投影、后台通知注入、结果校验与定义缺失文案），以及回合接线 14 例（回调轨迹、
-两个端口的形参与批次步号、循环收到的消息、最终回复补发、用量累计、失败分类与取消检查点）。
+两个端口的形参与批次步号、循环收到的消息、最终回复补发、用量累计、失败分类与取消检查点），
+以及会话事件投影编排 6 例（`tests/store_parity.rs`：内存事件的逐字段形状与序号推进、
+落盘与未落盘事件各自的投影方式）。
 
 期望值来自真实现：能直接调的函数直接调；挂在 Mixin 上的方法用一个最小探针对象驱动
 （只补上方法真正读到的属性，不改写被测逻辑）。模板装载一组需要读仓库内
@@ -130,6 +134,10 @@ worktree 产物摘要与收集失败、丢弃保护与三类文案、失败描�
     上下文部分同理由宿主传入。
 16. 取消分类：Python 沿异常因果链按类名与 `ModelErrorCode.CANCELLED` 判定
     （`_is_turn_cancel_exception`），内核收敛为 `LoopError::Cancelled` 的 typed 判定。
+17. 内存事件的会话标识：Python 是 `str(getattr(state, "session_id", 占位))`，属性存在但值为
+    `None` 时会得到字符串 `"None"`；内核用 `Option<&str>` 表达「属性缺失」，这种取值未纳入对照。
+18. 内存事件序号：Python 的序号是任意精度整数，内核对 `u32` 饱和自增；该序号只在单轮内存事件里
+    递增，溢出不可达。
 
 ## 验证
 
