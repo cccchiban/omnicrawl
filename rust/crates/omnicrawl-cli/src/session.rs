@@ -724,14 +724,8 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     let mut connection = conn.borrow_mut();
     match outcome {
         Ok(result) => {
-            connection.notify(HostEvent::TurnFinished(TurnFinishedPayload {
-                turn_id: turn_id.clone(),
-                final_text: result.final_text.clone(),
-                reasoning: result.reasoning,
-                model_turns: result.model_turns,
-                tool_calls: result.tool_calls,
-                paused: result.paused,
-            }));
+            // 先落盘再通知：宿主收到 turn.finished 时转录必须已经持久化，
+            // 否则宿主此刻退出（或被强杀）就会丢掉这一轮的问答。
             let session = connection.session.take();
             drop(connection);
             if let Some(mut session) = session {
@@ -744,6 +738,15 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
                 );
                 conn.borrow_mut().session = Some(session);
             }
+            conn.borrow_mut()
+                .notify(HostEvent::TurnFinished(TurnFinishedPayload {
+                    turn_id: turn_id.clone(),
+                    final_text: result.final_text.clone(),
+                    reasoning: result.reasoning,
+                    model_turns: result.model_turns,
+                    tool_calls: result.tool_calls,
+                    paused: result.paused,
+                }));
             conn.borrow_mut().respond(request_id, json!({}));
         }
         Err(error) => {

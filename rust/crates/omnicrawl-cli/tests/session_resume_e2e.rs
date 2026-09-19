@@ -284,7 +284,6 @@ fn kernel_reloads_session_history_after_restart() {
 }
 
 #[test]
-#[ignore = "验收发现的缺口：强杀内核会丢回合事件（只有优雅关停才 flush），修复后去掉本标记"]
 fn kernel_reloads_history_even_when_previous_process_was_killed() {
     let root = temp_root("resume-killed");
 
