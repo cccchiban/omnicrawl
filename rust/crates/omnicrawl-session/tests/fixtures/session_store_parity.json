@@ -1434,6 +1434,680 @@
         "sessions",
         "summaries"
       ]
+    },
+    {
+      "name": "consistency_report_and_rebuild",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "一致性"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "检查一致性"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "check_consistency"
+        },
+        {
+          "kind": "write_file",
+          "path": "index.json",
+          "text": "{\"schema_version\":1,\"sessions\":[]}\n"
+        },
+        {
+          "kind": "check_consistency"
+        },
+        {
+          "kind": "rebuild_index",
+          "apply": false,
+          "offset_seconds": 30
+        },
+        {
+          "kind": "rebuild_index",
+          "apply": true,
+          "offset_seconds": 30
+        },
+        {
+          "kind": "rebuild_index",
+          "apply": true,
+          "offset_seconds": 30
+        },
+        {
+          "kind": "list_sessions"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "一致性",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "检查一致性"
+            }
+          }
+        },
+        {
+          "kind": "check_consistency",
+          "report": {
+            "ok": true,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 1,
+            "scanned_transcripts": 1,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 0,
+            "repairable_count": 0,
+            "issues": [],
+            "proposed_entries": [
+              {
+                "session_id": "<session-id-1>",
+                "title": "检查一致性",
+                "workspace_root": "D:\\work\\demo",
+                "path": "sessions/<session-id-1>.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "write_file",
+          "path": "index.json"
+        },
+        {
+          "kind": "check_consistency",
+          "report": {
+            "ok": false,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 0,
+            "scanned_transcripts": 1,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 1,
+            "repairable_count": 1,
+            "issues": [
+              {
+                "code": "orphan_transcript",
+                "severity": "error",
+                "message": "发现未进入索引的转录：sessions/<session-id-1>.jsonl",
+                "session_id": "<session-id-1>",
+                "path": "sessions/<session-id-1>.jsonl",
+                "details": {
+                  "event_count": 2
+                },
+                "repairable": true
+              }
+            ],
+            "proposed_entries": [
+              {
+                "session_id": "<session-id-1>",
+                "title": "检查一致性",
+                "workspace_root": "D:\\work\\demo",
+                "path": "sessions/<session-id-1>.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "rebuild_index",
+          "report": {
+            "ok": false,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 0,
+            "scanned_transcripts": 1,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 1,
+            "repairable_count": 1,
+            "issues": [
+              {
+                "code": "orphan_transcript",
+                "severity": "error",
+                "message": "发现未进入索引的转录：sessions/<session-id-1>.jsonl",
+                "session_id": "<session-id-1>",
+                "path": "sessions/<session-id-1>.jsonl",
+                "details": {
+                  "event_count": 2
+                },
+                "repairable": true
+              }
+            ],
+            "proposed_entries": [
+              {
+                "session_id": "<session-id-1>",
+                "title": "检查一致性",
+                "workspace_root": "D:\\work\\demo",
+                "path": "sessions/<session-id-1>.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "rebuild_index",
+          "report": {
+            "ok": false,
+            "applied": true,
+            "backup_path": "index.json.bak.20260918_030559",
+            "scanned_index_entries": 0,
+            "scanned_transcripts": 1,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 1,
+            "repairable_count": 1,
+            "issues": [
+              {
+                "code": "orphan_transcript",
+                "severity": "error",
+                "message": "发现未进入索引的转录：sessions/<session-id-1>.jsonl",
+                "session_id": "<session-id-1>",
+                "path": "sessions/<session-id-1>.jsonl",
+                "details": {
+                  "event_count": 2
+                },
+                "repairable": true
+              }
+            ],
+            "proposed_entries": [
+              {
+                "session_id": "<session-id-1>",
+                "title": "检查一致性",
+                "workspace_root": "D:\\work\\demo",
+                "path": "sessions/<session-id-1>.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "rebuild_index",
+          "report": {
+            "ok": true,
+            "applied": true,
+            "backup_path": "index.json.bak.20260918_030559.1",
+            "scanned_index_entries": 1,
+            "scanned_transcripts": 1,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 0,
+            "repairable_count": 0,
+            "issues": [],
+            "proposed_entries": [
+              {
+                "session_id": "<session-id-1>",
+                "title": "检查一致性",
+                "workspace_root": "D:\\work\\demo",
+                "path": "sessions/<session-id-1>.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        },
+        {
+          "kind": "list_sessions",
+          "sessions": [
+            {
+              "session_id": "<session-id-1>",
+              "title": "检查一致性",
+              "workspace_root": "D:\\work\\demo",
+              "path": "sessions/<session-id-1>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:30.123456+00:00",
+              "event_count": 2,
+              "message_count": 1,
+              "last_event_type": "user_message",
+              "archived_at": null
+            }
+          ]
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"检查一致性\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:30.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n",
+        "index.json.bak.20260918_030559": "{\"schema_version\":1,\"sessions\":[]}\n",
+        "index.json.bak.20260918_030559.1": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"检查一致性\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:30.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"一致性\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"检查一致性\"}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "consistency_missing_and_empty_transcript",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "缺失"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "内容"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "remove_path",
+          "path": "sessions/$session.jsonl"
+        },
+        {
+          "kind": "check_consistency"
+        },
+        {
+          "kind": "write_file",
+          "path": "sessions/$session.jsonl",
+          "text": ""
+        },
+        {
+          "kind": "check_consistency"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "缺失",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "内容"
+            }
+          }
+        },
+        {
+          "kind": "remove_path",
+          "path": "sessions/<session-id-1>.jsonl"
+        },
+        {
+          "kind": "check_consistency",
+          "report": {
+            "ok": false,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 1,
+            "scanned_transcripts": 0,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 1,
+            "repairable_count": 1,
+            "issues": [
+              {
+                "code": "missing_transcript",
+                "severity": "error",
+                "message": "索引指向的转录不存在：sessions/<session-id-1>.jsonl",
+                "session_id": "<session-id-1>",
+                "path": "sessions/<session-id-1>.jsonl",
+                "details": {},
+                "repairable": true
+              }
+            ],
+            "proposed_entries": []
+          }
+        },
+        {
+          "kind": "write_file",
+          "path": "sessions/<session-id-1>.jsonl"
+        },
+        {
+          "kind": "check_consistency",
+          "report": {
+            "ok": true,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 1,
+            "scanned_transcripts": 1,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 1,
+            "repairable_count": 0,
+            "issues": [
+              {
+                "code": "empty_transcript",
+                "severity": "warning",
+                "message": "转录文件无可解析事件：sessions/<session-id-1>.jsonl",
+                "session_id": "<session-id-1>",
+                "path": "sessions/<session-id-1>.jsonl",
+                "details": {},
+                "repairable": false
+              }
+            ],
+            "proposed_entries": [
+              {
+                "session_id": "<session-id-1>",
+                "title": "内容",
+                "workspace_root": "D:\\work\\demo",
+                "path": "sessions/<session-id-1>.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"内容\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:30.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": ""
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "consistency_duplicate_transcript",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "重复"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "重复转录"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "copy_file",
+          "from": "sessions/$session.jsonl",
+          "to": "archive/$session.jsonl"
+        },
+        {
+          "kind": "check_consistency"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "重复",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "重复转录"
+            }
+          }
+        },
+        {
+          "kind": "copy_file",
+          "from": "sessions/<session-id-1>.jsonl",
+          "to": "archive/<session-id-1>.jsonl"
+        },
+        {
+          "kind": "check_consistency",
+          "report": {
+            "ok": false,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 1,
+            "scanned_transcripts": 2,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 1,
+            "repairable_count": 0,
+            "issues": [
+              {
+                "code": "path_mismatch",
+                "severity": "error",
+                "message": "会话 <session-id-1> 同时存在多份转录：sessions/<session-id-1>.jsonl 与 archive/<session-id-1>.jsonl。",
+                "session_id": "<session-id-1>",
+                "path": "archive/<session-id-1>.jsonl",
+                "details": {
+                  "preferred_path": "sessions/<session-id-1>.jsonl",
+                  "other_path": "archive/<session-id-1>.jsonl"
+                },
+                "repairable": false
+              }
+            ],
+            "proposed_entries": [
+              {
+                "session_id": "<session-id-1>",
+                "title": "重复转录",
+                "workspace_root": "D:\\work\\demo",
+                "path": "sessions/<session-id-1>.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "archive/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"重复\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"重复转录\"}}\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"重复转录\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:30.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"重复\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"重复转录\"}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "consistency_orphan_artifact",
+      "steps": [
+        {
+          "kind": "mkdir",
+          "path": "artifacts/20260101-000000-bbbbbb"
+        },
+        {
+          "kind": "check_consistency"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "mkdir",
+          "path": "artifacts/20260101-000000-bbbbbb"
+        },
+        {
+          "kind": "check_consistency",
+          "report": {
+            "ok": true,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 0,
+            "scanned_transcripts": 0,
+            "scanned_artifact_dirs": 1,
+            "issue_count": 1,
+            "repairable_count": 0,
+            "issues": [
+              {
+                "code": "orphan_artifact",
+                "severity": "warning",
+                "message": "发现无对应会话索引/转录的 artifact 目录：20260101-000000-bbbbbb",
+                "session_id": "20260101-000000-bbbbbb",
+                "path": "artifacts/20260101-000000-bbbbbb",
+                "details": {},
+                "repairable": false
+              }
+            ],
+            "proposed_entries": []
+          }
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[]}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "artifacts/20260101-000000-bbbbbb",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "consistency_index_only_entry",
+      "steps": [
+        {
+          "kind": "write_file",
+          "path": "sessions/custom-name.jsonl",
+          "text": ""
+        },
+        {
+          "kind": "write_file",
+          "path": "index.json",
+          "text": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"20260101-000000-cccccc\",\"title\":\"路径\",\"workspace_root\":\"/workspace/demo\",\"path\":\"sessions/custom-name.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:30.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n"
+        },
+        {
+          "kind": "check_consistency"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "write_file",
+          "path": "sessions/custom-name.jsonl"
+        },
+        {
+          "kind": "write_file",
+          "path": "index.json"
+        },
+        {
+          "kind": "check_consistency",
+          "report": {
+            "ok": false,
+            "applied": false,
+            "backup_path": null,
+            "scanned_index_entries": 1,
+            "scanned_transcripts": 0,
+            "scanned_artifact_dirs": 0,
+            "issue_count": 1,
+            "repairable_count": 0,
+            "issues": [
+              {
+                "code": "path_mismatch",
+                "severity": "error",
+                "message": "索引路径不在标准会话目录扫描结果中：sessions/custom-name.jsonl",
+                "session_id": "20260101-000000-cccccc",
+                "path": "sessions/custom-name.jsonl",
+                "details": {},
+                "repairable": false
+              }
+            ],
+            "proposed_entries": [
+              {
+                "session_id": "20260101-000000-cccccc",
+                "title": "路径",
+                "workspace_root": "/workspace/demo",
+                "path": "sessions/custom-name.jsonl",
+                "created_at": "2026-09-18T03:05:29.123456+00:00",
+                "updated_at": "2026-09-18T03:05:30.123456+00:00",
+                "event_count": 2,
+                "message_count": 1,
+                "last_event_type": "user_message",
+                "archived_at": null
+              }
+            ]
+          }
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"20260101-000000-cccccc\",\"title\":\"路径\",\"workspace_root\":\"/workspace/demo\",\"path\":\"sessions/custom-name.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:30.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n",
+        "sessions/custom-name.jsonl": ""
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
     }
   ]
 }

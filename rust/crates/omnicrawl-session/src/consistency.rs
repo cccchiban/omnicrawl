@@ -288,8 +288,20 @@ fn archived_value(value: Option<DateTime<Utc>>) -> Value {
 // 目录扫描：一致性报告的两块地基（磁盘转录发现、artifact 目录发现）。
 // ---------------------------------------------------------------------------
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// 路径是否位于 `root` 之内（逐组件比较，避免前缀字符串误判）。
+fn is_relative_to(path: &Path, root: &Path) -> bool {
+    let mut components = path.components();
+    for root_component in root.components() {
+        if components.next() != Some(root_component) {
+            return false;
+        }
+    }
+    true
+}
 
 /// 磁盘上发现的一份会话转录。
 #[derive(Debug, Clone, PartialEq)]
@@ -370,4 +382,356 @@ pub fn discover_artifact_session_ids(artifacts_dir: &Path) -> Vec<String> {
         .iter()
         .filter_map(|name| normalize_session_id(name).ok())
         .collect()
+}
+
+pub const ISSUE_MISSING_TRANSCRIPT: &str = "missing_transcript";
+pub const ISSUE_ORPHAN_TRANSCRIPT: &str = "orphan_transcript";
+pub const ISSUE_ORPHAN_INDEX: &str = "orphan_index";
+pub const ISSUE_ORPHAN_ARTIFACT: &str = "orphan_artifact";
+pub const ISSUE_UNREADABLE_TRANSCRIPT: &str = "unreadable_transcript";
+pub const ISSUE_EMPTY_TRANSCRIPT: &str = "empty_transcript";
+pub const ISSUE_MISSING_WORKSPACE: &str = "missing_workspace_root";
+pub const SEVERITY_INFO: &str = "info";
+
+/// 一次一致性扫描或索引重建预览的结果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionConsistencyReport {
+    pub issues: Vec<SessionConsistencyIssue>,
+    pub scanned_index_entries: usize,
+    pub scanned_transcripts: usize,
+    pub scanned_artifact_dirs: usize,
+    pub proposed_entries: Vec<SessionIndexEntry>,
+    pub applied: bool,
+    pub backup_path: Option<String>,
+}
+
+impl SessionConsistencyReport {
+    /// 没有 `error` 级问题即为「健康」。
+    pub fn ok(&self) -> bool {
+        !self
+            .issues
+            .iter()
+            .any(|issue| issue.severity == SEVERITY_ERROR)
+    }
+
+    pub fn repairable_issues(&self) -> Vec<&SessionConsistencyIssue> {
+        self.issues
+            .iter()
+            .filter(|issue| issue.repairable)
+            .collect()
+    }
+
+    pub fn to_dict(&self) -> Value {
+        let mut object = Map::new();
+        object.insert("ok".into(), Value::Bool(self.ok()));
+        object.insert("applied".into(), Value::Bool(self.applied));
+        object.insert(
+            "backup_path".into(),
+            match self.backup_path.as_deref() {
+                Some(path) => Value::String(path.to_string()),
+                None => Value::Null,
+            },
+        );
+        object.insert(
+            "scanned_index_entries".into(),
+            Value::from(self.scanned_index_entries),
+        );
+        object.insert(
+            "scanned_transcripts".into(),
+            Value::from(self.scanned_transcripts),
+        );
+        object.insert(
+            "scanned_artifact_dirs".into(),
+            Value::from(self.scanned_artifact_dirs),
+        );
+        object.insert("issue_count".into(), Value::from(self.issues.len()));
+        object.insert(
+            "repairable_count".into(),
+            Value::from(self.repairable_issues().len()),
+        );
+        object.insert(
+            "issues".into(),
+            Value::Array(self.issues.iter().map(|issue| issue.to_dict()).collect()),
+        );
+        object.insert(
+            "proposed_entries".into(),
+            Value::Array(
+                self.proposed_entries
+                    .iter()
+                    .map(|entry| entry.to_dict())
+                    .collect(),
+            ),
+        );
+        Value::Object(object)
+    }
+
+    /// 重建索引落盘后的同一份报告：`applied` 为真并带上备份路径。
+    pub fn with_applied(&self, backup_path: Option<String>) -> Self {
+        Self {
+            issues: self.issues.clone(),
+            scanned_index_entries: self.scanned_index_entries,
+            scanned_transcripts: self.scanned_transcripts,
+            scanned_artifact_dirs: self.scanned_artifact_dirs,
+            proposed_entries: self.proposed_entries.clone(),
+            applied: true,
+            backup_path,
+        }
+    }
+}
+
+fn issue(
+    code: &str,
+    severity: &str,
+    message: String,
+    session_id: Option<&str>,
+    path: Option<&str>,
+    details: Map<String, Value>,
+    repairable: bool,
+) -> SessionConsistencyIssue {
+    SessionConsistencyIssue {
+        code: code.to_string(),
+        severity: severity.to_string(),
+        message,
+        session_id: session_id.map(str::to_string),
+        path: path.map(str::to_string),
+        details,
+        repairable,
+    }
+}
+
+/// 扫描索引、转录与 artifact 目录，生成诊断与建议索引。
+///
+/// `read_events(path, session_id)` 由调用方注入（复用 `SessionStore` 的路径边界检查）；
+/// 读失败会转成 `unreadable_transcript` 问题而不是中断扫描——诊断工具必须能跑完坏目录。
+pub fn build_consistency_report<F>(
+    root: &Path,
+    index_entries: &[SessionIndexEntry],
+    read_events: F,
+) -> Result<SessionConsistencyReport, SessionStoreError>
+where
+    F: Fn(&Path, &str) -> Result<Vec<crate::SessionEvent>, SessionStoreError>,
+{
+    let index_by_id: BTreeMap<String, SessionIndexEntry> = index_entries
+        .iter()
+        .map(|entry| (entry.session_id.clone(), entry.clone()))
+        .collect();
+    let transcripts = discover_transcripts(root);
+    let mut transcripts_by_id: BTreeMap<String, TranscriptLocation> = BTreeMap::new();
+    let mut issues: Vec<SessionConsistencyIssue> = Vec::new();
+
+    for location in &transcripts {
+        let Some(previous) = transcripts_by_id.get(&location.session_id).cloned() else {
+            transcripts_by_id.insert(location.session_id.clone(), location.clone());
+            continue;
+        };
+        // 同一 id 同时出现在 sessions 与 archive：保留活跃副本，报告冲突但不删任何文件。
+        let prefer_new = location.relative_path.starts_with("sessions/");
+        let (preferred, other) = if prefer_new {
+            (location.clone(), previous.clone())
+        } else {
+            (previous.clone(), location.clone())
+        };
+        transcripts_by_id.insert(location.session_id.clone(), preferred.clone());
+        let mut details = Map::new();
+        details.insert(
+            "preferred_path".into(),
+            Value::String(preferred.relative_path.clone()),
+        );
+        details.insert(
+            "other_path".into(),
+            Value::String(other.relative_path.clone()),
+        );
+        issues.push(issue(
+            ISSUE_PATH_MISMATCH,
+            SEVERITY_ERROR,
+            format!(
+                "会话 {} 同时存在多份转录：{} 与 {}。",
+                location.session_id, previous.relative_path, location.relative_path
+            ),
+            Some(&location.session_id),
+            Some(&other.relative_path),
+            details,
+            false,
+        ));
+    }
+
+    let mut rebuilt_entries: Vec<SessionIndexEntry> = Vec::new();
+    let mut known_session_ids: BTreeSet<String> = BTreeSet::new();
+
+    // 1) 以磁盘转录为权威来源重建可恢复条目。
+    for (session_id, location) in &transcripts_by_id {
+        known_session_ids.insert(session_id.clone());
+        let events = match read_events(&location.absolute_path, session_id) {
+            Ok(events) => events,
+            Err(error) => {
+                issues.push(issue(
+                    ISSUE_UNREADABLE_TRANSCRIPT,
+                    SEVERITY_ERROR,
+                    error.message().to_string(),
+                    Some(session_id),
+                    Some(&location.relative_path),
+                    Map::new(),
+                    false,
+                ));
+                // 读失败时保留原索引条目，避免修复时误删。
+                if let Some(current) = index_by_id.get(session_id) {
+                    rebuilt_entries.push(current.clone());
+                }
+                continue;
+            }
+        };
+
+        if events.is_empty() {
+            issues.push(issue(
+                ISSUE_EMPTY_TRANSCRIPT,
+                SEVERITY_WARNING,
+                format!("转录文件无可解析事件：{}", location.relative_path),
+                Some(session_id),
+                Some(&location.relative_path),
+                Map::new(),
+                false,
+            ));
+            if let Some(current) = index_by_id.get(session_id) {
+                rebuilt_entries.push(current.clone());
+            }
+            continue;
+        }
+
+        let expected = build_index_entry_from_events(session_id, &location.relative_path, &events)?;
+        if expected.workspace_root == UNKNOWN_WORKSPACE {
+            issues.push(issue(
+                ISSUE_MISSING_WORKSPACE,
+                SEVERITY_WARNING,
+                format!("转录缺少 session_started.workspace_root：{session_id}"),
+                Some(session_id),
+                Some(&location.relative_path),
+                Map::new(),
+                false,
+            ));
+        }
+
+        match index_by_id.get(session_id) {
+            None => {
+                let mut details = Map::new();
+                details.insert("event_count".into(), Value::from(expected.event_count));
+                issues.push(issue(
+                    ISSUE_ORPHAN_TRANSCRIPT,
+                    SEVERITY_ERROR,
+                    format!("发现未进入索引的转录：{}", location.relative_path),
+                    Some(session_id),
+                    Some(&location.relative_path),
+                    details,
+                    true,
+                ));
+            }
+            Some(current) => issues.extend(compare_index_entry(current, &expected)),
+        }
+        rebuilt_entries.push(expected);
+    }
+
+    // 2) 索引指向不存在或无法匹配磁盘转录的条目。
+    for entry in index_entries {
+        if transcripts_by_id.contains_key(&entry.session_id) {
+            continue;
+        }
+        known_session_ids.insert(entry.session_id.clone());
+        let absolute = root.join(&entry.path);
+        if !is_relative_to(&absolute, root) {
+            issues.push(issue(
+                ISSUE_ORPHAN_INDEX,
+                SEVERITY_ERROR,
+                format!("索引路径越界：{}", entry.path),
+                Some(&entry.session_id),
+                Some(&entry.path),
+                Map::new(),
+                false,
+            ));
+            continue;
+        }
+        if absolute.exists() {
+            // 文件在，但不在 sessions/archive 的标准命名扫描结果里。
+            issues.push(issue(
+                ISSUE_PATH_MISMATCH,
+                SEVERITY_ERROR,
+                format!("索引路径不在标准会话目录扫描结果中：{}", entry.path),
+                Some(&entry.session_id),
+                Some(&entry.path),
+                Map::new(),
+                false,
+            ));
+            rebuilt_entries.push(entry.clone());
+            continue;
+        }
+        issues.push(issue(
+            ISSUE_MISSING_TRANSCRIPT,
+            SEVERITY_ERROR,
+            format!("索引指向的转录不存在：{}", entry.path),
+            Some(&entry.session_id),
+            Some(&entry.path),
+            Map::new(),
+            true,
+        ));
+        // 缺失转录的条目默认不进 proposed_entries（修复只对齐索引，不动磁盘文件）。
+    }
+
+    // 3) 孤立 artifact 目录只报告，不自动清理。
+    let artifact_ids = discover_artifact_session_ids(&root.join("artifacts"));
+    for artifact_session_id in &artifact_ids {
+        if known_session_ids.contains(artifact_session_id)
+            || transcripts_by_id.contains_key(artifact_session_id)
+            || index_by_id.contains_key(artifact_session_id)
+        {
+            continue;
+        }
+        issues.push(issue(
+            ISSUE_ORPHAN_ARTIFACT,
+            SEVERITY_WARNING,
+            format!("发现无对应会话索引/转录的 artifact 目录：{artifact_session_id}"),
+            Some(artifact_session_id),
+            Some(&format!("artifacts/{artifact_session_id}")),
+            Map::new(),
+            false,
+        ));
+    }
+
+    // 与 list_sessions 一致的稳定顺序：按 updated_at 倒序。
+    rebuilt_entries.sort_by_key(|entry| std::cmp::Reverse(entry.updated_at));
+
+    Ok(SessionConsistencyReport {
+        issues,
+        scanned_index_entries: index_entries.len(),
+        scanned_transcripts: transcripts.len(),
+        scanned_artifact_dirs: artifact_ids.len(),
+        proposed_entries: rebuilt_entries,
+        applied: false,
+        backup_path: None,
+    })
+}
+
+/// 覆盖 `index.json` 前的同目录备份：文件名带时间戳，撞车时追加序号；索引不存在返回 `None`。
+pub fn write_index_backup(
+    index_path: &Path,
+    now: DateTime<Utc>,
+) -> Result<Option<PathBuf>, SessionStoreError> {
+    if !index_path.exists() {
+        return Ok(None);
+    }
+    let timestamp = now.format("%Y%m%d_%H%M%S").to_string();
+    let file_name = index_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "index.json".to_string());
+    let mut backup_path = index_path.with_file_name(format!("{file_name}.bak.{timestamp}"));
+    let mut suffix = 1;
+    while backup_path.exists() {
+        backup_path = index_path.with_file_name(format!("{file_name}.bak.{timestamp}.{suffix}"));
+        suffix += 1;
+    }
+    fs::copy(index_path, &backup_path).map_err(|error| {
+        SessionStoreError::new(format!(
+            "备份会话索引失败：{}，{error}",
+            backup_path.display()
+        ))
+    })?;
+    Ok(Some(backup_path))
 }

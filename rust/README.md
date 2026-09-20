@@ -435,9 +435,9 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 记忆层（格式、排序与相似度、索引与读写、检索入口、写入清理、提示词段落、旧目录迁移）、
 artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照，会话生命周期编排
 （重命名 / 导出 Markdown / 归档 / 取消归档 / 删除 / 丢弃空会话 / 带筛选的列表 / 项目路径 / artifact 读回）
-与 `append_event` 的载荷整理（超长输出转 artifact + 值级脱敏）也已落地；一致性诊断的索引重建
-`build_index_entry_from_events` 与条目对照 `compare_index_entry` 也已落地（`consistency.rs`，7 例对照）。
-未搬：一致性扫描的全量报告与索引回写、运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
+与 `append_event` 的载荷整理（超长输出转 artifact + 值级脱敏）也已落地；一致性诊断同样是完整链路：
+转录/artifact 发现、条目重建与对照、全量扫描报告、备份与索引回写（`consistency.rs` + `check_consistency` /
+`rebuild_index`）。未搬：运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
 
 `omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层全部 11 条规则
 （PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）、匹配引擎
@@ -452,7 +452,7 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 接下来：运行时的组装面（`build_runtime` 工厂 + 四路 Provider 的 `discover_models`）已进内核，
 下一批是把 `omnicrawl-cli` 的 `KernelModelPort::runtime()` 从「只造 OpenAiChatRuntime」改成经
 `build_runtime` 按协议选择；脱敏侧接 `DesensitizationRuntime` 装饰器（trait 已就位）；
-会话侧补一致性扫描与索引回写。上下文压缩这条链已在 Rust 侧补齐到「除内核接线外」的全部：`omnicrawl-controllers` 的
+会话侧补 undo 存储事务与有状态投影。上下文压缩这条链已在 Rust 侧补齐到「除内核接线外」的全部：`omnicrawl-controllers` 的
 `context_compaction`（账本、证据恢复、结构化摘要生成、压缩编排）与 `turn/compaction` 的判定面共有
 13 例对照；`omnicrawl-compaction` 提供会话/记忆编排（测量事件落盘、压缩触发、二级归档、
 记忆回写与自动召回、历史重建）与摘要模型适配器（复用主请求前缀与工具面、`tool_choice=none`），

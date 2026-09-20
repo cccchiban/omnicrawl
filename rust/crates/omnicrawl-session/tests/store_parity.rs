@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use omnicrawl_session::consistency::SessionConsistencyReport;
 use omnicrawl_session::{SessionListQuery, SessionStore, SessionStoreError};
 use serde_json::{json, Map, Value};
 
@@ -275,6 +276,49 @@ fn run_step(
                 Err(error) => error_output(kind, &error),
             }
         }
+        "check_consistency" => match store.check_consistency() {
+            Ok(report) => json!({"kind": kind, "report": report_payload(&report)}),
+            Err(error) => error_output(kind, &error),
+        },
+        "rebuild_index" => {
+            let now = base_time + chrono::Duration::seconds(offset(step, 1));
+            let apply = step.get("apply").and_then(Value::as_bool).unwrap_or(false);
+            match store.rebuild_index(apply, now) {
+                Ok(report) => json!({"kind": kind, "report": report_payload(&report)}),
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "mkdir" => {
+            let relative = context.substitute(step["path"].as_str().unwrap_or_default());
+            let path = root.join(&relative);
+            match fs::create_dir_all(&path) {
+                Ok(()) => json!({"kind": kind, "path": relative}),
+                Err(error) => error_output(kind, &SessionStoreError::new(error.to_string())),
+            }
+        }
+        "remove_path" => {
+            let relative = context.substitute(step["path"].as_str().unwrap_or_default());
+            let path = root.join(&relative);
+            let outcome = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else if path.exists() {
+                fs::remove_file(&path)
+            } else {
+                Ok(())
+            };
+            match outcome {
+                Ok(()) => json!({"kind": kind, "path": relative}),
+                Err(error) => error_output(kind, &SessionStoreError::new(error.to_string())),
+            }
+        }
+        "copy_file" => {
+            let from = context.substitute(step["from"].as_str().unwrap_or_default());
+            let to = context.substitute(step["to"].as_str().unwrap_or_default());
+            match fs::copy(root.join(&from), root.join(&to)) {
+                Ok(_) => json!({"kind": kind, "from": from, "to": to}),
+                Err(error) => error_output(kind, &SessionStoreError::new(error.to_string())),
+            }
+        }
         "corrupt_line" => {
             let path = root.join("sessions").join(format!(
                 "{}.jsonl",
@@ -292,17 +336,31 @@ fn run_step(
             }
         }
         "write_file" => {
-            let path = root.join(step["path"].as_str().unwrap_or_default());
+            let relative = context.substitute(step["path"].as_str().unwrap_or_default());
+            let text = context.substitute(step["text"].as_str().unwrap_or_default());
+            let path = root.join(&relative);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).expect("创建父目录");
             }
-            match fs::write(&path, step["text"].as_str().unwrap_or_default()) {
-                Ok(()) => json!({"kind": kind, "path": step["path"]}),
+            match fs::write(&path, &text) {
+                Ok(()) => json!({"kind": kind, "path": relative}),
                 Err(error) => error_output(kind, &SessionStoreError::new(error.to_string())),
             }
         }
         other => panic!("fixture 里出现未知步骤：{other}"),
     }
+}
+
+/// 报告转 JSON；备份文件路径只留文件名（两侧临时根目录不同，绝对路径不可比）。
+fn report_payload(report: &SessionConsistencyReport) -> Value {
+    let mut value = report.to_dict();
+    if let Some(object) = value.as_object_mut() {
+        if let Some(backup) = object.get("backup_path").and_then(Value::as_str) {
+            let name = backup.rsplit('/').next().unwrap_or(backup).to_string();
+            object.insert("backup_path".into(), Value::String(name));
+        }
+    }
+    value
 }
 
 fn record(outcome: Result<(), SessionStoreError>, kind: &str) -> Value {
@@ -347,12 +405,18 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 fn snapshot(root: &Path) -> Value {
+    // 键按字典序落表：与 Python 侧 `sorted(rglob)` 的快照顺序一致，
+    // 随机 id 的编号才不会依赖文件系统枚举顺序。
+    let mut collected: BTreeMap<String, Value> = BTreeMap::new();
+    collect(root, root, &mut collected);
     let mut files = Map::new();
-    collect(root, root, &mut files);
+    for (relative, text) in collected {
+        files.insert(relative, text);
+    }
     Value::Object(files)
 }
 
-fn collect(root: &Path, current: &Path, files: &mut Map<String, Value>) {
+fn collect(root: &Path, current: &Path, files: &mut BTreeMap<String, Value>) {
     let Ok(entries) = fs::read_dir(current) else {
         return;
     };

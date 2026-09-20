@@ -20,6 +20,7 @@ use memmap2::Mmap;
 use serde_json::{json, Map, Value};
 
 use crate::artifact::SessionArtifactStore;
+use crate::consistency::{build_consistency_report, write_index_backup, SessionConsistencyReport};
 use crate::error::SessionStoreError;
 use crate::event::SessionEvent;
 use crate::index::SessionIndexEntry;
@@ -593,6 +594,63 @@ impl SessionStore {
         Ok(true)
     }
 
+    /// 一致性扫描：只读检查索引、转录与 artifact，不改任何文件。
+    pub fn check_consistency(&self) -> Result<SessionConsistencyReport, SessionStoreError> {
+        let _access = self.exclusive_write()?;
+        self.ensure()?;
+        self.build_consistency_report_locked()
+    }
+
+    /// 按磁盘转录重建 `index.json`：`apply` 为假只返回诊断与建议索引，为真则先备份再写回。
+    ///
+    /// 只重写索引条目，不删转录、artifact 或任何无法判断归属的数据。
+    pub fn rebuild_index(
+        &self,
+        apply: bool,
+        now: DateTime<Utc>,
+    ) -> Result<SessionConsistencyReport, SessionStoreError> {
+        let _access = self.exclusive_write()?;
+        self.ensure()?;
+        let report = self.build_consistency_report_locked()?;
+        if !apply {
+            return Ok(report);
+        }
+        let backup = write_index_backup(&self.index_path, now)?;
+        self.save_entries(&report.proposed_entries)?;
+        Ok(report.with_applied(backup.map(|path| path_to_posix(&path))))
+    }
+
+    /// 持写锁期间构建一致性报告；读取注入 SessionStore 自己的路径边界检查。
+    fn build_consistency_report_locked(
+        &self,
+    ) -> Result<SessionConsistencyReport, SessionStoreError> {
+        let entries = self.load_entries()?;
+        build_consistency_report(&self.root, &entries, |path, session_id| {
+            self.read_events_for_consistency(path, session_id)
+        })
+    }
+
+    /// 一致性扫描专用读取：校验路径边界后解析 JSONL（坏行只留诊断）。
+    fn read_events_for_consistency(
+        &self,
+        path: &Path,
+        session_id: &str,
+    ) -> Result<Vec<SessionEvent>, SessionStoreError> {
+        let Some(relative) = relative_under_root(path, &self.root) else {
+            return Err(SessionStoreError::new(format!(
+                "会话路径越界：{}",
+                path.display()
+            )));
+        };
+        let relative = posix_of(&relative)?;
+        let result = crate::records::read_session_events_with_diagnostics(
+            path,
+            Some(session_id),
+            Some(&relative),
+        )?;
+        Ok(result.events)
+    }
+
     /// 读取会话 artifact 文本：路径规范化、会话归属与目录边界校验后返回内容。
     pub fn read_artifact_text(
         &self,
@@ -873,22 +931,45 @@ fn read_events_from_path(path: &Path) -> Result<Vec<SessionEvent>, SessionStoreE
     Ok(events)
 }
 
-/// 路径相对 `root` 的 posix 写法（事件载荷里的路径统一用正斜杠）。
-fn relative_posix(path: &Path, root: &Path) -> Result<String, SessionStoreError> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| SessionStoreError::new(format!("路径不在会话目录内：{}", path.display())))?;
-    let parts: Vec<String> = relative
+/// 绝对路径的 posix 写法（对齐 Python `Path.as_posix()`：反斜杠换成正斜杠，盘符保留）。
+fn path_to_posix(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// `path` 相对 `root` 的部分。
+///
+/// 既接受 `path` 直接以 `root` 开头的形态，也接受 `path` 已被 `canonicalize` 规范化过的形态
+/// （Windows 上会带 `\\?\` 前缀，与原始 `root` 的字面前缀不同）。
+fn relative_under_root(path: &Path, root: &Path) -> Option<PathBuf> {
+    if let Ok(relative) = path.strip_prefix(root) {
+        return Some(relative.to_path_buf());
+    }
+    let canonical_root = fs::canonicalize(root).ok()?;
+    path.strip_prefix(&canonical_root)
+        .ok()
+        .map(Path::to_path_buf)
+}
+
+/// 相对路径的 posix 写法：逐组件拼成长度非零的 `a/b/c`。
+fn posix_of(path: &Path) -> Result<String, SessionStoreError> {
+    let parts: Vec<String> = path
         .components()
         .map(|component| component.as_os_str().to_string_lossy().to_string())
         .collect();
     if parts.is_empty() {
         return Err(SessionStoreError::new(format!(
-            "路径不在会话目录内：{}",
+            "路径不是有效相对路径：{}",
             path.display()
         )));
     }
     Ok(parts.join("/"))
+}
+
+/// 路径相对 `root` 的 posix 写法（事件载荷里的路径统一用正斜杠）。
+fn relative_posix(path: &Path, root: &Path) -> Result<String, SessionStoreError> {
+    let relative = relative_under_root(path, root)
+        .ok_or_else(|| SessionStoreError::new(format!("路径不在会话目录内：{}", path.display())))?;
+    posix_of(&relative)
 }
 
 /// 索引计数与标题随事件演进，规则与 Python `_update_entry_after_event` 一致。

@@ -61,6 +61,15 @@ def resolve_step(step: dict, context: dict):
     return resolved
 
 
+def report_payload(report) -> dict:
+    """报告转 dict；备份文件路径只留文件名（两侧临时根目录不同，绝对路径不可比）。"""
+
+    data = report.to_dict()
+    if data.get("backup_path"):
+        data["backup_path"] = Path(data["backup_path"]).name
+    return data
+
+
 def snapshot(root: Path) -> dict:
     """记录磁盘状态：文件相对路径 → 字节内容（文本按 UTF-8 解码）。"""
 
@@ -200,15 +209,34 @@ def run_step(store: SessionStore, root: Path, step: dict, context: dict) -> dict
                 "kind": kind,
                 "text": store.read_artifact_text(step["session_id"], step["artifact_path"]),
             }
+        if kind == "check_consistency":
+            return {"kind": kind, "report": report_payload(store.check_consistency())}
+        if kind == "rebuild_index":
+            report = store.rebuild_index(
+                apply=step.get("apply", False),
+                now=BASE_TIME + timedelta(seconds=step.get("offset_seconds", 1)),
+            )
+            return {"kind": kind, "report": report_payload(report)}
+        if kind == "mkdir":
+            path = root / step["path"]
+            path.mkdir(parents=True, exist_ok=True)
+            return {"kind": kind, "path": step["path"]}
+        if kind == "remove_path":
+            path = root / step["path"]
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink()
+            return {"kind": kind, "path": step["path"]}
+        if kind == "copy_file":
+            shutil.copyfile(root / step["from"], root / step["to"])
+            return {"kind": kind, "from": step["from"], "to": step["to"]}
         if kind == "corrupt_line":
             # 人为往转录里插一行坏 JSON，观察读取行为
             path = root / "sessions" / f"{step['session_id']}.jsonl"
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(step["line"] + "\n")
             return {"kind": kind, "line": step["line"]}
-        if kind == "read_file":
-            path = root / step["path"]
-            return {"kind": kind, "path": step["path"], "text": path.read_text("utf-8")}
         if kind == "write_file":
             path = root / step["path"]
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,6 +482,100 @@ SCENARIOS = [
             {"kind": "list_project_paths", "include_archived": False},
         ],
     ),
+    (
+        "consistency_report_and_rebuild",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "一致性"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "检查一致性"},
+                "offset_seconds": 1,
+            },
+            {"kind": "check_consistency"},
+            # 索引被清空：转录成为孤立条目，修复应把它补回索引。
+            {
+                "kind": "write_file",
+                "path": "index.json",
+                "text": '{"schema_version":1,"sessions":[]}' + chr(10),
+            },
+            {"kind": "check_consistency"},
+            {"kind": "rebuild_index", "apply": False, "offset_seconds": 30},
+            {"kind": "rebuild_index", "apply": True, "offset_seconds": 30},
+            # 同一秒再修一次：备份文件名要追加序号。
+            {"kind": "rebuild_index", "apply": True, "offset_seconds": 30},
+            {"kind": "list_sessions"},
+        ],
+    ),
+    (
+        "consistency_missing_and_empty_transcript",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "缺失"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "内容"},
+                "offset_seconds": 1,
+            },
+            {"kind": "remove_path", "path": "sessions/$session.jsonl"},
+            {"kind": "check_consistency"},
+            # 转录文件回来了但没有任何事件：只告警，索引条目保留。
+            {"kind": "write_file", "path": "sessions/$session.jsonl", "text": ""},
+            {"kind": "check_consistency"},
+        ],
+    ),
+    (
+        "consistency_duplicate_transcript",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "重复"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "重复转录"},
+                "offset_seconds": 1,
+            },
+            {
+                "kind": "copy_file",
+                "from": "sessions/$session.jsonl",
+                "to": "archive/$session.jsonl",
+            },
+            {"kind": "check_consistency"},
+        ],
+    ),
+    (
+        # 孤立 artifact 只能用「非本场景生成的固定 id」表达：同一场景里不要再混入真实会话，
+        # 否则两侧的 id 编号会不一致（见 main() 里的编号说明）。
+        "consistency_orphan_artifact",
+        [
+            {"kind": "mkdir", "path": "artifacts/20260101-000000-bbbbbb"},
+            {"kind": "check_consistency"},
+        ],
+    ),
+    (
+        # 索引里只有条目、磁盘上有同名文件但文件名不符合会话 id 命名：扫描不到，报告路径不一致。
+        "consistency_index_only_entry",
+        [
+            {"kind": "write_file", "path": "sessions/custom-name.jsonl", "text": ""},
+            {
+                "kind": "write_file",
+                "path": "index.json",
+                "text": (
+                    '{"schema_version":1,"sessions":[{"session_id":"20260101-000000-cccccc",'
+                    '"title":"路径","workspace_root":"/workspace/demo",'
+                    '"path":"sessions/custom-name.jsonl",'
+                    '"created_at":"2026-09-18T03:05:29.123456+00:00",'
+                    '"updated_at":"2026-09-18T03:05:30.123456+00:00",'
+                    '"event_count":2,"message_count":1,"last_event_type":"user_message",'
+                    '"archived_at":null}]}'
+                    + chr(10)
+                ),
+            },
+            {"kind": "check_consistency"},
+        ],
+    ),
 ]
 
 def indexed_mapping(values, prefix: str) -> dict:
@@ -530,6 +652,10 @@ def main() -> None:
         raw = json.dumps(result, ensure_ascii=False)
         # 会话 id 的编号按“创建顺序”定：outputs 里 start_session 的先后是确定的，
         # 而文件名里带随机后缀，按文件名排序会让编号在两次生成之间漂移。
+        #
+        # 因此数据集里不要出现「自定义的 id 形状字面量 + 真实会话 id」混用的场景：
+        # 真实 id 只由 start_session 生成，字面量（如 20260101-000000-bbbbbb）在两侧
+        # 归一化时的编号顺序无法保证一致，单独成场景即可。
         session_ids = re.findall(
             r"20260918-030529-[a-f0-9]{6}",
             json.dumps(result["outputs"], ensure_ascii=False),

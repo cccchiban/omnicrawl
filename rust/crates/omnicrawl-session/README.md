@@ -48,6 +48,22 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - `append_event` 的载荷整理统一走 `SessionArtifactStore::prepare_event_payload`：超长工具输出转 artifact、
   值级脱敏与补字段都由同一处负责，`store.rs` 不再自带一份 inline 分支。
 
+## 一致性扫描与索引重建（`consistency.rs`）
+
+对齐 Python `omnicrawl/state/session_consistency.py`：
+
+- `discover_transcripts` / `discover_artifact_session_ids`：只认符合会话 id 命名的转录与 artifact 一级目录。
+- `build_index_entry_from_events` / `compare_index_entry`：重建条目与既有条目的逐字段对照（8 个诊断码）。
+- `build_consistency_report`：按「转录 → 索引 → artifact」三段扫描，产出问题列表、扫描计数与建议索引；
+  同一 id 同时存在 `sessions/` 与 `archive/` 时保留活跃副本并报 `path_mismatch`；读不出事件的转录报
+  `unreadable_transcript` 并保留原索引条目（避免修复时误删）；缺失转录的索引条目默认不进建议索引。
+- `write_index_backup`：覆盖前在同目录写 `index.json.bak.<YYYYMMDD_HHMMSS>`，同秒撞车追加 `.1`、`.2`。
+- `SessionStore::check_consistency`（只读）与 `SessionStore::rebuild_index(apply, now)`
+  （`apply=false` 只预览；`apply=true` 先备份再写回建议索引）。
+
+对照数据集见 `tests/fixtures/session_store_parity.json` 的 `consistency_*` 场景（健康目录、孤儿转录 + 两次重建、
+缺失/空转录、重复转录、孤立 artifact、索引单条目），比对报告 JSON、索引/备份文件字节与目录骨架。
+
 ## 跨进程锁与耐久写（`locking.rs`）
 
 对齐 Python `omnicrawl/state/session_locking.py`：同一个会话目录允许多进程访问，写路径靠 OS 级文件锁互斥。
