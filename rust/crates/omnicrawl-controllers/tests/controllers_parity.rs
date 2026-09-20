@@ -1120,6 +1120,113 @@ fn compression_constants_match_python() {
     );
 }
 
+#[test]
+fn compression_prompt_and_cleanup_match_python() {
+    let data = fixture();
+    let expected = &data["compression"];
+
+    assert_eq!(
+        compression::system_prompt_text(),
+        expected["system_prompt"].as_str().expect("提示词"),
+        "内置压缩系统提示"
+    );
+    assert_eq!(
+        compression::OUTPUT_OPEN,
+        expected["markers"]["output_open"].as_str().expect("标记")
+    );
+    assert_eq!(
+        compression::OUTPUT_CLOSE,
+        expected["markers"]["output_close"].as_str().expect("标记")
+    );
+    assert_eq!(
+        compression::OMITTED_NOTE,
+        expected["markers"]["omitted_note"].as_str().expect("标记")
+    );
+
+    for case in expected["build_messages"]
+        .as_array()
+        .expect("build_messages")
+    {
+        let label = case["name"].as_str().expect("用例名");
+        let actual = compression::build_messages(
+            case["tool_name"].as_str().expect("工具名"),
+            case["arguments_summary"].as_str().expect("参数摘要"),
+            case["task_hint"].as_str().expect("任务提示"),
+            case["output"].as_str().expect("原始输出"),
+        );
+        assert_eq!(
+            serde_json::json!(actual),
+            case["expected"],
+            "压缩请求消息（{label}）"
+        );
+    }
+
+    for case in expected["sample_output"].as_array().expect("sample_output") {
+        let label = case["name"].as_str().expect("用例名");
+        let actual = compression::sample_output(
+            case["output"].as_str().expect("输出"),
+            case["max_chars"].as_u64().expect("上限") as usize,
+        );
+        assert_eq!(actual, case["expected"], "输出采样（{label}）");
+    }
+
+    for case in expected["clean_reply_text"]
+        .as_array()
+        .expect("clean_reply_text")
+    {
+        let label = case["name"].as_str().expect("用例名");
+        let actual = compression::clean_reply_text(case["text"].as_str().expect("回包"));
+        assert_eq!(actual, case["expected"], "回包清洗（{label}）");
+    }
+
+    for case in expected["label_line"].as_array().expect("label_line") {
+        let label = case["name"].as_str().expect("用例名");
+        let actual = compression::is_label_line(case["line"].as_str().expect("行"));
+        assert_eq!(
+            actual,
+            case["expected"].as_bool().expect("布尔"),
+            "标签行判定（{label}）"
+        );
+    }
+
+    for case in expected["bound_text"].as_array().expect("bound_text") {
+        let label = case["name"].as_str().expect("用例名");
+        let actual = compression::bound_text(
+            case["text"].as_str().expect("文本"),
+            case["max_chars"].as_u64().expect("上限") as usize,
+        );
+        assert_eq!(actual, case["expected"], "结果截断（{label}）");
+    }
+
+    for case in expected["looks_like_cancellation"]
+        .as_array()
+        .expect("looks_like_cancellation")
+    {
+        let label = case["name"].as_str().expect("用例名");
+        let actual = compression::looks_like_cancellation(
+            case["type_name"].as_str().expect("类型名"),
+            case["message"].as_str().expect("消息"),
+        );
+        assert_eq!(
+            actual,
+            case["expected"].as_bool().expect("布尔"),
+            "取消判定（{label}）"
+        );
+    }
+
+    for case in expected["reasoning_effort"]
+        .as_array()
+        .expect("reasoning_effort")
+    {
+        let label = case["name"].as_str().expect("用例名");
+        let actual = compression::effective_reasoning_effort(
+            case["thinking_enabled"].as_bool().expect("开关"),
+            case["effort"].as_str().expect("深度"),
+        );
+        assert_eq!(actual, case["expected"], "思考深度（{label}）");
+    }
+}
+
 // ------------------------------------------------------------------------- building
 
 #[test]

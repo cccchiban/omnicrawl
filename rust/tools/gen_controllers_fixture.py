@@ -32,6 +32,7 @@ import omnicrawl.agent.controllers.tools.output as output_module  # noqa: E402
 from omnicrawl.agent.controllers import shared as shared_module  # noqa: E402
 from omnicrawl.agent.controllers.memory.stores import MemoryStoresMixin  # noqa: E402
 from omnicrawl.agent.controllers.tools import compression as compression_module  # noqa: E402
+from omnicrawl.agent.runtime import tool_output_compressor as compressor_module  # noqa: E402
 from omnicrawl.agent.controllers.tools.building import ToolBuildingMixin  # noqa: E402
 from omnicrawl.agent.controllers.tools.output import ToolOutputMixin as OutputMixin  # noqa: E402
 from omnicrawl.agent.controllers.undo import UndoMixin  # noqa: E402
@@ -1086,10 +1087,132 @@ def compression_cases() -> dict:
             }
         )
 
+    build_message_cases = []
+    for name, tool_name, arguments_summary, task_hint, output in [
+        ("普通调用", "bash", '{"command": "ls -la"}', "看看目录", "a" + chr(10) + "b"),
+        ("空任务与空参数", "grep", "   ", "   ", ""),
+        (
+            "多字节按字符计数",
+            "bash",
+            '{"command": "cat 中文.txt"}',
+            "读中文文件",
+            "中" * 5,
+        ),
+    ]:
+        build_message_cases.append(
+            {
+                "name": name,
+                "tool_name": tool_name,
+                "arguments_summary": arguments_summary,
+                "task_hint": task_hint,
+                "output": output,
+                "expected": compressor_module._build_messages(
+                    tool_name=tool_name,
+                    arguments_summary=arguments_summary,
+                    task_hint=task_hint,
+                    output=output,
+                ),
+            }
+        )
+
+    sample_cases = []
+    for name, output, max_chars in [
+        ("未超预算", "abcdef", 10),
+        ("超预算头尾保留", "".join(str(index % 10) for index in range(200)), 40),
+        ("预算极小", "abcdefghij", 2),
+        ("多字节输出", "中" * 50, 20),
+        ("空输出", "", 5),
+    ]:
+        sample_cases.append(
+            {
+                "name": name,
+                "output": output,
+                "max_chars": max_chars,
+                "expected": compressor_module._sample_output(output, max_chars),
+            }
+        )
+
+    clean_cases = []
+    for name, text in [
+        ("普通文本", "  精简后的观察  "),
+        ("围栏包裹", "```" + chr(10) + "精简观察" + chr(10) + "```"),
+        ("标签行开头", "压缩结果：" + chr(10) + "精简观察"),
+        ("围栏加标签", "```" + chr(10) + "摘要" + chr(10) + "精简观察" + chr(10) + "```"),
+        ("单行标签", "摘要"),
+        ("空文本", "   "),
+    ]:
+        clean_cases.append(
+            {"name": name, "text": text, "expected": compressor_module._clean_reply_text(text)}
+        )
+
+    label_line_cases = [
+        {"name": name, "line": line, "expected": compressor_module._is_label_line(line)}
+        for name, line in [
+            ("压缩", "压缩"),
+            ("带冒号", "压缩结果："),
+            ("带空格冒号", "  摘要 : "),
+            ("超长标签", "压缩结果说明"),
+            ("普通正文", "这里是一段比较长的正文内容"),
+        ]
+    ]
+
+    bound_cases = [
+        {
+            "name": name,
+            "text": text,
+            "max_chars": max_chars,
+            "expected": compressor_module._bound_text(text, max_chars),
+        }
+        for name, text, max_chars in [
+            ("未超限", "abc", 5),
+            ("超限截断", "abcdef", 3),
+            ("上限为一", "abcdef", 1),
+            ("多字节", "中文内容", 2),
+        ]
+    ]
+
+    cancellation_cases = [
+        {"name": name, "type_name": type_name, "message": message, "expected": expected}
+        for name, type_name, message, expected in [
+            ("类型名含 cancel", "AsyncioCancelledError", "boom", True),
+            ("消息含 CANCELLED", "ValueError", "request CANCELLED", True),
+            ("普通异常", "ValueError", "连接超时", False),
+        ]
+    ]
+
+    reasoning_cases = [
+        {
+            "name": name,
+            "thinking_enabled": thinking_enabled,
+            "effort": effort,
+            "expected": compressor_module.effective_reasoning_effort(
+                type("cfg", (), {"thinking_enabled": thinking_enabled, "reasoning_effort": effort})()
+            ),
+        }
+        for name, thinking_enabled, effort in [
+            ("开启思考", True, "high"),
+            ("关闭思考", False, "high"),
+            ("开启但空深度", True, ""),
+        ]
+    ]
+
     return {
         "should_compact": compact_cases,
         "arguments_summary": argument_cases,
         "compacted_display": display_cases,
+        "build_messages": build_message_cases,
+        "sample_output": sample_cases,
+        "clean_reply_text": clean_cases,
+        "label_line": label_line_cases,
+        "bound_text": bound_cases,
+        "looks_like_cancellation": cancellation_cases,
+        "reasoning_effort": reasoning_cases,
+        "system_prompt": compressor_module.system_prompt_text(),
+        "markers": {
+            "output_open": compressor_module._OUTPUT_OPEN,
+            "output_close": compressor_module._OUTPUT_CLOSE,
+            "omitted_note": compressor_module._OMITTED_NOTE,
+        },
         "constants": {
             "arguments_preview_chars": compression_module.ARGUMENTS_PREVIEW_CHARS,
             "max_parallel_compressions": compression_module.MAX_PARALLEL_COMPRESSIONS,

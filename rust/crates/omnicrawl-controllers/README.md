@@ -33,7 +33,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `agent/toolkit/tools.py`、`host_tools.py` | `src/tool_args.rs` | 工具名/参数名归一化、参数投影（Session/确认页/SSE）、紧凑 Schema、Schema 校验与结果信封 |
 | Python `json.dumps` 子集 | `src/json.rs` | Python 风格 JSON 文本与 `repr`（工具结果信封、审查指令、参数摘要共用） |
 | `controllers/tools/output.py` | `src/output.rs` | 批次输出预算与落盘预览、工具结果消息、视觉旁路文案 |
-| `controllers/tools/compression.py` | `src/compression.rs` | 压缩选取、展示文本、参数摘要 |
+| `controllers/tools/compression.py`、`runtime/tool_output_compressor.py`（纯逻辑） | `src/compression.rs` | 压缩选取、展示文本、参数摘要、压缩请求消息、超长输出采样、回包清洗与截断、取消判定、思考深度、内置系统提示 |
 | `controllers/tools/building.py` | `src/building.rs` | 模式模板装载与 system prompt 组装 |
 | `controllers/tools/implementations.py`（判定面） | `src/tool_impl.rs` | `update_todos` 的清单投影与输出信封、`ask_user` 入参校验与回答信封、记忆工具 `scope` 解析（实现本体是 I/O，仍在宿主） |
 | `agent/runtime/llm_protocol.py`（一函数） | `src/shared.rs` | `resolve_tool_name_from_hashed_function_name` |
@@ -89,7 +89,7 @@ cd rust && cargo test -p omnicrawl-controllers # 同输入重放 Rust 实现逐�
 `tests/fixtures/controllers_parity.json` 覆盖 1105 个用例：整数配置读取与区间校验、未知工具
 文案（含哈希名反查）、超时结果、限时执行、undo 安全性 15 例、副作用账本与预检 16 例、
 快照路径防穿越 13 例、工作区切换 5 例、记忆目录 16 例、输出预算与视觉旁路 26 例、
-压缩 13 例、模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
+压缩 42 例（选取/摘要/展示 + 提示词、采样、回包清洗、标签行、截断、取消判定、思考深度），模式与 system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级与变更
 判定、命令分流、删除意图、审查结论解析与审批归属）、会话侧 92 例（设置层 76 例与控制面
 16 例），以及顾问 23 例（消息分支、工具清单、黑名单、调用与信封）与插件 49 例
 （`HOOK_POLICIES` 全表 fail-closed、拒绝事实与文案、分发结局），以及工具参数层 73 例
