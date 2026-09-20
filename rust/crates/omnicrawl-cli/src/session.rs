@@ -965,10 +965,7 @@ fn spawn_subagent_batch(
         Ok(value) => (true, json_result_text(&value)),
         Err(error) => (
             false,
-            json_result_text(&top_level_error(
-                "SUBAGENT_LIMIT_EXCEEDED",
-                &error.message().to_string(),
-            )),
+            json_result_text(&top_level_error("SUBAGENT_LIMIT_EXCEEDED", error.message())),
         ),
     }
 }
