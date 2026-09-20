@@ -56,6 +56,10 @@ impl HttpTransport for MockHttp {
         }));
         let payload = if url.contains("tenant_access_token") {
             json!({"code": 0, "tenant_access_token": "t-mock", "expire": 3600})
+        } else if url.contains("/im/v1/images") {
+            json!({"code": 0, "data": {"image_key": "img_mock"}})
+        } else if url.contains("/im/v1/files") {
+            json!({"code": 0, "data": {"file_key": "file_mock"}})
         } else if url.contains("/im/v1/messages") && method == "POST" {
             self.messages_created.fetch_add(1, Ordering::SeqCst);
             json!({"code": 0, "data": {"message_id": format!("om_{}", self.messages_created.load(Ordering::SeqCst))}})
@@ -408,4 +412,45 @@ fn cancel_releases_pending_approval() {
     wait_for(5.0, || !driver.confirm_results().is_empty());
     assert_eq!(driver.confirm_results(), vec![false]);
     assert!(driver.cancel_requested.load(Ordering::SeqCst) >= 1);
+}
+
+#[test]
+fn generated_file_marker_uploads_and_sends_image_message() {
+    let driver = Arc::new(MockDriver::default());
+    let http = Arc::new(MockHttp::default());
+    let bot = bot_with(driver.clone(), http.clone(), &["ou_owner"]);
+
+    let dir = std::env::temp_dir().join(format!("omnicrawl-bot-file-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("创建临时目录");
+    let path = dir.join("out.png");
+    std::fs::write(&path, b"PNG").expect("写临时图片");
+    driver.set_script(json!({"reply": format!("结果见文件 [FILE:{}]", path.display())}));
+
+    bot.handle_message(&text_event("m1", "ou_owner", "生成图片"));
+    // 负载是 Python 风格的 `json.dumps`（分隔符带空格），断言要照着这个形状写。
+    wait_for(8.0, || {
+        http.requests().iter().any(|request| {
+            request["body"]
+                .as_str()
+                .unwrap_or("")
+                .contains("\"msg_type\": \"image\"")
+        })
+    });
+
+    let requests = http.requests();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request["body"].as_str().unwrap_or("").contains("PNG")),
+        "上传正文应带上文件内容"
+    );
+    assert!(
+        requests.iter().any(|request| request["url"]
+            .as_str()
+            .unwrap_or("")
+            .contains("/im/v1/images")),
+        "图片应走上传接口"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

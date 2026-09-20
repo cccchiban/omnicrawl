@@ -525,6 +525,13 @@ impl<D: AgentDriver> FeishuBot<D> {
                             .send_text(&task.receive_id, &remaining, &task.receive_id_type);
                     }
                 }
+                // 回复里的 `[FILE:path]` 标记：把 Agent 产出的文件回传（失败由编排层提示）。
+                super::file_send::send_generated_files(
+                    &*self.api,
+                    &task.receive_id,
+                    &raw_reply,
+                    &task.receive_id_type,
+                );
             }
             Err(TurnError::Cancelled) => {
                 display.abort_running_tools();

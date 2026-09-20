@@ -84,15 +84,19 @@ cd rust && cargo test -p omnicrawl-connectors
 标记扫描复刻 `\[FILE:([^\]]+)\]`：`[FILE:]` 不是标记，`[FILE: ]` 是（路径去空白后为空，
 落到「输出路径不是文件」）。
 
-上传与消息发送经 `FileTransport` 端口由宿主实现；网络层的 multipart 调用尚未搬
-（`tests/feishu_file_send_parity.json`：12 例本地文件 + 6 例标记扫描，对照上传/发送调用序列与结果）。
+上传与消息发送既可经 `FileTransport` 端口注入宿主实现，也可用内核自持的
+`impl FileTransport for FeishuApi`：`feishu/upload.rs` 拼 multipart（先文本字段、后文件字段），
+端点 `im/v1/images` 与 `im/v1/files`，`file_type` 复用 `files::FILE_TYPE_MAP`，bot 在回合收尾
+扫描 `[FILE:]` 标记回传文件。
+（`tests/feishu_file_send_parity.json`：12 例本地文件 + 6 例标记扫描，对照上传/发送调用序列与结果；
+`tests/feishu_upload.rs` 用传输桩件钉住 multipart 字节形状。）
 
 改任一侧实现都要重跑生成脚本再跑测试；卡片负载按**字符串**比对，缩进与分隔符也是契约。
 
 ## 尚未移植
 
-- 飞书文件上传的**网络层**（`_upload_image` / `_upload_file` 的 multipart 调用）：判定与编排已在
-  内核（`feishu/file_send.rs`），上传与消息发送经 `FileTransport` 端口由宿主实现。
+- 飞书文件上传的**网络层已落地**（`FeishuApi::upload_image` / `upload_file` 与 `FileTransport`
+  实现，bot 回合收尾扫描 `[FILE:]`）；Telegram 侧的同类文件回传仍未接。
 - `connectors/autostart.py` 的子进程自动启动与单例锁：与 TUI 生命周期绑定，等宿主侧编排
   迁移后一并处理。
 - 飞书 SDK 的 `Content-Disposition` 文件名解析：缺文件名时回落成 `file_key`，

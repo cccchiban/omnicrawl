@@ -13,6 +13,7 @@ pub mod inbox;
 pub mod render;
 pub mod text;
 pub mod timeline;
+pub mod upload;
 pub mod ws;
 
 pub use api::{
@@ -45,4 +46,5 @@ pub use timeline::{
     MessagePort, PlanMessage, ReasoningMessage, SubAgentMessage, TextMessage, TimelineMessage,
     ToolMessage, ToolRecord,
 };
+pub use upload::{file_type_for, multipart_body, multipart_content_type, new_boundary};
 pub use ws::{ping_interval_seconds, ReconnectPolicy};

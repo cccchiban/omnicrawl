@@ -5,12 +5,14 @@
 //! SDK 自带的令牌缓存、重试与 `lark.ws.Client` 的握手/心跳在这里按同名语义实现：
 //! 令牌按 `expire` 提前 60 秒续期，HTTP 失败只记录日志并让调用方兜底。
 
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use super::text::split_text;
+use super::upload;
 use crate::http::{with_query, HttpTransport, UreqTransport};
 use crate::json;
 
@@ -359,6 +361,131 @@ impl FeishuApi {
         }
         Ok(payload)
     }
+
+    /// 上传图片：`im/v1/images` 的 multipart 请求，成功返回 `image_key`。
+    ///
+    /// 与 Python `_upload_image` 一致：客户端不可用、读文件失败、接口报错、key 为空都返回 `None`。
+    pub fn upload_image(&self, path: &Path) -> Option<String> {
+        let file_name = file_name_of(path);
+        let fields = [("image_type", "message")];
+        self.upload_multipart(
+            &format!("{}/open-apis/im/v1/images", self.base_url),
+            &fields,
+            "image",
+            &file_name,
+            path,
+            "data",
+            "image_key",
+            "上传飞书图片",
+        )
+    }
+
+    /// 上传文件：`im/v1/files` 的 multipart 请求，成功返回 `file_key`。
+    ///
+    /// `file_type` 按后缀查表（未命中 `stream`），`file_name` 用原文件名。
+    pub fn upload_file(&self, path: &Path) -> Option<String> {
+        let file_name = file_name_of(path);
+        let file_type = upload::file_type_for(&file_name);
+        let fields = [("file_type", file_type), ("file_name", file_name.as_str())];
+        self.upload_multipart(
+            &format!("{}/open-apis/im/v1/files", self.base_url),
+            &fields,
+            "file",
+            &file_name,
+            path,
+            "data",
+            "file_key",
+            "上传飞书文件",
+        )
+    }
+
+    /// 普通文本：脱敏后按上限分段，每段用 `{"text": ...}` 负载发送。
+    fn send_text_parts(&self, receive_id: &str, text: &str, receive_id_type: &str) -> bool {
+        let redacted = omnicrawl_session::redact_sensitive_text(text);
+        let parts = split_text(&redacted);
+        if parts.is_empty() {
+            return false;
+        }
+        let mut sent = true;
+        for part in parts {
+            let payload = json::dumps(&json!({"text": part}));
+            sent = self
+                .send_message(receive_id, &payload, "text", receive_id_type)
+                .is_some()
+                && sent;
+        }
+        sent
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upload_multipart(
+        &self,
+        url: &str,
+        fields: &[(&str, &str)],
+        file_field: &str,
+        file_name: &str,
+        path: &Path,
+        data_key: &str,
+        key_field: &str,
+        action: &str,
+    ) -> Option<String> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("{action}失败：无法读取 {}，{error}", path.display());
+                return None;
+            }
+        };
+        let token = match self.tenant_token() {
+            Ok(token) => token,
+            Err(error) => {
+                eprintln!("[feishu] 获取令牌失败：{error}");
+                return None;
+            }
+        };
+        let boundary = upload::new_boundary();
+        let body = upload::multipart_body(&boundary, fields, file_field, file_name, &bytes);
+        let headers = vec![
+            (
+                "Content-Type".to_string(),
+                upload::multipart_content_type(&boundary),
+            ),
+            ("Authorization".to_string(), format!("Bearer {token}")),
+        ];
+        let reply =
+            match self
+                .transport
+                .request("POST", url, &headers, Some(&body), REQUEST_TIMEOUT)
+            {
+                Ok(reply) => reply,
+                Err(error) => {
+                    eprintln!("{action}失败：{error}");
+                    return None;
+                }
+            };
+        let payload = match parse_payload(&reply) {
+            Ok(payload) => payload,
+            Err(error) => {
+                eprintln!("{action}失败：{error}");
+                return None;
+            }
+        };
+        let code = payload.get("code").and_then(Value::as_i64).unwrap_or(0);
+        if code != 0 {
+            eprintln!(
+                "{action}失败：{code} {}",
+                payload.get("msg").and_then(Value::as_str).unwrap_or("")
+            );
+            return None;
+        }
+        payload
+            .get(data_key)
+            .and_then(|data| data.get(key_field))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+    }
 }
 
 impl super::timeline::MessagePort for FeishuApi {
@@ -378,20 +505,7 @@ impl super::timeline::MessagePort for FeishuApi {
 
     /// 普通文本：脱敏后按上限分段，每段用 `{"text": ...}` 负载发送。
     fn send_text(&self, receive_id: &str, text: &str, receive_id_type: &str) -> bool {
-        let redacted = omnicrawl_session::redact_sensitive_text(text);
-        let parts = split_text(&redacted);
-        if parts.is_empty() {
-            return false;
-        }
-        let mut sent = true;
-        for part in parts {
-            let payload = json::dumps(&json!({"text": part}));
-            sent = self
-                .send_message(receive_id, &payload, "text", receive_id_type)
-                .is_some()
-                && sent;
-        }
-        sent
+        self.send_text_parts(receive_id, text, receive_id_type)
     }
 }
 
@@ -399,6 +513,32 @@ fn parse_payload(reply: &crate::http::HttpReply) -> Result<Value, FeishuApiError
     serde_json::from_slice(&reply.body).map_err(|_| FeishuApiError::NonJson {
         status: reply.status,
     })
+}
+
+/// 上传时用的文件名：路径最后一段，取不到时回落空串。
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
+/// 内核自持的文件上传与文本发送：把 `feishu::file_send` 的编排接到真实接口上。
+impl super::file_send::FileTransport for FeishuApi {
+    fn upload_image(&self, path: &Path) -> Option<String> {
+        FeishuApi::upload_image(self, path)
+    }
+
+    fn upload_file(&self, path: &Path) -> Option<String> {
+        FeishuApi::upload_file(self, path)
+    }
+
+    fn send_raw(&self, receive_id: &str, body: &str, message_type: &str, receive_id_type: &str) {
+        let _ = self.send_message(receive_id, body, message_type, receive_id_type);
+    }
+
+    fn send_text(&self, receive_id: &str, text: &str, receive_id_type: &str) {
+        let _ = self.send_text_parts(receive_id, text, receive_id_type);
+    }
 }
 
 /// 从 URL 查询串里取值（`service_id` 等）。
