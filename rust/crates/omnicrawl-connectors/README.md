@@ -95,8 +95,9 @@ cd rust && cargo test -p omnicrawl-connectors
 
 ## 尚未移植
 
-- 飞书文件上传的**网络层已落地**（`FeishuApi::upload_image` / `upload_file` 与 `FileTransport`
-  实现，bot 回合收尾扫描 `[FILE:]`）；Telegram 侧的同类文件回传仍未接。
+- 飞书文件回传（`[FILE:]` 标记 → 上传 → 消息）已落地：`FeishuApi::upload_image` / `upload_file`
+  与 `FileTransport` 实现，bot 在回合收尾扫描标记。Python 的 Telegram 连接器只有纯文本发送
+  （`_send_message`），没有同类文件回传，因此这一侧无对应缺口。
 - `connectors/autostart.py` 的子进程自动启动与单例锁：与 TUI 生命周期绑定，等宿主侧编排
   迁移后一并处理。
 - 飞书 SDK 的 `Content-Disposition` 文件名解析：缺文件名时回落成 `file_key`，
