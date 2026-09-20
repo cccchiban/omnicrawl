@@ -133,7 +133,9 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - **结果与补位**：每个结果各一条 `tool` 消息（锚点自身事件）；批次结束时仍未返回结果的调用补
   「已中断」占位；没有配对来源的孤立结果被丢弃；`tool_call_id` 缺失时按工具名回退配对
   （取最近的同名未完成调用）。
-- **参数原文优先级**：先用落盘的 `arguments_json`，回退到 `json.dumps(..., ensure_ascii=False)` 的默认分隔符写法。
+- **参数原文优先级**：先取「已发往 Provider 的 arguments 原文」（`with_raw_arguments_provider` /
+  `set_raw_arguments_provider` 注入，只存在于内存），拿不到再回落落盘的 `arguments_json`，
+  最后回退到 `json.dumps(..., ensure_ascii=False)` 的默认分隔符写法。
 - **压缩边界**：带 `remaining_event_ids` 的摘要把历史替换成「摘要 + 窗口」；只带
   `remaining_message_count` 的旧摘要走按数量的兼容分支。`project_session_history` 只认最后一个边界，
   边界之后的全部事件完整保留（恢复指令、后续工具调用与最终回复都不能丢），边界之前只留窗口。
@@ -358,9 +360,9 @@ fixture `tests/fixtures/turn_snapshot_parity.json`：5 个脚本化场景（往�
   与值级脱敏都由 `artifact.rs` 的 `prepare_event_payload` 负责，与 Python `_prepare_event_payload` 一致。
 - **`session_started` 的 runtime 身份**：Python 记源码指纹与已加载模块，内核记实现名与版本；该字段不参与跨实现比对。
 - **索引顶层异常路径未覆盖**：Python 在索引不是对象时会重写索引文件，机制未确认，本片未实现也未纳入对照。
-- **运行期参数原文提供者未搬**：Python 的投影器可以注入一个「已发往 Provider 的 arguments 原文」回调
-  （只在内存里、不落盘）；内核侧等运行时代理接进来时再补，现在只走落盘参数的投影。
-- **子任务结果的投影未搬**：`subagent.event` 一类事件目前不参与投影（Python 侧也主要由运行期聚合）。
+- **运行期参数原文提供者已落地**：`TurnHistoryProjector::with_raw_arguments_provider` / `set_raw_arguments_provider` 注入「已发往 Provider 的 arguments 原文」，拿不到（缺席 / 空串）时回落到 `arguments_json`，再回落到 `arguments` 的 JSON 写法。
+- **子任务事件不参与会话投影**（与 Python 一致）：`SUBAGENT_EVENT_TYPES` 只落转录；
+  运行期把完成通知注入本轮 user 消息的是 `omnicrawl-controllers` 的 `inject_subagent_notifications`。
 - **工具参数里的浮点写法**：Python 的 `json.dumps` 用 `repr`（`1e+20`），内核用 `ryu`（`1e20`），
   `1e-5` 这类还会写成小数——只在参数含极端浮点数时影响上下文正文，语义等价。
 - **`casefold()` 用 `to_lowercase()` 近似**：待办状态值（ASCII）一致，非 ASCII 大小写折叠可能有差异。

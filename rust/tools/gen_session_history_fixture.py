@@ -92,6 +92,33 @@ def call(call_id: str, tool: str, arguments: dict, **extra) -> dict:
     return payload
 
 
+def provider_case(name: str, specs: list[tuple[str, str, dict]], provider: dict) -> dict:
+    """带「arguments 原文」提供者的投影：provider 表描述每个 call_id 的返回形态。"""
+
+    def stub(call_id: str, _tool: str):
+        entry = provider.get(call_id)
+        if not isinstance(entry, dict):
+            return None
+        kind = entry.get("kind")
+        if kind == "raise":
+            raise RuntimeError("提供者取原文失败")
+        if kind == "empty":
+            return ""
+        if kind == "text":
+            return entry.get("text", "")
+        return None
+
+    projector = P.TurnHistoryProjector(raw_arguments_provider=stub)
+    for item in build(specs):
+        projector.feed(item)
+    return {
+        "name": name,
+        "events": [event_dict(*spec) for spec in specs],
+        "provider": provider,
+        "expected": entries_to_json(projector.take()),
+    }
+
+
 CASES = [
     history_case(
         "plain_messages",
@@ -223,6 +250,40 @@ CASES = [
             ("e5", "assistant_message", {"content": "第三轮回答"}),
         ],
     ),
+    provider_case(
+        "provider_prefers_raw_arguments",
+        [
+            ("e1", "tool_call_requested", call("c1", "read_file", {"path": "a.py"})),
+            ("e2", "tool_call_requested", call("c2", "grep", {"pattern": "x"})),
+            (
+                "e3",
+                "tool_result",
+                {"tool": "read_file", "tool_call_id": "c1", "ok": True, "output": "内容"},
+            ),
+            ("e4", "tool_result", {"tool": "grep", "tool_call_id": "c2", "ok": True, "output": "结果"}),
+        ],
+        {
+            # 原文与落盘 arguments 不同：投影必须用原文。
+            "c1": {"kind": "text", "text": '{"path": "a.py", "encoding": "utf-8"}'},
+            # 提供者返回空串 → 回落 arguments_json。
+            "c2": {"kind": "empty"},
+        },
+    ),
+    provider_case(
+        "provider_raise_and_absent_fall_back",
+        [
+            (
+                "e1",
+                "tool_call_requested",
+                call("c3", "read_file", {"path": "b.py"}, arguments_json='{"path":"b.py"}'),
+            ),
+            ("e2", "tool_call_requested", call("c4", "grep", {"pattern": "y"})),
+        ],
+        {
+            "c3": {"kind": "raise"},
+            "c4": {"kind": "absent"},
+        },
+    ),
 ]
 
 
@@ -242,6 +303,9 @@ def main() -> None:
         "session_id": SESSION_ID,
         "history": [case for case in CASES if "expected" in case and "events" in case and case["name"].startswith(("plain", "tool", "missing", "result", "orphan", "new_batch", "denied", "cancel", "arguments", "compact"))],
         "session_history": [case for case in CASES if case["name"].startswith("session_history")],
+        "history_with_provider": [
+            case for case in CASES if case["name"].startswith("provider_")
+        ],
         "boundary": [
             {
                 "name": "with_remaining_ids",

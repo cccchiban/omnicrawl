@@ -5,8 +5,9 @@
 //! 完整协议消息；重启恢复用同一状态机投影整份事件流——两条路径共用唯一实现，
 //! 同一会话内的历史与重启后的历史才会逐字一致（前缀缓存因此不失效）。
 //!
-//! 未搬：运行期「已发往 Provider 的 arguments 原文」提供者——那份原文只在内存里，
-//! 协议原文不落盘；内核侧等运行时代理接进来时再补，这里走落盘的 `arguments_json` 回退。
+//! 运行期「已发往 Provider 的 arguments 原文」只在内存里（协议原文不落盘），
+//! 由 `TurnHistoryProjector::with_raw_arguments_provider` 注入；拿不到时回落到
+//! 落盘的 `arguments_json` 与 `arguments`，保证同一段历史只用一种参数写法。
 
 use std::collections::BTreeSet;
 use std::io;
@@ -72,7 +73,13 @@ impl ToolGroup {
 pub struct TurnHistoryProjector {
     entries: Vec<ProjectedEntry>,
     tools: ToolGroup,
+    /// 运行期「已发往 Provider 的 arguments 原文」提供者：只有内存投影能拿到，
+    /// 缺失或空串时回落到落盘的 `arguments_json` / `arguments`。
+    raw_arguments_provider: Option<RawArgumentsProvider>,
 }
+
+/// `(call_id, tool) -> 发往 Provider 的 arguments 原文`；返回 `None` 或空串表示拿不到原文。
+pub type RawArgumentsProvider = Box<dyn Fn(&str, &str) -> Option<String>>;
 
 impl Default for TurnHistoryProjector {
     fn default() -> Self {
@@ -85,7 +92,21 @@ impl TurnHistoryProjector {
         Self {
             entries: Vec::new(),
             tools: ToolGroup::default(),
+            raw_arguments_provider: None,
         }
+    }
+
+    /// 带上「arguments 原文」提供者：同一段历史只用一种参数写法（原文优先）。
+    pub fn with_raw_arguments_provider(provider: RawArgumentsProvider) -> Self {
+        Self {
+            entries: Vec::new(),
+            tools: ToolGroup::default(),
+            raw_arguments_provider: Some(provider),
+        }
+    }
+
+    pub fn set_raw_arguments_provider(&mut self, provider: RawArgumentsProvider) {
+        self.raw_arguments_provider = Some(provider);
     }
 
     /// 丢弃全部状态；压缩边界替换历史后由调用方重新累积后续事件。
@@ -217,8 +238,12 @@ impl TurnHistoryProjector {
                 .unwrap_or_default();
         }
 
-        let raw_arguments = non_empty(payload, "arguments_json")
-            .map(|text| text.trim().to_string())
+        let raw_arguments = self
+            .raw_arguments_provider
+            .as_ref()
+            .and_then(|provider| provider(&call_id, &tool))
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| non_empty(payload, "arguments_json").map(|text| text.trim().to_string()))
             .unwrap_or_else(|| dumps_default(&arguments));
 
         self.tools

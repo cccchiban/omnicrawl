@@ -75,6 +75,45 @@ fn compaction_boundary_matches_python() {
 }
 
 #[test]
+fn history_with_provider_matches_python() {
+    for case in section(&fixture(), "history_with_provider") {
+        let table = case["provider"].clone();
+        let provider: Vec<(String, String)> = table
+            .as_object()
+            .expect("provider 必须是对象")
+            .iter()
+            .map(|(call_id, entry)| {
+                (
+                    call_id.clone(),
+                    entry["kind"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        let lookup = move |call_id: &str, _tool: &str| -> Option<String> {
+            let kind = provider
+                .iter()
+                .find(|(id, _)| id == call_id)
+                .map(|(_, kind)| kind.clone())?;
+            match kind.as_str() {
+                "text" => table[call_id]["text"].as_str().map(str::to_string),
+                "empty" => Some(String::new()),
+                _ => None,
+            }
+        };
+        let mut projector = TurnHistoryProjector::with_raw_arguments_provider(Box::new(lookup));
+        for event in events(&case) {
+            projector.feed(&event);
+        }
+        assert_eq!(
+            entries_json(&projector.take()),
+            case["expected"],
+            "用例 {}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
 fn incremental_feed_matches_whole_stream() {
     // 逐条 feed + 分批取走与整体投影必须给出同一序列（前缀缓存因此不失效）。
     //
