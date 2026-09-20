@@ -53,6 +53,8 @@ rust/
 │   ├── src/naming.rs                       # 会话 id、事件类型、转录路径校验与标题折叠
 │   ├── src/time.rs                         # 时间戳 ISO-8601（UTC、微秒）解析与格式化
 │   ├── src/error.rs                        # 与 Python 同文案的会话错误
+│   ├── src/store.rs                        # 会话存储 I/O、生命周期编排、一致性报告入口与 undo 事务
+│   ├── src/undo.rs                         # 最近一轮回退的事件计划（complete / incomplete 判定）
 │   ├── tests/models_parity.rs              # 与 Python 的对照测试（107 用例）
 │   ├── tests/round_trip.rs                 # 写入方自洽性（读回、再写字节一致）
 │   └── tests/fixtures/session_models_parity.json
@@ -437,7 +439,7 @@ artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照，会话生
 （重命名 / 导出 Markdown / 归档 / 取消归档 / 删除 / 丢弃空会话 / 带筛选的列表 / 项目路径 / artifact 读回）
 与 `append_event` 的载荷整理（超长输出转 artifact + 值级脱敏）也已落地；一致性诊断同样是完整链路：
 转录/artifact 发现、条目重建与对照、全量扫描报告、备份与索引回写（`consistency.rs` + `check_consistency` /
-`rebuild_index`）。未搬：运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
+`rebuild_index`），最近一轮回退的存储事务（`undo.rs` 的计划构建 + `prepare_undo_last_turn` / `commit_undo_plan` / `undo_last_turn`）与 `read_active_events` 有效事件视图也已落地。未搬：运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
 
 `omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层全部 11 条规则
 （PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）、匹配引擎

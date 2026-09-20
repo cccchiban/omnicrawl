@@ -26,6 +26,9 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - `append_event`：读索引 → 找条目（`未找到会话：<id>`）→ 生成事件 → 追加一行到 `sessions/<id>.jsonl`
   → 更新索引（计数、标题、`last_event_type`、`updated_at`）→ 原子替换 `index.json`。
 - `read_events`：坏行记为诊断（stderr）并跳过；`list_sessions` 按更新时间倒序（稳定排序保证同刻按创建顺序）。
+- `read_active_events`：回退投影后的有效事件流（对齐 Python 公开的 `read_session_events`）——
+  有 `turn_undone` 时被回退轮次与 `turn_undone` 自身都不出现。上下文重建、证据召回、历史投影与 UI 回放
+  走这一条；一致性扫描等需要看原始转录的场景用 `read_events`。
 - 路径边界：转录路径必须落在根目录内，越界拒绝（索引可能被外部改写，不能当可信输入）。
 
 ## 会话生命周期编排（`store.rs`）
@@ -47,6 +50,22 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - `read_artifact_text` / `write_tool_result_artifact`：委托 `artifact.rs`，路径规范化、会话归属与目录边界一致。
 - `append_event` 的载荷整理统一走 `SessionArtifactStore::prepare_event_payload`：超长工具输出转 artifact、
   值级脱敏与补字段都由同一处负责，`store.rs` 不再自带一份 inline 分支。
+
+## 最近一轮回退（`undo.rs` + `store.rs`）
+
+对齐 Python `_build_undo_plan` 与 `prepare_undo_last_turn` / `commit_undo_plan` / `undo_last_turn`：
+
+- `build_undo_plan`：从「回退投影后」的事件流里定位最后一轮。末尾有助手回复时为 `complete`
+  （用户消息 + 回复，并带上回复之后的 `compact_summary` / `turn_snapshot` / `turn_cancelled` /
+  `session_interrupted` / `run_guard_*`）；没有回复时为 `incomplete`（用户消息到末尾的取消/中断事件）。
+  消息条数与预期不符直接报「当前会话最后一轮结构异常，无法安全回退。」，没有用户消息报
+  「当前会话没有可回退的对话轮次。」。
+- `SessionStore::prepare_undo_last_turn`：只算计划，不写盘；调用方用它做文件系统副作用预检。
+- `SessionStore::commit_undo_plan(plan, side_effects_reverted, now)`：重新算一遍计划并比对事件 id，
+  对不上就报「最近一轮在回退期间发生变化，已取消回退。」；通过后追加 `turn_undone`
+  （载荷含 `event_ids` / `user_event_id` / `assistant_event_id` / `message_count` / `kind` /
+  `side_effects_reverted`），返回该事件。与 Python 的差异：时间戳由调用方传入（内核不读系统时钟）。
+- `undo_last_turn`：兼容入口，等价于准备 + 提交。
 
 ## 一致性扫描与索引重建（`consistency.rs`）
 

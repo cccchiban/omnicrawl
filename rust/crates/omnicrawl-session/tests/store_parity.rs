@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use omnicrawl_session::consistency::SessionConsistencyReport;
-use omnicrawl_session::{SessionListQuery, SessionStore, SessionStoreError};
+use omnicrawl_session::{SessionListQuery, SessionStore, SessionStoreError, SessionUndoPlan};
 use serde_json::{json, Map, Value};
 
 const FIXTURE: &str = include_str!("fixtures/session_store_parity.json");
@@ -69,19 +69,35 @@ fn store_matches_python() {
             "files": scenario["files"],
             "dirs": scenario["dirs"],
         }));
-        for key in ["outputs", "files", "dirs"] {
-            assert_eq!(actual[key], expected[key], "场景 {name} 的 {key} 不一致");
+        // 场景可以裁剪比对面（undo 的提交时刻两侧无法共用时钟，只比 outputs）。
+        let compare: Vec<String> = match scenario["compare"].as_array() {
+            Some(keys) => keys
+                .iter()
+                .filter_map(|key| key.as_str().map(str::to_string))
+                .collect(),
+            None => ["outputs", "files", "dirs"]
+                .iter()
+                .map(|key| key.to_string())
+                .collect(),
+        };
+        for key in compare {
+            assert_eq!(
+                actual[key.as_str()],
+                expected[key.as_str()],
+                "场景 {name} 的 {key} 不一致"
+            );
         }
 
         fs::remove_dir_all(&root).ok();
     }
 }
 
-/// 步骤之间传递的上下文：上一步产出的会话 id 与 artifact 相对路径。
+/// 步骤之间传递的上下文：上一步产出的会话 id、artifact 相对路径与 undo 计划。
 #[derive(Default)]
 struct StepContext {
     session_id: Option<String>,
     artifact_path: Option<String>,
+    undo_plan: Option<SessionUndoPlan>,
 }
 
 impl StepContext {
@@ -153,13 +169,15 @@ fn run_step(
                 Err(error) => error_output(kind, &error),
             }
         }
-        "read_events" => match store.read_events(session_id.as_deref().unwrap_or_default()) {
-            Ok(events) => json!({
-                "kind": kind,
-                "events": events.iter().map(|event| event.to_dict()).collect::<Vec<Value>>(),
-            }),
-            Err(error) => error_output(kind, &error),
-        },
+        "read_events" => {
+            match store.read_active_events(session_id.as_deref().unwrap_or_default()) {
+                Ok(events) => json!({
+                    "kind": kind,
+                    "events": events.iter().map(|event| event.to_dict()).collect::<Vec<Value>>(),
+                }),
+                Err(error) => error_output(kind, &error),
+            }
+        }
         "list_sessions" => {
             // Python 的无参 `list_sessions()` 自带默认筛选：隐藏归档、最多 10 条。
             let entries = match store.list_sessions_filtered(&SessionListQuery::default()) {
@@ -317,6 +335,58 @@ fn run_step(
             match fs::copy(root.join(&from), root.join(&to)) {
                 Ok(_) => json!({"kind": kind, "from": from, "to": to}),
                 Err(error) => error_output(kind, &SessionStoreError::new(error.to_string())),
+            }
+        }
+        "prepare_undo_last_turn" => {
+            match store.prepare_undo_last_turn(session_id.as_deref().unwrap_or_default()) {
+                Ok(plan) => {
+                    let event_types: Vec<String> = plan
+                        .events
+                        .iter()
+                        .map(|event| event.event_type.clone())
+                        .collect();
+                    let has_assistant_id = plan.assistant_event_id.is_some();
+                    let plan_kind = plan.kind.clone();
+                    context.undo_plan = Some(plan);
+                    json!({
+                        "kind": kind,
+                        "plan_kind": plan_kind,
+                        "event_types": event_types,
+                        "has_assistant_id": has_assistant_id,
+                    })
+                }
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "commit_undo_plan" | "undo_last_turn" => {
+            let now = base_time + chrono::Duration::seconds(offset(step, 2));
+            let target = session_id.as_deref().unwrap_or_default();
+            let outcome = if kind == "commit_undo_plan" {
+                match context.undo_plan.as_ref() {
+                    Some(plan) => {
+                        let reverted = step
+                            .get("side_effects_reverted")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        store.commit_undo_plan(plan, reverted, now)
+                    }
+                    None => Err(SessionStoreError::new("数据集缺少 undo 计划")),
+                }
+            } else {
+                store.undo_last_turn(target, now)
+            };
+            match outcome {
+                Ok(_) => match store.read_active_events(target) {
+                    Ok(events) => json!({
+                        "kind": kind,
+                        "active_event_types": events
+                            .iter()
+                            .map(|event| event.event_type.clone())
+                            .collect::<Vec<String>>(),
+                    }),
+                    Err(error) => error_output(kind, &error),
+                },
+                Err(error) => error_output(kind, &error),
             }
         }
         "corrupt_line" => {

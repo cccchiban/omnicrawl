@@ -24,6 +24,7 @@ pub mod redaction;
 pub mod store;
 pub mod time;
 pub mod turn_snapshot;
+pub mod undo;
 
 pub use artifact::{
     normalize_relative_artifact_path, preview_text, redact_sensitive_html, tool_output_summary,
@@ -99,3 +100,4 @@ pub use time::{datetime_from_json, datetime_to_millis, format_datetime, parse_da
 pub use turn_snapshot::{
     SnapshotError, WorktreeSnapshot, WorktreeSnapshotStore, GIT_COMMAND_TIMEOUT_SECONDS,
 };
+pub use undo::{build_undo_plan, SessionUndoPlan, UNDO_KIND_COMPLETE, UNDO_KIND_INCOMPLETE};

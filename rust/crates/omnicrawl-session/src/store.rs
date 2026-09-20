@@ -33,6 +33,7 @@ use crate::naming::{
     EMPTY_SESSION_EVENT_TYPES,
 };
 use crate::projection::active_session_events;
+use crate::undo::{build_undo_plan, SessionUndoPlan};
 
 /// `session_started` 载荷里的运行时身份。
 ///
@@ -247,6 +248,17 @@ impl SessionStore {
         let index = self.entry_index(&entries, &session_id)?;
         let path = self.session_path(&entries[index].path)?;
         read_events_from_path(&path)
+    }
+
+    /// 回退投影后的有效事件流：对齐 Python 公开的 `read_session_events`。
+    ///
+    /// 与 `read_events` 的差别只在有 `turn_undone` 时：被回退轮次的事件与 `turn_undone` 自身都不出现。
+    /// 上下文重建、证据召回、历史投影与 UI 回放走这一条；一致性扫描等需要看原始转录的场景用 `read_events`。
+    pub fn read_active_events(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionEvent>, SessionStoreError> {
+        Ok(active_session_events(&self.read_events(session_id)?))
     }
 
     /// 把被压缩窗口的原始事件写入二级归档，返回 archive_id。
@@ -592,6 +604,74 @@ impl SessionStore {
         }
         self.remove_session_files(&entry, &session_id)?;
         Ok(true)
+    }
+
+    /// 算出最近一轮的稳定事件计划（只读，不改转录）。
+    ///
+    /// 调用方拿到计划后做副作用预检（工作区快照恢复），再回 `commit_undo_plan` 提交。
+    pub fn prepare_undo_last_turn(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionUndoPlan, SessionStoreError> {
+        let _access = self.exclusive_write()?;
+        self.ensure()?;
+        let session_id = normalize_session_id(session_id)?;
+        let entries = self.load_entries()?;
+        let index = self.entry_index(&entries, &session_id)?;
+        let active = active_session_events(&self.read_events_locked(&entries[index])?);
+        build_undo_plan(&session_id, &active)
+    }
+
+    /// 提交回退：确认计划仍指向最后一轮后追加 `turn_undone`，返回该事件。
+    ///
+    /// 与 Python 的差异：时间戳由调用方传入（内核不读系统时钟），Python 侧用当前时间。
+    pub fn commit_undo_plan(
+        &self,
+        plan: &SessionUndoPlan,
+        side_effects_reverted: bool,
+        now: DateTime<Utc>,
+    ) -> Result<SessionEvent, SessionStoreError> {
+        let _access = self.exclusive_write()?;
+        self.ensure()?;
+        let session_id = normalize_session_id(&plan.session_id)?;
+        let entries = self.load_entries()?;
+        let index = self.entry_index(&entries, &session_id)?;
+        let active = active_session_events(&self.read_events_locked(&entries[index])?);
+        let current = build_undo_plan(&session_id, &active)?;
+        if current.event_ids != plan.event_ids {
+            return Err(SessionStoreError::new(
+                "最近一轮在回退期间发生变化，已取消回退。",
+            ));
+        }
+
+        let payload = json!({
+            "event_ids": plan.event_ids,
+            "user_event_id": plan.user_event_id,
+            "assistant_event_id": match plan.assistant_event_id.as_deref() {
+                Some(event_id) => Value::String(event_id.to_string()),
+                None => Value::Null,
+            },
+            "message_count": plan.message_count(),
+            "kind": plan.kind,
+            "side_effects_reverted": side_effects_reverted,
+        });
+        self.append_event_locked(
+            &session_id,
+            crate::projection::TURN_UNDONE_EVENT_TYPE,
+            as_object(payload),
+            None,
+            now,
+        )
+    }
+
+    /// 兼容入口：只做逻辑回退（准备 + 提交），不走副作用预检。
+    pub fn undo_last_turn(
+        &self,
+        session_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<SessionEvent, SessionStoreError> {
+        let plan = self.prepare_undo_last_turn(session_id)?;
+        self.commit_undo_plan(&plan, false, now)
     }
 
     /// 一致性扫描：只读检查索引、转录与 artifact，不改任何文件。

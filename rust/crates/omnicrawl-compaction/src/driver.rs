@@ -284,7 +284,7 @@ impl CompactionDriver {
     fn source_events(&self, session_id: &str) -> Result<Vec<SourceEvent>, String> {
         let events = self
             .store
-            .read_events(session_id)
+            .read_active_events(session_id)
             .map_err(|error| error.message().to_string())?;
         Ok(events
             .into_iter()
@@ -324,7 +324,7 @@ impl CompactionDriver {
         }
         let raw: Vec<Value> = self
             .store
-            .read_events(session_id)
+            .read_active_events(session_id)
             .map_err(|error| error.message().to_string())?
             .into_iter()
             .filter(|event| wanted.contains(&event.event_id))
@@ -384,7 +384,7 @@ impl CompactionDriver {
     ) -> Result<Vec<Value>, String> {
         let events = self
             .store
-            .read_events(session_id)
+            .read_active_events(session_id)
             .map_err(|error| error.message().to_string())?;
         let summary = payload.as_object().cloned().unwrap_or_default();
         let mut history = project_compaction_boundary_history(&summary, &events);

@@ -209,6 +209,27 @@ def run_step(store: SessionStore, root: Path, step: dict, context: dict) -> dict
                 "kind": kind,
                 "text": store.read_artifact_text(step["session_id"], step["artifact_path"]),
             }
+        if kind == "prepare_undo_last_turn":
+            plan = store.prepare_undo_last_turn(step["session_id"])
+            context["undo_plan"] = plan
+            return {
+                "kind": kind,
+                "plan_kind": plan.kind,
+                "event_types": [event.type for event in plan.events],
+                "has_assistant_id": plan.assistant_event_id is not None,
+            }
+        if kind in {"commit_undo_plan", "undo_last_turn"}:
+            if kind == "commit_undo_plan":
+                plan = context["undo_plan"]
+                store.commit_undo_plan(
+                    plan,
+                    side_effects_reverted=step.get("side_effects_reverted", False),
+                )
+            else:
+                store.undo_last_turn(step["session_id"])
+            # 只回报回退后的有效事件流（提交时刻的时间戳两侧不同，不能进对照）。
+            active = store.read_session_events(step["session_id"])
+            return {"kind": kind, "active_event_types": [event.type for event in active]}
         if kind == "check_consistency":
             return {"kind": kind, "report": report_payload(store.check_consistency())}
         if kind == "rebuild_index":
@@ -576,6 +597,97 @@ SCENARIOS = [
             {"kind": "check_consistency"},
         ],
     ),
+    (
+        # undo 的提交时刻两侧无法共用时钟（Python 用当前时间），因此这组场景只比对 outputs。
+        "undo_complete_turn",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "回退"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "第一轮"},
+                "offset_seconds": 1,
+            },
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "assistant_message",
+                "payload": {"content": "第一轮回复"},
+                "offset_seconds": 2,
+            },
+            {"kind": "prepare_undo_last_turn", "session_id": "$session"},
+            {
+                "kind": "commit_undo_plan",
+                "session_id": "$session",
+                "side_effects_reverted": True,
+            },
+            # 计划已过期：提交后同一份计划再提交一次。
+            {"kind": "commit_undo_plan", "session_id": "$session"},
+        ],
+        {"compare": ["outputs"]},
+    ),
+    (
+        "undo_stale_plan",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "过期计划"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "第一轮"},
+                "offset_seconds": 1,
+            },
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "assistant_message",
+                "payload": {"content": "第一轮回复"},
+                "offset_seconds": 2,
+            },
+            {"kind": "prepare_undo_last_turn", "session_id": "$session"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "插进来的新一轮"},
+                "offset_seconds": 3,
+            },
+            {"kind": "commit_undo_plan", "session_id": "$session"},
+        ],
+        {"compare": ["outputs"]},
+    ),
+    (
+        "undo_incomplete_turn",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "未完成"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "只有用户消息"},
+                "offset_seconds": 1,
+            },
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "turn_cancelled",
+                "payload": {"reason": "用户取消"},
+                "offset_seconds": 2,
+            },
+            {"kind": "prepare_undo_last_turn", "session_id": "$session"},
+            {"kind": "undo_last_turn", "session_id": "$session"},
+        ],
+        {"compare": ["outputs"]},
+    ),
+    (
+        "undo_without_turn",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "空会话"},
+            {"kind": "prepare_undo_last_turn", "session_id": "$session"},
+        ],
+        {"compare": ["outputs"]},
+    ),
 ]
 
 def indexed_mapping(values, prefix: str) -> dict:
@@ -647,7 +759,9 @@ def normalize_runtime(value):
 
 def main() -> None:
     scenarios = []
-    for name, steps in SCENARIOS:
+    for entry in SCENARIOS:
+        name, steps = entry[0], entry[1]
+        options = entry[2] if len(entry) > 2 else {}
         result = run_scenario(name, steps)
         raw = json.dumps(result, ensure_ascii=False)
         # 会话 id 的编号按“创建顺序”定：outputs 里 start_session 的先后是确定的，
@@ -681,6 +795,9 @@ def main() -> None:
             )
         }
         result["files"] = normalize_pids(normalize_runtime(files))
+        if options.get("compare"):
+            # 只有显式声明时才裁剪比对面：例如 undo 的提交时刻两侧无法共用时钟。
+            result["compare"] = list(options["compare"])
         scenarios.append(result)
 
     fixture = {

@@ -2108,6 +2108,395 @@
         "sessions",
         "summaries"
       ]
+    },
+    {
+      "name": "undo_complete_turn",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "回退"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "第一轮"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "assistant_message",
+          "payload": {
+            "content": "第一轮回复"
+          },
+          "offset_seconds": 2
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "session_id": "$session"
+        },
+        {
+          "kind": "commit_undo_plan",
+          "session_id": "$session",
+          "side_effects_reverted": true
+        },
+        {
+          "kind": "commit_undo_plan",
+          "session_id": "$session"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "回退",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "第一轮"
+            }
+          }
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "assistant_message",
+            "created_at": "2026-09-18T03:05:31.123456+00:00",
+            "payload": {
+              "content": "第一轮回复"
+            }
+          }
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "plan_kind": "complete",
+          "event_types": [
+            "user_message",
+            "assistant_message"
+          ],
+          "has_assistant_id": true
+        },
+        {
+          "kind": "commit_undo_plan",
+          "active_event_types": [
+            "session_started"
+          ]
+        },
+        {
+          "kind": "commit_undo_plan",
+          "error": "当前会话没有可回退的对话轮次。"
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"回退\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-20T04:58:02.704709+00:00\",\"event_count\":4,\"message_count\":0,\"last_event_type\":\"turn_undone\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"回退\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"第一轮\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"assistant_message\",\"created_at\":\"2026-09-18T03:05:31.123456+00:00\",\"payload\":{\"content\":\"第一轮回复\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"turn_undone\",\"created_at\":\"2026-09-20T04:58:02.704709+00:00\",\"payload\":{\"event_ids\":[\"<event-id>\",\"<event-id>\"],\"user_event_id\":\"<event-id>\",\"assistant_event_id\":\"<event-id>\",\"message_count\":2,\"kind\":\"complete\",\"side_effects_reverted\":true}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ],
+      "compare": [
+        "outputs"
+      ]
+    },
+    {
+      "name": "undo_stale_plan",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "过期计划"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "第一轮"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "assistant_message",
+          "payload": {
+            "content": "第一轮回复"
+          },
+          "offset_seconds": 2
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "session_id": "$session"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "插进来的新一轮"
+          },
+          "offset_seconds": 3
+        },
+        {
+          "kind": "commit_undo_plan",
+          "session_id": "$session"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "过期计划",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "第一轮"
+            }
+          }
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "assistant_message",
+            "created_at": "2026-09-18T03:05:31.123456+00:00",
+            "payload": {
+              "content": "第一轮回复"
+            }
+          }
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "plan_kind": "complete",
+          "event_types": [
+            "user_message",
+            "assistant_message"
+          ],
+          "has_assistant_id": true
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:32.123456+00:00",
+            "payload": {
+              "content": "插进来的新一轮"
+            }
+          }
+        },
+        {
+          "kind": "commit_undo_plan",
+          "error": "最近一轮在回退期间发生变化，已取消回退。"
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"第一轮\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:32.123456+00:00\",\"event_count\":4,\"message_count\":3,\"last_event_type\":\"user_message\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"过期计划\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"第一轮\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"assistant_message\",\"created_at\":\"2026-09-18T03:05:31.123456+00:00\",\"payload\":{\"content\":\"第一轮回复\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:32.123456+00:00\",\"payload\":{\"content\":\"插进来的新一轮\"}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ],
+      "compare": [
+        "outputs"
+      ]
+    },
+    {
+      "name": "undo_incomplete_turn",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "未完成"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "只有用户消息"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "turn_cancelled",
+          "payload": {
+            "reason": "用户取消"
+          },
+          "offset_seconds": 2
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "session_id": "$session"
+        },
+        {
+          "kind": "undo_last_turn",
+          "session_id": "$session"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "未完成",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "只有用户消息"
+            }
+          }
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "turn_cancelled",
+            "created_at": "2026-09-18T03:05:31.123456+00:00",
+            "payload": {
+              "reason": "用户取消"
+            }
+          }
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "plan_kind": "incomplete",
+          "event_types": [
+            "user_message",
+            "turn_cancelled"
+          ],
+          "has_assistant_id": false
+        },
+        {
+          "kind": "undo_last_turn",
+          "active_event_types": [
+            "session_started"
+          ]
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"未完成\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-20T04:58:02.769913+00:00\",\"event_count\":4,\"message_count\":0,\"last_event_type\":\"turn_undone\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"未完成\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"只有用户消息\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"turn_cancelled\",\"created_at\":\"2026-09-18T03:05:31.123456+00:00\",\"payload\":{\"reason\":\"用户取消\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"turn_undone\",\"created_at\":\"2026-09-20T04:58:02.769913+00:00\",\"payload\":{\"event_ids\":[\"<event-id>\",\"<event-id>\"],\"user_event_id\":\"<event-id>\",\"assistant_event_id\":null,\"message_count\":1,\"kind\":\"incomplete\",\"side_effects_reverted\":false}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ],
+      "compare": [
+        "outputs"
+      ]
+    },
+    {
+      "name": "undo_without_turn",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "空会话"
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "session_id": "$session"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "空会话",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "prepare_undo_last_turn",
+          "error": "当前会话没有可回退的对话轮次。"
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"空会话\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:29.123456+00:00\",\"event_count\":1,\"message_count\":0,\"last_event_type\":\"session_started\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"空会话\",\"runtime\":{\"<normalized>\":true}}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ],
+      "compare": [
+        "outputs"
+      ]
     }
   ]
 }

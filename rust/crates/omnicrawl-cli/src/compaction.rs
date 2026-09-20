@@ -73,7 +73,7 @@ impl KernelSession {
     pub fn reload_history(&mut self) -> Result<(), String> {
         let events = self
             .store
-            .read_events(&self.session_id)
+            .read_active_events(&self.session_id)
             .map_err(|error| error.message().to_string())?;
         self.history = project_session_history(&events)
             .into_iter()
@@ -219,7 +219,7 @@ pub fn recall_session_evidence(
     let Some(session) = session else {
         return failure_envelope("session_unavailable", "当前没有可读取的活动 Session。");
     };
-    let events = match session.store.read_events(&session.session_id) {
+    let events = match session.store.read_active_events(&session.session_id) {
         Ok(events) => events,
         Err(_) => {
             return failure_envelope("evidence_unavailable", "当前 Session 证据暂时不可读取。")
