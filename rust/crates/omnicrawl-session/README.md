@@ -28,6 +28,26 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - `read_events`：坏行记为诊断（stderr）并跳过；`list_sessions` 按更新时间倒序（稳定排序保证同刻按创建顺序）。
 - 路径边界：转录路径必须落在根目录内，越界拒绝（索引可能被外部改写，不能当可信输入）。
 
+## 会话生命周期编排（`store.rs`）
+
+对齐 Python `SessionStore` 的同名方法，全部走「先进程内、再跨进程」的同一把写锁：
+
+- `rename_session`：写 `session_renamed` 事件（标题进转录，索引重建时能还原最后一次命名），空标题报
+  `会话标题不能为空。`。
+- `export_session_markdown`：导出文件落 `exports/chat_export_<id>_<YYYYMMDD_HHMMSS>.md`，再写
+  `session_exported`（只记相对路径与 `format=markdown`，不把正文写回转录）；空内容报 `导出内容不能为空。`。
+- `archive_session` / `unarchive_session`：写 `session_archived` / `session_unarchived` 事件 → 转录在
+  `sessions/` 与 `archive/` 之间移动 → 用新路径与 `archived_at` 改写索引条目（标题与计数保留）。
+  重复归档报 `会话已在归档中：<id>`；取消归档对未归档会话是空操作。
+- `delete_session` / `discard_empty_session`：删转录 + artifact 目录（清理失败不阻塞）+ 索引条目；
+  丢弃空会话只在「未归档、`message_count == 0`、且事件全部属于 `EMPTY_SESSION_EVENT_TYPES`」时返回真。
+- `list_sessions_filtered`：Python `list_sessions` 的工作区/项目过滤、归档可见性、`limit` 收敛（1..100）；
+  无参 `list_sessions()` 是内核内部的全量视图（含归档、不截断），两者语义差别写在方法文档里。
+- `list_project_paths`：按大小写折叠去重与排序。
+- `read_artifact_text` / `write_tool_result_artifact`：委托 `artifact.rs`，路径规范化、会话归属与目录边界一致。
+- `append_event` 的载荷整理统一走 `SessionArtifactStore::prepare_event_payload`：超长工具输出转 artifact、
+  值级脱敏与补字段都由同一处负责，`store.rs` 不再自带一份 inline 分支。
+
 ## 跨进程锁与耐久写（`locking.rs`）
 
 对齐 Python `omnicrawl/state/session_locking.py`：同一个会话目录允许多进程访问，写路径靠 OS 级文件锁互斥。
@@ -299,8 +319,8 @@ fixture `tests/fixtures/turn_snapshot_parity.json`：5 个脚本化场景（往�
 - **锁超时按调用传入**：Python 把同一根目录上的超时取 max、轮询取 min 后粘在共享实例上；内核每次调用都按策略走。
 - **IO 错误文案不逐字对齐**：Python 会把系统错误包成两层路径（`写入会话转录失败：<p>，写入文件失败：<p>，…`），
   内核只保留一层；底层 OS 错误文本本身也不同（`[Errno 13]` vs `Access is denied. (os error 5)`）。
-- **载荷整理只搬了 inline 分支**：`tool_result` 会补 `output_sha256`/`output_size_chars`/`storage=inline`；
-  超长输出转 artifact 文件、以及敏感值脱敏（`_redact_sensitive_values`）尚未移植。
+- **载荷整理与 Python 同源**：`tool_result` 的 inline/artifact 分流、`output_sha256`/`output_size_chars`/`storage`
+  与值级脱敏都由 `artifact.rs` 的 `prepare_event_payload` 负责，与 Python `_prepare_event_payload` 一致。
 - **`session_started` 的 runtime 身份**：Python 记源码指纹与已加载模块，内核记实现名与版本；该字段不参与跨实现比对。
 - **索引顶层异常路径未覆盖**：Python 在索引不是对象时会重写索引文件，机制未确认，本片未实现也未纳入对照。
 - **运行期参数原文提供者未搬**：Python 的投影器可以注入一个「已发往 Provider 的 arguments 原文」回调

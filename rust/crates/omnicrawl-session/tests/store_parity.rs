@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use omnicrawl_session::{SessionStore, SessionStoreError};
+use omnicrawl_session::{SessionListQuery, SessionStore, SessionStoreError};
 use serde_json::{json, Map, Value};
 
 const FIXTURE: &str = include_str!("fixtures/session_store_parity.json");
@@ -49,7 +49,7 @@ fn store_matches_python() {
         let name = scenario["name"].as_str().expect("场景名");
         let root = temp_root(name);
         let store = SessionStore::open(&root);
-        let mut context: Option<String> = None;
+        let mut context = StepContext::default();
         let mut outputs = Vec::new();
         for step in scenario["steps"].as_array().expect("缺少 steps") {
             outputs.push(run_step(&store, &root, step, &mut context, base_time));
@@ -76,20 +76,38 @@ fn store_matches_python() {
     }
 }
 
+/// 步骤之间传递的上下文：上一步产出的会话 id 与 artifact 相对路径。
+#[derive(Default)]
+struct StepContext {
+    session_id: Option<String>,
+    artifact_path: Option<String>,
+}
+
+impl StepContext {
+    /// 把 fixture 里的 `$session` / `$artifact` 占位换成真实值。
+    fn substitute(&self, value: &str) -> String {
+        let mut text = value.to_string();
+        if let Some(session_id) = self.session_id.as_deref() {
+            text = text.replace("$session", session_id);
+        }
+        if let Some(artifact_path) = self.artifact_path.as_deref() {
+            text = text.replace("$artifact", artifact_path);
+        }
+        text
+    }
+}
+
 fn run_step(
     store: &SessionStore,
     root: &Path,
     step: &Value,
-    context: &mut Option<String>,
+    context: &mut StepContext,
     base_time: DateTime<Utc>,
 ) -> Value {
     let kind = step["kind"].as_str().expect("步骤类型");
     let session_id = step["session_id"]
         .as_str()
-        .map(|value| match context.as_deref() {
-            Some(current) => value.replace("$session", current),
-            None => value.to_string(),
-        });
+        .map(|value| context.substitute(value));
 
     match kind {
         "ensure" => record(store.ensure(), kind),
@@ -103,7 +121,7 @@ fn run_step(
                 now,
             ) {
                 Ok(created) => {
-                    *context = Some(created.session_id.clone());
+                    context.session_id = Some(created.session_id.clone());
                     json!({
                         "kind": kind,
                         "session_id": created.session_id,
@@ -141,13 +159,122 @@ fn run_step(
             }),
             Err(error) => error_output(kind, &error),
         },
-        "list_sessions" => match store.list_sessions() {
-            Ok(entries) => json!({
+        "list_sessions" => {
+            // Python 的无参 `list_sessions()` 自带默认筛选：隐藏归档、最多 10 条。
+            let entries = match store.list_sessions_filtered(&SessionListQuery::default()) {
+                Ok(entries) => entries,
+                Err(error) => return error_output(kind, &error),
+            };
+            json!({
                 "kind": kind,
                 "sessions": entries.iter().map(|entry| entry.to_dict()).collect::<Vec<Value>>(),
-            }),
+            })
+        }
+        "list_sessions_filtered" => {
+            let query = SessionListQuery {
+                workspace_root: step.get("workspace_root").and_then(Value::as_str),
+                project_path: step.get("project_path").and_then(Value::as_str),
+                limit: step.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize,
+                include_archived: step
+                    .get("include_archived")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                archived_only: step
+                    .get("archived_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            };
+            match store.list_sessions_filtered(&query) {
+                Ok(entries) => json!({
+                    "kind": kind,
+                    "sessions": entries.iter().map(|entry| entry.to_dict()).collect::<Vec<Value>>(),
+                }),
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "list_project_paths" => {
+            let include_archived = step
+                .get("include_archived")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            match store.list_project_paths(include_archived) {
+                Ok(paths) => json!({"kind": kind, "paths": paths}),
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "rename_session" => {
+            let now = base_time + chrono::Duration::seconds(offset(step, 1));
+            match store.rename_session(
+                session_id.as_deref().unwrap_or_default(),
+                step["title"].as_str().unwrap_or_default(),
+                now,
+            ) {
+                Ok(entry) => json!({"kind": kind, "title": entry.title}),
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "export_session_markdown" => {
+            let now = base_time + chrono::Duration::seconds(offset(step, 1));
+            match store.export_session_markdown(
+                session_id.as_deref().unwrap_or_default(),
+                step["text"].as_str().unwrap_or_default(),
+                now,
+            ) {
+                Ok(path) => json!({
+                    "kind": kind,
+                    "file": path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                }),
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "archive_session" | "unarchive_session" => {
+            let now = base_time + chrono::Duration::seconds(offset(step, 1));
+            let target = session_id.as_deref().unwrap_or_default();
+            let outcome = if kind == "archive_session" {
+                store.archive_session(target, now)
+            } else {
+                store.unarchive_session(target, now)
+            };
+            match outcome {
+                Ok(entry) => json!({"kind": kind, "archived": entry.archived_at.is_some()}),
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "delete_session" => match store.delete_session(session_id.as_deref().unwrap_or_default()) {
+            Ok(()) => json!({"kind": kind}),
             Err(error) => error_output(kind, &error),
         },
+        "discard_empty_session" => {
+            match store.discard_empty_session(session_id.as_deref().unwrap_or_default()) {
+                Ok(discarded) => json!({"kind": kind, "discarded": discarded}),
+                Err(error) => error_output(kind, &error),
+            }
+        }
+        "write_tool_result_artifact" => match store.write_tool_result_artifact(
+            session_id.as_deref().unwrap_or_default(),
+            step["output"].as_str().unwrap_or_default(),
+        ) {
+            Ok(artifact_path) => {
+                context.artifact_path = Some(artifact_path.clone());
+                json!({"kind": kind, "artifact_path": artifact_path})
+            }
+            Err(error) => error_output(kind, &error),
+        },
+        "read_artifact_text" => {
+            let artifact_path = step["artifact_path"]
+                .as_str()
+                .map(|value| context.substitute(value))
+                .unwrap_or_default();
+            match store
+                .read_artifact_text(session_id.as_deref().unwrap_or_default(), &artifact_path)
+            {
+                Ok(text) => json!({"kind": kind, "text": text}),
+                Err(error) => error_output(kind, &error),
+            }
+        }
         "corrupt_line" => {
             let path = root.join("sessions").join(format!(
                 "{}.jsonl",

@@ -103,6 +103,34 @@ rust/
 │   ├── src/feishu/                         # 配置、文本、卡片渲染、资源、去重、时间线条目
 │   ├── tests/*_parity.rs                   # 与 Python 连接器的对照测试
 │   └── README.md                           # 模块分工、对照工作流、尚未移植清单
+├── crates/omnicrawl-extensions/            # 扩展子系统（插件模型与注册表、Hook 分发、Skill、安装器）
+│   ├── src/models.rs                       # Hook 表与策略、manifest 解析、JSON Patch、Handler 排序
+│   ├── src/registry.rs                     # 注册表读写、user/project 合并、执行计划与 replaces 解析
+│   ├── src/skill.rs                        # Skill 校验、frontmatter 解析、扫描与匹配、渐进式披露
+│   ├── src/protocol.rs                     # Worker NDJSON JSON-RPC 客户端与环境变量白名单
+│   ├── src/manager.rs                      # HookDispatcher / PluginManager / PluginRuntime
+│   ├── src/install.rs                      # npm 安装、本地包、启停、卸载、回滚、doctor
+│   ├── tests/extensions_parity.rs          # 与 Python 扩展层的对照测试（23 组）
+│   └── README.md                           # 模块分工、已知差异、尚未纳入对照的面
+├── crates/omnicrawl-tts/                   # 语音合成引擎（MOSS-TTS-Nano ONNX 推理、模型下载、播放与 CLI）
+│   ├── src/runtime.rs                      # 8 个 ONNX session、prefill/decode、local 采样分支、codec 全量/流式解码
+│   ├── src/engine.rs                       # 文本分块、音色解析、参考音频编码、逐块合成与 WAV 写出
+│   ├── src/sampler.rs                      # PCG64 随机数与 top-k/top-p 采样
+│   ├── tests/tts_runtime_parity.rs         # greedy 生成帧与 Python 逐帧对照（需要模型）
+│   └── README.md                           # 模块对映、关键决策、验证与已知差异
+├── crates/omnicrawl-mcp/                   # MCP 子系统（配置、传输、管理器、本地 Server）
+│   ├── src/config.rs                       # [mcp] 配置段、环境变量覆盖、Server/传输/风险等级校验
+│   ├── src/registry.rs                     # Tool/Resource/Prompt 元数据、去重诊断、命名空间化
+│   ├── src/security.rs                     # 参数体积与轻量 JSON Schema 校验、密钥脱敏
+│   ├── src/audit.rs                        # 工作区内 JSONL 审计、先脱敏后截断、时间源注入
+│   ├── src/jsonrpc.rs                      # Content-Length 分帧、JSON-RPC 拆包、SSE 解析、能力分页
+│   ├── src/stdio.rs                        # stdio 传输：子进程、常驻读线程、stderr 排空、超时回收重启
+│   ├── src/http.rs                         # Streamable HTTP：会话头、协议头、SSE 响应
+│   ├── src/client.rs                       # 多 Server 管理器：并发发现、状态与诊断、失败降级
+│   ├── src/server.rs                       # 本地 stdio MCP Server（只读文档 / 内置文档 / Prompt）
+│   ├── src/bundled.rs                      # 内置文档（include_str! 打进二进制）
+│   ├── tests/*_parity.rs                   # 六组对照 + stdio 端到端自测
+│   └── README.md                           # 模块对映、已知差异、宿主接线与未接线清单
 ├── docs/protocol-v1.md                     # 协议 v1 规格（方法、负载、错误、版本）
 └── tools/
     ├── gen_parity_fixture.py               # 协议层对照数据集生成脚本
@@ -115,7 +143,9 @@ rust/
     ├── gen_session_fixture.py              # 会话层模型对照数据集生成脚本
     ├── gen_connectors_telegram_fixture.py  # Telegram 连接器对照数据集生成脚本
     ├── gen_connectors_feishu_fixture.py    # 飞书连接器对照数据集生成脚本
-    └── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
+    ├── gen_extensions_fixture.py           # 扩展层（插件模型/注册表/Skill/安装器）对照数据集生成脚本
+    ├── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
+    └── gen_mcp_fixture.py                  # MCP 子系统（配置/注册表/安全/审计/协议/管理器/HTTP）对照数据集生成脚本
 ```
 
 ## 构建与验证
@@ -225,7 +255,7 @@ cd rust && cargo test -p omnicrawl-session
 宿主桥接同理：
 
 ```bash
-python rust/tools/gen_host_bridge_fixture.py  # 反射 loop.py 的 run_stream 与循环 run 的签名
+    ├── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
 cd rust && cargo test -p omnicrawl-ipc        # 校验回调↔方法一一对应与负载往返
 ```
 
@@ -323,6 +353,34 @@ system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级�
 `omnicrawl/templates/`，因此按仓库布局定位模板目录。边界与已知差异见
 `crates/omnicrawl-controllers/README.md`。
 
+扩展层同理：
+
+```bash
+python rust/tools/gen_extensions_fixture.py   # 期望值来自 omnicrawl/extensions/ 真实现
+cd rust && cargo test -p omnicrawl-extensions
+```
+
+`extensions_parity.json` 覆盖 23 组用例：SemVer 与包名判定、命名空间归一化、plugins 配置
+解析与区间校验、Handler 声明校验、自定义事件声明、manifest 全量解析、载荷 schema 校验、
+JSON Patch 校验与应用、Handler 排序、`HookResult` 归一化、稳定哈希、模式默认超时、
+注册表合并、执行计划、`replaces` 冲突与环、Skill 名称 / 描述校验、frontmatter 解析、
+描述推断、渐进式披露输出，以及安装器的包规格与 URL 编码。依赖真实进程、网络或文件系统的面
+（Worker 生命周期、分发编排、npm 与 store I/O、Skill 目录扫描、注册表原子写）按实现对齐，
+尚未纳入对照，清单见 `crates/omnicrawl-extensions/README.md`。
+
+MCP 子系统同理：
+
+```bash
+python rust/tools/gen_mcp_fixture.py   # 期望值来自 omnicrawl/mcp/ 真实现
+cd rust && cargo test -p omnicrawl-mcp
+```
+
+`mcp_parity.json` 覆盖八组：配置段与环境变量覆盖（含 21 个用例的校验文案）、能力注册与
+去重诊断、参数校验与密钥脱敏、审计行（固定时刻、先脱敏后截断）、分帧与 SSE 与结果文本化、
+本地 Server 的 24 个响应、管理器 13 个场景（发现/降级/外部拦截/关闭后调用），以及
+Streamable HTTP 的 14 个请求形状场景。另有 `tests/stdio_e2e.rs`：管理器真的拉起
+`omnicrawl-mcp-server` 子进程跑通握手与读取。边界与已知差异见 `crates/omnicrawl-mcp/README.md`。
+
 ## 已知与 Python 的差异
 
 1. 非字符串字段（`role`、`tool_call_id`、工具名、`description` 等）不再走 Python 的 `str()`
@@ -375,10 +433,11 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 `omnicrawl-session` 已覆盖会话与记忆两条链：数据契约（事件 / 索引模型、命名与时间校验、转录行字节布局）、
 存储 I/O（目录初始化、新建、追加、读回、索引维护）、跨进程写锁与耐久写、会话投影与有状态投影、
 记忆层（格式、排序与相似度、索引与读写、检索入口、写入清理、提示词段落、旧目录迁移）、
-artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照，一致性诊断的索引重建
+artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照，会话生命周期编排
+（重命名 / 导出 Markdown / 归档 / 取消归档 / 删除 / 丢弃空会话 / 带筛选的列表 / 项目路径 / artifact 读回）
+与 `append_event` 的载荷整理（超长输出转 artifact + 值级脱敏）也已落地；一致性诊断的索引重建
 `build_index_entry_from_events` 与条目对照 `compare_index_entry` 也已落地（`consistency.rs`，7 例对照）。
-未搬：归档、导出、一致性扫描的全量报告与索引回写、
-运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
+未搬：一致性扫描的全量报告与索引回写、运行期"已发往 Provider 的参数原文"提供者、子任务结果投影。
 
 `omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层全部 11 条规则
 （PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）、匹配引擎
@@ -393,7 +452,7 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 接下来：运行时的组装面（`build_runtime` 工厂 + 四路 Provider 的 `discover_models`）已进内核，
 下一批是把 `omnicrawl-cli` 的 `KernelModelPort::runtime()` 从「只造 OpenAiChatRuntime」改成经
 `build_runtime` 按协议选择；脱敏侧接 `DesensitizationRuntime` 装饰器（trait 已就位）；
-会话侧补归档、导出与一致性诊断。上下文压缩这条链已在 Rust 侧补齐到「除内核接线外」的全部：`omnicrawl-controllers` 的
+会话侧补一致性扫描与索引回写。上下文压缩这条链已在 Rust 侧补齐到「除内核接线外」的全部：`omnicrawl-controllers` 的
 `context_compaction`（账本、证据恢复、结构化摘要生成、压缩编排）与 `turn/compaction` 的判定面共有
 13 例对照；`omnicrawl-compaction` 提供会话/记忆编排（测量事件落盘、压缩触发、二级归档、
 记忆回写与自动召回、历史重建）与摘要模型适配器（复用主请求前缀与工具面、`tool_choice=none`），

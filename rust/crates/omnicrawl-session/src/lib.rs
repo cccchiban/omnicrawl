@@ -94,7 +94,7 @@ pub use records::{
     SUPPORTED_EVENT_VERSIONS, TRANSCRIPT_MMAP_THRESHOLD_BYTES,
 };
 pub use redaction::{redact_sensitive_text, redact_sensitive_values};
-pub use store::{kernel_runtime_identity, CreatedSession, SessionStore};
+pub use store::{kernel_runtime_identity, CreatedSession, SessionListQuery, SessionStore};
 pub use time::{datetime_from_json, datetime_to_millis, format_datetime, parse_datetime, utc_now};
 pub use turn_snapshot::{
     SnapshotError, WorktreeSnapshot, WorktreeSnapshotStore, GIT_COMMAND_TIMEOUT_SECONDS,

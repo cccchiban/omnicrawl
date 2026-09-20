@@ -48,12 +48,15 @@ LAYOUT_DIRS = [
 
 
 def resolve_step(step: dict, context: dict):
-    """把步骤里的 $session 占位换成刚创建的会话 id。"""
+    """把步骤里的 $session / $artifact 占位换成上一步产出的真实值。"""
 
     resolved = {}
     for key, value in step.items():
-        if isinstance(value, str) and "$session" in value:
-            value = value.replace("$session", context.get("session_id", "$session"))
+        if isinstance(value, str):
+            if "$session" in value:
+                value = value.replace("$session", context.get("session_id", "$session"))
+            if "$artifact" in value:
+                value = value.replace("$artifact", context.get("artifact_path", "$artifact"))
         resolved[key] = value
     return resolved
 
@@ -139,6 +142,63 @@ def run_step(store: SessionStore, root: Path, step: dict, context: dict) -> dict
             return {
                 "kind": kind,
                 "sessions": [entry.to_dict() for entry in entries],
+            }
+        if kind == "list_sessions_filtered":
+            entries = store.list_sessions(
+                workspace_root=Path(step["workspace_root"]) if step.get("workspace_root") else None,
+                project_path=step.get("project_path"),
+                limit=step.get("limit", 10),
+                include_archived=step.get("include_archived", False),
+                archived_only=step.get("archived_only", False),
+            )
+            return {
+                "kind": kind,
+                "sessions": [entry.to_dict() for entry in entries],
+            }
+        if kind == "list_project_paths":
+            return {
+                "kind": kind,
+                "paths": store.list_project_paths(include_archived=step.get("include_archived", True)),
+            }
+        if kind == "rename_session":
+            state = store.rename_session(
+                step["session_id"],
+                step["title"],
+                now=BASE_TIME + timedelta(seconds=step.get("offset_seconds", 1)),
+            )
+            return {"kind": kind, "title": state.title}
+        if kind == "export_session_markdown":
+            path = store.export_session_markdown(
+                step["session_id"],
+                step["text"],
+                now=BASE_TIME + timedelta(seconds=step.get("offset_seconds", 1)),
+            )
+            return {"kind": kind, "file": path.name}
+        if kind == "archive_session":
+            state = store.archive_session(
+                step["session_id"],
+                now=BASE_TIME + timedelta(seconds=step.get("offset_seconds", 1)),
+            )
+            return {"kind": kind, "archived": state.archived_at is not None}
+        if kind == "unarchive_session":
+            state = store.unarchive_session(
+                step["session_id"],
+                now=BASE_TIME + timedelta(seconds=step.get("offset_seconds", 1)),
+            )
+            return {"kind": kind, "archived": state.archived_at is not None}
+        if kind == "delete_session":
+            store.delete_session(step["session_id"])
+            return {"kind": kind}
+        if kind == "discard_empty_session":
+            return {"kind": kind, "discarded": store.discard_empty_session(step["session_id"])}
+        if kind == "write_tool_result_artifact":
+            artifact = store.write_tool_result_artifact(step["session_id"], step["output"])
+            context["artifact_path"] = artifact
+            return {"kind": kind, "artifact_path": artifact}
+        if kind == "read_artifact_text":
+            return {
+                "kind": kind,
+                "text": store.read_artifact_text(step["session_id"], step["artifact_path"]),
             }
         if kind == "corrupt_line":
             # 人为往转录里插一行坏 JSON，观察读取行为
@@ -247,6 +307,151 @@ SCENARIOS = [
             {"kind": "start_session", "workspace_root": WORKSPACE, "title": "甲"},
             {"kind": "start_session", "workspace_root": "D:/work/other", "title": "乙"},
             {"kind": "list_sessions"},
+        ],
+    ),
+    (
+        "rename_session",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "旧标题"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "第一轮"},
+                "offset_seconds": 1,
+            },
+            {
+                "kind": "rename_session",
+                "session_id": "$session",
+                "title": "  新标题   带空格  ",
+                "offset_seconds": 5,
+            },
+            {
+                "kind": "rename_session",
+                "session_id": "$session",
+                "title": "   ",
+                "offset_seconds": 6,
+            },
+            {"kind": "read_events", "session_id": "$session"},
+            {"kind": "list_sessions"},
+        ],
+    ),
+    (
+        "export_session_markdown",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "导出"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "导出我"},
+                "offset_seconds": 1,
+            },
+            {
+                "kind": "export_session_markdown",
+                "session_id": "$session",
+                "text": "# 会话导出" + chr(10) + chr(10) + "第一轮对话。" + chr(10),
+                "offset_seconds": 3600,
+            },
+            {
+                "kind": "export_session_markdown",
+                "session_id": "$session",
+                "text": "   ",
+                "offset_seconds": 3661,
+            },
+            {"kind": "read_events", "session_id": "$session"},
+        ],
+    ),
+    (
+        "archive_and_unarchive",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "归档"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "归档前"},
+                "offset_seconds": 1,
+            },
+            {"kind": "archive_session", "session_id": "$session", "offset_seconds": 10},
+            {"kind": "list_sessions"},
+            {"kind": "list_sessions_filtered", "include_archived": True},
+            {"kind": "list_sessions_filtered", "archived_only": True},
+            {"kind": "archive_session", "session_id": "$session", "offset_seconds": 11},
+            {"kind": "read_events", "session_id": "$session"},
+            {"kind": "unarchive_session", "session_id": "$session", "offset_seconds": 20},
+            {"kind": "unarchive_session", "session_id": "$session", "offset_seconds": 21},
+            {"kind": "read_events", "session_id": "$session"},
+            {"kind": "list_sessions"},
+        ],
+    ),
+    (
+        "discard_empty_and_delete",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "空会话"},
+            {"kind": "discard_empty_session", "session_id": "$session"},
+            {"kind": "list_sessions"},
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "有内容"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "留下"},
+                "offset_seconds": 1,
+            },
+            {"kind": "discard_empty_session", "session_id": "$session"},
+            {
+                "kind": "write_tool_result_artifact",
+                "session_id": "$session",
+                "output": "第一行" + chr(10) + "第二行" + chr(10),
+            },
+            {
+                "kind": "read_artifact_text",
+                "session_id": "$session",
+                "artifact_path": "$artifact",
+            },
+            {
+                "kind": "read_artifact_text",
+                "session_id": "$session",
+                "artifact_path": "artifacts/$session/missing.txt",
+            },
+            {
+                "kind": "read_artifact_text",
+                "session_id": "$session",
+                "artifact_path": "artifacts/other-session/tool_result_0000000000000000.txt",
+            },
+            {"kind": "delete_session", "session_id": "$session"},
+            {"kind": "list_sessions"},
+        ],
+    ),
+    (
+        "session_list_filters",
+        [
+            {"kind": "start_session", "workspace_root": WORKSPACE, "title": "甲"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "甲的内容"},
+                "offset_seconds": 3,
+            },
+            {"kind": "start_session", "workspace_root": "D:/work/other", "title": "乙"},
+            {
+                "kind": "append_event",
+                "session_id": "$session",
+                "event_type": "user_message",
+                "payload": {"content": "乙的内容"},
+                "offset_seconds": 4,
+            },
+            {"kind": "list_sessions_filtered", "workspace_root": WORKSPACE},
+            {"kind": "list_sessions_filtered", "workspace_root": "D:/work/other"},
+            {"kind": "list_sessions_filtered", "project_path": "D:/work/other", "limit": 1},
+            {"kind": "list_sessions_filtered", "limit": 1},
+            {"kind": "archive_session", "session_id": "$session", "offset_seconds": 10},
+            {"kind": "list_sessions_filtered", "include_archived": True},
+            {"kind": "list_sessions_filtered", "archived_only": True},
+            {"kind": "list_project_paths"},
+            {"kind": "list_project_paths", "include_archived": False},
         ],
     ),
 ]

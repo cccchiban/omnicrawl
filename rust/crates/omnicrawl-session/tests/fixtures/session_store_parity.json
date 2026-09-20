@@ -501,6 +501,939 @@
         "sessions",
         "summaries"
       ]
+    },
+    {
+      "name": "rename_session",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "旧标题"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "第一轮"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "rename_session",
+          "session_id": "$session",
+          "title": "  新标题   带空格  ",
+          "offset_seconds": 5
+        },
+        {
+          "kind": "rename_session",
+          "session_id": "$session",
+          "title": "   ",
+          "offset_seconds": 6
+        },
+        {
+          "kind": "read_events",
+          "session_id": "$session"
+        },
+        {
+          "kind": "list_sessions"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "旧标题",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "第一轮"
+            }
+          }
+        },
+        {
+          "kind": "rename_session",
+          "title": "新标题 带空格"
+        },
+        {
+          "kind": "rename_session",
+          "error": "会话标题不能为空。"
+        },
+        {
+          "kind": "read_events",
+          "events": [
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_started",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "payload": {
+                "workspace_root": "D:\\work\\demo",
+                "title": "旧标题",
+                "runtime": {
+                  "<normalized>": true
+                }
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "user_message",
+              "created_at": "2026-09-18T03:05:30.123456+00:00",
+              "payload": {
+                "content": "第一轮"
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_renamed",
+              "created_at": "2026-09-18T03:05:34.123456+00:00",
+              "payload": {
+                "title": "新标题 带空格"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "list_sessions",
+          "sessions": [
+            {
+              "session_id": "<session-id-1>",
+              "title": "新标题 带空格",
+              "workspace_root": "D:\\work\\demo",
+              "path": "sessions/<session-id-1>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:34.123456+00:00",
+              "event_count": 3,
+              "message_count": 1,
+              "last_event_type": "session_renamed",
+              "archived_at": null
+            }
+          ]
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"新标题 带空格\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:34.123456+00:00\",\"event_count\":3,\"message_count\":1,\"last_event_type\":\"session_renamed\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"旧标题\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"第一轮\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_renamed\",\"created_at\":\"2026-09-18T03:05:34.123456+00:00\",\"payload\":{\"title\":\"新标题 带空格\"}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "export_session_markdown",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "导出"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "导出我"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "export_session_markdown",
+          "session_id": "$session",
+          "text": "# 会话导出\n\n第一轮对话。\n",
+          "offset_seconds": 3600
+        },
+        {
+          "kind": "export_session_markdown",
+          "session_id": "$session",
+          "text": "   ",
+          "offset_seconds": 3661
+        },
+        {
+          "kind": "read_events",
+          "session_id": "$session"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "导出",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "导出我"
+            }
+          }
+        },
+        {
+          "kind": "export_session_markdown",
+          "file": "chat_export_<session-id-1>_20260918_040529.md"
+        },
+        {
+          "kind": "export_session_markdown",
+          "error": "导出内容不能为空。"
+        },
+        {
+          "kind": "read_events",
+          "events": [
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_started",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "payload": {
+                "workspace_root": "D:\\work\\demo",
+                "title": "导出",
+                "runtime": {
+                  "<normalized>": true
+                }
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "user_message",
+              "created_at": "2026-09-18T03:05:30.123456+00:00",
+              "payload": {
+                "content": "导出我"
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_exported",
+              "created_at": "2026-09-18T04:05:29.123456+00:00",
+              "payload": {
+                "path": "exports/chat_export_<session-id-1>_20260918_040529.md",
+                "format": "markdown"
+              }
+            }
+          ]
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "exports/chat_export_<session-id-1>_20260918_040529.md": "# 会话导出\n\n第一轮对话。\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"导出我\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T04:05:29.123456+00:00\",\"event_count\":3,\"message_count\":1,\"last_event_type\":\"session_exported\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"导出\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"导出我\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_exported\",\"created_at\":\"2026-09-18T04:05:29.123456+00:00\",\"payload\":{\"path\":\"exports/chat_export_<session-id-1>_20260918_040529.md\",\"format\":\"markdown\"}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "archive_and_unarchive",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "归档"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "归档前"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "archive_session",
+          "session_id": "$session",
+          "offset_seconds": 10
+        },
+        {
+          "kind": "list_sessions"
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "include_archived": true
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "archived_only": true
+        },
+        {
+          "kind": "archive_session",
+          "session_id": "$session",
+          "offset_seconds": 11
+        },
+        {
+          "kind": "read_events",
+          "session_id": "$session"
+        },
+        {
+          "kind": "unarchive_session",
+          "session_id": "$session",
+          "offset_seconds": 20
+        },
+        {
+          "kind": "unarchive_session",
+          "session_id": "$session",
+          "offset_seconds": 21
+        },
+        {
+          "kind": "read_events",
+          "session_id": "$session"
+        },
+        {
+          "kind": "list_sessions"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "归档",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "归档前"
+            }
+          }
+        },
+        {
+          "kind": "archive_session",
+          "archived": true
+        },
+        {
+          "kind": "list_sessions",
+          "sessions": []
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-1>",
+              "title": "归档前",
+              "workspace_root": "D:\\work\\demo",
+              "path": "archive/<session-id-1>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:39.123456+00:00",
+              "event_count": 3,
+              "message_count": 1,
+              "last_event_type": "session_archived",
+              "archived_at": "2026-09-18T03:05:39.123456+00:00"
+            }
+          ]
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-1>",
+              "title": "归档前",
+              "workspace_root": "D:\\work\\demo",
+              "path": "archive/<session-id-1>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:39.123456+00:00",
+              "event_count": 3,
+              "message_count": 1,
+              "last_event_type": "session_archived",
+              "archived_at": "2026-09-18T03:05:39.123456+00:00"
+            }
+          ]
+        },
+        {
+          "kind": "archive_session",
+          "error": "会话已在归档中：<session-id-1>"
+        },
+        {
+          "kind": "read_events",
+          "events": [
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_started",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "payload": {
+                "workspace_root": "D:\\work\\demo",
+                "title": "归档",
+                "runtime": {
+                  "<normalized>": true
+                }
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "user_message",
+              "created_at": "2026-09-18T03:05:30.123456+00:00",
+              "payload": {
+                "content": "归档前"
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_archived",
+              "created_at": "2026-09-18T03:05:39.123456+00:00",
+              "payload": {
+                "previous_path": "sessions/<session-id-1>.jsonl",
+                "archive_path": "archive/<session-id-1>.jsonl"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "unarchive_session",
+          "archived": false
+        },
+        {
+          "kind": "unarchive_session",
+          "archived": false
+        },
+        {
+          "kind": "read_events",
+          "events": [
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_started",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "payload": {
+                "workspace_root": "D:\\work\\demo",
+                "title": "归档",
+                "runtime": {
+                  "<normalized>": true
+                }
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "user_message",
+              "created_at": "2026-09-18T03:05:30.123456+00:00",
+              "payload": {
+                "content": "归档前"
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_archived",
+              "created_at": "2026-09-18T03:05:39.123456+00:00",
+              "payload": {
+                "previous_path": "sessions/<session-id-1>.jsonl",
+                "archive_path": "archive/<session-id-1>.jsonl"
+              }
+            },
+            {
+              "version": 1,
+              "session_id": "<session-id-1>",
+              "event_id": "<event-id>",
+              "parent_id": null,
+              "type": "session_unarchived",
+              "created_at": "2026-09-18T03:05:49.123456+00:00",
+              "payload": {
+                "previous_path": "archive/<session-id-1>.jsonl",
+                "active_path": "sessions/<session-id-1>.jsonl"
+              }
+            }
+          ]
+        },
+        {
+          "kind": "list_sessions",
+          "sessions": [
+            {
+              "session_id": "<session-id-1>",
+              "title": "归档前",
+              "workspace_root": "D:\\work\\demo",
+              "path": "sessions/<session-id-1>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:49.123456+00:00",
+              "event_count": 4,
+              "message_count": 1,
+              "last_event_type": "session_unarchived",
+              "archived_at": null
+            }
+          ]
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"归档前\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:49.123456+00:00\",\"event_count\":4,\"message_count\":1,\"last_event_type\":\"session_unarchived\",\"archived_at\":null}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"归档\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:30.123456+00:00\",\"payload\":{\"content\":\"归档前\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_archived\",\"created_at\":\"2026-09-18T03:05:39.123456+00:00\",\"payload\":{\"previous_path\":\"sessions/<session-id-1>.jsonl\",\"archive_path\":\"archive/<session-id-1>.jsonl\"}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_unarchived\",\"created_at\":\"2026-09-18T03:05:49.123456+00:00\",\"payload\":{\"previous_path\":\"archive/<session-id-1>.jsonl\",\"active_path\":\"sessions/<session-id-1>.jsonl\"}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "discard_empty_and_delete",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "空会话"
+        },
+        {
+          "kind": "discard_empty_session",
+          "session_id": "$session"
+        },
+        {
+          "kind": "list_sessions"
+        },
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "有内容"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "留下"
+          },
+          "offset_seconds": 1
+        },
+        {
+          "kind": "discard_empty_session",
+          "session_id": "$session"
+        },
+        {
+          "kind": "write_tool_result_artifact",
+          "session_id": "$session",
+          "output": "第一行\n第二行\n"
+        },
+        {
+          "kind": "read_artifact_text",
+          "session_id": "$session",
+          "artifact_path": "$artifact"
+        },
+        {
+          "kind": "read_artifact_text",
+          "session_id": "$session",
+          "artifact_path": "artifacts/$session/missing.txt"
+        },
+        {
+          "kind": "read_artifact_text",
+          "session_id": "$session",
+          "artifact_path": "artifacts/other-session/tool_result_0000000000000000.txt"
+        },
+        {
+          "kind": "delete_session",
+          "session_id": "$session"
+        },
+        {
+          "kind": "list_sessions"
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "空会话",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "discard_empty_session",
+          "discarded": true
+        },
+        {
+          "kind": "list_sessions",
+          "sessions": []
+        },
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-2>",
+          "title": "有内容",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-2>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:30.123456+00:00",
+            "payload": {
+              "content": "留下"
+            }
+          }
+        },
+        {
+          "kind": "discard_empty_session",
+          "discarded": false
+        },
+        {
+          "kind": "write_tool_result_artifact",
+          "artifact_path": "artifacts/<session-id-2>/tool_result_f075c7793e2a3429.txt"
+        },
+        {
+          "kind": "read_artifact_text",
+          "text": "第一行\n第二行\n"
+        },
+        {
+          "kind": "read_artifact_text",
+          "error": "artifact 不存在：artifacts/<session-id-2>/missing.txt"
+        },
+        {
+          "kind": "read_artifact_text",
+          "error": "artifact 路径必须位于当前会话目录：artifacts/other-session/tool_result_0000000000000000.txt"
+        },
+        {
+          "kind": "delete_session"
+        },
+        {
+          "kind": "list_sessions",
+          "sessions": []
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[]}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
+    },
+    {
+      "name": "session_list_filters",
+      "steps": [
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/demo",
+          "title": "甲"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "甲的内容"
+          },
+          "offset_seconds": 3
+        },
+        {
+          "kind": "start_session",
+          "workspace_root": "D:/work/other",
+          "title": "乙"
+        },
+        {
+          "kind": "append_event",
+          "session_id": "$session",
+          "event_type": "user_message",
+          "payload": {
+            "content": "乙的内容"
+          },
+          "offset_seconds": 4
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "workspace_root": "D:/work/demo"
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "workspace_root": "D:/work/other"
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "project_path": "D:/work/other",
+          "limit": 1
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "limit": 1
+        },
+        {
+          "kind": "archive_session",
+          "session_id": "$session",
+          "offset_seconds": 10
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "include_archived": true
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "archived_only": true
+        },
+        {
+          "kind": "list_project_paths"
+        },
+        {
+          "kind": "list_project_paths",
+          "include_archived": false
+        }
+      ],
+      "outputs": [
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-1>",
+          "title": "甲",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-1>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:32.123456+00:00",
+            "payload": {
+              "content": "甲的内容"
+            }
+          }
+        },
+        {
+          "kind": "start_session",
+          "session_id": "<session-id-2>",
+          "title": "乙",
+          "event_count": 1,
+          "last_event_type": "session_started"
+        },
+        {
+          "kind": "append_event",
+          "event": {
+            "version": 1,
+            "session_id": "<session-id-2>",
+            "event_id": "<event-id>",
+            "parent_id": null,
+            "type": "user_message",
+            "created_at": "2026-09-18T03:05:33.123456+00:00",
+            "payload": {
+              "content": "乙的内容"
+            }
+          }
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-1>",
+              "title": "甲的内容",
+              "workspace_root": "D:\\work\\demo",
+              "path": "sessions/<session-id-1>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:32.123456+00:00",
+              "event_count": 2,
+              "message_count": 1,
+              "last_event_type": "user_message",
+              "archived_at": null
+            }
+          ]
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-2>",
+              "title": "乙的内容",
+              "workspace_root": "D:\\work\\other",
+              "path": "sessions/<session-id-2>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:33.123456+00:00",
+              "event_count": 2,
+              "message_count": 1,
+              "last_event_type": "user_message",
+              "archived_at": null
+            }
+          ]
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-2>",
+              "title": "乙的内容",
+              "workspace_root": "D:\\work\\other",
+              "path": "sessions/<session-id-2>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:33.123456+00:00",
+              "event_count": 2,
+              "message_count": 1,
+              "last_event_type": "user_message",
+              "archived_at": null
+            }
+          ]
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-2>",
+              "title": "乙的内容",
+              "workspace_root": "D:\\work\\other",
+              "path": "sessions/<session-id-2>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:33.123456+00:00",
+              "event_count": 2,
+              "message_count": 1,
+              "last_event_type": "user_message",
+              "archived_at": null
+            }
+          ]
+        },
+        {
+          "kind": "archive_session",
+          "archived": true
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-2>",
+              "title": "乙的内容",
+              "workspace_root": "D:\\work\\other",
+              "path": "archive/<session-id-2>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:39.123456+00:00",
+              "event_count": 3,
+              "message_count": 1,
+              "last_event_type": "session_archived",
+              "archived_at": "2026-09-18T03:05:39.123456+00:00"
+            },
+            {
+              "session_id": "<session-id-1>",
+              "title": "甲的内容",
+              "workspace_root": "D:\\work\\demo",
+              "path": "sessions/<session-id-1>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:32.123456+00:00",
+              "event_count": 2,
+              "message_count": 1,
+              "last_event_type": "user_message",
+              "archived_at": null
+            }
+          ]
+        },
+        {
+          "kind": "list_sessions_filtered",
+          "sessions": [
+            {
+              "session_id": "<session-id-2>",
+              "title": "乙的内容",
+              "workspace_root": "D:\\work\\other",
+              "path": "archive/<session-id-2>.jsonl",
+              "created_at": "2026-09-18T03:05:29.123456+00:00",
+              "updated_at": "2026-09-18T03:05:39.123456+00:00",
+              "event_count": 3,
+              "message_count": 1,
+              "last_event_type": "session_archived",
+              "archived_at": "2026-09-18T03:05:39.123456+00:00"
+            }
+          ]
+        },
+        {
+          "kind": "list_project_paths",
+          "paths": [
+            "D:\\work\\demo",
+            "D:\\work\\other"
+          ]
+        },
+        {
+          "kind": "list_project_paths",
+          "paths": [
+            "D:\\work\\demo"
+          ]
+        }
+      ],
+      "files": {
+        ".session_store.lock": "pid=<pid>\n",
+        "archive/<session-id-2>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-2>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\other\",\"title\":\"乙\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-2>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:33.123456+00:00\",\"payload\":{\"content\":\"乙的内容\"}}\n{\"version\":1,\"session_id\":\"<session-id-2>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_archived\",\"created_at\":\"2026-09-18T03:05:39.123456+00:00\",\"payload\":{\"previous_path\":\"sessions/<session-id-2>.jsonl\",\"archive_path\":\"archive/<session-id-2>.jsonl\"}}\n",
+        "history.jsonl": "",
+        "index.json": "{\"schema_version\":1,\"sessions\":[{\"session_id\":\"<session-id-1>\",\"title\":\"甲的内容\",\"workspace_root\":\"D:\\\\work\\\\demo\",\"path\":\"sessions/<session-id-1>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:32.123456+00:00\",\"event_count\":2,\"message_count\":1,\"last_event_type\":\"user_message\",\"archived_at\":null},{\"session_id\":\"<session-id-2>\",\"title\":\"乙的内容\",\"workspace_root\":\"D:\\\\work\\\\other\",\"path\":\"archive/<session-id-2>.jsonl\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"updated_at\":\"2026-09-18T03:05:39.123456+00:00\",\"event_count\":3,\"message_count\":1,\"last_event_type\":\"session_archived\",\"archived_at\":\"2026-09-18T03:05:39.123456+00:00\"}]}\n",
+        "sessions/<session-id-1>.jsonl": "{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"session_started\",\"created_at\":\"2026-09-18T03:05:29.123456+00:00\",\"payload\":{\"workspace_root\":\"D:\\\\work\\\\demo\",\"title\":\"甲\",\"runtime\":{\"<normalized>\":true}}}\n{\"version\":1,\"session_id\":\"<session-id-1>\",\"event_id\":\"<event-id>\",\"parent_id\":null,\"type\":\"user_message\",\"created_at\":\"2026-09-18T03:05:32.123456+00:00\",\"payload\":{\"content\":\"甲的内容\"}}\n"
+      },
+      "dirs": [
+        "archive",
+        "archive/compacted",
+        "artifacts",
+        "exports",
+        "sessions",
+        "summaries"
+      ]
     }
   ]
 }
