@@ -60,6 +60,7 @@ use omnicrawl_controllers::subagents::worktrees::{
 };
 use omnicrawl_session::tool_result_message;
 
+use crate::compression::KernelCompressor;
 use crate::subagent::{PreparedTask, SubAgentExecution, SubAgentRuntime};
 
 use crate::compaction::{
@@ -617,6 +618,10 @@ struct RemoteTools {
     turn_id: String,
     /// 隔离根：子任务把工具批次指到 worktree 里执行；主回合与共享子任务为 `None`。
     workspace_root: Option<String>,
+    /// 工具输出压缩旁路：配置未启用时为 `None`，此时整批观察原样返回。
+    compressor: Option<Rc<KernelCompressor>>,
+    /// 本轮任务文本，作为压缩请求的任务背景。
+    task_hint: String,
 }
 
 impl ToolBatchHost for RemoteTools {
@@ -674,6 +679,15 @@ impl ToolBatchHost for RemoteTools {
                         ordered.len() + 1
                     )))
                 }
+            }
+        }
+
+        // 超长工具观察交给压缩旁路：未启用、失败或没压小都保留原文。
+        if let Some(compressor) = &self.compressor {
+            let cancel_source = Rc::clone(&self.conn);
+            let cancelled = || cancel_source.borrow().cancel.load(Ordering::SeqCst);
+            if !cancelled() {
+                compressor.apply_observations(&mut ordered, &self.task_hint, &cancelled);
             }
         }
         Ok(ordered)
@@ -1467,10 +1481,16 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
             turn_id: turn_id.clone(),
         }),
     };
+    let compressor = model_config
+        .clone()
+        .and_then(|config| KernelCompressor::load(&config))
+        .map(Rc::new);
     let mut tools = RemoteTools {
         conn: Rc::clone(conn),
         turn_id: turn_id.clone(),
         workspace_root: None,
+        compressor,
+        task_hint: user_text.clone(),
     };
     let build_cancel_check = || {
         let cancel_source = Rc::clone(conn);
@@ -1884,10 +1904,19 @@ fn serve_background(conn: &Rc<RefCell<Conn>>, request: BackgroundRequest) {
             workspace_root,
             reply,
         } => {
+            // 后台子任务批次也走压缩旁路：模型连接取当前进程的协议配置。
+            let compressor = conn
+                .borrow()
+                .model
+                .clone()
+                .and_then(|config| KernelCompressor::load(&config))
+                .map(Rc::new);
             let mut tools = RemoteTools {
                 conn: Rc::clone(conn),
                 turn_id,
                 workspace_root,
+                compressor,
+                task_hint: String::new(),
             };
             let outcome = tools
                 .execute_tool_batch(&calls, 0)

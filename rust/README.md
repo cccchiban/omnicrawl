@@ -80,7 +80,7 @@ rust/
 │   ├── src/workspace.rs                    # 工作区切换校验与拒绝文案、内部目录保护
 │   ├── src/memory.rs                       # 三类作用域记忆目录解析与会话级清理
 │   ├── src/output.rs                       # 输出预算与落盘预览、工具结果消息、视觉旁路
-│   ├── src/compression.rs                  # 工具输出压缩的选取与文案
+│   ├── src/compression.rs                  # 工具输出压缩：选取、文案、压缩请求与回包清洗
 │   ├── src/building.rs                     # 模式模板装载与 system prompt 组装
 │   ├── src/turn/turn_loop.rs               # 回合接线：13 回调面、两个循环端口与守卫、收尾补发、失败分类
 │   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（825 用例）

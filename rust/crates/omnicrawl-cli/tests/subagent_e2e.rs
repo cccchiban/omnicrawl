@@ -32,6 +32,10 @@ enum Reply {
     Stream(String),
     Raw(String),
     /// 先要求调工具、拿到结果后再收尾；脚本用尽时按请求内容兜底（并发下顺序不定）。
+    ///
+    /// 当前用例都走 `ToolCalls`/`AlwaysText`，这条分支留给脚本化调试；标 `allow`
+    /// 是为了让 `clippy -D warnings` 的门槛不被测试里的备用分支挡住。
+    #[allow(dead_code)]
     ToolThenText {
         tool: String,
         tool_arguments: String,

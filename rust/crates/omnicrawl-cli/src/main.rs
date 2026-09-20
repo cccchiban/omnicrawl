@@ -4,6 +4,7 @@
 //! 用 NDJSON JSON-RPC 2.0 帧驱动它。
 
 mod compaction;
+mod compression;
 mod connector;
 mod session;
 mod subagent;

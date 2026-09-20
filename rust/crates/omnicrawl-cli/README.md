@@ -25,6 +25,18 @@
 `recall_session_evidence` 之外的可恢复信息（被压缩窗口的原始事件）归档到 `archive/compacted/`；
 下一轮请求只带「摘要 + 保留窗口 + 当前输入」。
 
+## 工具输出压缩旁路
+
+`[tool_output_compression]` 启用时，内核在拿到宿主回传的整批观察后会额外跑一次压缩请求：
+只有 `bash` / `powershell` / `git` / `grep` 且模型可见文本达到 `min_chars` 的结果才送压；
+模型请求带内置系统提示（`omnicrawl/templates/tool_output_compression_system.md`，编译期嵌入）与
+`<<<TOOL_OUTPUT_START>>>` 包裹，`thinking_enabled=false` 时显式下发 `reasoning_effort=none`。
+模型没把文本压小、返回工具调用或空文本、请求失败都保留原文；采纳时观察正文换成精简文本，
+`full_output` 换成「已压缩：<原始> → <精简> 字符，模型 <name>」的展示文案。
+
+连接沿用一次 `initialize.model` 给的那条，只把 model 名换成 `[tool_output_compression].model_key`
+（与子任务的 `child_model_config` 同一做法）；配置文件路径与其它配置一致：显式路径 > `AI_CONFIG_FILE` > 用户目录。
+
 ## 错误映射
 
 | `LoopError` | 协议错误码 | `data.kind` |
