@@ -451,6 +451,30 @@ fn kernel_owns_the_session_and_compacts_after_turn() {
         notices.iter().any(|notice| notice.contains("已压缩")),
         "回合内应出现压缩提示：{notices:?}"
     );
+    // 触发压缩的回合把计量发给宿主（宿主据此分发 `context.compaction.after_turn`）。
+    let compaction = frames
+        .iter()
+        .find(|frame| frame["method"] == "turn.context_compaction")
+        .expect("触发压缩的回合应有压缩计量通知");
+    assert!(
+        compaction["params"]["post_turn_context_tokens"]
+            .as_i64()
+            .unwrap_or(0)
+            > 0,
+        "计量应带上压缩前的实际上下文 Token：{compaction}"
+    );
+    assert_eq!(
+        compaction["params"]["trigger_context_tokens"].as_i64(),
+        Some(1),
+        "计量应带上触发阈值：{compaction}"
+    );
+    assert!(
+        !compaction["params"]["turn_id"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "计量应带上回合 id：{compaction}"
+    );
 
     // 摘要请求：复用主请求前缀（历史 + 本轮用户消息），带工具面，且禁止调用工具。
     let bodies = server.bodies();
@@ -718,6 +742,14 @@ fn kernel_answers_evidence_tool_without_the_host() {
     assert!(
         !methods(&frames).iter().any(|method| method == "tool.batch"),
         "只读会话的工具应由内核本地作答，不该占用宿主的批次：{:?}",
+        methods(&frames)
+    );
+    // 未触发压缩的回合不发泄量：宿主也就不会分发压缩 Hook。
+    assert!(
+        !methods(&frames)
+            .iter()
+            .any(|method| method == "turn.context_compaction"),
+        "未触发压缩的回合不该发压缩计量：{:?}",
         methods(&frames)
     );
 

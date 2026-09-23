@@ -1,8 +1,8 @@
 //! 桥接层往返：每个方法的负载样本解帧后回组帧必须一致，样本必须覆盖全部方法。
 
 use omnicrawl_ipc::bridge::{
-    initialize_result, method, unsupported_version_error, Command, HostEvent, ModelRequest,
-    ToolBatch, ToolBatchResult,
+    initialize_result, method, unsupported_version_error, Command, HostEvent, ModelHookRequest,
+    ModelHookResult, ModelRequest, ToolBatch, ToolBatchResult,
 };
 use omnicrawl_ipc::frame::{error_code, Frame, Id};
 use omnicrawl_ipc::version::{negotiate_version, VersionError, PROTOCOL_VERSION};
@@ -68,6 +68,22 @@ fn host_event_samples() -> Vec<(&'static str, Value)> {
                 "tool_calls": 1,
                 "paused": false,
             }),
+        ),
+        (
+            method::TURN_CONTEXT_COMPACTION,
+            json!({
+                "post_turn_context_tokens": 130000,
+                "trigger_context_tokens": 120000,
+                "turn_id": "t1",
+            }),
+        ),
+        (
+            method::TURN_MODEL_RESPONSE_AFTER,
+            json!({"model": "gpt-4o", "content": "完成", "tool_call_count": 1}),
+        ),
+        (
+            method::TURN_MODEL_REQUEST_ERROR,
+            json!({"error": "Agent 模型流中断：连接重置", "model": "gpt-4o"}),
         ),
     ]
 }
@@ -232,6 +248,29 @@ fn tool_batch_round_trips_with_its_result() {
     });
     let parsed = ToolBatchResult::from_result(&result).expect("解观察批次");
     assert_eq!(parsed.to_result(), result);
+}
+
+#[test]
+fn model_hook_request_and_result_round_trip() {
+    let request = ModelHookRequest {
+        messages: vec![json!({"role": "user", "content": "你好"})],
+        model: "gpt-4o".into(),
+    };
+    let frame = request.to_frame(Id::Number(5));
+    assert!(frame.is_request());
+    assert_eq!(frame.method(), Some(method::MODEL_HOOK));
+    assert_eq!(
+        ModelHookRequest::from_frame(&frame).expect("解 model.hook"),
+        request
+    );
+
+    let result = ModelHookResult {
+        messages: vec![json!({"role": "user", "content": "你好（已改写）"})],
+    };
+    assert_eq!(
+        ModelHookResult::from_result(&result.to_result()).expect("解 model.hook 结果"),
+        result
+    );
 }
 
 #[test]

@@ -578,6 +578,11 @@ impl AppState {
                     ));
                 }
             }
+            // 压缩计量与模型 Hook 触发点只供宿主分发插件 Hook，不改动对话视图；
+            // 压缩的可见边界仍由 `turn.status` 的提示呈现。
+            HostEvent::ContextCompaction(_)
+            | HostEvent::ModelResponseAfter(_)
+            | HostEvent::ModelRequestError(_) => {}
         }
     }
 

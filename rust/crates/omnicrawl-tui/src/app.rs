@@ -79,9 +79,9 @@ use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
 use omnicrawl_ipc::{
     bridge::{
         Command, HostEvent, InitializeParams, KernelCompactionConfig, KernelModelConfig,
-        KernelSessionConfig, SessionAppendParams, SessionHistoryParams, SessionListParams,
-        SessionModelSettings, SessionRenameParams, SessionResumeParams, SessionSettingsParams,
-        SubagentRunParams, ToolBatch,
+        KernelSessionConfig, ModelHookRequest, ModelHookResult, SessionAppendParams,
+        SessionHistoryParams, SessionListParams, SessionModelSettings, SessionRenameParams,
+        SessionResumeParams, SessionSettingsParams, SubagentRunParams, ToolBatch,
     },
     error_code, Frame, Id, PROTOCOL_VERSION,
 };
@@ -541,7 +541,10 @@ impl App {
             },
             user_agent: format!("omnicrawl-tui/{}", env!("CARGO_PKG_VERSION")),
             system_prompt: self.prompt.system_prompt(),
-            context_messages: self.prompt.context_messages(true).unwrap_or_default(),
+            context_messages: self
+                .prompt
+                .context_messages_with_plugins(true, Some(self.plugins.as_ref()), None, None)
+                .unwrap_or_default(),
             tools: self.registry.declarations(),
             options: if external_channel {
                 json!({})
@@ -585,6 +588,8 @@ impl App {
             }),
             model: Some(Box::new(model)),
             session,
+            // TUI 总是持有插件运行期：声明能力，内核才会在模型请求前发 `model.hook`。
+            plugin_model_hooks: true,
         };
         let id = self.kernel.next_id();
         let frame = Command::Initialize(params).to_frame(id.clone());
@@ -700,6 +705,34 @@ impl App {
                     let finished = matches!(event, HostEvent::TurnFinished(_));
                     // 回合 id 要在 `apply` 之前取：落地处理会把当前回合卸下。
                     let turn_id = self.current_turn_id();
+                    // 内核发来的插件 Hook 触发点：宿主在此分发，对映 Python 在 agent runtime
+                    // 内的同名派发（压缩计量、模型请求前后）。
+                    let session_id = self.current_session_id();
+                    let session_id = (!session_id.is_empty()).then_some(session_id);
+                    match &event {
+                        HostEvent::ContextCompaction(payload) => {
+                            self.plugins.compaction_after_turn(
+                                payload.post_turn_context_tokens,
+                                payload.trigger_context_tokens,
+                                session_id.as_deref(),
+                                (!payload.turn_id.is_empty()).then_some(payload.turn_id.as_str()),
+                            )
+                        }
+                        HostEvent::ModelResponseAfter(payload) => {
+                            self.plugins.model_response_after(
+                                &payload.model,
+                                &payload.content,
+                                payload.tool_call_count,
+                                session_id.as_deref(),
+                            )
+                        }
+                        HostEvent::ModelRequestError(payload) => self.plugins.model_request_error(
+                            &payload.error,
+                            &payload.model,
+                            session_id.as_deref(),
+                        ),
+                        _ => {}
+                    }
                     self.state.apply(&event, Instant::now());
                     if finished {
                         self.plugins.turn_end(None, turn_id.as_deref());
@@ -721,6 +754,9 @@ impl App {
             Some(method) if method == omnicrawl_ipc::method::MODEL_REPLY => {
                 // 内核自带 provider runtime 发模型请求，宿主代答路径不再需要。
                 let _ = self.kernel.respond_unsupported(&id, method);
+            }
+            Some(method) if method == omnicrawl_ipc::method::MODEL_HOOK => {
+                self.handle_model_hook(id, &frame);
             }
             Some(method) => {
                 let _ = self.kernel.respond_unsupported(&id, method);
@@ -744,6 +780,42 @@ impl App {
                         self.apply_settings_response(&change, &frame);
                     }
                 }
+            }
+        }
+    }
+
+    /// 服务内核的 `model.hook`：跑 `model.request.before`，回改写后的消息或拒绝文案。
+    fn handle_model_hook(&mut self, id: Id, frame: &Frame) {
+        let request = match ModelHookRequest::from_frame(frame) {
+            Ok(request) => request,
+            Err(error) => {
+                let _ = self.kernel.respond_error(
+                    &id,
+                    error_code::INVALID_PARAMS,
+                    &format!("model.hook 负载不符：{error}"),
+                );
+                return;
+            }
+        };
+        let ModelHookRequest {
+            mut messages,
+            model,
+        } = request;
+        let session_id = self.current_session_id();
+        let session_id = (!session_id.is_empty()).then_some(session_id);
+        match self
+            .plugins
+            .model_request_before(&mut messages, &model, session_id.as_deref())
+        {
+            Ok(()) => {
+                let result = ModelHookResult { messages }.to_result();
+                let _ = self.kernel.respond(&id, result);
+            }
+            // 插件拒绝：错误响应带上拒绝文案，内核据此中止本轮。
+            Err(error) => {
+                let _ =
+                    self.kernel
+                        .respond_error(&id, error_code::INVALID_REQUEST, error.message());
             }
         }
     }
@@ -2820,12 +2892,15 @@ impl App {
     /// 因此这里必须与握手走同一份装配结果；内核只按帧里的文本发请求。
     pub(crate) fn command_activate_mode(&mut self, mode: &str) -> Result<String, String> {
         let activated = self.prompt.activate_mode(mode)?;
+        let session_id = self.current_session_id();
         let settings = SessionModelSettings {
             system_prompt: Some(self.prompt.system_prompt()),
-            context_messages: Some(
-                self.prompt
-                    .context_messages(!self.registry.declarations().is_empty())?,
-            ),
+            context_messages: Some(self.prompt.context_messages_with_plugins(
+                !self.registry.declarations().is_empty(),
+                Some(self.plugins.as_ref()),
+                (!session_id.is_empty()).then_some(session_id.as_str()),
+                None,
+            )?),
             ..SessionModelSettings::default()
         };
         let params = SessionSettingsParams {

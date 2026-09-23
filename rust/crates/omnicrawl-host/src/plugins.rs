@@ -561,6 +561,120 @@ impl PluginHost {
             _ => display_text.to_string(),
         }
     }
+
+    /// `context.build.before`：允许插件附加上下文（transform），返回 `additionalContext`。
+    ///
+    /// 该 Hook 是 fail-open（`ignore_deny`）：被拒、超时或分发异常时退回空附加上下文，
+    /// 与 Python `_context_messages` 里 `self._dispatch_plugin_hook(...) or {"additionalContext": []}`
+    /// 完全同义——插件不能阻断上下文装配。
+    pub fn context_build_before(
+        &self,
+        session_id: Option<&str>,
+        turn_id: Option<&str>,
+    ) -> Option<Value> {
+        let mut payload = Map::new();
+        payload.insert("additionalContext".to_string(), Value::Array(Vec::new()));
+        let original = payload.clone();
+        let decision = self.dispatch("context.build.before", payload, session_id, turn_id);
+        // 被拒时 `payload_or` 退回原始载荷，`additionalContext` 为空数组 → 不注入。
+        decision
+            .payload_or(original)
+            .get("additionalContext")
+            .cloned()
+    }
+
+    /// `context.build.after`：只报最终上下文消息条数（观察类，失败不阻断）。
+    pub fn context_build_after(
+        &self,
+        message_count: usize,
+        session_id: Option<&str>,
+        turn_id: Option<&str>,
+    ) {
+        let mut payload = Map::new();
+        payload.insert("messageCount".to_string(), Value::from(message_count));
+        let _ = self.dispatch("context.build.after", payload, session_id, turn_id);
+    }
+
+    /// `context.compaction.after_turn`：回合结束边界触发压缩后的通知（notify 类，失败不阻断）。
+    ///
+    /// 载荷与 Python `_trigger_context_compaction_after_turn` 一致：压缩后的实际上下文 Token、
+    /// 触发阈值 Token 与本回合 id。调用方需先判定 `trigger_reached`，未触发不调用。
+    pub fn compaction_after_turn(
+        &self,
+        post_turn_context_tokens: i64,
+        trigger_context_tokens: i64,
+        session_id: Option<&str>,
+        turn_id: Option<&str>,
+    ) {
+        let mut payload = Map::new();
+        payload.insert(
+            "postTurnContextTokens".to_string(),
+            Value::from(post_turn_context_tokens),
+        );
+        payload.insert(
+            "triggerContextTokens".to_string(),
+            Value::from(trigger_context_tokens),
+        );
+        payload.insert(
+            "turnId".to_string(),
+            Value::from(turn_id.unwrap_or_default()),
+        );
+        let _ = self.dispatch(
+            "context.compaction.after_turn",
+            payload,
+            session_id,
+            turn_id,
+        );
+    }
+
+    /// `model.request.before`：允许插件改写消息（transform）或拒绝本轮（guard）。
+    ///
+    /// 载荷与 Python 同形 `{messages, model}`；拒绝时返回带插件文案的 `AgentError`，
+    /// 调用方据此中止本轮模型请求。放行时用返回值里的 `messages` 覆盖入参（仅在
+    /// 确为数组时，与 Python 的 `isinstance(..., list)` 判定一致）。
+    pub fn model_request_before(
+        &self,
+        messages: &mut Vec<Value>,
+        model: &str,
+        session_id: Option<&str>,
+    ) -> Result<(), AgentError> {
+        let mut payload = Map::new();
+        payload.insert("messages".to_string(), Value::Array(messages.clone()));
+        payload.insert("model".to_string(), Value::from(model));
+        let original = payload.clone();
+        let decision = self.dispatch("model.request.before", payload, session_id, None);
+        if let Some(error) = decision.denial_error("model.request.before") {
+            return Err(error);
+        }
+        let resolved = decision.payload_or(original);
+        if let Some(Value::Array(rewritten)) = resolved.get("messages") {
+            *messages = rewritten.clone();
+        }
+        Ok(())
+    }
+
+    /// `model.response.after`：模型请求成功返回后的观察通知（失败不阻断）。
+    pub fn model_response_after(
+        &self,
+        model: &str,
+        content: &str,
+        tool_call_count: usize,
+        session_id: Option<&str>,
+    ) {
+        let mut payload = Map::new();
+        payload.insert("model".to_string(), Value::from(model));
+        payload.insert("content".to_string(), Value::from(content));
+        payload.insert("toolCallCount".to_string(), Value::from(tool_call_count));
+        let _ = self.dispatch("model.response.after", payload, session_id, None);
+    }
+
+    /// `model.request.error`：模型请求以协议错误终结时的通知（失败不阻断）。
+    pub fn model_request_error(&self, error: &str, model: &str, session_id: Option<&str>) {
+        let mut payload = Map::new();
+        payload.insert("error".to_string(), Value::from(error));
+        payload.insert("model".to_string(), Value::from(model));
+        let _ = self.dispatch("model.request.error", payload, session_id, None);
+    }
 }
 
 /// 工作区根：空路径回落进程工作目录（与 Python `Path.cwd()` 一致）。
@@ -583,3 +697,46 @@ fn looks_like_local_path(package_spec: &str) -> bool {
 
 /// 环境变量名透出给调用方（启动器与打包脚本共用同一份约定）。
 pub const RUNNER_DIR_VARIABLE: &str = RUNNER_DIR_ENV;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn host() -> PluginHost {
+        PluginHost::new(Path::new("."), PluginsConfig::default())
+    }
+
+    #[test]
+    fn context_build_before_falls_back_to_empty_when_disabled() {
+        // fail-open：没有 Manager 时原样返回初始载荷，即空附加上下文。
+        let plugins = host();
+        assert_eq!(
+            plugins.context_build_before(None, None),
+            Some(Value::Array(Vec::new()))
+        );
+        assert_eq!(
+            plugins.context_build_before(Some("session-1"), Some("turn-1")),
+            Some(Value::Array(Vec::new()))
+        );
+    }
+
+    #[test]
+    fn notify_context_hooks_are_noops_when_disabled() {
+        let plugins = host();
+        plugins.context_build_after(3, None, None);
+        plugins.compaction_after_turn(120_000, 100_000, Some("session-1"), Some("turn-1"));
+    }
+
+    #[test]
+    fn model_hooks_fall_back_when_disabled() {
+        let plugins = host();
+        let mut messages = vec![serde_json::json!({"role": "user", "content": "你好"})];
+        // 未启用（无 Manager）时每个模型 Hook 都退化为原样放行。
+        plugins
+            .model_request_before(&mut messages, "gpt-4o", None)
+            .expect("模型请求 Hook 应原样放行");
+        assert_eq!(messages.len(), 1);
+        plugins.model_response_after("gpt-4o", "完成", 0, None);
+        plugins.model_request_error("上游超时", "gpt-4o", None);
+    }
+}

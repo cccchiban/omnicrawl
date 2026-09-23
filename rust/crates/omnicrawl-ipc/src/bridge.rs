@@ -57,6 +57,17 @@ pub mod method {
     pub const TURN_STREAM_ROLLBACK: &str = "turn.stream_rollback";
     pub const TURN_TOKEN_USAGE: &str = "turn.token_usage";
     pub const TURN_FINISHED: &str = "turn.finished";
+    /// 回合收尾触发了上下文压缩时的计量通知（宿主据此分发 `context.compaction.after_turn`）。
+    pub const TURN_CONTEXT_COMPACTION: &str = "turn.context_compaction";
+    /// 一次模型请求成功返回（宿主据此分发 `model.response.after`）。
+    pub const TURN_MODEL_RESPONSE_AFTER: &str = "turn.model_response_after";
+    /// 一次模型请求以协议错误终结（宿主据此分发 `model.request.error`）。
+    pub const TURN_MODEL_REQUEST_ERROR: &str = "turn.model_request_error";
+
+    /// 内核在发出模型请求前请宿主运行 `model.request.before` 插件 Hook。
+    ///
+    /// 只在宿主于 `initialize` 声明 `plugin_model_hooks` 时使用；未声明的宿主永远收不到。
+    pub const MODEL_HOOK: &str = "model.hook";
     pub const TOOL_STARTED: &str = "tool.started";
     pub const TOOL_FINISHED: &str = "tool.finished";
     pub const TOOL_OUTPUT_UPDATE: &str = "tool.output_update";
@@ -140,6 +151,34 @@ pub struct TurnFinishedPayload {
     pub paused: bool,
 }
 
+/// 回合收尾的上下文压缩计量：对应 Python `_trigger_context_compaction_after_turn`
+/// 在 `snapshot.trigger_reached` 时发给插件的载荷。只在真正触发压缩的回合发出。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextCompactionPayload {
+    /// 压缩前测得的回合结束后实际上下文 Token。
+    pub post_turn_context_tokens: i64,
+    /// 触发压缩的阈值 Token。
+    pub trigger_context_tokens: i64,
+    /// 触发压缩的回合 id；缺省为空串。
+    #[serde(default)]
+    pub turn_id: String,
+}
+
+/// 一次模型请求成功返回的通知：对应 Python `model.response.after` 的载荷。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelResponseAfterPayload {
+    pub model: String,
+    pub content: String,
+    pub tool_call_count: usize,
+}
+
+/// 一次模型请求以协议错误终结的通知：对应 Python `model.request.error` 的载荷。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRequestErrorPayload {
+    pub error: String,
+    pub model: String,
+}
+
 /// 内核发给宿主的notifications。
 ///
 /// 每个变体对应 Python 侧 `loop.py` 的一个 `run_stream` 回调（`turn.finished` 对应其返回值），
@@ -172,6 +211,12 @@ pub enum HostEvent {
     TodoUpdate(TodoUpdatePayload),
     /// 回合结束。
     TurnFinished(TurnFinishedPayload),
+    /// 回合收尾触发了上下文压缩（携带计量，宿主据此分发插件 Hook）。
+    ContextCompaction(ContextCompactionPayload),
+    /// 一次模型请求成功返回（宿主据此分发 `model.response.after`）。
+    ModelResponseAfter(ModelResponseAfterPayload),
+    /// 一次模型请求以协议错误终结（宿主据此分发 `model.request.error`）。
+    ModelRequestError(ModelRequestErrorPayload),
 }
 
 impl HostEvent {
@@ -185,6 +230,9 @@ impl HostEvent {
         method::TURN_STREAM_ROLLBACK,
         method::TURN_TOKEN_USAGE,
         method::TURN_FINISHED,
+        method::TURN_CONTEXT_COMPACTION,
+        method::TURN_MODEL_RESPONSE_AFTER,
+        method::TURN_MODEL_REQUEST_ERROR,
         method::TOOL_STARTED,
         method::TOOL_FINISHED,
         method::TOOL_OUTPUT_UPDATE,
@@ -207,6 +255,9 @@ impl HostEvent {
             Self::SubagentEvent(_) => method::SUBAGENT_EVENT,
             Self::TodoUpdate(_) => method::TODO_UPDATE,
             Self::TurnFinished(_) => method::TURN_FINISHED,
+            Self::ContextCompaction(_) => method::TURN_CONTEXT_COMPACTION,
+            Self::ModelResponseAfter(_) => method::TURN_MODEL_RESPONSE_AFTER,
+            Self::ModelRequestError(_) => method::TURN_MODEL_REQUEST_ERROR,
         }
     }
 
@@ -221,6 +272,9 @@ impl HostEvent {
             Self::SubagentEvent(payload) => payload_value(payload),
             Self::TodoUpdate(payload) => payload_value(payload),
             Self::TurnFinished(payload) => payload_value(payload),
+            Self::ContextCompaction(payload) => payload_value(payload),
+            Self::ModelResponseAfter(payload) => payload_value(payload),
+            Self::ModelRequestError(payload) => payload_value(payload),
         }
     }
 
@@ -249,6 +303,9 @@ impl HostEvent {
             method::SUBAGENT_EVENT => Ok(Self::SubagentEvent(from_params(params)?)),
             method::TODO_UPDATE => Ok(Self::TodoUpdate(from_params(params)?)),
             method::TURN_FINISHED => Ok(Self::TurnFinished(from_params(params)?)),
+            method::TURN_CONTEXT_COMPACTION => Ok(Self::ContextCompaction(from_params(params)?)),
+            method::TURN_MODEL_RESPONSE_AFTER => Ok(Self::ModelResponseAfter(from_params(params)?)),
+            method::TURN_MODEL_REQUEST_ERROR => Ok(Self::ModelRequestError(from_params(params)?)),
             other => Err(BridgeError::UnknownMethod(other.to_string())),
         }
     }
@@ -268,6 +325,18 @@ pub struct InitializeParams {
     /// 可选的会话配置：给了就让内核自己持有会话（多轮历史、转录落盘与回合结束后的压缩）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<Box<KernelSessionConfig>>,
+    /// 宿主是否支持插件模型 Hook（内核据此决定是否发 `model.hook` 请求）。
+    ///
+    /// 缺省 false：未声明的宿主（如只实现协议最小集的兼容宿主）永远收不到该请求，
+    /// 内核也就不会因等不到响应而阻住回合。false 时不序列化该字段，保持与旧宿主的
+    /// 帧形状逐字一致。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub plugin_model_hooks: bool,
+}
+
+/// `skip_serializing_if` 辅助：false 时省掉该字段。
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// 内核自己持有会话时需要的配置（与 Python 侧 `.agent_sessions` 同一套布局）。
@@ -727,6 +796,53 @@ impl ModelRequest {
             Some(other) => Err(BridgeError::UnknownMethod(other.to_string())),
             None => Err(BridgeError::NotARequest),
         }
+    }
+}
+
+/// 内核在发出模型请求前，请宿主运行 `model.request.before` 插件 Hook。
+///
+/// 载荷与 Python 同形（`{messages, model}`）；仅当宿主在 `initialize` 声明
+/// `plugin_model_hooks` 时才发出。宿主拒绝时以错误响应回填插件的拒绝文案。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelHookRequest {
+    pub messages: Vec<Value>,
+    pub model: String,
+}
+
+impl ModelHookRequest {
+    pub fn to_frame(&self, id: Id) -> Frame {
+        Frame::request(id, method::MODEL_HOOK, payload_value(self))
+    }
+
+    pub fn from_frame(frame: &Frame) -> Result<Self, BridgeError> {
+        if !frame.is_request() {
+            return Err(BridgeError::NotARequest);
+        }
+        match frame.method() {
+            Some(method::MODEL_HOOK) => {
+                from_params(frame.params.clone().unwrap_or_else(|| json!({})))
+            }
+            Some(other) => Err(BridgeError::UnknownMethod(other.to_string())),
+            None => Err(BridgeError::NotARequest),
+        }
+    }
+}
+
+/// 宿主对 `model.hook` 的响应：Hook 放行后的最终消息集（可被插件改写）。
+///
+/// 插件拒绝时不走这里：宿主以错误响应回填 `HookDecision` 的拒绝文案，内核据此中止本轮。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelHookResult {
+    pub messages: Vec<Value>,
+}
+
+impl ModelHookResult {
+    pub fn to_result(&self) -> Value {
+        payload_value(self)
+    }
+
+    pub fn from_result(result: &Value) -> Result<Self, BridgeError> {
+        from_params(result.clone())
     }
 }
 

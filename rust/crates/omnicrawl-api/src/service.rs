@@ -798,6 +798,40 @@ impl AgentService {
             }
             // 回合收尾由 `submit` 的返回值负责，通知本身不重复成事件。
             HostEvent::TurnFinished(_) => return,
+            // 压缩计量不进 SSE：它只用来在宿主侧分发 `context.compaction.after_turn`。
+            HostEvent::ContextCompaction(payload) => {
+                if let Some(plugins) = self.options.plugins.as_ref() {
+                    plugins.compaction_after_turn(
+                        payload.post_turn_context_tokens,
+                        payload.trigger_context_tokens,
+                        (!session_id.is_empty()).then_some(session_id.as_str()),
+                        (!payload.turn_id.is_empty()).then_some(payload.turn_id.as_str()),
+                    );
+                }
+                return;
+            }
+            // 模型 Hook 的两个触发点也不进 SSE：只在宿主侧分发插件事件。
+            HostEvent::ModelResponseAfter(payload) => {
+                if let Some(plugins) = self.options.plugins.as_ref() {
+                    plugins.model_response_after(
+                        &payload.model,
+                        &payload.content,
+                        payload.tool_call_count,
+                        (!session_id.is_empty()).then_some(session_id.as_str()),
+                    );
+                }
+                return;
+            }
+            HostEvent::ModelRequestError(payload) => {
+                if let Some(plugins) = self.options.plugins.as_ref() {
+                    plugins.model_request_error(
+                        &payload.error,
+                        &payload.model,
+                        (!session_id.is_empty()).then_some(session_id.as_str()),
+                    );
+                }
+                return;
+            }
             // 隐藏推理与工具输出增量都不进 SSE。
             HostEvent::ReasoningDelta(_) | HostEvent::ToolOutputUpdate(_) => return,
         };

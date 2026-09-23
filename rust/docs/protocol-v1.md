@@ -44,7 +44,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 | 方法 | 类型 | params | result |
 | --- | --- | --- | --- |
-| `initialize` | 请求 | `{protocol_version, client?, model?, session?}` | `{protocol_version, session_id}` |
+| `initialize` | 请求 | `{protocol_version, client?, model?, session?, plugin_model_hooks?}` | `{protocol_version, session_id}` |
 | `turn.submit` | 请求 | `{turn_id, user_text}` | `{}`（回合已结束） |
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
 | `turn.undo` | 请求 | `{}` | `{kind, message_count, side_effects_reverted, unrestorable, history}` |
@@ -70,6 +70,10 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 `initialize` 的 `model` 是可选块：**给了它，内核就自己发模型请求**（工具仍由宿主执行），宿主不必再应答
 `model.reply`；不给则维持代答路径，旧宿主不受影响。凭据不进帧——`api_key_env` 只给环境变量名。
+
+`initialize` 的 `plugin_model_hooks`（缺省 false）是宿主对插件模型 Hook 的能力声明：声明后内核
+在每次模型请求前发 `model.hook`（见「内核 → 宿主」请求表），未声明则不发，因此只实现协议最小集
+的兼容宿主不受影响。TUI 与本地 API 都声明。
 
 ```json
 {"model": {"model": "gpt-5.2", "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
@@ -187,6 +191,12 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | --- | --- | --- |
 | `tool.batch` | `{turn_id, step, calls: [ToolCall], workspace_root?}` | `{observations: [AgentLoopObservation]}` |
 | `model.reply` | `{turn_id, messages: [Value]}` | AgentModelReply：`{message, content, tool_calls, reasoning, content_streamed}` |
+| `model.hook` | `{messages: [Value], model}` | `{messages: [Value]}`（插件改写后的消息）；拒绝时回错误响应 |
+
+`model.hook` 只在宿主于 `initialize` 声明 `plugin_model_hooks: true` 时使用：内核在发出模型请求前
+请宿主跑 `model.request.before`（transform + guard）。插件放行时宿主回（可改写的）消息；插件拒绝时
+宿主回错误响应，`error.message` 就是插件的拒绝文案，内核据此中止本轮（与 Python `_plugin_denial_error`
+同口径）。未声明的宿主不会收到该请求，也就不会因等不到响应而阻住回合。
 
 `tool.batch` 是刻意保留的批次边界：宿主必须先完成整批规范化与审批，再按 `calls` 顺序返回**同数量**
 的观察。数量不符时内核按协议错误处理并终止该回合（不变式已在 `omnicrawl-core` 内校验）。
@@ -213,6 +223,9 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.stream_rollback` | `{}` | `on_stream_rollback` |
 | `turn.token_usage` | `{input_tokens, output_tokens, cached_input_tokens}` | `on_token_usage` |
 | `turn.finished` | `{turn_id, final_text, reasoning, model_turns, tool_calls, paused}` | `run_stream` 的返回值 |
+| `turn.context_compaction` | `{post_turn_context_tokens, trigger_context_tokens, turn_id}` | 回合收尾的压缩触发点（`_trigger_context_compaction_after_turn`）；宿主据此分发 `context.compaction.after_turn` |
+| `turn.model_response_after` | `{model, content, tool_call_count}` | 模型请求返回点（`_request_agent_reply` 里 `model.response.after`）；宿主据此分发 `model.response.after` |
+| `turn.model_request_error` | `{error, model}` | 模型请求以 `AgentProtocolError` 终结（`_request_agent_reply` 里 `model.request.error`）；宿主据此分发 `model.request.error` |
 | `tool.started` | `{step, call}` | `on_tool_start` |
 | `tool.finished` | `{call, result}` | `on_tool_result` |
 | `tool.output_update` | `{call, result}` | `on_tool_output_update` |
@@ -295,6 +308,12 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 - **内核发出**（`omnicrawl-llm` 已接线，内核自带 provider runtime）：`turn.delta`、`turn.reasoning_delta`、
   `turn.token_usage`、`turn.status`、`turn.retry_status`、`turn.stream_rollback`、`turn.finished`。给了
   `initialize.model` 后模型请求由内核自己发，增量也由内核转出。
+- **内核自产的收尾事件**：`turn.finished`、`turn.context_compaction`、`turn.model_response_after`、
+  `turn.model_request_error`。`turn.context_compaction` 的触发点在回合收尾的压缩判定
+  （`_trigger_context_compaction_after_turn`）：只有 `trigger_reached` 的回合才发，载荷是压缩前的
+  上下文计量。模型的两条分别对应一次模型请求成功返回与以协议错误终结。宿主收到这些通知后
+  分发同名插件 Hook（`context.compaction.after_turn` / `model.response.after` / `model.request.error`）
+  ——插件运行期在宿主侧，而触发点在 agent runtime（内核侧）。
 - **宿主发出**（宿主执行 `tool.batch` 时自行产生）：`tool.started` / `tool.finished` / `tool.output_update`，
   以及 `todo.update`。同一件事不在协议上出现两份，所以内核不重复转出工具生命周期事件。
 - **两者都可能发出**：`subagent.event`——子代理由宿主执行时宿主发，由内核自持执行（当前实现）时内核发。

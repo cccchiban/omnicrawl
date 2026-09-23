@@ -34,12 +34,13 @@ use omnicrawl_core::{
     LoopError, LoopGuards, ReplySource, SystemClock, ToolBatchHost, ToolCall, ToolResult,
 };
 use omnicrawl_ipc::bridge::{
-    initialize_result, method, unsupported_version_error, BridgeError, Command, HostEvent,
-    InitializeParams, KernelModelConfig, KernelSessionConfig, MessagePayload, ModelRequest,
-    SessionAppendParams, SessionHistoryParams, SessionListParams, SessionRenameParams,
-    SessionResumeParams, SessionSettingsParams, SubagentEventPayload, SubagentQueryParams,
-    SubagentRunParams, TextPayload, TokenUsagePayload, ToolBatch, ToolBatchResult,
-    TurnCancelParams, TurnFinishedPayload, TurnSubmitParams,
+    initialize_result, method, unsupported_version_error, BridgeError, Command,
+    ContextCompactionPayload, HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig,
+    MessagePayload, ModelHookRequest, ModelHookResult, ModelRequest, ModelRequestErrorPayload,
+    ModelResponseAfterPayload, SessionAppendParams, SessionHistoryParams, SessionListParams,
+    SessionRenameParams, SessionResumeParams, SessionSettingsParams, SubagentEventPayload,
+    SubagentQueryParams, SubagentRunParams, TextPayload, TokenUsagePayload, ToolBatch,
+    ToolBatchResult, TurnCancelParams, TurnFinishedPayload, TurnSubmitParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
@@ -144,6 +145,12 @@ enum BackgroundRequest {
     },
     /// 事件外发：后台任务的流式增量与状态提示也要让宿主看见。
     Notify(Box<HostEvent>),
+    /// 子代理的模型请求前让主循环代跑 `model.request.before`（插件运行期在宿主侧）。
+    ModelHook {
+        messages: Vec<Value>,
+        model: String,
+        reply: mpsc::SyncSender<Result<Vec<Value>, String>>,
+    },
 }
 
 struct Conn {
@@ -157,6 +164,8 @@ struct Conn {
     model: Option<KernelModelConfig>,
     /// 宿主交来的会话配置：有它内核自己持有会话（多轮历史、转录落盘与回合结束后的压缩）。
     session: Option<KernelSession>,
+    /// 宿主是否支持插件模型 Hook：声明后才发 `model.hook` 请求（否则不阻住回合）。
+    plugin_model_hooks: bool,
     /// 本回合模型请求的用量累计与最近一次请求消息（压缩判定与前缀复用都要用）。
     usage: Rc<RefCell<TurnUsage>>,
     /// 后台任务借用连接的端口；接收端也在这里，服务方始终是当前正在跑的那条线程。
@@ -318,6 +327,7 @@ impl Conn {
                 if let Some(config) = model_config_of(frame.params.as_ref()) {
                     self.model = Some(*config);
                 }
+                self.plugin_model_hooks = plugin_model_hooks_of(frame.params.as_ref());
                 if let Some(settings) = session_config_of(frame.params.as_ref()) {
                     match KernelSession::open(*settings) {
                         Ok(opened) => self.session = Some(opened),
@@ -417,6 +427,9 @@ struct KernelModelPort {
 
 impl ReplySource for KernelModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
+        // model.request.before：宿主声明支持时才发请求，允许插件改写消息或拒绝本轮。
+        // 必须在记录「最近一次请求消息」之前：压缩前缀复用取的是改写后的消息（与 Python 同序）。
+        self.run_request_hook(messages)?;
         {
             // 摘要请求要逐字复用最近一次主请求：这里记下它真正发出的消息。
             let mut usage = self.usage.borrow_mut();
@@ -458,11 +471,13 @@ impl ReplySource for KernelModelPort {
                             self.notify_retry(format!("正在重试(第{attempt}次)"));
                             continue;
                         }
-                        return Err(LoopError::ReplySource(format!(
+                        return Err(self.model_error(format!(
                             "Agent 连续 {limit} 次返回空响应，已停止本轮请求。"
                         )));
                     }
-                    return to_agent_reply(reply);
+                    let reply = to_agent_reply(reply)?;
+                    self.notify_model_response(&reply);
+                    return Ok(reply);
                 }
                 Err(error) => {
                     if error.kind == RuntimeErrorKind::Cancelled {
@@ -481,12 +496,12 @@ impl ReplySource for KernelModelPort {
                         continue;
                     }
                     if error.retryable {
-                        return Err(LoopError::ReplySource(format!(
+                        return Err(self.model_error(format!(
                             "上游错误已达到本回合自动重试上限，已停止本次请求。{}",
                             error.message
                         )));
                     }
-                    return Err(LoopError::ReplySource(error.message));
+                    return Err(self.model_error(error.message));
                 }
             }
         }
@@ -505,6 +520,71 @@ impl KernelModelPort {
         self.conn
             .borrow_mut()
             .notify(HostEvent::RetryStatus(MessagePayload { message }));
+    }
+
+    /// `model.request.before`：宿主声明支持时才发请求；插件拒绝时中止本轮。
+    ///
+    /// 拒绝文案由宿主的 `HookDecision` 生成并放在错误响应里，这里原样上抛（与 Python
+    /// `_plugin_denial_error("model.request.before")` 同口径）。
+    fn run_request_hook(&self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
+        if !self.conn.borrow().plugin_model_hooks {
+            return Ok(());
+        }
+        let request = ModelHookRequest {
+            messages: messages.clone(),
+            model: self.config.model.clone(),
+        };
+        let params =
+            serde_json::to_value(&request).expect("model.hook 负载是 Value 字段，必须可序列化");
+        let value = self
+            .conn
+            .borrow_mut()
+            .request(method::MODEL_HOOK, params)
+            .map_err(|failure| match failure {
+                PortFailure::Cancelled(message) => LoopError::Cancelled(message),
+                PortFailure::Shutdown => {
+                    LoopError::Cancelled("收到 shutdown，回合中止。".to_string())
+                }
+                PortFailure::Remote(error) => LoopError::ReplySource(error.message),
+                PortFailure::Disconnected => LoopError::ReplySource("宿主连接已关闭。".to_string()),
+                PortFailure::Io(detail) => LoopError::ReplySource(format!("写请求失败：{detail}")),
+            })?;
+        match ModelHookResult::from_result(&value) {
+            Ok(result) => {
+                *messages = result.messages;
+                Ok(())
+            }
+            Err(error) => Err(LoopError::ReplySource(format!(
+                "宿主返回的 model.hook 结果无法解析：{error}"
+            ))),
+        }
+    }
+
+    /// `model.request.error`：一次模型请求以协议错误终结时的通知（取消不算）。
+    fn notify_model_error(&self, message: &str) {
+        self.conn
+            .borrow_mut()
+            .notify(HostEvent::ModelRequestError(ModelRequestErrorPayload {
+                error: message.to_string(),
+                model: self.config.model.clone(),
+            }));
+    }
+
+    /// 记一条错误通知并把它原样折成循环错误。
+    fn model_error(&self, message: String) -> LoopError {
+        self.notify_model_error(&message);
+        LoopError::ReplySource(message)
+    }
+
+    /// `model.response.after`：一次模型请求成功返回后的观察通知。
+    fn notify_model_response(&self, reply: &AgentModelReply) {
+        self.conn
+            .borrow_mut()
+            .notify(HostEvent::ModelResponseAfter(ModelResponseAfterPayload {
+                model: self.config.model.clone(),
+                content: reply.content.clone(),
+                tool_call_count: reply.tool_calls.len(),
+            }));
     }
 }
 
@@ -726,6 +806,14 @@ fn session_config_of(params: Option<&Value>) -> Option<Box<KernelSessionConfig>>
     serde_json::from_value::<KernelSessionConfig>(value.clone())
         .ok()
         .map(Box::new)
+}
+
+/// 从 `initialize` 参数里取「宿主支持插件模型 Hook」的能力声明；缺省 false。
+fn plugin_model_hooks_of(params: Option<&Value>) -> bool {
+    params
+        .and_then(|value| value.get("plugin_model_hooks"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// 从 `initialize` 参数里取模型配置；给了就给，缺字段或形状不对按「没给」处理。
@@ -2031,7 +2119,14 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
             let session = connection.session.take();
             drop(connection);
             if let Some(mut session) = session {
-                run_session_tail(conn, &mut session, &run_guard, &messages, &final_text);
+                run_session_tail(
+                    conn,
+                    &mut session,
+                    &run_guard,
+                    &messages,
+                    &final_text,
+                    &turn_id,
+                );
                 conn.borrow_mut().session = Some(session);
                 // 快照事件跟在会话事件之后：`/undo` 的副作用回滚依赖它还原工作区。
                 if let Some(session) = conn.borrow().session.as_ref() {
@@ -2120,6 +2215,7 @@ fn run_session_tail(
     run_guard: &TurnRunGuard,
     working_messages: &[Value],
     final_text: &str,
+    turn_id: &str,
 ) {
     if let Err(detail) = session.append("user_message", run_guard.user_message_payload()) {
         eprintln!("[kernel] 会话写入用户消息失败：{detail}");
@@ -2185,6 +2281,31 @@ fn run_session_tail(
                     "[kernel] 模型摘要未通过校验，已跳过本回合压缩：{}",
                     report.diagnostic
                 );
+            }
+            // 触发压缩的回合把计量发给宿主：宿主据此分发 `context.compaction.after_turn`
+            // 插件 Hook（Python 在同一位置由 agent runtime 内部派发）。未触发则不发。
+            if report
+                .measurement_payload
+                .get("trigger_reached")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let post_turn_context_tokens = report
+                    .measurement_payload
+                    .get("post_turn_context_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                let trigger_context_tokens = report
+                    .measurement_payload
+                    .get("trigger_context_tokens")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                conn.borrow_mut()
+                    .notify(HostEvent::ContextCompaction(ContextCompactionPayload {
+                        post_turn_context_tokens,
+                        trigger_context_tokens,
+                        turn_id: turn_id.to_string(),
+                    }));
             }
             if let Some(notice) = report.notice {
                 conn.borrow_mut()
@@ -2400,11 +2521,13 @@ fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             protocol_version,
             model,
             session,
+            plugin_model_hooks,
             ..
         }) => {
             if let Some(config) = model {
                 conn.borrow_mut().model = Some(*config);
             }
+            conn.borrow_mut().plugin_model_hooks = plugin_model_hooks;
             if let Some(settings) = session {
                 match KernelSession::open(*settings) {
                     Ok(opened) => {
@@ -3093,6 +3216,7 @@ pub fn run_stdio() -> Result<(), String> {
         exit_requested: false,
         model: None,
         session: None,
+        plugin_model_hooks: false,
         usage: Rc::new(RefCell::new(TurnUsage::default())),
         background: background_sender,
         background_receiver,
@@ -3137,10 +3261,47 @@ fn drain_background(conn: &Rc<RefCell<Conn>>) {
     }
 }
 
+/// 主循环代子代理跑 `model.request.before`：宿主声明支持时才发请求。
+///
+/// 与主端口同口径：宿主未声明能力（或插件未启用）时原样放行；拒绝时把宿主给的文案带回去，
+/// 由子代理端口折算成中止本轮的错误。
+fn serve_model_hook(
+    conn: &Rc<RefCell<Conn>>,
+    messages: Vec<Value>,
+    model: String,
+) -> Result<Vec<Value>, String> {
+    if !conn.borrow().plugin_model_hooks {
+        return Ok(messages);
+    }
+    let request = ModelHookRequest { messages, model };
+    let params =
+        serde_json::to_value(&request).expect("model.hook 负载是 Value 字段，必须可序列化");
+    let value = conn
+        .borrow_mut()
+        .request(method::MODEL_HOOK, params)
+        .map_err(|failure| match failure {
+            PortFailure::Cancelled(message) => message,
+            PortFailure::Shutdown => "收到 shutdown，回合中止。".to_string(),
+            PortFailure::Remote(error) => error.message,
+            PortFailure::Disconnected => "宿主连接已关闭。".to_string(),
+            PortFailure::Io(detail) => format!("写请求失败：{detail}"),
+        })?;
+    ModelHookResult::from_result(&value)
+        .map(|result| result.messages)
+        .map_err(|error| format!("宿主返回的 model.hook 结果无法解析：{error}"))
+}
+
 /// 主循环代后台任务借用一次连接：工具批次转给宿主，事件直接外发。
 fn serve_background(conn: &Rc<RefCell<Conn>>, request: BackgroundRequest) {
     match request {
         BackgroundRequest::Notify(event) => conn.borrow_mut().notify(*event),
+        BackgroundRequest::ModelHook {
+            messages,
+            model,
+            reply,
+        } => {
+            let _ = reply.send(serve_model_hook(conn, messages, model));
+        }
         BackgroundRequest::ToolBatch {
             turn_id,
             calls,
@@ -3217,6 +3378,8 @@ struct BackgroundModelPort {
 
 impl ReplySource for BackgroundModelPort {
     fn request_reply(&mut self, messages: &mut Vec<Value>) -> Result<AgentModelReply, LoopError> {
+        // 子代理的模型请求同样先过 `model.request.before`（由主循环代跑）。
+        self.run_request_hook(messages)?;
         let runtime = build_model_runtime(&self.config)?;
         let options = parse_options(&self.config)?;
         let tools = parse_tools(&self.config);
@@ -3241,14 +3404,72 @@ impl ReplySource for BackgroundModelPort {
             cancel: self.cancel.clone(),
         };
         match runtime.run_turn(&input, &mut sink) {
-            Ok(reply) => to_agent_reply(reply),
+            Ok(reply) => {
+                let reply = to_agent_reply(reply)?;
+                self.notify_model_response(&reply);
+                Ok(reply)
+            }
             Err(error) => {
                 if error.kind == RuntimeErrorKind::Cancelled {
                     return Err(LoopError::Cancelled(error.message));
                 }
+                self.notify_model_error(&error.message);
                 Err(LoopError::ReplySource(error.message))
             }
         }
+    }
+}
+
+impl BackgroundModelPort {
+    /// 请主循环代跑 `model.request.before`，并把（可能被改写的）消息取回。
+    fn run_request_hook(&self, messages: &mut Vec<Value>) -> Result<(), LoopError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(BackgroundRequest::ModelHook {
+                messages: messages.clone(),
+                model: self.config.model.clone(),
+                reply,
+            })
+            .map_err(|_| {
+                LoopError::ReplySource("内核主循环已停止，子代理无法继续。".to_string())
+            })?;
+        match receiver.recv() {
+            Ok(Ok(rewritten)) => {
+                *messages = rewritten;
+                Ok(())
+            }
+            Ok(Err(detail)) => {
+                if self.cancel.is_set() {
+                    Err(LoopError::Cancelled(detail))
+                } else {
+                    Err(LoopError::ReplySource(detail))
+                }
+            }
+            Err(_) => Err(LoopError::ReplySource(
+                "子代理的模型 Hook 没有拿到结果。".to_string(),
+            )),
+        }
+    }
+
+    /// `model.request.error`：一次子代理模型请求以错误终结时的通知。
+    fn notify_model_error(&self, message: &str) {
+        let _ = self.sender.send(BackgroundRequest::Notify(Box::new(
+            HostEvent::ModelRequestError(ModelRequestErrorPayload {
+                error: message.to_string(),
+                model: self.config.model.clone(),
+            }),
+        )));
+    }
+
+    /// `model.response.after`：一次子代理模型请求成功返回后的观察通知。
+    fn notify_model_response(&self, reply: &AgentModelReply) {
+        let _ = self.sender.send(BackgroundRequest::Notify(Box::new(
+            HostEvent::ModelResponseAfter(ModelResponseAfterPayload {
+                model: self.config.model.clone(),
+                content: reply.content.clone(),
+                tool_call_count: reply.tool_calls.len(),
+            }),
+        )));
     }
 }
 

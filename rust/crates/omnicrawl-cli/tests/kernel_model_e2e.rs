@@ -160,10 +160,15 @@ impl Kernel {
     }
 
     fn initialize(&mut self, model: Option<Value>) {
+        self.initialize_with(model, false);
+    }
+
+    fn initialize_with(&mut self, model: Option<Value>, plugin_model_hooks: bool) {
         let mut params = json!({"protocol_version": "1.0", "client": {"name": "e2e"}});
         if let Some(model) = model {
             params["model"] = model;
         }
+        params["plugin_model_hooks"] = json!(plugin_model_hooks);
         self.send(json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params,
         }));
@@ -267,6 +272,59 @@ fn kernel_calls_the_model_itself_when_configured() {
     // 应答帧：turn.submit 的响应在 turn.finished 之后到达，这里只确认它存在。
     let header = kernel.next_frame();
     assert_eq!(header["id"], 2);
+}
+
+#[test]
+fn kernel_runs_model_request_hook_when_host_declares_capability() {
+    let server = StubServer::spawn(TEXT_STREAM);
+    let mut kernel = Kernel::spawn();
+    kernel.initialize_with(Some(model_config(&server)), true);
+    kernel.send(json!({
+        "jsonrpc": "2.0", "id": 2, "method": "turn.submit",
+        "params": {"turn_id": "turn-1", "user_text": "你好"},
+    }));
+
+    let mut hook_seen = false;
+    loop {
+        let frame = kernel.next_frame();
+        let method = frame["method"].as_str().unwrap_or_default().to_string();
+        if method == "model.hook" {
+            hook_seen = true;
+            assert_eq!(frame["params"]["model"], "e2e-model");
+            // 改写第一条（唯一的用户）消息，验证改写真的进了模型请求。
+            let mut messages = frame["params"]["messages"].clone();
+            messages[0]["content"] = json!("你好（插件改写）");
+            let id = frame["id"].clone();
+            kernel.send(json!({"jsonrpc": "2.0", "id": id, "result": {"messages": messages}}));
+            continue;
+        }
+        if method == "turn.finished" {
+            break;
+        }
+    }
+    assert!(hook_seen, "声明能力后应在模型请求前收到 model.hook");
+
+    let bodies = server.bodies();
+    assert_eq!(bodies.len(), 1, "一次回合只应发一次请求");
+    assert_eq!(
+        bodies[0]["messages"][1]["content"], "你好（插件改写）",
+        "插件改写的消息应进模型请求"
+    );
+}
+
+#[test]
+fn kernel_skips_model_request_hook_without_capability() {
+    let server = StubServer::spawn(TEXT_STREAM);
+    let mut kernel = Kernel::spawn();
+    // 不声明 plugin_model_hooks：内核不发 model.hook，回合照常完成。
+    kernel.initialize(Some(model_config(&server)));
+    let frames = kernel.run_turn(None);
+    let seen = methods(&frames);
+    assert!(
+        !seen.iter().any(|method| method == "model.hook"),
+        "未声明能力时不应发 model.hook：{seen:?}"
+    );
+    assert_eq!(server.bodies().len(), 1);
 }
 
 #[test]

@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use omnicrawl_core::{AgentLoopObservation, ToolCall, ToolResult};
 use omnicrawl_ipc::bridge::{
-    Command, HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig,
-    SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload, ToolBatch, ToolEventPayload,
-    ToolStartedPayload,
+    Command, HostEvent, InitializeParams, KernelModelConfig, KernelSessionConfig, ModelHookRequest,
+    ModelHookResult, SessionSettingsParams, SubagentQueryParams, TodoUpdatePayload, ToolBatch,
+    ToolEventPayload, ToolStartedPayload,
 };
 use omnicrawl_ipc::{
     error_code, Frame, Id, ToolBatchResult, TurnCancelParams, TurnSubmitParams, PROTOCOL_VERSION,
@@ -190,6 +190,8 @@ impl TurnRunner {
             }),
             model: Some(Box::new(model)),
             session: self.options.session.clone().map(Box::new),
+            // 有插件运行期就声明能力：内核才会在模型请求前发 `model.hook`。
+            plugin_model_hooks: self.options.plugins.is_some(),
         };
         let id = self.kernel.next_id();
         self.kernel
@@ -519,12 +521,61 @@ impl TurnRunner {
                     }
                 }
             }
+            Some(method) if method == omnicrawl_ipc::bridge::method::MODEL_HOOK => {
+                match ModelHookRequest::from_frame(&frame) {
+                    Ok(request) => match self.run_model_hook(request) {
+                        Ok(result) => {
+                            if let Err(error) = self.kernel.respond(&id, result.to_result()) {
+                                eprintln!("[host] 回 model.hook 失败：{error}");
+                            }
+                        }
+                        Err(message) => {
+                            let _ = self.kernel.respond_error(
+                                &id,
+                                error_code::INVALID_REQUEST,
+                                &message,
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        let _ = self.kernel.respond_error(
+                            &id,
+                            error_code::INVALID_PARAMS,
+                            &format!("model.hook 负载不符：{error}"),
+                        );
+                    }
+                }
+            }
             // 内核自带 provider runtime，`model.reply` 代答路径不再需要。
             Some(method) => {
                 let _ = self.kernel.respond_unsupported(&id, method);
             }
             None => {}
         }
+    }
+
+    /// `model.request.before`：插件可改写消息；拒绝时以错误响应回填拒绝文案。
+    ///
+    /// 无插件运行期时原样放行（不会走到这里：未声明能力时内核不发该请求，
+    /// 这里只是把两条路径都收在一个地方，避免以后能力判定漂移）。
+    fn run_model_hook(&mut self, request: ModelHookRequest) -> Result<ModelHookResult, String> {
+        let ModelHookRequest {
+            mut messages,
+            model,
+        } = request;
+        let Some(plugins) = self.options.plugins.clone() else {
+            return Ok(ModelHookResult { messages });
+        };
+        let session_id = self
+            .options
+            .session
+            .as_ref()
+            .map(|session| session.session_id.clone())
+            .filter(|id| !id.is_empty());
+        plugins
+            .model_request_before(&mut messages, &model, session_id.as_deref())
+            .map_err(|error| error.message().to_string())?;
+        Ok(ModelHookResult { messages })
     }
 
     /// 跑完一整批工具：先把整批定调（自持工具就地办、敏感工具逐个问），再并发执行，最后回观察。

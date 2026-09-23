@@ -8,6 +8,18 @@ use serde_json::Value;
 
 const FIXTURE: &str = include_str!("fixtures/host_bridge.json");
 
+/// 内核自产的通知：不对应 `run_stream` 的回调。
+///
+/// `turn.finished` 对应 `run_stream` 的返回值；其余三个由 agent runtime 内部的触发点
+/// （压缩计量、模型请求前后）产生，Python 侧不经宿主回调下发，而在 Rust 里由宿主
+/// 收到通知后分发同名插件 Hook。
+const KERNEL_ORIGIN_EVENTS: &[&str] = &[
+    method::TURN_FINISHED,
+    method::TURN_CONTEXT_COMPACTION,
+    method::TURN_MODEL_RESPONSE_AFTER,
+    method::TURN_MODEL_REQUEST_ERROR,
+];
+
 /// Python 回调名 → 协议 v1 方法名。
 ///
 /// `cancel_check` 是宿主 → 内核的通知；`turn.finished` 不在表里，因为它对应
@@ -62,8 +74,8 @@ fn mapping_uses_only_declared_methods() {
     }
     let mapped: Vec<&str> = CALLBACK_METHODS.iter().map(|(_, m)| *m).collect();
     for declared in HostEvent::METHODS {
-        if *declared == method::TURN_FINISHED {
-            // 由 run_stream 的返回值产生，不加回调；由 finished_event_... 测试覆盖。
+        if KERNEL_ORIGIN_EVENTS.contains(declared) {
+            // 由回合收尾直接产生，不加回调；由下面两个内核自产事件测试覆盖。
             continue;
         }
         assert!(
@@ -81,10 +93,27 @@ fn finished_event_comes_from_the_turn_result_not_a_callback() {
         "turn.finished 对应 run_stream 的返回值，不应绑定回调"
     );
     assert!(HostEvent::METHODS.contains(&method::TURN_FINISHED));
+    // `cancel_check` 映射到宿主命令 `turn.cancel`，不是内核→宿主事件，要先排除。
+    let callback_events = CALLBACK_METHODS
+        .iter()
+        .filter(|(_, mapped)| *mapped != method::TURN_CANCEL)
+        .count();
     assert_eq!(
-        CALLBACK_METHODS.len(),
+        callback_events + KERNEL_ORIGIN_EVENTS.len(),
         HostEvent::METHODS.len(),
-        "回调数应比事件数少一（少的是 turn.finished）"
+        "事件数应等于（非 cancel 的回调数 + 内核自产事件数）"
+    );
+}
+
+#[test]
+fn context_compaction_is_a_kernel_origin_event() {
+    // 压缩计量由内核回合收尾发出，宿主收到后分发 `context.compaction.after_turn`。
+    assert!(HostEvent::METHODS.contains(&method::TURN_CONTEXT_COMPACTION));
+    assert!(
+        !CALLBACK_METHODS
+            .iter()
+            .any(|(_, mapped)| *mapped == method::TURN_CONTEXT_COMPACTION),
+        "turn.context_compaction 不对应 run_stream 回调"
     );
 }
 
@@ -92,7 +121,7 @@ fn finished_event_comes_from_the_turn_result_not_a_callback() {
 fn method_spaces_do_not_overlap() {
     // 需要宿主响应的请求、单向通知、宿主命令三者方法名不得重叠，
     // 否则两侧会把同一条帧理解成不同方向的消息。
-    for request in [method::TOOL_BATCH, method::MODEL_REPLY] {
+    for request in [method::TOOL_BATCH, method::MODEL_REPLY, method::MODEL_HOOK] {
         assert!(
             !HostEvent::METHODS.contains(&request),
             "{request} 需要宿主响应，不能同时是单向通知"
