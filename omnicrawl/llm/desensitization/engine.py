@@ -626,28 +626,19 @@ def _replace_assignment(match: re.Match, ctx: MaskContext) -> str:
     if not ctx.matcher.is_sensitive(match.group(2)):
         return match.group(0)
     raw_value = match.group(4)
-<<<<<<< ours
-<<<<<<< ours
     body = _assignment_value_body(raw_value)
     if body is None:
         return match.group(0)
     body_start, body_end = body
-    placeholder = ctx.placeholder_for(raw_value[body_start:body_end])
+    start, end = match.span(4)
+    # 区间按阶段输入文本（`match.string`）记录；被跳过的值由 `placeholder_at` 返回 None。
+    placeholder = ctx.placeholder_at(match.string, start + body_start, start + body_end)
     if placeholder is None:
-=======
-=======
->>>>>>> theirs
-    masked = _mask_assignment_value(raw_value, ctx, text=match.string, start=match.start(4))
-    if masked == raw_value:
->>>>>>> theirs
         return match.group(0)
     masked_value = raw_value[:body_start] + placeholder + raw_value[body_end:]
-    start, end = match.span(4)
     return match.string[match.start() : start] + masked_value + match.string[end : match.end()]
 
 
-<<<<<<< ours
-<<<<<<< ours
 def _assignment_value_body(raw_value: str) -> tuple[int, int] | None:
     """定位赋值右侧的值本体区间（相对 ``raw_value``）；形态不明确时返回 None。
 
@@ -682,31 +673,6 @@ def _inline_comment_start(text: str) -> int:
         if character == "#" and (index == 0 or text[index - 1].isspace()):
             return len(text[:index].rstrip())
     return len(text)
-=======
-=======
->>>>>>> theirs
-def _mask_assignment_value(
-    raw_value: str,
-    ctx: MaskContext,
-    *,
-    text: str,
-    start: int,
-) -> str:
-    """处理赋值右侧值区间：保留引号与行尾空白，只替换值本体。"""
-
-    stripped = raw_value.rstrip()
-    trailing = raw_value[len(stripped) :]
-    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in "\"'":
-        inner = stripped[1:-1]
-        placeholder = ctx.placeholder_at(text, start + 1, start + len(stripped) - 1, value=inner)
-        if placeholder is None:
-            return raw_value
-        return f"{stripped[0]}{placeholder}{stripped[-1]}{trailing}"
-    placeholder = ctx.placeholder_at(text, start, start + len(stripped), value=stripped)
-    if placeholder is None:
-        return raw_value
-    return f"{placeholder}{trailing}"
->>>>>>> theirs
 
 
 def _replace_json_pair(match: re.Match, ctx: MaskContext) -> str:

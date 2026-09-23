@@ -103,15 +103,8 @@ class DesensitizationRuntime:
     def close(self) -> None:
         """关闭：丢弃全部未注销序号（不落盘、不恢复，§7.3），再关闭内层运行时。"""
 
-<<<<<<< ours
-<<<<<<< ours
         self._memo.clear()
-=======
         self._plan_cache.clear()
->>>>>>> theirs
-=======
-        self._plan_cache.clear()
->>>>>>> theirs
         self._registry.drop_all()
         self._inner.close()
 
@@ -142,15 +135,8 @@ class DesensitizationRuntime:
                     self._config,
                     self._rules,
                     self._ner_layer,
-<<<<<<< ours
-<<<<<<< ours
                     self._memo,
-=======
                     plan_cache=self._plan_cache,
->>>>>>> theirs
-=======
-                    plan_cache=self._plan_cache,
->>>>>>> theirs
                 )
                 cycle.masked_request = masked_request
         except Exception as exc:
@@ -261,15 +247,8 @@ def _mask_request(
     config: DesensitizationConfig,
     rules: tuple[PatternRule, ...] = (),
     ner_layer: NerLayer | None = None,
-<<<<<<< ours
-<<<<<<< ours
     memo: "_MessageMaskMemo | None" = None,
-=======
     plan_cache: MaskPlanCache | None = None,
->>>>>>> theirs
-=======
-    plan_cache: MaskPlanCache | None = None,
->>>>>>> theirs
 ) -> ModelTurnRequest:
     context = MaskContext(
         matcher=matcher,
@@ -283,12 +262,9 @@ def _mask_request(
         pattern_rules=rules,
         ner_layer=ner_layer,
         plan_cache=plan_cache,
-<<<<<<< ours
     )
     messages = tuple(
         _mask_message_cached(message, context, memo) for message in request.messages
-=======
->>>>>>> theirs
     )
     # 稳定序号复用计数（只到计数粒度，§10.2）：同一值跨请求复用同一序号即前缀缓存可命中。
     stats.sequence_reuses += cycle.stable_reuses
