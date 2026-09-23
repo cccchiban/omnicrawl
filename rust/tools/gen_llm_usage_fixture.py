@@ -17,6 +17,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = ROOT / "rust/crates/omnicrawl-llm/tests/fixtures/openai_chat_usage_parity.json"
+# 数值边界单独成组：钉住的是「负值不归零」这一条，与字段名/来源矩阵分开维护。
+BOUNDARY_FIXTURE_PATH = (
+    ROOT / "rust/crates/omnicrawl-llm/tests/fixtures/openai_chat_usage_boundary_parity.json"
+)
 
 # 必须加载仓库源码：已安装的 omnicrawl 在 site-packages，会对照到另一份实现。
 sys.path.insert(0, str(ROOT))
@@ -115,6 +119,22 @@ USAGE_CASES = [
     {"usage": {"prompt_tokens": None, "completion_tokens": 2}},
 ]
 
+# 数值边界：Python 的 `TokenUsage` 是普通 `int`，负值原样保留（不归零）；是否 clamp
+# 由消费方决定（HUD 展示 `max(0, ...)`、压缩累加器同样 clamp）。
+USAGE_BOUNDARY_CASES = [
+    {"usage": {"prompt_tokens": -5, "completion_tokens": 2}},
+    {"usage": {"prompt_tokens": 10, "completion_tokens": -3}},
+    {"usage": {"prompt_tokens": 7, "completion_tokens": 1, "cached_tokens": -2}},
+    {"usage": {"prompt_tokens": 1, "completion_tokens": 2, "reasoning_tokens": -9}},
+    {
+        "usage": {
+            "prompt_cache_hit_tokens": -4,
+            "prompt_cache_miss_tokens": -6,
+            "completion_tokens": 2,
+        }
+    },
+]
+
 
 def usage_to_json(usage) -> dict | None:
     if usage is None:
@@ -127,21 +147,25 @@ def usage_to_json(usage) -> dict | None:
     }
 
 
-def main() -> None:
+def write_fixture(path: Path, cases) -> int:
     fixture = {
         "source": "omnicrawl/llm/usage.py",
         "usage": [
             {"payload": payload, "expected": usage_to_json(U.usage_from_openai_payload(payload))}
-            for payload in USAGE_CASES
+            for payload in cases
         ],
     }
-    FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    FIXTURE_PATH.write_text(
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(fixture, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    print(
-        f"已写入 {FIXTURE_PATH.relative_to(ROOT)}：用例 {len(fixture['usage'])}"
-    )
+    print(f"已写入 {path.relative_to(ROOT)}：用例 {len(fixture['usage'])}")
+    return len(fixture["usage"])
+
+
+def main() -> None:
+    write_fixture(FIXTURE_PATH, USAGE_CASES)
+    write_fixture(BOUNDARY_FIXTURE_PATH, USAGE_BOUNDARY_CASES)
 
 
 if __name__ == "__main__":

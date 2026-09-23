@@ -34,6 +34,9 @@ const LOCK_TIMEOUT_SECONDS: f64 = 5.0;
 /// 锁的重试间隔。
 const LOCK_POLL_SECONDS: f64 = 0.02;
 
+/// 孤儿运行收敛时的错误文案（对应 Python `reconcile_orphan_runs`）。
+pub const ORPHAN_RUN_ERROR: &str = "拥有该生成任务的 API worker 已退出。";
+
 /// 决策种类：取消 / 审批 / 提问（对应 Python `DECISION_*`）。
 /// `target_id` 为对应的 `confirmation_id` 或 `question_id`，取消用空串。
 pub const DECISION_CANCEL: &str = "cancel";
@@ -114,11 +117,24 @@ impl SharedRunStore {
     // ---- 运行记录 ---------------------------------------------------------
 
     /// 受理一个新运行；已有活动运行或存储关闭时拒绝。
+    ///
+    /// 所有者 PID 记录为本进程：worker 崩溃后由 [`Self::reconcile_orphan_runs`] 收敛。
     pub fn create(
         &self,
         run_id: &str,
         message: &str,
         session_id: &str,
+    ) -> Result<RunRecord, RunStoreError> {
+        self.create_with_owner_pid(run_id, message, session_id, std::process::id() as i64)
+    }
+
+    /// 指定所有者 PID 的受理入口（测试与跨进程收敛用）。
+    pub fn create_with_owner_pid(
+        &self,
+        run_id: &str,
+        message: &str,
+        session_id: &str,
+        owner_pid: i64,
     ) -> Result<RunRecord, RunStoreError> {
         let _guard = self.acquire()?;
         let mut document = self.read_locked()?;
@@ -130,6 +146,7 @@ impl SharedRunStore {
             run_id: run_id.to_string(),
             message: message.to_string(),
             session_id: session_id.to_string(),
+            owner_pid,
             status: RunStatus::Pending.as_str().to_string(),
             created_at: now,
             updated_at: now,
@@ -156,6 +173,37 @@ impl SharedRunStore {
         let _guard = self.acquire()?;
         let document = self.read_locked()?;
         find_run(&document, run_id)?.to_record()
+    }
+
+    /// 把所有者进程已消失的活动运行标记为失败，避免客户端无限等待。
+    ///
+    /// worker 崩溃后它的内存运行状态随之消失，若不收敛，SSE 客户端会一直挂在
+    /// `running` 上轮询。返回被收敛的运行数量（对应 Python `reconcile_orphan_runs`）。
+    /// 没有孤儿时不写盘。
+    pub fn reconcile_orphan_runs(
+        &self,
+        pid_alive: impl Fn(i64) -> bool,
+    ) -> Result<usize, RunStoreError> {
+        let _guard = self.acquire()?;
+        let mut document = self.read_locked()?;
+        let now = now_seconds();
+        let mut reconciled = 0usize;
+        for run in document.runs.iter_mut() {
+            let active = RunStatus::parse(&run.status)
+                .map(|status| status.is_active())
+                .unwrap_or(false);
+            if !active || pid_alive(run.owner_pid) {
+                continue;
+            }
+            run.status = RunStatus::Failed.as_str().to_string();
+            run.error = ORPHAN_RUN_ERROR.to_string();
+            run.updated_at = now;
+            reconciled += 1;
+        }
+        if reconciled > 0 {
+            self.write_locked(&document)?;
+        }
+        Ok(reconciled)
     }
 
     /// 最近更新的运行记录（跨进程取 `updated_at` 最大者）。
@@ -745,6 +793,9 @@ struct StoredRun {
     #[serde(default)]
     session_id: String,
     status: String,
+    /// 所有者进程 PID；崩溃后用于收敛孤儿运行。旧快照缺字段时按 0 处理（视为孤儿）。
+    #[serde(default)]
+    owner_pid: i64,
     #[serde(default)]
     created_at: f64,
     #[serde(default)]
@@ -1082,5 +1133,64 @@ mod tests {
         );
         assert!(store.take_decisions("r1").expect("取走").is_empty());
         assert_eq!(store.task_source("t1").expect("查询"), None);
+    }
+
+    #[test]
+    fn create_records_the_owner_pid() {
+        let store = store("owner-pid");
+        let record = store.create("r1", "你好", "s1").expect("受理");
+        assert_eq!(record.status, RunStatus::Pending);
+        // 快照里记下本进程 PID：别人的收敛不会误杀活着的运行。
+        let raw = std::fs::read_to_string(store.path()).expect("读取快照");
+        let document: StoreDocument = serde_json::from_str(&raw).expect("解析快照");
+        assert_eq!(document.runs[0].owner_pid, std::process::id() as i64);
+    }
+
+    #[test]
+    fn reconcile_marks_runs_whose_owner_process_is_gone() {
+        let store = store("reconcile");
+        store
+            .create_with_owner_pid("alive", "活着", "s1", 4242)
+            .expect("受理");
+
+        // 所有者仍在：不动。
+        assert_eq!(
+            store
+                .reconcile_orphan_runs(|pid| pid == 4242)
+                .expect("收敛"),
+            0
+        );
+        assert_eq!(store.get("alive").expect("读取").status, RunStatus::Pending);
+
+        // 所有者消失：标记为失败并保留可读原因，让客户端不再空等。
+        assert_eq!(store.reconcile_orphan_runs(|_| false).expect("收敛"), 1);
+        let record = store.get("alive").expect("读取");
+        assert_eq!(record.status, RunStatus::Failed);
+        assert_eq!(record.error, ORPHAN_RUN_ERROR);
+        // 收敛后活动名额让出，可以受理新运行。
+        store.create("next", "再来", "s1").expect("受理新运行");
+    }
+
+    #[test]
+    fn reconcile_ignores_terminal_runs_and_missing_owner() {
+        let store = store("reconcile-terminal");
+        store
+            .create_with_owner_pid("done", "已完成", "s1", 4242)
+            .expect("受理");
+        store
+            .finish("done", RunStatus::Completed, "好的", "")
+            .expect("收尾");
+        // 终态不受影响，即便所有者已消失。
+        assert_eq!(store.reconcile_orphan_runs(|_| false).expect("收敛"), 0);
+        assert_eq!(
+            store.get("done").expect("读取").status,
+            RunStatus::Completed
+        );
+        // 旧快照缺 owner_pid 时按 0 处理；`pid_is_running(0)` 为假，因此会被收敛。
+        store
+            .create_with_owner_pid("legacy", "旧记录", "s1", 0)
+            .expect("受理");
+        assert_eq!(store.reconcile_orphan_runs(|pid| pid > 0).expect("收敛"), 1);
+        assert_eq!(store.get("legacy").expect("读取").status, RunStatus::Failed);
     }
 }

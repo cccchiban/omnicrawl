@@ -309,10 +309,11 @@ impl TurnCallbacks for HostEventCallbacks<'_> {
     }
 
     fn on_token_usage(&mut self, input_tokens: i64, output_tokens: i64, cached_input_tokens: i64) {
+        // 负值原样透传（Python 的用量字段是无符号语义之外的有符号 int；这里不归零）。
         (self.emit)(HostEvent::TokenUsage(TokenUsagePayload {
-            input_tokens: u64::try_from(input_tokens).unwrap_or(0),
-            output_tokens: u64::try_from(output_tokens).unwrap_or(0),
-            cached_input_tokens: u64::try_from(cached_input_tokens).unwrap_or(0),
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
         }));
     }
 

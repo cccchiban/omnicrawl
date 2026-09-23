@@ -298,6 +298,15 @@ pub fn build_runtime(
         &model.protocol,
     )?;
 
+    // 凭据在构造运行期时就检查（Python 侧在各 Adapter 的 `create_*_client` 里抛）。
+    // 文案按 Provider 分叉：Anthropic / Gemini 只报缺哪种 Key，OpenAI 一族再附配置指引。
+    if profile.api_key.trim().is_empty() {
+        return Err(ModelError::configuration(missing_credential_message(
+            &profile.id,
+            protocol,
+        )));
+    }
+
     let mut capabilities = merge_capabilities(&[
         Some(conservative_capabilities(protocol)),
         model.capabilities,
@@ -334,4 +343,22 @@ pub fn build_runtime(
         base_url,
         runtime,
     })
+}
+
+/// 缺凭据的文案（Python `create_openai_client` / `_create_anthropic_client` /
+/// `_create_gemini_client`）：Anthropic / Gemini 只报缺哪种 Key，OpenAI 一族再附配置指引。
+fn missing_credential_message(profile_id: &str, protocol: Protocol) -> String {
+    if profile_id.trim().is_empty() {
+        // 内核自己组装的运行期没有 Profile 身份（`KernelModelConfig` 不带 id）：沿用内核既有
+        // 文案，不为空 id 造出 `Profile  缺少…` 这种双空格消息。
+        return "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。"
+            .to_string();
+    }
+    match protocol {
+        Protocol::AnthropicMessages => format!("Profile {profile_id} 缺少 Anthropic API Key。"),
+        Protocol::GeminiGenerateContent => format!("Profile {profile_id} 缺少 Gemini API Key。"),
+        _ => format!(
+            "Profile {profile_id} 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。"
+        ),
+    }
 }

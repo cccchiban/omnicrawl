@@ -111,11 +111,12 @@ pub struct MessagePayload {
     pub message: String,
 }
 
+/// `turn.token_usage` 的载荷：与 Python 的用量字段同为有符号整数（负值原样透传）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsagePayload {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_input_tokens: u64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_input_tokens: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

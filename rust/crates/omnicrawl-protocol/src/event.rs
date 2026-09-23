@@ -81,13 +81,13 @@ impl ToolCallCompleted {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageReported {
     #[serde(default)]
-    pub input_tokens: u64,
+    pub input_tokens: i64,
     #[serde(default)]
-    pub output_tokens: u64,
+    pub output_tokens: i64,
     #[serde(default)]
-    pub cached_input_tokens: u64,
+    pub cached_input_tokens: i64,
     #[serde(default)]
-    pub reasoning_tokens: u64,
+    pub reasoning_tokens: i64,
 }
 
 impl UsageReported {

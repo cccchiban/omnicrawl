@@ -1,4 +1,8 @@
-"""OmniCrawl CLI 入口：plugin 子命令与 TUI 启动路由。"""
+"""OmniCrawl 插件 CLI（已弃用）：plugin 子命令的实现与 TUI 启动路由。
+
+产品路径上的 ``plugin`` 子命令由 Rust 宿主承担（``omnicrawl plugin ...``）。本模块保留
+Python 实现只为旧脚本与回归测试沿用；:func:`main` 已改为转发 Rust 宿主（见 :mod:`omnicrawl.compat`）。
+"""
 
 from __future__ import annotations
 
@@ -348,15 +352,11 @@ def _cmd_doctor(args: argparse.Namespace, root: Path) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI / console script 主入口。返回进程退出码。
+    """CLI 主入口（已弃用）：转发给 Rust 宿主，返回其退出码。"""
 
-    - ``omnicrawl plugin ...``：插件管理
-    - ``omnicrawl`` / ``omnicrawl --resume <id>``：启动 TUI（当前控制台）
-    """
+    from omnicrawl.compat import forward_to_rust
 
-    from omnicrawl.entry import run_application
-
-    return run_application(argv)
+    return forward_to_rust(argv)
 
 
 if __name__ == "__main__":

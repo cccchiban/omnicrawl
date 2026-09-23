@@ -1,4 +1,8 @@
-"""Textual 全屏工作台（门面入口）。
+"""Textual 全屏工作台（门面入口，**已弃用**，保留作开发对照）。
+
+产品工作台已改由 Rust TUI（``omnicrawl-tui``）承担；本包不再随发布产物分发，只在本仓库
+源码里保留，供开发期对照布局/交互。仅在显式 ``--legacy-python`` 或
+``OMNICRAWL_LEGACY_PYTHON_UI=1`` 时经由 ``omnicrawl.entry`` 启动。
 
 P4 归类重构（2026-08-21）：``ui/fullscreen`` 下所有业务逻辑均已按职责归入
 分类子包，各子包 ``__init__.py`` 只做再导出：

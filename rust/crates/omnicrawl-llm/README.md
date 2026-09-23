@@ -184,9 +184,12 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 - **内核不内置重试**：Python 的 SDK 自己会重试 5xx/超时（httpx/SDK 内置 2 次），内核没有这一层，
   只把 `retryable` 交给调用方按 `request_retry_count` 决定；端到端 fixture 里 503 用例
   Python 发了 3 次、内核 1 次，测试据此只比对首个请求体。
-- **流内 `error` 负载**：与 Python 一致——经「未识别」通用文案
-  （`Agent 流式回复中断：模型请求失败，但未能识别具体原因。…错误类型：APIError。`）且**不**标记可重试，
-  上游 message 不落到用户可见文本里。
+- **流内 `error` 负载**：走 Python 的同一套分类——文案前缀 `Agent 流式回复中断：`，
+  映射结果取自 `map_exception`（等价 `format_openai_error`），可重试标记取自
+  `is_retryable_model_request_error`（同一张关键词表）。因此认不出的负载落到「未识别」通用文案
+  （`Agent 流式回复中断：模型请求失败，但未能识别具体原因。…错误类型：APIError。`）且不可重试；
+  命中「连接断开 / 超时 / 限流」一类文案时标记可重试。上游 message 本身不落到用户可见文本里。
+  仍不可对齐的一处：`type(exc).__name__` 固定为 `APIError`（SDK 子类名如 `RateLimitError` 拿不到）。
 - **传输中断的文案不同**：Python 会带 SDK 异常类型名（如 `ReadTimeout`），内核只能给出 IO 描述
   （`Agent 流式回复中断：{io}`），类型名不可对齐。
 - **超时语义**：映射 Python 的 `timeout` 为建连、等响应头、以及**每次**读取响应体的空闲超时
@@ -200,7 +203,7 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   `error` / `detail` 五个字段（深度 ≤ 4、最多 12 段、每段 512 字符）。传输层不再自己编文案：
   `TransportFailure` 只给类型与 SDK 等价文案（`Request timed out.` / `Connection error.`），
   分支判定仍走同一张阶梯，免得两处各写一套「什么算超时、什么算连接失败」。
-  未搬：流内 `error` 负载的分类——它取决于 SDK 对这类负载的 `str(exc)` 形状，当前按「未能识别」处理。
+  流内 `error` 负载的分类已搬（见上一条）；仍未搬的是 SDK 子类名对文案的影响。
 - **工具调用参数串的键序不同**：Python 的 `json.dumps` 与 `serde_json` 现在都保留插入序（workspace 开了
   `preserve_order`），但两侧的插入序来源不同：Python 侧由 SDK 按其签名顺序序列化请求体，内核按自己的组装顺序。
   语义等价（Provider 按 JSON 解析），比较前已规范化。会话文件那种长期存续的格式另有要求，
@@ -208,8 +211,10 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 - **浮点写法不同**：Python 用 `repr`（`1e+20`、`1e-07`），Rust 用 ryu（`1e20`、`1e-7`），`1e-5` 这类还会写成小数。
   语义等价，「浮点写法」组只校验解析回 `f64` 后相等。
 - **provider_options 多处违规时报哪一条**：Python 按调用方插入序、Rust 按字典序，两者都拒绝。
-- **用量取值的边界**：`TokenUsage` 是无符号整数，负数一律归零（Python 原样返回负数）；超出 `i64` 的整数按缺失处理
-  （Python 用任意精度整数）。
+- **用量取值的边界**：`TokenUsage` 与 `UsageReported` 的字段为**有符号**整数，负值原样保留
+  （与 Python 的普通 `int` 同口径，`openai_chat_usage_boundary_parity.json` 钉住）。
+  展示层（TUI HUD）与压缩累加器各自按 Python 的 `max(0, ...)` clamp。
+  仍未对齐的一处：Python 是任意精度整数，超出 `i64` 的取值内核算不出来（按缺失处理）。
 - JSON 解析用 `serde_json`：不接受 `NaN`/`Infinity`（Python 的 `json.loads` 接受）。
 - 数值/布尔的 str 化按 JSON 写法（`true`），Python `str(True)` 给出 `True`；实际模型请求里这些字段恒为字符串。
 - **消息脱敏的两处字符类差异**：Python 的 `\s` / `str.isspace()` 含 `\x1c`–`\x1f` 这类控制分隔符，
@@ -230,11 +235,12 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   `reasoning_effort` → `thinking` 的那个分支（Python 侧本身就是 no-op 空分支）。
 - **`index` 的读法**：Python 走 SDK 对象的 `event.index`，内核读负载里的 `index` 字段；真实链路上两者同源同值，
   驱动 Python 的对照片因此用带 `index` 的对象，而不是裸 dict（裸 dict 会让 `getattr` 恒取默认 0）。
-- **缺凭据文案**：沿用内核既有的配置错误文案（Python 是 `Profile {id} 缺少 Anthropic API Key。`）。
+- **缺凭据文案**：构造运行期时报 `Profile {id} 缺少 Anthropic API Key。`（与 Python `_create_anthropic_client` 同）。
 - **超时来源**：`timeout_seconds` 取 Profile 值——Python 把超时挂在 SDK 客户端上，不是每请求参数。
-- **流内 `error` 负载**：内核走通用 `provider_error_stream` 文案（Python 是 SDK 抛 `APIError` →
-  `STREAM_INTERRUPTED`）；错误码一致，`retryable` 标记不同。
-- 用量负数按无符号归零（与 OpenAI 一路同口径）。
+- **流内 `error` 负载**：文案走 Claude 一路（`Claude 流式回复中断：{_format_anthropic_error}`），
+  错误码 `STREAM_INTERRUPTED`、`retryable=False`，与 Python 一致；
+  只有兜底分支的 `type(exc).__name__` 只能取等价类型名 `APIError`。
+- 用量负值原样保留（同 OpenAI 一路的有符号口径）。
 
 ### Gemini（未搬与差异）
 
@@ -257,11 +263,11 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   因此两侧读法天然不同（对照片里这条用例用**裸 dict 负载**驱动，见生成器的 `raw` 标记）。
 - **`index` 一类的 SDK 对象细节不参与映射**：Gemini 的流映射按分片内容而非下标推进，
   没有 Anthropic 那样的 `content_block_*` 缓冲。
-- **缺凭据文案**：沿用内核既有的配置错误文案（Python 是 `Profile {id} 缺少 Gemini API Key。`）。
+- **缺凭据文案**：构造运行期时报 `Profile {id} 缺少 Gemini API Key。`（与 Python `_create_gemini_client` 同）。
 - **超时来源**：`timeout_seconds` 取 Profile 值（Python 把它挂在 SDK 客户端上）。
-- **错误文案的两处不可对齐**：`_format_gemini_error` 的兜底分支用 `type(exc).__name__`，
-  内核只能拿到等价类型名（`APIStatusError` / `APIConnectionError`）；流内 `error` 负载与另外两路一样
-  走通用文案。
+- **错误文案的不可对齐处**：`_format_gemini_error` 的兜底分支用 `type(exc).__name__`，
+  内核只能拿到等价类型名（`APIStatusError` / `APIConnectionError`）；流内 `error` 负载已改为
+  Gemini 一路文案（`Gemini 流式回复中断：{_format_gemini_error}`）且 `retryable=False`，与 Python 一致。
 
 ## 回合资源注册表（`stream_registry.rs`）
 

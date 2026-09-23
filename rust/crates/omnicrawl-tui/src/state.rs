@@ -535,9 +535,11 @@ impl AppState {
                 self.telemetry.rate.rollback();
             }
             HostEvent::TokenUsage(payload) => {
-                self.telemetry.input_tokens = payload.input_tokens;
-                self.telemetry.output_tokens = payload.output_tokens;
-                self.telemetry.cached_input_tokens = payload.cached_input_tokens;
+                // 与 Python HUD 同口径（`max(0, int(...))`）：展示层不显示负值，
+                // 但协议与归一化层仍保留上游给的原值。
+                self.telemetry.input_tokens = payload.input_tokens.max(0) as u64;
+                self.telemetry.output_tokens = payload.output_tokens.max(0) as u64;
+                self.telemetry.cached_input_tokens = payload.cached_input_tokens.max(0) as u64;
             }
             HostEvent::ToolStarted(payload) => {
                 self.records.push(Record::Tool(ToolCard {

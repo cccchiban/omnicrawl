@@ -133,11 +133,11 @@ struct UsageSink {
 impl TurnSink for UsageSink {
     fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
         if let ModelStreamEvent::UsageReported(usage) = event {
-            let to_tokens = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+            // 用量是有符号的：负值原样交给累加器（`add` 自己 clamp 到 0，与 Python 同口径）。
             self.usage = self.usage.add(
-                to_tokens(usage.input_tokens),
-                to_tokens(usage.output_tokens),
-                to_tokens(usage.cached_input_tokens),
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cached_input_tokens,
             );
         }
         SinkFlow::Continue

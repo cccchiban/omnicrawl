@@ -5,7 +5,7 @@
 
 use omnicrawl_llm::{
     build_runtime, conservative_capabilities, default_base_url, ModelCapabilities, ModelDescriptor,
-    ProviderProfile,
+    ModelErrorCode, ProviderProfile,
 };
 use omnicrawl_protocol::Protocol;
 
@@ -51,6 +51,27 @@ fn provider_defaults_pick_protocol_and_base_url() {
             bundle.base_url, base_url,
             "Provider {provider} 的默认 API 根"
         );
+    }
+}
+
+/// 缺凭据在**构造运行期**时就报错，文案按 Provider 分叉（与 Python 的 `create_*_client` 同）。
+#[test]
+fn missing_api_key_reports_provider_specific_text() {
+    let cases = [
+        (
+            "openai",
+            "",
+            "Profile p1 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+        ),
+        ("anthropic", "", "Profile p1 缺少 Anthropic API Key。"),
+        ("gemini", "", "Profile p1 缺少 Gemini API Key。"),
+    ];
+    for (provider, protocol, expected) in cases {
+        let mut target = profile(provider);
+        target.api_key = String::new();
+        let error = build_runtime(&target, &model(protocol)).expect_err("缺凭据必须失败");
+        assert_eq!(error.code, ModelErrorCode::ConfigurationError, "{provider}");
+        assert_eq!(error.message, expected, "Provider {provider} 的缺凭据文案");
     }
 }
 

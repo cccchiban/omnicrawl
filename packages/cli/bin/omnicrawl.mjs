@@ -10,6 +10,9 @@ import { chmodSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
+import { fileURLToPath } from 'node:url'
+
+import { runStartupUpdateIfDue, shouldCheckUpdate } from './update.mjs'
 
 const PLATFORM_PACKAGES = {
   'linux-x64': '@omnicrawl/cli-linux-x64',
@@ -130,7 +133,7 @@ function run(executable, args) {
   })
 }
 
-function main() {
+async function main() {
   let targets
   try {
     targets = resolveTargets()
@@ -147,6 +150,16 @@ function main() {
   if (args.includes('--version') || args.includes('-V')) return printVersion(targets)
   if (args.includes('--help') || args.includes('-h')) return printHelp()
 
+  // 启动自动更新只走默认工作台路径；升级成功后重新拉起并沿用子进程退出码。
+  if (shouldCheckUpdate(args, process.env)) {
+    const code = await runStartupUpdateIfDue({
+      argv: args,
+      currentVersion: launcherVersion,
+      launcherPath: fileURLToPath(import.meta.url),
+    })
+    if (code !== null) process.exit(code)
+  }
+
   if (targets.host && existsSync(targets.host)) return run(targets.host, args)
 
   // 嵌入式目标（armv7 等）没有宿主载荷：退回内核直连，并说明这一平台的边界。
@@ -157,4 +170,4 @@ function main() {
   return run(targets.kernel, args)
 }
 
-main()
+main().catch((error) => fail(`omnicrawl：${error.message}`))

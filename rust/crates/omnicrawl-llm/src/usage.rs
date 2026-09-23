@@ -31,10 +31,10 @@ pub fn usage_from_openai_payload(payload: &Value) -> Option<TokenUsage> {
     }
 
     Some(TokenUsage {
-        input_tokens: non_negative(input_tokens),
-        output_tokens: non_negative(output_tokens),
-        cached_input_tokens: non_negative(Some(cached_input_tokens)),
-        reasoning_tokens: non_negative(Some(reasoning_tokens)),
+        input_tokens: signed(input_tokens),
+        output_tokens: signed(output_tokens),
+        cached_input_tokens: signed(Some(cached_input_tokens)),
+        reasoning_tokens: signed(Some(reasoning_tokens)),
     })
 }
 
@@ -94,8 +94,12 @@ fn read_cached_input_tokens(usage: &Value) -> Option<i64> {
     None
 }
 
-fn non_negative(value: Option<i64>) -> u64 {
-    value.unwrap_or(0).max(0) as u64
+/// 有符号取值：缺字段按 0，其余原样保留（含负值）。
+///
+/// 与 Python `value or 0` 同口径：Python 侧 `TokenUsage` 是普通 `int`，上游给负值就保留负值；
+/// 这里同样不归零，是否 clamp 交给消费方（如 `context_compaction` 的累加器）。
+fn signed(value: Option<i64>) -> i64 {
+    value.unwrap_or(0)
 }
 
 /// Gemini Generate Content 的用量：`usage_metadata` 与 `usageMetadata` 两种写法都认。
@@ -130,15 +134,15 @@ pub fn usage_from_gemini_payload(payload: &Value) -> Option<TokenUsage> {
 
     if input_tokens == 0 && output_tokens == 0 && total_tokens.is_some_and(|total| total != 0) {
         return Some(TokenUsage {
-            input_tokens: non_negative(total_tokens),
+            input_tokens: signed(total_tokens),
             output_tokens: 0,
             cached_input_tokens: 0,
             reasoning_tokens: 0,
         });
     }
     Some(TokenUsage {
-        input_tokens: non_negative(Some(input_tokens)),
-        output_tokens: non_negative(Some(output_tokens)),
+        input_tokens: signed(Some(input_tokens)),
+        output_tokens: signed(Some(output_tokens)),
         cached_input_tokens: 0,
         reasoning_tokens: 0,
     })
@@ -152,9 +156,9 @@ pub fn usage_from_gemini_payload(payload: &Value) -> Option<TokenUsage> {
 pub fn usage_from_anthropic_payload(payload: &Value) -> Option<TokenUsage> {
     let usage = payload.get("usage").filter(|value| !value.is_null())?;
     Some(TokenUsage {
-        input_tokens: non_negative(read_usage_int(usage, &["input_tokens"])),
-        output_tokens: non_negative(read_usage_int(usage, &["output_tokens"])),
-        cached_input_tokens: non_negative(read_usage_int(
+        input_tokens: signed(read_usage_int(usage, &["input_tokens"])),
+        output_tokens: signed(read_usage_int(usage, &["output_tokens"])),
+        cached_input_tokens: signed(read_usage_int(
             usage,
             &["cache_read_input_tokens", "cached_input_tokens"],
         )),

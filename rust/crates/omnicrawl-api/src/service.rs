@@ -50,6 +50,7 @@ use omnicrawl_workspace::agent_isolation::{
     finalize_isolation_session, finalize_subagent_worktrees, prepare_isolated_workspace,
     start_background_isolation_sweep, IsolationOptions, IsolationSession,
 };
+use omnicrawl_workspace::process_control::pid_is_running;
 use serde_json::{json, Map, Value};
 
 use crate::error::ApiError;
@@ -340,6 +341,19 @@ impl AgentService {
 
     /// 换运行状态后端：`api.workers > 1` 时切到跨进程共享存储（默认是内存）。
     pub fn with_run_backend(mut self, backend: RunBackend) -> Self {
+        // 多 worker 场景：上一个 worker 崩溃会留下永远活动的运行，其内存状态已随进程消失。
+        // 装配共享后端时按所有者 PID 存活情况收敛，避免客户端无限等待（对应 Python
+        // `AgentAPIService.__init__` 里的 `reconcile_orphan_runs`；收敛失败不阻断启动）。
+        if let Some(store) = backend.shared() {
+            match store.reconcile_orphan_runs(pid_is_running) {
+                Ok(0) => {}
+                Ok(count) => eprintln!("[api] 收敛了 {count} 个所有进程已消失的生成任务。"),
+                Err(error) => eprintln!(
+                    "[api] 收敛孤儿生成任务失败：{}",
+                    error.to_api_error().message
+                ),
+            }
+        }
         self.store = Arc::new(backend);
         self
     }

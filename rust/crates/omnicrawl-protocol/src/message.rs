@@ -255,20 +255,27 @@ impl Default for GenerationOptions {
     }
 }
 
+/// 一次模型请求的用量。
+///
+/// 字段为**有符号**整数，与 Python `omnicrawl/llm/protocol.py` 的 `TokenUsage`（普通 `int`）
+/// 同口径：上游给出负值时原样保留，不在此层归零（是否参与统计由消费方决定，例如
+/// `context_compaction` 的累加器会 clamp 到 0）。真实 Provider 不会给出负值。
+///
+/// 仍未对齐的一处：Python 是任意精度整数，超出 `i64` 的取值这里解析不出来（按缺失处理）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
     #[serde(default)]
-    pub input_tokens: u64,
+    pub input_tokens: i64,
     #[serde(default)]
-    pub output_tokens: u64,
+    pub output_tokens: i64,
     #[serde(default)]
-    pub cached_input_tokens: u64,
+    pub cached_input_tokens: i64,
     #[serde(default)]
-    pub reasoning_tokens: u64,
+    pub reasoning_tokens: i64,
 }
 
 impl TokenUsage {
-    pub fn new(input_tokens: u64, output_tokens: u64) -> Self {
+    pub fn new(input_tokens: i64, output_tokens: i64) -> Self {
         Self {
             input_tokens,
             output_tokens,
@@ -277,7 +284,7 @@ impl TokenUsage {
     }
 
     /// 兼容旧 UI 回调签名 (input, output, cached_input)。
-    pub fn as_tuple(self) -> (u64, u64, u64) {
+    pub fn as_tuple(self) -> (i64, i64, i64) {
         (
             self.input_tokens,
             self.output_tokens,

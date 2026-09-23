@@ -1,31 +1,22 @@
-"""项目根启动入口。
+"""项目根启动入口（已弃用，仅作兼容垫片）。
 
-开发态：``python main.py`` / ``python main.py plugin ...``
-安装后：``ocl`` / ``omnicrawl`` / ``ocl plugin ...``（见 pyproject.toml console script）
+产品入口是 npm 分发的 Rust 二进制：``npm install -g omnicrawl-cli && omnicrawl``。
+保留 ``python main.py`` 只为兼容旧脚本：按同样的参数把命令行转发给 Rust 宿主并沿用其退出码，
+找不到二进制时打印迁移提示（详见 :mod:`omnicrawl.compat`）。
 
-插件管理推荐使用 ``ocl plugin ...``；``python main.py plugin ...`` 仍可用于源码目录。
-
-Windows 下普通 TUI 路径在没有交互式终端时才弹新 PowerShell 窗口；已有 PowerShell、Windows Terminal 或 VS Code 集成终端时直接复用当前终端。plugin 子命令必须在弹窗前处理。
+开发对照 Textual UI：``python main.py --legacy-python`` 或 ``OMNICRAWL_LEGACY_PYTHON_UI=1``。
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-from omnicrawl.entry import _parse_args, run_application
-from omnicrawl.ui.windows_launcher import launch_in_powershell_window
+from omnicrawl.compat import forward_to_rust
 
 
 def main(argv: list[str] | None = None) -> int:
-    """启动 OmniCrawl 并返回进程退出码；脚本入口负责转换为 SystemExit。"""
+    """转发给 Rust 宿主并返回其退出码。"""
 
-    return run_application(argv)
+    return forward_to_rust(argv)
 
 
 if __name__ == "__main__":
-    # plugin 子命令必须在弹新窗口之前处理，否则脚本拿不到真实 stdout/退出码。
-    if len(sys.argv) > 1 and sys.argv[1] == "plugin":
-        raise SystemExit(main())
-    elif not launch_in_powershell_window(Path(__file__)):
-        raise SystemExit(main())
+    raise SystemExit(main())

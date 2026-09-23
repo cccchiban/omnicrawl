@@ -239,6 +239,32 @@ fn stream_error_payload_uses_python_fallback_text() {
     );
 }
 
+/// 流内 error 的可重试标记走 Python 的关键词表：命中连接断开一类文案时标记可重试，
+/// 不再一律硬编码为不可重试。
+#[test]
+fn retryable_stream_error_payload_is_marked_retryable() {
+    let stream = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"半\"}}]}\n\n",
+        "data: {\"error\":{\"message\":\"Connection reset by peer\"}}\n\n",
+    );
+    let server = StubServer::spawn(vec![Reply::sse(200, stream)]);
+    let runtime = runtime_for(&server);
+    let case = CaseInput::simple("qwen-test", "你好");
+
+    let mut sink = RecordingSink::default();
+    let error = runtime
+        .run_turn(&case.chat_input(), &mut sink)
+        .expect_err("流内错误负载必须中断回合");
+
+    assert_eq!(error.kind, RuntimeErrorKind::StreamInterrupted);
+    assert!(error.retryable, "连接被中途断开应标记可重试");
+    assert!(
+        error.message.contains("模型服务连接被中途断开"),
+        "文案走同一张分类阶梯：{}",
+        error.message
+    );
+}
+
 #[test]
 fn sink_can_cancel_mid_stream() {
     let server = StubServer::spawn(vec![Reply::sse(200, TEXT_STREAM)]);

@@ -1,0 +1,78 @@
+{
+  "source": "omnicrawl/llm/usage.py",
+  "usage": [
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": -5,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": -5,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 10,
+          "completion_tokens": -3
+        }
+      },
+      "expected": {
+        "input_tokens": 10,
+        "output_tokens": -3,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 7,
+          "completion_tokens": 1,
+          "cached_tokens": -2
+        }
+      },
+      "expected": {
+        "input_tokens": 7,
+        "output_tokens": 1,
+        "cached_input_tokens": -2,
+        "reasoning_tokens": 0
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_tokens": 1,
+          "completion_tokens": 2,
+          "reasoning_tokens": -9
+        }
+      },
+      "expected": {
+        "input_tokens": 1,
+        "output_tokens": 2,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": -9
+      }
+    },
+    {
+      "payload": {
+        "usage": {
+          "prompt_cache_hit_tokens": -4,
+          "prompt_cache_miss_tokens": -6,
+          "completion_tokens": 2
+        }
+      },
+      "expected": {
+        "input_tokens": -10,
+        "output_tokens": 2,
+        "cached_input_tokens": -4,
+        "reasoning_tokens": 0
+      }
+    }
+  ]
+}

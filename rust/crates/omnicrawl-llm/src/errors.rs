@@ -68,16 +68,39 @@ impl RuntimeError {
         }
     }
 
-    /// Provider 在流里下发 `error` 负载。
+    /// 流中断且**不可重试**：Anthropic / Gemini 的流内 `error` 负载。
     ///
-    /// Python 侧这会变成 SDK 的 `APIError`，再经错误映射表；映射表认不出时给的就是这条
-    /// 通用文案（上游 message 不会落到用户可见文本里），且不标记可重试。
-    pub fn provider_error_stream() -> Self {
+    /// Python 侧两路都是 `ModelError(code=STREAM_INTERRUPTED, message=...)`，`retryable`
+    /// 取缺省值 `False`（只有 OpenAI 一族会按 `is_retryable_model_request_error` 计算）。
+    pub fn stream_interrupted_unretryable(message: impl Into<String>) -> Self {
         Self {
             kind: RuntimeErrorKind::StreamInterrupted,
-            message: "Agent 流式回复中断：模型请求失败，但未能识别具体原因。请检查网络、模型服务地址和本地配置。错误类型：APIError。"
-                .to_string(),
+            message: message.into(),
             retryable: false,
+            status_code: None,
+        }
+    }
+
+    /// Provider 在流里下发 `error` 负载（OpenAI 一族：Chat Completions 与 Responses）。
+    ///
+    /// Python 侧这会变成 SDK 的 `APIError`，文案走 `format_openai_error(exc)`
+    /// （= `map_openai_exception(exc).message`）、可重试标记走
+    /// `is_retryable_model_request_error(exc)`。因此：认不出的负载落到「未能识别具体原因」
+    /// 的通用文案且不可重试；命中「超时 / 连接断开 / 限流」等关键词（同一张关键词表）时
+    /// 标记可重试——这与 Python 一致，不再一律硬编码为不可重试。
+    pub fn openai_provider_error_stream(message: &str, body: Option<&Value>) -> Self {
+        let view = ExceptionView {
+            message,
+            type_name: "APIError",
+            body,
+            ..ExceptionView::default()
+        };
+        let mapped = map_exception(&view, &[]);
+        Self {
+            kind: RuntimeErrorKind::StreamInterrupted,
+            message: format!("Agent 流式回复中断：{}", mapped.message),
+            // 流内错误没有 HTTP 状态，只扫文案（Python `is_retryable_model_request_error` 同）。
+            retryable: is_retryable_model_request_error(message, None),
             status_code: None,
         }
     }

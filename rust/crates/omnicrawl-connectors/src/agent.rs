@@ -89,9 +89,9 @@ pub enum TurnEvent {
     ProtocolWait,
     StreamRollback,
     TokenUsage {
-        input_tokens: u64,
-        output_tokens: u64,
-        cached_input_tokens: u64,
+        input_tokens: i64,
+        output_tokens: i64,
+        cached_input_tokens: i64,
     },
     ToolStarted {
         step: u64,

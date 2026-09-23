@@ -94,8 +94,8 @@ fn str_field(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or_default().to_string()
 }
 
-fn u64_field(value: &Value, key: &str) -> u64 {
-    value[key].as_u64().unwrap_or_default()
+fn i64_field(value: &Value, key: &str) -> i64 {
+    value[key].as_i64().unwrap_or_default()
 }
 
 fn obj_field(value: &Value, key: &str) -> Map<String, Value> {
@@ -121,10 +121,10 @@ fn event_from_json(value: &Value) -> ModelStreamEvent {
             obj_field(value, "arguments"),
         )),
         "usage" => ModelStreamEvent::UsageReported(UsageReported {
-            input_tokens: u64_field(value, "input_tokens"),
-            output_tokens: u64_field(value, "output_tokens"),
-            cached_input_tokens: u64_field(value, "cached_input_tokens"),
-            reasoning_tokens: u64_field(value, "reasoning_tokens"),
+            input_tokens: i64_field(value, "input_tokens"),
+            output_tokens: i64_field(value, "output_tokens"),
+            cached_input_tokens: i64_field(value, "cached_input_tokens"),
+            reasoning_tokens: i64_field(value, "reasoning_tokens"),
         }),
         "finished" => ModelStreamEvent::Finished {
             finish_reason: str_field(value, "finish_reason"),

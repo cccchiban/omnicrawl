@@ -40,7 +40,7 @@ use crate::responses::{
     build_responses_request_with_items, flatten_tool_history_to_text, has_tool_history_items,
     is_tool_history_rejection, messages_to_responses_input, ResponsesStreamState,
 };
-use crate::sse::{payload_of_line, step_payload, SseStep};
+use crate::sse::{payload_of_line, step_payload, SseError, SseStep};
 use crate::transport::{self, HttpRequest, HttpResponse, TransportFailure};
 use crate::usage::usage_from_openai_payload;
 
@@ -227,8 +227,12 @@ impl OpenAiChatRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
-                StreamOutcome::ProviderError => {
-                    return Err(RuntimeError::provider_error_stream());
+                StreamOutcome::ProviderError { message, body } => {
+                    // OpenAI 一族：文案与可重试标记都走 Python 的分类阶梯。
+                    return Err(RuntimeError::openai_provider_error_stream(
+                        &message,
+                        Some(&body),
+                    ));
                 }
                 StreamOutcome::Io(message) => {
                     return Err(RuntimeError::stream_interrupted(format!(
@@ -402,8 +406,12 @@ impl AnthropicRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
-                StreamOutcome::ProviderError => {
-                    return Err(RuntimeError::provider_error_stream());
+                StreamOutcome::ProviderError { message, .. } => {
+                    // Anthropic：文案前缀与格式化器换成 Claude 一路，且与 Python 一致地不可重试。
+                    return Err(RuntimeError::stream_interrupted_unretryable(format!(
+                        "Claude 流式回复中断：{}",
+                        format_anthropic_error(&message, "APIError")
+                    )));
                 }
                 StreamOutcome::Io(message) => {
                     return Err(RuntimeError::stream_interrupted(format!(
@@ -642,8 +650,12 @@ impl ResponsesRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
-                StreamOutcome::ProviderError => {
-                    return Err(RuntimeError::provider_error_stream());
+                StreamOutcome::ProviderError { message, .. } => {
+                    return Err(responses_stream_error(&SdkFailure {
+                        message,
+                        type_name: "APIError".to_string(),
+                        status_code: None,
+                    }));
                 }
                 StreamOutcome::Io(message) => {
                     return Err(responses_stream_error(&SdkFailure {
@@ -826,8 +838,12 @@ impl GeminiRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
-                StreamOutcome::ProviderError => {
-                    return Err(RuntimeError::provider_error_stream());
+                StreamOutcome::ProviderError { message, .. } => {
+                    // Gemini：文案前缀与格式化器换成 Gemini 一路，且与 Python 一致地不可重试。
+                    return Err(RuntimeError::stream_interrupted_unretryable(format!(
+                        "Gemini 流式回复中断：{}",
+                        format_gemini_error(&message, "APIError")
+                    )));
                 }
                 StreamOutcome::Io(message) => {
                     return Err(RuntimeError::stream_interrupted(format!(
@@ -988,8 +1004,11 @@ fn arguments_truncated(raw: &str) -> bool {
 /// 后台读取线程转发的条目。
 enum StreamItem {
     Step(SseStep),
-    /// 流内 error 负载。
-    ProviderError,
+    /// 流内 error 负载（带出来源文案与错误体，供各 Provider 分类）。
+    ProviderError {
+        message: String,
+        body: Value,
+    },
     /// 读取失败（IO）。
     Io(String),
 }
@@ -998,7 +1017,7 @@ enum StreamOutcome {
     Step(SseStep),
     Idle,
     End,
-    ProviderError,
+    ProviderError { message: String, body: Value },
     Io(String),
 }
 
@@ -1041,8 +1060,9 @@ impl StreamReader {
                         return;
                     }
                     Ok(step) => step,
-                    Err(_) => {
-                        let _ = sender.send(StreamItem::ProviderError);
+                    // 目前唯一的错误分支就是流内 error 负载：把文案与错误体带给消费方。
+                    Err(SseError::Provider { message, body }) => {
+                        let _ = sender.send(StreamItem::ProviderError { message, body });
                         return;
                     }
                 };
@@ -1065,9 +1085,9 @@ impl StreamReader {
         }
         match self.receiver.recv_timeout(poll) {
             Ok(StreamItem::Step(step)) => StreamOutcome::Step(step),
-            Ok(StreamItem::ProviderError) => {
+            Ok(StreamItem::ProviderError { message, body }) => {
                 self.ended = true;
-                StreamOutcome::ProviderError
+                StreamOutcome::ProviderError { message, body }
             }
             Ok(StreamItem::Io(message)) => {
                 self.ended = true;

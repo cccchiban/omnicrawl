@@ -1,8 +1,9 @@
-"""OmniCrawl 应用入口：TUI 启动与 plugin 子命令路由。
+"""仓库内保留的 Textual UI 启动编排（**已弃用**，仅供开发对照）。
 
-console script（omnicrawl）与项目根 main.py 共用本模块，避免两套启动逻辑漂移。
-Windows 下「弹新 PowerShell 窗口」只由项目根 main.py 的 ``__main__`` 负责；
-``omnicrawl`` / ``python -m omnicrawl`` 始终在当前控制台运行，保证脚本能拿到真实 stdout/退出码。
+产品入口已改由 npm 分发的 Rust 二进制承担；进程入口（``main.py`` / ``python -m omnicrawl`` /
+控制台脚本）现在是 :mod:`omnicrawl.compat` 的薄垫片，直接转发 Rust 宿主。
+本模块只在显式使用 ``OMNICRAWL_LEGACY_PYTHON_UI=1`` 或 ``--legacy-python`` 时被调用，
+用于开发期对照 Textual UI 的视觉与交互 parity；功能缺口以 Rust 侧为准。
 """
 
 from __future__ import annotations

@@ -608,19 +608,13 @@ impl TurnSink for ProtocolSink {
                 connection.notify(HostEvent::ReasoningDelta(TextPayload { text: delta.text }));
             }
             ModelStreamEvent::UsageReported(usage) => {
-                if let Ok(input) = i64::try_from(usage.input_tokens) {
+                // 用量字段是有符号的：负值原样累加与透传，与 Python 同口径。
+                {
                     let mut totals = self.usage.borrow_mut();
-                    totals.last_request_input_tokens = input;
-                }
-                if let (Ok(input), Ok(output), Ok(cached)) = (
-                    i64::try_from(usage.input_tokens),
-                    i64::try_from(usage.output_tokens),
-                    i64::try_from(usage.cached_input_tokens),
-                ) {
-                    let mut totals = self.usage.borrow_mut();
-                    totals.input_tokens += input;
-                    totals.output_tokens += output;
-                    totals.cached_input_tokens += cached;
+                    totals.last_request_input_tokens = usage.input_tokens;
+                    totals.input_tokens += usage.input_tokens;
+                    totals.output_tokens += usage.output_tokens;
+                    totals.cached_input_tokens += usage.cached_input_tokens;
                 }
                 connection.notify(HostEvent::TokenUsage(TokenUsagePayload {
                     input_tokens: usage.input_tokens,
@@ -3532,10 +3526,22 @@ mod runtime_selection_tests {
         }
     }
 
+    /// 缺凭据在**构造运行期**时就失败（与 Python 的 `create_*_client` 同），所以回退验证
+    /// 改用显式凭据的入口；同时钉住「空 id 不会造出 `Profile  缺少…` 双空格文案」。
     #[test]
     fn empty_provider_falls_back_to_openai() {
-        assert!(build_model_runtime(&config("", "")).is_ok());
-        assert!(build_model_runtime(&config("gemini", "")).is_ok());
+        assert!(build_model_runtime_with_key(&config("", ""), "k".to_string()).is_ok());
+        assert!(build_model_runtime_with_key(&config("gemini", ""), "k".to_string()).is_ok());
+        let error = build_model_runtime(&config("", ""))
+            .err()
+            .expect("缺凭据必须失败");
+        match error {
+            LoopError::ReplySource(message) => assert_eq!(
+                message,
+                "模型 Profile 缺少 API Key。请配置 api_key_env 环境变量或 profile.api_key。",
+            ),
+            other => panic!("意外的错误类型：{other:?}"),
+        }
     }
 
     #[test]

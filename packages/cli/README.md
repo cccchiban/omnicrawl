@@ -33,6 +33,21 @@ omnicrawl --version       打印启动器、平台包、宿主与内核版本
 
 无交互式终端时宿主会直接给出改用 `api` 的提示并以 2 退出，不会停在协议等待状态。
 
+## 启动自动更新
+
+默认工作台路径（无子命令）启动时，启动器会检查 npm registry 上 `omnicrawl-cli` 的最新版：
+落后就执行 `npm install -g omnicrawl-cli@<latest>`，成功后用原参数重新拉起启动器，
+沿用新进程的退出码。语义与旧 Python 的 `maintenance/updater.py` 一路对齐，只是版本源换成
+npm registry、升级方式换成 `npm install -g`。
+
+- 版本结果缓存 24 小时（`~/.OmniCrawl/npm-version-check.json`），过期才请求 registry（3 秒超时）。
+- `[update].enabled = false`（`~/.OmniCrawl/config.toml`）可关闭；缺省开启。
+- 护栏：源码检出（祖先目录含 `.git`）、`OMNICRAWL_HOST` / `OMNICRAWL_BINARY` 逃生口、
+  已知子命令（`api` / `kernel` / `plugin`）都不做更新检查。
+- `OMNICRAWL_SKIP_AUTO_UPDATE=1` 彻底关闭；升级尝试后写 `OMNICRAWL_AUTO_UPDATE_ATTEMPTED=1`
+  让重启的子进程不再重复尝试，避免升级失败时无限重启。
+- 任何失败（离线、npm 不可用、安装报错）只打印原因与手动升级命令，继续用当前版本启动。
+
 ## 本地开发
 
 ```bash

@@ -132,7 +132,9 @@ SO_REUSEPORT）；Rust 侧不做进程内存共享，跨进程可见的状态统
   `503 KERNEL_RESTART_UNAVAILABLE`。
 - 共享存储的差异：介质是 JSON + 文件锁（不是 SQLite）；保留窗口按
   `api-runs-<host>-<port>.json` 单文件维护，四张跨进程表的分区与 Python 表同名同义。
-  缺 `owner_pid` 与孤儿 Run 收敛（Python `reconcile_orphan_runs`）。
+  运行记录带 `owner_pid`，装配共享后端时按所有者 PID 存活情况收敛孤儿运行
+  （`reconcile_orphan_runs`，对应 Python 的 `pid_is_running` 判定与失败文案）。
+  旧快照缺 `owner_pid` 时按 0 处理，与 `pid_is_running(0)` 为假一致，仍会被收敛。
 - 管理面读的是磁盘上的 `config.toml` 与运行期管理器，Python 读的是 Agent 内存态；两者只在
   「有别的进程改过配置」时有差别。
 - 设置写端点没有「运行态」可回滚（先校验、再原子落盘）；`PUT /settings/features` 的 `plugins`
