@@ -481,7 +481,7 @@ pub fn rewrite_hyphens_before_zh_wetext(text: &str) -> String {
         ),
         (r"([^\s-])\s*-\s*(?=[^\s-])", "${1} ".to_string()),
     ] {
-        let compiled = regex_of(&pattern);
+        let compiled = regex_of(pattern);
         rewritten = compiled
             .replace_all(&rewritten, replacement.as_str())
             .to_string();

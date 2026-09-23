@@ -550,7 +550,16 @@ fn drive_tool_turn_in(
         base_url: server.base_url.clone(),
         api_key_env: "OMNICRAWL_TUI_E2E_TOOL_KEY".to_string(),
         system_prompt: "你是端到端测试助手。".to_string(),
-        session_root: None,
+        // 内核自持会话，且会话数据放在工作区之外：工作区里多出任何文件都会让撤销时的
+        // 冲突检测（对比本轮结束快照）判定“被改过”而拒绝回退。
+        session_root: Some({
+            let root = workspace.with_file_name(format!(
+                "{}-sessions",
+                workspace.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            root
+        }),
         context_window_tokens: Some(128_000),
         approval: ApprovalMode::Manual,
         command_timeout_seconds: 360,
@@ -593,9 +602,8 @@ fn drive_tool_turn_in(
         }
         thread::sleep(Duration::from_millis(20));
     }
-    app.request_shutdown();
-    app.kernel.wait_or_kill(Duration::from_secs(5));
     assert!(answered, "模型收尾回复没有进界面：{:?}", app.state.records);
+    // 内核保持存活：调用方可能还要接着发命令（例如撤销），收尾由调用方负责。
     (app, server, approved)
 }
 
@@ -654,5 +662,112 @@ fn real_kernel_verifies_changes_with_git_status() {
         ),
         "应当留下成功的 git 工具卡：{:?}",
         app.state.records
+    );
+}
+
+/// 建一个已提交的 git 工作区：撤销要靠 Git 快照，没有仓库时内核会拒绝回退。
+fn git_workspace(name: &str) -> PathBuf {
+    let root = workspace_dir(name);
+    git(&root, &["init", "-q"]);
+    git(&root, &["config", "user.email", "e2e@example.com"]);
+    git(&root, &["config", "user.name", "e2e"]);
+    std::fs::write(root.join("a.txt"), "旧内容\n").expect("写初始文件");
+    git(&root, &["add", "-A"]);
+    git(
+        &root,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "初始提交",
+        ],
+    );
+    root
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .status()
+        .expect("执行 git");
+    assert!(status.success(), "git {args:?} 失败");
+}
+
+/// `/undo` 是宿主命令：不进模型对话，请内核整轮回退（含工作区副作用）。
+#[test]
+fn real_kernel_undoes_the_last_turn_from_slash_command() {
+    let workspace = git_workspace("undo-slash");
+    let (mut app, server, _approved) = drive_tool_turn_in(
+        &workspace,
+        "Edit_file",
+        "{\"path\":\"a.txt\",\"old_text\":\"旧内容\",\"new_text\":\"新内容\"}",
+        "已改好文件",
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("a.txt")).expect("读回被改的文件"),
+        "新内容\n",
+        "工具应当真的改写了文件"
+    );
+
+    // `turn.finished` 可能还没到：先等回合收尾再输入命令（运行中 Enter 不入队）。
+    let settle = Instant::now() + WAIT;
+    while app.state.turn.is_running() {
+        assert!(
+            Instant::now() < settle,
+            "回合没有收尾：{:?}",
+            app.state.records
+        );
+        app.drain_frames();
+        thread::sleep(Duration::from_millis(20));
+    }
+
+    app.state.composer.insert("/undo");
+    app.handle_event(Event::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    let notice = loop {
+        if let Some(text) = app.state.records.iter().find_map(|record| match record {
+            Record::Notice(text) if text.contains("撤销") => Some(text.clone()),
+            _ => None,
+        }) {
+            break text;
+        }
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "等不到撤销结果：模型服务端共收到 {} 轮请求，界面记录：{:?}",
+                server.bodies().len(),
+                app.state.records
+            );
+        }
+        app.drain_frames();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    // 先收内核再断言：断言失败也不会留下孤儿进程。
+    app.request_shutdown();
+    app.kernel.wait_or_kill(std::time::Duration::from_secs(5));
+
+    // 1) `/undo` 没有变成用户消息，也就没进模型上下文。
+    assert!(
+        !app.state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::User(text) if text.contains("/undo"))),
+        "`/undo` 不该进模型对话：{:?}",
+        app.state.records
+    );
+    // 2) 界面给出内核的结论。
+    assert!(notice.contains("已撤销"), "撤销结论不符：{notice}");
+    // 3) 工作区副作用真的回退了（Windows 上补丁恢复可能是 CRLF，按行尾归一比较）。
+    let restored = std::fs::read_to_string(workspace.join("a.txt")).expect("读回 a.txt");
+    assert_eq!(
+        restored.replace("\r\n", "\n"),
+        "旧内容\n",
+        "撤销应当把文件恢复成本轮开始前"
     );
 }

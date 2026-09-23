@@ -149,17 +149,108 @@ def file_cases(workspace: Path) -> dict:
     return cases
 
 
-def unsupported_locator_cases(workspace: Path) -> list[dict]:
-    """Python 支持、当前 Rust 宿主尚未实现的定位方式（只记录期望，不做逐字对照）。"""
+def locator_cases(workspace: Path) -> list[dict]:
+    """`function_name` 定位用例：Python 侧返回值或错误文案就是 Rust 的期望。
+
+    覆盖 AST 路径（限定名、装饰器、异步、嵌套类、多匹配歧义、语法错误回退）与大括号
+    扫描回退（JS 声明、箭头函数、多匹配歧义、非 Python 文件未命中）。
+    """
 
     tools = WorkspaceTools(workspace)
     cases = []
-    (workspace / "locate.txt").write_text("def alpha():\n    return 1\n", encoding="utf-8")
-    for arguments in ({"path": "locate.txt", "function_name": "alpha"},):
+
+    def locate_case(label: str, filename: str, content: str, arguments: dict) -> None:
+        (workspace / filename).write_text(content, encoding="utf-8")
         try:
-            cases.append({"arguments": arguments, "python_output": tools.read_file(arguments)})
+            output = tools.read_file(arguments)
+            cases.append(
+                {
+                    "label": label,
+                    "files": {filename: content},
+                    "arguments": arguments,
+                    "ok": True,
+                    "output": output,
+                }
+            )
         except WorkspaceToolError as exc:
-            cases.append({"arguments": arguments, "python_output": exc.formatted_message()})
+            cases.append(
+                {
+                    "label": label,
+                    "files": {filename: content},
+                    "arguments": arguments,
+                    "ok": False,
+                    "output": exc.formatted_message(),
+                    "code": "FS_TOOL_ERROR",
+                    "retryable": False,
+                }
+            )
+
+    locate_case(
+        "python_qualified",
+        "locate_class.py",
+        "class Outer:\n    def run(self):\n        return 1\n\ndef run():\n    return 2\n",
+        {"path": "locate_class.py", "function_name": "Outer.run"},
+    )
+    locate_case(
+        "python_decorated",
+        "locate_deco.py",
+        "@decorator\n@another(1)\ndef handled():\n    value = 1\n    return value\n",
+        {"path": "locate_deco.py", "function_name": "handled", "max_lines": 2},
+    )
+    locate_case(
+        "python_async",
+        "locate_async.py",
+        "async def fetch():\n    data = await load()\n    return data\n",
+        {"path": "locate_async.py", "function_name": "fetch"},
+    )
+    locate_case(
+        "python_nested_class",
+        "locate_nested.py",
+        "class A:\n    class B:\n        def deep(self):\n            return 3\n",
+        {"path": "locate_nested.py", "function_name": "A.B.deep"},
+    )
+    locate_case(
+        "python_ambiguous",
+        "locate_dup.py",
+        "def dup():\n    return 1\n\ndef dup():\n    return 2\n",
+        {"path": "locate_dup.py", "function_name": "dup"},
+    )
+    locate_case(
+        "python_syntax_error_fallback",
+        "locate_broken.py",
+        "def broken(:\n    pass\n",
+        {"path": "locate_broken.py", "function_name": "broken"},
+    )
+    locate_case(
+        "python_missing",
+        "locate_missing.py",
+        "def present():\n    return 1\n",
+        {"path": "locate_missing.py", "function_name": "absent"},
+    )
+    locate_case(
+        "braced_js",
+        "locate.js",
+        "export function hello(name) {\n  console.log(name);\n}\n",
+        {"path": "locate.js", "function_name": "hello"},
+    )
+    locate_case(
+        "braced_arrow",
+        "locate.ts",
+        "export const add = (a: number, b: number) => {\n  return a + b;\n}\n",
+        {"path": "locate.ts", "function_name": "add"},
+    )
+    locate_case(
+        "braced_ambiguous",
+        "locate_dup.js",
+        "function dup() {\n}\nfunction dup() {\n}\n",
+        {"path": "locate_dup.js", "function_name": "dup"},
+    )
+    locate_case(
+        "braced_no_braces",
+        "locate_braces.txt",
+        "def alpha():\n    return 1\n",
+        {"path": "locate_braces.txt", "function_name": "alpha"},
+    )
     return cases
 
 
@@ -313,7 +404,7 @@ def main() -> None:
             "source": "omnicrawl/workspace/tools.py + omnicrawl/agent/toolkit/host_tools.py",
             "declarations": declarations(),
             "files": file_cases(workspace),
-            "unsupported_locators": unsupported_locator_cases(workspace),
+            "locators": locator_cases(workspace),
             "sampling": sampling_cases(),
             "search": search,
             "git": git,
@@ -337,7 +428,7 @@ def main() -> None:
     counts = {
         "declarations": len(payload["declarations"]),
         **{name: len(cases) for name, cases in payload["files"].items()},
-        "unsupported_locators": len(payload["unsupported_locators"]),
+        "locators": len(payload["locators"]),
         **{f"search.{name}": len(cases) for name, cases in payload["search"].items()},
         "git": len(payload["git"]),
         "sampling": len(payload["sampling"]),

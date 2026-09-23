@@ -458,8 +458,13 @@ pub fn build_catalog(
                     protocol: model.protocol.as_str().to_string(),
                     model_id: model.model_id.clone(),
                     display_name,
-                    capabilities: ModelCapabilities::default(),
-                    context_window_tokens: profile.default_context_window_tokens,
+                    capabilities: model.capabilities,
+                    // Python：`model.context_window_tokens or profile.default_context_window_tokens`。
+                    context_window_tokens: if model.context_window_tokens != 0 {
+                        model.context_window_tokens
+                    } else {
+                        profile.default_context_window_tokens
+                    },
                     availability: "available".to_string(),
                     matched_custom_key: matched,
                     diagnostic: String::new(),

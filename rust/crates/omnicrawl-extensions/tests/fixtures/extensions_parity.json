@@ -1,0 +1,2653 @@
+{
+  "semver": [
+    {
+      "version": "1.0.0",
+      "valid": true
+    },
+    {
+      "version": "0.0.1",
+      "valid": true
+    },
+    {
+      "version": "10.20.30",
+      "valid": true
+    },
+    {
+      "version": "1.0.0-alpha",
+      "valid": true
+    },
+    {
+      "version": "1.0.0-alpha.1",
+      "valid": true
+    },
+    {
+      "version": "1.0.0-0.3.7",
+      "valid": true
+    },
+    {
+      "version": "1.0.0+build.1",
+      "valid": true
+    },
+    {
+      "version": "1.0.0-beta+exp.sha.5114f85",
+      "valid": true
+    },
+    {
+      "version": " 1.2.3 ",
+      "valid": true
+    },
+    {
+      "version": "01.0.0",
+      "valid": false
+    },
+    {
+      "version": "1.0",
+      "valid": false
+    },
+    {
+      "version": "1.0.0-",
+      "valid": false
+    },
+    {
+      "version": "1.0.0-01",
+      "valid": false
+    },
+    {
+      "version": "1.0.0-0",
+      "valid": true
+    },
+    {
+      "version": "1.0.0-alpha..1",
+      "valid": false
+    },
+    {
+      "version": "v1.0.0",
+      "valid": false
+    },
+    {
+      "version": "",
+      "valid": false
+    },
+    {
+      "version": "1.0.0+",
+      "valid": false
+    }
+  ],
+  "npm_name": [
+    {
+      "name": "omnicrawl-plugin-demo",
+      "valid": true
+    },
+    {
+      "name": "@omnicrawl/plugin-demo",
+      "valid": true
+    },
+    {
+      "name": "a",
+      "valid": true
+    },
+    {
+      "name": "~demo",
+      "valid": true
+    },
+    {
+      "name": "@scope/name",
+      "valid": true
+    },
+    {
+      "name": "UPPER",
+      "valid": false
+    },
+    {
+      "name": "with space",
+      "valid": false
+    },
+    {
+      "name": "@scope",
+      "valid": false
+    },
+    {
+      "name": "@scope/",
+      "valid": false
+    },
+    {
+      "name": "",
+      "valid": false
+    },
+    {
+      "name": "name_with_underscore",
+      "valid": true
+    },
+    {
+      "name": "name.with.dot",
+      "valid": true
+    }
+  ],
+  "namespace": [
+    {
+      "package": "@omnicrawl/plugin-demo",
+      "expect": "omnicrawl-plugin-demo"
+    },
+    {
+      "package": "Plain-Name",
+      "expect": "plain-name"
+    },
+    {
+      "package": "@Scope/Name",
+      "expect": "scope-name"
+    },
+    {
+      "package": "a__b",
+      "expect": "a-b"
+    },
+    {
+      "package": "---",
+      "expect": "plugin"
+    },
+    {
+      "package": "!!!",
+      "expect": "plugin"
+    },
+    {
+      "package": "",
+      "expect": "plugin"
+    }
+  ],
+  "plugins_config": [
+    {
+      "input": null,
+      "result": {
+        "enabled": false,
+        "default_timeout_ms": 1000,
+        "max_timeout_ms": 5000,
+        "failure_threshold": 3,
+        "max_message_bytes": 1048576,
+        "custom_event_max_depth": 4,
+        "allow_network_install": false,
+        "audit_log_enabled": true
+      }
+    },
+    {
+      "input": {},
+      "result": {
+        "enabled": false,
+        "default_timeout_ms": 1000,
+        "max_timeout_ms": 5000,
+        "failure_threshold": 3,
+        "max_message_bytes": 1048576,
+        "custom_event_max_depth": 4,
+        "allow_network_install": false,
+        "audit_log_enabled": true
+      }
+    },
+    {
+      "input": {
+        "enabled": true
+      },
+      "result": {
+        "enabled": true,
+        "default_timeout_ms": 1000,
+        "max_timeout_ms": 5000,
+        "failure_threshold": 3,
+        "max_message_bytes": 1048576,
+        "custom_event_max_depth": 4,
+        "allow_network_install": false,
+        "audit_log_enabled": true
+      }
+    },
+    {
+      "input": {
+        "enabled": "yes",
+        "defaultTimeoutMs": "2500"
+      },
+      "result": {
+        "enabled": true,
+        "default_timeout_ms": 2500,
+        "max_timeout_ms": 5000,
+        "failure_threshold": 3,
+        "max_message_bytes": 1048576,
+        "custom_event_max_depth": 4,
+        "allow_network_install": false,
+        "audit_log_enabled": true
+      }
+    },
+    {
+      "input": {
+        "default_timeout_ms": 10
+      },
+      "error": "plugins.default_timeout_ms 必须在 50 与 max_timeout_ms 之间。"
+    },
+    {
+      "input": {
+        "max_timeout_ms": 70000
+      },
+      "error": "plugins.max_timeout_ms 必须在 100 到 60000 之间。"
+    },
+    {
+      "input": {
+        "failure_threshold": 0
+      },
+      "error": "plugins.failure_threshold 必须在 1 到 20 之间。"
+    },
+    {
+      "input": {
+        "max_message_bytes": 100
+      },
+      "error": "plugins.max_message_bytes 必须在 1KiB 到 8MiB 之间。"
+    },
+    {
+      "input": {
+        "custom_event_max_depth": 99
+      },
+      "error": "plugins.custom_event_max_depth 必须在 1 到 16 之间。"
+    },
+    {
+      "input": {
+        "audit_log_enabled": false,
+        "allow_network_install": true
+      },
+      "result": {
+        "enabled": false,
+        "default_timeout_ms": 1000,
+        "max_timeout_ms": 5000,
+        "failure_threshold": 3,
+        "max_message_bytes": 1048576,
+        "custom_event_max_depth": 4,
+        "allow_network_install": true,
+        "audit_log_enabled": false
+      }
+    },
+    {
+      "input": [
+        1,
+        2
+      ],
+      "error": "plugins 配置必须是 JSON 对象。"
+    },
+    {
+      "input": "text",
+      "error": "plugins 配置必须是 JSON 对象。"
+    }
+  ],
+  "handler_registration": [
+    {
+      "input": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "transform"
+      },
+      "result": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "transform",
+        "priority": 0,
+        "replaces": [],
+        "event_version": null,
+        "timeout_ms": null
+      }
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "observe"
+      },
+      "error": "Hook turn.start 不支持 mode=observe"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "plugin.demo.event",
+        "mode": "notify"
+      },
+      "result": {
+        "id": "h1",
+        "hook": "plugin.demo.event",
+        "mode": "notify",
+        "priority": 0,
+        "replaces": [],
+        "event_version": null,
+        "timeout_ms": null
+      }
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "plugin.demo",
+        "mode": "notify"
+      },
+      "error": "自定义 Hook 名称非法：plugin.demo"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "unknown.hook",
+        "mode": "notify"
+      },
+      "error": "未知 Hook：unknown.hook"
+    },
+    {
+      "input": {
+        "id": "-bad",
+        "hook": "turn.start",
+        "mode": "guard"
+      },
+      "error": "非法 Handler ID：-bad"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "bogus"
+      },
+      "error": "Handler h1 mode 非法：bogus"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "tool.execute.after",
+        "mode": "transform",
+        "priority": "3",
+        "replaces": [
+          "other/handler",
+          "",
+          "x"
+        ],
+        "eventVersion": 2,
+        "timeoutMs": "1500"
+      },
+      "error": "replaces 必须是 package/handler 形式：x"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "transform",
+        "replaces": "core/x"
+      },
+      "error": "Handler h1 replaces 必须是数组。"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "transform",
+        "replaces": [
+          "nope"
+        ]
+      },
+      "error": "replaces 必须是 package/handler 形式：nope"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "transform",
+        "replaces": "single"
+      },
+      "error": "Handler h1 replaces 必须是数组。"
+    },
+    {
+      "input": {
+        "id": "h1",
+        "hook": "turn.start",
+        "mode": "transform",
+        "replaces": [
+          "core/sealed"
+        ]
+      },
+      "error": "不能替换 sealed Handler：core/sealed"
+    },
+    {
+      "input": "not-an-object",
+      "error": "hooks 项必须是对象。"
+    }
+  ],
+  "custom_event": [
+    {
+      "input": {
+        "name": "plugin.demo.ping"
+      },
+      "error": "自定义事件必须位于本插件命名空间 plugin.omnicrawl-demo.*，当前：plugin.demo.ping"
+    },
+    {
+      "input": {
+        "name": "plugin.demo.ping",
+        "version": 2,
+        "visibility": "public"
+      },
+      "error": "自定义事件必须位于本插件命名空间 plugin.omnicrawl-demo.*，当前：plugin.demo.ping"
+    },
+    {
+      "input": {
+        "name": "plugin.other.ping"
+      },
+      "error": "自定义事件必须位于本插件命名空间 plugin.omnicrawl-demo.*，当前：plugin.other.ping"
+    },
+    {
+      "input": {
+        "name": "plugin.demo.Ping"
+      },
+      "error": "自定义事件必须位于本插件命名空间 plugin.omnicrawl-demo.*，当前：plugin.demo.Ping"
+    },
+    {
+      "input": {
+        "name": "plugin.demo.ping",
+        "version": 0
+      },
+      "error": "自定义事件必须位于本插件命名空间 plugin.omnicrawl-demo.*，当前：plugin.demo.ping"
+    },
+    {
+      "input": {
+        "name": "plugin.demo.ping",
+        "visibility": "shared"
+      },
+      "error": "自定义事件必须位于本插件命名空间 plugin.omnicrawl-demo.*，当前：plugin.demo.ping"
+    },
+    {
+      "input": {
+        "name": "plugin.demo.ping",
+        "schema": []
+      },
+      "error": "自定义事件必须位于本插件命名空间 plugin.omnicrawl-demo.*，当前：plugin.demo.ping"
+    },
+    {
+      "input": "not-an-object",
+      "error": "customEvents 项必须是对象。"
+    }
+  ],
+  "plugin_manifest": [
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "result": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "api_version": "1",
+        "entry": "index.js",
+        "permissions": [
+          "hook:turn.start"
+        ],
+        "hooks": [
+          {
+            "id": "h1",
+            "hook": "turn.start",
+            "mode": "transform",
+            "priority": 0,
+            "replaces": [],
+            "event_version": null,
+            "timeout_ms": null
+          }
+        ],
+        "engines_omnicrawl": ">=0.1",
+        "engines_node": ">=20",
+        "timeout_ms": null,
+        "custom_events": [],
+        "agents": [],
+        "package_type": "module",
+        "source_path": "/tmp/demo/package.json"
+      }
+    },
+    {
+      "input": {
+        "name": "Bad Name",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "error": "非法 NPM 包名：Bad Name"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.0",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "error": "非法 SemVer：1.0"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3"
+      },
+      "error": "缺少 omnicrawl 扩展字段。"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "2",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "error": "不支持的 apiVersion：2，当前仅接受 1。"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "error": "缺少 omnicrawl.engines.node。"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "../escape.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "error": "entry 路径非法或不允许逃逸：../escape.js"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "error": "omnicrawl.permissions 必须是非空数组。"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            },
+            {
+              "id": "h1",
+              "hook": "turn.end",
+              "mode": "notify"
+            }
+          ]
+        }
+      },
+      "error": "Handler ID 在包内必须唯一。"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "tool.call.before",
+              "mode": "transform"
+            }
+          ]
+        }
+      },
+      "error": "Handler h1 注册 tool.call.before 需要权限 hook:tool.call.before。"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start",
+            "agent:definitions"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ],
+          "agents": [
+            "agents/a.md"
+          ]
+        }
+      },
+      "result": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "api_version": "1",
+        "entry": "index.js",
+        "permissions": [
+          "hook:turn.start",
+          "agent:definitions"
+        ],
+        "hooks": [
+          {
+            "id": "h1",
+            "hook": "turn.start",
+            "mode": "transform",
+            "priority": 0,
+            "replaces": [],
+            "event_version": null,
+            "timeout_ms": null
+          }
+        ],
+        "engines_omnicrawl": ">=0.1",
+        "engines_node": ">=20",
+        "timeout_ms": null,
+        "custom_events": [],
+        "agents": [
+          "agents/a.md"
+        ],
+        "package_type": "module",
+        "source_path": "/tmp/demo/package.json"
+      }
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start",
+            "agent:definitions"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ],
+          "agents": [
+            "agents/a.md",
+            "agents/a.md"
+          ]
+        }
+      },
+      "error": "omnicrawl.agents 不允许重复路径：agents/a.md"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start",
+            "agent:definitions"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ],
+          "agents": [
+            "agents/b.txt"
+          ]
+        }
+      },
+      "error": "omnicrawl.agents 路径非法或不允许逃逸：agents/b.txt"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start",
+            "hook:custom-emit"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ],
+          "customEvents": [
+            {
+              "name": "plugin.omnicrawl-demo.ping"
+            }
+          ]
+        }
+      },
+      "result": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "api_version": "1",
+        "entry": "index.js",
+        "permissions": [
+          "hook:turn.start",
+          "hook:custom-emit"
+        ],
+        "hooks": [
+          {
+            "id": "h1",
+            "hook": "turn.start",
+            "mode": "transform",
+            "priority": 0,
+            "replaces": [],
+            "event_version": null,
+            "timeout_ms": null
+          }
+        ],
+        "engines_omnicrawl": ">=0.1",
+        "engines_node": ">=20",
+        "timeout_ms": null,
+        "custom_events": [
+          {
+            "name": "plugin.omnicrawl-demo.ping",
+            "version": 1,
+            "visibility": "private",
+            "schema": {
+              "type": "object"
+            }
+          }
+        ],
+        "agents": [],
+        "package_type": "module",
+        "source_path": "/tmp/demo/package.json"
+      }
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": [
+            {
+              "id": "h1",
+              "hook": "turn.start",
+              "mode": "transform"
+            }
+          ],
+          "customEvents": [
+            {
+              "name": "plugin.omnicrawl-demo.ping"
+            }
+          ]
+        }
+      },
+      "error": "声明 customEvents 需要 hook:custom-emit 权限。"
+    },
+    {
+      "input": {
+        "name": "@omnicrawl/demo",
+        "version": "1.2.3",
+        "omnicrawl": {
+          "apiVersion": "1",
+          "engines": {
+            "omnicrawl": ">=0.1",
+            "node": ">=20"
+          },
+          "entry": "index.js",
+          "permissions": [
+            "hook:turn.start"
+          ],
+          "hooks": false
+        }
+      },
+      "error": "omnicrawl.hooks 必须是数组。"
+    },
+    {
+      "input": "not-an-object",
+      "error": "package.json 顶层必须是对象。"
+    }
+  ],
+  "payload_schema": [
+    {
+      "payload": {
+        "name": "x"
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "result": null
+    },
+    {
+      "payload": {
+        "name": 1
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "error": "字段 name 必须是 string"
+    },
+    {
+      "payload": {
+        "name": "x",
+        "extra": 1
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "error": "自定义事件 payload 含未声明字段：extra"
+    },
+    {
+      "payload": {},
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "error": "自定义事件 payload 缺少必填字段：name"
+    },
+    {
+      "payload": {
+        "name": "x",
+        "count": 2.5
+      },
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "error": "字段 count 必须是 integer"
+    },
+    {
+      "payload": {
+        "name": "x"
+      },
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": null
+      },
+      "result": null
+    },
+    {
+      "payload": [],
+      "schema": {
+        "type": "array"
+      },
+      "result": null
+    },
+    {
+      "payload": "text",
+      "schema": {
+        "type": "string"
+      },
+      "result": null
+    },
+    {
+      "payload": 1,
+      "schema": {
+        "type": "string"
+      },
+      "error": "自定义事件 payload 必须是 string。"
+    },
+    {
+      "payload": [
+        1
+      ],
+      "schema": null,
+      "error": "自定义事件 payload 默认必须是对象。"
+    },
+    {
+      "payload": {
+        "a": 1
+      },
+      "schema": null,
+      "result": null
+    },
+    {
+      "payload": {
+        "a": 1
+      },
+      "schema": {},
+      "result": null
+    },
+    {
+      "payload": 1,
+      "schema": {
+        "type": "unknown"
+      },
+      "result": null
+    }
+  ],
+  "validate_patch": [
+    {
+      "hook": "turn.start",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/tags",
+          "value": [
+            "a"
+          ]
+        }
+      ],
+      "result": [
+        {
+          "op": "replace",
+          "path": "/payload/tags",
+          "value": [
+            "a"
+          ]
+        }
+      ]
+    },
+    {
+      "hook": "turn.start",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payload/tags/-",
+          "value": "b"
+        }
+      ],
+      "result": [
+        {
+          "op": "add",
+          "path": "/payload/tags/-",
+          "value": "b"
+        }
+      ]
+    },
+    {
+      "hook": "turn.start",
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/payload/userText"
+        }
+      ],
+      "result": [
+        {
+          "op": "remove",
+          "path": "/payload/userText"
+        }
+      ]
+    },
+    {
+      "hook": "turn.start",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payload/other",
+          "value": 1
+        }
+      ],
+      "error": "patch[0].path 不在 Hook turn.start 白名单：/payload/other"
+    },
+    {
+      "hook": "turn.start",
+      "patch": [
+        {
+          "op": "move",
+          "path": "/payload/tags",
+          "value": 1
+        }
+      ],
+      "error": "patch[0] 不支持 op=move，V1 仅允许 add/replace/remove。"
+    },
+    {
+      "hook": "turn.start",
+      "patch": [
+        {
+          "op": "add",
+          "path": "payload/tags",
+          "value": 1
+        }
+      ],
+      "error": "patch[0].path 必须是 JSON Pointer：payload/tags"
+    },
+    {
+      "hook": "turn.start",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payload/tags"
+        }
+      ],
+      "error": "patch[0] 缺少 value。"
+    },
+    {
+      "hook": "turn.end",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payload/tags",
+          "value": 1
+        }
+      ],
+      "error": "Hook turn.end 不允许 transform Patch。"
+    },
+    {
+      "hook": "model.request.before",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/messages/0/content",
+          "value": "x"
+        }
+      ],
+      "result": [
+        {
+          "op": "replace",
+          "path": "/payload/messages/0/content",
+          "value": "x"
+        }
+      ]
+    },
+    {
+      "hook": "model.request.before",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/temperature",
+          "value": 0.5
+        }
+      ],
+      "result": [
+        {
+          "op": "replace",
+          "path": "/payload/temperature",
+          "value": 0.5
+        }
+      ]
+    },
+    {
+      "hook": "turn.start",
+      "patch": "not-a-list",
+      "error": "patch 必须是数组。"
+    },
+    {
+      "hook": "turn.start",
+      "patch": [
+        "not-an-object"
+      ],
+      "error": "patch[0] 必须是对象。"
+    },
+    {
+      "hook": "turn.start",
+      "patch": [],
+      "result": []
+    }
+  ],
+  "apply_patch": [
+    {
+      "document": {
+        "payload": {
+          "a": 1
+        }
+      },
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/a",
+          "value": 2
+        }
+      ],
+      "result": {
+        "payload": {
+          "a": 2
+        }
+      }
+    },
+    {
+      "document": {
+        "payload": {
+          "a": 1
+        }
+      },
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payload/b",
+          "value": 2
+        }
+      ],
+      "result": {
+        "payload": {
+          "a": 1,
+          "b": 2
+        }
+      }
+    },
+    {
+      "document": {
+        "payload": {
+          "a": 1
+        }
+      },
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/payload/a"
+        }
+      ],
+      "result": {
+        "payload": {}
+      }
+    },
+    {
+      "document": {
+        "payload": {
+          "a": 1
+        }
+      },
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/payload/missing"
+        }
+      ],
+      "error": "remove 目标不存在：/payload/missing"
+    },
+    {
+      "document": {
+        "payload": {
+          "tags": [
+            "a"
+          ]
+        }
+      },
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payload/tags/-",
+          "value": "b"
+        }
+      ],
+      "result": {
+        "payload": {
+          "tags": [
+            "a",
+            "b"
+          ]
+        }
+      }
+    },
+    {
+      "document": {
+        "payload": {
+          "tags": [
+            "a"
+          ]
+        }
+      },
+      "patch": [
+        {
+          "op": "add",
+          "path": "/payload/tags/5",
+          "value": "b"
+        }
+      ],
+      "result": {
+        "payload": {
+          "tags": [
+            "a",
+            "b"
+          ]
+        }
+      }
+    },
+    {
+      "document": {
+        "payload": {
+          "tags": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/payload/tags/1"
+        }
+      ],
+      "result": {
+        "payload": {
+          "tags": [
+            "a"
+          ]
+        }
+      }
+    },
+    {
+      "document": {
+        "payload": {}
+      },
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/deep/child",
+          "value": 1
+        }
+      ],
+      "error": "replace 目标不存在：/payload/deep/child"
+    },
+    {
+      "document": {
+        "payload": {}
+      },
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/missing",
+          "value": 1
+        }
+      ],
+      "error": "replace 目标不存在：/payload/missing"
+    },
+    {
+      "document": {
+        "payload": {
+          "a": 1
+        }
+      },
+      "patch": [
+        {
+          "op": "add",
+          "path": "/",
+          "value": 1
+        }
+      ],
+      "result": {
+        "payload": {
+          "a": 1
+        },
+        "": 1
+      }
+    },
+    {
+      "document": {
+        "payload": {
+          "a~b": 1
+        }
+      },
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/a~0b",
+          "value": 2
+        }
+      ],
+      "result": {
+        "payload": {
+          "a~b": 2
+        }
+      }
+    },
+    {
+      "document": {
+        "payload": {
+          "a/b": 1
+        }
+      },
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/payload/a~1b",
+          "value": 2
+        }
+      ],
+      "result": {
+        "payload": {
+          "a/b": 2
+        }
+      }
+    }
+  ],
+  "sort_handlers": [
+    {
+      "handlers": [
+        {
+          "key": "b/obs",
+          "plugin_name": "b",
+          "plugin_version": "1.0.0",
+          "handler_id": "obs",
+          "hook": "turn.start",
+          "mode": "observe",
+          "priority": 5,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "a/guard",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "guard",
+          "hook": "turn.start",
+          "mode": "guard",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "c/tr",
+          "plugin_name": "c",
+          "plugin_version": "1.0.0",
+          "handler_id": "tr",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 1,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "a/tr",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "tr",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 9,
+          "scope": "project",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "a/notify",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "notify",
+          "hook": "turn.start",
+          "mode": "notify",
+          "priority": 1,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "zzz/tr",
+          "plugin_name": "zzz",
+          "plugin_version": "1.0.0",
+          "handler_id": "tr",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 9,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "expect": [
+        {
+          "key": "a/guard",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "guard",
+          "hook": "turn.start",
+          "mode": "guard",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "a/tr",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "tr",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 9,
+          "scope": "project",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "zzz/tr",
+          "plugin_name": "zzz",
+          "plugin_version": "1.0.0",
+          "handler_id": "tr",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 9,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "c/tr",
+          "plugin_name": "c",
+          "plugin_version": "1.0.0",
+          "handler_id": "tr",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 1,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "b/obs",
+          "plugin_name": "b",
+          "plugin_version": "1.0.0",
+          "handler_id": "obs",
+          "hook": "turn.start",
+          "mode": "observe",
+          "priority": 5,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "a/notify",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "notify",
+          "hook": "turn.start",
+          "mode": "notify",
+          "priority": 1,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ]
+    }
+  ],
+  "hook_result": [
+    {
+      "raw": null,
+      "result": {
+        "action": "continue",
+        "reason": "",
+        "code": "",
+        "patch": [],
+        "annotations": {},
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "continue"
+      }
+    },
+    {
+      "raw": {},
+      "result": {
+        "action": "continue",
+        "reason": "",
+        "code": "",
+        "patch": [],
+        "annotations": {},
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "continue"
+      }
+    },
+    {
+      "raw": {
+        "action": "continue"
+      },
+      "result": {
+        "action": "continue",
+        "reason": "",
+        "code": "",
+        "patch": [],
+        "annotations": {},
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "continue"
+      }
+    },
+    {
+      "raw": {
+        "action": "continue",
+        "annotations": {
+          "a": 1
+        }
+      },
+      "result": {
+        "action": "continue",
+        "reason": "",
+        "code": "",
+        "patch": [],
+        "annotations": {
+          "a": 1
+        },
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "continue"
+      }
+    },
+    {
+      "raw": {
+        "action": "approve"
+      },
+      "error": "Handler demo/h1 返回了非法 action=approve；插件只能 deny，不能批准。"
+    },
+    {
+      "raw": {
+        "action": "deny"
+      },
+      "result": {
+        "action": "deny",
+        "reason": "插件拒绝操作",
+        "code": "",
+        "patch": [],
+        "annotations": {},
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "deny"
+      }
+    },
+    {
+      "raw": {
+        "action": "deny",
+        "reason": "  ",
+        "code": "forbidden"
+      },
+      "result": {
+        "action": "deny",
+        "reason": "插件拒绝操作",
+        "code": "forbidden",
+        "patch": [],
+        "annotations": {},
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "deny"
+      }
+    },
+    {
+      "raw": {
+        "action": "patch",
+        "patch": [
+          {
+            "op": "add",
+            "path": "/payload/tags",
+            "value": 1
+          }
+        ]
+      },
+      "result": {
+        "action": "patch",
+        "reason": "",
+        "code": "",
+        "patch": [
+          {
+            "op": "add",
+            "path": "/payload/tags",
+            "value": 1
+          }
+        ],
+        "annotations": {},
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "patch"
+      }
+    },
+    {
+      "raw": {
+        "action": "patch",
+        "patch": "nope"
+      },
+      "error": "Handler demo/h1 patch 必须是数组。"
+    },
+    {
+      "raw": {
+        "action": "bogus"
+      },
+      "error": "Handler demo/h1 action 非法：bogus"
+    },
+    {
+      "raw": {
+        "annotations": []
+      },
+      "result": {
+        "action": "continue",
+        "reason": "",
+        "code": "",
+        "patch": [],
+        "annotations": {},
+        "handler_key": "demo/h1",
+        "elapsed_ms": 12.5,
+        "status": "continue"
+      }
+    },
+    {
+      "raw": {
+        "annotations": "text"
+      },
+      "error": "Handler demo/h1 annotations 必须是对象。"
+    },
+    {
+      "raw": "not-an-object",
+      "error": "Handler demo/h1 返回值必须是对象。"
+    }
+  ],
+  "stable_hash": [
+    {
+      "value": {
+        "b": 1,
+        "a": 2
+      },
+      "expect": "d3626ac30a87e6f7"
+    },
+    {
+      "value": [
+        1,
+        2,
+        3
+      ],
+      "expect": "a615eeaee21de517"
+    },
+    {
+      "value": "text",
+      "expect": "1e1d0f251d3a76fa"
+    },
+    {
+      "value": 1,
+      "expect": "6b86b273ff34fce1"
+    },
+    {
+      "value": null,
+      "expect": "74234e98afe7498f"
+    },
+    {
+      "value": {
+        "nested": {
+          "z": 1,
+          "a": [
+            1,
+            {
+              "y": 2,
+              "x": 3
+            }
+          ]
+        }
+      },
+      "expect": "71cf20adae8f6b98"
+    },
+    {
+      "value": {
+        "中文": "值"
+      },
+      "expect": "8b67ddcefd8fcde7"
+    }
+  ],
+  "timeout_for_mode": [
+    {
+      "mode": "observe",
+      "expect": 500
+    },
+    {
+      "mode": "transform",
+      "expect": 2000
+    },
+    {
+      "mode": "guard",
+      "expect": 2000
+    },
+    {
+      "mode": "notify",
+      "expect": 500
+    },
+    {
+      "mode": "bogus",
+      "expect": 500
+    }
+  ],
+  "merge_registry": [
+    {
+      "user": {
+        "schemaVersion": 1,
+        "plugins": {
+          "a": {
+            "enabled": true,
+            "active": null,
+            "candidate": null,
+            "previous": null,
+            "approvedPermissions": [],
+            "localPath": "",
+            "devMode": false
+          },
+          "b": {
+            "enabled": false,
+            "active": null,
+            "candidate": null,
+            "previous": null,
+            "approvedPermissions": [],
+            "localPath": "",
+            "devMode": true
+          }
+        },
+        "disabledHandlers": [
+          "a/h1"
+        ]
+      },
+      "project": {
+        "schemaVersion": 2,
+        "plugins": {
+          "b": {
+            "enabled": true,
+            "active": null,
+            "candidate": null,
+            "previous": null,
+            "approvedPermissions": [],
+            "localPath": "/tmp/b",
+            "devMode": false
+          }
+        },
+        "disabledHandlers": [
+          "a/h1",
+          "b/h2"
+        ]
+      },
+      "expect": {
+        "schemaVersion": 2,
+        "plugins": {
+          "a": {
+            "enabled": true,
+            "active": null,
+            "candidate": null,
+            "previous": null,
+            "approvedPermissions": [],
+            "localPath": "",
+            "devMode": false
+          },
+          "b": {
+            "enabled": true,
+            "active": null,
+            "candidate": null,
+            "previous": null,
+            "approvedPermissions": [],
+            "localPath": "/tmp/b",
+            "devMode": false
+          }
+        },
+        "disabledHandlers": [
+          "a/h1",
+          "b/h2"
+        ]
+      }
+    }
+  ],
+  "execution_plan": [
+    {
+      "manifests": [
+        {
+          "manifest": {
+            "name": "demo",
+            "version": "1.0.0",
+            "api_version": "1",
+            "entry": "index.js",
+            "permissions": [
+              "hook:turn.start"
+            ],
+            "hooks": [
+              {
+                "id": "h1",
+                "hook": "turn.start",
+                "mode": "transform",
+                "priority": 0,
+                "replaces": [],
+                "event_version": null,
+                "timeout_ms": null
+              },
+              {
+                "id": "h2",
+                "hook": "turn.end",
+                "mode": "notify",
+                "priority": 0,
+                "replaces": [],
+                "event_version": null,
+                "timeout_ms": 9000
+              }
+            ],
+            "engines_omnicrawl": ">=0.1",
+            "engines_node": ">=20",
+            "timeout_ms": null,
+            "custom_events": [],
+            "agents": [],
+            "package_type": "module",
+            "source_path": ""
+          },
+          "scope": "user",
+          "record": {
+            "name": "demo",
+            "enabled": true,
+            "active": {
+              "version": "1.0.0",
+              "integrity": "sha512-abcdefghijklmnop",
+              "lockfile_hash": "sha256-x",
+              "source": "registry.npmjs.org",
+              "store_path": "/store/demo",
+              "content_hash": ""
+            },
+            "candidate": null,
+            "previous": null,
+            "approved_permissions": [
+              "hook:turn.start",
+              "hook:turn.end"
+            ],
+            "local_path": "/store/demo",
+            "dev_mode": false
+          }
+        },
+        {
+          "manifest": {
+            "name": "skipped",
+            "version": "0.9.0",
+            "api_version": "1",
+            "entry": "index.js",
+            "permissions": [
+              "hook:turn.start"
+            ],
+            "hooks": [
+              {
+                "id": "d1",
+                "hook": "turn.start",
+                "mode": "guard",
+                "priority": 0,
+                "replaces": [],
+                "event_version": null,
+                "timeout_ms": null
+              }
+            ],
+            "engines_omnicrawl": ">=0.1",
+            "engines_node": ">=20",
+            "timeout_ms": null,
+            "custom_events": [],
+            "agents": [],
+            "package_type": "module",
+            "source_path": ""
+          },
+          "scope": "project",
+          "record": {
+            "name": "skipped",
+            "enabled": true,
+            "active": null,
+            "candidate": null,
+            "previous": null,
+            "approved_permissions": [
+              "hook:turn.start"
+            ],
+            "local_path": "",
+            "dev_mode": true
+          }
+        }
+      ],
+      "disabled": [
+        "skipped/d1"
+      ],
+      "max_timeout_ms": 5000,
+      "expect": [
+        {
+          "key": "demo/h1",
+          "plugin_name": "demo",
+          "plugin_version": "1.0.0",
+          "handler_id": "h1",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "abcdefghijkl",
+          "local_path": "/store/demo",
+          "permissions": [
+            "hook:turn.start"
+          ]
+        },
+        {
+          "key": "demo/h2",
+          "plugin_name": "demo",
+          "plugin_version": "1.0.0",
+          "handler_id": "h2",
+          "hook": "turn.end",
+          "mode": "notify",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 5000,
+          "replaces": [],
+          "integrity_prefix": "abcdefghijkl",
+          "local_path": "/store/demo",
+          "permissions": [
+            "hook:turn.start"
+          ]
+        }
+      ]
+    }
+  ],
+  "resolve_replacements": [
+    {
+      "handlers": [
+        {
+          "key": "a/h",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "b/h"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "b/h",
+          "plugin_name": "b",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "c/h",
+          "plugin_name": "c",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "expect": [
+        "a/h",
+        "c/h"
+      ]
+    },
+    {
+      "handlers": [
+        {
+          "key": "a/h",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "c/h"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "b/h",
+          "plugin_name": "b",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "c/h"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "c/h",
+          "plugin_name": "c",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "expect": [
+        "c/h"
+      ]
+    },
+    {
+      "handlers": [
+        {
+          "key": "a/h",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "b/other"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "b/other",
+          "plugin_name": "b",
+          "plugin_version": "1.0.0",
+          "handler_id": "other",
+          "hook": "turn.end",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "expect": [
+        "b/other"
+      ]
+    },
+    {
+      "handlers": [
+        {
+          "key": "a/h",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "core/sealed"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "b/h",
+          "plugin_name": "b",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "expect": [
+        "b/h"
+      ]
+    },
+    {
+      "handlers": [
+        {
+          "key": "a/h",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "b/h"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "b/h",
+          "plugin_name": "b",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "a/h"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        },
+        {
+          "key": "c/h",
+          "plugin_name": "c",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "expect": [
+        "c/h"
+      ]
+    },
+    {
+      "handlers": [
+        {
+          "key": "a/h",
+          "plugin_name": "a",
+          "plugin_version": "1.0.0",
+          "handler_id": "h",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [
+            "ghost/h"
+          ],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "expect": [
+        "a/h"
+      ]
+    }
+  ],
+  "skill_name": [
+    {
+      "name": "ok-name",
+      "errors": []
+    },
+    {
+      "name": "a",
+      "errors": []
+    },
+    {
+      "name": "-bad",
+      "errors": [
+        "名称不能以连字符开头或结尾"
+      ]
+    },
+    {
+      "name": "bad-",
+      "errors": [
+        "名称不能以连字符开头或结尾"
+      ]
+    },
+    {
+      "name": "double--dash",
+      "errors": [
+        "名称不能包含连续连字符"
+      ]
+    },
+    {
+      "name": "UPPER",
+      "errors": [
+        "名称只能包含小写字母 a-z、数字 0-9、连字符"
+      ]
+    },
+    {
+      "name": "with space",
+      "errors": [
+        "名称只能包含小写字母 a-z、数字 0-9、连字符"
+      ]
+    },
+    {
+      "name": "",
+      "errors": [
+        "名称只能包含小写字母 a-z、数字 0-9、连字符"
+      ]
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "errors": [
+        "名称超过 64 字符（当前 65 字符）"
+      ]
+    },
+    {
+      "name": "中文",
+      "errors": [
+        "名称只能包含小写字母 a-z、数字 0-9、连字符"
+      ]
+    }
+  ],
+  "skill_description": [
+    {
+      "description": null,
+      "errors": [
+        "description 是必填字段"
+      ]
+    },
+    {
+      "description": "",
+      "errors": [
+        "description 是必填字段"
+      ]
+    },
+    {
+      "description": "   ",
+      "errors": [
+        "description 是必填字段"
+      ]
+    },
+    {
+      "description": "ok",
+      "errors": []
+    },
+    {
+      "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "errors": [
+        "描述超过 1024 字符（当前 1025 字符）"
+      ]
+    }
+  ],
+  "frontmatter": [
+    {
+      "content": "---\nname: demo\ndescription: 说明\n---\n\n正文\n",
+      "frontmatter": {
+        "name": "demo",
+        "description": "说明"
+      },
+      "body": "正文"
+    },
+    {
+      "content": "---\nname: demo\ndisable-model-invocation: true\n---\nbody\n",
+      "frontmatter": {
+        "name": "demo",
+        "disable-model-invocation": true
+      },
+      "body": "body"
+    },
+    {
+      "content": "---\nname: \"demo\"\ndescription: '用引号'\n---\nbody",
+      "frontmatter": {
+        "name": "demo",
+        "description": "用引号"
+      },
+      "body": "body"
+    },
+    {
+      "content": "---\n# comment\nname: demo\n---\nbody",
+      "frontmatter": {
+        "name": "demo"
+      },
+      "body": "body"
+    },
+    {
+      "content": "no frontmatter\n",
+      "frontmatter": {},
+      "body": "no frontmatter\n"
+    },
+    {
+      "content": "---\nname: demo\n",
+      "frontmatter": {},
+      "body": "---\nname: demo\n"
+    },
+    {
+      "content": "---\r\nname: demo\r\ndescription: x\r\n---\r\nbody\r\n",
+      "frontmatter": {
+        "name": "demo",
+        "description": "x"
+      },
+      "body": "body"
+    },
+    {
+      "content": "---\nname: demo\nweird line\n---\nbody\n",
+      "frontmatter": {
+        "name": "demo"
+      },
+      "body": "body"
+    }
+  ],
+  "infer_description": [
+    {
+      "raw": "# 标题\n\n正文",
+      "body": "# 标题\n\n正文",
+      "expect": "标题"
+    },
+    {
+      "raw": "raw text",
+      "body": "",
+      "expect": "raw text"
+    },
+    {
+      "raw": "",
+      "body": "- 列表项",
+      "expect": "列表项"
+    },
+    {
+      "raw": "---\nname: x\n---\n",
+      "body": "",
+      "expect": "name: x"
+    },
+    {
+      "raw": "",
+      "body": "**加粗**",
+      "expect": "加粗**"
+    }
+  ],
+  "skill_prompt": [
+    {
+      "skills": [
+        {
+          "name": "alpha",
+          "description": "含 <特殊> & 字符",
+          "source_path": "\\skills\\alpha\\SKILL.md",
+          "base_dir": "\\skills\\alpha",
+          "scope": "user",
+          "disable_model_invocation": false
+        },
+        {
+          "name": "hidden",
+          "description": "不展示",
+          "source_path": "\\skills\\hidden\\SKILL.md",
+          "base_dir": "\\skills\\hidden",
+          "scope": "user",
+          "disable_model_invocation": true
+        }
+      ],
+      "expect": "\n以下 Skill 提供了针对特定任务的专用指令。当你判断当前任务匹配某个 Skill 的描述时，请使用 read 工具加载对应的 SKILL.md 文件，然后严格遵循其中的指令执行。Skill 文件中引用的相对路径应相对于 SKILL.md 所在目录解析。\n\n<available_skills>\n  <skill>\n    <name>alpha</name>\n    <description>含 &lt;特殊&gt; &amp; 字符</description>\n    <location>\\skills\\alpha\\SKILL.md</location>\n  </skill>\n</available_skills>"
+    }
+  ],
+  "dispatch_context": [
+    {
+      "handlers": [],
+      "source": "none"
+    },
+    {
+      "handlers": [
+        {
+          "key": "demo/h1",
+          "plugin_name": "demo",
+          "plugin_version": "1.0.0",
+          "handler_id": "h1",
+          "hook": "turn.start",
+          "mode": "transform",
+          "priority": 0,
+          "scope": "user",
+          "timeout_ms": 2000,
+          "replaces": [],
+          "integrity_prefix": "",
+          "local_path": "",
+          "permissions": []
+        }
+      ],
+      "source": "parent-plan"
+    }
+  ]
+}

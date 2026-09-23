@@ -7,12 +7,17 @@
 //! 对齐、行为与视觉对齐），上述模块是该对映层完成后要退役的早期简化页面。
 
 pub mod composer;
+pub mod config_chat;
 pub mod conversation;
+pub mod file_picker;
 pub mod fullscreen;
 pub mod hud;
 pub mod panels;
+pub mod queue;
+pub mod settings;
+pub mod splash;
 
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::Frame;
 
 use crate::state::AppState;
@@ -20,26 +25,81 @@ use crate::state::AppState;
 /// HUD 固定两行：一行遥测、一行项目与上下文占用。
 pub const HUD_HEIGHT: u16 = 2;
 
-pub fn render(frame: &mut Frame, state: &AppState) {
-    let area = frame.area();
+/// 一帧的各区几何：渲染与鼠标命中判定共用同一套布局计算，两者永远一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiAreas {
+    pub hud: Rect,
+    pub conversation: Rect,
+    pub todos: Rect,
+    pub panel: Rect,
+    pub queue: Rect,
+    pub status: Rect,
+    /// 输入框上方的命令菜单（对映 Python `#composer-wrap` 里的菜单行预算）。
+    pub menu: Rect,
+    pub composer: Rect,
+}
+
+/// 按当前状态把整屏切成固定条带；消息区吃剩余高度。
+pub fn layout(area: Rect, state: &AppState) -> UiAreas {
     let width = area.width;
-    let [hud, conversation, todos, panel, status, composer] = Layout::vertical([
+    let [hud, conversation, todos, panel, queue, status, menu, composer] = Layout::vertical([
         Constraint::Length(HUD_HEIGHT),
         // 消息区吃掉除固定条带外的全部高度；用 Fill 而不是 Min，避免多余空间落到布局末尾。
         Constraint::Fill(1),
         Constraint::Length(panels::todo_height(state)),
         Constraint::Length(panels::panel_height(state, width)),
+        Constraint::Length(queue::height(state)),
         Constraint::Length(panels::status_height(state)),
+        Constraint::Length(composer::menu_height(state)),
         Constraint::Length(composer::height(state, width)),
     ])
     .areas(area);
+    UiAreas {
+        hud,
+        conversation,
+        todos,
+        panel,
+        queue,
+        status,
+        menu,
+        composer,
+    }
+}
 
-    hud::render(frame, hud, state);
-    conversation::render(frame, conversation, state);
-    panels::render_todos(frame, todos, state, width);
-    panels::render_panel(frame, panel, state, width);
-    panels::render_status(frame, status, state);
-    composer::render(frame, composer, state);
+/// 渲染一帧：设置面板打开时铺满整屏（对映 Python 的 `SettingsScreen` 模态页）。
+///
+/// 文件选择弹层盖在设置面板之上（TTS 页选参考音频时用它）；弹层自己在中间画对话框，
+/// 底下的界面照旧渲染，退出弹层时不需要重排布局。
+pub fn render(
+    frame: &mut Frame,
+    state: &AppState,
+    settings: Option<&settings::SettingsState>,
+    picker: Option<&file_picker::FilePickerState>,
+    chat: Option<&config_chat::ConfigChatState>,
+) {
+    if let Some(chat) = chat {
+        config_chat::render(frame, frame.area(), chat);
+        return;
+    }
+    if let Some(settings) = settings {
+        settings::render::render(frame, frame.area(), settings);
+        if let Some(picker) = picker {
+            file_picker::render(frame, frame.area(), picker);
+        }
+        return;
+    }
+    let area = frame.area();
+    let width = area.width;
+    let regions = layout(area, state);
+
+    hud::render(frame, regions.hud, state);
+    conversation::render(frame, regions.conversation, state);
+    panels::render_todos(frame, regions.todos, state, width);
+    panels::render_panel(frame, regions.panel, state, width);
+    queue::render(frame, regions.queue, state);
+    panels::render_status(frame, regions.status, state);
+    composer::render_menu(frame, regions.menu, state);
+    composer::render(frame, regions.composer, state);
 }
 
 /// 按显示列宽折行；CJK 与 emoji 各占自己的列宽，阶段一按列断行，不做单词级避断。

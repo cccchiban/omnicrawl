@@ -70,6 +70,8 @@ pub struct AfterTurnReport {
     /// 压缩发生时的运行期历史（摘要 + 召回注入 + 保留窗口）。
     pub history: Option<Vec<Value>>,
     pub diagnostic: String,
+    /// 摘要正文（`compact_summary` 载荷的 `content`）：显式压缩要回给客户端。
+    pub summary: String,
 }
 
 /// 上下文压缩驱动：测量、压缩、归档、记忆回写、自动召回与历史重建。
@@ -150,11 +152,68 @@ impl CompactionDriver {
             return Ok(report);
         };
 
+        self.apply_compaction(
+            boundary.session_id,
+            &compact_payload,
+            boundary.history_messages,
+            &mut report,
+        )?;
+        Ok(report)
+    }
+
+    /// 显式压缩（`session.compact` 命令）：不做阈值判定，直接请求一次模型摘要。
+    ///
+    /// 与回合结束边界的差别只有触发方式；载荷落盘、归档、记忆回写、召回与历史重建共用
+    /// [`CompactionDriver::apply_compaction`]，两条路径不会漂移。摘要在 `report.summary`。
+    pub fn manual_compact(&self, session_id: &str) -> Result<AfterTurnReport, String> {
+        let events = self.source_events(session_id)?;
+        let outcome = self
+            .service
+            .manual_compact(
+                &events,
+                self.config.target_summary_tokens,
+                self.config.reasoning_effort.as_str(),
+                self.config.preserve_exact_evidence,
+            )
+            .map_err(|error| error.message().to_string())?;
+
+        let mut report = AfterTurnReport {
+            measurement_payload: outcome.measurement_payload.clone(),
+            diagnostic: outcome.diagnostic.clone(),
+            ..AfterTurnReport::default()
+        };
+        let Some(compact_payload) = outcome.compact_payload.clone() else {
+            let reason = if outcome.diagnostic.is_empty() {
+                "当前会话内容太少，暂不需要压缩。".to_string()
+            } else {
+                outcome.diagnostic.clone()
+            };
+            // 与 Python 的 `manual_model` 模式一致：失败也留事件，便于诊断。
+            self.append_event(
+                session_id,
+                "context_compaction_failed",
+                &json!({"mode": "manual_model", "reason": reason}),
+            )?;
+            return Err(reason);
+        };
+        self.apply_compaction(session_id, &compact_payload, &[], &mut report)?;
+        Ok(report)
+    }
+
+    /// 压缩载荷的收尾：归档、事件、记忆回写、召回、历史重建与提示文案。
+    ///
+    /// `history_messages` 只在测量载荷缺少 `estimated_next_input_tokens` 时用于估算压缩前的
+    /// Token 数（回合结束边界传当轮历史；显式压缩没有当轮历史，传空）。
+    fn apply_compaction(
+        &self,
+        session_id: &str,
+        compact_payload: &Value,
+        history_messages: &[Value],
+        report: &mut AfterTurnReport,
+    ) -> Result<(), String> {
         let mut payload = compact_payload.as_object().cloned().unwrap_or_default();
         // 归档被压缩窗口的原始事件（二级存储），并把 archive_id 回写事件。
-        if let Some((archive_id, archived_count)) =
-            self.archive_events(boundary.session_id, &payload)?
-        {
+        if let Some((archive_id, archived_count)) = self.archive_events(session_id, &payload)? {
             payload.insert("archive_id".to_string(), Value::from(archive_id.clone()));
             if let Some(measurement) = report.measurement_payload.as_object_mut() {
                 measurement.insert("archive_id".to_string(), Value::from(archive_id));
@@ -173,28 +232,30 @@ impl CompactionDriver {
         }
         let payload = Value::Object(payload);
         self.append_event(
-            boundary.session_id,
+            session_id,
             "context_compaction_measurement",
             &report.measurement_payload,
         )?;
-        self.append_event(boundary.session_id, "compact_summary", &payload)?;
+        self.append_event(session_id, "compact_summary", &payload)?;
         self.write_memories(&payload);
-        let recall_text = self.remember_recall(&payload, boundary.session_id);
-        let history =
-            self.rebuild_history(&payload, boundary.session_id, recall_text.as_deref())?;
+        let recall_text = self.remember_recall(&payload, session_id);
+        let history = self.rebuild_history(&payload, session_id, recall_text.as_deref())?;
         // after 一律用替换后的真实历史计算：无预算上限模式下模拟值会误导显示。
         let before_tokens = report
             .measurement_payload
             .get("estimated_next_input_tokens")
             .and_then(Value::as_i64)
-            .unwrap_or_else(|| {
-                estimate_json_tokens(&Value::Array(boundary.history_messages.to_vec()))
-            });
+            .unwrap_or_else(|| estimate_json_tokens(&Value::Array(history_messages.to_vec())));
         let after_tokens = estimate_json_tokens(&Value::Array(history.clone()));
         report.notice = format_compaction_notice(Some(before_tokens), Some(after_tokens));
+        report.summary = payload
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         report.history = Some(history);
         report.compacted = true;
-        Ok(report)
+        Ok(())
     }
 
     /// 上下文超限后的恢复：压缩当前未完成回合，返回可直接重试的历史。
@@ -233,6 +294,7 @@ impl CompactionDriver {
                 notice: None,
                 history: None,
                 diagnostic,
+                summary: String::new(),
             });
         };
 
@@ -278,6 +340,7 @@ impl CompactionDriver {
             notice: format_compaction_notice(Some(before_tokens), Some(after_tokens)),
             history: Some(history),
             diagnostic: String::new(),
+            summary: String::new(),
         })
     }
 

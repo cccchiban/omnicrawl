@@ -25,6 +25,7 @@ pub mod middleware;
 pub mod ner;
 pub mod ner_weights;
 pub mod oneshot;
+pub mod plan_cache;
 pub mod rules;
 pub mod stream;
 
@@ -43,6 +44,10 @@ pub use middleware::{
     mask_messages,
 };
 pub use oneshot::{OneShotMasker, OneshotOptions};
+pub use plan_cache::{
+    stage_counter_field, text_key, MaskPlan, MaskPlanBuilder, MaskPlanCache, PlanCacheStats,
+    PlanSpan, DEFAULT_MAX_BYTES, DEFAULT_MAX_ENTRIES, STAGE_COUNTER_FIELDS,
+};
 pub use rules::{
     build_enabled_rules, builtin_rules, scan_pattern_rules, shannon_entropy_bits, PatternRule,
     RuleMatch, RuleMatcher,

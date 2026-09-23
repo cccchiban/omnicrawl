@@ -18,6 +18,29 @@ pub mod method {
     pub const INITIALIZE: &str = "initialize";
     pub const TURN_SUBMIT: &str = "turn.submit";
     pub const TURN_CANCEL: &str = "turn.cancel";
+    pub const TURN_UNDO: &str = "turn.undo";
+    /// 运行期更新内核对后续回合生效的设置（模型、工具声明、上下文与压缩阈值）。
+    pub const SESSION_SETTINGS: &str = "session.settings";
+    /// 显式压缩当前会话：不做阈值判定，直接请求一次模型摘要。
+    pub const SESSION_COMPACT: &str = "session.compact";
+    /// 查询／取消内核持有的后台 SubAgent 任务（不做任务创建与分发）。
+    pub const SUBAGENT_QUERY: &str = "subagent.query";
+    /// 列出当前工作区最近的会话（`archived=false`）或已归档会话（`archived=true`）。
+    pub const SESSION_LIST: &str = "session.list";
+    /// 重命名当前会话。
+    pub const SESSION_RENAME: &str = "session.rename";
+    /// 归档当前会话，并立即开启一个新的空会话。
+    pub const SESSION_ARCHIVE: &str = "session.archive";
+    /// 查询用户提示历史（只读展示，不注入模型上下文）。
+    pub const SESSION_HISTORY: &str = "session.history";
+    /// 清空当前对话并开启新会话。
+    pub const SESSION_NEW: &str = "session.new";
+    /// 恢复指定会话：内核切到该会话并用转录重建运行期历史。
+    pub const SESSION_RESUME: &str = "session.resume";
+    /// 派生一个子 Agent 任务并等它结束，返回子 Agent 的原始输出文本。
+    pub const SUBAGENT_RUN: &str = "subagent.run";
+    /// 把宿主产生的文本作为 assistant 消息注入内核会话历史（下一轮请求可见）。
+    pub const SESSION_APPEND: &str = "session.append";
     pub const SHUTDOWN: &str = "shutdown";
 
     // 内核 → 宿主（请求，需要宿主回响应）
@@ -258,6 +281,9 @@ pub struct KernelSessionConfig {
     /// 会话级记忆目录；空则不写记忆、不自动召回。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_root: Option<String>,
+    /// 宿主工作区根：内核据此在回合内拍工作区快照，供 `/undo` 回滚副作用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_root: Option<String>,
     /// 压缩策略；缺省用内核默认值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<KernelCompactionConfig>,
@@ -288,6 +314,55 @@ pub struct KernelCompactionConfig {
     pub auto_memory_recall: Option<bool>,
 }
 
+/// 宿主在运行期更新内核持有的设置（协议 v1 `session.settings`）。
+///
+/// 只覆盖给出的字段，其余保持原值；任一字段非法时整体不生效（原子），
+/// 错误响应的 `data.kind` 给出可判定原因（见 `docs/protocol-v1.md`）。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SessionSettingsParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<Box<SessionModelSettings>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<KernelCompactionConfig>,
+}
+
+/// `session.settings.model` 的可改字段：`None` 表示不动该字段。
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SessionModelSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 生成选项（`GenerationOptions` 的 JSON 形状），整体替换。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Value>,
+    /// 推理强度：只写进生成选项的 `reasoning_effort` 字段，不整体替换 `options`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// system prompt，整体替换（模式切换会改写它）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// system 之外的上下文消息，整体替换（Skill 重扫、工作区切换后用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_messages: Option<Vec<Value>>,
+    /// 静态工具声明，整体替换；工具仍由宿主执行。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<i64>,
+    // ---- 渠道字段：切换模型渠道时一并下发，空串视作不改 ----
+    /// Provider 名（`openai` / `anthropic` / `gemini`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// 协议名（如 `openai_responses`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// 渠道的基地址；空则沿用运行时默认。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// 存放 API Key 的环境变量名（凭据本身不进帧）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
 /// 宿主交给内核的模型配置，内核据此自己发起 Chat Completions 请求。
 ///
 /// 凭据不进帧：这里只给环境变量名，内核在发请求时读环境。
@@ -313,6 +388,12 @@ pub struct KernelModelConfig {
     /// 系统提示词。请求改由内核组装后，这份文本必须由宿主交进来。
     #[serde(default)]
     pub system_prompt: String,
+    /// system 之外的上下文消息（项目规范、Skill 索引、工具能力说明、运行环境）。
+    ///
+    /// 这些消息由宿主按「稳定 → 动态」组装好整段交进来，内核每轮把它们原样插在历史之前；
+    /// 空数组表示旧宿主不给（行为与迁移前一致）。
+    #[serde(default)]
+    pub context_messages: Vec<Value>,
     /// 静态工具声明（OpenAI functions 形状）；工具仍由宿主执行，内核只负责声明。
     #[serde(default)]
     pub tools: Vec<Value>,
@@ -344,6 +425,72 @@ pub struct TurnSubmitParams {
     pub user_text: String,
 }
 
+/// `session.list` 负载：`archived` 为真时只看归档，`limit` 由内核收敛到 1..=100。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionListParams {
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default = "default_session_list_limit")]
+    pub limit: u32,
+}
+
+fn default_session_list_limit() -> u32 {
+    10
+}
+
+/// `session.rename` 负载。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRenameParams {
+    pub title: String,
+}
+
+/// `session.history` 负载。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryParams {
+    #[serde(default)]
+    pub query: String,
+    #[serde(default = "default_history_limit")]
+    pub limit: u32,
+}
+
+fn default_history_limit() -> u32 {
+    20
+}
+
+/// `session.resume` 负载。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResumeParams {
+    pub session_id: String,
+}
+
+/// `subagent.run` 负载：派生单个子 Agent 并等它跑完（`/review` 这类命令用）。
+///
+/// 与 `subagent` 工具共用同一套定义发现与工具白名单：`agent_type` 取定义目录里注册的
+/// 名字（如 `review`），`prompt` 是子 Agent 的任务指令。工具批次照旧回到宿主执行，
+/// 因此宿主必须保持事件循环可响应（不能同步等待本方法的响应）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentRunParams {
+    pub agent_type: String,
+    #[serde(default)]
+    pub description: String,
+    pub prompt: String,
+}
+
+/// `session.append` 负载：把宿主产生的文本注入内核会话历史。
+///
+/// 只允许 `role = "assistant"`：宿主注入的是**自己产生的**说明或报告文本（如 `/review`
+/// 的评审报告），不借这个入口伪造用户输入或工具结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionAppendParams {
+    #[serde(default = "default_append_role")]
+    pub role: String,
+    pub content: String,
+}
+
+fn default_append_role() -> String {
+    "assistant".to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnCancelParams {
     pub turn_id: String,
@@ -358,8 +505,42 @@ pub enum Command {
     TurnSubmit(TurnSubmitParams),
     /// 请求取消当前回合。
     TurnCancel(TurnCancelParams),
+    /// 撤销最近一轮：恢复工作区副作用并回退会话逻辑。
+    TurnUndo,
+    /// 运行期更新设置（模型、工具声明、上下文与压缩阈值）。
+    ///
+    /// 装箱是因为它（含工具声明）比同枚举里其他命令大一个量级。
+    SessionSettings(Box<SessionSettingsParams>),
+    /// 显式压缩当前会话（无参数）。
+    SessionCompact,
+    /// 查询／取消后台 SubAgent 任务：`action` 取 `list` / `get` / `cancel`。
+    SubagentQuery(SubagentQueryParams),
+    /// 列出最近会话或已归档会话。
+    SessionList(SessionListParams),
+    /// 重命名当前会话。
+    SessionRename(SessionRenameParams),
+    /// 归档当前会话并开启新会话。
+    SessionArchive,
+    /// 查询用户提示历史。
+    SessionHistory(SessionHistoryParams),
+    /// 清空当前对话并开启新会话。
+    SessionNew,
+    /// 恢复指定会话。
+    SessionResume(SessionResumeParams),
+    /// 派生单个子 Agent 并等它结束。
+    SubagentRun(SubagentRunParams),
+    /// 把宿主产生的 assistant 文本追加到内核会话历史。
+    SessionAppend(SessionAppendParams),
     /// 要求内核退出。
     Shutdown,
+}
+
+/// `subagent.query` 的负载：动作与可选任务 ID（空串表示不指定）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubagentQueryParams {
+    pub action: String,
+    #[serde(default)]
+    pub task_id: String,
 }
 
 impl Command {
@@ -367,6 +548,18 @@ impl Command {
         method::INITIALIZE,
         method::TURN_SUBMIT,
         method::TURN_CANCEL,
+        method::TURN_UNDO,
+        method::SESSION_SETTINGS,
+        method::SESSION_COMPACT,
+        method::SUBAGENT_QUERY,
+        method::SESSION_LIST,
+        method::SESSION_RENAME,
+        method::SESSION_ARCHIVE,
+        method::SESSION_HISTORY,
+        method::SESSION_NEW,
+        method::SESSION_RESUME,
+        method::SUBAGENT_RUN,
+        method::SESSION_APPEND,
         method::SHUTDOWN,
     ];
 
@@ -375,6 +568,18 @@ impl Command {
             Self::Initialize(_) => method::INITIALIZE,
             Self::TurnSubmit(_) => method::TURN_SUBMIT,
             Self::TurnCancel(_) => method::TURN_CANCEL,
+            Self::TurnUndo => method::TURN_UNDO,
+            Self::SessionSettings(_) => method::SESSION_SETTINGS,
+            Self::SessionCompact => method::SESSION_COMPACT,
+            Self::SubagentQuery(_) => method::SUBAGENT_QUERY,
+            Self::SessionList(_) => method::SESSION_LIST,
+            Self::SessionRename(_) => method::SESSION_RENAME,
+            Self::SessionArchive => method::SESSION_ARCHIVE,
+            Self::SessionHistory(_) => method::SESSION_HISTORY,
+            Self::SessionNew => method::SESSION_NEW,
+            Self::SessionResume(_) => method::SESSION_RESUME,
+            Self::SubagentRun(_) => method::SUBAGENT_RUN,
+            Self::SessionAppend(_) => method::SESSION_APPEND,
             Self::Shutdown => method::SHUTDOWN,
         }
     }
@@ -384,6 +589,18 @@ impl Command {
             Self::Initialize(payload) => payload_value(payload),
             Self::TurnSubmit(payload) => payload_value(payload),
             Self::TurnCancel(payload) => payload_value(payload),
+            Self::TurnUndo => json!({}),
+            Self::SessionSettings(payload) => payload_value(payload),
+            Self::SessionCompact => json!({}),
+            Self::SubagentQuery(payload) => payload_value(payload),
+            Self::SessionList(payload) => payload_value(payload),
+            Self::SessionRename(payload) => payload_value(payload),
+            Self::SessionArchive => json!({}),
+            Self::SessionHistory(payload) => payload_value(payload),
+            Self::SessionNew => json!({}),
+            Self::SessionResume(payload) => payload_value(payload),
+            Self::SubagentRun(payload) => payload_value(payload),
+            Self::SessionAppend(payload) => payload_value(payload),
             Self::Shutdown => json!({}),
         }
     }
@@ -403,6 +620,18 @@ impl Command {
             method::INITIALIZE => Command::Initialize(from_params(params)?),
             method::TURN_SUBMIT => Command::TurnSubmit(from_params(params)?),
             method::TURN_CANCEL => Command::TurnCancel(from_params(params)?),
+            method::TURN_UNDO => Command::TurnUndo,
+            method::SESSION_SETTINGS => Command::SessionSettings(from_params(params)?),
+            method::SESSION_COMPACT => Command::SessionCompact,
+            method::SUBAGENT_QUERY => Command::SubagentQuery(from_params(params)?),
+            method::SESSION_LIST => Command::SessionList(from_params(params)?),
+            method::SESSION_RENAME => Command::SessionRename(from_params(params)?),
+            method::SESSION_ARCHIVE => Command::SessionArchive,
+            method::SESSION_HISTORY => Command::SessionHistory(from_params(params)?),
+            method::SESSION_NEW => Command::SessionNew,
+            method::SESSION_RESUME => Command::SessionResume(from_params(params)?),
+            method::SUBAGENT_RUN => Command::SubagentRun(from_params(params)?),
+            method::SESSION_APPEND => Command::SessionAppend(from_params(params)?),
             method::SHUTDOWN => Command::Shutdown,
             other => return Err(BridgeError::UnknownMethod(other.to_string())),
         };
@@ -449,6 +678,12 @@ impl ToolBatch {
         }
     }
 }
+
+/// 宿主拒绝执行工具调用时回填的 `result.error_code`。
+///
+/// 拒绝事实只走观察（`tool.batch` 响应），不额外加协议方法：内核据此把拒绝落成
+/// `tool_call_denied` 会话事件，因此两侧取值必须同源。
+pub const DENIED_ERROR_CODE: &str = "denied";
 
 /// 宿主对 `tool.batch` 的响应负载。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

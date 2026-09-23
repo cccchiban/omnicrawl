@@ -1,0 +1,41 @@
+[package]
+name = "omnicrawl-api"
+description = "OmniCrawl 本地 HTTP/SSE API 服务端（`omnicrawl/api/` 的 Rust 移植）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "omnicrawl_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omnicrawl-api"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-controllers = { path = "../omnicrawl-controllers" }
+omnicrawl-extensions = { path = "../omnicrawl-extensions" }
+omnicrawl-host = { path = "../omnicrawl-host" }
+omnicrawl-ipc = { path = "../omnicrawl-ipc" }
+omnicrawl-llm = { path = "../omnicrawl-llm" }
+omnicrawl-mcp = { path = "../omnicrawl-mcp" }
+omnicrawl-protocol = { path = "../omnicrawl-protocol" }
+omnicrawl-session = { path = "../omnicrawl-session" }
+# 主 Agent 隔离工作区：启动准备（worktree/local）与退出收尾（apply + 清理）。
+omnicrawl-workspace = { path = "../omnicrawl-workspace" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+# SSE 需要把通道包成 Stream 交给 axum 的响应体；tokio 自家的适配器，不额外引生态。
+tokio-stream = { version = "0.1", features = ["sync"] }
+# 模型列表发现要发真实 HTTP：与内核同一份阻塞式客户端，不引入第二个 HTTP 栈。
+ureq = { workspace = true }
+
+[dev-dependencies]
+ureq = { workspace = true }

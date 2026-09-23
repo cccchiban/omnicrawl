@@ -1,0 +1,17 @@
+[package]
+name = "omnicrawl-commands"
+description = "斜杠命令框架与内置命令（Python 侧 omnicrawl/commands/ 的 Rust 移植）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-controllers = { path = "../omnicrawl-controllers" }
+omnicrawl-extensions = { path = "../omnicrawl-extensions" }
+omnicrawl-session = { path = "../omnicrawl-session" }
+chrono = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

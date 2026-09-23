@@ -1,0 +1,700 @@
+{
+  "exit_codes": {
+    "ok": 0,
+    "usage": 2,
+    "node": 3,
+    "registry_net": 4,
+    "manifest": 5,
+    "user_cancel": 6,
+    "atomic": 7,
+    "smoke": 8
+  },
+  "parse": [
+    {
+      "argv": [
+        "plugin",
+        "list"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "list",
+        "project": false,
+        "user": false,
+        "all": false,
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "--resume",
+        "abc",
+        "plugin",
+        "list"
+      ],
+      "args": {
+        "resume": "abc",
+        "command": "plugin",
+        "plugin_command": "list",
+        "project": false,
+        "user": false,
+        "all": false,
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "--resume=abc",
+        "plugin",
+        "list"
+      ],
+      "args": {
+        "resume": "abc",
+        "command": "plugin",
+        "plugin_command": "list",
+        "project": false,
+        "user": false,
+        "all": false,
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "system",
+        "enable"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "system",
+        "action": "enable"
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "system",
+        "disable"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "system",
+        "action": "disable"
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "demo-plugin"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "install",
+        "package_spec": "demo-plugin",
+        "project": false,
+        "user": false,
+        "enable": false,
+        "yes": false,
+        "dev": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "demo-plugin",
+        "--enable",
+        "--yes"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "install",
+        "package_spec": "demo-plugin",
+        "project": false,
+        "user": false,
+        "enable": true,
+        "yes": true,
+        "dev": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "@scope/demo@1.2.3",
+        "--user"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "install",
+        "package_spec": "@scope/demo@1.2.3",
+        "project": false,
+        "user": true,
+        "enable": false,
+        "yes": false,
+        "dev": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "./local-plugin",
+        "--dev"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "install",
+        "package_spec": "./local-plugin",
+        "project": false,
+        "user": false,
+        "enable": false,
+        "yes": false,
+        "dev": true
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "C:\\plugins\\demo",
+        "--project"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "install",
+        "package_spec": "C:\\plugins\\demo",
+        "project": true,
+        "user": false,
+        "enable": false,
+        "yes": false,
+        "dev": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--json"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "list",
+        "project": false,
+        "user": false,
+        "all": false,
+        "json": true
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--all",
+        "--json"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "list",
+        "project": false,
+        "user": false,
+        "all": true,
+        "json": true
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--project"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "list",
+        "project": true,
+        "user": false,
+        "all": false,
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--user"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "list",
+        "project": false,
+        "user": true,
+        "all": false,
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "info",
+        "demo"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "info",
+        "name": "demo",
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "info",
+        "demo",
+        "--json"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "info",
+        "name": "demo",
+        "json": true
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "enable",
+        "demo"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "enable",
+        "name": "demo",
+        "project": false,
+        "user": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "disable",
+        "demo",
+        "--user"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "disable",
+        "name": "demo",
+        "project": false,
+        "user": true
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "update",
+        "demo"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "update",
+        "name": "demo",
+        "to_version": "",
+        "project": false,
+        "user": false,
+        "yes": false,
+        "no_activate": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "update",
+        "demo",
+        "--to",
+        "1.2.3",
+        "--yes",
+        "--no-activate"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "update",
+        "name": "demo",
+        "to_version": "1.2.3",
+        "project": false,
+        "user": false,
+        "yes": true,
+        "no_activate": true
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "update",
+        "demo",
+        "--to=1.2.3"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "update",
+        "name": "demo",
+        "to_version": "1.2.3",
+        "project": false,
+        "user": false,
+        "yes": false,
+        "no_activate": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "rollback",
+        "demo"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "rollback",
+        "name": "demo",
+        "project": false,
+        "user": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "rollback",
+        "demo",
+        "--project"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "rollback",
+        "name": "demo",
+        "project": true,
+        "user": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "uninstall",
+        "demo",
+        "--purge",
+        "--yes"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "uninstall",
+        "name": "demo",
+        "project": false,
+        "user": false,
+        "purge": true,
+        "yes": true
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "uninstall",
+        "demo"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "uninstall",
+        "name": "demo",
+        "project": false,
+        "user": false,
+        "purge": false,
+        "yes": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "doctor"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "doctor",
+        "name": "",
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "doctor",
+        "demo"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "doctor",
+        "name": "demo",
+        "json": false
+      }
+    },
+    {
+      "argv": [
+        "plugin",
+        "doctor",
+        "--json"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "doctor",
+        "name": "",
+        "json": true
+      }
+    },
+    {
+      "argv": [
+        "--help"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "plugin",
+        "--help"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "--help"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "-h"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "plugin"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "bogus"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--purge"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "enable",
+        "demo",
+        "--purge"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "system"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "system",
+        "bogus"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "install"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "info"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "extra"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "doctor",
+        "one",
+        "two"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "--bogus",
+        "plugin",
+        "list"
+      ],
+      "exit": 2
+    },
+    {
+      "argv": [
+        "plugin",
+        "update",
+        "demo",
+        "--no-activate",
+        "--project",
+        "--user"
+      ],
+      "args": {
+        "resume": "",
+        "command": "plugin",
+        "plugin_command": "update",
+        "name": "demo",
+        "to_version": "",
+        "project": true,
+        "user": true,
+        "yes": false,
+        "no_activate": true
+      }
+    }
+  ],
+  "scope": [
+    {
+      "argv": [
+        "plugin",
+        "list"
+      ],
+      "workspace": "empty",
+      "scope": "user"
+    },
+    {
+      "argv": [
+        "plugin",
+        "list"
+      ],
+      "workspace": "agents",
+      "scope": "project"
+    },
+    {
+      "argv": [
+        "plugin",
+        "list"
+      ],
+      "workspace": "package",
+      "scope": "project"
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "demo"
+      ],
+      "workspace": "agents",
+      "scope": "project"
+    },
+    {
+      "argv": [
+        "plugin",
+        "install",
+        "demo"
+      ],
+      "workspace": "package",
+      "scope": "project"
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--project"
+      ],
+      "workspace": "empty",
+      "scope": "project"
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--user"
+      ],
+      "workspace": "agents",
+      "scope": "user"
+    },
+    {
+      "argv": [
+        "plugin",
+        "enable",
+        "demo"
+      ],
+      "workspace": "empty",
+      "scope": "user"
+    },
+    {
+      "argv": [
+        "plugin",
+        "uninstall",
+        "demo",
+        "--yes"
+      ],
+      "workspace": "package",
+      "scope": "project"
+    },
+    {
+      "argv": [
+        "plugin",
+        "list",
+        "--project",
+        "--user"
+      ],
+      "workspace": "empty",
+      "exit": 2
+    }
+  ]
+}

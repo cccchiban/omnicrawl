@@ -1,0 +1,1124 @@
+{
+  "keys": [
+    {
+      "path": "version",
+      "kind": "key",
+      "section": "",
+      "name": "version",
+      "type": "int",
+      "default": "2"
+    },
+    {
+      "path": "llm.active_model",
+      "kind": "section",
+      "section": "llm.active_model",
+      "name": "active_model",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "llm.active_model.source",
+      "kind": "key",
+      "section": "llm.active_model",
+      "name": "source",
+      "type": "str",
+      "default": "custom"
+    },
+    {
+      "path": "llm.active_model.key",
+      "kind": "key",
+      "section": "llm.active_model",
+      "name": "key",
+      "type": "str",
+      "default": "default-chat"
+    },
+    {
+      "path": "llm.defaults",
+      "kind": "section",
+      "section": "llm.defaults",
+      "name": "defaults",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "llm.defaults.request_timeout_seconds",
+      "kind": "key",
+      "section": "llm.defaults",
+      "name": "request_timeout_seconds",
+      "type": "int",
+      "default": "180"
+    },
+    {
+      "path": "llm.defaults.request_retry_count",
+      "kind": "key",
+      "section": "llm.defaults",
+      "name": "request_retry_count",
+      "type": "int",
+      "default": "5"
+    },
+    {
+      "path": "llm.defaults.discovery_timeout_seconds",
+      "kind": "key",
+      "section": "llm.defaults",
+      "name": "discovery_timeout_seconds",
+      "type": "int",
+      "default": "10"
+    },
+    {
+      "path": "llm.defaults.discovery_cache_ttl_seconds",
+      "kind": "key",
+      "section": "llm.defaults",
+      "name": "discovery_cache_ttl_seconds",
+      "type": "int",
+      "default": "300"
+    },
+    {
+      "path": "llm.defaults.reasoning_effort",
+      "kind": "key",
+      "section": "llm.defaults",
+      "name": "reasoning_effort",
+      "type": "str",
+      "default": ""
+    },
+    {
+      "path": "llm.defaults.thinking_type",
+      "kind": "key",
+      "section": "llm.defaults",
+      "name": "thinking_type",
+      "type": "str",
+      "default": "disabled"
+    },
+    {
+      "path": "vision",
+      "kind": "section",
+      "section": "vision",
+      "name": "vision",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "vision.enabled",
+      "kind": "key",
+      "section": "vision",
+      "name": "enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "vision.models",
+      "kind": "key",
+      "section": "vision",
+      "name": "models",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "path": "image_gen",
+      "kind": "section",
+      "section": "image_gen",
+      "name": "image_gen",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "image_gen.enabled",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "image_gen.base_url",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "base_url",
+      "type": "str",
+      "default": "https://api.openai.com/v1"
+    },
+    {
+      "path": "image_gen.api_key",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "api_key",
+      "type": "str",
+      "default": ""
+    },
+    {
+      "path": "image_gen.api_key_env",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "api_key_env",
+      "type": "str",
+      "default": "OPENAI_API_KEY"
+    },
+    {
+      "path": "image_gen.model",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "model",
+      "type": "str",
+      "default": "gpt-image-2"
+    },
+    {
+      "path": "image_gen.size",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "size",
+      "type": "str",
+      "default": "auto"
+    },
+    {
+      "path": "image_gen.quality",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "quality",
+      "type": "str",
+      "default": "auto"
+    },
+    {
+      "path": "image_gen.output_format",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "output_format",
+      "type": "str",
+      "default": "png"
+    },
+    {
+      "path": "image_gen.n",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "n",
+      "type": "int",
+      "default": "1"
+    },
+    {
+      "path": "image_gen.timeout_seconds",
+      "kind": "key",
+      "section": "image_gen",
+      "name": "timeout_seconds",
+      "type": "int",
+      "default": "120"
+    },
+    {
+      "path": "tts",
+      "kind": "section",
+      "section": "tts",
+      "name": "tts",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "tts.enabled",
+      "kind": "key",
+      "section": "tts",
+      "name": "enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "tts.model_dir",
+      "kind": "key",
+      "section": "tts",
+      "name": "model_dir",
+      "type": "str",
+      "default": ""
+    },
+    {
+      "path": "tts.voice",
+      "kind": "key",
+      "section": "tts",
+      "name": "voice",
+      "type": "str",
+      "default": "Junhao"
+    },
+    {
+      "path": "tts.auto_play",
+      "kind": "key",
+      "section": "tts",
+      "name": "auto_play",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "tts.thread_count",
+      "kind": "key",
+      "section": "tts",
+      "name": "thread_count",
+      "type": "int",
+      "default": "4"
+    },
+    {
+      "path": "tts.device",
+      "kind": "key",
+      "section": "tts",
+      "name": "device",
+      "type": "str",
+      "default": "auto"
+    },
+    {
+      "path": "tts.streaming",
+      "kind": "key",
+      "section": "tts",
+      "name": "streaming",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "tts.output_dir",
+      "kind": "key",
+      "section": "tts",
+      "name": "output_dir",
+      "type": "str",
+      "default": ".omnicrawl/.agent_tmp/tts"
+    },
+    {
+      "path": "approval",
+      "kind": "section",
+      "section": "approval",
+      "name": "approval",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "approval.mode",
+      "kind": "key",
+      "section": "approval",
+      "name": "mode",
+      "type": "str",
+      "default": "review"
+    },
+    {
+      "path": "approval.review_model",
+      "kind": "key",
+      "section": "approval",
+      "name": "review_model",
+      "type": "str",
+      "default": ""
+    },
+    {
+      "path": "ui",
+      "kind": "section",
+      "section": "ui",
+      "name": "ui",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "ui.show_thinking",
+      "kind": "key",
+      "section": "ui",
+      "name": "show_thinking",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "memory",
+      "kind": "section",
+      "section": "memory",
+      "name": "memory",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "memory.enabled",
+      "kind": "key",
+      "section": "memory",
+      "name": "enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "tools",
+      "kind": "section",
+      "section": "tools",
+      "name": "tools",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "tools.powershell",
+      "kind": "key",
+      "section": "tools",
+      "name": "powershell",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "tools.bash",
+      "kind": "key",
+      "section": "tools",
+      "name": "bash",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "tools.read_image",
+      "kind": "key",
+      "section": "tools",
+      "name": "read_image",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "tools.windows_screenshot",
+      "kind": "key",
+      "section": "tools",
+      "name": "windows_screenshot",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "run_guard",
+      "kind": "section",
+      "section": "run_guard",
+      "name": "run_guard",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "run_guard.enabled",
+      "kind": "key",
+      "section": "run_guard",
+      "name": "enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "run_guard.guard",
+      "kind": "section",
+      "section": "run_guard.guard",
+      "name": "guard",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "run_guard.guard.enabled",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "run_guard.guard.window_chars",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "window_chars",
+      "type": "int",
+      "default": "2000"
+    },
+    {
+      "path": "run_guard.guard.substr_len",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "substr_len",
+      "type": "int",
+      "default": "32"
+    },
+    {
+      "path": "run_guard.guard.repeat_ratio",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "repeat_ratio",
+      "type": "float",
+      "default": "0.7"
+    },
+    {
+      "path": "run_guard.guard.check_every",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "check_every",
+      "type": "int",
+      "default": "50"
+    },
+    {
+      "path": "run_guard.guard.max_blocks",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "max_blocks",
+      "type": "int",
+      "default": "10000"
+    },
+    {
+      "path": "run_guard.guard.max_chars",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "max_chars",
+      "type": "int",
+      "default": "500000"
+    },
+    {
+      "path": "run_guard.guard.max_guard_retries",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "max_guard_retries",
+      "type": "int",
+      "default": "2"
+    },
+    {
+      "path": "run_guard.guard.auto_retry_errors",
+      "kind": "key",
+      "section": "run_guard.guard",
+      "name": "auto_retry_errors",
+      "type": "list",
+      "default": "[\"SERVICE_UNAVAILABLE\"]"
+    },
+    {
+      "path": "run_guard.continue",
+      "kind": "section",
+      "section": "run_guard.continue",
+      "name": "continue",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "run_guard.continue.enabled",
+      "kind": "key",
+      "section": "run_guard.continue",
+      "name": "enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "run_guard.continue.max_auto_followups",
+      "kind": "key",
+      "section": "run_guard.continue",
+      "name": "max_auto_followups",
+      "type": "int",
+      "default": "3"
+    },
+    {
+      "path": "context_compaction",
+      "kind": "section",
+      "section": "context_compaction",
+      "name": "context_compaction",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "context_compaction.trigger_context_tokens",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "trigger_context_tokens",
+      "type": "int",
+      "default": "100000"
+    },
+    {
+      "path": "context_compaction.trigger_context_percent",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "trigger_context_percent",
+      "type": "int",
+      "default": "80"
+    },
+    {
+      "path": "context_compaction.next_user_reserve_tokens",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "next_user_reserve_tokens",
+      "type": "int",
+      "default": "10240"
+    },
+    {
+      "path": "context_compaction.emergency_context_ratio",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "emergency_context_ratio",
+      "type": "float",
+      "default": "0.85"
+    },
+    {
+      "path": "context_compaction.summary_profile",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "summary_profile",
+      "type": "str",
+      "default": ""
+    },
+    {
+      "path": "context_compaction.reasoning_effort",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "reasoning_effort",
+      "type": "str",
+      "default": "low"
+    },
+    {
+      "path": "context_compaction.recent_turns",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "recent_turns",
+      "type": "int",
+      "default": "6"
+    },
+    {
+      "path": "context_compaction.target_summary_tokens",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "target_summary_tokens",
+      "type": "int",
+      "default": "0"
+    },
+    {
+      "path": "context_compaction.preserve_exact_evidence",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "preserve_exact_evidence",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "context_compaction.allow_cross_provider",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "allow_cross_provider",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "context_compaction.failure_fallback",
+      "kind": "key",
+      "section": "context_compaction",
+      "name": "failure_fallback",
+      "type": "str",
+      "default": "deterministic"
+    },
+    {
+      "path": "desensitization",
+      "kind": "section",
+      "section": "desensitization",
+      "name": "desensitization",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "desensitization.enabled",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.fail_closed",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "fail_closed",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.strict_restore",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "strict_restore",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.extra_sensitive_keys",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "extra_sensitive_keys",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "path": "desensitization.exempt_keys",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "exempt_keys",
+      "type": "list",
+      "default": "[]"
+    },
+    {
+      "path": "desensitization.entropy_enabled",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "entropy_enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.entropy_min_length",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "entropy_min_length",
+      "type": "int",
+      "default": "20"
+    },
+    {
+      "path": "desensitization.entropy_min_bits",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "entropy_min_bits",
+      "type": "float",
+      "default": "3.5"
+    },
+    {
+      "path": "desensitization.entropy_pure_letters",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "entropy_pure_letters",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.entropy_pure_digits",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "entropy_pure_digits",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.detect_pem_private_key",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_pem_private_key",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.detect_db_connection_string",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_db_connection_string",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.detect_email",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_email",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.detect_bank_card",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_bank_card",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.detect_internal_ip",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_internal_ip",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.detect_external_ip",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_external_ip",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.detect_url",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_url",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.detect_mac_address",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_mac_address",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.detect_license_plate",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "detect_license_plate",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "desensitization.ner_enabled",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "ner_enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "desensitization.ner_model_path",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "ner_model_path",
+      "type": "str",
+      "default": ""
+    },
+    {
+      "path": "desensitization.ner_device",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "ner_device",
+      "type": "str",
+      "default": "auto"
+    },
+    {
+      "path": "desensitization.ner_entity_types",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "ner_entity_types",
+      "type": "list",
+      "default": "[\"PER\", \"ORG\", \"LOC\"]"
+    },
+    {
+      "path": "desensitization.ner_min_entity_chars",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "ner_min_entity_chars",
+      "type": "int",
+      "default": "2"
+    },
+    {
+      "path": "desensitization.ner_cache_size",
+      "kind": "key",
+      "section": "desensitization",
+      "name": "ner_cache_size",
+      "type": "int",
+      "default": "2048"
+    },
+    {
+      "path": "api",
+      "kind": "section",
+      "section": "api",
+      "name": "api",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "api.bearer_token",
+      "kind": "key",
+      "section": "api",
+      "name": "bearer_token",
+      "type": "str",
+      "default": "请替换为随机长令牌"
+    },
+    {
+      "path": "api.host",
+      "kind": "key",
+      "section": "api",
+      "name": "host",
+      "type": "str",
+      "default": "127.0.0.1"
+    },
+    {
+      "path": "api.port",
+      "kind": "key",
+      "section": "api",
+      "name": "port",
+      "type": "int",
+      "default": "8765"
+    },
+    {
+      "path": "api.allowed_origins",
+      "kind": "key",
+      "section": "api",
+      "name": "allowed_origins",
+      "type": "list",
+      "default": "[\"http://localhost:5173\"]"
+    },
+    {
+      "path": "api.confirmation_timeout_seconds",
+      "kind": "key",
+      "section": "api",
+      "name": "confirmation_timeout_seconds",
+      "type": "int",
+      "default": "300"
+    },
+    {
+      "path": "api.workers",
+      "kind": "key",
+      "section": "api",
+      "name": "workers",
+      "type": "int",
+      "default": "1"
+    },
+    {
+      "path": "agent_temp",
+      "kind": "section",
+      "section": "agent_temp",
+      "name": "agent_temp",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "agent_temp.enabled",
+      "kind": "key",
+      "section": "agent_temp",
+      "name": "enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "agent_temp.directory",
+      "kind": "key",
+      "section": "agent_temp",
+      "name": "directory",
+      "type": "str",
+      "default": ".omnicrawl/.agent_tmp"
+    },
+    {
+      "path": "agent_temp.cleanup_enabled",
+      "kind": "key",
+      "section": "agent_temp",
+      "name": "cleanup_enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "agent_temp.cleanup_interval_hours",
+      "kind": "key",
+      "section": "agent_temp",
+      "name": "cleanup_interval_hours",
+      "type": "int",
+      "default": "24"
+    },
+    {
+      "path": "update",
+      "kind": "section",
+      "section": "update",
+      "name": "update",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "update.enabled",
+      "kind": "key",
+      "section": "update",
+      "name": "enabled",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "plugins",
+      "kind": "section",
+      "section": "plugins",
+      "name": "plugins",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "plugins.enabled",
+      "kind": "key",
+      "section": "plugins",
+      "name": "enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents",
+      "kind": "section",
+      "section": "subagents",
+      "name": "subagents",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "subagents.enabled",
+      "kind": "key",
+      "section": "subagents",
+      "name": "enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents.max_depth",
+      "kind": "key",
+      "section": "subagents",
+      "name": "max_depth",
+      "type": "int",
+      "default": "1"
+    },
+    {
+      "path": "subagents.max_concurrency",
+      "kind": "key",
+      "section": "subagents",
+      "name": "max_concurrency",
+      "type": "int",
+      "default": "2"
+    },
+    {
+      "path": "subagents.max_tasks_per_batch",
+      "kind": "key",
+      "section": "subagents",
+      "name": "max_tasks_per_batch",
+      "type": "int",
+      "default": "4"
+    },
+    {
+      "path": "subagents.default_timeout_seconds",
+      "kind": "key",
+      "section": "subagents",
+      "name": "default_timeout_seconds",
+      "type": "int",
+      "default": "3600"
+    },
+    {
+      "path": "subagents.model_request_concurrency",
+      "kind": "key",
+      "section": "subagents",
+      "name": "model_request_concurrency",
+      "type": "int",
+      "default": "2"
+    },
+    {
+      "path": "subagents.allow_background",
+      "kind": "key",
+      "section": "subagents",
+      "name": "allow_background",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents.allow_fork",
+      "kind": "key",
+      "section": "subagents",
+      "name": "allow_fork",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents.allow_worktree",
+      "kind": "key",
+      "section": "subagents",
+      "name": "allow_worktree",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents.allow_standard_agent",
+      "kind": "key",
+      "section": "subagents",
+      "name": "allow_standard_agent",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents.allow_shared_workspace_writes",
+      "kind": "key",
+      "section": "subagents",
+      "name": "allow_shared_workspace_writes",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents.enable_verify_agent",
+      "kind": "key",
+      "section": "subagents",
+      "name": "enable_verify_agent",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "subagents.verify_command_timeout_seconds",
+      "kind": "key",
+      "section": "subagents",
+      "name": "verify_command_timeout_seconds",
+      "type": "int",
+      "default": "120"
+    },
+    {
+      "path": "subagents.task_retention_minutes",
+      "kind": "key",
+      "section": "subagents",
+      "name": "task_retention_minutes",
+      "type": "int",
+      "default": "60"
+    },
+    {
+      "path": "subagents.result_summary_chars",
+      "kind": "key",
+      "section": "subagents",
+      "name": "result_summary_chars",
+      "type": "int",
+      "default": "6000"
+    },
+    {
+      "path": "mcp",
+      "kind": "section",
+      "section": "mcp",
+      "name": "mcp",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "mcp.enabled",
+      "kind": "key",
+      "section": "mcp",
+      "name": "enabled",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "mcp.default_timeout_seconds",
+      "kind": "key",
+      "section": "mcp",
+      "name": "default_timeout_seconds",
+      "type": "int",
+      "default": "30"
+    },
+    {
+      "path": "mcp.servers",
+      "kind": "key",
+      "section": "mcp",
+      "name": "servers",
+      "type": "dict",
+      "default": "{}"
+    },
+    {
+      "path": "mcp.policy",
+      "kind": "section",
+      "section": "mcp.policy",
+      "name": "policy",
+      "type": "section",
+      "default": ""
+    },
+    {
+      "path": "mcp.policy.require_confirmation_for_write",
+      "kind": "key",
+      "section": "mcp.policy",
+      "name": "require_confirmation_for_write",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "mcp.policy.require_confirmation_for_command",
+      "kind": "key",
+      "section": "mcp.policy",
+      "name": "require_confirmation_for_command",
+      "type": "bool",
+      "default": "true"
+    },
+    {
+      "path": "mcp.policy.allow_external_network_tools",
+      "kind": "key",
+      "section": "mcp.policy",
+      "name": "allow_external_network_tools",
+      "type": "bool",
+      "default": "false"
+    },
+    {
+      "path": "mcp.policy.audit_log_enabled",
+      "kind": "key",
+      "section": "mcp.policy",
+      "name": "audit_log_enabled",
+      "type": "bool",
+      "default": "true"
+    }
+  ]
+}

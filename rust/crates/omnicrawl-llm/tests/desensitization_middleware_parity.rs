@@ -70,6 +70,8 @@ fn message_masking_matches_python() {
         entropy_pure_digits: false,
         pattern_rules: &rules,
         gitleaks_rules: &[],
+        plan_cache: None,
+        plan_builder: None,
     };
 
     for case in fixture["messages"].as_array().expect("messages") {
@@ -117,6 +119,8 @@ fn unreadable_placeholder_scan_matches_python() {
         entropy_pure_digits: false,
         pattern_rules: &rules,
         gitleaks_rules: &[],
+        plan_cache: None,
+        plan_builder: None,
     };
     let masked = mask_message(&secret_message, &mut ctx);
     assert_eq!(

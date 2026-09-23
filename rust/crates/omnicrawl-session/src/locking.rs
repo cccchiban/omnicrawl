@@ -20,6 +20,8 @@ use crate::error::SessionStoreError;
 pub const DEFAULT_LOCK_TIMEOUT_SECONDS: f64 = 30.0;
 pub const DEFAULT_LOCK_POLL_SECONDS: f64 = 0.05;
 pub const LOCK_FILE_NAME: &str = ".session_store.lock";
+/// 持有者信息行：`pid=<pid>`（连接器单例锁的粘滞接管也依赖这个形状）。
+pub const LOCK_OWNER_LINE_PREFIX: &str = "pid=";
 /// Windows 上目标文件被只读打开/杀软扫描时，替换可能短暂返回拒绝访问。
 const ATOMIC_REPLACE_MAX_ATTEMPTS: u32 = 8;
 const ATOMIC_REPLACE_RETRY_SECONDS: f64 = 0.05;
@@ -107,28 +109,39 @@ impl ProcessFileLock {
     }
 
     fn try_acquire(&self) -> std::io::Result<File> {
-        // 必须是读写打开：Windows 的字节区间锁要求句柄带 GENERIC_WRITE，
-        // 只开 append 拿到的是 FILE_APPEND_DATA，LockFileEx 会回「拒绝访问」。
-        // 打开时不能截断——截断必须发生在拿到锁之后，否则会把别人的持有者信息清掉。
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&self.path)?;
-        // 字节区间锁要求区域内至少有一个字节：空文件先补占位（锁住后会截掉）。
-        if file.metadata()?.len() == 0 {
-            file.write_all(b"\0")?;
-            file.flush()?;
-        }
-        lock_file(&file)?;
-        file.set_len(0)?;
-        // 截断后游标停在占位字节之后，写持有者信息前先回到文件头。
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(format!("pid={}\n", std::process::id()).as_bytes())?;
-        file.flush()?;
-        Ok(file)
+        try_lock_file(&self.path)
     }
+}
+
+/// 打开锁文件并取 OS 级排他锁，返回**持锁句柄**：句柄在手上就是持锁，句柄关闭
+/// （含进程退出）时由 OS 自动释放。锁文件的形状与 [`ProcessFileLock`] 一致：
+/// 拿到锁后清空并把持有者 PID 写成 `pid=<pid>\n`。
+///
+/// 同一个锁文件被两个句柄排他锁定时，第二个句柄必然失败（Windows 的字节区间锁与
+/// POSIX 的 `flock` 都是按打开实例排斥），因此这个入口可以当作「跨句柄单例锁」使用；
+/// 需要「同进程内也互斥」的调用方仍应走 [`ProcessFileLock`]（它额外持有进程内互斥）。
+pub fn try_lock_file(path: &Path) -> std::io::Result<File> {
+    // 必须是读写打开：Windows 的字节区间锁要求句柄带 GENERIC_WRITE，
+    // 只开 append 拿到的是 FILE_APPEND_DATA，LockFileEx 会回「拒绝访问」。
+    // 打开时不能截断——截断必须发生在拿到锁之后，否则会把别人的持有者信息清掉。
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    // 字节区间锁要求区域内至少有一个字节：空文件先补占位（锁住后会截掉）。
+    if file.metadata()?.len() == 0 {
+        file.write_all(b"\0")?;
+        file.flush()?;
+    }
+    lock_file(&file)?;
+    file.set_len(0)?;
+    // 截断后游标停在占位字节之后，写持有者信息前先回到文件头。
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(format!("pid={}\n", std::process::id()).as_bytes())?;
+    file.flush()?;
+    Ok(file)
 }
 
 /// 持锁凭据：销毁即解锁并关闭句柄（解锁失败按已失效处理）。

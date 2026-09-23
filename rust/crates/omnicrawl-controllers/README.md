@@ -24,6 +24,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/turn/loop.py`（接线面） | `src/turn/turn_loop.rs` | 13 回调面与缺省回落（重试提示回落状态回调）、`request_reply` / `execute_tool_batch` 两个循环端口与守门回调、进入循环前的取消检查、最终回复的收尾补发、用量累计与失败分类、运行时视觉能力与原生视觉开关 |
 | `controllers/turn/loop.py`（文本规则） | `src/turn/turn_text.rs` | 短「继续/重试」识别与上一轮任务还原、被取消回合的历史摘要、助手消息的推理字段 |
 | `agent/context/prompt_context.py`、`controllers/turn/loop.py`（上下文消息） | `src/turn/context_messages.rs` | 项目规范消息外壳（来源 + 权限边界）、插件 `context.build.before` 附加上下文的注入规则与收尾载荷 |
+| `agent/context/environment.py` | `src/turn/environment.rs` | 运行环境摘要（`runtime_environment_context`）、Agent 运行窗口/终端线索探测、Windows 进程链（Toolhelp API + 进程级缓存）；「Python 版本」两行改写为「内核」两行 |
 | `controllers/turn/loop.py`（工具调用事件） | `src/turn/tool_events.rs` | 原始 assistant 消息里取 `arguments_json`/`function_name`（按 ID 或函数名匹配首个命中）、协议原文不落盘的字段边界 |
 | `controllers/turn/loop.py`（技能命令） | `src/turn/skill_command.rs` | `/skill:<名> [任务]` 的解析与加载文案（未命中带可用列表、命中无任务给默认提示） |
 | `controllers/subagents/worktrees.py`、`orchestration.py`（判定面） | `src/subagents/` | worktree 登记键与查找归一化、会话去重投影、产物摘要渲染、丢弃保护判定、失败描述、Fork 上下文冻结、公开结果投影、后台通知注入、结果校验与定义缺失文案 |

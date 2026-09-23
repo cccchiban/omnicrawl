@@ -1,15 +1,8 @@
-//! TTS 引擎配置与文本归一化（`omnicrawl/tts/` 的纯逻辑层）。
-//!
-//! ONNX 推理本身尚未接入（需要运行时与模型文件），本模块先把与推理无关的部分搬过来：
-//! `config.py` 的配置解析与 `normalize.py` 的文本预处理管道——它们决定了送给模型的文本。
-
-pub mod audio;
-pub mod normalize;
-pub mod voices;
+//! TTS 引擎配置：`omnicrawl/tts/config.py` 的等价实现。
 
 use std::path::PathBuf;
 
-use super::paths::resolve_lenient;
+use crate::paths::resolve_lenient;
 
 /// 默认模型目录：`~/.omnicrawl/tts/models`（可用 `OMNICRAWL_TTS_MODEL_DIR` 覆盖）。
 pub fn default_model_dir() -> PathBuf {

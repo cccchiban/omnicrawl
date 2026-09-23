@@ -549,13 +549,151 @@
       }
     ]
   },
-  "unsupported_locators": [
+  "locators": [
     {
+      "label": "python_qualified",
+      "files": {
+        "locate_class.py": "class Outer:\n    def run(self):\n        return 1\n\ndef run():\n    return 2\n"
+      },
       "arguments": {
-        "path": "locate.txt",
+        "path": "locate_class.py",
+        "function_name": "Outer.run"
+      },
+      "ok": true,
+      "output": "定位：函数 Outer.run（第 2-3 行）\n2:     def run(self):\n3:         return 1"
+    },
+    {
+      "label": "python_decorated",
+      "files": {
+        "locate_deco.py": "@decorator\n@another(1)\ndef handled():\n    value = 1\n    return value\n"
+      },
+      "arguments": {
+        "path": "locate_deco.py",
+        "function_name": "handled",
+        "max_lines": 2
+      },
+      "ok": true,
+      "output": "定位：函数 handled（第 1-5 行）\n1: @decorator\n2: @another(1)\n... 函数内容超过 max_lines，可提高 max_lines 继续读取。"
+    },
+    {
+      "label": "python_async",
+      "files": {
+        "locate_async.py": "async def fetch():\n    data = await load()\n    return data\n"
+      },
+      "arguments": {
+        "path": "locate_async.py",
+        "function_name": "fetch"
+      },
+      "ok": true,
+      "output": "定位：函数 fetch（第 1-3 行）\n1: async def fetch():\n2:     data = await load()\n3:     return data"
+    },
+    {
+      "label": "python_nested_class",
+      "files": {
+        "locate_nested.py": "class A:\n    class B:\n        def deep(self):\n            return 3\n"
+      },
+      "arguments": {
+        "path": "locate_nested.py",
+        "function_name": "A.B.deep"
+      },
+      "ok": true,
+      "output": "定位：函数 A.B.deep（第 3-4 行）\n3:         def deep(self):\n4:             return 3"
+    },
+    {
+      "label": "python_ambiguous",
+      "files": {
+        "locate_dup.py": "def dup():\n    return 1\n\ndef dup():\n    return 2\n"
+      },
+      "arguments": {
+        "path": "locate_dup.py",
+        "function_name": "dup"
+      },
+      "ok": false,
+      "output": "函数名 dup 存在多个匹配，请使用限定名：dup, dup。",
+      "code": "FS_TOOL_ERROR",
+      "retryable": false
+    },
+    {
+      "label": "python_syntax_error_fallback",
+      "files": {
+        "locate_broken.py": "def broken(:\n    pass\n"
+      },
+      "arguments": {
+        "path": "locate_broken.py",
+        "function_name": "broken"
+      },
+      "ok": false,
+      "output": "未找到函数或方法：broken（文件：locate_broken.py）。",
+      "code": "FS_TOOL_ERROR",
+      "retryable": false
+    },
+    {
+      "label": "python_missing",
+      "files": {
+        "locate_missing.py": "def present():\n    return 1\n"
+      },
+      "arguments": {
+        "path": "locate_missing.py",
+        "function_name": "absent"
+      },
+      "ok": false,
+      "output": "未找到函数或方法：absent（文件：locate_missing.py）。",
+      "code": "FS_TOOL_ERROR",
+      "retryable": false
+    },
+    {
+      "label": "braced_js",
+      "files": {
+        "locate.js": "export function hello(name) {\n  console.log(name);\n}\n"
+      },
+      "arguments": {
+        "path": "locate.js",
+        "function_name": "hello"
+      },
+      "ok": true,
+      "output": "定位：函数 hello（第 1-3 行）\n1: export function hello(name) {\n2:   console.log(name);\n3: }"
+    },
+    {
+      "label": "braced_arrow",
+      "files": {
+        "locate.ts": "export const add = (a: number, b: number) => {\n  return a + b;\n}\n"
+      },
+      "arguments": {
+        "path": "locate.ts",
+        "function_name": "add"
+      },
+      "ok": false,
+      "output": "未找到函数或方法：add（文件：locate.ts）。",
+      "code": "FS_TOOL_ERROR",
+      "retryable": false
+    },
+    {
+      "label": "braced_ambiguous",
+      "files": {
+        "locate_dup.js": "function dup() {\n}\nfunction dup() {\n}\n"
+      },
+      "arguments": {
+        "path": "locate_dup.js",
+        "function_name": "dup"
+      },
+      "ok": false,
+      "output": "函数名 dup 存在多个文本匹配，请改用更具体的文件或函数名。",
+      "code": "FS_TOOL_ERROR",
+      "retryable": false
+    },
+    {
+      "label": "braced_no_braces",
+      "files": {
+        "locate_braces.txt": "def alpha():\n    return 1\n"
+      },
+      "arguments": {
+        "path": "locate_braces.txt",
         "function_name": "alpha"
       },
-      "python_output": "未找到函数或方法：alpha（文件：locate.txt）。"
+      "ok": false,
+      "output": "未找到函数或方法：alpha（文件：locate_braces.txt）。",
+      "code": "FS_TOOL_ERROR",
+      "retryable": false
     }
   ],
   "sampling": [

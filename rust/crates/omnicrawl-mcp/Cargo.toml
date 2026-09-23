@@ -1,0 +1,29 @@
+[package]
+name = "omnicrawl-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MCP 子系统：配置、能力注册表、安全与审计、stdio / Streamable HTTP 传输、本地 Server"
+
+[lib]
+name = "omnicrawl_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omnicrawl-mcp-server"
+path = "src/bin/omnicrawl_mcp_server.rs"
+
+[dependencies]
+chrono = { workspace = true }
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-controllers = { path = "../omnicrawl-controllers" }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

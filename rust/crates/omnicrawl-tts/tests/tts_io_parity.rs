@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use serde_json::Value;
 
-use omnicrawl_tui::tools::tts::audio::{
+use omnicrawl_tts::audio::{
     load_reference_audio, read_wav, resample_linear, write_wav, AudioBuffer,
 };
-use omnicrawl_tui::tools::tts::voices::{
+use omnicrawl_tts::voices::{
     add_custom_voice, custom_voices_path_in, delete_custom_voice, list_custom_voice_names,
     validate_voice_name,
 };

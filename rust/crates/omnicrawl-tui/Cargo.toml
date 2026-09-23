@@ -12,27 +12,34 @@ name = "omnicrawl-tui"
 path = "src/main.rs"
 
 [dependencies]
-base64 = "0.23"
-# 截图编码：GDI 抓到的是 BGRA 位图，用纯 Rust 的 PNG 编码器落盘。
-png = "0.17"
 omnicrawl-config = { path = "../omnicrawl-config" }
 omnicrawl-controllers = { path = "../omnicrawl-controllers" }
+# 斜杠命令的候选来源（菜单只消费 CommandOption，不持有宿主）。
+# 命令能力面（`CommandAgent`）的签名用到了 Skill 与会话条目类型，因此这两份也要直接依赖。
+omnicrawl-commands = { path = "../omnicrawl-commands" }
+# 配置对话（`/settings --chat`）的本地路由器与原子写回都在这个 crate。
+omnicrawl-config-chat = { path = "../omnicrawl-config-chat" }
 omnicrawl-core = { path = "../omnicrawl-core" }
-omnicrawl-ipc = { path = "../omnicrawl-ipc" }
-omnicrawl-llm = { path = "../omnicrawl-llm" }
-omnicrawl-protocol = { path = "../omnicrawl-protocol" }
+omnicrawl-extensions = { path = "../omnicrawl-extensions" }
 omnicrawl-session = { path = "../omnicrawl-session" }
-chrono = { workspace = true }
+# 宿主执行层：内核客户端、工具批次与工具执行体（与本地 API 共用）。
+omnicrawl-host = { path = "../omnicrawl-host" }
+omnicrawl-ipc = { path = "../omnicrawl-ipc" }
+omnicrawl-mcp = { path = "../omnicrawl-mcp" }
+# TTS 设置页的模型下载 / 音色克隆（引擎与下载器都在 omnicrawl-tts）。
+omnicrawl-tts = { path = "../omnicrawl-tts" }
+# 主 Agent 隔离工作区：启动准备（worktree/local）与退出收尾（apply + 清理）。
+omnicrawl-workspace = { path = "../omnicrawl-workspace" }
 crossterm = { workspace = true }
-ignore = { workspace = true }
 regex = { workspace = true }
-# TTS 文本归一化：Python 侧模式含 lookbehind/lookahead，标准 regex 不支持。
-fancy-regex = "0.14"
-# 归一化管道按 Unicode General_Category 判定控制符与标点。
-unicode-general-category = "1"
 ratatui = { workspace = true }
-scraper = { workspace = true }
-ureq = { workspace = true }
+pulldown-cmark = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+# 集成测试解码图片与核对时间戳要用的依赖（生产代码里这些已随执行层搬走）。
+base64 = "0.23"
+chrono = { workspace = true }
+# 渲染回归测试按显示宽度还原屏幕文本（宽字符占两格）。
 unicode-width = { workspace = true }

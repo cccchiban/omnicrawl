@@ -26,8 +26,11 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 内核回：
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0"}}
+{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"1.0","session_id":"20260922-101500-abcd1234"}}
 ```
+
+`session_id` 是内核**当前**会话的 id：`initialize.session.session_id` 没给而内核新建了一条时，这是宿主
+唯一能知道「现在在哪个会话」的途径（`/sessions`、`/rename`、`/new` 都依赖它）。内核没持有会话时为空串。
 
 主版本不匹配时回错误（`supported` 与 `host` 便于诊断）：
 
@@ -41,12 +44,28 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 | 方法 | 类型 | params | result |
 | --- | --- | --- | --- |
-| `initialize` | 请求 | `{protocol_version, client?, model?, session?}` | `{protocol_version}` |
+| `initialize` | 请求 | `{protocol_version, client?, model?, session?}` | `{protocol_version, session_id}` |
 | `turn.submit` | 请求 | `{turn_id, user_text}` | `{}`（回合已结束） |
 | `turn.cancel` | 请求 | `{turn_id}` | `{}` |
+| `turn.undo` | 请求 | `{}` | `{kind, message_count, side_effects_reverted, unrestorable, history}` |
+| `session.settings` | 请求 | `{model?, compaction?}` | `{applied: [字段路径]}` |
+| `session.list` | 请求 | `{archived?, limit?}` | `{sessions: [会话索引条目], current_session_id}` |
+| `session.rename` | 请求 | `{title}` | `{session: 会话索引条目}` |
+| `session.archive` | 请求 | `{}` | `{session: 会话索引条目, new_session_id?}` |
+| `session.history` | 请求 | `{query?, limit?}` | `{entries: [提示历史条目]}` |
+| `session.new` | 请求 | `{}` | `{session_id}` |
+| `session.resume` | 请求 | `{session_id}` | `{session_id, session: 会话索引条目, history: [消息]}` |
+| `session.append` | 请求 | `{role?, content}` | `{appended}` |
+| `subagent.run` | 请求 | `{agent_type, description?, prompt}` | `{agent_type, output, task}` |
+| `subagent.query` | 请求 | `{action, task_id?}` | `{unavailable, action, tasks, task, result}` |
 | `shutdown` | 请求 | `{}` | `{}` |
 
 - 回合结果只经由 `turn.finished` 通知传递，`turn.submit` 的响应不重复结果，避免两处真相。
+- 会话读写方法都要求**内核自持会话**（`initialize.session`），否则回 `-32600` 与「当前会话不受内核
+  持有」；会话归属内核是因为转录、压缩边界与运行期历史都在那边，宿主只做投影。
+- `turn.undo` 撤销最近一轮：先把工作区按 `turn_snapshot` 事件的快照换回本轮开始前，再提交会话逻辑回退
+  并落 `turn_undone`。副作用没有快照、本轮跑过不可逆工具、或快照绑定的工作区与当前工作区不一致时整轮
+  拒绝（回 `-32600` 与中文原因）；提交会话失败会把工作区换回撤销前。
 - `turn.cancel` 是建议性的：内核在下一个模型或工具批次边界检查取消。若某一批工具已经交给宿主，
 
 `initialize` 的 `model` 是可选块：**给了它，内核就自己发模型请求**（工具仍由宿主执行），宿主不必再应答
@@ -55,11 +74,14 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 ```json
 {"model": {"model": "gpt-5.2", "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
            "user_agent": "omnicrawl/0.1.0", "system_prompt": "你是助手。",
+           "context_messages": [{"role": "user", "content": "<runtime_context>…</runtime_context>"}],
            "tools": [{"type": "function", "function": {"name": "read_file"}}],
            "options": {"temperature": 0.2}, "request_timeout_seconds": 180,
            "prompt_cache_capable": true, "prompt_cache_identity": {"profile": "main"},
            "request_retry_count": 1}}
 ```
+
+`context_messages` 是 system 之外的上下文消息（项目规范、Skill 索引、工具能力说明、运行环境）：由宿主按「稳定 → 动态」组装好整段交进来，内核每轮把它们**原样插在历史之前**，且不写进会话转录——它们是本轮读到的真实环境，不是会话历史。缺省空数组表示旧宿主不给（行为与迁移前一致）。
 
 `initialize` 的 `session` 也是可选块：给了它，内核自己持有会话——回合消息落进转录、
 下一轮上下文由转录恢复、回合结束后按阈值跑一次压缩（摘要请求走同一个 `model` 配置）。
@@ -97,6 +119,66 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `request_retry_count` 是空响应与可重试错误的最大请求次数（默认 1），语义与 Python 侧同名配置一致。
   内核等该批次返回后再收尾，不会中断宿主正在执行的工具。
 
+`session.settings` 让宿主在运行期改内核持有的设置，用于设置面板的即时生效：
+
+```json
+{"model": {"model": "gpt-5.2", "provider": "openai", "protocol": "openai_responses",
+           "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
+           "options": {"reasoning_effort": "high"}, "reasoning_effort": "high",
+           "system_prompt": "你是助手。…<active_mode_prompt name=\"plan\">…</active_mode_prompt>",
+           "context_messages": [{"role": "user", "content": "<project_instructions>…</project_instructions>"}],
+           "tools": [{"type": "function", "function": {"name": "read_file"}}],
+           "context_window_tokens": 200000},
+ "compaction": {"trigger_context_tokens": 160000, "context_window_tokens": 200000}}
+```
+
+- 两个块都可选，**只覆盖给出的字段**，其余保持原值；结果里的 `applied` 是本次真正改动的字段路径
+  （如 `model.tools`、`model.reasoning_effort`、`model.base_url`、`compaction.trigger_context_tokens`）。
+- `model.reasoning_effort` 只写生成选项里的 `reasoning_effort` 这一个键（别名按 `llm.reasoning_effort`
+  的别名表归一化后写入），不像 `model.options` 那样整体替换——后者会顺手把别的生成选项打回默认值。
+- `provider` / `protocol` / `base_url` / `api_key_env` 是**渠道字段**：宿主切换模型渠道时整套下发，
+  凭据本身仍然不进帧（只给环境变量名）；给空串等同于不给。
+- `model.system_prompt` / `model.context_messages` 是**提示词整体替换**：宿主启用主 Agent 模式
+  （`/plan`）后重算 system prompt（末尾追加 `<active_mode_prompt>`）与上下文消息并下发；
+  上下文消息只在请求体里生效，不写进会话转录。
+- 设置对**后续**回合生效：正在跑的回合在开始时已快照模型配置，本次更新不会改变它已经发出的请求。
+  回合进行中也能应答这个方法，不必等回合结束。
+- 校验与写入分两段：任一字段非法则一个字节都不改（原子），回 `-32602` 并在 `data.kind` 给出可判定原因：
+  - `model_unavailable`：`initialize` 没给 `model`（宿主走 `model.reply` 代答），模型段不可改；
+  - `session_unavailable`：内核没有自持会话，压缩段不可改；
+  - `empty_settings`：两个块都没给；
+  - `invalid_settings`：字段取值非法（模型 ID 为空、工具项不是对象、阈值非正整数、未知推理强度等）。
+- 宿主据此区分「写盘失败」与「内核拒绝即时更新」：后者配置已落盘，宿主如实提示「下次会话生效」，
+  不假装即时生效。
+- 工具声明（`model.tools`）由宿主负责生成与替换：工具仍由宿主执行，内核只持有声明。
+
+`session.list` / `session.rename` / `session.archive` / `session.history` / `session.new` /
+`session.resume` 是斜杠命令（`/sessions`、`/archives`、`/rename`、`/archive`、`/history`、`/new`、
+`/resume`）在宿主侧的落点，语义与 Python 的 `SessionFacade` 一一对应：
+
+- `session.list`：`archived=false` 列未归档，`archived=true` 只看归档；`limit` 由内核收敛到 1..=100，
+  且**不**按工作区过滤（与 Python「列出全部会话，不再绑当前工作区」一致）。`current_session_id` 让宿主
+  给当前项打标记，也顺便校准自己记的 id。
+- `session.rename`：只改当前会话的标题；索引条目直接回给宿主展示。
+- `session.archive`：归档当前会话**并自动开一条新会话**（新 id 在 `new_session_id` 里，可能缺失——归档
+  已成功但新建失败时只在 stderr 记日志，不回滚归档）。归档会话从默认列表隐藏。
+- `session.resume`：切到目标会话并用转录重建运行期历史，`history` 一并回给宿主重放对话视图；目标必须
+  已存在（否则 `-32600`），已归档的先自动解除归档，切换前会丢掉当前的空占位会话。
+- `session.new`：清空当前对话并开新会话。
+- `session.history`：只读的用户提示历史（独立于会话转录），空 `query` 表示不过滤。
+- `turn.undo` 与 `session.resume` 都会带回 `history`：宿主据此重放视图，撤回的消息与工具卡才能真正消失。
+
+`session.append` 与 `subagent.run` 供「模型循环之外」的宿主入口使用，当前只有 `/review`：
+
+- `subagent.run`：派生**单个**子 Agent（`agent_type` 取 `subagents.toml` 定义目录里的角色名）并等它
+  结束，回的是子 Agent 未截断的收尾文本（`output`）与公开结果（`task`）——公开的 `summary` 会按
+  `result_summary_chars` 截断，会把评审 JSON 打碎。失败时回 `-32600`，`data.kind` 给 `SUBAGENT_DISABLED`
+  / `SUBAGENT_TASK_FAILED` 这类可判定原因。子任务的工具批次仍回到宿主执行，因此**宿主不能同步等待
+  本方法的响应**（会与 `tool.batch` 互相卡死）：要么异步等回执，要么先继续处理帧。
+- `session.append`：把宿主产生的文本作为 assistant 消息注入内核会话历史，下一轮请求即可见（对映
+  Python 的 `remember_review_report`）。只接受 `role=assistant`——不借这个入口伪造用户输入或工具结果；
+  内容为空白时不做任何事，回 `{"appended": false}`。
+
 ## 内核 → 宿主
 
 ### 请求
@@ -108,6 +190,12 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 `tool.batch` 是刻意保留的批次边界：宿主必须先完成整批规范化与审批，再按 `calls` 顺序返回**同数量**
 的观察。数量不符时内核按协议错误处理并终止该回合（不变式已在 `omnicrawl-core` 内校验）。
+
+宿主拒绝执行某个调用时，观察里回 `result.error_code = "denied"`（常量 `omnicrawl_ipc::DENIED_ERROR_CODE`），
+`result.output` 写拒绝原因；内核据此把这次拒绝落成 `tool_call_denied` 会话事件。拒绝不额外设协议方法。
+
+带图观察（`followup_messages` 里正文含 `image_url` 部件的 user 消息）由宿主注入、内核可以改写：
+内核启用 `[vision]` 代理时把这条观察换成视觉模型的文本结论，代理未启用时原样使用。这条通路也不额外设协议方法。
 
 `workspace_root` 是可选字段：带上它表示这批工具要在**隔离根**下执行（当前只有 `subagent` 的
 `isolation=worktree` 子任务会带）——宿主应把工作目录与路径保护都切到该根，缺省则用宿主自己的
@@ -191,7 +279,16 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 ## 当前实现：`omnicrawl-cli`
 
 `rust/crates/omnicrawl-cli` 提供 `omnicrawl` 二进制，已实现握手状态机（未握手前其他请求回 `-32600`）、
-`turn.submit` / `turn.cancel` / `shutdown`，并作为 `tool.batch` 与 `model.reply` 的请求方。
+`turn.submit` / `turn.cancel` / `turn.undo` / `session.settings` / `session.compact` / `subagent.query` /
+`session.list` / `session.rename` / `session.archive` / `session.history` / `session.new` / `session.resume` /
+`session.append` / `subagent.run` / `shutdown`，并作为 `tool.batch` 与 `model.reply` 的请求方。
+
+`session.settings` 的写入面在 `src/settings.rs`（校验与应用分离，失败即整体不写），压缩字段的映射
+与 `initialize` 共用 `compaction.rs::overlay_compaction_config`，两处不会漂移。会话状态的读写面在
+`compaction.rs::KernelSession`（`open` / `reopen` / `start_new` / `reload_history` / `append`）与
+`session.rs` 的各 `respond_session_*` 之间，命令只做协议校验与结果投影。
+`subagent.run` 与 `subagent` 工具共用 `SubAgentRuntime::prepare` 与同一套结果投影
+（`require_completed_result`），因此角色发现、工具白名单与失败文案不会出现两份。
 
 事件归属按「信息在哪一侧产生」划分：
 
@@ -216,6 +313,12 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 指定配置文件、`OMNICRAWL_SUBAGENTS_DIR` 指定定义目录）；未启用时工具仍在表里，调用会得到
 `SUBAGENT_DISABLED` 的稳定错误。宿主只负责把角色名填进工具声明的 `enum`。
 
+`subagent` 的执行方式：`action=run` 按 `max_concurrency` 并发跑子任务，`action=spawn` 交给内核的
+后台线程池、父回合立刻收尾，`list` / `get` / `cancel` 用来查这些后台任务；`fail_fast` 在前序任务
+失败后停止调度，未跑的任务落成 `cancelled`。**并发对宿主是透明的**——所有子任务的工具批次都由内核
+汇总后**串行**发出，任一时刻只有一个 `tool.batch` 在途，宿主不必支持多批次并存；后台任务的工具批次
+发生在回合之外，`turn_id` 用子任务号。
+
 `isolation=worktree` 的角色由内核建独立工作树（`~/.omnicrawl/agent-worktrees/sw-<task>`），
 并把隔离根随子任务的 `tool.batch` 下发；成果**不自动写回**，由父 Agent 用 `subagent` 的
 `list_worktrees` / `apply_worktree` / `discard_worktree` 审查处理（`discard` 默认受变更保护，
@@ -227,7 +330,3 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 - 多连接与多回合并发不支持。
 - 回合内断线不带状态恢复：宿主重连后应重新 `initialize`。
 - `model.reply` 的代答路径没有流式增量：过渡期由宿主自己把增量推给界面。
-- `subagent` 目前只支持 `action=run` 且**逐个**执行任务（`max_concurrency` 未生效）；`action=spawn`
-  回 `SUBAGENT_BACKGROUND_DISABLED`——后台线程池已经在 `controllers/subagents/tasks.rs` 备好，
-  接进来需要把连接从 `Rc<RefCell<Conn>>` 改成可跨线程共享。`fail_fast` 已实现：前序任务失败后
-  停止调度，未跑的任务落成 `cancelled`（原因见 `fail_fast 已在前序任务失败后停止调度该任务。`）。

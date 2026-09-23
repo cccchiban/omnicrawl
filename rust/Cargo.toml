@@ -1,16 +1,25 @@
 [workspace]
 members = [
     "crates/omnicrawl-cli",
+    "crates/omnicrawl-commands",
     "crates/omnicrawl-compaction",
     "crates/omnicrawl-config",
+    "crates/omnicrawl-config-chat",
     "crates/omnicrawl-connectors",
     "crates/omnicrawl-controllers",
     "crates/omnicrawl-core",
+    "crates/omnicrawl-extensions",
+    "crates/omnicrawl-host",
     "crates/omnicrawl-ipc",
     "crates/omnicrawl-llm",
+    "crates/omnicrawl-mcp",
     "crates/omnicrawl-protocol",
     "crates/omnicrawl-session",
     "crates/omnicrawl-tui",
+    "crates/omnicrawl-tts",
+    "crates/omnicrawl-workspace",
+    "crates/omnicrawl-api",
+    "crates/omnicrawl-entry",
 ]
 resolver = "2"
 
@@ -43,6 +52,8 @@ regex = "1"
 ignore = "0.4"
 # 网页正文提取：HTML5 容错解析（html5ever 系），比正则去标签更能应对真实站点的畸形标签。
 scraper = "0.20"
+# AI 消息与思考区的 Markdown 渲染：对映 Python 侧 Rich 的 RichMarkdown。
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [profile.release]
 lto = "thin"

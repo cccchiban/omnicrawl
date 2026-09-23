@@ -8,13 +8,19 @@
 //! 值类型规则层是手写等价实现：Python 侧的每条正则在这里都有一份等价实现（行首锚定的赋值、
 //! 转义感知的 JSON 串、以及熵兜底的一整组形态判定）。
 //!
-//! 未搬：NER 语义兜底层（Python 侧可选依赖 torch + 5MB 权重，默认关闭）。
+//! 未接线：NER 语义兜底层（`ner.rs` 已落地前向与区间过滤，尚未接进 `mask_text`；
+//! Python 侧是可选依赖 torch + 5MB 权重，默认关闭）。
+//!
+//! 屏蔽计划缓存（Python `plan_cache.py`）已接线：`mask_text` 先按缓存计划重放，未命中时
+//! 用记录器收集各阶段区间、跑完再把计划写回缓存。计划不含原文，只记区间 + 稳定序号。
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use omnicrawl_protocol::ProviderWarning;
 use serde_json::Value;
 
+use super::plan_cache::{stage_counter_field, MaskPlanBuilder, MaskPlanCache};
 use super::rules::{scan_pattern_rules, shannon_entropy_bits, PatternRule};
 use super::{match_placeholder, DesensitizationStats, PlaceholderCycle, PLACEHOLDER_MARKER};
 
@@ -427,6 +433,10 @@ pub struct MaskContext<'a> {
     pub pattern_rules: &'a [PatternRule],
     /// gitleaks 规则（运行时正则）：排在值类型规则之后，重叠区间由先命中者占位。
     pub gitleaks_rules: &'a [super::gitleaks::GitleaksRule],
+    /// 屏蔽计划缓存（运行时实例级）：`None` 等价于未接线，屏蔽路径不走计划重放与记录。
+    pub plan_cache: Option<Arc<MaskPlanCache>>,
+    /// 本次文本屏蔽的计划记录器；只有 [`MaskContext::recording_copy`] 产出的副本带记录器。
+    pub plan_builder: Option<MaskPlanBuilder>,
 }
 
 impl MaskContext<'_> {
@@ -441,6 +451,132 @@ impl MaskContext<'_> {
             self.stats.values_masked += 1;
         }
         Some(super::format_placeholder(seq))
+    }
+
+    /// 登记值并返回占位符与序号（被跳过的值返回 `(None, None)`）。
+    pub fn placeholder_and_seq(&mut self, value: &str) -> (Option<String>, Option<u64>) {
+        if should_skip_value(value) {
+            self.stats.skipped_values += 1;
+            return (None, None);
+        }
+        let (seq, created) = self.cycle.seq_for_value(value);
+        if created {
+            self.stats.values_masked += 1;
+        }
+        if let Some(builder) = self.plan_builder.as_mut() {
+            builder.note_registration();
+        }
+        (Some(super::format_placeholder(seq)), Some(seq))
+    }
+
+    /// 把 `text[start..end]` 替换为占位符，并记录该区间（启用计划缓存时）。
+    ///
+    /// `value` 用于「值与文本切片不一致」的类型（JSON 转义）：不一致时不记录区间，
+    /// 该文本的计划因「记录数 != 分配数」判为不可重放，只损失速度、不改语义。
+    pub fn placeholder_at(
+        &mut self,
+        text: &str,
+        start: usize,
+        end: usize,
+        value: Option<&str>,
+    ) -> Option<String> {
+        let sliced = &text[start..end];
+        let target = value.unwrap_or(sliced);
+        let (placeholder, seq) = self.placeholder_and_seq(target);
+        let placeholder = placeholder?;
+        if let Some(builder) = self.plan_builder.as_mut() {
+            if let Some(seq) = seq {
+                if value.is_none() || value == Some(sliced) {
+                    builder.record(start, end, seq);
+                }
+            }
+        }
+        Some(placeholder)
+    }
+
+    /// 开启一个新的计划阶段（对应一次赋值替换 / 一层规则）；未启用计划缓存时为空操作。
+    pub fn begin_stage(&mut self, counter: &str) {
+        if let Some(builder) = self.plan_builder.as_mut() {
+            builder.begin_stage(counter);
+        }
+    }
+
+    /// 返回带计划记录器的上下文副本；两侧共享匹配器、周期注册表与计数。
+    ///
+    /// 未启用计划缓存时副本同样没有记录器（等价于直接沿用原上下文）。
+    pub fn recording_copy(&mut self) -> MaskContext<'_> {
+        let cache = self.plan_cache.clone();
+        let builder = cache.as_ref().map(|_| MaskPlanBuilder::new());
+        MaskContext {
+            matcher: self.matcher,
+            cycle: &mut *self.cycle,
+            stats: &mut *self.stats,
+            entropy_enabled: self.entropy_enabled,
+            entropy_min_length: self.entropy_min_length,
+            entropy_min_bits: self.entropy_min_bits,
+            entropy_pure_letters: self.entropy_pure_letters,
+            entropy_pure_digits: self.entropy_pure_digits,
+            pattern_rules: self.pattern_rules,
+            gitleaks_rules: self.gitleaks_rules,
+            plan_cache: cache,
+            plan_builder: builder,
+        }
+    }
+
+    /// 把本次文本屏蔽的匹配计划写入缓存；计划不完整或未启用缓存时跳过。
+    pub fn store_plan(&mut self, text: &str) {
+        let Some(cache) = self.plan_cache.clone() else {
+            return;
+        };
+        let Some(builder) = self.plan_builder.take() else {
+            return;
+        };
+        if let Some(plan) = builder.build() {
+            cache.put(text, plan);
+        }
+    }
+
+    /// 按缓存的匹配计划重建屏蔽结果；未启用缓存 / 未命中 / 计划失效时返回 `None`。
+    ///
+    /// 计划内的区间按各自阶段的输入文本记录，逐阶段重放即可复现原坐标；每个区间都
+    /// 从当前文本重新取值并走 [`MaskContext::placeholder_for`]，因此当前周期照样登记
+    /// 原文（可还原）。序号与计划不一致时按未命中收场，让调用方走完整屏蔽。
+    pub fn replay_plan(&mut self, text: &str) -> Option<String> {
+        let cache = self.plan_cache.clone()?;
+        let plan = cache.get(text)?;
+        let mut result = text.to_string();
+        for stage in &plan.stages {
+            for span in stage.iter().rev() {
+                let value = result[span.start..span.end].to_string();
+                let before = self.stats.values_masked;
+                let placeholder = self.placeholder_for(&value);
+                if placeholder.as_deref() != Some(super::format_placeholder(span.seq).as_str()) {
+                    cache.note_invalid();
+                    return None;
+                }
+                let placeholder = placeholder.expect("上面已比对过是否为 None");
+                if let Some(field) = stage_counter_field(&span.counter) {
+                    if self.stats.values_masked > before {
+                        note_stage_counter(self.stats, field);
+                    }
+                }
+                result.replace_range(span.start..span.end, &placeholder);
+            }
+        }
+        Some(result)
+    }
+}
+
+/// 按阶段标签把「本周期首次登记」计入对应计数口径。
+///
+/// 标签表来自 [`super::plan_cache::STAGE_COUNTER_FIELDS`]（`rules` / `entropy` / `ner`），
+/// 与未命中路径里各层自己的计数同义。
+fn note_stage_counter(stats: &mut DesensitizationStats, field: &str) {
+    match field {
+        "rules_masked" => stats.rules_masked += 1,
+        "entropy_masked" => stats.entropy_masked += 1,
+        "ner_masked" => stats.ner_masked += 1,
+        _ => {}
     }
 }
 
@@ -495,19 +631,31 @@ fn mask_sensitive_subtree(value: &Value, ctx: &mut MaskContext<'_>) -> Value {
 }
 
 /// 文本匹配：结构感知 → 值类型规则层 → 熵兜底。
+///
+/// 启用计划缓存时先按缓存计划重放；未命中则用带记录器的副本跑完各层，再把本次计划写回缓存。
+/// 阶段划分与 Python 侧一致（三步结构层各占一个无名阶段，规则层与熵兜底各带标签），
+/// 阶段内的坐标同源，逐一重放即可复现原结果。
 pub fn mask_text(text: &str, ctx: &mut MaskContext<'_>) -> String {
     if text.is_empty() {
         return text.to_string();
     }
-    let mut masked = substitute_assignments(text, ctx, AssignmentKind::Env);
-    masked = substitute_assignments(&masked, ctx, AssignmentKind::KeyValue);
-    masked = substitute_json_pairs(&masked, ctx);
-    if !ctx.pattern_rules.is_empty() {
-        masked = mask_pattern_text(&masked, ctx);
+    if let Some(replayed) = ctx.replay_plan(text) {
+        return replayed;
     }
-    if ctx.entropy_enabled {
-        masked = mask_entropy_text(&masked, ctx);
+    let mut local = ctx.recording_copy();
+    local.begin_stage("");
+    let mut masked = substitute_assignments(text, &mut local, AssignmentKind::Env);
+    local.begin_stage("");
+    masked = substitute_assignments(&masked, &mut local, AssignmentKind::KeyValue);
+    local.begin_stage("");
+    masked = substitute_json_pairs(&masked, &mut local);
+    if !local.pattern_rules.is_empty() {
+        masked = mask_pattern_text(&masked, &mut local);
     }
+    if local.entropy_enabled {
+        masked = mask_entropy_text(&masked, &mut local);
+    }
+    local.store_plan(text);
     masked
 }
 
@@ -537,10 +685,11 @@ fn mask_pattern_text(text: &str, ctx: &mut MaskContext<'_>) -> String {
     if hits.is_empty() {
         return text.to_string();
     }
+    ctx.begin_stage("rules");
     let mut result = text.to_string();
     for (start, end, value) in hits.iter().rev() {
         let before = ctx.stats.values_masked;
-        let placeholder = match ctx.placeholder_for(value) {
+        let placeholder = match ctx.placeholder_at(text, *start, *end, Some(value)) {
             Some(placeholder) => placeholder,
             None => continue,
         };
@@ -564,11 +713,11 @@ fn mask_entropy_text(text: &str, ctx: &mut MaskContext<'_>) -> String {
     if spans.is_empty() {
         return text.to_string();
     }
+    ctx.begin_stage("entropy");
     let mut result = text.to_string();
     for (start, end) in spans.iter().rev() {
-        let token = &text[*start..*end];
         let before = ctx.stats.values_masked;
-        let placeholder = match ctx.placeholder_for(token) {
+        let placeholder = match ctx.placeholder_at(text, *start, *end, None) {
             Some(placeholder) => placeholder,
             None => continue,
         };
@@ -711,12 +860,17 @@ fn replace_assignment(
     let Some((body_start, body_end)) = assignment_value_body(raw_value) else {
         return text[match_start..match_end].to_string();
     };
-    let body = &raw_value[body_start..body_end];
-    let placeholder = match ctx.placeholder_for(body) {
+    let value_offset = match_start + (text[match_start..match_end].len() - raw_value.len());
+    // 区间按阶段输入文本（`text`）记录；被跳过的值由 `placeholder_at` 返回 `None`。
+    let placeholder = match ctx.placeholder_at(
+        text,
+        value_offset + body_start,
+        value_offset + body_end,
+        None,
+    ) {
         Some(placeholder) => placeholder,
         None => return text[match_start..match_end].to_string(),
     };
-    let value_offset = match_start + (text[match_start..match_end].len() - raw_value.len());
     let mut replaced = String::new();
     replaced.push_str(&text[match_start..value_offset + body_start]);
     replaced.push_str(&placeholder);
@@ -777,10 +931,12 @@ fn substitute_json_pairs(text: &str, ctx: &mut MaskContext<'_>) -> String {
         result.push_str(&text[cursor..value_start]);
         if !ctx.matcher.is_sensitive(&unescape_json_string(&key)) {
             result.push_str(&text[value_start..value_end]);
-        } else if let Some(placeholder) = ctx.placeholder_for(&unescape_json_string(&raw_value)) {
-            result.push_str(&placeholder);
         } else {
-            result.push_str(&text[value_start..value_end]);
+            let value = unescape_json_string(&raw_value);
+            match ctx.placeholder_at(text, value_start, value_end, Some(&value)) {
+                Some(placeholder) => result.push_str(&placeholder),
+                None => result.push_str(&text[value_start..value_end]),
+            }
         }
         cursor = value_end;
         index = match_end;
@@ -1120,4 +1276,115 @@ fn is_naming_chain(token: &str) -> bool {
 /// 供上层复用：把告警补齐（本层当前不产出告警，保留签名以便 middleware 接线）。
 pub fn engine_warnings() -> Vec<ProviderWarning> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod plan_cache_tests {
+    use super::*;
+    use crate::desensitization::plan_cache::{MaskPlan, MaskPlanCache, PlanSpan};
+    use crate::desensitization::rules::builtin_rules;
+    use crate::desensitization::SequenceRegistry;
+
+    /// 用同一份上下文按顺序屏蔽多段文本（可选挂计划缓存），返回结果。
+    fn run(texts: &[&str], cache: Option<Arc<MaskPlanCache>>) -> Vec<String> {
+        let empty: Vec<String> = Vec::new();
+        let matcher = SensitiveMatcher::new(&empty, &empty);
+        let rules = builtin_rules();
+        let mut registry = SequenceRegistry::new();
+        let (mut cycle, _) = registry.begin_cycle("计划缓存");
+        let mut stats = DesensitizationStats::default();
+        let mut ctx = MaskContext {
+            matcher: &matcher,
+            cycle: &mut cycle,
+            stats: &mut stats,
+            entropy_enabled: false,
+            entropy_min_length: 0,
+            entropy_min_bits: 0.0,
+            entropy_pure_letters: false,
+            entropy_pure_digits: false,
+            pattern_rules: rules,
+            gitleaks_rules: &[],
+            plan_cache: cache,
+            plan_builder: None,
+        };
+        texts.iter().map(|text| mask_text(text, &mut ctx)).collect()
+    }
+
+    /// 同一段文本重复屏蔽：第二次走缓存重放，结果与第一次逐字一致。
+    #[test]
+    fn repeated_text_hits_the_cached_plan() {
+        let cache = Arc::new(MaskPlanCache::default());
+        let secret = ["A1b2C3d4E5f6G7h8", "I9j0K1l2M3n4"].concat();
+        let text = format!("API_KEY={secret}");
+        let outputs = run(&[&text, &text], Some(Arc::clone(&cache)));
+        assert_eq!(outputs[0], outputs[1], "重放结果必须与首次屏蔽一致");
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.invalid, 0);
+    }
+
+    /// 未挂缓存时行为不变（重放路径不参与）。
+    #[test]
+    fn without_cache_output_is_unchanged() {
+        let secret = ["A1b2C3d4E5f6G7h8", "I9j0K1l2M3n4"].concat();
+        let text = format!("API_KEY={secret}");
+        let plain = run(&[&text, &text], None);
+        let cached = run(&[&text, &text], Some(Arc::new(MaskPlanCache::default())));
+        assert_eq!(plain, cached);
+    }
+
+    /// 文本变了就是另一个缓存键：不会把旧计划套到新文本上。
+    #[test]
+    fn changed_text_misses_the_cache() {
+        let cache = Arc::new(MaskPlanCache::default());
+        let secret = ["A1b2C3d4E5f6G7h8", "I9j0K1l2M3n4"].concat();
+        let first = format!("API_KEY={secret}");
+        let second = format!("API_KEY={secret}9");
+        let outputs = run(&[&first, &second], Some(Arc::clone(&cache)));
+        assert_ne!(outputs[0], outputs[1]);
+        assert_eq!(cache.stats().entries, 2);
+        assert_eq!(cache.stats().hits, 0);
+    }
+
+    /// 计划里的序号与当前周期不符（规则或稳定索引漂移）：按未命中重算，不改语义。
+    #[test]
+    fn drifted_plan_falls_back_to_full_mask() {
+        let cache = Arc::new(MaskPlanCache::default());
+        let secret = ["A1b2C3d4E5f6G7h8", "I9j0K1l2M3n4"].concat();
+        let text = format!("API_KEY={secret}");
+        // 让计划指向一个永远不对的序号：重放必然失效。
+        cache.put(
+            &text,
+            MaskPlan {
+                stages: vec![vec![PlanSpan {
+                    start: 8,
+                    end: 8 + secret.len(),
+                    seq: 9999,
+                    counter: String::new(),
+                }]],
+            },
+        );
+        let expected = run(&[text.as_str()], None);
+        let replayed = run(&[&text], Some(Arc::clone(&cache)));
+        assert_eq!(replayed, expected, "失效后回落到完整屏蔽");
+        let stats = cache.stats();
+        assert_eq!(stats.invalid, 1);
+        assert_eq!(stats.hits, 0, "命中的那次被改记为未命中");
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.lookups, 1);
+    }
+
+    /// 值类型规则层与熵兜底同样按阶段记录：命中后各层计数口径不变。
+    #[test]
+    fn stage_counters_survive_replay() {
+        let cache = Arc::new(MaskPlanCache::default());
+        let text = format!("联系 {}", ["worker", "@", "corp.local"].concat());
+        let outputs = run(&[&text, &text], Some(Arc::clone(&cache)));
+        assert_eq!(outputs[0], outputs[1]);
+        let stats = cache.stats();
+        assert_eq!(stats.hits, 1, "邮箱命中落在规则阶段，计划可重放");
+        assert_eq!(stats.invalid, 0);
+    }
 }

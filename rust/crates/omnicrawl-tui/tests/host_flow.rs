@@ -209,8 +209,16 @@ impl Harness {
 }
 
 /// 每个用例一个干净的工作区：工具执行体真的会在这里读写文件。
+///
+/// 目录名带进程内的自增序号：用例是并行跑的，共用同一个目录会互相删掉
+/// 对方的工作区（工具表构建因此随目录消失而失败）。
 fn workspace_dir() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("omnicrawl-tui-host-flow-{}", std::process::id()));
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "omnicrawl-tui-host-flow-{}-{seq}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("创建临时工作区");
     root
@@ -593,4 +601,302 @@ fn monitor_batches_start_poll_and_stop_a_background_task() {
         "应当留下 monitor 工具卡：{:?}",
         harness.app.state.records
     );
+}
+// ---------- 斜杠命令接线 ----------
+
+/// 内核对 `subagent.query`（list）的响应：一条运行中的后台任务。
+const SUBAGENT_LIST_REPLY: &str = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"unavailable\":false,\
+\"action\":\"list\",\"tasks\":[{\"task_id\":\"task-1\",\"agent_type\":\"reviewer\",\"status\":\"running\",\
+\"description\":\"审查改动\"}],\"task\":null,\"result\":{}}}\n";
+
+/// 内核对 `turn.undo` 的响应。
+const UNDO_REPLY: &str = "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"kind\":\"complete\",\
+\"message_count\":2,\"side_effects_reverted\":true,\"unrestorable\":[]}}\n";
+
+fn notices(harness: &Harness) -> Vec<String> {
+    harness
+        .app
+        .state
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Notice(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn type_text(harness: &mut Harness, text: &str) {
+    for character in text.chars() {
+        harness.press(KeyCode::Char(character));
+    }
+}
+
+#[test]
+fn slash_prefix_opens_menu_and_tab_completes() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    assert!(
+        !harness.app.state.composer.menu().is_open(),
+        "空输入时菜单不应弹出"
+    );
+
+    // 输入 `/set`：候选来自统一命令源，只有 `/settings` 以它开头。
+    type_text(&mut harness, "/set");
+    let names: Vec<&str> = harness
+        .app
+        .state
+        .composer
+        .menu()
+        .matches()
+        .iter()
+        .map(|option| option.command.as_str())
+        .collect();
+    assert_eq!(names, vec!["/settings"], "菜单候选应当来自注册表");
+
+    // Tab 只补全、不提交；补全后完整命令会带上参数提示候选。
+    harness.press(KeyCode::Tab);
+    assert_eq!(harness.app.state.composer.text(), "/settings");
+    let names: Vec<&str> = harness
+        .app
+        .state
+        .composer
+        .menu()
+        .matches()
+        .iter()
+        .map(|option| option.command.as_str())
+        .collect();
+    assert_eq!(names, vec!["/settings", "--chat"], "{names:?}");
+
+    // 输入已是完整命令：Enter 放行提交流程，命令层给出「打开设置面板」。
+    harness.press(KeyCode::Enter);
+    assert!(
+        notices(&harness).iter().any(|text| text == "打开设置面板"),
+        "Enter 应当执行 /settings：{:?}",
+        notices(&harness)
+    );
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .all(|frame| frame.method() != Some("turn.submit")),
+        "斜杠命令不应变成一轮对话"
+    );
+}
+
+#[test]
+fn quit_command_asks_the_host_to_exit() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    type_text(&mut harness, "/quit");
+    harness.press(KeyCode::Enter);
+    assert!(harness.app.quit, "/quit 应当请求退出");
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .any(|frame| frame.method() == Some("shutdown")),
+        "退出前应当请内核收工"
+    );
+}
+
+#[test]
+fn unsupported_command_reports_reason_instead_of_talking_to_the_model() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    // 切换工作区要重建内核会话、MCP 与工具表，协议仍没有入口：给出原因，而不是当成提示词发出去。
+    type_text(&mut harness, "/workspace D:/other");
+    harness.press(KeyCode::Enter);
+    let messages = notices(&harness);
+    assert!(
+        messages.iter().any(|text| text.contains("/workspace")),
+        "{messages:?}"
+    );
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .all(|frame| frame.method() != Some("turn.submit")),
+        "未支持的命令不能退化成模型对话"
+    );
+}
+
+/// 测试用会话 id：与内核同格式（`YYYYMMDD-HHMMSS-<hex>`），否则条目校验会拒掉。
+const SESSION_ID: &str = "20260101-000000-abcdef";
+
+/// 一条会话索引条目的内核回包形状（与 `SessionIndexEntry::to_dict` 同字段）。
+fn session_entry_json() -> String {
+    format!(
+        "{{\"session_id\":\"{SESSION_ID}\",\"title\":\"旧会话\",\"workspace_root\":\"D:/w\",\
+         \"path\":\"sessions/{SESSION_ID}.jsonl\",\"created_at\":\"2026-01-01T00:00:00Z\",\
+         \"updated_at\":\"2026-01-02T00:00:00Z\",\"event_count\":4,\"message_count\":2,\
+         \"last_event_type\":\"assistant_message\",\"archived_at\":null}}"
+    )
+}
+
+/// `/resume`：宿主把整条命令下发给内核，并把回给的历史重放进消息流。
+///
+/// 命令层是同步接口，宿主在按 Enter 的那一帧里等响应，所以回帧必须先备好。
+#[test]
+fn resume_command_asks_the_kernel_and_replays_history() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.send(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"session_id\":\"{SESSION_ID}\",\
+         \"session\":{},\"history\":[{{\"role\":\"user\",\"content\":\"第一问\"}},\
+         {{\"role\":\"assistant\",\"content\":\"第一答\"}}]}}}}\n",
+        session_entry_json()
+    ));
+
+    type_text(&mut harness, &format!("/resume {SESSION_ID}"));
+    harness.press(KeyCode::Enter);
+
+    let request = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("session.resume"))
+        .expect("应当下发 session.resume");
+    assert_eq!(
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("session_id")),
+        Some(&json!(SESSION_ID)),
+        "会话 id 原样传给内核：{request:?}"
+    );
+    let messages = notices(&harness);
+    assert!(
+        messages
+            .iter()
+            .any(|text| text.contains(&format!("已恢复会话：{SESSION_ID}"))
+                && text.contains("2 条上下文消息")),
+        "{messages:?}"
+    );
+    // 历史重放进消息流：撤回/切换后旧的对话不再留在视图里，是「重放」而不是「追加提示」。
+    let texts: Vec<String> = harness
+        .app
+        .state
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            Record::User(text) | Record::Assistant(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, vec!["第一问", "第一答"], "历史应当成为对话视图");
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .all(|frame| frame.method() != Some("turn.submit")),
+        "会话命令不能退化成模型对话"
+    );
+}
+
+/// 内核拒绝会话命令时如实透出原因（不假装成功，也不退化成模型对话）。
+#[test]
+fn session_command_failure_is_reported() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.send(
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32600,\"message\":\"当前会话不受内核持有，无法执行该会话操作。\"}}\n",
+    );
+
+    type_text(&mut harness, "/sessions");
+    harness.press(KeyCode::Enter);
+
+    let messages = notices(&harness);
+    assert!(
+        messages.iter().any(|text| {
+            text.contains("会话列表读取失败") && text.contains("不受内核持有")
+        }),
+        "{messages:?}"
+    );
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .all(|frame| frame.method() != Some("turn.submit")),
+        "失败也不能退化成模型对话"
+    );
+}
+
+/// `/review`：宿主先做 git 预检，再异步下发 `subagent.run`，回执渲染成报告、随后注入上下文。
+#[test]
+fn review_command_runs_precheck_then_subagent_and_injects_report() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    // 工作区是空的 git 仓库（`Harness::start` 只建了目录）：预检会先失败，不会拉起子 Agent。
+    type_text(&mut harness, "/review");
+    harness.press(KeyCode::Enter);
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .all(|frame| frame.method() != Some("subagent.run")),
+        "预检失败时不应派生评审子 Agent"
+    );
+    let messages = notices(&harness);
+    assert!(
+        messages
+            .iter()
+            .any(|text| text.contains("git") || text.contains("仓库")),
+        "应当给出预检原因：{messages:?}"
+    );
+}
+
+#[test]
+fn tasks_command_queries_the_kernel_and_prints_the_snapshot() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    // 响应要在 Enter 之前就位：命令分派会在事件处理里同步等它。
+    harness.send(SUBAGENT_LIST_REPLY);
+    type_text(&mut harness, "/tasks");
+    harness.press(KeyCode::Enter);
+
+    let query = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("subagent.query"))
+        .expect("应当发出 subagent.query");
+    assert_eq!(
+        query
+            .params
+            .as_ref()
+            .and_then(|params| params["action"].as_str()),
+        Some("list")
+    );
+    let messages = notices(&harness);
+    assert!(
+        messages
+            .iter()
+            .any(|text| text.contains("task-1") && text.contains("running")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn undo_is_dispatched_to_the_kernel_and_reported_back() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    harness.send(UNDO_REPLY);
+    type_text(&mut harness, "/undo");
+    harness.press(KeyCode::Enter);
+
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .any(|frame| frame.method() == Some("turn.undo")),
+        "/undo 应当异步下发给内核"
+    );
+    harness.expect_ready(
+        |app| {
+            app.state.records.iter().any(
+                |record| matches!(record, Record::Notice(text) if text.contains("已撤销最近一轮")),
+            )
+        },
+        "撤销结果应当回填到消息流",
+    );
+    assert_eq!(harness.app.state.status, None, "回执到达后状态行应当收起");
 }

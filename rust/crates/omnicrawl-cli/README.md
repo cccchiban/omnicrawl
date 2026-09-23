@@ -37,6 +37,82 @@
 连接沿用一次 `initialize.model` 给的那条，只把 model 名换成 `[tool_output_compression].model_key`
 （与子任务的 `child_model_config` 同一做法）；配置文件路径与其它配置一致：显式路径 > `AI_CONFIG_FILE` > 用户目录。
 
+## 工具输出预算与落盘归档
+
+内核拿到宿主回传的整批观察后，先按 Python 的批次预算口径裁剪模型可见文本：单个工具输出超过
+50K 字符、或本回合未落盘总量超过 200K 字符时，完整内容写进会话 artifact（`artifacts/<会话 id>/`），
+模型上下文只留头尾预览与「输出太大（NKB），完整内容已保存到：<路径>」，模型可按路径用 `read` 取回全文。
+落盘失败或会话不在内核时降级为纯预览（提示「完整内容未能保存到磁盘。」），不阻断工具执行；
+`full_output` 始终保留完整原文。这一步在压缩旁路之前跑。
+
+## 审批审计
+
+审批发生在宿主（面板在 TUI），但拒绝事实要进会话转录：宿主在观察里回 `result.error_code = denied`，
+内核据此补一条 `tool_call_denied` 事件（载荷 `tool` / `arguments` / `reason`，参数按
+`public_tool_arguments` 投影，不把 shell 全文写进转录）。会话投影与历史靠这个事件还原「用户拒绝执行」，
+因此拒绝只走观察、不额外加协议方法（错误码常量见 `omnicrawl_ipc::DENIED_ERROR_CODE`，
+`tool.batch` 的响应负载约定记在协议文档里）。批准事实（`tool_call_approved`）与插件钩子
+`tool.approval.after` 仍由宿主侧编排，内核不参与。
+
+## 独立视觉模型代理
+
+宿主把图片作为带图观察回传（`followup_messages` 里形如「文本 + `image_url`」的 user 消息）时，
+内核若读到 `[vision]` 配置且已启用，就把这条观察交给配置里的视觉模型：按 `models` 顺序尝试，
+前一个候选失败就换下一个，每次沿用 `initialize.model` 的连接、只换 model 名，请求不带工具与系统提示、
+`reasoning_effort=none`，单候选最多重试两次。成功后模型上下文里换成 `<vision_observation>` 包裹的
+不可信文本观察（图片不再进请求），展示文本追加「视觉模型分析（模型）：…」；全部候选失败则把该结果
+改成「视觉模型分析失败：…」。
+
+代理未启用、候选都装配不出来或观察里没有图片时，内核原样保留宿主给的观察（图片通路仍由宿主决定）。
+判定面（候选选择、标签、失败汇总、文本截断）在 `omnicrawl-controllers/src/vision_proxy.rs`。
+
+## 撤销最近一轮（`turn.undo`）
+
+宿主发 `turn.undo` 时，内核按「先副作用、后会话」的顺序撤销最近一轮：读 `turn_snapshot` 事件 → 按
+`undo/{begin,end}.patch` 与未跟踪清单把工作区换回本轮开始前 → 提交会话回退并落 `turn_undone`，
+随后按会话重建运行期历史。副作用没有快照、本轮跑过不可逆工具、快照绑定的工作区与当前工作区不一致时
+整轮拒绝（含中文原因）；提交会话失败会把工作区换回撤销前。判定面与恢复预检在
+`omnicrawl-controllers/src/undo.rs`，宿主侧编排（git 子进程、artifact 读写、提交）在
+`omnicrawl-cli/src/undo.rs`。
+
+## 运行期设置更新（`session.settings`）
+
+宿主可以在回合间隙改内核持有的设置，用于设置面板即点即存：
+
+- `model`：`model` / `options` / `reasoning_effort`（只改生成选项里的这一个键）/ `tools`（静态工具声明整体替换）/ `context_window_tokens`，以及渠道字段 `provider` / `protocol` / `base_url` / `api_key_env`（切换模型渠道时整套下发，空串等同于不给，凭据本身不进帧）；
+- `compaction`：压缩阈值与窗口等字段，映射与 `initialize.session.compaction` 共用
+  `compaction.rs::overlay_compaction_config`，两处不会漂移。
+
+只覆盖给出的字段，结果回 `{applied: [字段路径]}`；任一字段非法则整体不写，回 `-32602` 且
+`data.kind` 取 `model_unavailable` / `session_unavailable` / `empty_settings` / `invalid_settings`，
+宿主据此区分「写盘失败」与「内核拒绝即时更新」。设置对**后续**回合生效：正在跑的回合在开始时已快照
+模型配置，不会被中途换掉；因此回合进行中也照常应答这个方法（`handle_inbound` 的回合内分支）。
+
+## 会话生命周期（`session.*` 与 `subagent.run`）
+
+会话状态的唯一真相在内核：摘要边界、运行期历史与转录投影都在这边，宿主只做展示与视图同步。
+因此斜杠命令对应的读写全部是协议方法（语义逐条见 `../../docs/protocol-v1.md`）：
+
+| 方法 | 对映命令 | 行为要点 |
+| --- | --- | --- |
+| `session.list` | `/sessions`、`/archives` | 按 `archived` 列未归档 / 已归档，`limit` 收敛到 1..=100，**不**按工作区过滤；回包带 `current_session_id` |
+| `session.rename` | `/rename` | 只改当前会话标题，回索引条目 |
+| `session.archive` | `/archive` | 归档并自动开一条新会话（`new_session_id`）；归档失败不新建，新建失败不回滚归档 |
+| `session.history` | `/history` | 只读的用户提示历史（`<session_root>/history.jsonl`），空 `query` 不过滤 |
+| `session.new` | `/new` | 清空当前对话并开新会话 |
+| `session.resume` | `/resume` | 切会话并用转录重建历史；目标必须存在，已归档先解除归档，`history` 一并回给宿主重放 |
+| `session.append` | （`/review` 的报告注入） | 只接受 `role=assistant`；先落盘再进运行期历史，下一轮请求即带上 |
+| `subagent.run` | `/review` | 派生单个子 Agent 等它跑完，回**未截断**的收尾文本（公开 `summary` 会按 `result_summary_chars` 截断，会把评审 JSON 打碎） |
+
+两个实现约束：
+
+- `turn.undo` 与 `session.resume` 都把重建后的 `history` 一并回给宿主，否则 UI 无法让撤回的消息与工具卡真正消失；
+- `subagent.run` 的子任务工具批次仍回到宿主执行，因此宿主**不能同步等待**它的响应（会与 `tool.batch` 互相卡死）。
+
+`subagent.run` 与 `subagent` 工具共用 `SubAgentRuntime::prepare`（角色发现、工具白名单、worktree 隔离）
+与同一套结果投影（`require_completed_result`），失败回 `-32600` 且 `data.kind` 给 `SUBAGENT_DISABLED` /
+`SUBAGENT_TASK_FAILED` 这类可判定原因。
+
 ## 错误映射
 
 | `LoopError` | 协议错误码 | `data.kind` |

@@ -8,11 +8,13 @@
 //! 不逐行照搬，由本层的组件状态、布局函数、事件分派与显式按键处理承接；
 //! 文案、取色、按键与可视行为以 Python 侧逐条对齐。
 
+pub mod input;
 pub mod random;
 pub mod rendering;
 pub mod status;
 pub mod terminal;
 pub mod text;
+pub mod tool_labels;
 
 /// 对映 Python 内建 `round`：浮点半数进偶数（banker's rounding）。
 ///

@@ -109,6 +109,41 @@ impl StyledText {
             .sum()
     }
 
+    /// 对映 `Text.split("\n")`：按换行切分并保留各段样式。
+    pub fn split_lines(&self) -> Vec<StyledText> {
+        let mut lines: Vec<StyledText> = Vec::new();
+        let mut current = StyledText::with_base_style(&self.base_style);
+        for span in &self.spans {
+            let mut parts = span.text.split('\n');
+            if let Some(first) = parts.next() {
+                if !first.is_empty() {
+                    current.push(first, &span.style);
+                }
+            }
+            for part in parts {
+                lines.push(std::mem::take(&mut current));
+                current = StyledText::with_base_style(&self.base_style);
+                if !part.is_empty() {
+                    current.push(part, &span.style);
+                }
+            }
+        }
+        lines.push(current);
+        lines
+    }
+
+    /// 对映 `Text("\n").join(lines)`。
+    pub fn join_lines(lines: &[StyledText], separator: &str) -> StyledText {
+        let mut rendered = StyledText::new();
+        for (index, line) in lines.iter().enumerate() {
+            if index > 0 {
+                rendered.push(separator, "");
+            }
+            rendered.append_text(line);
+        }
+        rendered
+    }
+
     /// 转成 ratatui 分段：样式串逐段解析。
     pub fn to_spans(&self) -> Vec<Span<'static>> {
         let mut spans: Vec<Span<'static>> = Vec::new();

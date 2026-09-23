@@ -136,6 +136,7 @@ python rust/tools/gen_desensitization_fixture.py         # 消息脱敏：占位
 python rust/tools/gen_desensitization_stream_fixture.py  # 消息脱敏：流式还原
 python rust/tools/gen_desensitization_rules_fixture.py   # 消息脱敏：值类型规则层
 python rust/tools/gen_desensitization_engine_fixture.py  # 消息脱敏：匹配引擎
+python rust/tools/gen_desensitization_plan_cache_fixture.py  # 消息脱敏：屏蔽计划缓存
 python rust/tools/gen_stream_registry_fixture.py         # 回合资源注册表：注册 / 注销 / 计数 / 关闭轨迹
 cd rust && cargo test -p omnicrawl-llm
 ```
@@ -146,6 +147,7 @@ fixture：
 - `tests/fixtures/desensitization_stream_parity.json`：13 个场景、71 步操作（分片还原、通道隔离、结构化还原、告警、严格模式、截断判定）。
 - `tests/fixtures/desensitization_rules_parity.json`：98 条语料（逐条候选 96、扫描命中 83）、熵 10 例、Luhn 13 例、邮箱豁免 12 例、IP 判定 50 例。
 - `tests/fixtures/desensitization_engine_parity.json`：文本 24 + 3 条（两套熵参数）、结构用例 3、键名 24、跳过 8、形态 22、候选 11、词形 8、扫描 6。
+- `tests/fixtures/desensitization_plan_cache_parity.json`：文本指纹 8、计划构建器 6 例、缓存 10 组操作序列（含计数、淘汰、失效、停用与清空）。
 - `tests/fixtures/openai_chat_stream_parity.json`：参数完整性 16、分片归并 8、SSE 解码 10、SSE 流 9、首选项 6。
 - `tests/fixtures/openai_chat_request_parity.json`：请求 33、provider_options 8、GPT 判定 13、prompt_cache_key 5、
   参数串 16、浮点写法 6。
@@ -219,7 +221,10 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 - **未搬**（按设计或留待后续批次）：`close()` 与 `_closed` 关闭态（Rust 运行时无关闭态，取消由 sink 表达）；
   能力门禁（`request.tools && !capabilities.tools` → `UNSUPPORTED_CAPABILITY`）与其他门禁一样留在调用方；
   `discover_models`（属 adapter 注册表 / `build_runtime` 批次）；`interruptible_stream_events`
-  （内核用可放弃读取线程 + 50ms 轮询表达同一件事；`stream_registry` 本身已搬，见上文模块，运行时未接线）；
+  的**机制**已抽成独立模块 `stream_reader.rs`（`omnicrawl/llm/stream_reader.py` 的移植：
+  可放弃读取线程 + 按轮询窗口转发事件 + Drop 置位放弃信号），供长流消费方复用；
+  四路 Provider 运行时目前的取消仍由运行时内置的读取线程 + 50ms 轮询表达，尚未改接到该模块；
+  `stream_registry` 本身已搬，见上文模块，运行时未接线）；
   SDK 客户端级配置（`default_headers` / 客户端超时由 `ChatEndpoint` 承载）；
   `_sanitize_options` 的「provider_options 必须是对象」分支（类型系统下不可达）；
   `reasoning_effort` → `thinking` 的那个分支（Python 侧本身就是 no-op 空分支）。
@@ -235,8 +240,8 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 
 - **未搬**（按设计或留待后续批次）：`close()` 与 `_closed` 关闭态、能力门禁
   （`request.tools && !capabilities.tools` → `UNSUPPORTED_CAPABILITY`）、`discover_models`
-  （属 adapter 注册表 / `build_runtime` 批次）、`interruptible_stream_events`
-  （内核用可放弃读取线程 + 50ms 轮询表达同一件事；`stream_registry` 本身已搬，运行时未接线）、
+  （属 adapter 注册表 / `build_runtime` 批次）、`interruptible_stream_events` 的机制已抽到
+  `stream_reader.rs`（同 Anthropic 条目），运行时尚未改接；
   `_create_gemini_client` 的
   「缺少 google-genai 依赖」分支（内核不带 SDK）、`_sanitize_options` 的
   「provider_options 必须是对象」分支（类型系统下不可达）。
@@ -356,7 +361,8 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   未注册序号保留 + 告警、工具参数还原）。
   两处实现差异（语义等价）：**不复用**上一周期的掩码请求（总是重新脱敏——稳定序号索引保证同值同号，
   代价只是重复扫描）；计数分两层（周期计数在注册表里，屏蔽 / 还原计数在装饰器里）。
-  未搬：`_MessageMaskMemo`（性能缓存）与 `_referenced_sequences`。
+  逐消息屏蔽缓存与屏蔽计划缓存都已接线：历史里逐字未变的消息走 `MessageMaskMemo`（命中即复用，
+  并校验引用的序号在本周期可还原），文本重复出现时再走 `MaskPlanCache`（按指纹重放匹配计划）。
 
 gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快照 `data/gitleaks.toml`
 （与 Python 侧同名文件逐字节一致，由 `tests/gitleaks_parity.rs` 的 sha256 断言看住），按 Python 语义解析
@@ -365,8 +371,9 @@ gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快
 编译期适配里（`\Z` → `\z`；非量词的 `{` / `}` 转义），且适配只用于编译不过的模式——能原样编译的一律不动。
 出厂配置里 `gitleaks_enabled = true`，内核侧 `DesensitizationOptions.gitleaks_enabled` 默认仍为关，
 等配置层搬完再对齐出厂默认。
-未搬：`locality` 局部化扫描与扫描结果缓存（纯性能优化，不影响命中集合）、`_MessageMaskMemo` 缓存、
-`oneshot` 旁路尚未接 gitleaks、NER 语义兜底层（torch 依赖）。
+未接线：`locality` 局部化扫描（Python 侧重正则的性能优化，内核的手写匹配器没有整段回溯的开销、
+结果与全量扫描一致）、`oneshot` 旁路尚未接 gitleaks、NER 语义兜底层（`ner.rs` 前向与区间过滤
+已落地并对照，但还没接进 `mask_text` 的末尾——接线的前提是配置域给出模型路径与静默降级开关）。
 
 三份数据集的占位符与号牌一类「占位符形状」的字面量一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：
 本仓库自己就是宿主，在启用了消息脱敏的会话里写这类完整字面量会被还原成会话注册表里的原文——数据集照旧生成、
@@ -391,13 +398,27 @@ gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快
   `predict` 逐条前向（Python 按 token 预算打包批处理，结果等价）；`extract_entities` 显式接收
   文本长度参数（Python 收原文本）。
 
-## 掩码记忆与扫描缓存（性能层）
+## 掩码记忆、计划缓存与扫描缓存（性能层）
 
 - `middleware.rs` 的 `MessageMaskMemo`：逐消息屏蔽结果缓存 + 本轮新增 (序号, 原文) 对；
   命中后按引用的序号校验本周期可还原（否则退回重扫并重新登记）。淘汰口径是「最近用过的」
   而不是 LRU——与 Python 的 `_MessageMaskMemo` 一致（历史是每轮顺序全扫，LRU 会正好淘汰
-  下一轮马上要用的条目）。
+  下一轮马上要用的条目）。运行时（`live.rs`）走 `mask_messages_cached`，与 Python 的
+  `_mask_message_cached` 同一路径。
+- `plan_cache.rs` 的 `MaskPlanCache`：按文本指纹（SHA-256）缓存**匹配计划**——
+  只记「阶段 → 待替换区间 + 稳定序号」，不含原文；命中时按区间从当前文本重新取值并走标准
+  `placeholder_for` 重新登记，因此还原 / 注销 / 并发周期隔离的语义与未命中路径完全一致。
+  序号对不上（规则或稳定索引漂移）就按未命中重算，宁慢勿错：失效的那次在计数里从命中改记为
+  未命中（`invalid`），条目仍留在缓存里。条目数与字节预算双上限，淘汰是真正的 LRU。
+  阶段划分与 Python 一致：三步结构层各占一个无名阶段，规则层与熵兜底各带标签
+  （`rules` / `entropy` / `ner`，命中重放时按标签补对应层计数）。
 - `rules.rs` 的 `ScanCache`：按 (文本, 规则集合身份) 记忆扫描结果，按字节预算淘汰；
   `locality` 局部化扫描是 Python 侧重正则的性能优化，内核的手写匹配器没有整段回溯的开销、
   结果与全量扫描一致。
 - Python 侧的模块级单例在内核里都是**实例**（由调用方持有），便于测试与配置变更后失效。
+  计划缓存与逐消息缓存都由 `DesensitizationRuntime` 持有，`close()` 时两处一起清空（计数保留）。
+
+计划缓存的对照数据集由 `gen_desensitization_plan_cache_fixture.py` 生成。注意该脚本
+**按文件路径**加载 `plan_cache.py`：Python 侧的 `engine.py` / `middleware.py` 当前带着未合并的
+冲突标记，走包导入会直接 `SyntaxError`；模块本身只依赖标准库，按路径加载不受影响。
+合并收口后可以把加载方式换回包导入（模块级行为不变），引擎重放路径的对照用例也可随那一批补。

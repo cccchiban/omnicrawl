@@ -1,0 +1,791 @@
+{
+  "source": [
+    "omnicrawl/llm/desensitization/plan_cache.py"
+  ],
+  "defaults": {
+    "max_entries": 1024,
+    "max_bytes": 4194304,
+    "stage_counter_fields": {
+      "rules": "rules_masked",
+      "entropy": "entropy_masked",
+      "ner": "ner_masked"
+    }
+  },
+  "text_keys": [
+    {
+      "text": "",
+      "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "text": "a",
+      "digest": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+    },
+    {
+      "text": "abc",
+      "digest": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    },
+    {
+      "text": "API_KEY=A1b2C3d4E5f6G7h8I9j0K1l2M3n4",
+      "digest": "53064ccbef9220376cc9d827a7da528ea0766a29b4e07fc42e7ffb28c0272916"
+    },
+    {
+      "text": "密码：hunter2000!!",
+      "digest": "39fbdcc4ddc432d14bc70359ec8682fc2e35f24f1c9cce7cf5fe4e7620af98dd"
+    },
+    {
+      "text": "多行\n文本\r\n第二行",
+      "digest": "03e2d1c89147e2159fbbea333af7a1dc2df745e0c5c931df0ffa24ad025d57ac"
+    },
+    {
+      "text": "emoji 与代理对：🧪🔐",
+      "digest": "080eba503cd29881244441eca9aad3f706988db665552edbd5e5c4718ba45776"
+    },
+    {
+      "text": "  xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "digest": "6a4cde5ba250273887aa287648990276735035264cc176e2f9305df347a3b6c5"
+    }
+  ],
+  "builder_cases": [
+    {
+      "note": "空计划（零区间零分配）照样产出",
+      "ops": [],
+      "plan": {
+        "stages": [],
+        "span_count": 0
+      }
+    },
+    {
+      "note": "单阶段单区间",
+      "ops": [
+        [
+          "begin_stage",
+          "rules"
+        ],
+        [
+          "record",
+          0,
+          3,
+          1
+        ],
+        [
+          "note_registration"
+        ]
+      ],
+      "plan": {
+        "stages": [
+          [
+            {
+              "start": 0,
+              "end": 3,
+              "seq": 1,
+              "counter": "rules"
+            }
+          ]
+        ],
+        "span_count": 1
+      }
+    },
+    {
+      "note": "未显式开阶段：落进无标签阶段",
+      "ops": [
+        [
+          "record",
+          2,
+          5,
+          9
+        ],
+        [
+          "note_registration"
+        ]
+      ],
+      "plan": {
+        "stages": [
+          [
+            {
+              "start": 2,
+              "end": 5,
+              "seq": 9,
+              "counter": ""
+            }
+          ]
+        ],
+        "span_count": 1
+      }
+    },
+    {
+      "note": "开了阶段但没记区间：该阶段在产出时丢掉",
+      "ops": [
+        [
+          "begin_stage",
+          ""
+        ],
+        [
+          "begin_stage",
+          "rules"
+        ],
+        [
+          "record",
+          0,
+          3,
+          1
+        ],
+        [
+          "note_registration"
+        ]
+      ],
+      "plan": {
+        "stages": [
+          [
+            {
+              "start": 0,
+              "end": 3,
+              "seq": 1,
+              "counter": "rules"
+            }
+          ]
+        ],
+        "span_count": 1
+      }
+    },
+    {
+      "note": "记录数与分配数不一致：不可重放",
+      "ops": [
+        [
+          "begin_stage",
+          "rules"
+        ],
+        [
+          "record",
+          0,
+          3,
+          1
+        ],
+        [
+          "note_registration"
+        ],
+        [
+          "begin_stage",
+          "entropy"
+        ],
+        [
+          "note_registration"
+        ]
+      ],
+      "plan": null
+    },
+    {
+      "note": "多阶段多区间，记录顺序即应用顺序",
+      "ops": [
+        [
+          "begin_stage",
+          ""
+        ],
+        [
+          "record",
+          8,
+          32,
+          1
+        ],
+        [
+          "note_registration"
+        ],
+        [
+          "begin_stage",
+          "rules"
+        ],
+        [
+          "record",
+          40,
+          52,
+          2
+        ],
+        [
+          "record",
+          10,
+          20,
+          3
+        ],
+        [
+          "note_registration"
+        ],
+        [
+          "note_registration"
+        ]
+      ],
+      "plan": {
+        "stages": [
+          [
+            {
+              "start": 8,
+              "end": 32,
+              "seq": 1,
+              "counter": ""
+            }
+          ],
+          [
+            {
+              "start": 40,
+              "end": 52,
+              "seq": 2,
+              "counter": "rules"
+            },
+            {
+              "start": 10,
+              "end": 20,
+              "seq": 3,
+              "counter": "rules"
+            }
+          ]
+        ],
+        "span_count": 3
+      }
+    }
+  ],
+  "cache_cases": [
+    {
+      "note": "命中与未命中计数",
+      "max_entries": 8,
+      "max_bytes": 1000000,
+      "ops": [
+        [
+          "get",
+          "abc"
+        ],
+        [
+          "put",
+          "abc",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "abc"
+        ],
+        [
+          "get",
+          "abd"
+        ]
+      ],
+      "results": [
+        false,
+        true,
+        false
+      ],
+      "stats": {
+        "entries": 1,
+        "size_bytes": 256,
+        "lookups": 3,
+        "hits": 1,
+        "misses": 2,
+        "invalid": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "note": "条目数上限：淘汰最久未用的那条",
+      "max_entries": 2,
+      "max_bytes": 1000000,
+      "ops": [
+        [
+          "put",
+          "a",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "put",
+          "b",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "put",
+          "c",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "a"
+        ],
+        [
+          "get",
+          "b"
+        ],
+        [
+          "get",
+          "c"
+        ]
+      ],
+      "results": [
+        false,
+        true,
+        true
+      ],
+      "stats": {
+        "entries": 2,
+        "size_bytes": 512,
+        "lookups": 3,
+        "hits": 2,
+        "misses": 1,
+        "invalid": 0,
+        "evictions": 1
+      }
+    },
+    {
+      "note": "重复写同一个键：条目数不变、旧占用先退回",
+      "max_entries": 8,
+      "max_bytes": 1000000,
+      "ops": [
+        [
+          "put",
+          "abc",
+          [
+            [
+              [
+                0,
+                2,
+                1,
+                ""
+              ],
+              [
+                4,
+                6,
+                2,
+                ""
+              ],
+              [
+                8,
+                10,
+                3,
+                ""
+              ],
+              [
+                12,
+                14,
+                4,
+                ""
+              ],
+              [
+                16,
+                18,
+                5,
+                ""
+              ]
+            ]
+          ]
+        ],
+        [
+          "put",
+          "abc",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "abc"
+        ]
+      ],
+      "results": [
+        true
+      ],
+      "stats": {
+        "entries": 1,
+        "size_bytes": 256,
+        "lookups": 1,
+        "hits": 1,
+        "misses": 0,
+        "invalid": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "note": "超字节预算的条目直接放弃，不淘汰既有条目",
+      "max_entries": 8,
+      "max_bytes": 300,
+      "ops": [
+        [
+          "put",
+          "keep",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "put",
+          "huge",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ],
+            [
+              [
+                10,
+                12,
+                2,
+                "entropy"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "keep"
+        ],
+        [
+          "get",
+          "huge"
+        ]
+      ],
+      "results": [
+        true,
+        false
+      ],
+      "stats": {
+        "entries": 1,
+        "size_bytes": 256,
+        "lookups": 2,
+        "hits": 1,
+        "misses": 1,
+        "invalid": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "note": "字节预算触发的淘汰（单条 448 字节 > 800 的一半）",
+      "max_entries": 8,
+      "max_bytes": 800,
+      "ops": [
+        [
+          "put",
+          "a",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "put",
+          "b",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ],
+            [
+              [
+                10,
+                12,
+                2,
+                "entropy"
+              ]
+            ]
+          ]
+        ],
+        [
+          "put",
+          "c",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "a"
+        ],
+        [
+          "get",
+          "b"
+        ],
+        [
+          "get",
+          "c"
+        ]
+      ],
+      "results": [
+        false,
+        true,
+        true
+      ],
+      "stats": {
+        "entries": 2,
+        "size_bytes": 704,
+        "lookups": 3,
+        "hits": 2,
+        "misses": 1,
+        "invalid": 0,
+        "evictions": 1
+      }
+    },
+    {
+      "note": "命中后重放失败：命中改记未命中，条目留在缓存里",
+      "max_entries": 8,
+      "max_bytes": 1000000,
+      "ops": [
+        [
+          "put",
+          "abc",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "abc"
+        ],
+        [
+          "note_invalid"
+        ],
+        [
+          "get",
+          "abc"
+        ]
+      ],
+      "results": [
+        true,
+        true
+      ],
+      "stats": {
+        "entries": 1,
+        "size_bytes": 256,
+        "lookups": 2,
+        "hits": 1,
+        "misses": 1,
+        "invalid": 1,
+        "evictions": 0
+      }
+    },
+    {
+      "note": "清空只丢条目，计数保留",
+      "max_entries": 8,
+      "max_bytes": 1000000,
+      "ops": [
+        [
+          "put",
+          "abc",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "abc"
+        ],
+        [
+          "clear"
+        ],
+        [
+          "get",
+          "abc"
+        ]
+      ],
+      "results": [
+        true,
+        false
+      ],
+      "stats": {
+        "entries": 0,
+        "size_bytes": 0,
+        "lookups": 2,
+        "hits": 1,
+        "misses": 1,
+        "invalid": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "note": "条目数上限为 0：整体停用，连 lookup 都不计",
+      "max_entries": 0,
+      "max_bytes": 1024,
+      "ops": [
+        [
+          "put",
+          "abc",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "abc"
+        ]
+      ],
+      "results": [
+        false
+      ],
+      "stats": {
+        "entries": 0,
+        "size_bytes": 0,
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "invalid": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "note": "字节预算为 0：整体停用",
+      "max_entries": 1024,
+      "max_bytes": 0,
+      "ops": [
+        [
+          "put",
+          "abc",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          "abc"
+        ]
+      ],
+      "results": [
+        false
+      ],
+      "stats": {
+        "entries": 0,
+        "size_bytes": 0,
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "invalid": 0,
+        "evictions": 0
+      }
+    },
+    {
+      "note": "空文本不进缓存",
+      "max_entries": 8,
+      "max_bytes": 1000000,
+      "ops": [
+        [
+          "put",
+          "",
+          [
+            [
+              [
+                0,
+                3,
+                1,
+                "rules"
+              ]
+            ]
+          ]
+        ],
+        [
+          "get",
+          ""
+        ]
+      ],
+      "results": [
+        false
+      ],
+      "stats": {
+        "entries": 0,
+        "size_bytes": 0,
+        "lookups": 0,
+        "hits": 0,
+        "misses": 0,
+        "invalid": 0,
+        "evictions": 0
+      }
+    }
+  ]
+}

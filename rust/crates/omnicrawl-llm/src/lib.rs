@@ -19,6 +19,7 @@ mod responses;
 mod runtime;
 mod runtime_manager;
 mod sse;
+pub mod stream_reader;
 mod stream_registry;
 mod transport;
 mod usage;
@@ -64,6 +65,11 @@ pub use runtime_manager::{
 };
 pub use sse::{
     decode_sse_data, iter_raw_sse_events, payload_of_line, step_payload, SseError, SseStep,
+};
+pub use stream_reader::{
+    interruptible_stream_events, interruptible_stream_events_with_opener, poll_duration,
+    AbandonedFlag, InterruptibleOutcome, InterruptionReader, StreamOpener, DEFAULT_POLL,
+    DEFAULT_POLL_SECONDS,
 };
 pub use stream_registry::{
     active_resource_count, active_stream_count, close_active_resources, close_active_streams,

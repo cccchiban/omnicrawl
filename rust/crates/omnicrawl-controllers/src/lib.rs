@@ -32,6 +32,7 @@ pub mod tool_impl;
 pub mod turn;
 pub mod types;
 pub mod undo;
+pub mod vision_proxy;
 pub mod workspace;
 
 pub use error::AgentError;

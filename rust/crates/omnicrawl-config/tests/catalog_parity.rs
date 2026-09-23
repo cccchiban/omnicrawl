@@ -10,7 +10,7 @@ use omnicrawl_config::models::llm::LlmConfig;
 use omnicrawl_config::models::model_catalog as MC;
 use omnicrawl_config::models::ProviderProfile;
 use omnicrawl_config::value::json_object_to_table;
-use omnicrawl_llm::{DiscoveryModel, DiscoveryResult, DiscoveryStatus};
+use omnicrawl_llm::{DiscoveryModel, DiscoveryResult, DiscoveryStatus, ModelCapabilities};
 use omnicrawl_protocol::Protocol;
 use serde_json::{json, Value as Json};
 
@@ -461,6 +461,8 @@ fn discovery_result(failed: bool) -> DiscoveryResult {
                 protocol: Protocol::OpenaiChatCompletions,
                 model_id: "gpt-5".to_string(),
                 display_name: "GPT-5".to_string(),
+                capabilities: ModelCapabilities::default(),
+                context_window_tokens: 0,
             },
             DiscoveryModel {
                 profile_id: "openai-main".to_string(),
@@ -468,6 +470,8 @@ fn discovery_result(failed: bool) -> DiscoveryResult {
                 protocol: Protocol::OpenaiChatCompletions,
                 model_id: "gpt-4.1".to_string(),
                 display_name: String::new(),
+                capabilities: ModelCapabilities::default(),
+                context_window_tokens: 0,
             },
         ],
     }

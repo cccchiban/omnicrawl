@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成 `omnicrawl-tui` TTS 文本归一化的对照数据集。
+"""生成 `omnicrawl-tts` TTS 文本归一化的对照数据集。
 
 期望值来自 Python 真实现 `omnicrawl/tts/normalize.py`：`normalize_tts_text`（稳健清洗管道）、
 `prepare_tts_request_texts`（合成前预处理）、`resolve_text_normalization_language`（语言推断）与
@@ -8,7 +8,7 @@
 用法（仓库根目录）：
 
     python rust/tools/gen_tts_fixture.py
-    cd rust && cargo test -p omnicrawl-tui --test tts_parity
+    cd rust && cargo test -p omnicrawl-tts --test tts_parity
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_PATH = ROOT / "rust/crates/omnicrawl-tui/tests/fixtures/tts_parity.json"
+FIXTURE_PATH = ROOT / "rust/crates/omnicrawl-tts/tests/fixtures/tts_parity.json"
 
 sys.path.insert(0, str(ROOT))
 

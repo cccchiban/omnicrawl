@@ -33,6 +33,10 @@ use crate::naming::{
     EMPTY_SESSION_EVENT_TYPES,
 };
 use crate::projection::active_session_events;
+use crate::prompt_history::PromptHistoryStore;
+use crate::records::{
+    read_session_events_with_diagnostics as read_events_with_diagnostics, SessionEventReadResult,
+};
 use crate::undo::{build_undo_plan, SessionUndoPlan};
 
 /// `session_started` 载荷里的运行时身份。
@@ -259,6 +263,24 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<Vec<SessionEvent>, SessionStoreError> {
         Ok(active_session_events(&self.read_events(session_id)?))
+    }
+
+    /// 提示历史存储（`history.jsonl`）：与 Python `SessionStore.prompt_history` 同义。
+    pub fn prompt_history(&self) -> PromptHistoryStore {
+        PromptHistoryStore::open(&self.history_path, self.policy.fsync)
+    }
+
+    /// 读取转录并收集版本/损坏诊断（对应 Python `read_session_events_with_diagnostics`）。
+    ///
+    /// 与 `read_events` 的差别是坏行不静默丢弃：诊断随结果一起返回。未知会话照旧报错——
+    /// Python 侧也是先 `load_session` 再读。
+    pub fn read_session_events_with_diagnostics(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionEventReadResult, SessionStoreError> {
+        let entry = self.entry_of(session_id)?;
+        let path = self.session_path(&entry.path)?;
+        read_events_with_diagnostics(&path, Some(&entry.session_id), Some(&entry.path))
     }
 
     /// 把被压缩窗口的原始事件写入二级归档，返回 archive_id。
@@ -739,6 +761,17 @@ impl SessionStore {
     ) -> Result<String, SessionStoreError> {
         let session_id = normalize_session_id(session_id)?;
         self.artifact_store().read_text(&session_id, artifact_path)
+    }
+
+    /// artifact 根目录（`artifacts/`）。
+    pub fn artifacts_root(&self) -> PathBuf {
+        self.artifact_store().artifacts_root()
+    }
+
+    /// 会话 artifact 目录（`artifacts/<会话 id>/`）：undo 快照等附属文件落在这里。
+    pub fn session_artifacts_dir(&self, session_id: &str) -> Result<PathBuf, SessionStoreError> {
+        self.artifact_store()
+            .ensure_session_artifacts_dir(session_id)
     }
 
     /// 把完整工具输出写进当前会话 artifact，返回相对路径（供批次输出预算使用）。

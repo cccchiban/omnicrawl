@@ -110,8 +110,72 @@ fn command_samples() -> Vec<(&'static str, Value)> {
             json!({"turn_id": "t1", "user_text": "读一下 loop.py"}),
         ),
         (method::TURN_CANCEL, json!({"turn_id": "t1"})),
+        (method::TURN_UNDO, json!({})),
+        (method::SESSION_COMPACT, json!({})),
+        (
+            method::SUBAGENT_QUERY,
+            json!({"action": "list", "task_id": ""}),
+        ),
+        (
+            method::SESSION_SETTINGS,
+            json!({
+                "model": {"tools": [], "context_window_tokens": 200000},
+                "compaction": {"trigger_context_tokens": 160000},
+            }),
+        ),
+        (method::SESSION_LIST, json!({"archived": true, "limit": 10})),
+        (method::SESSION_RENAME, json!({"title": "新的会话标题"})),
+        (method::SESSION_ARCHIVE, json!({})),
+        (
+            method::SESSION_HISTORY,
+            json!({"query": "测试", "limit": 20}),
+        ),
+        (method::SESSION_NEW, json!({})),
+        (
+            method::SESSION_RESUME,
+            json!({"session_id": "20260101-000000-abcdef"}),
+        ),
+        (
+            method::SUBAGENT_RUN,
+            json!({
+                "agent_type": "review",
+                "description": "评审当前代码变更",
+                "prompt": "请评审当前工作区的代码变更。",
+            }),
+        ),
+        (
+            method::SESSION_APPEND,
+            json!({"role": "assistant", "content": "[评审报告]\n未发现问题。"}),
+        ),
         (method::SHUTDOWN, json!({})),
     ]
+}
+
+/// `session.append` 的 `role` 默认是 assistant：省略时的回组帧要补上同一个默认值。
+#[test]
+fn session_append_defaults_to_assistant_role() {
+    let frame = Frame::request(
+        Id::Number(1),
+        method::SESSION_APPEND,
+        json!({"content": "报告"}),
+    );
+    let parsed = Frame::parse(&frame.to_line()).expect("回读帧");
+    let pending = Command::from_frame(&parsed).expect("解帧");
+    match pending.command {
+        Command::SessionAppend(params) => {
+            assert_eq!(params.role, "assistant");
+            assert_eq!(params.content, "报告");
+        }
+        other => panic!("应当是 session.append：{other:?}"),
+    }
+
+    // `session.list` 与 `session.history` 的 limit 都有默认值，缺省时不该解帧失败。
+    for name in [method::SESSION_LIST, method::SESSION_HISTORY] {
+        let frame = Frame::request(Id::Number(2), name, json!({}));
+        let parsed = Frame::parse(&frame.to_line()).expect("回读帧");
+        Command::from_frame(&parsed)
+            .unwrap_or_else(|error| panic!("方法 {name} 应当能用默认负载解帧：{error}"));
+    }
 }
 
 #[test]

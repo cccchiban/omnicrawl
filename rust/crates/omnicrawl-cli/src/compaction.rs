@@ -17,7 +17,8 @@ use omnicrawl_controllers::json::python_dumps_compact;
 use omnicrawl_controllers::memory::session_memory_root;
 use omnicrawl_ipc::bridge::{KernelCompactionConfig, KernelModelConfig, KernelSessionConfig};
 use omnicrawl_session::{
-    project_session_history, utc_now, MemoryStore, SessionArtifactStore, SessionStore,
+    project_session_history, recover_run_guard_state, utc_now, MemoryStore, SessionArtifactStore,
+    SessionStore,
 };
 use serde_json::{json, Value};
 
@@ -32,6 +33,8 @@ pub struct KernelSession {
     pub config: CompactionConfig,
     /// 会话级记忆的用户数据根；为空则不做记忆回写与自动召回。
     pub memory_root: Option<PathBuf>,
+    /// 宿主工作区根：回合内用它拍工作区快照（`/undo` 的副作用回滚）。
+    pub workspace: Option<String>,
 }
 
 impl KernelSession {
@@ -64,6 +67,12 @@ impl KernelSession {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
+            workspace: settings
+                .workspace_root
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
         };
         state.reload_history()?;
         Ok(state)
@@ -82,6 +91,44 @@ impl KernelSession {
         Ok(())
     }
 
+    /// 切换到已有会话：重建运行期历史。调用方负责先校验会话存在（含归档处理）。
+    pub fn reopen(&mut self, session_id: &str) -> Result<(), String> {
+        self.session_id = session_id.to_string();
+        self.reload_history()
+    }
+
+    /// 在当前存储上新建一条会话并切换过去，返回新会话 id。
+    ///
+    /// 与 `open` 的新建分支同一口径（工作区缺省取进程当前目录）。
+    pub fn start_new(&mut self) -> Result<String, String> {
+        let workspace = self.workspace.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default()
+        });
+        let created = self
+            .store
+            .start_session(&workspace, "", utc_now())
+            .map_err(|error| error.message().to_string())?;
+        self.session_id = created.session_id;
+        self.reload_history()?;
+        Ok(self.session_id.clone())
+    }
+
+    /// 运行护栏恢复出来的待续任务文本与执行清单投影。
+    ///
+    /// 用户发短「继续/重试」时用它还原上一轮任务：与 `read_active_events` 同一视图
+    /// （被回退的轮次不参与），读不出来就当成「没有待续任务」，不阻断本次回合。
+    pub fn run_guard_state(&self) -> (String, Vec<Value>) {
+        match self.store.read_active_events(&self.session_id) {
+            Ok(events) => recover_run_guard_state(&events),
+            Err(error) => {
+                eprintln!("[kernel] 读取待续任务失败：{}", error.message());
+                (String::new(), Vec::new())
+            }
+        }
+    }
+
     /// 落一条会话事件：回合消息与压缩事件都走这里。
     pub fn append(&self, event_type: &str, payload: Value) -> Result<(), String> {
         let payload = payload.as_object().cloned().unwrap_or_default();
@@ -98,37 +145,60 @@ pub fn compaction_config(settings: Option<&KernelCompactionConfig>) -> Compactio
     let Some(settings) = settings else {
         return config;
     };
+    overlay_compaction_config(&mut config, settings);
+    config
+}
+
+/// 把协议里的压缩配置覆盖到既有配置上（只动给出的字段），返回被改动的字段路径。
+///
+/// `session.settings` 用它做运行期更新；`compaction_config` 用它做首次装载——
+/// 两条路径共用同一份字段映射，避免「初始化认的字段」与「热更新认的字段」漂移。
+pub fn overlay_compaction_config(
+    config: &mut CompactionConfig,
+    settings: &KernelCompactionConfig,
+) -> Vec<&'static str> {
+    let mut applied = Vec::new();
     if let Some(value) = settings.recent_turns {
         config.recent_turns = value;
+        applied.push("compaction.recent_turns");
     }
     if let Some(value) = settings.target_summary_tokens {
         config.target_summary_tokens = value;
+        applied.push("compaction.target_summary_tokens");
     }
     if let Some(value) = settings.next_user_reserve_tokens {
         config.next_user_reserve_tokens = value;
+        applied.push("compaction.next_user_reserve_tokens");
     }
     if let Some(value) = settings.trigger_context_tokens {
         config.trigger_context_tokens = value;
+        applied.push("compaction.trigger_context_tokens");
     }
     if let Some(value) = settings.context_window_tokens {
         config.context_window_tokens = value;
+        applied.push("compaction.context_window_tokens");
     }
     if let Some(value) = settings.emergency_context_ratio {
         config.emergency_context_ratio = value;
+        applied.push("compaction.emergency_context_ratio");
     }
     if let Some(value) = settings.reasoning_effort.as_ref() {
         config.reasoning_effort = value.clone();
+        applied.push("compaction.reasoning_effort");
     }
     if let Some(value) = settings.preserve_exact_evidence {
         config.preserve_exact_evidence = value;
+        applied.push("compaction.preserve_exact_evidence");
     }
     if let Some(value) = settings.archive_compacted_events {
         config.archive_compacted_events = value;
+        applied.push("compaction.archive_compacted_events");
     }
     if let Some(value) = settings.auto_memory_recall {
         config.auto_memory_recall = value;
+        applied.push("compaction.auto_memory_recall");
     }
-    config
+    applied
 }
 
 /// 构造压缩驱动：摘要请求走与主请求同一个内核模型配置。
@@ -194,6 +264,19 @@ pub fn compact_after_turn(
         last_request_input_tokens,
     };
     driver.after_turn(&boundary)
+}
+
+/// 显式压缩当前会话（`session.compact` 命令）：不做阈值判定，直接请求一次摘要。
+///
+/// 命令本身不带参数；摘要请求复用主请求的前缀与工具面，压缩后的历史回写运行期历史。
+pub fn compact_now(
+    session: &KernelSession,
+    model: &KernelModelConfig,
+    api_key: &str,
+    last_request_messages: &[Value],
+) -> Result<AfterTurnReport, String> {
+    let driver = build_driver(session, model, api_key, last_request_messages)?;
+    driver.manual_compact(&session.session_id)
 }
 
 /// 上下文超限后的恢复：压缩当前未完成回合，返回可继续的历史投影。

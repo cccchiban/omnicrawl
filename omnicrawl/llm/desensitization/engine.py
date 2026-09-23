@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Iterable
 
+from .plan_cache import STAGE_COUNTER_FIELDS, MaskPlanBuilder, MaskPlanCache
 from .registry import (
     PLACEHOLDER_PATTERN,
     DesensitizationStats,
@@ -386,6 +387,93 @@ class MaskContext:
     # NER 兜底层（BiLSTM-CRF，可选依赖 torch）：结构 / 规则 / 熵之外的最后一道语义兜底。
     # 为 None 时本层不参与，保持既有行为。
     ner_layer: "NerLayer | None" = None
+    # 屏蔽计划缓存与记录器（运行时实例级）：命中时按计划重放，未启用时为空。
+    plan_cache: "MaskPlanCache | None" = None
+    plan_builder: "MaskPlanBuilder | None" = None
+
+    def begin_stage(self, counter: str = "") -> None:
+        """开始一个新的计划阶段；未启用计划缓存时为空操作。"""
+
+        if self.plan_builder is not None:
+            self.plan_builder.begin_stage(counter)
+
+    def placeholder_and_seq(self, value: str) -> tuple[str | None, int | None]:
+        """登记值并返回占位符与序号（被跳过的值返回 ``(None, None)``）。"""
+
+        if should_skip_value(value):
+            self.stats.skipped_values += 1
+            return None, None
+        seq, created = self.cycle.seq_for_value(value)
+        if created:
+            self.stats.values_masked += 1
+        if self.plan_builder is not None:
+            self.plan_builder.note_registration()
+        return format_placeholder(seq), seq
+
+    def placeholder_at(
+        self, text: str, start: int, end: int, *, value: str | None = None
+    ) -> str | None:
+        """把 ``text[start:end]`` 替换为占位符，并记录该区间（启用计划缓存时）。
+
+        ``value`` 用于「值与文本切片不一致」的类型（JSON 转义）：不一致时不记录区间，
+        该文本的计划因「记录数 != 分配数」判为不可重放，只损失速度、不改语义。
+        """
+
+        sliced = text[start:end]
+        target = sliced if value is None else value
+        placeholder, seq = self.placeholder_and_seq(target)
+        if placeholder is None:
+            return None
+        if self.plan_builder is None:
+            return placeholder
+        if seq is not None and (value is None or value == sliced):
+            self.plan_builder.record(start, end, seq)
+        return placeholder
+
+    def recording_copy(self):
+        """返回带计划记录器的上下文副本；未启用计划缓存时返回自身。"""
+
+        if self.plan_cache is None:
+            return self
+        return replace(self, plan_builder=MaskPlanBuilder())
+
+    def store_plan(self, text: str) -> None:
+        """把本次文本屏蔽的匹配计划写入缓存；计划不完整或未启用缓存时跳过。"""
+
+        builder = self.plan_builder
+        if builder is None or self.plan_cache is None:
+            return
+        plan = builder.build()
+        if plan is not None:
+            self.plan_cache.put(text, plan)
+
+    def replay_plan(self, text: str) -> str | None:
+        """按缓存的匹配计划重建屏蔽结果；未启用缓存 / 未命中 / 计划失效时返回 None。
+
+        计划内的区间按各自阶段的输入文本记录，逐阶段重放即可复现原坐标；每个区间都
+        从当前文本重新取值并走 ``placeholder_for``，因此当前周期照样登记原文（可还原）。
+        """
+
+        cache = self.plan_cache
+        if cache is None:
+            return None
+        plan = cache.get(text)
+        if plan is None:
+            return None
+        result = text
+        for stage in plan.stages:
+            for span in reversed(stage):
+                value = result[span.start : span.end]
+                before = self.stats.values_masked
+                placeholder = self.placeholder_for(value)
+                if placeholder is None or placeholder != format_placeholder(span.seq):
+                    cache.note_invalid()
+                    return None
+                field = STAGE_COUNTER_FIELDS.get(span.counter)
+                if field and self.stats.values_masked > before:
+                    setattr(self.stats, field, getattr(self.stats, field) + 1)
+                result = result[: span.start] + placeholder + result[span.end :]
+        return result
 
     def placeholder_for(self, value: str) -> str | None:
         """值 → 占位符；被跳过（空串 / 已脱敏 / 占位符样式）时返回 None。"""
@@ -446,15 +534,23 @@ def mask_text(text: str, ctx: MaskContext) -> str:
 
     if not text:
         return text
-    masked = _ENV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, ctx), text)
-    masked = _KV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, ctx), masked)
-    masked = _JSON_STRING_PAIR_PATTERN.sub(lambda match: _replace_json_pair(match, ctx), masked)
-    if ctx.pattern_rules:
-        masked = _mask_pattern_text(masked, ctx)
-    if ctx.entropy_enabled:
-        masked = _mask_entropy_text(masked, ctx)
-    if ctx.ner_layer is not None:
-        masked = _mask_ner_text(masked, ctx)
+    replayed = ctx.replay_plan(text)
+    if replayed is not None:
+        return replayed
+    local = ctx.recording_copy()
+    local.begin_stage("")
+    masked = _ENV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, local), text)
+    local.begin_stage("")
+    masked = _KV_ASSIGNMENT_PATTERN.sub(lambda match: _replace_assignment(match, local), masked)
+    local.begin_stage("")
+    masked = _JSON_STRING_PAIR_PATTERN.sub(lambda match: _replace_json_pair(match, local), masked)
+    if local.pattern_rules:
+        masked = _mask_pattern_text(masked, local)
+    if local.entropy_enabled:
+        masked = _mask_entropy_text(masked, local)
+    if local.ner_layer is not None:
+        masked = _mask_ner_text(masked, local)
+    local.store_plan(text)
     return masked
 
 
@@ -464,10 +560,11 @@ def _mask_pattern_text(text: str, ctx: MaskContext) -> str:
     matches = scan_pattern_rules(text, ctx.pattern_rules)
     if not matches:
         return text
+    ctx.begin_stage("rules")
     result = text
     for match in reversed(matches):
         before = ctx.stats.values_masked
-        placeholder = ctx.placeholder_for(match.value)
+        placeholder = ctx.placeholder_at(text, match.start, match.end, value=match.value)
         if placeholder is None:
             continue
         if ctx.stats.values_masked > before:
@@ -488,11 +585,11 @@ def _mask_entropy_text(text: str, ctx: MaskContext) -> str:
     )
     if not spans:
         return text
+    ctx.begin_stage("entropy")
     result = text
     for start, end in reversed(spans):
-        token = text[start:end]
         before = ctx.stats.values_masked
-        placeholder = ctx.placeholder_for(token)
+        placeholder = ctx.placeholder_at(text, start, end)
         if placeholder is None:
             continue
         if ctx.stats.values_masked > before:
@@ -512,11 +609,11 @@ def _mask_ner_text(text: str, ctx: MaskContext) -> str:
     spans = layer.find_spans(text)
     if not spans:
         return text
+    ctx.begin_stage("ner")
     result = text
     for start, end in reversed(spans):
-        token = text[start:end]
         before = ctx.stats.values_masked
-        placeholder = ctx.placeholder_for(token)
+        placeholder = ctx.placeholder_at(text, start, end)
         if placeholder is None:
             continue
         if ctx.stats.values_masked > before:
@@ -529,18 +626,28 @@ def _replace_assignment(match: re.Match, ctx: MaskContext) -> str:
     if not ctx.matcher.is_sensitive(match.group(2)):
         return match.group(0)
     raw_value = match.group(4)
+<<<<<<< ours
+<<<<<<< ours
     body = _assignment_value_body(raw_value)
     if body is None:
         return match.group(0)
     body_start, body_end = body
     placeholder = ctx.placeholder_for(raw_value[body_start:body_end])
     if placeholder is None:
+=======
+=======
+>>>>>>> theirs
+    masked = _mask_assignment_value(raw_value, ctx, text=match.string, start=match.start(4))
+    if masked == raw_value:
+>>>>>>> theirs
         return match.group(0)
     masked_value = raw_value[:body_start] + placeholder + raw_value[body_end:]
     start, end = match.span(4)
     return match.string[match.start() : start] + masked_value + match.string[end : match.end()]
 
 
+<<<<<<< ours
+<<<<<<< ours
 def _assignment_value_body(raw_value: str) -> tuple[int, int] | None:
     """定位赋值右侧的值本体区间（相对 ``raw_value``）；形态不明确时返回 None。
 
@@ -575,16 +682,42 @@ def _inline_comment_start(text: str) -> int:
         if character == "#" and (index == 0 or text[index - 1].isspace()):
             return len(text[:index].rstrip())
     return len(text)
+=======
+=======
+>>>>>>> theirs
+def _mask_assignment_value(
+    raw_value: str,
+    ctx: MaskContext,
+    *,
+    text: str,
+    start: int,
+) -> str:
+    """处理赋值右侧值区间：保留引号与行尾空白，只替换值本体。"""
+
+    stripped = raw_value.rstrip()
+    trailing = raw_value[len(stripped) :]
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in "\"'":
+        inner = stripped[1:-1]
+        placeholder = ctx.placeholder_at(text, start + 1, start + len(stripped) - 1, value=inner)
+        if placeholder is None:
+            return raw_value
+        return f"{stripped[0]}{placeholder}{stripped[-1]}{trailing}"
+    placeholder = ctx.placeholder_at(text, start, start + len(stripped), value=stripped)
+    if placeholder is None:
+        return raw_value
+    return f"{placeholder}{trailing}"
+>>>>>>> theirs
 
 
 def _replace_json_pair(match: re.Match, ctx: MaskContext) -> str:
     if not ctx.matcher.is_sensitive(_try_unescape_json_string(match.group("key"))):
         return match.group(0)
     raw_value = match.group("value")
-    placeholder = ctx.placeholder_for(_try_unescape_json_string(raw_value))
+    start, end = match.span("value")
+    value = _try_unescape_json_string(raw_value)
+    placeholder = ctx.placeholder_at(match.string, start, end, value=value)
     if placeholder is None:
         return match.group(0)
-    start, end = match.span("value")
     return match.string[match.start() : start] + placeholder + match.string[end : match.end()]
 
 

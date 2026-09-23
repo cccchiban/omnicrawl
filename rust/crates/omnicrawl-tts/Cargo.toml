@@ -1,0 +1,34 @@
+[package]
+name = "omnicrawl-tts"
+description = "OmniCrawl TTS 引擎：MOSS-TTS-Nano ONNX 推理、音色库、文本归一化与 WAV 输出"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "omnicrawl_tts"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omnicrawl-tts"
+path = "src/main.rs"
+
+[dependencies]
+omnicrawl-controllers = { path = "../omnicrawl-controllers" }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+# 模型推理：MOSS-TTS-Nano 的 8 个 ONNX session 由官方 ONNX Runtime 绑定执行。
+ort = { version = "2.0.0-rc.13", features = ["copy-dylibs"] }
+# 分词：模型自带 sentencepiece BPE（nmt_nfkc 归一化 + byte fallback）。
+# 纯 Rust 实现，避免与 ORT 自带 protobuf 的 C++ 静态库符号冲突。
+sentencepiece-rs = "0.2.2"
+# 文本归一化管道含 lookbehind/lookahead，标准 regex 不支持。
+fancy-regex = "0.14"
+# 归一化管道按 Unicode General_Category 判定控制符与标点。
+unicode-general-category = "1"
+
+[dev-dependencies]
+# 音频对照数据集把 WAV 样本存成 Base64。
+base64 = "0.23"

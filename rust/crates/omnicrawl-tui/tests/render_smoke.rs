@@ -24,7 +24,7 @@ fn screen(state: &AppState, width: u16, height: u16) -> Vec<String> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("测试终端应当可用");
     terminal
-        .draw(|frame| ui::render(frame, state))
+        .draw(|frame| ui::render(frame, state, None, None, None))
         .expect("渲染不应失败");
     let buffer = terminal.backend().buffer();
     let row_width = buffer.area.width as usize;
@@ -214,7 +214,7 @@ fn cursor_sits_in_the_composer() {
     let backend = TestBackend::new(80, 12);
     let mut terminal = Terminal::new(backend).expect("测试终端应当可用");
     terminal
-        .draw(|frame| ui::render(frame, &state))
+        .draw(|frame| ui::render(frame, &state, None, None, None))
         .expect("渲染不应失败");
     let position = terminal.backend().cursor_position();
     // 输入框在最后一行，光标在提示符「› 」之后、三个全角字之后。
@@ -263,5 +263,39 @@ fn history_scroll_hides_the_newest_lines() {
             .filter(|record| matches!(record, Record::User(_)))
             .count(),
         21
+    );
+}
+
+#[test]
+fn command_menu_renders_directly_above_the_composer() {
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    state
+        .composer
+        .set_commands(omnicrawl_tui::commands::command_options());
+    // 屏幕上一行菜单：候选来自统一命令源，选中项带 `› ` 与描述段。
+    // 用 `/sett` 而不是 `/se`：后者同时是 `/sessions` 的前缀，会有两行候选。
+    state.composer.insert("/sett");
+    let lines = screen(&state, 80, 12);
+    let menu_row = lines
+        .iter()
+        .position(|line| line.contains("· 打开中文设置面板"))
+        .unwrap_or_else(|| panic!("菜单项应当出现在屏幕上：{lines:?}"));
+    assert!(
+        lines[menu_row].starts_with("› /settings"),
+        "唯一候选即选中项：{:?}",
+        lines[menu_row]
+    );
+    let composer_row = lines
+        .iter()
+        .position(|line| line.trim_end() == "› /sett")
+        .unwrap_or_else(|| panic!("输入框应当还在：{lines:?}"));
+    assert_eq!(
+        composer_row,
+        menu_row + 1,
+        "菜单紧贴输入框上方（对映 `#composer-wrap` 里的菜单行预算）"
     );
 }

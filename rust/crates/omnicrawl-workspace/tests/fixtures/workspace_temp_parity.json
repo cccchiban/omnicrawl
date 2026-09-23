@@ -1,0 +1,364 @@
+{
+  "constants": {
+    "default_directory": ".omnicrawl/.agent_tmp",
+    "default_interval_hours": 24,
+    "subdirectories": [
+      "files",
+      "images",
+      "code",
+      "videos",
+      "scripts",
+      "audio"
+    ],
+    "last_cleanup_filename": ".last_cleanup",
+    "preserved_root_names": [
+      ".gitignore",
+      ".last_cleanup",
+      "README.md"
+    ],
+    "readme": "# Agent 临时目录\n\n这个目录用于存放 Agent 工作时产生的一次性文件、图片、代码、视频和脚本。\n\n- `files/`：普通临时文件和中间结果。\n- `images/`：截图、生成图片和图像处理中间文件。\n- `code/`：一次性验证代码、草稿代码和临时样例。\n- `videos/`：临时视频、录屏和转码中间文件。\n- `scripts/`：只为当前任务服务的临时脚本。\n- `audio/`：临时音频、语音和转码中间文件。\n\n长期需要保留的交付物不要放在这里。Agent 会通过 `.last_cleanup` 的时间戳按约 24 小时间隔清理临时内容，并在清理后重建上述分类子目录。\n",
+    "config_defaults": {
+      "enabled": true,
+      "directory": ".omnicrawl/.agent_tmp",
+      "cleanup_enabled": true,
+      "cleanup_interval_hours": 24
+    }
+  },
+  "config_cases": [
+    {
+      "name": "missing_file",
+      "file": null,
+      "config": {
+        "enabled": true,
+        "directory": ".omnicrawl/.agent_tmp",
+        "cleanup_enabled": true,
+        "cleanup_interval_hours": 24
+      }
+    },
+    {
+      "name": "defaults",
+      "file": "[agent_temp]\n",
+      "config": {
+        "enabled": true,
+        "directory": ".omnicrawl/.agent_tmp",
+        "cleanup_enabled": true,
+        "cleanup_interval_hours": 24
+      }
+    },
+    {
+      "name": "all_values",
+      "file": "[agent_temp]\nenabled = false\ndirectory = \"tmp/agent\"\ncleanup_enabled = false\ncleanup_interval_hours = 6\n",
+      "config": {
+        "enabled": false,
+        "directory": "tmp/agent",
+        "cleanup_enabled": false,
+        "cleanup_interval_hours": 6
+      }
+    },
+    {
+      "name": "directory_blank",
+      "file": "[agent_temp]\ndirectory = \"   \"\n",
+      "config": {
+        "enabled": true,
+        "directory": ".omnicrawl/.agent_tmp",
+        "cleanup_enabled": true,
+        "cleanup_interval_hours": 24
+      }
+    },
+    {
+      "name": "directory_not_string",
+      "file": "[agent_temp]\ndirectory = 5\n",
+      "error": "配置项 agent_temp.directory 必须是字符串。"
+    },
+    {
+      "name": "enabled_not_bool",
+      "file": "[agent_temp]\nenabled = \"yes\"\n",
+      "error": "配置项 agent_temp.enabled 必须是布尔值 true 或 false。"
+    },
+    {
+      "name": "cleanup_enabled_not_bool",
+      "file": "[agent_temp]\ncleanup_enabled = 1\n",
+      "error": "配置项 agent_temp.cleanup_enabled 必须是布尔值 true 或 false。"
+    },
+    {
+      "name": "interval_zero",
+      "file": "[agent_temp]\ncleanup_interval_hours = 0\n",
+      "error": "配置项 agent_temp.cleanup_interval_hours 必须是大于 0 的整数。"
+    },
+    {
+      "name": "interval_negative",
+      "file": "[agent_temp]\ncleanup_interval_hours = -3\n",
+      "error": "配置项 agent_temp.cleanup_interval_hours 必须是大于 0 的整数。"
+    },
+    {
+      "name": "interval_bool",
+      "file": "[agent_temp]\ncleanup_interval_hours = true\n",
+      "error": "配置项 agent_temp.cleanup_interval_hours 必须是大于 0 的整数。"
+    },
+    {
+      "name": "interval_float",
+      "file": "[agent_temp]\ncleanup_interval_hours = 1.5\n",
+      "error": "配置项 agent_temp.cleanup_interval_hours 必须是大于 0 的整数。"
+    },
+    {
+      "name": "no_section",
+      "file": "other = 1\n",
+      "config": {
+        "enabled": true,
+        "directory": ".omnicrawl/.agent_tmp",
+        "cleanup_enabled": true,
+        "cleanup_interval_hours": 24
+      }
+    },
+    {
+      "name": "section_not_table",
+      "file": "agent_temp = 5\n",
+      "error": "配置项 agent_temp 必须是对象。"
+    }
+  ],
+  "status_labels": [
+    {
+      "config": {
+        "enabled": true,
+        "directory": ".omnicrawl/.agent_tmp",
+        "cleanup_enabled": true,
+        "cleanup_interval_hours": 24
+      },
+      "label": ".omnicrawl/.agent_tmp，每 24 小时自动清理"
+    },
+    {
+      "config": {
+        "enabled": false,
+        "directory": ".omnicrawl/.agent_tmp",
+        "cleanup_enabled": true,
+        "cleanup_interval_hours": 24
+      },
+      "label": "关闭"
+    },
+    {
+      "config": {
+        "enabled": true,
+        "directory": ".omnicrawl/.agent_tmp",
+        "cleanup_enabled": false,
+        "cleanup_interval_hours": 24
+      },
+      "label": ".omnicrawl/.agent_tmp，自动清理关闭"
+    },
+    {
+      "config": {
+        "enabled": true,
+        "directory": "tmp/agent",
+        "cleanup_enabled": true,
+        "cleanup_interval_hours": 6
+      },
+      "label": "tmp/agent，每 6 小时自动清理"
+    }
+  ],
+  "cleanup": {
+    "tree": {
+      "files/keep.txt": "keep",
+      "images/pic.bin": "data",
+      "notes.txt": "hello",
+      "sub/deep/nested.txt": "nested",
+      ".last_cleanup": "last_cleanup=2000-01-01T00:00:00\n",
+      "screen.bin": "screen"
+    },
+    "now": "2026-03-04T05:06:07",
+    "root": "<ROOT>/cleanup/.omnicrawl/.agent_tmp",
+    "deleted_entries": [
+      "audio",
+      "code",
+      "files",
+      "images",
+      "notes.txt",
+      "screen.bin",
+      "scripts",
+      "sub",
+      "videos"
+    ],
+    "failed_entries": [],
+    "marker_text": "last_cleanup=2026-03-04T05:06:07\n",
+    "after": {
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/.gitignore": "file",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/.last_cleanup": "file",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/audio": "dir",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/code": "dir",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/files": "dir",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/images": "dir",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/README.md": "file",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/scripts": "dir",
+      "<ROOT>/cleanup/.omnicrawl/.agent_tmp/videos": "dir"
+    },
+    "readme": "# Agent 临时目录\n\n这个目录用于存放 Agent 工作时产生的一次性文件、图片、代码、视频和脚本。\n\n- `files/`：普通临时文件和中间结果。\n- `images/`：截图、生成图片和图像处理中间文件。\n- `code/`：一次性验证代码、草稿代码和临时样例。\n- `videos/`：临时视频、录屏和转码中间文件。\n- `scripts/`：只为当前任务服务的临时脚本。\n- `audio/`：临时音频、语音和转码中间文件。\n\n长期需要保留的交付物不要放在这里。Agent 会通过 `.last_cleanup` 的时间戳按约 24 小时间隔清理临时内容，并在清理后重建上述分类子目录。\n",
+    "gitignore": "*\n!.gitignore\n!README.md\n"
+  },
+  "due": {
+    "base_time": "2026-03-04T05:06:07",
+    "interval_hours": 24,
+    "cases": [
+      {
+        "delta_seconds": 0.0,
+        "due": false,
+        "seconds_until_next": 86400.0
+      },
+      {
+        "delta_seconds": 3600.0,
+        "due": false,
+        "seconds_until_next": 82800.0
+      },
+      {
+        "delta_seconds": 86399.0,
+        "due": false,
+        "seconds_until_next": 1.0
+      },
+      {
+        "delta_seconds": 86401.0,
+        "due": true,
+        "seconds_until_next": 1.0
+      },
+      {
+        "delta_seconds": 200000.0,
+        "due": true,
+        "seconds_until_next": 1.0
+      }
+    ]
+  },
+  "resolve_cases": [
+    {
+      "directory": ".omnicrawl/.agent_tmp",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/.omnicrawl/.agent_tmp"
+    },
+    {
+      "directory": "tmp",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/tmp"
+    },
+    {
+      "directory": "tmp/agent/work",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/tmp/agent/work"
+    },
+    {
+      "directory": "sub/",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/sub"
+    },
+    {
+      "directory": "a/./b",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/a/b"
+    },
+    {
+      "directory": "./x",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/x"
+    },
+    {
+      "directory": ".",
+      "platform": "any",
+      "error": "配置项 agent_temp.directory 不能指向工作区根目录或工作区外。"
+    },
+    {
+      "directory": "",
+      "platform": "any",
+      "error": "配置项 agent_temp.directory 必须是非空字符串。"
+    },
+    {
+      "directory": "   ",
+      "platform": "any",
+      "error": "配置项 agent_temp.directory 必须是非空字符串。"
+    },
+    {
+      "directory": "..",
+      "platform": "any",
+      "error": "配置项 agent_temp.directory 必须是工作区内的普通相对路径。"
+    },
+    {
+      "directory": "../outside",
+      "platform": "any",
+      "error": "配置项 agent_temp.directory 必须是工作区内的普通相对路径。"
+    },
+    {
+      "directory": "sub/..",
+      "platform": "any",
+      "error": "配置项 agent_temp.directory 必须是工作区内的普通相对路径。"
+    },
+    {
+      "directory": "/outside",
+      "platform": "windows",
+      "error": "配置项 agent_temp.directory 不能指向工作区根目录或工作区外。"
+    },
+    {
+      "directory": "C:/outside",
+      "platform": "windows",
+      "error": "配置项 agent_temp.directory 必须是工作区内的普通相对路径。"
+    },
+    {
+      "directory": "//server/share",
+      "platform": "windows",
+      "error": "配置项 agent_temp.directory 必须是工作区内的普通相对路径。"
+    }
+  ],
+  "child_cases": [
+    {
+      "relative": "files",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/.omnicrawl/.agent_tmp/files"
+    },
+    {
+      "relative": "images/pic",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/.omnicrawl/.agent_tmp/images/pic"
+    },
+    {
+      "relative": "a/./b",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/.omnicrawl/.agent_tmp/a/b"
+    },
+    {
+      "relative": ".",
+      "platform": "any",
+      "error": "Agent 临时目录子路径不安全：."
+    },
+    {
+      "relative": "",
+      "platform": "any",
+      "error": "Agent 临时目录子路径不安全："
+    },
+    {
+      "relative": "..",
+      "platform": "any",
+      "error": "Agent 临时目录子路径不安全：.."
+    },
+    {
+      "relative": "../escape",
+      "platform": "any",
+      "error": "Agent 临时目录子路径不安全：../escape"
+    },
+    {
+      "relative": "/outside",
+      "platform": "windows",
+      "error": "Agent 临时目录子路径越界：/outside"
+    },
+    {
+      "relative": "files/",
+      "platform": "any",
+      "dir": "<ROOT>/workspace/.omnicrawl/.agent_tmp/files"
+    }
+  ],
+  "delete_cases": [
+    {
+      "entry": "<ROOT>/delete/.omnicrawl/.agent_tmp",
+      "error": "拒绝清理 Agent 临时目录外路径：<ROOT>\\delete\\.omnicrawl\\.agent_tmp"
+    },
+    {
+      "entry": "<ROOT>/delete/outside.txt",
+      "error": "拒绝清理 Agent 临时目录外路径：<ROOT>\\delete\\outside.txt"
+    },
+    {
+      "entry": "<ROOT>/delete/.omnicrawl/.agent_tmp/files/inside.txt",
+      "deleted": true
+    }
+  ]
+}

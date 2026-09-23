@@ -73,8 +73,8 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
   `omnicrawl-llm` 的运行时承担，异常分类文案（`format_request_error`）与负载解析
   （`extract_stream_text` / `extract_token_usage` / `_find_usage_payload`）分别对应
   `omnicrawl-llm` 的 `errors::map_exception` 与 `usage::usage_from_openai_payload`。
-- **发现模型的能力字段**：内核 `DiscoveryModel` 只有 `profile_id/provider/protocol/model_id/
-  display_name`，Python 侧的 `capabilities`/`context_window_tokens` 待内核补齐后再回填。
+- **发现模型的能力字段**：内核 `DiscoveryModel` 与 Python 对齐，另带 `capabilities`（按协议的保守默认）与 `context_window_tokens`（发现阶段为 0，目录按 Profile 默认窗口回填）；其余字段 `profile_id/provider/protocol/model_id/
+  display_name`，Python 侧的 `capabilities`/`context_window_tokens` 已同样可取。
 - **类型即校验**：Python 里「取值必须是 `bool`/`int`/字符串」的 `isinstance` 分支在 Rust 侧由
   类型保证，因此没有对应用例；跨字段与跨字段区间校验仍全部对照。
 - **文案差异**：底层库的错误尾巴随实现不同（IO 错误、TOML 解析位置）。数据集对这类文案只
@@ -104,6 +104,10 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 （MCP 配置以 `McpConfigData` 视图注入，服务端顺序即写回顺序）。
 
 **`core/workspace`**：`[workspace] root` 的读取与写回（路径按 `expanduser` + `abspath` 归一化）。
+
+**`core/context`**：工作区上下文检测，对应 `omnicrawl/workspace/context.py`；启动目录优先，支持
+`AI_VOICE_CHAT_LAUNCH_CWD` 覆盖，已有文件取父目录，解析失败或路径不存在回退当前目录。
+TUI 与本地 API 共用该模块，避免入口之间的工作区判定漂移。
 
 **`core/bootstrap`**：首次启动编排——模板落盘、Profile 与模型配置读取、API Key 收集、
 三项启动检查与启动提示文案。模板资源、渠道向导、API Key 输入、Node 探测与插件注册表都走

@@ -23,6 +23,28 @@ pub fn height(state: &AppState, width: u16) -> u16 {
     (lines.len().max(1) as u16).min(COMPOSER_MAX_LINES as u16)
 }
 
+/// 命令菜单占用的行数：每项一行，超出可见上限时随选择位滚动（对映 `_resize_composer_to_text`
+/// 的 `menu_rows = min(len(matches), COMMAND_MENU_VISIBLE_OPTIONS)`）。
+pub fn menu_height(state: &AppState) -> u16 {
+    state.composer.menu().visible_rows() as u16
+}
+
+/// 渲染命令菜单：选中项 `› ` + 琥珀色，其余次级色，描述段弱化。
+///
+/// 菜单行与 Python 一样不软折行（超宽部分裁断，对应 Textual 的 `no_wrap` + `ellipsis`）。
+pub fn render_menu(frame: &mut Frame, area: Rect, state: &AppState) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let rendered = state.composer.menu().render();
+    let lines: Vec<Line<'static>> = rendered
+        .split_lines()
+        .iter()
+        .map(|line| Line::from(line.to_spans()))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     let body_width = area.width.saturating_sub(prompt_width()).max(1);
     let (lines, cursor_row) = state.composer.visible_lines(body_width);

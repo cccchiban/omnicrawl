@@ -42,6 +42,9 @@ impl Default for OneshotOptions {
 pub struct OneShotMasker {
     matcher: SensitiveMatcher,
     rules: Vec<PatternRule>,
+    /// gitleaks 规则（运行时正则）：排在值类型规则之后，与 Python `build_enabled_rules`
+    /// 把 gitleaks 追加到内置规则尾部同一顺序；未启用时为空。
+    gitleaks_rules: Vec<super::gitleaks::GitleaksRule>,
     options: OneshotOptions,
     stats: DesensitizationStats,
     registry: SequenceRegistry,
@@ -75,11 +78,20 @@ impl OneShotMasker {
         Self {
             matcher: SensitiveMatcher::new(extra_keys, exempt_keys),
             rules,
+            gitleaks_rules: Vec::new(),
             options,
             stats: DesensitizationStats::default(),
             registry,
             cycle: None,
         }
+    }
+
+    /// 附带 gitleaks 规则（与 Python `build_enabled_rules` 追加 gitleaks 的行为对应）。
+    ///
+    /// 规则顺序不变：值类型规则在前，gitleaks 规则在后，重叠区间由先命中者占位。
+    pub fn with_gitleaks(mut self, gitleaks_rules: Vec<super::gitleaks::GitleaksRule>) -> Self {
+        self.gitleaks_rules = gitleaks_rules;
+        self
     }
 
     /// 屏蔽文本并登记本次周期；返回替换后的文本。
@@ -97,7 +109,10 @@ impl OneShotMasker {
                 entropy_pure_letters: self.options.entropy_pure_letters,
                 entropy_pure_digits: self.options.entropy_pure_digits,
                 pattern_rules: &self.rules,
-                gitleaks_rules: &[],
+                gitleaks_rules: &self.gitleaks_rules,
+                // 一次性脱敏器不持有计划缓存（每次调用都是新文本，没有复用收益）。
+                plan_cache: None,
+                plan_builder: None,
             };
             mask_text(text, &mut context)
         };

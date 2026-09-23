@@ -1,0 +1,30 @@
+[package]
+name = "omnicrawl-workspace"
+description = "工作区与隔离区（Python 侧 omnicrawl/workspace/ 的 Rust 移植）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+omnicrawl-config = { path = "../omnicrawl-config" }
+# 连接器单例锁复用会话层那套 OS 级文件锁（Windows 字节区间锁 / POSIX flock），
+# 不在这里再写一份。
+omnicrawl-session = { path = "../omnicrawl-session" }
+serde_json = { workspace = true }
+# 临时工作区的时间源：Python 用 naive local datetime，这里用 DateTime<Local>。
+chrono = { workspace = true }
+
+# 进程树回收：Windows 走 Job Object，Unix 走进程组（killpg）。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    # CreateJobObjectW 的签名引用 Security::SECURITY_ATTRIBUTES，缺这个 feature 时
+    # windows-sys 不会导出该函数符号。
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -1,0 +1,126 @@
+{
+  "constants": {
+    "prefix": "connector-",
+    "suffix": ".lock",
+    "stale_reclaim_wait_seconds": 2.0
+  },
+  "lock_filenames": [
+    {
+      "name": "Telegram",
+      "stem": "Telegram",
+      "filename": "connector-Telegram.lock"
+    },
+    {
+      "name": "飞书",
+      "stem": "飞书",
+      "filename": "connector-飞书.lock"
+    },
+    {
+      "name": "weChat",
+      "stem": "weChat",
+      "filename": "connector-weChat.lock"
+    },
+    {
+      "name": "Ünïcode",
+      "stem": "Ünïcode",
+      "filename": "connector-Ünïcode.lock"
+    },
+    {
+      "name": "name.with.dots",
+      "stem": "name.with.dots",
+      "filename": "connector-name.with.dots.lock"
+    },
+    {
+      "name": "-lead-trail-",
+      "stem": "lead-trail",
+      "filename": "connector-lead-trail.lock"
+    },
+    {
+      "name": "a/b:c*d?e",
+      "stem": "a-b-c-d-e",
+      "filename": "connector-a-b-c-d-e.lock"
+    },
+    {
+      "name": "  spaced  ",
+      "stem": "spaced",
+      "filename": "connector-spaced.lock"
+    },
+    {
+      "name": "!!!",
+      "stem": "connector",
+      "filename": "connector-connector.lock"
+    },
+    {
+      "name": "",
+      "stem": "connector",
+      "filename": "connector-connector.lock"
+    }
+  ],
+  "pid_lines": [
+    {
+      "content": "pid=1234\n",
+      "pid": 1234
+    },
+    {
+      "content": "pid=1234",
+      "pid": 1234
+    },
+    {
+      "content": "pid=0012\n",
+      "pid": 12
+    },
+    {
+      "content": "pid=0\n",
+      "pid": 0
+    },
+    {
+      "content": "pid=-5\n",
+      "pid": null
+    },
+    {
+      "content": "pid=abc\n",
+      "pid": null
+    },
+    {
+      "content": "pid=\n",
+      "pid": null
+    },
+    {
+      "content": " pid=5\n",
+      "pid": null
+    },
+    {
+      "content": "x=1\npid=7\n",
+      "pid": 7
+    },
+    {
+      "content": "pid=1234\r\n",
+      "pid": 1234
+    },
+    {
+      "content": "",
+      "pid": null
+    }
+  ],
+  "takeover": {
+    "content": "pid=0\n",
+    "acquired": true,
+    "owner_flag": true,
+    "lock_file_exists_while_held": true,
+    "lock_file_exists_after_release": false
+  },
+  "pid_running": [
+    {
+      "pid": 0,
+      "running": false
+    },
+    {
+      "pid": -1,
+      "running": false
+    },
+    {
+      "pid": -9999,
+      "running": false
+    }
+  ]
+}

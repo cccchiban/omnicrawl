@@ -67,6 +67,8 @@ fn replay_texts(fixture: &Value, field: &str, pure_letters: bool, pure_digits: b
         entropy_pure_digits: pure_digits,
         pattern_rules: rules,
         gitleaks_rules: &[],
+        plan_cache: None,
+        plan_builder: None,
     };
 
     for case in fixture[field].as_array().expect(field) {
@@ -117,6 +119,8 @@ fn mask_structured_value_matches_python() {
         entropy_pure_digits: false,
         pattern_rules: rules,
         gitleaks_rules: &[],
+        plan_cache: None,
+        plan_builder: None,
     };
     for case in fixture["structured"].as_array().expect("structured") {
         let value = &case["value"];

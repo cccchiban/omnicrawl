@@ -12,23 +12,22 @@
 | --- | --- |
 | `src/main.rs` | 二进制入口：选内核、握手、进出全屏、事件循环与终端恢复 |
 | `src/args.rs` | 启动参数（命令行 → 环境变量 → 默认值）、内核路径解析 |
-| `src/kernel.rs` | 内核进程客户端：NDJSON 帧读写、读线程、请求/响应配对 |
 | `src/app.rs` | 接线层：帧 ↔ 状态机 ↔ 写回内核 |
 | `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载 |
-| `src/host.rs` | 宿主侧工具批次：审批/提问判定、执行派发、观察构造 |
-| `src/tools/tts/` | TTS 纯逻辑层：`TtsConfig`（`tts/config.py`）、`normalize_tts_text` 管道（`tts/normalize.py`：保护 URL/路径/日期、清理 emoji 与装饰符、分隔符与空白归一化、结构标点与重复标点收敛、逐行补终止标点）、`audio`（`tts/audio.py`：8/16/24/32 位 PCM 读取、线性重采样、参考音频声道转换、16 位 PCM 写出且字节与 Python 一致）、`voices`（`tts/custom_voices.py`：音色名校验、自定义音色库读写、manifest 内置音色行） |
-| `src/tools/` | 工作区工具执行体：`paths`（保护路径）、`read`、`read_image`（本机图片与视觉附件）、`image_gen`（图像生成与编辑）、`write`、`edit`、`command`、`monitor`（后台命令）、`finding`、`grep`、`listing`、`git`、`knowledge`（知识库）、`memory`（三处作用域记忆）、`web_transport`（共享 HTTP 传输/代理/重定向）、`web_search`（三引擎搜索）、`fetcher`（网页抓取与正文提取）、`sample`、`declarations`、`registry` |
-| `src/ui/` | 渲染：`hud.rs`、`conversation.rs`、`composer.rs`、`panels.rs` |
+| `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：`TtsConfig`、文本归一化、音频 I/O、声线库、ONNX 推理（CPU）、模型下载与本地播放 |
+| `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
+| `src/ui/` | 渲染：`hud.rs`、`conversation.rs`、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制） |
+| `../omnicrawl-host/` | 宿主执行层已独立成 `omnicrawl-host` crate：内核进程客户端（`kernel`）、工具批次与审批策略（`host`）、工具执行体（`tools`）、审批模式（`approval`）与无头回合运行器（`turn`）；本 crate 只做界面与接线 |
 
 ## 工具执行层
 
 工具表、参数归一化、Schema 校验与压缩复用内核已搬好的 `omnicrawl-controllers`（数据来自
-`omnicrawl/agent/toolkit/tools.py`）；本 crate 负责**执行体**与声明生成：
+`omnicrawl/agent/toolkit/tools.py`）；**执行体**与声明生成在 `omnicrawl-host` 的 `tools/` 下，下表是那张表的内容（TUI 按原路径再导出）：
 
 | 工具 | 状态 | 说明 |
 | --- | --- | --- |
 | `read` | 已实现 | 行窗口、超长行截断、行号与续读 footer；`text` 片段定位已实现 |
-| `read_image` | 已实现 | 本机图片读取：拒绝 URL/data URI、相对路径不得越出工作区、按签名识别 PNG/JPEG/GIF/WebP、Base64 编码为视觉附件；`--native-vision` 打开后图片作为下一条观察注入模型请求（默认关闭则只回文本载荷） |
+| `read_image` | 已实现 | 本机图片读取：拒绝 URL/data URI、相对路径不得越出工作区、按签名识别 PNG/JPEG/GIF/WebP、Base64 编码为视觉附件；`--native-vision` 打开后图片作为下一条观察注入模型请求（默认关闭则只回文本载荷），内核启用 `[vision]` 代理时这条图片观察会被换成视觉模型的文本结论 |
 | `image_gen` | 已实现 | OpenAI 兼容 Image API：`/images/generations` 与 `/images/edits`（multipart 参考图），`b64_json` 落盘或按 URL 下载，保存位置支持目录 / 文件名 / 多张编号；未启用时调用给出明确错误（配置来自开关与环境变量，见已知差异） |
 | `write_file` | 已实现 | overwrite / append，父目录自动创建 |
 | `Edit_file` | 已实现 | count 语义、行尾风格恢复、版本指纹校验、文件锁 + 原子写、错误码 |
@@ -45,7 +44,7 @@
 | `windows_window` / `windows_control` / `windows_input` / `windows_clipboard` / `windows_screenshot` | 已实现 | 整组注册：窗口枚举/详情/前台激活、控件 UI Automation（Windows PowerShell）、受约束的 SendInput 键鼠、剪贴板文本读写、桌面/区域/窗口截图（GDI 抓屏 + 缩放 + PNG，>5MiB 继续缩小）并作为视觉附件回模型 |
 | `advisor` | 已实现 | 零参数顾问：判定与分支裁剪复用内核 `controllers::advisor`，运行期用独立 LLM Runtime 做单轮无工具补全（系统提示词取自 `templates/advisor_system.md`），返回 plan/correction/stop 指导；只在 `--advisor-model`（或 `OMNICRAWL_ADVISOR_MODEL`）给出时进表 |
 | `update_todos` / `ask_user` / `pause_work` | 已实现 | 由界面侧判定与面板交互 |
-| `tts_synthesize` | 未接入 | 纯逻辑层已落地并对照（文本归一化 50 例 + 音频 I/O 与声线库 27 例）；缺 ONNX 运行时（`ort`/`tract`）、MOSS-TTS 模型文件与 sentencepiece，因此工具本身尚未进表 |
+| `tts_synthesize` | 未接入 | 引擎已在 `omnicrawl-tts` 落地并对照（文本归一化、音频 I/O 与声线库、greedy 生成帧逐帧一致）；本 crate 的工具执行体尚未接线 |
 | `subagent` | 由并行内核侧改造覆盖 | `controllers/subagents/*` 与本 crate 的 `subagent_types` 接线正在推进中，本 crate 不重复开工 |
 
 声明由工具表生成：`read` / `Edit_file` / `write_file` 的参数契约在 Python 侧写的是**示例值**，
@@ -59,12 +58,16 @@
 非只读 git 操作弹确认**，文件、搜索与后台监控类工具直接放行（`auto` 全部放行）。同一批审批完成后工具并发执行，
 最后按模型调用顺序回观察（顺序与数量都不能变）。`Esc` 取消会先回收正在跑的进程树。
 
+拒绝结果与 Python 对齐：文案取 `user_cancelled_reason`（「用户取消执行：<工具>。」），回观察时带
+`error_code = denied`，内核据此把这次拒绝落成会话事件（`tool_call_denied`）。
+
 `monitor` 的后台进程归当前回合：批次派发时记下回合号，`Esc` 取消该回合时只回收本回合启动的任务
 （事件里写明「当前回合已取消，后台任务已强制终止。」），宿主退出时回收全部任务。输出只在内存环形缓冲里，
-不写持久化日志；模型用游标增量轮询。已知限制：Windows 上停止进程树走 `taskkill /T`，MSYS bash 在
-启动瞬间会连起三层进程，若杀树发生在最内层出现之前，那次调用可能留下一个孤儿（Python 侧靠 Job Object 的
-kill-on-close 规避，Rust 侧要同样的语义需要引入 Win32 绑定）。遇到这种情况宿主仍会在 5 秒内把任务落成
-终态（与 Python 的 `reader.join(timeout=5)` 一致），不会让回合无限期挂在 `running` 上。
+不写持久化日志；模型用游标增量轮询。Windows 上后台进程同样纳入 kill-on-close Job
+（`KillOnCloseJob::assign`，与 `bash` / `powershell` 路径同一实现）：宿主正常退出或崩溃时由操作系统
+递归回收整棵进程树，`taskkill /T` 只在拿不到 Job（例如当前进程已在不可嵌套的 Job 里）时作退路。
+遇到进程已被外部回收、管道写端仍被孤儿持有时，宿主仍会在 5 秒内把任务落成终态
+（与 Python 的 `reader.join(timeout=5)` 一致），不会让回合无限期挂在 `running` 上。
 
 ## 运行
 
@@ -107,31 +110,213 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 | `src/ui/fullscreen/status/indicators.rs` | `status/indicators.py` | 轮播状态机与排队预览行（组件热区留给装配层） |
 | `src/ui/fullscreen/mod.rs` | | `round_half_even`（对映 Python 内建 `round`） |
 
+已落地（渲染批 1）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `src/ui/fullscreen/rendering/difflib.rs` | stdlib `difflib` | `SequenceMatcher` 等价子集（`isjunk=None` / `autojunk=False`）：最长匹配块 + 递归队列 + 相邻块合并，opcodes 与 CPython 逐段一致（7 组对照数据集钉住） |
+| `src/ui/fullscreen/rendering/tool_diff.rs` | `rendering/tool_diff.py` | 工具卡标题（色点/原名/上下文/状态/耗时）、fetcher 正文过滤、文件变更预览（append/rewrite 预览 + 旁注行号 diff + 80 行截断）、`替换 N 处` 摘要与真实起始行号解析 |
+| `src/ui/fullscreen/rendering/widgets.rs` | `rendering/widgets.py`（部分） | 子任务进度树、任务清单、子任务会话面板；`AssistantMessage` / `ReasoningDisclosure` / `ToolDisclosure` / `ConfirmationScreen` 待补 |
+| `src/ui/fullscreen/tool_labels.rs` | `ui/tool_labels.py` | 工具显示名与图标表、状态图标、耗时格式化 |
+
+已落地（渲染批 2，工具卡与状态行）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `rendering/widgets.rs`（续） | `rendering/widgets.py` | `ToolDisclosure`（标题去重、首尾各 2 行采样 + 省略提示行、展开/收起、终态正文分块释放、`update_body`、状态 class 映射、`refresh_elapsed` 只对进行中生效）、`RuntimeStatus`（同一帧文本跳过重绘 + `[ ESC ]` 提示）、`ConfirmationScreen`（默认聚焦「允许执行」、`←/→` 切焦点、`Esc` 以拒绝收口）、`indent_body_lines` / `body_hint_text` |
+| `text.rs`（续） | Rich `Text` | `split_lines` / `join_lines`（保留分段样式），供正文采样与缩进使用 |
+
+已落地（渲染批 3，Markdown 渲染与消息组件）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `rendering/markdown.rs` | Rich `Markdown`（RichMarkdown） | 用 `pulldown-cmark`（新增依赖，已确认）解析事件流并映射为样式串：标题/段落/列表（含嵌套与任务列表 `☑`/`☐`）/围栏代码块（整块灰底）/行内代码（青字 + 灰底）/粗体/斜体/删除线/链接（下划线 + 蓝）/引用（`│ ` 前缀）/分隔线；`uniform_gray` 对映 `_UniformGrayMarkdown`（保留结构、统一下压为灰阶前景） |
+| `rendering/widgets.rs`（续） | `rendering/widgets.py` | `AssistantMessage`（全量重绘、流式分块首块补 `◇ ` 前缀、挂载后重绘并释放全文副本、复制用纯文本）；`ReasoningDisclosure`（增量累积 + 换行/512 字触发分块落盘、未换行尾部留缓冲、折叠 5 行、点击切换展开、收口全量灰阶重绘） |
+
+已落地（渲染批 4，启动画面与欢迎 Logo）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `src/ui/splash.rs` | `ui/splash.py` | 启动画面：左侧亮黄 Logo + 右侧圆角日志框（级别标记 `- ` / `! ` / `× ` 按色重绘、内容变化整窗重绘）+ Windows XP 滑块滚动条（滑入/横穿/滑出/空档四阶段）；`StartupLogSink` 线程安全收集、`run_startup_splash` 后台准备 + 主线程渲染、非交互流同步执行、`attach_startup_log_handler` / `report_startup_log` 承接 Python 的 logging 桥 |
+| `src/ui/fullscreen/rendering/welcome_logo.rs` | `rendering/welcome_logo.py` | 8 行块字 Logo（字面量与 Python 渲染结果逐字节一致、行首缩进保留）、`LOGO_STYLE` 纯白、静态 `StyledText` |
+| `src/ui/fullscreen/rendering/logo_anim.rs` | `rendering/logo_anim.py` | 解密扫描入场动画：行/列错位进度、共享乱码字符集（78 字符）、0.16 闪现概率、进度 1.0 终态快路径；`LogoAnimation` 承接 `app/core.py` 的播放游标（只播一次、播满 24 帧落定静态） |
+
+已落地（渲染批 5，LaTeX 转换）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `src/ui/fullscreen/rendering/latex.rs` | `rendering/latex.py` | 行内 `$..$`、块级 `$$..$$` / `\[..\]`、`\(..\)`、数学 fenced block 与整行裸公式统一转 Unicode 近似文本：分数 / 根号 / 上下标 / 希腊字母与符号表 / 矩阵与方程组按列对齐 / 文本样式与重音 / `\mathbb` / 转义符号 / 未知命令保留原文；`$$` 与 fenced 归一化、普通代码围栏占位保护、多余美元收敛、误转义美元恢复；另提供 `split_blocks`（块级分段，供图像渲染管线）与 `has_block_formula`（快速判定）。Python 侧的四处正则（含 `(?<!\\)` / `(?!\$)` 环视）在本层是手写扫描器：语义等价、不引依赖 |
+
+LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换，数学 fenced 必须从行首开始）与 `ReasoningDisclosure`（增量与全量两条路径）在渲染前都走 `latex_to_text`，与 Python 的调用点一一对应。
+
+已落地（输入批，斜杠命令菜单）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `src/ui/fullscreen/input/mod.rs` | `input/__init__.py` | 输入区模块出口 |
+| `src/ui/fullscreen/input/menu.rs` | `input/menu.py` | 命令菜单逻辑：按 `search` 子串筛选并稳定排序（前缀命中先于子串命中、同级保留统一命令源的产品顺序）、命令名后出现空白改按参数前缀筛选（已输入完整参数不再提示）、完整命令名后追加参数候选、`COMMAND_MENU_VISIBLE_OPTIONS` 可见窗口随选择位滚动、`Up`/`Down` 环绕、`Enter`/`Tab` 只补全而完整命令放行提交、渲染为 `› ` 选中行 + `  · ` 弱化描述段（空白描述折叠为空） |
+
+斜杠命令接线：
+
+- **候选来源**：`src/commands.rs` 的 `command_options()` 取统一命令源的 `registry().options(false)`，启动时交给输入框（`Composer::set_commands`）；输入框每次文本变化自己重刷菜单，不必在每个改动点手动同步。
+- **选择键**：菜单开着时 `Up`/`Down` 在候选间移动、`Enter`/`Tab` 只补全而**完整命令放行提交**（否则 `/settings` 这类无参数命令永远打不开）；菜单收起时这些键照旧归输入框与消息区。
+- **提交分派**：命中注册表即交给命令层 `dispatch()`，未命中的输入照旧当成一轮对话；生成期间按 `CommandType::immediate()`（纯界面 / 只读查询）当场执行、其余排队。
+- **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、插件状态、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入可用；`/workspace`、`/plan`、`/advisor`、`/memory:clean`、`/mcp` 这类**能力在内核侧而协议还没有入口**的一律返回带原因的文案（不再悄悄变成一次模型对话）。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
+- **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 的回执都带重建后的 `history`，宿主据此重放消息流（`AppState::replay_history` 只投影 user/assistant 文本），因此撤回/切换后旧消息与工具卡会真正消失，而不只是追加一条提示。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` / `OMNICRAWL_SESSION_ROOT` 可覆盖。
+- **异步内核往返**：命令层的接口是同步的、内核链路是异步帧，因此 `/undo`、`/compact` 与 `/review` 由宿主在进命令层之前拦下、异步下发（响应按请求 id 回填，状态行随回执收起）。`/review` 必须走异步：评审子 Agent 的工具批次要回到宿主执行，同步等待会与 `tool.batch` 互相卡死；它先在宿主侧跑 git 预检（复用命令层的 `check_review_preconditions`），回执到了先渲染报告、再发一条 `session.append` 把报告注入内核上下文（下一轮请求可见）。
+- **同步往返**：只读或本地毫秒级的几条用宿主侧快速往返（`/tasks`、`/task`、`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume`）；等待期间让路的帧收进 `deferred_frames`，下次 `drain_frames` 按原顺序处理，通知不丢。
+- **延迟执行体**（`CommandResult::deferred`）目前在本线程内联跑完：宿主还没有慢命令 worker，而本批能真正执行的命令都不产生延迟体。
+
+已落地（接线批，子任务进度树）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `src/state.rs` | `rendering/pipeline.py` 的 `_handle_subagent_event` | `Record::SubagentTree`：`subagent.task.*` 事件按 `batch_id` 找树、没有就新开一棵挂在消息流末尾；状态表外的子代理事件（对话/工具/文本）不进树；载荷缺字段按 `or` 口径回落（`task_id` → `task`、`batch_id` → `batch-<task_id>`、`description` → `task_id`）；`refresh_subagent_trees` 只推进活跃树 |
+| `src/ui/conversation.rs` | `rendering/widgets.py` 的 `SubAgentProgressTree` 挂载点 | 进度树记录铺开为显示行（每行自带图标与状态取色），不参与点击命中 |
+| `src/app.rs` / `src/main.rs` | `app/core.py` 的耗时定时器 | 每帧调用 `tick_subagent_trees`，批次收口后不再重算 |
+
+子任务进度树接线：同一批次的任务事件在多行树上原地更新，而不是每来一条事件就追加一行通知；终态节点不会被迟到的活动事件回退、树的耗时只在仍有非终态任务时刷新（与 Python 的 `is_active` / `refresh_elapsed` 同规则）。
+
+启动画面接线：`main.rs` 把内核进程、工具表与 MCP 能力、内核握手整体放进后台准备线程，进备用屏幕之前在普通屏幕上显示 splash；
+准备失败立即收画面并把错误交给普通终端打印，准备线程 panic 同样先复位终端再原样抛出（对映 Python worker 的 `except BaseException` + `has_error()` 提前收画面）。
+
+欢迎 Logo 接线：空会话（尚无任何记录）时 `ui/conversation.rs` 只渲染 Logo，首条记录进来即让位，清空会话后重新出现（此时动画已落定为静态字形）。
+
+已落地（交互批：排队预览、鼠标与输入自愈）：
+
+| Rust 文件 | 对映 Python | 说明 |
+| --- | --- | --- |
+| `src/ui/queue.rs` | `status/indicators.py` 的 `PendingQueue` / `QueueDelete` / `QueueToggle` | 排队预览条（标题 + FIFO 摘要行 + 行尾 `[ DELETE ]` 热区 + 展开/收起提示行）；行数、摘要、行序、命中区与展开关卡都复用对映层纯函数 |
+| `src/ui/conversation.rs` | `rendering/widgets.py` 的 `ToolDisclosure` / `ReasoningDisclosure` 点击 | 每条显示行携带 `LineHit`（提示行 / 卡片 / 思考段）；`collapsed_body` 按「有效行」首尾各 2 行采样，提示行文案 `点击展开 N 行`；`hit_test` 按窗口起止下标把区内行号换算成绝对行号 |
+| `src/ui/hud.rs` | `status/hud.py` 的内容驱动分段 | 不再用固定列宽：分段贴齐、超长值 `compact_hud_value` 截断、窄屏逐段收缩（版本号优先保留），任何宽度都恰好填满一行 |
+| `src/ui/fullscreen/terminal/console_heal.rs` | `terminal/handling.py` 的 `_restore_windows_vt_input_mode_if_needed` | 控制台模式自愈（只声明 `GetStdHandle`/`GetConsoleMode`/`SetConsoleMode`，不引入 `windows-sys` 到 TUI） |
+| `src/main.rs` | `terminal/handling.py` 的周期看门狗 | 切备用屏幕时开鼠标与焦点报告（`Drop` 里关掉），每秒核对一次控制台模式，恢复后重发协议序列；每帧把终端区域交给 `App::set_viewport` 供命中判定 |
+| `src/ui/mod.rs` | | `ui::layout` + `UiAreas`：渲染与鼠标命中共用同一套区域计算 |
+
+终端模式自愈与 Python 的一处刻意差异：Python 的 Windows 自愈要求**关掉** VT 输入（它自带 win32 驱动直接解析 `INPUT_RECORD`）；
+本 crate 走 crossterm 的 VT 输入路径，因此要求**打开** `ENABLE_VIRTUAL_TERMINAL_INPUT`，并额外清掉 `ENABLE_QUICK_EDIT_MODE`
+（快速编辑会吃掉鼠标输入并冻结控制台）。轮询间隔 1 秒；Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗口收到工具结束时刻。
+
 已知差异：
 
+- 鼠标滚轮一格按 3 行推进（Textual 的滚轮步长）；设置面板内的点击交互尚未接线（面板仍是纯键盘模态页）；
 - 轮播留言文案（`carousel_messages.txt`）编译期内嵌：Python 从包资源在运行期读取，可随 pip 分发并手工编辑，Rust 侧脱离宿主单文件分发时仍可用但不能在运行期改；
 - `decrypt_frame` 的乱码随机源是内部 xorshift64\*（Python 用 Mersenne Twister）：字符集与概率一致，随机序列不同；
 - `rgba(...)` 令牌（用户消息背景）只取 RGB 分量：ratatui 无 alpha 混合，Python 侧由 Textual 与终端底色混合；
-- 尚未接线：`src/ui/mod.rs` 的渲染入口仍是旧简化页面，对映层按后续批次逐个接入替换。
+- `difflib` 等价层自实现（不引入 diff crate）：与 CPython 在 7 组对照用例上 opcodes 逐段一致，未覆盖 `isjunk` / `autojunk` 路径（Python 侧两处均传 `autojunk=False` 且无 junk 函数）；
+- Markdown 渲染为**近似样式映射**：走 `pulldown-cmark` 事件流 + 本项目主题令牌，不复刻 Rich 的 Markdown 主题（各段精确色值、标题色相不同）；Python 侧代码块走 Rich 语法高亮，Rust 侧目前只加整块灰底、不做逐 token 高亮；
+- **LaTeX 转换层已接入**（`rendering/latex.rs`）：AI 回复与思考在渲染前都走 `latex_to_text`。两处 Unicode 细节与 Python 有出入，且都只作用于启发式判定：裸公式行的 `str.isdigit()` 用 `char::is_numeric()` 近似、`str.isalpha()` 用 `char::is_alphabetic()`，`str.strip()` 用 `str::trim()`；
+- 启动画面的日志桥改为显式上报：Python 给 root logger 挂 `logging.Handler`（只转发 WARNING/ERROR），Rust 无 logging 框架，由 `report_startup_log` 承担——有桥时写日志框且不落 stderr（避免打乱画面），无桥时回落 stderr（管道/测试下诊断不丢）；`logo_anim` 的随机源同样是内部 xorshift64\*；
+- 终端尺寸不做环境变量回退：`shutil.get_terminal_size` 会先读 `COLUMNS`/`LINES`，Rust 直接问终端（`crossterm::terminal::size`），取不到时同样回落 80x24；
+- 欢迎 Logo 动画按「起始时刻 → 经过时间」换算帧号（Python 用 Textual 定时器计次推进）：总帧数（24）与落定时刻（1.2s）一致，首帧是进度 0 的纯乱码帧（Python 首帧为 1/24）；
+- 尚未接线：`src/ui/mod.rs` 的渲染入口仍是旧简化页面（欢迎 Logo 已按空会话规则接入该页面），其余对映层按后续批次逐个接入替换。
 
 ## 本阶段（骨架）的边界
 
 **明确不在本阶段范围**（写在这里避免误读）：
 
-- **工具未搬完**：已实现 read / read_image / image_gen / write_file / Edit_file / bash / powershell / list /
-  find / grep / git / monitor / kb_* / memory_* / web_search / fetcher / windows_* / advisor 与三个自持工具；
-  语音合成（`tts_synthesize`）尚未接入（需 ONNX 运行时与模型文件），`subagent` 由内核侧改造覆盖；
-- **不替换现有入口**：Python 侧 Textual 工作台（`omnicrawl/ui/`、`omnicrawl` / `main.py` 启动路径）照旧，本 crate 是并列的新二进制；
-- **未接入分发**：不参与 `packages/cli` 启动器与 npm 平台分包，本轮只保证 `cargo run -p omnicrawl-tui` 可用。
+- **工具未搬完**：已实现 read / read_image / image_gen / tts_synthesize / write_file / Edit_file / bash /
+  powershell / list / find / grep / git / monitor / kb_* / memory_* / web_search / fetcher / windows_* /
+  advisor 与三个自持工具；语音合成的执行体走 `omnicrawl-tts`（ONNX 推理、模型下载、纯 Rust 分词、
+  音频播放），配置在启动期读 config.toml 的 `[tts]` 段，未启用时工具不进表（与 Python 一致）；
+  `subagent` 由内核侧改造覆盖；
+- **入口与分发**：默认启动路径已归 `omnicrawl-host`（`omnicrawl` npm 启动器 → 平台包的
+  `host/omnicrawl-host`，见 `packages/cli/scripts/build-host.mjs`）；Python 侧 Textual 工作台
+  （`omnicrawl/ui/`、`main.py`）保留为迁移期对照，不再是默认入口。
 
 **已实现**：两行 HUD（工作区/模型/审批模式/队列，上下文占用条与 IN/OUT/CA/tok/s）、
 消息流（用户 `$`、思考段折叠为最新五行、正文 `◇`、工具卡边框随状态着色、正文头尾采样限五行）、
 单行起步按显示宽度软折行的输入框（五行上限、超出后随光标滚动）、任务清单条、状态行（Braille spinner + `[ ESC ]`）、
-审批面板与提问面板、`Esc` 取消、内核退出与终端恢复。
+审批面板与提问面板、`Esc` 取消、内核退出与终端恢复、`/undo`（请内核整轮回退，结论落消息流，
+命令本身不进模型对话）。
 
-**工具执行**：已接入二十九个真实执行体（`read` / `read_image` / `image_gen` / `write_file` / `Edit_file` /
-`bash` / `powershell` / `monitor` / `list` / `find` / `grep` / `git` / `kb_*` / `memory_*` / `web_search` /
-`fetcher` / `windows_*` / `advisor`）与内核自持的
+完整的斜杠命令框架与 27 条内置命令在 `omnicrawl-commands`（Python `omnicrawl/commands/` 的 Rust 移植，
+含 `CommandRegistry`、`CommandAgent` 能力 trait 与全部展示文案），本 crate 负责把能力面接上：
+
+- 进命令层之前由宿主特判的只有三条——`/undo`、`/compact`、`/review`（原因见上文「异步内核往返」）；
+- `/settings` 仍是本 crate 直接打开设置面板；
+- 其余命令都经统一注册表分发。命令处理器是同步接口，`App` 不实现 `Send + Sync`，因此没有另建
+  线程安全命令代理：需要内核往返的命令在 `TuiHostAgent` 里就地做一次同步往返（`request_kernel`），
+  内联跑完的延迟执行体仍是本线程（本批能真正执行的命令都不产生延迟体）。
+
+尚未接线（一律给出「暂不可用＋原因」，不退化成一次模型对话）：`/workspace`（切换工作区要重建内核会话、
+MCP 与工具表）、`/advisor`（顾问工具表在内核装配）、
+`/memory:clean`（长期记忆在内核侧）、`/mcp`（宿主没有与 Python 同形的 MCP 清单）、`/settings --chat`
+（配置对话），以及 `/resume` 之后的子代理对话流式展示（`stream_subagent_conversation`）。
+
+`/plan` 已接线：`TuiHostAgent::activate_mode` → `App::command_activate_mode` 重新装配
+system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文消息，再经
+`session.settings` 下发内核；内核拒绝时状态行会写明「只在本宿主生效」，不静默。
+
+### 生成期间的 FIFO 输入队列
+
+对映 Python `_pending_inputs`：回合进行中按 `Enter` 的消息不丢也不并发提交，而是排进队列
+（`AppState::pending_inputs`），输入框上方的预览条显示总数、FIFO 摘要与行尾 `[ DELETE ]`；
+回合落地（含 `Esc` 取消）后由 `drain_pending_inputs` 按序提交，模态页（设置面板）打开时不排空
+（同 Python 的 `len(self.screen_stack) == 1` 守卫）。`/settings` 属于「立即命令」，生成期间也当场
+打开面板、不入队；`/undo` 需要回合空闲，因此照常排队。
+
+纯计算（行数、摘要、行序、可撤回/可展开判定）复用 `ui/fullscreen/status/indicators.rs` 的对映层，
+`ui/queue.rs` 只负责「对映行 → ratatui 行 + 点击命中区」；预览条占几行由 `pending_queue_rows`
+算出后参与 `ui::layout`，鼠标命中与渲染因此共用同一套布局计算（`ui::UiAreas`）。
+
+## 设置面板（`/settings`）
+
+`src/ui/settings/` 对映 Python 的 `ui/fullscreen/screens/`：全屏两区（左侧一级项 + 右侧二级面板）、
+准星焦点边框（四角 `⇘ ⇙ ⇗ ⇖`，焦点在哪一栏就在哪一栏）、圆角边框、折叠态下拉是 3 行细边框
+（聚焦/展开换白色粗边框）、展开的候选列表是白框浮层且高亮项用琥珀底色。
+
+键位逐项对映 Python：左侧 `↑`/`↓` 移动并实时预览、`Enter`/`→` 进入右侧、`Esc` 退出；
+右侧 `Esc`/`←` 先回左栏；上下文页 `Tab` 切换字段，Textual `Select` 的 `Enter`/`↑`/`↓`/`空格` 展开候选，
+展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起（单选页与上下文页共用这套键位）；
+工具开关页 `↑`/`↓` 选行、`←`/`→`/`Enter`/`空格` 切换。
+
+本批落地的一级项与二级面板：
+
+| 一级项 | 状态 | 说明 |
+| --- | --- | --- |
+| 模型 | 已实现（离线版） | 候选 = config.toml 的 profiles + models.toml 条目合成的渠道（`load_channel_configuration`），显示渠道名、取值是渠道 key；选定后写 `llm.active_model`（legacy 配置写 `llm.model`）并把模型 id + 整条渠道（Provider/协议/基地址/凭据变量名）推给内核，本会话即刻生效。**未迁**：Python 那套双列选择器（左列渠道 + 右列远端自动发现的模型） |
+| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名 / Provider / 协议 / 基地址 / API Key 环境变量 / 模型 ID / User-Agent / 启用）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**未迁**：多列宽表单与鼠标交互、凭据直接录入（凭据仍走环境变量名；内联 `api_key` 保存时按 key 从磁盘继承，不会被抹掉） |
+| 上下文 | 已实现 | 两个下拉：上下文长度（32K–2048K，折算到最近档）与压缩阈值（5%–95%，5% 一档，按当前窗口换算 Token）；写回 `llm.context_window_tokens` 与 `context_compaction.trigger_context_*` |
+| 推理强度 | 已实现 | 六档（关闭/低/中/高/超高/最大）；写回 `llm.reasoning_effort`，并经 `session.settings` 推给内核的生成选项 |
+| 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
+| 记忆功能 | 已实现 | 开关；写回 `memory.enabled` 并立刻重建工具表（记忆四件套整组进/出表） |
+| 插件功能 | 已实现（写配置） | 写回 `plugins.enabled`；插件运行期在内核（它拉起独立 Node 插件宿主），协议上没有运行期开关，状态行明确写「重启后生效」 |
+| 工具设置 | 已实现（内置工具开关节） | 逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
+| 其余 10 项 | 未迁移 | 右侧显示「该设置页尚未迁移到 Rust 宿主」提示（顾问设置、工具输出压缩、视觉、图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务设置、通过对话修改设置） |
+
+### Provider 配置接线（`initialize.model`）
+
+握手不再发空壳：没显式给 `--base-url`（或 `OPENAI_BASE_URL`）时，`initialize.model` 的
+Provider、协议、基地址、凭据变量名、生成选项（推理强度/温度/最大输出/请求超时/重试/provider_options）
+与上下文窗口全部来自 `config.toml` + `models.toml` 的解析结果（`load_llm_config` / `load_channel_configuration`），
+独立运行不必再靠命令行参数喂模型配置。
+
+显式给了基地址时视为「外部渠道」：Provider/协议/生成选项/超时/重试/凭据变量名一律用命令行给的值，
+内核按运行时默认语义发请求——这条规则让「传给测试回环服务端的那套参数」保持完全确定，
+也避免把配置里那条渠道的协议塞给另一个端点。`--model` 始终优先（它是必填项）。
+
+已知差异：`prompt_cache_capable` 仍为假（Python 从稳定身份派生 `prompt_cache_key`，Rust 宿主未复刻）。
+
+应用路径分三层，**不假装即时生效**：
+
+1. 写盘：复用 `omnicrawl-config` 的 `save_context_window_tokens` / `save_context_compaction_trigger_percent` /
+   `save_tool_switch` / `save_reasoning_effort` / `save_show_thinking` / `save_feature_enabled`，
+   不做第二套 TOML 读写；上下文页按 Python 的口径「先写窗口、再写阈值，第二段失败就把窗口改回旧值」，
+   不留「新窗口 + 旧百分比」的自相矛盾配置。
+2. 宿主侧：工具开关与记忆开关立刻重建工具表（`rebuild_registry`）；重建时把旧表的 `MonitorManager` 与
+   `CancelToken` 带过去，否则一次开关会把在跑的后台任务从宿主账上抹掉。思考显示改的是界面状态本身。
+3. 内核侧：发协议 v1 的 `session.settings` 做热更新（模型与整条渠道、工具声明、上下文窗口与压缩阈值、
+   推理强度）。内核拒绝（如未持有模型配置）时，状态行如实追加「内核未接受即时更新（原因），将在下次会话生效。」
+   ——配置已落盘、宿主侧已生效，不回滚也不掩饰。没有对应协议字段的项（思考显示、记忆/插件开关）不发帧。
+
+已知差异：左栏列表与工具列表超出可视高度时按选中项滚动，不做 Python 的滚动条与实际滚动动画；
+右侧面板状态文本按面板各自保存（Python 是每个面板实例各存一份，效果一致）；
+跨栏鼠标操作（Python 支持点选与悬停换色）未实现——本批只做键盘。
+
+**工具执行**：已接入三十个真实执行体（`read` / `read_image` / `image_gen` / `tts_synthesize` /
+`write_file` / `Edit_file` / `bash` / `powershell` / `monitor` / `list` / `find` / `grep` / `git` / `kb_*` /
+`memory_*` / `web_search` / `fetcher` / `windows_*` / `advisor`）与内核自持的
 三个工具（`update_todos` / `ask_user` / `pause_work`）；`manual` 模式下逐个确认，**审批完成后同批并发执行**，
 结果按模型调用顺序回填。批准后真的会读写文件、真的会起进程、真的会发包。执行层的两条兜底：
 
@@ -143,9 +328,7 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 
 **尚未实现（按优先级）**：
 
-1. 工具层收尾：`tts_synthesize` 的推理层（需引入 ONNX 运行时 `ort`/`tract` + MOSS-TTS 模型下载 + sentencepiece + 音频播放）；
-   `src/tools/tts/` 里的配置、文本归一化、音频 I/O 与声线库已就绪，推理层接上后即可注册工具；
-   记忆工具已实现但默认不进表（TUI 尚无记忆配置面，`memory_enabled` 为假）；
+1. 工具层收尾：记忆工具已实现但默认不进表（TUI 尚无记忆配置面，`memory_enabled` 为假）；
    视觉路径的已知差异：`read_image` 的图片只在 `--native-vision`（或 `OMNICRAWL_NATIVE_VISION`）打开时
    注入请求；Python 侧「未显式配置时回落运行时模型能力」的判定需要模型能力表，本 crate 目前没有，
    因此默认关闭而不是自动判断；独立视觉模型代理（把图片交给另一个视觉模型分析、再把结论作为不可信
@@ -166,17 +349,37 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
    搜索侧已知差异：Windows 下 glob 展开按大小写敏感匹配（Python 的 `glob` 走 `normcase`），
    目录条目的排序在两侧可能不同（Rust 侧无法设置目录 mtime，对照数据集对这类用例只比对条目集合）；
 2. `monitor` 任务的界面展示（Python 的 Textual 工作台会定时轮询并在消息流里显示后台任务，
-   本 crate 目前只在模型调用 `monitor` 时以工具卡呈现）；
-3. `read` 的 `function_name` 定位（AST 与声明括号扫描）与 `omnicrawl://docs/` 内置文档；
-   两者当前返回 `FS_UNSUPPORTED_FEATURE` 明确报错，不静默读错内容；
-4. 工具输出预算与落盘归档（Python 侧单工具 50K / 批次 200K，内核已有 `controllers::output` 可复用）；
-5. FIFO 输入队列、鼠标滚轮/点击展开工具卡正文；
-6. Markdown 与 LaTeX 渲染（现为纯文本）、子任务进度树（现为一行通知）、斜杠命令菜单与设置面板；
-7. Windows 输入自愈（锁屏/息屏后恢复控制台模式）、窄屏 HUD 弹性收缩、会话与模型选择；
-8. `model.reply` 代答路径（内核自带 provider runtime 后不需要，当前显式回 `-32601`）；
-9. 非 Windows 平台的进程树回收（当前只杀直接子进程，需要 setsid/libc 才能回收整个进程组）；
-10. Windows Job Object 的 kill-on-close（`bash` / `powershell` / `monitor` 三处共用同一条 `taskkill /T`
-    回收规则，Job Object 才能消除「杀树时最内层刚出现」的孤儿窗口）。
+   本 crate 目前只在模型调用 `monitor` 时以工具卡呈现）；后台进程的 kill-on-close Job
+   已与 `command` 工具对齐（见「Windows Job Object」段）；
+3. ~~`read` 的 `function_name` 定位（AST 与声明括号扫描）与 `omnicrawl://docs/` 内置文档~~
+   （已完成）：`.py` 走缩进块解析（限定名、装饰器起始行、嵌套类/函数、多匹配歧义、语法
+   错误回退），其它语言走声明正则等价的大括号扫描；`omnicrawl://docs/<name>.md` 直接读
+   `omnicrawl-mcp` 的编译期内嵌文档表并套用同一套行窗口/片段渲染。对照数据集见
+   `tests/fixtures/workspace_tools_parity.json` 的 `locators` 段（11 例）；
+4. ~~FIFO 输入队列、鼠标滚轮/点击展开工具卡正文~~（已完成）：运行中 `Enter` 进队列、回合落地
+   后按序提交，预览条行尾 `[ DELETE ]` 点击撤回、提示行点击展开/收起；鼠标滚轮滚动消息区、
+   点击工具卡省略提示行展开完整正文、展开态点击卡片收起、点击思考段切换折叠（见上文「生成期间的
+   FIFO 输入队列」）。命中判定与渲染共用 `ui::layout`，因此缩放窗口后点击位置不会错位；
+5. Markdown 语法高亮（现为近似样式映射，代码块无逐 token 高亮）；~~子任务进度树~~、~~斜杠命令的补全菜单与命令分派~~（已完成，见上文「输入批 / 斜杠命令接线」）。
+   斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/plugins`、`/skills`、`/tasks`、`/task`、`/undo`、`/compact`、
+   `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan` 能真正执行；
+   `/workspace`、`/advisor`、`/memory:clean`、`/mcp` 会给出「暂不可用＋原因」（能力在内核侧、协议没有入口），
+   而不是退化成一次模型对话；`/settings --chat`（配置对话）同样尚未接线；
+   菜单不列运行期 Skill 候选（内核侧发现，宿主给不出同一份清单）；设置面板见上节——一级菜单 + 模型（离线版）+
+   模型渠道 + 上下文 + 工具开关 + 推理强度 + 思考显示 + 记忆 + 插件已落地，其余 10 个一级项待迁（顾问设置、
+   工具输出压缩、视觉、图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务设置、通过对话修改设置）；
+6. ~~Windows 输入自愈、窄屏 HUD 弹性收缩~~（已完成）；会话与模型选择仍待做：
+   自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（开启 VT 输入/鼠标/窗口输入、
+   关掉快速编辑与处理输入，输出侧重开 VT 处理），恢复后重发鼠标与焦点报告序列；
+   HUD 改为内容驱动的分段（超长值经 `compact_hud_value` 保留首尾），窄屏按重要性逐段收缩、
+   版本号最后丢，任何宽度下都填满一行；
+7. `model.reply` 代答路径（内核自带 provider runtime 后不需要，当前显式回 `-32601`）；
+8. ~~非 Windows 平台的进程树回收~~（已完成，见下）；
+9. ~~Windows Job Object 的 kill-on-close~~（已完成）：`omnicrawl-host` 的
+   `process_control::KillOnCloseJob` 把子进程纳入 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 的 Job，
+   `bash` / `powershell`（`tools/command.rs`）与 `monitor`（`tools/monitor.rs`）两条路径都在 spawn
+   后立即纳入；Job 句柄随任务存活、终态或停止时关闭，宿主崩溃时由操作系统关闭句柄递归回收，
+   消除了「杀树时最内层刚出现」的孤儿窗口。Unix 侧仍是自成进程组 + `kill(-pgid, SIGKILL)`。
 
 ## 验证
 
@@ -185,19 +388,25 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p omnicrawl-cli          # 端到端用例需要内核二进制
 python rust/tools/gen_tui_tools_fixture.py   # 改了工具语义时重生成对照数据集
+python rust/tools/gen_latex_fixture.py       # 改了 LaTeX 语义时重生成对照数据集
 cargo test -p omnicrawl-tui
 ```
 
 测试分五层：
 
-- 模块内单测：状态聚合、输入编辑、HUD 对齐、面板高度、路径安全、命令采样、工具执行体；
+- 模块内单测：状态聚合、输入编辑（含斜杠命令菜单的筛选、补全与参数字段）、HUD 对齐、面板高度、路径安全、命令采样、工具执行体、命令能力面与插件行映射；
 - `tests/workspace_tools_parity.rs`：与 Python 真实现的对照（声明逐字、read/write/edit 用例、采样、
   已记录的定位缺口）；
 - `tests/search_tools_parity.rs`：list / find / grep / git 的对照（mtime 钉死、落盘随机文件名归一、
   目录排序只比集合）；
+- `tests/latex_parity.rs`：LaTeX 转换层与 Python 真实现的逐字对照（107 例转换 + 9 例块级分段 +
+  26 例块级公式快判，含 `$$`/`$$$`、未闭合块级、末尾反斜杠、超长公式一类边界）；
 - `tests/host_flow.rs`：脚本化假内核驱动完整宿主流程（握手、审批、真执行、提问、拒绝、慢工具超时收口、
-  后台命令监控的 start/poll/stop 三批、内核退出）；
-- `tests/render_smoke.rs`：`TestBackend` 渲染断言 HUD/消息流/面板/光标位置与滚动窗口；
+  后台命令监控的 start/poll/stop 三批、内核退出、斜杠命令分派：菜单补全→`/settings` 打开面板、`/quit` 退出、
+  未支持命令给出原因而不发 `turn.submit`、`/tasks` 查询内核回执、`/undo` 异步下发与回执回填）；
+- `tests/render_smoke.rs`：`TestBackend` 渲染断言 HUD/消息流/面板/光标位置、滚动窗口与命令菜单（菜单紧贴输入框上方）；
+- `tests/settings_screen.rs`：设置面板的 `TestBackend` 回归——两栏与准星边框随焦点转移、上下文候选
+  下拉（含高亮底色）、工具开关行状态文本、状态行回填与内核拒绝提示、窄屏左栏收缩、极窄极矮不 panic；
 - `tests/kernel_e2e.rs`：真内核 + 本机回环模型服务端。六个用例让模型**真的请求**工具：
   `read` / `Edit_file` / `grep` / `git status` 直接执行并断言磁盘与搜索结果回填，`bash` 走人工批准，
   另有纯文本回合；请求体里核对工具输出与已声明工具名。

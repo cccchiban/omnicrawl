@@ -5,7 +5,7 @@
 
 use serde_json::Value;
 
-use omnicrawl_tui::tools::tts::normalize::{
+use omnicrawl_tts::normalize::{
     normalize_tts_text, prepare_tts_request_texts, resolve_text_normalization_language,
     rewrite_hyphens_before_zh_wetext,
 };

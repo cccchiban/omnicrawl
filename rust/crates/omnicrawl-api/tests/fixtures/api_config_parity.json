@@ -1,0 +1,581 @@
+{
+ "constructs": [
+  {
+   "name": "缺省字段与令牌去空白",
+   "input": {
+    "bearer_token": " parity-token "
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "空令牌",
+   "input": {
+    "bearer_token": ""
+   },
+   "outcome": {
+    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+   }
+  },
+  {
+   "name": "纯空白令牌",
+   "input": {
+    "bearer_token": "   "
+   },
+   "outcome": {
+    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+   }
+  },
+  {
+   "name": "回环地址大小写与空白",
+   "input": {
+    "bearer_token": "parity-token",
+    "host": " LocalHost "
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "LocalHost",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "IPv6 回环",
+   "input": {
+    "bearer_token": "parity-token",
+    "host": "::1"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "::1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "非回环地址",
+   "input": {
+    "bearer_token": "parity-token",
+    "host": "0.0.0.0"
+   },
+   "outcome": {
+    "error": "API 服务首版仅允许绑定回环地址。"
+   }
+  },
+  {
+   "name": "端口下界越界",
+   "input": {
+    "bearer_token": "parity-token",
+    "port": 0
+   },
+   "outcome": {
+    "error": "api.port 必须是 1 到 65535 的整数。"
+   }
+  },
+  {
+   "name": "端口上界越界",
+   "input": {
+    "bearer_token": "parity-token",
+    "port": 65536
+   },
+   "outcome": {
+    "error": "api.port 必须是 1 到 65535 的整数。"
+   }
+  },
+  {
+   "name": "端口为整数值字符串",
+   "input": {
+    "bearer_token": "parity-token",
+    "port": "8765"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "确认超时为 0",
+   "input": {
+    "bearer_token": "parity-token",
+    "confirmation_timeout_seconds": 0
+   },
+   "outcome": {
+    "error": "api.confirmation_timeout_seconds 必须大于 0。"
+   }
+  },
+  {
+   "name": "确认超时为负",
+   "input": {
+    "bearer_token": "parity-token",
+    "confirmation_timeout_seconds": -1
+   },
+   "outcome": {
+    "error": "api.confirmation_timeout_seconds 必须大于 0。"
+   }
+  },
+  {
+   "name": "worker 为 0",
+   "input": {
+    "bearer_token": "parity-token",
+    "workers": 0
+   },
+   "outcome": {
+    "error": "api.workers 必须是 1 到 32 的整数。"
+   }
+  },
+  {
+   "name": "worker 超上限",
+   "input": {
+    "bearer_token": "parity-token",
+    "workers": 33
+   },
+   "outcome": {
+    "error": "api.workers 必须是 1 到 32 的整数。"
+   }
+  },
+  {
+   "name": "来源列表去空白与空串",
+   "input": {
+    "bearer_token": "parity-token",
+    "allowed_origins": [
+     "  http://a  ",
+     "",
+     "   ",
+     "http://b"
+    ]
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [
+      "http://a",
+      "http://b"
+     ],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "来源通配符",
+   "input": {
+    "bearer_token": "parity-token",
+    "allowed_origins": [
+     " * "
+    ]
+   },
+   "outcome": {
+    "error": "api.allowed_origins 不允许使用通配符 *。"
+   }
+  }
+ ],
+ "loads": [
+  {
+   "name": "段内令牌",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "环境变量令牌优先",
+   "env": {
+    "OMNICRAWL_API_TOKEN": " env-token "
+   },
+   "section": {
+    "bearer_token": "file-token"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "env-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "环境变量令牌为空回退段内",
+   "env": {
+    "OMNICRAWL_API_TOKEN": "   "
+   },
+   "section": {
+    "bearer_token": "file-token"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "file-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "缺少令牌",
+   "env": {},
+   "section": {},
+   "outcome": {
+    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+   }
+  },
+  {
+   "name": "令牌字段非字符串",
+   "env": {},
+   "section": {
+    "bearer_token": 123
+   },
+   "outcome": {
+    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+   }
+  },
+  {
+   "name": "api 段为字符串",
+   "env": {},
+   "section": "text",
+   "outcome": {
+    "error": "配置项 api 必须是对象。"
+   }
+  },
+  {
+   "name": "api 段为空字符串",
+   "env": {},
+   "section": "",
+   "outcome": {
+    "error": "api.bearer_token 或 OMNICRAWL_API_TOKEN 不能为空。"
+   }
+  },
+  {
+   "name": "监听地址字段非字符串",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "host": 8765
+   },
+   "outcome": {
+    "error": "API 服务首版仅允许绑定回环地址。"
+   }
+  },
+  {
+   "name": "监听地址字段为列表",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "host": [
+     "127.0.0.1"
+    ]
+   },
+   "outcome": {
+    "error": "API 服务首版仅允许绑定回环地址。"
+   }
+  },
+  {
+   "name": "环境变量覆盖地址与端口",
+   "env": {
+    "OMNICRAWL_API_HOST": "localhost",
+    "OMNICRAWL_API_PORT": "9000"
+   },
+   "section": {
+    "bearer_token": "parity-token",
+    "host": "127.0.0.1",
+    "port": 8765
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "localhost",
+     "port": 9000,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "环境变量 worker",
+   "env": {
+    "OMNICRAWL_API_WORKERS": "2"
+   },
+   "section": {
+    "bearer_token": "parity-token"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 2
+    }
+   }
+  },
+  {
+   "name": "端口为字面量浮点",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "port": 9000.5
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 9000,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "端口为布尔",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "port": true
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 1,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "端口为布尔假",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "port": false
+   },
+   "outcome": {
+    "error": "api.port 必须是 1 到 65535 的整数。"
+   }
+  },
+  {
+   "name": "端口为数字字符串",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "port": "8765"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "端口为小数字符串",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "port": "9000.0"
+   },
+   "outcome": {
+    "error": "api.port 必须是整数。"
+   }
+  },
+  {
+   "name": "端口为字母",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "port": "abc"
+   },
+   "outcome": {
+    "error": "api.port 必须是整数。"
+   }
+  },
+  {
+   "name": "端口越界",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "port": 70000
+   },
+   "outcome": {
+    "error": "api.port 必须是 1 到 65535 的整数。"
+   }
+  },
+  {
+   "name": "来源为逗号分隔字符串",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "allowed_origins": "http://a, ,http://b"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [
+      "http://a",
+      "http://b"
+     ],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "来源为字符串列表",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "allowed_origins": [
+     " http://a ",
+     "",
+     "http://b"
+    ]
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [
+      "http://a",
+      "http://b"
+     ],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "来源为非法列表",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "allowed_origins": [
+     1,
+     2
+    ]
+   },
+   "outcome": {
+    "error": "api.allowed_origins 必须是字符串列表。"
+   }
+  },
+  {
+   "name": "来源为表",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "allowed_origins": {
+     "a": "http://a"
+    }
+   },
+   "outcome": {
+    "error": "api.allowed_origins 必须是字符串列表。"
+   }
+  },
+  {
+   "name": "确认超时为数字字符串",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "confirmation_timeout_seconds": "60"
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 60.0,
+     "workers": 1
+    }
+   }
+  },
+  {
+   "name": "确认超时非数字",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "confirmation_timeout_seconds": "soon"
+   },
+   "outcome": {
+    "error": "api.confirmation_timeout_seconds 必须是数字。"
+   }
+  },
+  {
+   "name": "worker 非整数",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "workers": "many"
+   },
+   "outcome": {
+    "error": "api.workers 必须是整数。"
+   }
+  },
+  {
+   "name": "worker 为布尔",
+   "env": {},
+   "section": {
+    "bearer_token": "parity-token",
+    "workers": true
+   },
+   "outcome": {
+    "ok": {
+     "bearer_token": "parity-token",
+     "host": "127.0.0.1",
+     "port": 8765,
+     "allowed_origins": [],
+     "confirmation_timeout_seconds": 300.0,
+     "workers": 1
+    }
+   }
+  }
+ ]
+}

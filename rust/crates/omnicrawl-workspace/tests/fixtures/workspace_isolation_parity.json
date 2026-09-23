@@ -1,0 +1,724 @@
+{
+  "slug": [
+    {
+      "name": "abc",
+      "max_length": 64,
+      "safe": true,
+      "validated": "abc"
+    },
+    {
+      "name": "abc",
+      "max_length": 8,
+      "safe": true,
+      "validated": "abc"
+    },
+    {
+      "name": "a_b-c",
+      "max_length": 64,
+      "safe": true,
+      "validated": "a_b-c"
+    },
+    {
+      "name": "w1a2b3c",
+      "max_length": 64,
+      "safe": true,
+      "validated": "w1a2b3c"
+    },
+    {
+      "name": "aw-0123456789ab",
+      "max_length": 64,
+      "safe": true,
+      "validated": "aw-0123456789ab"
+    },
+    {
+      "name": "aw-0123456789ab",
+      "max_length": 8,
+      "safe": false,
+      "error": "隔离区实例 ID长度超过 8 字符（当前 15 字符）。"
+    },
+    {
+      "name": "ABC_123-xyz",
+      "max_length": 64,
+      "safe": true,
+      "validated": "ABC_123-xyz"
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "max_length": 64,
+      "safe": true,
+      "validated": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID长度超过 64 字符（当前 65 字符）。"
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "max_length": 8,
+      "safe": false,
+      "error": "隔离区实例 ID长度超过 8 字符（当前 65 字符）。"
+    },
+    {
+      "name": "",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID不能为空。"
+    },
+    {
+      "name": "   ",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID不能为空。"
+    },
+    {
+      "name": "  abc  ",
+      "max_length": 64,
+      "safe": false,
+      "validated": "abc"
+    },
+    {
+      "name": "  abc  ",
+      "max_length": 8,
+      "safe": false,
+      "validated": "abc"
+    },
+    {
+      "name": "a b",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a b'"
+    },
+    {
+      "name": "..",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'..'"
+    },
+    {
+      "name": "../etc",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'../etc'"
+    },
+    {
+      "name": "../etc",
+      "max_length": 8,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'../etc'"
+    },
+    {
+      "name": "a/b",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a/b'"
+    },
+    {
+      "name": "a\\b",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a\\\\b'"
+    },
+    {
+      "name": "a.b",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a.b'"
+    },
+    {
+      "name": "a.b",
+      "max_length": 8,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a.b'"
+    },
+    {
+      "name": "中文",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'中文'"
+    },
+    {
+      "name": "aaaaaaaa",
+      "max_length": 64,
+      "safe": true,
+      "validated": "aaaaaaaa"
+    },
+    {
+      "name": "abcdefgh",
+      "max_length": 64,
+      "safe": true,
+      "validated": "abcdefgh"
+    },
+    {
+      "name": "abcdefgh",
+      "max_length": 8,
+      "safe": true,
+      "validated": "abcdefgh"
+    },
+    {
+      "name": "abcdefghi",
+      "max_length": 64,
+      "safe": true,
+      "validated": "abcdefghi"
+    },
+    {
+      "name": "abc\n",
+      "max_length": 64,
+      "safe": false,
+      "validated": "abc"
+    },
+    {
+      "name": "a\tb",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a\\tb'"
+    },
+    {
+      "name": "a\tb",
+      "max_length": 8,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a\\tb'"
+    },
+    {
+      "name": "a*b",
+      "max_length": 64,
+      "safe": false,
+      "error": "隔离区实例 ID只能包含字母、数字、下划线与连字符，且不能包含点、路径分隔符、空格等字符。实际值：'a*b'"
+    },
+    {
+      "name": "-",
+      "max_length": 64,
+      "safe": true,
+      "validated": "-"
+    },
+    {
+      "name": "_",
+      "max_length": 64,
+      "safe": true,
+      "validated": "_"
+    },
+    {
+      "name": "_",
+      "max_length": 8,
+      "safe": true,
+      "validated": "_"
+    }
+  ],
+  "diff_stats": [
+    {
+      "diff": "diff --git a/one.txt b/one.txt\nindex 0000000..1111111 100644\n--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1 @@\n+hello\ndiff --git a/dir/two.txt b/dir/two.txt\nnew file mode 100644\n--- /dev/null\n+++ b/dir/two.txt\n@@ -0,0 +1,2 @@\n+a\n+b\n",
+      "changed": 2,
+      "files": [
+        "one.txt",
+        "dir/two.txt"
+      ]
+    },
+    {
+      "diff": "diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n",
+      "changed": 1,
+      "files": [
+        "new.txt"
+      ]
+    },
+    {
+      "diff": "diff --git \"a/with space.txt\" \"b/with space.txt\"\n",
+      "changed": 1,
+      "files": []
+    },
+    {
+      "diff": "diff --git a/lonely\n",
+      "changed": 1,
+      "files": []
+    },
+    {
+      "diff": "",
+      "changed": 0,
+      "files": []
+    },
+    {
+      "diff": "\n",
+      "changed": 0,
+      "files": []
+    },
+    {
+      "diff": "  \n",
+      "changed": 0,
+      "files": []
+    }
+  ],
+  "worktree_head": [
+    {
+      "name": "detached",
+      "gitdir": "<ROOT>/repo-detached/.git/worktrees/detached",
+      "prefix": "repo-detached",
+      "tree": {
+        "repo-detached/.git/worktrees/detached/HEAD": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        "repo-detached/.git/worktrees/detached/commondir": "../..\n"
+      },
+      "expect": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "detached-sha256",
+      "gitdir": "<ROOT>/repo-detached-sha256/.git/worktrees/detached-sha256",
+      "prefix": "repo-detached-sha256",
+      "tree": {
+        "repo-detached-sha256/.git/worktrees/detached-sha256/HEAD": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "repo-detached-sha256/.git/worktrees/detached-sha256/commondir": "../.."
+      },
+      "expect": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "name": "symref-loose",
+      "gitdir": "<ROOT>/repo-symref-loose/.git/worktrees/symref-loose",
+      "prefix": "repo-symref-loose",
+      "tree": {
+        "repo-symref-loose/.git/worktrees/symref-loose/HEAD": "ref: refs/heads/main\n",
+        "repo-symref-loose/.git/worktrees/symref-loose/commondir": "../..",
+        "repo-symref-loose/.git/refs/heads/main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+      },
+      "expect": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "symref-nested-ref",
+      "gitdir": "<ROOT>/repo-symref-nested-ref/.git/worktrees/symref-nested-ref",
+      "prefix": "repo-symref-nested-ref",
+      "tree": {
+        "repo-symref-nested-ref/.git/worktrees/symref-nested-ref/HEAD": "ref: refs/heads/feature/x",
+        "repo-symref-nested-ref/.git/worktrees/symref-nested-ref/commondir": "../..",
+        "repo-symref-nested-ref/.git/refs/heads/feature/x": "dddddddddddddddddddddddddddddddddddddddd"
+      },
+      "expect": "dddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "symref-packed",
+      "gitdir": "<ROOT>/repo-symref-packed/.git/worktrees/symref-packed",
+      "prefix": "repo-symref-packed",
+      "tree": {
+        "repo-symref-packed/.git/worktrees/symref-packed/HEAD": "ref: refs/heads/packed\n",
+        "repo-symref-packed/.git/worktrees/symref-packed/commondir": "../..",
+        "repo-symref-packed/.git/packed-refs": "# pack-refs with: peeled fully-peeled sorted \nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/other\n^0000000000000000000000000000000000000000\ncccccccccccccccccccccccccccccccccccccccc refs/heads/packed\n"
+      },
+      "expect": "cccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "name": "loose-preferred-over-packed",
+      "gitdir": "<ROOT>/repo-loose-preferred-over-packed/.git/worktrees/loose-preferred-over-packed",
+      "prefix": "repo-loose-preferred-over-packed",
+      "tree": {
+        "repo-loose-preferred-over-packed/.git/worktrees/loose-preferred-over-packed/HEAD": "ref: refs/heads/main",
+        "repo-loose-preferred-over-packed/.git/worktrees/loose-preferred-over-packed/commondir": "../..",
+        "repo-loose-preferred-over-packed/.git/refs/heads/main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "repo-loose-preferred-over-packed/.git/packed-refs": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb refs/heads/main\n"
+      },
+      "expect": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "absolute-commondir",
+      "gitdir": "<ROOT>/repo-absolute-commondir/.git/worktrees/absolute-commondir",
+      "prefix": "repo-absolute-commondir",
+      "tree": {
+        "repo-absolute-commondir/.git/worktrees/absolute-commondir/HEAD": "ref: refs/heads/main",
+        "repo-absolute-commondir/.git/worktrees/absolute-commondir/commondir": "<ROOT>/repo-absolute-commondir/.git\n",
+        "repo-absolute-commondir/.git/refs/heads/main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "expect": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "missing-ref",
+      "gitdir": "<ROOT>/repo-missing-ref/.git/worktrees/missing-ref",
+      "prefix": "repo-missing-ref",
+      "tree": {
+        "repo-missing-ref/.git/worktrees/missing-ref/HEAD": "ref: refs/heads/gone",
+        "repo-missing-ref/.git/worktrees/missing-ref/commondir": "../.."
+      },
+      "expect": null
+    },
+    {
+      "name": "no-commondir",
+      "gitdir": "<ROOT>/repo-no-commondir/.git/worktrees/no-commondir",
+      "prefix": "repo-no-commondir",
+      "tree": {
+        "repo-no-commondir/.git/worktrees/no-commondir/HEAD": "ref: refs/heads/main"
+      },
+      "expect": null
+    },
+    {
+      "name": "garbage-head",
+      "gitdir": "<ROOT>/repo-garbage-head/.git/worktrees/garbage-head",
+      "prefix": "repo-garbage-head",
+      "tree": {
+        "repo-garbage-head/.git/worktrees/garbage-head/HEAD": "not-a-sha\n",
+        "repo-garbage-head/.git/worktrees/garbage-head/commondir": "../.."
+      },
+      "expect": null
+    },
+    {
+      "name": "short-sha",
+      "gitdir": "<ROOT>/repo-short-sha/.git/worktrees/short-sha",
+      "prefix": "repo-short-sha",
+      "tree": {
+        "repo-short-sha/.git/worktrees/short-sha/HEAD": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "repo-short-sha/.git/worktrees/short-sha/commondir": "../.."
+      },
+      "expect": null
+    },
+    {
+      "name": "uppercase-sha",
+      "gitdir": "<ROOT>/repo-uppercase-sha/.git/worktrees/uppercase-sha",
+      "prefix": "repo-uppercase-sha",
+      "tree": {
+        "repo-uppercase-sha/.git/worktrees/uppercase-sha/HEAD": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "repo-uppercase-sha/.git/worktrees/uppercase-sha/commondir": "../.."
+      },
+      "expect": null
+    },
+    {
+      "name": "empty-head",
+      "gitdir": "<ROOT>/repo-empty-head/.git/worktrees/empty-head",
+      "prefix": "repo-empty-head",
+      "tree": {
+        "repo-empty-head/.git/worktrees/empty-head/HEAD": "\n",
+        "repo-empty-head/.git/worktrees/empty-head/commondir": "../.."
+      },
+      "expect": null
+    },
+    {
+      "name": "no-head",
+      "gitdir": "<ROOT>/repo-no-head/.git/worktrees/no-head",
+      "prefix": "repo-no-head",
+      "tree": {
+        "repo-no-head/.git/worktrees/no-head/commondir": "../.."
+      },
+      "expect": null
+    }
+  ],
+  "sweep_entries": [
+    {
+      "name": "aw-abc",
+      "instance_id": "abc",
+      "tree": {
+        "aw-abc.json": "{\"instance_id\": \"aw-abc\", \"mode\": \"worktree\", \"repo_root\": \"<ROOT>/repo\", \"main_workspace\": \"<ROOT>/repo\", \"worktree_path\": \"<ROOT>/aw-abc\", \"base_ref\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"branch_name\": \"\", \"created_at\": 1700000000.0, \"apply_on_exit\": true, \"cleanup_on_exit\": \"auto\"}"
+      },
+      "expect": {
+        "instance_id": "aw-abc",
+        "mode": "worktree",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/aw-abc",
+        "base_ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1700000000.0,
+        "branch_name": ""
+      }
+    },
+    {
+      "name": "aw-rel",
+      "instance_id": "rel",
+      "tree": {
+        "aw-rel.json": "{\"instance_id\": \"rel\", \"mode\": \"worktree\", \"repo_root\": \"<ROOT>/repo\", \"main_workspace\": \"<ROOT>/repo\", \"worktree_path\": \"aw-rel\", \"base_ref\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"branch_name\": \"\", \"created_at\": 1700000000.0, \"apply_on_exit\": true, \"cleanup_on_exit\": \"auto\"}"
+      },
+      "expect": {
+        "instance_id": "rel",
+        "mode": "worktree",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/aw-rel",
+        "base_ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1700000000.0,
+        "branch_name": ""
+      }
+    },
+    {
+      "name": "sw-task",
+      "instance_id": "task",
+      "tree": {
+        "sw-task.json": "{\"instance_id\": \"task\", \"mode\": \"subagent\", \"repo_root\": \"<ROOT>/repo\", \"main_workspace\": \"<ROOT>/repo\", \"worktree_path\": \"<ROOT>/sw-task\", \"base_ref\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"branch_name\": \"omnicrawl/subagent/task\", \"created_at\": 1700000000.0, \"apply_on_exit\": true, \"cleanup_on_exit\": \"auto\"}"
+      },
+      "expect": {
+        "instance_id": "task",
+        "mode": "subagent",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/sw-task",
+        "base_ref": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1700000000.0,
+        "branch_name": "omnicrawl/subagent/task"
+      }
+    },
+    {
+      "name": "aw-outside",
+      "instance_id": "outside",
+      "tree": {
+        "aw-outside.json": "{\"instance_id\": \"other\", \"mode\": \"worktree\", \"repo_root\": \"<ROOT>/repo\", \"main_workspace\": \"<ROOT>/repo\", \"worktree_path\": \"<ROOT>/other\", \"base_ref\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"branch_name\": \"\", \"created_at\": 1700000000.0, \"apply_on_exit\": true, \"cleanup_on_exit\": \"auto\"}"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-escape",
+      "instance_id": "escape",
+      "tree": {
+        "aw-escape.json": "{\"instance_id\": \"escape\", \"mode\": \"worktree\", \"repo_root\": \"<ROOT>/repo\", \"main_workspace\": \"<ROOT>/repo\", \"worktree_path\": \"<ROOT>/../escape\", \"base_ref\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"branch_name\": \"\", \"created_at\": 1700000000.0, \"apply_on_exit\": true, \"cleanup_on_exit\": \"auto\"}"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-nokey",
+      "instance_id": "nokey",
+      "tree": {
+        "aw-nokey.json": "{\"instance_id\": \"aw-nokey\", \"mode\": \"worktree\", \"repo_root\": \"<ROOT>/repo\", \"main_workspace\": \"<ROOT>/repo\", \"base_ref\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"branch_name\": \"\", \"created_at\": 1700000000.0, \"apply_on_exit\": true, \"cleanup_on_exit\": \"auto\"}"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-badjson",
+      "instance_id": "badjson",
+      "tree": {
+        "aw-badjson.json": "{not json"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-bad name",
+      "instance_id": "bad name",
+      "tree": {
+        "aw-bad name.json": "{\"instance_id\": \"aw-bad name\", \"mode\": \"worktree\", \"repo_root\": \"<ROOT>/repo\", \"main_workspace\": \"<ROOT>/repo\", \"worktree_path\": \"<ROOT>/aw-bad name\", \"base_ref\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"branch_name\": \"\", \"created_at\": 1700000000.0, \"apply_on_exit\": true, \"cleanup_on_exit\": \"auto\"}"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-plain",
+      "instance_id": "plain",
+      "tree": {
+        "aw-plain/keep.txt": "x"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-legacy",
+      "instance_id": "legacy",
+      "tree": {
+        "aw-legacy/.git": "gitdir: <ROOT>/repo-aw-legacy/.git/worktrees/aw-legacy",
+        "repo-aw-legacy/.git/worktrees/aw-legacy/HEAD": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "repo-aw-legacy/.git/worktrees/aw-legacy/commondir": "../.."
+      },
+      "expect": {
+        "instance_id": "legacy",
+        "mode": "worktree",
+        "repo_root": "<ROOT>/repo-aw-legacy",
+        "worktree_path": "<ROOT>/aw-legacy",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo-aw-legacy",
+        "created_at": "<MTIME>",
+        "branch_name": ""
+      }
+    },
+    {
+      "name": "sw-legacy",
+      "instance_id": "legacy",
+      "tree": {
+        "sw-legacy/.git": "gitdir: <ROOT>/repo-sw-legacy/.git/worktrees/sw-legacy",
+        "repo-sw-legacy/.git/worktrees/sw-legacy/HEAD": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "repo-sw-legacy/.git/worktrees/sw-legacy/commondir": "../.."
+      },
+      "expect": null
+    }
+  ],
+  "metadata_read": [
+    {
+      "name": "aw-ok",
+      "entry": "aw-ok",
+      "tree": {
+        "aw-ok.json": "{\"a\": 1, \"\\u4e2d\\u6587\": \"\\u503c\"}"
+      },
+      "expect": {
+        "a": 1,
+        "中文": "值"
+      }
+    },
+    {
+      "name": "aw-array",
+      "entry": "aw-array",
+      "tree": {
+        "aw-array.json": "[]"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-null",
+      "entry": "aw-null",
+      "tree": {
+        "aw-null.json": "null"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-broken",
+      "entry": "aw-broken",
+      "tree": {
+        "aw-broken.json": "{oops"
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-empty",
+      "entry": "aw-empty",
+      "tree": {
+        "aw-empty.json": ""
+      },
+      "expect": null
+    },
+    {
+      "name": "aw-missing",
+      "entry": "aw-missing",
+      "tree": {},
+      "expect": null
+    }
+  ],
+  "metadata_path": [
+    {
+      "root": "<ROOT>",
+      "entry": "aw-abc",
+      "expect": "<ROOT>/aw-abc.json"
+    },
+    {
+      "root": "<ROOT>",
+      "entry": "sw-task",
+      "expect": "<ROOT>/sw-task.json"
+    },
+    {
+      "root": "<ROOT>",
+      "entry": "plain",
+      "expect": "<ROOT>/plain.json"
+    }
+  ],
+  "cleanup_gates": [
+    {
+      "session": {
+        "instance_id": "old",
+        "mode": "local",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/aw-old",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1699996000.0,
+        "branch_name": ""
+      },
+      "in_use": [],
+      "now": 1700000000.0,
+      "expect": [
+        true,
+        "可安全清理"
+      ]
+    },
+    {
+      "session": {
+        "instance_id": "fresh",
+        "mode": "local",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/aw-fresh",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1699999990.0,
+        "branch_name": ""
+      },
+      "in_use": [],
+      "now": 1700000000.0,
+      "expect": [
+        false,
+        "隔离区未过保留期（还需 3590s）"
+      ]
+    },
+    {
+      "session": {
+        "instance_id": "-temp",
+        "mode": "local",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/not-temp",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1699996000.0,
+        "branch_name": ""
+      },
+      "in_use": [],
+      "now": 1700000000.0,
+      "expect": [
+        false,
+        "非临时隔离区（目录名不以 aw-/sw- 开头）"
+      ]
+    },
+    {
+      "session": {
+        "instance_id": "old",
+        "mode": "subagent",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/sw-old",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1699996000.0,
+        "branch_name": ""
+      },
+      "in_use": [],
+      "now": 1700000000.0,
+      "expect": [
+        true,
+        "可安全清理"
+      ]
+    },
+    {
+      "session": {
+        "instance_id": "used",
+        "mode": "local",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/aw-used",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1699996000.0,
+        "branch_name": ""
+      },
+      "in_use": [
+        "used"
+      ],
+      "now": 1700000000.0,
+      "expect": [
+        false,
+        "隔离区当前正在使用中"
+      ]
+    },
+    {
+      "session": {
+        "instance_id": "noclock",
+        "mode": "local",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/aw-noclock",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 0.0,
+        "branch_name": ""
+      },
+      "in_use": [],
+      "now": 1700000000.0,
+      "expect": [
+        true,
+        "可安全清理"
+      ]
+    },
+    {
+      "session": {
+        "instance_id": "gone",
+        "mode": "worktree",
+        "repo_root": "<ROOT>/repo",
+        "worktree_path": "<ROOT>/aw-gone",
+        "base_ref": "",
+        "main_workspace": "<ROOT>/repo",
+        "created_at": 1699996000.0,
+        "branch_name": ""
+      },
+      "in_use": [],
+      "now": 1700000000.0,
+      "expect": [
+        true,
+        "可安全清理"
+      ]
+    }
+  ]
+}

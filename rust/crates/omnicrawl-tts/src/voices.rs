@@ -42,6 +42,11 @@ fn home_directory() -> PathBuf {
     PathBuf::from(".")
 }
 
+/// 用户级资产所在的家目录根（与 [`custom_voices_path`] 同源）。
+pub fn default_root() -> PathBuf {
+    home_directory()
+}
+
 fn write_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -88,7 +93,7 @@ pub fn load_custom_voices(root: &Path) -> Vec<Value> {
             };
             let voice = map
                 .get("voice")
-                .map(|value| argument_text(value))
+                .map(argument_text)
                 .unwrap_or_default();
             let codes_ok = matches!(map.get("prompt_audio_codes"), Some(Value::Array(items)) if !items.is_empty());
             !voice.trim().is_empty() && codes_ok
@@ -258,7 +263,7 @@ fn write_library(root: &Path, data: &Value) -> Result<(), String> {
 pub fn builtin_voice_rows(model_dir: Option<&Path>) -> Vec<Value> {
     let resolved = match model_dir {
         Some(path) => path.to_path_buf(),
-        None => super::default_model_dir(),
+        None => crate::config::default_model_dir(),
     };
     let Some(manifest_path) = MANIFEST_CANDIDATES
         .iter()

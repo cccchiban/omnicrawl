@@ -84,6 +84,11 @@ rust/
 │   ├── src/building.rs                     # 模式模板装载与 system prompt 组装
 │   ├── src/turn/turn_loop.rs               # 回合接线：13 回调面、两个循环端口与守卫、收尾补发、失败分类
 │   └── tests/controllers_parity.rs         # 与 Python 实现的对照测试（825 用例）
+├── crates/omnicrawl-commands/              # 斜杠命令框架与内置命令（`omnicrawl/commands/` 的 Rust 移植）
+│   ├── src/framework.rs                    # 注册、解析、分发、候选/帮助派生
+│   ├── src/agent.rs                        # CommandAgent 能力面（宿主注入）与命令用的值类型
+│   ├── src/slash.rs                        # registry()/build_registry() 与 27 条内置命令、全部展示文案
+│   └── README.md                           # 对映表、与 Python 的两处必要差异、尚未接线的宿主入口
 ├── crates/omnicrawl-compaction/            # 上下文压缩的会话/记忆编排与摘要模型适配器
 │   ├── src/adapter.rs                      # 摘要请求：复用主请求前缀与工具面、tool_choice=none、用量累计
 │   ├── src/driver.rs                       # 回合边界：测量落盘、压缩触发、归档、记忆回写与召回、历史重建
@@ -92,18 +97,28 @@ rust/
 │   ├── src/main.rs                         # 入口：--version / --help
 │   ├── src/session.rs                      # 会话：握手、回合、两个宿主端口、取消守卫
 │   └── README.md                           # 端口与错误映射、当前发出的事件
+├── crates/omnicrawl-host/                  # 宿主执行层（TUI 与本地 API 共用）
+│   ├── src/kernel.rs                       # 内核进程客户端：NDJSON 帧读写、读线程与请求配对
+│   ├── src/host.rs                         # 工具批次：审批/提问判定、执行派发、观察构造
+│   ├── src/tools/                          # 工具执行体（30 个模块：文件、搜索、命令、监控、知识库、记忆、联网、视觉、桌面）
+│   ├── src/approval.rs                     # 审批模式：manual / auto
+│   ├── src/turn.rs                         # 无头回合运行器：握手、定调、并发执行、超时收口、取消
+│   ├── src/prompt.rs                       # 启动期提示词装配：模板 / AGENTS.md / Skill 索引 / 模式区块 / 上下文消息
+│   ├── tests/turn_flow.rs                  # 脚本化假内核上的回合流程测试（5 组）
+│   └── README.md                           # 模块对映、与界面/API 的边界、已知差异
 ├── crates/omnicrawl-tui/                   # 全屏终端工作台（协议 v1 的 Rust 宿主前端）
 │   ├── src/main.rs                         # 二进制入口：选内核、握手、进出全屏、事件循环
-│   ├── src/kernel.rs                       # 内核进程客户端：NDJSON 帧读写与请求配对
+│   ├── src/app.rs                          # 接线层：内核帧 ↔ 状态机 ↔ 写回内核
 │   ├── src/state.rs                        # 界面状态机：消息记录、输入框、遥测
-│   ├── src/host.rs                         # 宿主侧工具批次：观察构造、审批策略、待决面板
 │   ├── src/ui/                             # 渲染：HUD、消息流、输入框、面板
 │   └── README.md                           # 本阶段边界与尚未实现清单
 ├── crates/omnicrawl-connectors/            # 消息平台连接器（Telegram Bot 与飞书自建应用）
 │   ├── src/agent.rs                        # 连接器 ↔ 宿主边界：回合事件、驱动 trait、确认/提问桥
 │   ├── src/telegram/                       # 配置、分段与裁剪、文件接收、更新路由、Bot API、轮询服务
 │   ├── src/feishu/                         # 配置、文本、卡片渲染、资源、去重、时间线条目
+│   ├── src/autostart.rs                    # 自动启动监督器：配置探测、子进程拉起、单例锁、退出回收
 │   ├── tests/*_parity.rs                   # 与 Python 连接器的对照测试
+│   ├── tests/autostart_process.rs          # 真子进程测试（拉起 → 采集日志 → 连后代回收 → 锁释放）
 │   └── README.md                           # 模块分工、对照工作流、尚未移植清单
 ├── crates/omnicrawl-extensions/            # 扩展子系统（插件模型与注册表、Hook 分发、Skill、安装器）
 │   ├── src/models.rs                       # Hook 表与策略、manifest 解析、JSON Patch、Handler 排序
@@ -133,6 +148,41 @@ rust/
 │   ├── src/bundled.rs                      # 内置文档（include_str! 打进二进制）
 │   ├── tests/*_parity.rs                   # 六组对照 + stdio 端到端自测
 │   └── README.md                           # 模块对映、已知差异、宿主接线与未接线清单
+├── crates/omnicrawl-api/                   # 本地 HTTP/SSE API 服务端（`omnicrawl/api/` 的 Rust 移植）
+│   ├── src/config.rs                       # APIConfig 与 load_api_config（校验顺序、文案、环境变量优先级）
+│   ├── src/error.rs                        # ApiError 与 {data} / {error} 信封
+│   ├── src/app.rs                          # 路由装配、Bearer 鉴权、CORS、框架级 404/405
+│   ├── tests/config_parity.rs              # 配置面逐条对照（15 组构造 + 26 组装载）
+│   ├── tests/server.rs                     # 真实回环 HTTP 上的装配层端到端测试
+│   └── README.md                           # 已搬范围、资源进度表、已知差异
+├── crates/omnicrawl-config-chat/           # 配置对话（`omnicrawl/config_chat/` 的 Rust 移植）
+│   ├── src/router.rs                       # 从句切分、BIO 解码、别名向量检索、命令列表
+│   ├── src/router_weights.rs               # 内核权重（魔数 + 头部 JSON + f32 数据块）装载与双向 GRU 前向
+│   ├── src/service.rs                      # 类型校验、TOML 写回、运行态同步（ConfigChatAgent）
+│   ├── src/assets.rs                       # labels.json / aliases.json 资源面
+│   ├── data/                               # 权重与两份 JSON 资源（由 gen_config_router_fixture.py 生成）
+│   ├── tests/config_chat_parity.rs         # 与 Python 的对照测试（5 组）
+│   └── README.md                           # 模块对映、算法与 Python 的差异、尚未接线
+├── crates/omnicrawl-workspace/             # 工作区层（`omnicrawl/workspace/` 的 Rust 移植：slug + 隔离区 + 临时目录 + 进程控制 + 连接器单例锁）
+│   ├── src/slug.rs                         # 路径段安全校验（fail-closed，隔离区实例 ID / 分支名共用）
+│   ├── src/paths.rs                        # `Path.resolve()` / `expanduser()` / `home()` 的可用子集
+│   ├── src/agent_isolation.rs              # worktree / local 隔离区：创建与复用、apply、四层门禁、退出收尾、启动清扫
+│   ├── src/temp.rs                         # Agent 临时目录：分类子目录、间隔清理、启动补清理与后台线程
+│   ├── src/process_control.rs              # 进程树控制（Windows Job Object / Unix 进程组）与跨平台 PID 存活探测
+│   ├── src/connector_singleton.rs          # 连接器子进程的跨进程单例锁（锁文件路径、PID 行解析、粘滞接管）
+│   ├── tests/workspace_isolation_parity.rs # 与 Python 的对照测试（7 组：slug / diff 统计 / gitdir 解析 / 清扫条目 / 元数据 / 门禁）
+│   ├── tests/workspace_temp_parity.rs      # 临时目录对照测试（配置 / 目录解析 / 子路径 / 删除 / 清理 / 间隔 / 状态文案）
+│   ├── tests/connector_singleton_parity.rs # 单例锁对照测试（锁文件名 / PID 行解析 / 陈旧锁接管 / 存活判定）
+│   ├── tests/isolation_git_roundtrip.rs    # 真 git 集成测试（worktree 往返、复用、local 镜像、收尾摘要）
+│   ├── tests/connector_lock_process.rs     # 真文件锁与真进程测试（同进程互斥、跨进程互斥、持有者退出后接管）
+│   └── README.md                           # 模块对映、四层门禁、与 Python 的差异、尚未移植的同包模块
+├── crates/omnicrawl-entry/                 # 统一启动入口（`entry.py` 路由 + `cli.py` 插件 CLI）
+│   ├── src/main.rs                         # 二进制 `omnicrawl-host`：help/version、kernel/api/TUI 子进程路由与退出码传播
+│   ├── src/cli.rs                          # `plugin ...`：参数面、作用域解析、十个子命令与退出码阶梯
+│   ├── src/startup.rs                      # 启动编排：首次配置与诊断、Node/插件探测、连接器自动启动与子进程形状
+│   ├── src/channel_setup.rs                # 首次配置的渠道向导（行式，复用配置域的原子写与校验）
+│   ├── tests/plugin_cli_parity.rs          # 与 Python 的对照测试（参数面 44 例 + 作用域 10 例 + 退出码）
+│   └── README.md                           # 已迁移 / 尚未迁移、参数面差异、验证边界
 ├── docs/protocol-v1.md                     # 协议 v1 规格（方法、负载、错误、版本）
 └── tools/
     ├── gen_parity_fixture.py               # 协议层对照数据集生成脚本
@@ -147,7 +197,16 @@ rust/
     ├── gen_connectors_feishu_fixture.py    # 飞书连接器对照数据集生成脚本
     ├── gen_extensions_fixture.py           # 扩展层（插件模型/注册表/Skill/安装器）对照数据集生成脚本
     ├── gen_host_bridge_fixture.py          # 宿主桥接契约 fixture 生成脚本
-    └── gen_mcp_fixture.py                  # MCP 子系统（配置/注册表/安全/审计/协议/管理器/HTTP）对照数据集生成脚本
+    ├── gen_api_config_fixture.py           # 本地 API 配置面（APIConfig / load_api_config）对照数据集生成脚本
+    ├── gen_mcp_fixture.py                  # MCP 子系统（配置/注册表/安全/审计/协议/管理器/HTTP）对照数据集生成脚本
+    ├── gen_config_router_fixture.py        # 配置对话权重（router.pt → 内核二进制）与对照数据集生成脚本
+    ├── gen_workspace_isolation_fixture.py  # 工作区隔离层（slug / gitdir 解析 / 清扫条目 / 元数据 / 四层门禁）对照数据集生成脚本
+    ├── gen_workspace_temp_fixture.py       # Agent 临时目录（配置 / 目录解析 / 清理 / 间隔 / 状态文案）对照数据集生成脚本
+    ├── gen_workspace_connector_singleton_fixture.py  # 连接器单例锁（锁文件名 / PID 行解析 / 陈旧锁接管）对照数据集生成脚本
+    ├── gen_connectors_autostart_fixture.py # 连接器自动启动监督器（配置探测 / 拉起 / 诊断 / 子进程实参形状）对照数据集生成脚本
+    ├── gen_tui_tools_fixture.py            # TUI 搜索与 git 工具对照数据集生成脚本
+    ├── gen_latex_fixture.py                # LaTeX 转换层（行内 / 块级 / fenced / 裸公式）对照数据集生成脚本
+    └── gen_plugin_cli_fixture.py           # 插件 CLI 参数面与作用域对照数据集生成脚本
 ```
 
 ## 构建与验证
@@ -326,6 +385,7 @@ cd rust && cargo test -p omnicrawl-llm --test openai_responses_stream_parity
 ```bash
 python rust/tools/gen_connectors_telegram_fixture.py   # 期望值来自 connectors/telegram.py
 python rust/tools/gen_connectors_feishu_fixture.py     # 期望值来自 connectors/fsapp.py
+python rust/tools/gen_connectors_autostart_fixture.py  # 期望值来自 connectors/autostart.py（Popen 换成记录用的假实现）
 cd rust && cargo test -p omnicrawl-connectors
 ```
 
@@ -334,8 +394,12 @@ cd rust && cargo test -p omnicrawl-connectors
 `/thinking` 与 `/workspace` 判定；`feishu_parity.json` 覆盖标签清理与空行折叠、长文分段、
 工具摘要与正文、`difflib.SequenceMatcher` 的 `+N -M` 与变更预览、计划与思考面板、子任务进度树、
 卡片 JSON（键序与 `json.dumps` 分隔符是契约）、配置解析与掩码、去重键，以及时间线条目
-（正文/工具/思考/计划）真正发出的消息序列。连接器的边界与尚未移植清单见
-`crates/omnicrawl-connectors/README.md`。
+（正文/工具/思考/计划）真正发出的消息序列。
+`connectors_autostart_parity.json` 覆盖自动启动监督器：十个场景（未配置 / 只配一个平台 /
+两个都配 / 段类型错误 / 只给环境变量 / 开关关闭 / 开关取值无效 / 采集日志）下「拉起哪些平台」、
+告警文案、以及传给子进程的实参形状（stdin/stdout/stderr、独立进程组、启动目录变量已清掉），
+外加开关取值判定表与子进程环境的受控用例；真拉起与真回收由 `tests/autostart_process.rs`
+用真子进程覆盖。连接器的边界与尚未移植清单见 `crates/omnicrawl-connectors/README.md`。
 
 Agent 控制器域同理：
 
@@ -354,6 +418,19 @@ system prompt 19 例、审批 269 例（名称/字段识别、git 风险分级�
 （只补上方法真正读到的宿主属性），不改写被测逻辑；模板装载一组需要读仓库内
 `omnicrawl/templates/`，因此按仓库布局定位模板目录。边界与已知差异见
 `crates/omnicrawl-controllers/README.md`。
+
+斜杠命令同理（框架与命令表的静态对照，不依赖编译）：
+
+```bash
+python .omnicrawl/.agent_tmp/scripts/check_commands_parity.py   # ast 解析 slash.py ↔ build_registry() 逐字段比对
+```
+
+`crates/omnicrawl-commands/` 把 `omnicrawl/commands/framework.py` + `slash.py` 全量搬到 Rust：
+框架层（`CommandType` / `Command` / `ParsedCommand` / `CommandResult` / `CommandContext` /
+`CommandRegistry`）零宿主依赖，27 条内置命令的元数据与 `slash.py` 逐字一致（名称、别名、用法、
+类型、参数提示、说明、补全形态），宿主能力经 `CommandAgent` trait 注入（缺能力必须显式报错，
+不静默成功）。两处必要差异（`deferred` 把宿主当参数、能力面收成 trait）与「尚未接线 TUI」的
+前置条件见 `crates/omnicrawl-commands/README.md`。
 
 扩展层同理：
 
@@ -382,6 +459,54 @@ cd rust && cargo test -p omnicrawl-mcp
 本地 Server 的 24 个响应、管理器 13 个场景（发现/降级/外部拦截/关闭后调用），以及
 Streamable HTTP 的 14 个请求形状场景。另有 `tests/stdio_e2e.rs`：管理器真的拉起
 `omnicrawl-mcp-server` 子进程跑通握手与读取。边界与已知差异见 `crates/omnicrawl-mcp/README.md`。
+
+配置对话同理（同一脚本还负责把 torch 权重转成内核二进制，并把两份 JSON 资源复制到 `data/`）：
+
+```bash
+python rust/tools/gen_config_router_fixture.py   # 期望值来自 omnicrawl/config_chat/ 真实现
+cd rust && cargo test -p omnicrawl-config-chat
+```
+
+`config_chat_parity.json` 覆盖五组：资源快照（sha256 / 形状）、片段切分、逐从句的取词与
+BIO 标签与检索下标与命令列表、校验折算文案、以及 `apply_text` 的改动与两份 TOML 的最终文本。
+边界与已知差异见 `crates/omnicrawl-config-chat/README.md`。
+
+工作区层同理（同一个 crate 下有几条生成命令与真 git / 真文件锁测试）：
+
+```bash
+python rust/tools/gen_workspace_isolation_fixture.py            # 隔离区
+python rust/tools/gen_workspace_temp_fixture.py                 # Agent 临时目录
+python rust/tools/gen_workspace_connector_singleton_fixture.py  # 连接器单例锁
+cd rust && cargo test -p omnicrawl-workspace
+```
+
+`workspace_isolation_parity.json` 覆盖七组：slug 命名与校验文案（34 例）、补丁的文件数统计
+（7 例）、`resolve_worktree_head` 在合成 gitdir 布局上的结果（14 例，含 detached / loose ref /
+packed-refs / 相对 commondir）、清扫条目重建的接受与拒绝矩阵（11 例，含被篡改的元数据与
+路径穿越）、元数据容错读取（6 例）、元数据路径命名（3 例）、四层门禁的前两层（7 例）。
+需要真跑 `git` 的部分（`worktree add` 与复用校验、`diff` + `apply --3way`、第三 / 第四层门禁、
+`worktree remove` + `prune`、local 模式镜像、退出收尾摘要）由 `tests/isolation_git_roundtrip.rs`
+覆盖，环境里没有 `git` 时整组跳过。
+
+同一 crate 另有两份数据集：`workspace_temp_parity.json` 覆盖配置读取、临时目录解析、子路径
+安全、删除边界、一次真清理（删除清单与清理前后目录树）、清理间隔判定与状态文案；
+`connector_singleton_parity.json` 覆盖锁文件名净化、锁文件里 `pid=` 行的解析、陈旧锁文件
+接管与 PID 存活判定。两处真动 OS 锁与真进程的部分（同进程内两个句柄互斥、另一进程持锁时
+拿不到、持有者被强杀后能接管）由 `tests/connector_lock_process.rs` 覆盖。
+边界与已知差异见 `crates/omnicrawl-workspace/README.md`。
+
+插件 CLI 同理（对照的是参数面与作用域，不碰 npm 与网络）：
+
+```bash
+python rust/tools/gen_plugin_cli_fixture.py   # 期望值来自 omnicrawl/cli.py 的 argparse 面
+cd rust && cargo test -p omnicrawl-entry
+```
+
+`plugin_cli_parity.json` 覆盖三条：44 组 argv 的解析结果（成功逐字段比对 argparse 的 namespace，
+帮助与参数错误按退出码比对）、10 组作用域判定（空工作区 / 有 AGENTS.md / 有 package.json，
+以及 `--project` 与 `--user` 同时给出的静默退出）、八个退出码常量。安装 / 注册表 / 诊断要真跑
+`npm` 与网络，不在本批次对照范围，由 `omnicrawl-extensions` 的对照测试负责；能力面差异见
+`crates/omnicrawl-entry/README.md`。
 
 ## 已知与 Python 的差异
 
@@ -426,6 +551,15 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 分发路线见知识库「分发路线与内核宿主边界决策」：主程序最终走 npm，内核与宿主的边界以
 「进程 + NDJSON JSON-RPC / 平台二进制」为一等公民，PyO3 内联不再是路线图项。
 
+**启动编排已脱离 Python**：`omnicrawl-host` 的默认路由自己跑首次配置与渠道向导
+（`crates/omnicrawl-entry/src/channel_setup.rs`）、Node/插件启动诊断、连接器自动启动与退出回收；
+提示词装配（模板 / AGENTS.md / Skill 索引 / 模式区块 / 上下文消息）在
+`crates/omnicrawl-host/src/prompt.rs`，经 `initialize.model.{system_prompt,context_messages}`
+进入真实请求路径，模式切换（`/plan`）经 `session.settings` 即时下发。
+npm 平台包的宿主载荷也换成 Rust 产物：`packages/cli/scripts/build-host.mjs` 默认走
+`cargo build --release`（宿主 + 内核 + TUI + API + MCP Server + 模板），
+`--legacy-python` 才回到旧的 PyInstaller 冻结路径。
+
 `omnicrawl-llm` 与内核接线都已落地：宿主在 `initialize` 里给出可选的 `model` 块，内核就自己发模型请求，
 增量经 `turn.delta` / `turn.reasoning_delta` / `turn.token_usage` 外发，重试与文案按 `request_retry_count`
 保持与 Python 一致；没有该块时退回 `model.reply` 代答，新旧宿主可以同时存在。这条链由
@@ -444,7 +578,12 @@ artifact 转存与核心凭据脱敏（`redaction.rs`）都有对照，会话生
 `omnicrawl-llm` 的消息脱敏已落地模块根（错误面 + 序号注册表）、流式还原、值类型规则层全部 11 条规则
 （PEM / 连接串 / 网址 / 邮箱 / 车牌 / 银行卡 / MAC / 内外网 IP，全部手写匹配器）、匹配引擎
 （结构层 / 键名规则 / 熵兜底 / 占位符分配）、middleware 编排件与 oneshot 一次性脱敏器（对照已转正，
-3 例全绿）；余下运行时装饰器、gitleaks 规则表、locality 与扫描缓存、NER（torch 依赖）。
+3 例全绿）、gitleaks 规则表、NER 兜底层（前向 + 权重 + 对照）、运行时装饰器与**屏蔽计划缓存**
+（`desensitization/plan_cache.rs`，按文本指纹重放匹配计划；逐消息缓存与计划缓存都由运行时持有、
+`close()` 一起清空）；余下把 NER 层接进 `mask_text` 末尾、`locality` 局部化扫描。
+
+屏蔽计划缓存的对照数据集与说明见 `crates/omnicrawl-llm/README.md`（生成器按文件路径加载
+`plan_cache.py`，因为 Python 侧 `engine.py` / `middleware.py` 当前正带着未合并的冲突标记）。
 
 `omnicrawl-llm` 的运行时契约也已落地：`ModelCapabilities` / `merge_capabilities`（能力解析、合并优先级、
 四个保守默认值）、`resolve_protocol` / `protocol_for_provider` / `validate_protocol_matches_provider`
@@ -497,6 +636,11 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 并由工具表生成 `initialize.model.tools` 声明；工具表、参数归一化与 Schema 校验复用 `omnicrawl-controllers`，
 声明与行为逐字对齐 Python（`tests/workspace_tools_parity.rs`、`tests/search_tools_parity.rs` +
 `rust/tools/gen_tui_tools_fixture.py`）。审批语义与 Python 的 manual 分支一致：只对 shell 命令与非只读 git 操作确认。
+
+界面层按目录对映移植 `omnicrawl/ui/`：渲染侧已落 `difflib`（`SequenceMatcher` 等价）、`tool_diff`、`widgets`、
+`markdown`、`welcome_logo`、`logo_anim` 与 `latex`（LaTeX → Unicode 近似文本，含 `split_blocks` / `has_block_formula`），
+状态侧已落 `hud` / `indicators`，启动画面与 `tool_labels` 也已接入；对照片为
+`tests/latex_parity.rs` + `rust/tools/gen_latex_fixture.py`（107 例转换 + 9 例分段 + 26 例快判）。
 
 仍未搬完：`read_image` / `web_search` / `fetcher` /
 `image_gen` / `tts_synthesize`、知识库、记忆（`omnicrawl-session` 已有 `MemoryStore` 可复用）、Windows 桌面、

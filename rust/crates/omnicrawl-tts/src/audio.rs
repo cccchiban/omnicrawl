@@ -42,7 +42,7 @@ fn home_directory() -> PathBuf {
 }
 
 fn resolve_path(path: &Path) -> PathBuf {
-    super::super::paths::resolve_lenient(&PathBuf::from(expand_user(&path.to_string_lossy())))
+    crate::paths::resolve_lenient(&PathBuf::from(expand_user(&path.to_string_lossy())))
 }
 
 /// 读取 WAV 文件，返回（声道优先波形, 采样率）；支持 8/16/24/32 位 PCM。
@@ -108,7 +108,7 @@ fn parse_wav(bytes: &[u8]) -> Result<(usize, usize, u32, Vec<u8>), String> {
                 let Some((bits, channels, sample_rate)) = format else {
                     return Err("WAV 的 data 块出现在 fmt 块之前。".to_string());
                 };
-                let width = (bits as usize + 7) / 8;
+                let width = (bits as usize).div_ceil(8);
                 return Ok((
                     channels,
                     width,

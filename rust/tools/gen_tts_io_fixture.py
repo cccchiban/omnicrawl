@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成 `omnicrawl-tui` TTS 音频 I/O 与声线库的对照数据集。
+"""生成 `omnicrawl-tts` TTS 音频 I/O 与声线库的对照数据集。
 
 期望值来自 Python 真实现 `omnicrawl/tts/audio.py`（WAV 读写、线性重采样、参考音频加载）与
 `omnicrawl/tts/custom_voices.py`（音色名校验、自定义音色库读写、内置音色行）。
@@ -10,7 +10,7 @@ WAV 样本以 Base64 存进数据集（含 8/16/24/32 位与单/双声道），�
 用法（仓库根目录）：
 
     python rust/tools/gen_tts_io_fixture.py
-    cd rust && cargo test -p omnicrawl-tui --test tts_io_parity
+    cd rust && cargo test -p omnicrawl-tts --test tts_io_parity
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_PATH = ROOT / "rust/crates/omnicrawl-tui/tests/fixtures/tts_io_parity.json"
+FIXTURE_PATH = ROOT / "rust/crates/omnicrawl-tts/tests/fixtures/tts_io_parity.json"
 
 sys.path.insert(0, str(ROOT))
 

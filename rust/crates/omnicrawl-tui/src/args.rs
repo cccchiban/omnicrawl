@@ -5,29 +5,8 @@ use std::path::{Path, PathBuf};
 /// 阶段一的默认系统提示词；给了 `--system-prompt` 或环境变量时以它们为准。
 const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 助手，回答保持简洁。";
 
-/// 工具审批模式：协议与 Python 侧同名，`manual` 下非内核自持工具先弹确认。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApprovalMode {
-    Manual,
-    Auto,
-}
-
-impl ApprovalMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Manual => "MAN",
-            Self::Auto => "AUTO",
-        }
-    }
-
-    fn parse(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "manual" => Ok(Self::Manual),
-            "auto" => Ok(Self::Auto),
-            other => Err(format!("审批模式只支持 manual 或 auto，收到：{other}")),
-        }
-    }
-}
+// 审批模式归宿主执行层所有（批次定调要用），这里再导出给启动参数与界面用。
+pub use omnicrawl_host::approval::ApprovalMode;
 
 /// 一次启动的完整配置。
 #[derive(Debug, Clone, PartialEq)]
@@ -534,7 +513,8 @@ mod tests {
     #[test]
     fn invalid_approval_is_rejected() {
         let error = options_err(&["--model", "m", "--approval", "sometimes"], &no_env);
-        assert!(error.contains("manual 或 auto"), "{error}");
+        // 文案与 `ApprovalMode::parse` 的三种模式（manual / review / auto）保持一致。
+        assert!(error.contains("manual / review / auto"), "{error}");
     }
 
     fn options_err(args: &[&str], env: &dyn Fn(&str) -> Option<String>) -> String {

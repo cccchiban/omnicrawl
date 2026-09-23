@@ -214,6 +214,15 @@ impl Kernel {
     ///
     /// 返回途中所有帧与每个工具批次的请求参数。
     fn run_turn(&mut self, user_text: &str, tool_output: &str) -> (Vec<Value>, Vec<Value>) {
+        self.run_turn_with(user_text, |params| observation_for(params, tool_output))
+    }
+
+    /// 与 [`Kernel::run_turn`] 同一流程，观察由调用方给出（用于回填拒绝这类非成功结果）。
+    fn run_turn_with(
+        &mut self,
+        user_text: &str,
+        reply: impl Fn(&Value) -> Value,
+    ) -> (Vec<Value>, Vec<Value>) {
         self.send(json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -230,7 +239,7 @@ impl Kernel {
                 let params = frame["params"].clone();
                 batches.push(params.clone());
                 let id = frame["id"].clone();
-                let observation = observation_for(&params, tool_output);
+                let observation = reply(&params);
                 self.send(json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -363,6 +372,86 @@ fn kernel_hands_the_batch_to_the_host_and_folds_results_back() {
     assert_eq!(finished["method"], "turn.finished");
     assert_eq!(finished["params"]["tool_calls"], 1);
     assert_eq!(finished["params"]["final_text"], FINAL_TEXT);
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 宿主拒绝的观察：拒绝原因走 `result.output`，错误码标记为拒绝。
+fn observation_for_denied(batch: &Value, reason: &str) -> Value {
+    let call = &batch["calls"][0];
+    let call_id = call["id"].as_str().unwrap_or("call-1");
+    json!({
+        "tool_call": call,
+        "result": {
+            "ok": false,
+            "output": reason,
+            "full_output": reason,
+            "error_code": omnicrawl_ipc::DENIED_ERROR_CODE,
+        },
+        "message": {"role": "tool", "tool_call_id": call_id, "content": reason},
+        "followup_messages": [],
+    })
+}
+
+/// 会话转录全文：会话布局由内核决定，这里递归收集所有 `.jsonl`。
+fn session_transcript(root: &Path) -> String {
+    let mut text = String::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+                text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+    }
+    text
+}
+
+#[test]
+fn kernel_records_denied_call_in_the_session() {
+    let server = StubServer::spawn(vec![
+        Reply::Raw(tool_call_stream("bash", "{\"command\":\"rm -rf build\"}")),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("denied");
+
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+    let (frames, batches) = kernel.run_turn_with("清一下 build", |params| {
+        observation_for_denied(params, "用户取消执行：bash。")
+    });
+
+    // ① 拒绝照旧走同一个批次通道，宿主不必额外通知内核。
+    assert_eq!(batches.len(), 1, "应恰好发一次工具批次，实收帧：{frames:?}");
+    assert_eq!(batches[0]["calls"][0]["name"], "bash");
+
+    // ② 拒绝原因被折回上下文：第二次模型请求里带着它。
+    let bodies = server.bodies();
+    assert_eq!(bodies.len(), 2, "实收请求数：{}", bodies.len());
+    let second = pairs(&bodies[1]);
+    assert!(
+        second
+            .iter()
+            .any(|(role, content)| role == "tool" && content == "用户取消执行：bash。"),
+        "第二次请求应带拒绝原因：{second:?}"
+    );
+
+    // ③ 内核把拒绝写进会话转录，投影与历史据此还原「用户拒绝执行」。
+    let transcript = session_transcript(&root);
+    assert!(
+        transcript.contains("tool_call_denied"),
+        "会话转录应有 tool_call_denied 事件：{transcript}"
+    );
+    assert!(
+        transcript.contains("用户取消执行：bash。"),
+        "事件里应带拒绝原因：{transcript}"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }

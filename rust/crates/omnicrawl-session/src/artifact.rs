@@ -346,7 +346,15 @@ impl SessionArtifactStore {
         relative_posix(&path, &self.root)
     }
 
-    fn ensure_session_artifacts_dir(&self, session_id: &str) -> Result<PathBuf, SessionStoreError> {
+    /// artifact 根目录（`artifacts/`）：undo 预检按「根 + 会话 id」解析补丁路径。
+    pub(crate) fn artifacts_root(&self) -> PathBuf {
+        self.artifacts_dir.clone()
+    }
+
+    pub(crate) fn ensure_session_artifacts_dir(
+        &self,
+        session_id: &str,
+    ) -> Result<PathBuf, SessionStoreError> {
         let directory = self.artifacts_dir.join(session_id);
         if !is_relative_to(&directory, &self.root) {
             return Err(SessionStoreError::new(format!(

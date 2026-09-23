@@ -1,0 +1,21 @@
+[package]
+name = "omnicrawl-extensions"
+description = "扩展子系统（Python 侧 omnicrawl/extensions/ 的 Rust 内核移植）：插件模型与校验、注册表与执行计划、Hook 分发与 Worker 生命周期、Skill 发现与匹配、npm 安装器"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.23"
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+ureq = { workspace = true }
+
+# npm 包是 gzip 压缩的 tar（.tgz）：解包要 gzip 解压 + tar 归档遍历。
+# flate2 已在依赖图里（ureq 的传输链带进来的），提为直接依赖不引入新的供应链面；
+# tar 是纯 Rust 的归档解析器（无构建脚本），要用它处理 pax 扩展头里的长路径。
+flate2 = "1"
+tar = "0.4"

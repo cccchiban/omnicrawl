@@ -104,6 +104,23 @@ print(result.audio_path, result.duration_seconds)
 | `omnicrawl/tts/cli.py` | `python -m omnicrawl.tts` 命令行入口 |
 | `omnicrawl/config/features/tts.py` | `[tts]` 配置读取/校验/写回 |
 
+## Rust 实现（`omnicrawl-tts`）
+
+`rust/crates/omnicrawl-tts/` 是同一引擎的 Rust 版本，用于内核脱离 Python 宿主：模块与
+Python 侧一一对映（配置、音频 I/O、文本归一化、自定义音色库、模型下载、分词、采样、
+ONNX 推理、合成编排、播放、CLI），自带对照数据集（文本归一化、音频 I/O 与声线库、
+greedy 模式生成帧与 Python 逐帧一致）。
+
+已知差异：
+
+- **仅 CPU**：`device=cuda` 在 Rust 侧明确报错（CUDA 需要随包分发 `onnxruntime-gpu`）；
+  `device=auto` 直接落 CPU。
+- **无 WeTextProcessing**：`enable_wetext` 依赖 Python `pynini`，Rust 侧不支持——开启时
+  降级为纯清洗并提示。
+- **`fixed` 采样模式的随机序列不同**：Rust 用 PCG64 + 自己的播种，`seed` 可复现但数值与
+  Python 不一致；`greedy` 不使用随机数，与 Python 完全一致。
+- 命令行入口为 `omnicrawl-tts`，参数与 `python -m omnicrawl.tts` 对齐。
+
 ## 常见问题
 
 - **模型在哪里下载？** 默认 `~/.omnicrawl/tts/models`；`model_dir` 留空时首次调用 `TtsEngine` 或点击 TUI 设置面板的"下载模型"按钮自动下载。网络受限时可用 `OMNICRAWL_TTS_MODEL_DIR` 指定已手动放置的模型目录。

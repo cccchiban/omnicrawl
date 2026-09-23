@@ -91,7 +91,8 @@ stderr 排空、降级与关闭都在真进程上验证（不依赖 Python）。
 
 - Textual 的三个 MCP 设置屏（`ui/fullscreen/screens/mcp_*`）→ Rust 全屏设置面板；
 - 本地 API 的 MCP 设置路由（`api/routes/settings.py`）；
-- `/mcp` 状态命令（Rust TUI 尚无斜杠命令面）；`McpClientManager::format_status()` 已对照就绪，
+- `/mcp` 状态命令（Rust TUI 尚未接线斜杠命令面，框架与 `/mcp` 命令定义见 `omnicrawl-commands`）；
+  `McpClientManager::format_status()` 已对照就绪，
   拿到命令面即可直接输出；
 - `ui/fullscreen/status` 的完整状态行（Python 对映层）尚未接进渲染路径，MCP 计数目前只进
   简化版 HUD；

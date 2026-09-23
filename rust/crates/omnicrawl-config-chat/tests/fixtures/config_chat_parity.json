@@ -1,0 +1,2175 @@
+{
+ "weights": {
+  "path": "data/config_router.bin",
+  "magic": "OCCFG1\u0000\u0000",
+  "size": 17167437,
+  "sha256": "7d96cb2a9544110d6659566b557e44845e77ea39f701e63dc404d10c21ff5831",
+  "labels_sha256": "3d1315880f8eba7d1f12d576d629bf306671392c0d3b3562ed7621a0c95428ab",
+  "aliases_sha256": "1ad0aa62c3e19099f8cb4ffc981c9bb1f09996e696efcd9dd75b2e7b57f61340",
+  "vocab_size": 480,
+  "configs": 141,
+  "aliases": 907,
+  "tensors": 25,
+  "model_config": {
+   "embed_dim": 192,
+   "hidden_dim": 384,
+   "num_layers": 2,
+   "dropout": 0.2,
+   "vocab_size": 480
+  },
+  "actions": [
+   "OPEN",
+   "SET",
+   "ENABLE",
+   "DISABLE",
+   "TOGGLE",
+   "RESET"
+  ]
+ },
+ "router": [
+  {
+   "text": "打开记忆功能",
+   "clauses": [
+    "打开记忆功能"
+   ],
+   "detail": [
+    {
+     "text": "打开记忆功能",
+     "token_ids": [
+      79,
+      23,
+      239,
+      238,
+      1,
+      88
+     ],
+     "config_tags": [
+      0,
+      0,
+      1,
+      2,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "spans": [
+      [
+       2,
+       6
+      ]
+     ],
+     "config_indices": [
+      39
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "OPEN",
+     "config": "memory",
+     "value": "",
+     "score": 0.6584136486053467
+    }
+   ]
+  },
+  {
+   "text": "把记忆关掉",
+   "clauses": [
+    "把记忆关掉"
+   ],
+   "detail": [
+    {
+     "text": "把记忆关掉",
+     "token_ids": [
+      9,
+      239,
+      238,
+      30,
+      155
+     ],
+     "config_tags": [
+      0,
+      1,
+      2,
+      2,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      3,
+      3,
+      3,
+      3,
+      3
+     ],
+     "spans": [
+      [
+       1,
+       4
+      ]
+     ],
+     "config_indices": [
+      39
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "DISABLE",
+     "config": "memory.enabled",
+     "value": "false",
+     "score": 0.6287961006164551
+    }
+   ]
+  },
+  {
+   "text": "开启子代理",
+   "clauses": [
+    "开启子代理"
+   ],
+   "detail": [
+    {
+     "text": "开启子代理",
+     "token_ids": [
+      23,
+      64,
+      65,
+      84,
+      52
+     ],
+     "config_tags": [
+      0,
+      0,
+      1,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "spans": [
+      [
+       2,
+       5
+      ]
+     ],
+     "config_indices": [
+      116
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "ENABLE",
+     "config": "subagents.enabled",
+     "value": "true",
+     "score": 0.7318267822265625
+    }
+   ]
+  },
+  {
+   "text": "打开 TTS 语音合成，然后关闭思考显示",
+   "clauses": [
+    "打开 TTS 语音合成",
+    "关闭思考显示"
+   ],
+   "detail": [
+    {
+     "text": "打开 TTS 语音合成",
+     "token_ids": [
+      79,
+      23,
+      14,
+      97,
+      97,
+      162,
+      14,
+      160,
+      143,
+      125,
+      13
+     ],
+     "config_tags": [
+      0,
+      0,
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "spans": [
+      [
+       2,
+       11
+      ]
+     ],
+     "config_indices": [
+      25
+     ]
+    },
+    {
+     "text": "关闭思考显示",
+     "token_ids": [
+      30,
+      129,
+      201,
+      202,
+      221,
+      222
+     ],
+     "config_tags": [
+      0,
+      0,
+      1,
+      2,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+     ],
+     "spans": [
+      [
+       2,
+       6
+      ]
+     ],
+     "config_indices": [
+      38
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "OPEN",
+     "config": "tts",
+     "value": "",
+     "score": 0.6533539295196533
+    },
+    {
+     "action": "DISABLE",
+     "config": "ui.show_thinking",
+     "value": "false",
+     "score": 0.7565798759460449
+    }
+   ]
+  },
+  {
+   "text": "把请求超时设为 60 秒",
+   "clauses": [
+    "把请求超时设为 60 秒"
+   ],
+   "detail": [
+    {
+     "text": "把请求超时设为 60 秒",
+     "token_ids": [
+      9,
+      180,
+      189,
+      102,
+      62,
+      35,
+      34,
+      14,
+      133,
+      26,
+      14,
+      1
+     ],
+     "config_tags": [
+      0,
+      1,
+      2,
+      2,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      2,
+      0,
+      2
+     ],
+     "action_ids": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      2,
+      0,
+      2
+     ],
+     "spans": [
+      [
+       1,
+       5
+      ]
+     ],
+     "config_indices": [
+      5
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "SET",
+     "config": "llm.defaults.request_timeout_seconds",
+     "value": "60",
+     "score": 0.8168763518333435
+    }
+   ]
+  },
+  {
+   "text": "修改模型名称为 gpt-5",
+   "clauses": [
+    "修改模型名称为 gpt-5"
+   ],
+   "detail": [
+    {
+     "text": "修改模型名称为 gpt-5",
+     "token_ids": [
+      1,
+      27,
+      56,
+      60,
+      341,
+      1,
+      34,
+      14,
+      31,
+      28,
+      3,
+      228,
+      145
+     ],
+     "config_tags": [
+      1,
+      0,
+      1,
+      2,
+      2,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      2,
+      2,
+      2,
+      2
+     ],
+     "action_ids": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      2,
+      2,
+      2,
+      2,
+      0
+     ],
+     "spans": [
+      [
+       0,
+       1
+      ],
+      [
+       2,
+       6
+      ]
+     ],
+     "config_indices": [
+      1,
+      19
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "SET",
+     "config": "llm.active_model",
+     "value": "gpt-5",
+     "score": 0.649641752243042
+    },
+    {
+     "action": "SET",
+     "config": "image_gen.model",
+     "value": "",
+     "score": 0.7606656551361084
+    }
+   ]
+  },
+  {
+   "text": "显示思考过程",
+   "clauses": [
+    "显示思考过程"
+   ],
+   "detail": [
+    {
+     "text": "显示思考过程",
+     "token_ids": [
+      221,
+      222,
+      201,
+      202,
+      1,
+      95
+     ],
+     "config_tags": [
+      1,
+      2,
+      2,
+      2,
+      2,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+     ],
+     "spans": [
+      [
+       0,
+       5
+      ]
+     ],
+     "config_indices": [
+      38
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "SET",
+     "config": "ui.show_thinking",
+     "value": "",
+     "score": 0.6323184370994568
+    }
+   ]
+  },
+  {
+   "text": "关闭消息脱敏",
+   "clauses": [
+    "关闭消息脱敏"
+   ],
+   "detail": [
+    {
+     "text": "关闭消息脱敏",
+     "token_ids": [
+      30,
+      129,
+      71,
+      70,
+      38,
+      36
+     ],
+     "config_tags": [
+      0,
+      0,
+      1,
+      2,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      3,
+      3,
+      3,
+      3,
+      3,
+      3
+     ],
+     "spans": [
+      [
+       2,
+       6
+      ]
+     ],
+     "config_indices": [
+      74
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "DISABLE",
+     "config": "desensitization.enabled",
+     "value": "false",
+     "score": 0.6675307750701904
+    }
+   ]
+  },
+  {
+   "text": "打开插件功能；顺便把上下文压缩阈值改成 70",
+   "clauses": [
+    "打开插件功能",
+    "把上下文压缩阈值改成 70"
+   ],
+   "detail": [
+    {
+     "text": "打开插件功能",
+     "token_ids": [
+      79,
+      23,
+      270,
+      168,
+      1,
+      88
+     ],
+     "config_tags": [
+      0,
+      0,
+      1,
+      2,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "spans": [
+      [
+       2,
+       6
+      ]
+     ],
+     "config_indices": [
+      114
+     ]
+    },
+    {
+     "text": "把上下文压缩阈值改成 70",
+     "token_ids": [
+      9,
+      110,
+      19,
+      92,
+      51,
+      50,
+      230,
+      75,
+      27,
+      13,
+      14,
+      192,
+      26
+     ],
+     "config_tags": [
+      0,
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      2
+     ],
+     "action_ids": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+     ],
+     "spans": [
+      [
+       1,
+       8
+      ]
+     ],
+     "config_indices": [
+      62
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "OPEN",
+     "config": "plugins",
+     "value": "",
+     "score": 0.6811937093734741
+    },
+    {
+     "action": "SET",
+     "config": "context_compaction.trigger_context_tokens",
+     "value": "70",
+     "score": 0.7974241971969604
+    }
+   ]
+  },
+  {
+   "text": "把子代理的 max_turns 改成 12",
+   "clauses": [
+    "把子代理的 max_turns 改成 12"
+   ],
+   "detail": [
+    {
+     "text": "把子代理的 max_turns 改成 12",
+     "token_ids": [
+      9,
+      65,
+      84,
+      52,
+      21,
+      14,
+      25,
+      6,
+      72,
+      8,
+      3,
+      20,
+      11,
+      5,
+      12,
+      14,
+      27,
+      13,
+      14,
+      63,
+      135
+     ],
+     "config_tags": [
+      0,
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1,
+      2
+     ],
+     "action_ids": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+     ],
+     "spans": [
+      [
+       1,
+       16
+      ]
+     ],
+     "config_indices": [
+      69
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "SET",
+     "config": "context_compaction.recent_turns",
+     "value": "12",
+     "score": 0.7017068862915039
+    }
+   ]
+  },
+  {
+   "text": "disable plugins and set temperature to 0.25",
+   "clauses": [
+    "disable plugins and set temperature to 0.25"
+   ],
+   "detail": [
+    {
+     "text": "disable plugins and set temperature to 0.25",
+     "token_ids": [
+      18,
+      10,
+      12,
+      6,
+      39,
+      17,
+      2,
+      14,
+      28,
+      17,
+      20,
+      31,
+      10,
+      5,
+      12,
+      14,
+      6,
+      5,
+      18,
+      14,
+      12,
+      2,
+      3,
+      14,
+      3,
+      2,
+      25,
+      28,
+      2,
+      11,
+      6,
+      3,
+      20,
+      11,
+      2,
+      14,
+      3,
+      7,
+      14,
+      26,
+      24,
+      135,
+      145
+     ],
+     "config_tags": [
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "spans": [
+      [
+       0,
+       43
+      ]
+     ],
+     "config_indices": [
+      68
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "OPEN",
+     "config": "context_compaction.reasoning_effort",
+     "value": "",
+     "score": 0.5125399827957153
+    }
+   ]
+  },
+  {
+   "text": "关掉记忆，另外把重试次数改成 3，还有开启 MCP",
+   "clauses": [
+    "关掉记忆",
+    "把重试次数改成 3",
+    "开启 MCP"
+   ],
+   "detail": [
+    {
+     "text": "关掉记忆",
+     "token_ids": [
+      30,
+      155,
+      239,
+      238
+     ],
+     "config_tags": [
+      0,
+      0,
+      1,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      3,
+      3,
+      3,
+      3
+     ],
+     "spans": [
+      [
+       2,
+       4
+      ]
+     ],
+     "config_indices": [
+      39
+     ]
+    },
+    {
+     "text": "把重试次数改成 3",
+     "token_ids": [
+      9,
+      103,
+      213,
+      179,
+      53,
+      27,
+      13,
+      14,
+      123
+     ],
+     "config_tags": [
+      0,
+      1,
+      2,
+      2,
+      2,
+      0,
+      0,
+      0,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+     ],
+     "action_ids": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      4
+     ],
+     "spans": [
+      [
+       1,
+       5
+      ]
+     ],
+     "config_indices": [
+      56
+     ]
+    },
+    {
+     "text": "开启 MCP",
+     "token_ids": [
+      23,
+      64,
+      14,
+      80,
+      87,
+      59
+     ],
+     "config_tags": [
+      0,
+      0,
+      0,
+      1,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "spans": [
+      [
+       3,
+       6
+      ]
+     ],
+     "config_indices": [
+      132
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "DISABLE",
+     "config": "memory.enabled",
+     "value": "false",
+     "score": 0.7857621908187866
+    },
+    {
+     "action": "SET",
+     "config": "run_guard.guard.max_guard_retries",
+     "value": "3",
+     "score": 0.7519090175628662
+    },
+    {
+     "action": "ENABLE",
+     "config": "mcp.enabled",
+     "value": "true",
+     "score": 0.7854477763175964
+    }
+   ]
+  },
+  {
+   "text": "打开…接着关闭…顺便重启…另外重置…还有退出",
+   "clauses": [
+    "打开…",
+    "关闭…",
+    "重启…",
+    "重置…",
+    "退出"
+   ],
+   "detail": [
+    {
+     "text": "打开…",
+     "token_ids": [
+      79,
+      23,
+      1
+     ],
+     "config_tags": [
+      0,
+      0,
+      1
+     ],
+     "value_tags": [
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      0,
+      0
+     ],
+     "spans": [
+      [
+       2,
+       3
+      ]
+     ],
+     "config_indices": [
+      41
+     ]
+    },
+    {
+     "text": "关闭…",
+     "token_ids": [
+      30,
+      129,
+      1
+     ],
+     "config_tags": [
+      0,
+      0,
+      1
+     ],
+     "value_tags": [
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      3,
+      3,
+      3
+     ],
+     "spans": [
+      [
+       2,
+       3
+      ]
+     ],
+     "config_indices": [
+      36
+     ]
+    },
+    {
+     "text": "重启…",
+     "token_ids": [
+      103,
+      64,
+      1
+     ],
+     "config_tags": [
+      0,
+      0,
+      0
+     ],
+     "value_tags": [
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      2,
+      2
+     ],
+     "spans": [],
+     "config_indices": []
+    },
+    {
+     "text": "重置…",
+     "token_ids": [
+      103,
+      49,
+      1
+     ],
+     "config_tags": [
+      0,
+      0,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      5,
+      0,
+      2
+     ],
+     "spans": [],
+     "config_indices": []
+    },
+    {
+     "text": "退出",
+     "token_ids": [
+      318,
+      136
+     ],
+     "config_tags": [
+      1,
+      2
+     ],
+     "value_tags": [
+      0,
+      0
+     ],
+     "action_ids": [
+      0,
+      0
+     ],
+     "spans": [
+      [
+       0,
+       2
+      ]
+     ],
+     "config_indices": [
+      22
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "OPEN",
+     "config": "tools",
+     "value": "",
+     "score": 0.42893844842910767
+    },
+    {
+     "action": "DISABLE",
+     "config": "approval.review_model",
+     "value": "false",
+     "score": 0.24943526089191437
+    },
+    {
+     "action": "OPEN",
+     "config": "image_gen.output_format",
+     "value": "",
+     "score": 0.5274375677108765
+    }
+   ]
+  },
+  {
+   "text": "把 很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述 的超时改成 30",
+   "clauses": [
+    "把 很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述 的超时改成 30"
+   ],
+   "detail": [
+    {
+     "text": "把 很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述很长的描述 的超时改成 30",
+     "token_ids": [
+      9,
+      14,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1,
+      1,
+      1,
+      115,
+      21,
+      1
+     ],
+     "config_tags": [
+      0,
+      1,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+     ],
+     "value_tags": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "action_ids": [
+      2,
+      0,
+      2,
+      2,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+     ],
+     "spans": [
+      [
+       1,
+       96
+      ]
+     ],
+     "config_indices": [
+      58
+     ]
+    }
+   ],
+   "commands": [
+    {
+     "action": "OPEN",
+     "config": "run_guard.continue",
+     "value": "",
+     "score": 0.3880032002925873
+    }
+   ]
+  },
+  {
+   "text": "",
+   "clauses": [],
+   "detail": [],
+   "commands": []
+  },
+  {
+   "text": "   ",
+   "clauses": [],
+   "detail": [],
+   "commands": []
+  },
+  {
+   "text": "，；。！？",
+   "clauses": [],
+   "detail": [],
+   "commands": []
+  },
+  {
+   "text": "你好",
+   "clauses": [
+    "你好"
+   ],
+   "detail": [
+    {
+     "text": "你好",
+     "token_ids": [
+      1,
+      1
+     ],
+     "config_tags": [
+      0,
+      2
+     ],
+     "value_tags": [
+      0,
+      0
+     ],
+     "action_ids": [
+      0,
+      0
+     ],
+     "spans": [],
+     "config_indices": []
+    }
+   ],
+   "commands": []
+  }
+ ],
+ "prepare": [
+  {
+   "action": "OPEN",
+   "config": "memory",
+   "value": "",
+   "error": "“memory”是查看请求，不是修改请求。"
+  },
+  {
+   "action": "TOGGLE",
+   "config": "memory.enabled",
+   "value": "",
+   "error": "暂不支持“TOGGLE”操作：memory.enabled"
+  },
+  {
+   "action": "RESET",
+   "config": "memory.enabled",
+   "value": "",
+   "error": "暂不支持“RESET”操作：memory.enabled"
+  },
+  {
+   "action": "ENABLE",
+   "config": "memory",
+   "value": "",
+   "coerced": true
+  },
+  {
+   "action": "ENABLE",
+   "config": "memory.enabled",
+   "value": "",
+   "coerced": true
+  },
+  {
+   "action": "DISABLE",
+   "config": "memory.enabled",
+   "value": "",
+   "coerced": false
+  },
+  {
+   "action": "SET",
+   "config": "memory.enabled",
+   "value": "开",
+   "coerced": true
+  },
+  {
+   "action": "SET",
+   "config": "memory.enabled",
+   "value": "关闭",
+   "coerced": false
+  },
+  {
+   "action": "SET",
+   "config": "memory.enabled",
+   "value": "maybe",
+   "error": "memory.enabled 需要布尔值，收到：maybe"
+  },
+  {
+   "action": "SET",
+   "config": "memory.enabled",
+   "value": " True ",
+   "coerced": true
+  },
+  {
+   "action": "SET",
+   "config": "version",
+   "value": "60",
+   "coerced": 60
+  },
+  {
+   "action": "SET",
+   "config": "version",
+   "value": "-3",
+   "coerced": -3
+  },
+  {
+   "action": "SET",
+   "config": "version",
+   "value": "abc",
+   "error": "version 需要 int，收到：abc"
+  },
+  {
+   "action": "SET",
+   "config": "run_guard.guard.repeat_ratio",
+   "value": "0.25",
+   "coerced": 0.25
+  },
+  {
+   "action": "SET",
+   "config": "llm.active_model.source",
+   "value": "  value  ",
+   "coerced": "value"
+  },
+  {
+   "action": "SET",
+   "config": "vision.models",
+   "value": "a,b",
+   "error": "暂不支持直接修改复合配置：vision.models"
+  },
+  {
+   "action": "SET",
+   "config": "mcp.servers",
+   "value": "a=1",
+   "error": "暂不支持直接修改复合配置：mcp.servers"
+  },
+  {
+   "action": "SET",
+   "config": "not.a.real.key",
+   "value": "1",
+   "error": "不允许修改未知配置：not.a.real.key"
+  }
+ ],
+ "service": [
+  {
+   "text": "打开记忆功能",
+   "initial": null,
+   "error": "“memory”是查看请求，不是修改请求。",
+   "config_file": null,
+   "subagents_file": null
+  },
+  {
+   "text": "把记忆关掉",
+   "initial": null,
+   "changes": [
+    {
+     "path": "memory.enabled",
+     "value": false
+    }
+   ],
+   "commands": [
+    {
+     "action": "DISABLE",
+     "config": "memory.enabled",
+     "value": "false"
+    }
+   ],
+   "config_file": "[memory]\nenabled = false\n",
+   "subagents_file": null
+  },
+  {
+   "text": "开启子代理",
+   "initial": null,
+   "changes": [
+    {
+     "path": "subagents.enabled",
+     "value": true
+    }
+   ],
+   "commands": [
+    {
+     "action": "ENABLE",
+     "config": "subagents.enabled",
+     "value": "true"
+    }
+   ],
+   "config_file": null,
+   "subagents_file": "[subagents]\nenabled = true\n"
+  },
+  {
+   "text": "把请求超时设为 60 秒",
+   "initial": "llm.defaults.request_timeout_seconds = 5\n",
+   "changes": [
+    {
+     "path": "llm.defaults.request_timeout_seconds",
+     "value": 60
+    }
+   ],
+   "commands": [
+    {
+     "action": "SET",
+     "config": "llm.defaults.request_timeout_seconds",
+     "value": "60"
+    }
+   ],
+   "config_file": "[llm.defaults]\nrequest_timeout_seconds = 60\n",
+   "subagents_file": null
+  },
+  {
+   "text": "显示思考过程",
+   "initial": null,
+   "error": "ui.show_thinking 需要布尔值，收到：",
+   "config_file": null,
+   "subagents_file": null
+  },
+  {
+   "text": "修改模型名称为 gpt-5",
+   "initial": null,
+   "changes": [
+    {
+     "path": "llm.active_model",
+     "value": "gpt-5"
+    },
+    {
+     "path": "image_gen.model",
+     "value": ""
+    }
+   ],
+   "commands": [
+    {
+     "action": "SET",
+     "config": "llm.active_model",
+     "value": "gpt-5"
+    },
+    {
+     "action": "SET",
+     "config": "image_gen.model",
+     "value": ""
+    }
+   ],
+   "config_file": "[llm]\nactive_model = \"gpt-5\"\n\n[image_gen]\nmodel = \"\"\n",
+   "subagents_file": null
+  },
+  {
+   "text": "关闭消息脱敏",
+   "initial": null,
+   "changes": [
+    {
+     "path": "desensitization.enabled",
+     "value": false
+    }
+   ],
+   "commands": [
+    {
+     "action": "DISABLE",
+     "config": "desensitization.enabled",
+     "value": "false"
+    }
+   ],
+   "config_file": "[desensitization]\nenabled = false\n",
+   "subagents_file": null
+  },
+  {
+   "text": "打开 TTS 语音合成，然后关闭思考显示",
+   "initial": null,
+   "error": "“tts”是查看请求，不是修改请求。",
+   "config_file": null,
+   "subagents_file": null
+  },
+  {
+   "text": "你好",
+   "initial": null,
+   "error": "没有识别到可修改的配置。",
+   "config_file": null,
+   "subagents_file": null
+  },
+  {
+   "text": "把子代理的 max_turns 改成 12",
+   "initial": null,
+   "changes": [
+    {
+     "path": "context_compaction.recent_turns",
+     "value": 12
+    }
+   ],
+   "commands": [
+    {
+     "action": "SET",
+     "config": "context_compaction.recent_turns",
+     "value": "12"
+    }
+   ],
+   "config_file": "[context_compaction]\nrecent_turns = 12\n",
+   "subagents_file": null
+  }
+ ]
+}

@@ -9,7 +9,11 @@ license.workspace = true
 [dependencies]
 base64 = "0.23"
 chrono = { workspace = true }
+# 自动启动监督器要读连接器配置（`config.toml` + 环境变量）并复用工作区层的
+# 连接器单例锁与进程树回收。
+omnicrawl-config = { path = "../omnicrawl-config" }
 omnicrawl-session = { path = "../omnicrawl-session" }
+omnicrawl-workspace = { path = "../omnicrawl-workspace" }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 sha2 = { workspace = true }
 webpki-roots = "1"

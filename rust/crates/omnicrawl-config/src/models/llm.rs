@@ -75,6 +75,43 @@ pub struct LlmConfig {
     pub provider_options: Table,
 }
 
+/// JSON 对象 → `provider_options` 的 TOML 表。
+///
+/// `provider_options` 在配置文件里是 TOML 表，而界面与协议交换的是 JSON；
+/// 界面要把填好的值写回配置、或按 JSON 形状构造一份表来做等价比对时，用这里
+/// 做一次平移，避免每一处各写一遍类型映射（日期没有 JSON 对应形状，落成字符串）。
+pub fn provider_options_from_json(value: &serde_json::Value) -> Table {
+    let serde_json::Value::Object(entries) = value else {
+        return Table::new();
+    };
+    entries
+        .iter()
+        .map(|(key, entry)| (key.clone(), json_to_toml(entry)))
+        .collect()
+}
+
+fn json_to_toml(value: &serde_json::Value) -> toml::Value {
+    match value {
+        serde_json::Value::Null => toml::Value::String(String::new()),
+        serde_json::Value::Bool(flag) => toml::Value::Boolean(*flag),
+        serde_json::Value::Number(number) => match number.as_i64() {
+            Some(integer) => toml::Value::Integer(integer),
+            None => toml::Value::Float(number.as_f64().unwrap_or(0.0)),
+        },
+        serde_json::Value::String(text) => toml::Value::String(text.clone()),
+        serde_json::Value::Array(items) => {
+            toml::Value::Array(items.iter().map(json_to_toml).collect())
+        }
+        serde_json::Value::Object(entries) => {
+            let mut nested = Table::new();
+            for (key, entry) in entries {
+                nested.insert(key.clone(), json_to_toml(entry));
+            }
+            toml::Value::Table(nested)
+        }
+    }
+}
+
 impl LlmConfig {
     /// Python dataclass 的默认值：凭据相关的三项从环境取，其余为常量。
     pub fn with_environment(env: &ConfigEnvironment) -> Self {

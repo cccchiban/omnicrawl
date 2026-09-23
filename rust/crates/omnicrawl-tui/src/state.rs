@@ -3,19 +3,32 @@
 //! 所有状态变化都发生在主线程，事件来源只有两处：内核帧（[`AppState::apply`]）与
 //! 用户输入（输入框与面板）。渲染只读，不修改状态。
 
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use omnicrawl_commands::CommandOption;
 use omnicrawl_core::AgentLoopObservation;
 use omnicrawl_ipc::{HostEvent, Id};
 
 use crate::args::ApprovalMode;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
+use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
+use crate::ui::fullscreen::rendering::logo_anim::LogoAnimation;
+use crate::ui::fullscreen::rendering::widgets::SubAgentProgressTree;
+use crate::ui::fullscreen::status::indicators as queue;
 
 /// 相邻增量间隔超过这个时长视为待机（工具执行、模型停顿），不计入输出时长。
 const IDLE_GAP: Duration = Duration::from_secs(2);
 
 /// 输入框可见行数上限：超过后在编辑器内滚动。
 pub const COMPOSER_MAX_LINES: usize = 5;
+
+/// 生成期间 FIFO 排队预览的可见条数上限与摘要长度上限。
+///
+/// 直接复用对映层常量，不另立一份：预览行数与 HUD 的 `QUEUE` 段读的是同一组值。
+pub use crate::ui::fullscreen::status::indicators::{
+    QUEUE_PREVIEW_MAX_ROWS, QUEUE_PREVIEW_SUMMARY_LIMIT,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -43,6 +56,9 @@ pub enum Record {
     Assistant(String),
     Tool(ToolCard),
     Notice(String),
+    /// 一个 SubAgent 批次的进度树：同批次的任务事件在第 `i` 条记录上原地更新
+    /// （对映 Python 把 `SubAgentProgressTree` 挂进消息区、后续事件复用同一组件）。
+    SubagentTree(SubAgentProgressTree),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,10 +127,16 @@ pub struct Telemetry {
 }
 
 /// 单行起步、按显示宽度软折行的输入框；最多显示 [`COMPOSER_MAX_LINES`] 行。
+///
+/// 输入框自己带着斜杠命令菜单与候选表：菜单跟着文本变化刷新（对映 Textual 的
+/// `on_text_area_changed` → `_refresh_command_menu`），因此不必在每个改动点手动
+/// 同步——漏掉一处就会让菜单与实际输入脱节。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Composer {
     text: String,
     cursor: usize,
+    commands: Vec<CommandOption>,
+    menu: CommandMenu,
 }
 
 impl Composer {
@@ -122,16 +144,55 @@ impl Composer {
         self.text.trim().is_empty()
     }
 
+    /// 当前全文（集成测试与命令分派核对用）。
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.refresh_menu();
+    }
+
+    /// 用给定文本替换全文，并把光标放到末尾（撤回排队消息、菜单补全时用）。
+    pub fn set_text(&mut self, text: &str) {
+        self.text = text.to_string();
+        self.cursor = self.text.chars().count();
+        self.refresh_menu();
     }
 
     /// 取走内容并清空；提交时用。
     pub fn take(&mut self) -> String {
         let text = std::mem::take(&mut self.text);
         self.cursor = 0;
+        self.refresh_menu();
         text
+    }
+
+    /// 装载命令菜单候选表（统一命令源）；运行期 Skill 上下线时由宿主重装。
+    pub fn set_commands(&mut self, commands: Vec<CommandOption>) {
+        self.commands = commands;
+        self.refresh_menu();
+    }
+
+    pub fn commands(&self) -> &[CommandOption] {
+        &self.commands
+    }
+
+    /// 斜杠命令菜单状态（渲染与高度预算读它）。
+    pub fn menu(&self) -> &CommandMenu {
+        &self.menu
+    }
+
+    /// 把菜单选择键交给菜单；完整命令时返回 [`MenuAction::Passthrough`]（放行提交）。
+    pub fn menu_handle_key(&mut self, key: MenuKey) -> MenuAction {
+        self.menu.handle_key(key, &self.text)
+    }
+
+    /// 按当前文本重新筛选候选（对映 `on_text_area_changed` 的刷新时机）。
+    fn refresh_menu(&mut self) {
+        self.menu.refresh(&self.text, &self.commands);
     }
 
     pub fn insert(&mut self, text: &str) {
@@ -143,6 +204,7 @@ impl Composer {
         chars.splice(at..at, inserted);
         self.text = chars.into_iter().collect();
         self.cursor = at + count;
+        self.refresh_menu();
     }
 
     pub fn newline(&mut self) {
@@ -158,6 +220,7 @@ impl Composer {
         chars.remove(at - 1);
         self.text = chars.into_iter().collect();
         self.cursor = at - 1;
+        self.refresh_menu();
     }
 
     pub fn delete(&mut self) {
@@ -167,6 +230,7 @@ impl Composer {
         }
         chars.remove(self.cursor);
         self.text = chars.into_iter().collect();
+        self.refresh_menu();
     }
 
     pub fn move_left(&mut self) {
@@ -275,8 +339,25 @@ pub struct AppState {
     pub paused: bool,
     pub turn: TurnState,
     pub telemetry: Telemetry,
+    /// 已启用的 MCP Server 数量（HUD 的 MCP 段）。
+    pub mcp_servers: u64,
     /// 本回合开始时刻；状态行的 spinner 按它推进。
     pub turn_started: Option<Instant>,
+    /// 是否在消息流里显示思考段（`ui.show_thinking`，由设置面板的「思考显示」页更新）。
+    pub show_thinking: bool,
+    /// 空会话首屏的欢迎 Logo：未收到任何记录时展示（对映 Python 的 `#welcome-logo`
+    /// 静态块，以及只在首次挂载播放一次的入场动画）。
+    pub logo: LogoAnimation,
+    /// 生成期间按 Enter 排队的消息（FIFO）。回合结束后按顺序自动提交，
+    /// 避免同一进程里出现重叠的回合 worker（对映 Python 的 `_pending_inputs`）。
+    pub pending_inputs: VecDeque<String>,
+    /// 排队预览是否处于展开态（超出可见上限时才可切换）。
+    pub pending_queue_expanded: bool,
+    /// 被点击展开正文的工具卡（按 `call_id`），对映 Python `ToolDisclosure._expanded`。
+    pub expanded_tools: HashSet<String>,
+    /// 被点击展开的思考段（按记录下标），对映 Python `ReasoningDisclosure._expanded`。
+    /// 下标随记录清空/回滚而变，展开态在那种情况下自然失效（服务端不会回填）。
+    pub expanded_reasoning: HashSet<usize>,
     batch: Option<host::PendingBatch>,
 }
 
@@ -295,7 +376,15 @@ impl AppState {
             paused: false,
             turn: TurnState::Idle,
             telemetry: Telemetry::default(),
+            mcp_servers: 0,
             turn_started: None,
+            // 缺省显示思考（与 Python 的 `ui.show_thinking` 缺省一致），启动期由宿主按配置覆盖。
+            show_thinking: true,
+            logo: LogoAnimation::new(),
+            pending_inputs: VecDeque::new(),
+            pending_queue_expanded: false,
+            expanded_tools: HashSet::new(),
+            expanded_reasoning: HashSet::new(),
             batch: None,
         }
     }
@@ -325,6 +414,103 @@ impl AppState {
             return None;
         }
         Some(self.composer.take())
+    }
+
+    /// 生成期间按 Enter：把输入排进 FIFO 队列（对映 Python `_pending_inputs.append`）。
+    pub fn queue_pending(&mut self, text: String) {
+        self.pending_inputs.push_back(text);
+        self.sync_queue_expanded();
+    }
+
+    /// 撤回第 `index` 条排队消息并回填输入框；返回是否真的撤回。
+    ///
+    /// 守卫与 Python `_withdraw_pending_input` 一致：只在回合进行中、索引有效、
+    /// 且当前没有待回答的提问（question / 确认）时执行——否则回填的内容会被
+    /// 提问模式吞掉。撤回只回填、不自动发送，用户改完再按 Enter。
+    pub fn withdraw_pending(&mut self, index: usize) -> bool {
+        if !self.turn.is_running() || index >= self.pending_inputs.len() {
+            return false;
+        }
+        if self.waiting().is_some() {
+            return false;
+        }
+        let Some(text) = self.pending_inputs.remove(index) else {
+            return false;
+        };
+        self.composer.set_text(&text);
+        self.sync_queue_expanded();
+        true
+    }
+
+    /// 展开/收起排队预览中被折叠的条目；不超过可见上限时不动作。
+    pub fn toggle_queue_expanded(&mut self) {
+        if !queue::can_toggle_queue_expanded(self.pending_inputs.len(), QUEUE_PREVIEW_MAX_ROWS) {
+            return;
+        }
+        self.pending_queue_expanded = !self.pending_queue_expanded;
+    }
+
+    /// 队列缩回可见上限内时退出展开态，避免残留无效的展开/收起行。
+    fn sync_queue_expanded(&mut self) {
+        if self.pending_inputs.len() <= QUEUE_PREVIEW_MAX_ROWS {
+            self.pending_queue_expanded = false;
+        }
+    }
+
+    /// 取队首消息准备提交；回合进行中时不取（对映 Python 的排空循环守卫）。
+    ///
+    /// 模态页（设置面板）是否放行由调用方判断，与 Python 的
+    /// `len(self.screen_stack) == 1` 守卫同义。
+    pub fn take_next_pending(&mut self) -> Option<String> {
+        if self.turn.is_running() {
+            return None;
+        }
+        let text = self.pending_inputs.pop_front()?;
+        self.sync_queue_expanded();
+        Some(text)
+    }
+
+    /// 丢开全部排队消息（退出前收尾，对映 Python `_pending_inputs.clear()`）。
+    pub fn clear_pending(&mut self) {
+        self.pending_inputs.clear();
+        self.pending_queue_expanded = false;
+    }
+
+    /// 展开一张工具卡的完整正文；提示行点击触发。
+    pub fn expand_tool(&mut self, call_id: &str) {
+        if call_id.is_empty() {
+            return;
+        }
+        self.expanded_tools.insert(call_id.to_string());
+    }
+
+    /// 点开着的工具卡收起；返回新状态（点击卡片其余部分触发）。
+    pub fn toggle_tool_expanded(&mut self, call_id: &str) -> bool {
+        if call_id.is_empty() {
+            return false;
+        }
+        if self.expanded_tools.remove(call_id) {
+            return false;
+        }
+        self.expanded_tools.insert(call_id.to_string());
+        true
+    }
+
+    pub fn is_tool_expanded(&self, call_id: &str) -> bool {
+        self.expanded_tools.contains(call_id)
+    }
+
+    /// 点击思考段：在折叠与展开之间切换；返回切换后的展开态。
+    pub fn toggle_reasoning_expanded(&mut self, index: usize) -> bool {
+        if self.expanded_reasoning.remove(&index) {
+            return false;
+        }
+        self.expanded_reasoning.insert(index);
+        true
+    }
+
+    pub fn is_reasoning_expanded(&self, index: usize) -> bool {
+        self.expanded_reasoning.contains(&index)
     }
 
     /// 内核事件 → 消息流。
@@ -373,8 +559,7 @@ impl AppState {
                 }
             }
             HostEvent::SubagentEvent(payload) => {
-                self.records
-                    .push(Record::Notice(format!("并行子任务：{}", payload.name)));
+                self.apply_subagent_event(&payload.name, &payload.payload);
             }
             HostEvent::TodoUpdate(payload) => {
                 if let Some(items) = payload.todos.as_array() {
@@ -394,6 +579,100 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// 追加一条系统消息；不改动回合状态。
+    pub fn notice(&mut self, message: String) {
+        self.records.push(Record::Notice(message));
+    }
+
+    /// 用内核回给的会话历史重建对话视图（`/resume` 与 `/undo` 后的重放）。
+    ///
+    /// 只投影 user/assistant 的**文本**消息：工具卡、推理段、通知与子任务进度树属于
+    /// 「本进程这次运行」的观感，转录里没有它们的等价物，因此重放后它们自然消失——
+    /// 这正是 `/undo` 要的效果（被撤回的消息与工具卡不能留着）。内容是多模态数组或
+    /// 非字符串的消息跳过，不把 JSON 塞进消息流。
+    pub fn replay_history(&mut self, history: &[serde_json::Value]) {
+        self.records.clear();
+        for message in history {
+            let role = message
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let Some(content) = message.get("content").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let content = content.trim();
+            if content.is_empty() {
+                continue;
+            }
+            match role {
+                "user" => self.records.push(Record::User(content.to_string())),
+                "assistant" => self.records.push(Record::Assistant(content.to_string())),
+                _ => {}
+            }
+        }
+        self.scroll_to_bottom();
+    }
+
+    /// 子任务事件 → 进度树：按 `batch_id` 找树，没有就新开一棵并挂到消息流末尾。
+    ///
+    /// 对映 Python `_handle_subagent_event`：只处理任务状态类事件（子代理对话、工具与
+    /// 文本事件不进树），状态无法识别时同样忽略。载荷字段缺失时按 Python 的 `or` 口径
+    /// 回落（`task_id` → `task`，`batch_id` → `batch-<task_id>`，`description` → `task_id`）。
+    fn apply_subagent_event(&mut self, name: &str, payload: &serde_json::Value) {
+        let Some(status) = subagent_status_for_event(name) else {
+            return;
+        };
+        let task_id = payload_text(payload, "task_id").unwrap_or("task");
+        let batch_id = payload_text(payload, "batch_id")
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("batch-{task_id}"));
+        let agent_type = payload_text(payload, "agent_type").unwrap_or("subagent");
+        let description = payload_text(payload, "description");
+        let tree = match self
+            .records
+            .iter_mut()
+            .rev()
+            .find_map(|record| match record {
+                Record::SubagentTree(tree) if tree.batch_id == batch_id => Some(tree),
+                _ => None,
+            }) {
+            Some(tree) => tree,
+            None => {
+                self.records
+                    .push(Record::SubagentTree(SubAgentProgressTree::new(&batch_id)));
+                match self.records.last_mut() {
+                    Some(Record::SubagentTree(tree)) => tree,
+                    // 刚压入的记录类型不会变；这里只作为不可能路径的兜底。
+                    _ => return,
+                }
+            }
+        };
+        tree.update_task(
+            task_id,
+            agent_type,
+            description.unwrap_or(task_id),
+            status,
+            None,
+        );
+    }
+
+    /// 推进仍活跃的进度树的运行耗时（对映 Python 的耗时 tick）：终态树不再重绘。
+    ///
+    /// 返回是否还有活跃树需要继续 tick；耗时跨过整秒前可见文本不变，而渲染结果
+    /// 相同的刷新由 [`SubAgentProgressTree::refresh_elapsed`] 内部自行跳过重绘。
+    pub fn refresh_subagent_trees(&mut self) -> bool {
+        let mut active = false;
+        for record in self.records.iter_mut() {
+            if let Record::SubagentTree(tree) = record {
+                if tree.is_active() {
+                    active = true;
+                    tree.refresh_elapsed(None);
+                }
+            }
+        }
+        active
     }
 
     /// 回合失败或取消：状态复位并把原因写进消息流。
@@ -459,6 +738,63 @@ impl AppState {
         let step = step?;
         self.batch = Some(batch);
         Some(step)
+    }
+
+    /// 插件改写调用参数（`tool.call.before` 的 transform 结局）；无批次时返回 `false`。
+    pub fn rewrite_call_arguments(
+        &mut self,
+        index: usize,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        match self.batch.as_mut() {
+            Some(batch) => batch.rewrite_arguments(index, arguments),
+            None => false,
+        }
+    }
+
+    /// 插件守卫当前待决审批。
+    ///
+    /// `guard` 返回 `Ok(Some(arguments))` 表示插件改写了参数（回写完继续弹审批面板）；
+    /// `Ok(None)` 表示放行；`Err(reason)` 表示拒绝（写入插件给出的文案并推进批次，
+    /// 与 `decide_approval(false)` 的差别只在拒绝文案来源）。返回值 `Some(step)` 表示
+    /// 批次已被推进，调用方要接着按新步骤处理。
+    pub fn guard_pending_approval<F>(&mut self, guard: F) -> Option<host::BatchStep>
+    where
+        F: FnOnce(
+            &omnicrawl_core::ToolCall,
+        ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String>,
+    {
+        let mut batch = self.batch.take()?;
+        let current = match batch.current() {
+            Some((index, call)) if matches!(batch.waiting(), Some(host::Waiting::Approval(_))) => {
+                Some((index, call.clone()))
+            }
+            _ => None,
+        };
+        let Some((index, call)) = current else {
+            self.batch = Some(batch);
+            return None;
+        };
+        match guard(&call) {
+            Ok(Some(arguments)) => {
+                batch.rewrite_arguments(index, arguments);
+                self.batch = Some(batch);
+                None
+            }
+            Ok(None) => {
+                self.batch = Some(batch);
+                None
+            }
+            Err(reason) => {
+                batch.record_result(index, host::denied_with_reason(&reason), None);
+                let step = {
+                    let mut ctx = self.context();
+                    batch.decide(true, &mut ctx)
+                };
+                self.batch = Some(batch);
+                step
+            }
+        }
     }
 
     /// 执行层回填一个调用的结果；返回是否整批就绪。
@@ -544,6 +880,8 @@ impl AppState {
             approval: self.approval,
             todos: &mut self.todos,
             paused: &mut self.paused,
+            // TUI 侧没有宿主工具事实表可给：删除意图识别按无事实处理。
+            tools: None,
         }
     }
 
@@ -605,6 +943,29 @@ impl AppState {
 
 fn body_lines(output: &str) -> Vec<String> {
     output.lines().map(|line| line.to_string()).collect()
+}
+
+/// 子任务事件名 → 进度树状态；对映 Python `_handle_subagent_event` 的 `status_by_event`。
+///
+/// 表外事件（`subagent.tool.*`、`subagent.turn.text` 等子代理对话流）不进树。
+fn subagent_status_for_event(name: &str) -> Option<&'static str> {
+    match name {
+        "subagent.task.queued" => Some("queued"),
+        "subagent.task.started" | "subagent.task.running" => Some("running"),
+        "subagent.task.waiting_approval" => Some("waiting_approval"),
+        "subagent.task.completed" => Some("completed"),
+        "subagent.task.failed" => Some("failed"),
+        "subagent.task.cancelled" | "subagent.task.approval_cancelled" => Some("cancelled"),
+        _ => None,
+    }
+}
+
+/// 取非空字符串字段；缺失、类型不符或空串都按「未提供」处理（对映 Python 的 `x or 默认值`）。
+fn payload_text<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
 }
 
 /// Token 估算：CJK 字符按 1 token，其他字符按 4 字符 1 token。
@@ -944,6 +1305,128 @@ mod tests {
     }
 
     #[test]
+    fn subagent_events_fill_one_tree_per_batch() {
+        let mut state = state();
+        let now = Instant::now();
+        state.apply(
+            &subagent_event("subagent.task.queued", "t1", "batch-1"),
+            now,
+        );
+        state.apply(
+            &subagent_event("subagent.task.started", "t1", "batch-1"),
+            now,
+        );
+        state.apply(
+            &subagent_event("subagent.task.completed", "t1", "batch-1"),
+            now,
+        );
+        state.apply(
+            &subagent_event("subagent.task.running", "t2", "batch-2"),
+            now,
+        );
+
+        let trees: Vec<&SubAgentProgressTree> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::SubagentTree(tree) => Some(tree),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(trees.len(), 2, "每个 batch_id 一棵树：{:?}", state.records);
+        assert_eq!(trees[0].batch_id, "batch-1");
+        assert!(!trees[0].is_active(), "批次 1 的任务已收口");
+        assert!(trees[1].is_active(), "批次 2 仍是运行中");
+        let rendered = trees[0].render_text(None).plain();
+        assert!(rendered.contains("└─ ✓ "), "终态图标要落在树上：{rendered}");
+        assert!(rendered.contains("· 完成"), "{rendered}");
+        assert!(rendered.contains("1/1 完成"), "{rendered}");
+    }
+
+    #[test]
+    fn subagent_event_falls_back_to_defaults_and_ignores_other_events() {
+        let mut state = state();
+        let now = Instant::now();
+        // 子代理对话/工具事件不进树（对映 Python 的 status_by_event 表外分支）。
+        state.apply(
+            &subagent_event("subagent.tool.started", "t1", "batch-1"),
+            now,
+        );
+        assert!(!state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::SubagentTree(_))));
+
+        state.apply(
+            &HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
+                name: "subagent.task.queued".to_string(),
+                payload: json!({}),
+            }),
+            now,
+        );
+        match state.records.last() {
+            Some(Record::SubagentTree(tree)) => {
+                assert_eq!(tree.batch_id, "batch-task", "缺字段时回落 batch-<task_id>");
+                let plain = tree.render_text(None).plain();
+                assert!(plain.contains("└─ ○ task  subagent · 等待中"), "{plain}");
+            }
+            other => panic!("应当有一棵进度树，实际：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn terminal_subagent_task_is_not_reopened_by_late_events() {
+        let mut state = state();
+        let now = Instant::now();
+        state.apply(
+            &subagent_event("subagent.task.completed", "t1", "batch-1"),
+            now,
+        );
+        state.apply(
+            &subagent_event("subagent.task.running", "t1", "batch-1"),
+            now,
+        );
+        let tree = match state.records.last() {
+            Some(Record::SubagentTree(tree)) => tree,
+            other => panic!("应当有一棵进度树，实际：{other:?}"),
+        };
+        assert!(
+            tree.render_text(None).plain().contains("└─ ✓ "),
+            "迟到的活动事件不得把已完成节点改回运行中"
+        );
+    }
+
+    #[test]
+    fn active_subagent_trees_refresh_their_elapsed_time() {
+        let mut state = state();
+        state.apply(
+            &subagent_event("subagent.task.running", "t1", "batch-1"),
+            Instant::now(),
+        );
+        assert!(
+            state.refresh_subagent_trees(),
+            "运行中的树每次 tick 都要重算耗时"
+        );
+        state.apply(
+            &subagent_event("subagent.task.completed", "t1", "batch-1"),
+            Instant::now(),
+        );
+        assert!(!state.refresh_subagent_trees(), "终态树不再需要耗时 tick");
+    }
+
+    fn subagent_event(name: &str, task_id: &str, batch_id: &str) -> HostEvent {
+        HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
+            name: name.to_string(),
+            payload: json!({
+                "task_id": task_id,
+                "batch_id": batch_id,
+                "agent_type": "reviewer",
+                "description": format!("审查 {task_id}"),
+            }),
+        })
+    }
+
+    #[test]
     fn composer_edits_by_character_not_byte() {
         let mut composer = Composer::default();
         composer.insert("你好ab");
@@ -960,6 +1443,67 @@ mod tests {
         composer.move_end();
         composer.insert("\n第二行");
         assert_eq!(composer.text, "好a世b\n第二行");
+    }
+
+    #[test]
+    fn composer_menu_follows_text_and_answers_selection_keys() {
+        let mut composer = Composer::default();
+        composer.set_commands(crate::commands::command_options());
+        assert!(!composer.menu().is_open(), "空输入不弹菜单");
+
+        composer.insert("/set");
+        let names: Vec<&str> = composer
+            .menu()
+            .matches()
+            .iter()
+            .map(|option| option.command.as_str())
+            .collect();
+        assert_eq!(names, vec!["/settings"]);
+
+        // Tab 补全：菜单把插入文本交回调用方，自己不写输入框。
+        assert_eq!(
+            composer.menu_handle_key(MenuKey::Tab),
+            MenuAction::Complete {
+                insert: "/settings".to_string()
+            }
+        );
+        composer.set_text("/settings");
+        // 完整命令名：候选后面附上参数提示，Enter 放行提交。
+        let names: Vec<&str> = composer
+            .menu()
+            .matches()
+            .iter()
+            .map(|option| option.command.as_str())
+            .collect();
+        assert_eq!(names, vec!["/settings", "--chat"]);
+        assert_eq!(
+            composer.menu_handle_key(MenuKey::Enter),
+            MenuAction::Passthrough
+        );
+
+        // 输入不再是命令前缀（普通提问）：菜单立即收起。
+        composer.set_text("帮我看看这个报错");
+        assert!(!composer.menu().is_open());
+        assert_eq!(
+            composer.menu_handle_key(MenuKey::Down),
+            MenuAction::Passthrough,
+            "菜单收起时不能吃掉选择键"
+        );
+    }
+
+    #[test]
+    fn composer_menu_switches_to_parameter_candidates_after_a_space() {
+        let mut composer = Composer::default();
+        composer.set_commands(crate::commands::command_options());
+        composer.insert("/settings --");
+        let names: Vec<&str> = composer
+            .menu()
+            .matches()
+            .iter()
+            .map(|option| option.command.as_str())
+            .collect();
+        assert_eq!(names, vec!["--chat"]);
+        assert_eq!(composer.menu().matches()[0].insert, "/settings --chat");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //!    稳定序号索引保证同值同号，结果一致，代价只是重复扫描；
 //! ② 计数分成两层：周期计数在注册表里，屏蔽/还原计数在本层的 `stats` 里。
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use omnicrawl_protocol::{
     aggregate_stream_events, ModelReply, ModelStreamEvent, ReasoningDelta, TextDelta,
@@ -18,6 +18,8 @@ use omnicrawl_protocol::{
 
 use super::engine::{MaskContext, SensitiveMatcher};
 use super::gitleaks::{load_rules, GitleaksRule};
+use super::middleware::MessageMaskMemo;
+use super::plan_cache::{MaskPlanCache, PlanCacheStats};
 use super::rules::{build_enabled_rules, PatternRule};
 use super::stream::StreamRestorer;
 use super::{collect_placeholder_numbers, DesensitizationStats, SequenceRegistry};
@@ -79,6 +81,11 @@ pub struct DesensitizationRuntime {
     gitleaks_rules: Vec<GitleaksRule>,
     registry: Mutex<SequenceRegistry>,
     stats: Mutex<DesensitizationStats>,
+    /// 屏蔽计划缓存：按运行时实例持有，随运行时关闭清空（Python 的 `self._plan_cache`）。
+    plan_cache: Arc<MaskPlanCache>,
+    /// 逐消息屏蔽结果缓存：历史每轮全量重发，逐字未变的消息不必重跑引擎
+    /// （Python 的 `self._memo`）。
+    memo: MessageMaskMemo,
 }
 
 impl DesensitizationRuntime {
@@ -97,6 +104,8 @@ impl DesensitizationRuntime {
             matcher,
             registry: Mutex::new(SequenceRegistry::new()),
             stats: Mutex::new(DesensitizationStats::default()),
+            plan_cache: Arc::new(MaskPlanCache::default()),
+            memo: MessageMaskMemo::default(),
             options,
         }
     }
@@ -112,14 +121,31 @@ impl DesensitizationRuntime {
         Box::new(Self::new(runtime, options.clone()))
     }
 
-    /// 关闭：丢弃全部未注销序号（不落盘、不恢复），再交给调用方关闭内层。
+    /// 关闭：丢弃全部未注销序号与两处缓存（不落盘、不恢复），再交给调用方关闭内层。
     pub fn close(&self) {
+        self.memo.clear();
+        self.plan_cache.clear();
         lock(&self.registry).drop_all();
         *lock(&self.stats) = DesensitizationStats::default();
     }
 
     pub fn stats(&self) -> DesensitizationStats {
         lock(&self.stats).clone()
+    }
+
+    /// 屏蔽计划缓存（观测 / 测试用）。
+    pub fn plan_cache(&self) -> &MaskPlanCache {
+        &self.plan_cache
+    }
+
+    /// 计划缓存的计数与占用。
+    pub fn plan_cache_stats(&self) -> PlanCacheStats {
+        self.plan_cache.stats()
+    }
+
+    /// 逐消息屏蔽缓存的 (命中, 未命中) 计数（观测 / 测试用）。
+    pub fn memo_stats(&self) -> (u64, u64) {
+        self.memo.stats()
     }
 
     /// 一次回合：屏蔽 → 内层 → 还原 → 归并。
@@ -145,8 +171,12 @@ impl DesensitizationRuntime {
                 entropy_pure_digits: self.options.entropy_pure_digits,
                 pattern_rules: &self.rules,
                 gitleaks_rules: &self.gitleaks_rules,
+                plan_cache: Some(Arc::clone(&self.plan_cache)),
+                plan_builder: None,
             };
-            super::middleware::mask_messages(input.messages, &mut context)
+            // 与 Python 的 `_mask_message_cached` 路径一致：逐消息缓存命中即复用，
+            // 未命中才走引擎（引擎内部再走文本级的计划缓存）。
+            super::middleware::mask_messages_cached(input.messages, &mut context, Some(&self.memo))
         };
         // 请求里已经写好的占位符样式序号要登记为保留号，避免新值抢号。
         let request_texts = super::middleware::collect_request_texts(

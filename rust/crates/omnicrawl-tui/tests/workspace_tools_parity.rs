@@ -176,22 +176,28 @@ fn sampling_matches_python() {
 }
 
 #[test]
-fn unsupported_locators_are_documented_divergences() {
-    // Python 支持的 `function_name` 定位尚未搬入：本宿主返回明确错误码，
-    // 而不是静默按整文件读取返回错误内容。
-    for case in fixture()["unsupported_locators"]
-        .as_array()
-        .expect("定位用例")
-    {
-        let (paths, _root) = prepare_workspace("locators");
-        let error = read::read(&paths, &arguments(&case["arguments"]))
-            .expect_err("本宿主尚未实现 function_name 定位");
-        assert_eq!(error.code.as_deref(), Some("FS_UNSUPPORTED_FEATURE"));
-        assert!(
-            error.message.contains("尚未实现"),
-            "错误文案应说明缺口：{}",
-            error.message
-        );
+fn locator_cases_match_python() {
+    // `function_name` 定位与 Python 逐字对照：AST 路径与大括号扫描回退都在数据集里。
+    for case in fixture()["locators"].as_array().expect("定位用例") {
+        let (paths, root) = prepare_workspace("locators");
+        // 数据集自带每个用例的初始文件内容，避免用例间互相污染。
+        if let Some(files) = case["files"].as_object() {
+            for (name, content) in files {
+                std::fs::write(root.join(name), content.as_str().unwrap_or_default())
+                    .expect("写定位用例文件");
+            }
+        }
+        let label = case["label"].as_str().unwrap_or_default();
+        match read::read(&paths, &arguments(&case["arguments"])) {
+            Ok(output) => {
+                assert_eq!(case["ok"], true, "用例 {label}");
+                assert_eq!(output, case["output"], "用例 {label}");
+            }
+            Err(error) => {
+                assert_eq!(case["ok"], false, "用例 {label}");
+                assert_eq!(error.formatted(), case["output"], "用例 {label}");
+            }
+        }
     }
 }
 

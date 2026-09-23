@@ -1,0 +1,23 @@
+[package]
+name = "omnicrawl-entry"
+description = "OmniCrawl 统一启动入口：TUI、API、plugin CLI 与子进程生命周期"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "omnicrawl_entry"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omnicrawl-host"
+path = "src/main.rs"
+
+[dependencies]
+omnicrawl-config = { path = "../omnicrawl-config" }
+omnicrawl-connectors = { path = "../omnicrawl-connectors" }
+omnicrawl-extensions = { path = "../omnicrawl-extensions" }
+omnicrawl-workspace = { path = "../omnicrawl-workspace" }
+serde_json = { workspace = true }

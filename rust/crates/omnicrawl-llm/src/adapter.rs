@@ -88,7 +88,11 @@ pub enum DiscoveryStatus {
     Unsupported,
 }
 
-/// 发现到的一个模型（Python `DiscoveryModel` 的内核子集）。
+/// 发现到的一个模型（Python `DiscoveryModel`）。
+///
+/// Python 每条发现结果都带上该协议的保守能力（`conservative_*_capabilities()`）；
+/// 窗口值一律留 0，由调用方按 Profile 默认窗口回填（`model.context_window_tokens
+/// or profile.default_context_window_tokens`）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveryModel {
     pub profile_id: String,
@@ -96,6 +100,8 @@ pub struct DiscoveryModel {
     pub protocol: Protocol,
     pub model_id: String,
     pub display_name: String,
+    pub capabilities: ModelCapabilities,
+    pub context_window_tokens: i64,
 }
 
 /// 一次模型列表发现的结果（Python `DiscoveryResult`）。
@@ -207,6 +213,8 @@ pub fn discover_models(
             protocol,
             display_name: model_id.clone(),
             model_id,
+            capabilities: conservative_capabilities(protocol),
+            context_window_tokens: 0,
         })
         .collect();
 

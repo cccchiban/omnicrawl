@@ -4,7 +4,8 @@
 // 否则 npm install 会因平台不匹配直接 notsup 失败（工作区成员同样会被校验）。
 // os/cpu 与依赖只写进发布产物，这也是 esbuild 类项目的常见做法。
 //
-// 宿主载荷由 packages/cli/scripts/build-host.mjs 产出（PyInstaller one-dir），只能与构建机同架构：
+// 宿主载荷由 packages/cli/scripts/build-host.mjs 产出（cargo release 产物 + 模板资源，
+// 可 `--target` 指定三元组）；`--legacy-python` 才走旧的 PyInstaller 冻结路径。
 // hostKey 为 null 的目标（32 位 Windows、armv7 嵌入式）只带内核，启动器会退回协议直连。
 //
 // 用法：
@@ -242,10 +243,11 @@ function main() {
     )
     process.exit(1)
   }
+  // 宿主载荷与内核分开找：两者是不同 crate 的产物，缺少宿主的平台包只带内核。
   if (missingHosts.length && requireHost) {
     console.error(
       `\n发布门槛未通过：${missingHosts.join('、')} 没有宿主载荷。\n` +
-        '宿主载荷必须在该平台的原生 runner 上构建（见 .github/workflows/publish-npm.yml）。',
+        '先构建宿主载荷：node packages/cli/scripts/build-host.mjs（可加 --target <三元组>）。',
     )
     process.exit(1)
   }

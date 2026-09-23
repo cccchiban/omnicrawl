@@ -46,8 +46,9 @@ pub use history::{
 };
 pub use index::SessionIndexEntry;
 pub use locking::{
-    append_text_line, atomic_write_text, process_lock_for_root, DurableWritePolicy,
+    append_text_line, atomic_write_text, process_lock_for_root, try_lock_file, DurableWritePolicy,
     ProcessFileLock, DEFAULT_LOCK_POLL_SECONDS, DEFAULT_LOCK_TIMEOUT_SECONDS, LOCK_FILE_NAME,
+    LOCK_OWNER_LINE_PREFIX,
 };
 pub use memory::{
     body_of, dedupe_directories, dedupe_strings, format_memory_datetime, format_memory_markdown,
