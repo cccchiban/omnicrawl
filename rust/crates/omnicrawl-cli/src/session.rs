@@ -23,7 +23,7 @@ use omnicrawl_config::features::desensitization::{
 use omnicrawl_controllers::context_compaction::TokenUsageSample;
 use omnicrawl_controllers::context_compaction::RECALL_SESSION_EVIDENCE_TOOL_NAME;
 use omnicrawl_controllers::shared::CONTEXT_OVERFLOW_ERROR_MARKERS;
-use omnicrawl_controllers::tool_args::TODO_TOOL_NAME;
+use omnicrawl_controllers::tool_args::{public_tool_arguments, TODO_TOOL_NAME};
 use omnicrawl_controllers::tool_impl::{project_todos, TodoItem};
 use omnicrawl_controllers::turn::continuation::{
     self, ContinueConfig, ContinueStep, LastReplyFacts,
@@ -1202,6 +1202,7 @@ fn spawn_subagent_batch(
                 &sender,
                 cancel,
                 None,
+                false,
             ) {
                 Ok(execution) => runtime
                     .completed_result(task, &execution)
@@ -1258,6 +1259,7 @@ fn spawn_subagent_batch(
 }
 
 /// 后台任务的子回合：模型请求直连，工具批次经通道交给主循环。
+#[allow(clippy::too_many_arguments)]
 fn run_background_task(
     runtime: &SubAgentRuntime,
     model_config: &KernelModelConfig,
@@ -1266,17 +1268,25 @@ fn run_background_task(
     sender: &mpsc::Sender<BackgroundRequest>,
     cancel: &CancelToken,
     workspace_root: Option<&str>,
+    stream_conversation: bool,
 ) -> Result<SubAgentExecution, (String, String)> {
     let mut messages = runtime.task_messages(task, fork_messages);
     let mut model = BackgroundModelPort {
         config: runtime.child_model_config(model_config, task),
         sender: sender.clone(),
         cancel: cancel.clone(),
+        task_id: task.task_id.clone(),
+        batch_id: task.batch_id.clone(),
+        agent_type: task.agent_type.clone(),
+        stream: stream_conversation,
     };
     let mut tools = BackgroundTools {
         sender: sender.clone(),
         turn_id: task.task_id.clone(),
         workspace_root: workspace_root.map(str::to_string),
+        batch_id: task.batch_id.clone(),
+        agent_type: task.agent_type.clone(),
+        stream: stream_conversation,
     };
     let runner = AgentLoopRunner::new(Box::new(SystemClock::new()));
     let cancel_for_check = cancel.clone();
@@ -1522,6 +1532,7 @@ fn run_task_in_isolation(
         sender,
         cancel,
         root.as_deref(),
+        keep_full_text,
     ) {
         Ok(execution) => {
             let mut result = runtime.completed_result(task, &execution);
@@ -3334,6 +3345,23 @@ struct BackgroundTools {
     turn_id: String,
     /// 隔离根：worktree 子任务的工具批次要在自己的工作树里执行。
     workspace_root: Option<String>,
+    /// 子代理对话流：批次号、角色名（与 `subagent.tool.*` 事件同一身份）。
+    batch_id: String,
+    agent_type: String,
+    /// 是否流式上报子代理对话（只有 `/review` 这类宿主入口开启）。
+    stream: bool,
+}
+
+impl BackgroundTools {
+    /// 子代理工具事件的身份字段（与 Python 的 `subagent.tool.*` 载荷同形）。
+    fn conversation_payload(&self, tool: &str) -> Value {
+        json!({
+            "task_id": self.turn_id,
+            "batch_id": self.batch_id,
+            "agent_type": self.agent_type,
+            "tool": tool,
+        })
+    }
 }
 
 impl ToolBatchHost for BackgroundTools {
@@ -3342,6 +3370,20 @@ impl ToolBatchHost for BackgroundTools {
         calls: &[ToolCall],
         _first_step: usize,
     ) -> Result<Vec<AgentLoopObservation>, LoopError> {
+        // 开始事件先发：宿主据此把工具卡挂进子代理会话面板。
+        if self.stream {
+            for call in calls {
+                let mut payload = self.conversation_payload(&call.name);
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert(
+                        "arguments".to_string(),
+                        public_tool_arguments(&call.name, &call.arguments),
+                    );
+                }
+                emit_background_event(&self.sender, "subagent.tool.started", payload);
+            }
+        }
+        let started = std::time::Instant::now();
         let (reply, receiver) = mpsc::sync_channel(1);
         self.sender
             .send(BackgroundRequest::ToolBatch {
@@ -3354,7 +3396,26 @@ impl ToolBatchHost for BackgroundTools {
                 LoopError::ToolBatch("内核主循环已停止，后台任务无法继续。".to_string())
             })?;
         match receiver.recv() {
-            Ok(Ok(observations)) => Ok(observations),
+            Ok(Ok(observations)) => {
+                let elapsed = started.elapsed().as_secs_f64();
+                if self.stream {
+                    for observation in &observations {
+                        let mut payload = self.conversation_payload(&observation.tool_call.name);
+                        if let Some(object) = payload.as_object_mut() {
+                            let output = if observation.result.full_output.is_empty() {
+                                observation.result.output.clone()
+                            } else {
+                                observation.result.full_output.clone()
+                            };
+                            object.insert("ok".to_string(), Value::Bool(observation.result.ok));
+                            object.insert("output".to_string(), Value::String(output));
+                            object.insert("duration_seconds".to_string(), json!(elapsed));
+                        }
+                        emit_background_event(&self.sender, "subagent.tool.completed", payload);
+                    }
+                }
+                Ok(observations)
+            }
             Ok(Err(detail)) => Err(LoopError::ToolBatch(detail)),
             Err(_) => Err(LoopError::ToolBatch(
                 "后台工具批次没有拿到结果。".to_string(),
@@ -3368,6 +3429,12 @@ struct BackgroundModelPort {
     config: KernelModelConfig,
     sender: mpsc::Sender<BackgroundRequest>,
     cancel: CancelToken,
+    /// 子代理对话流：任务号、批次号与角色名。
+    task_id: String,
+    batch_id: String,
+    agent_type: String,
+    /// 是否流式上报子代理对话（与工具端口同一开关）。
+    stream: bool,
 }
 
 impl ReplySource for BackgroundModelPort {
@@ -3400,6 +3467,19 @@ impl ReplySource for BackgroundModelPort {
         match runtime.run_turn(&input, &mut sink) {
             Ok(reply) => {
                 let reply = to_agent_reply(reply)?;
+                // 与 Python 同规则：只有带工具调用的过程性文本进子代理会话面板。
+                if self.stream && !reply.content.is_empty() && !reply.tool_calls.is_empty() {
+                    emit_background_event(
+                        &self.sender,
+                        "subagent.turn.text",
+                        json!({
+                            "task_id": self.task_id,
+                            "batch_id": self.batch_id,
+                            "agent_type": self.agent_type,
+                            "text": reply.content,
+                        }),
+                    );
+                }
                 self.notify_model_response(&reply);
                 Ok(reply)
             }

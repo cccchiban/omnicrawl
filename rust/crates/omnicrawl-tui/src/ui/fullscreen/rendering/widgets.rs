@@ -434,7 +434,7 @@ fn truthy(value: Option<&serde_json::Value>) -> bool {
 }
 
 /// 左侧 `│ ` 竖线 + 底部 `╰` 圆角转角包裹的子代理会话面板。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubAgentConversation {
     pub batch_id: String,
     pub agent_type: String,

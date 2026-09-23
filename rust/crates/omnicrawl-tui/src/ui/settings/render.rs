@@ -183,6 +183,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
     match state.pane() {
         Pane::Context => render_context(frame, body, state, focused),
         Pane::Tools => render_tools(frame, body, state, focused),
+        Pane::Mcp => render_mcp(frame, body, state, focused),
         Pane::Subagents => render_subagents(frame, body, state, focused),
         Pane::Vision => render_vision(frame, body, state, focused),
         Pane::Channels => render_channels(frame, body, state, focused),
@@ -585,6 +586,149 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
         state.pane_hint(),
         theme::rich_style(theme::ACCENT_WHITE),
     );
+}
+
+/// MCP 设置页：全局行 / Server 列表 / 编辑器三个子模式。
+fn render_mcp(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    if state.mcp_editor_title().is_some() {
+        render_mcp_editor(frame, area, state, focused);
+    } else if state.mcp_servers_view() {
+        render_mcp_servers(frame, area, state, focused);
+    } else {
+        render_mcp_globals(frame, area, state, focused);
+    }
+}
+
+/// 底部 4 行留给状态与提示（与工具页同款）。
+const MCP_TAIL_RESERVED: u16 = 4;
+
+fn render_mcp_tail(frame: &mut Frame, area: Rect, state: &SettingsState) {
+    let tail = Rect {
+        y: area.y + area.height.saturating_sub(MCP_TAIL_RESERVED),
+        height: MCP_TAIL_RESERVED.min(area.height),
+        ..area
+    };
+    render_pane_tail(
+        frame,
+        tail,
+        state.status(),
+        state.pane_hint(),
+        theme::rich_style(theme::ACCENT_WHITE),
+    );
+}
+
+fn render_mcp_globals(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let rows = state.mcp_rows();
+    let reserved = MCP_TAIL_RESERVED.min(area.height);
+    let list_height = area.height.saturating_sub(reserved) as usize;
+    let selected = rows.iter().position(|row| row.selected).unwrap_or(0);
+    let offset = window_offset(selected, rows.len(), list_height);
+    let list_area = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(1),
+        height: area.height.min(list_height as u16),
+        ..area
+    };
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(list_height)
+        .map(|(_, row)| {
+            let text = format!(
+                "{}{}：{}",
+                if row.selected { "› " } else { "  " },
+                row.label,
+                row.value
+            );
+            let style = if row.selected && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                theme::rich_style(theme::TEXT_SECONDARY)
+            };
+            Line::styled(fit(&text, list_area.width as usize), style)
+        })
+        .collect();
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
+    render_mcp_tail(frame, area, state);
+}
+
+fn render_mcp_servers(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let rows = state.mcp_server_rows();
+    let selected = state.mcp_server_selected();
+    let reserved = MCP_TAIL_RESERVED.min(area.height);
+    let list_height = area.height.saturating_sub(reserved) as usize;
+    let offset = window_offset(selected, rows.len().max(1), list_height);
+    let list_area = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(1),
+        height: area.height.min(list_height as u16),
+        ..area
+    };
+    let mut lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(list_height)
+        .map(|(index, row)| {
+            let text = format!(
+                "{}{}：{} · {} · {}",
+                if index == selected { "› " } else { "  " },
+                row.name,
+                if row.enabled { "启用" } else { "禁用" },
+                row.transport,
+                row.risk_level
+            );
+            let style = if index == selected && focused {
+                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                theme::rich_style(theme::TEXT_SECONDARY)
+            };
+            Line::styled(fit(&text, list_area.width as usize), style)
+        })
+        .collect();
+    if rows.is_empty() {
+        lines.push(Line::styled(
+            fit("（暂无 Server，按 A 添加）", list_area.width as usize),
+            theme::rich_style(theme::TEXT_MUTED),
+        ));
+    }
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
+    render_mcp_tail(frame, area, state);
+}
+
+fn render_mcp_editor(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let reserved = MCP_TAIL_RESERVED.min(area.height);
+    let list_height = area.height.saturating_sub(reserved) as usize;
+    let list_area = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(1),
+        height: area.height.min(list_height as u16),
+        ..area
+    };
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(title) = state.mcp_editor_title() {
+        lines.push(Line::styled(
+            fit(&title, list_area.width as usize),
+            theme::rich_style(theme::ACCENT_WHITE).add_modifier(Modifier::BOLD),
+        ));
+    }
+    for row in state.mcp_editor_rows() {
+        let text = format!(
+            "{}{}：{}",
+            if row.focused { "› " } else { "  " },
+            row.label,
+            row.value
+        );
+        let style = if row.focused && focused {
+            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
+        } else {
+            theme::rich_style(theme::TEXT_SECONDARY)
+        };
+        lines.push(Line::styled(fit(&text, list_area.width as usize), style));
+    }
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
+    render_mcp_tail(frame, area, state);
 }
 
 /// 视觉设置页：模型原生视觉行 + 代理开关行 + 故障转移列表 + 状态与提示。

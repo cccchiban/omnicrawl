@@ -37,6 +37,8 @@ pub enum Pane {
     Context,
     /// 工具开关：逐工具启用/关闭。
     Tools,
+    /// MCP 设置：全局策略 + Server 列表 / 编辑器。
+    Mcp,
     /// 子任务设置：分组行（总开关 + 高级参数），选中即改。
     Subagents,
     /// 视觉：模型原生视觉三态 + 代理开关 + 故障转移列表。
@@ -66,6 +68,7 @@ impl Pane {
             "image_gen" => Self::Form(FormKind::ImageGen),
             "context" => Self::Context,
             "tools" => Self::Tools,
+            "mcp" => Self::Mcp,
             "subagents" => Self::Subagents,
             "vision" => Self::Vision,
             "reasoning" => Self::Choice(ChoiceKind::Reasoning),
@@ -164,6 +167,94 @@ pub enum SubagentChange {
     Enabled(bool),
     /// 某个高级参数的档位（整数；配置侧按该键的类型写成整数或浮点）。
     Advanced { key: String, value: i64 },
+}
+
+/// MCP 设置页的一个 Server 行（对映 Python 的 `MCPServerListPane` 行）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerRow {
+    pub name: String,
+    pub enabled: bool,
+    pub transport: String,
+    pub risk_level: String,
+}
+
+/// MCP 设置页的初始值（全局开关/策略 + Server 列表）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpSettingsValues {
+    pub enabled: bool,
+    pub allow_external_network_tools: bool,
+    pub require_confirmation_for_write: bool,
+    pub require_confirmation_for_command: bool,
+    pub audit_log_enabled: bool,
+    pub timeout_seconds: i64,
+    pub servers: Vec<McpServerRow>,
+}
+
+impl Default for McpSettingsValues {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_external_network_tools: false,
+            require_confirmation_for_write: true,
+            require_confirmation_for_command: true,
+            audit_log_enabled: true,
+            timeout_seconds: 30,
+            servers: Vec::new(),
+        }
+    }
+}
+
+/// 一个 MCP Server 的编辑草稿（新增或修改）。
+///
+/// `env` / `headers` 在界面上是大小写敏感的 `KEY=VALUE` 列表（分号分隔），
+/// 原样交给宿主解析；`original_name` 非空表示这是对已有条目的重命名。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct McpServerDraft {
+    pub name: String,
+    pub enabled: bool,
+    pub transport: String,
+    pub command: String,
+    pub args: String,
+    pub url: String,
+    pub timeout_seconds: i64,
+    pub risk_level: String,
+    pub env: String,
+    pub headers: String,
+    pub original_name: Option<String>,
+}
+
+impl McpServerDraft {
+    /// 从已有行建草稿（`原值` 只能拿得到展示字段，其余保持空/默认，宿主保存时补全）。
+    pub fn from_row(row: &McpServerRow) -> Self {
+        Self {
+            name: row.name.clone(),
+            enabled: row.enabled,
+            transport: row.transport.clone(),
+            risk_level: row.risk_level.clone(),
+            original_name: Some(row.name.clone()),
+            ..Self::default()
+        }
+    }
+}
+
+/// MCP 设置的一次变更。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpChange {
+    /// 全局开关与策略（Server 列表不动）。
+    Globals {
+        enabled: bool,
+        allow_external_network_tools: bool,
+        require_confirmation_for_write: bool,
+        require_confirmation_for_command: bool,
+        audit_log_enabled: bool,
+        timeout_seconds: i64,
+    },
+    /// 新增/修改一个 Server（按 `original_name` 重命名）。
+    SaveServer(Box<McpServerDraft>),
+    /// 启用/禁用一个 Server。
+    SetServerEnabled { name: String, enabled: bool },
+    /// 删除一个 Server。
+    DeleteServer { name: String },
 }
 
 /// 一条视觉模型引用（对映 Python 的 `ActiveModelRef` 在界面上的投影）。
@@ -307,6 +398,8 @@ pub struct SettingsValues {
     pub tools: Vec<ToolSwitchRow>,
     /// 子任务设置页的行（总开关 + 高级参数）。
     pub subagents: Vec<SubagentRow>,
+    /// MCP 设置页的初始值（全局策略 + Server 列表）。
+    pub mcp: McpSettingsValues,
     /// 视觉设置页的初始值：代理开关、故障转移列表与模型原生视觉三态值。
     pub vision_enabled: bool,
     pub vision_models: Vec<VisionModelRef>,
@@ -342,6 +435,7 @@ impl SettingsValues {
             plugins_enabled: false,
             tools,
             subagents: Vec::new(),
+            mcp: McpSettingsValues::default(),
             vision_enabled: false,
             vision_models: Vec::new(),
             vision_native: None,
@@ -416,6 +510,12 @@ impl SettingsValues {
     /// 覆盖子任务设置页的行（宿主从配置读出当前值后调用）。
     pub fn with_subagents(mut self, rows: Vec<SubagentRow>) -> Self {
         self.subagents = rows;
+        self
+    }
+
+    /// 覆盖 MCP 设置页的初始值（宿主从配置读出后调用）。
+    pub fn with_mcp(mut self, values: McpSettingsValues) -> Self {
+        self.mcp = values;
         self
     }
 
@@ -503,6 +603,8 @@ pub enum SettingsChange {
     ToolSwitch { name: String, enabled: bool },
     /// 子任务设置的一行（选中即改，没有保存键）。
     Subagent(SubagentChange),
+    /// MCP 设置（全局策略或 Server 列表，保存后重建 MCP 连接）。
+    Mcp(McpChange),
     /// 视觉设置：`Ctrl+S` 一次写入代理配置（必要时连带模型原生视觉）。
     Vision(VisionChange),
     /// 推理强度（归一化后的档位）。
@@ -843,6 +945,9 @@ pub enum SettingsEvent {
 }
 
 const TOOLS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
+const MCP_HINT: &str = "↑↓ 选择  ←→/Enter/空格 修改  S 管理 Server  Esc 返回";
+const MCP_SERVERS_HINT: &str = "↑↓ 选择  Enter 编辑  Space 启用/禁用  A 添加  D 删除  Esc 返回";
+const MCP_EDITOR_HINT: &str = "↑↓/Tab 换字段  ←→ 换档  Enter 编辑  Ctrl+S 保存  Esc 取消";
 const SUBAGENTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档  Esc 返回";
 const VISION_HINT: &str =
     "↑↓ 选择  空格 启用/停用  A 添加  D 删除  N 原生视觉  Ctrl+↑↓ 排序  Ctrl+S 保存  Esc 返回";
@@ -938,6 +1043,259 @@ struct ToolsState {
     status: String,
 }
 
+/// MCP 设置页的行号（对映 Python `MCPSettingsPane._ROWS`）。
+pub const MCP_ROW_ENABLED: usize = 0;
+pub const MCP_ROW_NETWORK: usize = 1;
+pub const MCP_ROW_WRITE: usize = 2;
+pub const MCP_ROW_COMMAND: usize = 3;
+pub const MCP_ROW_AUDIT: usize = 4;
+pub const MCP_ROW_TIMEOUT: usize = 5;
+pub const MCP_ROW_SERVERS: usize = 6;
+/// MCP 全局设置的行数。
+pub const MCP_ROW_COUNT: usize = 7;
+
+/// MCP 全局设置的行标签（渲染与测试都读它）。
+pub const MCP_ROW_LABELS: [&str; MCP_ROW_COUNT] = [
+    "MCP 总开关",
+    "外部网络工具",
+    "写入操作确认",
+    "命令操作确认",
+    "审计日志",
+    "默认超时",
+    "MCP Server",
+];
+
+/// MCP 默认超时档位（秒，对映 Python 的 `MCP_TIMEOUT_OPTIONS`）。
+pub const MCP_TIMEOUT_OPTIONS: [i64; 5] = [10, 30, 60, 120, 300];
+
+/// Server 编辑器字段序号（渲染与键位处理共用）。
+pub const MCP_EDITOR_NAME: usize = 0;
+pub const MCP_EDITOR_TRANSPORT: usize = 1;
+pub const MCP_EDITOR_COMMAND: usize = 2;
+pub const MCP_EDITOR_ARGS: usize = 3;
+pub const MCP_EDITOR_URL: usize = 4;
+pub const MCP_EDITOR_TIMEOUT: usize = 5;
+pub const MCP_EDITOR_RISK: usize = 6;
+pub const MCP_EDITOR_ENV: usize = 7;
+pub const MCP_EDITOR_HEADERS: usize = 8;
+/// Server 编辑器的字段数。
+pub const MCP_EDITOR_FIELD_COUNT: usize = 9;
+
+/// Server 编辑器字段标签（渲染与测试都读它）。
+pub const MCP_EDITOR_LABELS: [&str; MCP_EDITOR_FIELD_COUNT] = [
+    "名称",
+    "传输",
+    "命令",
+    "参数",
+    "URL",
+    "超时（秒）",
+    "风险等级",
+    "环境变量",
+    "请求头",
+];
+
+/// 传输候选取值（对映 `MCP_TRANSPORT_STDIO` / `MCP_TRANSPORT_STREAMABLE_HTTP`）。
+pub const MCP_TRANSPORT_OPTIONS: [&str; 2] = ["stdio", "streamable_http"];
+/// 风险等级候选取值（对映 `MCP_RISK_*`）。
+pub const MCP_RISK_OPTIONS: [&str; 3] = ["trusted", "restricted", "external"];
+
+/// 在 MCP 超时档位表里按方向循环取值（当前值不在表里时先取最近一档）。
+pub fn cycle_mcp_timeout(current: i64, direction: isize) -> i64 {
+    let index = MCP_TIMEOUT_OPTIONS
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, option)| (**option - current).abs())
+        .map(|(index, _)| index)
+        .unwrap_or(0);
+    let count = MCP_TIMEOUT_OPTIONS.len() as isize;
+    MCP_TIMEOUT_OPTIONS[((index as isize + direction).rem_euclid(count)) as usize]
+}
+
+/// MCP 全局设置行的只读视图（渲染层用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpRowView {
+    pub label: &'static str,
+    pub value: String,
+    pub selected: bool,
+}
+
+/// Server 编辑器一行字段的只读视图（渲染层用）。
+pub struct McpEditorRowView {
+    pub label: &'static str,
+    pub value: String,
+    pub editing: bool,
+    pub focused: bool,
+    pub has_menu: bool,
+}
+
+/// Server 的可编辑草稿 + 字段游标。
+#[derive(Debug, Clone)]
+struct McpEditor {
+    draft: McpServerDraft,
+    focused: usize,
+    /// 文本字段的输入缓冲（`None` 表示不在编辑态）。
+    input: Option<Composer>,
+    /// 新建（而非修改已有条目）。
+    is_new: bool,
+}
+
+impl McpEditor {
+    fn field_text(&self, index: usize) -> String {
+        match index {
+            MCP_EDITOR_NAME => self.draft.name.clone(),
+            MCP_EDITOR_TRANSPORT => self.draft.transport.clone(),
+            MCP_EDITOR_COMMAND => self.draft.command.clone(),
+            MCP_EDITOR_ARGS => self.draft.args.clone(),
+            MCP_EDITOR_URL => self.draft.url.clone(),
+            MCP_EDITOR_TIMEOUT => self.draft.timeout_seconds.to_string(),
+            MCP_EDITOR_RISK => self.draft.risk_level.clone(),
+            MCP_EDITOR_ENV => self.draft.env.clone(),
+            MCP_EDITOR_HEADERS => self.draft.headers.clone(),
+            _ => String::new(),
+        }
+    }
+
+    fn set_field(&mut self, index: usize, text: String) {
+        match index {
+            MCP_EDITOR_NAME => self.draft.name = text,
+            MCP_EDITOR_COMMAND => self.draft.command = text,
+            MCP_EDITOR_ARGS => self.draft.args = text,
+            MCP_EDITOR_URL => self.draft.url = text,
+            MCP_EDITOR_ENV => self.draft.env = text,
+            MCP_EDITOR_HEADERS => self.draft.headers = text,
+            MCP_EDITOR_TIMEOUT => {
+                if let Ok(value) = text.trim().parse::<i64>() {
+                    self.draft.timeout_seconds = value;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 文本字段进输入态（枚举/超时字段不支持自由输入）。
+    fn begin_input(&mut self) {
+        let index = self.focused;
+        if matches!(
+            index,
+            MCP_EDITOR_TRANSPORT | MCP_EDITOR_RISK | MCP_EDITOR_TIMEOUT
+        ) {
+            return;
+        }
+        let mut composer = Composer::default();
+        composer.insert(&self.field_text(index));
+        self.input = Some(composer);
+    }
+
+    fn commit_input(&mut self) {
+        if let Some(mut composer) = self.input.take() {
+            let text = composer.take();
+            self.set_field(self.focused, text);
+        }
+    }
+
+    fn input_key(&mut self, key: KeyCode) {
+        let Some(composer) = self.input.as_mut() else {
+            return;
+        };
+        match key {
+            KeyCode::Enter => {
+                let text = composer.take();
+                self.input = None;
+                self.set_field(self.focused, text);
+            }
+            KeyCode::Esc => self.input = None,
+            KeyCode::Char(character) => composer.insert(&character.to_string()),
+            KeyCode::Backspace => composer.backspace(),
+            KeyCode::Delete => composer.delete(),
+            KeyCode::Left => composer.move_left(),
+            KeyCode::Right => composer.move_right(),
+            KeyCode::Home => composer.move_home(),
+            KeyCode::End => composer.move_end(),
+            _ => {}
+        }
+    }
+}
+
+/// 在静态字符串候选里按方向循环（当前值不在表里时从首项起步）。
+fn cycle_static(options: &[&str], current: &str, direction: isize) -> String {
+    if options.is_empty() {
+        return current.to_string();
+    }
+    let index = options
+        .iter()
+        .position(|option| *option == current)
+        .map(|index| index as isize)
+        .unwrap_or(-direction);
+    let next = (index + direction).rem_euclid(options.len() as isize) as usize;
+    options[next].to_string()
+}
+
+/// MCP 设置页的界面状态（全局行 + Server 列表 + 编辑器）。
+#[derive(Debug, Clone)]
+struct McpState {
+    enabled: bool,
+    network: bool,
+    write: bool,
+    command: bool,
+    audit: bool,
+    timeout: i64,
+    servers: Vec<McpServerRow>,
+    /// 全局行的游标。
+    selected: usize,
+    /// Server 列表的游标。
+    server_selected: usize,
+    /// `true` 表示当前停在 Server 列表（而不是全局行）。
+    servers_view: bool,
+    /// `Some` 表示正在编辑一个 Server。
+    editor: Option<McpEditor>,
+    status: String,
+}
+
+impl McpState {
+    fn global_values(&self) -> Vec<String> {
+        vec![
+            if self.enabled {
+                "已开启"
+            } else {
+                "已关闭"
+            }
+            .to_string(),
+            if self.network {
+                "已允许"
+            } else {
+                "已禁止"
+            }
+            .to_string(),
+            if self.write {
+                "需要确认"
+            } else {
+                "免确认"
+            }
+            .to_string(),
+            if self.command {
+                "需要确认"
+            } else {
+                "免确认"
+            }
+            .to_string(),
+            if self.audit { "已开启" } else { "已关闭" }.to_string(),
+            format!("{} 秒", self.timeout),
+            format!("管理（{} 个）", self.servers.len()),
+        ]
+    }
+
+    fn globals_change(&self) -> McpChange {
+        McpChange::Globals {
+            enabled: self.enabled,
+            allow_external_network_tools: self.network,
+            require_confirmation_for_write: self.write,
+            require_confirmation_for_command: self.command,
+            audit_log_enabled: self.audit,
+            timeout_seconds: self.timeout,
+        }
+    }
+}
+
 /// 子任务设置页的界面状态。
 #[derive(Debug, Clone)]
 struct SubagentsState {
@@ -985,6 +1343,7 @@ pub struct SettingsState {
     dropdown: Option<Dropdown>,
     context: ContextState,
     tools: ToolsState,
+    mcp: McpState,
     subagents: SubagentsState,
     vision: VisionState,
     choices: ChoicesState,
@@ -1012,6 +1371,20 @@ impl SettingsState {
                 rows: values.tools,
                 selected: 0,
                 status: TOOLS_HINT.to_string(),
+            },
+            mcp: McpState {
+                enabled: values.mcp.enabled,
+                network: values.mcp.allow_external_network_tools,
+                write: values.mcp.require_confirmation_for_write,
+                command: values.mcp.require_confirmation_for_command,
+                audit: values.mcp.audit_log_enabled,
+                timeout: values.mcp.timeout_seconds,
+                servers: values.mcp.servers,
+                selected: 0,
+                server_selected: 0,
+                servers_view: false,
+                editor: None,
+                status: MCP_HINT.to_string(),
             },
             subagents: SubagentsState {
                 rows: values.subagents,
@@ -1114,6 +1487,91 @@ impl SettingsState {
         self.subagents.selected
     }
 
+    /// MCP 全局设置行（渲染层用）。
+    pub fn mcp_rows(&self) -> Vec<McpRowView> {
+        let values = self.mcp.global_values();
+        MCP_ROW_LABELS
+            .iter()
+            .enumerate()
+            .map(|(index, label)| McpRowView {
+                label,
+                value: values[index].clone(),
+                selected: !self.mcp.servers_view
+                    && self.mcp.editor.is_none()
+                    && index == self.mcp.selected,
+            })
+            .collect()
+    }
+
+    /// MCP 面板当前是否停在 Server 列表。
+    pub fn mcp_servers_view(&self) -> bool {
+        self.mcp.servers_view
+    }
+
+    /// MCP Server 列表（渲染层用）。
+    pub fn mcp_server_rows(&self) -> &[McpServerRow] {
+        &self.mcp.servers
+    }
+
+    pub fn mcp_server_selected(&self) -> usize {
+        self.mcp.server_selected
+    }
+
+    /// 正在编辑的 Server 标题；不在编辑器时为 `None`。
+    pub fn mcp_editor_title(&self) -> Option<String> {
+        self.mcp.editor.as_ref().map(|editor| {
+            if editor.is_new {
+                "添加 MCP Server".to_string()
+            } else {
+                "编辑 MCP Server".to_string()
+            }
+        })
+    }
+
+    /// Server 编辑器的字段行；不在编辑器时为空。
+    pub fn mcp_editor_rows(&self) -> Vec<McpEditorRowView> {
+        let Some(editor) = self.mcp.editor.as_ref() else {
+            return Vec::new();
+        };
+        let draft = &editor.draft;
+        let values: [String; MCP_EDITOR_FIELD_COUNT] = [
+            draft.name.clone(),
+            draft.transport.clone(),
+            draft.command.clone(),
+            draft.args.clone(),
+            draft.url.clone(),
+            draft.timeout_seconds.to_string(),
+            draft.risk_level.clone(),
+            draft.env.clone(),
+            draft.headers.clone(),
+        ];
+        MCP_EDITOR_LABELS
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                let focused = index == editor.focused;
+                let editing = focused && editor.input.is_some();
+                let shown = if editing {
+                    editor
+                        .input
+                        .as_ref()
+                        .and_then(|composer| composer.wrapped_lines(FORM_INPUT_WIDTH).pop())
+                        .map(|text| format!("{text}▌"))
+                        .unwrap_or_default()
+                } else {
+                    values[index].clone()
+                };
+                McpEditorRowView {
+                    label,
+                    value: shown,
+                    editing,
+                    focused,
+                    has_menu: index == MCP_EDITOR_TRANSPORT || index == MCP_EDITOR_RISK,
+                }
+            })
+            .collect()
+    }
+
     /// 表单页当前聚焦的字段序号。
     pub fn form_focused(&self) -> usize {
         self.form().map(|form| form.focused()).unwrap_or(0)
@@ -1196,6 +1654,7 @@ impl SettingsState {
         match self.pane {
             Pane::Context => &self.context.status,
             Pane::Tools => &self.tools.status,
+            Pane::Mcp => &self.mcp.status,
             Pane::Subagents => &self.subagents.status,
             Pane::Vision => &self.vision.status,
             Pane::Channels => &self.channels.status,
@@ -1211,6 +1670,15 @@ impl SettingsState {
         match self.pane {
             Pane::Context => CONTEXT_HINT,
             Pane::Tools => TOOLS_HINT,
+            Pane::Mcp => {
+                if self.mcp.editor.is_some() {
+                    MCP_EDITOR_HINT
+                } else if self.mcp.servers_view {
+                    MCP_SERVERS_HINT
+                } else {
+                    MCP_HINT
+                }
+            }
             Pane::Subagents => SUBAGENTS_HINT,
             Pane::Vision => VISION_HINT,
             Pane::Channels => {
@@ -1283,6 +1751,7 @@ impl SettingsState {
         match self.pane {
             Pane::Context => self.handle_context_key(key),
             Pane::Tools => self.handle_tools_key(key),
+            Pane::Mcp => self.handle_mcp_key(key),
             Pane::Subagents => self.handle_subagents_key(key),
             Pane::Vision => self.handle_vision_key(key),
             Pane::Channels => self.handle_channels_key(key),
@@ -1607,6 +2076,232 @@ impl SettingsState {
         }
     }
 
+    /// MCP 设置页：全局行（改即保存）、Server 列表与编辑器三个子模式。
+    fn handle_mcp_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        if self.mcp.editor.is_some() {
+            return self.handle_mcp_editor_key(key);
+        }
+        if self.mcp.servers_view {
+            return self.handle_mcp_servers_key(key);
+        }
+        match key {
+            KeyCode::Up => {
+                self.move_mcp(-1);
+                None
+            }
+            KeyCode::Down => {
+                self.move_mcp(1);
+                None
+            }
+            KeyCode::Left => self.activate_mcp_global(-1),
+            KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => self.activate_mcp_global(1),
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.enter_mcp_servers();
+                None
+            }
+            KeyCode::Esc => {
+                self.back_to_list();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn move_mcp(&mut self, delta: isize) {
+        let count = MCP_ROW_COUNT as isize;
+        self.mcp.selected = ((self.mcp.selected as isize + delta).rem_euclid(count)) as usize;
+    }
+
+    /// 改一行全局设置：布尔切换、超时换档、`servers` 行进入列表。
+    fn activate_mcp_global(&mut self, direction: isize) -> Option<SettingsEvent> {
+        match self.mcp.selected {
+            MCP_ROW_ENABLED => self.mcp.enabled = !self.mcp.enabled,
+            MCP_ROW_NETWORK => self.mcp.network = !self.mcp.network,
+            MCP_ROW_WRITE => self.mcp.write = !self.mcp.write,
+            MCP_ROW_COMMAND => self.mcp.command = !self.mcp.command,
+            MCP_ROW_AUDIT => self.mcp.audit = !self.mcp.audit,
+            MCP_ROW_TIMEOUT => {
+                self.mcp.timeout = cycle_mcp_timeout(self.mcp.timeout, direction);
+            }
+            MCP_ROW_SERVERS => {
+                self.enter_mcp_servers();
+                return None;
+            }
+            _ => return None,
+        }
+        Some(SettingsEvent::Apply(SettingsChange::Mcp(
+            self.mcp.globals_change(),
+        )))
+    }
+
+    fn enter_mcp_servers(&mut self) {
+        self.mcp.servers_view = true;
+        self.mcp.server_selected = self
+            .mcp
+            .server_selected
+            .min(self.mcp.servers.len().saturating_sub(1));
+        self.mcp.status = MCP_SERVERS_HINT.to_string();
+    }
+
+    fn move_mcp_server(&mut self, delta: isize) {
+        let count = self.mcp.servers.len() as isize;
+        if count == 0 {
+            self.mcp.server_selected = 0;
+            return;
+        }
+        self.mcp.server_selected =
+            ((self.mcp.server_selected as isize + delta).rem_euclid(count)) as usize;
+    }
+
+    fn handle_mcp_servers_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        match key {
+            KeyCode::Up => {
+                self.move_mcp_server(-1);
+                None
+            }
+            KeyCode::Down => {
+                self.move_mcp_server(1);
+                None
+            }
+            KeyCode::Enter => {
+                let row = self.mcp.servers.get(self.mcp.server_selected).cloned()?;
+                self.mcp.editor = Some(McpEditor {
+                    draft: McpServerDraft::from_row(&row),
+                    focused: MCP_EDITOR_NAME,
+                    input: None,
+                    is_new: false,
+                });
+                None
+            }
+            KeyCode::Char(' ') => {
+                let row = self.mcp.servers.get(self.mcp.server_selected).cloned()?;
+                Some(SettingsEvent::Apply(SettingsChange::Mcp(
+                    McpChange::SetServerEnabled {
+                        name: row.name,
+                        enabled: !row.enabled,
+                    },
+                )))
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.mcp.editor = Some(McpEditor {
+                    draft: McpServerDraft {
+                        transport: MCP_TRANSPORT_OPTIONS[0].to_string(),
+                        risk_level: MCP_RISK_OPTIONS[1].to_string(),
+                        timeout_seconds: self.mcp.timeout,
+                        ..McpServerDraft::default()
+                    },
+                    focused: MCP_EDITOR_NAME,
+                    input: None,
+                    is_new: true,
+                });
+                None
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                let row = self.mcp.servers.get(self.mcp.server_selected).cloned()?;
+                Some(SettingsEvent::Apply(SettingsChange::Mcp(
+                    McpChange::DeleteServer { name: row.name },
+                )))
+            }
+            KeyCode::Esc | KeyCode::Left => {
+                self.mcp.servers_view = false;
+                Some(SettingsEvent::Apply(SettingsChange::Mcp(
+                    self.mcp.globals_change(),
+                )))
+            }
+            _ => None,
+        }
+    }
+
+    fn move_mcp_editor(&mut self, delta: isize) {
+        if let Some(editor) = self.mcp.editor.as_mut() {
+            editor.input = None;
+            let count = MCP_EDITOR_FIELD_COUNT as isize;
+            editor.focused = ((editor.focused as isize + delta).rem_euclid(count)) as usize;
+        }
+    }
+
+    /// 编辑器里的 transport / risk 字段按方向换档；文本字段忽略。
+    fn cycle_mcp_editor_field(&mut self, direction: isize) {
+        let Some(editor) = self.mcp.editor.as_mut() else {
+            return;
+        };
+        match editor.focused {
+            MCP_EDITOR_TRANSPORT => {
+                editor.draft.transport =
+                    cycle_static(&MCP_TRANSPORT_OPTIONS, &editor.draft.transport, direction)
+            }
+            MCP_EDITOR_RISK => {
+                editor.draft.risk_level =
+                    cycle_static(&MCP_RISK_OPTIONS, &editor.draft.risk_level, direction)
+            }
+            MCP_EDITOR_TIMEOUT => {
+                editor.draft.timeout_seconds =
+                    cycle_mcp_timeout(editor.draft.timeout_seconds, direction)
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mcp_editor_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        if self
+            .mcp
+            .editor
+            .as_ref()
+            .is_some_and(|editor| editor.input.is_some())
+        {
+            if let Some(editor) = self.mcp.editor.as_mut() {
+                editor.input_key(key);
+            }
+            return None;
+        }
+        match key {
+            KeyCode::Up => {
+                self.move_mcp_editor(-1);
+                None
+            }
+            KeyCode::Down | KeyCode::Tab => {
+                self.move_mcp_editor(1);
+                None
+            }
+            KeyCode::Left => {
+                self.cycle_mcp_editor_field(-1);
+                None
+            }
+            KeyCode::Right => {
+                self.cycle_mcp_editor_field(1);
+                None
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                let focused = self.mcp.editor.as_ref().map(|editor| editor.focused)?;
+                match focused {
+                    MCP_EDITOR_TRANSPORT | MCP_EDITOR_RISK | MCP_EDITOR_TIMEOUT => {
+                        self.cycle_mcp_editor_field(1);
+                    }
+                    _ => {
+                        if let Some(editor) = self.mcp.editor.as_mut() {
+                            editor.begin_input();
+                        }
+                    }
+                }
+                None
+            }
+            KeyCode::Esc => {
+                self.mcp.editor = None;
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 编辑器里的文本型字段（名称/命令/参数/URL/环境变量/请求头）。
+    fn handle_mcp_editor_save(&mut self) -> Option<SettingsEvent> {
+        let editor = self.mcp.editor.as_mut()?;
+        editor.commit_input();
+        Some(SettingsEvent::Apply(SettingsChange::Mcp(
+            McpChange::SaveServer(Box::new(editor.draft.clone())),
+        )))
+    }
+
     fn handle_tools_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
         match key {
             KeyCode::Up => {
@@ -1900,6 +2595,7 @@ impl SettingsState {
                 _ => None,
             },
             Pane::Tools
+            | Pane::Mcp
             | Pane::Subagents
             | Pane::Channels
             | Pane::Vision
@@ -2374,6 +3070,10 @@ impl SettingsState {
                 }
                 _ => None,
             },
+            Pane::Mcp if self.mcp.editor.is_some() => match key {
+                KeyCode::Char('s') | KeyCode::Char('S') => self.handle_mcp_editor_save(),
+                _ => None,
+            },
             Pane::Tts => match key {
                 KeyCode::Char('b') | KeyCode::Char('B') => Some(SettingsEvent::Apply(
                     SettingsChange::Tts(TtsChange::BrowseAudio),
@@ -2512,8 +3212,80 @@ impl SettingsState {
                 }
                 self.tts.status = message;
             }
+            SettingsChange::Mcp(change) => self.apply_mcp_succeeded(change, message),
         }
         self.dropdown = None;
+    }
+
+    /// MCP 变更成功：把界面状态对齐到刚保存的配置。
+    fn apply_mcp_succeeded(&mut self, change: &McpChange, message: String) {
+        match change {
+            McpChange::Globals {
+                enabled,
+                allow_external_network_tools,
+                require_confirmation_for_write,
+                require_confirmation_for_command,
+                audit_log_enabled,
+                timeout_seconds,
+            } => {
+                self.mcp.enabled = *enabled;
+                self.mcp.network = *allow_external_network_tools;
+                self.mcp.write = *require_confirmation_for_write;
+                self.mcp.command = *require_confirmation_for_command;
+                self.mcp.audit = *audit_log_enabled;
+                self.mcp.timeout = *timeout_seconds;
+            }
+            McpChange::SaveServer(draft) => {
+                let row = McpServerRow {
+                    name: draft.name.clone(),
+                    enabled: draft.enabled,
+                    transport: draft.transport.clone(),
+                    risk_level: draft.risk_level.clone(),
+                };
+                if let Some(original) = draft.original_name.as_deref() {
+                    if let Some(slot) = self
+                        .mcp
+                        .servers
+                        .iter_mut()
+                        .find(|candidate| candidate.name == original)
+                    {
+                        *slot = row;
+                    } else {
+                        self.mcp.servers.push(row);
+                    }
+                } else if !self
+                    .mcp
+                    .servers
+                    .iter()
+                    .any(|candidate| candidate.name == draft.name)
+                {
+                    self.mcp.servers.push(row);
+                }
+                self.mcp.server_selected = self
+                    .mcp
+                    .server_selected
+                    .min(self.mcp.servers.len().saturating_sub(1));
+                self.mcp.editor = None;
+            }
+            McpChange::SetServerEnabled { name, enabled } => {
+                if let Some(row) = self
+                    .mcp
+                    .servers
+                    .iter_mut()
+                    .find(|candidate| &candidate.name == name)
+                {
+                    row.enabled = *enabled;
+                }
+            }
+            McpChange::DeleteServer { name } => {
+                self.mcp.servers.retain(|candidate| &candidate.name != name);
+                self.mcp.server_selected = self
+                    .mcp
+                    .server_selected
+                    .min(self.mcp.servers.len().saturating_sub(1));
+            }
+        }
+        self.mcp.status = message;
     }
 
     /// 应用失败：值保持不变（界面回落到原值），只显示失败文本。
@@ -2521,6 +3293,7 @@ impl SettingsState {
         match self.pane {
             Pane::Context => self.context.status = message,
             Pane::Tools => self.tools.status = message,
+            Pane::Mcp => self.mcp.status = message,
             Pane::Subagents => self.subagents.status = message,
             Pane::Vision => self.vision.status = message,
             // 渠道页失败时保留表单，方便就地改错再按 Ctrl+S。
@@ -2552,6 +3325,7 @@ impl SettingsState {
                 self.context.status.push_str(note);
             }
             SettingsChange::ToolSwitch { .. } => self.tools.status.push_str(note),
+            SettingsChange::Mcp(_) => self.mcp.status.push_str(note),
             SettingsChange::Subagent(_) => self.subagents.status.push_str(note),
             SettingsChange::Vision(_) => self.vision.status.push_str(note),
             SettingsChange::Reasoning { .. } => {
@@ -3977,5 +4751,111 @@ mod tests {
 
         state.handle_key(KeyCode::Char('d'));
         assert!(state.status().contains("没有可删除的视觉模型"));
+    }
+
+    fn mcp_state() -> SettingsState {
+        SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_mcp(
+            McpSettingsValues {
+                enabled: true,
+                allow_external_network_tools: false,
+                require_confirmation_for_write: true,
+                require_confirmation_for_command: true,
+                audit_log_enabled: true,
+                timeout_seconds: 30,
+                servers: vec![McpServerRow {
+                    name: "fs".to_string(),
+                    enabled: true,
+                    transport: "stdio".to_string(),
+                    risk_level: "restricted".to_string(),
+                }],
+            },
+        ))
+    }
+
+    #[test]
+    fn mcp_pane_cycles_timeout_and_toggles_globals() {
+        let mut state = mcp_state();
+        goto(&mut state, "mcp");
+        state.handle_key(KeyCode::Enter); // 进右侧面板
+        state.mcp.selected = MCP_ROW_ENABLED;
+        match state.handle_key(KeyCode::Char(' ')) {
+            Some(SettingsEvent::Apply(SettingsChange::Mcp(McpChange::Globals {
+                enabled, ..
+            }))) => assert!(!enabled, "总开关被切换"),
+            other => panic!("应产出全局变更：{other:?}"),
+        }
+        state.mcp.selected = MCP_ROW_TIMEOUT;
+        match state.handle_key(KeyCode::Right) {
+            Some(SettingsEvent::Apply(SettingsChange::Mcp(McpChange::Globals {
+                timeout_seconds,
+                ..
+            }))) => assert_eq!(timeout_seconds, 60, "30 秒进到下一档"),
+            other => panic!("应产出全局变更：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn mcp_servers_view_opens_editor_and_saves() {
+        let mut state = mcp_state();
+        goto(&mut state, "mcp");
+        state.handle_key(KeyCode::Enter);
+        state.mcp.selected = MCP_ROW_SERVERS;
+        assert!(
+            state.handle_key(KeyCode::Enter).is_none(),
+            "servers 行进入列表"
+        );
+        assert!(state.mcp_servers_view());
+
+        // 编辑现有 Server：草稿带上原名，保存产出 SaveServer。
+        state.handle_key(KeyCode::Enter);
+        assert!(state.mcp_editor_title().is_some());
+        match state.handle_mcp_editor_save() {
+            Some(SettingsEvent::Apply(SettingsChange::Mcp(McpChange::SaveServer(draft)))) => {
+                assert_eq!(draft.name, "fs");
+                assert_eq!(draft.original_name.as_deref(), Some("fs"));
+            }
+            other => panic!("应产出保存事件：{other:?}"),
+        }
+
+        // 新建：A 打开空草稿，标题是添加。
+        state.mcp.editor = None;
+        state.handle_key(KeyCode::Char('a'));
+        assert!(state.mcp_editor_title().unwrap().contains("添加"));
+    }
+
+    #[test]
+    fn mcp_apply_succeeded_updates_server_rows() {
+        let mut state = mcp_state();
+        goto(&mut state, "mcp");
+        state.apply_succeeded(
+            &SettingsChange::Mcp(McpChange::SetServerEnabled {
+                name: "fs".to_string(),
+                enabled: false,
+            }),
+            "已保存".to_string(),
+        );
+        assert!(!state.mcp_server_rows()[0].enabled);
+
+        state.apply_succeeded(
+            &SettingsChange::Mcp(McpChange::SaveServer(Box::new(McpServerDraft {
+                name: "net".to_string(),
+                transport: "streamable_http".to_string(),
+                risk_level: "external".to_string(),
+                timeout_seconds: 60,
+                ..McpServerDraft::default()
+            }))),
+            "已保存".to_string(),
+        );
+        assert_eq!(state.mcp_server_rows().len(), 2);
+        assert!(state.mcp_editor_title().is_none(), "保存后关闭编辑器");
+
+        state.apply_succeeded(
+            &SettingsChange::Mcp(McpChange::DeleteServer {
+                name: "fs".to_string(),
+            }),
+            "已保存".to_string(),
+        );
+        assert_eq!(state.mcp_server_rows().len(), 1);
+        assert_eq!(state.mcp_server_rows()[0].name, "net");
     }
 }

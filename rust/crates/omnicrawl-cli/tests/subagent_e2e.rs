@@ -28,6 +28,7 @@ const PARENT_TEXT: &str = "主回合完成";
 const FAIL_FAST_REASON: &str = "fail_fast 已在前序任务失败后停止调度该任务。";
 
 /// 回环服务端的一次应答：正常 SSE，或一段完整原始响应（用来造失败）。
+#[derive(Clone)]
 enum Reply {
     Stream(String),
     Raw(String),
@@ -43,6 +44,65 @@ enum Reply {
     },
     /// 任何请求都回同一段文本（并发下顺序不定时用来验证调度本身）。
     AlwaysText(String),
+}
+
+/// 请求来自哪一侧：父回合还是子代理回合。
+///
+/// 判据是请求体里第一条 system 消息的内容——父回合用宿主拼的系统提示（`你是主助手。`），
+/// 子回合用角色定义里的系统提示（含「子代理」）。按内容分流是必须的：`action=spawn`
+/// 的后台子任务与父回合并发发请求，若仍按 TCP 连接到达顺序派发脚本，子任务会抢走
+/// 本该给父回合的那一帧，断言就会随机失败（见 `background_spawn_*` 的回归说明）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lane {
+    /// 主回合的请求。
+    Parent,
+    /// 子代理回合的请求。
+    Child,
+}
+
+impl Lane {
+    /// 按首条 system 消息判断请求来源。
+    fn of(request: &str) -> Self {
+        let system = serde_json::from_str::<Value>(request)
+            .ok()
+            .and_then(|value| {
+                value["messages"].as_array().and_then(|messages| {
+                    messages
+                        .iter()
+                        .find(|message| message["role"] == "system")
+                        .and_then(|message| message["content"].as_str())
+                        .map(str::to_string)
+                })
+            })
+            .unwrap_or_default();
+        if system.contains("子代理") {
+            Lane::Child
+        } else {
+            Lane::Parent
+        }
+    }
+}
+
+/// 本机回环测试脚本：
+/// - `Sequential`: 按连接到达序号推进，供 `action=run` 的顺序用例沿用（完全对齐旧语义）；
+/// - `Lanes`: 按请求来源（父/子）分流，供 `action=spawn` 并发用例解耦两端请求。
+#[derive(Clone)]
+enum Script {
+    Sequential(Vec<Reply>),
+    Lanes {
+        parent: Vec<Reply>,
+        child: Vec<Reply>,
+    },
+}
+
+impl Script {
+    fn sequential(steps: Vec<Reply>) -> Self {
+        Script::Sequential(steps)
+    }
+
+    fn lanes(parent: Vec<Reply>, child: Vec<Reply>) -> Self {
+        Script::Lanes { parent, child }
+    }
 }
 
 /// SSE：一段文本 + 结束原因。
@@ -79,55 +139,55 @@ fn ok_stream(body: String) -> Reply {
     Reply::Stream(body)
 }
 
-/// 本机回环服务端：按脚本依次应答，并记录收到的请求体。
+/// 本机回环服务端：按请求来源分流应答，并记录收到的请求体。
 struct StubServer {
     addr: String,
     requests: Arc<Mutex<Vec<Value>>>,
 }
 
 impl StubServer {
+    /// 顺序脚本：等价旧 API，按连接顺序全局派发（供既有 4 个测试沿用）。
     fn spawn(script: Vec<Reply>) -> Self {
+        Self::spawn_script(Script::sequential(script))
+    }
+
+    /// 双泳道分流脚本：按请求来源派发，供并发用例使用。
+    fn spawn_script(script: Script) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("无法监听回环端口");
         let addr = listener.local_addr().expect("无法取本地地址");
         let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);
 
         thread::spawn(move || {
-            for (index, stream) in listener.incoming().enumerate() {
+            let global_cursor = Arc::new(Mutex::new(0usize));
+            let lane_cursors = Arc::new(Mutex::new((0usize, 0usize)));
+            for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
                 let raw = read_request(&mut stream);
                 if let Ok(value) = serde_json::from_str::<Value>(&raw) {
                     recorded.lock().expect("记录锁").push(value);
                 }
-                let reply = match script.get(index) {
-                    Some(Reply::Stream(body)) => sse_response(body),
-                    Some(Reply::Raw(raw)) => raw.clone(),
-                    Some(Reply::AlwaysText(text)) => sse_response(&text_stream(text)),
-                    Some(Reply::ToolThenText { .. }) | None => {
-                        // 脚本用尽：有 AlwaysText 就继续用它，否则按请求内容兜底
-                        // （已经回过工具结果就要文本，否则要求调工具）。
-                        let always = script.iter().find_map(|item| match item {
-                            Reply::AlwaysText(text) => Some(text),
-                            _ => None,
-                        });
-                        let tool_rule = script.iter().find_map(|item| match item {
-                            Reply::ToolThenText {
-                                tool,
-                                tool_arguments,
-                                text,
-                            } => Some((tool, tool_arguments, text)),
-                            _ => None,
-                        });
-                        match (always, tool_rule) {
-                            (Some(text), _) => sse_response(&text_stream(text)),
-                            (None, Some((tool, arguments, _)))
-                                if !raw.contains("\"role\":\"tool\"") =>
-                            {
-                                sse_response(&tool_call_stream(tool, arguments))
-                            }
-                            (None, Some((_, _, text))) => sse_response(&text_stream(text)),
-                            (None, None) => sse_response(&text_stream("（脚本用尽）")),
-                        }
+                let reply = match &script {
+                    Script::Sequential(steps) => {
+                        let mut guard = global_cursor.lock().expect("全局游标锁");
+                        let index = *guard;
+                        *guard += 1;
+                        build_reply(steps.get(index), steps, &raw)
+                    }
+                    Script::Lanes { parent, child } => {
+                        let lane = Lane::of(&raw);
+                        let steps = match lane {
+                            Lane::Parent => parent,
+                            Lane::Child => child,
+                        };
+                        let mut guard = lane_cursors.lock().expect("泳道游标锁");
+                        let slot = match lane {
+                            Lane::Parent => &mut guard.0,
+                            Lane::Child => &mut guard.1,
+                        };
+                        let index = *slot;
+                        *slot += 1;
+                        build_reply(steps.get(index), steps, &raw)
                     }
                 };
                 let _ = stream.write_all(reply.as_bytes());
@@ -138,6 +198,40 @@ impl StubServer {
         Self {
             addr: format!("http://{addr}/v1"),
             requests,
+        }
+    }
+}
+
+/// 取脚本里第 `index` 条应答；用尽时按请求内容兜底。
+///
+/// 兜底规则沿用旧实现：先找 `AlwaysText`（并发用例常用），再按 `ToolThenText` 判断
+/// 是否已经回过工具结果——回过就要文本，没回过就要求调工具。
+fn build_reply(step: Option<&Reply>, steps: &[Reply], raw: &str) -> String {
+    match step {
+        Some(Reply::Stream(body)) => sse_response(body),
+        Some(Reply::Raw(raw)) => raw.clone(),
+        Some(Reply::AlwaysText(text)) => sse_response(&text_stream(text)),
+        Some(Reply::ToolThenText { .. }) | None => {
+            let always = steps.iter().find_map(|item| match item {
+                Reply::AlwaysText(text) => Some(text),
+                _ => None,
+            });
+            let tool_rule = steps.iter().find_map(|item| match item {
+                Reply::ToolThenText {
+                    tool,
+                    tool_arguments,
+                    text,
+                } => Some((tool, tool_arguments, text)),
+                _ => None,
+            });
+            match (always, tool_rule) {
+                (Some(text), _) => sse_response(&text_stream(text)),
+                (None, Some((tool, arguments, _))) if !raw.contains("\"role\":\"tool\"") => {
+                    sse_response(&tool_call_stream(tool, arguments))
+                }
+                (None, Some((_, _, text))) => sse_response(&text_stream(text)),
+                (None, None) => sse_response(&text_stream("（脚本用尽）")),
+            }
         }
     }
 }
@@ -813,16 +907,22 @@ fn background_spawn_runs_after_turn_and_is_queryable() {
     })
     .to_string();
     let list_arguments = json!({"action": "list"}).to_string();
-    // 脚本顺序：父回合受理 spawn → 父回合收尾 → 后台子回合调工具 → 后台收尾 →
-    // 第二个回合查 list → 收尾。宿主会等后台收尾事件，所以顺序是确定的。
-    let server = StubServer::spawn(vec![
-        ok_stream(tool_call_stream("subagent", &spawn_arguments)),
-        ok_stream(text_stream(PARENT_TEXT)),
-        ok_stream(tool_call_stream("read", "{\"path\":\"a.py\"}")),
-        ok_stream(text_stream(CHILD_TEXT)),
-        ok_stream(tool_call_stream("subagent", &list_arguments)),
-        ok_stream(text_stream(PARENT_TEXT)),
-    ]);
+    // 双泳道脚本：后台子任务与父回合会并发发请求，必须按来源分流，否则子任务的
+    // 连接会插在父回合两次请求之间、吃掉本该给父回合的那一帧（旧实现的间歇性失败）。
+    // 父泳道：受理 spawn → 收尾 → 第二回合查 list → 收尾。
+    // 子泳道：调 read → 收尾。
+    let server = StubServer::spawn_script(Script::lanes(
+        vec![
+            ok_stream(tool_call_stream("subagent", &spawn_arguments)),
+            ok_stream(text_stream(PARENT_TEXT)),
+            ok_stream(tool_call_stream("subagent", &list_arguments)),
+            ok_stream(text_stream(PARENT_TEXT)),
+        ],
+        vec![
+            ok_stream(tool_call_stream("read", "{\"path\":\"a.py\"}")),
+            ok_stream(text_stream(CHILD_TEXT)),
+        ],
+    ));
     let (root, workspace, agents, config) = prepare_root(
         "bg",
         "[subagents]\nenabled = true\nallow_background = true\nmax_concurrency = 1\nmax_tasks_per_batch = 1\n",

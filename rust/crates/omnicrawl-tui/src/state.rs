@@ -14,7 +14,7 @@ use crate::args::ApprovalMode;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
 use crate::ui::fullscreen::rendering::logo_anim::LogoAnimation;
-use crate::ui::fullscreen::rendering::widgets::SubAgentProgressTree;
+use crate::ui::fullscreen::rendering::widgets::{SubAgentConversation, SubAgentProgressTree};
 use crate::ui::fullscreen::status::indicators as queue;
 
 /// 相邻增量间隔超过这个时长视为待机（工具执行、模型停顿），不计入输出时长。
@@ -59,6 +59,10 @@ pub enum Record {
     /// 一个 SubAgent 批次的进度树：同批次的任务事件在第 `i` 条记录上原地更新
     /// （对映 Python 把 `SubAgentProgressTree` 挂进消息区、后续事件复用同一组件）。
     SubagentTree(SubAgentProgressTree),
+    /// 一个 SubAgent 批次的流式对话面板（`/review` 这类派生评审流程用；
+    /// 对映 Python 的 `_handle_subagent_conversation_event` 把 `SubAgentConversation`
+    /// 按 `batch_id` 挂进消息区）。
+    SubagentConversation(SubAgentConversation),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -358,6 +362,9 @@ pub struct AppState {
     /// 被点击展开的思考段（按记录下标），对映 Python `ReasoningDisclosure._expanded`。
     /// 下标随记录清空/回滚而变，展开态在那种情况下自然失效（服务端不会回填）。
     pub expanded_reasoning: HashSet<usize>,
+    /// 子代理对话流是否处于开启态（`/review` 运行期间）：事件进流式对话面板
+    /// 而不是进度树，对映 Python 的 `_conversation_stream_active`。
+    pub subagent_stream: bool,
     batch: Option<host::PendingBatch>,
 }
 
@@ -385,6 +392,7 @@ impl AppState {
             pending_queue_expanded: false,
             expanded_tools: HashSet::new(),
             expanded_reasoning: HashSet::new(),
+            subagent_stream: false,
             batch: None,
         }
     }
@@ -628,6 +636,12 @@ impl AppState {
     /// 文本事件不进树），状态无法识别时同样忽略。载荷字段缺失时按 Python 的 `or` 口径
     /// 回落（`task_id` → `task`，`batch_id` → `batch-<task_id>`，`description` → `task_id`）。
     fn apply_subagent_event(&mut self, name: &str, payload: &serde_json::Value) {
+        // `/review` 等派生评审流程开启流式态时，整批事件都进会话面板，不再画进度树
+        // （对映 Python `_handle_subagent_event` 顶部的 `_conversation_stream_active` 早退）。
+        if self.subagent_stream {
+            self.apply_subagent_conversation(name, payload);
+            return;
+        }
         let Some(status) = subagent_status_for_event(name) else {
             return;
         };
@@ -663,6 +677,87 @@ impl AppState {
             status,
             None,
         );
+    }
+
+    /// 子代理对话流事件 → 按批次挂一块流式对话面板。
+    ///
+    /// 对映 Python `_handle_subagent_conversation_event`：首次事件建面板，
+    /// 之后 `turn.text` / `tool.started` / `tool.completed` 逐行追加，
+    /// 任务终态收口面板。只有流式态（`subagent_stream`）下才走这条路径。
+    fn apply_subagent_conversation(&mut self, name: &str, payload: &serde_json::Value) {
+        let task_id = payload_text(payload, "task_id").unwrap_or("task");
+        let batch_id = payload_text(payload, "batch_id")
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("batch-{task_id}"));
+        let has_panel = self.records.iter().any(|record| {
+            matches!(record, Record::SubagentConversation(panel) if panel.batch_id == batch_id)
+        });
+        if !has_panel {
+            let agent_type = payload_text(payload, "agent_type").unwrap_or("subagent");
+            self.records
+                .push(Record::SubagentConversation(SubAgentConversation::new(
+                    &batch_id, agent_type,
+                )));
+        }
+        let Some(panel) = self
+            .records
+            .iter_mut()
+            .rev()
+            .find_map(|record| match record {
+                Record::SubagentConversation(panel) if panel.batch_id == batch_id => Some(panel),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        match name {
+            "subagent.turn.text" => {
+                let text = payload
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                for line in text.lines() {
+                    if !line.trim().is_empty() {
+                        panel.append(line, "");
+                    }
+                }
+            }
+            "subagent.tool.started" => {
+                let tool = payload_text(payload, "tool").unwrap_or_default();
+                panel.append(
+                    &format!("⌁ {}", subagent_tool_brief(tool, payload.get("arguments"))),
+                    "",
+                );
+            }
+            "subagent.tool.completed" => {
+                let ok = payload
+                    .get("ok")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let suffix = payload
+                    .get("duration_seconds")
+                    .and_then(serde_json::Value::as_f64)
+                    .map(|seconds| format!(" · {seconds:.2}s"))
+                    .unwrap_or_default();
+                panel.append(
+                    &format!("● {}{suffix}", if ok { "成功" } else { "失败" }),
+                    if ok { "green" } else { "red" },
+                );
+                let output = payload
+                    .get("output")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                for line in sample_output_lines(output) {
+                    panel.append(&line, "dim");
+                }
+            }
+            "subagent.task.completed" => panel.finish("✓ 子代理评审完成"),
+            "subagent.task.cancelled" | "subagent.task.approval_cancelled" => {
+                panel.finish("– 子代理评审已取消")
+            }
+            "subagent.task.failed" => panel.finish(&subagent_failure_line(payload)),
+            _ => {}
+        }
     }
 
     /// 推进仍活跃的进度树的运行耗时（对映 Python 的耗时 tick）：终态树不再重绘。
@@ -973,6 +1068,104 @@ fn payload_text<'a>(payload: &'a serde_json::Value, key: &str) -> Option<&'a str
         .get(key)
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.is_empty())
+}
+
+/// 把子代理工具调用压成一行摘要（对映 Python `_subagent_tool_brief`）。
+fn subagent_tool_brief(tool_name: &str, arguments: Option<&serde_json::Value>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(serde_json::Value::Object(map)) = arguments {
+        if tool_name == "git" {
+            if let Some(action) = map.get("action").and_then(serde_json::Value::as_str) {
+                if !action.is_empty() {
+                    parts.push(action.to_string());
+                }
+            }
+            if let Some(serde_json::Value::Array(args)) = map.get("args") {
+                parts.extend(args.iter().map(scalar_text));
+            }
+        } else {
+            for key in ["path", "paths", "pattern", "query", "text", "scope"] {
+                match map.get(key) {
+                    Some(serde_json::Value::String(text)) if !text.trim().is_empty() => {
+                        parts.push(text.trim().to_string());
+                        break;
+                    }
+                    Some(serde_json::Value::Array(items)) if !items.is_empty() => {
+                        parts.push(scalar_text(&items[0]));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut brief = parts.join(" ").trim().to_string();
+    if brief.chars().count() > 60 {
+        brief = brief.chars().take(57).collect::<String>();
+        brief.push_str("...");
+    }
+    if brief.is_empty() {
+        tool_name.to_string()
+    } else {
+        format!("{tool_name} · {brief}")
+    }
+}
+
+/// 对映 Python `str(value)` 的标量取值；容器退化为 JSON 文本。
+fn scalar_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Bool(flag) => flag.to_string(),
+        serde_json::Value::Number(number) => number.to_string(),
+        serde_json::Value::Null => String::new(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+/// 工具输出采样：最多五行，超出时保留首尾各两行（对映 Python `_sample_output_lines`）。
+fn sample_output_lines(output: &str) -> Vec<String> {
+    let lines: Vec<String> = output
+        .lines()
+        .map(|line| line.trim_end().to_string())
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if lines.len() <= 5 {
+        return lines;
+    }
+    let mut sampled: Vec<String> = lines[..2].to_vec();
+    sampled.push("…".to_string());
+    sampled.extend(lines[lines.len() - 2..].iter().cloned());
+    sampled
+}
+
+/// 失败面板的终态行（对映 Python 失败分支的「原因（分类）」拼法）。
+fn subagent_failure_line(payload: &serde_json::Value) -> String {
+    let mut line = "× 子代理评审失败".to_string();
+    let Some(error) = payload.get("error") else {
+        return line;
+    };
+    if let Some(reason) = error.get("message").and_then(serde_json::Value::as_str) {
+        if !reason.trim().is_empty() {
+            line.push_str(&format!("：{reason}"));
+        }
+    }
+    let code = error
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let category = error
+        .get("diagnostic")
+        .and_then(|diagnostic| diagnostic.get("category"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let labels: Vec<&str> = [code, category]
+        .into_iter()
+        .filter(|label| !label.is_empty())
+        .collect();
+    if !labels.is_empty() {
+        line.push_str(&format!("（{}）", labels.join("，")));
+    }
+    line
 }
 
 /// Token 估算：CJK 字符按 1 token，其他字符按 4 字符 1 token。
@@ -1419,6 +1612,109 @@ mod tests {
             Instant::now(),
         );
         assert!(!state.refresh_subagent_trees(), "终态树不再需要耗时 tick");
+    }
+
+    #[test]
+    fn streaming_subagent_events_fill_conversation_panel() {
+        let mut state = state();
+        state.subagent_stream = true;
+        let now = Instant::now();
+        // 任务开始：建对话面板，不建进度树。
+        state.apply(
+            &subagent_event("subagent.task.started", "t1", "batch-1"),
+            now,
+        );
+        assert!(
+            !state
+                .records
+                .iter()
+                .any(|record| matches!(record, Record::SubagentTree(_))),
+            "流式态不画进度树"
+        );
+        assert!(panel_text(&state).contains("子代理对话"));
+
+        state.apply(
+            &conversation_event(
+                "subagent.turn.text",
+                "t1",
+                "batch-1",
+                json!({"text": "正在看代码"}),
+            ),
+            now,
+        );
+        state.apply(
+            &conversation_event(
+                "subagent.tool.started",
+                "t1",
+                "batch-1",
+                json!({"tool": "read", "arguments": {"path": "a.py"}}),
+            ),
+            now,
+        );
+        state.apply(
+            &conversation_event(
+                "subagent.tool.completed",
+                "t1",
+                "batch-1",
+                json!({"tool": "read", "ok": true, "output": "文件内容：42", "duration_seconds": 0.5}),
+            ),
+            now,
+        );
+        let text = panel_text(&state);
+        assert!(text.contains("正在看代码"));
+        assert!(text.contains("⌁ read · a.py"), "工具摘要：{text}");
+        assert!(text.contains("● 成功 · 0.50s"), "工具结果：{text}");
+        assert!(text.contains("文件内容：42"));
+
+        state.apply(
+            &subagent_event("subagent.task.completed", "t1", "batch-1"),
+            now,
+        );
+        assert!(panel_text(&state).contains("✓ 子代理评审完成"));
+        // 收口后迟到的事件被忽略（面板 finish 后 append 无效）。
+        state.apply(
+            &conversation_event(
+                "subagent.turn.text",
+                "t1",
+                "batch-1",
+                json!({"text": "迟到"}),
+            ),
+            now,
+        );
+        assert!(!panel_text(&state).contains("迟到"));
+    }
+
+    fn panel_text(state: &AppState) -> String {
+        state
+            .records
+            .iter()
+            .find_map(|record| match record {
+                Record::SubagentConversation(panel) => Some(panel.logical_text()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn conversation_event(
+        name: &str,
+        task_id: &str,
+        batch_id: &str,
+        extra: serde_json::Value,
+    ) -> HostEvent {
+        let mut payload = json!({
+            "task_id": task_id,
+            "batch_id": batch_id,
+            "agent_type": "reviewer",
+        });
+        if let (Some(target), Some(source)) = (payload.as_object_mut(), extra.as_object()) {
+            for (key, value) in source {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        HostEvent::SubagentEvent(omnicrawl_ipc::bridge::SubagentEventPayload {
+            name: name.to_string(),
+            payload,
+        })
     }
 
     fn subagent_event(name: &str, task_id: &str, batch_id: &str) -> HostEvent {

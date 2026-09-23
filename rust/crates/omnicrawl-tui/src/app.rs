@@ -25,7 +25,8 @@ use omnicrawl_commands::SessionSummary;
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::core::settings::{
     load_feature_enabled, load_show_thinking, save_context_compaction_trigger_percent,
-    save_context_window_tokens, save_feature_enabled, save_show_thinking, save_subagent_setting,
+    save_context_window_tokens, save_feature_enabled, save_mcp_config, save_show_thinking,
+    save_subagent_setting, McpConfigData, McpPolicyData, McpServerData,
 };
 use omnicrawl_config::features::advisor::{
     load_advisor_config, save_advisor_config, AdvisorConfig,
@@ -105,9 +106,10 @@ use crate::ui::file_picker::{FilePickerEvent, FilePickerState};
 use crate::ui::fullscreen::input::menu::{MenuAction, MenuKey};
 use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
-    nearest_compaction_percent, reasoning_label, ChannelRow, FieldValue, FormKind, SettingsChange,
-    SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow,
-    TtsChange, TtsDraft, TtsValues, VisionChange, VisionModelRef, SUBAGENT_ADVANCED_SPECS,
+    nearest_compaction_percent, reasoning_label, ChannelRow, FieldValue, FormKind, McpChange,
+    McpServerDraft, McpServerRow, McpSettingsValues, SettingsChange, SettingsEvent, SettingsState,
+    SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow, TtsChange, TtsDraft, TtsValues,
+    VisionChange, VisionModelRef, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
 use omnicrawl_tts::config::TtsConfig;
@@ -1554,6 +1556,10 @@ impl App {
             }
         }
         self.state.status = Some(kind.working_status().to_string());
+        // `/review` 运行期间子代理事件进流式对话面板（面板按 batch_id 挂进消息流）。
+        if matches!(kind, KernelCommand::Review { .. }) {
+            self.state.subagent_stream = true;
+        }
         let id = self.send(command);
         self.pending_commands.insert(id, kind);
     }
@@ -1584,6 +1590,9 @@ impl App {
     fn finish_kernel_command(&mut self, command: KernelCommand, frame: &Frame) {
         // 回执到了就收起状态行：命令已经不在执行中。
         self.state.status = None;
+        if matches!(command, KernelCommand::Review { .. }) {
+            self.state.subagent_stream = false;
+        }
         match (&frame.error, &frame.result) {
             (Some(error), _) => {
                 let label = command.label();
@@ -1715,6 +1724,7 @@ impl App {
         )
         .with_form(FormKind::ImageGen, image_gen_form_values(&image_gen))
         .with_subagents(subagent_rows(&subagent_config))
+        .with_mcp(self.mcp_settings_values(&environment))
         .with_vision(
             vision.enabled,
             vision.models.iter().map(vision_ref_from_config).collect(),
@@ -1841,6 +1851,7 @@ impl App {
             SettingsChange::Feature { key, enabled } => self.apply_feature(key, *enabled)?,
             SettingsChange::Form { kind, values } => self.apply_form(*kind, values)?,
             SettingsChange::Subagent(subagent) => self.apply_subagent(subagent)?,
+            SettingsChange::Mcp(change) => self.apply_mcp(change)?,
             SettingsChange::Vision(vision) => self.apply_vision(vision)?,
             SettingsChange::Tts(change) => self.apply_tts(change)?,
         };
@@ -2316,6 +2327,89 @@ impl App {
             if enabled { "启用" } else { "关闭" },
             path.display()
         ))
+    }
+
+    /// 读 MCP 设置页的初值：全局开关/策略 + Server 列表；读不出来用保守默认值。
+    fn mcp_settings_values(&self, environment: &ConfigEnvironment) -> McpSettingsValues {
+        match load_mcp_config(environment, None) {
+            Ok(config) => mcp_values_from_config(&config),
+            Err(error) => {
+                eprintln!("[tui] MCP 配置读取失败，MCP 设置页用默认值：{error}");
+                McpSettingsValues::default()
+            }
+        }
+    }
+
+    /// 应用一次 MCP 设置：把界面变更写回 `[mcp]` 段，再重建 MCP 连接与工具表。
+    ///
+    /// MCP 能力注册进工具表，所以保存后必须重建注册表；旧管理器先 `close()`，
+    /// 不给系统留下孤儿子进程（与退出路径同一处理）。
+    fn apply_mcp(&mut self, change: &McpChange) -> Result<String, String> {
+        let environment = ConfigEnvironment::from_process();
+        let config = load_mcp_config(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let mut data = mcp_config_data(&config);
+        match change {
+            McpChange::Globals {
+                enabled,
+                allow_external_network_tools,
+                require_confirmation_for_write,
+                require_confirmation_for_command,
+                audit_log_enabled,
+                timeout_seconds,
+            } => {
+                data.enabled = *enabled;
+                data.default_timeout_seconds = *timeout_seconds;
+                data.policy = McpPolicyData {
+                    require_confirmation_for_write: *require_confirmation_for_write,
+                    require_confirmation_for_command: *require_confirmation_for_command,
+                    allow_external_network_tools: *allow_external_network_tools,
+                    audit_log_enabled: *audit_log_enabled,
+                };
+            }
+            McpChange::SaveServer(draft) => {
+                let name = draft.name.trim().to_string();
+                if name.is_empty() {
+                    return Err("设置未完成：Server 名称不能为空。".to_string());
+                }
+                let original = draft.original_name.as_deref();
+                let duplicate = data.servers.iter().any(|(key, _)| key == &name)
+                    && original != Some(name.as_str());
+                if duplicate {
+                    return Err("设置未完成：Server 名称不能重复。".to_string());
+                }
+                let previous = original
+                    .and_then(|key| data.servers.iter().find(|(name, _)| name == key))
+                    .map(|(_, server)| server.clone());
+                let server = mcp_server_data(draft.as_ref(), previous.as_ref())?;
+                if let Some(original) = original {
+                    if original != name {
+                        data.servers.retain(|(key, _)| key != original);
+                    }
+                }
+                match data.servers.iter_mut().find(|(key, _)| key == &name) {
+                    Some(entry) => entry.1 = server,
+                    None => data.servers.push((name, server)),
+                }
+            }
+            McpChange::SetServerEnabled { name, enabled } => {
+                if let Some(entry) = data.servers.iter_mut().find(|(key, _)| key == name) {
+                    entry.1.enabled = *enabled;
+                }
+            }
+            McpChange::DeleteServer { name } => {
+                data.servers.retain(|(key, _)| key != name);
+            }
+        }
+        let path = save_mcp_config(&environment, &data, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 旧连接先关，再按新配置重新发现并重建工具表。
+        if let Some(manager) = self.registry.mcp() {
+            manager.close();
+        }
+        self.registry_options.mcp = mcp_manager(&self.workspace);
+        self.rebuild_registry()?;
+        Ok(format!("MCP 设置已保存：{}。", path.display()))
     }
 
     /// 保存一页表单：按表单页把字段值拼回配置结构，写盘后再让宿主侧生效。
@@ -3658,6 +3752,147 @@ fn generation_options(llm: &LlmConfig) -> Value {
 }
 
 /// 工具开关行：按 `TOOL_SWITCH_KEYS` 的顺序，注册状态来自当前工具表。
+/// MCP 配置 → 设置面板初值。
+fn mcp_values_from_config(config: &omnicrawl_mcp::config::McpConfig) -> McpSettingsValues {
+    McpSettingsValues {
+        enabled: config.enabled,
+        allow_external_network_tools: config.policy.allow_external_network_tools,
+        require_confirmation_for_write: config.policy.require_confirmation_for_write,
+        require_confirmation_for_command: config.policy.require_confirmation_for_command,
+        audit_log_enabled: config.policy.audit_log_enabled,
+        timeout_seconds: config.default_timeout_seconds,
+        servers: config
+            .servers
+            .iter()
+            .map(|(_, server)| McpServerRow {
+                name: server.name.clone(),
+                enabled: server.enabled,
+                transport: server.transport.clone(),
+                risk_level: server.risk_level.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// MCP 配置（内核/客户端的形态）→ 可写回配置（`omnicrawl-config` 的形态）。
+fn mcp_config_data(config: &omnicrawl_mcp::config::McpConfig) -> McpConfigData {
+    McpConfigData {
+        enabled: config.enabled,
+        default_timeout_seconds: config.default_timeout_seconds,
+        servers: config
+            .servers
+            .iter()
+            .map(|(_, server)| {
+                let mut env = omnicrawl_config::toml::Table::new();
+                for (key, value) in &server.env {
+                    env.insert(
+                        key.clone(),
+                        omnicrawl_config::toml::Value::String(value.clone()),
+                    );
+                }
+                let mut headers = omnicrawl_config::toml::Table::new();
+                for (key, value) in &server.headers {
+                    headers.insert(
+                        key.clone(),
+                        omnicrawl_config::toml::Value::String(value.clone()),
+                    );
+                }
+                (
+                    server.name.clone(),
+                    McpServerData {
+                        enabled: server.enabled,
+                        transport: server.transport.clone(),
+                        command: server.command.clone().unwrap_or_default(),
+                        args: server.args.clone(),
+                        url: server.url.clone().unwrap_or_default(),
+                        env,
+                        headers,
+                        timeout_seconds: server.timeout_seconds,
+                        risk_level: server.risk_level.clone(),
+                    },
+                )
+            })
+            .collect(),
+        policy: McpPolicyData {
+            require_confirmation_for_write: config.policy.require_confirmation_for_write,
+            require_confirmation_for_command: config.policy.require_confirmation_for_command,
+            allow_external_network_tools: config.policy.allow_external_network_tools,
+            audit_log_enabled: config.policy.audit_log_enabled,
+        },
+    }
+}
+
+/// 编辑草稿 → 可写回的 Server 数据。
+///
+/// 环境变量与请求头在界面上是 `KEY=VALUE;…`：留空表示保持原值（凭据不在界面回显，
+/// 因此不能因为一次编辑把它们抹掉）；参数按 `shlex.split(posix=True)` 切分，
+/// 与 Python 编辑器同口径。
+fn mcp_server_data(
+    draft: &McpServerDraft,
+    previous: Option<&McpServerData>,
+) -> Result<McpServerData, String> {
+    let transport = if draft.transport.trim().is_empty() {
+        "stdio".to_string()
+    } else {
+        draft.transport.trim().to_string()
+    };
+    let args = omnicrawl_controllers::subagents::shlex_split(draft.args.trim(), true)
+        .unwrap_or_else(|_| draft.args.split_whitespace().map(str::to_string).collect());
+    let env = parse_key_value_list(&draft.env, previous.map(|server| &server.env), "环境变量")?;
+    let headers = parse_key_value_list(
+        &draft.headers,
+        previous.map(|server| &server.headers),
+        "请求头",
+    )?;
+    let risk_level = if draft.risk_level.trim().is_empty() {
+        "restricted".to_string()
+    } else {
+        draft.risk_level.trim().to_string()
+    };
+    Ok(McpServerData {
+        enabled: draft.enabled,
+        transport,
+        command: draft.command.trim().to_string(),
+        args,
+        url: draft.url.trim().to_string(),
+        env,
+        headers,
+        timeout_seconds: draft.timeout_seconds,
+        risk_level,
+    })
+}
+
+/// 解析 `KEY=VALUE;KEY2=VALUE` 形式的表；留空保持原值，格式错时拒绝保存。
+fn parse_key_value_list(
+    text: &str,
+    previous: Option<&omnicrawl_config::toml::Table>,
+    label: &str,
+) -> Result<omnicrawl_config::toml::Table, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(previous.cloned().unwrap_or_default());
+    }
+    let mut table = omnicrawl_config::toml::Table::new();
+    for item in trimmed.split(';') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = item.split_once('=') else {
+            return Err(format!("设置未完成：{label}格式必须是 KEY=VALUE。"));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("设置未完成：{label}格式必须是 KEY=VALUE。"));
+        }
+        table.insert(
+            key.to_string(),
+            omnicrawl_config::toml::Value::String(value.to_string()),
+        );
+    }
+    Ok(table)
+}
+
 fn tool_switch_rows(registry: &ToolRegistry) -> Vec<ToolSwitchRow> {
     let environment = ConfigEnvironment::from_process();
     let switches = load_tool_switches(&environment, None).unwrap_or_default();

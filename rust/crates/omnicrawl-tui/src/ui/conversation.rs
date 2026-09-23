@@ -15,7 +15,7 @@ use ratatui::Frame;
 
 use super::{display_width, fit, pad, wrap_display};
 use crate::state::{AppState, Record, ToolCard, ToolStatus};
-use crate::ui::fullscreen::rendering::widgets::SubAgentProgressTree;
+use crate::ui::fullscreen::rendering::widgets::{SubAgentConversation, SubAgentProgressTree};
 
 /// 工具卡正文在缩略态与展开态的行数上限（对映 Python `MAX_EXPANDED_BODY_LINES`）。
 const TOOL_BODY_LIMIT: usize = 5;
@@ -93,6 +93,9 @@ pub fn display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
             Record::Notice(text) => push_prefixed(&mut lines, "· ", text, width, Color::DarkGray),
             Record::Tool(card) => push_tool(&mut lines, card, width, state),
             Record::SubagentTree(tree) => push_subagent_tree(&mut lines, tree),
+            Record::SubagentConversation(panel) => {
+                push_subagent_conversation(&mut lines, panel, width)
+            }
         }
     }
     lines.push(DisplayLine::plain(Line::raw("")));
@@ -222,6 +225,17 @@ fn push_prefixed(
 /// [`AppState::refresh_subagent_trees`] 推进），因此渲染本身保持只读。
 fn push_subagent_tree(lines: &mut Vec<DisplayLine>, tree: &SubAgentProgressTree) {
     for line in tree.render_text(None).split_lines() {
+        lines.push(DisplayLine::plain(Line::from(line.to_spans())));
+    }
+}
+
+/// 子代理流式对话面板：`│` 包裹的会话面板按可用宽度换行。
+fn push_subagent_conversation(
+    lines: &mut Vec<DisplayLine>,
+    panel: &SubAgentConversation,
+    width: usize,
+) {
+    for line in panel.render_text(width).split_lines() {
         lines.push(DisplayLine::plain(Line::from(line.to_spans())));
     }
 }

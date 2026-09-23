@@ -245,9 +245,14 @@ impl CommandAgent for TuiHostAgent<'_> {
     // ── MCP / 插件 ────────────────────────────────────────────
 
     fn mcp_status(&self) -> String {
-        // `format_mcp_status` 只在宿主给得出状态时才有意义；TUI 没有与 Python 同形的
-        // MCP 清单（连接托管在工具表里），返回空串让 `/mcp` 的文案如实说明。
-        String::new()
+        // MCP 清单由宿主工具表持有连接，`McpClientManager::format_status()` 已能
+        // 给出与 Python 同形的摘要（启用/连接数、工具与资源计数、逐 Server 状态）。
+        // 未配置 MCP 时给一句明确说明，而不是空串。
+        let app = self.app.borrow();
+        match app.registry().mcp() {
+            Some(manager) => manager.format_status(),
+            None => "MCP 未配置：在 config.toml 的 [mcp] 段添加 Server 后可查看详情。".to_string(),
+        }
     }
 
     fn plugins_status(&self) -> Option<String> {

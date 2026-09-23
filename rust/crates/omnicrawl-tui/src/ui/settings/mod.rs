@@ -19,14 +19,20 @@ pub use form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS
 
 pub use state::{
     channel_field_value, display_value, ChannelDropdown, ChannelField, ChannelFormView, ChannelRow,
-    ChoiceKind, ContextField, Dropdown, DropdownField, Focus, OptionValue, Pane, SettingsChange,
+    ChoiceKind, ContextField, Dropdown, DropdownField, Focus, McpChange, McpEditorRowView,
+    McpRowView, McpServerDraft, McpServerRow, McpSettingsValues, OptionValue, Pane, SettingsChange,
     SettingsEvent, SettingsState, SettingsValues, SubagentChange, SubagentRow, ToolSwitchRow,
-    TtsChange, TtsDraft, TtsRowView, TtsValues, VisionChange, VisionModelRef, TTS_DEVICE_OPTIONS,
-    TTS_FALLBACK_VOICES, TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_THREAD_COUNTS,
+    TtsChange, TtsDraft, TtsRowView, TtsValues, VisionChange, VisionModelRef,
+    MCP_EDITOR_FIELD_COUNT, MCP_EDITOR_LABELS, MCP_ROW_COUNT, MCP_ROW_LABELS, MCP_TIMEOUT_OPTIONS,
+    TTS_DEVICE_OPTIONS, TTS_FALLBACK_VOICES, TTS_ROW_COUNT, TTS_ROW_LABELS, TTS_THREAD_COUNTS,
 };
 
 /// 一级设置项的自上而下顺序（对映 Python 的 `_SETTING_ORDER`）。
-pub const ROW_ORDER: [&str; 18] = [
+///
+/// `mcp` 是 Rust 宿主额外暴露的一级项：Python 把 MCP 设置做成独立弹层
+/// （`MCPSettingsScreen`）并由 `SettingsAction("mcp_settings")` 打开，Rust 的设置面板
+/// 没有独立导航层，因此把它并入左侧列表，键名与 Python 的 `_build_complex_pane("mcp")` 一致。
+pub const ROW_ORDER: [&str; 19] = [
     "config_chat",
     "model",
     "channels",
@@ -35,6 +41,7 @@ pub const ROW_ORDER: [&str; 18] = [
     "context",
     "reasoning",
     "tools",
+    "mcp",
     "vision",
     "image_gen",
     "tts",
@@ -58,6 +65,7 @@ pub fn row_label(key: &str) -> String {
         "context" => "上下文",
         "reasoning" => "推理强度",
         "tools" => "工具设置",
+        "mcp" => "MCP 设置",
         "vision" => "视觉",
         "image_gen" => "图像生成",
         "tts" => "TTS 语音合成",
