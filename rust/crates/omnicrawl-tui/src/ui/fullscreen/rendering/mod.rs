@@ -7,11 +7,13 @@
 //!
 //! Rust 侧按文件顺序迁移，公共的样式文本由 [`crate::ui::fullscreen::text`] 承载；
 //! `widgets` 已落子任务进度树、任务清单与子任务会话面板，`difflib` 提供
-//! `tool_diff` 依赖的 `SequenceMatcher` 等价实现，`welcome_logo` 与 `logo_anim`
+//! `tool_diff` 依赖的 `SequenceMatcher` 等价实现，`highlight` 为代码块提供逐 token
+//! 高亮（对映 Rich `Syntax` 的 monokai 主题），`welcome_logo` 与 `logo_anim`
 //! 提供首屏欢迎 Logo 的静态字形与解密扫描入场动画，`latex` 把数学公式转成
 //! Unicode 近似文本，其余组件随后续批次补入。
 
 pub mod difflib;
+pub mod highlight;
 pub mod latex;
 pub mod logo_anim;
 pub mod markdown;

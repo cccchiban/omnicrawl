@@ -238,8 +238,10 @@ impl FeishuApi {
 
     /// 下载消息资源；返回 (内容, 文件名)。
     ///
-    /// 与 SDK 的差别：不解析 `Content-Disposition`，缺文件名时回落成 `file_key`，
-    /// 由调用方按资源类型补扩展名（`resource_file_name`）。
+    /// 文件名优先取响应头的 `Content-Disposition`（RFC 6266：`filename*` 扩展参数优先于
+    /// `filename`），取不到才回落成 `file_key`，由调用方按资源类型补扩展名
+    /// （`resource_file_name`）。飞书对上传时就带名字的资源会回这个头，回落分支只对
+    /// 图片/语音这类服务端自生成的 key 生效。
     pub fn download_resource(
         &self,
         message_id: &str,
@@ -271,7 +273,12 @@ impl FeishuApi {
                 message: "资源下载失败".to_string(),
             });
         }
-        Ok((reply.body, file_key.to_string()))
+        // 先算文件名再移 `body`：`header()` 借的是 `reply`。
+        let name = reply
+            .header("content-disposition")
+            .and_then(super::files::filename_from_content_disposition)
+            .unwrap_or_else(|| file_key.to_string());
+        Ok((reply.body, name))
     }
 
     /// 请求长连接端点，拿到连接 URL 与客户端配置。

@@ -242,7 +242,8 @@ pub fn resolve_scope(args: &PluginArgs, workspace_root: &Path) -> Result<String,
 /// `node_runner.mjs` 所在目录。
 ///
 /// 解析顺序：`OMNICRAWL_RUNNER_DIR` → 扩展内核的搜索链（可执行文件及其祖先下的
-/// `extensions/` 与 `omnicrawl/extensions/`、进程工作目录）→ 可执行文件同级的
+/// `extensions/`、`rust/assets/extensions/`（仓库检出）与 `omnicrawl/extensions/`、
+/// 进程工作目录）→ 可执行文件同级的
 /// `extensions/`。宿主运行期的 [`worker_launcher`] 用的是同一条链，
 /// 因此「CLI 装得上」与「宿主起得来」不会分裂。
 pub fn runner_dir() -> PathBuf {

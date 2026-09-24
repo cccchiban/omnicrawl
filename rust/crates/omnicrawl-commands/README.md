@@ -34,21 +34,23 @@
 写回函数并传入 `agent.config_environment()`，与 Python `slash.py` 同时调 agent 方法与配置函数
 的结构一致。
 
-## 尚未接线的宿主入口（后续批次）
+## 宿主接线（当前状态）
 
-本 crate 只提供框架与命令定义；**刻意不动** `omnicrawl-tui/src/app.rs` 里 `/undo`、`/settings`
-的既有特判（那一版 `is_undo_command` / `is_settings_command` 仍在服役）。接线前需要先解决三件事：
+本 crate 只提供框架与命令定义；宿主侧 TUI 已把能力面接上（`omnicrawl-tui/src/commands.rs`
+的 `TuiHostAgent`），当初挡在前面的三件事都已解决：
 
-1. **协议缺口**：协议 v1 只有 `turn.undo` 与 `session.settings` 两个「命令可复用」的方法。
-   `/sessions`、`/archives`、`/history`、`/resume`、`/new`、`/archive`、`/rename`、`/compact`、
-   `/tasks`、`/task`、`/review` 都要求内核（会话与子代理在内核侧）先给出对应方法或映射，
-   否则 Rust 宿主实现 `CommandAgent` 时只能如实回「内核未提供该方法」。
-2. **代理对象要线程安全**：Rust TUI 的 `App` 不可 `Send + Sync`（持有 crossterm 状态与内核
-   接收端），因此宿主侧要另建一个由 `Arc` 组成的「命令代理」（内核发送端、工具表、MCP 管理器、
-   配置环境、工作区路径），而不是把 `App` 直接实现成 `CommandAgent`。
-3. **`/undo` 是异步路径**：Python 的 `undo_last_turn()` 同步返回结论，Rust 侧是
-   「发 `turn.undo` → 等响应帧 → 回填消息流」。接线时要么给 `CommandAgent` 加一条「已受理、
-   结果稍后到」的语义，要么保持 `/undo` 在 `App` 里走请求/响应，仅把注册表用于其余命令。
+1. **协议缺口已补**：`session.list` / `session.history` / `session.resume` / `session.new` /
+   `session.archive` / `session.rename` / `session.compact` / `turn.undo` / `subagent.query` 等
+   方法都已在内核侧落地，命令层对内核只需转发；`/mcp` 走宿主工具表
+   （`McpClientManager::format_status()`），不需要协议方法。
+2. **代理对象不再要求线程安全**：命令处理器是同步接口，TUI 用 `TuiHostAgent`（以 `RefCell`
+   借用 `App`）直接实现，需要内核对往返的命令就地做一次同步 `request_kernel`，
+   没有另建 `Arc` 代理。
+3. **三条慢命令不进注册表**：`/undo`、`/compact`、`/review` 由 TUI 在分发前拦下
+   （`KernelCommand::from_parsed`）→ 宿主异步下发内核（整轮回退、摘要模型、
+   子代理工具批次要回到宿主执行层，同步等会死锁）；命令层这三条只回「已交给宿主」。
+   需要延迟执行的命令用 `CommandResult::with_deferred`（如 `/workspace`），`/settings` 则经
+   注册表返回 `with_open_settings`，由 TUI 打开面板。
 
 ## 与 Python 的已知文案差异
 

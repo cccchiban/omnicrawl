@@ -26,13 +26,15 @@ use omnicrawl_controllers::approval::{
     REVIEW_EMPTY_DETAIL, REVIEW_THINKING_ONLY_DETAIL, REVIEW_USER_SUMMARY_MAX_CHARS,
     TOOL_REVIEW_SYSTEM_PROMPT,
 };
+use omnicrawl_llm::desensitization::ner::NerLayerOptions;
 use omnicrawl_llm::desensitization::rules::{
     CATEGORY_BANK_CARD, CATEGORY_DB_CONNECTION_STRING, CATEGORY_EMAIL, CATEGORY_EXTERNAL_IP,
     CATEGORY_INTERNAL_IP, CATEGORY_LICENSE_PLATE, CATEGORY_MAC_ADDRESS, CATEGORY_PEM_PRIVATE_KEY,
     CATEGORY_URL,
 };
 use omnicrawl_llm::desensitization::{
-    build_enabled_rules, load_gitleaks_rules, OneShotMasker, OneshotOptions,
+    build_enabled_rules, build_runtime_ner_layer, load_gitleaks_rules, OneShotMasker,
+    OneshotOptions,
 };
 use omnicrawl_llm::{ChatEndpoint, ChatRequestInput, DiscardSink, OpenAiChatRuntime};
 use omnicrawl_protocol::{conversation_from_openai_messages, GenerationOptions, ToolSpec};
@@ -102,6 +104,22 @@ pub fn masking_from_config(environment: &ConfigEnvironment) -> Option<ReviewMask
             let path = config.gitleaks_config_path.trim();
             let path = if path.is_empty() { None } else { Some(path) };
             masker = masker.with_gitleaks(load_gitleaks_rules(path));
+        }
+        // NER 语义兜底层：与 Python `OneShotMasker` 一致，旁路调用同样接这一层
+        // （`oneshot.py:52` 的 `build_ner_layer(config)`）。抽取器池是进程级的，
+        // 每个审查请求重新取层只是复用池里的同一份权重。
+        if config.ner_enabled {
+            let options = NerLayerOptions {
+                enabled: true,
+                model_path: config.ner_model_path.clone(),
+                device: config.ner_device.clone(),
+                entity_types: config.ner_entity_types.clone(),
+                min_entity_chars: config.ner_min_entity_chars,
+                cache_size: config.ner_cache_size,
+            };
+            if let Some(layer) = build_runtime_ner_layer(&options) {
+                masker = masker.with_ner(std::sync::Arc::new(layer));
+            }
         }
         Ok(masker)
     });

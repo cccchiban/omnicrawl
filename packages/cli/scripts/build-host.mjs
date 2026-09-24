@@ -9,8 +9,9 @@
 //   payload/omnicrawl-tui[.exe]    终端工作台
 //   payload/omnicrawl-api[.exe]    本地 HTTP/SSE 服务
 //   payload/omnicrawl-mcp-server[.exe]
-//   payload/omnicrawl/templates/   提示词与模式模板（运行期可编辑；缺失时用内嵌副本）
-//   payload/omnicrawl/config/templates/   首次配置的三份 TOML 模板
+//   payload/omnicrawl/templates/   提示词与模式模板（源在 rust/assets/templates；缺失时用内嵌副本）
+//   payload/omnicrawl/config/templates/   首次配置的三份 TOML 模板（源在 rust/assets/config-templates）
+//   payload/omnicrawl/extensions/node_runner.mjs   插件 Worker 的 JS 端点（源在 rust/assets/extensions）
 //
 // `--legacy-python` 保留旧的 PyInstaller 路径（冻结 Python 宿主），仅用于对照与回退验证。
 //
@@ -87,17 +88,26 @@ function buildRust() {
     }
     cpSync(candidate, join(payloadDir, `${name}${suffix}`))
   }
-  // 模板走运行期磁盘路径（`<可执行文件祖先>/omnicrawl/templates`）；内嵌副本仍作兜底。
-  cpSync(join(repoRoot, 'omnicrawl', 'templates'), join(payloadDir, 'omnicrawl', 'templates'), {
+  // 模板源在 rust/assets/templates（脱离 Python 包树后的单一来源）；载荷内仍走运行期磁盘路径
+  // `<可执行文件祖先>/omnicrawl/templates`，缺失时用编译期内嵌副本。
+  // 插件 Worker 的 JS 端点随载荷分发：宿主按 `<可执行文件祖先>/omnicrawl/extensions/` 找到它。
+  cpSync(join(repoRoot, 'rust', 'assets', 'extensions'), join(payloadDir, 'omnicrawl', 'extensions'), {
+    recursive: true,
+  })
+  cpSync(join(repoRoot, 'rust', 'assets', 'templates'), join(payloadDir, 'omnicrawl', 'templates'), {
     recursive: true,
   })
   cpSync(
-    join(repoRoot, 'omnicrawl', 'config', 'templates'),
+    join(repoRoot, 'rust', 'assets', 'config-templates'),
     join(payloadDir, 'omnicrawl', 'config', 'templates'),
     { recursive: true },
   )
 
-  const version = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')).version
+  // 版本号取自启动器包（`packages/cli/package.json`）：发布 tag 校验与 npm 包版本都以它为准。
+  // 根 `package.json` 是私有 workspace 清单，没有 `version` 字段，早先读它会得到 undefined。
+  const version = JSON.parse(
+    readFileSync(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
+  ).version
   writeMeta({
     platform: platformKey,
     hostVersion: version,
@@ -107,13 +117,19 @@ function buildRust() {
   })
 }
 
-/** 旧路径：PyInstaller one-dir 冻结 Python 宿主（对照与回退验证用）。 */
+// 旧路径：PyInstaller one-dir 冻结 Python 宿主（对照与回退验证用）。
+//
+// **待下线**：产品默认路径（`buildRust`）已完全不碰 Python。本函数保留到 Rust 侧
+// 功能缺口补齐、Textual UI 对照价值耗尽为止，之后连同 `packaging/pyinstaller/` 一起移除。
+// 它触发的 Python 调用逐处标了 `FROZEN-ALLOW`，供 `rust/tools/check_frozen_reference.mjs`
+// 区分「已计划的回退路径」与「意外回流」。
 function buildLegacyPython() {
   const specPath = join(repoRoot, 'packaging', 'pyinstaller', 'omnicrawl-host.spec')
   const distPath = join(outRoot, 'dist')
   const workPath = join(outRoot, 'build')
   const python = process.env.OMNICRAWL_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3')
   const run = (args, options = {}) =>
+    // FROZEN-ALLOW：legacy 回退路径（待下线），产品默认路径不经过此处。
     execFileSync(python, args, { cwd: repoRoot, encoding: 'utf8', ...options })
 
   try {

@@ -73,8 +73,9 @@ cd rust && cargo test -p omnicrawl-config-chat   # 同输入逐项比对
 5. **服务写回**：`apply_text` 的改动列表与 `config.toml` / `subagents.toml` 的最终文本逐字节一致
    （含「先全校验再写盘」的失败样例与 `subagents.enabled` 落独立文件）。
 
-## 尚未接线
+## 宿主接线
 
-宿主（TUI / 本地 API）还没有调用入口：设置面板里 `config_chat` 一级项仍显示未迁移提示。
-接线时宿主负责给出资源目录（随包 `data/`）、实现 `ConfigChatAgent` 的 setter 子集，
-并把 `ConfigChange` 推给自己的运行态刷新路径。
+TUI 已接线：设置面板的 `config_chat` 一级项打开配置对话页，宿主负责给出资源目录（随包 `data/`）、
+以 `TuiHostAgent` 实现 `ConfigChatAgent` 的 setter 子集，并把 `ConfigChange` 推给自己的运行态
+刷新路径（重建工具表并下发内核）。入口见 `omnicrawl-tui/src/app.rs` 的 `open_config_chat` /
+`tick_config_chat` 与 `src/ui/config_chat.rs` 的渲染。本地 API 侧尚未给出同等入口。

@@ -1,4 +1,23 @@
-"""OmniCrawl 的业务模块包。"""
+"""OmniCrawl 的 Python 侧业务模块包（**冻结的语义基准**）。
+
+本包不再是产品实现。产品链路已全部迁到 Rust（内核 + 宿主 + TUI + API + MCP + 连接器 + TTS），
+由 npm 分发；仓库根的 ``main.py`` / ``python -m omnicrawl`` 只是转发到 Rust 二进制的垫片。
+
+本包现在的唯一职责是充当 **parity 语义基准**：
+
+- ``rust/tools/gen_*.py`` 从这里取期望值，生成 ``crates/*/tests/fixtures/*_parity.json``；
+- ``tests/`` 的对照测试直接调用这里，验证 Rust 实现与基准逐字段一致。
+
+因此——
+
+- **不要**在这里新增产品功能；功能缺口一律补齐到 ``rust/crates/``；
+- **不要**让 ``rust/crates/**/src/`` 依赖 Python 解释器（由
+  ``rust/tools/check_frozen_reference.mjs`` 在 CI 上强制检查）；
+- 改动这里的语义实现时，必须重跑对应的 ``rust/tools/gen_*_fixture.py`` 并让 Rust 测试继续通过，
+  否则两侧契约会静默分叉。
+
+操作手册见 ``rust/docs/frozen-reference.md``。
+"""
 
 from __future__ import annotations
 

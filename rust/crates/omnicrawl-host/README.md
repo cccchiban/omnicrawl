@@ -12,11 +12,12 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`listing`、`git`、`knowledge`、`memory`、`web_transport`、`web_search`、`fetcher`、`sample`、`tts`、`advisor`、`windows/*`、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`wreq_transport`（浏览器指纹传输，仅 `fetcher` 用）、`web_search`、`fetcher`、`sample`、`tts`、`advisor`、`windows/*`、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断 |
 | `src/prompt.rs` | 启动期提示词装配：模板 → system prompt、AGENTS.md 合并、Skill 目录扫描、模式切换与 `context_messages`（对映 `agent/controllers/tools/building.py` 与 `agent/core.py` 的启动准备） |
+| `src/prompt_cache.rs` | 稳定 prompt 前缀的身份指纹：`initialize.model.prompt_cache_identity` 的七字段组装（对映 `agent/context/prompt_context.py::build_prompt_cache_identity`），与 Python 逐字节对齐 |
 
 ## 提示词装配
 
@@ -120,7 +121,7 @@ let text = plugins.turn_start(text, session, Some(&turn_id))?;   // 可改写 us
 - **无插件时零开销**：`plugins: None` 或总开关关闭时所有方法原样放行，不产生额外分支。
 - **Worker 启动路径**由 `omnicrawl-extensions::protocol::WorkerLauncher::resolve()` 统一解析，
   与 CLI 的安装期冒烟测试同一份（`OMNICRAWL_RUNNER_DIR` → 可执行文件祖先的 `extensions/`
-  与 `omnicrawl/extensions/` → 工作目录）；解析失败只留一条「无插件模式」诊断，
+  与 `rust/assets/extensions/`（仓库检出）或 `omnicrawl/extensions/` → 工作目录）；解析失败只留一条「无插件模式」诊断，
   不再逐个插件报「握手失败」。
 
 ## 已知差异
@@ -130,8 +131,10 @@ let text = plugins.turn_start(text, session, Some(&turn_id))?;   // 可改写 us
   参数改写（`tool.call.before` 的 transform 结局）在 TUI 侧走 `PendingBatch::rewrite_arguments` 回写，
   审批面板的摘要仍按改写前的参数渲染。
 - 插件对 `context.build.*` / `model.request.*` / `model.response.*` / `context.compaction.after_turn`
-  这些回合内节点尚未接线：它们在 Python 侧由 Agent 主循环分发，而 Rust 的内核（`omnicrawl-core`）
-  目前不持有 Plugins 配置。
+  这些回合内节点**已接线**（`context_build_before` / `context_build_after` / `model_request_before` /
+  `model_response_after` / `model_request_error` / `compaction_after_turn`）：内核（`omnicrawl-core`
+  与 `omnicrawl-cli` 的回合循环）不持有 Plugins 配置，事件与扇出仍由宿主分发——压缩计量由内核在
+  回合收尾回传，宿主据此触发 `context.compaction.after_turn`。
 - `session.close.before` / `session.close.after` 已有入口（`PluginHost::session_close`），
   但宿主目前没有「关闭当前会话」的动作可挂（会话切换是重建内核，不是关闭），暂未接线。
 - `resume` / `undo` 之外的会话动作仍由内核与 `omnicrawl-session` 承担，这里不做会话落盘。

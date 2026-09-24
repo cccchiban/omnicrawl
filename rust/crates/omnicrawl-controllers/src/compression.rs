@@ -64,7 +64,7 @@ pub fn arguments_summary(arguments: &Value) -> String {
 
 /// 压缩器使用的内置系统提示模板（与 Python 同名文件逐字节一致，编译期嵌入）。
 const SYSTEM_TEMPLATE: &str =
-    include_str!("../../../../omnicrawl/templates/tool_output_compression_system.md");
+    include_str!("../../../../rust/assets/templates/tool_output_compression_system.md");
 
 /// 原始输出在提示词里的包裹标记。
 pub const OUTPUT_OPEN: &str = "<<<TOOL_OUTPUT_START>>>";

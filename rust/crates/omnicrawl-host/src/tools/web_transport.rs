@@ -65,6 +65,12 @@ pub struct WebRequest {
     pub insecure: bool,
     pub timeout: Duration,
     pub max_redirects: u32,
+    /// 浏览器指纹档案名（`chrome`/`firefox`/`safari`/`edge`），语义对齐 Python
+    /// `omnicrawl/net/fetcher.py` 的 `impersonate` 参数（含前缀匹配与未知值回退 `chrome`）。
+    ///
+    /// `None` 表示调用方没有要求指纹模拟：普通传输（ureq）会忽略它，只有
+    /// [`super::wreq_transport::WreqWebTransport`] 会据此挑选浏览器档案。
+    pub impersonate: Option<String>,
 }
 
 impl WebRequest {
@@ -78,6 +84,7 @@ impl WebRequest {
             insecure: false,
             timeout,
             max_redirects: MAX_REDIRECTS,
+            impersonate: None,
         }
     }
 
@@ -96,6 +103,7 @@ impl WebRequest {
             insecure: false,
             timeout,
             max_redirects: 0,
+            impersonate: None,
         }
     }
 
@@ -114,6 +122,7 @@ impl WebRequest {
             insecure: false,
             timeout,
             max_redirects: 0,
+            impersonate: None,
         }
     }
 }

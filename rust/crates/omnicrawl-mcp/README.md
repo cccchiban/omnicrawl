@@ -87,17 +87,15 @@ stderr 排空、降级与关闭都在真进程上验证（不依赖 Python）。
 - 退出时 `ToolRegistry::close_mcp()` 关闭全部 MCP 连接，不留孤儿子进程。
 - HUD 第一行新增 `MCP n` 段（n = 启用的 Server 数）。
 
-**宿主缺口**（本 crate 的接口已就绪，缺的是宿主侧接线，不属于内核移植范围）：
+**宿主接线**（已就绪；本 crate 只提供接口）：
 
-- Textual 的三个 MCP 设置屏（`ui/fullscreen/screens/mcp_*`）→ Rust 全屏设置面板；
-- 本地 API 的 MCP 设置路由（`api/routes/settings.py`）；
-- `/mcp` 状态命令（Rust TUI 尚未接线斜杠命令面，框架与 `/mcp` 命令定义见 `omnicrawl-commands`）；
-  `McpClientManager::format_status()` 已对照就绪，
-  拿到命令面即可直接输出；
-- `ui/fullscreen/status` 的完整状态行（Python 对映层）尚未接进渲染路径，MCP 计数目前只进
-  简化版 HUD；
-- 审批 `review` 分支里「MCP 工具被拒绝时写审计」的编排：`record_denied_tool_call`
-  （拒绝结果 + `approval_result=denied` 审计）已移植并有对照，缺的是宿主审批拒绝路径调用它。
+- Rust 全屏设置面板的 MCP 页（`omnicrawl-tui/src/ui/settings/` 的 `Pane::Mcp`）：全局策略、
+  Server 列表与编辑器，保存后重连并重建工具表；
+- 本地 API：`GET /settings` 的 `mcp` 载荷 + `PUT /settings/mcp`（写盘 + 热更新 + 非法候选回滚）；
+  这个写端点在 Python 侧没有对应物（Textual 在进程内改配置），是宿主自持 MCP 后的新增面；
+- `/mcp` 状态命令与 HUD 的 `MCP n` 段（`McpClientManager::format_status()` 直接输出）；
+- 审批拒绝的审计编排：`omnicrawl-host` 的 `host::record_mcp_denial` 在「人工拒绝」与「审查拒绝」
+  两条路径上写 `approval_result=denied`（与 Python `_approve_tool_call` 同粒度：插件挡下的调用不写）。
 
 内核侧 MCP 接口按 Python 公开面逐项核对无缺口：配置读写、能力发现、工具/资源/提示调用、
 注册表与安全策略、审计、状态查询、stdio 与 HTTP 传输都在 `src/` 落地。

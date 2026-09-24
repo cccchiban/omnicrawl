@@ -9,15 +9,28 @@
 use std::io::Read;
 use std::time::Duration;
 
-/// 一次 HTTP 响应：状态码与原始响应体（图片/文件下载不能按文本读）。
+/// 一次 HTTP 响应：状态码、原始响应体（图片/文件下载不能按文本读）与响应头。
+///
+/// 响应头名统一小写存：文件下载的 `Content-Disposition` 文件名解析需要它，查表也因此
+/// 不必再关心大小写。
 pub struct HttpReply {
     pub status: u16,
     pub body: Vec<u8>,
+    pub headers: Vec<(String, String)>,
 }
 
 impl HttpReply {
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).to_string()
+    }
+
+    /// 按名字取响应头（大小写无关；重名时取第一条）。
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let target = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(key, _value)| *key == target)
+            .map(|(_key, value)| value.as_str())
     }
 }
 
@@ -115,9 +128,24 @@ impl HttpTransport for UreqTransport {
         match agent.run(request) {
             Ok(response) => {
                 let status = response.status().as_u16();
+                // 头要在 `into_body()` 之前取：那个调用会消耗响应。
+                let headers: Vec<(String, String)> = response
+                    .headers()
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.as_str().to_ascii_lowercase(),
+                            value.to_str().unwrap_or_default().to_string(),
+                        )
+                    })
+                    .collect();
                 let mut raw = Vec::new();
                 let _ = response.into_body().into_reader().read_to_end(&mut raw);
-                Ok(HttpReply { status, body: raw })
+                Ok(HttpReply {
+                    status,
+                    body: raw,
+                    headers,
+                })
             }
             Err(error) => Err(error.to_string()),
         }

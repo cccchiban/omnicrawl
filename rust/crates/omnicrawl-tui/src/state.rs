@@ -65,6 +65,18 @@ pub enum Record {
     SubagentConversation(SubAgentConversation),
 }
 
+/// Monitor 任务状态 → 卡片状态：字符串取值与 `MonitorManager` 的快照同源。
+///
+/// `stopped`（被显式终止）归「成功」是因为它同样是终态；用词不精确但原始状态字符串
+/// 仍在卡片正文里（`Monitor · id · stopped`），不必为了措辞新增一个渲染分支。
+fn monitor_status(status: &str) -> ToolStatus {
+    match status {
+        "running" => ToolStatus::Running,
+        "failed" => ToolStatus::Failed,
+        _ => ToolStatus::Ok,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnState {
     Idle,
@@ -401,6 +413,18 @@ impl AppState {
         self.batch.as_ref().and_then(|batch| batch.waiting())
     }
 
+    /// 待决审批对应的调用（工具名 + 当前参数）；没有待决审批时 `None`。
+    ///
+    /// 拒绝时的 MCP 审计要用它，而且要用批次里的**当前**参数：插件可能在
+    /// `tool.call.before` 里改写过参数，审计应与用户看到的、执行层拿到的版本一致。
+    pub fn pending_approval_call(&self) -> Option<omnicrawl_core::ToolCall> {
+        let batch = self.batch.as_ref()?;
+        if !matches!(batch.waiting(), Some(host::Waiting::Approval(_))) {
+            return None;
+        }
+        batch.current().map(|(_, call)| call.clone())
+    }
+
     /// 待决批次的请求 id：界面把决定回给内核时要用它配对。
     pub fn batch_request_id(&self) -> Option<Id> {
         self.batch.as_ref().map(|batch| batch.request_id().clone())
@@ -599,6 +623,22 @@ impl AppState {
     /// 追加一条系统消息；不改动回合状态。
     pub fn notice(&mut self, message: String) {
         self.records.push(Record::Notice(message));
+    }
+
+    /// 追加一条后台任务日志（工具卡形状）；不改动回合状态。
+    ///
+    /// 对映 Python 把 Monitor 增量批次当 `tool` 消息追加进对话区：`call_id` 用
+    /// `monitor:<id>` 前缀，避免与真实工具调用的 id 相撞（工具卡靠它做展开/收起）。
+    pub fn push_monitor_batch(&mut self, monitor_id: &str, status: &str, text: String) {
+        self.records.push(Record::Tool(ToolCard {
+            call_id: format!("monitor:{monitor_id}"),
+            name: "monitor".to_string(),
+            summary: monitor_id.to_string(),
+            status: monitor_status(status),
+            elapsed: None,
+            started: Instant::now(),
+            body: text.lines().map(str::to_string).collect(),
+        }));
     }
 
     /// 用内核回给的会话历史重建对话视图（`/resume` 与 `/undo` 后的重放）。
@@ -912,13 +952,13 @@ impl AppState {
         }
     }
 
-    /// 整批就绪时取走观察并卸下批次；`native_vision` 决定是否把图片注入下一步请求。
-    pub fn take_observations(&mut self, native_vision: bool) -> Option<Vec<AgentLoopObservation>> {
+    /// 整批就绪时取走观察并卸下批次；`attach_images` 决定是否把图片注入下一步请求。
+    pub fn take_observations(&mut self, attach_images: bool) -> Option<Vec<AgentLoopObservation>> {
         if !self.batch.as_ref().is_some_and(|batch| batch.is_ready()) {
             return None;
         }
         let batch = self.batch.take()?;
-        Some(batch.observations(native_vision))
+        Some(batch.observations(attach_images))
     }
 
     /// 执行超时：把未回填的调用写成超时结果、把仍在运行的工具卡收口，并留一条提示；

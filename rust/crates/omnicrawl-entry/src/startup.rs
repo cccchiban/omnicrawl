@@ -25,11 +25,11 @@ use crate::channel_setup::{run_channel_setup, unavailable_outcome};
 pub const TEMPLATES_DIR_ENV: &str = "OMNICRAWL_TEMPLATES_DIR";
 
 const CONFIG_TEMPLATE: &str =
-    include_str!("../../../../omnicrawl/config/templates/config.example.toml");
+    include_str!("../../../../rust/assets/config-templates/config.example.toml");
 const MODELS_TEMPLATE: &str =
-    include_str!("../../../../omnicrawl/config/templates/models.example.toml");
+    include_str!("../../../../rust/assets/config-templates/models.example.toml");
 const SUBAGENTS_TEMPLATE: &str =
-    include_str!("../../../../omnicrawl/config/templates/subagents.example.toml");
+    include_str!("../../../../rust/assets/config-templates/subagents.example.toml");
 
 /// 首次启动的编排结果：诊断文本与是否具备启动条件。
 pub struct StartupOutcome {
@@ -129,7 +129,8 @@ pub fn interactive_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// 磁盘上的模板目录：环境变量优先，其次可执行文件祖先里的 `omnicrawl/config/templates`。
+/// 磁盘上的模板目录：环境变量优先，其次可执行文件祖先里的 `rust/assets/config-templates`
+/// （仓库检出）与 `omnicrawl/config/templates`（已发布载荷）。
 pub fn locate_templates_dir(env: &ConfigEnvironment) -> Option<PathBuf> {
     let configured = env.get_trimmed(TEMPLATES_DIR_ENV);
     if !configured.trim().is_empty() {
@@ -144,6 +145,14 @@ pub fn locate_templates_dir(env: &ConfigEnvironment) -> Option<PathBuf> {
         let Some(directory) = current.as_ref() else {
             break;
         };
+        // 仓库检出里的新家优先（脱离 Python 包树后的单一来源），再落到已发布载荷的旧布局。
+        let candidate = directory
+            .join("rust")
+            .join("assets")
+            .join("config-templates");
+        if candidate.join("config.example.toml").is_file() {
+            return Some(candidate);
+        }
         let candidate = directory.join("omnicrawl").join("config").join("templates");
         if candidate.join("config.example.toml").is_file() {
             return Some(candidate);
@@ -246,6 +255,22 @@ mod tests {
             assert!(!text.trim().is_empty(), "{resource} 不应为空");
         }
         assert!(embedded_template("system_prompt.md").is_none());
+    }
+
+    /// 仓库检出里配置模板目录的优先级：`rust/assets/config-templates` 必须先于旧的
+    /// `omnicrawl/config/templates`（后者只剩「已发布载荷」的兼容角色）。
+    #[test]
+    fn config_templates_dir_prefers_rust_assets() {
+        let env = ConfigEnvironment::new("bundle", "test");
+        let found = locate_templates_dir(&env).expect("仓库检出里应能找到配置模板目录");
+        assert!(found.join("config.example.toml").is_file(), "{found:?}");
+        assert!(
+            found
+                .to_string_lossy()
+                .replace('\\', "/")
+                .ends_with("rust/assets/config-templates"),
+            "应优先命中 rust/assets/config-templates：{found:?}"
+        );
     }
 
     #[test]

@@ -198,6 +198,7 @@ fn model() -> KernelModelConfig {
         context_window_tokens: 0,
         prompt_cache_capable: false,
         prompt_cache_identity: Default::default(),
+        native_vision: false,
         request_retry_count: 1,
     }
 }
@@ -210,7 +211,7 @@ fn runner_options(root: &Path) -> RunnerOptions {
         approval: ApprovalMode::Manual,
         command_timeout_seconds: 5,
         tool_timeout_seconds: 5,
-        native_vision: false,
+        attach_vision_images: false,
         client_name: "omnicrawl-api-test".to_string(),
         // 测试进程不装插件运行期：所有 Hook 节点都退化为原样放行。
         plugins: None,

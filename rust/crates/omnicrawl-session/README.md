@@ -90,6 +90,8 @@ Python 侧 `omnicrawl/state/session_models.py`。
 - **锁原语**：Windows 用字节区间锁（`LockFileEx`，与 Python `msvcrt.locking` 同一个机制）、POSIX 用 `flock`。
   两个实现锁的是同一个文件、同一个区间，所以能互相排斥；进程退出时 OS 自动释放，不存在需要抢占的残留锁。
 - **锁文件**：`.session_store.lock`，内容 `pid=<进程号>`；打开时**不**截断，截断发生在拿到锁之后。
+  父目录不存在时先建（与 Python `ProcessFileLock` 的 `mkdir(parents=True, exist_ok=True)` 一致）——
+  不建的话调用方会把 `NotFound` 当成「锁被占用」，首次启动会静默跳过所有连接器自动启动。
 - **两层串行**：先进程内互斥（线程之间不去争 OS 锁），再取跨进程文件锁；顺序固定避免交叉死锁。
 - **超时**：默认 30s 轮询 50ms，文案与 Python 一致（`获取会话存储写锁超时（30.0s）：<锁文件路径>：<最后一次错误>`）。
 - **耐久写**：追加转录与替换索引默认 fsync；索引走「同目录临时文件 + 原子替换」，Windows 上目标被短暂占用
@@ -116,7 +118,8 @@ Python 侧 `omnicrawl/state/session_models.py`。
   保证协议配对合法。
 - `tool_result_output_text` / `function_tool_call`：输出优先级与 OpenAI 形状的 tool_call 构造。
 
-> 有状态的那一层 `TurnHistoryProjector`（压缩边界、子任务结果、增量投影）尚未搬运。
+> 有状态的那一层 `TurnHistoryProjector`（压缩边界、子任务结果、增量投影）在下一节的
+> `history.rs`，与上面的无状态投影工具同一 crate。
 
 工具参数的上下文文案是 `json.dumps(..., ensure_ascii=False, sort_keys=True)` 的等价物：键按字典序、
 分隔符带空格、非 ASCII 原样输出——所以内核自己实现了一个小的 Python 风格序列化器，而不是直接用
@@ -359,15 +362,24 @@ fixture `tests/fixtures/turn_snapshot_parity.json`：5 个脚本化场景（往�
 - **载荷整理与 Python 同源**：`tool_result` 的 inline/artifact 分流、`output_sha256`/`output_size_chars`/`storage`
   与值级脱敏都由 `artifact.rs` 的 `prepare_event_payload` 负责，与 Python `_prepare_event_payload` 一致。
 - **`session_started` 的 runtime 身份**：Python 记源码指纹与已加载模块，内核记实现名与版本；该字段不参与跨实现比对。
-- **索引顶层异常路径未覆盖**：Python 在索引不是对象时会重写索引文件，机制未确认，本片未实现也未纳入对照。
+- **索引顶层异常路径已对齐**：Python `state/session_records.py::parse_index_document` 在顶层不是 JSON
+  对象时是**抛** `SessionStoreError`（`会话索引顶层必须是 JSON 对象。`），并不重写索引文件；
+  内核 `records.rs::parse_index_document` 逐句对齐四条拒绝路径（非对象、`schema_version` 非整数、
+  版本不支持、`sessions` 非列表，文案逐字相同），且 `fixtures/session_records_parity.json` 的
+  `parse_index` 段 9 例已含 `not_object` 与 `future_version`。
 - **运行期参数原文提供者已落地**：`TurnHistoryProjector::with_raw_arguments_provider` / `set_raw_arguments_provider` 注入「已发往 Provider 的 arguments 原文」，拿不到（缺席 / 空串）时回落到 `arguments_json`，再回落到 `arguments` 的 JSON 写法。
 - **子任务事件不参与会话投影**（与 Python 一致）：`SUBAGENT_EVENT_TYPES` 只落转录；
   运行期把完成通知注入本轮 user 消息的是 `omnicrawl-controllers` 的 `inject_subagent_notifications`。
 - **工具参数里的浮点写法**：Python 的 `json.dumps` 用 `repr`（`1e+20`），内核用 `ryu`（`1e20`），
   `1e-5` 这类还会写成小数——只在参数含极端浮点数时影响上下文正文，语义等价。
-- **`casefold()` 用 `to_lowercase()` 近似**：待办状态值（ASCII）一致，非 ASCII 大小写折叠可能有差异。
-- **`is_relative_to` 尚未搬**：这一层没有出现路径包含判断，等存储读写切片需要时再补（注意 Windows 上
-  Python 的路径比较是大小写不敏感的）。
+- **`casefold()` 用 `to_lowercase()` 近似**：命中处与 Python 同源——项目/目录名排序（`project.rs`）、
+  提示历史关键词与去重键（`prompt_history.rs`）、工作区路径归一（`store.rs`）。ASCII 与中日韩文结果
+  一致，不同的只占少数全折叠规则（`ß`→`ss`、连字等）：Rust 标准库没有大小写折叠，完全对齐需引入折叠表。
+- **路径包含判断已搬**：Python `common/paths.py::is_relative_to`（`relative_to` + `ValueError`）
+  对应内核 `store.rs::is_within`，由 `SessionStore::session_path` 统一执行，越界时报
+  `会话路径越界：<相对路径>`。两者的比较方式有别：Python 在 Windows 上经 `normcase` 折叠大小写，
+  内核逐组件精确比较；但该调用点用 `root.join(相对路径)` 构路径，前缀组件必然同源，
+  大小写不一致无法出现。
 
 ## 依赖
 

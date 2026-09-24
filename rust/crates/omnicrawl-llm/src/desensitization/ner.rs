@@ -20,8 +20,10 @@ pub const DEVICE_CPU: &str = "cpu";
 pub const DEVICE_CUDA: &str = "cuda";
 pub const NER_DEVICES: [&str; 3] = [DEVICE_AUTO, DEVICE_CPU, DEVICE_CUDA];
 
-/// 随包分发的默认 checkpoint 文件名。
+/// 随包分发的默认 checkpoint 文件名（Python 侧的原件；仅 [`resolve_model_path`] 用）。
 pub const PACKAGED_MODEL_FILENAME: &str = "bilstm_crf_best.pt";
+/// 内核随包分发的权重文件名：Python checkpoint 转成的自描述二进制。
+pub const PACKAGED_KERNEL_MODEL_FILENAME: &str = "ner_bilstm_crf.bin";
 pub const DEFAULT_MAX_SEQ_LEN: usize = 200;
 pub const DEFAULT_BATCH_TOKENS: usize = 12000;
 /// 结果缓存容量，单位为**块**（0 表示关闭）。
@@ -81,6 +83,36 @@ pub fn is_chinese_span(value: &str) -> bool {
         return false;
     }
     value.chars().all(is_chinese_char)
+}
+
+/// 内核随包权重的默认位置：`<data 目录>/ner_bilstm_crf.bin`。
+pub fn packaged_kernel_model_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(PACKAGED_KERNEL_MODEL_FILENAME)
+}
+
+/// 运行期的权重路径：显式配置 > `OMNICRAWL_NER_MODEL` > 内核随包二进制。
+///
+/// 优先顺序与 [`resolve_model_path`] 一致，只在最后一级不同：那个函数按 Python 的
+/// checkpoint 名（[`PACKAGED_MODEL_FILENAME`]）拼默认路径，是配置层的兼容语义；
+/// 内核运行时用的是转换后的二进制，因此由这个函数解析。
+pub fn resolve_runtime_model_path(
+    configured: Option<&str>,
+    env_value: Option<&str>,
+    data_dir: &Path,
+) -> PathBuf {
+    if let Some(configured) = configured {
+        let trimmed = configured.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    if let Some(env_value) = env_value {
+        let trimmed = env_value.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    packaged_kernel_model_path(data_dir)
 }
 
 /// 解析 checkpoint 路径：显式配置 > 环境变量 > 随包默认（相对 `default_dir`）。
@@ -590,11 +622,13 @@ impl NerExtractorPool {
 }
 
 /// 按配置构建 NER 兜底层；未启用或后端不可用时返回 `None`（静默降级）。
+///
+/// `model_path` 由调用方用 [`resolve_runtime_model_path`] 解析好（显式配置 > 环境变量 >
+/// 随包二进制）；这里只管装载与复用，不猜路径。
 pub fn build_ner_layer<F>(
     options: &NerLayerOptions,
     pool: &NerExtractorPool,
-    model_dir: &Path,
-    env_model_path: Option<&str>,
+    model_path: &Path,
     load_backend: F,
 ) -> Option<NerLayer>
 where
@@ -603,7 +637,7 @@ where
     if !options.enabled {
         return None;
     }
-    let path = resolve_model_path(Some(options.model_path.as_str()), env_model_path, model_dir);
+    let path = model_path.to_path_buf();
     let device = resolve_device(Some(options.device.as_str())).to_string();
     let cache_size = if options.cache_size < 0 {
         0

@@ -76,8 +76,9 @@ pub fn node_runner_path(runner_dir: &Path) -> PathBuf {
 ///
 /// 1. `OMNICRAWL_RUNNER_DIR`（显式指定，npm 启动器与打包脚本用它注入）；
 /// 2. 可执行文件目录及其各级祖先下的 `extensions/`（Rust 二进制同级的载荷布局）；
-/// 3. 同样祖先下的 `omnicrawl/extensions/`（源码仓库与 PyInstaller 载荷布局）;
-/// 4. 进程工作目录下的上述两级（开发联调时直接从仓库根运行）。
+/// 3. 同样祖先下的 `rust/assets/extensions/`（仓库检出里的单一来源，脱离 Python 包树）；
+/// 4. 同样祖先下的 `omnicrawl/extensions/`（旧源码仓库与 PyInstaller 载荷布局）;
+/// 5. 进程工作目录下的上述三级（开发联调时直接从仓库根运行）。
 pub fn runner_search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let mut push = |dir: PathBuf| {
@@ -97,6 +98,7 @@ pub fn runner_search_dirs() -> Vec<PathBuf> {
         let mut current = executable.parent().map(Path::to_path_buf);
         while let Some(directory) = current {
             push(directory.join("extensions"));
+            push(directory.join("rust").join("assets").join("extensions"));
             push(directory.join("omnicrawl").join("extensions"));
             current = directory.parent().map(Path::to_path_buf);
         }
@@ -104,6 +106,7 @@ pub fn runner_search_dirs() -> Vec<PathBuf> {
 
     if let Ok(cwd) = std::env::current_dir() {
         push(cwd.join("extensions"));
+        push(cwd.join("rust").join("assets").join("extensions"));
         push(cwd.join("omnicrawl").join("extensions"));
     }
 
@@ -133,6 +136,29 @@ pub fn describe_runner_search() -> String {
         "未找到插件 Worker 入口 {NODE_RUNNER_FILENAME}；已探测：{listed}。\
          可用环境变量 {RUNNER_DIR_ENV} 指定它所在目录。"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 仓库检出里的 runner 归属：`rust/assets/extensions` 必须先于旧的 `omnicrawl/extensions`
+    /// （后者只剩旧源码布局与 PyInstaller 载荷的兼容角色），否则脱钩后这里会悄悄读回 Python 包树。
+    #[test]
+    fn runner_search_prefers_rust_assets() {
+        if std::env::var_os(RUNNER_DIR_ENV).is_some() {
+            // 显式指定 runner 目录时优先它，那条路径不参与本次判定。
+            return;
+        }
+        let found = resolve_runner_path().expect("仓库检出里应能找到插件 Worker 入口");
+        assert!(
+            found
+                .to_string_lossy()
+                .replace('\\', "/")
+                .ends_with("rust/assets/extensions/node_runner.mjs"),
+            "应优先命中 rust/assets/extensions：{found:?}"
+        );
+    }
 }
 
 /// Worker 启动所需的两个路径：Node 可执行文件与 `node_runner.mjs`。

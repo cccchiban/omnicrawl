@@ -159,6 +159,7 @@ fn event_loop(
         app.tick_subagent_trees();
         app.tick_tts_tasks();
         app.tick_config_chat();
+        app.tick_monitor_events(Instant::now());
         app.drain_frames();
         terminal
             .draw(|frame| {

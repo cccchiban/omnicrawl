@@ -423,7 +423,7 @@ impl ConnectorProcessManager {
         }
         if !decision.enabled {
             self.record(format!(
-                "已通过 {AUTO_START_ENV} 关闭 {TELEGRAM_PLATFORM}/{FEISHU_PLATFORM} 自动启动。"
+                "已通过 {AUTO_START_ENV} 关闭 {TELEGRAM_PLATFORM}/{FEISHU_PLATFORM}自动启动。"
             ));
             return Vec::new();
         }

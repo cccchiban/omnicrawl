@@ -395,6 +395,13 @@ impl FormState {
         self.focused
     }
 
+    /// 直接把焦点移到第 N 个字段（鼠标点击用）；越界时不动。
+    pub fn set_focused(&mut self, index: usize) {
+        if index < self.specs().len() {
+            self.focused = index;
+        }
+    }
+
     pub fn input(&self) -> Option<&Composer> {
         self.input.as_ref()
     }

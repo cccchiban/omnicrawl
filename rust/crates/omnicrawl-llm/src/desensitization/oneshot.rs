@@ -7,7 +7,10 @@
 //! 配置面（`OneshotOptions`）与规则集合由调用方给出：Python 侧的 `[desensitization]` 配置模块
 //! 尚未搬进内核，`build_enabled_rules` 的输出与阈值一起传进来即可。
 
+use std::sync::Arc;
+
 use super::engine::{mask_text, MaskContext, SensitiveMatcher};
+use super::ner::NerLayer;
 use super::rules::PatternRule;
 use super::stream::StreamRestorer;
 use super::DesensitizationError;
@@ -46,6 +49,13 @@ pub struct OneShotMasker {
     /// 把 gitleaks 追加到内置规则尾部同一顺序；未启用时为空。
     gitleaks_rules: Vec<super::gitleaks::GitleaksRule>,
     options: OneshotOptions,
+    /// NER 语义兜底层：由调用方注入（`[desensitization].ner_*` 由配置层解析），
+    /// 未启用或权重不可用时为 `None`。
+    ///
+    /// 与 Python `OneShotMasker` 一致——旁路调用同样接这一层兜底（`oneshot.py:52`）；
+    /// 权重加载与池化不在本模块做，调用方用
+    /// [`build_runtime_ner_layer`](super::live::build_runtime_ner_layer) 拿到层再注入。
+    ner: Option<Arc<NerLayer>>,
     stats: DesensitizationStats,
     registry: SequenceRegistry,
     cycle: Option<PlaceholderCycle>,
@@ -80,10 +90,17 @@ impl OneShotMasker {
             rules,
             gitleaks_rules: Vec::new(),
             options,
+            ner: None,
             stats: DesensitizationStats::default(),
             registry,
             cycle: None,
         }
+    }
+
+    /// 附带 NER 语义兜底层（与 Python `OneShotMasker._ner_layer` 对应）。
+    pub fn with_ner(mut self, layer: Arc<NerLayer>) -> Self {
+        self.ner = Some(layer);
+        self
     }
 
     /// 附带 gitleaks 规则（与 Python `build_enabled_rules` 追加 gitleaks 的行为对应）。
@@ -110,6 +127,8 @@ impl OneShotMasker {
                 entropy_pure_digits: self.options.entropy_pure_digits,
                 pattern_rules: &self.rules,
                 gitleaks_rules: &self.gitleaks_rules,
+                // NER 兜底层由调用方注入（见 `with_ner`）。
+                ner: self.ner.as_deref(),
                 // 一次性脱敏器不持有计划缓存（每次调用都是新文本，没有复用收益）。
                 plan_cache: None,
                 plan_builder: None,

@@ -121,6 +121,15 @@ impl ProcessFileLock {
 /// POSIX 的 `flock` 都是按打开实例排斥），因此这个入口可以当作「跨句柄单例锁」使用；
 /// 需要「同进程内也互斥」的调用方仍应走 [`ProcessFileLock`]（它额外持有进程内互斥）。
 pub fn try_lock_file(path: &Path) -> std::io::Result<File> {
+    // 父目录可能还不存在（首次启动、用户删掉了 `~/.OmniCrawl`）：Python 的
+    // `ProcessFileLock` 同样会先 `mkdir(parents=True, exist_ok=True)`。这里不建就会
+    // 回 NotFound，而调用方（如连接器单例锁）把「拿不到锁」一律当成「已有实例在运行」，
+    // 于是首次启动会静默跳过所有连接器。
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
     // 必须是读写打开：Windows 的字节区间锁要求句柄带 GENERIC_WRITE，
     // 只开 append 拿到的是 FILE_APPEND_DATA，LockFileEx 会回「拒绝访问」。
     // 打开时不能截断——截断必须发生在拿到锁之后，否则会把别人的持有者信息清掉。

@@ -270,6 +270,7 @@ mod tests {
             context_window_tokens: 128_000,
             prompt_cache_capable: false,
             prompt_cache_identity: Default::default(),
+            native_vision: false,
             request_retry_count: 1,
         }
     }

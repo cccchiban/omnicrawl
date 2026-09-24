@@ -44,6 +44,7 @@ use omnicrawl_ipc::bridge::{
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
+use omnicrawl_llm::desensitization::ner::NerLayerOptions;
 use omnicrawl_llm::desensitization::rules::{
     CATEGORY_BANK_CARD, CATEGORY_DB_CONNECTION_STRING, CATEGORY_EMAIL, CATEGORY_EXTERNAL_IP,
     CATEGORY_INTERNAL_IP, CATEGORY_LICENSE_PLATE, CATEGORY_MAC_ADDRESS, CATEGORY_PEM_PRIVATE_KEY,
@@ -730,6 +731,16 @@ fn desensitization_options(config: &DesensitizationConfig) -> DesensitizationOpt
         },
         extra_sensitive_keys: config.extra_sensitive_keys.clone(),
         exempt_keys: config.exempt_keys.clone(),
+        // NER 语义兜底层：配置层已就绪（`[desensitization].ner_*`），这里逐字段搬运。
+        // 权重路径空串 ⇒ 交给内核的路径解析（环境变量 → 随包二进制）。
+        ner: NerLayerOptions {
+            enabled: config.ner_enabled,
+            model_path: config.ner_model_path.clone(),
+            device: config.ner_device.clone(),
+            entity_types: config.ner_entity_types.clone(),
+            min_entity_chars: config.ner_min_entity_chars,
+            cache_size: config.ner_cache_size,
+        },
     }
 }
 
@@ -944,13 +955,27 @@ impl ToolBatchHost for RemoteTools {
             crate::output_budget::apply_batch_output_budget(&mut ordered, session);
         }
 
-        // 只有真的带图才装配视觉代理：`[vision]` 未启用或候选装配不出来时不插手。
+        // 图片观察的去向与 Python `route_image_result` 同优先级：原生视觉直送主模型，
+        // 否则交给独立视觉模型代理。两条路都走不通时必须把图片摄掉——主模型看不懂图，
+        // 图片留在请求里只会被 Provider 拒掉；宿主侧已在未配置代理时不交图，这里是兵底。
         if crate::vision_proxy::has_vision_observation(&ordered) {
-            if let Some(proxy) = self.vision_model.as_ref().and_then(KernelVisionProxy::load) {
-                let cancel_source = Rc::clone(&self.conn);
-                let cancelled = || cancel_source.borrow().cancel.load(Ordering::SeqCst);
-                if !cancelled() {
-                    proxy.apply_observations(&mut ordered, &cancelled);
+            let native_vision = self
+                .vision_model
+                .as_ref()
+                .map(|model| model.native_vision)
+                .unwrap_or(false);
+            if !native_vision {
+                match self.vision_model.as_ref().and_then(KernelVisionProxy::load) {
+                    Some(proxy) => {
+                        let cancel_source = Rc::clone(&self.conn);
+                        let cancelled = || cancel_source.borrow().cancel.load(Ordering::SeqCst);
+                        if !cancelled() {
+                            proxy.apply_observations(&mut ordered, &cancelled);
+                        }
+                    }
+                    None => {
+                        omnicrawl_controllers::vision_proxy::strip_vision_followups(&mut ordered);
+                    }
                 }
             }
         }
@@ -3602,6 +3627,7 @@ mod runtime_selection_tests {
             context_window_tokens: 0,
             prompt_cache_capable: false,
             prompt_cache_identity: std::collections::BTreeMap::new(),
+            native_vision: false,
             request_retry_count: 1,
         }
     }

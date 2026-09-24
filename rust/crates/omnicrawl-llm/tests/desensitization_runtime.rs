@@ -254,6 +254,50 @@ fn unregistered_placeholder_keeps_text_and_warns() {
     );
 }
 
+/// NER 兜底层按配置装载：不填路径时用随包权重（`data/ner_bilstm_crf.bin`）。
+///
+/// 这里只验「装载与否」——权重推理的逐位对照在 `ner_parity.rs`，兜底层接入 `mask_text`
+/// 的语义在 `desensitization_ner_stage.rs`。
+#[test]
+fn ner_layer_loads_from_packaged_weights_when_enabled() {
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut options = DesensitizationOptions::default();
+    options.ner.enabled = true;
+    let runtime = DesensitizationRuntime::new(
+        Box::new(StubRuntime::new(&seen, Behavior::Events(Vec::new()))),
+        options,
+    );
+
+    let stats = runtime
+        .ner_stats()
+        .expect("启用后应当装载随包权重（否则路径解析链断了）");
+    assert_eq!(stats.inferred_chunks, 0, "还未跑过任何文本");
+}
+
+/// 权重缺失 / 读取失败时静默降级：不报错、不阻断回合，只是少一层软兑底。
+#[test]
+fn ner_layer_degrades_silently_when_weights_are_missing() {
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut options = DesensitizationOptions::default();
+    options.ner.enabled = true;
+    options.ner.model_path = "不存在的目录/ner.bin".to_string();
+    let runtime = DesensitizationRuntime::new(
+        Box::new(StubRuntime::new(&seen, Behavior::EchoText)),
+        options,
+    );
+    assert!(
+        runtime.ner_stats().is_none(),
+        "权重不可用时应当降级为「没有兜底层」"
+    );
+
+    let fixture = Fixture::with_text(&format!("api_key={SECRET}"));
+    let mut sink = RecordingSink { events: Vec::new() };
+    runtime
+        .run_turn(&fixture.input(), &mut sink)
+        .expect("降级后回合仍应跑通");
+    assert_eq!(text_of(&sink.events), format!("api_key={SECRET}"));
+}
+
 #[test]
 fn restores_tool_call_arguments() {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));

@@ -2,7 +2,8 @@
 //! 以及 `PluginManager` 从注册表引导到真实 Worker 再分发的完整接线。
 //!
 //! 这两条链路此前只有判定层的单测覆盖，「CLI 装得上、宿主起不来」这类断裂不会被发现。
-//! 用例需要 Node.js 20+ 与 `omnicrawl/extensions/node_runner.mjs`：缺任一时跳过整组用例
+//! 用例需要 Node.js 20+ 与 `rust/assets/extensions/node_runner.mjs`（旧的
+//! `omnicrawl/extensions/` 布局仍兼容）：缺任一时跳过整组用例
 //! （打印原因后直接返回），因此没有 JS 运行时的构建环境不会因此变红。
 //!
 //! 插件包直接用仓库里的真实 fixture（`tests/fixtures/npm_plugins/`），

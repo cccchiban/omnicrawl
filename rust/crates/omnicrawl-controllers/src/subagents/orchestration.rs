@@ -1,7 +1,8 @@
 //! `omnicrawl/agent/controllers/subagents/orchestration.py` 的判定与投影面。
 //!
 //! 失败描述、Fork 上下文冻结、子任务结果公开投影、后台通知注入与「是否需要完整评审报告」
-//! 判定收进内核；模型运行时引导、线程池、Coordinator/TaskManager 与 Session 落盘留在宿主。
+//! 判定收进内核（任务生命周期本体在同目录 `tasks.rs`）；模型运行时引导、线程池、
+//! worktree 的 git 操作与 Session 落盘留在宿主（`omnicrawl-cli`）。
 
 use omnicrawl_session::redaction::{redact_sensitive_text, redact_sensitive_values};
 use serde_json::{json, Map, Value};

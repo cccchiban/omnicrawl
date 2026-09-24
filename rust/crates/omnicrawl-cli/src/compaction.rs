@@ -22,7 +22,7 @@ use omnicrawl_session::{
 };
 use serde_json::{json, Value};
 
-const SUMMARY_PROMPT: &str = include_str!("../../../../omnicrawl/templates/summary_prompt.md");
+const SUMMARY_PROMPT: &str = include_str!("../../../../rust/assets/templates/summary_prompt.md");
 
 /// 内核侧的会话状态：会话目录、会话 id、运行期历史与压缩策略。
 pub struct KernelSession {

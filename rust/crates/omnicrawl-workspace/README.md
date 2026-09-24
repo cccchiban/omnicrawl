@@ -104,6 +104,7 @@ worktree 往返（改动不穿透主工作区 → 第三层门禁拦截 → appl
 
 - 同包的 `connector_singleton`、`context`、`monitor`、`process_control`、`search_backend`、
   `temp`、`tools` 仍不在本 crate；
-- 宿主（TUI / 本地 API / 启动入口）还没有调用入口：Python 侧的三个接线点分别是
-  `entry.py`（启动准备 + 后台清扫 + 退出收尾）、`api/app.py`（同上）与
-  `agent/controllers/session/control.py`（会话收尾），内核侧要等这些宿主路径迁移时再接。
+- ~~宿主还没有调用入口~~ 三条宿主路径都已接线：`omnicrawl-tui/src/main.rs`
+  （启动准备 + 后台清扫 + 失败收尾）、`omnicrawl-api/src/service.rs`（`prepare_isolated_workspace` /
+  `start_background_isolation_sweep` / `finalize_isolation_session`）与两边的会话收尾
+  （`app.rs` 的 `finalize_isolation_session` + `finalize_subagent_worktrees`）。

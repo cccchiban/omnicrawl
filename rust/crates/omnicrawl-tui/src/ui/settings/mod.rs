@@ -7,15 +7,18 @@
 //!
 //! 已落地 `settings.py` 的一级菜单，以及上下文、工具开关、子任务设置、视觉、模型渠道、
 //! 五个单选页、顾问设置、工具输出压缩、消息脱敏、持续运转、隔离工作区、图像生成
-//! 六个表单页与 TTS 页；仅「通过对话修改设置」在右侧显示未迁移提示。
+//! 六个表单页、TTS 页与 MCP 设置；「通过对话修改设置」是一个动作行，`Enter` 直接把
+//! 控制权交给配置对话弹层（见 `crate::ui::config_chat`），因此它没有右侧面板。
 
 pub mod form;
+pub mod hit;
 pub mod render;
 pub mod state;
 
 use omnicrawl_config::models::llm::normalize_reasoning_effort;
 
 pub use form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
+pub use hit::{HitAction, HitRegion};
 
 pub use state::{
     channel_field_value, display_value, ChannelDropdown, ChannelField, ChannelFormView, ChannelRow,

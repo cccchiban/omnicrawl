@@ -8,13 +8,18 @@
 //!   Textual `Select` 的键位是 `Enter`/`↓`/`Space`/`↑` 展开候选，
 //!   展开后 `↑`/`↓` 移动、`Enter` 确认并立即保存、`Esc` 收起。
 //! - 工具开关页：`↑`/`↓` 选行，`←`/`→`/`Enter`/`Space` 切换开关。
+//! - 「通过对话修改设置」行：`Enter`/`→` 不进右侧面板，直接产出
+//!   [`SettingsEvent::OpenConfigChat`]，由 `app.rs` 关闭面板并拉起配置对话弹层。
 
 use crossterm::event::KeyCode;
 use omnicrawl_config::models::channels::{protocols_for_provider, provider_options};
+use ratatui::layout::Rect;
+use std::cell::RefCell;
 
 use crate::state::Composer;
 
 use super::form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
+use super::hit::{HitAction, HitRegion};
 use super::{
     choice_field_options, context_field_options, cycle_subagent_option, nearest_compaction_percent,
     nearest_context_window_tokens, normalize_reasoning, reasoning_label, row_label, ROW_ORDER,
@@ -51,7 +56,9 @@ pub enum Pane {
     Form(FormKind),
     /// TTS 设置页：开关 / 音色 / 模型目录 / 设备与线程 + 模型下载与音色克隆。
     Tts,
-    /// 尚未迁移到 Rust 宿主的一级项。
+    /// 通过对话修改设置：本页只是一个入口，`Enter` 直接把控制权交给配置对话弹层。
+    ConfigChat,
+    /// 未知一级项（一级表与面板表不同步时的兜底）。
     Pending,
 }
 
@@ -76,6 +83,7 @@ impl Pane {
             "memory" => Self::Choice(ChoiceKind::Memory),
             "plugins" => Self::Choice(ChoiceKind::Plugins),
             "tts" => Self::Tts,
+            "config_chat" => Self::ConfigChat,
             _ => Self::Pending,
         }
     }
@@ -942,6 +950,8 @@ pub enum SettingsEvent {
     Close,
     /// 应用一项设置（宿主负责写盘、推内核、按需重建工具表）。
     Apply(SettingsChange),
+    /// 打开配置对话弹层（「通过对话修改设置」行）：面板该让位，键盘交给弹层。
+    OpenConfigChat,
 }
 
 const TOOLS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
@@ -952,6 +962,7 @@ const SUBAGENTS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换或换档
 const VISION_HINT: &str =
     "↑↓ 选择  空格 启用/停用  A 添加  D 删除  N 原生视觉  Ctrl+↑↓ 排序  Ctrl+S 保存  Esc 返回";
 const CONTEXT_HINT: &str = "Tab 切换字段；选中即保存。";
+const CONFIG_CHAT_HINT: &str = "Enter 打开配置对话  Esc 返回";
 const TTS_HINT: &str =
     "↑↓ 选择  ←→/Enter/空格 切换  B 浏览参考音频  C 克隆  D 删除音色  Enter 执行  Ctrl+S 保存  Esc 返回";
 const CHANNELS_LIST_HINT: &str = "↑↓ 选择渠道  Enter 编辑  N 新建  D 删除  Esc 返回";
@@ -1352,6 +1363,10 @@ pub struct SettingsState {
     forms: Vec<FormState>,
     /// TTS 页的草稿状态机。
     tts: TtsState,
+    /// 本次渲染记录下来的可点区域：渲染只拿 `&self`，所以用 `RefCell`。
+    hits: RefCell<Vec<HitRegion>>,
+    /// 鼠标悬停所在的行（事件层写、渲染层读，用来加亮那一行）。
+    hover: Option<HitAction>,
 }
 
 impl SettingsState {
@@ -1418,6 +1433,8 @@ impl SettingsState {
             },
             forms: form_states(values.form_values),
             tts: TtsState::new(values.tts),
+            hits: RefCell::new(Vec::new()),
+            hover: None,
         }
     }
 
@@ -1425,6 +1442,204 @@ impl SettingsState {
 
     pub fn rows(&self) -> [&'static str; ROW_ORDER.len()] {
         ROW_ORDER
+    }
+
+    /// 开始一帧渲染：丢掉上一帧记录的可点区域。
+    pub fn begin_frame(&self) {
+        self.hits.borrow_mut().clear();
+    }
+
+    /// 记下一块可点区域（只在渲染时调用；空区域不记）。
+    pub fn record_hit(&self, area: Rect, action: HitAction) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        self.hits.borrow_mut().push(HitRegion { area, action });
+    }
+
+    /// 按落点反查动作；**后画的优先**——展开的候选浮层画在面板之上，应当先命中它。
+    pub fn hit_at(&self, column: u16, row: u16) -> Option<HitAction> {
+        self.hits
+            .borrow()
+            .iter()
+            .rev()
+            .find(|region| {
+                column >= region.area.x
+                    && column < region.area.x + region.area.width
+                    && row >= region.area.y
+                    && row < region.area.y + region.area.height
+            })
+            .map(|region| region.action)
+    }
+
+    /// 记录鼠标悬停的行；`None` 表示光标已离开可点区域。
+    pub fn set_hover(&mut self, action: Option<HitAction>) {
+        self.hover = action;
+    }
+
+    pub fn hover(&self) -> Option<HitAction> {
+        self.hover
+    }
+
+    /// 悬停行在当前帧里的区域（用于描边加亮）；该行本帧没画出来时为 `None`。
+    pub fn hover_area(&self) -> Option<Rect> {
+        let hover = self.hover?;
+        self.hits
+            .borrow()
+            .iter()
+            .rev()
+            .find(|region| region.action == hover)
+            .map(|region| region.area)
+    }
+
+    /// 左键点击分派。
+    ///
+    /// - 左栏：单击即切页（Python 的列表点击是选中并立即进入，且切页不写配置）；
+    /// - 右栏：先把该页的选中行 / 字段移到落点，**再点当前行**才等同 `Enter`
+    ///   （工具开关、枚举循环这类行被误触一次就是配置变更，所以不做单击即改）；
+    /// - 候选浮层：单击即选中该候选并确认（浮层本来就是为这一次选择而展开的）。
+    pub fn click(&mut self, action: HitAction) -> Option<SettingsEvent> {
+        match action {
+            HitAction::Row(index) => {
+                self.select_row(index);
+                self.handle_list_key(KeyCode::Enter)
+            }
+            HitAction::PaneRow(index) => {
+                if self.select_pane_row(index) {
+                    return self.handle_key(KeyCode::Enter);
+                }
+                None
+            }
+            HitAction::Option(index) => {
+                // 浮层下拉（上下文页 / 单选页 / 表单页 / 视觉页）与渠道表单的内联候选
+                // 是两套结构：前者记在 `self.dropdown`，后者记在渠道表单里。
+                if self.dropdown.is_some() {
+                    let count = self.dropdown_options().len();
+                    if count == 0 {
+                        return None;
+                    }
+                    if let Some(dropdown) = self.dropdown.as_mut() {
+                        dropdown.selected = index.min(count - 1);
+                    }
+                } else if let Some(form) = self.channels.form.as_mut() {
+                    let count = form.dropdown.as_ref().map(|d| d.options.len()).unwrap_or(0);
+                    if count == 0 {
+                        return None;
+                    }
+                    let dropdown = form.dropdown.as_mut()?;
+                    dropdown.selected = index.min(count - 1);
+                } else {
+                    return None;
+                }
+                self.handle_key(KeyCode::Enter)
+            }
+        }
+    }
+
+    /// 左栏：把选中项移到第 N 项；复用键盘的逐项移动，保证切页时被清掉的
+    /// 状态（收起下拉、上下文字段回到第一个）与按 `↑`/`↓` 完全一致。
+    fn select_row(&mut self, index: usize) {
+        let count = ROW_ORDER.len();
+        if index >= count || index == self.selected {
+            return;
+        }
+        let mut guard = 0usize;
+        while self.selected != index && guard <= count {
+            let direction = if index > self.selected { 1 } else { -1 };
+            self.move_selection(direction);
+            guard += 1;
+        }
+    }
+
+    /// 右栏：把当前页的选中行 / 字段移到第 N 个可点行。
+    ///
+    /// 返回 `true` 表示落点就是当前行（调用方可继续走 `Enter` 语义）。
+    fn select_pane_row(&mut self, index: usize) -> bool {
+        self.dropdown = None;
+        self.focus = Focus::Pane;
+        match self.pane {
+            Pane::Context => {
+                let field = if index == 0 {
+                    ContextField::Window
+                } else {
+                    ContextField::Compaction
+                };
+                let already = self.context.field == field;
+                self.context.field = field;
+                already
+            }
+            Pane::Tools => {
+                let target = index.min(self.tools.rows.len().saturating_sub(1));
+                let already = self.tools.selected == target;
+                self.tools.selected = target;
+                already
+            }
+            Pane::Subagents => {
+                let target = index.min(self.subagents.rows.len().saturating_sub(1));
+                let already = self.subagents.selected == target;
+                self.subagents.selected = target;
+                already
+            }
+            Pane::Vision => {
+                let target = index.min(self.vision.models.len().saturating_sub(1));
+                let already = self.vision.selected == target;
+                self.vision.selected = target;
+                already
+            }
+            Pane::Tts => {
+                let target = index.min(TTS_ROW_COUNT - 1);
+                let already = self.tts.focused == target;
+                self.tts.focused = target;
+                already
+            }
+            Pane::Channels => {
+                // 列表态选渠道，表单态选字段（字段顺序就是 `ChannelField::ORDER`）。
+                if let Some(form) = self.channels.form.as_mut() {
+                    let Some(field) = ChannelField::ORDER.get(index).copied() else {
+                        return false;
+                    };
+                    let already = form.field == field;
+                    form.field = field;
+                    already
+                } else {
+                    let target = index.min(self.channels.rows.len().saturating_sub(1));
+                    let already = self.channels.selected == target;
+                    self.channels.selected = target;
+                    already
+                }
+            }
+            Pane::Mcp => {
+                if let Some(editor) = self.mcp.editor.as_mut() {
+                    let already = editor.focused == index;
+                    editor.focused = index;
+                    already
+                } else if self.mcp.servers_view {
+                    let target = index.min(self.mcp.servers.len().saturating_sub(1));
+                    let already = self.mcp.server_selected == target;
+                    self.mcp.server_selected = target;
+                    already
+                } else {
+                    let target = index.min(MCP_ROW_COUNT - 1);
+                    let already = self.mcp.selected == target;
+                    self.mcp.selected = target;
+                    already
+                }
+            }
+            Pane::Choice(_) => {
+                // 单选页只有一个字段：点它就是「把候选展开」，于是直接走 Enter。
+                self.focus = Focus::Pane;
+                true
+            }
+            Pane::Form(_) => {
+                let Some(form) = self.form_mut() else {
+                    return false;
+                };
+                let already = form.focused() == index;
+                form.set_focused(index);
+                already
+            }
+            Pane::ConfigChat | Pane::Pending => false,
+        }
     }
 
     pub fn selected(&self) -> usize {
@@ -1649,7 +1864,7 @@ impl SettingsState {
         }
     }
 
-    /// 当前面板底部的一行状态文本；未迁移的面板没有状态文本。
+    /// 当前面板底部的一行状态文本；没有状态文本的面板返回空串。
     pub fn status(&self) -> &str {
         match self.pane {
             Pane::Context => &self.context.status,
@@ -1661,7 +1876,7 @@ impl SettingsState {
             Pane::Choice(kind) => &self.choices.status[kind.index()],
             Pane::Form(_) => self.form().map(|form| form.status()).unwrap_or(""),
             Pane::Tts => &self.tts.status,
-            Pane::Pending => "",
+            Pane::ConfigChat | Pane::Pending => "",
         }
     }
 
@@ -1692,6 +1907,7 @@ impl SettingsState {
             Pane::Choice(_) => "",
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
+            Pane::ConfigChat => CONFIG_CHAT_HINT,
             Pane::Pending => "",
         }
     }
@@ -1735,6 +1951,11 @@ impl SettingsState {
                 None
             }
             KeyCode::Enter | KeyCode::Right => {
+                // 「通过对话修改设置」没有右侧面板：它本身就是一个动作，直接把控制权
+                // 交给配置对话弹层（与 `/settings --chat` 同一个入口）。
+                if self.pane == Pane::ConfigChat {
+                    return Some(SettingsEvent::OpenConfigChat);
+                }
                 self.enter_pane();
                 None
             }
@@ -1758,6 +1979,14 @@ impl SettingsState {
             Pane::Choice(kind) => self.handle_choice_key(key, kind),
             Pane::Form(_) => self.handle_form_key(key),
             Pane::Tts => self.handle_tts_key(key),
+            Pane::ConfigChat => match key {
+                KeyCode::Enter | KeyCode::Right => Some(SettingsEvent::OpenConfigChat),
+                KeyCode::Esc | KeyCode::Left => {
+                    self.back_to_list();
+                    None
+                }
+                _ => None,
+            },
             Pane::Pending => match key {
                 KeyCode::Esc | KeyCode::Left => {
                     self.back_to_list();
@@ -2582,7 +2811,7 @@ impl SettingsState {
         self.dropdown = None;
     }
 
-    /// 当前面板正在编辑的字段；没有可展开字段（工具页/渠道页/未迁移页，以及表单页
+    /// 当前面板正在编辑的字段；没有可展开字段（工具页/渠道页/配置对话入口页，以及表单页
     /// 的开关与整数项）时为 `None`。
     fn active_field(&self) -> Option<DropdownField> {
         match self.pane {
@@ -2600,6 +2829,7 @@ impl SettingsState {
             | Pane::Channels
             | Pane::Vision
             | Pane::Tts
+            | Pane::ConfigChat
             | Pane::Pending => None,
         }
     }
@@ -3306,7 +3536,7 @@ impl SettingsState {
                 }
             }
             Pane::Tts => self.tts.status = message,
-            Pane::Pending => {}
+            Pane::ConfigChat | Pane::Pending => {}
         }
         self.dropdown = None;
     }
@@ -3586,9 +3816,28 @@ mod tests {
     fn starts_on_first_row_with_context_pane() {
         let state = state();
         assert_eq!(state.selected_key(), "config_chat");
-        assert_eq!(state.pane(), Pane::Pending);
+        assert_eq!(state.pane(), Pane::ConfigChat);
         assert_eq!(state.focus(), Focus::List);
         assert_eq!(state.title(), "通过对话修改设置");
+    }
+
+    /// 「通过对话修改设置」是动作行：不进右侧面板，`Enter`/`→` 直接产出打开事件。
+    ///
+    /// 弹层拉起后设置面板整体关闭，因此焦点始终留在左侧（`Esc` 一路退出面板）。
+    #[test]
+    fn config_chat_row_opens_the_chat_layer() {
+        let mut state = state();
+        assert_eq!(state.pane(), Pane::ConfigChat);
+        assert_eq!(
+            state.handle_key(KeyCode::Enter),
+            Some(SettingsEvent::OpenConfigChat)
+        );
+        assert_eq!(state.focus(), Focus::List, "动作行不进右侧面板");
+        assert_eq!(
+            state.handle_key(KeyCode::Right),
+            Some(SettingsEvent::OpenConfigChat)
+        );
+        assert_eq!(state.handle_key(KeyCode::Esc), Some(SettingsEvent::Close));
     }
 
     #[test]
@@ -3626,6 +3875,7 @@ mod tests {
         assert_eq!(state.handle_key(KeyCode::Esc), Some(SettingsEvent::Close));
 
         // 进入右侧后 Esc 先回左侧，再按一次才退出。
+        goto(&mut state, "context");
         state.handle_key(KeyCode::Enter);
         assert_eq!(state.focus(), Focus::Pane);
         assert_eq!(state.handle_key(KeyCode::Esc), None);
@@ -3801,11 +4051,13 @@ mod tests {
         assert!(state.tool_rows().is_empty());
     }
 
+    /// 配置对话页没有状态行（写回结论在弹层里），但按键提示要给出打开方式。
     #[test]
-    fn pending_pane_has_pane_hint_only() {
+    fn config_chat_pane_has_pane_hint_only() {
         let state = state();
         assert_eq!(state.status(), "");
-        assert_eq!(state.pane_hint(), "");
+        assert_eq!(state.pane_hint(), CONFIG_CHAT_HINT);
+        assert!(state.pane_hint().contains("Enter"));
         assert!(state.help_text().contains("↑↓ 选择设置项"));
     }
 

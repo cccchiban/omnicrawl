@@ -61,6 +61,7 @@ SO_REUSEPORT 绑定同一端口（等价 uvicorn 的多 worker）。不支持 SO
 | `routes/projects.py` | `/projects` 增删改查、`/overview`、`/import`、`/pin`、`/switch` | 8/8 |
 | `routes/sessions.py` | 列表/新建/诊断/事件/恢复/重命名/压缩/归档/删除/导出/artifact | 12/12 |
 | `routes/settings.py` | `GET /settings` + 10 个域 PUT | 11/11 |
+| —（Python 侧无此端点） | `PUT /settings/mcp` | 新增 |
 | `routes/monitors.py` | 列表 / 单个 / 日志 SSE | 3/3 |
 | `routes/configuration.py` | `/models`、`/models/catalog`、`/models/refresh`、`/models/current`、`/reasoning`、`/approval` | 6/6 |
 | `routes/subagents.py` | `/subagents`、`/subagents/events`、`/subagents/{id}`、`/subagents/{id}/cancel` | 4/4 |
@@ -70,8 +71,8 @@ SO_REUSEPORT 绑定同一端口（等价 uvicorn 的多 worker）。不支持 SO
 
 - `omnicrawl-host`：`MonitorManager` 新增查询面（`tasks()` / `task()` / `poll_view()` /
   `wait_for_events()` 与三个对外视图结构）；`TurnRunner` 新增 `set_approval_mode`、
-  `apply_session_settings`、`compact_session`、`manage_subagents`、`drain_notifications`；
-  `RunnerOptions` 加 `Clone`。
+  `apply_session_settings`、`compact_session`、`manage_subagents`、`drain_notifications`、
+  `rebuild_registry`（运行期重建工具表，供 MCP 设置热更新用）；`RunnerOptions` 加 `Clone`。
 - `omnicrawl-ipc`：协议新增 `session.compact` 与 `subagent.query`（命令表与往返测试样本同步更新）。
 - `omnicrawl-cli`：内核处理 `session.compact`（压完把历史换成摘要 + 保留窗口，回
   `{summary, compacted}`）与 `subagent.query`（复用 `SubAgentTaskManager` 的 list/get/cancel，
@@ -144,6 +145,14 @@ SO_REUSEPORT）；Rust 侧不做进程内存共享，跨进程可见的状态统
   `GET /settings` 的 `features.plugins` 现在是**运行期**是否生效（原先是配置值），运行态细节在
   同响应的 `plugins` 字段；插件运行期在 `AgentService::spawn` 装配（`options.plugins`），
   嵌入模式（`with_runner`）默认没有。
+- `PUT /settings/mcp` 是本移植**新增**的端点：Python 侧 MCP 设置只由 Textual 工作台在进程内改，
+  宿主自持 MCP 之后需要一个能写 `[mcp]` 段并立刻重连的入口。语义与同一组设置端点一致：字段全部
+  可选（`enabled` / `default_timeout_seconds` / `policy` / `servers` 整表替换 /
+  `server` 单条增改带 `original_name` 改名 / `delete_server`），未传字段保持原值。写盘后调
+  `AgentService::reload_mcp` 热更新：按新配置重连、重建工具表并把新声明经 `session.settings`
+  下发给内核（回合在途时按 `409 RUN_ACTIVE` 语义放弃运行期改动，但磁盘已是新值，响应里用
+  `applied` / `detail` 如实回报）。Server 名、传输、地址与超时边界沿用读取器的校验：写盘后回读
+  一次，不合格就按写前快照**逐字节还原**配置并回 `400 INVALID_SETTING`。
 - `PATCH /sessions/current` 返回会话索引条目，Python 返回 `SessionState`；
   `POST /sessions/{id}/resume` 与 `/sessions/current/archive` 返回 Rust 版会话状态视图
   （索引元数据 + 转录投影 + `pending_user_text` / `todo_items`）。

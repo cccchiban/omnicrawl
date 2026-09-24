@@ -5,8 +5,8 @@
 //! [`omnicrawl_extensions::skill`]，这里只做宿主侧的 I/O：读模板、读 AGENTS.md、扫 Skill 目录。
 //!
 //! 模板优先从磁盘目录读取（`OMNICRAWL_TEMPLATES_DIR`，其次可执行文件祖先里的
-//! `omnicrawl/templates`），读不到时用编译期内嵌的同一份文本——脱离 Python 宿主分发时
-//! 不必再带模板目录，行为与 Python 逐字一致。
+//! `rust/assets/templates`（仓库检出）与 `omnicrawl/templates`（已发布载荷）），读不到时用
+//! 编译期内嵌的同一份文本——脱离 Python 宿主分发时不必再带模板目录，行为与 Python 逐字一致。
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,7 @@ use omnicrawl_controllers::turn::context_messages::plugin_context_messages;
 use omnicrawl_controllers::turn::prompt_context::{
     build_context_messages, build_system_prompt, ContextMessageInputs,
 };
-use omnicrawl_extensions::skill::SkillManager;
+use omnicrawl_extensions::skill::{SkillManager, SkillMeta};
 use serde_json::Value;
 
 use crate::plugins::PluginHost;
@@ -30,8 +30,8 @@ pub const TEMPLATES_DIR_ENV: &str = "OMNICRAWL_TEMPLATES_DIR";
 pub const DEFAULT_AGENT_TEMP_DIR: &str = ".omnicrawl/.agent_tmp";
 
 const EMBEDDED_SYSTEM_PROMPT: &str =
-    include_str!("../../../../omnicrawl/templates/system_prompt.md");
-const EMBEDDED_PLAN_PROMPT: &str = include_str!("../../../../omnicrawl/templates/plan.md");
+    include_str!("../../../../rust/assets/templates/system_prompt.md");
+const EMBEDDED_PLAN_PROMPT: &str = include_str!("../../../../rust/assets/templates/plan.md");
 
 /// 一次提示词装配所需的宿主输入。
 pub struct PromptOptions {
@@ -129,6 +129,18 @@ impl PromptRuntime {
             .as_ref()
             .map(|manager| manager.list_all().len())
             .unwrap_or(0)
+    }
+
+    /// 已发现的 Skill 索引条目。
+    ///
+    /// prompt cache 身份的 `skill_index_hash` 直接用这份列表，因此它必须与
+    /// [`Self::context_messages_with_plugins`] 拼进 Skill 索引段的来源是**同一份**
+    /// （同一个 `SkillManager::list_all()`），否则身份哈希会与实际发给模型的前缀脱节。
+    pub fn skill_metas(&self) -> Vec<SkillMeta> {
+        self.skill_manager
+            .as_ref()
+            .map(|manager| manager.list_all())
+            .unwrap_or_default()
     }
 
     /// 当前活动模式（未启用时为空串，与 Python 的 `active_mode` 同义）。
@@ -252,7 +264,8 @@ impl PromptRuntime {
     }
 }
 
-/// 模板目录：显式环境变量优先，其次可执行文件祖先里的 `omnicrawl/templates`。
+/// 模板目录：显式环境变量优先，其次可执行文件祖先里的 `rust/assets/templates`（仓库检出）
+/// 与 `omnicrawl/templates`（已发布载荷）。
 pub fn locate_templates_dir(env: &ConfigEnvironment) -> Option<PathBuf> {
     let configured = env.get_trimmed(TEMPLATES_DIR_ENV);
     if !configured.trim().is_empty() {
@@ -267,6 +280,11 @@ pub fn locate_templates_dir(env: &ConfigEnvironment) -> Option<PathBuf> {
         let Some(directory) = base.as_ref() else {
             break;
         };
+        // 仓库检出里的新家优先（脱离 Python 包树后的单一来源），再落到已发布载荷的旧布局。
+        let candidate = directory.join("rust").join("assets").join("templates");
+        if candidate.join("system_prompt.md").is_file() {
+            return Some(candidate);
+        }
         let candidate = directory.join("omnicrawl").join("templates");
         if candidate.join("system_prompt.md").is_file() {
             return Some(candidate);
@@ -292,6 +310,23 @@ mod tests {
         let mut options = PromptOptions::new(std::env::temp_dir().join("oc-prompt-ws"));
         options.agent_temp_dir = ".omnicrawl/.agent_tmp".to_string();
         options
+    }
+
+    /// 仓库检出里模板目录的优先级：`rust/assets/templates` 必须先于旧的 `omnicrawl/templates`
+    /// （后者只剩「已发布载荷」的兼容角色，脱离 Python 包树后会被删掉）。
+    #[test]
+    fn templates_dir_prefers_rust_assets() {
+        // 隔离环境：不读进程变量，避免本机的 `OMNICRAWL_TEMPLATES_DIR` 把用例带偏。
+        let env = ConfigEnvironment::new("bundle", "test");
+        let found = locate_templates_dir(&env).expect("仓库检出里应能找到模板目录");
+        assert!(found.join("system_prompt.md").is_file(), "{found:?}");
+        assert!(
+            found
+                .to_string_lossy()
+                .replace('\\', "/")
+                .ends_with("rust/assets/templates"),
+            "应优先命中 rust/assets/templates：{found:?}"
+        );
     }
 
     #[test]

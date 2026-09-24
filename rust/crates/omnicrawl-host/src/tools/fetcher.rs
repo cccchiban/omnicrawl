@@ -2,9 +2,10 @@
 //!
 //! 语义基准是 `omnicrawl/net/fetcher.py`：只抓取用户明确给出的 URL、不执行 JavaScript、
 //! 不绕过验证码；内网/本机目标直连而不走系统代理；`insecure=true` 跳过 TLS 校验。
-//! 正文提取用 HTML5 容错解析（`lxml` 的 `main > article > body` + `text_content` 等价），
-//! Python 侧的 `impersonate` 浏览器指纹参数在此被接受但**不生效**（Rust 传输不做 JA3/JA4
-//! 模拟），这一点记录在 crate README 的已知差异里。
+//! 正文提取用 HTML5 容错解析（`lxml` 的 `main > article > body` + `text_content` 等价）。
+//! Python 侧的 `impersonate` 浏览器指纹参数在此同样生效：默认传输换成了
+//! [`super::wreq_transport::WreqWebTransport`]（wreq + wreq-util 设备档案），不再是
+//! 「接受但不生效」——因为 Python 的默认值就是 `chrome`，它属于默认路径而非可选增强。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -19,6 +20,8 @@ use super::web_transport::{
     browser_headers, detect_windows_proxy, host_of, is_private_host, resolve_url, WebErrorKind,
     WebRequest, WebTransport, MAX_REDIRECTS,
 };
+// 浏览器指纹传输：wreq（BoringSSL）+ wreq-util 设备档案，只给 fetcher 用。
+use super::wreq_transport::{normalize_impersonate, WreqWebTransport};
 
 pub const DEFAULT_TIMEOUT_SECONDS: f64 = 15.0;
 pub const DEFAULT_MAX_CHARS: i64 = 8000;
@@ -42,7 +45,9 @@ pub struct FetcherOptions {
 impl Default for FetcherOptions {
     fn default() -> Self {
         Self {
-            transport: Arc::new(super::web_transport::UreqWebTransport::new()),
+            // 默认就走浏览器指纹传输：Python 的 `impersonate` 默认值是 chrome，
+            // 用 ureq+rustls 的库指纹会在做 TLS 指纹校验的站点上直接失败。
+            transport: Arc::new(WreqWebTransport::new()),
             user_agent: super::web_transport::DEFAULT_USER_AGENT.to_string(),
             request_timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
             max_workers: MAX_WORKERS,
@@ -96,6 +101,9 @@ struct FetchPlan {
     max_chars: usize,
     max_html: bool,
     timeout: Duration,
+    /// 归一化后的浏览器指纹族名（`chrome`/`firefox`/`safari`/`edge`）。
+    /// 在计划阶段就归一化，避免每个 URL、每个重定向轮次重复解析。
+    impersonate: String,
 }
 
 pub fn fetcher(options: &FetcherOptions, arguments: &Map<String, Value>) -> ToolOutcome {
@@ -120,6 +128,7 @@ pub fn fetcher(options: &FetcherOptions, arguments: &Map<String, Value>) -> Tool
             1.0,
             60.0,
         )),
+        impersonate: normalize_impersonate(arguments.get("impersonate")),
     };
 
     let started = Instant::now();
@@ -199,6 +208,7 @@ fn fetch_one_inner(
         request.proxy = resolve_proxy(&current, options);
         request.insecure = plan.insecure;
         request.max_redirects = MAX_REDIRECTS;
+        request.impersonate = Some(plan.impersonate.clone());
         let response = options
             .transport
             .send(&request)

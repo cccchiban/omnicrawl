@@ -184,7 +184,9 @@ rust/
 │   ├── tests/plugin_cli_parity.rs          # 与 Python 的对照测试（参数面 44 例 + 作用域 10 例 + 退出码）
 │   └── README.md                           # 已迁移 / 尚未迁移、参数面差异、验证边界
 ├── docs/protocol-v1.md                     # 协议 v1 规格（方法、负载、错误、版本）
+├── docs/frozen-reference.md                # 冻结基准的定位、硬规则与残留清单
 └── tools/
+    ├── check_frozen_reference.mjs          # 冻结基准准入检查（CI 每次推送都跑）
     ├── gen_parity_fixture.py               # 协议层对照数据集生成脚本
     ├── gen_core_parity_fixture.py          # 回合循环对照数据集生成脚本
     ├── gen_llm_stream_fixture.py           # Provider 流解析对照数据集生成脚本
@@ -218,6 +220,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+构建 `omnicrawl-host` 及其上层（`omnicrawl-tui` / `omnicrawl-api` / `omnicrawl-cli`）会
+编译 BoringSSL（`fetcher` 的浏览器指纹传输用 wreq + btls），因此还要求 C/C++、CMake、
+perl、libclang 与 NASM；Windows 上必须设 `CMAKE_TOOLCHAIN_FILE`，仓库路径含非 ASCII
+字符时还要把 `CARGO_TARGET_DIR` 指到纯 ASCII 目录。完整清单与排障见
+[`docs/python-free-build.md`](docs/python-free-build.md)。
+
 嵌入式 Linux 交叉编译（产物静态链接，便于塞进镜像）：
 
 ```bash
@@ -248,7 +256,12 @@ Provider 与协议都是闭集：`openai` / `anthropic` / `gemini`，以及四�
 
 ## 对照（parity）工作流
 
-Python 侧是语义基准，不靠人读代码对齐：
+Python 侧（`omnicrawl/`）是**冻结的语义基准**：它只服务本节的 fixture 生成与 `tests/` 的对照
+测试，不再承载产品逻辑。边界、三条硬规则与待下线的残留清单见
+[`docs/frozen-reference.md`](docs/frozen-reference.md)；边界由
+`tools/check_frozen_reference.mjs` 在 CI（`.github/workflows/frozen-check.yml`）上强制检查。
+
+语义基准不靠人读代码对齐：
 
 ```bash
 python rust/tools/gen_parity_fixture.py   # 用 omnicrawl/llm/protocol.py 生成期望值
@@ -642,8 +655,13 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 状态侧已落 `hud` / `indicators`，启动画面与 `tool_labels` 也已接入；对照片为
 `tests/latex_parity.rs` + `rust/tools/gen_latex_fixture.py`（107 例转换 + 9 例分段 + 26 例快判）。
 
-仍未搬完：`read_image` / `web_search` / `fetcher` /
-`image_gen` / `tts_synthesize`、知识库、记忆（`omnicrawl-session` 已有 `MemoryStore` 可复用）、Windows 桌面、
-SubAgent、`advisor`，以及 `monitor` 任务的界面轮询展示、`read` 的 `function_name` 定位与 `omnicrawl://docs/` 内置文档
-（当前返回 `FS_UNSUPPORTED_FEATURE`）与工具输出预算归档。
+已落在宿主执行层、但界面层尚未接线或展示的：`/workspace` 的运行中切换（要重建内核会话与工具表）。
+`/advisor`、`/memory:clean`、`prompt_cache_identity` 的组装与后台任务日志的界面轮询已接线
+（分别由宿主同步顾问选项并重建工具表、按三个作用域清理过期记忆、在 `handshake()` 组装七字段身份、
+按 0.5 秒节流把 `monitor` 增量追回消息流；后者见 `crates/omnicrawl-tui/src/monitor.rs`）。
+身份指纹与 Python 逐字节对齐，见 `crates/omnicrawl-tui/README.md`。
+工具执行体本身（`read_image`、`web_search`、`fetcher`、
+`image_gen`、`tts_synthesize`、知识库、记忆、Windows 桌面、`advisor`）已在
+`omnicrawl-host/src/tools/` 落地，缺口在 `crates/omnicrawl-host/README.md` 与本文件的
+`crates/omnicrawl-tui/README.md` 里逐项列出。
 边界与缺口清单见 `crates/omnicrawl-tui/README.md`；Python 侧 Textual 工作台在迁移完成前仍在服役。

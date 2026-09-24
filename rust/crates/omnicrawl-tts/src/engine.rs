@@ -800,8 +800,7 @@ mod tests {
     #[test]
     fn inter_chunk_pause_follows_word_count() {
         let engine_pause = |count: usize| {
-            let text = std::iter::repeat("word")
-                .take(count)
+            let text = std::iter::repeat_n("word", count)
                 .collect::<Vec<_>>()
                 .join(" ");
             if text.split_whitespace().count() <= 4 {

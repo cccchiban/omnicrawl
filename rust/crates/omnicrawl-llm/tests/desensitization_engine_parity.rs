@@ -67,6 +67,8 @@ fn replay_texts(fixture: &Value, field: &str, pure_letters: bool, pure_digits: b
         entropy_pure_digits: pure_digits,
         pattern_rules: rules,
         gitleaks_rules: &[],
+        // 对照集只覆盖前三层；NER 兜底层在 `desensitization_ner_stage.rs` 里验。
+        ner: None,
         plan_cache: None,
         plan_builder: None,
     };
@@ -119,6 +121,8 @@ fn mask_structured_value_matches_python() {
         entropy_pure_digits: false,
         pattern_rules: rules,
         gitleaks_rules: &[],
+        // 对照集只覆盖前三层；NER 兜底层在 `desensitization_ner_stage.rs` 里验。
+        ner: None,
         plan_cache: None,
         plan_builder: None,
     };

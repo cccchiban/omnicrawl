@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{json, Value};
 
+use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::core::settings::load_feature_enabled;
+use omnicrawl_config::features::advisor::AdvisorConfig;
 use omnicrawl_ipc::{Frame, Id};
 use omnicrawl_tui::app::App;
 use omnicrawl_tui::args::{ApprovalMode, Options};
@@ -601,6 +604,46 @@ fn monitor_batches_start_poll_and_stop_a_background_task() {
         "应当留下 monitor 工具卡：{:?}",
         harness.app.state.records
     );
+
+    // 界面的增量日志（对映 Python `_refresh_monitor_events`）：适配器从游标 0 起读，
+    // 把整批事件渲染成一张工具卡；游标推后后同一批事件不再重复追回。
+    // 用 `monitor:` 前缀把界面卡与工具调用卡（call_id="c1"）区分开。
+    let monitor_body = |harness: &Harness| -> Vec<String> {
+        harness
+            .app
+            .state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Tool(card) if card.call_id.starts_with("monitor:") => {
+                    Some(card.body.join("\n"))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let later = Instant::now() + Duration::from_secs(1);
+    harness.app.tick_monitor_events(later);
+    let body = monitor_body(&harness);
+    assert_eq!(body.len(), 1, "应当追回一张后台任务日志卡：{body:?}");
+    assert!(
+        body[0].starts_with("Monitor · ") && body[0].contains(" · completed"),
+        "首行应带任务 id 与状态：{body:?}"
+    );
+    assert!(
+        body[0].contains("[stdout] monitor-e2e"),
+        "事件行应是 `[流] 文本` 形状：{body:?}"
+    );
+
+    harness
+        .app
+        .tick_monitor_events(later + Duration::from_secs(1));
+    assert_eq!(
+        monitor_body(&harness).len(),
+        1,
+        "已消费的事件不应重复追加：{:?}",
+        monitor_body(&harness)
+    );
 }
 // ---------- 斜杠命令接线 ----------
 
@@ -899,4 +942,164 @@ fn undo_is_dispatched_to_the_kernel_and_reported_back() {
         "撤销结果应当回填到消息流",
     );
     assert_eq!(harness.app.state.status, None, "回执到达后状态行应当收起");
+}
+
+/// 记忆工具整组进出表：与配置一致。
+///
+/// 语义基准是 Python `entry.py` 的 `load_feature_enabled("memory", default=True)`：**缺省开启**。
+/// 这条断言不假设缺省值，而是先按同一入口读出预期，再与 `App` 真实装出来的工具表对账，
+/// 因此在显式写了 `[memory].enabled = false` 的机器上同样成立。
+///
+/// 回归的对象：`RegistryOptions::default()` 的 `memory_enabled` 是 `false`，早先 TUI 没有
+/// 覆盖它，而 `/settings` 又报 `features.memory = true`——两侧自相矛盾。
+#[test]
+fn memory_tools_presence_tracks_the_configured_switch() {
+    let expected = load_feature_enabled(
+        &ConfigEnvironment::from_process(),
+        "memory",
+        true,
+        None,
+        None,
+    )
+    .unwrap_or(true);
+
+    let harness = Harness::start("", ApprovalMode::Manual);
+    let names: Vec<String> = harness
+        .app
+        .registry()
+        .tool_inventory()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+
+    // 四个工具与 `omnicrawl-host` 的 `MEMORY_RUNNERS` 同源；这里写字面量，
+    // 工具集变动时这条断言会先响，提醒同步检查缺省开关。
+    for tool in [
+        "memory_search",
+        "memory_read",
+        "memory_expand_related",
+        "memory_write",
+    ] {
+        assert_eq!(
+            names.iter().any(|name| name == tool),
+            expected,
+            "记忆工具 {tool} 的进出表应与配置一致（配置读值 {expected}）：{names:?}"
+        );
+    }
+}
+
+/// `/advisor` 的命令路径要让顾问工具真的进出表。
+///
+/// 回归的对象：宿主能力面早先把 `apply_advisor_config` 直接桩成「暂不可用」，
+/// 于是 `/advisor <model>` 会写盘却永远不重建工具表，运行期与磁盘错配。
+/// 这条断言直接驱动命令层的落地入口，不经过写盘，因此不会碰真实的 `config.toml`。
+#[test]
+fn advisor_command_path_toggles_the_advisor_tool() {
+    fn has_advisor(harness: &Harness) -> bool {
+        harness
+            .app
+            .registry()
+            .tool_inventory()
+            .into_iter()
+            .any(|(name, _)| name == "advisor")
+    }
+
+    let mut harness = Harness::start("", ApprovalMode::Manual);
+    assert!(
+        !has_advisor(&harness),
+        "有黑名单或未选模型时 advisor 不应进表"
+    );
+
+    // `/advisor <model_key>` 落地时调用的就是这个入口。
+    harness
+        .app
+        .command_apply_advisor_config(&AdvisorConfig {
+            enabled: true,
+            model_key: "advisor-test-model".to_string(),
+            effort: "high".to_string(),
+            disabled_for_models: Vec::new(),
+        })
+        .expect("同步顾问配置并重建工具表应当成功");
+    assert!(has_advisor(&harness), "启用后 advisor 应当进表");
+
+    // `/advisor off`：关掉后工具立刻剥离（与 Python 的「已从工具表剥离」同义）。
+    harness
+        .app
+        .command_apply_advisor_config(&AdvisorConfig::default())
+        .expect("关闭顾问并重建工具表应当成功");
+    assert!(!has_advisor(&harness), "关闭后 advisor 应当离表");
+}
+
+/// 握手要把稳定前缀的 prompt cache 身份交给内核。
+///
+/// 回归的对象：宿主早先固定发 `prompt_cache_capable: false` 且身份为空映射，于是
+/// 内核派生不出 cache key，GPT 系列拿不到 prompt caching。这里钉住
+/// 「`initialize.model.prompt_cache_identity` 带齐七项且都不是空串」。
+#[test]
+fn handshake_sends_a_stable_prompt_cache_identity() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+
+    let line = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("initialize"))
+        .expect("宿主应当发出 initialize")
+        .to_line();
+    let frame: Value = serde_json::from_str(&line).expect("帧是 JSON");
+    let identity = frame["params"]["model"]["prompt_cache_identity"]
+        .as_object()
+        .expect("initialize.model 应带 prompt_cache_identity");
+
+    // 键集与 Python `PromptCacheIdentity` 一致；不含 `model`——它由内核的
+    // `build_prompt_cache_key` 补进去。
+    let mut keys: Vec<&str> = identity.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "active_skill_context_hash",
+            "agent_prompt_version",
+            "project_instructions_hash",
+            "skill_index_hash",
+            "system_prompt_hash",
+            "tool_schema_hash",
+            "workspace_root",
+        ],
+        "身份字段集应当与 Python 一致"
+    );
+    for (key, value) in identity {
+        let text = value.as_str().unwrap_or_default();
+        assert!(!text.is_empty(), "{key} 不应为空");
+        if key.ends_with("_hash") {
+            assert_eq!(text.len(), 64, "{key} 应当是 sha256 的十六进制");
+            assert!(
+                text.chars().all(|character| character.is_ascii_hexdigit()),
+                "{key} 应当只含十六进制字符：{text}"
+            );
+        }
+    }
+}
+
+/// 原生视觉的开关必须随握手交给内核：图片是直送主模型还是走 `[vision]` 代理由内核判定，
+/// 缺了这个字段内核只能按「不是原生视觉」处理，带了 `--native-vision` 的会话会让图片被掉。
+#[test]
+fn handshake_reports_the_native_vision_switch() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+
+    let line = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("initialize"))
+        .expect("宿主应当发出 initialize")
+        .to_line();
+    let frame: Value = serde_json::from_str(&line).expect("帧是 JSON");
+    // 与 `Options::native_vision` 同源——测试构造的 `Options` 里它是 false，
+    // 字段存在且为布尔值才是关键（省略字段会让旧内核默认成假，但新内核靠它做判定）。
+    assert_eq!(
+        frame["params"]["model"]["native_vision"],
+        Value::Bool(false),
+        "initialize.model 应显式带 native_vision"
+    );
 }

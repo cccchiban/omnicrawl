@@ -112,6 +112,148 @@ pub fn resource_file_name(name: &str, file_key: &str, resource_type: &str) -> St
     }
 }
 
+/// 从 `Content-Disposition` 里取文件名（RFC 6266 / RFC 5987）。
+///
+/// 优先 `filename*=UTF-8''<百分号编码>`（扩展参数，非 ASCII 名字走这条），其次是
+/// `filename="..."` / `filename=...`；都没有时返回 `None`，由调用方回落成 `file_key`。
+/// 只取最后一个路径分量：服务端给的可以是任意字符串，而落盘路径要靠它拼。
+pub fn filename_from_content_disposition(value: &str) -> Option<String> {
+    let mut plain: Option<String> = None;
+    for part in split_header_parameters(value) {
+        let Some((key, raw)) = part.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let raw = raw.trim();
+        if key == "filename*" {
+            // 扩展参数一旦解出来就直接用它（与浏览器及 `requests` 一致）。
+            if let Some(decoded) = decode_extended_value(raw) {
+                return last_path_segment(&decoded);
+            }
+        } else if key == "filename" && plain.is_none() {
+            plain = last_path_segment(&unquote(raw));
+        }
+    }
+    plain
+}
+
+/// 按 `;` 切参数，但不切双引号内的分号（`filename="a;b.txt"` 是一个参数）。
+fn split_header_parameters(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in value.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' if quoted => {
+                current.push(character);
+                escaped = true;
+            }
+            '"' => {
+                quoted = !quoted;
+                current.push(character);
+            }
+            ';' if !quoted => {
+                parts.push(current.clone());
+                current.clear();
+            }
+            other => current.push(other),
+        }
+    }
+    parts.push(current);
+    parts
+}
+
+/// 去掉两端双引号并还原 `\"` / `\\`。
+///
+/// 只当后一个字符是 `"` 或 `\` 时才把 `\` 当转义——与 RFC 的 quoted-pair 以及 Python
+/// `email` 的取值一致（否则 `"a\b.txt"` 这类 Windows 路径会被吃成 `ab.txt`）。
+fn unquote(raw: &str) -> String {
+    let trimmed = raw.trim();
+    let Some(inner) = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    else {
+        return trimmed.to_string();
+    };
+    let mut text = String::new();
+    let mut characters = inner.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            match characters.peek() {
+                Some('"') | Some('\\') => {
+                    if let Some(next) = characters.next() {
+                        text.push(next);
+                    }
+                }
+                _ => text.push('\\'),
+            }
+        } else {
+            text.push(character);
+        }
+    }
+    text
+}
+
+/// `UTF-8''<百分号编码>` → 文本；字符集不是 UTF-8 、或解码后不是合法 UTF-8 时返回 `None`。
+fn decode_extended_value(raw: &str) -> Option<String> {
+    let mut pieces = raw.splitn(3, '\'');
+    let charset = pieces.next()?.trim();
+    let _language = pieces.next()?;
+    let encoded = pieces.next()?;
+    if !charset.eq_ignore_ascii_case("utf-8") {
+        return None;
+    }
+    let bytes = percent_decode(encoded)?;
+    String::from_utf8(bytes).ok()
+}
+
+/// 百分号解码；遇到非法转义（`%` 后不足两位十六进制）返回 `None`。
+fn percent_decode(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = bytes.get(index + 1).and_then(|byte| hex_value(*byte))?;
+            let low = bytes.get(index + 2).and_then(|byte| hex_value(*byte))?;
+            decoded.push(high * 16 + low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Some(decoded)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// 取最后一个路径分量；空、`.`、`..` 都算无效（返回 `None`）。
+fn last_path_segment(name: &str) -> Option<String> {
+    let segment = name
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+        .unwrap_or_default()
+        .trim();
+    if segment.is_empty() || segment == "." || segment == ".." || segment.contains('\0') {
+        return None;
+    }
+    Some(segment.to_string())
+}
+
 /// 提取 `[FILE:...]` 标记中的路径（按出现顺序，去掉两端空白）。
 pub fn file_marker_paths(text: &str) -> Vec<String> {
     let mut paths = Vec::new();
@@ -315,5 +457,95 @@ mod tests {
         let (text, images) = post_text_and_images(&content);
         assert_eq!(text, "标题 正文 @小明");
         assert_eq!(images, vec!["img_1".to_string()]);
+    }
+
+    #[test]
+    fn content_disposition_prefers_the_extended_parameter() {
+        // RFC 5987 扩展参数（非 ASCII 名字走这条）。
+        assert_eq!(
+            filename_from_content_disposition(
+                "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A.pdf"
+            ),
+            Some("报告.pdf".to_string())
+        );
+        assert_eq!(
+            filename_from_content_disposition("attachment; filename=\"report.pdf\""),
+            Some("report.pdf".to_string())
+        );
+        // 两者同时出现时扩展参数优先。
+        assert_eq!(
+            filename_from_content_disposition(
+                "attachment; filename=\"fallback.pdf\"; filename*=utf-8'en'%E6%8A%A5%E5%91%8A.pdf"
+            ),
+            Some("报告.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn content_disposition_handles_quoting_and_semicolons() {
+        // 引号内的分号不是参数分隔符；转义引号要还原。
+        assert_eq!(
+            filename_from_content_disposition("attachment; filename=\"a;b.txt\""),
+            Some("a;b.txt".to_string())
+        );
+        assert_eq!(
+            filename_from_content_disposition("attachment; filename=\"a\\\"b.txt\""),
+            Some("a\"b.txt".to_string())
+        );
+        // 不带引号、多余空白与参数顺序都能识别。
+        assert_eq!(
+            filename_from_content_disposition("attachment;size=10;  filename = plain.bin "),
+            Some("plain.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn content_disposition_never_escapes_the_directory() {
+        // 只取最后一个路径分量：这是拼落盘路径用的字符串。
+        assert_eq!(
+            filename_from_content_disposition("attachment; filename=\"../../etc/passwd\""),
+            Some("passwd".to_string())
+        );
+        assert_eq!(
+            filename_from_content_disposition("attachment; filename=\"..\\..\\boot.ini\""),
+            Some("boot.ini".to_string())
+        );
+        for empty in [
+            "attachment",
+            "attachment; filename=\"\"",
+            "attachment; filename=\"..\"",
+            "attachment; filename=\"/\"",
+        ] {
+            assert_eq!(
+                filename_from_content_disposition(empty),
+                None,
+                "{empty} 不应给出可用文件名"
+            );
+        }
+    }
+
+    #[test]
+    fn content_disposition_rejects_unusable_extended_values() {
+        // 非 UTF-8 字符集、非法百分号转义、解码后非 UTF-8 都归为「取不到」，
+        // 让调用方回落成 file_key，而不是拿半个名字去落盘。
+        for value in [
+            "attachment; filename*=iso-8859-1'en'%E6%8A%A5",
+            "attachment; filename*=UTF-8'en'%E6%8A",
+            "attachment; filename*=UTF-8'en'%FF%FE",
+            "attachment; filename*=UTF-8'en'",
+        ] {
+            assert_eq!(
+                filename_from_content_disposition(value),
+                None,
+                "{value} 不应给出可用文件名"
+            );
+        }
+        // 扩展参数不可用时仍可回落成普通参数。
+        assert_eq!(
+            filename_from_content_disposition(
+                "attachment; filename=\"fallback.bin\"; filename*=iso-8859-1'en'%E6"
+            ),
+            Some("fallback.bin".to_string())
+        );
     }
 }

@@ -82,7 +82,7 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
            "tools": [{"type": "function", "function": {"name": "read_file"}}],
            "options": {"temperature": 0.2}, "request_timeout_seconds": 180,
            "prompt_cache_capable": true, "prompt_cache_identity": {"profile": "main"},
-           "request_retry_count": 1}}
+           "native_vision": false, "request_retry_count": 1}}
 ```
 
 `context_messages` 是 system 之外的上下文消息（项目规范、Skill 索引、工具能力说明、运行环境）：由宿主按「稳定 → 动态」组装好整段交进来，内核每轮把它们**原样插在历史之前**，且不写进会话转录——它们是本轮读到的真实环境，不是会话历史。缺省空数组表示旧宿主不给（行为与迁移前一致）。
@@ -122,6 +122,10 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `options` 用 `GenerationOptions` 的 JSON 形状。
 - `request_retry_count` 是空响应与可重试错误的最大请求次数（默认 1），语义与 Python 侧同名配置一致。
   内核等该批次返回后再收尾，不会中断宿主正在执行的工具。
+- `native_vision` 为真表示主模型自己能看图：带图观察**直送主模型**，内核不再启用独立视觉模型
+  代理。为假（或旧宿主不给）时带图观察交给 `[vision].models` 里的模型分析，把结论换成不可信
+  文本观察；代理未启用时图片被掉，主模型只收到图片元数据。优先级与 Python
+  `route_image_result` 一致：原生视觉优先于代理。
 
 `session.settings` 让宿主在运行期改内核持有的设置，用于设置面板的即时生效：
 

@@ -333,10 +333,7 @@ impl SessionEvidenceRecallService {
             for (item_index, item) in items.iter().enumerate() {
                 if let Some(text) = item.get("content").and_then(Value::as_str) {
                     let length = text.chars().count();
-                    if best
-                        .as_ref()
-                        .map_or(true, |current| length > current.length)
-                    {
+                    if best.as_ref().is_none_or(|current| length > current.length) {
                         best = Some(ContentTarget {
                             item_index,
                             artifact_index: None,
@@ -348,10 +345,7 @@ impl SessionEvidenceRecallService {
                     for (artifact_index, artifact) in artifacts.iter().enumerate() {
                         if let Some(text) = artifact.get("content").and_then(Value::as_str) {
                             let length = text.chars().count();
-                            if best
-                                .as_ref()
-                                .map_or(true, |current| length > current.length)
-                            {
+                            if best.as_ref().is_none_or(|current| length > current.length) {
                                 best = Some(ContentTarget {
                                     item_index,
                                     artifact_index: Some(artifact_index),

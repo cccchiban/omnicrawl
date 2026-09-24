@@ -73,10 +73,12 @@ use omnicrawl_config::models::vision::{
 };
 use omnicrawl_controllers::settings::context_compaction_trigger_tokens;
 use omnicrawl_controllers::subagents::definitions::AgentDefinitionRegistry;
+use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
 use omnicrawl_controllers::AgentError;
 use omnicrawl_core::{ToolCall, ToolResult};
 use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::prompt::{PromptOptions, PromptRuntime};
+use omnicrawl_host::prompt_cache::build_prompt_cache_identity;
 use omnicrawl_ipc::{
     bridge::{
         Command, HostEvent, InitializeParams, KernelCompactionConfig, KernelModelConfig,
@@ -98,7 +100,9 @@ use crate::commands::{self, TuiHostAgent};
 use crate::host::{self, BatchStep, Waiting};
 use crate::kernel::KernelClient;
 use crate::state::{AppState, Record};
-use crate::tools::{AdvisorOptions, ImageGenOptions, RegistryOptions, ToolRegistry, TtsOptions};
+use crate::tools::{
+    AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry, TtsOptions,
+};
 use crate::ui;
 use crate::ui::config_chat::{ConfigChatEvent, ConfigChatState};
 use crate::ui::conversation::{self, LineHit};
@@ -264,6 +268,11 @@ pub struct App {
     pub config_chat: Option<ConfigChatState>,
     /// 后台 TTS 任务（模型下载 / 音色克隆）的结果通道。
     tts_task: Option<Receiver<TtsTaskResult>>,
+    /// 本界面独有的 Monitor 日志消费游标（对映 Python `MonitorStateAdapter`）。
+    monitor_state: crate::monitor::MonitorStateAdapter,
+    /// 上次轮询 Monitor 事件的时刻：主循环每帧调 `tick_monitor_events`，按
+    /// `MONITOR_POLL_INTERVAL` 节流。
+    monitor_polled_at: Instant,
     /// 主 Agent 隔离区会话：退出收尾时 apply 变更 + 按策略清理（对映 Python `attach_isolation_session`）。
     isolation: Option<IsolationSession>,
     /// 内核当前持有的会话 id：握手与各会话命令的回执里同步过来。
@@ -293,9 +302,30 @@ impl App {
             let slot = Arc::clone(&advisor_tools);
             Arc::new(move || slot.lock().map(|guard| guard.clone()).unwrap_or_default())
         };
+        // 记忆开关与 Python 侧同源：`entry.py` 读 `load_feature_enabled("memory", default=True)`，
+        // 即缺省开启。此前这里直接走 `RegistryOptions::default()`（`memory_enabled: false`），
+        // 导致记忆整组工具永远进不了表，而 Python 侧缺省是进的。
+        let memory_enabled = load_feature_enabled(
+            &ConfigEnvironment::from_process(),
+            "memory",
+            true,
+            None,
+            None,
+        )
+        .unwrap_or(true);
         let registry_options = RegistryOptions {
             session_held_by_kernel: options.session_root.is_some(),
-            native_vision: options.native_vision,
+            // 记忆整组工具进表，作用域与 Python 的 `_create_memory_stores` 对齐：项目级与
+            // 用户级常开（目录由 `MemoryOptions::store` 按 `DEFAULT_MEMORY_DIRECTORY` 与
+            // `$HOME` 解析）。会话级记忆不开——内核自持会话时宿主拿不到 session id，
+            // 强行开启只会让模型调用 `scope="session"` 时拿到「未启用」。
+            memory_enabled,
+            memory: MemoryOptions {
+                project_enabled: true,
+                user_enabled: true,
+                session_enabled: false,
+                ..MemoryOptions::default()
+            },
             subagent_types: subagent_role_names(),
             mcp: mcp_manager(workspace),
             image_gen: ImageGenOptions {
@@ -434,6 +464,8 @@ impl App {
             file_picker: None,
             config_chat: None,
             tts_task: None,
+            monitor_state: crate::monitor::MonitorStateAdapter::default(),
+            monitor_polled_at: Instant::now(),
             isolation: None,
             session_id: String::new(),
         })
@@ -515,10 +547,24 @@ impl App {
     ///   一律用命令行给的值（内核按运行时默认语义发请求），不叠加配置里那条渠道的设置，
     ///   免得把别的协议塞给这个端点。
     ///
-    /// `--model` 始终优先（它是必填项）。提示词缓存身份由 Python 侧从稳定身份派生，
-    /// Rust 宿主尚未复刻，这里不声明缓存能力。
+    /// `--model` 始终优先。提示词缓存身份在这里按稳定前缀算出来交给内核（它据此
+    /// 派生 `prompt_cache_key`），与 Python `build_prompt_cache_identity` 逐字节对齐。
     pub fn handshake(&mut self) -> Result<(), String> {
         let external_channel = !self.options.base_url.trim().is_empty();
+        // 稳定前缀的三样来源：system prompt、工具声明、项目规范。
+        // 先算好再进 `KernelModelConfig` 字面量，避免同一份内容算两遍（模板可能很大）。
+        let system_prompt = self.prompt.system_prompt();
+        let tool_declarations = self.registry.declarations();
+        // 活动 Skill 取决于用户本轮输入，握手时还没有，因此传空列表；
+        // 此时 `active_skill_context_hash` 就是空数组的哈希，与 Python 无命中时同值。
+        let prompt_cache_identity = build_prompt_cache_identity(
+            &system_prompt,
+            self.workspace.as_path(),
+            &self.prompt.project_instructions().unwrap_or_default(),
+            &self.prompt.skill_metas(),
+            &[],
+            &tool_declarations,
+        );
         let model = KernelModelConfig {
             model: self.options.model.clone(),
             provider: if external_channel {
@@ -542,12 +588,12 @@ impl App {
                 self.llm.api_key_env.clone()
             },
             user_agent: format!("omnicrawl-tui/{}", env!("CARGO_PKG_VERSION")),
-            system_prompt: self.prompt.system_prompt(),
+            system_prompt,
             context_messages: self
                 .prompt
                 .context_messages_with_plugins(true, Some(self.plugins.as_ref()), None, None)
                 .unwrap_or_default(),
-            tools: self.registry.declarations(),
+            tools: tool_declarations,
             options: if external_channel {
                 json!({})
             } else {
@@ -565,8 +611,13 @@ impl App {
                 self.options.context_window_tokens,
                 &self.llm,
             ),
+            // 能力声明留给 Provider 档案：`LlmConfig` 不带 `capabilities`，因此这里
+            // 只交身份。内核 `should_send_prompt_cache_key` 对 GPT 系列有回退分支，
+            // 与 Python 在 `capabilities.prompt_cache` 未声明时的行为一致。
             prompt_cache_capable: false,
-            prompt_cache_identity: Default::default(),
+            prompt_cache_identity: prompt_cache_identity.to_identity_map(),
+            // 交给内核做优先级判定：为真时带图观察直送主模型，不再走 `[vision]` 代理。
+            native_vision: self.options.native_vision,
             request_retry_count: if external_channel {
                 1
             } else {
@@ -693,10 +744,17 @@ impl App {
         let Some(request_id) = self.state.batch_request_id() else {
             return;
         };
-        let native_vision = self.options.native_vision;
-        if let Some(observations) = self.state.take_observations(native_vision) {
+        let attach_images = self.attach_vision_images();
+        if let Some(observations) = self.state.take_observations(attach_images) {
             self.respond_batch(&request_id, observations);
         }
+    }
+
+    /// 是否把图片交给内核：原生视觉或 `[vision]` 代理任一可用即可（与 Python
+    /// `route_image_result` 同义）。两者都没有时图片不会进请求——主模型看不懂图，
+    /// 交出去只会白跑一趟 base64 过管道。
+    fn attach_vision_images(&self) -> bool {
+        self.options.native_vision || vision_proxy_configured(&ConfigEnvironment::from_process())
     }
 
     fn handle_frame(&mut self, frame: Frame) {
@@ -924,8 +982,8 @@ impl App {
             BatchStep::Complete => {
                 self.tool_deadline = None;
                 self.batch_registry = None;
-                let native_vision = self.options.native_vision;
-                if let Some(observations) = self.state.take_observations(native_vision) {
+                let attach_images = self.attach_vision_images();
+                if let Some(observations) = self.state.take_observations(attach_images) {
                     self.respond_batch(&request_id, observations);
                 }
             }
@@ -1036,6 +1094,8 @@ impl App {
                     });
                 }
                 Err(reason) => {
+                    // 审查拒绝也属「未批准」：MCP 调用落一条拒绝审计。
+                    host::record_mcp_denial(&registry, &call.name, &call.arguments, &reason);
                     plugins.tool_approval_after(&call.name, false, &reason, "review");
                     let _ = sender.send(ToolCompletion {
                         index,
@@ -1147,7 +1207,7 @@ impl App {
                     return;
                 }
                 // 设置面板是模态页：它开着时按键都归它（与 Python 的 `SettingsScreen` 一致）；
-                // 鼠标事件同理不由主界面处理（面板自己的点击交互尚未接线）。
+                // 鼠标同理——面板铺满整屏，落点只能按面板自己的命中区判。
                 if self.settings.is_some() {
                     self.handle_settings_key(key);
                     return;
@@ -1156,7 +1216,8 @@ impl App {
             }
             Event::Mouse(_) if self.file_picker.is_some() => {}
             Event::Mouse(_) if self.config_chat.is_some() => {}
-            Event::Mouse(mouse) if self.settings.is_none() => self.handle_mouse(mouse),
+            Event::Mouse(mouse) if self.settings.is_some() => self.handle_settings_mouse(mouse),
+            Event::Mouse(mouse) => self.handle_mouse(mouse),
             // 弹层开着时粘贴不落到主输入框（路径输入用键盘）。
             Event::Paste(_) if self.file_picker.is_some() => {}
             Event::Paste(text) if self.config_chat.is_some() => {
@@ -1183,6 +1244,34 @@ impl App {
             MouseEventKind::ScrollDown => self.state.scroll_by(WHEEL_STEP),
             MouseEventKind::Down(MouseButton::Left) if interactive => {
                 self.handle_click(mouse.column, mouse.row);
+            }
+            _ => {}
+        }
+    }
+
+    /// 设置面板的鼠标事件：悬停只记录行（加亮交给渲染层），左键按命中区分派。
+    ///
+    /// 面板是整屏模态页，各页的滚动都跟着选中项走，因此滚轮不在这里接管。
+    fn handle_settings_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Moved => {
+                if let Some(settings) = self.settings.as_mut() {
+                    let hover = settings.hit_at(mouse.column, mouse.row);
+                    settings.set_hover(hover);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // 先取出事件再分派：`click` 要可变借用面板，而事件处理要可变借用 `App`。
+                let event = {
+                    let Some(settings) = self.settings.as_mut() else {
+                        return;
+                    };
+                    let Some(action) = settings.hit_at(mouse.column, mouse.row) else {
+                        return;
+                    };
+                    settings.click(action)
+                };
+                self.dispatch_settings_event(event);
             }
             _ => {}
         }
@@ -1320,6 +1409,16 @@ impl App {
                         }
                     }
                     KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                        // 拒绝的若是 MCP Tool，先落审计再推进批次（与 Python 的
+                        // `record_denied_tool_call` 同一时点、同一文案）。
+                        if let Some(call) = self.state.pending_approval_call() {
+                            host::record_mcp_denial(
+                                &self.registry,
+                                &call.name,
+                                &call.arguments,
+                                &omnicrawl_controllers::approval::user_cancelled_reason(&call.name),
+                            );
+                        }
                         if let Some(step) = self.state.decide_approval(false) {
                             self.handle_batch_step(batch_id, step);
                         }
@@ -1812,11 +1911,16 @@ impl App {
         self.dispatch_settings_event(event);
     }
 
-    /// 面板事件 → 宿主动作：关闭，或执行一次设置变更并回填结果。
+    /// 面板事件 → 宿主动作：关闭、交出键盘给配置对话，或执行一次设置变更并回填结果。
     fn dispatch_settings_event(&mut self, event: Option<SettingsEvent>) {
         match event {
             None => {}
             Some(SettingsEvent::Close) => self.settings = None,
+            Some(SettingsEvent::OpenConfigChat) => {
+                // 与 `/settings --chat` 同一入口：面板让位，弹层接管键盘。
+                self.settings = None;
+                self.open_config_chat();
+            }
             Some(SettingsEvent::Apply(change)) => {
                 let outcome = self.apply_settings_change(&change);
                 if let Some(settings) = self.settings.as_mut() {
@@ -2041,6 +2145,23 @@ impl App {
     pub fn tick_config_chat(&mut self) {
         if let Some(chat) = self.config_chat.as_mut() {
             chat.tick();
+        }
+    }
+
+    /// 按 `MONITOR_POLL_INTERVAL` 节流轮询后台任务日志，把增量追加成工具卡。
+    ///
+    /// 对映 Python `ConversationViewMixin._refresh_monitor_events`：只往消息流追加，
+    /// 不改动回合状态，不干扰正在跑的模型回合或其他后台任务。游标只在本适配器里，
+    /// 本地 API 的 `/monitors` 与模型侧的 `monitor` 工具各有自己的消费位置。
+    pub fn tick_monitor_events(&mut self, now: Instant) {
+        if now.duration_since(self.monitor_polled_at) < crate::monitor::MONITOR_POLL_INTERVAL {
+            return;
+        }
+        self.monitor_polled_at = now;
+        for batch in self.monitor_state.refresh(self.registry.monitors()) {
+            let text = crate::monitor::format_monitor_display_batch(&batch);
+            self.state
+                .push_monitor_batch(&batch.monitor_id, &batch.status, text);
         }
     }
 
@@ -2498,6 +2619,28 @@ impl App {
             }
         }
         self.registry_options.advisor = advisor;
+    }
+
+    /// `/advisor` 的运行期落地：把命令层已写盘的顾问配置同步到工具选项并重建工具表。
+    ///
+    /// 与设置页（[`App::apply_advisor_form`]）不同的是，写盘由命令处理器负责
+    /// （它先调 `save_advisor_config` 再调这里），所以宿主这一侧只做两件事：
+    /// 把配置映射成运行期选项，再重建工具表让 advisor 工具即时出现/消失。
+    ///
+    /// 重建失败时把运行期选项回滚成原值再报错：调用方会看到「已保存但未生效」，
+    /// 而不是「磁盘是新值、运行期还是旧值」这种看不见的错配。
+    ///
+    /// 公开是为了让集成测试能直接驱动这条落地路径（`/advisor <model>` 的写盘会碰
+    /// 真实 `config.toml`，不经写盘就验证「选项同步 + 重建工具表」只能走这里）。
+    pub fn command_apply_advisor_config(&mut self, config: &AdvisorConfig) -> Result<(), String> {
+        let environment = ConfigEnvironment::from_process();
+        let previous_options = self.registry_options.advisor.clone();
+        self.sync_advisor_options(&environment, config);
+        if let Err(error) = self.rebuild_registry() {
+            self.registry_options.advisor = previous_options;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// 工具输出压缩：写 `config.toml [tool_output_compression]`。

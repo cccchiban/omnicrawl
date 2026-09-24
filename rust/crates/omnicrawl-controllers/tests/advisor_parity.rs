@@ -39,7 +39,7 @@ fn sha256_hex(text: &str) -> String {
 }
 
 fn template_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../omnicrawl/templates")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../rust/assets/templates")
 }
 
 fn assert_result(actual: &ToolResult, expected: &Value, label: &str) {

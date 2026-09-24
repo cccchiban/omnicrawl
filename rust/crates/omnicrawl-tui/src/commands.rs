@@ -25,11 +25,13 @@ use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::advisor::AdvisorConfig;
 use omnicrawl_config::models::llm::LlmConfig;
 use omnicrawl_controllers::control::PluginWorkerRow;
+use omnicrawl_controllers::tool_impl::MemoryScope;
 use omnicrawl_extensions::skill::SkillMeta;
 use omnicrawl_session::{PromptHistoryEntry, SessionIndexEntry};
 use serde_json::{Map, Value};
 
 use crate::app::App;
+use crate::tools::MemoryOptions;
 
 /// 只读 git 探测的超时（与 Python 的 30 秒一致）。
 const GIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -60,6 +62,40 @@ impl<'a> TuiHostAgent<'a> {
 /// 宿主缺少这项能力时的统一说法：点明缺什么，不让调用方以为命令成功了。
 fn blocked<T>(what: &str, why: &str) -> Result<T, AgentError> {
     Err(AgentError::new(format!("{what}暂不可用：{why}")))
+}
+
+/// 清理项目 / 会话 / 用户三个作用域的过期记忆，返回 `作用域:路径` 列表。
+///
+/// 语义对齐 Python 的 `agent/controllers/memory/stores.py::clean_memory`：
+/// 顺序是项目 → 会话 → 用户，每条结果写成 `作用域:路径`；未启用的作用域等同于
+/// Python 里的 `None` store，跳过而不是报错；三个都没启用时相当于 Python 的
+/// 「一个 store 都没有」，报「记忆系统未启用。」。
+///
+/// 抽成自由函数是为了能在隔离目录上验证：宿主里的选项会把用户级指向真实的
+/// `~/.omnicrawl/User_memory`，端到端跑 `/memory:clean` 会碰到用户的真实记忆。
+fn clean_expired_memory_scopes(options: &MemoryOptions) -> Result<Vec<String>, String> {
+    let scopes = [
+        ("project", MemoryScope::Project),
+        ("session", MemoryScope::Session),
+        ("user", MemoryScope::User),
+    ];
+    let mut deleted: Vec<String> = Vec::new();
+    let mut any_enabled = false;
+    for (label, scope) in scopes {
+        // 未启用的作用域在 Python 里就是 None store，这里同样跳过而不是报错。
+        let Ok(store) = options.store(scope) else {
+            continue;
+        };
+        any_enabled = true;
+        let paths = store
+            .clean_expired_memories()
+            .map_err(|error| error.message().to_string())?;
+        deleted.extend(paths.into_iter().map(|path| format!("{label}:{path}")));
+    }
+    if !any_enabled {
+        return Err("记忆系统未启用。".to_string());
+    }
+    Ok(deleted)
 }
 
 impl CommandAgent for TuiHostAgent<'_> {
@@ -208,11 +244,14 @@ impl CommandAgent for TuiHostAgent<'_> {
         Ok(())
     }
 
-    fn apply_advisor_config(&self, _config: &AdvisorConfig) -> Result<(), AgentError> {
-        blocked(
-            "/advisor",
-            "顾问工具由内核装配工具表；请用 /settings 的「顾问」页设置（那里已接线）。",
-        )
+    fn apply_advisor_config(&self, config: &AdvisorConfig) -> Result<(), AgentError> {
+        // 写盘已在命令处理器里完成（`save_advisor_config`）；宿主只负责把新配置映射成
+        // 运行期选项并重建工具表，让 advisor 工具即时出现/消失——与 Python 的
+        // `set_advisor_configuration` 同义。
+        self.app
+            .borrow_mut()
+            .command_apply_advisor_config(config)
+            .map_err(AgentError::new)
     }
 
     // ── 工作区 ────────────────────────────────────────────────
@@ -236,10 +275,11 @@ impl CommandAgent for TuiHostAgent<'_> {
     }
 
     fn clean_memory(&self) -> Result<Vec<String>, AgentError> {
-        blocked(
-            "/memory:clean",
-            "长期记忆由内核侧的记忆子系统持有，宿主没有清理入口。",
-        )
+        // 记忆工具的执行体在宿主（`omnicrawl-host`），所以清理由宿主自己做，不需要新的
+        // 协议入口；作用域的解析用注册表里的选项——它的 `workspace_root` 已在
+        // 构造时按工作区补全，与项目级目录的基准一致。
+        let app = self.app.borrow();
+        clean_expired_memory_scopes(app.registry().memory()).map_err(AgentError::new)
     }
 
     // ── MCP / 插件 ────────────────────────────────────────────
@@ -466,6 +506,78 @@ mod tests {
             settings.parameters.as_ref().map(Vec::len),
             Some(1),
             "参数提示来自命令声明"
+        );
+    }
+
+    /// 建一个只开项目级的隔离选项。
+    ///
+    /// 用户级必须关掉：真实解析会指向 `~/.omnicrawl/User_memory`，测试里不能碰。
+    fn isolated_memory_options(workspace: &Path) -> MemoryOptions {
+        MemoryOptions {
+            workspace_root: workspace.to_path_buf(),
+            project_directory: ".omnicrawl/.oclmemory".to_string(),
+            project_enabled: true,
+            user_enabled: false,
+            session_enabled: false,
+            ..MemoryOptions::default()
+        }
+    }
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("omnicrawl-tui-commands-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("创建临时工作区");
+        root
+    }
+
+    /// 直接写索引构造一条 30 天前的记忆：过期门槛是 `7 + touch_count` 天，必然越线。
+    fn seed_expired_memory(workspace: &Path) {
+        let store = omnicrawl_session::memory_store::MemoryStore::open(
+            workspace.join(".omnicrawl/.oclmemory"),
+        );
+        let mut entries = vec![omnicrawl_session::memory::MemoryIndexEntry {
+            id: "m1".to_string(),
+            path: "general/old.md".to_string(),
+            storage_directory: "general".to_string(),
+            timestamp: chrono::Local::now().fixed_offset() - chrono::Duration::days(30),
+            touch_count: 0,
+            related_directories: Vec::new(),
+            summary: "旧记忆".to_string(),
+        }];
+        store.save_entries(&mut entries).expect("写入记忆索引");
+    }
+
+    #[test]
+    fn clean_memory_prefixes_deleted_entries_with_the_scope_name() {
+        let root = temp_workspace("clean-memory-hit");
+        seed_expired_memory(&root);
+        let deleted =
+            clean_expired_memory_scopes(&isolated_memory_options(&root)).expect("清理应当成功");
+        // 前缀格式与 Python 的 `f"{scope}:{path}"` 一致。
+        assert_eq!(deleted, vec!["project:general/old.md".to_string()]);
+    }
+
+    #[test]
+    fn clean_memory_is_a_noop_without_expired_entries() {
+        let root = temp_workspace("clean-memory-empty");
+        let deleted =
+            clean_expired_memory_scopes(&isolated_memory_options(&root)).expect("空存储也应当成功");
+        assert!(deleted.is_empty(), "没有过期记忆时不应报删除：{deleted:?}");
+    }
+
+    #[test]
+    fn clean_memory_errors_when_no_scope_is_enabled() {
+        let options = MemoryOptions {
+            workspace_root: temp_workspace("clean-memory-disabled"),
+            project_enabled: false,
+            user_enabled: false,
+            session_enabled: false,
+            ..MemoryOptions::default()
+        };
+        // 与 Python `stores.py::clean_memory` 的「记忆系统未启用。」同义。
+        assert_eq!(
+            clean_expired_memory_scopes(&options),
+            Err("记忆系统未启用。".to_string())
         );
     }
 }

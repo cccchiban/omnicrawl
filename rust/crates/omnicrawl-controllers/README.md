@@ -43,40 +43,51 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/__init__.py` 的错误面 | `src/error.rs` | `AgentError`（只承载文案） |
 | `controllers/session/store.py`（事件投影编排） | `src/store.rs` | 落盘事件用未脱敏原始 payload 投影、未落盘事件的等价内存事件构造（序号推进与 ID 形状）、投影方式选择 |
 
-## 尚未搬的部分（宿主粘合层）
+## 宿主粘合层（原「尚未搬」的编排段，现均已落地）
 
-以下内容依赖宿主对象或多子系统协作，留在 Python 侧；后续批次按依赖顺序收口：
+这些编排段依赖宿主对象或多子系统协作，最初留在 Python 侧；内核 / 宿主拆分完成后各归其位。
+本 crate 仍只放判定与文案，下表的落点才是真实的钩子调用、模型请求与落盘：
 
 - `tools/approval.py` 的编排段：插件钩子（`tool.call.before` / `tool.approval.before` /
-  `tool.execute.before` 等）、审查模型的 Responses 请求、用户确认面板、会话事件持久化。
-  判定件（`agent/toolkit/approval_policy.py` 的全部规则）与编排契约（阶段顺序、事件载荷、
-  生效模式、展示文本回落）已在 `src/approval.rs`；剩下的是真实的钩子调用、模型请求与落盘。
-- `tools/building.py` 的 `_build_tools` / `_build_mcp_tools`：工具表构建，依赖
-  `agent/toolkit/tools.py`。
-- `tools/implementations.py`：工具实现本体（属 `agent/toolkit/`）。判定面（清单投影、`ask_user` 入参、
-  记忆 `scope`）已在 `src/tool_impl.rs`；文件系统 / HTTP / 子进程 / MCP / TTS 的调用仍在 Python。
-- `toolkit/tools.py` 的**执行函数绑定**：目录与注册规则已搬（`src/tool_catalog.rs` + 导出的
-  `data/agent_tools.json`），但各工具的实现本体（`agent/toolkit/*`、`workspace/`、`mcp/`…）仍在 Python。
-- `turn/loop.py` 的编排壳：插件钩子、会话事件与历史落盘、回合快照、压缩触发、
-  run_guard 续跑与上下文超限恢复；接线面（13 回调面、两个循环端口与守卫、收尾补发、
-  失败分类）已搬（`src/turn/turn_loop.rs`）。
-- `turn/compaction.py` 的**会话与模型编排**已搬到 `omnicrawl-compaction`（`driver.rs` 落事件、
-  归档、写记忆、自动召回、重建历史；`adapter.rs` 走内核运行时发摘要请求），判定面留在
-  `src/turn/compaction.rs`；仍未接线的是内核进程侧（会话归属与回合结束后触发）。
-- `subagents/{orchestration,worktrees}.py` 的进程面：Coordinator/TaskManager 生命周期、
-  模型运行时引导（`_create_subagent_runtime_manager` / `_run_subagent_task_loop` /
-  `_prepare_subagent_execution`）、worktree 的 git 创建/应用/清理、`_refresh_subagent_definitions`
-  与事件观察者转发；判定与投影已在 `src/subagents/`。
-- `advisor.py` 的模型面：`apply_model_selection` + 独立 Runtime 引导 + 协议单轮补全 +
-  用量回调；判定、消息分支与信封已在 `src/advisor.rs`。
-- `plugins.py` 的进程面：Plugin Runtime / Worker 生命周期、`HOOK_POLICIES` 表本身与
-  配置读写；分发后的判定、文案与运行期处置决策（冻结上下文、回合 Hook、会话 Hook）已在 `src/plugins.rs`。
-- `session/settings.py` 的 setter 事务（替换 `config` 字段 → 重建工具表 / Runtime /
-  MCP Manager，失败回滚）、`session/store.py` 的存取门面（会话/项目/归档转发、`_session_facade`
-  的磁盘入口）、`session/control.py` 的资源关闭与隔离区收尾：判定与文案已在
-  `src/{settings,store,control}.rs`，事件投影编排已搬（`src/store.rs`）。
-- `undo.py` 的 git 应用段（`_restore_turn_side_effects` 的补丁应用、
-  `_begin_turn_snapshot` 的 store 构造）：crate 只到「可以安全应用」为止。
+  `tool.execute.before` 等）在 `omnicrawl-host/src/plugins.rs`，审查模型的 Responses 请求与
+  脱敏旁路在 `omnicrawl-host/src/review.rs`，确认面板由宿主 `Interactor` 承接
+  （TUI 与本地 API 各一实现），会话事件持久化走会话存储。
+- `tools/building.py` 的 `_build_tools` / `_build_mcp_tools`：工具表构建在
+  `omnicrawl-host/src/tools/registry.rs`（含 MCP 三类的声明与适配工具），注册规则与导出数据
+  仍在 `src/tool_catalog.rs` + `data/agent_tools.json`。
+- `tools/implementations.py`：实现本体在 `omnicrawl-host/src/tools/`（advisor / command / edit /
+  fetcher / finding / git / grep / image_gen / knowledge / listing / memory / monitor / read /
+  read_image / sample / tts / web_search / web_transport / write / windows）；判定面
+  （清单投影、`ask_user` 入参、记忆 `scope`）在 `src/tool_impl.rs`。
+- `toolkit/tools.py` 的执行函数绑定：同一张注册表按 `agent_tools.json` 绑定；内核向模型声明的
+  工具面由 `session.settings.model.tools` 与宿主执行表同步。
+- `turn/loop.py` 的编排壳：回合循环在 `omnicrawl-host/src/turn.rs`（13 回调面、两个循环端口与守卫、
+  收尾补发、失败分类在 `src/turn/turn_loop.rs`），插件钩子、事件与历史落盘、压缩触发由宿主与
+  内核各自的会话实现承接。
+- `turn/compaction.py` 的会话与模型编排已搬到 `omnicrawl-compaction`（`driver.rs` 落事件、
+  归档、写记忆、自动召回、重建历史；`adapter.rs` 走内核运行时发摘要请求）；内核回合收尾会调用
+  `compact_after_turn`，触发压缩的回合把计量交回宿主分发 `context.compaction.after_turn`
+  （`omnicrawl-host/src/plugins.rs`）。
+- `subagents/{orchestration,worktrees}.py` 的进程面：任务生命周期在 `src/subagents/tasks.rs`
+  （`SubAgentTaskManager`）与 `src/subagents/execution.rs`，模型运行时引导与线程池在宿主
+  `omnicrawl-cli/src/subagent.rs`，worktree 的 git 创建 / 应用 / 清理在
+  `omnicrawl-cli/src/worktree.rs`，定义刷新随工具表重建一起做。
+- `advisor.py` 的模型面：`omnicrawl-host/src/tools/advisor.rs`（独立 Runtime 引导 + 协议单轮补全 +
+  用量回调）；判定、消息分支与信封已在 `src/advisor.rs`。
+- `plugins.py` 的进程面：`omnicrawl-extensions`（Plugin Manager / Worker 生命周期、
+  `HOOK_POLICIES` 表与配置读写），分发后的判定、文案与处置决策在 `src/plugins.rs`。
+- `session/{settings,store,control}.py`：setter 事务（重建工具表 / Runtime / MCP Manager，失败回滚）
+  与运行期重载在 `omnicrawl-api/src/service.rs`（`apply_session_settings` / `reload_mcp`）
+  以及 TUI 的设置面板；存取门面在 `omnicrawl-session` 与本地 API 的会话路由；资源关闭与
+  隔离区收尾在 `omnicrawl-cli` 的会话实现。判定与文案在 `src/{settings,store,control}.rs`，
+  事件投影编排在 `src/store.rs`。
+- `undo.py` 的 git 应用段：`omnicrawl-cli/src/undo.rs`。
+
+仍留在宿主侧的零星项：`/workspace` 的运行中切换（主机侧重建工具表 / 内核会话，TUI 仍报未接线）。
+
+`/memory:clean` 已不需要内核入口：记忆工具的执行体在宿主（`omnicrawl-host`），
+宿主的 `TuiHostAgent::clean_memory` 直接按三个作用域调 `omnicrawl-session` 的
+`MemoryStore::clean_expired_memories`。
 
 ## 对照（parity）工作流
 

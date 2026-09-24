@@ -29,6 +29,12 @@ scraper = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 ureq = { workspace = true }
+# fetcher 的 impersonate 需要真实浏览器指纹（JA3/JA4 + HTTP/2），只有 wreq 能提供。
+# 这里只给 fetcher 用；克/vm/connectors 等其余链路仍走上面的阻塞式 ureq。
+wreq = { workspace = true }
+wreq-util = { workspace = true }
+# 驱动 wreq 的异步传输：在专用线程上建 current_thread runtime，见 tools/wreq_transport.rs。
+tokio = { workspace = true }
 
 # 后台命令树要随宿主退出（含崩溃）被回收：Windows Job Object 的 kill-on-close。
 [target.'cfg(windows)'.dependencies]

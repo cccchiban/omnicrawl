@@ -504,7 +504,7 @@ impl SubAgentTaskManager {
                 .filter(|id| {
                     state.tasks.get(id).is_some_and(|task| {
                         task.owner_id == owner_id
-                            && session_id.map_or(true, |value| task.session_id == value)
+                            && session_id.is_none_or(|value| task.session_id == value)
                     })
                 })
                 .collect();

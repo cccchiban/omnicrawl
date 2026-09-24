@@ -1,0 +1,267 @@
+# OmniCrawl 首次启动配置
+# API Key 会在首次启动时交互式写入当前用户配置目录。
+version = 2
+
+[llm.active_model]
+source = "custom"
+key = "default-chat"
+
+[llm.defaults]
+request_timeout_seconds = 180
+request_retry_count = 5
+discovery_timeout_seconds = 10
+discovery_cache_ttl_seconds = 300
+reasoning_effort = ""
+thinking_type = "disabled"
+
+[llm.profiles.openai-main]
+provider = "openai"
+enabled = true
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+# 可选：覆盖该渠道请求使用的 HTTP User-Agent。
+# user_agent = "OmniCrawl/1.0"
+default_protocol = "openai_chat_completions"
+default_context_window_tokens = 128000
+
+[llm.profiles.openai-main.discovery]
+enabled = true
+
+[llm.profiles.anthropic-main]
+provider = "anthropic"
+enabled = false
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+default_protocol = "anthropic_messages"
+default_context_window_tokens = 200000
+
+[llm.profiles.anthropic-main.discovery]
+enabled = true
+
+[llm.profiles.gemini-main]
+provider = "gemini"
+enabled = false
+base_url = "https://generativelanguage.googleapis.com"
+api_key_env = "GEMINI_API_KEY"
+default_protocol = "gemini_generate_content"
+default_context_window_tokens = 1000000
+
+[llm.profiles.gemini-main.discovery]
+enabled = true
+
+# 视觉模型代理：模型引用复用 llm.profiles / models.toml，不在这里存 API Key。
+# models 按顺序作为故障转移链；主模型不支持视觉且此项开启时，图片会先交给这些模型分析。
+# 模型原生视觉在设置页「视觉」按当前模型/渠道开关（models.toml 或 [llm.profiles.<id>] 的 native_vision）。
+[vision]
+enabled = false
+models = []
+
+# 图像生成（OpenAI 兼容 Image API）：接口地址、Key、模型与默认参数在
+# TUI /settings → 图像生成 中配置；api_key 写入本地 config.toml（不提交仓库），
+# 留空时回退环境变量 OPENAI_API_KEY。
+[image_gen]
+enabled = false
+base_url = "https://api.openai.com/v1"
+api_key = ""
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-image-2"
+size = "auto"
+quality = "auto"
+output_format = "png"
+n = 1
+timeout_seconds = 120
+
+# TTS 语音合成（MOSS-TTS-Nano ONNX 推理，无需 PyTorch）：
+# 首次启用时在 TUI /settings → TTS 中下载模型（约 763MB）并选择音色。
+[tts]
+enabled = false
+model_dir = ""
+voice = "Junhao"
+auto_play = true
+thread_count = 4
+# 推理设备：auto 优先 CUDA，不可用时回退 CPU；cuda 不可用时直接报错。
+device = "auto"
+# codec 流式解码（低首字节延迟；默认开启，显存占用低，避免全量解码 OOM）。
+streaming = true
+output_dir = ".omnicrawl/.agent_tmp/tts"
+
+[approval]
+mode = "review"
+# 自动审查使用的独立模型（可选）：留空时沿用 [llm] model。
+# 审查请求与主对话完全隔离（不携带主对话上下文），独立模型不影响主对话成本，
+# 且主模型被提示词注入时也不影响审查独立性；建议指定更便宜/更严格的模型。
+review_model = ""
+
+# 对话区思考块显示：关闭后思考内容仍照常产生并进入推理链路，只是不在
+# 对话区渲染思考块（Markdown 渲染）。可在 TUI /settings 中切换。
+[ui]
+show_thinking = true
+
+[memory]
+enabled = true
+
+# 内置工具开关：默认除 powershell 关闭外，其余全部启用。
+# 只在需要禁用某个工具时取消注释并设为 false。
+# [tools]
+# powershell = false
+# bash = true
+# read_image = true
+# windows_screenshot = true
+
+# 运行节奏护栏：Reasoning 死循环保护、白名单临时错误恢复与有限自动续跑。
+# 自动续跑会增加模型请求次数和 Token 消耗；保存后从下一次回合生效。
+[run_guard]
+enabled = true
+
+[run_guard.guard]
+enabled = true
+window_chars = 2000
+substr_len = 32
+repeat_ratio = 0.7
+check_every = 50
+max_blocks = 10000
+max_chars = 500000
+max_guard_retries = 2
+# 白名单错误码：默认使用 provider-neutral 统一错误码（SERVICE_UNAVAILABLE 对应
+# HTTP 5xx/网关临时不可用）。如需对网关等上游业务错误码/错误文本做自动重试，
+# 可在此追加自定义字符串，例如 ["SERVICE_UNAVAILABLE", "PI_AI_ERROR"]。
+auto_retry_errors = ["SERVICE_UNAVAILABLE"]
+
+[run_guard.continue]
+enabled = true
+max_auto_followups = 3
+
+[context_compaction]
+# 上下文压缩是 Agent 的基础能力。触发阈值（Token）也可在运行设置面板按当前
+# 模型上下文窗口的百分比设置（5% 步进）：trigger_context_tokens = 上下文窗口 × 百分比。
+# 设置面板修改百分比后会保存该关系，并在上下文窗口变化时实时重算。
+trigger_context_tokens = 100000
+trigger_context_percent = 80
+next_user_reserve_tokens = 10240
+emergency_context_ratio = 0.85
+summary_profile = ""
+reasoning_effort = "low"
+# 模型压缩「压缩即丢弃」：压缩后上下文只有摘要 + 最终回复锚点，不保留原文回合；
+# recent_turns 仍用于触发预估的热窗口划分。
+recent_turns = 6
+target_summary_tokens = 0
+preserve_exact_evidence = true
+allow_cross_provider = false
+failure_fallback = "deterministic"
+
+# AI 消息可逆脱敏（opt-in，默认关闭）：把发往模型的消息副本中命中的敏感值
+# 替换为 ｛Desensitized:n｝ 占位符，模型返回后按序号还原；原文不出本机。
+# 仅作用于 AI 消息（含工具调用消息），不改动请求参数；设计文档见
+# omnicrawl/docs/agent_gateway_desensitization_design.md。
+# 说明：熵检测兜底（entropy_*）为 P2 增强，键位已保留。
+# [desensitization]
+# enabled = false                # 显式启用后才生效；未启用零成本
+# fail_closed = true             # 屏蔽异常时中止请求，不静默发送原文
+# strict_restore = false         # 还原缺失时中止并报错（默认保留 + 告警）
+# extra_sensitive_keys = []      # 追加敏感键名
+# exempt_keys = []               # 豁免键名（优先于命中）
+# entropy_enabled = true         # 熵兜底开关（关闭则仅键名/结构匹配）
+# entropy_min_length = 20        # 熵兜底长度下限
+# entropy_min_bits = 3.5         # 熵兜底阈值
+# entropy_pure_letters = false   # 纯字母令牌：长度达标即脱敏（默认关闭；十六进制字母串仍跳过）
+# entropy_pure_digits = false    # 纯数字令牌：长度达标即脱敏（默认关闭）
+# 值类型规则层（正则识别「无键名的敏感值类型」）：高危类型默认开启，
+# 泛化类型（邮箱 / 外网 IP / 网址）误报较高，默认关闭、按需开启。
+# detect_pem_private_key = true         # PEM 私钥（BEGIN/END … PRIVATE KEY）
+# detect_db_connection_string = true    # 数据库连接串（URI / ADO 键值）
+# detect_email = false                  # 邮箱地址
+# detect_bank_card = true               # 银行卡号（Luhn 校验）
+# detect_internal_ip = true             # 内网 IP（私有 / 链路本地）
+# detect_external_ip = false            # 外网 IP（公网可路由）
+# detect_url = false                    # 网址（http / https / ftp）
+# detect_mac_address = true             # MAC 地址
+# detect_license_plate = true           # 中国大陆车牌
+# gitleaks 开源规则：默认加载内置离线快照（omnicrawl/llm/desensitization/gitleaks.toml）；
+# gitleaks_config_path 指向自定义文件时按规则 id 覆盖 / 追加（失败回退内置快照）。
+# NER 兜底层（BiLSTM-CRF：人名 / 地名 / 机构名）：结构 / 规则 / 熵之外的最后一道语义
+# 兜底，输入是前几层处理后的文本且只对中文片段兜底（非中文字符已等长隔离）；
+# 需要可选依赖 torch（pip install -e .[ner]）。
+# 权重随包分发，可用 ner_model_path 或环境变量 OMNICRAWL_NER_MODEL 覆盖；
+# torch / 权重缺失时本层静默跳过，不影响既有脱敏链路。
+# ner_enabled = false                   # 默认关闭；开启后作为语义兜底
+# ner_model_path = ""                   # checkpoint 路径；留空用随包权重 / 环境变量
+# ner_device = "auto"                   # auto 优先 CUDA、不可用回退 CPU
+# ner_entity_types = ["PER", "ORG", "LOC"]  # 需要识别的实体类型
+# ner_min_entity_chars = 2              # 最小实体长度（2 规避单字地名歧义）
+# 推理结果缓存：按「块」（≤200 字符）缓存，长会话中未变历史不再重复推理；
+# 容量单位是块数，默认 2048（约 400KB 文本），0 关闭。
+# ner_cache_size = 2048
+
+[api]
+bearer_token = "请替换为随机长令牌"
+host = "127.0.0.1"
+port = 8765
+allowed_origins = ["http://localhost:5173"]
+confirmation_timeout_seconds = 300
+# uvicorn worker 进程数，默认 1（Run 状态、事件流、审批全部在进程内存里）。
+# >1 时内核按连接在 worker 间轮询，同一客户端的后续请求可能落到任意 worker，
+# 因此运行状态自动改走跨进程共享存储（~/.OmniCrawl/api-runs-<host>-<port>.sqlite3）。
+# 每个 worker 会各自创建一个 Agent 与独立隔离 worktree，按机器核数与内存设置。
+workers = 1
+
+[agent_temp]
+enabled = true
+directory = ".omnicrawl/.agent_tmp"
+cleanup_enabled = true
+cleanup_interval_hours = 24
+
+# 启动自动更新：每次启动时联网比对 PyPI 最新版（检测结果带 24 小时本地缓存，
+# 同一天不重复请求），本地版本落后时自动执行 pip 升级，完成后重新启动 TUI。
+# 仅对 pip 正常安装的环境生效（源码目录或 editable 安装直接跳过）；离线、升级
+# 失败或配置异常时按"继续使用当前版本"启动，不影响工具可用性。
+# 设置 OMNICRAWL_SKIP_AUTO_UPDATE=1 可彻底关闭。
+[update]
+enabled = true
+
+[plugins]
+enabled = false
+
+# SubAgent 设置已完全迁移到独立文件 subagents.toml（模板见 subagents.example.toml），
+# 支持为每个子代理单独指定模型。本段不再从 config.toml 读取，
+# 请直接编辑 subagents.toml 调整子代理全局边界与逐角色模型。
+# [subagents]
+# enabled = false
+# max_depth = 1
+# max_concurrency = 2
+# max_tasks_per_batch = 4
+# default_timeout_seconds = 3600
+# model_request_concurrency = 2
+# allow_background = false
+# allow_fork = false
+# allow_worktree = false
+# allow_standard_agent = false
+# allow_shared_workspace_writes = false
+# enable_verify_agent = false
+# verify_command_timeout_seconds = 120
+# task_retention_minutes = 60
+# result_summary_chars = 6000
+#
+# [subagents.models.explore]
+# model = "default-chat"
+
+[mcp]
+enabled = false
+default_timeout_seconds = 30
+# 工具输出预算为固定硬编码（单工具 50K 字符、每回合聚合 200K 字符）：
+# 超限输出自动落盘到会话 artifact，模型上下文只保留头尾预览与文件路径。
+servers = {}
+# 远程 Streamable HTTP Server 可在这里声明认证请求头：
+# [mcp.servers.remote_service]
+# enabled = true
+# transport = "streamable_http"
+# url = "https://example.com/mcp"
+#
+# [mcp.servers.remote_service.headers]
+# Authorization = "Bearer replace-with-token"
+# X-API-Key = "replace-with-api-key"
+
+[mcp.policy]
+require_confirmation_for_write = true
+require_confirmation_for_command = true
+allow_external_network_tools = false
+audit_log_enabled = true

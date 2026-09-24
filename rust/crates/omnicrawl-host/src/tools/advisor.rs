@@ -20,7 +20,7 @@ use super::error::{ToolError, ToolOutcome};
 
 pub const ADVISOR_TOOL_NAME: &str = "advisor";
 pub const ADVISOR_SYSTEM_PROMPT: &str =
-    include_str!("../../../../../omnicrawl/templates/advisor_system.md");
+    include_str!("../../../../../rust/assets/templates/advisor_system.md");
 const USER_AGENT: &str = "omnicrawl-tui-advisor/0.0.1";
 
 /// 顾问运行期配置：模型与凭据来自 `--advisor-*` / `OMNICRAWL_ADVISOR_*`，工作分支与工具面由宿主注入。

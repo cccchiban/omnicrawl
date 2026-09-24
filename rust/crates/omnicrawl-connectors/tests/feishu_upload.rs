@@ -80,6 +80,7 @@ impl HttpTransport for MockHttp {
         Ok(HttpReply {
             status: 200,
             body: payload.to_string().into_bytes(),
+            headers: Vec::new(),
         })
     }
 }

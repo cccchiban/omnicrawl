@@ -34,6 +34,7 @@ pub mod tts;
 pub mod web_search;
 pub mod web_transport;
 pub mod windows;
+pub mod wreq_transport;
 pub mod write;
 
 pub use advisor::AdvisorOptions;
@@ -48,3 +49,4 @@ pub use registry::{RegistryOptions, ToolRegistry, IMPLEMENTED_TOOLS};
 pub use tts::TtsOptions;
 pub use web_search::WebSearchOptions;
 pub use web_transport::{WebError, WebErrorKind, WebRequest, WebResponse, WebTransport};
+pub use wreq_transport::WreqWebTransport;

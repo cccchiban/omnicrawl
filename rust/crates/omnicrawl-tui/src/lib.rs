@@ -12,5 +12,6 @@ pub use omnicrawl_host::{approval, host, kernel, tools};
 pub mod app;
 pub mod args;
 pub mod commands;
+pub mod monitor;
 pub mod state;
 pub mod ui;

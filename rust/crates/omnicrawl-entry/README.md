@@ -69,7 +69,8 @@ Rust 统一启动入口，对应 Python `omnicrawl/entry.py` 的路由与子进�
 （`packages/cli/bin/omnicrawl.mjs`）、宿主运行期（`omnicrawl-host` 的 `PluginHost`）与本 crate 的安装命令。
 
 `cli::runner_dir()` / `cli::runner_path()` 现在委派给 `omnicrawl-extensions` 的同一份搜索链
-（`OMNICRAWL_RUNNER_DIR` → 可执行文件及其祖先下的 `extensions/` 与 `omnicrawl/extensions/`
+（`OMNICRAWL_RUNNER_DIR` → 可执行文件及其祖先下的 `extensions/`、`rust/assets/extensions/`
+（仓库检出）与 `omnicrawl/extensions/`（旧布局）
 → 工作目录），失败时带回探测过的目录；`cli::worker_launcher()` 给出 Node + runner 两条路径，
 供需要自己起 Worker 的调用方复用。因此「`ocl plugin install` 装得上」与「宿主起得来」
 用的是同一个 runner，不再各找一份。
@@ -79,7 +80,9 @@ Rust 统一启动入口，对应 Python `omnicrawl/entry.py` 的路由与子进�
 本 crate 不复制 Python 启动编排中的业务逻辑。以下内容仍由独立迁移批次负责：
 
 - 自动更新（`maintenance/updater.py` + `version_check.py`）：Rust 宿主冻结分发下走 npm 升级路径；
-- MCP 后台预热：内核侧没有同形的预热线程，工具发现由 TUI 的 MCP 管理器承担；
+- MCP 后台预热：内核侧没有同形的预热线程——能力发现被**提前**到宿主启动期
+  （TUI 装配 `McpClientManager` 时调 `discover()`，见 `omnicrawl-tui/README`），
+  因此不需要 Python 那种后续补发现的预热线程；
 - Python Textual fallback。
 
 未迁移的入口一律返回明确的未接入错误，不静默回退到 Python，也不执行不完整的替代逻辑。

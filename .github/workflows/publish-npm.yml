@@ -9,7 +9,8 @@ name: 发布 npm 包
 #   environment：留空
 #   动作：勾选允许直接 npm publish（新连接默认只允许 staged publish）
 #
-# 宿主载荷里是 CPython 运行时与原生扩展，只能在该平台的原生 runner 上构建：矩阵里每个平台
+# 宿主载荷是 cargo release 产物（Linux 侧 musl 静态链接、Windows 侧 MSVC），没有 CPython 运行时；
+# 但平台二进制仍只能在对应 runner 上构建（或交叉编译），因此矩阵里每个平台
 # 各自构建内核（+ 宿主）并上传暂存产物，发布任务把所有平台下载齐、跑安装冒烟后才逐一发布。
 # 没有宿主载荷的平台（32 位 Windows、armv7 嵌入式）只发内核，启动器会退回协议直连。
 on:
@@ -40,8 +41,8 @@ jobs:
             target: i686-pc-windows-msvc
             host: false
           - package: cli-linux-x64
-            # 宿主载荷里的 CPython 与原生扩展要求 glibc 不低于构建机：钉在 22.04（glibc 2.35），
-            # 才能跑在 Debian 12 / Raspberry Pi OS Bookworm 这类发行版上。
+            # 宿主载荷是 musl 静态链接（x86_64-unknown-linux-musl），不依赖构建机的 glibc；
+            # 钉 22.04 是沿用既有构建机，理论上可换 ubuntu-latest。
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             host: true
@@ -51,7 +52,7 @@ jobs:
             host: false
             zigbuild: true
           - package: cli-linux-arm64-musl
-            # 同上：arm64 宿主的 glibc 门槛由构建机决定。
+            # 同上：musl 静态链接，不依赖构建机 glibc。
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-musl
             host: true
@@ -68,14 +69,40 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
+      # armv7 的交叉工具链走 `python3 -m pip install --user ziglang`，需要 runner 上有 pip；
+      # 宿主构建本身已是纯 cargo，不再需要 Python。
       - uses: actions/setup-python@v5
-        if: matrix.host
+        if: matrix.zigbuild
         with:
           python-version: "3.11"
 
       - name: musl 工具链
         if: runner.os == 'Linux' && !matrix.zigbuild
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # wreq（fetcher 的浏览器指纹）静态链接 BoringSSL，其构建需要：
+      #   * cmake 生成/驱动构建，perl 生成部分汇编与配置头；
+      #   * libclang 供 btls-sys 的 bindgen 生成 Rust 绑定；
+      #   * pkg-config 与 git 是 BoringSSL 官方文档列出的前置。
+      # armv7 用 zig 交叉编译 C/C++（见下面 cargo-zigbuild），同样需要 cmake/perl/libclang。
+      - name: BoringSSL 构建依赖（Linux）
+        if: runner.os == 'Linux'
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          cmake perl pkg-config libclang-dev git
+
+      # Windows 侧：libclang 供 bindgen；CMAKE_TOOLCHAIN_FILE 绕开 CMake 的
+      # CMP0091/ASM_NASM 校验失败（MSVC_RUNTIME_LIBRARY ... not known for this
+      # ASM_NASM compiler），原因与适用边界写在 rust/tools/btls-msvc-runtime.cmake。
+      # 注意：该 toolchain file 只在 MSVC 构建需要，Linux 千万不要设——
+      # 它会让 btls-sys 跳过自己的交叉编译装配。
+      - name: BoringSSL 构建依赖（Windows）
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          choco install --no-progress -y llvm
+          echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> "$GITHUB_ENV"
+          echo "CMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/rust/tools/btls-msvc-runtime.cmake" >> "$GITHUB_ENV"
 
       # armv7 只做静态链接内核：本机没有 musl 的 arm 链接器，用 zig 交叉。
       - name: zig 交叉工具链（armv7）
@@ -95,11 +122,6 @@ jobs:
           else
             cargo build --release -p omnicrawl-cli --target ${{ matrix.target }}
           fi
-
-      - name: 安装宿主依赖
-        if: matrix.host
-        # -e .：宿主版本号取自 omnicrawl-agent 的包元数据，只装依赖拿不到。
-        run: python -m pip install -r requirements.txt -e . pyinstaller
 
       - name: 构建宿主载荷
         if: matrix.host

@@ -5,8 +5,9 @@
 //! Rich 的 Markdown 主题细节（各段的精确色值、标题色相）不复刻，取色沿用主题令牌，
 //! 差异记录在 crate README。
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
+use super::highlight::{highlight_line, ScanState};
 use crate::ui::fullscreen::terminal::theme::REASONING_BACKGROUND;
 use crate::ui::fullscreen::text::StyledText;
 
@@ -49,13 +50,31 @@ fn current_style(modifiers: &[&'static str], link_depth: usize) -> String {
     parts.join(" ")
 }
 
-fn push_inline_code_block(
+/// 围栏信息串 → 语言名：只看首个词元（```rust,ignore / ```sh 都取第一段）。
+fn fence_language(kind: &CodeBlockKind<'_>) -> String {
+    match kind {
+        CodeBlockKind::Fenced(info) => info
+            .split(|ch: char| ch.is_whitespace() || ch == ',')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        CodeBlockKind::Indented => String::new(),
+    }
+}
+
+/// 代码块：整块灰底，已知语言另外逐 token 着色（见 [`super::highlight`]）。
+///
+/// `scan` 在同一个代码块内跨行复用，用来承接块注释与三引号字符串。
+fn push_code_block(
     rendered: &mut StyledText,
     text: &str,
     at_line_start: &mut bool,
     depth: usize,
+    language: &str,
+    scan: &mut ScanState,
 ) {
-    let style = code_block_style();
+    let base = code_block_style();
     let indent = LIST_INDENT.repeat(depth);
     for (index, line) in text.split('\n').enumerate() {
         if index > 0 {
@@ -64,9 +83,11 @@ fn push_inline_code_block(
         }
         if !line.is_empty() {
             if !indent.is_empty() {
-                rendered.push(&indent, &style);
+                rendered.push(&indent, &base);
             }
-            rendered.push(line, &style);
+            for (piece, style) in highlight_line(language, line, scan, &base) {
+                rendered.push(&piece, &style);
+            }
             *at_line_start = false;
         }
     }
@@ -85,6 +106,8 @@ pub fn render_markdown(markdown: &str) -> StyledText {
     let mut counters: Vec<u64> = Vec::new();
     let mut link_depth = 0usize;
     let mut in_code_block = false;
+    let mut code_language = String::new();
+    let mut code_scan = ScanState::default();
     let mut pending_prefix: Option<String> = None;
     let mut quote_depth = 0usize;
     let mut at_line_start = true;
@@ -97,9 +120,11 @@ pub fn render_markdown(markdown: &str) -> StyledText {
                     push_newline(&mut rendered, &mut at_line_start);
                     modifiers.push("bold");
                 }
-                Tag::CodeBlock(_) => {
+                Tag::CodeBlock(kind) => {
                     push_newline(&mut rendered, &mut at_line_start);
                     in_code_block = true;
+                    code_language = fence_language(&kind);
+                    code_scan = ScanState::default();
                 }
                 Tag::List(start) => {
                     push_newline(&mut rendered, &mut at_line_start);
@@ -164,7 +189,14 @@ pub fn render_markdown(markdown: &str) -> StyledText {
             },
             Event::Text(text) => {
                 if in_code_block {
-                    push_inline_code_block(&mut rendered, &text, &mut at_line_start, quote_depth);
+                    push_code_block(
+                        &mut rendered,
+                        &text,
+                        &mut at_line_start,
+                        quote_depth,
+                        &code_language,
+                        &mut code_scan,
+                    );
                     continue;
                 }
                 let mut style = current_style(&modifiers, link_depth);
@@ -282,6 +314,57 @@ mod tests {
             .spans()
             .iter()
             .any(|span| span.style == code_block_style()));
+    }
+
+    #[test]
+    fn fenced_code_block_highlights_tokens_by_language() {
+        let rendered = render_markdown("```rust\nlet a = 1; // 注释\n```");
+        let styles: Vec<&str> = rendered
+            .spans()
+            .iter()
+            .map(|span| span.style.as_str())
+            .collect();
+        assert!(
+            styles.iter().any(|style| style.contains("#66d9ef")),
+            "关键字应当着色"
+        );
+        assert!(
+            styles.iter().any(|style| style.contains("#ae81ff")),
+            "数字应当着色"
+        );
+        assert!(
+            styles.iter().any(|style| style.contains("#75715e")),
+            "注释应当着色"
+        );
+    }
+
+    #[test]
+    fn unknown_fence_language_keeps_the_plain_code_style() {
+        let rendered = render_markdown("```\nlet a = 1;\n```");
+        let code = rendered
+            .spans()
+            .iter()
+            .find(|span| span.text.contains("let a = 1;"))
+            .expect("代码行应当被渲染");
+        assert_eq!(
+            code.style,
+            code_block_style(),
+            "无语言信息时不应逐 token 着色"
+        );
+    }
+
+    #[test]
+    fn python_fence_keeps_triple_quote_state_across_lines() {
+        let rendered = render_markdown("```python\ntext = \"\"\"第一行\n第二行\"\"\"\n```");
+        let second = rendered
+            .spans()
+            .iter()
+            .find(|span| span.text.contains("第二行"))
+            .expect("第二行应当被渲染");
+        assert!(
+            second.style.contains("#e6db74"),
+            "三引号状态应当跨行保留，第二行整行是字符串色"
+        );
     }
 
     #[test]

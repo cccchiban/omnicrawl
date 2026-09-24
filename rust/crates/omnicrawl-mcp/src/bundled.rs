@@ -1,4 +1,4 @@
-//! 随包发布的只读技术文档（对应 `omnicrawl/common/documentation.py` 与 `omnicrawl/docs/`）。
+//! 随包发布的只读技术文档（源在 `rust/assets/docs/`；对应 `omnicrawl/common/documentation.py`）。
 //!
 //! Python 侧按安装包目录读盘；Rust 侧要把这些文档打进二进制（二进制可能被单独分发，
 //! 安装目录里不一定有 `docs/`），因此用 `include_str!` 固化内容。文件名与排序
@@ -43,55 +43,55 @@ struct BundledDoc {
 const BUNDLED_DOCS: [BundledDoc; 13] = [
     BundledDoc {
         name: "advisor_design.md",
-        text: include_str!("../../../../omnicrawl/docs/advisor_design.md"),
+        text: include_str!("../../../../rust/assets/docs/advisor_design.md"),
     },
     BundledDoc {
         name: "agent_gateway_desensitization_design.md",
-        text: include_str!("../../../../omnicrawl/docs/agent_gateway_desensitization_design.md"),
+        text: include_str!("../../../../rust/assets/docs/agent_gateway_desensitization_design.md"),
     },
     BundledDoc {
         name: "API.md",
-        text: include_str!("../../../../omnicrawl/docs/API.md"),
+        text: include_str!("../../../../rust/assets/docs/API.md"),
     },
     BundledDoc {
         name: "FSAPP.md",
-        text: include_str!("../../../../omnicrawl/docs/FSAPP.md"),
+        text: include_str!("../../../../rust/assets/docs/FSAPP.md"),
     },
     BundledDoc {
         name: "MCP_USAGE.md",
-        text: include_str!("../../../../omnicrawl/docs/MCP_USAGE.md"),
+        text: include_str!("../../../../rust/assets/docs/MCP_USAGE.md"),
     },
     BundledDoc {
         name: "memory_system_design.md",
-        text: include_str!("../../../../omnicrawl/docs/memory_system_design.md"),
+        text: include_str!("../../../../rust/assets/docs/memory_system_design.md"),
     },
     BundledDoc {
         name: "session_design.md",
-        text: include_str!("../../../../omnicrawl/docs/session_design.md"),
+        text: include_str!("../../../../rust/assets/docs/session_design.md"),
     },
     BundledDoc {
         name: "SKILL_INSTALLATION.md",
-        text: include_str!("../../../../omnicrawl/docs/SKILL_INSTALLATION.md"),
+        text: include_str!("../../../../rust/assets/docs/SKILL_INSTALLATION.md"),
     },
     BundledDoc {
         name: "TELEGRAM.md",
-        text: include_str!("../../../../omnicrawl/docs/TELEGRAM.md"),
+        text: include_str!("../../../../rust/assets/docs/TELEGRAM.md"),
     },
     BundledDoc {
         name: "TERMINAL_UI.md",
-        text: include_str!("../../../../omnicrawl/docs/TERMINAL_UI.md"),
+        text: include_str!("../../../../rust/assets/docs/TERMINAL_UI.md"),
     },
     BundledDoc {
         name: "TOOL_CALLING.md",
-        text: include_str!("../../../../omnicrawl/docs/TOOL_CALLING.md"),
+        text: include_str!("../../../../rust/assets/docs/TOOL_CALLING.md"),
     },
     BundledDoc {
         name: "tool_output_compression_design.md",
-        text: include_str!("../../../../omnicrawl/docs/tool_output_compression_design.md"),
+        text: include_str!("../../../../rust/assets/docs/tool_output_compression_design.md"),
     },
     BundledDoc {
         name: "TTS.md",
-        text: include_str!("../../../../omnicrawl/docs/TTS.md"),
+        text: include_str!("../../../../rust/assets/docs/TTS.md"),
     },
 ];
 

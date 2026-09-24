@@ -149,6 +149,7 @@ fn model() -> KernelModelConfig {
         context_window_tokens: 0,
         prompt_cache_capable: false,
         prompt_cache_identity: Default::default(),
+        native_vision: false,
         request_retry_count: 1,
     }
 }
@@ -161,7 +162,7 @@ fn runner(client: KernelClient, root: &Path) -> TurnRunner {
         approval: ApprovalMode::Manual,
         command_timeout_seconds: 5,
         tool_timeout_seconds: 5,
-        native_vision: false,
+        attach_vision_images: false,
         client_name: "omnicrawl-host-test".to_string(),
         plugins: None,
         review: None,

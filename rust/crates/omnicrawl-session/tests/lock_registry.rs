@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use omnicrawl_session::process_lock_for_root;
+use omnicrawl_session::{process_lock_for_root, try_lock_file};
 
 fn temp_root(tag: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
@@ -37,6 +37,24 @@ fn same_root_shares_one_lock_and_releases_it() {
 
     let other = process_lock_for_root(&temp_root("other"));
     assert!(!Arc::ptr_eq(&rebuilt, &other), "不同会话根必须独立持锁");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// 父目录尚不存在时也必须能拿到锁。
+///
+/// 调用方（连接器平台单例锁）把「拿不到锁」一律当成「已有实例在运行」，因此这里的
+/// `NotFound` 会被误报成「连接器已在运行」。首次启动、用户删掉 `~/.OmniCrawl` 都会命中
+/// 这条路径；Python 的 `ProcessFileLock` 同样会先 `mkdir(parents=True, exist_ok=True)`。
+#[test]
+fn lock_file_creates_its_missing_parent_directory() {
+    let root = temp_root("nested");
+    let path = root.join("config").join("connector-Telegram.lock");
+    assert!(!path.parent().expect("父目录").exists());
+
+    let file = try_lock_file(&path).expect("父目录不存在时也应当能取锁");
+    assert!(path.is_file(), "取锁应当建出父目录与锁文件");
+    drop(file);
 
     std::fs::remove_dir_all(&root).ok();
 }

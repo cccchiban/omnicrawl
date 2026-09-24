@@ -140,8 +140,6 @@ pub struct RegistryOptions {
     pub disabled_tools: Vec<String>,
     /// 知识库根目录；未配置时用 `~/.OmniCrawl/knowledge`。
     pub knowledge_root: Option<PathBuf>,
-    /// 模型原生支持视觉：为真时才会把 `read_image` 注册进工具表（否则图片无处可用）。
-    pub native_vision: bool,
     /// 联网工具的运行期配置（传输可注入，测试用桩替换）。
     pub web_search: WebSearchOptions,
     pub fetcher: FetcherOptions,
@@ -208,10 +206,9 @@ impl ToolRegistry {
         if options.advisor.active() {
             available.push(ADVISOR_RUNNER.to_string());
         }
-        // 视觉工具只在模型能看图时进表：否则客户端会读出图片却无处可送。
-        if options.native_vision {
-            available.extend(VISION_RUNNERS.iter().map(|name| (*name).to_string()));
-        }
+        // 视觉工具始终进表（与 Python 的 `_build_tools` 一致）：图片的去向由路由决定——
+        // 原生视觉直送主模型，否则交给 `[vision]` 代理，两者都没有时只把图片元数据给模型。
+        available.extend(VISION_RUNNERS.iter().map(|name| (*name).to_string()));
         if options.session_held_by_kernel {
             available.push("evidence_recall".to_string());
         }
@@ -432,6 +429,22 @@ impl ToolRegistry {
     /// MCP 管理器（未配置时为 `None`）。
     pub fn mcp(&self) -> Option<&Arc<McpClientManager>> {
         self.mcp.as_ref()
+    }
+
+    /// 记忆作用域选项。
+    ///
+    /// 这里的 `workspace_root` 已在构造时按工作区补全（与 `paths.root()` 同源），
+    /// 因此调用方拿到的是可直接 `store(scope)` 的选项，而不是注册表外的原始入参。
+    pub fn memory(&self) -> &MemoryOptions {
+        &self.memory
+    }
+
+    /// 该名称是不是 MCP Server 提供的 **Tool**（Resource / Prompt 的适配工具不算）。
+    ///
+    /// 审批拒绝的审计只用这张表：Python 的 `_approve_tool_call` 用
+    /// `tool.name in mcp_manager.registry.tools` 判定，Resource / Prompt 不在其中。
+    pub fn is_mcp_tool(&self, name: &str) -> bool {
+        self.mcp_tool_names.contains(name)
     }
 
     /// 执行一次工具调用。
@@ -713,10 +726,12 @@ mod tests {
             "windows_input",
             "windows_clipboard",
             "windows_screenshot",
+            // 视觉工具始终进表（与 Python `_build_tools` 一致），图片去向由内核路由。
+            "read_image",
         ] {
             assert!(names.contains(expected), "缺少 {expected}：{names:?}");
         }
-        for hidden in ["subagent", "memory_search", "read_image"] {
+        for hidden in ["subagent", "memory_search"] {
             assert!(!names.contains(hidden), "{hidden} 不该出现：{names:?}");
         }
         // 内核自持的三个工具仍在表里（界面负责交互）。
@@ -1054,15 +1069,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("创建临时工作区");
         std::fs::write(root.join("pic.png"), b"\x89PNG\r\n\x1a\n0000").expect("写测试图片");
-        let options = RegistryOptions {
-            native_vision: true,
-            ..RegistryOptions::default()
-        };
-        let registry = ToolRegistry::new(&root, &options, 360).expect("工具表应当构建成功");
-        // 未开启原生视觉时这张表里没有 read_image：图片读出来也无处可送。
+        let registry =
+            ToolRegistry::new(&root, &RegistryOptions::default(), 360).expect("工具表应当构建成功");
+        // 图片的去向不由工具表决定：默认表里也有 read_image（与 Python `_build_tools` 一致），
+        // 未开原生视觉时由 `[vision]` 代理接手，两者都没有时模型只收到图片元数据。
         let default_registry =
             ToolRegistry::new(&root, &RegistryOptions::default(), 360).expect("工具表应当构建成功");
-        assert!(!declared_names(&default_registry).contains("read_image"));
+        assert!(declared_names(&default_registry).contains("read_image"));
 
         let execution = registry
             .execute_with_vision(&call(

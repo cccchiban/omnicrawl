@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
+use super::hit::HitAction;
 use super::state::{
     ChannelField, ChannelFormView, ContextField, DropdownField, Focus, Pane, SettingsState,
     ToolSwitchRow,
@@ -38,6 +39,8 @@ const FORM_TAIL_HEIGHT: u16 = 4;
 
 /// 渲染整个设置面板（铺满终端，含底部帮助行）。
 pub fn render(frame: &mut Frame, area: Rect, state: &SettingsState) {
+    // 命中区每帧重建：鼠标落点必须对应当前画出来的那一帧。
+    state.begin_frame();
     let [main, help] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
     let left_width = left_column_width(
         main.width,
@@ -54,6 +57,39 @@ pub fn render(frame: &mut Frame, area: Rect, state: &SettingsState) {
     render_rows(frame, inset_horizontal(left, COLUMN_PADDING), state);
     render_pane(frame, inset_horizontal(right, COLUMN_PADDING), state);
     render_help(frame, help, state);
+    paint_hover(frame, state);
+}
+
+/// 列表里第 `row` 行（相对窗口起点）的命中区。
+///
+/// 各页的行高都是 1，只是起点不同；调用方传「已经画到第几行」即可，不必再算一次布局。
+fn row_hit(area: Rect, row: usize) -> Rect {
+    Rect {
+        x: area.x,
+        y: area.y + row as u16,
+        width: area.width,
+        height: 1,
+    }
+}
+
+/// 悬停加亮：把鼠标所在行的整行加上下划线。
+///
+/// 直接改渲染结果而不是在十几个面板渲染函数里各写一遍「这行是不是被悬停」——
+/// 行区域取的是同一帧记下来的命中区，因此不会指错行；颜色不动，避免与选中态的
+/// 琥珀色、面板自己的取色打架。
+fn paint_hover(frame: &mut Frame, state: &SettingsState) {
+    let Some(area) = state.hover_area() else {
+        return;
+    };
+    let buffer = frame.buffer_mut();
+    let bottom = area.y.saturating_add(area.height).min(buffer.area.height);
+    let right = area.x.saturating_add(area.width).min(buffer.area.width);
+    for y in area.y..bottom {
+        for x in area.x..right {
+            let cell = &mut buffer[(x, y)];
+            cell.set_style(cell.style().add_modifier(Modifier::UNDERLINED));
+        }
+    }
 }
 
 /// 左右两栏各自的内边距（对映 CSS 的 `padding: 0 1`）。
@@ -138,6 +174,7 @@ fn render_rows(frame: &mut Frame, area: Rect, state: &SettingsState) {
         .skip(offset)
         .take(visible)
         .map(|(index, key)| {
+            state.record_hit(row_hit(inner, index - offset), HitAction::Row(index));
             let style = if index == state.selected() && focused {
                 theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
             } else {
@@ -190,6 +227,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
         Pane::Choice(_) => render_choice(frame, body, state, focused),
         Pane::Form(_) => render_form(frame, body, state, focused),
         Pane::Tts => render_tts(frame, body, state, focused),
+        Pane::ConfigChat => render_config_chat(frame, body, state),
         Pane::Pending => render_pending(frame, body),
     }
     render_dropdown_overlay(frame, body, state, focused);
@@ -198,7 +236,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
 /// 渠道页：表单态画字段，列表态画渠道行。
 fn render_channels(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
     match state.channel_form() {
-        Some(form) => render_channel_form(frame, area, form, focused),
+        Some(form) => render_channel_form(frame, area, state, form, focused),
         None => render_channel_list(frame, area, state, focused),
     }
     let tail = Rect {
@@ -223,6 +261,17 @@ fn render_channel_list(frame: &mut Frame, area: Rect, state: &SettingsState, foc
     let offset = window_offset(state.channel_selected(), rows.len(), list_height);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (index, row) in rows.iter().enumerate().skip(offset).take(list_height) {
+        state.record_hit(
+            row_hit(
+                Rect {
+                    x: area.x + 1,
+                    width: area.width.saturating_sub(1),
+                    ..area
+                },
+                index - offset,
+            ),
+            HitAction::PaneRow(index),
+        );
         let selected = index == state.channel_selected();
         let marker = if selected { "›" } else { " " };
         let current = if row.key == state.channel_default_key() {
@@ -266,9 +315,18 @@ fn render_channel_list(frame: &mut Frame, area: Rect, state: &SettingsState, foc
 }
 
 /// 渠道表单：一行一个字段；枚举字段带 `▼`，编辑中的文本字段带光标块。
-fn render_channel_form(frame: &mut Frame, area: Rect, form: ChannelFormView<'_>, focused: bool) {
+///
+/// 带 `state` 是为了登记命中区（表单自己只是只读视图，不携带任何状态）。
+fn render_channel_form(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SettingsState,
+    form: ChannelFormView<'_>,
+    focused: bool,
+) {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for field in ChannelField::ORDER {
+    for (index, field) in ChannelField::ORDER.iter().copied().enumerate() {
+        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
         let is_current = field == form.field;
         let marker = if is_current { "›" } else { " " };
         let editing = is_current && form.input.is_some();
@@ -306,6 +364,7 @@ fn render_channel_form(frame: &mut Frame, area: Rect, form: ChannelFormView<'_>,
     if let Some(dropdown) = form.dropdown {
         lines.push(Line::raw(""));
         for (index, option) in dropdown.options.iter().enumerate() {
+            state.record_hit(row_hit(area, lines.len()), HitAction::Option(index));
             let highlighted = index == dropdown.selected;
             let style = if highlighted {
                 Style::default().bg(Color::Yellow)
@@ -394,6 +453,7 @@ fn render_choice(frame: &mut Frame, area: Rect, state: &SettingsState, focused: 
         height: 3.min(area.height),
         ..area
     };
+    state.record_hit(box_area, HitAction::PaneRow(0));
     render_field_box(frame, box_area, &state.choice_value(), style, kind);
 
     // `#select-pane-status { height: 2; margin-top: 2; color: $terminal-text-secondary }`：
@@ -420,9 +480,11 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bo
     let offset = form_window_offset(state, area);
     let lines: Vec<Line<'static>> = rows
         .iter()
+        .enumerate()
         .skip(offset)
         .take(visible)
-        .map(|row| {
+        .map(|(index, row)| {
+            state.record_hit(row_hit(area, index - offset), HitAction::PaneRow(index));
             let marker = if row.focused { "›" } else { " " };
             let value = if row.has_menu {
                 format!("{} ▼", row.value)
@@ -467,10 +529,11 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bo
 fn render_context(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
     let expanded = state.dropdown();
     let mut y = area.y;
-    for (field, label) in [
+    let entries = [
         (ContextField::Window, "上下文长度"),
         (ContextField::Compaction, "上下文阈值"),
-    ] {
+    ];
+    for (index, (field, label)) in entries.into_iter().enumerate() {
         let block_height = FIELD_BLOCK_HEIGHT.min((area.y + area.height).saturating_sub(y));
         if block_height < 2 {
             break;
@@ -513,6 +576,15 @@ fn render_context(frame: &mut Frame, area: Rect, state: &SettingsState, focused:
             ContextField::Compaction => format!("{}%", state.compaction_percent()),
         };
         render_field_box(frame, box_area, &value, style, kind);
+        // 字段的可点区域盖住标签行 + 下拉框，点哪都能选中这个字段。
+        state.record_hit(
+            Rect {
+                y: y.saturating_sub(1),
+                height: 4.min((area.y + area.height).saturating_sub(y.saturating_sub(1))),
+                ..area
+            },
+            HitAction::PaneRow(index),
+        );
         y += 3;
     }
     let tail = Rect {
@@ -566,6 +638,10 @@ fn render_tools(frame: &mut Frame, area: Rect, state: &SettingsState, focused: b
         .skip(offset)
         .take(list_height)
         .map(|(index, row)| {
+            state.record_hit(
+                row_hit(list_area, index - offset),
+                HitAction::PaneRow(index),
+            );
             Line::from(tool_row_spans(
                 row,
                 index == state.tool_selected() && focused,
@@ -634,7 +710,11 @@ fn render_mcp_globals(frame: &mut Frame, area: Rect, state: &SettingsState, focu
         .enumerate()
         .skip(offset)
         .take(list_height)
-        .map(|(_, row)| {
+        .map(|(index, row)| {
+            state.record_hit(
+                row_hit(list_area, index - offset),
+                HitAction::PaneRow(index),
+            );
             let text = format!(
                 "{}{}：{}",
                 if row.selected { "› " } else { "  " },
@@ -671,6 +751,10 @@ fn render_mcp_servers(frame: &mut Frame, area: Rect, state: &SettingsState, focu
         .skip(offset)
         .take(list_height)
         .map(|(index, row)| {
+            state.record_hit(
+                row_hit(list_area, index - offset),
+                HitAction::PaneRow(index),
+            );
             let text = format!(
                 "{}{}：{} · {} · {}",
                 if index == selected { "› " } else { "  " },
@@ -713,7 +797,8 @@ fn render_mcp_editor(frame: &mut Frame, area: Rect, state: &SettingsState, focus
             theme::rich_style(theme::ACCENT_WHITE).add_modifier(Modifier::BOLD),
         ));
     }
-    for row in state.mcp_editor_rows() {
+    for (index, row) in state.mcp_editor_rows().into_iter().enumerate() {
+        state.record_hit(row_hit(list_area, lines.len()), HitAction::PaneRow(index));
         let text = format!(
             "{}{}：{}",
             if row.focused { "› " } else { "  " },
@@ -749,6 +834,17 @@ fn render_vision(frame: &mut Frame, area: Rect, state: &SettingsState, focused: 
     let rows = state.vision_rows();
     let offset = window_offset(state.vision_selected(), rows.len(), list_height);
     for (index, text) in rows.iter().enumerate().skip(offset).take(list_height) {
+        state.record_hit(
+            row_hit(
+                Rect {
+                    x: area.x + 1,
+                    width: area.width.saturating_sub(1),
+                    ..area
+                },
+                lines.len(),
+            ),
+            HitAction::PaneRow(index),
+        );
         let selected = index == state.vision_selected();
         let style = if selected && focused {
             theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
@@ -799,6 +895,7 @@ fn render_subagents(frame: &mut Frame, area: Rect, state: &SettingsState, focuse
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut section = "";
     for (index, row) in rows.iter().enumerate().skip(offset).take(list_height) {
+        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
         if row.section != section {
             section = row.section;
             lines.push(Line::styled(
@@ -882,6 +979,7 @@ fn render_tts(frame: &mut Frame, area: Rect, state: &SettingsState, focused: boo
     let offset = window_offset(state.tts_focused(), rows.len(), list_height);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (index, row) in rows.iter().enumerate().skip(offset).take(list_height) {
+        state.record_hit(row_hit(area, lines.len()), HitAction::PaneRow(index));
         let selected = index == state.tts_focused();
         let marker = if selected { "›" } else { " " };
         let style = if selected && focused {
@@ -922,13 +1020,55 @@ fn render_tts(frame: &mut Frame, area: Rect, state: &SettingsState, focused: boo
     );
 }
 
+/// 未知一级项：一级表与面板表不同步时的兜底文案（正常构建不会出现）。
 fn render_pending(frame: &mut Frame, area: Rect) {
-    let text = "该设置页尚未迁移到 Rust 宿主，暂时请用 Python 工作台设置。";
+    let text = "该设置项没有对应的面板。";
     let line = Line::styled(
         fit(text, area.width as usize),
         theme::rich_style(theme::TEXT_MUTED),
     );
     Paragraph::new(line).render(Rect { height: 1, ..area }, frame.buffer_mut());
+}
+
+/// 「通过对话修改设置」：本页只是一个入口，说明用途并把按键写清楚。
+///
+/// 真正的对话在 [`crate::ui::config_chat`] 的独立弹层里：设置面板是一整屏模态页，把会话
+/// 塞进右侧会挤掉其余一级项的可读宽度（与 Python 把 `config_chat` 做成独立页面同因）。
+fn render_config_chat(frame: &mut Frame, area: Rect, state: &SettingsState) {
+    let lines: Vec<Line<'static>> = vec![
+        Line::styled(
+            fit(
+                "用一句话改配置：模型、上下文、工具开关、TTS 等。",
+                area.width as usize,
+            ),
+            theme::rich_style(theme::TEXT_PRIMARY),
+        ),
+        Line::styled(
+            fit(
+                "按 Enter 打开配置对话（本地路由器，不经过模型）。",
+                area.width as usize,
+            ),
+            theme::rich_style(theme::TEXT_SECONDARY),
+        ),
+    ];
+    Paragraph::new(lines).render(
+        Rect {
+            height: area.height.min(2),
+            ..area
+        },
+        frame.buffer_mut(),
+    );
+    render_pane_tail(
+        frame,
+        Rect {
+            y: area.y + area.height.saturating_sub(2),
+            height: area.height.min(2),
+            ..area
+        },
+        state.status(),
+        state.pane_hint(),
+        theme::rich_style(theme::TEXT_MUTED),
+    );
 }
 
 /// 面板底部的状态行（1 空行 + 最多 2 行文本）与提示行（1 行）。
@@ -1006,6 +1146,7 @@ fn render_dropdown_overlay(frame: &mut Frame, area: Rect, state: &SettingsState,
         .skip(offset)
         .take(visible)
         .map(|(index, (label, _))| {
+            state.record_hit(row_hit(inner, index - offset), HitAction::Option(index));
             // 高亮项：琥珀底色 + 终端默认前景（对映 `.option-list--option-highlighted`）。
             let style = if index == dropdown.selected {
                 Style::default()

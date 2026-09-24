@@ -26,7 +26,10 @@ resolver = "2"
 [workspace.package]
 version = "0.0.1"
 edition = "2021"
-rust-version = "1.75"
+# MSRV 由 wreq 的 BoringSSL 绑定（btls-sys）决定：它声明 rust-version = 1.85。
+# 这是一次全工作区抬升——只有 omnicrawl-host 的 fetcher 用到 wreq，但 Cargo 的
+# rust-version 是工作区级声明，无法只对单个 crate 抬高。
+rust-version = "1.85"
 license = "MIT"
 
 [workspace.dependencies]
@@ -37,6 +40,25 @@ sha2 = "0.10"
 # 内核自带传输：阻塞式 HTTP/1.1 + rustls，不引入异步运行时；
 # 只要 TLS 与连接超时，gzip 等我们不发 Accept-Encoding 就用不上。
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+# 浏览器指纹模拟：fetcher 工具的 impersonate 参数要靠它做真实的 JA3/JA4 与 HTTP/2 指纹匹配。
+# 这是本项目唯一一处异步 HTTP 依赖，且刻意只给 omnicrawl-host 用——其余链路（llm、mcp、
+# connectors、tts）继续走上面的阻塞式 ureq，避免把整个工作区拖进异步运行时。
+#
+# 关于 prefix-symbols：wreq 文档建议 Linux/Android 开启，以免与生态里同样静态链接 BoringSSL
+# 的 openssl-sys 撞符号。本项目**不开**，两个原因：
+#   1. 依赖树里没有 openssl-sys（链路里全部 HTTP 走 rustls），没有撞符号的对象；
+#   2. 它与 Windows 的构建出口不兼容——btls-sys 的构建脚本一旦检测到 CMAKE_TOOLCHAIN_FILE
+#      就提前返回（Windows 必须靠它绕开 CMP0091/ASM_NASM 的 generate 失败，见
+#      tools/btls-msvc-runtime.cmake），会连前缀符号的注入一起跳过，于是 Rust 侧引用
+#      `build_script_main_*` 而 C 库里没有这些符号，链接直接失败（568 个 LNK2019）。
+# 若将来真引入 openssl-sys，需要连同 btls-sys 的前缀与交叉编译设置一起重新设计。
+wreq = { version = "6.0.0-rc.31" }
+# 浏览器设备档案库（100+ profile）。wreq 自身只提供 Emulation 容器结构，真正的
+# Chrome/Firefox/Safari/Edge 指纹组合都在这里，通过 wreq_util::Emulation 引用。
+wreq-util = "3.0.0-rc.14"
+# 只为驱动 wreq：在专用线程上跑一个 current_thread runtime，把阻塞式调用方桥接到异步传输。
+# 不启用 macros/rt-multi-thread——产品链路不需要 #[tokio::main]，也不该出现多线程运行时。
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
 # 会话时间戳：对齐 Python datetime 的 ISO-8601（UTC、微秒）。只要解析/格式化与取当前时间。
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # 读取大转录：只读内存映射，整份内容不再复制进内核堆（Windows 与 POSIX 都走 OS 映射）。

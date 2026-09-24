@@ -1,0 +1,310 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "identity": {
+          "active_skill_context_hash": "9200131dd754ae03c6dda5770c2a11e359e62d18c6b92c971c5a9de2b5ed3eed",
+          "agent_prompt_version": "2026-06-22.top-level-tools-v1",
+          "model": "gpt-4o-mini",
+          "project_instructions_hash": "901d92d5e8ab2d2a0b0b498eb459a666ff0c60d7ca959e9a156800a0746228cc",
+          "skill_index_hash": "5ffecddc0668ad83de70a413189df6c67b48632940c4c9eb73004b7e6d9a7b4e",
+          "system_prompt_hash": "3dd6536d8563172a2333be2600e49e21775d6b8e5deccb644feccfc9012170ee",
+          "tool_schema_hash": "3417ceb585a637fceabbb7ca902e33b55c8e2ee141c67b02fbb4215bd4d5e58e",
+          "workspace_root": "/ws/demo"
+        },
+        "prompt_cache_key": "local-agent-431712817aee91901c4548b84ceba2b8"
+      },
+      "inputs": {
+        "active_skills": [
+          0
+        ],
+        "chat_tools": [
+          {
+            "function": {
+              "description": "读取文件",
+              "name": "read",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          },
+          {
+            "function": {
+              "description": "执行命令",
+              "name": "bash",
+              "parameters": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ],
+        "project_instructions": "# 项目规范\n\n先读文档。",
+        "skills": [
+          {
+            "base_dir": "/home/u/.omnicrawl/skills/bili-note",
+            "body": "# B 站笔记\n\n按字幕提取并整理。\n",
+            "description": "提取 B 站视频为可读 Markdown",
+            "disable_model_invocation": false,
+            "name": "bili-note",
+            "scope": "user",
+            "source_path": "/home/u/.omnicrawl/skills/bili-note/SKILL.md"
+          },
+          {
+            "base_dir": "/ws/demo/.omnicrawl/skills/ui-design",
+            "body": "# UI 设计\n\n层级、间距、对比。\n",
+            "description": "UI 设计准则",
+            "disable_model_invocation": true,
+            "name": "ui-design",
+            "scope": "project",
+            "source_path": "/ws/demo/.omnicrawl/skills/ui-design/SKILL.md"
+          }
+        ],
+        "system_prompt": "你是 OmniCrawl。\n",
+        "workspace_root": "/ws/demo"
+      },
+      "name": "basic"
+    },
+    {
+      "expected": {
+        "identity": {
+          "active_skill_context_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "agent_prompt_version": "2026-06-22.top-level-tools-v1",
+          "model": "gpt-4o-mini",
+          "project_instructions_hash": "901d92d5e8ab2d2a0b0b498eb459a666ff0c60d7ca959e9a156800a0746228cc",
+          "skill_index_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "system_prompt_hash": "3dd6536d8563172a2333be2600e49e21775d6b8e5deccb644feccfc9012170ee",
+          "tool_schema_hash": "3417ceb585a637fceabbb7ca902e33b55c8e2ee141c67b02fbb4215bd4d5e58e",
+          "workspace_root": "/ws/demo"
+        },
+        "prompt_cache_key": "local-agent-ff27655c574eb8344ba17a7f5e3fab17"
+      },
+      "inputs": {
+        "active_skills": [],
+        "chat_tools": [
+          {
+            "function": {
+              "description": "读取文件",
+              "name": "read",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          },
+          {
+            "function": {
+              "description": "执行命令",
+              "name": "bash",
+              "parameters": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ],
+        "project_instructions": "# 项目规范\n\n先读文档。",
+        "skills": [],
+        "system_prompt": "你是 OmniCrawl。\n",
+        "workspace_root": "/ws/demo"
+      },
+      "name": "no_skills"
+    },
+    {
+      "expected": {
+        "identity": {
+          "active_skill_context_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "agent_prompt_version": "2026-06-22.top-level-tools-v1",
+          "model": "gpt-4o-mini",
+          "project_instructions_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "skill_index_hash": "5ffecddc0668ad83de70a413189df6c67b48632940c4c9eb73004b7e6d9a7b4e",
+          "system_prompt_hash": "3dd6536d8563172a2333be2600e49e21775d6b8e5deccb644feccfc9012170ee",
+          "tool_schema_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "workspace_root": "/ws/demo"
+        },
+        "prompt_cache_key": "local-agent-7d1bd08d36f1d64c6511befa21c10d30"
+      },
+      "inputs": {
+        "active_skills": [],
+        "chat_tools": [],
+        "project_instructions": "",
+        "skills": [
+          {
+            "base_dir": "/home/u/.omnicrawl/skills/bili-note",
+            "body": "# B 站笔记\n\n按字幕提取并整理。\n",
+            "description": "提取 B 站视频为可读 Markdown",
+            "disable_model_invocation": false,
+            "name": "bili-note",
+            "scope": "user",
+            "source_path": "/home/u/.omnicrawl/skills/bili-note/SKILL.md"
+          },
+          {
+            "base_dir": "/ws/demo/.omnicrawl/skills/ui-design",
+            "body": "# UI 设计\n\n层级、间距、对比。\n",
+            "description": "UI 设计准则",
+            "disable_model_invocation": true,
+            "name": "ui-design",
+            "scope": "project",
+            "source_path": "/ws/demo/.omnicrawl/skills/ui-design/SKILL.md"
+          }
+        ],
+        "system_prompt": "你是 OmniCrawl。\n",
+        "workspace_root": "/ws/demo"
+      },
+      "name": "empty_tools"
+    },
+    {
+      "expected": {
+        "identity": {
+          "active_skill_context_hash": "6b5dde21d5e50266b6ba4776e00ed2d34cd2a20242b3328c9cdebd87d405fe27",
+          "agent_prompt_version": "2026-06-22.top-level-tools-v1",
+          "model": "gpt-4o-mini",
+          "project_instructions_hash": "1662a9e3e1d9188a8515f9f0ff388272ae7a46247890bc34f6cf7745fb4919bd",
+          "skill_index_hash": "5ffecddc0668ad83de70a413189df6c67b48632940c4c9eb73004b7e6d9a7b4e",
+          "system_prompt_hash": "a4772e7d2801a4ed3053e30123a22421b91732f5dd26d6a2fa0f6053a0e3e21e",
+          "tool_schema_hash": "3417ceb585a637fceabbb7ca902e33b55c8e2ee141c67b02fbb4215bd4d5e58e",
+          "workspace_root": "/ws/中文 工作区"
+        },
+        "prompt_cache_key": "local-agent-7894ca0404a0fdbb024f382d42b4934c"
+      },
+      "inputs": {
+        "active_skills": [
+          1
+        ],
+        "chat_tools": [
+          {
+            "function": {
+              "description": "读取文件",
+              "name": "read",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          },
+          {
+            "function": {
+              "description": "执行命令",
+              "name": "bash",
+              "parameters": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ],
+        "project_instructions": "任务不清先确认。",
+        "skills": [
+          {
+            "base_dir": "/home/u/.omnicrawl/skills/bili-note",
+            "body": "# B 站笔记\n\n按字幕提取并整理。\n",
+            "description": "提取 B 站视频为可读 Markdown",
+            "disable_model_invocation": false,
+            "name": "bili-note",
+            "scope": "user",
+            "source_path": "/home/u/.omnicrawl/skills/bili-note/SKILL.md"
+          },
+          {
+            "base_dir": "/ws/demo/.omnicrawl/skills/ui-design",
+            "body": "# UI 设计\n\n层级、间距、对比。\n",
+            "description": "UI 设计准则",
+            "disable_model_invocation": true,
+            "name": "ui-design",
+            "scope": "project",
+            "source_path": "/ws/demo/.omnicrawl/skills/ui-design/SKILL.md"
+          }
+        ],
+        "system_prompt": "你是一个中文助手，回答要克制。\n",
+        "workspace_root": "/ws/中文 工作区"
+      },
+      "name": "cjk_and_order"
+    },
+    {
+      "expected": {
+        "identity": {
+          "active_skill_context_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "agent_prompt_version": "2026-06-22.top-level-tools-v1",
+          "model": "gpt-4o-mini",
+          "project_instructions_hash": "901d92d5e8ab2d2a0b0b498eb459a666ff0c60d7ca959e9a156800a0746228cc",
+          "skill_index_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+          "system_prompt_hash": "3dd6536d8563172a2333be2600e49e21775d6b8e5deccb644feccfc9012170ee",
+          "tool_schema_hash": "3417ceb585a637fceabbb7ca902e33b55c8e2ee141c67b02fbb4215bd4d5e58e",
+          "workspace_root": "/ws/demo"
+        },
+        "prompt_cache_key": "local-agent-ff27655c574eb8344ba17a7f5e3fab17"
+      },
+      "inputs": {
+        "active_skills": [],
+        "chat_tools": [
+          {
+            "function": {
+              "description": "读取文件",
+              "name": "read",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          },
+          {
+            "function": {
+              "description": "执行命令",
+              "name": "bash",
+              "parameters": {
+                "properties": {},
+                "required": [],
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ],
+        "project_instructions": "\n\n   # 项目规范\n\n先读文档。  \n\n",
+        "skills": [],
+        "system_prompt": "你是 OmniCrawl。\n",
+        "workspace_root": "/ws/demo"
+      },
+      "name": "stripped_instructions"
+    }
+  ],
+  "model": "gpt-4o-mini"
+}

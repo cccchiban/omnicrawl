@@ -3,7 +3,7 @@
 //!
 //! 期望值来自 Python 真实现：改任一侧后先跑
 //! `python rust/tools/gen_controllers_fixture.py`，再用同一份输入重放本套件。
-//! 摘要提示词模板按仓库布局读取 `omnicrawl/templates/`——对照的是「读到了什么」。
+//! 摘要提示词模板按仓库布局读取 `rust/assets/templates/`——对照的是「读到了什么」。
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -146,7 +146,7 @@ fn batch_from(events: Vec<SourceEvent>, previous_summary: Option<Value>) -> Comp
 }
 
 fn template_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../omnicrawl/templates")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../rust/assets/templates")
 }
 
 fn summary_prompt() -> String {

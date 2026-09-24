@@ -50,8 +50,9 @@ frontmatter 解析、描述推断、渐进式披露输出，以及安装器的�
 ### Worker 启动路径
 
 `WorkerLauncher::resolve()` 按固定顺序找 Node 与 `node_runner.mjs`：
-`OMNICRAWL_RUNNER_DIR` → 可执行文件及其各级祖先下的 `extensions/` 与 `omnicrawl/extensions/`
-→ 进程工作目录下的同两级。CLI 的安装期冒烟（`cli::runner_path`）、宿主的运行期启动
+`OMNICRAWL_RUNNER_DIR` → 可执行文件及其各级祖先下的 `extensions/`（载荷同级）、
+`rust/assets/extensions/`（仓库检出的单一来源）与 `omnicrawl/extensions/`（旧布局）
+→ 进程工作目录下的同三级。CLI 的安装期冒烟（`cli::runner_path`）、宿主的运行期启动
 （`PluginManager`）与 TUI/API 的诊断共用这一份解析，失败文案里带上探测过的目录。
 
 ## 已知差异

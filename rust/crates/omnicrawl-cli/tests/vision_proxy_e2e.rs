@@ -3,6 +3,9 @@
 //!
 //! 判据全在协议帧与内核实际发出的模型请求体上：视觉请求带 data URL 图片、用候选模型名，
 //! 下一轮主请求里换成 `<vision_observation>` 文本，图片不再进上下文。
+//!
+//! 另外两个分支也被钉住：宿主声明的 `initialize.model.native_vision` 为真时原生视觉优先，
+//! 图片直送主模型且**不**调视觉模型；代理未启用时图片被掉（非视觉主模型只收到图片元数据）。
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -346,9 +349,9 @@ fn image_observation_is_routed_to_the_vision_model() {
 }
 
 #[test]
-fn vision_failure_becomes_an_error_result() {
+fn vision_disabled_drops_the_image_for_a_non_vision_model() {
     let server = StubServer::spawn();
-    // 未启用代理时保持宿主原样：图片观察照旧进请求。
+    // 代理关着、宿主也没声明原生视觉：图片必须被掉。
     let config = write_config("disabled");
     std::fs::write(
         &config,
@@ -378,11 +381,56 @@ fn vision_failure_becomes_an_error_result() {
         .iter()
         .rfind(|body| body["model"] == json!("main-model"))
         .expect("应当有收尾主请求");
+    let text = follow_up.to_string();
+    // 与 Python `route_image_result` 同义：非原生视觉 + 代理未启用 → 空 followup，
+    // 主模型只收到图片元数据；data URL 送进去只会被 Provider 拒掉。
+    assert!(
+        !text.contains(&format!("base64,{IMAGE_DATA}")),
+        "未启用代理时图片不应进主请求：{follow_up}"
+    );
+    assert!(
+        text.contains(TOOL_OUTPUT),
+        "图片元数据（工具文本）仍应保留：{follow_up}"
+    );
+
+    std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
+}
+
+#[test]
+fn native_vision_keeps_the_image_and_skips_the_proxy() {
+    let server = StubServer::spawn();
+    // 代理同样开着，但宿主声明了原生视觉：Python 的优先级是原生视觉优先于代理。
+    let config = write_config("native");
+    let session_root = config.parent().expect("配置目录").join("sessions");
+    let mut kernel = Kernel::spawn(&config);
+    let mut model = model_config(&server);
+    model["native_vision"] = json!(true);
+    kernel.initialize(model, &session_root);
+
+    let frames = kernel.run_turn("看看截图");
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["method"] == "turn.finished"),
+        "回合应正常收尾：{frames:?}"
+    );
+
+    let bodies = server.bodies();
+    assert!(
+        !bodies
+            .iter()
+            .any(|body| body["model"] == json!(VISION_MODEL)),
+        "原生视觉优先，不应调用视觉模型：{bodies:?}"
+    );
+    let follow_up = bodies
+        .iter()
+        .rfind(|body| body["model"] == json!("main-model"))
+        .expect("应当有主请求");
     assert!(
         follow_up
             .to_string()
             .contains(&format!("base64,{IMAGE_DATA}")),
-        "未启用代理时图片照旧交给主模型：{follow_up}"
+        "原生视觉时图片应直送主模型：{follow_up}"
     );
 
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();

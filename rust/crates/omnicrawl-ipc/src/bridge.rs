@@ -480,6 +480,13 @@ pub struct KernelModelConfig {
     pub prompt_cache_capable: bool,
     #[serde(default)]
     pub prompt_cache_identity: BTreeMap<String, String>,
+    /// 主模型是否用原生视觉。为真时内核**不**启用独立视觉模型代理——带图观察直送主模型；
+    /// 为假时交给 `[vision].models` 代理；两者都不可用时内核把图片观察摄掉。
+    ///
+    /// 优先级与 Python `route_image_result` 一致（原生视觉优先于代理）；旧宿主不给这个字段
+    /// 时按假处理，行为是「图片走代理」，与迁移前的默认一致。
+    #[serde(default)]
+    pub native_vision: bool,
     /// 空响应与可重试错误的最大请求次数，默认 1（与 Python 侧主循环的默认一致）。
     #[serde(default = "default_request_retry_count")]
     pub request_retry_count: u32,

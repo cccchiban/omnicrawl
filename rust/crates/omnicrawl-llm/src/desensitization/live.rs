@@ -16,9 +16,17 @@ use omnicrawl_protocol::{
     ToolCallArgumentsDelta,
 };
 
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
 use super::engine::{MaskContext, SensitiveMatcher};
 use super::gitleaks::{load_rules, GitleaksRule};
 use super::middleware::MessageMaskMemo;
+use super::ner::{
+    build_ner_layer, model_path_env_name, resolve_runtime_model_path, NerExtractorPool, NerLayer,
+    NerLayerOptions,
+};
+use super::ner_weights::NerWeights;
 use super::plan_cache::{MaskPlanCache, PlanCacheStats};
 use super::rules::{build_enabled_rules, PatternRule};
 use super::stream::StreamRestorer;
@@ -26,6 +34,39 @@ use super::{collect_placeholder_numbers, DesensitizationStats, SequenceRegistry}
 use crate::errors::RuntimeError;
 use crate::request::ChatRequestInput;
 use crate::runtime::{ModelRuntime, SinkFlow, TurnSink};
+
+/// 随包权重的存放目录：`<crate>/data`（与 `gitleaks.toml` 同址）。
+fn ner_data_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("data")
+}
+
+/// 进程级的抽取器池：权重 5 MB，多个运行期（会话 / 工具表重建）共用一个实例。
+static NER_POOL: OnceLock<NerExtractorPool> = OnceLock::new();
+
+/// 按配置构建 NER 兜底层：未启用、权重缺失或读取失败都返回 `None`（静默降级）。
+///
+/// 与 Python 一致：`[desensitization].ner_enabled` 默认关，且加载失败不阻断屏蔽路径——
+/// 少一层语义兜底仍然是一套可用的脱敏，而报错会让整个回合发不出请求。
+///
+/// 公开给**旁路调用方**：Python 的 `OneShotMasker` 也自己 `build_ner_layer(config)`
+/// （`oneshot.py:52`），审查模型那条链路因此共用同一个抽取器池。
+pub fn build_runtime_ner_layer(options: &NerLayerOptions) -> Option<NerLayer> {
+    if !options.enabled {
+        return None;
+    }
+    let pool = NER_POOL.get_or_init(NerExtractorPool::new);
+    let env_model_path = std::env::var(model_path_env_name()).ok();
+    let model_path = resolve_runtime_model_path(
+        Some(options.model_path.as_str()),
+        env_model_path.as_deref(),
+        &ner_data_dir(),
+    );
+    build_ner_layer(options, pool, &model_path, |path| {
+        NerWeights::load(path)
+            .ok()
+            .map(|weights| Arc::new(weights) as Arc<dyn super::ner::NerBackend>)
+    })
+}
 
 /// 脱敏层的配置（Python `DesensitizationConfig` 的内核子集）。
 ///
@@ -50,6 +91,8 @@ pub struct DesensitizationOptions {
     pub gitleaks_config_path: Option<String>,
     pub extra_sensitive_keys: Vec<String>,
     pub exempt_keys: Vec<String>,
+    /// NER 语义兜底层：默认关闭（与 Python 出厂默认一致），启用后接在屏蔽路径的最后一层。
+    pub ner: NerLayerOptions,
 }
 
 impl Default for DesensitizationOptions {
@@ -68,6 +111,7 @@ impl Default for DesensitizationOptions {
             gitleaks_config_path: None,
             extra_sensitive_keys: Vec::new(),
             exempt_keys: Vec::new(),
+            ner: NerLayerOptions::default(),
         }
     }
 }
@@ -86,6 +130,9 @@ pub struct DesensitizationRuntime {
     /// 逐消息屏蔽结果缓存：历史每轮全量重发，逐字未变的消息不必重跑引擎
     /// （Python 的 `self._memo`）。
     memo: MessageMaskMemo,
+    /// NER 兜底层：未启用或权重不可用时为 `None`（静默降级，与 Python 的
+    /// `build_ner_layer` 同义）。抽取器按 (路径, 设备, 缓存容量) 池化，关闭时一起清掉。
+    ner: Option<NerLayer>,
 }
 
 impl DesensitizationRuntime {
@@ -97,7 +144,9 @@ impl DesensitizationRuntime {
         } else {
             Vec::new()
         };
+        let ner = build_runtime_ner_layer(&options.ner);
         Self {
+            ner,
             inner,
             rules: build_enabled_rules(&categories),
             gitleaks_rules,
@@ -125,8 +174,15 @@ impl DesensitizationRuntime {
     pub fn close(&self) {
         self.memo.clear();
         self.plan_cache.clear();
+        // 抽取器是跨会话复用的池化资源（权重约 5 MB）：这里只丢自己的那份引用，
+        // 池本身是进程级的（还有别的运行期可能正用着同一实例）。
         lock(&self.registry).drop_all();
         *lock(&self.stats) = DesensitizationStats::default();
+    }
+
+    /// NER 兜底层的缓存计数；未启用时为 `None`（观测 / 测试用）。
+    pub fn ner_stats(&self) -> Option<super::ner::NerCacheStats> {
+        self.ner.as_ref().map(|layer| layer.stats())
     }
 
     pub fn stats(&self) -> DesensitizationStats {
@@ -171,6 +227,7 @@ impl DesensitizationRuntime {
                 entropy_pure_digits: self.options.entropy_pure_digits,
                 pattern_rules: &self.rules,
                 gitleaks_rules: &self.gitleaks_rules,
+                ner: self.ner.as_ref(),
                 plan_cache: Some(Arc::clone(&self.plan_cache)),
                 plan_builder: None,
             };

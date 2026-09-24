@@ -49,10 +49,12 @@ impl KernelVisionProxy {
     /// 从 `[vision]` 配置与主模型连接装配代理；未启用或没有可用候选时返回 `None`（代理是可选旁路）。
     pub fn load(model: &KernelModelConfig) -> Option<Self> {
         let env = ConfigEnvironment::from_process();
-        let config = load_vision_configuration(&env, None).ok()?;
-        if !config.enabled || config.models.is_empty() {
+        // 与宿主同一个判据（`vision_proxy_configured`）：宿主据此决定交不交图，
+        // 两边一致才不会出现「交了图却没人处理」。
+        if !vision_logic::vision_proxy_configured(&env) {
             return None;
         }
+        let config = load_vision_configuration(&env, None).ok()?;
         let mut candidates = Vec::new();
         for reference in &config.models {
             let Ok(selection) = vision_logic::model_ref_selection(reference) else {

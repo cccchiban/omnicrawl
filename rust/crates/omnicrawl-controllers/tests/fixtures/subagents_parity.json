@@ -576,7 +576,7 @@
     "templates": [
       {
         "label": "explore.md",
-        "file": "omnicrawl/templates/subagents/explore.md",
+        "file": "rust/assets/templates/subagents/explore.md",
         "ok": true,
         "definition": {
           "name": "explore",
@@ -597,13 +597,13 @@
           "mcp_servers": [],
           "git_mode": "readonly",
           "source": "builtin",
-          "source_path": "<REPO>/omnicrawl/templates/subagents/explore.md"
+          "source_path": "<REPO>/rust/assets/templates/subagents/explore.md"
         },
         "error": null
       },
       {
         "label": "general-purpose.md",
-        "file": "omnicrawl/templates/subagents/general-purpose.md",
+        "file": "rust/assets/templates/subagents/general-purpose.md",
         "ok": true,
         "definition": {
           "name": "general-purpose",
@@ -636,13 +636,13 @@
           "mcp_servers": [],
           "git_mode": "readonly",
           "source": "builtin",
-          "source_path": "<REPO>/omnicrawl/templates/subagents/general-purpose.md"
+          "source_path": "<REPO>/rust/assets/templates/subagents/general-purpose.md"
         },
         "error": null
       },
       {
         "label": "plan.md",
-        "file": "omnicrawl/templates/subagents/plan.md",
+        "file": "rust/assets/templates/subagents/plan.md",
         "ok": true,
         "definition": {
           "name": "plan",
@@ -663,13 +663,13 @@
           "mcp_servers": [],
           "git_mode": "readonly",
           "source": "builtin",
-          "source_path": "<REPO>/omnicrawl/templates/subagents/plan.md"
+          "source_path": "<REPO>/rust/assets/templates/subagents/plan.md"
         },
         "error": null
       },
       {
         "label": "review.md",
-        "file": "omnicrawl/templates/subagents/review.md",
+        "file": "rust/assets/templates/subagents/review.md",
         "ok": true,
         "definition": {
           "name": "review",
@@ -700,13 +700,13 @@
           "mcp_servers": [],
           "git_mode": "full",
           "source": "builtin",
-          "source_path": "<REPO>/omnicrawl/templates/subagents/review.md"
+          "source_path": "<REPO>/rust/assets/templates/subagents/review.md"
         },
         "error": null
       },
       {
         "label": "verify.md",
-        "file": "omnicrawl/templates/subagents/verify.md",
+        "file": "rust/assets/templates/subagents/verify.md",
         "ok": true,
         "definition": {
           "name": "verify",
@@ -741,7 +741,7 @@
           "mcp_servers": [],
           "git_mode": "readonly",
           "source": "builtin",
-          "source_path": "<REPO>/omnicrawl/templates/subagents/verify.md"
+          "source_path": "<REPO>/rust/assets/templates/subagents/verify.md"
         },
         "error": null
       }

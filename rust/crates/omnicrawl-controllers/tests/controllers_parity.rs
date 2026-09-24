@@ -4,7 +4,7 @@
 //! `python rust/tools/gen_controllers_fixture.py` 重新生成
 //! `tests/fixtures/controllers_parity.json`，再跑本套件用同一份输入重放并逐字段比对。
 //!
-//! 模板装载一组需要读仓库内的 `omnicrawl/templates/`：那一组对照的是「读到的内容」，
+//! 模板装载一组需要读仓库内的 `rust/assets/templates/`：那一组对照的是「读到的内容」，
 //! 因此测试直接按照仓库布局定位模板目录。
 
 use omnicrawl_controllers::{building, compression, memory, output, shared, undo, workspace};
@@ -170,7 +170,7 @@ fn expect_outcome<T>(result: Result<T, AgentError>, case: &Value, label: &str) -
 }
 
 fn template_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../omnicrawl/templates")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../rust/assets/templates")
 }
 
 // --------------------------------------------------------------------------- shared

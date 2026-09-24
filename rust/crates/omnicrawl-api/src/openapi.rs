@@ -605,7 +605,7 @@ fn methods(entries: &[(&str, Value)]) -> Value {
 }
 
 /// `PUT /settings/<domain>` 的路径、摘要与请求体模型。
-fn settings_writes() -> [(&'static str, &'static str, &'static str); 10] {
+fn settings_writes() -> [(&'static str, &'static str, &'static str); 11] {
     [
         (
             "/api/v1/settings/context",
@@ -645,6 +645,7 @@ fn settings_writes() -> [(&'static str, &'static str, &'static str); 10] {
         ),
         ("/api/v1/settings/tts", "更新 TTS 配置", "TtsSetting"),
         ("/api/v1/settings/tools", "更新内置工具开关", "ToolsSetting"),
+        ("/api/v1/settings/mcp", "更新 MCP 配置并重连", "McpSetting"),
     ]
 }
 
@@ -889,6 +890,31 @@ fn schemas() -> Value {
                     "type": "object",
                     "additionalProperties": {"type": "boolean"},
                 },
+            },
+        },
+        "McpSetting": {
+            "type": "object",
+            "description": "字段全部可选：globals + {servers} 整表替换，或 {server, delete_server} 单点修改。写盘后立即重连，apply_runtime=false 只写盘。",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "default_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 360},
+                "policy": {
+                    "type": "object",
+                    "properties": {
+                        "require_confirmation_for_write": {"type": "boolean"},
+                        "require_confirmation_for_command": {"type": "boolean"},
+                        "allow_external_network_tools": {"type": "boolean"},
+                        "audit_log_enabled": {"type": "boolean"},
+                    },
+                },
+                "servers": {
+                    "type": "object",
+                    "description": "Server 名 → 规格；给出时整表替换。",
+                    "additionalProperties": {"type": "object"},
+                },
+                "server": {"type": "object", "description": "单条 Server 增改；可带 original_name 改名。"},
+                "delete_server": {"type": "string"},
+                "apply_runtime": {"type": "boolean", "default": true},
             },
         },
     })

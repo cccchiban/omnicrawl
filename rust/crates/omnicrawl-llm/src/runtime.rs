@@ -41,6 +41,7 @@ use crate::responses::{
     is_tool_history_rejection, messages_to_responses_input, ResponsesStreamState,
 };
 use crate::sse::{payload_of_line, step_payload, SseError, SseStep};
+use crate::stream_registry::CancelHandle;
 use crate::transport::{self, HttpRequest, HttpResponse, TransportFailure};
 use crate::usage::usage_from_openai_payload;
 
@@ -227,6 +228,7 @@ impl OpenAiChatRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
+                StreamOutcome::Cancelled => return Err(RuntimeError::cancelled()),
                 StreamOutcome::ProviderError { message, body } => {
                     // OpenAI 一族：文案与可重试标记都走 Python 的分类阶梯。
                     return Err(RuntimeError::openai_provider_error_stream(
@@ -406,6 +408,7 @@ impl AnthropicRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
+                StreamOutcome::Cancelled => return Err(RuntimeError::cancelled()),
                 StreamOutcome::ProviderError { message, .. } => {
                     // Anthropic：文案前缀与格式化器换成 Claude 一路，且与 Python 一致地不可重试。
                     return Err(RuntimeError::stream_interrupted_unretryable(format!(
@@ -650,6 +653,7 @@ impl ResponsesRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
+                StreamOutcome::Cancelled => return Err(RuntimeError::cancelled()),
                 StreamOutcome::ProviderError { message, .. } => {
                     return Err(responses_stream_error(&SdkFailure {
                         message,
@@ -838,6 +842,7 @@ impl GeminiRuntime {
             match stream.next(CANCEL_POLL) {
                 StreamOutcome::Idle => continue,
                 StreamOutcome::End => break,
+                StreamOutcome::Cancelled => return Err(RuntimeError::cancelled()),
                 StreamOutcome::ProviderError { message, .. } => {
                     // Gemini：文案前缀与格式化器换成 Gemini 一路，且与 Python 一致地不可重试。
                     return Err(RuntimeError::stream_interrupted_unretryable(format!(
@@ -1017,15 +1022,27 @@ enum StreamOutcome {
     Step(SseStep),
     Idle,
     End,
-    ProviderError { message: String, body: Value },
+    /// 流被**另一个线程**关闭（回合注册表里的取消），与 sink 自己的取消同义。
+    Cancelled,
+    ProviderError {
+        message: String,
+        body: Value,
+    },
     Io(String),
 }
 
 /// 可放弃的 SSE 读取：建连与迭代都在后台线程里，消费方按 `CANCEL_POLL` 轮询，
 /// 取消后立即返回；被放弃的线程在读到下一条数据或连接关闭时自行退出。
+///
+/// 每条流都登记进回合资源注册表（`stream_registry`，对应 Python 的 `register_stream`）：
+/// 任一线程拿同一个回合归属调 `close_active_streams` 就能停掉它——消费方在下一次轮询
+/// 看到 `Cancelled`，读取线程也在下一个数据边界退出。以前只有 sink 自己答取消，
+/// 跨线程（审批取消 / 界面中断）的回合中断没有着力点。
 struct StreamReader {
     receiver: mpsc::Receiver<StreamItem>,
     abandoned: Arc<AtomicBool>,
+    /// 注册表里的身份；丢弃时注销，避免悬挂条目。
+    handle: Arc<CancelHandle>,
     ended: bool,
 }
 
@@ -1034,6 +1051,17 @@ impl StreamReader {
         let (sender, receiver) = mpsc::channel();
         let abandoned = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&abandoned);
+        // 注册“关闭动作”= 置放弃位：读取线程下一个边界退出，消费方下一次轮询即返回取消。
+        // 归属取当前线程的回合作用域（Python 的 `stream_owner_for(cancel_check)` 同义）。
+        let handle = CancelHandle::with_close({
+            let abandoned = Arc::clone(&abandoned);
+            move || abandoned.store(true, Ordering::Relaxed)
+        });
+        crate::stream_registry::register_stream(
+            Some(&handle),
+            crate::stream_registry::current_stream_scope(),
+            None,
+        );
 
         thread::spawn(move || {
             let mut reader = BufReader::new(body);
@@ -1075,6 +1103,7 @@ impl StreamReader {
         Self {
             receiver,
             abandoned,
+            handle,
             ended: false,
         }
     }
@@ -1082,6 +1111,11 @@ impl StreamReader {
     fn next(&mut self, poll: Duration) -> StreamOutcome {
         if self.ended {
             return StreamOutcome::End;
+        }
+        // 另一个线程关掉了这条流：立刻返回，不等下一次超时窗口。
+        if self.abandoned.load(Ordering::Relaxed) {
+            self.ended = true;
+            return StreamOutcome::Cancelled;
         }
         match self.receiver.recv_timeout(poll) {
             Ok(StreamItem::Step(step)) => StreamOutcome::Step(step),
@@ -1105,5 +1139,6 @@ impl StreamReader {
 impl Drop for StreamReader {
     fn drop(&mut self) {
         self.abandoned.store(true, Ordering::Relaxed);
+        crate::stream_registry::unregister_stream(&self.handle);
     }
 }

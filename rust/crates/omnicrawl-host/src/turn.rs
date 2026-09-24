@@ -49,7 +49,10 @@ pub struct RunnerOptions {
     pub approval: ApprovalMode,
     pub command_timeout_seconds: i64,
     pub tool_timeout_seconds: i64,
-    pub native_vision: bool,
+    /// 是否把图片交给内核：原生视觉或 `[vision]` 代理任一可用即为真（与 Python
+    /// `route_image_result` 同义）。为假时图片不会进入请求——主模型看不懂图，
+    /// 留在请求里只会被 Provider 拒掉。
+    pub attach_vision_images: bool,
     /// 握手时报出的宿主名，供内核诊断。
     pub client_name: String,
     /// 插件运行期；`None` 表示无插件模式，所有 Hook 节点都退化为原样放行。
@@ -172,6 +175,26 @@ impl TurnRunner {
 
     pub fn registry(&self) -> &ToolRegistry {
         &self.registry
+    }
+
+    /// 运行期重建工具表（MCP / 顾问 / 工具开关等宿主侧能力变化后用）。
+    ///
+    /// 与首次构建走同一入口：调用方传进来的选项必须已经带上新的运行期句柄；后台任务
+    /// 管理器与取消令牌一律沿用旧表，重建不会丢掉正在跑的后台命令，也不改变本回合的
+    /// 取消语义。重建之后调用方还要把新声明下发给内核
+    /// （`session.settings.model.tools`），否则内核仍按旧工具表向模型声明能力。
+    pub fn rebuild_registry(&mut self, registry_options: &RegistryOptions) -> Result<(), String> {
+        let mut options = registry_options.clone();
+        options.monitors = Some(self.registry.monitors().clone());
+        options.cancel = Some(self.registry.cancel_token());
+        let registry = ToolRegistry::new(
+            self.options.workspace_root.clone(),
+            &options,
+            self.options.command_timeout_seconds,
+        )
+        .map_err(|error| format!("工具表构建失败：{}", error.message))?;
+        self.registry = Arc::new(registry);
+        Ok(())
     }
 
     pub fn kernel_closed(&self) -> bool {
@@ -688,8 +711,19 @@ impl TurnRunner {
                                 let reason = if approved {
                                     String::new()
                                 } else {
-                                    format!("用户取消执行：{}。", panel.tool)
+                                    omnicrawl_controllers::approval::user_cancelled_reason(
+                                        &panel.tool,
+                                    )
                                 };
+                                if !approved {
+                                    // 人工拒绝的 MCP 调用落审计（与 Python 同粒度）。
+                                    host::record_mcp_denial(
+                                        &self.registry,
+                                        &panel.tool,
+                                        &arguments,
+                                        &reason,
+                                    );
+                                }
                                 self.plugin_approval_after(&panel.tool, approved, &reason);
                                 decided[index] = true;
                                 pending.decide(
@@ -762,6 +796,13 @@ impl TurnRunner {
                         // 审查只在 `review` 模式且判定为 Review 的调用上发生（删除类、
                         // 下载并执行类、高风险 Git）；其余模式下它是空操作。
                         if let Err(reason) = self.review_gate(call, facts) {
+                            // 审查拒绝与人工拒绝同属「未批准」：同样落 MCP 审计。
+                            host::record_mcp_denial(
+                                &self.registry,
+                                &call.name,
+                                &call.arguments,
+                                &reason,
+                            );
                             pending.record_result(*index, host::denied_with_reason(&reason), None);
                             self.plugin_approval_after(&call.name, false, &reason);
                             decided[*index] = true;
@@ -811,7 +852,7 @@ impl TurnRunner {
             }));
         }
         let _ = paused;
-        pending.observations(self.options.native_vision)
+        pending.observations(self.options.attach_vision_images)
     }
 
     /// 本批调用一个一线程并发执行，按批次绝对截止时间收口未完成的调用。

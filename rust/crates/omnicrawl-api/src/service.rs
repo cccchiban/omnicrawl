@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use axum::http::StatusCode;
 use omnicrawl_config::core::context::detect_project_context;
 use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
+use omnicrawl_config::core::settings::load_feature_enabled;
 use omnicrawl_config::features::agent_workspace::load_agent_workspace_config;
 use omnicrawl_config::features::approval::{
     load_approval_mode, APPROVAL_MODE_AUTO, APPROVAL_MODE_REVIEW,
@@ -23,12 +24,13 @@ use omnicrawl_config::models::model_catalog::{
     CatalogRequest, DiscoveryCache, ModelOption, MODEL_LIST_TIMEOUT_SECONDS,
 };
 use omnicrawl_controllers::tool_args::public_tool_arguments;
+use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
 use omnicrawl_extensions::skill::SkillManager;
 use omnicrawl_host::approval::ApprovalMode;
 use omnicrawl_host::kernel::KernelClient;
 use omnicrawl_host::plugins::PluginHost;
 use omnicrawl_host::tools::monitor::{MonitorManager, MonitorPollView, MonitorTaskView};
-use omnicrawl_host::tools::RegistryOptions;
+use omnicrawl_host::tools::{MemoryOptions, RegistryOptions};
 use omnicrawl_host::turn::{Interactor, RunnerOptions, TurnControl, TurnError, TurnRunner};
 use omnicrawl_ipc::bridge::{
     HostEvent, KernelModelConfig, KernelSessionConfig, SessionModelSettings, SessionSettingsParams,
@@ -85,6 +87,14 @@ const RUN_FAILED_MESSAGE: &str = "生成任务失败。";
 const RUN_CANCELLED_MESSAGE: &str = "用户取消生成。";
 /// 未配置系统提示词时的兜底文本（与 TUI 的默认值同源；完整提示词的组装见 README）。
 const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 助手，回答保持简洁。";
+
+/// MCP 热更新的结果：连接诊断、重建后工具表规模与「是否要重启才生效」。
+pub struct McpReload {
+    pub diagnostics: Vec<String>,
+    pub tool_count: usize,
+    /// 嵌入模式（`with_runner`）没有可重建的运行器，只能等下次启动装配新配置。
+    pub requires_restart: bool,
+}
 
 /// 服务启动所需的固定输入。
 pub struct ServiceOptions {
@@ -165,6 +175,11 @@ pub struct AgentService {
     subagent_feed: SubagentFeed,
     /// 服务是否已关闭（事件泵据此退出）。
     closed: AtomicBool,
+    /// MCP 管理器句柄：`PUT /settings/mcp` 会整体换掉它，`/mcp` 状态与工具表共用同一份。
+    ///
+    /// 放在 `ServiceOptions` 之外是因为设置写端点在 `&self` 上运行，而选项结构在装配
+    /// 完成后不再可变；这里只承载「当前是哪份配置」，不改启动输入。
+    mcp: Mutex<Option<Arc<McpClientManager>>>,
     options: ServiceOptions,
 }
 
@@ -317,6 +332,7 @@ impl AgentService {
         ));
         let model = options.model.model.clone();
         let workspace = options.workspace_root.clone();
+        let mcp = options.mcp.clone();
         Self {
             store,
             runner: Mutex::new(Some(runner)),
@@ -327,6 +343,7 @@ impl AgentService {
             spawner: Mutex::new(None),
             subagent_feed: SubagentFeed::new(),
             closed: AtomicBool::new(false),
+            mcp: Mutex::new(mcp),
             options,
         }
     }
@@ -1151,6 +1168,8 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
         context_window_tokens: llm.context_window_tokens,
         prompt_cache_capable: false,
         prompt_cache_identity: Default::default(),
+        // 原生视觉的优先级由内核判定（`route_image_result` 同顺序）：为真时不走代理。
+        native_vision: llm.native_vision.unwrap_or(false),
         request_retry_count: llm.request_retry_count.max(1) as u32,
     };
     let mut options = ServiceOptions::new(workspace.clone(), model);
@@ -1166,6 +1185,19 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
     // 后台任务管理器同理：工具表与 `/monitors` 必须看到同一批任务。
     let monitors = MonitorManager::new(options.workspace_root.clone());
     options.registry_options.monitors = Some(monitors.clone());
+    // 记忆工具整组进出：与 Python `entry.py` 的 `load_feature_enabled("memory", default=True)`
+    // 同源，缺省开启（本处早先没有设置，`RegistryOptions::default()` 让记忆整组永远不进表，
+    // 而 `/settings` 的 `features.memory` 又报 true——两侧会自相矛盾）。
+    // 作用域对齐 Python 的 `_create_memory_stores`：项目级与用户级常开；会话级不开——
+    // 这里的会话每个 run 现开现关，`RegistryOptions` 是进程级共享的，塞不进某个 run 的 session id。
+    options.registry_options.memory_enabled =
+        load_feature_enabled(env, "memory", true, None, None).unwrap_or(true);
+    options.registry_options.memory = MemoryOptions {
+        project_enabled: true,
+        user_enabled: true,
+        session_enabled: false,
+        ..MemoryOptions::default()
+    };
     options.monitors = Some(monitors);
     // 插件运行期：即使总开关关着也建句柄，设置页才能在运行期把它打开。
     options.plugins = Some(Arc::new(PluginHost::from_environment(
@@ -1246,7 +1278,9 @@ fn runner_options(options: &ServiceOptions) -> RunnerOptions {
         approval: options.approval,
         command_timeout_seconds: options.command_timeout_seconds,
         tool_timeout_seconds: options.tool_timeout_seconds,
-        native_vision: options.native_vision,
+        // 交不交图与「内核走不走代理」是两件事：原生视觉或 `[vision]` 代理任一可用都要把
+        // 图片交出去，内核再按优先级决定直送主模型还是交给代理。
+        attach_vision_images: options.native_vision || vision_proxy_configured(&options.env),
         client_name: "omnicrawl-api".to_string(),
         plugins: options.plugins.clone(),
         // 审查运行期与 `options_from_process` 装配的那份同源（嵌入与测试可直接填 `None`）。
@@ -1292,11 +1326,17 @@ impl AgentService {
 
     /// MCP 子系统是否启用（管理器缺失按未启用处理）。
     pub fn mcp_enabled(&self) -> bool {
-        self.options
-            .mcp
-            .as_ref()
+        self.mcp_handle()
             .map(|manager| manager.enabled())
             .unwrap_or(false)
+    }
+
+    /// 当前 MCP 管理器句柄：装配时那份，或设置写入后热更新换上的那份。
+    pub fn mcp_handle(&self) -> Option<Arc<McpClientManager>> {
+        match self.mcp.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     /// 审批模式取 `config.toml` 当前值；读不到时退到启动时解析的结果。
@@ -2043,10 +2083,98 @@ impl AgentService {
 
     /// `GET /mcp`：管理器缺失时报「未接入」，否则用管理器自己的状态摘要。
     pub fn mcp_status(&self) -> String {
-        match self.options.mcp.as_ref() {
+        match self.mcp_handle() {
             Some(manager) => manager.format_status(),
             None => "MCP 未接入：配置读取失败已跳过。".to_string(),
         }
+    }
+
+    /// `PUT /settings/mcp` 的运行期一半：按新配置重连 MCP，并把新工具表推给内核。
+    ///
+    /// 与 Python `agent.apply_mcp_config` 同义（那里 Agent 就在本进程，改配置即重连），
+    /// 差别是这里工具表属于宿主、由 `TurnRunner` 持有，所以要多一步「重建工具表 + 把新
+    /// 声明下发给内核」。会话不受影响：换的是工具面，不动模型上下文。
+    ///
+    /// 回合在途时按 `try_lock` 快速失败（与 `apply_session_settings` 同一理由）；嵌入模式
+    /// （`with_runner`）没有可重建的运行器，此时只换状态句柄并回报「需重启生效」。
+    pub fn reload_mcp(&self, config: omnicrawl_mcp::McpConfig) -> Result<McpReload, ApiError> {
+        let workspace = self.workspace_root();
+        let manager = Arc::new(McpClientManager::new(config, workspace));
+        manager.discover();
+        let diagnostics: Vec<String> = manager
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| {
+                let server = diagnostic.server_name.clone().unwrap_or_default();
+                format!(
+                    "[{}] {}: {}",
+                    diagnostic.severity, server, diagnostic.message
+                )
+            })
+            .collect();
+        let tool_count = manager.tools().len();
+
+        let mut guard = self
+            .runner
+            .try_lock()
+            .map_err(|_| kernel_busy("生成任务进行中，MCP 设置要等回合结束后才能生效。"))?;
+        let mut requires_restart = true;
+        if let Some(runner) = guard.as_mut() {
+            let mut registry_options = self.options.registry_options.clone();
+            registry_options.mcp = Some(Arc::clone(&manager));
+            runner
+                .rebuild_registry(&registry_options)
+                .map_err(|message| {
+                    ApiError::new(
+                        "MCP_RUNTIME_FAILED",
+                        format!("重建工具表失败：{message}"),
+                        StatusCode::BAD_GATEWAY,
+                        None,
+                    )
+                })?;
+            // 新声明整体替换内核侧的工具表：模型下一轮才看得到新增/消失的 MCP 能力。
+            let declarations = runner.registry().declarations();
+            let params = SessionSettingsParams {
+                model: Some(Box::new(SessionModelSettings {
+                    tools: Some(declarations),
+                    ..SessionModelSettings::default()
+                })),
+                compaction: None,
+            };
+            runner
+                .apply_session_settings(params, &mut |_| {})
+                .map_err(|message| {
+                    ApiError::new(
+                        "MCP_RUNTIME_FAILED",
+                        format!("下发工具声明失败：{message}"),
+                        StatusCode::BAD_GATEWAY,
+                        None,
+                    )
+                })?;
+            requires_restart = false;
+        }
+        drop(guard);
+
+        // 旧连接先关（先建新的、再关旧的，失败路径上不会出现「无 MCP」窗口）。
+        if let Some(previous) = self
+            .mcp
+            .lock()
+            .map(|mut guard| guard.replace(Arc::clone(&manager)))
+            .unwrap_or(None)
+        {
+            previous.close();
+        }
+        // 下一次内核重起（切会话 / 切工作区）也要用新配置，否则会被旧句柄覆盖回去。
+        if let Ok(mut spawner) = self.spawner.lock() {
+            if let Some(spawner) = spawner.as_mut() {
+                spawner.registry_options.mcp = Some(manager);
+            }
+        }
+        Ok(McpReload {
+            diagnostics,
+            tool_count,
+            requires_restart,
+        })
     }
 
     /// `POST /memory/clean`：清理项目级、当前会话级与用户级的过期记忆。

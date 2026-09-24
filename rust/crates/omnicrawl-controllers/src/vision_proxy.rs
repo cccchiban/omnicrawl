@@ -2,7 +2,9 @@
 //!
 //! 真正的模型调用在内核侧（`omnicrawl-cli/src/vision_proxy.rs`）：这里只放能脱离运行时验证的部分。
 
+use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::models::llm::ActiveModelRef;
+use omnicrawl_config::models::vision::load_vision_configuration;
 use omnicrawl_core::AgentLoopObservation;
 use serde_json::{json, Value};
 
@@ -95,7 +97,8 @@ pub fn vision_request_message(content: Value) -> Value {
 /// 观察里的视觉观察正文：宿主注入的 user 消息，正文是数组且含 `image_url` 部件。
 ///
 /// 宿主注入图片时用的就是这条形状（`omnicrawl-tui` 的 `vision_observation_messages`），
-/// 内核据此判断「这批观察要不要交给独立视觉模型」，不额外加协议字段。
+/// 内核据此判断「这批观察带不带图」。图片的去向不靠这条形状决定：原生视觉与独立视觉代理
+/// 的优先级由 `initialize.model.native_vision` 加上 `[vision]` 配置共同决定。
 pub fn vision_followup_content(observation: &AgentLoopObservation) -> Option<Value> {
     observation.followup_messages.iter().find_map(|message| {
         if message.get("role").and_then(Value::as_str) != Some("user") {
@@ -112,6 +115,32 @@ pub fn vision_followup_content(observation: &AgentLoopObservation) -> Option<Val
     })
 }
 
+/// `[vision]` 里是否配置了可用的视觉模型代理（已启用且有候选模型）。
+///
+/// 宿主据此决定要不要把图片交给内核（`native_vision` 为假时仍可能要走代理），内核据此
+/// 决定要不要装配代理——两边必须是同一个判定，否则会出现「交了图却没人处理」。
+pub fn vision_proxy_configured(env: &ConfigEnvironment) -> bool {
+    load_vision_configuration(env, None)
+        .map(|config| config.enabled && !config.models.is_empty())
+        .unwrap_or(false)
+}
+
+/// 清掉带图观察的 followup，返回被清理的观察数。
+///
+/// 主模型看不懂图、代理又装配不出来时，图片不能留在请求里：Python 的 `route_image_result`
+/// 在同样条件下返回空 followup（非视觉主模型只收到图片元数据）。宿主没把图片交出来时
+/// 这里无事可做。
+pub fn strip_vision_followups(observations: &mut [AgentLoopObservation]) -> usize {
+    let mut cleared = 0;
+    for observation in observations.iter_mut() {
+        if vision_followup_content(observation).is_some() {
+            observation.followup_messages.clear();
+            cleared += 1;
+        }
+    }
+    cleared
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +155,32 @@ mod tests {
             model_id: model_id.to_string(),
             protocol: String::new(),
         }
+    }
+
+    #[test]
+    fn strips_only_image_followups() {
+        let with_image = observation(vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "看图"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ],
+        })]);
+        let text_only = observation(vec![json!({"role": "user", "content": "纯文本"})]);
+        let mut items = vec![with_image, text_only];
+
+        assert_eq!(strip_vision_followups(&mut items), 1);
+        assert!(items[0].followup_messages.is_empty(), "图片观察应被清掉");
+        assert_eq!(items[1].followup_messages.len(), 1, "纯文本观察不动");
+        // 工具消息本身（模型看得到的文本）保持不变。
+        assert_eq!(items[0].message["content"], "已读取图片");
+    }
+
+    #[test]
+    fn vision_proxy_is_unconfigured_without_a_config_file() {
+        // 隔离环境读不到 `[vision]`：按未配置处理，不 panic、不误判为可用。
+        let env = ConfigEnvironment::new("bundle", "test");
+        assert!(!vision_proxy_configured(&env));
     }
 
     #[test]

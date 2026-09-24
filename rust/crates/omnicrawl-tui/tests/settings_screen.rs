@@ -6,13 +6,14 @@
 use crossterm::event::KeyCode;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 
 use omnicrawl_tui::ui::settings::render::helpers::left_column_width;
 use omnicrawl_tui::ui::settings::{
-    ChannelRow, ChoiceKind, ContextField, FieldValue, Focus, FormKind, Pane, SettingsChange,
-    SettingsEvent, SettingsState, SettingsValues, SubagentRow, ToolSwitchRow, VisionModelRef,
+    ChannelRow, ChoiceKind, ContextField, FieldValue, Focus, FormKind, HitAction, Pane,
+    SettingsChange, SettingsEvent, SettingsState, SettingsValues, SubagentRow, ToolSwitchRow,
+    VisionModelRef,
 };
 
 const WIDTH: u16 = 100;
@@ -618,4 +619,124 @@ fn vision_page_renders_native_state_and_model_rows() {
         !screen.contains("该设置页尚未迁移到 Rust 宿主"),
         "视觉页已经迁移：{screen}"
     );
+}
+
+// ---------- 鼠标：点选与悬停 ----------
+
+/// 右栏第 `index` 个可点行在屏幕上的行号。
+///
+/// 反查渲染时记下的命中区，而不是在测试里再算一遍面板内部的布局（标题行、缩进、
+/// 窗口滚动都会有影响）。
+fn pane_row_y(state: &SettingsState, index: usize) -> u16 {
+    (0..HEIGHT)
+        .find(|row| state.hit_at(40, *row) == Some(HitAction::PaneRow(index)))
+        .unwrap_or_else(|| panic!("右栏第 {index} 行应当可点"))
+}
+
+/// 左栏第 `index` 个一级项所在的行号（同理反查）。
+fn list_row_y(state: &SettingsState, index: usize) -> u16 {
+    (0..HEIGHT)
+        .find(|row| state.hit_at(5, *row) == Some(HitAction::Row(index)))
+        .unwrap_or_else(|| panic!("左栏第 {index} 行应当可点"))
+}
+
+/// 该行是不是被悬停加亮。
+///
+/// 扫整行而不是看单格：中文标签占两列，其后一个「续格」的 `skip` 为真，刷新时会被
+/// 跳过（它本来就被宽字形覆盖），逐格断言会误报。
+fn row_is_underlined(state: &SettingsState, y: u16) -> bool {
+    let buffer = draw(state, WIDTH, HEIGHT);
+    (0..WIDTH).any(|x| {
+        buffer[(x, y)]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED)
+    })
+}
+
+#[test]
+fn left_column_click_switches_page_and_enters_the_pane() {
+    let mut state = state();
+    draw(&state, WIDTH, HEIGHT);
+    let y = list_row_y(&state, 7);
+    let action = state.hit_at(5, y).expect("左栏行应当可点");
+    assert!(state.click(action).is_none(), "切页不产出配置变更事件");
+    assert_eq!(state.selected(), 7);
+    assert_eq!(state.selected_key(), "tools");
+    assert_eq!(state.pane(), Pane::Tools);
+    assert_eq!(state.focus(), Focus::Pane, "点左栏等于 Enter，直接进右栏");
+}
+
+#[test]
+fn pane_row_click_selects_first_and_activates_on_the_same_row() {
+    let mut state = state();
+    while state.selected_key() != "tools" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    draw(&state, WIDTH, HEIGHT);
+    let y = pane_row_y(&state, 1);
+
+    let action = state.hit_at(40, y).expect("工具行应当可点");
+    assert!(
+        state.click(action).is_none(),
+        "首次点击只把选中移到该行，不能顺手把开关翻掉"
+    );
+    assert_eq!(state.tool_selected(), 1);
+
+    let event = state.click(action).expect("再点当前行等同 Enter");
+    assert!(
+        matches!(event, SettingsEvent::Apply(_)),
+        "工具开关行确认后应当产出配置变更事件"
+    );
+}
+
+#[test]
+fn dropdown_option_click_confirms_the_choice() {
+    let mut state = state();
+    while state.selected_key() != "reasoning" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    state.handle_key(KeyCode::Enter); // 展开候选
+    let options = state.dropdown_options();
+    assert!(!options.is_empty(), "推理强度页应当有候选");
+    draw(&state, WIDTH, HEIGHT);
+
+    // 浮层画在面板之上：同一个落点应当先命中候选行。
+    let (column, row) = (
+        40u16,
+        (0..HEIGHT as usize)
+            .map(|row| row as u16)
+            .find(|row| state.hit_at(40, *row) == Some(HitAction::Option(2)))
+            .expect("浮层第 3 项应当可点"),
+    );
+    let action = state.hit_at(column, row).expect("浮层候选可点");
+    let event = state.click(action).expect("选候选并确认");
+    match event {
+        SettingsEvent::Apply(SettingsChange::Reasoning { effort }) => {
+            assert_eq!(effort, "medium", "第三项应当是中档")
+        }
+        other => panic!("应当产出推理强度变更：{other:?}"),
+    }
+    // 状态机只产出事件：界面上的取值由 `App` 落盘后回填，这里不看 `choice_value()`。
+}
+
+#[test]
+fn hover_underlines_the_row_under_the_cursor() {
+    let mut state = state();
+    draw(&state, WIDTH, HEIGHT);
+    assert!(state.hover_area().is_none(), "未悬停时没有加亮行");
+
+    let y = list_row_y(&state, 2);
+    let action = state.hit_at(5, y).expect("左栏行应当可点");
+    state.set_hover(Some(action));
+    let area = state.hover_area().expect("悬停行应当有区域");
+    assert_eq!(area.y, y);
+    assert!(row_is_underlined(&state, y), "悬停行应当加下划线");
+    assert!(!row_is_underlined(&state, y - 1), "上一行不该加亮");
+    assert!(!row_is_underlined(&state, y + 1), "下一行不该加亮");
+
+    state.set_hover(None);
+    assert!(!row_is_underlined(&state, y), "光标移开后加亮应当消失");
 }

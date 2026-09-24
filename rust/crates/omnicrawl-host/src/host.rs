@@ -16,6 +16,7 @@ use omnicrawl_ipc::Id;
 use serde_json::{json, Map, Value};
 
 use crate::approval::ApprovalMode;
+use crate::tools::ToolRegistry;
 
 pub const TODO_TOOL: &str = "update_todos";
 pub const ASK_USER_TOOL: &str = "ask_user";
@@ -311,9 +312,9 @@ impl PendingBatch {
 
     /// 按模型调用顺序产出观察（整批就绪后调用）。
     ///
-    /// `native_vision` 为真时，带图片的调用会把图片作为下一条观察注入（与 Python 的
+    /// `attach_images` 为真时，带图片的调用会把图片作为下一条观察注入（与 Python 的
     /// `vision_observation_messages` 同义）；为假时不注入，图片不会进入模型请求。
-    pub fn observations(&self, native_vision: bool) -> Vec<AgentLoopObservation> {
+    pub fn observations(&self, attach_images: bool) -> Vec<AgentLoopObservation> {
         self.calls
             .iter()
             .enumerate()
@@ -322,7 +323,7 @@ impl PendingBatch {
                     .clone()
                     .unwrap_or_else(|| unavailable_result(&call.name));
                 let vision = self.vision.get(index).and_then(Option::as_ref);
-                observation_from_result(call, result, vision, native_vision)
+                observation_from_result(call, result, vision, attach_images)
             })
             .collect()
     }
@@ -407,12 +408,12 @@ pub fn observation_from_result(
     call: &ToolCall,
     result: ToolResult,
     vision: Option<&VisionPayload>,
-    native_vision: bool,
+    attach_images: bool,
 ) -> AgentLoopObservation {
     let content = result.output.clone();
     let followup_messages = match vision {
         Some(payload) => {
-            vision_observation_messages(result.ok, native_vision, &payload.prompt, &payload.images)
+            vision_observation_messages(result.ok, attach_images, &payload.prompt, &payload.images)
         }
         None => Vec::new(),
     };
@@ -455,6 +456,31 @@ pub fn panicked_result(tool: &str) -> ToolResult {
 
 pub fn denied_result(tool: &str) -> ToolResult {
     denied_with_reason(&user_cancelled_reason(tool))
+}
+
+/// 审批（人工确认或审查模型）拒绝一次调用时落一条 MCP 审计。
+///
+/// 对映 Python `_approve_tool_call` 里的
+/// `if mcp_manager is not None and tool.name in mcp_manager.registry.tools:
+/// mcp_manager.record_denied_tool_call(tool.name, arguments, reason)`。
+///
+/// 粒度刻意与 Python 对齐：只在「未批准」这条路径上调用——被插件在
+/// `tool.call.before` / `approval.before` / `execute.before` 挡下的调用在 Python 里走
+/// 提前返回，不写这条审计；非 MCP 工具与未配置 MCP 时是空操作。
+/// `reason` 用与拒绝结果同一句文案，审计记录与模型看到的观察因此一致。
+pub fn record_mcp_denial(
+    registry: &ToolRegistry,
+    tool: &str,
+    arguments: &Map<String, Value>,
+    reason: &str,
+) {
+    let Some(manager) = registry.mcp() else {
+        return;
+    };
+    if !registry.is_mcp_tool(tool) {
+        return;
+    }
+    manager.record_denied_tool_call(tool, arguments, reason);
 }
 
 /// 指定原因的拒绝结果：插件守卫在 `tool.call.before` / `approval.before` /

@@ -98,10 +98,14 @@ cd rust && cargo test -p omnicrawl-connectors
 - 飞书文件回传（`[FILE:]` 标记 → 上传 → 消息）已落地：`FeishuApi::upload_image` / `upload_file`
   与 `FileTransport` 实现，bot 在回合收尾扫描标记。Python 的 Telegram 连接器只有纯文本发送
   （`_send_message`），没有同类文件回传，因此这一侧无对应缺口。
-- `connectors/autostart.py` 的子进程自动启动与单例锁：与 TUI 生命周期绑定，等宿主侧编排
-  迁移后一并处理。
-- 飞书 SDK 的 `Content-Disposition` 文件名解析：缺文件名时回落成 `file_key`，
-  由资源类型补扩展名（`.jpg`/`.opus`/`.bin`）。
+- ~~`connectors/autostart.py` 的子进程自动启动与单例锁~~ 已落地：`src/autostart.rs`
+  （`ConnectorProcessManager`：跨进程单例锁、子进程编排、日志尾与 Windows Job Object 收尾），
+  由 `omnicrawl-entry/src/startup.rs` 在宿主启动时装配。
+- 飞书 SDK 的 `Content-Disposition` 文件名解析已落地：`download_resource` 先取响应头的
+  `filename*`（RFC 5987 扩展参数，非 ASCII 名字走这条）再取 `filename`（RFC 6266），两者都
+  拿不到才回落成 `file_key`，再由资源类型补扩展名（`.jpg`/`.opus`/`.bin`）。只取最后一个
+  路径分量，非 UTF-8 字符集与非法百分号转义一律归为「拿不到」。`HttpReply`
+  因此多了响应头（小写名存），查表大小写无关。
 - Telegram 的 HTTP 错误文案无法逐字复刻 `requests` 的异常文本，`TelegramApiError::Network`
   只保证分类与中文前缀一致；飞书侧同理（`FeishuApiError::Transport`）。
 - 飞书 `_prewarm_agent`（Agent 预热线程）：宿主构建好 Agent 后交给连接器即可，不再单独预热。

@@ -33,7 +33,7 @@ _module_file = Path(sys.modules[parse_agent_definition.__module__].__file__).res
 if not _module_file.is_relative_to(ROOT):
     raise SystemExit("加载到的不是仓库源码")
 
-TEMPLATES_DIR = ROOT / "omnicrawl/templates/subagents"
+TEMPLATES_DIR = ROOT / "rust/assets/templates/subagents"
 
 
 def outcome(callable_, *args, **kwargs):
@@ -221,7 +221,7 @@ def template_cases(normalizer: Normalizer) -> list[dict]:
         observed = outcome(parse_agent_definition, path, source="builtin")
         entry = {
             "label": path.name,
-            "file": "omnicrawl/templates/subagents/%s" % path.name,
+            "file": "rust/assets/templates/subagents/%s" % path.name,
             "ok": observed["ok"],
         }
         if observed["ok"]:

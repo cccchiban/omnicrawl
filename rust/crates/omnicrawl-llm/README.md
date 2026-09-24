@@ -228,8 +228,9 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   `discover_models`（属 adapter 注册表 / `build_runtime` 批次）；`interruptible_stream_events`
   的**机制**已抽成独立模块 `stream_reader.rs`（`omnicrawl/llm/stream_reader.py` 的移植：
   可放弃读取线程 + 按轮询窗口转发事件 + Drop 置位放弃信号），供长流消费方复用；
-  四路 Provider 运行时目前的取消仍由运行时内置的读取线程 + 50ms 轮询表达，尚未改接到该模块；
-  `stream_registry` 本身已搬，见上文模块，运行时未接线）；
+  四路 Provider 运行时的取消由运行时内置的可放弃读取线程表达（与 `stream_reader.rs` 同机制，
+  只是内联在 `runtime.rs` 里：后台线程读 SSE、消费方按 `CANCEL_POLL` 轮询、Drop 置位放弃信号），
+  并已改接 `stream_registry`，见下文「回合资源注册表」）；
   SDK 客户端级配置（`default_headers` / 客户端超时由 `ChatEndpoint` 承载）；
   `_sanitize_options` 的「provider_options 必须是对象」分支（类型系统下不可达）；
   `reasoning_effort` → `thinking` 的那个分支（Python 侧本身就是 no-op 空分支）。
@@ -247,7 +248,7 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 - **未搬**（按设计或留待后续批次）：`close()` 与 `_closed` 关闭态、能力门禁
   （`request.tools && !capabilities.tools` → `UNSUPPORTED_CAPABILITY`）、`discover_models`
   （属 adapter 注册表 / `build_runtime` 批次）、`interruptible_stream_events` 的机制已抽到
-  `stream_reader.rs`（同 Anthropic 条目），运行时尚未改接；
+  `stream_reader.rs`（同 Anthropic 条目），四路运行时都用自己的可放弃读取线程（已接 `stream_registry`）；
   `_create_gemini_client` 的
   「缺少 google-genai 依赖」分支（内核不带 SDK）、`_sanitize_options` 的
   「provider_options 必须是对象」分支（类型系统下不可达）。
@@ -284,7 +285,17 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
 
 两处已知差异：作用域是线程局部的——跨线程注册要像 Python 侧「owner 由调用线程解析」那样显式传
 `owner`（没有 `copy_context` 的等价物）；关闭动作 panic 不会被吞掉（Python 用 `except Exception`
-兜住并继续回收其余资源）。**运行时尚未接线**：内核现有的取消仍由可放弃读取线程 + 50ms 轮询表达。
+兜住并继续回收其余资源）。
+
+**运行时已接线**（`runtime.rs` 的 `StreamReader`）：每条在飞的模型流在建立时
+`register_stream`（归属取当前线程的回合作用域）、丢弃时 `unregister_stream`，关闭动作置位放弃位。
+因此取消有两个来源——sink 自己回答（`TurnSink::cancelled`，内核进程与本地 API 现有的那条路：
+取消以帧到达，同一条线程 pump）与**任一线程**按归属 `close_active_streams`
+（对应 Python 的 `close_active_streams(owner)`）；后者的消费方在下一次轮询
+（`StreamOutcome::Cancelled` → `RuntimeError::cancelled`）即返回，不必等响应体超时。
+后者是给跨线程 / 嵌入调用方准备的着力点，产品内现有的两条取消路不依赖它。
+验收见 `tests/stream_cancel_registry.rs`（3 例：跨线程取消、归属过滤是硬边界、
+无归属的流由 `None` 关闭，并钉住「回合结束后条目全部注销」）。
 
 ## 运行时管理器（`runtime_manager.rs`）
 
@@ -348,7 +359,8 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   （长度下限 + 单类开关 + 形态白名单 + 字符类混合 + 香农熵；白名单含 UUID / 十六进制 / 前缀哈希 /
   版本号 / 时间戳 / 路径 / 代码片段 / 命名链 / 词形标识符）。命中值统一走 `placeholder_for`
   分配占位符，空串 / 已脱敏（`***`）/ 整串恰为占位符的值按跳过规则处理并计数。
-  未搬：NER 语义兜底层（Python 侧可选依赖 torch + 5MB 权重，默认关闭）。
+  NER 语义兜底层已接在**最末尾**：由运行期注入（未启用时为 `None`），命中区间走同一个
+  `placeholder_for` 并计入 `ner_masked` / 计划缓存的 `ner` 阶段，见下文 NER 一节。
 
 - **编排件与一次性脱敏器**（`middleware.rs` / `oneshot.rs`）：逐消息屏蔽（文本块 / 工具调用参数 /
   工具结果 / 思考内容；system 文本、工具声明与图片块豁免）、碰撞扫描的文本收集、工具参数里
@@ -368,7 +380,8 @@ HTTP 4xx/5xx 的**响应正文**会一起交给分类阶梯（`http_status_error
   两处实现差异（语义等价）：**不复用**上一周期的掩码请求（总是重新脱敏——稳定序号索引保证同值同号，
   代价只是重复扫描）；计数分两层（周期计数在注册表里，屏蔽 / 还原计数在装饰器里）。
   逐消息屏蔽缓存与屏蔽计划缓存都已接线：历史里逐字未变的消息走 `MessageMaskMemo`（命中即复用，
-  并校验引用的序号在本周期可还原），文本重复出现时再走 `MaskPlanCache`（按指纹重放匹配计划）。
+  并校验引用的序号在本周期可还原），文本重复出现时再走 `MaskPlanCache`（按指纹重放匹配计划）；
+  旁路链路（审查模型）走同一个 `OneShotMasker`，两层可选脱敏（gitleaks / NER）同样按配置注入。
 
 gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快照 `data/gitleaks.toml`
 （与 Python 侧同名文件逐字节一致，由 `tests/gitleaks_parity.rs` 的 sha256 断言看住），按 Python 语义解析
@@ -377,9 +390,13 @@ gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快
 编译期适配里（`\Z` → `\z`；非量词的 `{` / `}` 转义），且适配只用于编译不过的模式——能原样编译的一律不动。
 出厂配置里 `gitleaks_enabled = true`，内核侧 `DesensitizationOptions.gitleaks_enabled` 默认仍为关，
 等配置层搬完再对齐出厂默认。
+旁路一次性脱敏器（`OneShotMasker`）的两层可选脱敏都由调用方注入，与 Python `oneshot.py` 一致：
+`with_gitleaks` 给 gitleaks 规则，`with_ner` 给 NER 兜底层——权重装载与池化不在本模块，
+调用方用 `build_runtime_ner_layer(&NerLayerOptions)` 拿到层（进程级抽取器池，审查请求与运行时共用同一份），
+宿主侧 `omnicrawl-host/src/review.rs` 已按 `[desensitization]` 的 `gitleaks_enabled` / `ner_enabled` 接线。
+验收见 `tests/desensitization_ner_stage.rs::oneshot_masker_uses_an_injected_ner_layer`。
 未接线：`locality` 局部化扫描（Python 侧重正则的性能优化，内核的手写匹配器没有整段回溯的开销、
-结果与全量扫描一致）、`oneshot` 旁路尚未接 gitleaks、NER 语义兜底层（`ner.rs` 前向与区间过滤
-已落地并对照，但还没接进 `mask_text` 的末尾——接线的前提是配置域给出模型路径与静默降级开关）。
+结果与全量扫描一致）。
 
 三份数据集的占位符与号牌一类「占位符形状」的字面量一律**拼接构造**（`BRACE_OPEN + MARKER + ":" + str(seq) + BRACE_CLOSE`）：
 本仓库自己就是宿主，在启用了消息脱敏的会话里写这类完整字面量会被还原成会话注册表里的原文——数据集照旧生成、
@@ -389,7 +406,14 @@ gitleaks 规则表已落地（`desensitization/gitleaks.rs`）：内嵌上游快
 ## NER 兜底层（`desensitization/ner.rs` + `ner_weights.rs`）
 
 对齐 Python `omnicrawl/llm/desensitization/ner.py`：BiLSTM-CRF 语义兜底（PER / ORG / LOC）。
-内核侧是**完整实现**，不是接口占位：
+内核侧是**完整实现**，不是接口占位；**运行期已接线**——`DesensitizationRuntime` 按
+`DesensitizationOptions.ner`（配置层的 `[desensitization].ner_*` 逐字段搬运）构建兜底层，
+未启用、权重缺失或读取失败一律静默降级为「没有这一层」（与 Python 同义：少一层兜底仍是可用的脱敏，
+报错则会让整个回合发不出请求）。权重路径按「显式配置 → `OMNICRAWL_NER_MODEL` → 随包二进制
+`data/ner_bilstm_crf.bin`」解析；抽取器按 (路径, 设备, 缓存容量) 在**进程级池**里复用，
+多个运行期（会话 / 工具表重建）共用一个实例。接线验收见 `tests/desensitization_ner_stage.rs`
+（阶段位置与计数、类型/长度过滤、计划缓存重放）与 `tests/desensitization_runtime.rs`
+（随包权重可装载、路径无效时降级）：
 
 - **纯逻辑**：句末标点切句 + 超长硬切（`split_units` / `iter_chunks`）、中文片段等长隔离、
   BIO 解码、实体过滤（类型 / 最小长度 / 中文区间 / 占位符重叠）、块级 LRU 结果缓存、
