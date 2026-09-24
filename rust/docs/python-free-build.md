@@ -336,6 +336,8 @@ node packages/cli/scripts/install-smoke.mjs
 
 ### 两个发布阻断缺陷（本轮实测发现并已修）
 
+（另有第三个属于既有缺陷、本轮一并修掉，见本节末。）
+
 - `build-host.mjs` 把资源写到 `payload/omnicrawl/...`，非 Windows 目标因此与内核文件名撞名，
   Linux/ARM 载荷根本装不出来（详见上面的资源布局）。
 - `prepare.mjs` 只把 `bin/omnicrawl.mjs` 拷进启动器包，而当前启动器静态 `import './update.mjs'`，
@@ -348,6 +350,21 @@ node packages/cli/scripts/install-smoke.mjs
 同样叫 `omnicrawl` 的 `bin` 会抢走全局 shim，`omnicrawl` 于是直接跑内核（版本只打印 `omnicrawl 0.0.1`）。
 真机实测过 registry 路径（`npm i -g omnicrawl-cli@0.2.1`）：shim 正确指向
 `node_modules/omnicrawl-cli/bin/omnicrawl.mjs`，所以这条只影响“自己手装平台包”的用法。
+
+### 第三个发布缺陷：平台包与启动器的 `bin` 撞名
+
+平台包里的内核二进制原先也声明成 `bin: { omnicrawl: bin/omnicrawl }`，而启动器同样声明
+`omnicrawl`。两者在安装树里都会生成 `node_modules/.bin` 条目，撞名时**平台包赢**：
+
+- `npm i -g omnicrawl-cli@0.2.2`（官方用法）→ `.bin/omnicrawl` 指向启动器，正常；
+- 本地前缀安装 / `npx omnicrawl-cli` → `.bin/omnicrawl` 指向内核 exe，`omnicrawl` 变成
+  直连内核（只打印 `omnicrawl 0.0.1`，然后等 `initialize`），功能看起来「坏了」。
+
+0.2.1 的平台包就是这样声明的，属于早于 0.2.2 的既有缺陷。修法：平台包的 bin 改名
+`omnicrawl-kernel`（`.bin/omnicrawl` 只归启动器，内核仍有一个显式入口），并在
+`install-smoke.mjs` 里断言 `.bin/omnicrawl` 指向 `omnicrawl-cli/bin/omnicrawl.mjs`、
+`.bin/omnicrawl-kernel` 存在——该脚本原来直接用 `node <launcher>.mjs` 跑，绕过了 `.bin`
+这一层，所以一直没有暴露。
 
 若将来 BoringSSL 在某个目标上真的编不出来，回退方案仍是把 `impersonate` 降级为
 「显式报错说明该平台不支持」（对齐 Python 未安装 `curl_cffi` 时的行为），

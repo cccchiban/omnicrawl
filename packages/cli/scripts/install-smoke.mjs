@@ -4,7 +4,15 @@
 //   node packages/cli/scripts/prepare.mjs          # 先暂存发布产物
 //   node packages/cli/scripts/install-smoke.mjs    # 选项：--keep 保留临时目录便于排查
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -70,6 +78,23 @@ try {
   for (const command of ['api', 'kernel', 'plugin']) {
     if (!help.includes(command)) fail(`--help 没有列出 ${command} 指令：\n${help}`)
   }
+
+  // .bin 层：本地安装 / npx 走的是 node_modules/.bin/omnicrawl，而不是上面那个 .mjs 路径。
+  // 平台包曾经同样声明 omnicrawl 的 bin，npm 会让它抢走这个条目，于是 `omnicrawl` 变成
+  // 直连内核（只打印 `omnicrawl 0.0.1`）——真实用户报障过，所以这里守住归属。
+  const binDir = join(app, 'node_modules', '.bin')
+  const isWindows = process.platform === 'win32'
+  const launcherBin = join(binDir, isWindows ? 'omnicrawl.cmd' : 'omnicrawl')
+  if (!existsSync(launcherBin)) fail(`安装后 .bin 里没有 omnicrawl：${launcherBin}`)
+  const binTarget = (isWindows ? readFileSync(launcherBin, 'utf8') : readlinkSync(launcherBin)).replace(
+    /\\/g,
+    '/',
+  )
+  if (!binTarget.includes('omnicrawl-cli/bin/omnicrawl.mjs')) {
+    fail(`.bin/omnicrawl 没有指向启动器，而是：${binTarget.trim()}`)
+  }
+  const kernelBin = join(binDir, isWindows ? 'omnicrawl-kernel.cmd' : 'omnicrawl-kernel')
+  if (!existsSync(kernelBin)) fail(`.bin 里缺少内核入口 omnicrawl-kernel：${kernelBin}`)
 
   // 链路闭环：默认（无参数）应真的把宿主拉起来。这里没有终端，宿主应给出提示并退 2。
   const hosted = spawnSync(process.execPath, [launcher], { encoding: 'utf8', cwd: app, input: '' })
