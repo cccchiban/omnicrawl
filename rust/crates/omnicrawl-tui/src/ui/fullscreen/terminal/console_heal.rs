@@ -12,10 +12,16 @@
 //! 一律按「未恢复」处理，不把异常抛给事件循环——Python 侧同样把这里定义为自愈
 //! 边界而非主流程。
 //!
-//! 与 Python 的一处刻意差异：Python 的 Windows 自愈要求**关掉** VT 输入
-//! （它自带 win32 驱动直接解析 `INPUT_RECORD`）；crossterm 走 VT 输入路径，
-//! 因此这里要求**打开** `ENABLE_VIRTUAL_TERMINAL_INPUT`，并额外清掉
-//! `ENABLE_QUICK_EDIT_MODE`（快速编辑模式会吞掉鼠标输入并冻结控制台）。
+//! 目标模式必须与 crossterm 自己设的值**整值一致**，这是本模块最容易写错的地方：
+//! crossterm 0.29 的 Windows 事件源走 win32 控制台记录路径（`INPUT_RECORD` 交给
+//! `handle_key_event` / `handle_mouse_event`），**不需要** VT 输入位；而且它的
+//! `EnableMouseCapture` 是把模式整体覆盖成 `0x0010 | 0x0080 | 0x0008`
+//! （`event/sys/windows.rs` 的 `ENABLE_MOUSE_MODE`）。若这里要求的目标里多出任何一个位
+//! （例如按 Python 的 VT 驱动那样要求 `ENABLE_VIRTUAL_TERMINAL_INPUT`），就会出现
+//! 「自愈补上该位 → 重发鼠标捕获又把它抹掉 → 下一秒再次判定被重置」的一秒一次自激
+//! （曾真实报障：界面上刷满「控制台输入模式被外部重置」）。
+//!
+//! 快速编辑位、回显位、行输入位、处理输入位都不在目标值里，因此同样被压掉。
 
 /// 控制台模式自愈的平台实现；非 Windows 平台是空实现。
 #[cfg(windows)]
@@ -38,7 +44,16 @@ mod platform {
     const ENABLE_MOUSE_INPUT: u32 = 0x0010;
     const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
     const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
-    const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
+    /// 「非 raw」位（回显 / 行输入 / 处理输入 / 快速编辑）：目标值里必须一个都没有。
+    const NON_RAW_MASK: u32 =
+        ENABLE_QUICK_EDIT_MODE | ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT;
+    /// crossterm `event/sys/windows.rs` 的 `ENABLE_MOUSE_MODE`：鼠标捕获时的整值目标，
+    /// 也是本模块自愈后必须落到的值（改这里等于改 crossterm 的行为，必须同步核对）。
+    const CROSSTERM_MOUSE_MODE: u32 =
+        ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT;
+    /// 编译期自证：整值目标确实压掉了那几个位（数字写错就编不过，不靠运行期测试兜）。
+    const _: () = assert!(CROSSTERM_MOUSE_MODE & NON_RAW_MASK == 0);
+    /// 输出句柄的 VT 处理位（清掉它 ANSI 序列会被当普通文本打印）。
     const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
 
     extern "system" {
@@ -47,22 +62,15 @@ mod platform {
         fn SetConsoleMode(handle: *mut c_void, mode: u32) -> i32;
     }
 
-    /// 按当前模式算出「应当具备」的输入模式。
+    /// 「健康」的输入模式：与 crossterm 鼠标捕获设的整值完全一致，因此是自愈的不动点。
     ///
-    /// 纯函数，自愈的正确性靠它兜底：保留宿主已有的其他位，只补上必需的位、
-    /// 清掉会破坏交互的位。`ENABLE_EXTENDED_FLAGS` 必须与
-    /// `ENABLE_QUICK_EDIT_MODE` 的修改同时给出，否则 Windows 会忽略快速编辑位。
-    pub fn required_input_mode(current: u32) -> u32 {
-        let required = current
-            | ENABLE_VIRTUAL_TERMINAL_INPUT
-            | ENABLE_MOUSE_INPUT
-            | ENABLE_WINDOW_INPUT
-            | ENABLE_EXTENDED_FLAGS;
-        required
-            & !(ENABLE_QUICK_EDIT_MODE
-                | ENABLE_ECHO_INPUT
-                | ENABLE_LINE_INPUT
-                | ENABLE_PROCESSED_INPUT)
+    /// 必须是**整值**而不是「在现有值上补位」：crossterm 的 `EnableMouseCapture` 会把模式
+    /// 整体覆盖成 [`CROSSTERM_MOUSE_MODE`]，只要目标里多出任何一个位（例如 VT 输入位），
+    /// 每次重发鼠标捕获都会把模式推回 `0x0098`，下一秒又被判定成「被外部重置」，形成
+    /// 一秒一次的提示刷屏。参数保留是为了让调用方与测试能表达「当前模式是什么」，
+    /// 返回值故意与它无关。
+    pub fn required_input_mode(_current: u32) -> u32 {
+        CROSSTERM_MOUSE_MODE
     }
 
     /// 读取句柄的控制台模式。
@@ -150,23 +158,22 @@ pub use platform::required_input_mode;
 mod tests {
     use super::*;
 
-    /// 自愈后的模式必须打开 VT 输入与鼠标/窗口输入，并关掉快速编辑。
-    /// crossterm 的鼠标与功能键解析全部依赖这几个位。
+    /// 自愈目标必须与 crossterm 的 `ENABLE_MOUSE_MODE` 逐位一致。
+    ///
+    /// 这条断言是防回归的关键：目标一旦多出 VT 输入位（0x0200），自愈就会和
+    /// crossterm 的鼠标捕获互相覆盖，界面上会刷满「控制台输入模式被外部重置」。
     #[test]
     #[cfg(windows)]
-    fn required_mode_enables_vt_and_mouse_input() {
-        let current = 0x0000_0001 | 0x0040; // PROCESSED_INPUT | QUICK_EDIT
-        let required = required_input_mode(current);
-        assert_eq!(required & 0x0200, 0x0200, "VT 输入必须打开");
-        assert_eq!(required & 0x0010, 0x0010, "鼠标输入必须打开");
-        assert_eq!(required & 0x0008, 0x0008, "窗口输入必须打开");
-        assert_eq!(required & 0x0080, 0x0080, "扩展标志必须打开");
+    fn required_mode_matches_crossterm_mouse_mode() {
+        // 数值抄自 crossterm 0.29 `event/sys/windows.rs` 的 ENABLE_MOUSE_MODE。
+        const EXPECTED: u32 = 0x0010 | 0x0080 | 0x0008;
+        let required = required_input_mode(0x0001 | 0x0040); // 任意「被重置」的当前值
+        assert_eq!(required, EXPECTED, "目标值必须等于 crossterm 的鼠标捕获模式");
+        assert_eq!(required & 0x0200, 0, "不得要求 VT 输入位（crossterm 会覆盖掉它）");
+        assert_eq!(required & 0x0001, 0, "处理输入必须关闭");
+        assert_eq!(required & 0x0004, 0, "回显必须关闭");
+        assert_eq!(required & 0x0002, 0, "行输入必须关闭");
         assert_eq!(required & 0x0040, 0, "快速编辑必须关闭");
-        assert_eq!(
-            required & 0x0001,
-            0,
-            "处理输入必须关闭，否则 Ctrl+C 会被系统吞掉"
-        );
     }
 
     /// 模式已经是目标值时自愈必须判定为「无需改动」，避免每周期都重设一次。
@@ -174,11 +181,8 @@ mod tests {
     #[cfg(windows)]
     fn already_healthy_mode_is_not_touched() {
         let healthy = required_input_mode(0x0200);
-        assert_eq!(
-            required_input_mode(healthy),
-            healthy,
-            "已健康的模式是自愈不动点"
-        );
+        assert_eq!(required_input_mode(healthy), healthy, "已健康的模式是自愈不动点");
+        assert_eq!(healthy, 0x0098, "健康值就是 crossterm 鼠标捕获后的值");
     }
 
     /// 非 Windows 平台没有可恢复的模式。

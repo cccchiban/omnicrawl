@@ -44,6 +44,8 @@ const SPLASH_HOLD_AFTER_DONE_SECONDS: f64 = 0.5;
 /// 控制台输入模式自愈的核对间隔：锁屏/息屏恢复与工具子进程改写都在秒级被发现即可，
 /// 又不至于每帧都去问一次控制台（对映 Python 侧的周期看门狗）。
 const CONSOLE_HEAL_INTERVAL: Duration = Duration::from_secs(1);
+/// 自愈提示的最小间隔：恢复本身照常做，只是不再每次都往屏幕上写一行。
+const NOTICE_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
 fn main() -> ExitCode {
     match run() {
@@ -180,7 +182,7 @@ fn event_loop(
         if app.quit {
             return Ok(());
         }
-        if guard.heal_if_needed(Instant::now()) {
+        if guard.heal_if_needed(Instant::now()) && guard.notice_due(Instant::now()) {
             eprintln!("[tui] 控制台输入模式被外部重置，已恢复鼠标与键盘协议。");
         }
         if event::poll(POLL_INTERVAL).map_err(|error| format!("读取终端事件失败：{error}"))?
@@ -200,9 +202,22 @@ fn event_loop(
 /// `_recover_stale_mouse_interaction` 周期看门狗）。
 struct TerminalGuard {
     last_heal: Instant,
+    /// 上一次向用户提示自愈的时间；一分钟内的重复恢复只恢复、不再刷屏。
+    last_notice: Option<Instant>,
 }
 
 impl TerminalGuard {
+    /// 是否该向用户提示这次自愈（同一分钟内的重复恢复只提示一次）。
+    fn notice_due(&mut self, now: Instant) -> bool {
+        if let Some(last) = self.last_notice {
+            if now.saturating_duration_since(last) < NOTICE_MIN_INTERVAL {
+                return false;
+            }
+        }
+        self.last_notice = Some(now);
+        true
+    }
+
     fn start() -> Result<Self, String> {
         enable_raw_mode().map_err(|error| format!("进入原始模式失败：{error}"))?;
         let mut out = stdout();
@@ -216,6 +231,7 @@ impl TerminalGuard {
         .map_err(|error| format!("切换备用屏幕失败：{error}"))?;
         Ok(Self {
             last_heal: Instant::now(),
+            last_notice: None,
         })
     }
 
@@ -230,6 +246,8 @@ impl TerminalGuard {
         }
         // 控制台模式被系统重置后不会再产生可识别的 AppFocus，必须主动重发
         // 鼠标与焦点报告序列，否则「模式恢复了但事件依旧不来」。
+        // （重发鼠标捕获会把模式整值设回 crossterm 的目标值，与自愈目标一致，
+        // 不再互相覆盖——两者若不一致就会一秒一次地互相判定为「被重置」。）
         let mut out = stdout();
         let _ = execute!(out, EnableMouseCapture, EnableFocusChange);
         true

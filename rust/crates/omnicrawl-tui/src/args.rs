@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::models::llm::load_llm_config;
+
 /// 阶段一的默认系统提示词；给了 `--system-prompt` 或环境变量时以它们为准。
 const DEFAULT_SYSTEM_PROMPT: &str = "你是 OmniCrawl 助手，回答保持简洁。";
 
@@ -79,7 +82,8 @@ pub const USAGE: &str = "\
 
 选项：
   --kernel <路径>          内核可执行文件
-  --model <名称>           模型名（默认 $OMNICRAWL_MODEL / $OPENAI_MODEL）
+  --model <名称>           模型名（默认 $OMNICRAWL_MODEL / $OPENAI_MODEL，
+                           再退回 config.toml 里的当前模型）
   --base-url <地址>        模型接口基地址（默认 $OPENAI_BASE_URL）
   --api-key-env <变量名>   存放凭据的环境变量名（默认 OPENAI_API_KEY）
   --system-prompt <文本>   系统提示词
@@ -105,6 +109,17 @@ pub fn parse(
     args: &[String],
     env: &dyn Fn(&str) -> Option<String>,
     exe_dir: &Path,
+) -> Result<Parsed, String> {
+    parse_with(args, env, exe_dir, &configured_model)
+}
+
+/// [`parse`] 的实现。模型名的最后一级回退（读 config.toml）也作为参数注入：
+/// 测试才能在不依赖开发机真实配置的前提下覆盖「配置里也没有模型」这一分支。
+fn parse_with(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+    exe_dir: &Path,
+    configured: &dyn Fn() -> Result<String, String>,
 ) -> Result<Parsed, String> {
     let mut kernel: Option<PathBuf> = None;
     let mut model: Option<String> = None;
@@ -204,12 +219,24 @@ pub fn parse(
         index += 1;
     }
 
-    let model = model
+    // 模型名来源顺序：`--model` → `OMNICRAWL_MODEL` → `OPENAI_MODEL` → config.toml 的当前模型。
+    // 最后一段是对齐 Python 的关键（`config/models/llm.py` 的
+    // `model=_read_required_config_text(llm_section, "model", "OPENAI_MODEL")`：
+    // 模型是配置项，环境变量只是回退）；Rust 侧原来只认前三级，配置里明明配好了
+    // `[llm.active_model]` 也必须再敲一遍 `--model` 才能启动。
+    let model = match model
         .or_else(|| non_empty(env("OMNICRAWL_MODEL")))
         .or_else(|| non_empty(env("OPENAI_MODEL")))
-        .ok_or_else(|| {
-            "--model 未给出，且环境变量 OMNICRAWL_MODEL / OPENAI_MODEL 都是空的。".to_string()
-        })?;
+    {
+        Some(model) => model,
+        None => configured().map_err(|error| {
+            format!(
+                "--model 未给出，环境变量 OMNICRAWL_MODEL / OPENAI_MODEL 也是空的，\
+且从 config.toml 取模型失败：{error}\
+可在 config.toml 中配置模型，或设置 OPENAI_MODEL 切换。"
+            )
+        })?,
+    };
 
     let disabled_for_models: Vec<String> = non_empty(env("OMNICRAWL_ADVISOR_DISABLED_FOR_MODELS"))
         .map(|value| {
@@ -314,6 +341,22 @@ fn take_value(args: &[String], index: &mut usize, flag: &str) -> Result<String, 
         .ok_or_else(|| format!("{flag} 缺少取值"))
 }
 
+/// 从配置里取当前模型名；只负责说清「为什么取不到」，面向用户的引导语由
+/// [`parse_with`] 统一追加（这样三处都缺模型时错误里一定同时点到环境变量与配置）。
+///
+/// 走的就是界面与内核共用的那条配置链（`load_llm_config` 内部按
+/// `[llm.active_model]` / `[llm] model` / models.toml 解析），因此
+/// 「TUI 里选中的模型」与「启动时用的模型」不会出现两套口径。
+fn configured_model() -> Result<String, String> {
+    let environment = ConfigEnvironment::from_process();
+    let config = load_llm_config(&environment).map_err(|error| error.to_string())?;
+    let model = config.model.trim().to_string();
+    if model.is_empty() {
+        return Err("config.toml 里没有可用的模型".to_string());
+    }
+    Ok(model)
+}
+
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
@@ -392,9 +435,16 @@ mod tests {
         assert_eq!(cli.api_key_env, "CLI_KEY");
     }
 
+    /// 测试默认的模型回退：配置里没有模型（真实配置属于开发机状态，不能进断言）。
+    fn no_configured_model() -> Result<String, String> {
+        Err("测试：config.toml 里没有模型。".to_string())
+    }
+
     fn options(args: &[&str], env: &dyn Fn(&str) -> Option<String>) -> Options {
         let args: Vec<String> = args.iter().map(|value| value.to_string()).collect();
-        match parse(&args, env, Path::new("C:/tools")).expect("参数应能解析") {
+        match parse_with(&args, env, Path::new("C:/tools"), &no_configured_model)
+            .expect("参数应能解析")
+        {
             Parsed::Run(options) => *options,
             other => panic!("期望运行配置，拿到 {other:?}"),
         }
@@ -441,13 +491,33 @@ mod tests {
         assert_eq!(options.context_window_tokens, None);
     }
 
+    /// 命令行、环境变量、配置三处都没有模型时才是错误（Python 同口径）。
     #[test]
-    fn missing_model_is_an_error() {
-        let error = parse(&[], &no_env, Path::new("C:/tools")).expect_err("缺少模型名应报错");
+    fn missing_model_everywhere_is_an_error() {
+        let error = parse_with(
+            &[],
+            &no_env,
+            Path::new("C:/tools"),
+            &no_configured_model,
+        )
+        .expect_err("三处都没有模型名应报错");
         assert!(
             error.contains("OMNICRAWL_MODEL"),
             "错误应指出可用的环境变量：{error}"
         );
+        assert!(error.contains("config.toml"), "错误应指出可改配置：{error}");
+    }
+
+    /// 命令行与环境变量都没有时，模型名从 config.toml 的当前模型来（对齐 Python）。
+    #[test]
+    fn config_supplies_model_when_no_flag_or_env() {
+        let configured = || Ok("config-model".to_string());
+        match parse_with(&[], &no_env, Path::new("C:/tools"), &configured)
+            .expect("配置里有模型就应该能启动")
+        {
+            Parsed::Run(options) => assert_eq!(options.model, "config-model"),
+            other => panic!("期望运行配置，拿到 {other:?}"),
+        }
     }
 
     #[test]

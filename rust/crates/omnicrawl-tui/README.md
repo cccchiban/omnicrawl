@@ -79,7 +79,7 @@ cargo run -p omnicrawl-tui -- --model deepseek-v4-flash --session-root ../.agent
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--kernel <路径>` | `$OMNICRAWL_BINARY` → 同目录 `omnicrawl` → PATH | 内核可执行文件 |
-| `--model <名称>` | `$OMNICRAWL_MODEL` / `$OPENAI_MODEL` | 必填 |
+| `--model <名称>` | `$OMNICRAWL_MODEL` / `$OPENAI_MODEL` → config.toml 的当前模型 | 命令行与环境变量都没有时退回配置（`[llm.active_model]` / `[llm] model`，对齐 Python 的读配置语义）；三处都没有才报错 |
 | `--base-url <地址>` | `$OPENAI_BASE_URL` | 模型接口基地址 |
 | `--api-key-env <变量名>` | `OPENAI_API_KEY` | 凭据只给环境变量名，不进帧 |
 | `--session-root <目录>` | 空 | 给了就让内核自己持有会话（转录与压缩） |
@@ -192,13 +192,18 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 | `src/ui/queue.rs` | `status/indicators.py` 的 `PendingQueue` / `QueueDelete` / `QueueToggle` | 排队预览条（标题 + FIFO 摘要行 + 行尾 `[ DELETE ]` 热区 + 展开/收起提示行）；行数、摘要、行序、命中区与展开关卡都复用对映层纯函数 |
 | `src/ui/conversation.rs` | `rendering/widgets.py` 的 `ToolDisclosure` / `ReasoningDisclosure` 点击 | 每条显示行携带 `LineHit`（提示行 / 卡片 / 思考段）；`collapsed_body` 按「有效行」首尾各 2 行采样，提示行文案 `点击展开 N 行`；`hit_test` 按窗口起止下标把区内行号换算成绝对行号 |
 | `src/ui/hud.rs` | `status/hud.py` 的内容驱动分段 | 不再用固定列宽：分段贴齐、超长值 `compact_hud_value` 截断、窄屏逐段收缩（版本号优先保留），任何宽度都恰好填满一行 |
-| `src/ui/fullscreen/terminal/console_heal.rs` | `terminal/handling.py` 的 `_restore_windows_vt_input_mode_if_needed` | 控制台模式自愈（只声明 `GetStdHandle`/`GetConsoleMode`/`SetConsoleMode`，不引入 `windows-sys` 到 TUI） |
+| `src/ui/fullscreen/terminal/console_heal.rs` | `terminal/handling.py` 的 `_restore_windows_vt_input_mode_if_needed` | 控制台模式自愈（只声明 `GetStdHandle`/`GetConsoleMode`/`SetConsoleMode`，不引入 `windows-sys` 到 TUI）；目标值是 crossterm 鼠标捕获的整值 `0x0098`，不是 Python 的 VT 输入位 |
 | `src/main.rs` | `terminal/handling.py` 的周期看门狗 | 切备用屏幕时开鼠标与焦点报告（`Drop` 里关掉），每秒核对一次控制台模式，恢复后重发协议序列；每帧把终端区域交给 `App::set_viewport` 供命中判定 |
 | `src/ui/mod.rs` | | `ui::layout` + `UiAreas`：渲染与鼠标命中共用同一套区域计算 |
 
-终端模式自愈与 Python 的一处刻意差异：Python 的 Windows 自愈要求**关掉** VT 输入（它自带 win32 驱动直接解析 `INPUT_RECORD`）；
-本 crate 走 crossterm 的 VT 输入路径，因此要求**打开** `ENABLE_VIRTUAL_TERMINAL_INPUT`，并额外清掉 `ENABLE_QUICK_EDIT_MODE`
-（快速编辑会吃掉鼠标输入并冻结控制台）。轮询间隔 1 秒；Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗口收到工具结束时刻。
+终端模式自愈与 Python 的**必守差异**：目标模式必须与 crossterm 自己设的值整值一致。crossterm 0.29 的 Windows 事件源走
+win32 控制台记录路径（`INPUT_RECORD` 交给 `handle_key_event` / `handle_mouse_event`），**不需要** VT 输入位；它的
+`EnableMouseCapture` 是把模式整体覆盖成 `0x0010 | 0x0080 | 0x0008`（`ENABLE_MOUSE_MODE` = `0x0098`）。
+Python 侧要求 `ENABLE_VIRTUAL_TERMINAL_INPUT` 是因为那是 Textual 的 VT 驱动——照抄到 crossterm 上会让自愈与鼠标捕获
+互相覆盖：自愈补 VT 位 → 重发鼠标捕获又抹掉 → 下一秒再次判定「被外部重置」，界面上刷满提示（曾真实报障）。
+因此这里的目标值就是 `0x0098`（顺带压掉了快速编辑/回显/行输入/处理输入位），并有编译期断言与单测锁住它。
+轮询间隔 1 秒；提示另做限流（`NOTICE_MIN_INTERVAL` 一分钟内只提示一次），恢复本身照常执行。
+Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗口收到工具结束时刻。
 
 已知差异：
 
@@ -433,8 +438,8 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    （模型、模型渠道、上下文、工具、推理强度、思考显示、记忆、插件、顾问、工具输出压缩、视觉、
    图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务、MCP、通过对话修改设置）；
 6. ~~Windows 输入自愈、窄屏 HUD 弹性收缩~~（已完成）；会话与模型选择仍待做：
-   自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（开启 VT 输入/鼠标/窗口输入、
-   关掉快速编辑与处理输入，输出侧重开 VT 处理），恢复后重发鼠标与焦点报告序列；
+   自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（目标值 = crossterm 鼠标捕获的
+   `0x0098`，输出侧重开 VT 处理），恢复后重发鼠标与焦点报告序列，并对提示做一分钟限流；
    HUD 改为内容驱动的分段（超长值经 `compact_hud_value` 保留首尾），窄屏按重要性逐段收缩、
    版本号最后丢，任何宽度下都填满一行；
 7. `model.reply` 代答路径（内核自带 provider runtime 后不需要，当前显式回 `-32601`）；
