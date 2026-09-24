@@ -338,10 +338,16 @@ node packages/cli/scripts/install-smoke.mjs
 
 - `build-host.mjs` 把资源写到 `payload/omnicrawl/...`，非 Windows 目标因此与内核文件名撞名，
   Linux/ARM 载荷根本装不出来（详见上面的资源布局）。
-- `prepare.mjs` 只把 `bin/omnicrawl.mjs` 拷进启动器包，而它静态 `import './update.mjs'`，
-  装出来的启动器在加载阶段就 `ERR_MODULE_NOT_FOUND`——线上 0.2.1 的启动器包里确实只有
-  `bin/omnicrawl.mjs`（下载 tarball 核对过），即**线上启动器是坏的**；现在整目录逐个文件拷贝，
-  `install-smoke.mjs` 会把这条挡住。
+- `prepare.mjs` 只把 `bin/omnicrawl.mjs` 拷进启动器包，而当前启动器静态 `import './update.mjs'`，
+  这样发出去装完就在加载阶段 `ERR_MODULE_NOT_FOUND`。线上 0.2.1 的启动器包里同样只有
+  `bin/omnicrawl.mjs`（下载 tarball 核对过），但 0.2.1 的启动器不 import 自更新模块，所以它还跑得起来
+  ——真正的风险是**带自更新入口的 0.2.2**。现在整目录逐个文件拷贝，`install-smoke.mjs` 会把这条挡住。
+
+另外注意 `install-smoke.mjs` 的拓扑与真实安装不同：它把平台包与启动器**都**当顶级依赖装进同一个前缀，
+而真实安装里只有启动器是顶级包、平台包是它的可选依赖。两个包都作顶级包时，平台包 `package.json` 里
+同样叫 `omnicrawl` 的 `bin` 会抢走全局 shim，`omnicrawl` 于是直接跑内核（版本只打印 `omnicrawl 0.0.1`）。
+真机实测过 registry 路径（`npm i -g omnicrawl-cli@0.2.1`）：shim 正确指向
+`node_modules/omnicrawl-cli/bin/omnicrawl.mjs`，所以这条只影响“自己手装平台包”的用法。
 
 若将来 BoringSSL 在某个目标上真的编不出来，回退方案仍是把 `impersonate` 降级为
 「显式报错说明该平台不支持」（对齐 Python 未安装 `curl_cffi` 时的行为），
