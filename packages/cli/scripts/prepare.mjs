@@ -170,11 +170,15 @@ function stagePlatform(target, source, version, host) {
 function stageLauncher(version, platformNames) {
   const template = JSON.parse(readFileSync(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'))
   const cliDir = join(staging, 'cli')
+  // bin/ 下的入口不止一个：`omnicrawl.mjs` 静态 import 同目录的 `update.mjs`，只拷一个文件
+  // 会让装出来的启动器在加载阶段直接 ERR_MODULE_NOT_FOUND（0.2.1 线上包就是这样）。
+  // 逐个文件拷而不是 cpSync 目录：Node 22.22 的目录 cpSync 会静默崩掉整个进程。
+  const binSource = join(repoRoot, 'packages', 'cli', 'bin')
   mkdirSync(join(cliDir, 'bin'), { recursive: true })
-  copyFileSync(
-    join(repoRoot, 'packages', 'cli', 'bin', 'omnicrawl.mjs'),
-    join(cliDir, 'bin', 'omnicrawl.mjs'),
-  )
+  for (const entry of readdirSync(binSource, { withFileTypes: true })) {
+    if (!entry.isFile()) continue
+    copyFileSync(join(binSource, entry.name), join(cliDir, 'bin', entry.name))
+  }
   copyFileSync(join(repoRoot, 'packages', 'cli', 'README.md'), join(cliDir, 'README.md'))
   writeJson(join(cliDir, 'package.json'), {
     ...template,

@@ -244,11 +244,23 @@ LIBCLANG_PATH=<libclang 目录> cargo zigbuild --release \
 
 | 产物 | 字节 | 类型 |
 | --- | --- | --- |
-| `omnicrawl`（内核） | 7,492,464 | ELF x86-64 静态链接 |
+| `omnicrawl`（内核） | 7,508,400 | ELF x86-64 静态链接 |
 | `omnicrawl-host` | 3,247,072 | 同上 |
-| `omnicrawl-tui` | 32,606,520 | 同上 |
-| `omnicrawl-api` | 15,848,760 | 同上 |
-| `omnicrawl-mcp-server` | 846,960 | 同上 |
+| `omnicrawl-tui` | 32,665,936 | 同上 |
+| `omnicrawl-api` | 15,844,680 | 同上 |
+| `omnicrawl-mcp-server` | 844,400 | 同上 |
+| `omnicrawl`（aarch64 musl） | 6,308,944 | ELF aarch64 静态链接 |
+| `omnicrawl-tui`（aarch64 musl） | 30,523,232 | 同上 |
+| `omnicrawl-api`（aarch64 musl） | 13,578,744 | 同上 |
+| `omnicrawl-host`（aarch64 musl） | 2,783,576 | 同上 |
+| `omnicrawl-mcp-server`（aarch64 musl） | 788,448 | 同上 |
+| `omnicrawl`（armv7 musl） | 5,944,384 | ELF armv7 静态链接 |
+
+同一批代码在 Windows MSVC 上的对照（本轮实测，比早期记录小得多——`omnicrawl-tts` 的
+ONNX 运行时已随「接口合成默认」变成可选 feature，不再静态链进 TUI/API）：
+`omnicrawl.exe` 6,924,800；`omnicrawl-host.exe` 2,905,088；`omnicrawl-tui.exe` 33,595,392；
+`omnicrawl-api.exe` 16,719,872；`omnicrawl-mcp-server.exe` 605,184（合计约 58 MB，
+早期带 ort 的同一批是 104 MB）。32 位 Windows 内核 5,789,696。
 
 耗时：首次（含 BoringSSL 全量交叉编译）3 分 08 秒，增量 1 分 35 秒。
 对照：Windows x64 宿主载荷是 104 MiB，musl 反而更小（32.6 MiB 的 TUI vs 55 MiB）——
@@ -274,6 +286,62 @@ ELF 不带 PDB，且 `strip` 后不保留符号表。
 `/opt/hostedtoolcache/CodeQL`，不碰 `$AGENT_TOOLSDIRECTORY`），并用
 `CARGO_PROFILE_DEV_DEBUG=0` / `CARGO_PROFILE_TEST_DEBUG=0` 关掉 debuginfo（只影响体积，
 断言失败的行号来自源码位置元数据，不依赖 DWARF）。
+
+### 载荷内的资源布局（跨平台必须一致）
+
+宿主载荷里，资源放在 `payload/rust/assets/{extensions,templates,config-templates}`：
+
+- 这一层是运行期搜索的**第一候选**——`omnicrawl-extensions` 的 `runner_search_dirs`、
+  `omnicrawl-host` 的模板搜索、`omnicrawl-entry` 的 `locate_templates_dir` 都按
+  「可执行文件目录 → 各级祖先」逐级找 `rust/assets/<资源>`；
+- 读不到时二进制里还有编译期内嵌副本，所以最坏情况是「少一份可编辑副本」而不是起不来；
+- **不要**再往 `payload/omnicrawl/<资源>` 放（旧 Python 载荷布局）：非 Windows 目标的内核文件名
+  就叫 `omnicrawl`（没有 `.exe`），跟这个目录**同名冲突**，装配阶段直接
+  `ENOENT: mkdir .../payload/omnicrawl/extensions`。Windows 上因为内核叫 `omnicrawl.exe`
+  不冲突，`build-host.mjs` 才额外保留一份旧布局。
+
+### 本机手动发版（不跑 CI 时用）
+
+一条链路把五个平台包与启动器都装出来（本机实测全通，耗时约 15 分钟构建 + 1 分钟装配）：
+
+```bash
+# 1) Windows x64 宿主载荷 + 32 位内核：构建目录必须是纯 ASCII（见第 4 节），
+#    产物先落在自定义 target 目录，再拷回 rust/target/<三元组>/release（打包脚本按它找）。
+export CARGO_TARGET_DIR=C:/ocl-target LIBCLANG_PATH=<libclang 目录>
+export CMAKE_TOOLCHAIN_FILE="$PWD/rust/tools/btls-msvc-runtime.cmake"
+export CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc="$PWD/rust/tools/btls-msvc-runtime.cmake"
+cargo build --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-mcp --target x86_64-pc-windows-msvc
+cargo build --release -p omnicrawl-cli --target i686-pc-windows-msvc
+
+# 2) 三个 musl 内核 + 两个 musl 宿主载荷：不要设 CARGO_TARGET_DIR / CMAKE_TOOLCHAIN_FILE，
+#    产物要落到 rust/target/<三元组>/release。
+unset CARGO_TARGET_DIR CMAKE_TOOLCHAIN_FILE CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc
+export LIBCLANG_PATH=<libclang 目录>
+cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-mcp --target x86_64-unknown-linux-musl
+cargo zigbuild --release -p omnicrawl-entry -p omnicrawl-cli -p omnicrawl-tui -p omnicrawl-api -p omnicrawl-mcp --target aarch64-unknown-linux-musl
+cargo zigbuild --release -p omnicrawl-cli --target armv7-unknown-linux-musleabihf
+
+# 3) 装配载荷 → 暂存 npm 包 → 干净前缀真装一遍
+node packages/cli/scripts/build-host.mjs --target x86_64-pc-windows-msvc --skip-build
+node packages/cli/scripts/build-host.mjs --target x86_64-unknown-linux-musl  --platform linux-x64   --skip-build
+node packages/cli/scripts/build-host.mjs --target aarch64-unknown-linux-musl --platform linux-arm64 --skip-build
+node packages/cli/scripts/prepare.mjs --require-all --require-host
+node packages/cli/scripts/install-smoke.mjs
+```
+
+要点：`--platform` 是交叉装配必需的（默认取构建机平台，会把 Linux 载荷写到 `win32-x64` 键下）；
+`--skip-build` 用于产物已就位、不想再跑一遍 cargo；**打包脚本要用 Node 22.14.0**
+（`.github` 里钉的就是它）——本机 22.22.1 的目录 `cpSync` 会静默崩掉整个 node 进程（退出码 127），
+所以 `prepare.mjs` 的 `bin/` 拷贝改用逐文件 `copyFileSync`，不再依赖 `cpSync`。
+
+### 两个发布阻断缺陷（本轮实测发现并已修）
+
+- `build-host.mjs` 把资源写到 `payload/omnicrawl/...`，非 Windows 目标因此与内核文件名撞名，
+  Linux/ARM 载荷根本装不出来（详见上面的资源布局）。
+- `prepare.mjs` 只把 `bin/omnicrawl.mjs` 拷进启动器包，而它静态 `import './update.mjs'`，
+  装出来的启动器在加载阶段就 `ERR_MODULE_NOT_FOUND`——线上 0.2.1 的启动器包里确实只有
+  `bin/omnicrawl.mjs`（下载 tarball 核对过），即**线上启动器是坏的**；现在整目录逐个文件拷贝，
+  `install-smoke.mjs` 会把这条挡住。
 
 若将来 BoringSSL 在某个目标上真的编不出来，回退方案仍是把 `impersonate` 降级为
 「显式报错说明该平台不支持」（对齐 Python 未安装 `curl_cffi` 时的行为），
