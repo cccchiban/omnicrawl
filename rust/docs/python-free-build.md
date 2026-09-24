@@ -266,6 +266,15 @@ ELF 不带 PDB，且 `strip` 后不保留符号表。
 任何平台都会在载荷拷完、写 `host-meta.json` 之前以
 `ReferenceError: readFileSync is not defined` 退出，`prepare.mjs` 会因此认为缺宿主载荷。
 
+发布工作流（`.github/workflows/publish-npm.yml`）的磁盘约束（实测踩过）：平台任务里的
+`cargo test --workspace` 会为 20 个 crate 编带调试信息的测试二进制，GitHub 的 ubuntu runner
+因此写满根分区，链接阶段以 `rust-lld` SIGBUS（`ld terminated with signal 7 [Bus error]`）+
+`running out of disk space` 警告收场。现在这一步先删掉镜像自带、与本构建无关的大件
+（`/usr/share/dotnet`、`/usr/local/lib/android`、`/opt/ghc`、`/usr/local/share/boost`、
+`/opt/hostedtoolcache/CodeQL`，不碰 `$AGENT_TOOLSDIRECTORY`），并用
+`CARGO_PROFILE_DEV_DEBUG=0` / `CARGO_PROFILE_TEST_DEBUG=0` 关掉 debuginfo（只影响体积，
+断言失败的行号来自源码位置元数据，不依赖 DWARF）。
+
 若将来 BoringSSL 在某个目标上真的编不出来，回退方案仍是把 `impersonate` 降级为
 「显式报错说明该平台不支持」（对齐 Python 未安装 `curl_cffi` 时的行为），
 而不是静默退回库指纹。

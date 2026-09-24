@@ -63,6 +63,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ubuntu 镜像自带 .NET / Android SDK / GHC 等大件（合计 15 GB 上下）。本工作区的
+      # `cargo test --workspace` 会为 20 个 crate 编译带调试信息的测试二进制，实测不先腾地方
+      # 会在链接阶段把根分区写满——现象是 rust-lld 直接 SIGBUS（Bus error）并伴随 runner 的
+      # "running out of disk space" 警告。这里只删与本构建无关的大件，不碰
+      # $AGENT_TOOLSDIRECTORY（Node / Python 工具链在里面），也不动 setup-node 之后的缓存。
+      - name: 释放磁盘空间（Linux）
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -121,6 +133,11 @@ jobs:
       - name: 构建内核
         working-directory: rust
         shell: bash
+        env:
+          # 只为省盘：CI 不需要调试信息，关掉后 debug/ 的体量从数 GB 掉到 1 GB 级别；
+          # 断言失败的行号来自 panic 位置的源码元数据，不依赖 DWARF。（release 侧不受影响。）
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
         run: |
           # --no-fail-fast：一个测试目标失败也要把其余目标的失败一次性报全。
           cargo test --workspace --no-fail-fast
@@ -135,9 +152,9 @@ jobs:
         run: node packages/cli/scripts/build-host.mjs --target ${{ matrix.target }}
 
       # Linux 侧刻意不带 `--target`：宿主载荷按构建机的原生 gnu 目标构建，因此发布包依赖
-      # runner 的 glibc（Ubuntu 22.04 → glibc 2.35）。改成 musl 静态需要先解决
-      # `omnicrawl-tts → ort-sys` 没有 musl 预编译二进制的问题（构建会直接报
-      # `no prebuilt binaries available for target x86_64-unknown-linux-musl`），
+      # runner 的 glibc（Ubuntu 22.04 → glibc 2.35）。
+      # 曾经的拦路石 `omnicrawl-tts → ort-sys`（musl 无预编译二进制）已随 TTS 改接口后端而消失，
+      # x86_64 musl 的宿主载荷本机已整包构建通过；arm64 runner 上还没实测，所以这一步先保持原生目标，
       # 详见 rust/docs/python-free-build.md「发布产物的目标选择」。
       - name: 构建宿主载荷（Linux：原生目标）
         if: matrix.host && runner.os == 'Linux'
