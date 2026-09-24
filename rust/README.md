@@ -129,11 +129,12 @@ rust/
 │   ├── src/install.rs                      # npm 安装、本地包、启停、卸载、回滚、doctor
 │   ├── tests/extensions_parity.rs          # 与 Python 扩展层的对照测试（23 组）
 │   └── README.md                           # 模块分工、已知差异、尚未纳入对照的面
-├── crates/omnicrawl-tts/                   # 语音合成引擎（MOSS-TTS-Nano ONNX 推理、模型下载、播放与 CLI）
-│   ├── src/runtime.rs                      # 8 个 ONNX session、prefill/decode、local 采样分支、codec 全量/流式解码
-│   ├── src/engine.rs                       # 文本分块、音色解析、参考音频编码、逐块合成与 WAV 写出
+├── crates/omnicrawl-tts/                   # 语音合成：接口合成（默认）+ 可选 MOSS-TTS-Nano ONNX 本地推理
+│   ├── src/api.rs                          # OpenAI 兼容 audio/speech、长文本分块与波形拼接
+│   ├── src/runtime.rs                      # 8 个 ONNX session、prefill/decode、local 采样分支、codec 全量/流式解码（onnx）
+│   ├── src/engine.rs                       # 文本分块、音色解析、参考音频编码、逐块合成与 WAV 写出（onnx）
 │   ├── src/sampler.rs                      # PCG64 随机数与 top-k/top-p 采样
-│   ├── tests/tts_runtime_parity.rs         # greedy 生成帧与 Python 逐帧对照（需要模型）
+│   ├── tests/tts_runtime_parity.rs         # greedy 生成帧与 Python 逐帧对照（需要模型与 --features onnx）
 │   └── README.md                           # 模块对映、关键决策、验证与已知差异
 ├── crates/omnicrawl-mcp/                   # MCP 子系统（配置、传输、管理器、本地 Server）
 │   ├── src/config.rs                       # [mcp] 配置段、环境变量覆盖、Server/传输/风险等级校验
@@ -571,7 +572,11 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 进入真实请求路径，模式切换（`/plan`）经 `session.settings` 即时下发。
 npm 平台包的宿主载荷也换成 Rust 产物：`packages/cli/scripts/build-host.mjs` 默认走
 `cargo build --release`（宿主 + 内核 + TUI + API + MCP Server + 模板），
-`--legacy-python` 才回到旧的 PyInstaller 冻结路径。
+`--target <三元组>` 指到交叉目标并让产物目录跟三元组走（Windows 侧 CI 会传它，产物与内核同处），
+`--legacy-python` 才回到旧的 PyInstaller 冻结路径。Linux 侧宿主载荷原先只能构建原生 gnu 目标
+（`omnicrawl-tts → ort-sys` 没有 musl 预编译库）；TTS 改成「接口合成为主、本地 ONNX 为可选 feature」后
+`ort` 退出了默认依赖树，musl 宿主载荷已可在本机交叉编出（五个产物全静态链接，
+详见 `docs/python-free-build.md` 第 7 节）。
 
 `omnicrawl-llm` 与内核接线都已落地：宿主在 `initialize` 里给出可选的 `model` 块，内核就自己发模型请求，
 增量经 `turn.delta` / `turn.reasoning_delta` / `turn.token_usage` 外发，重试与文案按 `request_retry_count`
@@ -655,10 +660,18 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 状态侧已落 `hud` / `indicators`，启动画面与 `tool_labels` 也已接入；对照片为
 `tests/latex_parity.rs` + `rust/tools/gen_latex_fixture.py`（107 例转换 + 9 例分段 + 26 例快判）。
 
-已落在宿主执行层、但界面层尚未接线或展示的：`/workspace` 的运行中切换（要重建内核会话与工具表）。
-`/advisor`、`/memory:clean`、`prompt_cache_identity` 的组装与后台任务日志的界面轮询已接线
-（分别由宿主同步顾问选项并重建工具表、按三个作用域清理过期记忆、在 `handshake()` 组装七字段身份、
-按 0.5 秒节流把 `monitor` 增量追回消息流；后者见 `crates/omnicrawl-tui/src/monitor.rs`）。
+已接线的运行期能力（不再列在“未接线”里）：`/advisor`、`/memory:clean`、`/workspace` 的运行中切换
+（宿主做子 Agent 排空与 pending worktree 拦阻、在工作线程装配新工具表/MCP/提示词运行时、请内核在同一
+会话转录 `workspace_switched`，见 `crates/omnicrawl-tui/README.md`）、会话历史页的事件流回放
+（`session.events` + `AppState::replay_events`；内核按 Python 口径落 `tool_call_requested` /
+`tool_result` / `tool_call_denied`，工具卡、计划清单与 SubAgent 进度树都能按事件还原，消息投影只在
+事件流读不到时兜底）、慢命令的后台执行（`/workspace` 候选装配与 `/mcp` 状态文本在线程里跑）、
+`prompt_cache_identity` 的组装与后台任务日志的界面轮询（分别由宿主同步顾问选项并重建工具表、按三个作用域清理过期记忆、
+在 TUI 与无头运行器的 `handshake()` 组装七字段身份、按 0.5 秒节流把 `monitor` 增量追回消息流；
+后者见 `crates/omnicrawl-tui/src/monitor.rs`）。
+`prompt_cache_capable` 也不再恒为假：自定义模型条目的 `capabilities.prompt_cache` 经 `LlmConfig`
+流到 `initialize.model`；退出收尾的 `session.close.before` / `after` 已在 TUI 与本地 API 接线，
+内核在两者之间补写 `session_closed` 并丢弃空占位。
 身份指纹与 Python 逐字节对齐，见 `crates/omnicrawl-tui/README.md`。
 工具执行体本身（`read_image`、`web_search`、`fetcher`、
 `image_gen`、`tts_synthesize`、知识库、记忆、Windows 桌面、`advisor`）已在

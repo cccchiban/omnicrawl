@@ -9,7 +9,10 @@ name: 发布 npm 包
 #   environment：留空
 #   动作：勾选允许直接 npm publish（新连接默认只允许 staged publish）
 #
-# 宿主载荷是 cargo release 产物（Linux 侧 musl 静态链接、Windows 侧 MSVC），没有 CPython 运行时；
+# 内核是纯 Rust、静态链接（musl），没有 CPython 运行时；Windows 侧宿主是 MSVC 产物，
+# 由 `--target <三元组>` 指到与内核同一个 `target/<三元组>/release/`；
+# Linux 侧宿主载荷仍按构建机的原生 gnu 目标构建（因此依赖 runner 的 glibc），
+# 原因见 rust/docs/python-free-build.md「发布产物的目标选择」。
 # 但平台二进制仍只能在对应 runner 上构建（或交叉编译），因此矩阵里每个平台
 # 各自构建内核（+ 宿主）并上传暂存产物，发布任务把所有平台下载齐、跑安装冒烟后才逐一发布。
 # 没有宿主载荷的平台（32 位 Windows、armv7 嵌入式）只发内核，启动器会退回协议直连。
@@ -41,21 +44,22 @@ jobs:
             target: i686-pc-windows-msvc
             host: false
           - package: cli-linux-x64
-            # 宿主载荷是 musl 静态链接（x86_64-unknown-linux-musl），不依赖构建机的 glibc；
-            # 钉 22.04 是沿用既有构建机，理论上可换 ubuntu-latest。
+            # 内核是 musl 静态；宿主载荷是原生 gnu 目标（依赖 glibc，见构建宿主载荷那一步的注释）。
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             host: true
+            zigbuild: true
           - package: cli-linux-arm-musl
             runner: ubuntu-latest
             target: armv7-unknown-linux-musleabihf
             host: false
             zigbuild: true
           - package: cli-linux-arm64-musl
-            # 同上：musl 静态链接，不依赖构建机 glibc。
+            # 同 x64：内核 musl 静态，宿主载荷原生 gnu 目标。
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-musl
             host: true
+            zigbuild: true
     steps:
       - uses: actions/checkout@v4
 
@@ -69,22 +73,17 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
-      # armv7 的交叉工具链走 `python3 -m pip install --user ziglang`，需要 runner 上有 pip；
-      # 宿主构建本身已是纯 cargo，不再需要 Python。
+      # 三个 musl 内核目标（x86_64 / armv7 / aarch64）都走 zig 交叉，pip 装 ziglang 是它的前置；
+      # 具体理由见下面「zig 交叉工具链」一步。
       - uses: actions/setup-python@v5
         if: matrix.zigbuild
         with:
           python-version: "3.11"
 
-      - name: musl 工具链
-        if: runner.os == 'Linux' && !matrix.zigbuild
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-
       # wreq（fetcher 的浏览器指纹）静态链接 BoringSSL，其构建需要：
       #   * cmake 生成/驱动构建，perl 生成部分汇编与配置头；
       #   * libclang 供 btls-sys 的 bindgen 生成 Rust 绑定；
       #   * pkg-config 与 git 是 BoringSSL 官方文档列出的前置。
-      # armv7 用 zig 交叉编译 C/C++（见下面 cargo-zigbuild），同样需要 cmake/perl/libclang。
       - name: BoringSSL 构建依赖（Linux）
         if: runner.os == 'Linux'
         run: >-
@@ -104,8 +103,16 @@ jobs:
           echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> "$GITHUB_ENV"
           echo "CMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/rust/tools/btls-msvc-runtime.cmake" >> "$GITHUB_ENV"
 
-      # armv7 只做静态链接内核：本机没有 musl 的 arm 链接器，用 zig 交叉。
-      - name: zig 交叉工具链（armv7）
+      # musl 内核的 C/C++ 交叉工具链：pip 装 ziglang，cargo-zigbuild 作为 cargo 子命令。
+      # 不用 apt 的 `musl-tools`，因为它只满足一部分：
+      #   * 它只提供 `musl-gcc`（C）。x86_64 musl 上 cc-rs 会在 PATH 里找到 `musl-gcc` 并接受，
+      #     但 aarch64 musl 在 cc-rs 的表里是硬的 `aarch64-linux-musl` 前缀，要的是
+      #     `aarch64-linux-musl-gcc`，这个名字 musl-tools 不给；
+      #   * 它不改 linker：cargo 仍会用宿主 cc 驱动，交叉到 musl 会编不过。
+      # zig 自带 clang 与链接器驱动，cargo-zigbuild 会把它接进 CC/CXX/`-C linker`；
+      # 不要再另外设 `CC_<target>` 之类的变量，会和它冲突。
+      # `--locked` 是因为 zig 发布版与 cargo-zigbuild 的 C 编译器探测口径会变，钉住锁文件更可预期。
+      - name: zig 交叉工具链
         if: matrix.zigbuild
         run: |
           python3 -m pip install --user ziglang
@@ -123,8 +130,17 @@ jobs:
             cargo build --release -p omnicrawl-cli --target ${{ matrix.target }}
           fi
 
-      - name: 构建宿主载荷
-        if: matrix.host
+      - name: 构建宿主载荷（Windows：指到内核那个三元组）
+        if: matrix.host && runner.os == 'Windows'
+        run: node packages/cli/scripts/build-host.mjs --target ${{ matrix.target }}
+
+      # Linux 侧刻意不带 `--target`：宿主载荷按构建机的原生 gnu 目标构建，因此发布包依赖
+      # runner 的 glibc（Ubuntu 22.04 → glibc 2.35）。改成 musl 静态需要先解决
+      # `omnicrawl-tts → ort-sys` 没有 musl 预编译二进制的问题（构建会直接报
+      # `no prebuilt binaries available for target x86_64-unknown-linux-musl`），
+      # 详见 rust/docs/python-free-build.md「发布产物的目标选择」。
+      - name: 构建宿主载荷（Linux：原生目标）
+        if: matrix.host && runner.os == 'Linux'
         run: node packages/cli/scripts/build-host.mjs
 
       - name: 宿主冒烟（无终端提示）

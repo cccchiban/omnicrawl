@@ -40,7 +40,7 @@ use omnicrawl_ipc::bridge::{
     ModelResponseAfterPayload, SessionAppendParams, SessionHistoryParams, SessionListParams,
     SessionRenameParams, SessionResumeParams, SessionSettingsParams, SubagentEventPayload,
     SubagentQueryParams, SubagentRunParams, TextPayload, TokenUsagePayload, ToolBatch,
-    ToolBatchResult, TurnCancelParams, TurnFinishedPayload, TurnSubmitParams,
+    ToolBatchResult, TurnCancelParams, TurnFinishedPayload, TurnSubmitParams, WorkspaceSwitchParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
@@ -245,6 +245,28 @@ impl Conn {
         crate::settings::apply(&mut self.model, config, params)
     }
 
+    /// 退出前的会话收尾：补写 `session_closed` 并丢弃空占位。
+    ///
+    /// 宿主在发 `shutdown` 前已发 `session.close.before`、收到进程退出后发
+    /// `session.close.after`，事件补写正落在这两个钩子之间。判定与幂等性见
+    /// [`KernelSession::close`]。没有自持会话时什么都不做。
+    fn close_session(&self) {
+        if let Some(session) = self.session.as_ref() {
+            session.close();
+        }
+    }
+
+    /// 运行中切换工作区：把新根记到自持会话并转录 `workspace_switched`。
+    ///
+    /// 宿主侧已经解析并校验过路径，内核不再重复解析。`Ok(None)` 表示当前会话
+    /// 不受内核持有（与 `session.append` 回同一个错误）；`Err` 是转录失败。
+    fn switch_workspace(&mut self, path: &str) -> Result<Option<(String, String)>, String> {
+        match self.session.as_mut() {
+            Some(session) => session.switch_workspace(path).map(Some),
+            None => Ok(None),
+        }
+    }
+
     /// 完成握手：版本不匹配回 `-32001`。
     ///
     /// 回包里带上当前会话 id（`initialize.session` 没给 id 而新建时，这是宿主唯一
@@ -310,9 +332,28 @@ impl Conn {
                 self.respond(id, json!({}));
                 Some(PortFailure::Cancelled("回合已取消。".to_string()))
             }
+            (Some(id), method::WORKSPACE_SWITCH) => {
+                // 回合进行中切换：当前回合的工作区快照已拍，更新只对后续回合生效。
+                match serde_json::from_value::<WorkspaceSwitchParams>(
+                    frame.params.clone().unwrap_or_else(|| json!({})),
+                ) {
+                    Ok(params) => handle_workspace_switch(self, id, &params),
+                    Err(error) => self.respond_error(
+                        id,
+                        ErrorObject::new(
+                            error_code::INVALID_PARAMS,
+                            format!("workspace.switch 负载不符：{error}"),
+                        ),
+                    ),
+                }
+                None
+            }
             (Some(id), method::SHUTDOWN) => {
                 self.cancel.store(true, Ordering::SeqCst);
                 self.exit_requested = true;
+                // 回合进行中也能收到 shutdown：先收尾会话再回包，保证 `session_closed`
+                // 落在宿主的 before / after 钩子之间。
+                self.close_session();
                 self.respond(id, json!({}));
                 Some(PortFailure::Shutdown)
             }
@@ -347,7 +388,9 @@ impl Conn {
                 self.handshake(id, &host_version);
                 None
             }
-            (Some(id), method::SESSION_LIST) | (Some(id), method::SESSION_HISTORY) => {
+            (Some(id), method::SESSION_LIST)
+            | (Some(id), method::SESSION_HISTORY)
+            | (Some(id), method::SESSION_EVENTS) => {
                 // 只读会话查询在回合进行中也照常应答（见 [`SessionQuery`]）。
                 match SessionQuery::from_frame(frame) {
                     Ok(query) => match query.respond(self) {
@@ -396,6 +439,8 @@ impl Conn {
 struct RemoteModelPort {
     conn: Rc<RefCell<Conn>>,
     turn_id: String,
+    /// 本批 assistant 原文：代答路径下宿主回的回复同样带工具调用，事件里也要有协议字段。
+    active_assistant: ActiveAssistantSlot,
 }
 
 impl ReplySource for RemoteModelPort {
@@ -411,8 +456,10 @@ impl ReplySource for RemoteModelPort {
             .borrow_mut()
             .request(method::MODEL_REPLY, params)
             .map_err(PortFailure::into_reply_error)?;
-        serde_json::from_value(value)
-            .map_err(|error| LoopError::ReplySource(format!("宿主返回的模型回复无法解析：{error}")))
+        let reply = serde_json::from_value(value)
+            .map_err(|error| LoopError::ReplySource(format!("宿主返回的模型回复无法解析：{error}")))?;
+        remember_active_assistant(&self.active_assistant, &reply);
+        Ok(reply)
     }
 }
 
@@ -424,6 +471,8 @@ struct KernelModelPort {
     conn: Rc<RefCell<Conn>>,
     config: KernelModelConfig,
     usage: Rc<RefCell<TurnUsage>>,
+    /// 本批 assistant 原文：工具批次落 `tool_call_requested` 时取协议字段。
+    active_assistant: ActiveAssistantSlot,
 }
 
 impl ReplySource for KernelModelPort {
@@ -478,6 +527,7 @@ impl ReplySource for KernelModelPort {
                     }
                     let reply = to_agent_reply(reply)?;
                     self.notify_model_response(&reply);
+                    remember_active_assistant(&self.active_assistant, &reply);
                     return Ok(reply);
                 }
                 Err(error) => {
@@ -802,6 +852,22 @@ fn to_agent_reply(reply: ModelReply) -> Result<AgentModelReply, LoopError> {
     })
 }
 
+/// 本批「含工具调用的 assistant 原文」暂存格（Python 的 `_active_assistant_tool_message`）。
+///
+/// 模型回复带工具调用时写进来，同一批的工具批次读走——`tool_call_requested` 事件要带回
+/// `assistant_content` / 思考回传字段 / `function_name`，否则恢复后同一段历史换一种写法，
+/// 前缀缓存必然失效（Python 侧的原话）。**取走即清空**：批与批之间不残留，免得下个模型
+/// 回合的事件带上错位的 `assistant_content`。
+type ActiveAssistantSlot = Rc<RefCell<Option<Value>>>;
+
+/// 记下这一批的 assistant 协议原文；只有「带工具调用」的回复才需要暂存。
+fn remember_active_assistant(slot: &ActiveAssistantSlot, reply: &AgentModelReply) {
+    if reply.tool_calls.is_empty() || !reply.message.is_object() {
+        return;
+    }
+    *slot.borrow_mut() = Some(reply.message.clone());
+}
+
 /// 从 `initialize` 参数里取会话配置；给了就给，缺字段或形状不对按「没给」处理。
 fn session_config_of(params: Option<&Value>) -> Option<Box<KernelSessionConfig>> {
     let value = params?.get("session")?;
@@ -848,6 +914,10 @@ struct RemoteTools {
     task_hint: String,
     /// 本轮执行清单：`update_todos` 调用按内核投影写进来，供 run_guard 续跑判定读。
     todos: Option<Rc<RefCell<Vec<TodoItem>>>>,
+    /// 工具事件落盘开关与来源：`Some` 时本批写 `tool_call_requested` / `tool_result`，
+    /// 格子里是本批的 assistant 原文。**`None` 表示这批不落事件**——后台子任务批次走的就是
+    /// 这条路，对应 Python 子代理循环里的 `persist_session_events=False`。
+    active_assistant: Option<ActiveAssistantSlot>,
 }
 
 impl ToolBatchHost for RemoteTools {
@@ -878,6 +948,24 @@ impl ToolBatchHost for RemoteTools {
                 let mut tracked = todos.borrow_mut();
                 tracked.clear();
                 tracked.extend(projected);
+            }
+        }
+
+        // 工具事件落盘（Python `_normalize_tool_calls` 的落盘点）：模型每次请求工具都先
+        // 落 `tool_call_requested`，参数走公开投影、带上本批 assistant 协议字段。
+        // 后台子任务批次不落（`active_assistant` 为 None ≡ `persist_session_events=False`）；
+        // 协议原文只在本批有效，读走即清空，免得残留到下一个模型回合。
+        let persist_events = self.active_assistant.is_some();
+        if let Some(slot) = self.active_assistant.as_ref() {
+            let assistant_message = slot.borrow_mut().take();
+            let connection = self.conn.borrow();
+            if let Some(session) = connection.session.as_ref() {
+                let _ = crate::tool_events::record_requested_calls(
+                    calls,
+                    assistant_message.as_ref(),
+                    session.store.as_ref(),
+                    &session.session_id,
+                );
             }
         }
 
@@ -934,7 +1022,8 @@ impl ToolBatchHost for RemoteTools {
         }
 
         // 宿主拒绝的调用先落进会话转录：投影与历史据此还原「用户拒绝执行」。
-        {
+        // 与请求事件同一个开关：子代理的工具调用不落父会话（Python 同规则）。
+        if persist_events {
             let conn = self.conn.borrow();
             if let Some(session) = conn.session.as_ref() {
                 crate::approval_audit::record_denied_calls(
@@ -986,6 +1075,19 @@ impl ToolBatchHost for RemoteTools {
             let cancelled = || cancel_source.borrow().cancel.load(Ordering::SeqCst);
             if !cancelled() {
                 compressor.apply_observations(&mut ordered, &self.task_hint, &cancelled);
+            }
+        }
+        // `tool_result` 落盘（Python `_execute_tool_batch` 的落盘点在同一个位置）：写的是
+        // **处理过**的观察，事件里的 output / model_output 与回填模型的文本同源；超长输出的
+        // artifact 化由会话存储负责。被拒绝的调用也有结果事件（观察本身就是拒绝结果）。
+        if persist_events {
+            let conn = self.conn.borrow();
+            if let Some(session) = conn.session.as_ref() {
+                let _ = crate::tool_events::record_results(
+                    &ordered,
+                    session.store.as_ref(),
+                    &session.session_id,
+                );
             }
         }
         Ok(ordered)
@@ -1987,15 +2089,19 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         combined.extend(messages);
         messages = combined;
     }
+    // 本批 assistant 原文：模型端口写、工具端口读，两个端口共用同一个格子。
+    let active_assistant: ActiveAssistantSlot = Rc::new(RefCell::new(None));
     let mut model: Box<dyn ReplySource> = match model_config.clone() {
         Some(config) => Box::new(KernelModelPort {
             conn: Rc::clone(conn),
             config,
             usage: Rc::clone(&usage),
+            active_assistant: Rc::clone(&active_assistant),
         }),
         None => Box::new(RemoteModelPort {
             conn: Rc::clone(conn),
             turn_id: turn_id.clone(),
+            active_assistant: Rc::clone(&active_assistant),
         }),
     };
     let compressor = model_config
@@ -2031,6 +2137,7 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         undo: Some(Rc::clone(&undo)),
         task_hint: user_text.clone(),
         todos: Some(Rc::clone(&active_todos)),
+        active_assistant: Some(active_assistant),
     };
     let build_cancel_check = || {
         let cancel_source = Rc::clone(conn);
@@ -2445,9 +2552,25 @@ fn subagent_query_value(
     params: &SubagentQueryParams,
 ) -> Result<Value, String> {
     let action = params.action.trim().to_lowercase();
+    // worktree 清单放在任务表检查之前：托管根里的残留 worktree 与后台任务管理器是否启用无关，
+    // 切换工作区前必须能看到它们（对映 Python `list_subagent_worktrees` 的拦阻项）。
+    if action == "list_worktrees" {
+        let sessions: Vec<Value> = crate::worktree::list_sessions(None)
+            .iter()
+            .map(crate::worktree::session_value)
+            .collect();
+        return Ok(json!({
+            "unavailable": false,
+            "action": action,
+            "tasks": [],
+            "task": Value::Null,
+            "result": {},
+            "worktrees": sessions,
+        }));
+    }
     if !matches!(action.as_str(), "list" | "get" | "cancel") {
         return Err(format!(
-            "action 仅支持 list、get 或 cancel，收到：{}",
+            "action 仅支持 list、get、cancel 或 list_worktrees，收到：{}",
             params.action
         ));
     }
@@ -2632,6 +2755,10 @@ fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             respond_session_query(conn, id, &SessionQuery::History(params));
             false
         }
+        Command::SessionEvents => {
+            respond_session_query(conn, id, &SessionQuery::Events);
+            false
+        }
         Command::SessionNew => {
             respond_session_new(conn, id);
             false
@@ -2648,7 +2775,13 @@ fn dispatch(conn: &Rc<RefCell<Conn>>, frame: Frame) -> bool {
             respond_session_append(conn, id, &params);
             false
         }
+        Command::WorkspaceSwitch(params) => {
+            handle_workspace_switch(&mut conn.borrow_mut(), id, &params);
+            false
+        }
         Command::Shutdown => {
+            // 正常退出：先收尾会话（写 `session_closed` 并丢弃空占位），再回包退出。
+            conn.borrow().close_session();
             conn.borrow_mut().respond(id, json!({}));
             true
         }
@@ -2727,15 +2860,17 @@ fn session_handle(conn: &Conn) -> Option<(Arc<SessionStore>, String)> {
         .map(|session| (Arc::clone(&session.store), session.session_id.clone()))
 }
 
-/// 会话的**只读**查询：`session.list` 与 `session.history`。
+/// 会话的**只读**查询：`session.list`、`session.history` 与 `session.events`。
 ///
-/// 两条都只看会话目录（索引与提示历史），与正在跑的回合不共享可变状态，所以回合内
+/// 三条都只看会话目录（索引、提示历史与转录文件），与正在跑的回合不共享可变状态，所以回合内
 /// 也可应答：宿主侧 `/sessions`、`/archives`、`/history` 是「立即命令」，生成期间照常
 /// 执行，若内核只在空闲时应答，它们就只能撞上「未知方法」。
 #[derive(Debug, Clone)]
 enum SessionQuery {
     List(SessionListParams),
     History(SessionHistoryParams),
+    /// 回放用的有效事件流：不带参数，读内核当前持有的会话。
+    Events,
 }
 
 impl SessionQuery {
@@ -2755,6 +2890,7 @@ impl SessionQuery {
             Some(method::SESSION_HISTORY) => Ok(Self::History(
                 serde_json::from_value(params).map_err(invalid)?,
             )),
+            Some(method::SESSION_EVENTS) => Ok(Self::Events),
             other => Err(ErrorObject::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("未知方法 {}。", other.unwrap_or_default()),
@@ -2797,6 +2933,23 @@ impl SessionQuery {
                     })?;
                 let items: Vec<Value> = entries.iter().map(|entry| entry.to_dict()).collect();
                 Ok(json!({ "entries": items }))
+            }
+            Self::Events => {
+                // 回退投影后的有效事件流（`turn_undone` 撤掉的轮次不出现），与
+                // Python `current_session_events()` 读的是同一条视图，UI 回放据此
+                // 重建消息、工具卡与 SubAgent 进度树。
+                let events = store
+                    .read_active_events(&current)
+                    .map_err(|error| {
+                        ErrorObject::new(
+                            error_code::INTERNAL_ERROR,
+                            format!("会话事件读取失败：{}", error.message()),
+                        )
+                    })?
+                    .iter()
+                    .map(|event| event.to_dict())
+                    .collect::<Vec<Value>>();
+                Ok(json!({ "session_id": current, "events": events }))
             }
         }
     }
@@ -3042,6 +3195,40 @@ fn respond_subagent_run(conn: &Rc<RefCell<Conn>>, id: Id, params: &SubagentRunPa
 /// 对映 Python 的 `remember_review_report`：`/review` 在模型循环之外跑，报告默认只作界面
 /// 消息；注入后下一轮请求才会带上它。只允许 assistant 角色——不借这个入口伪造用户输入
 /// 或工具结果。空内容不注入（与 Python 的 `remember_review_report` 同口径）。
+/// `workspace.switch` 的统一应答：校验 path → 会话侧切换 → 回包。
+///
+/// 内核只做会话一致性（把自持会话的工作区指向新根 + 转录 `workspace_switched`）；
+/// 工具表、MCP、临时目录等宿主侧资源由宿主自己重建，协议不回传。空闲路径与
+/// 回合内路径（`handle_inbound`）共用这一份，避免两条路径的文案与校验分叉。
+fn handle_workspace_switch(conn: &mut Conn, id: Id, params: &WorkspaceSwitchParams) {
+    let path = params.path.trim().to_string();
+    if path.is_empty() {
+        conn.respond_error(
+            id,
+            ErrorObject::new(error_code::INVALID_PARAMS, "workspace.switch 需要非空 path。"),
+        );
+        return;
+    }
+    match conn.switch_workspace(&path) {
+        // 没有自持会话时与 `session.append` 同一口径。
+        Ok(None) => conn.respond_error(id, no_session_error()),
+        Ok(Some((from, to))) => conn.respond(
+            id,
+            json!({ "switched": from != to, "from": from, "to": to }),
+        ),
+        Err(detail) => {
+            eprintln!("[kernel] 转录 workspace_switched 失败：{detail}");
+            conn.respond_error(
+                id,
+                ErrorObject::new(
+                    error_code::INVALID_REQUEST,
+                    format!("工作区切换记录失败：{detail}"),
+                ),
+            );
+        }
+    }
+}
+
 fn respond_session_append(conn: &Rc<RefCell<Conn>>, id: Id, params: &SessionAppendParams) {
     let role = params.role.trim().to_lowercase();
     if role != "assistant" {
@@ -3355,6 +3542,9 @@ fn serve_background(conn: &Rc<RefCell<Conn>>, request: BackgroundRequest) {
                 // 后台子任务批次没有自己的执行清单（run_guard 只看主回合）。
                 todos: None,
                 task_hint: String::new(),
+                // 子代理的工具调用不落父会话：Python 在子代理循环里传
+                // `persist_session_events=False`。
+                active_assistant: None,
             };
             let outcome = tools
                 .execute_tool_batch(&calls, 0)

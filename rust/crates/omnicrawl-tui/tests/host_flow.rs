@@ -744,15 +744,15 @@ fn quit_command_asks_the_host_to_exit() {
 }
 
 #[test]
-fn unsupported_command_reports_reason_instead_of_talking_to_the_model() {
+fn workspace_switch_reports_invalid_target_instead_of_talking_to_the_model() {
     let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
     harness.app.handshake().expect("握手应当成功");
-    // 切换工作区要重建内核会话、MCP 与工具表，协议仍没有入口：给出原因，而不是当成提示词发出去。
-    type_text(&mut harness, "/workspace D:/other");
+    // 目标目录不存在：给出失败原因，而不是当成提示词发出去。
+    type_text(&mut harness, "/workspace D:/ocl-missing-dir-for-test");
     harness.press(KeyCode::Enter);
     let messages = notices(&harness);
     assert!(
-        messages.iter().any(|text| text.contains("/workspace")),
+        messages.iter().any(|text| text.contains("工作区切换失败")),
         "{messages:?}"
     );
     assert!(
@@ -761,6 +761,353 @@ fn unsupported_command_reports_reason_instead_of_talking_to_the_model() {
             .iter()
             .all(|frame| frame.method() != Some("turn.submit")),
         "未支持的命令不能退化成模型对话"
+    );
+}
+
+/// 用户配置快照：切换成功会把新根写回 `~/.OmniCrawl/config.toml`（`ConfigEnvironment::from_process()`），
+/// 测试跑完要恢复现场，否则开发机的 `[workspace] root` 会被改成临时目录。
+struct ConfigFileGuard {
+    path: PathBuf,
+    content: Option<String>,
+}
+
+impl ConfigFileGuard {
+    fn take() -> Self {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        let path = PathBuf::from(home).join(".OmniCrawl").join("config.toml");
+        let content = std::fs::read_to_string(&path).ok();
+        Self { path, content }
+    }
+}
+
+impl Drop for ConfigFileGuard {
+    fn drop(&mut self) {
+        match &self.content {
+            Some(content) => {
+                let _ = std::fs::write(&self.path, content);
+            }
+            None => {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+}
+
+/// 推进界面直到条件成立：收帧 + 轮询慢命令，并按方法名给前置检查的同步往返补响应。
+///
+/// 工作区切换前会同步下发 `subagent.query`（排空与 worktree 拦阻），假内核只会回脚本
+/// 里写好的帧，因此这里按 `action` 生成最小响应；`respond` 返回 `None` 表示这条请求
+/// 由脚本自己应付。
+fn drive(
+    harness: &mut Harness,
+    answered: &mut std::collections::HashSet<i64>,
+    mut respond: impl FnMut(&str, &Value, i64) -> Option<String>,
+    mut ready: impl FnMut(&Harness) -> bool,
+    message: &str,
+) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        harness.app.drain_frames();
+        harness.app.tick_slow_command();
+        let pending: Vec<(i64, String, Value)> = harness
+            .frames()
+            .into_iter()
+            .filter(|frame| frame.is_request())
+            .filter_map(|frame| {
+                let id = match frame.id() {
+                    Some(Id::Number(id)) => *id,
+                    _ => return None,
+                };
+                Some((
+                    id,
+                    frame.method()?.to_string(),
+                    frame.params.clone().unwrap_or(Value::Null),
+                ))
+            })
+            .collect();
+        for (id, method, params) in pending {
+            if answered.contains(&id) {
+                continue;
+            }
+            if let Some(body) = respond(&method, &params, id) {
+                harness.send(&body);
+                answered.insert(id);
+            }
+        }
+        if ready(harness) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{message}（当前记录：{:?}）",
+            harness.app.state.records
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// 帧负载（缺省按空对象处理）。
+fn params_of(frame: &Frame) -> Value {
+    frame.params.clone().unwrap_or(Value::Null)
+}
+
+/// `subagent.query` 的最小成功响应；`tasks` / `worktrees` 是 JSON 数组字面量。
+fn subagent_reply(action: &str, tasks: &str, worktrees: &str, id: i64) -> String {
+    format!(
+        concat!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"result\":{{",
+            "\"unavailable\":false,\"action\":\"{}\",\"tasks\":{},\"task\":null,",
+            "\"result\":{{}},\"worktrees\":{}}}}}\n"
+        ),
+        id, action, tasks, worktrees
+    )
+}
+
+/// 宿主下一条请求会用的 id（`KernelClient` 的 id 从 1 起递增）。
+///
+/// 工作区切换的前置检查是**同步**往返：它发生在按键那一刻，测试来不及按需回包，
+/// 因此响应要按预测到的 id 预先写进脚本。
+fn next_id(harness: &Harness) -> i64 {
+    harness
+        .frames()
+        .iter()
+        .filter(|frame| frame.is_request())
+        .filter_map(|frame| match frame.id() {
+            Some(Id::Number(id)) => Some(*id),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+/// 默认响应器：任务表为空、worktree 清单为空。
+fn no_subagents(method: &str, params: &Value, id: i64) -> Option<String> {
+    if method != "subagent.query" {
+        return None;
+    }
+    let action = params
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("list");
+    Some(subagent_reply(action, "[]", "[]", id))
+}
+
+fn switch_target() -> PathBuf {
+    let target = std::env::temp_dir().join(format!(
+        "omnicrawl-tui-ws-switch-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&target);
+    std::fs::create_dir_all(&target).expect("建切换目标目录");
+    target
+}
+
+/// `/workspace <已存在目录>`：前置检查 → 工作线程装配 → 提交 → 两条内核帧。
+///
+/// 对映 Python 的慢命令：命令一按下就回「正在切换工作区」，候选子系统在工作线程装配，
+/// 每帧轮询取回结果后才提交（假内核的 `session.settings` / `workspace.switch` 不回包，
+/// 宿主也不等回包）。
+#[test]
+fn workspace_switch_runs_prechecks_then_commits_on_tick() {
+    let guard = ConfigFileGuard::take();
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let target = switch_target();
+
+    // 前置检查是同步往返：响应要按预测到的 id 预先写进脚本（早于按键）。
+    let base = next_id(&harness);
+    harness.send(&subagent_reply("list", "[]", "[]", base));
+    harness.send(&subagent_reply("list_worktrees", "[]", "[]", base + 1));
+
+    type_text(&mut harness, &format!("/workspace {}", target.display()));
+    harness.press(KeyCode::Enter);
+    assert!(
+        notices(&harness)
+            .iter()
+            .any(|text| text.contains("正在切换工作区")),
+        "慢命令应当先回待办文案：{:?}",
+        harness.app.state.records
+    );
+
+    let mut answered = std::collections::HashSet::new();
+    drive(
+        &mut harness,
+        &mut answered,
+        no_subagents,
+        |harness| {
+            notices(harness)
+                .iter()
+                .any(|text| text.contains("已切换工作区"))
+        },
+        "切换应当提交并报告新根",
+    );
+
+    let frames = harness.frames();
+    let switch_at = frames
+        .iter()
+        .position(|frame| frame.method() == Some("workspace.switch"))
+        .expect("应当请内核转录 workspace_switched");
+    assert_eq!(
+        params_of(&frames[switch_at])["path"].as_str(),
+        Some(target.to_string_lossy().as_ref()),
+        "workspace.switch 应指向解析后的新根"
+    );
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame.method() == Some("session.settings")),
+        "应当把新工作区的工具表推给内核：{frames:?}"
+    );
+    // 前置检查在下发切换之前：`subagent.query` 的查询都要早于 `workspace.switch`。
+    let query_at = frames
+        .iter()
+        .position(|frame| frame.method() == Some("subagent.query"))
+        .expect("切换前应先查 worktree 与子任务");
+    assert!(query_at < switch_at, "前置检查应早于切换帧：{frames:?}");
+    let actions: Vec<String> = frames
+        .iter()
+        .filter(|frame| frame.method() == Some("subagent.query"))
+        .filter_map(|frame| params_of(frame)["action"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        actions.iter().any(|action| action == "list_worktrees"),
+        "应当查 pending worktree：{actions:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .all(|frame| frame.method() != Some("turn.submit")),
+        "切换命令不能退化成模型对话"
+    );
+
+    drop(guard);
+    let _ = std::fs::remove_dir_all(&target);
+}
+
+/// pending worktree 拦阻：任何未处理的 worktree 都要拒绝切换（对映 Python `pending_worktrees_error`）。
+#[test]
+fn workspace_switch_refuses_while_a_worktree_is_pending() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let target = switch_target();
+
+    // 少了 `repo_root` 的条目按「属于当前仓库」处理（保守拦阻）。
+    let base = next_id(&harness);
+    harness.send(&subagent_reply("list", "[]", "[]", base));
+    harness.send(&subagent_reply(
+        "list_worktrees",
+        "[]",
+        r#"[{"task_id":"t1","branch":"feature-x"}]"#,
+        base + 1,
+    ));
+
+    type_text(&mut harness, &format!("/workspace {}", target.display()));
+    harness.press(KeyCode::Enter);
+
+    let mut answered = std::collections::HashSet::new();
+    drive(
+        &mut harness,
+        &mut answered,
+        no_subagents,
+        |harness| {
+            notices(harness)
+                .iter()
+                .any(|text| text.contains("仍有未处理的 SubAgent worktree"))
+        },
+        "有 pending worktree 时应拒绝切换",
+    );
+
+    let message = notices(&harness)
+        .into_iter()
+        .find(|text| text.contains("仍有未处理的 SubAgent worktree"))
+        .expect("拒绝文案");
+    assert!(message.contains("feature-x"), "要点名分支：{message}");
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .all(|frame| frame.method() != Some("workspace.switch")),
+        "被拒绝时不该下发切换：{:?}",
+        harness.frames()
+    );
+    let _ = std::fs::remove_dir_all(&target);
+}
+
+/// 子 Agent 排空：切换前逐个取消活跃任务并等它们离开任务表（对映 Python `cancel_and_wait`）。
+#[test]
+fn workspace_switch_cancels_active_subagents_before_switching() {
+    let guard = ConfigFileGuard::take();
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let target = switch_target();
+
+    // 第一次 list 报一个活跃任务 → 宿主取消它 → 轮询时任务已退出 → 再查 worktree。
+    let base = next_id(&harness);
+    harness.send(&subagent_reply(
+        "list",
+        r#"[{"task_id":"t1","status":"running"}]"#,
+        "[]",
+        base,
+    ));
+    harness.send(&subagent_reply("cancel", "[]", "[]", base + 1));
+    harness.send(&subagent_reply("list", "[]", "[]", base + 2));
+    harness.send(&subagent_reply("list_worktrees", "[]", "[]", base + 3));
+
+    type_text(&mut harness, &format!("/workspace {}", target.display()));
+    harness.press(KeyCode::Enter);
+
+    let mut answered = std::collections::HashSet::new();
+    drive(
+        &mut harness,
+        &mut answered,
+        no_subagents,
+        |harness| {
+            notices(harness)
+                .iter()
+                .any(|text| text.contains("已切换工作区"))
+        },
+        "排空后应当继续切换",
+    );
+
+    let cancel = harness
+        .frames()
+        .into_iter()
+        .find(|frame| {
+            frame.method() == Some("subagent.query") && params_of(frame)["action"] == "cancel"
+        })
+        .expect("应当逐个取消活跃子任务");
+    assert_eq!(params_of(&cancel)["task_id"], "t1", "取消要指名任务");
+
+    drop(guard);
+    let _ = std::fs::remove_dir_all(&target);
+}
+
+/// `/mcp`：状态文本在后台线程读（`format_status` 会触发 MCP 发现与连接），主线程不阻塞。
+#[test]
+fn mcp_status_is_read_in_the_background() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+
+    type_text(&mut harness, "/mcp");
+    harness.press(KeyCode::Enter);
+
+    let mut answered = std::collections::HashSet::new();
+    drive(
+        &mut harness,
+        &mut answered,
+        no_subagents,
+        |harness| notices(harness).iter().any(|text| text.contains("MCP")),
+        "/mcp 应当在后台读出状态文本",
+    );
+    assert!(
+        harness
+            .frames()
+            .iter()
+            .all(|frame| frame.method() != Some("turn.submit")),
+        "/mcp 不能退化成模型对话"
     );
 }
 

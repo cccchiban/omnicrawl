@@ -878,6 +878,8 @@ mod tests {
                     auto_play: false,
                     ..Default::default()
                 },
+                // 这个用例只看工具是否进表与空文本的 JSON 信封，走本地分支。
+                None,
                 root.join("models"),
                 root.clone(),
             ))),

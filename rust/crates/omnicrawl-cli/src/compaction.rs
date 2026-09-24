@@ -13,6 +13,7 @@ use omnicrawl_controllers::context_compaction::{
     ArtifactReadFailure, ContextCompactionService, ModelSummaryCompactor,
     SessionEvidenceRecallService, SourceEvent, TokenUsageSample, DEFAULT_MAX_INPUT_TOKENS,
 };
+use omnicrawl_controllers::control::{session_closed_action, SessionCloseAction};
 use omnicrawl_controllers::json::python_dumps_compact;
 use omnicrawl_controllers::memory::session_memory_root;
 use omnicrawl_ipc::bridge::{KernelCompactionConfig, KernelModelConfig, KernelSessionConfig};
@@ -136,6 +137,58 @@ impl KernelSession {
             .append_event(&self.session_id, event_type, payload, None, utc_now())
             .map(|_| ())
             .map_err(|error| error.message().to_string())
+    }
+
+    /// 正常退出时收尾当前会话：按最后一次事件类型决定补写 `session_closed` 还是
+    /// 直接丢弃空占位。
+    ///
+    /// 对映 Python `LocalToolAgent._append_session_closed_event`：
+    /// * 已是 `session_closed`——只丢空占位；
+    /// * 已是 `session_interrupted`——什么都不做（中断的会话要保留）；
+    /// * 其余（含正常回合收尾）——先补写 `session_closed`，再丢空占位。
+    ///
+    /// 判定复用 `omnicrawl-controllers` 的决策层（与 Python 同一份对照数据集），
+    /// 因此「最后一次事件类型 → 动作」的映射不会在两侧分叉。本方法是幂等的：
+    /// 会话已被丢弃后再调用会因读不到事件而落到「无会话」分支，不做第二次写入。
+    pub fn close(&self) {
+        let last_event_type = self
+            .store
+            .read_active_events(&self.session_id)
+            .ok()
+            .and_then(|events| events.last().map(|event| event.event_type.clone()));
+        match session_closed_action(last_event_type.as_deref()) {
+            SessionCloseAction::None => {}
+            SessionCloseAction::Discard => {
+                let _ = self.store.discard_empty_session(&self.session_id);
+            }
+            SessionCloseAction::AppendAndDiscard => {
+                if let Err(detail) = self.append("session_closed", json!({})) {
+                    eprintln!("[kernel] 补写 session_closed 失败：{detail}");
+                }
+                let _ = self.store.discard_empty_session(&self.session_id);
+            }
+        }
+    }
+
+    /// 运行中切换工作区：把会话的工作区指向新根，并转录 `workspace_switched`。
+    ///
+    /// 对映 Python `WorkspaceSwitchingMixin.switch_workspace` 的收尾一步
+    /// （`_append_session_event("workspace_switched", {"from": str(old), "to": str(new)})`）。
+    /// 会话已全局化、且切换保持同一会话，所以这里不新建/重建会话，只改工作区与事件。
+    ///
+    /// 先追加事件再改内存字段：追加失败时两者都不变，不会出现「工作区已换、转录里没有
+    /// 这条切换」的半截状态。目标与当前相同时直接返回，不重复写事件（与 Python 的早退一致）。
+    ///
+    /// 返回 `(from, to)`；`from` 取会话记录的工作区，未记录时用空串。
+    pub fn switch_workspace(&mut self, new_root: &str) -> Result<(String, String), String> {
+        let from = self.workspace.clone().unwrap_or_default();
+        let to = new_root.to_string();
+        if from == to {
+            return Ok((from, to));
+        }
+        self.append("workspace_switched", json!({ "from": from, "to": to }))?;
+        self.workspace = Some(to.clone());
+        Ok((from, to))
     }
 }
 

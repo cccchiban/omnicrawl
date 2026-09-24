@@ -14,7 +14,7 @@
 | `src/args.rs` | 启动参数（命令行 → 环境变量 → 默认值）、内核路径解析 |
 | `src/app.rs` | 接线层：帧 ↔ 状态机 ↔ 写回内核 |
 | `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载 |
-| `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：`TtsConfig`、文本归一化、音频 I/O、声线库、ONNX 推理（CPU）、模型下载与本地播放 |
+| `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：接口合成（OpenAI 兼容 `audio/speech`，发布默认）与可选的本地 MOSS-TTS-Nano ONNX 推理（`onnx` feature）、文本归一化、音频 I/O、声线库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
 | `src/ui/` | 渲染：`hud.rs`、`conversation.rs`、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制） |
 | `../omnicrawl-host/` | 宿主执行层已独立成 `omnicrawl-host` crate：内核进程客户端（`kernel`）、工具批次与审批策略（`host`）、工具执行体（`tools`）、审批模式（`approval`）与无头回合运行器（`turn`）；本 crate 只做界面与接线 |
@@ -162,11 +162,13 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 - **候选来源**：`src/commands.rs` 的 `command_options()` 取统一命令源的 `registry().options(false)`，启动时交给输入框（`Composer::set_commands`）；输入框每次文本变化自己重刷菜单，不必在每个改动点手动同步。
 - **选择键**：菜单开着时 `Up`/`Down` 在候选间移动、`Enter`/`Tab` 只补全而**完整命令放行提交**（否则 `/settings` 这类无参数命令永远打不开）；菜单收起时这些键照旧归输入框与消息区。
 - **提交分派**：命中注册表即交给命令层 `dispatch()`，未命中的输入照旧当成一轮对话；生成期间按 `CommandType::immediate()`（纯界面 / 只读查询）当场执行、其余排队。
-- **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、插件状态、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）可用；只剩 `/workspace` 因为要重建内核会话、MCP 与工具表而返回带原因的文案（不再悄悄变成一次模型对话）。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
-- **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 的回执都带重建后的 `history`，宿主据此重放消息流（`AppState::replay_history` 只投影 user/assistant 文本），因此撤回/切换后旧消息与工具卡会真正消失，而不只是追加一条提示。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` / `OMNICRAWL_SESSION_ROOT` 可覆盖。
+- **能力面**（`commands::TuiHostAgent`）按「有什么报什么」实现：审批模式、模型与推理强度（写盘后随 `session.settings` 热更新内核）、插件状态、后台任务查询、**会话生命周期与历史**（`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume` 各走一次内核往返）、工作区根、只读 git 探测、评审报告注入、**顾问策略**（`/advisor`：命令层写盘后由宿主同步运行期选项并重建工具表，顾问工具即时进出表）、**记忆清理**（`/memory:clean`：按项目 → 会话 → 用户清理过期记忆）、**工作区切换**（`/workspace`：见下文「工作区切换」）可用。`/skills` 与本地 API 同口径：宿主自己按工作区发现 Skill 目录。
+- **工作区切换**（`/workspace <路径>`）：宿主按 Python `WorkspaceSwitchingMixin` 的主体重排运行态——解析校验目标目录 → **子 Agent 排空**（活跃任务逐个 `subagent.query cancel` 并轮询到退出，超期报 `subagent_drain_error`）→ **pending worktree 拦阻**（`subagent.query list_worktrees` + `pending_worktrees_error`）→ 本地预备新工具表（含新工作区的 MCP 连接与全新后台任务管理器）与提示词运行时（**候选装配在工作线程**，见下文「慢命令」）→ 插件 `workspace.switch.before`（拒绝即中止，旧 Worker 不动；失败时补发 `workspace.switch.error`）→ 关闭旧工作区的 MCP 与后台任务 → 暂定/恢复 `monitor` 轮询并废弃旧游标 → 提交新状态 → 下发 `session.settings`（新工具表与上下文消息）并请内核在同一会话转录 `workspace_switched`。与 Python 的已知差异：`before`/`after` 由 `PluginHost::switch_workspace` 一次发出，因此钩子相对「候选装配」的先后与 Python 不同源（见「本阶段的边界」）。
+- **会话状态的唯一真相在内核**：`App` 只记一个 `session_id`（握手回包的 `result.session_id` 给出，各会话命令的回执再校准）。`/resume` 与 `/undo` 之后宿主向内核索取 `session.events`（回退投影后的有效事件流）并用 `AppState::replay_events` 重建对话视图——消息、工具卡（含未收口/被拒绝的收口文案）、计划清单、SubAgent 进度树与压缩边界都按事件重建，而不是只投影 user/assistant 文本；回执里的 `history` 只在事件流读不到时兜底（`AppState::replay_history`）。默认会话根与 Python、本地 API 同址（`~/.OmniCrawl/.agent_sessions`），`--session-root` / `OMNICRAWL_SESSION_ROOT` 可覆盖。
+  内核按 Python 的口径把工具事件一并落进转录：每次模型请求工具先落 `tool_call_requested`（公开参数 + 本批 assistant 原文的 `assistant_content` / 思考回传字段 / `function_name`），整批执行且输出预算/视觉/压缩处理过之后落 `tool_result`（`output` 展示全文、`model_output` 模型可见输出，超长输出由会话存储落 artifact），被拒绝的调用另有 `tool_call_denied`；因此回放出的历史页能还原工具卡，`/undo` 的 `event_ids` 也自然覆盖这些事件。已知缺口只剩两处：`tool_call_approved` 仍未落盘（审批在宿主侧完成，协议里还没有宿主→内核的审批通知），以及宿主协议观察不带 `ui_artifact`，事件里按 Python 缺省写 `{}`。子代理内部的工具调用**不落父会话**（Python 的 `persist_session_events=False` 口径）。
 - **异步内核往返**：命令层的接口是同步的、内核链路是异步帧，因此 `/undo`、`/compact` 与 `/review` 由宿主在进命令层之前拦下、异步下发（响应按请求 id 回填，状态行随回执收起）。`/review` 必须走异步：评审子 Agent 的工具批次要回到宿主执行，同步等待会与 `tool.batch` 互相卡死；它先在宿主侧跑 git 预检（复用命令层的 `check_review_preconditions`），回执到了先渲染报告、再发一条 `session.append` 把报告注入内核上下文（下一轮请求可见）。
 - **同步往返**：只读或本地毫秒级的几条用宿主侧快速往返（`/tasks`、`/task`、`/sessions`、`/archives`、`/history`、`/rename`、`/new`、`/archive`、`/resume`）；等待期间让路的帧收进 `deferred_frames`，下次 `drain_frames` 按原顺序处理，通知不丢。
-- **延迟执行体**（`CommandResult::deferred`）目前在本线程内联跑完：宿主还没有慢命令 worker，而本批能真正执行的命令都不产生延迟体。
+- **慢命令**（对映 Python `CommandOutcome.execution == "slow"`）：命令层的延迟执行体是同步接口，`App` 又不跨线程共享，因此宿主直接接管真正慢的两条并只把慢的那一段放进线程——`/workspace` 的候选装配（工具表 + MCP + 提示词运行时）在工作线程、提交与内核下发仍在主线程（`App::tick_slow_command` 每帧取回结果）；`/mcp` 的状态文本也在工作线程读（`format_status` 会触发 MCP 发现与连接）。两条都在后台期间把状态行改成「正在准备新工作区…」/「正在读取 MCP 状态」，并在途时拒绝第二条慢命令。其余命令（含 `/undo`、`/compact`、`/review`）走宿主的内核往返或内联延迟体。
 
 已落地（接线批，子任务进度树）：
 
@@ -234,18 +236,30 @@ LaTeX 接线：`AssistantMessage`（全量重绘先剥离 `◇ ` 前缀再转换
 完整的斜杠命令框架与 27 条内置命令在 `omnicrawl-commands`（Python `omnicrawl/commands/` 的 Rust 移植，
 含 `CommandRegistry`、`CommandAgent` 能力 trait 与全部展示文案），本 crate 负责把能力面接上：
 
-- 进命令层之前由宿主特判的只有三条——`/undo`、`/compact`、`/review`（原因见上文「异步内核往返」）；
+- 进命令层之前由宿主特判的有五条——`/undo`、`/compact`、`/review`（原因见上文「异步内核往返」）与慢命令 `/workspace`、`/mcp`（原因见下文「慢命令」）；
 - `/settings` 仍是本 crate 直接打开设置面板；
 - 其余命令都经统一注册表分发。命令处理器是同步接口，`App` 不实现 `Send + Sync`，因此没有另建
   线程安全命令代理：需要内核往返的命令在 `TuiHostAgent` 里就地做一次同步往返（`request_kernel`），
-  内联跑完的延迟执行体仍是本线程（本批能真正执行的命令都不产生延迟体）。
+  列表/归档/历史这类毫秒级命令照旧内联跑完。
 
-尚未接线（一律给出「暂不可用＋原因」，不退化成一次模型对话）：只剩 `/workspace`（切换工作区要重建内核会话、
-MCP 与工具表）。
-已接线的四条更新：`/mcp` 走宿主工具表的 `McpClientManager::format_status()`；
+尚未接线（一律给出「暂不可用＋原因」，不退化成一次模型对话）：无。
+已接线的更新：`/workspace` 走宿主的运行中切换（解析校验 → 子 Agent 排空与 worktree 拦阻 →
+工作线程装配新工具表/MCP/提示词运行时 → 插件 `workspace.switch.before`（拒绝即中止）→
+收尾旧工作区的 MCP 与后台任务 → 提交并下发 `session.settings`，再请内核在同一会话转录
+`workspace_switched`）；
+`/mcp` 走宿主工具表的 `McpClientManager::format_status()`（工作线程读）；
 `/settings --chat` 打开配置对话页（`omnicrawl-config-chat`），保存后由宿主重建工具表并下发内核；
 `/advisor` 由宿主同步顾问选项并重建工具表（写盘由命令层负责，宿主重建失败时回滚运行期选项）；
 `/memory:clean` 由宿主按三个作用域调 `omnicrawl-session` 的过期清理，不需要新协议入口。
+
+`/workspace` 的已接线范围是窄口径（见上文「工作区切换」）。仍缺、且已在 Python 侧有对等实现的两项：
+
+- **切换前的子 Agent 排空与 pending worktree 阻止**：Python 先 `coordinator.cancel_and_wait`（不合作就拒绝切换、
+  保持旧状态），再拒绝仍有未处理 worktree 的切换（避免新项目的父 Agent 仍能 apply 旧仓库分支）。
+  Rust 侧决策层已就位（`subagent_drain_error` / `pending_worktrees_error`），但宿主还拿不到
+  “当前会话的 pending worktree”清单，因此未挂。当前只拒绝“回合进行中”的切换。
+- **`workspace.switch.error` 钩子**：`workspace.switch.before` / `after` 已由 `PluginHost::switch_workspace`
+  发出；准备阶段失败时的 `error`（notify 类）还没有调用点。
 
 `/plan` 已接线：`TuiHostAgent::activate_mode` → `App::command_activate_mode` 重新装配
 system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文消息，再经
@@ -287,6 +301,18 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 插件功能 | 已实现（写配置） | 写回 `plugins.enabled`；插件运行期在内核（它拉起独立 Node 插件宿主），协议上没有运行期开关，状态行明确写「重启后生效」 |
 | 工具设置 | 已实现（内置工具开关节） | 逐工具启用/关闭，写回 config.toml 的 `tools` 段，随即重建宿主工具表（禁用的工具不进声明，模型不可见即不可调）；「（未注册）」标注对映 Python |
 | 顾问设置 / 工具输出压缩 / 消息脱敏 / 持续运转 / 隔离工作区 / 图像生成 / TTS / 视觉 / 子任务设置 / MCP | 已实现 | 各面板的落点与键位见 `src/ui/settings/mod.rs` 的模块注释与各面板实现；MCP 另有一条写端点（`PUT /settings/mcp`）可在运行期重连 |
+
+TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成后端**（接口 / 本地，后端行会写明
+当前选了哪个、本地推理本构建是否编译、接口密钥是否已配）、**接口地址 / 模型 / 音色 / 密钥 /
+密钥环境变量 / 语速**。这 6 个字符串行直接编辑，语速按候选档位循环。两条约束值得记住：
+
+- 发布构建不带 `onnx`（`omnicrawl_tts::local_engine_available() == false`）时，后端行**强制停在接口**
+  且不响应切换——不允许用户在界面上配出跑不通的组合；
+- 密钥行只展示末 4 位（`****…1234`），且**空的输入不修改**已存密钥（想清空请改配置文件），
+  避免误触抹掉凭据。
+
+面板保存时同时写 `[tts]` 与 `[tts_api]` 两段（接口段里界面上没编辑的 `response_format` /
+`timeout_seconds` 按磁盘原值保留），随后重建工具表让新后端即时生效。
 | 通过对话修改设置 | 已实现 | 本行是**动作行**：`Enter`/`→` 关闭设置面板并打开配置对话弹层（与 `/settings --chat` 同一入口）。一句话经 `omnicrawl-config-chat` 的本地路由器折成命令，全部校验通过后原子写盘并同步运行态；不经过模型、不带上下文 |
 
 ### Provider 配置接线（`initialize.model`）
@@ -306,13 +332,11 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 由 `tests/prompt_cache_parity.rs` + `rust/tools/gen_prompt_cache_fixture.py` 钉住（含中文、空数组、
 键序与 `.strip()` 四类边界，并复核最终 `prompt_cache_key`）。
 
-已知差异：`prompt_cache_capable` 仍为假——能力声明在 Provider 档案里（Python 的 `capabilities.prompt_cache`），
-而 `LlmConfig` 不带这个字段。这正好对应 Python 在未声明能力时的行为：内核
-`should_send_prompt_cache_key` 对 GPT 系列有回退分支，依旧会带上 key；
-非 GPT 且显式声明能力的 Provider 在 Rust 侧拿不到 key（仅失去缓存收益，不影响正确性）。
+`prompt_cache_capable` 取自 `LlmConfig.prompt_cache`（自定义模型条目声明的 `capabilities.prompt_cache`）；
+未声明时对应 Python 在未声明能力时的行为：内核 `should_send_prompt_cache_key` 对 GPT 系列有回退分支，
+依旧会带上 key；非 GPT 且显式声明能力的 Provider 声明真时才拿到 key。
 另一处差异：`active_skill_context_hash` 在握手时按空列表计算（活动 Skill 取决于用户本轮输入，
 而 `prompt_cache_identity` 是会话级静态映射），Python 是逐调用计算。
-补完前，GPT 系列以外的模型即使支持 prompt cache 也不会收到 `prompt_cache_key`。
 
 应用路径分三层，**不假装即时生效**：
 
@@ -390,7 +414,7 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    把增量批次按 `Monitor · id · status` + `[流] 文本` 渲染成可折叠的工具卡（`call_id`
    加 `monitor:` 前缀，与真实工具调用区分）；单任务取不到（已被回收）静默跳过且不推进
    游标，下一轮重试。工作区切换的暂停/恢复（`suspend_for_workspace_switch` /
-   `resume_polling`）已随适配器就位，等 `/workspace` 接线时挂上调用；后台进程的
+   `resume_polling`）已随切换接线：`/workspace` 提交前暂停并废弃旧工作区游标，提交完成后恢复；后台进程的
    kill-on-close Job 已与 `command` 工具对齐（见「Windows Job Object」段）；
 3. ~~`read` 的 `function_name` 定位（AST 与声明括号扫描）与 `omnicrawl://docs/` 内置文档~~
    （已完成）：`.py` 走缩进块解析（限定名、装饰器起始行、嵌套类/函数、多匹配歧义、语法
@@ -403,9 +427,8 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
    FIFO 输入队列」）。命中判定与渲染共用 `ui::layout`，因此缩放窗口后点击位置不会错位；
 5. ~~Markdown 语法高亮~~（代码块已按语言逐 token 高亮，见 `rendering/highlight.rs`；仍非 pygments 等价，差异见上文「已知差异」）；~~子任务进度树~~、~~斜杠命令的补全菜单与命令分派~~（已完成，见上文「输入批 / 斜杠命令接线」）。
    斜杠命令的可用边界：`/settings`、`/quit`、`/approval*`、`/reasoning`、`/model`、`/plugins`、`/skills`、`/tasks`、`/task`、`/undo`、`/compact`、
-   `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan` 能真正执行；
-   `/workspace` 会给出「暂不可用＋原因」（要重建内核会话，宿主尚未接线），
-   而不是退化成一次模型对话；`/mcp` 与 `/settings --chat` 已接线（见上文）；
+   `/new`、`/sessions`、`/resume`、`/archive`、`/rename`、`/history`、`/review`、`/plan`、`/workspace` 能真正执行；
+   `/mcp` 与 `/settings --chat` 已接线（见上文）；
    菜单不列运行期 Skill 候选（内核侧发现，宿主给不出同一份清单）；设置面板的一级菜单全部落地
    （模型、模型渠道、上下文、工具、推理强度、思考显示、记忆、插件、顾问、工具输出压缩、视觉、
    图像生成、TTS、持续运转、隔离工作区、消息脱敏、子任务、MCP、通过对话修改设置）；

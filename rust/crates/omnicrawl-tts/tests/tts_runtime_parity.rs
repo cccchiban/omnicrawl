@@ -4,10 +4,13 @@
 //! 已下载模型（`~/.omnicrawl/tts/models`）。缺少数据集或模型时跳过，便于无模型环境
 //! 仍然跑通其它测试。
 //!
-//! 重新生成：
+//! 本地推理默认不编译（`omnicrawl-tts` 的 `onnx` feature 关闭，发布构建走接口合成），
+//! 整个文件跟着特征开关：
 //!
 //!     python rust/tools/gen_tts_runtime_fixture.py
-//!     cd rust && cargo test -p omnicrawl-tts --test tts_runtime_parity
+//!     cd rust && cargo test -p omnicrawl-tts --features onnx --test tts_runtime_parity
+
+#![cfg(feature = "onnx")]
 
 use std::path::PathBuf;
 

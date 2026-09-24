@@ -256,11 +256,14 @@ impl CommandAgent for TuiHostAgent<'_> {
 
     // ── 工作区 ────────────────────────────────────────────────
 
-    fn switch_workspace(&self, _path: &str) -> Result<PathBuf, AgentError> {
-        blocked(
-            "/workspace",
-            "切换工作区要重建内核会话、MCP 与工具表，TUI 尚未接线。",
-        )
+    fn switch_workspace(&self, path: &str) -> Result<PathBuf, AgentError> {
+        // 实际编排在 App 上：要重建工具表/MCP、重排临时目录、挂起 monitor 轮询，
+        // 并在内核侧同一会话补写 `workspace_switched`。宿主只在这里转一手，
+        // 让命令层继续只依赖 `CommandAgent` 抽象。
+        self.app
+            .borrow_mut()
+            .command_switch_workspace(path)
+            .map_err(AgentError::new)
     }
 
     // ── Skill / 记忆 ──────────────────────────────────────────

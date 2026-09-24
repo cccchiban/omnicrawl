@@ -29,6 +29,7 @@ use crate::approval::ApprovalMode;
 use crate::host::{self, BatchContext, BatchStep, PendingBatch, TodoItem, VisionPayload, Waiting};
 use crate::kernel::KernelClient;
 use crate::plugins::PluginHost;
+use crate::prompt_cache::build_prompt_cache_identity;
 use crate::review::{needs_review, review_tool_call, ReviewContext, ReviewOptions, ReviewRequest};
 use crate::tools::{RegistryOptions, ToolRegistry};
 
@@ -205,6 +206,9 @@ impl TurnRunner {
     pub fn handshake(&mut self, on_event: &mut dyn FnMut(HostEvent)) -> Result<(), String> {
         let mut model = self.options.model.clone();
         model.tools = self.registry.declarations();
+        // 稳定前缀身份必须在工具表就位后组装：`tool_schema_hash` 参与哈希，而
+        // `options.model` 里从 `options_from_process` 拿到的工具表还是空的。
+        model.prompt_cache_identity = self.prompt_cache_identity(&model);
         let params = InitializeParams {
             protocol_version: PROTOCOL_VERSION.to_string(),
             client: json!({
@@ -246,6 +250,27 @@ impl TurnRunner {
     /// 运行期切换审批模式：下一次工具批次立即生效（审批由宿主定调）。
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) {
         self.options.approval = mode;
+    }
+
+    /// 组装稳定 prompt 前缀的身份指纹（`initialize.model.prompt_cache_identity`）。
+    ///
+    /// 无头宿主（本地 API）当前不做 AGENTS.md / Skill 组装，system prompt 取自配置，
+    /// 因此项目规范与 Skill 索引按空集参与；这与发往模型的稳定前缀保持一致，
+    /// 同一会话内每轮得到同一个 `prompt_cache_key`。哈希算法复用
+    /// [`build_prompt_cache_identity`]，与 TUI 及 Python 逐字节对齐。
+    fn prompt_cache_identity(
+        &self,
+        model: &KernelModelConfig,
+    ) -> std::collections::BTreeMap<String, String> {
+        build_prompt_cache_identity(
+            &model.system_prompt,
+            &self.options.workspace_root,
+            "",
+            &[],
+            &[],
+            &model.tools,
+        )
+        .to_identity_map()
     }
 
     /// 下发一次 `session.settings`（模型 / 生成选项 / 推理强度 / 压缩等），返回内核回执。
@@ -481,6 +506,15 @@ impl TurnRunner {
         }
         let id = self.kernel.next_id();
         let _ = self.kernel.send_frame(&Command::Shutdown.to_frame(id));
+    }
+
+    /// 请内核退出后等它自己收尾（宿主退出收尾用）。
+    ///
+    /// `shutdown` 只负责把 `shutdown` 帧发出去；内核需要在这之后才把
+    /// `session_closed` 落盘，因此要发 `session.close.after` 的宿主必须等它退出。
+    /// 超时后强杀，避免留下孤儿进程。
+    pub fn wait_for_exit(&mut self, timeout: std::time::Duration) {
+        self.kernel.wait_or_kill(timeout);
     }
 
     /// 取消：请内核停止，并回收本回合的进程树与后台任务。

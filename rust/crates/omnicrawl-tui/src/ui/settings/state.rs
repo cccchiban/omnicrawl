@@ -637,7 +637,8 @@ pub enum SettingsChange {
 
 // ---------- TTS 页（对映 Python 的 `TTSSettingsPane`） ----------
 
-/// TTS 页的行号（对映 Python 里控件的自上而下顺序）。
+/// TTS 页的行号（前 13 行对映 Python `TTSSettingsPane` 的控件顺序；
+/// 末尾几行是 Rust 侧新增的接口合成配置，Python 面板没有对映控件）。
 pub const TTS_ROW_ENABLED: usize = 0;
 pub const TTS_ROW_AUTO_PLAY: usize = 1;
 pub const TTS_ROW_VOICE: usize = 2;
@@ -650,9 +651,17 @@ pub const TTS_ROW_MODEL_DIR: usize = 8;
 pub const TTS_ROW_DEVICE: usize = 9;
 pub const TTS_ROW_THREADS: usize = 10;
 pub const TTS_ROW_DOWNLOAD: usize = 11;
-pub const TTS_ROW_SAVE: usize = 12;
+/// 合成后端：接口合成（`[tts_api]`）或本地 ONNX 推理（`[tts]`）。
+pub const TTS_ROW_BACKEND: usize = 12;
+pub const TTS_ROW_API_BASE_URL: usize = 13;
+pub const TTS_ROW_API_MODEL: usize = 14;
+pub const TTS_ROW_API_VOICE: usize = 15;
+pub const TTS_ROW_API_KEY: usize = 16;
+pub const TTS_ROW_API_KEY_ENV: usize = 17;
+pub const TTS_ROW_API_SPEED: usize = 18;
+pub const TTS_ROW_SAVE: usize = 19;
 /// TTS 页的行数。
-pub const TTS_ROW_COUNT: usize = 13;
+pub const TTS_ROW_COUNT: usize = 20;
 
 /// TTS 页的行标签（渲染与测试都读它）。
 pub const TTS_ROW_LABELS: [&str; TTS_ROW_COUNT] = [
@@ -668,8 +677,19 @@ pub const TTS_ROW_LABELS: [&str; TTS_ROW_COUNT] = [
     "推理设备 device",
     "CPU 推理线程数 thread_count",
     "下载 ONNX 模型（约 763MB）",
+    "合成后端（接口 / 本地）",
+    "接口地址 tts_api.base_url",
+    "接口模型 tts_api.model",
+    "接口音色 tts_api.voice",
+    "接口密钥 tts_api.api_key（留空读环境变量）",
+    "密钥环境变量 tts_api.api_key_env",
+    "接口语速 tts_api.speed",
     "保存",
 ];
+
+/// 接口语速候选：取 OpenAI `speed` 的常用档位（其它 0.25~4.0 的值可在配置里手改）。
+/// 文案写成 `1` 而不是 `1.0`：界面上的值要与候选表逐字相等，否则第一次按方向键会从首项重开。
+pub const TTS_API_SPEEDS: [&str; 6] = ["0.5", "0.75", "1", "1.25", "1.5", "2"];
 
 /// 推理设备候选（对映 Python 的 `_DEVICE_OPTIONS`）。
 ///
@@ -710,6 +730,15 @@ pub struct TtsDraft {
     pub model_dir: String,
     pub device: String,
     pub thread_count: i64,
+    /// `true` = 走 `[tts_api]` 接口合成；`false` = 本地 ONNX 推理。
+    pub api_enabled: bool,
+    pub api_base_url: String,
+    pub api_model: String,
+    pub api_voice: String,
+    pub api_key: String,
+    pub api_key_env: String,
+    /// 接口语速。写成字符串：`TtsDraft` 要能 `Eq`（f64 不行），保存时再解析。
+    pub api_speed: String,
 }
 
 /// TTS 页的初值（宿主在打开面板时读配置与音色库给出）。
@@ -727,6 +756,18 @@ pub struct TtsValues {
     pub custom_voices: Vec<String>,
     /// 模型状态行文案（对映 Python 的 `_model_status_text`）。
     pub model_status: String,
+    /// 接口后端（`[tts_api]`）的初值。
+    pub api_enabled: bool,
+    pub api_base_url: String,
+    pub api_model: String,
+    pub api_voice: String,
+    pub api_key: String,
+    pub api_key_env: String,
+    pub api_speed: String,
+    /// 本构建是否带本地 ONNX 推理（`false` 时后端行给出提示，不允许选本地）。
+    pub local_engine_available: bool,
+    /// 接口地址与密钥是否已就绪（后端行的提示文案用）。
+    pub api_ready: bool,
 }
 
 /// TTS 页一行在渲染层的视图。
@@ -748,6 +789,18 @@ struct TtsState {
     thread_count: i64,
     voices: Vec<String>,
     custom_voices: Vec<String>,
+    /// 接口后端草稿（`[tts_api]`）。
+    api_enabled: bool,
+    api_base_url: String,
+    api_model: String,
+    api_voice: String,
+    api_key: String,
+    api_key_env: String,
+    api_speed: String,
+    /// 本构建是否带本地 ONNX 推理（后端行提示用）。
+    local_engine_available: bool,
+    /// 接口地址与密钥是否已就绪（后端行提示用）。
+    api_ready: bool,
     /// 删除行的选中下标（在 `custom_voices` 内循环）。
     delete_index: usize,
     clone_name: String,
@@ -770,6 +823,8 @@ impl TtsState {
         } else {
             values.voices
         };
+        // 本地推理没编译时，界面不能把后端定在「本地」，否则用户会以为能用。
+        let api_enabled = values.api_enabled || !values.local_engine_available;
         Self {
             enabled: values.enabled,
             auto_play: values.auto_play,
@@ -779,6 +834,15 @@ impl TtsState {
             thread_count: values.thread_count,
             voices,
             custom_voices: values.custom_voices,
+            api_enabled,
+            api_base_url: values.api_base_url,
+            api_model: values.api_model,
+            api_voice: values.api_voice,
+            api_key: values.api_key,
+            api_key_env: values.api_key_env,
+            api_speed: values.api_speed,
+            local_engine_available: values.local_engine_available,
+            api_ready: values.api_ready,
             delete_index: 0,
             clone_name: String::new(),
             clone_audio: String::new(),
@@ -797,6 +861,13 @@ impl TtsState {
             model_dir: self.model_dir.clone(),
             device: self.device.clone(),
             thread_count: self.thread_count,
+            api_enabled: self.api_enabled,
+            api_base_url: self.api_base_url.clone(),
+            api_model: self.api_model.clone(),
+            api_voice: self.api_voice.clone(),
+            api_key: self.api_key.clone(),
+            api_key_env: self.api_key_env.clone(),
+            api_speed: self.api_speed.clone(),
         }
     }
 
@@ -821,7 +892,29 @@ impl TtsState {
             TTS_ROW_MODEL_DIR => self.model_dir.clone(),
             TTS_ROW_DEVICE => self.device.clone(),
             TTS_ROW_THREADS => self.thread_count.to_string(),
+            TTS_ROW_BACKEND => self.backend_text(),
+            TTS_ROW_API_BASE_URL => self.api_base_url.clone(),
+            TTS_ROW_API_MODEL => self.api_model.clone(),
+            TTS_ROW_API_VOICE => self.api_voice.clone(),
+            TTS_ROW_API_KEY => mask_api_key(&self.api_key),
+            TTS_ROW_API_KEY_ENV => self.api_key_env.clone(),
+            TTS_ROW_API_SPEED => self.api_speed.clone(),
             _ => String::new(),
+        }
+    }
+
+    /// 后端行的显示文案：把当前后端与「少了什么」说清楚。
+    fn backend_text(&self) -> String {
+        if self.api_enabled {
+            if self.api_ready {
+                "接口合成".to_string()
+            } else {
+                "接口合成（未配密钥）".to_string()
+            }
+        } else if self.local_engine_available {
+            "本地推理".to_string()
+        } else {
+            "本地推理（本构建未编译）".to_string()
         }
     }
 
@@ -867,6 +960,19 @@ impl TtsState {
                 let next = cycle_text(&options, &current, direction);
                 self.thread_count = next.parse().unwrap_or(self.thread_count);
             }
+            TTS_ROW_BACKEND => {
+                // 本地推理没编译时只能停在接口后端（否则用户会配出一个跑不通的组合）。
+                if self.local_engine_available {
+                    self.api_enabled = !self.api_enabled;
+                } else {
+                    self.api_enabled = true;
+                }
+            }
+            TTS_ROW_API_SPEED => {
+                let options: Vec<String> =
+                    TTS_API_SPEEDS.iter().map(|item| (*item).to_string()).collect();
+                self.api_speed = cycle_text(&options, &self.api_speed, direction);
+            }
             _ => {}
         }
     }
@@ -879,6 +985,13 @@ impl TtsState {
         self.model_dir = draft.model_dir.clone();
         self.device = draft.device.clone();
         self.thread_count = draft.thread_count;
+        self.api_enabled = draft.api_enabled;
+        self.api_base_url = draft.api_base_url.clone();
+        self.api_model = draft.api_model.clone();
+        self.api_voice = draft.api_voice.clone();
+        self.api_key = draft.api_key.clone();
+        self.api_key_env = draft.api_key_env.clone();
+        self.api_speed = draft.api_speed.clone();
     }
 
     /// 宿主回填：自定义音色库变化（克隆完成 / 删除后重载）。
@@ -900,6 +1013,13 @@ impl TtsState {
             TTS_ROW_CLONE_NAME => self.clone_name.clone(),
             TTS_ROW_CLONE_AUDIO => self.clone_audio.clone(),
             TTS_ROW_MODEL_DIR => self.model_dir.clone(),
+            TTS_ROW_API_BASE_URL => self.api_base_url.clone(),
+            TTS_ROW_API_MODEL => self.api_model.clone(),
+            TTS_ROW_API_VOICE => self.api_voice.clone(),
+            // 密钥按「当前值」编辑（不预先填明文，避免在界面上完整暴露）；
+            // 想改环境变量名走下一行，想清空则整行删完再确认。
+            TTS_ROW_API_KEY => String::new(),
+            TTS_ROW_API_KEY_ENV => self.api_key_env.clone(),
             _ => return,
         };
         let mut composer = Composer::default();
@@ -916,6 +1036,16 @@ impl TtsState {
             TTS_ROW_CLONE_NAME => self.clone_name = text,
             TTS_ROW_CLONE_AUDIO => self.clone_audio = text,
             TTS_ROW_MODEL_DIR => self.model_dir = text,
+            TTS_ROW_API_KEY => {
+                // 空输入 = 不修改（避免误触把已存密钥抹掉）；要清空请在配置里手改。
+                if !text.trim().is_empty() {
+                    self.api_key = text.trim().to_string();
+                }
+            }
+            TTS_ROW_API_BASE_URL => self.api_base_url = text,
+            TTS_ROW_API_MODEL => self.api_model = text,
+            TTS_ROW_API_VOICE => self.api_voice = text,
+            TTS_ROW_API_KEY_ENV => self.api_key_env = text,
             _ => {}
         }
     }
@@ -927,6 +1057,20 @@ fn is_tts_action_row(row: usize) -> bool {
         row,
         TTS_ROW_CLONE_BROWSE | TTS_ROW_CLONE_RUN | TTS_ROW_DOWNLOAD | TTS_ROW_SAVE
     )
+}
+
+/// 密钥在界面上的展示：只露末 4 位，其余打码；空值直接显示「（未配置）」。
+fn mask_api_key(api_key: &str) -> String {
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return "（未配置）".to_string();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 4 {
+        return "*".repeat(chars.len());
+    }
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{}…{}", "*".repeat(4), tail)
 }
 
 /// 在候选表里按方向循环取值；当前值不在候选表里时从首项起步。
@@ -2264,11 +2408,18 @@ impl SettingsState {
         let row = self.tts.focused;
         match row {
             TTS_ROW_ENABLED | TTS_ROW_AUTO_PLAY | TTS_ROW_VOICE | TTS_ROW_DEVICE
-            | TTS_ROW_THREADS => {
+            | TTS_ROW_THREADS | TTS_ROW_BACKEND | TTS_ROW_API_SPEED => {
                 self.tts.cycle(row, 1);
                 None
             }
-            TTS_ROW_CLONE_NAME | TTS_ROW_CLONE_AUDIO | TTS_ROW_MODEL_DIR => {
+            TTS_ROW_CLONE_NAME
+            | TTS_ROW_CLONE_AUDIO
+            | TTS_ROW_MODEL_DIR
+            | TTS_ROW_API_BASE_URL
+            | TTS_ROW_API_MODEL
+            | TTS_ROW_API_VOICE
+            | TTS_ROW_API_KEY
+            | TTS_ROW_API_KEY_ENV => {
                 self.tts.begin_input(row);
                 None
             }
@@ -5109,5 +5260,146 @@ mod tests {
         );
         assert_eq!(state.mcp_server_rows().len(), 1);
         assert_eq!(state.mcp_server_rows()[0].name, "net");
+    }
+
+    /// TTS 后端行：按「接口开关 + 本构建是否带本地推理」给出可读文案。
+    #[test]
+    fn tts_backend_row_reports_backend_and_capability() {
+        let mut values = TtsValues {
+            api_enabled: false,
+            local_engine_available: true,
+            ..TtsValues::default()
+        };
+        values.api_ready = false;
+        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(
+            state.tts_rows()[TTS_ROW_BACKEND].value,
+            "本地推理",
+            "带本地推理的构建里，接口关闭时后端是本地"
+        );
+
+        // 没编译本地推理：后端强制停在接口，并提示缺密钥。
+        let values = TtsValues {
+            api_enabled: false,
+            local_engine_available: false,
+            ..TtsValues::default()
+        };
+        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(
+            state.tts_rows()[TTS_ROW_BACKEND].value,
+            "接口合成（未配密钥）"
+        );
+        // 尝试切换也停在接口：不允许配出跑不通的组合。
+        state.handle_key(KeyCode::Down); // 聚焦到后端行（第 0 行起步）
+        for _ in 0..(TTS_ROW_BACKEND) {
+            state.handle_key(KeyCode::Down);
+        }
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.tts_rows()[TTS_ROW_BACKEND].value, "接口合成（未配密钥）");
+
+        // 密钥就绪时只显示后端名。
+        let values = TtsValues {
+            api_enabled: true,
+            api_ready: true,
+            local_engine_available: false,
+            ..TtsValues::default()
+        };
+        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.tts_rows()[TTS_ROW_BACKEND].value, "接口合成");
+    }
+
+    /// 接口字段可在面板里编辑，并随保存草稿一起送出去。
+    #[test]
+    fn tts_api_rows_edit_into_save_draft() {
+        let values = TtsValues {
+            api_enabled: true,
+            api_base_url: "https://tts.example.com/v1".to_string(),
+            api_model: String::new(),
+            api_voice: "alloy".to_string(),
+            api_speed: "1".to_string(),
+            local_engine_available: false,
+            ..TtsValues::default()
+        };
+        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..TTS_ROW_API_MODEL {
+            state.handle_key(KeyCode::Down);
+        }
+        state.handle_key(KeyCode::Enter); // 进入输入态
+        for ch in "cosyvoice-2".chars() {
+            state.handle_key(KeyCode::Char(ch));
+        }
+        state.handle_key(KeyCode::Enter); // 提交输入
+        assert_eq!(state.tts_rows()[TTS_ROW_API_MODEL].value, "cosyvoice-2");
+
+        for _ in 0..(TTS_ROW_SAVE - TTS_ROW_API_MODEL) {
+            state.handle_key(KeyCode::Down);
+        }
+        let event = state.handle_key(KeyCode::Enter);
+        let Some(SettingsEvent::Apply(SettingsChange::Tts(TtsChange::Save(draft)))) = event else {
+            panic!("保存行应当产出 Save 事件，实际 {event:?}");
+        };
+        assert!(draft.api_enabled);
+        assert_eq!(draft.api_base_url, "https://tts.example.com/v1");
+        assert_eq!(draft.api_model, "cosyvoice-2");
+        assert_eq!(draft.api_voice, "alloy");
+        assert_eq!(draft.api_speed, "1");
+    }
+
+    /// 密钥行：界面只露末 4 位；空白输入不改动已存密钥（避免误抹）。
+    #[test]
+    fn tts_api_key_is_masked_and_blank_input_keeps_previous() {
+        assert_eq!(mask_api_key(""), "（未配置）");
+        assert_eq!(mask_api_key("   "), "（未配置）");
+        assert_eq!(mask_api_key("sk-abcdef1234"), "****…1234");
+        assert_eq!(mask_api_key("key1"), "****");
+
+        let values = TtsValues {
+            api_enabled: true,
+            api_key: "sk-existing".to_string(),
+            local_engine_available: false,
+            ..TtsValues::default()
+        };
+        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..TTS_ROW_API_KEY {
+            state.handle_key(KeyCode::Down);
+        }
+        assert_eq!(state.tts_rows()[TTS_ROW_API_KEY].value, "****…ting");
+        state.handle_key(KeyCode::Enter); // 进入输入态（缓冲为空）
+        state.handle_key(KeyCode::Enter); // 直接提交
+        assert_eq!(
+            state.tts_rows()[TTS_ROW_API_KEY].value, "****…ting",
+            "空输入不得抹掉已存密钥"
+        );
+    }
+
+    /// 语速行按候选档位循环。
+    #[test]
+    fn tts_api_speed_row_cycles_candidates() {
+        let values = TtsValues {
+            api_enabled: true,
+            api_speed: "1".to_string(),
+            local_engine_available: false,
+            ..TtsValues::default()
+        };
+        let mut state = SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_tts(values));
+        goto(&mut state, "tts");
+        state.handle_key(KeyCode::Enter);
+        for _ in 0..TTS_ROW_API_SPEED {
+            state.handle_key(KeyCode::Down);
+        }
+        state.handle_key(KeyCode::Right);
+        assert_eq!(state.tts_rows()[TTS_ROW_API_SPEED].value, "1.25");
+        state.handle_key(KeyCode::Left);
+        assert_eq!(state.tts_rows()[TTS_ROW_API_SPEED].value, "1");
     }
 }

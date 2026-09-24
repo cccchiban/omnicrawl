@@ -33,6 +33,8 @@ pub mod method {
     pub const SESSION_ARCHIVE: &str = "session.archive";
     /// 查询用户提示历史（只读展示，不注入模型上下文）。
     pub const SESSION_HISTORY: &str = "session.history";
+    /// 读取当前会话的有效事件流（只读回放，供宿主重建对话视图）。
+    pub const SESSION_EVENTS: &str = "session.events";
     /// 清空当前对话并开启新会话。
     pub const SESSION_NEW: &str = "session.new";
     /// 恢复指定会话：内核切到该会话并用转录重建运行期历史。
@@ -41,6 +43,8 @@ pub mod method {
     pub const SUBAGENT_RUN: &str = "subagent.run";
     /// 把宿主产生的文本作为 assistant 消息注入内核会话历史（下一轮请求可见）。
     pub const SESSION_APPEND: &str = "session.append";
+    /// 运行中切换工作区：内核把自持会话的工作区切到新根并转录 `workspace_switched`。
+    pub const WORKSPACE_SWITCH: &str = "workspace.switch";
     pub const SHUTDOWN: &str = "shutdown";
 
     // 内核 → 宿主（请求，需要宿主回响应）
@@ -568,6 +572,16 @@ fn default_append_role() -> String {
     "assistant".to_string()
 }
 
+/// `workspace.switch` 的负载：宿主已解析并校验过的新工作区绝对路径。
+///
+/// 内核只负责会话侧的一致性：把自持会话的工作区指向新根，并按 Python
+/// `_append_session_event("workspace_switched", ...)` 的口径转录 `{from, to}`。
+/// 工具表、MCP、临时目录等宿主侧资源由宿主自己重建，协议不传。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceSwitchParams {
+    pub path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnCancelParams {
     pub turn_id: String,
@@ -600,6 +614,8 @@ pub enum Command {
     SessionArchive,
     /// 查询用户提示历史。
     SessionHistory(SessionHistoryParams),
+    /// 读取当前会话的有效事件流（回退投影后的视图，与 UI 回放同源）。
+    SessionEvents,
     /// 清空当前对话并开启新会话。
     SessionNew,
     /// 恢复指定会话。
@@ -608,6 +624,8 @@ pub enum Command {
     SubagentRun(SubagentRunParams),
     /// 把宿主产生的 assistant 文本追加到内核会话历史。
     SessionAppend(SessionAppendParams),
+    /// 运行中切换工作区：更新自持会话的工作区并转录 `workspace_switched`。
+    WorkspaceSwitch(WorkspaceSwitchParams),
     /// 要求内核退出。
     Shutdown,
 }
@@ -633,10 +651,12 @@ impl Command {
         method::SESSION_RENAME,
         method::SESSION_ARCHIVE,
         method::SESSION_HISTORY,
+        method::SESSION_EVENTS,
         method::SESSION_NEW,
         method::SESSION_RESUME,
         method::SUBAGENT_RUN,
         method::SESSION_APPEND,
+        method::WORKSPACE_SWITCH,
         method::SHUTDOWN,
     ];
 
@@ -653,10 +673,12 @@ impl Command {
             Self::SessionRename(_) => method::SESSION_RENAME,
             Self::SessionArchive => method::SESSION_ARCHIVE,
             Self::SessionHistory(_) => method::SESSION_HISTORY,
+            Self::SessionEvents => method::SESSION_EVENTS,
             Self::SessionNew => method::SESSION_NEW,
             Self::SessionResume(_) => method::SESSION_RESUME,
             Self::SubagentRun(_) => method::SUBAGENT_RUN,
             Self::SessionAppend(_) => method::SESSION_APPEND,
+            Self::WorkspaceSwitch(_) => method::WORKSPACE_SWITCH,
             Self::Shutdown => method::SHUTDOWN,
         }
     }
@@ -674,10 +696,12 @@ impl Command {
             Self::SessionRename(payload) => payload_value(payload),
             Self::SessionArchive => json!({}),
             Self::SessionHistory(payload) => payload_value(payload),
+            Self::SessionEvents => json!({}),
             Self::SessionNew => json!({}),
             Self::SessionResume(payload) => payload_value(payload),
             Self::SubagentRun(payload) => payload_value(payload),
             Self::SessionAppend(payload) => payload_value(payload),
+            Self::WorkspaceSwitch(payload) => payload_value(payload),
             Self::Shutdown => json!({}),
         }
     }
@@ -705,10 +729,12 @@ impl Command {
             method::SESSION_RENAME => Command::SessionRename(from_params(params)?),
             method::SESSION_ARCHIVE => Command::SessionArchive,
             method::SESSION_HISTORY => Command::SessionHistory(from_params(params)?),
+            method::SESSION_EVENTS => Command::SessionEvents,
             method::SESSION_NEW => Command::SessionNew,
             method::SESSION_RESUME => Command::SessionResume(from_params(params)?),
             method::SUBAGENT_RUN => Command::SubagentRun(from_params(params)?),
             method::SESSION_APPEND => Command::SessionAppend(from_params(params)?),
+            method::WORKSPACE_SWITCH => Command::WorkspaceSwitch(from_params(params)?),
             method::SHUTDOWN => Command::Shutdown,
             other => return Err(BridgeError::UnknownMethod(other.to_string())),
         };

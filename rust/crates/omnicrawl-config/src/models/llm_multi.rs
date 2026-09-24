@@ -44,6 +44,8 @@ struct ModelSource {
     max_output_tokens: i64,
     temperature: Option<f64>,
     native_vision: Option<bool>,
+    /// 自定义模型条目声明的 prompt 缓存能力（其余来源保持 `None`）。
+    prompt_cache: Option<bool>,
     provider_options: Table,
 }
 
@@ -60,6 +62,7 @@ impl ModelSource {
             max_output_tokens: 0,
             temperature: None,
             native_vision: None,
+            prompt_cache: None,
             provider_options: Table::new(),
         }
     }
@@ -79,6 +82,7 @@ impl ModelSource {
         self.temperature = record.temperature;
         self.provider_options = record.provider_options.clone();
         self.native_vision = record.native_vision;
+        self.prompt_cache = record.capabilities.prompt_cache;
     }
 }
 
@@ -368,6 +372,7 @@ pub fn load_multi_model_llm_config(
         } else {
             "custom".to_string()
         },
+        prompt_cache: state.prompt_cache,
         api_key_env,
         user_agent,
         request_timeout_seconds: timeout,
@@ -484,6 +489,9 @@ pub fn llm_config_to_profile_and_descriptor(
         tools: Some(true),
         parallel_tool_calls: Some(true),
         reasoning: Some(config.thinking_enabled()),
+        // 自定义模型声明的 prompt 缓存能力要进描述符，否则 Runtime 侧的门禁会
+        // 看不到它（对应 Python `llm_config_to_profile_and_descriptor` 的同名字段）。
+        prompt_cache: config.prompt_cache,
         context_window_tokens: config.context_window_tokens,
         max_output_tokens: config.max_output_tokens,
         ..Default::default()
@@ -546,6 +554,8 @@ pub fn apply_model_selection(
         model: token.to_string(),
         max_output_tokens: 0,
         temperature: None,
+        // 换模型就重置能力声明：上一模型的 prompt_cache 不该跟着新模型走。
+        prompt_cache: None,
         native_vision: selection_native_vision(env, "", &config.profile_id),
         protocol: if config.protocol.is_empty() {
             "openai_chat_completions".to_string()
@@ -618,6 +628,7 @@ fn config_from_custom_record(
         },
         catalog_key: record.key.clone(),
         model_source: "custom".to_string(),
+        prompt_cache: record.capabilities.prompt_cache,
         api_key_env: profile.api_key_env.clone(),
         user_agent: profile.user_agent.clone(),
         request_timeout_seconds: if profile.request_timeout_seconds > 0.0 {
@@ -657,6 +668,7 @@ fn config_from_profile_model(
             model: model_id.to_string(),
             max_output_tokens: 0,
             temperature: None,
+            prompt_cache: None,
             native_vision: selection_native_vision(env, "", profile_id),
             profile_id: profile_id.to_string(),
             provider: if config.provider.is_empty() {
@@ -703,6 +715,7 @@ fn config_from_profile_model(
         },
         max_output_tokens: 0,
         temperature: None,
+        prompt_cache: None,
         native_vision: selection_native_vision(env, "", &profile.id),
         profile_id: profile.id.clone(),
         provider: profile.provider.clone(),

@@ -49,7 +49,15 @@ fn resolve_path(path: &Path) -> PathBuf {
 pub fn read_wav(path: &Path) -> Result<(AudioBuffer, u32), String> {
     let path = resolve_path(path);
     let bytes = std::fs::read(&path).map_err(|error| format!("{error}"))?;
-    let (channels, sample_width, sample_rate, raw) = parse_wav(&bytes)?;
+    read_wav_bytes(&bytes)
+}
+
+/// 从内存里的 WAV 字节解码出（声道优先波形, 采样率）。
+///
+/// 与 [`read_wav`] 同一套解码逻辑，供不需要落盘临时文件的调用方使用
+/// （例如接口合成直接拿到响应体就地解析）。支持 8/16/24/32 位 PCM。
+pub fn read_wav_bytes(bytes: &[u8]) -> Result<(AudioBuffer, u32), String> {
+    let (channels, sample_width, sample_rate, raw) = parse_wav(bytes)?;
     if channels == 0 {
         return Err("WAV 声道数为 0。".to_string());
     }

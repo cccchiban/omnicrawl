@@ -224,6 +224,24 @@ fn handshake_declares_tools_and_reports_rejection() {
         .unwrap_or_default();
     assert!(declared > 0, "握手必须声明工具表");
 
+    // 稳定前缀身份必须在工具表就位后组装：七字段齐全，且工具表哈希非空。
+    let identity = initialize
+        .params
+        .as_ref()
+        .and_then(|params| params.get("model"))
+        .and_then(|model| model.get("prompt_cache_identity"))
+        .and_then(Value::as_object)
+        .expect("握手必须装配 prompt_cache_identity");
+    assert_eq!(identity.len(), 7, "身份指纹七字段：{identity:?}");
+    assert!(
+        identity
+            .get("tool_schema_hash")
+            .and_then(Value::as_str)
+            .map(|hash| !hash.is_empty())
+            .unwrap_or(false),
+        "工具表哈希不能为空：{identity:?}"
+    );
+
     let (client, _, pipe) = kernel();
     pipe.push(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"负载字段不符"}}"#);
     let mut rejected = runner(client, &root);

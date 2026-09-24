@@ -1570,6 +1570,30 @@ fn path_text(path: &Path) -> String {
     }
 }
 
+/// `/workspace` 带参数时的即时反馈。
+///
+/// 文案只有这一处来源：命令层的内联延迟执行体与宿主的慢命令 worker（TUI 把重建放
+/// 到工作线程）都读它，避免两份"正在切换"。
+pub const WORKSPACE_SWITCH_PENDING_MESSAGE: &str = "正在切换工作区";
+
+/// `/workspace` 切换成功后的回执文案（`root` 是解析后的根，不是用户输入的原文）。
+pub fn workspace_switch_success_message(root: &Path) -> String {
+    format!("已切换工作区：{}", path_text(root))
+}
+
+/// 把新工作区写回 `config.toml`（跨进程同步：远程入口在任务开始前重读并跟随）。
+///
+/// 失败只提示不阻断：切换本身已经生效，持久化只是让下一个进程看到同一个根。
+pub fn persist_workspace_root(agent: &dyn CommandAgent, workspace: &str) {
+    let environment = agent.config_environment();
+    if let Err(error) = save_workspace_root(&environment, Path::new(workspace), None) {
+        eprintln!(
+            "[commands] 工作区持久化到 config.toml 失败：{}",
+            error.message()
+        );
+    }
+}
+
 /// 查询或切换工作区。
 ///
 /// 无参数时是只读查询，直接返回；带参数时把重建与持久化推迟到 `deferred`，
@@ -1590,19 +1614,11 @@ pub fn handle_workspace_command(ctx: &CommandContext<'_>) -> CommandResult {
             Ok(root) => root,
             Err(error) => return CommandResult::message(error.to_string()),
         };
-        // 跨进程同步：把新工作区写回 config.toml，远程入口（Telegram Bot）
-        // 在任务开始前重读并跟随；失败不阻断切换。
-        let environment = agent.config_environment();
-        if let Err(error) = save_workspace_root(&environment, Path::new(&workspace), None) {
-            eprintln!(
-                "[commands] 工作区持久化到 config.toml 失败：{}",
-                error.message()
-            );
-        }
-        CommandResult::message(format!("已切换工作区：{}", path_text(&root)))
+        persist_workspace_root(agent, &workspace);
+        CommandResult::message(workspace_switch_success_message(&root))
     };
 
-    CommandResult::message("正在切换工作区")
+    CommandResult::message(WORKSPACE_SWITCH_PENDING_MESSAGE)
         .with_refresh_context()
         .with_workspace_switch_requested()
         .with_deferred(Box::new(switch_workspace))

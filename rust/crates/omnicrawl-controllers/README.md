@@ -25,7 +25,7 @@ git 快照能力由宿主实现，crate 内不起子进程。
 | `controllers/turn/loop.py`（文本规则） | `src/turn/turn_text.rs` | 短「继续/重试」识别与上一轮任务还原、被取消回合的历史摘要、助手消息的推理字段 |
 | `agent/context/prompt_context.py`、`controllers/turn/loop.py`（上下文消息） | `src/turn/context_messages.rs` | 项目规范消息外壳（来源 + 权限边界）、插件 `context.build.before` 附加上下文的注入规则与收尾载荷 |
 | `agent/context/environment.py` | `src/turn/environment.rs` | 运行环境摘要（`runtime_environment_context`）、Agent 运行窗口/终端线索探测、Windows 进程链（Toolhelp API + 进程级缓存）；「Python 版本」两行改写为「内核」两行 |
-| `controllers/turn/loop.py`（工具调用事件） | `src/turn/tool_events.rs` | 原始 assistant 消息里取 `arguments_json`/`function_name`（按 ID 或函数名匹配首个命中）、协议原文不落盘的字段边界 |
+| `controllers/turn/loop.py`（工具调用事件） | `src/turn/tool_events.rs` | 原始 assistant 消息里取 `arguments_json`/`function_name`（按 ID 或函数名匹配首个命中）、协议原文不落盘的字段边界，以及 `tool_call_requested` / `tool_result` 两个落盘载荷的构造（键序与 Python 内联字典一致，Rust 侧单测自检，见模块内 `mod tests`） |
 | `controllers/turn/loop.py`（技能命令） | `src/turn/skill_command.rs` | `/skill:<名> [任务]` 的解析与加载文案（未命中带可用列表、命中无任务给默认提示） |
 | `controllers/subagents/worktrees.py`、`orchestration.py`（判定面） | `src/subagents/` | worktree 登记键与查找归一化、会话去重投影、产物摘要渲染、丢弃保护判定、失败描述、Fork 上下文冻结、公开结果投影、后台通知注入、结果校验与定义缺失文案 |
 | `agent/subagents/worktree.py`（判定面） | `src/subagents/worktrees.rs` | 分支名片段清洗（非安全字符折叠 + 48 字符截断）、主树脏时的门禁文案（8 行预览）、worktree 变更统计（目录不存在即无变更、`rev-list` 失败保守记 1） |
@@ -83,7 +83,10 @@ git 快照能力由宿主实现，crate 内不起子进程。
   事件投影编排在 `src/store.rs`。
 - `undo.py` 的 git 应用段：`omnicrawl-cli/src/undo.rs`。
 
-仍留在宿主侧的零星项：`/workspace` 的运行中切换（主机侧重建工具表 / 内核会话，TUI 仍报未接线）。
+仍留在宿主侧的零星项：`/workspace` 的运行中切换——宿主负责预备新工具表/MCP/提示词运行时、插件
+`workspace.switch.before`/`after`、旧资源收尾与内核 `workspace.switch` 下发，TUI 已按窄口径接线；
+缺的是切换前的子 Agent 排空与 pending worktree 阻止（决策层已就位，宿主还拿不到 worktree 清单）
+与准备失败时的 `workspace.switch.error` 钩子。
 
 `/memory:clean` 已不需要内核入口：记忆工具的执行体在宿主（`omnicrawl-host`），
 宿主的 `TuiHostAgent::clean_memory` 直接按三个作用域调 `omnicrawl-session` 的

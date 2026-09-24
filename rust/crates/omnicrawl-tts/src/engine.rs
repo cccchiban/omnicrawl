@@ -18,27 +18,16 @@ use crate::sampler::{normalize_sample_mode, Pcg64, SAMPLE_MODE_GREEDY};
 use crate::tokenizer::TtsTokenizer;
 use crate::voices;
 
+// 合成结果放在 `result` 模块（接口后端也要用），这里重新导出，
+// 保持 `omnicrawl_tts::engine::TtsResult` 这个既有导入路径不变。
+pub use crate::result::TtsResult;
+
 const DEFAULT_VOICE_CLONE_INTER_CHUNK_PAUSE_SHORT_SECONDS: f64 = 0.40;
 const DEFAULT_VOICE_CLONE_INTER_CHUNK_PAUSE_LONG_SECONDS: f64 = 0.24;
 
 const SENTENCE_END_PUNCTUATION: &str = ".!?。！？；;";
 const CLAUSE_SPLIT_PUNCTUATION: &str = "，,、；;：:";
 const CLOSING_PUNCTUATION: &str = "\"'”’)]}）】》」』";
-
-/// 一次合成的结果。
-#[derive(Debug, Clone)]
-pub struct TtsResult {
-    pub audio_path: PathBuf,
-    pub sample_rate: u32,
-    /// 声道优先波形 `[channels, samples]`。
-    pub waveform: AudioBuffer,
-    pub duration_seconds: f64,
-    /// 生成的音频 token 帧数。
-    pub audio_token_frames: usize,
-    pub text_chunks: Vec<String>,
-    pub sample_mode: String,
-    pub voice: String,
-}
 
 /// 单块合成的中间结果。
 #[derive(Debug, Clone)]

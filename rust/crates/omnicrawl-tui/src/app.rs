@@ -19,10 +19,12 @@ use serde_json::{json, Value};
 use omnicrawl_commands::framework::{Channel, CommandResult, ParsedCommand};
 use omnicrawl_commands::slash::{
     build_review_task_prompt, check_review_preconditions, format_review_report,
-    registry as command_registry, REVIEW_TASK_DESCRIPTION,
+    registry as command_registry, workspace_switch_success_message, REVIEW_TASK_DESCRIPTION,
+    WORKSPACE_SWITCH_PENDING_MESSAGE,
 };
 use omnicrawl_commands::SessionSummary;
 use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::core::workspace::save_workspace_root;
 use omnicrawl_config::core::settings::{
     load_feature_enabled, load_show_thinking, save_context_compaction_trigger_percent,
     save_context_window_tokens, save_feature_enabled, save_mcp_config, save_show_thinking,
@@ -57,6 +59,9 @@ use omnicrawl_config::features::tools::{
 use omnicrawl_config::features::tts::{
     load_tts_configuration, save_tts_configuration, TtsConfiguration,
 };
+use omnicrawl_config::features::tts_api::{
+    load_tts_api_configuration, save_tts_api_configuration, TtsApiConfiguration,
+};
 use omnicrawl_config::models::channels::{
     default_channel, load_channel_configuration, provider_options, save_channel_configuration,
     ChannelConfig, ChannelConfiguration,
@@ -73,7 +78,11 @@ use omnicrawl_config::models::vision::{
 };
 use omnicrawl_controllers::settings::context_compaction_trigger_tokens;
 use omnicrawl_controllers::subagents::definitions::AgentDefinitionRegistry;
+use omnicrawl_controllers::subagents::tasks::is_terminal;
 use omnicrawl_controllers::vision_proxy::vision_proxy_configured;
+use omnicrawl_controllers::workspace::{
+    pending_worktrees_error, resolve_switch_target, subagent_drain_error, WorktreeRef,
+};
 use omnicrawl_controllers::AgentError;
 use omnicrawl_core::{ToolCall, ToolResult};
 use omnicrawl_host::plugins::PluginHost;
@@ -116,6 +125,7 @@ use crate::ui::settings::{
     VisionChange, VisionModelRef, SUBAGENT_ADVANCED_SPECS,
 };
 use crate::ui::splash::{report_startup_log, LogLevel};
+use omnicrawl_tts::api::ApiTtsConfig;
 use omnicrawl_tts::config::TtsConfig;
 use omnicrawl_tts::download::{download_models_into, models_ready};
 use omnicrawl_tts::engine::TtsEngine;
@@ -130,6 +140,40 @@ const SCROLL_STEP: isize = 1;
 const PAGE_STEP: isize = 10;
 /// 鼠标滚轮一格滚动的行数（Textual 的滚轮一步也是按行推进，这里取同一观感）。
 const WHEEL_STEP: isize = 3;
+
+/// 退出前等一次在途慢命令结果的时长（拿得到的候选子系统要 close 干净）。
+const SLOW_TASK_SETTLE_MS: u64 = 200;
+
+/// 装配工作区切换的候选子系统（工具表 + MCP 连接 + 提示词运行时）。
+///
+/// 放在模块级自由函数里是因为它同时被同步入口与工作线程调用：只读快照 + 新根，
+/// 不碰 `App` 与旧工作区的任何东西（因此可以跨线程）。失败时主动 close 已经建好的
+/// 候选资源（MCP 与后台任务），不留孤儿进程。
+fn prepare_workspace(
+    environment: &ConfigEnvironment,
+    options: &Options,
+    root: &Path,
+    registry_options: RegistryOptions,
+    command_timeout_seconds: i64,
+) -> Result<PreparedWorkspace, String> {
+    let registry = match ToolRegistry::new(root, &registry_options, command_timeout_seconds) {
+        Ok(registry) => registry,
+        Err(error) => {
+            if let Some(mcp) = registry_options.mcp.as_ref() {
+                mcp.close();
+            }
+            return Err(format!("工作区切换失败：{}", error.message));
+        }
+    };
+    match load_prompt_runtime(environment, options, root) {
+        Ok(prompt) => Ok(PreparedWorkspace { registry, prompt }),
+        Err(error) => {
+            registry.close_monitors();
+            registry.close_mcp();
+            Err(error)
+        }
+    }
+}
 
 /// 工具调用前的插件守卫：`tool.call.before` → `tool.approval.before` → `tool.execute.before`。
 ///
@@ -178,6 +222,50 @@ struct ToolCompletion {
     call: ToolCall,
     result: ToolResult,
     vision: Option<host::VisionPayload>,
+}
+
+/// 按工作区装配提示词运行时：模板 → system prompt、AGENTS.md → 项目规范、
+/// Skill 目录 → 索引。
+///
+/// 启动（`App::new`）与运行中切换工作区（`/workspace`）共用同一份规则：两条路径
+/// 的系统提示词/项目规范口径必须一致，否则切完工作区后上下文会「换了一份规范」。
+/// 装配失败只降级为「只有命令行 system prompt」的旧行为，不阻断界面；两次都失败
+/// 才算致命。
+fn load_prompt_runtime(
+    environment: &ConfigEnvironment,
+    options: &Options,
+    workspace: &Path,
+) -> Result<PromptRuntime, String> {
+    let mut prompt_options = PromptOptions::new(workspace.to_path_buf());
+    prompt_options.agent_temp_dir = omnicrawl_host::prompt::DEFAULT_AGENT_TEMP_DIR.to_string();
+    prompt_options.workspace_detection_summary =
+        omnicrawl_config::core::context::detect_project_context(environment, None)
+            .detection_summary();
+    prompt_options.system_prompt_override = Some(options.system_prompt.clone());
+    prompt_options.advisor_active = options.advisor.enabled;
+    prompt_options.advisor_blacklisted = options
+        .advisor
+        .disabled_for_models
+        .iter()
+        .any(|name| name == &options.model);
+    match PromptRuntime::load(environment, prompt_options) {
+        Ok(prompt) => Ok(prompt),
+        Err(error) => {
+            eprintln!("[tui] 系统提示词装配失败，改用命令行给的文本：{error}");
+            let mut fallback = PromptOptions::new(workspace.to_path_buf());
+            fallback.system_prompt_override = Some(options.system_prompt.clone());
+            PromptRuntime::load(environment, fallback)
+                .map_err(|error| format!("系统提示词装配失败：{error}"))
+        }
+    }
+}
+
+/// 两个路径是否指向同一目录（先规范化再比较，避免 `./x` 与绝对路径判不等）。
+fn same_directory(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 /// 审查闸的判定结果：直接放行、批准、或带原因拒绝。
@@ -280,6 +368,11 @@ pub struct App {
     /// `/new` 的提示文案、`/sessions` 的当前项标记与「`/resume` 是否真换了会话」都看它，
     /// 因此它是宿主侧唯一需要跟着内核走的会话状态。
     session_id: String,
+    /// 退出时 `session.close.before` 是否已发：`request_shutdown` 可能被调多次
+    /// （命令退出一次、`main` 的收尾一次），但关闭钩子只能各发一次。
+    session_close_before_sent: bool,
+    /// 慢命令的宿主侧后台任务（`/workspace`、`/mcp`），每帧轮询取回结果。
+    slow_task: Option<SlowTask>,
 }
 
 /// 后台 TTS 任务的产出（下载 / 克隆），由 UI 线程的轮询取回。
@@ -288,6 +381,57 @@ enum TtsTaskResult {
     Download(Result<(), String>),
     /// 音色克隆：成功或失败文案。
     Clone(Result<(), String>),
+}
+
+/// 慢命令的宿主侧后台任务（对映 Python `CommandOutcome.execution == "slow"`）。
+///
+/// Python 把延迟执行体交给工作线程（线程安全的 Agent）；宿主的 `App` 与工具表不是
+/// 跨线程可共享的，因此这两条命令由宿主接管，只把真正慢的那一段放进线程：
+/// `/mcp` 的状态文本（会触发 MCP 发现/连接）与 `/workspace` 的候选子系统装配
+/// （工具表 + MCP + 提示词运行时）；提交与内核下发仍在主线程。
+struct SlowTask {
+    kind: SlowTaskKind,
+    outcome: Receiver<SlowOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlowTaskKind {
+    /// `/workspace <路径>`：预备阶段在工作线程，提交在主线程。
+    WorkspaceSwitch,
+    /// `/mcp`：状态文本在工作线程读。
+    McpStatus,
+}
+
+impl SlowTaskKind {
+    /// 后台任务进行中的状态行文案。
+    fn working_status(self) -> &'static str {
+        match self {
+            Self::WorkspaceSwitch => "正在准备新工作区…",
+            Self::McpStatus => "正在读取 MCP 状态",
+        }
+    }
+}
+
+/// 慢命令线程的产出。
+enum SlowOutcome {
+    WorkspacePrepared {
+        /// 解析后的新工作区根。
+        root: PathBuf,
+        /// 用户输入的原文（写回 config.toml 用它，与命令层同口径）。
+        requested: String,
+        /// 候选子系统；失败时是已经带前缀的中文原因。
+        prepared: Result<PreparedWorkspace, String>,
+    },
+    McpStatus(String),
+}
+
+/// 工作线程装配好的候选子系统。
+///
+/// 只装不提交：工具表与提示词运行时的所有权直接交给主线程，主线程负责插件门禁、
+/// 收尾旧资源与状态切换（避免跨线程改 `App` 状态）。
+struct PreparedWorkspace {
+    registry: ToolRegistry,
+    prompt: PromptRuntime,
 }
 
 impl App {
@@ -384,33 +528,7 @@ impl App {
             .mcp()
             .map(|manager| manager.config().enabled_servers().len() as u64)
             .unwrap_or(0);
-        // 提示词运行时：模板 → system prompt，AGENTS.md → 项目规范，Skill 目录 → 索引。
-        // 装配失败只降级为「没有提示词运行时」的旧行为，不阻断界面启动。
-        let mut prompt_options = PromptOptions::new(workspace.to_path_buf());
-        prompt_options.agent_temp_dir = omnicrawl_host::prompt::DEFAULT_AGENT_TEMP_DIR.to_string();
-        prompt_options.workspace_detection_summary =
-            omnicrawl_config::core::context::detect_project_context(
-                &ConfigEnvironment::from_process(),
-                None,
-            )
-            .detection_summary();
-        prompt_options.system_prompt_override = Some(options.system_prompt.clone());
-        prompt_options.advisor_active = options.advisor.enabled;
-        prompt_options.advisor_blacklisted = options
-            .advisor
-            .disabled_for_models
-            .iter()
-            .any(|name| name == &options.model);
-        let prompt = match PromptRuntime::load(&ConfigEnvironment::from_process(), prompt_options) {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                eprintln!("[tui] 系统提示词装配失败，改用命令行给的文本：{error}");
-                let mut fallback = PromptOptions::new(workspace.to_path_buf());
-                fallback.system_prompt_override = Some(options.system_prompt.clone());
-                PromptRuntime::load(&ConfigEnvironment::from_process(), fallback)
-                    .map_err(|error| format!("系统提示词装配失败：{error}"))?
-            }
-        };
+        let prompt = load_prompt_runtime(&ConfigEnvironment::from_process(), &options, workspace)?;
         let (completion_sender, completions) = mpsc::channel();
         // 模型/渠道视图：配置读不出来时退回环境变量默认值，界面照常可用（缺什么会由内核回错）。
         let llm = match load_llm_config(&ConfigEnvironment::from_process()) {
@@ -468,6 +586,8 @@ impl App {
             monitor_polled_at: Instant::now(),
             isolation: None,
             session_id: String::new(),
+            session_close_before_sent: false,
+            slow_task: None,
         })
     }
 
@@ -611,10 +731,10 @@ impl App {
                 self.options.context_window_tokens,
                 &self.llm,
             ),
-            // 能力声明留给 Provider 档案：`LlmConfig` 不带 `capabilities`，因此这里
-            // 只交身份。内核 `should_send_prompt_cache_key` 对 GPT 系列有回退分支，
+            // Provider 能力声明来自自定义模型条目的 `capabilities.prompt_cache`；
+            // 未声明时内核 `should_send_prompt_cache_key` 对 GPT 系列有回退分支，
             // 与 Python 在 `capabilities.prompt_cache` 未声明时的行为一致。
-            prompt_cache_capable: false,
+            prompt_cache_capable: self.llm.prompt_cache.unwrap_or(false),
             prompt_cache_identity: prompt_cache_identity.to_identity_map(),
             // 交给内核做优先级判定：为真时带图观察直送主模型，不再走 `[vision]` 代理。
             native_vision: self.options.native_vision,
@@ -1552,6 +1672,21 @@ impl App {
             self.start_kernel_command(text, kind);
             return;
         }
+        // 慢命令在宿主侧接管（对映 Python `CommandOutcome.execution == "slow"`）：
+        // 延迟执行体是同步接口，内联跑会冻结界面，因此只接 `/workspace` 与 `/mcp`
+        // 两条真正慢的，剩下的照旧交命令层。
+        match parsed.command.name.as_str() {
+            "workspace" if !parsed.args.trim().is_empty() => {
+                let path = parsed.args.trim().to_string();
+                self.start_workspace_switch(&path);
+                return;
+            }
+            "mcp" => {
+                self.start_mcp_status();
+                return;
+            }
+            _ => {}
+        }
         let result = {
             let agent = TuiHostAgent::new(self);
             command_registry().dispatch(&text, &agent, Channel::Tui, None)
@@ -1564,6 +1699,18 @@ impl App {
     /// 延迟执行体（`/workspace` 一类慢命令）目前在本线程内联跑完：宿主还没有慢命令
     /// worker，而本批能真正执行的命令都不产生延迟体（见 README「斜杠命令接线」）。
     fn apply_command_result(&mut self, mut result: CommandResult) {
+        // 命令层要求重放会话视图（如 `/undo`）：先按消息投影立即对齐，再请内核给
+        // 事件流做完整重建（工具卡与子 Agent 进度树只有事件流里才有）。
+        if result.replay_conversation {
+            self.request_session_replay(Vec::new(), None);
+        }
+        // 慢命令期间把子代理事件渲染成 │ 对话面板（Python
+        // `_start_slow_command(stream_subagent_conversation=...)`）：延迟执行体在
+        // 本地内联，因此在体的前后开关流式态；体内部的同步内核往返仍会收帧，
+        // 期间到达的子代理事件照 `subagent_stream` 口径进面板。
+        if result.stream_subagent_conversation {
+            self.state.subagent_stream = true;
+        }
         if let Some(run) = result.deferred.take() {
             let deferred = {
                 let agent = TuiHostAgent::new(self);
@@ -1575,6 +1722,9 @@ impl App {
             if let Some(error) = deferred.error {
                 self.state.notice(error);
             }
+        }
+        if result.stream_subagent_conversation {
+            self.state.subagent_stream = false;
         }
         if let Some(status) = result.working_status.take() {
             self.state.status = Some(status);
@@ -1596,15 +1746,6 @@ impl App {
         }
         if result.open_settings {
             self.open_settings();
-        }
-        if result.replay_conversation {
-            self.state.notice(
-                "会话重放暂未接线：历史事件重放要等会话恢复接线完成后才有内容可放。".to_string(),
-            );
-        }
-        if result.workspace_switch_requested || result.stream_subagent_conversation {
-            self.state
-                .notice("该命令的界面动作暂未接线（见 README 的已知差异）。".to_string());
         }
         // `refresh_context` 对内核侧上下文没有可刷新的东西：模型上下文由内核持有，
         // 宿主这里没有缓存可失效。
@@ -1694,15 +1835,42 @@ impl App {
         }
         match (&frame.error, &frame.result) {
             (Some(error), _) => {
+                // 回放读不到事件时不把错误摆到消息流：对话视图已经有消息投影可看
+                // （Python `_replay_session_conversation` 同样静默跳过读取失败）。
+                if let KernelCommand::Replay { fallback, notice } = &command {
+                    if !fallback.is_empty() {
+                        self.state.replay_history(fallback);
+                    }
+                    if let Some(notice) = notice {
+                        self.state.notice(notice.clone());
+                    }
+                    return;
+                }
                 let label = command.label();
                 self.state.notice(format!("{label}失败：{}", error.message));
             }
             (None, Some(result)) => {
-                // `/undo` 的回执带重建后的历史：消息与工具卡要跟着消失，不能只追加提示。
+                // `/undo` 的回执带重建后的历史：该提示要等回放完成后才进消息流，
+                // 否则回放的清空会把刚追加的提示一并抹掉。
                 if let Some(history) = command.replay_history(result) {
-                    self.state.replay_history(&history);
+                    self.request_session_replay(history, Some(command.success_message(result)));
+                    // 回放请求已经接过这条命令的提示，别再重复追加。
+                    return;
                 }
-                self.state.notice(command.success_message(result));
+                // 回放回执的结果就是对话视图，不另发提示。
+                if let Some(events) = command.replay_events(result) {
+                    self.state.replay_events(&events);
+                    if let KernelCommand::Replay { notice, .. } = &command {
+                        if let Some(notice) = notice {
+                            self.state.notice(notice.clone());
+                        }
+                    }
+                } else {
+                    let message = command.success_message(result);
+                    if !message.trim().is_empty() {
+                        self.state.notice(message);
+                    }
+                }
                 // `/review` 的第二段：报告先展示，再注入内核上下文供下一轮请求使用。
                 if let Some(report) = command.review_report(result) {
                     let id = self.send(Command::SessionAppend(SessionAppendParams {
@@ -1775,10 +1943,12 @@ impl App {
             resolve_native_vision(&environment, &llm.catalog_key, &llm.profile_id, None, None)
                 .map(|setting| setting.value)
                 .unwrap_or(None);
-        // TTS 页：配置 + 音色库（内置 manifest 优先）+ 模型状态行。
+        // TTS 页：配置 + 音色库（内置 manifest 优先）+ 模型状态行 + 接口后端。
         let tts_config = load_tts_configuration(&environment, None).unwrap_or_default();
         let tts_model_dir = tts_config.resolved_model_dir(&environment);
         let tts_root = default_root();
+        let tts_api = load_tts_api_configuration(&environment, None).unwrap_or_default();
+        let tts_api_ready = tts_api.resolve_api_key(&environment).trim().to_string();
         let tts_values = TtsValues {
             enabled: tts_config.enabled,
             auto_play: tts_config.auto_play,
@@ -1793,6 +1963,16 @@ impl App {
             } else {
                 "模型未下载，请先点「下载 ONNX 模型（约 763MB）」。".to_string()
             },
+            api_enabled: tts_api.enabled,
+            api_base_url: tts_api.base_url.clone(),
+            api_model: tts_api.model.clone(),
+            api_voice: tts_api.voice.clone(),
+            // 界面上只展示是否已配密钥，不回显明文。
+            api_key: String::new(),
+            api_key_env: tts_api.api_key_env.clone(),
+            api_speed: format_speed(tts_api.speed),
+            local_engine_available: omnicrawl_tts::local_engine_available(),
+            api_ready: !tts_api_ready.is_empty(),
         };
         Ok(SettingsValues::new(
             context_window_tokens,
@@ -1999,15 +2179,46 @@ impl App {
         .map_err(|error| format!("设置未完成：{}", error.message()))?;
         let path = save_tts_configuration(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        // 接口后端：面板上不编辑的 response_format / timeout_seconds 按磁盘值保留。
+        let previous_api = load_tts_api_configuration(&environment, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        let speed = draft.api_speed.trim().parse::<f64>().map_err(|_| {
+            format!(
+                "设置未完成：接口语速必须是数值，当前为「{}」。",
+                draft.api_speed
+            )
+        })?;
+        let api_configuration = TtsApiConfiguration {
+            enabled: draft.api_enabled,
+            base_url: draft.api_base_url.clone(),
+            // 密钥空字符串 = 保留磁盘上的旧值（界面上不回显明文）。
+            api_key: if draft.api_key.trim().is_empty() {
+                previous_api.api_key.clone()
+            } else {
+                draft.api_key.trim().to_string()
+            },
+            api_key_env: draft.api_key_env.clone(),
+            model: draft.api_model.clone(),
+            voice: draft.api_voice.clone(),
+            response_format: previous_api.response_format.clone(),
+            speed,
+            timeout_seconds: previous_api.timeout_seconds,
+        }
+        .normalize()
+        .map_err(|error| format!("设置未完成：{}", error.message()))?;
+        save_tts_api_configuration(&environment, &api_configuration, None)
+            .map_err(|error| format!("设置未完成：{}", error.message()))?;
         self.registry_options.tts = tts_options_from(configuration.clone(), &self.workspace);
         self.rebuild_registry()?;
         Ok(format!(
             "TTS 设置已保存到 {}（{}）。",
             path.display(),
-            if configuration.enabled {
-                "本会话即刻生效"
-            } else {
+            if !configuration.enabled {
                 "语音合成已停用"
+            } else if api_configuration.enabled {
+                "本会话即刻生效，后端：接口合成"
+            } else {
+                "本会话即刻生效，后端：本地推理"
             }
         ))
     }
@@ -2932,6 +3143,423 @@ impl App {
         Ok(())
     }
 
+    /// 运行中切换工作区（`/workspace <路径>` 的同步入口）。
+    ///
+    /// 窄口径对映 Python `WorkspaceSwitchingMixin.switch_workspace` 的主体：
+    /// 解析校验 → 子 Agent 排空（仍有活跃任务且超期时拒绝）→ pending worktree 拦阻
+    /// → 准备新子系统（工具表 / MCP 连接 / 提示词运行时）→ 插件
+    /// `workspace.switch.before`（拒绝即中止）→ 收尾旧资源（旧工作区的 MCP 与
+    /// 后台任务）→ 提交新状态 → 内核侧同一会话补写 `workspace_switched`。
+    ///
+    /// TUI 的 `/workspace` 走 [`Self::start_workspace_switch`]（装配在工作线程，界面
+    /// 不冻）；这一条是同步实现，供不接管慢命令的宿主（测试替身等）使用。
+    ///
+    /// 与 Python 的已知差异（见 README「本阶段的边界」）：before/after 钩子由
+    /// `PluginHost::switch_workspace` 一次发出，因此钩子相对「准备候选子系统」的
+    /// 先后与 Python 不同源。
+    ///
+    /// 事务性：候选子系统先在本地装配，插件切换通过后才提交；任一步失败都不动
+    /// 当前工作区与工具表（候选 MCP/后台任务在失败路径上主动 close，不留孤儿进程）。
+    pub(crate) fn command_switch_workspace(&mut self, path: &str) -> Result<PathBuf, String> {
+        let Some(new_root) = self.workspace_switch_target(path)? else {
+            // 目标就是当前工作区：Python 同样直接返回，不重建、不转录事件。
+            let current = self.workspace.clone();
+            return Ok(current);
+        };
+        let (registry_options, options, environment, timeout) =
+            self.workspace_prepare_inputs(&new_root);
+        let prepared = match prepare_workspace(
+            &environment,
+            &options,
+            &new_root,
+            registry_options,
+            timeout,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.notify_workspace_switch_error(&new_root, &error);
+                return Err(error);
+            }
+        };
+        self.commit_workspace_switch(&new_root, path, prepared)
+    }
+
+    /// `/workspace <路径>` 的异步入口（宿主接管慢命令）：装配在工作线程，提交在主线程。
+    ///
+    /// 对映 Python 把延迟执行体交给工作线程：前置检查是几次本地内核往返（毫秒级，留在
+    /// 主线程），真正慢的一段（MCP 连接与发现、工具表与提示词运行时重建）在线程里跑。
+    fn start_workspace_switch(&mut self, path: &str) {
+        if let Some(task) = self.slow_task.as_ref() {
+            self.state.notice(format!(
+                "上一条慢命令（{}）还在执行中，稍候再试。",
+                task.kind.working_status()
+            ));
+            return;
+        }
+        let new_root = match self.workspace_switch_target(path) {
+            Ok(Some(root)) => root,
+            Ok(None) => {
+                let current = self.workspace.clone();
+                self.state.notice(workspace_switch_success_message(&current));
+                return;
+            }
+            Err(message) => {
+                self.state.notice(message);
+                return;
+            }
+        };
+        let (registry_options, options, environment, timeout) =
+            self.workspace_prepare_inputs(&new_root);
+        let requested = path.trim().to_string();
+        let thread_root = new_root.clone();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let prepared = prepare_workspace(
+                &environment,
+                &options,
+                &thread_root,
+                registry_options,
+                timeout,
+            );
+            let _ = sender.send(SlowOutcome::WorkspacePrepared {
+                root: thread_root,
+                requested,
+                prepared,
+            });
+        });
+        self.state.status = Some(SlowTaskKind::WorkspaceSwitch.working_status().to_string());
+        self.state
+            .notice(WORKSPACE_SWITCH_PENDING_MESSAGE.to_string());
+        self.slow_task = Some(SlowTask {
+            kind: SlowTaskKind::WorkspaceSwitch,
+            outcome: receiver,
+        });
+    }
+
+    /// `/mcp` 的异步入口：状态文本在工作线程读（`format_status` 会触发 MCP 发现与连接）。
+    fn start_mcp_status(&mut self) {
+        if let Some(task) = self.slow_task.as_ref() {
+            self.state.notice(format!(
+                "上一条慢命令（{}）还在执行中，稍候再试。",
+                task.kind.working_status()
+            ));
+            return;
+        }
+        let manager = self.registry.mcp().cloned();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            // MCP 清单由宿主工具表持有连接；未配置时给一句明确说明，而不是空串。
+            let text = match manager {
+                Some(manager) => manager.format_status(),
+                None => {
+                    "MCP 未配置：在 config.toml 的 [mcp] 段添加 Server 后可查看详情。".to_string()
+                }
+            };
+            let _ = sender.send(SlowOutcome::McpStatus(text));
+        });
+        self.state.status = Some(SlowTaskKind::McpStatus.working_status().to_string());
+        self.slow_task = Some(SlowTask {
+            kind: SlowTaskKind::McpStatus,
+            outcome: receiver,
+        });
+    }
+
+    /// 每帧轮询慢命令的产出：回填消息、收起状态行，工作区切换在这里提交。
+    pub fn tick_slow_command(&mut self) {
+        let received = match self.slow_task.as_ref() {
+            Some(task) => task.outcome.try_recv(),
+            None => return,
+        };
+        let outcome = match received {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // 线程崩了：不能把状态行永远留在「正在准备…」。
+                self.slow_task = None;
+                self.state.status = None;
+                self.state
+                    .notice("慢命令后台任务意外结束，请重试。".to_string());
+                return;
+            }
+        };
+        self.slow_task = None;
+        self.state.status = None;
+        match outcome {
+            SlowOutcome::McpStatus(text) => self.state.notice(text),
+            SlowOutcome::WorkspacePrepared {
+                root,
+                requested,
+                prepared,
+            } => match prepared {
+                Ok(prepared) => {
+                    if let Err(message) = self.commit_workspace_switch(&root, &requested, prepared) {
+                        self.state.notice(message);
+                    }
+                }
+                Err(message) => {
+                    // 装配阶段失败：通知插件 `workspace.switch.error`（对映 Python
+                    // `_prepare_workspace_switch` 的 except），旧工作区一律不动。
+                    self.notify_workspace_switch_error(&root, &message);
+                    self.state.notice(message);
+                }
+            },
+        }
+    }
+
+    /// 退出前收尾在途的慢命令：短暂等一次结果，拿到的候选子系统要关干净。
+    ///
+    /// 不等就会把候选 MCP 子进程变成孤儿（线程随进程退出而消失，候选资源无人 close）。
+    pub fn settle_slow_task(&mut self) {
+        let Some(task) = self.slow_task.take() else {
+            return;
+        };
+        if let Ok(SlowOutcome::WorkspacePrepared {
+            prepared: Ok(prepared),
+            ..
+        }) = task
+            .outcome
+            .recv_timeout(Duration::from_millis(SLOW_TASK_SETTLE_MS))
+        {
+            prepared.registry.close_monitors();
+            prepared.registry.close_mcp();
+        }
+    }
+
+    /// `/workspace` 的公共前置：回合门禁 → 解析校验 → 子 Agent 排空 → worktree 拦阻。
+    ///
+    /// 返回 `Ok(None)` 表示目标就是当前工作区（调用方只需回一句成功文案）。
+    fn workspace_switch_target(&mut self, path: &str) -> Result<Option<PathBuf>, String> {
+        // 回合进行中不切换：本轮的工作区快照与工具批次已经按旧根展开。
+        if self.state.turn.is_running() {
+            return Err(
+                "工作区切换失败：当前回合仍在执行，请等它结束或先取消后再切换。".to_string(),
+            );
+        }
+        let new_root = resolve_switch_target(path).map_err(|error| error.message().to_string())?;
+        if same_directory(&new_root, &self.workspace) {
+            return Ok(None);
+        }
+        // 前置检查（对映 Python 的 `coordinator.cancel_and_wait` 与
+        // `list_subagent_worktrees`）：先排空活跃子任务，再有未处理的 worktree 就拒绝。
+        self.drain_subagents_before_switch()?;
+        let pending_worktrees = self.pending_subagent_worktrees()?;
+        if !pending_worktrees.is_empty() {
+            return Err(pending_worktrees_error(&pending_worktrees)
+                .message()
+                .to_string());
+        }
+        Ok(Some(new_root))
+    }
+
+    /// 装配候选子系统所需的输入（同步路径与工作线程共用同一口径）。
+    fn workspace_prepare_inputs(
+        &self,
+        root: &Path,
+    ) -> (RegistryOptions, Options, ConfigEnvironment, i64) {
+        let mut options = self.registry_options.clone();
+        // 旧工作区的后台任务不带进新工作区（与 Python 关闭旧 MonitorManager 同义）：
+        // 置空让 `ToolRegistry::new` 按新根建一个新管理器，避免把旧工作区的
+        // monitor 进程记到新工作区账上。取消令牌与工作区无关，照旧沿用。
+        options.monitors = None;
+        options.cancel = Some(self.registry.cancel_token());
+        options.mcp = mcp_manager(root);
+        (
+            options,
+            self.options.clone(),
+            ConfigEnvironment::from_process(),
+            self.options.command_timeout_seconds,
+        )
+    }
+
+    /// 提交候选子系统：插件门禁 → 收尾旧资源 → 换状态 → 内核下发。
+    ///
+    /// 失败路径上候选 MCP/后台任务主动 close，不留孤儿进程；提交开始后不再有可失败步骤。
+    fn commit_workspace_switch(
+        &mut self,
+        new_root: &Path,
+        requested: &str,
+        prepared: PreparedWorkspace,
+    ) -> Result<PathBuf, String> {
+        let PreparedWorkspace {
+            registry: candidate,
+            prompt,
+        } = prepared;
+        // 插件侧重建是事务式的：`workspace.switch.before` 拒绝时保持旧 Worker 不动，
+        // 工作区的 before/after 钩子也都在这一调用里（与 Python 不同源，但与
+        // `PluginHost::switch_workspace` 的既定契约一致）。
+        let diagnostics = match self.plugins.switch_workspace(new_root) {
+            Ok(diagnostics) => diagnostics,
+            Err(error) => {
+                candidate.close_monitors();
+                candidate.close_mcp();
+                return Err(format!("工作区切换失败：{error}"));
+            }
+        };
+        let mut options = self.registry_options.clone();
+        options.monitors = None;
+        options.cancel = Some(self.registry.cancel_token());
+        options.mcp = mcp_manager(new_root);
+        // —— 提交：以下不再有可失败步骤 ——
+        // 先暂停轮询并废弃旧工作区的游标（任务 ID 可能在新工作区复用），
+        // 提交完再恢复；旧后台任务随旧工具表一起关闭。
+        self.monitor_state.suspend_for_workspace_switch();
+        self.registry.close_monitors();
+        self.registry.close_mcp();
+        self.workspace = new_root.to_path_buf();
+        self.registry_options = options;
+        self.registry = Arc::new(candidate);
+        self.prompt = prompt;
+        self.monitor_state.resume_polling();
+        if let Some(settings) = self.settings.as_mut() {
+            settings.refresh_tools(tool_switch_rows(&self.registry));
+        }
+        // 跳进程同步：把新工作区写回 config.toml（远程入口在任务开始前重读并跟随）；
+        // 失败只提示不阻断，与命令层 `persist_workspace_root` 同口径。
+        if let Err(error) = save_workspace_root(
+            &ConfigEnvironment::from_process(),
+            Path::new(requested),
+            None,
+        ) {
+            eprintln!(
+                "[tui] 工作区持久化到 config.toml 失败：{}",
+                error.message()
+            );
+        }
+        // 内核侧：先把新工具表与上下文消息推给内核（与新工作区的稳定前缀一致），
+        // 再让它在同一会话里转录 `workspace_switched`。两者都不等回包：
+        // `handle_frame` 对未匹配的响应帧只丢弃，不阻断界面。
+        let context_messages = self
+            .prompt
+            .context_messages_with_plugins(true, Some(self.plugins.as_ref()), None, None)
+            .unwrap_or_default();
+        let _ = self.send(Command::SessionSettings(Box::new(SessionSettingsParams {
+            model: Some(Box::new(SessionModelSettings {
+                tools: Some(self.registry.declarations()),
+                context_messages: Some(context_messages),
+                ..SessionModelSettings::default()
+            })),
+            compaction: None,
+        })));
+        let _ = self.send(Command::WorkspaceSwitch(omnicrawl_ipc::bridge::WorkspaceSwitchParams {
+            path: new_root.to_string_lossy().to_string(),
+        }));
+        for line in diagnostics {
+            self.state.notice(format!("插件：{line}"));
+        }
+        let message = workspace_switch_success_message(new_root);
+        self.state.notice(message);
+        Ok(new_root.to_path_buf())
+    }
+
+    /// 切换前的子 Agent 排空（对映 Python `coordinator.cancel_and_wait(reason, timeout, permanent=False)`）。
+    ///
+    /// 仍活跃的后台子任务逐个取消，然后轮询到它们离开任务表；超期未退出就报
+    /// `subagent_drain_error`（原工作区与共享资源一律不动）。任务表本身在内核里，
+    /// 因此这里走宿主→内核的同步往返（与 `/tasks` 同一条路径）。
+    fn drain_subagents_before_switch(&mut self) -> Result<(), String> {
+        let mut active = self.active_subagent_tasks()?;
+        if active.is_empty() {
+            return Ok(());
+        }
+        for task_id in &active {
+            // 逐个取消：单个取消失败不阻断其余任务（与 Python 让协调器统一取消同效）。
+            let _ = self.command_subagent_query("cancel", task_id);
+        }
+        let deadline = Instant::now()
+            + Duration::from_secs_f64(
+                omnicrawl_controllers::shared::SUBAGENT_LIFECYCLE_WAIT_SECONDS,
+            );
+        while Instant::now() < deadline {
+            active = self.active_subagent_tasks()?;
+            if active.is_empty() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Err(subagent_drain_error().message().to_string())
+    }
+
+    /// 仍未离开任务表（非终态）的子任务 id。
+    fn active_subagent_tasks(&mut self) -> Result<Vec<String>, String> {
+        let value = self.command_subagent_query("list", "")?;
+        // 后台任务管理器未启用时没有任务，与「空表」同义。
+        if value
+            .get("unavailable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(Vec::new());
+        }
+        let tasks = value
+            .get("tasks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(tasks
+            .iter()
+            .filter(|task| {
+                let status = task
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                !is_terminal(status)
+            })
+            .filter_map(|task| {
+                task.get("task_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect())
+    }
+
+    /// 当前工作区仍未处理的 SubAgent worktree（切换前的拦阻项）。
+    ///
+    /// 托管根是全局的（`~/.omnicrawl/agent-worktrees`），可能还留着别的仓库的残留，
+    /// 因此按元数据里的 `repo_root` 对齐当前工作区（对映 Python 的「本进程登记的会话」）。
+    fn pending_subagent_worktrees(&mut self) -> Result<Vec<WorktreeRef>, String> {
+        let value = self.command_subagent_query("list_worktrees", "")?;
+        let items = value
+            .get("worktrees")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let current = self.workspace.clone();
+        Ok(items
+            .iter()
+            .filter(|item| match item.get("repo_root").and_then(Value::as_str) {
+                Some(root) if !root.is_empty() => same_directory(std::path::Path::new(root), &current),
+                // 元数据缺 repo_root（旧版本）：宁多拦一个，也不让未处理的 worktree 静默丢失。
+                _ => true,
+            })
+            .map(|item| WorktreeRef {
+                branch: item
+                    .get("branch")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                task_id: item
+                    .get("task_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+            .collect())
+    }
+
+    /// 准备阶段失败时通知插件 `workspace.switch.error`（对映 Python
+    /// `_prepare_workspace_switch` 的 except 分支）。钩子是 NOTIFY 语义，失败不抛错。
+    fn notify_workspace_switch_error(&self, root: &std::path::Path, error: &str) {
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "workspace".to_string(),
+            Value::String(root.to_string_lossy().to_string()),
+        );
+        payload.insert("error".to_string(), Value::String(error.to_string()));
+        let _decision = self
+            .plugins
+            .dispatch("workspace.switch.error", payload, None, None);
+    }
+
     /// 把本次变更推给内核做热更新；结果在 `handle_frame` 里回填。
     ///
     /// 只有内核持有的设置在协议上有对应字段：工具声明、上下文窗口与压缩阈值、推理强度。
@@ -3031,10 +3659,30 @@ impl App {
 
     /// 退出收尾：回收后台进程、收尾隔离工作区后请内核退出。
     pub fn shutdown(&mut self) {
+        // 在途的慢命令先收尾：候选子系统得 close，否则 MCP 子进程会成孤儿。
+        self.settle_slow_task();
         self.registry.close_monitors();
         self.registry.close_mcp();
         self.finalize_isolation();
         self.request_shutdown();
+    }
+
+    /// `session.close.before` / `after`：内核补写 `session_closed` 的观察与通知钩子。
+    ///
+    /// 顺序与 Python `LocalToolAgent.close` 一致：退出收尾后先发 before，内核据此
+    /// 在写事件与丢空占位之前得到一次观察机会；进程退出后再发 after。会话 id 未知
+    /// （握手尚未回填、或本来就不自持会话）时跳过。
+    fn dispatch_session_close(&self, before: bool) {
+        let session_id = self.current_session_id();
+        if session_id.is_empty() {
+            return;
+        }
+        self.plugins.session_close(&session_id, before);
+    }
+
+    /// 内核退出后的 `session.close.after`：由 `main` 在 `wait_or_kill` 之后调用。
+    pub fn finish_session_close(&self) {
+        self.dispatch_session_close(false);
     }
 
     fn start_shutdown(&mut self) {
@@ -3048,6 +3696,11 @@ impl App {
     pub fn request_shutdown(&mut self) {
         if self.kernel.is_closed() {
             return;
+        }
+        // 只在真正下发 shutdown 的那一次发 before 钩子。
+        if !self.session_close_before_sent {
+            self.session_close_before_sent = true;
+            self.dispatch_session_close(true);
         }
         self.send(Command::Shutdown);
     }
@@ -3303,7 +3956,10 @@ impl App {
         Ok(self.session_id.clone())
     }
 
-    /// 恢复会话（`/resume`）：切换内核会话，并用回给的历史重放对话视图。
+    /// `/resume`：切换内核会话，并用事件流重放对话视图。
+    ///
+    /// 先发一条 `session.events` 请内核给出有效事件流（与 Python
+    /// `current_session_events()` 同源），读不到时才退回回执里的消息投影。
     pub(crate) fn command_session_resume(
         &mut self,
         session_id: &str,
@@ -3320,8 +3976,50 @@ impl App {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        self.state.replay_history(&history);
+        match self.session_events_result() {
+            Some(events) => self.state.replay_events(&events),
+            None => self.state.replay_history(&history),
+        }
         session_summary(&result)
+    }
+
+    /// 请内核给出当前会话的有效事件流（`session.events`）；读不到时为 `None`。
+    pub(crate) fn session_events_result(&mut self) -> Option<Vec<Value>> {
+        let result = self.session_request(Command::SessionEvents).ok()?;
+        Some(
+            result
+                .get("events")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        )
+    }
+
+    /// 异步请求一次会话回放（`/undo` 回执与命令层的 `replay_conversation` 标记）。
+    ///
+    /// `fallback` 是事件流读不到时用的消息投影，`notice` 是回放完成后再进消息流的
+    /// 命令提示（顺序不能颠倒：回放会清空消息流）。已经有一条回放在途时不重复下发。
+    fn request_session_replay(&mut self, fallback: Vec<Value>, notice: Option<String>) {
+        if self
+            .pending_commands
+            .values()
+            .any(|pending| matches!(pending, KernelCommand::Replay { .. }))
+        {
+            // 回放是幂等的整视图重建，在途时用回退投影先把视图对齐，不再排队。
+            if !fallback.is_empty() {
+                self.state.replay_history(&fallback);
+            }
+            if let Some(notice) = notice {
+                self.state.notice(notice);
+            }
+            return;
+        }
+        self.state.status = Some("正在重放会话…".to_string());
+        let id = self.send(Command::SessionEvents);
+        self.pending_commands.insert(
+            id,
+            KernelCommand::Replay { fallback, notice },
+        );
     }
 
     /// 提示历史（`/history`）：只读展示，不注入模型上下文。
@@ -3428,6 +4126,13 @@ enum KernelCommand {
     Review { scope: String },
     /// `/review` 的第二段：把渲染好的报告注入内核上下文（内部后继命令）。
     ReviewInject,
+    /// 会话回放：向内核索取有效事件流，用它重建对话视图（`replay_conversation`
+    /// 标记与 `/undo` 回执都复用这一条；`fallback` 是请求失败时的消息投影，
+    /// `notice` 是回放完成后才进消息流的命令提示）。
+    Replay {
+        fallback: Vec<Value>,
+        notice: Option<String>,
+    },
 }
 
 impl KernelCommand {
@@ -3459,6 +4164,8 @@ impl KernelCommand {
                 prompt: build_review_task_prompt(scope),
             })),
             Self::ReviewInject => None,
+            // 回放没有用户输入（不入命令层），只需一条协议请求。
+            Self::Replay { .. } => Some(Command::SessionEvents),
         })
     }
 
@@ -3468,9 +4175,9 @@ impl KernelCommand {
             Self::Compact => "压缩",
             Self::Review { .. } => "评审",
             Self::ReviewInject => "评审报告注入",
+            Self::Replay { .. } => "会话回放",
         }
     }
-
     /// 执行期间的运行状态文案（对映命令层 `working_status`）。
     fn working_status(&self) -> &'static str {
         match self {
@@ -3478,6 +4185,7 @@ impl KernelCommand {
             Self::Compact => "正在压缩上下文",
             Self::Review { .. } => "正在评审",
             Self::ReviewInject => "正在注入评审报告",
+            Self::Replay { .. } => "正在重放会话…",
         }
     }
 
@@ -3498,6 +4206,8 @@ impl KernelCommand {
                     "评审报告未注入上下文（内容为空或写入失败）。".to_string()
                 }
             }
+            // 回放本身不产生提示：它的结果是对话视图。
+            Self::Replay { .. } => String::new(),
         }
     }
 
@@ -3518,6 +4228,14 @@ impl KernelCommand {
     fn replay_history(&self, result: &Value) -> Option<Vec<Value>> {
         match self {
             Self::Undo => result.get("history").and_then(Value::as_array).cloned(),
+            _ => None,
+        }
+    }
+
+    /// 回执里的有效事件流（`session.events` 用）。
+    fn replay_events(&self, result: &Value) -> Option<Vec<Value>> {
+        match self {
+            Self::Replay { .. } => result.get("events").and_then(Value::as_array).cloned(),
             _ => None,
         }
     }
@@ -4156,6 +4874,44 @@ fn tts_options(workspace: &Path) -> Option<Arc<TtsOptions>> {
     tts_options_from(configuration, workspace)
 }
 
+/// 把 `[tts_api]` 段映射成接口后端配置（密钥在这里解析）；未启用时返回 `None`（走本地推理）。
+fn tts_api_backend(environment: &ConfigEnvironment) -> Option<ApiTtsConfig> {
+    let configuration = match load_tts_api_configuration(environment, None) {
+        Ok(configuration) => configuration,
+        Err(error) => {
+            // 读不出来时按「接口未启用」处理：后面会落到本地推理，用户在日志里能看到真正原因。
+            report_startup_log(
+                LogLevel::Warning,
+                &format!("TTS 接口配置读取失败，已改按本地推理处理：{error}"),
+            );
+            return None;
+        }
+    };
+    if !configuration.enabled {
+        return None;
+    }
+    // 先解析密钥再搬字段：`resolve_api_key` 要借整份配置。
+    let api_key = configuration.resolve_api_key(environment);
+    Some(ApiTtsConfig {
+        base_url: configuration.base_url,
+        api_key,
+        model: configuration.model,
+        voice: configuration.voice,
+        response_format: configuration.response_format,
+        speed: configuration.speed,
+        timeout_seconds: configuration.timeout_seconds.max(1) as u64,
+    })
+}
+
+/// 语速的界面显示：整数去掉小数点（`1.0` → `1`），其余保留原样（`1.25`）。
+fn format_speed(speed: f64) -> String {
+    if speed.fract().abs() < f64::EPSILON {
+        format!("{}", speed as i64)
+    } else {
+        format!("{speed}")
+    }
+}
+
 /// 用一份已读出的配置构造 TTS 工具选项；未启用时不给工具。
 fn tts_options_from(configuration: TtsConfiguration, workspace: &Path) -> Option<Arc<TtsOptions>> {
     if !configuration.enabled {
@@ -4163,8 +4919,10 @@ fn tts_options_from(configuration: TtsConfiguration, workspace: &Path) -> Option
     }
     let environment = ConfigEnvironment::from_process();
     let model_dir = configuration.resolved_model_dir(&environment);
+    let api = tts_api_backend(&environment);
     Some(Arc::new(TtsOptions::new(
         configuration,
+        api,
         model_dir,
         workspace.to_path_buf(),
     )))

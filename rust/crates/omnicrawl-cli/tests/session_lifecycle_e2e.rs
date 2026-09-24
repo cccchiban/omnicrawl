@@ -148,10 +148,11 @@ impl Kernel {
         }));
         loop {
             let frame = self.next_frame();
-            // 通知（无 id）可能夹在中间：跳过，继续等响应。
-            if frame.get("id").is_some() {
-                assert_eq!(frame["id"], id, "响应 id 应配对：{frame}");
-                return frame;
+            match frame.get("id").and_then(Value::as_u64) {
+                // 通知（无 id）与旧请求的迟到响应（`turn.submit` 的应答可能在
+                // `turn.finished` 之后才到）都跳过，继续等目标 id。
+                Some(value) if value == id => return frame,
+                _ => continue,
             }
         }
     }
@@ -586,4 +587,236 @@ fn resume_of_unknown_session_is_rejected() {
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 转录里的全部事件（按写入顺序）。
+fn events(path: &Path) -> Vec<Value> {
+    let text = std::fs::read_to_string(path).expect("转录应当存在");
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect()
+}
+
+/// 转录里的事件类型序列（按写入顺序）。
+fn event_types(path: &Path) -> Vec<String> {
+    events(path)
+        .iter()
+        .filter_map(|event| event["type"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// 正常退出必须补写 `session_closed`，且已有业务事件的会话不能被当成空占位丢掉。
+///
+/// 这条覆盖「宿主发 shutdown → 内核收尾」这一段：Python 侧在 `Agent.close()` 里
+/// 把补写事件夹在 `session.close.before` / `after` 两个钩子之间，内核侧就是对映。
+#[test]
+fn shutdown_writes_session_closed_event() {
+    let root = temp_root("close-event");
+
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(json!({"root": root_param(&root)}));
+    let session_id = kernel.session_id();
+    let (frames, _) = kernel.run_turn(FIRST_TEXT, FIRST_REPLY);
+    assert_eq!(final_text(&frames), FIRST_REPLY);
+
+    kernel.shutdown();
+
+    let transcript = root.join("sessions").join(format!("{session_id}.jsonl"));
+    assert!(
+        transcript.exists(),
+        "有业务事件的会话退出后必须保留：{}",
+        transcript.display()
+    );
+    let types = event_types(&transcript);
+    assert_eq!(
+        types.last().map(String::as_str),
+        Some("session_closed"),
+        "转录最后一条应当是 session_closed：{types:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 运行中切换工作区：内核把自持会话的工作区指到新根，并转录 `workspace_switched`。
+///
+/// 这覆盖宿主侧 `/workspace` 编排里唯一动内核会话的一步（对映 Python
+/// `_append_session_event("workspace_switched", {"from": ..., "to": ...})`）：
+/// 会话不重建、历史不丢，只多一条切换事件；指向同一目录时不重复写事件。
+#[test]
+fn workspace_switch_appends_event_and_keeps_history() {
+    let root = temp_root("workspace-switch");
+    let base = std::env::temp_dir().join(format!(
+        "omnicrawl-switch-base-{}",
+        std::process::id()
+    ));
+    let target = std::env::temp_dir().join(format!(
+        "omnicrawl-switch-target-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&target);
+    std::fs::create_dir_all(&base).expect("无法建初始工作区");
+    std::fs::create_dir_all(&target).expect("无法建切换目标工作区");
+
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(json!({
+        "root": root_param(&root),
+        "workspace_root": root_param(&base),
+    }));
+    let session_id = kernel.session_id();
+    let (frames, _) = kernel.run_turn(FIRST_TEXT, FIRST_REPLY);
+    assert_eq!(final_text(&frames), FIRST_REPLY);
+
+    // 切换：应答给出 from/to，且 `switched` 为真。
+    let result = kernel.request_ok(
+        3,
+        "workspace.switch",
+        json!({"path": root_param(&target)}),
+    );
+    assert_eq!(result["switched"], true, "切换应生效：{result}");
+    assert_eq!(result["to"], root_param(&target));
+
+    let transcript = root.join("sessions").join(format!("{session_id}.jsonl"));
+    let all = events(&transcript);
+    let last = all.last().expect("转录至少有 session_started");
+    assert_eq!(last["type"], "workspace_switched", "切换后应多一条事件：{last}");
+    assert_eq!(last["payload"]["from"], result["from"]);
+    assert_eq!(last["payload"]["to"], root_param(&target));
+
+    // 会话不重建：再跑一轮时，运行期历史里仍有第一轮的用户消息。
+    let (_, messages) = kernel.run_turn(SECOND_TEXT, SECOND_REPLY);
+    let pairs = pairs(&messages);
+    assert!(
+        pairs.contains(&("user".to_string(), FIRST_TEXT.to_string())),
+        "切换工作区不应丢历史：{pairs:?}"
+    );
+
+    // 指向同一目录：不再重复写事件。
+    let before = event_types(&transcript);
+    let again = kernel.request_ok(
+        4,
+        "workspace.switch",
+        json!({"path": root_param(&target)}),
+    );
+    assert_eq!(again["switched"], false, "同目录切换不算切换：{again}");
+    assert_eq!(
+        event_types(&transcript),
+        before,
+        "同目录切换不应再写事件"
+    );
+
+    // 空 path 是无效请求，且不落任何事件。
+    let empty = kernel.request(5, "workspace.switch", json!({"path": "  "}));
+    assert!(
+        empty.get("error").is_some(),
+        "空 path 应当被拒绝：{empty}"
+    );
+    assert_eq!(event_types(&transcript), before, "被拒绝的切换不应写事件");
+
+    kernel.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&target);
+}
+
+/// 只有启动占位的会话在正常退出时应当被丢弃（补写 `session_closed` 后删除转录）。
+///
+/// 对映 Python `discard_current_empty_session()`：没有真实聊天内容的会话不该留在
+/// 历史与索引里。
+#[test]
+fn shutdown_discards_empty_placeholder_session() {
+    let root = temp_root("close-empty");
+
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(json!({"root": root_param(&root)}));
+    let session_id = kernel.session_id();
+    kernel.shutdown();
+
+    let transcript = root.join("sessions").join(format!("{session_id}.jsonl"));
+    assert!(
+        !transcript.exists(),
+        "空占位会话应当被丢弃：{}",
+        transcript.display()
+    );
+    let index = std::fs::read_to_string(root.join("index.json")).unwrap_or_default();
+    assert!(
+        !index.contains(&session_id),
+        "索引里不该留下空会话：{index}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `session.events`：宿主回放历史页的数据源，回的是回退投影后的有效事件流。
+#[test]
+fn session_events_returns_the_active_transcript() {
+    let root = temp_root("session-events");
+    // 绑定工作区：`turn.undo` 要按工作区快照回滚副作用，未绑定会被拒绝。
+    let workspace = std::env::temp_dir().join(format!(
+        "omnicrawl-events-ws-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&workspace);
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(json!({
+        "root": root_param(&root),
+        "workspace_root": root_param(&workspace),
+    }));
+    let session_id = kernel.session_id();
+    kernel.run_turn(FIRST_TEXT, FIRST_REPLY);
+
+    let result = kernel.request_ok(3, "session.events", json!({}));
+    assert_eq!(result["session_id"], session_id);
+    let events = result["events"].as_array().expect("events 是数组");
+    let types: Vec<&str> = events
+        .iter()
+        .map(|event| event["type"].as_str().unwrap_or_default())
+        .collect();
+    assert!(types.contains(&"session_started"), "事件流：{types:?}");
+    assert!(types.contains(&"user_message"), "事件流：{types:?}");
+    assert!(types.contains(&"assistant_message"), "事件流：{types:?}");
+    // 事件字段与转录行同形（宿主按 `type` / `payload` 消费）。
+    let user = events
+        .iter()
+        .find(|event| event["type"] == "user_message")
+        .expect("有用户消息事件");
+    assert_eq!(user["payload"]["content"], FIRST_TEXT);
+
+    // 撤回一轮后，被撤掉的轮次不再出现在有效事件流里（与 Python `read_active_events` 同义）。
+    kernel.request_ok(4, "turn.undo", json!({}));
+    let replayed = kernel.request_ok(5, "session.events", json!({}));
+    let remaining = replayed["events"].as_array().expect("events 是数组");
+    assert!(
+        !remaining
+            .iter()
+            .any(|event| event["type"] == "user_message"),
+        "撤回后不应再回放被撤掉的用户消息：{remaining:?}"
+    );
+
+    kernel.shutdown();
+}
+
+/// `subagent.query` 的 `list_worktrees`：宿主在 `/workspace` 切换前用它做 worktree 拦阻。
+#[test]
+fn subagent_query_lists_worktrees_from_the_managed_root() {
+    let root = temp_root("worktree-list");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(json!({"root": root_param(&root)}));
+
+    let result = kernel.request_ok(3, "subagent.query", json!({"action": "list_worktrees"}));
+    assert_eq!(result["unavailable"], false, "worktree 清单不依赖任务表：{result}");
+    let worktrees = result["worktrees"].as_array().expect("worktrees 是数组");
+    // 隔离的 HOME 下托管根是空的：清单为空，但字段必须在。
+    assert!(worktrees.is_empty(), "隔离 HOME 下不该有 worktree：{worktrees:?}");
+
+    // 认不出的动作要报错并点出可选值（宿主拼错 action 时不该静默成功）。
+    let response = kernel.request(4, "subagent.query", json!({"action": "nope"}));
+    let message = response["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("list_worktrees"),
+        "错误文案应点出可选动作：{response}"
+    );
+
+    kernel.shutdown();
 }

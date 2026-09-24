@@ -45,6 +45,26 @@ fn tool_call_stream(name: &str, arguments: &str) -> String {
     format!("data: {delta}\n\ndata: {finish}\n\ndata: [DONE]\n\n")
 }
 
+/// SSE：一段过程文本 + 要求调用某个工具。
+///
+/// `assistant_content` 落的是这段文本，用来验证事件真的带回了本批发往 Provider 的原文。
+fn tool_call_with_text_stream(text: &str, name: &str, arguments: &str) -> String {
+    let delta = json!({
+        "choices": [{
+            "delta": {
+                "content": text,
+                "tool_calls": [{
+                    "index": 0, "id": "call-1", "type": "function",
+                    "function": {"name": name, "arguments": arguments}
+                }]
+            }
+        }]
+    })
+    .to_string();
+    let finish = json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}).to_string();
+    format!("data: {delta}\n\ndata: {finish}\n\ndata: [DONE]\n\n")
+}
+
 enum Reply {
     Text(String),
     Raw(String),
@@ -411,6 +431,160 @@ fn session_transcript(root: &Path) -> String {
         }
     }
     text
+}
+
+/// 转录里指定类型的**第一条**事件（按 JSONL 逐行解析），方便按字段断言。
+fn transcript_event(root: &Path, event_type: &str) -> Value {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+                for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+                    let Ok(value) = serde_json::from_str::<Value>(line) else {
+                        continue;
+                    };
+                    if value["type"].as_str() == Some(event_type) {
+                        return value;
+                    }
+                }
+            }
+        }
+    }
+    panic!("转录里没有 {event_type} 事件");
+}
+
+/// 会话 id：转录文件名就是它（`sessions/<id>.jsonl`）。
+fn session_id(root: &Path) -> String {
+    let sessions = root.join("sessions");
+    let mut names: Vec<String> = std::fs::read_dir(&sessions)
+        .expect("会话目录应当存在")
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().map(|ext| ext == "jsonl").unwrap_or(false) {
+                path.file_stem().map(|stem| stem.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names.len(), 1, "应当恰好一个会话转录：{names:?}");
+    names.pop().expect("会话 id")
+}
+
+#[test]
+fn kernel_records_the_tool_call_and_its_result_in_the_session() {
+    let server = StubServer::spawn(vec![
+        Reply::Raw(tool_call_with_text_stream(
+            "先读文件。",
+            "read_file",
+            "{\"path\":\"a.txt\"}",
+        )),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("tool-events");
+
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+    let (frames, batches) = kernel.run_turn("读一下 a.txt", TOOL_OUTPUT);
+    assert_eq!(batches.len(), 1, "应恰好发一次工具批次，实收帧：{frames:?}");
+
+    // ① 请求事件：公开参数 + 调用 ID + 函数名 + 本批 assistant 原文。
+    let requested = transcript_event(&root, "tool_call_requested");
+    let payload = &requested["payload"];
+    assert_eq!(payload["tool"], "read_file");
+    assert_eq!(payload["tool_call_id"], "call-1");
+    assert_eq!(payload["function_name"], "read_file");
+    assert_eq!(payload["arguments"], json!({"path": "a.txt"}), "参数走公开投影");
+    assert_eq!(payload["assistant_content"], "先读文件。", "带回本批 assistant 原文");
+    assert!(
+        payload.get("arguments_json").is_none(),
+        "协议原文（可能含密钥）不落盘：{payload}"
+    );
+
+    // ② 结果事件：展示全文/模型可见输出 + 存储补齐的字段。
+    let result = transcript_event(&root, "tool_result");
+    let payload = &result["payload"];
+    assert_eq!(payload["tool"], "read_file");
+    assert_eq!(payload["tool_call_id"], "call-1");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["output"], TOOL_OUTPUT);
+    assert_eq!(payload["model_output"], TOOL_OUTPUT);
+    assert_eq!(payload["storage"], "inline");
+    assert!(payload["output_sha256"].is_string());
+    assert_eq!(payload["ui_artifact"], json!({}));
+
+    // ③ 事件进的是同一份转录，而且请求在前、结果在后。
+    let transcript = session_transcript(&root);
+    let requested_at = transcript.find("tool_call_requested").expect("请求事件");
+    let result_at = transcript.find("tool_result").expect("结果事件");
+    assert!(requested_at < result_at, "事件顺序应与 Python 一致");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn resumed_session_carries_the_tool_events_into_the_model_context() {
+    // 第一次运行：一个带工具调用的回合，事件落进转录。
+    let server = StubServer::spawn(vec![
+        Reply::Raw(tool_call_stream("read_file", "{\"path\":\"a.txt\"}")),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("resume-tools");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+    kernel.run_turn("读一下 a.txt", TOOL_OUTPUT);
+    let session = session_id(&root);
+    drop(kernel);
+
+    // 第二次运行：同一个会话根恢复同一个会话；第一份请求体就该带上上一轮的协议消息。
+    let resumed_server = StubServer::spawn(vec![Reply::Text("接着聊。".to_string())]);
+    let mut resumed = Kernel::spawn();
+    resumed.initialize(
+        model_config(&resumed_server),
+        json!({"root": root_param(&root), "session_id": session}),
+    );
+    resumed.run_turn("继续", "unused");
+
+    let bodies = resumed_server.bodies();
+    assert_eq!(bodies.len(), 1, "实收请求数：{}", bodies.len());
+    let messages = bodies[0]["messages"]
+        .as_array()
+        .expect("请求体里有消息数组")
+        .clone();
+
+    // 上一轮的调用与结果按协议形状回到上下文里（投影不写「工具调用请求：」文本行）。
+    let calls: Vec<Value> = messages
+        .iter()
+        .filter_map(|message| message["tool_calls"].as_array().cloned())
+        .flatten()
+        .collect();
+    assert_eq!(calls.len(), 1, "恢复后模型应看到上一轮的 tool_calls：{messages:?}");
+    assert_eq!(calls[0]["function"]["name"], "read_file");
+    assert_eq!(calls[0]["id"], "call-1");
+    let tool_message = messages
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap_or_else(|| panic!("应有工具结果消息：{messages:?}"));
+    assert_eq!(tool_message["tool_call_id"], "call-1");
+    assert!(
+        tool_message["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(TOOL_OUTPUT),
+        "工具结果消息应带上一轮的输出：{tool_message}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

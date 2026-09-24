@@ -71,6 +71,8 @@ const DECISION_POLL: Duration = Duration::from_millis(50);
 const EVENT_PUMP_INTERVAL: Duration = Duration::from_millis(200);
 /// 共享存储上的等待轮询粒度：跨进程没有条件变量可用（对应 Python `SHARED_WAIT_POLL_SECONDS`）。
 const SHARED_WAIT_POLL: Duration = Duration::from_millis(100);
+/// 退出时等内核把 `session_closed` 写完并自己退出的上限。
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 /// 子代理进入终态的事件名：到达后清除任务来源映射（对应 Python 的三件套）。
 const TERMINAL_SUBAGENT_EVENTS: [&str; 3] = [
     "subagent.task.completed",
@@ -512,13 +514,29 @@ impl AgentService {
     pub fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.finalize_isolation();
+        // `session.close.before`：内核据此在补写 `session_closed` 与丢弃空占位前
+        // 得到一次观察机会。会话 id 未知（内核未回填）时跳过。
+        let session_id = self.current_session_id();
+        let plugins = self.options.plugins.clone();
+        let notify_close = |before: bool| {
+            if session_id.is_empty() {
+                return;
+            }
+            if let Some(plugins) = plugins.as_ref() {
+                plugins.session_close(&session_id, before);
+            }
+        };
+        notify_close(true);
         let Ok(mut guard) = self.runner.lock() else {
             return;
         };
         if let Some(runner) = guard.as_mut() {
             runner.shutdown();
+            // 等内核把 `session_closed` 落盘后进程退出，再发 after——否则通知会早于事件。
+            runner.wait_for_exit(SHUTDOWN_WAIT);
         }
         *guard = None;
+        notify_close(false);
     }
 
     /// 隔离工作区退出收尾：按 `[agent_workspace]` 的 `apply_on_exit` / `cleanup_on_exit`
@@ -1166,7 +1184,8 @@ pub fn options_from_process(env: &ConfigEnvironment) -> Result<ServiceOptions, S
         request_timeout_seconds: (llm.request_timeout_seconds > 0)
             .then_some(llm.request_timeout_seconds as f64),
         context_window_tokens: llm.context_window_tokens,
-        prompt_cache_capable: false,
+        // 自定义模型条目声明的 prompt 缓存能力；未声明时只对 GPT 系列回退尝试。
+        prompt_cache_capable: llm.prompt_cache.unwrap_or(false),
         prompt_cache_identity: Default::default(),
         // 原生视觉的优先级由内核判定（`route_image_result` 同顺序）：为真时不走代理。
         native_vision: llm.native_vision.unwrap_or(false),

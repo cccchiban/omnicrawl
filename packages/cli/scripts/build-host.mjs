@@ -18,8 +18,14 @@
 // 用法：
 //   node packages/cli/scripts/build-host.mjs                    # 构建当前平台（Rust）
 //   node packages/cli/scripts/build-host.mjs --target <triple>  # 交叉/指定三元组
+//   node packages/cli/scripts/build-host.mjs --target <triple> --zigbuild  # 用 zig 做 C/C++ 交叉
 //   node packages/cli/scripts/build-host.mjs --legacy-python    # 旧 PyInstaller 载荷
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+//
+// `--target` 必须与「构建内核」步骤给的三元组一致，否则找不到 cargo 产物（release
+// 目录是 `<triple>/release`，与无 `--target` 的 `release/` 不是同一处）。
+// `--zigbuild` 换成 `cargo zigbuild`：musl 目标的 BoringSSL 需要能编 C++ 的交叉工具链，
+// 而 `musl-tools` 只给 `musl-gcc`（C），所以这类目标要传它并先在 PATH 上装好 zig。
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +39,8 @@ const payloadDir = join(outRoot, 'payload')
 const legacyPython = process.argv.includes('--legacy-python')
 const targetIndex = process.argv.indexOf('--target')
 const rustTarget = targetIndex === -1 ? null : process.argv[targetIndex + 1]
+// 交叉编译用 zig 提供的 C/C++ 工具链（cargo-zigbuild 会把它接到 CC/CXX 与链接器上）。
+const zigbuild = process.argv.includes('--zigbuild')
 
 /** 载荷里必须存在的可执行文件（平台后缀按目标平台给）。 */
 const HOST_FILES = ['omnicrawl-host', 'omnicrawl', 'omnicrawl-tui', 'omnicrawl-api', 'omnicrawl-mcp-server']
@@ -67,7 +75,7 @@ function buildRust() {
     'omnicrawl-api',
     'omnicrawl-mcp',
   ]
-  const cargoArgs = ['build', '--release']
+  const cargoArgs = [zigbuild ? 'zigbuild' : 'build', '--release']
   for (const name of packages) cargoArgs.push('-p', name)
   if (rustTarget) cargoArgs.push('--target', rustTarget)
   console.log(`[host] cargo ${cargoArgs.join(' ')}`)
@@ -162,5 +170,11 @@ function buildLegacyPython() {
 if (legacyPython) {
   buildLegacyPython()
 } else {
+  // zig 交叉只在有明确三元组时才有意义：没有 `--target` 时 cargo zigbuild 就是本机构建，
+  // 而载荷目录会落到 `release/`，很容易把错架构的产物当成交叉产物发出去——直接拦下。
+  if (zigbuild && !rustTarget) {
+    console.error('[host] --zigbuild 必须与 --target <三元组> 一起用。')
+    process.exit(1)
+  }
   buildRust()
 }

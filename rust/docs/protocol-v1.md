@@ -53,11 +53,13 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `session.rename` | 请求 | `{title}` | `{session: 会话索引条目}` |
 | `session.archive` | 请求 | `{}` | `{session: 会话索引条目, new_session_id?}` |
 | `session.history` | 请求 | `{query?, limit?}` | `{entries: [提示历史条目]}` |
+| `session.events` | 请求 | `{}` | `{session_id, events: [会话事件]}` |
 | `session.new` | 请求 | `{}` | `{session_id}` |
 | `session.resume` | 请求 | `{session_id}` | `{session_id, session: 会话索引条目, history: [消息]}` |
 | `session.append` | 请求 | `{role?, content}` | `{appended}` |
+| `workspace.switch` | 请求 | `{path}` | `{switched, from, to}` |
 | `subagent.run` | 请求 | `{agent_type, description?, prompt}` | `{agent_type, output, task}` |
-| `subagent.query` | 请求 | `{action, task_id?}` | `{unavailable, action, tasks, task, result}` |
+| `subagent.query` | 请求 | `{action, task_id?}` | `{unavailable, action, tasks, task, result, worktrees?}` |
 | `shutdown` | 请求 | `{}` | `{}` |
 
 - 回合结果只经由 `turn.finished` 通知传递，`turn.submit` 的响应不重复结果，避免两处真相。
@@ -160,9 +162,10 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
   不假装即时生效。
 - 工具声明（`model.tools`）由宿主负责生成与替换：工具仍由宿主执行，内核只持有声明。
 
-`session.list` / `session.rename` / `session.archive` / `session.history` / `session.new` /
-`session.resume` 是斜杠命令（`/sessions`、`/archives`、`/rename`、`/archive`、`/history`、`/new`、
-`/resume`）在宿主侧的落点，语义与 Python 的 `SessionFacade` 一一对应：
+`session.list` / `session.rename` / `session.archive` / `session.history` / `session.events` /
+`session.new` / `session.resume` 是斜杠命令（`/sessions`、`/archives`、`/rename`、`/archive`、
+`/history`、`/new`、`/resume`）与历史页回放在宿主侧的落点，语义与 Python 的 `SessionFacade`
+一一对应：
 
 - `session.list`：`archived=false` 列未归档，`archived=true` 只看归档；`limit` 由内核收敛到 1..=100，
   且**不**按工作区过滤（与 Python「列出全部会话，不再绑当前工作区」一致）。`current_session_id` 让宿主
@@ -174,7 +177,18 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
   已存在（否则 `-32600`），已归档的先自动解除归档，切换前会丢掉当前的空占位会话。
 - `session.new`：清空当前对话并开新会话。
 - `session.history`：只读的用户提示历史（独立于会话转录），空 `query` 表示不过滤。
-- `turn.undo` 与 `session.resume` 都会带回 `history`：宿主据此重放视图，撤回的消息与工具卡才能真正消失。
+- `session.events`：只读的**回退投影后**的有效事件流（`read_active_events`，被 `turn_undone` 撤掉的轮次
+  不出现），与 Python `current_session_events()` 同源。宿主用它重建历史页：消息、工具卡、计划清单、
+  SubAgent 进度树与压缩边界都按事件还原，而不是只投影 user/assistant 文本。与其他只读查询一样，
+  回合进行中照常应答；没有自持会话时 `-32600`。
+- `turn.undo` 与 `session.resume` 都会带回 `history`：宿主先据此对齐视图，随后再用 `session.events`
+  做完整回放（撤回的消息与工具卡才能真正消失），事件流读不到时才停在消息投影上。
+
+`subagent.query` 的 `action` 支持 `list` / `get` / `cancel`，另加 `list_worktrees`：它不查任务表，
+而是用 `action` 字段旁路到托管根（`~/.omnicrawl/agent-worktrees`）里的 SubAgent worktree 元数据，
+回 `{worktrees: [{task_id, branch, worktree_path, base_ref, repo_root}]}`——宿主在 `/workspace` 切换前
+用它做 pending worktree 拦阻（与 Python `list_subagent_worktrees` 同义，`cancel` 则用于切换前的
+子 Agent 排空）。
 
 `session.append` 与 `subagent.run` 供「模型循环之外」的宿主入口使用，当前只有 `/review`：
 
@@ -186,6 +200,20 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 - `session.append`：把宿主产生的文本作为 assistant 消息注入内核会话历史，下一轮请求即可见（对映
   Python 的 `remember_review_report`）。只接受 `role=assistant`——不借这个入口伪造用户输入或工具结果；
   内容为空白时不做任何事，回 `{"appended": false}`。
+
+`workspace.switch` 是宿主侧 `/workspace <路径>` 的运行中切换在会话上的落点：宿主已经解析并校验
+过目标路径（存在且是目录），内核只负责会话一致性：
+
+- 把自持会话的工作区指到新根，并按 Python `_append_session_event("workspace_switched", …)` 的口径
+  转录一条 `workspace_switched` 事件（payload `{from, to}`，`from` 是切换前的会话工作区）。
+- **会话不重建**：转录、运行期历史与 `session_started.workspace_root` 都不动（会话已全局化、不绑工作区），
+  因此切换后对话上下文与 `/undo` 账本不变。
+- `path` 为空白回 `-32602`；目标与当前工作区相同时不写事件，回 `switched=false`；内核没有自持会话时回
+  `-32600` 与「当前会话不受内核持有」。
+- 工具表、MCP 连接、临时目录等宿主侧资源由宿主自己重建，协议不回传也不下发；宿主通常先发
+  `session.settings`（`model.tools` / `model.context_messages`）再发本方法，让内核的工具声明与新工作区
+  一致。
+- 回合进行中也能应答：正在跑的回合已拍过工作区快照，更新只对后续回合生效。
 
 ## 内核 → 宿主
 
@@ -297,12 +325,13 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 
 `rust/crates/omnicrawl-cli` 提供 `omnicrawl` 二进制，已实现握手状态机（未握手前其他请求回 `-32600`）、
 `turn.submit` / `turn.cancel` / `turn.undo` / `session.settings` / `session.compact` / `subagent.query` /
-`session.list` / `session.rename` / `session.archive` / `session.history` / `session.new` / `session.resume` /
-`session.append` / `subagent.run` / `shutdown`，并作为 `tool.batch` 与 `model.reply` 的请求方。
+`session.list` / `session.rename` / `session.archive` / `session.history` / `session.events` / `session.new` / `session.resume` /
+`session.append` / `subagent.run` / `workspace.switch` / `shutdown`，并作为 `tool.batch` 与 `model.reply` 的请求方。
 
 `session.settings` 的写入面在 `src/settings.rs`（校验与应用分离，失败即整体不写），压缩字段的映射
 与 `initialize` 共用 `compaction.rs::overlay_compaction_config`，两处不会漂移。会话状态的读写面在
-`compaction.rs::KernelSession`（`open` / `reopen` / `start_new` / `reload_history` / `append`）与
+`compaction.rs::KernelSession`（`open` / `reopen` / `start_new` / `reload_history` / `append` /
+`switch_workspace`）与
 `session.rs` 的各 `respond_session_*` 之间，命令只做协议校验与结果投影。
 `subagent.run` 与 `subagent` 工具共用 `SubAgentRuntime::prepare` 与同一套结果投影
 （`require_completed_result`），因此角色发现、工具白名单与失败文案不会出现两份。

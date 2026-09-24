@@ -6,6 +6,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use omnicrawl_commands::CommandOption;
 use omnicrawl_core::AgentLoopObservation;
 use omnicrawl_ipc::{HostEvent, Id};
@@ -670,6 +671,180 @@ impl AppState {
         self.scroll_to_bottom();
     }
 
+    /// 按持久化事件流重建对话视图（对映 Python `_replay_session_events`）。
+    ///
+    /// 与 [`Self::replay_history`] 的分工：消息投影把工具请求/结果写成了 assistant 文本，
+    /// 只够恢复文字；历史页面必须消费事件流，才能还原工具卡、结果状态、计划清单与
+    /// SubAgent 进度树。事件流为空是权威结果（例如 `/undo` 撤掉了唯一一轮），因此必须
+    /// 清空视图，而不是保留旧消息。
+    pub fn replay_events(&mut self, events: &[serde_json::Value]) {
+        self.records.clear();
+        // 未收口的工具卡：`(call_id, tool, 记录下标, 请求时间)`。没有 call id 的旧事件按
+        // 工具名延后匹配（与 Python 的 `pending_by_id` / `pending_by_tool` 同口径）。
+        let mut pending: Vec<(String, String, usize, Option<DateTime<Utc>>)> = Vec::new();
+        // 被拒绝的调用：`call_id` 或 `tool:<name>` → 原因；收口时优先用它当正文。
+        let mut denied: Vec<(String, String)> = Vec::new();
+        for event in events {
+            let event_type = event
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let payload = match event.get("payload") {
+                Some(serde_json::Value::Object(_)) => event["payload"].clone(),
+                _ => serde_json::json!({}),
+            };
+            match event_type {
+                "user_message" => {
+                    if let Some(content) = replay_text(&payload, "content") {
+                        self.records.push(Record::User(content));
+                    }
+                }
+                "assistant_message" => {
+                    // 压缩后的会话正文放在 `session_content`，回放优先读它。
+                    let content = replay_text(&payload, "session_content")
+                        .or_else(|| replay_text(&payload, "content"));
+                    if let Some(content) = content {
+                        self.records.push(Record::Assistant(content));
+                    }
+                }
+                "tool_call_requested" => {
+                    let tool = replay_text(&payload, "tool").unwrap_or_default();
+                    if tool.is_empty() {
+                        continue;
+                    }
+                    if tool == host::TODO_TOOL {
+                        // 计划清单是展示层状态，不在会话区生成工具卡（对映 Python
+                        // `_handle_todo_update` 分支）。
+                        let mut map = serde_json::Map::new();
+                        let todos = payload
+                            .get("arguments")
+                            .and_then(|arguments| arguments.get("todos"))
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!([]));
+                        map.insert("todos".to_string(), todos);
+                        self.todos = host::parse_todos(&map);
+                        continue;
+                    }
+                    if tool == host::ASK_USER_TOOL {
+                        continue;
+                    }
+                    let call_id = replay_text(&payload, "tool_call_id").unwrap_or_default();
+                    let empty = serde_json::Map::new();
+                    let arguments = payload
+                        .get("arguments")
+                        .and_then(serde_json::Value::as_object)
+                        .unwrap_or(&empty);
+                    let summary = host::summarize_arguments(arguments);
+                    let index = self.records.len();
+                    self.records.push(Record::Tool(ToolCard {
+                        call_id: call_id.clone(),
+                        name: tool.clone(),
+                        summary,
+                        status: ToolStatus::Running,
+                        elapsed: None,
+                        started: Instant::now(),
+                        body: Vec::new(),
+                    }));
+                    pending.push((call_id, tool, index, replay_time(event)));
+                }
+                "tool_call_denied" => {
+                    let tool = replay_text(&payload, "tool").unwrap_or_default();
+                    let reason = replay_text(&payload, "reason")
+                        .unwrap_or_else(|| "工具调用未获批准。".to_string());
+                    let call_id = replay_text(&payload, "tool_call_id").unwrap_or_default();
+                    if !call_id.is_empty() {
+                        denied.push((call_id, reason));
+                    } else if !tool.is_empty() {
+                        denied.push((format!("tool:{tool}"), reason));
+                    }
+                }
+                "tool_result" => {
+                    let tool = replay_text(&payload, "tool").unwrap_or_default();
+                    if tool == host::TODO_TOOL || tool == host::ASK_USER_TOOL {
+                        continue;
+                    }
+                    let call_id = replay_text(&payload, "tool_call_id").unwrap_or_default();
+                    // 先按 call id 配对，再按工具名兜底；两者都没有就补一张空参数卡。
+                    let matched = pending
+                        .iter()
+                        .position(|(id, _, _, _)| !call_id.is_empty() && *id == call_id)
+                        .or_else(|| pending.iter().position(|(_, name, _, _)| *name == tool));
+                    let (index, started) = match matched {
+                        Some(at) => {
+                            let entry = pending.remove(at);
+                            (entry.2, entry.3)
+                        }
+                        None => {
+                            let index = self.records.len();
+                            self.records.push(Record::Tool(ToolCard {
+                                call_id: call_id.clone(),
+                                name: if tool.is_empty() {
+                                    "未知工具".to_string()
+                                } else {
+                                    tool.clone()
+                                },
+                                summary: String::new(),
+                                status: ToolStatus::Running,
+                                elapsed: None,
+                                started: Instant::now(),
+                                body: Vec::new(),
+                            }));
+                            (index, replay_time(event))
+                        }
+                    };
+                    let ok = payload
+                        .get("ok")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let finished = replay_time(event);
+                    if let Some(Record::Tool(card)) = self.records.get_mut(index) {
+                        card.status = if ok { ToolStatus::Ok } else { ToolStatus::Failed };
+                        card.elapsed = replay_elapsed(started, finished);
+                        card.body = body_lines(&replay_output(&payload));
+                    }
+                }
+                other => {
+                    if let Some(name) = replay_subagent_event_name(other) {
+                        self.apply_subagent_event(name, &payload);
+                    } else if other == "turn_cancelled" {
+                        self.records.push(Record::Assistant(
+                            replay_text(&payload, "summary")
+                                .unwrap_or_else(|| "（上一回合被取消，未生成最终回复）".to_string()),
+                        ));
+                    } else if other == "session_interrupted" {
+                        self.records
+                            .push(Record::Notice("上一回合在会话恢复前中断。".to_string()));
+                    } else if other == "compact_summary" {
+                        if let Some(content) = replay_text(&payload, "content") {
+                            self.records
+                                .push(Record::Assistant(format!("会话压缩摘要：\n{content}")));
+                        }
+                    }
+                }
+            }
+        }
+        // 尾部：仍挂着的卡片按「被拒绝」或「会话结束前没有结果」收口（对映 Python
+        // `_replay_session_events` 末尾遍历未收口组件的分支）。
+        for (call_id, tool, index, _) in pending {
+            let denial = denied
+                .iter()
+                .find(|(key, _)| !call_id.is_empty() && *key == call_id)
+                .or_else(|| denied.iter().find(|(key, _)| *key == format!("tool:{tool}")));
+            let (status, reason) = match denial {
+                Some((_, reason)) => (ToolStatus::Denied, reason.clone()),
+                None => (
+                    ToolStatus::Failed,
+                    "工具调用在会话结束前未收到结果。".to_string(),
+                ),
+            };
+            if let Some(Record::Tool(card)) = self.records.get_mut(index) {
+                card.status = status;
+                card.body = vec![reason];
+            }
+        }
+        self.scroll_to_bottom();
+    }
+
     /// 子任务事件 → 进度树：按 `batch_id` 找树，没有就新开一棵并挂到消息流末尾。
     ///
     /// 对映 Python `_handle_subagent_event`：只处理任务状态类事件（子代理对话、工具与
@@ -1085,6 +1260,60 @@ impl AppState {
 
 fn body_lines(output: &str) -> Vec<String> {
     output.lines().map(|line| line.to_string()).collect()
+}
+
+/// 回放取文本字段：非空字符串才算命中（对映 Python 的 `isinstance(value, str) and value`）。
+fn replay_text(payload: &serde_json::Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// 事件时间戳（`created_at`，RFC3339）；缺失或不可解析时为空。
+fn replay_time(event: &serde_json::Value) -> Option<DateTime<Utc>> {
+    event
+        .get("created_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+/// 回放工具卡耗时：两端时间戳齐备且顺序正确时给出差值，否则不显示耗时。
+fn replay_elapsed(started: Option<DateTime<Utc>>, finished: Option<DateTime<Utc>>) -> Option<Duration> {
+    let delta = finished?.signed_duration_since(started?);
+    let millis = delta.num_milliseconds();
+    if millis < 0 {
+        None
+    } else {
+        Some(Duration::from_millis(millis as u64))
+    }
+}
+
+/// 回放取工具正文：优先 UI 正文，其次模型可见输出（与 Python `_replay_tool_output` 同口径）。
+fn replay_output(payload: &serde_json::Value) -> String {
+    for key in ["full_output", "output", "model_output", "output_preview"] {
+        if let Some(value) = replay_text(payload, key) {
+            return value;
+        }
+    }
+    "无输出".to_string()
+}
+
+/// 转录里的 SubAgent 事件类型 → 实时通知名（对映 Python `subagent_event_names`）。
+fn replay_subagent_event_name(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "subagent_task_queued" => Some("subagent.task.queued"),
+        "subagent_task_started" => Some("subagent.task.started"),
+        "subagent_task_running" => Some("subagent.task.running"),
+        "subagent_task_waiting_approval" => Some("subagent.task.waiting_approval"),
+        "subagent_task_completed" => Some("subagent.task.completed"),
+        "subagent_task_failed" => Some("subagent.task.failed"),
+        "subagent_task_cancelled" => Some("subagent.task.cancelled"),
+        "subagent_task_approval_cancelled" => Some("subagent.task.approval_cancelled"),
+        _ => None,
+    }
 }
 
 /// 子任务事件名 → 进度树状态；对映 Python `_handle_subagent_event` 的 `status_by_event`。
@@ -1894,5 +2123,151 @@ mod tests {
         assert_eq!(estimated_tokens("你好世界"), 4);
         assert_eq!(estimated_tokens("abcdefgh"), 2);
         assert_eq!(estimated_tokens("你好abcd"), 3);
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn state() -> AppState {
+        AppState::new(
+            "demo".to_string(),
+            "test-model".to_string(),
+            ApprovalMode::Manual,
+        )
+    }
+
+    fn event(event_type: &str, payload: Value) -> Value {
+        json!({
+            "version": 1,
+            "session_id": "20260101-000000-abcdef",
+            "event_id": "e1",
+            "created_at": "2026-01-01T00:00:00Z",
+            "type": event_type,
+            "payload": payload,
+        })
+    }
+
+    fn tool_cards(state: &AppState) -> Vec<&ToolCard> {
+        state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Tool(card) => Some(card),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn replay_events_rebuilds_messages_and_closes_unfinished_cards() {
+        let mut state = state();
+        state.replay_events(&[
+            event("user_message", json!({"content": "读一下 a.py"})),
+            event("assistant_message", json!({"content": "我看看"})),
+            event(
+                "tool_call_requested",
+                json!({"tool": "read", "tool_call_id": "c1", "arguments": {"path": "a.py"}}),
+            ),
+            event(
+                "tool_result",
+                json!({"tool": "read", "tool_call_id": "c1", "ok": true, "output": "print(1)"}),
+            ),
+            // 没有结果的事件：尾部要按「未收到结果」收口，而不是留一张永远在跑的工具卡。
+            event(
+                "tool_call_requested",
+                json!({"tool": "bash", "tool_call_id": "c2", "arguments": {"command": "ls"}}),
+            ),
+        ]);
+
+        assert!(matches!(state.records.first(), Some(Record::User(text)) if text == "读一下 a.py"));
+        assert!(matches!(state.records.get(1), Some(Record::Assistant(text)) if text == "我看看"));
+        let cards = tool_cards(&state);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].name, "read");
+        assert_eq!(cards[0].status, ToolStatus::Ok);
+        assert_eq!(cards[0].body, vec!["print(1)".to_string()]);
+        assert_eq!(cards[1].name, "bash");
+        assert_eq!(cards[1].status, ToolStatus::Failed);
+        assert_eq!(
+            cards[1].body,
+            vec!["工具调用在会话结束前未收到结果。".to_string()]
+        );
+    }
+
+    #[test]
+    fn replay_events_marks_denied_cards_and_skips_control_tools() {
+        let mut state = state();
+        state.replay_events(&[
+            event(
+                "tool_call_requested",
+                json!({"tool": "bash", "tool_call_id": "c1", "arguments": {"command": "rm -rf /"}}),
+            ),
+            event(
+                "tool_call_denied",
+                json!({"tool": "bash", "reason": "用户拒绝执行。"}),
+            ),
+            // 计划清单与提问是展示层/入口状态，不生成工具卡。
+            event(
+                "tool_call_requested",
+                json!({"tool": host::TODO_TOOL, "arguments": {"todos": [{"step": "改 bug"}]}}),
+            ),
+            event("tool_call_requested", json!({"tool": host::ASK_USER_TOOL})),
+        ]);
+
+        let cards = tool_cards(&state);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].status, ToolStatus::Denied);
+        assert_eq!(cards[0].body, vec!["用户拒绝执行。".to_string()]);
+        assert_eq!(state.todos.len(), 1);
+    }
+
+    #[test]
+    fn replay_events_restores_subagent_trees_and_compaction_boundary() {
+        let mut state = state();
+        state.replay_events(&[
+            event(
+                "subagent_task_started",
+                json!({"task_id": "t1", "batch_id": "b1", "agent_type": "review"}),
+            ),
+            event(
+                "subagent_task_completed",
+                json!({"task_id": "t1", "batch_id": "b1"}),
+            ),
+            event("compact_summary", json!({"content": "前情提要"})),
+            event("session_interrupted", json!({})),
+            event("turn_cancelled", json!({})),
+        ]);
+
+        assert!(state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::SubagentTree(_))));
+        assert!(state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Assistant(text)
+                if text == "会话压缩摘要：\n前情提要")));
+        assert!(state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Notice(text)
+                if text == "上一回合在会话恢复前中断。")));
+        assert!(state
+            .records
+            .iter()
+            .any(|record| matches!(record, Record::Assistant(text)
+                if text == "（上一回合被取消，未生成最终回复）")));
+    }
+
+    #[test]
+    fn replay_events_clears_the_view_on_an_empty_stream() {
+        let mut state = state();
+        state.notice("旧消息".to_string());
+        // 空事件流是权威结果（`/undo` 撤掉唯一一轮）：视图必须清空，不能保留旧记录。
+        state.replay_events(&[]);
+        assert!(state.records.is_empty());
     }
 }

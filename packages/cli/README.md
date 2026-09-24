@@ -53,14 +53,18 @@ npm registry、升级方式换成 `npm install -g`。
 ```bash
 cargo build --release -p omnicrawl-cli        # 产物：rust/target/release/omnicrawl[.exe]
 node packages/cli/scripts/build-host.mjs      # 宿主载荷：dist/host/<platform>/payload
+node packages/cli/scripts/build-host.mjs --target x86_64-pc-windows-msvc  # 产物目录跟 --target 走
 node packages/cli/scripts/prepare.mjs         # 暂存发布产物（缺的平台只警告）
 node packages/cli/scripts/host-smoke.mjs      # 宿主冒烟：无终端提示 + 退出码
 node packages/cli/scripts/install-smoke.mjs   # 安装冒烟：干净前缀里真装真跑
 npm test -w omnicrawl-cli                     # e2e：真二进制 + 协议 v1
 ```
 
-宿主载荷只能与构建机同架构（里面有 CPython 与原生扩展），交叉构建不成立：
-其它平台由 CI 在各自 runner 上构建（见 `.github/workflows/publish-npm.yml`）。
+宿主载荷是纯 Rust 产物，但仍按构建机的原生目标构建（里面没有 CPython，交叉构建在大多数
+情况下也不再受限于 Python）：Windows 侧用 `--target` 指到与内核相同的三元组目录；
+Linux 侧的宿主载荷仍走原生 gnu 目标，因为 `omnicrawl-tts → ort-sys` 没有 musl 预编译库
+（详见 `rust/docs/python-free-build.md` 第 7 节）。若目标无法在构建机上构建（或宿主没接线），
+启动器会退回协议直连内核——内核可以单独交叉编译成 musl 静态。
 
 两个逃生口：`OMNICRAWL_HOST` 直接指定宿主、`OMNICRAWL_BINARY` 直接指定内核（此时启动器是纯透传）。
 

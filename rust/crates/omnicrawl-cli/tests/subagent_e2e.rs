@@ -534,6 +534,58 @@ fn model_block(server: &StubServer, tools: Value, retry: Option<i64>) -> Value {
     block
 }
 
+/// 带会话的握手：父回合的调用会落进该会话的转录。
+fn handshake_with_session(
+    host: &mut Host,
+    server: &StubServer,
+    tools: Value,
+    session_root: &PathBuf,
+) {
+    let response = host.request(
+        "initialize",
+        json!({
+            "protocol_version": "1.0",
+            "client": {"name": "subagent-e2e", "version": "0.1.0"},
+            "model": model_block(server, tools, None),
+            "session": {"root": session_root.to_string_lossy()},
+        }),
+    );
+    assert!(response.get("result").is_some(), "握手失败：{response}");
+}
+
+/// 转录里工具事件的 `payload.tool`，按落盘顺序。
+///
+/// 用来验证「子代理内部的工具调用不落父会话」：父子共用一个会话根，落盘的应该只有父回合
+/// 那一次 `subagent` 调用（Python 在子代理循环里传 `persist_session_events=False`）。
+fn transcript_tools(session_root: &PathBuf) -> Vec<String> {
+    let sessions = session_root.join("sessions");
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&sessions)
+        .expect("会话目录应当存在")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().map(|ext| ext == "jsonl").unwrap_or(false))
+        .collect();
+    paths.sort();
+    let mut tools: Vec<String> = Vec::new();
+    for path in paths {
+        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let kind = value["type"].as_str().unwrap_or_default();
+            if kind == "tool_call_requested" || kind == "tool_result" {
+                tools.push(
+                    value["payload"]["tool"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    tools
+}
+
 fn handshake(host: &mut Host, server: &StubServer, tools: Value, retry: Option<i64>) {
     let response = host.request(
         "initialize",
@@ -568,8 +620,10 @@ fn kernel_runs_subagent_with_host_tool_batch() {
         "[subagents]\nenabled = true\nmax_concurrency = 1\nmax_tasks_per_batch = 1\n",
     );
 
+    let session_root = root.join("session");
+    std::fs::create_dir_all(&session_root).expect("建会话根");
     let mut host = Host::start(&workspace, &agents, &config);
-    handshake(
+    handshake_with_session(
         &mut host,
         &server,
         json!([
@@ -577,7 +631,7 @@ fn kernel_runs_subagent_with_host_tool_batch() {
             {"type": "function", "function": {"name": "grep"}},
             {"type": "function", "function": {"name": "subagent"}}
         ]),
-        None,
+        &session_root,
     );
 
     let finished = host.run_turn("帮我评审");
@@ -614,6 +668,14 @@ fn kernel_runs_subagent_with_host_tool_batch() {
     assert_eq!(created.len(), 1, "应有批次创建事件");
     assert_eq!(started.len(), 1, "应有任务开始事件");
     assert_eq!(completed.len(), 1, "应有任务完成事件");
+
+    // 6. 工具事件只记父回合那一次 `subagent` 调用：子代理内部的 `read` 不落父会话
+    //    （父子共用一个会话根，落盘的若出现 `read` 就说明开关没生效）。
+    assert_eq!(
+        transcript_tools(&session_root),
+        vec!["subagent".to_string(), "subagent".to_string()],
+        "父会话应只有 subagent 的请求与结果事件"
+    );
 
     // 3/5. 模型请求体：子回合带角色定义，带回工具观察；主回合带回子任务观察。
     let requests = server.requests.lock().expect("请求锁").clone();

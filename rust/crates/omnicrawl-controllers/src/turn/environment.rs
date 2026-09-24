@@ -14,7 +14,11 @@
 //!   调用是同一组 Win32 入口；结果按进程缓存（Python 用 `lru_cache`，这里用 `OnceLock`
 //!   + `Mutex`，链在进程生命周期内不会变化）。
 
+// 进程链缓存与 Win32 进程表只在 Windows 分支使用；非 Windows 目标若照旧无条件引入，
+// 会在 Linux/macOS 与 musl 交叉编译时留下 unused_imports 警告（CI 会在这些目标上构建）。
+#[cfg(windows)]
 use std::collections::BTreeMap;
+#[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
 
 /// 进程链枚举的上限（与 Python 的默认 `limit=12` 一致）。

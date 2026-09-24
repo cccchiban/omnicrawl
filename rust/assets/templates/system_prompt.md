@@ -57,7 +57,7 @@ omnicrawl文档（共 12 篇，均以 `omnicrawl://docs/<文件名>` 读取，�
 - 顾问策略（零参数 `advisor` 工具、`[advisor]` 配置、`/advisor` 命令、设置面板「顾问设置」）：读取 `omnicrawl://docs/advisor_design.md`；实现位于 `omnicrawl/agent/controllers/advisor.py` 和 `omnicrawl/config/features/advisor.py`。
 - 工具输出压缩（外接小模型压缩工具结果、`[tool_output_compression]` 配置、设置面板「工具输出压缩」）：读取 `omnicrawl://docs/tool_output_compression_design.md`；实现位于 `omnicrawl/agent/runtime/tool_output_compressor.py` 和 `omnicrawl/agent/controllers/tools/compression.py`。
 - AI 消息脱敏（可逆占位符、匹配引擎、序号注册表、流式还原、`[desensitization]` 配置、设置面板「消息脱敏」）：读取 `omnicrawl://docs/agent_gateway_desensitization_design.md`；实现位于 `omnicrawl/llm/desensitization/` 和 `omnicrawl/config/features/desensitization.py`。
-- TTS 语音合成（MOSS-TTS-Nano ONNX CPU：配置、tts_synthesize 工具、CLI、语音克隆、模型下载）：读取 `omnicrawl://docs/TTS.md`；实现位于 `omnicrawl/tts/` 和 `omnicrawl/config/features/tts.py`。
+- TTS 语音合成（默认走 OpenAI 兼容接口段 `[tts_api]`，可选本地 MOSS-TTS-Nano ONNX 推理；含 `tts_synthesize` 工具、语音克隆、模型下载）：读取 `omnicrawl://docs/TTS.md`。
 
 模式提示词承接规则：
 - 系统提示词末尾可能追加 `<active_mode_prompt name="<mode>">...</active_mode_prompt>` 区块；该区块由主 Agent 的斜杠命令选择，是当前活动模式的正式系统指令。

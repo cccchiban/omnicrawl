@@ -26,6 +26,11 @@ TOML 原子写回（同目录临时文件 + 替换，Windows 短暂 Access Denie
 custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强度别名与报错文案、
 `load_llm_config`（单模型与环境变量补齐）、`save_reasoning_effort`、`save_active_model_ref`。
 
+`LlmConfig.prompt_cache` 是 Provider 能力声明（`Option<bool>`）：只由自定义模型条目的
+`capabilities.prompt_cache` 填充，detected / legacy 路径保持 `None`。宿主握手时据此设置
+`initialize.model.prompt_cache_capable`，内核的 `should_send_prompt_cache_key` 用它决定
+是否给非 GPT 系列也下发 `prompt_cache_key`。
+
 **`models/model_store`**：`models.toml` 的解析、校验与写回。key 形状、凭据字段拒绝
 （`api_key`/`token`/`cookie`/`authorization`）、别名冲突、排序（`sort_order` → `display_name`
 小写 → key）、能力与顶层窗口的双向回填、`temperature` 的 `provider_options` 回退、
@@ -97,6 +102,13 @@ custom 的 model/api_key）、`thinking_enabled`、`ActiveModelRef`、推理强�
 `tool_output_compression`（思考档位与四个正整数预算）、`tts`（线程数枚举、设备三态、
 模型目录解析）、`subagents`（独立 `subagents.toml`、环境变量紧急刹车、`models.<角色>` 覆盖）。
 
+**`features/tts_api`（Rust 专有）**：语音合成接口段（`[tts_api]`），与 `tts` 分开是刻意的——
+`[tts]` 的读回值与写回文本被 parity 数据集逐字节钉住（加字段就要同步改 Python），而本段是
+Rust 侧新增的合成后端（形状对齐 `[image_gen]`），因此不进 parity 数据集，自带
+`tests/tts_api_config.rs`：默认值（`enabled` 默认 `true`，地址/模型/音色/密钥变量名都有默认）、
+`base_url` 去尾斜杠、`response_format` 只允许 `wav`、`speed` 限 0.25~4.0、
+`resolve_api_key`（明文优先，否则读 `api_key_env`）与只改本段的写回。
+
 **`core/settings`**：`load_feature_enabled`（`subagents` 段走独立文件）、
 `save_context_window_tokens`（legacy 段 / 多模型 `defaults` / `models.toml` 条目三路）、
 `save_context_compaction_trigger_percent`、`save_subagent_setting`（复用设置面板白名单校验）、
@@ -157,6 +169,8 @@ Profile 复用冲突）、写回后失效 profile 与条目的清理、`models.t
   tts 读取 10 例 + 写回 1 例、agent_workspace 读取 8 例 + 写回 1 例、
   image_gen 读取 14 例 + 写回 1 例、tool_output_compression 读取 9 例 + 写回 2 例、
   desensitization 读取 15 例 + 写回 1 例。
+- `tests/tts_api_config.rs`（非 parity）：`[tts_api]` 的默认值、归一化、密钥解析、非法取值
+  与写回隔离，共 5 例。
 - `tests/fixtures/config_core_parity.json`：workspace 读取 5 例 + 写回 1 例、
   设置开关 6 例、窗口写回（配置 3 例 / 模型目录 3 例）、压缩阈值 5 例、
   显示思考 3 例、SubAgent 参数 4 例、MCP 写回 1 例、Node 判定 6 例、

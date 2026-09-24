@@ -5,6 +5,8 @@
 //! 证书校验）。测试用记录型实现替换 [`WebTransport`]，不必起网络。
 
 use std::io::Read;
+// 只有 Windows 的系统代理解析（`registry_value`）需要起子进程读注册表。
+#[cfg(windows)]
 use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;

@@ -1,7 +1,14 @@
-//! TTS 语音合成工具执行体（MOSS-TTS-Nano ONNX，引擎在 `omnicrawl-tts`）。
+//! TTS 语音合成工具执行体（引擎在 `omnicrawl-tts`）。
 //!
-//! 语义基准是 `omnicrawl/agent/controllers/tools/implementations.py::_tool_tts_synthesize`：
-//! 引擎按模型目录/线程数/设备缓存复用，合成后按配置自动播放；成功与失败都回 JSON 信封
+//! 两条后端，由配置决定：
+//!
+//! * **接口合成**（默认）：`[tts_api]` 段启用时走 OpenAI 兼容
+//!   `POST {base_url}/audio/speech`，不依赖 ONNX 运行时。
+//! * **本地推理**：`[tts_api].enabled = false` 时回落到 MOSS-TTS-Nano ONNX；
+//!   发布构建默认没编译它（`onnx` feature 关闭），此时会报出明确的不可用原因。
+//!
+//! 其余语义基准是 `omnicrawl/agent/controllers/tools/implementations.py::_tool_tts_synthesize`：
+//! 本地引擎按模型目录/线程数/设备缓存复用，合成后按配置自动播放；成功与失败都回 JSON 信封
 //! （失败是 `ok=false` 加 `error`，而不是错误码前缀文本），让模型不再重复调用。
 
 use std::path::{Path, PathBuf};
@@ -9,6 +16,7 @@ use std::sync::Mutex;
 
 use omnicrawl_config::features::tts::TtsConfiguration;
 use omnicrawl_core::ToolResult;
+use omnicrawl_tts::api::{synthesize_speech, ApiTtsConfig};
 use omnicrawl_tts::config::TtsConfig;
 use omnicrawl_tts::engine::{TtsEngine, TtsResult};
 use omnicrawl_tts::player::play_wav;
@@ -19,6 +27,8 @@ use super::error::text_success;
 /// TTS 工具的运行期配置。
 pub struct TtsOptions {
     pub configuration: TtsConfiguration,
+    /// 接口后端（由宿主把 `[tts_api]` 段映射而来，密钥已解析）；`None` 表示走本地推理。
+    pub api: Option<ApiTtsConfig>,
     /// 已解析的模型目录（不随工作区变化）。
     pub model_dir: PathBuf,
     /// 相对输出目录的基准。
@@ -41,14 +51,38 @@ struct SynthesisRequest {
 impl TtsOptions {
     pub fn new(
         configuration: TtsConfiguration,
+        api: Option<ApiTtsConfig>,
         model_dir: PathBuf,
         workspace_root: PathBuf,
     ) -> Self {
         Self {
             configuration,
+            api,
             model_dir,
             workspace_root,
             engine: Mutex::new(None),
+        }
+    }
+
+    /// 本次调用是否走接口合成。
+    fn uses_api(&self) -> bool {
+        self.api.is_some()
+    }
+
+    /// 音色名：接口后端取 `[tts_api].voice`，本地后端取 `[tts].voice`。
+    ///
+    /// 本地后端固定用设置里的音色（模型可能猜一个不存在的音色名，如 default）。
+    fn configured_voice(&self) -> String {
+        if let Some(api) = self.api.as_ref() {
+            if !api.voice.trim().is_empty() {
+                return api.voice.clone();
+            }
+        }
+        let configured = self.configuration.voice.trim();
+        if configured.is_empty() {
+            "Junhao".to_string()
+        } else {
+            configured.to_string()
         }
     }
 
@@ -58,21 +92,21 @@ impl TtsOptions {
         if text.is_empty() {
             return error_result("text 不能为空。");
         }
-        // 音色固定取设置里的配置：模型可能猜一个不存在的音色名（如 default）导致失败。
-        let voice = {
-            let configured = self.configuration.voice.trim();
-            if configured.is_empty() {
-                "Junhao".to_string()
-            } else {
-                configured.to_string()
-            }
-        };
+        let voice = self.configured_voice();
         let request = SynthesisRequest {
             text,
             prompt_audio: path_argument(arguments, "prompt_audio"),
             output_path: path_argument(arguments, "path")
                 .unwrap_or_else(|| self.default_output_path()),
         };
+        // 参考音频（语音克隆）只有本地推理管线吃得下：接口后端拿到它只能忽略，
+        // 那会让用户以为换了音色。这里直接报错并把出路写清楚。
+        if self.uses_api() && request.prompt_audio.is_some() {
+            return error_result(
+                "接口合成不支持参考音频（prompt_audio）：请在 [tts_api].voice 里填服务端支持的音色名，\
+                 或改用带本地推理的构建（--features omnicrawl-tts/onnx）。",
+            );
+        }
         let result = match self.run(&request, &voice) {
             Ok(result) => result,
             Err(message) => return error_result(&message),
@@ -110,6 +144,10 @@ impl TtsOptions {
     }
 
     fn run(&self, request: &SynthesisRequest, voice: &str) -> Result<TtsResult, String> {
+        if let Some(api) = self.api.as_ref() {
+            // 接口后端没有引擎缓存：每次调用就是一次 HTTP 请求，配置变化即刻生效。
+            return synthesize_speech(api, &request.text, Some(voice), &request.output_path);
+        }
         let signature = self.signature();
         let mut cache = self
             .engine
@@ -214,6 +252,7 @@ fn round_two(value: f64) -> f64 {
 mod tests {
     use super::*;
 
+    /// 本地后端（`api = None`）的工具选项。
     fn options() -> TtsOptions {
         let configuration = TtsConfiguration {
             enabled: true,
@@ -222,6 +261,29 @@ mod tests {
         };
         TtsOptions::new(
             configuration,
+            None,
+            PathBuf::from("/models/tts"),
+            PathBuf::from("/workspace"),
+        )
+    }
+
+    /// 接口后端的工具选项（密钥已解析）。
+    fn api_options(api_key: &str) -> TtsOptions {
+        let configuration = TtsConfiguration {
+            enabled: true,
+            auto_play: false,
+            ..TtsConfiguration::default()
+        };
+        let api = ApiTtsConfig {
+            base_url: "https://tts.example.com/v1".to_string(),
+            api_key: api_key.to_string(),
+            model: "cosyvoice-2".to_string(),
+            voice: "longxiaochun".to_string(),
+            ..ApiTtsConfig::default()
+        };
+        TtsOptions::new(
+            configuration,
+            Some(api),
             PathBuf::from("/models/tts"),
             PathBuf::from("/workspace"),
         )
@@ -258,9 +320,39 @@ mod tests {
         };
         let options = TtsOptions::new(
             configuration,
+            None,
             PathBuf::from("/models"),
             PathBuf::from("/ws"),
         );
         assert!(options.default_output_path().starts_with("D:/tts-out"));
+    }
+
+    /// 后端选择：`api` 为 `Some` 就是接口合成，音色取 `[tts_api].voice`。
+    #[test]
+    fn api_backend_uses_its_own_voice() {
+        assert!(api_options("key").uses_api());
+        assert_eq!(api_options("key").configured_voice(), "longxiaochun");
+        // 本地后端仍然取 `[tts].voice`。
+        assert!(!options().uses_api());
+        assert_eq!(options().configured_voice(), "Junhao");
+    }
+
+    /// 接口后端下缺密钥：在发请求之前就报错，且信封里带着排查指向。
+    #[test]
+    fn api_backend_without_key_reports_before_any_request() {
+        let result = api_options("   ").tts_synthesize(&arguments(&[("text", "你好")]));
+        assert!(!result.ok);
+        assert!(result.output.contains("未配置密钥"), "{}", result.output);
+    }
+
+    /// 接口后端不支持参考音频：直接报错而不是静默忽略（否则用户以为换了音色）。
+    #[test]
+    fn api_backend_rejects_reference_audio() {
+        let result = api_options("key").tts_synthesize(&arguments(&[
+            ("text", "你好"),
+            ("prompt_audio", "D:/voices/ref.wav"),
+        ]));
+        assert!(!result.ok);
+        assert!(result.output.contains("不支持参考音频"), "{}", result.output);
     }
 }

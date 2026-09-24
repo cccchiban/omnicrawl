@@ -12,12 +12,12 @@ TUI 与本地 API 共用这一层——界面状态留在 TUI，HTTP/SSE 留在 
 | --- | --- |
 | `src/kernel.rs` | 内核进程客户端：起子进程、NDJSON 帧读写、读线程、请求/响应配对 |
 | `src/host.rs` | 工具批次：整批定调（`update_todos` / `pause_work` / `ask_user` 就地办，敏感工具等审批）、执行派发、观察构造 |
-| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`wreq_transport`（浏览器指纹传输，仅 `fetcher` 用）、`web_search`、`fetcher`、`sample`、`tts`、`advisor`、`windows/*`、`declarations`、`registry` |
+| `src/tools/` | 工具执行体与注册表：`paths`（保护路径）、`read`、`read_image`、`image_gen`、`write`、`edit`、`command`、`monitor`、`finding`、`grep`、`listing`、`git`、`knowledge`、`memory`、`web_transport`（ureq 阻塞式传输）、`wreq_transport`（浏览器指纹传输，仅 `fetcher` 用）、`web_search`、`fetcher`、`sample`、`tts`（两条后端：接口合成默认、本地 ONNX 需 `omnicrawl-tts/onnx`）、`advisor`、`windows/*`（非 Windows 只保留「仅支持 Windows」分支）、`declarations`、`registry` |
 | `src/approval.rs` | 审批模式（`manual` / `auto`）与字面量解析 |
 | `src/turn.rs` | 无头回合运行器：握手、整批定调、并发执行、超时收口、取消与事件出口 |
 | `src/process_control.rs` | 跨平台进程树控制（对映 Python `workspace/process_control.py`）：Windows 的 kill-on-close Job Object、Unix 的进程组整组回收、进程组创建与 `process_group_of` 诊断 |
 | `src/prompt.rs` | 启动期提示词装配：模板 → system prompt、AGENTS.md 合并、Skill 目录扫描、模式切换与 `context_messages`（对映 `agent/controllers/tools/building.py` 与 `agent/core.py` 的启动准备） |
-| `src/prompt_cache.rs` | 稳定 prompt 前缀的身份指纹：`initialize.model.prompt_cache_identity` 的七字段组装（对映 `agent/context/prompt_context.py::build_prompt_cache_identity`），与 Python 逐字节对齐 |
+| `src/prompt_cache.rs` | 稳定 prompt 前缀的身份指纹：`initialize.model.prompt_cache_identity` 的七字段组装（对映 `agent/context/prompt_context.py::build_prompt_cache_identity`），与 Python 逐字节对齐；TUI 与无头运行器都在握手时调用 |
 
 ## 提示词装配
 
@@ -135,8 +135,13 @@ let text = plugins.turn_start(text, session, Some(&turn_id))?;   // 可改写 us
   `model_response_after` / `model_request_error` / `compaction_after_turn`）：内核（`omnicrawl-core`
   与 `omnicrawl-cli` 的回合循环）不持有 Plugins 配置，事件与扇出仍由宿主分发——压缩计量由内核在
   回合收尾回传，宿主据此触发 `context.compaction.after_turn`。
-- `session.close.before` / `session.close.after` 已有入口（`PluginHost::session_close`），
-  但宿主目前没有「关闭当前会话」的动作可挂（会话切换是重建内核，不是关闭），暂未接线。
+- `session.close.before` / `session.close.after` 已接线：TUI 在 `request_shutdown()` 前发 before、
+  进程退出后（`main` 的 `wait_or_kill` 之后）发 after；本地 API 在 `close()` 里 `shutdown()` 前发 before、
+  等内核退出后发 after。内核在两者之间补写 `session_closed` 并丢弃空占位。会话切换走的是重建内核
+  （不是关闭当前会话），因此不触发这对钩子。
+- `initialize.model.prompt_cache_identity` 在 `TurnRunner::handshake` 里装配：工具表就位后按
+  system prompt / 工作区 / 空项目规范与空 Skill 索引 / 工具声明算出七字段身份。无头宿主当前不做
+  AGENTS.md 与 Skill 组装，空集与它实际发给模型的稳定前缀一致。
 - `resume` / `undo` 之外的会话动作仍由内核与 `omnicrawl-session` 承担，这里不做会话落盘。
 - 工具声明的 `update_todos` 成功路径不发 `tool.finished`（对齐 Python），失败路径仍发。
 - `pause_work` 不产生工具生命周期事件（Python 会发一次开始/完成）；当前 API 未使用该工具。

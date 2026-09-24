@@ -1,11 +1,20 @@
 [package]
 name = "omnicrawl-tts"
-description = "OmniCrawl TTS 引擎：MOSS-TTS-Nano ONNX 推理、音色库、文本归一化与 WAV 输出"
+description = "OmniCrawl TTS：接口合成（OpenAI 兼容 audio/speech，默认）+ 可选的 MOSS-TTS-Nano 本地 ONNX 推理"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+
+[features]
+# 本地 ONNX 推理（含音色克隆、模型下载后的离线合成）。默认关闭的原因：
+#   * `ort` 的预编译库不覆盖全部目标（musl 没有分发件），发布构建要能编出 musl 载荷；
+#   * 接口合成（`[tts_api]`）不需要模型文件与几百 MB 的运行时。
+# 需要离线/克隆能力时：`cargo build -p omnicrawl-tts --features onnx`（消费者用
+# `--features omnicrawl-tts/onnx` 打开）。
+default = []
+onnx = ["dep:ort"]
 
 [lib]
 name = "omnicrawl_tts"
@@ -14,15 +23,19 @@ path = "src/lib.rs"
 [[bin]]
 name = "omnicrawl-tts"
 path = "src/main.rs"
+# 命令行子命令（下载模型 / 克隆音色 / 本地合成）都依赖本地推理，没有该特征就不构建它。
+required-features = ["onnx"]
 
 [dependencies]
 omnicrawl-controllers = { path = "../omnicrawl-controllers" }
 serde_json = { workspace = true }
 ureq = { workspace = true }
 # 模型推理：MOSS-TTS-Nano 的 8 个 ONNX session 由官方 ONNX Runtime 绑定执行。
-ort = { version = "2.0.0-rc.13", features = ["copy-dylibs"] }
+# 可选依赖：只有 `onnx` feature 打开时才编译（见上面 features 段的说明）。
+ort = { version = "2.0.0-rc.13", features = ["copy-dylibs"], optional = true }
 # 分词：模型自带 sentencepiece BPE（nmt_nfkc 归一化 + byte fallback）。
 # 纯 Rust 实现，避免与 ORT 自带 protobuf 的 C++ 静态库符号冲突。
+# 只有本地推理用得到它，但依赖很轻（纯 Rust），为减少特征穿透而保持常开。
 sentencepiece-rs = "0.2.2"
 # 文本归一化管道含 lookbehind/lookahead，标准 regex 不支持。
 fancy-regex = "0.14"

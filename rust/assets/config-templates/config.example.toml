@@ -71,8 +71,10 @@ output_format = "png"
 n = 1
 timeout_seconds = 120
 
-# TTS 语音合成（MOSS-TTS-Nano ONNX 推理，无需 PyTorch）：
-# 首次启用时在 TUI /settings → TTS 中下载模型（约 763MB）并选择音色。
+# TTS 语音合成，两条后端：
+#   1) 接口合成（默认）：走 [tts_api] 的 OpenAI 兼容 audio/speech 接口，任何平台可用；
+#   2) 本地推理（可选，需构建时带 omnicrawl-tts/onnx feature）：MOSS-TTS-Nano ONNX，
+#      首次启用时在 TUI /settings → TTS 中下载模型（约 763MB）并选择音色。
 [tts]
 enabled = false
 model_dir = ""
@@ -84,6 +86,20 @@ device = "auto"
 # codec 流式解码（低首字节延迟；默认开启，显存占用低，避免全量解码 OOM）。
 streaming = true
 output_dir = ".omnicrawl/.agent_tmp/tts"
+
+# TTS 接口合成（OpenAI 兼容 POST {base_url}/audio/speech）；enabled = false 时回落到本地推理。
+[tts_api]
+enabled = true
+base_url = "https://api.openai.com/v1"
+api_key = ""
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4o-mini-tts"
+voice = "alloy"
+# 只支持 wav（Windows 播放走 winmm，且要按 WAV 解析时长）。
+response_format = "wav"
+# 语速 0.25~4.0；1.0 时不发给服务端。
+speed = 1.0
+timeout_seconds = 120
 
 [approval]
 mode = "review"

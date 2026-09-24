@@ -7,6 +7,8 @@
 - 持有 `omnicrawl-core` 的回合循环：`turn.submit` 进来就跑一轮「模型 ⇄ 工具」。
 - 两个宿主端口经协议外发：`tool.batch`（宿主执行整批工具）与 `model.reply`（过渡期宿主代答模型）。
 - 回合进行中到达的 `turn.cancel` / `shutdown` 立即中止当前端口调用；其余请求照常应答，不阻塞宿主。
+- `shutdown` 会先收尾当前会话（对映 Python `Agent._append_session_closed_event`）：按最后一次
+  事件类型补写 `session_closed`、并丢弃没有真实内容的启动占位；已中断的会话保留不动。
 - 未握手前除 `initialize` 外的请求回 `-32600`；协议主版本不匹配回 `-32001`。
 
 ## 会话与压缩
@@ -15,8 +17,24 @@
 回合结束写 `user_message` / `assistant_message`，再按 `compaction` 阈值跑一次压缩。
 摘要提示词模板在编译期嵌进二进制（`omnicrawl/templates/summary_prompt.md`），不依赖运行时目录。
 
+工具事件也在内核侧落盘（语义基准 `omnicrawl/agent/controllers/turn/loop.py`）：每批工具调用前写
+`tool_call_requested`（参数走 `public_tool_arguments` 投影，另带本批发往 Provider 的
+`assistant_content` / `assistant_reasoning_content` / `function_name`——恢复后同一段历史的写法才与
+运行期一致），整批执行且输出预算/视觉/压缩处理过之后写 `tool_result`（`output` 取展示全文、
+`model_output` 是模型可见输出，超长输出的 artifact 化与 `output_sha256` / `storage` 由会话存储补齐），
+宿主拒绝的调用另写 `tool_call_denied`。协议原文（`arguments_json`）只在内存投影里，绝不落盘；
+子代理内部的工具调用不落父会话（对映 Python 的 `persist_session_events=False`）。
+
 内核自己持有会话时，`recall_session_evidence` 由内核本地作答（不发给宿主）：它按最后一个有效摘要的
 授权读取转录事件与 `archive/compacted/` 归档，artifact 正文经会话 artifact 区读取，返回紧凑 JSON 信封。
+
+`session.events` 只读当前自持会话的回退投影后事件流（`read_active_events`），宿主据此重建历史页：
+消息、工具卡、计划清单与 SubAgent 进度树都按事件还原，而不是只投影 user/assistant 文本。
+`subagent.query` 除 `list` / `get` / `cancel` 外还支持 `list_worktrees`（读托管根里的 worktree
+元数据），供宿主在 `/workspace` 切换前做 pending worktree 拦阻。
+
+运行中切换工作区走 `workspace.switch`（宿主侧 `/workspace` 的落点）：内核把自持会话的工作区指到新根，
+并按 Python 的口径转录 `workspace_switched`（`{from, to}`）；会话不重建，转录/历史/`/undo` 账本不受影响。
 
 上游判定上下文超限时（`ModelErrorCode::ContextLengthExceeded` 归类文案），内核压缩当前未完成回合、
 把续接指令写进会话并自动重试同一回合；恢复失败则保留原错误返回给宿主。

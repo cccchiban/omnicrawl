@@ -11,6 +11,7 @@ mod output_budget;
 mod session;
 mod settings;
 mod subagent;
+mod tool_events;
 mod undo;
 mod vision_proxy;
 mod worktree;

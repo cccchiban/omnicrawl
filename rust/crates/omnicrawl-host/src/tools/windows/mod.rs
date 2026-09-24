@@ -22,7 +22,19 @@ mod window;
 #[cfg(not(windows))]
 use super::error::{ToolError, ToolOutcome};
 #[cfg(not(windows))]
+use omnicrawl_controllers::types::ToolImageAttachment;
+#[cfg(not(windows))]
 use serde_json::{Map, Value};
+
+/// 非 Windows 平台的占位结果类型：字段与 `screenshot::ScreenshotOutcome` 一致。
+///
+/// 截图的真实现只在 `cfg(windows)` 下编译，但调用方（工具表）不分平台地读
+/// `outcome.output` / `outcome.images`，所以这里需要一个同名同形状的类型。
+#[cfg(not(windows))]
+pub struct ScreenshotOutcome {
+    pub output: String,
+    pub images: Vec<ToolImageAttachment>,
+}
 
 #[cfg(windows)]
 pub use clipboard::windows_clipboard;
@@ -58,7 +70,7 @@ pub fn windows_control(_arguments: &Map<String, Value>) -> ToolOutcome {
 pub fn windows_screenshot(
     _paths: &super::paths::WorkspacePaths,
     _arguments: &Map<String, Value>,
-) -> Result<super::screenshot::ScreenshotOutcome, ToolError> {
+) -> Result<ScreenshotOutcome, ToolError> {
     Err(windows_only_error())
 }
 

@@ -99,6 +99,9 @@ fn run() -> Result<ExitCode, String> {
     let result = event_loop(&mut terminal, &mut app, &mut guard);
     app.shutdown();
     app.kernel.wait_or_kill(SHUTDOWN_TIMEOUT);
+    // 内核已退出（或已被强杀）：补发 `session.close.after`，与 Python
+    // `close()` 里 before → 写事件 → after 的顺序对齐。
+    app.finish_session_close();
     drop(guard);
     result?;
     Ok(ExitCode::SUCCESS)
@@ -158,6 +161,8 @@ fn event_loop(
         app.tick_welcome_logo_animation(Instant::now());
         app.tick_subagent_trees();
         app.tick_tts_tasks();
+        // 慢命令（`/workspace`、`/mcp`）的后台结果：工作区切换在这里提交。
+        app.tick_slow_command();
         app.tick_config_chat();
         app.tick_monitor_events(Instant::now());
         app.drain_frames();

@@ -68,6 +68,13 @@ pub struct LlmConfig {
     pub catalog_key: String,
     /// legacy | custom | detected
     pub model_source: String,
+    /// Provider 能力声明：`prompt_cache=true` 时允许给非 GPT 系列也下发
+    /// `prompt_cache_key`（内核 `should_send_prompt_cache_key` 的门禁）。
+    ///
+    /// 只由自定义模型条目的 `capabilities.prompt_cache` 填充；detected / legacy
+    /// 路径保持 `None`（对应 Python `ModelCapabilities.prompt_cache` 未声明，
+    /// 仅 GPT 系列会尝试）。
+    pub prompt_cache: Option<bool>,
     pub api_key_env: String,
     pub user_agent: String,
     pub request_timeout_seconds: i64,
@@ -134,6 +141,7 @@ impl LlmConfig {
             protocol: "openai_chat_completions".to_string(),
             catalog_key: String::new(),
             model_source: "legacy".to_string(),
+            prompt_cache: None,
             api_key_env: String::new(),
             user_agent: String::new(),
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
