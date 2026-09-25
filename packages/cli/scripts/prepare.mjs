@@ -47,7 +47,7 @@ const TARGETS = [
     triple: 'i686-pc-windows-msvc',
     os: 'win32',
     cpu: 'ia32',
-    // 32 位 Windows 缺 numpy / onnxruntime 等运行期轮子，只发内核。
+    // 32 位 Windows 只发内核（宿主要链接 BoringSSL，i686 未纳入发布矩阵）。
     hostKey: null,
     description: 'OmniCrawl 内核二进制（Windows 32 位）',
   },
@@ -66,7 +66,7 @@ const TARGETS = [
     triple: 'armv7-unknown-linux-musleabihf',
     os: 'linux',
     cpu: 'arm',
-    // 嵌入式目标只跑静态内核（宿主需要 CPython 与各原生轮子，armv7 无可用产物）。
+    // 嵌入式目标只跑静态内核（armv7 宿主载荷不在发布矩阵内，需要交叉编译 BoringSSL）。
     hostKey: null,
     description: 'OmniCrawl 内核二进制（Linux armv7，musl 静态，嵌入式目标）',
   },
