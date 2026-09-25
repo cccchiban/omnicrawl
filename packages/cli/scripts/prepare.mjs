@@ -5,7 +5,7 @@
 // os/cpu 与依赖只写进发布产物，这也是 esbuild 类项目的常见做法。
 //
 // 宿主载荷由 packages/cli/scripts/build-host.mjs 产出（cargo release 产物 + 模板资源，
-// 可 `--target` 指定三元组）；`--legacy-python` 才走旧的 PyInstaller 冻结路径。
+// 可 `--target` 指定三元组；产品路径全是 Rust 二进制，构建期不碰 Python）。
 // hostKey 为 null 的目标（32 位 Windows、armv7 嵌入式）只带内核，启动器会退回协议直连。
 //
 // 用法：

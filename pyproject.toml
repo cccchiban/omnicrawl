@@ -3,7 +3,9 @@
 # 本包不再是产品实现——产品链路已全部迁到 rust/crates/ 并由 npm 分发。这里的模块只服务
 # rust/tools/gen_*.py 生成 parity fixture 与 tests/ 的对照测试，因此：
 #   · 不要在这里新增产品功能，功能缺口一律补到 rust/crates/；
-#   · 改动语义实现后必须重跑对应的 gen_*_fixture.py，否则两侧契约会静默分叉。
+#   · 改动语义实现后必须重跑对应的 gen_*_fixture.py，否则两侧契约会静默分叉；
+#   · 本包没有入口点，且不要再加：console script、setup.py、MANIFEST.in 与
+#     packaging/pyinstaller/ 已随「彻底脱离 Python 宿主」删除，构建期不再碰 Python。
 #
 # dependencies 里保留了 textual / fastapi / onnxruntime 一类「产品依赖」：它们被 parity 工具链
 # 间接需要（gen_*.py 会 import omnicrawl.api / omnicrawl.tts），不随 Textual UI 下线一并移除。
@@ -62,11 +64,6 @@ tts-cuda = [
     "nvidia-cudnn-cu12<9.7",
     "sentencepiece>=0.1.99",
 ]
-
-[project.scripts]
-# ocl 是面向用户的短命令；保留 omnicrawl 兼容已有脚本。
-ocl = "omnicrawl.__main__:main"
-omnicrawl = "omnicrawl.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["omnicrawl*"]

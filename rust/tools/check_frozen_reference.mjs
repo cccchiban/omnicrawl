@@ -14,8 +14,7 @@
 // ------------
 //   1. Rust **产品代码**（`crates/*/src/`）调用 Python 解释器（含 pyinstaller）；
 //   2. CI workflow 安装 Python 包（armv7 的 ziglang 交叉工具链除外）；
-//   3. npm 构建脚本调用 Python（`--legacy-python` 的 PyInstaller 回退路径除外，
-//      该路径整段标注了 `FROZEN-ALLOW`）。
+//   3. npm 构建脚本调用 Python（无例外：产品载荷全是 Rust 二进制，构建期不碰 Python）。
 //
 // `crates/*/tests/` 里的 Python 调用不算侵蚀——那是 parity 对照测试，和 `rust/tools/gen_*.py`
 // 同属「基准工具链」。它们会被登记为**已知开发期依赖**打印出来（信息性，不影响退出码），
@@ -34,10 +33,6 @@ import process from 'node:process'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..', '..')
-
-/** 显式豁免标记：出现在同一行，或出现在上方 8 行内的块注释里，即跳过该单元的检查。 */
-const ALLOW_MARKER = 'FROZEN-ALLOW'
-const ALLOW_LOOKBACK = 8
 
 const violations = []
 const devOnlyPythonUse = []
@@ -76,18 +71,6 @@ function collect(dir, suffixes, skipDirs) {
   }
   if (statSync(dir, { throwIfNoEntry: false })?.isDirectory()) walk(dir)
   return found
-}
-
-/** 该行是否被 FROZEN-ALLOW 豁免（同行或上方若干行的块注释里）。 */
-function isAllowed(lines, index) {
-  if (lines[index].includes(ALLOW_MARKER)) return true
-  for (let back = 1; back <= ALLOW_LOOKBACK && index - back >= 0; back += 1) {
-    const line = lines[index - back]
-    if (line.includes(ALLOW_MARKER)) return true
-    // 只在块注释内向上看，避免豁免标记跨过普通代码段生效。
-    if (!/^\s*(\/\/|\*|\/\*|#)/.test(line)) return false
-  }
-  return false
 }
 
 /**
@@ -138,7 +121,7 @@ function yamlRunBlockLines(lines) {
 // 范围限定 `crates/*/src/`：`tests/` 下的 Python 用法用于 parity 对照（见 `noteDevOnly`），
 // 且通常带 `OMNICRAWL_PYTHON` 门控，不属于产品依赖。
 const RUST_PYTHON_CALL = /\b(Command::new|Command::new_async|process::Command)\s*\(\s*&?\s*["']?(python|python3|pyinstaller)\b/i
-const IS_PARITY_TEST_DIR = /(^|\/)tests(\/|$)/  // FROZEN-ALLOW note: 本行只是路径判定
+const IS_PARITY_TEST_DIR = /(^|\/)tests(\/|$)/  // 本行只是路径判定
 
 for (const file of collect(join(repoRoot, 'rust', 'crates'), ['.rs'], new Set(['target', 'node_modules']))) {
   const lines = readFileSync(file, 'utf8').split('\n')
@@ -146,7 +129,6 @@ for (const file of collect(join(repoRoot, 'rust', 'crates'), ['.rs'], new Set(['
   lines.forEach((text, index) => {
     if (!RUST_PYTHON_CALL.test(text)) return
     if (isCommentLine(text)) return
-    if (isAllowed(lines, index)) return
     if (isParityTest) {
       noteDevOnly(file, index + 1, text)
       return
@@ -167,13 +149,11 @@ for (const file of collect(join(repoRoot, '.github', 'workflows'), ['.yml', '.ya
     if (!executable.has(index)) return
     if (!PIP_INSTALL.test(text)) return
     if (/\bziglang\b/.test(text)) return
-    if (isAllowed(lines, index)) return
     report('ci-installs-python-packages', file, index + 1, text)
   })
 }
 
 // ── 规则 3：npm 构建脚本不得调用 Python ──────────────────────────────────────
-// PyInstaller 回退路径（`build-host.mjs` 的 `buildLegacyPython`）整段带 FROZEN-ALLOW。
 const NPM_PYTHON_CALL = /\b(execFileSync|execSync|spawnSync|spawn)\s*\(\s*[`'"$]?.*\b(python|python3|pyinstaller)\b/i
 
 for (const file of collect(join(repoRoot, 'packages'), ['.mjs', '.js'], new Set(['node_modules', 'dist']))) {
@@ -181,8 +161,6 @@ for (const file of collect(join(repoRoot, 'packages'), ['.mjs', '.js'], new Set(
   lines.forEach((text, index) => {
     if (!NPM_PYTHON_CALL.test(text)) return
     if (isCommentLine(text)) return
-    if (/\bOMNICRAWL_PYTHON\b/.test(text)) return  // 环境变量覆盖点，供 legacy 路径使用
-    if (isAllowed(lines, index)) return
     report('npm-script-spawns-python', file, index + 1, text)
   })
 }
@@ -207,7 +185,6 @@ for (const item of violations) {
   console.error(`      ${item.text.slice(0, 160)}`)
 }
 console.error('\n处理方式：')
-console.error('  · 产品链路确实需要 Python → 说明设计决策，不要用 FROZEN-ALLOW 绕过；')
-console.error('  · 属于 parity 基准工具链（gen_*.py / tests/）→ 不属于本检查范围，无需处理；')
-console.error(`  · 确为待下线的回退路径 → 在该单元上方 8 行内的注释里标注 ${ALLOW_MARKER}。`)
+console.error('  · 产品链路确实需要 Python → 说明设计决策，不要静默绕过检查；')
+console.error('  · 属于 parity 基准工具链（gen_*.py / tests/）→ 不属于本检查范围，无需处理。')
 process.exit(1)

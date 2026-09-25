@@ -572,8 +572,10 @@ npm test -w @omnicrawl/cli                   # e2e：启动器 + 真二进制 + 
 进入真实请求路径，模式切换（`/plan`）经 `session.settings` 即时下发。
 npm 平台包的宿主载荷也换成 Rust 产物：`packages/cli/scripts/build-host.mjs` 默认走
 `cargo build --release`（宿主 + 内核 + TUI + API + MCP Server + 模板），
-`--target <三元组>` 指到交叉目标并让产物目录跟三元组走（Windows 侧 CI 会传它，产物与内核同处），
-`--legacy-python` 才回到旧的 PyInstaller 冻结路径。Linux 侧宿主载荷原先只能构建原生 gnu 目标
+`--target <三元组>` 指到交叉目标并让产物目录跟三元组走（Windows 侧 CI 会传它，产物与内核同处）。
+旧的 `--legacy-python` PyInstaller 冻结路径已随「彻底脱离 Python 宿主」删除
+（`packaging/pyinstaller/` 一并移除）：构建期不再需要 Python，`check_frozen_reference.mjs`
+也不再为它保留豁免机制。Linux 侧宿主载荷原先只能构建原生 gnu 目标
 （`omnicrawl-tts → ort-sys` 没有 musl 预编译库）；TTS 改成「接口合成为主、本地 ONNX 为可选 feature」后
 `ort` 退出了默认依赖树，musl 宿主载荷已可在本机交叉编出（五个产物全静态链接，
 详见 `docs/python-free-build.md` 第 7 节）。

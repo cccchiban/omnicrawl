@@ -7,8 +7,9 @@
 `omnicrawl/` **不再是产品实现**，而是 **parity 语义基准**。
 
 产品链路（内核、宿主、TUI、本地 API、MCP、连接器、TTS、扩展、工作区、会话存储、脱敏）
-全部在 `rust/crates/`，由 npm 分发。仓库根的 `main.py` / `python -m omnicrawl` /
-控制台脚本 `ocl` 只是 `omnicrawl/compat.py` 的薄垫片，把命令行转发给 Rust 二进制。
+全部在 `rust/crates/`，由 npm 分发。Python 侧**没有入口**：`main.py` / `omnicrawl/compat.py` /
+`omnicrawl/entry.py` / `__main__.py` 与 `setup.py` / `MANIFEST.in` / `packaging/pyinstaller/`
+已随「彻底脱离 Python 宿主」一并删除，`pyproject.toml` 不再声明控制台脚本。
 
 Python 侧只剩两个职责：
 
@@ -50,34 +51,22 @@ cd rust && cargo test -p <对应 crate>        # 确认 Rust 侧仍然一致
 两侧都提交。只改一侧而不重跑生成脚本，会让 fixture 停留在旧契约上——测试照样全绿，
 但两侧已经不一致。
 
-## 三、`FROZEN-ALLOW` 标记
+## 三、保留的 Python 对照面
 
-`check_frozen_reference.mjs` 通过 `FROZEN-ALLOW` 标记区分两类情况：
+以下项不是「待清理残留」，而是有意保留的对照面：
 
-- **已计划的回退路径**（标了标记）：如 `packages/cli/scripts/build-host.mjs` 的
-  `buildLegacyPython()`——它整段是待下线的 PyInstaller 冻结路径，产品默认路径不经过它。
-- **意外回流**（没标标记）：CI 里补一个 `pip install`、构建脚本里 `python -c` 拿版本号。
-  这类会在 CI 上失败。
-
-标记的生效范围是「同一行」或「上方 8 行内的连续注释」。**不要用它绕过规则 2**——
-它只用于标注已计划下线的路径，且必须写明下线条件。
-
-## 四、尚未下线的 Python 残留
-
-以下几项仍留在仓库里，属于待清理项而非冻结基准：
-
-| 残留 | 位置 | 下线条件 |
+| 保留项 | 位置 | 用途 |
 | --- | --- | --- |
-| Textual 全屏 UI（约 18,900 行） | `omnicrawl/ui/` + `omnicrawl/entry.py` | Rust TUI 的 Markdown 逐 token 高亮、设置面板点击、跨栏鼠标交互补齐后 |
-| PyInstaller 冻结路径 | `packaging/pyinstaller/` + `buildLegacyPython()` | Rust 侧功能缺口补齐、不再需要视觉对照后 |
-| 转发垫片 | `omnicrawl/compat.py` + `main.py` | 确认没有外部脚本依赖 `python main.py` 后 |
-| 打包元数据 | `setup.py` / `MANIFEST.in` | 同上 |
+| Textual 全屏 UI（约 18,900 行） | `omnicrawl/ui/` | Rust TUI 的逐屏对照参照（抓帧 A/B）；它不是产品入口，也不会随 npm 分发 |
+| 参照启动脚本 | `rust/tools/run_python_tui.py` | 把 Textual 工作台跑起来的开发工具（原 `entry.py` 的 TUI 装配路径）；有意不做插件 CLI / API / 自动更新 / 连接器分流 |
+| parity 工具链 | `rust/tools/gen_*.py` | 生成对照数据集（读 `omnicrawl/` 的语义实现） |
+| 对照断言 | `tests/`（144 个文件） | Python 侧的回归基准 |
 
 `pyproject.toml` 的 `dependencies` 仍包含 `textual` / `fastapi` / `onnxruntime` 等——
 它们被 parity 工具链间接需要（`gen_*.py` 会 import `omnicrawl.api` / `omnicrawl.tts`），
-不随 Textual UI 一并移除。
+不随 Textual UI 的对照价值一起移除。
 
-## 五、验证
+## 四、验证
 
 ```bash
 # 边界检查（CI 上每次推送都跑）

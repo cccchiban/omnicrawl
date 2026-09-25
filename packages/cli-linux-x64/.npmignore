@@ -1,2 +1,0 @@
-# 不把 .gitignore 当发布过滤：二进制目录是 gitignore 的，但必须进 tarball。
-# 实际包含范围由 package.json 的 files 决定。

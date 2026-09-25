@@ -21,13 +21,10 @@
 // 非 Windows 目标的内核文件名就叫 `omnicrawl`（没有 `.exe`），跟旧的 `omnicrawl/<资源>` 目录
 // **同名冲突**，所以旧布局只在带后缀的平台上额外补一份（Windows），保证老路径也能读到。
 //
-// `--legacy-python` 保留旧的 PyInstaller 路径（冻结 Python 宿主），仅用于对照与回退验证。
-//
 // 用法：
 //   node packages/cli/scripts/build-host.mjs                    # 构建当前平台（Rust）
 //   node packages/cli/scripts/build-host.mjs --target <triple>  # 交叉/指定三元组
 //   node packages/cli/scripts/build-host.mjs --target <triple> --zigbuild  # 用 zig 做 C/C++ 交叉
-//   node packages/cli/scripts/build-host.mjs --legacy-python    # 旧 PyInstaller 载荷
 //   node packages/cli/scripts/build-host.mjs --target <triple> --platform linux-x64 --skip-build
 //
 // `--platform <键>`：载荷目录用哪个平台键（默认取构建机，即 `<process.platform>-<arch>`）。
@@ -59,7 +56,6 @@ if (platformArg && !/^(win32|linux|darwin)-(x64|ia32|arm64|arm)$/.test(platformA
 const platformKey = platformArg ?? `${process.platform}-${process.arch}`
 const outRoot = join(repoRoot, 'dist', 'host', platformKey)
 const payloadDir = join(outRoot, 'payload')
-const legacyPython = process.argv.includes('--legacy-python')
 const targetIndex = process.argv.indexOf('--target')
 const rustTarget = targetIndex === -1 ? null : process.argv[targetIndex + 1]
 // 交叉编译用 zig 提供的 C/C++ 工具链（cargo-zigbuild 会把它接到 CC/CXX 与链接器上）。
@@ -170,56 +166,10 @@ function buildRust() {
   })
 }
 
-// 旧路径：PyInstaller one-dir 冻结 Python 宿主（对照与回退验证用）。
-//
-// **待下线**：产品默认路径（`buildRust`）已完全不碰 Python。本函数保留到 Rust 侧
-// 功能缺口补齐、Textual UI 对照价值耗尽为止，之后连同 `packaging/pyinstaller/` 一起移除。
-// 它触发的 Python 调用逐处标了 `FROZEN-ALLOW`，供 `rust/tools/check_frozen_reference.mjs`
-// 区分「已计划的回退路径」与「意外回流」。
-function buildLegacyPython() {
-  const specPath = join(repoRoot, 'packaging', 'pyinstaller', 'omnicrawl-host.spec')
-  const distPath = join(outRoot, 'dist')
-  const workPath = join(outRoot, 'build')
-  const python = process.env.OMNICRAWL_PYTHON ?? (process.platform === 'win32' ? 'python' : 'python3')
-  const run = (args, options = {}) =>
-    // FROZEN-ALLOW：legacy 回退路径（待下线），产品默认路径不经过此处。
-    execFileSync(python, args, { cwd: repoRoot, encoding: 'utf8', ...options })
-
-  try {
-    run(['-m', 'PyInstaller', '--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
-  } catch {
-    console.error(`缺少 PyInstaller：${python} -m pip install pyinstaller`)
-    process.exit(1)
-  }
-
-  rmSync(outRoot, { recursive: true, force: true })
-  mkdirSync(outRoot, { recursive: true })
-  run(
-    [
-      '-m', 'PyInstaller', '--noconfirm', '--clean', '--log-level', 'WARN',
-      '--distpath', distPath, '--workpath', workPath, specPath,
-    ],
-    { stdio: 'inherit' },
-  )
-  const builtDir = join(distPath, 'omnicrawl-host')
-  cpSync(builtDir, payloadDir, { recursive: true })
-  writeMeta({
-    platform: platformKey,
-    hostVersion: run(['-c', 'import importlib.metadata as m; print(m.version("omnicrawl-agent"))']).trim(),
-    hostKind: 'python',
-    pythonVersion: run(['-c', 'import platform; print(platform.python_version())']).trim(),
-    builtAt: new Date().toISOString(),
-  })
+// zig 交叉只在有明确三元组时才有意义：没有 `--target` 时 cargo zigbuild 就是本机构建，
+// 而载荷目录会落到 `release/`，很容易把错架构的产物当成交叉产物发出去——直接拦下。
+if (zigbuild && !rustTarget) {
+  console.error('[host] --zigbuild 必须与 --target <三元组> 一起用。')
+  process.exit(1)
 }
-
-if (legacyPython) {
-  buildLegacyPython()
-} else {
-  // zig 交叉只在有明确三元组时才有意义：没有 `--target` 时 cargo zigbuild 就是本机构建，
-  // 而载荷目录会落到 `release/`，很容易把错架构的产物当成交叉产物发出去——直接拦下。
-  if (zigbuild && !rustTarget) {
-    console.error('[host] --zigbuild 必须与 --target <三元组> 一起用。')
-    process.exit(1)
-  }
-  buildRust()
-}
+buildRust()

@@ -9,8 +9,7 @@ OmniCrawl 是一款本地运行的个人 AI 编程助手（终端工作台），
 ## 功能特性
 
 - **多模型协议**：通过统一运行时调用 OpenAI Chat Completions / Responses、Anthropic Messages、Google Gemini Generate Content（各用原生 SDK），支持思考模式、流式输出与中断自动重试。
-- **终端 TUI**：Rust 全屏工作台（`omnicrawl-tui`），键盘交互，内置模型热切换、渠道管理、设置面板、审批控制、事务式 `/undo` 回退、取消回合上下文保留。
-  （仓库内保留的 Python Textual UI 已弃用，仅作开发对照：`OMNICRAWL_LEGACY_PYTHON_UI=1`。）
+- **终端 TUI**：Rust 全屏工作台（`omnicrawl-tui`），键盘交互，内置模型热切换、渠道管理、设置面板、审批控制、事务式 `/undo` 回退、取消回合上下文保留。（`omnicrawl/ui/` 里的 Python Textual UI 保留为样式/行为对照参照，不是产品入口，也不随 npm 分发。）
 - **HTTP/SSE API**：本地服务可对接 Web 或桌面前端，`Swagger UI` 文档开箱即用。
 - **工具与安全**：内置文件读写、文本搜索、本地图片读取、视觉模型代理、Bash/PowerShell、Windows 桌面控制、记忆与 SubAgent 等工具，可在 `config.toml` 的 `tools` 段逐工具开关；SubAgent 支持独立 Git worktree 隔离执行。子代理全局设置与每个子代理的模型选择放在独立的 `subagents.toml`（模板见 `subagents.example.toml`），已从 `config.toml` 完全迁移，不再回退读取 `config.toml` 的 `[subagents]` 段。
 - **统一工具分发**：模型只看到固定的 `search_tools` 与 `invoke_tool`；真实工具 Schema、审批策略、MCP 能力和执行器由 Host 侧目录维护，详见 `omnicrawl/docs/TOOL_CALLING.md`。
@@ -18,58 +17,66 @@ OmniCrawl 是一款本地运行的个人 AI 编程助手（终端工作台），
 
 ## 环境要求
 
-- Python `>=3.9`
-- 安装完整功能建议本机具备 Node.js 20+（仅插件功能需要，缺失不影响无插件模式启动）
-- `grep`/`find` 的文本搜索由随包分发的 Go 原生扩展执行（`omnicrawl/_ocsearch.pyd`/`.so`，abi3 稳定 ABI，覆盖 Python 3.9+），源码在 `native/`；wheel 不再内置 ripgrep 二进制。原生扩展不可用时（从源码安装且未编译、或平台不在构建矩阵内）自动回退到 PATH 中的 `rg`，两者都没有时会明确报错
+- 产品是 Rust 二进制：运行**不需要** Python 运行时；插件功能需要 Node.js 20+
+- `grep`/`find` 的文本搜索由 Rust 侧实现（`rust/crates/omnicrawl-host` 的 `regex`/`ignore`，
+  与 `native/` 的 Go 扩展语义对齐）；Python 侧的 Go 原生扩展只服务对照测试
 
 ## 安装
 
-### 从 PyPI 安装（推荐）
-
 ```powershell
-pip install omnicrawl-agent
+npm install -g omnicrawl-cli   # 启动器 + 平台包（内核 + 宿主载荷，纯 Rust 二进制）
+omnicrawl                      # 全屏 TUI
 ```
 
-### 从源码运行
+平台包按 `os/cpu` 分发：`@omnicrawl/cli-win32-x64`、`cli-win32-ia32`、`cli-linux-x64`、
+`cli-linux-arm64-musl`、`cli-linux-arm-musl`（后两个分别覆盖 arm64 与 armv7；32 位 Windows
+与 armv7 只带内核，启动器会自动退回协议直连）。
+
+### 从源码构建
 
 ```powershell
 git clone https://github.com/cccchiban/omnicrawl.git
-cd omnicrawl
-
-pip install -r requirements.txt
-# 可选：以可编辑方式安装 console script（同时提供 ocl 和 omnicrawl 两个命令）
-pip install -e . --no-build-isolation
+cd omnicrawl/rust
+cargo build --release -p omnicrawl-cli      # 内核（协议 v1 NDJSON）
+cargo test --workspace                       # 全量对照测试
 ```
 
-### 构建原生搜索扩展（发布 wheel 时需要）
+宿主/TUI/API 会链接 BoringSSL（C/C++ 工具链），构建前置与交叉编译方式见
+`rust/docs/python-free-build.md`；发布载荷由 `packages/cli/scripts/build-host.mjs` 装配，
+`prepare.mjs` 组装 npm 产物。
 
-搜索核心是 Go 实现（`native/`），随 wheel 分发；构建需要 Go 1.21+ 与 cgo 可用的
-C 编译器（`gcc`/`clang`，Windows 上是 MinGW-w64，**MSVC 的 `cl.exe` 不被 cgo 支持**）：
+### Python 侧（冻结的语义基准，不是产品）
+
+`omnicrawl/` 只服务 `rust/tools/gen_*.py` 生成对照数据集与 `tests/` 的对照断言：
+它**没有入口点、不随 npm 分发、也不提供命令行命令**（`pip install -e .` 只装入一个可导入的基准包）。
+定位、边界与操作规则见 `rust/docs/frozen-reference.md`。
+
+带上 textual 依赖的解释器可直接跑保留的 Textual 工作台做逐屏对照：
 
 ```powershell
-# 可选：单独构建扩展
-python native/build.py --out omnicrawl/_ocsearch.pyd
-
-# 构建 wheel（产物：omnicrawl_agent-<版本>-cp39-abi3-<平台>.whl）
-python setup.py bdist_wheel
+python rust/tools/run_python_tui.py
 ```
 
-Windows 缺少编译器时可用 `winget install BrechtSanders.WinLibs.POSIX.UCRT`。发布
-wheel 时建议设置 `OMNICRAWL_REQUIRE_NATIVE_SEARCH=1`，让缺少工具链的构建直接失败；
-未设置时构建降级为“不带原生扩展”，运行时回退到 PATH 上的 `rg`。abi3 只省去按
-Python 版本分份，仍需在 Linux/macOS 各构建一次。详见 `native/README.md`。
+Go 原生搜索扩展（`native/`，与 Rust 侧搜索语义对齐）仍可就地重建（仅服务对照测试，不再随包分发）：
+
+```powershell
+python native/build.py --out omnicrawl/_ocsearch.pyd
+```
+
+构建需要 Go 1.21+ 与 cgo 可用的 C 编译器（`gcc`/`clang`，Windows 上是 MinGW-w64，**MSVC 的 `cl.exe` 不被 cgo 支持**；可 `winget install BrechtSanders.WinLibs.POSIX.UCRT`）。
 
 ## 启动
 
 ### 终端 TUI
 
 ```powershell
-ocl
+omnicrawl
 ```
 
-`omnicrawl` 为兼容旧命令的等价入口；源码目录下也可直接运行 `python main.py`。
+`omnicrawl` 就是产品入口（npm 启动器，按平台包解析到 Rust 宿主）；进程内还提供
+`omnicrawl api`（本地 HTTP/SSE 服务）与 `omnicrawl kernel`（直接跑协议内核）两个子命令。
 
-首次启动会引导配置模型渠道（预置 OpenAI、Anthropic、Gemini，支持自定义 Base URL 与 API Key），配置保存在本机 `~/.OmniCrawl`。至少保存一个已启用且具备 Key 的默认渠道后，重新运行 `ocl` 即可进入工作台。
+首次启动会引导配置模型渠道（预置 OpenAI、Anthropic、Gemini，支持自定义 Base URL 与 API Key），配置保存在本机 `~/.OmniCrawl`。至少保存一个已启用且具备 Key 的默认渠道后，重新运行 `omnicrawl` 即可进入工作台。
 
 如果本机配置了 Telegram（Bot Token + 授权用户 ID）或飞书（App ID + App Secret），
 启动 TUI 时会自动拉起对应的独立连接器子进程；未配置的平台不会启动，连接器故障不阻塞
@@ -89,7 +96,7 @@ TUI，退出 TUI 时会自动回收连接器。同一平台同一用户只允许
 
 ```powershell
 $env:OMNICRAWL_API_TOKEN = "请替换为随机长令牌"
-python -m omnicrawl.api
+omnicrawl api
 ```
 
 默认监听 `127.0.0.1:8765`，Swagger UI 位于 `http://127.0.0.1:8765/docs`，机器可读契约位于 `/openapi.json`。除健康检查与文档外，所有接口需携带 `Authorization: Bearer <token>`。完整接入说明见 `omnicrawl/docs/API.md`。

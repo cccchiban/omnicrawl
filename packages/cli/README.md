@@ -14,7 +14,7 @@ OmniCrawl 启动器：按 `platform-arch` 选平台分包，默认启动**完整
 | `@omnicrawl/cli-win32-ia32` | 仅内核（32 位 Windows 缺运行期轮子） |
 | `@omnicrawl/cli-linux-arm-musl` | 仅内核（armv7 嵌入式目标） |
 
-宿主载荷是 PyInstaller one-dir 产物（`host/`）：CPython 运行时、依赖、代码与资源都在里面，
+宿主载荷是 Rust 二进制（`host/`）：`omnicrawl-host` / `omnicrawl-tui` / `omnicrawl-api` / `omnicrawl-mcp-server` 与内核同架构，`host-meta.json` 里 `hostKind: "rust"`；
 用户机器不需要 Python 或 pip。没有宿主载荷的平台由启动器退回内核直连，并打印这一边界。
 
 **平台分包、`os`/`cpu` 与平台依赖只出现在发布产物里**（`dist/npm/`）。仓库内的 `packages/cli*/package.json`
