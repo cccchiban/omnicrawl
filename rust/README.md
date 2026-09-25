@@ -674,6 +674,10 @@ Provider 实现与出网脱敏装饰器都从这里换入。
 `prompt_cache_capable` 也不再恒为假：自定义模型条目的 `capabilities.prompt_cache` 经 `LlmConfig`
 流到 `initialize.model`；退出收尾的 `session.close.before` / `after` 已在 TUI 与本地 API 接线，
 内核在两者之间补写 `session_closed` 并丢弃空占位。
+工具名的**线上形态**也收敛过了：MCP 的 `server.tool` 与资源名里的 `:`/`/` 会被上游的
+`^[a-zA-Z0-9_-]+$` 拒掉（`Invalid 'tools[0].function.name'`），内核在发请求前用
+`conform_tool_names` 换成合法名、拿回调用后再还原成内部原名（宿主工具表、审批、审计、
+转录与界面看到仍是原名；Python 侧未收敛，见 `crates/omnicrawl-cli/README.md`）。
 身份指纹与 Python 逐字节对齐，见 `crates/omnicrawl-tui/README.md`。
 工具执行体本身（`read_image`、`web_search`、`fetcher`、
 `image_gen`、`tts_synthesize`、知识库、记忆、Windows 桌面、`advisor`）已在

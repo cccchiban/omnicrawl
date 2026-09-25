@@ -56,8 +56,8 @@ use omnicrawl_llm::{
     ProviderProfile, RuntimeErrorKind, SinkFlow, TurnSink, CONTEXT_LENGTH_EXCEEDED_MESSAGE,
 };
 use omnicrawl_protocol::{
-    conversation_from_openai_messages, tool_spec_from_openai_item, GenerationOptions, ModelReply,
-    ModelStreamEvent, ToolSpec,
+    conform_tool_names, conversation_from_openai_messages, tool_spec_from_openai_item,
+    GenerationOptions, ModelReply, ModelStreamEvent, ToolSpec,
 };
 use serde_json::{json, Map, Value};
 
@@ -488,7 +488,9 @@ impl ReplySource for KernelModelPort {
         }
         let runtime = self.runtime()?;
         let options = parse_options(&self.config)?;
-        let tools = parse_tools(&self.config);
+        // 线上名收敛：MCP 的 `server.tool`（以及资源名的 `:`/`/`）会被上游的
+        // `^[a-zA-Z0-9_-]+$` 拒掉，这里换成合法名并把模型回传的调用名还原。
+        let (tools, name_map) = conform_tool_names(&parse_tools(&self.config));
         let conversation = conversation_from_openai_messages(messages);
         let identity = self.config.prompt_cache_identity.clone();
         let input = ChatRequestInput {
@@ -525,6 +527,8 @@ impl ReplySource for KernelModelPort {
                             "Agent 连续 {limit} 次返回空响应，已停止本轮请求。"
                         )));
                     }
+                    let mut reply = reply;
+                    name_map.restore_reply(&mut reply);
                     let reply = to_agent_reply(reply)?;
                     self.notify_model_response(&reply);
                     remember_active_assistant(&self.active_assistant, &reply);
@@ -3658,7 +3662,8 @@ impl ReplySource for BackgroundModelPort {
         self.run_request_hook(messages)?;
         let runtime = build_model_runtime(&self.config)?;
         let options = parse_options(&self.config)?;
-        let tools = parse_tools(&self.config);
+        // 与主回合同一套线上名收敛（子 Agent 也能拿到 MCP 工具）。
+        let (tools, name_map) = conform_tool_names(&parse_tools(&self.config));
         let conversation = conversation_from_openai_messages(messages);
         let identity = self.config.prompt_cache_identity.clone();
         let input = ChatRequestInput {
@@ -3681,6 +3686,8 @@ impl ReplySource for BackgroundModelPort {
         };
         match runtime.run_turn(&input, &mut sink) {
             Ok(reply) => {
+                let mut reply = reply;
+                name_map.restore_reply(&mut reply);
                 let reply = to_agent_reply(reply)?;
                 // 与 Python 同规则：只有带工具调用的过程性文本进子代理会话面板。
                 if self.stream && !reply.content.is_empty() && !reply.tool_calls.is_empty() {

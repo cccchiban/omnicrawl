@@ -9,6 +9,7 @@ pub mod codec;
 pub mod event;
 pub mod identity;
 pub mod message;
+pub mod tool_names;
 
 pub use aggregate::aggregate_stream_events;
 pub use codec::{
@@ -24,3 +25,4 @@ pub use message::{
     ConversationMessage, GenerationOptions, ImageBlock, ImageDetail, MessageBlock, Role, TextBlock,
     TokenUsage, ToolCallBlock, ToolResultBlock, ToolSpec,
 };
+pub use tool_names::{conform_tool_names, sanitize_tool_name, ToolNameMap};

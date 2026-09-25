@@ -43,6 +43,27 @@
 `recall_session_evidence` 之外的可恢复信息（被压缩窗口的原始事件）归档到 `archive/compacted/`；
 下一轮请求只带「摘要 + 保留窗口 + 当前输入」。
 
+## 工具名的线上形态（发给上游前收敛）
+
+上游对 `function.name` 有硬约束（OpenAI 兼容网关是 `^[a-zA-Z0-9_-]+$`，Gemini 还要求首字符
+是字母或下划线），而 MCP 暴露给模型的名字天生带分隔符：工具是 `server.tool`，资源是
+`mcp_read_resource__<uri>`（URI 里有 `:` 与 `/`）。原样发出去，网关直接 400：
+
+```text
+Invalid 'tools[0].function.name': string does not match pattern.
+Expected a string that matches the pattern '^[a-zA-Z0-9_-]+$'.
+```
+
+因此两个模型端口（主回合 `KernelModelPort`、子 Agent `BackgroundModelPort`）在发请求前调
+`omnicrawl_protocol::conform_tool_names`：非法字符换 `_`、数字开头补 `_`、超长截断（64）、
+撞名追加 `_2`/`_3`（按声明顺序仲裁，因此每次都是同一组线上名，不会白改 prompt cache 前缀）；
+模型按线上名回传的调用再用同一张对照表**还原成内部原名**（同时改写 `tool_calls[].name` 与
+assistant 原文里的 `function.name`）。所以除了线上那一层，内核派发、宿主工具表与审批、
+审计、转录事件与界面上的工具卡看到的都还是 `server.tool`。
+
+Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` 不做任何收敛），带 MCP 的
+会话在严格网关上必然失败——这是 Rust 单侧的修正，不是新增功能。
+
 ## 工具输出压缩旁路
 
 `[tool_output_compression]` 启用时，内核在拿到宿主回传的整批观察后会额外跑一次压缩请求：

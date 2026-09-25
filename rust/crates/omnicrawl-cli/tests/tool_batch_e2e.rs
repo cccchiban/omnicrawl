@@ -629,3 +629,48 @@ fn kernel_records_denied_call_in_the_session() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// 工具名里的 `.`（MCP 的 `server.tool`）与资源名里的 `:`/`/`，都会被上游的
+/// `^[a-zA-Z0-9_-]+$` 拒掉（`Invalid 'tools[0].function.name'`）。因此：
+/// 发给上游的声明名要收敛成合法形式，模型按合法名回传的调用要还原成内部原名派发给宿主
+/// ——否则宿主工具表里只有 `fathom.search`，按 `fathom_search` 查必然「未知工具」。
+#[test]
+fn dotted_tool_names_are_conformed_on_the_wire_and_restored_for_the_host() {
+    let server = StubServer::spawn(vec![
+        Reply::Raw(tool_call_stream("fathom_search", "{\"query\":\"x\"}")),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("dotted-tool-name");
+
+    let mut kernel = Kernel::spawn();
+    let mut model = model_config(&server);
+    model["tools"] = json!([{
+        "type": "function",
+        "function": {
+            "name": "fathom.search",
+            "description": "搜索",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+        }
+    }]);
+    kernel.initialize(model, json!({"root": root_param(&root)}));
+    let (_frames, batches) = kernel.run_turn("搜一下", TOOL_OUTPUT);
+
+    let first = server
+        .bodies()
+        .first()
+        .cloned()
+        .expect("应当发出一次模型请求");
+    assert_eq!(
+        first["tools"][0]["function"]["name"], "fathom_search",
+        "线上声明名必须落在 ^[a-zA-Z0-9_-]+$ 内：{first}"
+    );
+
+    let call = &batches[0]["calls"][0];
+    assert_eq!(
+        call["name"], "fathom.search",
+        "派发给宿主的调用名要还原成内部原名：{call}"
+    );
+    assert_eq!(call["arguments"]["query"], "x");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
