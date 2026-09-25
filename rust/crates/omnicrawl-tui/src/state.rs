@@ -34,6 +34,9 @@ pub const COMPOSER_MAX_LINES: usize = 5;
 /// 轮播随机源种子：固定值让留言页与乱码帧在测试里可复现。
 const CAROUSEL_SEED: u64 = 0x0C1C_2025;
 
+/// 输入框上方那行瞬时提示（拖选复制等）的存活时长。
+pub const NOTICE_LINE_LINGER: Duration = Duration::from_secs(3);
+
 /// 生成期间 FIFO 排队预览的可见条数上限与摘要长度上限。
 ///
 /// 直接复用对映层常量，不另立一份：预览行数与 HUD 的 `QUEUE` 段读的是同一组值。
@@ -412,6 +415,8 @@ pub struct AppState {
     pub composer: Composer,
     pub scroll_from_bottom: usize,
     pub status: Option<String>,
+    /// 输入框上方那行瞬时提示（拖选复制等）：不进会话流，超过 [`NOTICE_LINE_LINGER`] 自散。
+    pub notice_line: Option<(String, Instant)>,
     pub todos: Vec<TodoItem>,
     pub paused: bool,
     pub turn: TurnState,
@@ -474,6 +479,7 @@ impl AppState {
             composer: Composer::default(),
             scroll_from_bottom: 0,
             status: None,
+            notice_line: None,
             todos: Vec::new(),
             paused: false,
             turn: TurnState::Idle,
@@ -1236,6 +1242,27 @@ impl AppState {
 
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_from_bottom = 0;
+    }
+
+    /// 在输入框上方那一行显示一条瞬时提示（拖选复制等）。
+    pub fn show_notice_line(&mut self, text: impl Into<String>, now: Instant) {
+        self.notice_line = Some((text.into(), now));
+    }
+
+    /// 当前该显示的提示行文本；超过存活时间返回 `None`。
+    pub fn notice_line_text(&self, now: Instant) -> Option<&str> {
+        let (text, at) = self.notice_line.as_ref()?;
+        if now.saturating_duration_since(*at) > NOTICE_LINE_LINGER {
+            return None;
+        }
+        Some(text.as_str())
+    }
+
+    /// 宿主每帧调一次：把过期的提示行真的清掉（渲染只读，不负责回收）。
+    pub fn tick_notice_line(&mut self, now: Instant) {
+        if self.notice_line.is_some() && self.notice_line_text(now).is_none() {
+            self.notice_line = None;
+        }
     }
 
     /// 开始处理一个工具批次，推进到等待点、执行点或整批结束。
@@ -2499,5 +2526,27 @@ mod replay_tests {
         // 空事件流是权威结果（`/undo` 撤掉唯一一轮）：视图必须清空，不能保留旧记录。
         state.replay_events(&[]);
         assert!(state.records.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod notice_line_tests {
+    use super::{AppState, NOTICE_LINE_LINGER};
+    use crate::args::ApprovalMode;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn notice_line_shows_then_expires() {
+        let mut state = AppState::new("项目".to_string(), "模型".to_string(), ApprovalMode::Manual);
+        let now = Instant::now();
+        assert!(state.notice_line_text(now).is_none(), "默认没有提示行");
+
+        state.show_notice_line("已复制 2 行到剪切板。", now);
+        assert_eq!(state.notice_line_text(now), Some("已复制 2 行到剪切板。"));
+
+        let later = now + NOTICE_LINE_LINGER + Duration::from_millis(10);
+        assert!(state.notice_line_text(later).is_none(), "超时后不再显示");
+        state.tick_notice_line(later);
+        assert!(state.notice_line.is_none(), "tick 要把过期提示真的回收掉");
     }
 }

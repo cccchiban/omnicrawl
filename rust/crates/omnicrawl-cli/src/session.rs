@@ -542,15 +542,28 @@ impl ReplySource for KernelModelPort {
                         self.usage.borrow_mut().context_overflow = true;
                     }
                     attempt += 1;
-                    if error.retryable && attempt < limit {
+                    // 内核策略（刻意偏离 Python 的 `is_retryable_model_request_error`）：
+                    // 任何**非取消**的请求失败都先退避重试——网络抖动、网关 5xx、限流，甚至
+                    // 瞬时被拒，都不该让整段会话直接断掉；确定性错误重试几次后仍会如实上报。
+                    // 上下文超限例外：它要走压缩恢复路径，不能在这里耗重试。
+                    let overflow = error.message.contains(CONTEXT_LENGTH_EXCEEDED_MESSAGE)
+                        || self.usage.borrow().context_overflow;
+                    let retryable = !overflow;
+                    if retryable && attempt < limit {
                         // 已经推给界面的半截流要先撤销，否则重试会叠在旧文本上。
                         if error.kind == RuntimeErrorKind::StreamInterrupted {
                             self.conn.borrow_mut().notify(HostEvent::StreamRollback);
                         }
+                        // 退避前先把入站帧抽干：这段时间里用户按 ESC 也能立刻止痛。
+                        if drain_inbound_during_turn(&self.conn) {
+                            return Err(LoopError::Cancelled("回合已取消。".to_string()));
+                        }
                         self.notify_retry(format!("请求失败，正在自动重试（第{attempt}次）"));
+                        let backoff_ms = (400u64 << (attempt - 1).min(3)).min(2_000);
+                        std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
                         continue;
                     }
-                    if error.retryable {
+                    if retryable {
                         return Err(self.model_error(format!(
                             "上游错误已达到本回合自动重试上限，已停止本次请求。{}",
                             error.message
@@ -654,6 +667,11 @@ struct ProtocolSink {
 
 impl TurnSink for ProtocolSink {
     fn on_event(&mut self, event: ModelStreamEvent) -> SinkFlow {
+        // 内核自己发请求时主循环正阻塞在这一层：宿主的 `turn.cancel` / `shutdown` 只能靠
+        // 每个流事件里顺手把入站帧抽干才会被看见（否则 ESC 要等整段流跑完）。
+        if drain_inbound_during_turn(&self.conn) {
+            return SinkFlow::Cancel;
+        }
         let mut connection = self.conn.borrow_mut();
         match event {
             ModelStreamEvent::TextDelta(delta) => {
@@ -2160,6 +2178,14 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
     // 判定面在 `omnicrawl_controllers::turn::continuation`，这里只做模型调用与事件累积。
     let continuation = load_continue_config();
     let mut run_guard = TurnRunGuard::begin(&model_text, continue_requested, &recovered_pending);
+    // 用户消息**先落盘**再发请求（与 Python `loop.py` 同序）：回合中途失败或被取消时，
+    // 下一轮与恢复投影仍然看得到这次提问，而不是把整轮丢在转录之外。
+    run_guard.todos = active_todos.borrow().clone();
+    if let Some(session) = conn.borrow_mut().session.as_mut() {
+        if let Err(detail) = session.append("user_message", run_guard.user_message_payload()) {
+            eprintln!("[kernel] 会话写入用户消息失败：{detail}");
+        }
+    }
 
     // 主 Agent 的预算是无限的：与 Python 侧一致，靠取消与停止检查来收敛。
     // 上下文超限时压缩当前未完成回合，用返回的投影重试一次（与 Python 的恢复路径同口径）。
@@ -2291,9 +2317,82 @@ fn run_turn(conn: &Rc<RefCell<Conn>>, request_id: Id, params: TurnSubmitParams) 
         }
         Err(error) => {
             eprintln!("[kernel] 回合失败：{}", error.message());
-            connection.respond_error(request_id, turn_error(&error))
+            // 失败/取消同样要留下可恢复的终态（Python `loop.py` 的两个 except 分支）：
+            // 用户消息此前已落盘，这里补一条终态事件并把投影写回运行期历史，否则紧接着的
+            // 下一次提问看不到被中断的任务与已执行的工具。
+            let cancelled = matches!(error, LoopError::Cancelled(_));
+            let executed = undo.borrow().executed_tools().to_vec();
+            let reason = error.message();
+            let response = turn_error(&error);
+            let session = connection.session.take();
+            drop(connection);
+            if let Some(mut session) = session {
+                let (event_type, payload) = if cancelled {
+                    (
+                        "turn_cancelled",
+                        json!({
+                            "user_text": user_text.clone(),
+                            "pending_user_text": run_guard.pending_user_text.clone(),
+                            "reason": reason,
+                            "summary": cancelled_turn_summary(&executed),
+                        }),
+                    )
+                } else {
+                    (
+                        "session_interrupted",
+                        json!({
+                            "user_text": user_text.clone(),
+                            "pending_user_text": run_guard.pending_user_text.clone(),
+                            "reason": reason,
+                        }),
+                    )
+                };
+                if let Err(detail) = session.append(event_type, payload) {
+                    eprintln!("[kernel] 会话写入回合终态失败：{detail}");
+                }
+                // 与 Python `_commit_turn_history()` 同义：把本轮已落盘的事件投影回运行期
+                // 历史，下一轮接着走时上下文完整。
+                if let Err(detail) = session.reload_history() {
+                    eprintln!("[kernel] 重建运行期历史失败：{detail}");
+                }
+                conn.borrow_mut().session = Some(session);
+            }
+            conn.borrow_mut().respond_error(request_id, response);
         }
     }
+}
+
+/// 被取消回合的历史摘要（语义基准 Python `TurnLoopMixin._cancelled_turn_summary`）。
+///
+/// 只写纯文本助手消息（不写未配对的 `tool_calls`），带上本轮已执行工具的次数统计；
+/// 这是紧接着的下一轮能延续上下文的依据。
+fn cancelled_turn_summary(executed_tools: &[String]) -> String {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for name in executed_tools {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        match counts.iter_mut().find(|(existing, _)| existing == name) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((name.to_string(), 1)),
+        }
+    }
+    if counts.is_empty() {
+        return "（上一回合被取消，未生成最终回复，未执行任何工具）".to_string();
+    }
+    let summary = counts
+        .iter()
+        .map(|(name, count)| {
+            if *count > 1 {
+                format!("{name}×{count}")
+            } else {
+                name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("，");
+    format!("（上一回合被取消，未生成最终回复）已执行工具：{summary}")
 }
 
 /// 上下文超限的错误判定：与 Python 侧 `_CONTEXT_OVERFLOW_ERROR_MARKERS` 同源。
@@ -2358,9 +2457,7 @@ fn run_session_tail(
     final_text: &str,
     turn_id: &str,
 ) {
-    if let Err(detail) = session.append("user_message", run_guard.user_message_payload()) {
-        eprintln!("[kernel] 会话写入用户消息失败：{detail}");
-    }
+    // `user_message` 已在发请求之前落盘（见 `run_turn`），这里只写本轮终态与续跑痕迹。
     // 续跑痕迹的落盘顺序与 Python 完全一致：先逐次 `run_guard_continue`，再写本轮终态。
     for payload in &run_guard.continue_events {
         if let Err(detail) = session.append(continuation::CONTINUE_EVENT, payload.clone()) {
@@ -3482,6 +3579,34 @@ fn drain_background(conn: &Rc<RefCell<Conn>>) {
     }
 }
 
+/// 回合进行中（内核自己发模型请求）抽干入站帧：让 `turn.cancel` / `shutdown` 立刻生效。
+///
+/// 返回 `true` 表示应当中止当前请求（已取消、已请求退出或宿主已断开）。其余帧交给
+/// [`Conn::handle_inbound`] 正常应答（重复 `turn.submit` 仍会收到 `-32002`）。
+fn drain_inbound_during_turn(conn: &Rc<RefCell<Conn>>) -> bool {
+    loop {
+        let frame = match conn.borrow().inbound.try_recv() {
+            Ok(Inbound::Frame(frame)) => frame,
+            Ok(Inbound::Closed) => return true,
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => return true,
+        };
+        let failure = conn.borrow_mut().handle_inbound(&frame);
+        if matches!(
+            failure,
+            Some(PortFailure::Cancelled(_)) | Some(PortFailure::Shutdown)
+        ) {
+            return true;
+        }
+        let connection = conn.borrow();
+        if connection.cancel.load(Ordering::SeqCst) || connection.exit_requested {
+            return true;
+        }
+    }
+    let connection = conn.borrow();
+    connection.cancel.load(Ordering::SeqCst) || connection.exit_requested
+}
+
 /// 主循环代子代理跑 `model.request.before`：宿主声明支持时才发请求。
 ///
 /// 与主端口同口径：宿主未声明能力（或插件未启用）时原样放行；拒绝时把宿主给的文案带回去，
@@ -3861,5 +3986,35 @@ mod runtime_selection_tests {
             }
             other => panic!("应为 ReplySource，实际 {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::cancelled_turn_summary;
+
+    #[test]
+    fn cancelled_summary_counts_executed_tools() {
+        assert_eq!(
+            cancelled_turn_summary(&[]),
+            "（上一回合被取消，未生成最终回复，未执行任何工具）"
+        );
+        assert_eq!(
+            cancelled_turn_summary(&["read".to_string()]),
+            "（上一回合被取消，未生成最终回复）已执行工具：read"
+        );
+        // 同一工具多次：Python 用 `name×次数`；不同工具之间用「，」连接。
+        assert_eq!(
+            cancelled_turn_summary(&[
+                "read".to_string(),
+                "bash".to_string(),
+                "read".to_string(),
+            ]),
+            "（上一回合被取消，未生成最终回复）已执行工具：read×2，bash"
+        );
+        assert_eq!(
+            cancelled_turn_summary(&["  ".to_string()]),
+            "（上一回合被取消，未生成最终回复，未执行任何工具）"
+        );
     }
 }

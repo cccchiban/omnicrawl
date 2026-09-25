@@ -68,6 +68,10 @@ fn tool_call_with_text_stream(text: &str, name: &str, arguments: &str) -> String
 enum Reply {
     Text(String),
     Raw(String),
+    /// 用指定 HTTP 状态码回一个错误体：用来验证「失败也留上下文」与自动重试。
+    Status(u16, String),
+    /// 把响应体分两半、中间停 `delay_ms` 再发完：用来在流中途插入 `turn.cancel`。
+    SlowRaw(String, u64),
 }
 
 /// 本机回环服务端：按脚本依次应答，并记录收到的请求体。
@@ -92,14 +96,39 @@ impl StubServer {
                 }
                 let body = match script.get(index) {
                     Some(Reply::Text(text)) => make_stream(text),
-                    Some(Reply::Raw(raw)) => raw.clone(),
+                    Some(Reply::Raw(raw)) | Some(Reply::SlowRaw(raw, _)) => raw.clone(),
+                    Some(Reply::Status(_, _)) => String::new(),
                     None => make_stream("（脚本用尽）"),
                 };
+                let (status, content_type) = match script.get(index) {
+                    Some(Reply::Status(code, _)) => (*code, "application/json"),
+                    _ => (200, "text/event-stream"),
+                };
+                let body = match script.get(index) {
+                    Some(Reply::Status(_, message)) => json!({ "error": { "message": message } })
+                        .to_string(),
+                    _ => body,
+                };
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\
+                    "HTTP/1.1 {status} STATUS\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\
                      Connection: close\r\n\r\n{body}",
                     body.len()
                 );
+                if let Some(Reply::SlowRaw(_, delay_ms)) = script.get(index) {
+                    // 头 + 前半截先发出去，睡一会儿再补完：留出发 `turn.cancel` 的窗口。
+                    let split = body.len() / 2;
+                    let head = format!(
+                        "HTTP/1.1 {status} STATUS\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body.as_bytes()[..split]);
+                    let _ = stream.flush();
+                    thread::sleep(Duration::from_millis(*delay_ms));
+                    let _ = stream.write_all(&body.as_bytes()[split..]);
+                    let _ = stream.flush();
+                    continue;
+                }
                 let _ = stream.write_all(reply.as_bytes());
                 let _ = stream.flush();
             }
@@ -673,4 +702,184 @@ fn dotted_tool_names_are_conformed_on_the_wire_and_restored_for_the_host() {
     assert_eq!(call["arguments"]["query"], "x");
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 跑一轮直到 `turn.finished` **或** `turn.submit` 收到错误响应：失败轮不会发 `turn.finished`。
+fn run_turn_expecting_error(kernel: &mut Kernel, user_text: &str) -> Vec<Value> {
+    kernel.send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "turn.submit",
+        "params": {"turn_id": "turn-1", "user_text": user_text},
+    }));
+    let mut collected = Vec::new();
+    loop {
+        let frame = kernel.next_frame();
+        let failed = frame.get("error").is_some();
+        let finished = frame["method"] == json!("turn.finished");
+        collected.push(frame);
+        if failed || finished {
+            return collected;
+        }
+    }
+}
+
+/// 再跑一轮（换一个 turn_id），只要 `turn.finished`，用于验证「下一轮看得见上一轮」。
+fn run_followup_turn(kernel: &mut Kernel, turn_id: &str, user_text: &str) -> Vec<Value> {
+    kernel.send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "turn.submit",
+        "params": {"turn_id": turn_id, "user_text": user_text},
+    }));
+    let mut collected = Vec::new();
+    loop {
+        let frame = kernel.next_frame();
+        let finished = frame["method"] == json!("turn.finished");
+        collected.push(frame);
+        if finished {
+            return collected;
+        }
+    }
+}
+
+#[test]
+fn failed_turn_still_leaves_context_for_the_next_turn() {
+    // 第一次请求直接 5xx（且 `request_retry_count` 缺省 = 1，不重试）→ 这一轮失败。
+    let server = StubServer::spawn(vec![
+        Reply::Status(500, "网关抖动".to_string()),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("failed-turn-context");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+
+    let frames = run_turn_expecting_error(&mut kernel, "第一句（失败那轮）");
+    assert!(
+        frames.iter().any(|frame| frame.get("error").is_some()),
+        "上游 5xx 应当让本轮失败：{frames:?}"
+    );
+
+    // 失败轮也要落盘：用户消息 + 可恢复的终态事件（Python `loop.py` 的补写口径）。
+    assert_eq!(
+        transcript_event(&root, "user_message")["payload"]["content"],
+        json!("第一句（失败那轮）"),
+        "失败轮的用户消息必须落盘"
+    );
+    assert!(
+        transcript_event(&root, "session_interrupted")["payload"]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "失败轮要留下 session_interrupted 终态与原因"
+    );
+
+    // 下一轮的模型请求里必须带上失败那轮的任务文本：上下文真的继承了。
+    let finished = run_followup_turn(&mut kernel, "turn-2", "第二句");
+    assert!(
+        finished.iter().any(|frame| frame["method"] == json!("turn.finished")),
+        "第二句应当正常完成：{finished:?}"
+    );
+    let body = server.bodies().last().cloned().expect("第二次请求体");
+    let messages = serde_json::to_string(&body["messages"]).expect("序列化");
+    assert!(
+        messages.contains("第一句（失败那轮）"),
+        "下一轮要带上失败那轮的任务：{messages}"
+    );
+}
+
+#[test]
+fn transient_gateway_error_is_retried_inside_the_turn() {
+    // 一次 503 + 一次正常回复：配上 `request_retry_count = 2`，本轮应当自愈。
+    let server = StubServer::spawn(vec![
+        Reply::Status(503, "上游暂时不可用".to_string()),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("retry-transient");
+    let mut kernel = Kernel::spawn();
+    let mut config = model_config(&server);
+    config["request_retry_count"] = json!(2);
+    kernel.initialize(config, json!({"root": root_param(&root)}));
+
+    let (frames, _) = kernel.run_turn("你好", "忽略");
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["method"] == json!("turn.retry_status")),
+        "应当提示正在自动重试：{frames:?}"
+    );
+    let finished = frames
+        .iter()
+        .find(|frame| frame["method"] == json!("turn.finished"))
+        .unwrap_or_else(|| panic!("重试成功后应当收到 turn.finished：{frames:?}"));
+    assert_eq!(
+        finished["params"]["final_text"], FINAL_TEXT,
+        "重试成功后要拿到回复"
+    );
+    assert_eq!(server.bodies().len(), 2, "两次请求 = 一次失败 + 一次重试");
+}
+
+#[test]
+fn cancelled_turn_is_recorded_and_the_next_turn_keeps_the_context() {
+    // 半截流 + 400ms 停顿：宿主在这中间发 `turn.cancel`（等同用户按 ESC）。
+    let stream = make_stream("半截回复");
+    let server = StubServer::spawn(vec![
+        Reply::SlowRaw(stream, 400),
+        Reply::Text(FINAL_TEXT.to_string()),
+    ]);
+    let root = temp_root("cancel-context");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+
+    kernel.send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "turn.submit",
+        "params": {"turn_id": "turn-1", "user_text": "本轮会被取消"},
+    }));
+    // 等到第一个流增量：说明请求已发出、流已经开跑。
+    loop {
+        let frame = kernel.next_frame();
+        if frame["method"] == json!("turn.delta") {
+            break;
+        }
+    }
+    kernel.send(json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "turn.cancel",
+        "params": {"turn_id": "turn-1"},
+    }));
+    // 取消后 `turn.submit` 会带回错误响应（失败轮不发 `turn.finished`）。
+    loop {
+        let frame = kernel.next_frame();
+        if frame["id"] == json!(2) {
+            assert!(
+                frame.get("error").is_some(),
+                "取消的回合同样以错误收尾：{frame}"
+            );
+            break;
+        }
+    }
+
+    // 取消轮也要留上下文：用户消息 + `turn_cancelled`（带「未执行任何工具」摘要）。
+    assert_eq!(
+        transcript_event(&root, "user_message")["payload"]["content"],
+        json!("本轮会被取消"),
+        "被取消轮的用户消息必须落盘"
+    );
+    let cancelled = transcript_event(&root, "turn_cancelled");
+    assert_eq!(
+        cancelled["payload"]["summary"],
+        json!("（上一回合被取消，未生成最终回复，未执行任何工具）"),
+        "取消摘要与 Python `_cancelled_turn_summary` 同口径：{cancelled}"
+    );
+
+    // 下一轮的请求里仍然看得到这一轮的任务。
+    run_followup_turn(&mut kernel, "turn-2", "第二句");
+    let body = server.bodies().last().cloned().expect("第二次请求体");
+    let messages = serde_json::to_string(&body["messages"]).expect("序列化");
+    assert!(
+        messages.contains("本轮会被取消"),
+        "取消也不能丢上下文：{messages}"
+    );
 }

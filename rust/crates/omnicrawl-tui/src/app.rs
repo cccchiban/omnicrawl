@@ -420,6 +420,8 @@ pub struct App {
     session_close_before_sent: bool,
     /// 慢命令的宿主侧后台任务（`/workspace`、`/mcp`），每帧轮询取回结果。
     slow_task: Option<SlowTask>,
+    /// 会话区右缘滚动条正在被按住拖动（松手才结束）。
+    scrollbar_drag: bool,
     /// 内核 stderr 的逐行通道：运行期报错转成会话区提示，不再直接写终端盖住输入框。
     kernel_logs: Option<Receiver<String>>,
     /// 渠道页「模型 ID」的自动检测后台任务。
@@ -649,6 +651,7 @@ impl App {
             session_id: String::new(),
             session_close_before_sent: false,
             slow_task: None,
+            scrollbar_drag: false,
             kernel_logs: None,
             channel_models_task: None,
         })
@@ -778,10 +781,21 @@ impl App {
             ),
             user_agent: format!("omnicrawl-tui/{}", env!("CARGO_PKG_VERSION")),
             system_prompt,
-            context_messages: self
-                .prompt
-                .context_messages_with_plugins(true, Some(self.plugins.as_ref()), None, None)
-                .unwrap_or_default(),
+            context_messages: match self.prompt.context_messages_with_plugins(
+                true,
+                Some(self.plugins.as_ref()),
+                None,
+                None,
+            ) {
+                Ok(messages) => messages,
+                Err(error) => {
+                    // `unwrap_or_default` 会让模型静默地收不到项目规范 / Skill / 运行环境，
+                    // 看起来就像「系统提示词没生效」；装不出来就明说。
+                    self.state
+                        .notice(format!("上下文装配失败：{error}（本轮只发系统提示词与历史）"));
+                    Vec::new()
+                }
+            },
             tools: tool_declarations,
             options: if external_channel {
                 json!({})
@@ -1469,6 +1483,10 @@ impl App {
 
     /// 鼠标事件：滚轮滚动消息区，左键拖选复制、按落点分派到排队预览或消息流。
     fn handle_mouse(&mut self, mouse: MouseEvent) {
+        // 滚动条拖动优先，且不受「等审批」限制：按住右缘那格上下滑就是滚会话。
+        if self.handle_scrollbar_mouse(&mouse) {
+            return;
+        }
         // 提问面板开着时不允许点击展开/撤回：回填内容会被提问模式吞掉
         // （与 Python `_withdraw_pending_input` 的守卫同源）。
         let interactive = self.state.waiting().is_none();
@@ -1517,6 +1535,38 @@ impl App {
     }
 
     /// 松左键：有选区就写剪切板并清掉高亮；没拖动（空选区）就当普通点击。
+    /// 滚动条拖动：命中返回 `true`（这一下不再当点选/拖选处理）。
+    fn handle_scrollbar_mouse(&mut self, mouse: &MouseEvent) -> bool {
+        let areas = ui::layout(self.viewport, &self.state);
+        let Some(column) = conversation::scrollbar_column(areas.conversation) else {
+            return false;
+        };
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if mouse.column == column => {
+                self.scrollbar_drag = true;
+                self.drag_scrollbar_to(mouse.row);
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.scrollbar_drag => {
+                self.drag_scrollbar_to(mouse.row);
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.scrollbar_drag => {
+                self.scrollbar_drag = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn drag_scrollbar_to(&mut self, row: u16) {
+        let areas = ui::layout(self.viewport, &self.state);
+        if let Some(offset) = conversation::scroll_offset_for_row(&self.state, areas.conversation, row)
+        {
+            self.state.scroll_from_bottom = offset;
+        }
+    }
+
     fn finish_selection(&mut self) {
         let Some(selection) = self.state.selection() else {
             return;
@@ -1535,11 +1585,12 @@ impl App {
             Ok(()) => {
                 self.state.clear_selection();
                 self.state
-                    .notice(format!("已复制 {rows} 行到剪切板。"));
+                    .show_notice_line(format!("已复制 {rows} 行到剪切板。"), Instant::now());
             }
-            Err(error) => self.state.notice(format!(
-                "复制失败：{error}（可按住 Shift 拖选，用终端自带的复制）"
-            )),
+            Err(error) => self.state.show_notice_line(
+                format!("复制失败：{error}（可按住 Shift 拖选，用终端自带的复制）"),
+                Instant::now(),
+            ),
         }
     }
 
@@ -3796,10 +3847,20 @@ impl App {
         // 内核侧：先把新工具表与上下文消息推给内核（与新工作区的稳定前缀一致），
         // 再让它在同一会话里转录 `workspace_switched`。两者都不等回包：
         // `handle_frame` 对未匹配的响应帧只丢弃，不阻断界面。
-        let context_messages = self
-            .prompt
-            .context_messages_with_plugins(true, Some(self.plugins.as_ref()), None, None)
-            .unwrap_or_default();
+        let context_messages = match self.prompt.context_messages_with_plugins(
+            true,
+            Some(self.plugins.as_ref()),
+            None,
+            None,
+        ) {
+            Ok(messages) => messages,
+            Err(error) => {
+                // 同上：切完工作区装不出上下文时，界面必须看得到原因。
+                self.state
+                    .notice(format!("上下文装配失败：{error}（只推送了工具表）"));
+                Vec::new()
+            }
+        };
         let _ = self.send(Command::SessionSettings(Box::new(SessionSettingsParams {
             model: Some(Box::new(SessionModelSettings {
                 tools: Some(self.registry.declarations()),

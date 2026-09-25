@@ -1453,3 +1453,44 @@ fn handshake_reports_the_native_vision_switch() {
         "initialize.model 应显式带 native_vision"
     );
 }
+
+/// 系统提示词与上下文消息必须真的装进 `initialize`（用户报过「模型不遵循系统提示词」）。
+///
+/// 这一条守的是「装配成功但没发」，以及 `context_messages` 被 `unwrap_or_default` 静默丢空。
+#[test]
+fn handshake_carries_system_prompt_and_context_messages() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let initialize = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("initialize"))
+        .expect("应发出 initialize");
+    let model = initialize.params.clone().unwrap_or(Value::Null)["model"].clone();
+
+    // 测试宿主用 `--system-prompt` 覆盖模板（命令行优先），这里断言「装配出来的那份就是发出去的」。
+    let prompt = model["system_prompt"].as_str().unwrap_or_default();
+    assert_eq!(prompt, "你是测试助手。", "系统提示词要原样进 initialize");
+
+    // 工具能力说明 / 运行环境这类 user 提示词由 context_messages 承载，不能为空。
+    let context = model["context_messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !context.is_empty(),
+        "上下文消息不能为空：{}",
+        model["context_messages"]
+    );
+    assert!(
+        context
+            .iter()
+            .all(|message| message["role"] == json!("user")),
+        "上下文消息是 system 之外的 user 消息：{context:?}"
+    );
+    let joined = serde_json::to_string(&context).expect("序列化");
+    assert!(
+        joined.contains("agent_tmp"),
+        "运行环境那条 user 提示词要带上临时目录：{joined}"
+    );
+}

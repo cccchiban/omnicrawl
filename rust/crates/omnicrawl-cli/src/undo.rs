@@ -107,6 +107,14 @@ impl TurnUndo {
         }
     }
 
+    /// 本轮已执行的工具名（按执行顺序，含重复）；没有账本时为空。
+    pub fn executed_tools(&self) -> &[String] {
+        match self.snapshot.as_ref() {
+            Some(snapshot) => snapshot.executed_tools.as_slice(),
+            None => &[],
+        }
+    }
+
     /// 回合收尾：捕获终点、写四个快照文件并落一条 `turn_snapshot` 事件。
     ///
     /// 纯读/纯对话轮次没有起点快照，直接标记完成、不落盘也不产生事件（与 Python 一致）。

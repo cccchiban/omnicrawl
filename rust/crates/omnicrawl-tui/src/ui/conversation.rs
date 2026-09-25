@@ -412,6 +412,37 @@ pub fn window(
         .collect()
 }
 
+/// 会话区右缘那条 1 格滚动条的列（终端太窄时没有）。
+pub fn scrollbar_column(area: Rect) -> Option<u16> {
+    if area.width < SCROLLBAR_WIDTH.saturating_add(2) {
+        return None;
+    }
+    Some(area.x + area.width - SCROLLBAR_WIDTH)
+}
+
+/// 把鼠标按在第 `row` 行（屏幕绝对行）时的滚动偏移（`scroll_from_bottom`）。
+///
+/// 拖到轨道顶部 = 看最早的行，拖到底部 = 贴底跟随最新记录；与渲染共用同一套
+/// 窗口数学（`display_lines` + `window_range`），所以拖动不会与画面对不上。
+pub fn scroll_offset_for_row(state: &AppState, area: Rect, row: u16) -> Option<usize> {
+    if area.height == 0 || row < area.y || row >= area.y.saturating_add(area.height) {
+        return None;
+    }
+    let text = text_area(area);
+    let height = text.height as usize;
+    if height == 0 {
+        return Some(0);
+    }
+    let total = display_lines(state, text.width).len();
+    let max_offset = total.saturating_sub(height);
+    if max_offset == 0 {
+        return Some(0);
+    }
+    let track = height.saturating_sub(1).max(1);
+    let position = usize::from(row.saturating_sub(text.y)).min(track);
+    Some(max_offset - max_offset * position / track)
+}
+
 /// 可见窗口在全部显示行里的下标区间；`height` 为 0 时是空区间。
 pub fn window_range(total: usize, height: usize, scroll_from_bottom: usize) -> (usize, usize) {
     if height == 0 {
@@ -1436,5 +1467,46 @@ mod tests {
         );
         assert!(texts(&window(&lines, 4, 6)) == vec!["行0", "行1", "行2", "行3"]);
         assert_eq!(window_range(10, 0, 0), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_tests {
+    use super::{scroll_offset_for_row, scrollbar_column};
+    use crate::args::ApprovalMode;
+    use crate::state::{AppState, Record};
+    use ratatui::layout::Rect;
+
+    fn state_with_lines(count: usize) -> AppState {
+        let mut state = AppState::new("项目".to_string(), "模型".to_string(), ApprovalMode::Manual);
+        for index in 0..count {
+            state.records.push(Record::Assistant(format!("行{index}")));
+        }
+        state
+    }
+
+    #[test]
+    fn scrollbar_column_sits_on_the_right_edge() {
+        assert_eq!(scrollbar_column(Rect::new(0, 0, 40, 10)), Some(39));
+        // 太窄时干脆没有滚动条（与 `text_area` 的预留规则一致）。
+        assert_eq!(scrollbar_column(Rect::new(0, 0, 2, 10)), None);
+    }
+
+    #[test]
+    fn dragging_the_scrollbar_maps_rows_to_offsets() {
+        let state = state_with_lines(40);
+        let area = Rect::new(0, 0, 40, 10);
+        let top = scroll_offset_for_row(&state, area, 0).expect("顶部");
+        let middle = scroll_offset_for_row(&state, area, 4).expect("中部");
+        let bottom = scroll_offset_for_row(&state, area, 9).expect("底部");
+        assert_eq!(bottom, 0, "拖到底 = 贴底跟随最新记录");
+        assert!(top > 0, "拖到顶要能往回翻");
+        assert!(
+            bottom < middle && middle < top,
+            "拖动应当单调：bottom={bottom} middle={middle} top={top}"
+        );
+        // 内容装得下时任何位置都是 0（不产生假滚动）。
+        let short = state_with_lines(2);
+        assert_eq!(scroll_offset_for_row(&short, area, 0), Some(0));
     }
 }

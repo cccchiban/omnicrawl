@@ -225,6 +225,15 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 
 ## 本阶段（骨架）的边界
 
+**鼠标与提示行**：会话区右缘那 1 格滚动条可以**按住拖动**（拖到顶看最早、拖到底贴底跟随最新；
+本轮新增，Python 用 Textual 自带滚动条），拖选复制的结果不再写进会话流，而是显示在
+**输入框上方那一行**（`ui/mod.rs` 的 `notice` 条带，3 秒后自散，见 `NOTICE_LINE_LINGER`）。
+
+**上下文装配失败会显式提示**：`initialize` / 切工作区推送 `context_messages` 时，如果装配失败
+（例如工作区的 `AGENTS.md` 不是 UTF-8），以前是 `unwrap_or_default()` 静默丢空——模型拿不到
+项目规范 / Skill / 运行环境，看起来就像「系统提示词没生效」；现在会在会话流里明确写出
+「上下文装配失败：…」，并且只发系统提示词与历史。
+
 **明确不在本阶段范围**（写在这里避免误读）：
 
 - **工具未搬完**：已实现 read / read_image / image_gen / tts_synthesize / write_file / Edit_file / bash /

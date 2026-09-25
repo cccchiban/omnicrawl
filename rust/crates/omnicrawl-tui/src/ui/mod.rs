@@ -21,7 +21,9 @@ pub mod splash;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Span;
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use std::time::Instant;
 
 use crate::state::AppState;
 use crate::ui::fullscreen::terminal::theme;
@@ -29,6 +31,9 @@ use crate::ui::fullscreen::text::StyledText;
 
 /// 底部单行轮播 HUD 占一行（对映 CSS `#bottom-carousel { height: 1 }`）。
 pub const HUD_HEIGHT: u16 = 1;
+
+/// 输入框上方那行瞬时提示（拖选复制等）占一行：不进会话流，几秒后自散。
+pub const NOTICE_LINE_HEIGHT: u16 = 1;
 
 /// 一帧的各区几何：渲染与鼠标命中判定共用同一套布局计算，两者永远一致。
 ///
@@ -43,6 +48,8 @@ pub struct UiAreas {
     pub panel: Rect,
     pub queue: Rect,
     /// 输入框上方的命令菜单（对映 Python `#composer-wrap` 里的菜单行预算）。
+    /// 输入框上方（命令菜单之上）的瞬时提示行。
+    pub notice: Rect,
     pub menu: Rect,
     pub composer: Rect,
 }
@@ -50,12 +57,13 @@ pub struct UiAreas {
 /// 按当前状态把整屏切成固定条带；消息区吃剩余高度。
 pub fn layout(area: Rect, state: &AppState) -> UiAreas {
     let width = area.width;
-    let [conversation, todos, panel, queue, menu, composer, hud] = Layout::vertical([
+    let [conversation, todos, panel, queue, notice, menu, composer, hud] = Layout::vertical([
         // 消息区吃掉除固定条带外的全部高度；用 Fill 而不是 Min，避免多余空间落到布局末尾。
         Constraint::Fill(1),
         Constraint::Length(panels::todo_height(state)),
         Constraint::Length(panels::panel_height(state, width)),
         Constraint::Length(queue::height(state)),
+        Constraint::Length(notice_line_height(state)),
         Constraint::Length(composer::menu_height(state)),
         Constraint::Length(composer::height(state, width)),
         Constraint::Length(HUD_HEIGHT),
@@ -67,8 +75,18 @@ pub fn layout(area: Rect, state: &AppState) -> UiAreas {
         todos,
         panel,
         queue,
+        notice,
         menu,
         composer,
+    }
+}
+
+/// 瞬时提示行的高度：有未见过的提示就占一行。
+fn notice_line_height(state: &AppState) -> u16 {
+    if state.notice_line_text(Instant::now()).is_some() {
+        NOTICE_LINE_HEIGHT
+    } else {
+        0
     }
 }
 
@@ -102,9 +120,25 @@ pub fn render(
     panels::render_todos(frame, regions.todos, state, width);
     panels::render_panel(frame, regions.panel, state, width);
     queue::render(frame, regions.queue, state);
+    render_notice_line(frame, regions.notice, state);
     composer::render_menu(frame, regions.menu, state);
     composer::render(frame, regions.composer, state);
     hud::render(frame, regions.hud, state);
+}
+
+/// 输入框上方那行瞬时提示（拖选复制等）：不进会话流，也不占消息区。
+fn render_notice_line(frame: &mut Frame, area: Rect, state: &AppState) {
+    let Some(text) = state.notice_line_text(Instant::now()) else {
+        return;
+    };
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let styled = StyledText::styled(&format!("  · {text}"), theme::TEXT_MUTED);
+    frame.render_widget(
+        Paragraph::new(hud::line_of(&styled, usize::from(area.width))),
+        area,
+    );
 }
 
 /// 按显示列宽折行；CJK 与 emoji 各占自己的列宽，阶段一按列断行，不做单词级避断。

@@ -14,7 +14,22 @@
 ## 会话与压缩
 
 `initialize` 带 `session` 块时内核自己持有会话：转录落在 `root`（与 Python 侧同一套布局），
-回合结束写 `user_message` / `assistant_message`，再按 `compaction` 阈值跑一次压缩。
+回合开始就把 `user_message` 落盘（与 Python `loop.py` 同序），结束再写 `assistant_message`，
+然后按 `compaction` 阈值跑一次压缩。
+
+**失败/取消也留上下文**（语义基准 Python `loop.py` 的两个 `except` 分支）：上游报错或用户取消时
+内核补写终态事件并把投影写回运行期历史——取消写 `turn_cancelled`
+（`{user_text, pending_user_text, reason, summary}`，`summary` 是「已执行工具：read×2，bash」这类文本），
+其余错误写 `session_interrupted`（`{user_text, pending_user_text, reason}`）。因此「报错 → ESC →
+再发一句」时，下一轮照样看得到上一轮的任务与已执行的工具，而不是把整轮丢在转录之外。
+
+**自动重试（刻意偏离 Python）**：`omnicrawl-llm` 的 `is_retryable_model_request_error` 只重试
+408/409/429/5xx 与传输层文案（与 Python 同表），而内核这一层把**任何非取消的请求失败**都先按
+0.4s→0.8s→1.6s→封顶 2s 退避重试，最多 `initialize.model.request_retry_count`（缺省 5）次：
+网络抖动、网关 5xx、限流、甚至瞬时被拒都不该直接打断整段会话；确定性错误重试几次后仍如实上报。
+上下文超限不在此列（它要走压缩恢复路径），取消也不重试。每次重试前先抽干入站帧，所以退避期间
+按 ESC 依然立刻止血。流式回复期间同样每个流事件抽一次入站帧，ESC 不再要等整段流跑完。
+
 摘要提示词模板在编译期嵌进二进制（`omnicrawl/templates/summary_prompt.md`），不依赖运行时目录。
 
 工具事件也在内核侧落盘（语义基准 `omnicrawl/agent/controllers/turn/loop.py`）：每批工具调用前写

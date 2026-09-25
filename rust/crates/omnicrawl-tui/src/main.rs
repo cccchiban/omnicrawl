@@ -185,6 +185,8 @@ fn event_loop(
         app.tick_tts_tasks();
         // 底部单行轮播：遥测 → 工作区路径 → 留言，各 10s，切换时解密扫描。
         app.tick_carousel(Instant::now());
+        // 输入框上方那行瞬时提示（拖选复制等）到时自散。
+        app.state.tick_notice_line(Instant::now());
         // 慢命令（`/workspace`、`/mcp`）的后台结果：工作区切换在这里提交。
         app.tick_slow_command();
         app.tick_config_chat();
