@@ -13,7 +13,8 @@
 | `src/main.rs` | 二进制入口：选内核、握手、进出全屏、事件循环与终端恢复 |
 | `src/args.rs` | 启动参数（命令行 → 环境变量 → 默认值）、内核路径解析 |
 | `src/app.rs` | 接线层：帧 ↔ 状态机 ↔ 写回内核 |
-| `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载 |
+| `src/state.rs` | 状态机：消息记录、输入框、遥测、批次挂载、鼠标拖选选区 |
+| `src/clipboard.rs` | 拖选复制的写剪切板（Windows 走宿主 Win32 `CF_UNICODETEXT` 实现，其余平台 `pbcopy`/`wl-copy`/`xclip`） |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：接口合成（OpenAI 兼容 `audio/speech`，发布默认）与可选的本地 MOSS-TTS-Nano ONNX 推理（`onnx` feature）、文本归一化、音频 I/O、声线库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
 | `src/ui/` | 渲染：`hud.rs`、`conversation.rs`、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制） |
@@ -236,13 +237,15 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
   （`omnicrawl/ui/`、`main.py`）保留为迁移期对照，不再是默认入口。
 
 **已实现**：底部单行轮播 HUD（遥测 → 工作区路径 → 留言，各 10s 循环、切换时解密扫描；遥测页是
-`上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s ⁕ 模型 ⁕ THK 推理强度  APR 审批模式  MCP n  QUE n`，与 Python 的
+`上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s ⁕ 模型 ⁕ THK 推理强度  APR 审批模式  MCP n`（**不带 ` QUE n`**，见下文刻意差异），与 Python 的
 `#bottom-carousel` 同款式；不再有顶部两行 HUD，也不再在 HUD 里显示版本号）、
 消息流（用户 `user：` 灰斜标签 + 白色正文 + 左侧青色竖条、思考段暗底灰字斜体并折叠为最新五行、
 助手正文 `◇` 且**走对映层 Markdown + LaTeX 渲染**（标题/加粗/列表/围栏代码高亮/行内代码青字暗底，
 `$E=mc^2$` 一律先归一成 Unicode；刻意差异：`◇ ` 前缀在渲染后捕到首行行首，Python 是把它拼进
-Markdown 源码，因此 Python 那边「首行就是标题」解析不出来，Rust 这边能）、无边框工具卡（`●` 状态点随状态着色 + 缩进正文，正文由对映层生成：文件变更预览 / 
+Markdown 源码，因此 Python 那边「首行就是标题」解析不出来，Rust 这边能）、**底部遥测不再显示 ` QUE n`**
+（排队消息数；队列本身仍在输入框上方按需展示，队列预览行数用的还是同一组对映层常量）、无边框工具卡（`●` 状态点随状态着色 + 缩进正文，正文由对映层生成：文件变更预览 / 
 隐藏类正文为空 / 超宽行折行，头尾采样限五行但文件变更工具豁免）、右侧 1 格细滚动条、
+**鼠标拖选复制**（拖过的地方反显高亮，松手写系统剪切板并提示「已复制 N 行」；`Ctrl+C` 也能复制当前选区，`Esc` 只清选区；按住 Shift 拖选交给终端自己处理），
 会话流内的运行状态行（Braille spinner + `[ ESC ]`））、
 悬浮圆角输入卡（上方留一行、框内左右各缩进 4 格；空输入显示占位文案 `› 输入消息或 / 命令`，
 五行上限、超出后随光标滚动）、任务清单条（`▣/▢` 无表头）、
@@ -309,7 +312,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 一级项 | 状态 | 说明 |
 | --- | --- | --- |
 | 模型 | 已实现（离线版） | 候选 = config.toml 的 profiles + models.toml 条目合成的渠道（`load_channel_configuration`），显示渠道名、取值是渠道 key；选定后写 `llm.active_model`（legacy 配置写 `llm.model`）并把模型 id + 整条渠道（Provider/协议/基地址/凭据变量名）推给内核，本会话即刻生效。**未迁**：Python 那套双列选择器（左列渠道 + 右列远端自动发现的模型） |
-| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名称 / Provider / 请求协议 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / User-Agent（可选） / 启用，标签与字段口径对齐 Python 渠道编辑器）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时再把它注入子进程环境。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空走环境变量——用户确认的差异） |
+| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名称 / Provider / 请求协议 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / User-Agent（可选） / 启用，标签与字段口径对齐 Python 渠道编辑器）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时再把它注入子进程环境。**模型 ID 自动检测的凭据**：先读 `api_key_env` 指向的环境变量，没设时退回该行的内联密钥（与 config 层 `ProviderProfile::resolve_api_key` 同口径；只把密钥留在 config.toml 的用户也能拉到模型列表）。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空走环境变量——用户确认的差异） |
 | 上下文 | 已实现 | 两个下拉：上下文长度（32K–2048K，折算到最近档）与压缩阈值（5%–95%，5% 一档，按当前窗口换算 Token）；写回 `llm.context_window_tokens` 与 `context_compaction.trigger_context_*` |
 | 推理强度 | 已实现 | 六档（关闭/低/中/高/超高/最大）；写回 `llm.reasoning_effort`，并经 `session.settings` 推给内核的生成选项 |
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |

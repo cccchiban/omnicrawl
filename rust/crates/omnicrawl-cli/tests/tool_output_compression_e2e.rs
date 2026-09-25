@@ -325,6 +325,66 @@ fn long_tool_output_is_compressed_before_next_request() {
 }
 
 #[test]
+fn compression_model_key_is_resolved_through_the_profile_connection() {
+    // 回归：`model_key` 形如 `profile/model_id` 时，要按模型切换同一套口径解析出
+    // 真正的 model 名与连接（以前把整个 key 当模型名发给上游，上游会回
+    // 「模型不存在或当前账号无权使用该模型」）。
+    let server = StubServer::spawn();
+    let config = write_config_with_profile("profile-key", &server.addr, 100);
+    let mut kernel = Kernel::spawn(&config);
+    kernel.initialize(model_config(&server));
+
+    let long_output = "日志行内容".repeat(200);
+    kernel.run_turn("看一下日志", &long_output);
+
+    let bodies = server.bodies();
+    let compression = bodies
+        .iter()
+        .find(|body| body.to_string().contains("<<<TOOL_OUTPUT_START>>>"))
+        .expect("应当发出一次压缩请求");
+    assert_eq!(
+        compression["model"].as_str(),
+        Some("sub-model-x"),
+        "压缩请求应带解析后的模型名，而不是 `stub/sub-model-x` 这个 key：{compression}"
+    );
+    // 连接也跟着被选中的 Profile 走（请求真到了本回环服务端才可能被记下来）。
+    assert!(
+        compression["messages"].is_array(),
+        "压缩请求应是一份正常对话：{compression}"
+    );
+    std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
+}
+
+/// 写一份「有 [llm] Profile，压缩选择用 `profile/model_id` 形式」的 config.toml。
+fn write_config_with_profile(name: &str, base_url: &str, min_chars: usize) -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("omnicrawl-compress-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("建临时配置目录");
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "version = 2\n\
+             [llm]\n\
+             [llm.active_model]\n\
+             source = \"detected\"\n\
+             profile = \"stub\"\n\
+             model_id = \"main-model\"\n\
+             protocol = \"openai_chat_completions\"\n\
+             [llm.profiles.stub]\n\
+             provider = \"openai\"\n\
+             base_url = \"{base_url}\"\n\
+             api_key = \"{TEST_KEY}\"\n\
+             [tool_output_compression]\nenabled = true\nmodel_key = \"stub/sub-model-x\"\n\
+             thinking_enabled = false\nreasoning_effort = \"high\"\nmin_chars = {min_chars}\n\
+             max_input_chars = 4000\nmax_output_chars = 400\ntimeout_seconds = 5\n"
+        ),
+    )
+    .expect("写配置失败");
+    path
+}
+
+#[test]
 fn short_tool_output_is_left_alone() {
     let server = StubServer::spawn();
     // 门槛高于观察长度：不该发出压缩请求。

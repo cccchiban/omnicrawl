@@ -52,8 +52,13 @@
 模型没把文本压小、返回工具调用或空文本、请求失败都保留原文；采纳时观察正文换成精简文本，
 `full_output` 换成「已压缩：<原始> → <精简> 字符，模型 <name>」的展示文案。
 
-连接沿用一次 `initialize.model` 给的那条，只把 model 名换成 `[tool_output_compression].model_key`
-（与子任务的 `child_model_config` 同一做法）；配置文件路径与其它配置一致：显式路径 > `AI_CONFIG_FILE` > 用户目录。
+连接与模型按模型切换同一套口径解析：`model_key` 支持自定义 key/alias、`profile/model_id`
+与裸 model_id，走 `apply_model_selection` 一并把模型名、基地址、协议与凭据换成被选中的那条
+（以前是把整个 key 当模型名直接发给上游，`channel-2/Qwen/…` 这种带 Profile 前缀的 key 会被
+上游回「模型不存在或当前账号无权使用该模型」）。**凭据**取配置解析出来的那个（与 config 层
+同口径：环境变量优先、其次内联密钥）；配置里没有可读的 `[llm]` 时退回「帧里那条连接 +
+选择当模型名」，与子任务的 `child_model_config` 同一做法。配置文件路径与其它配置一致：
+显式路径 > `AI_CONFIG_FILE` > 用户目录。
 
 ## 工具输出预算与落盘归档
 

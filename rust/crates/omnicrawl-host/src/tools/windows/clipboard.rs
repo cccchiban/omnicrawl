@@ -107,7 +107,11 @@ unsafe fn read_utf16_until_nul(pointer: *const u16) -> String {
     String::from_utf16_lossy(std::slice::from_raw_parts(pointer, length))
 }
 
-fn write_clipboard_text(text: &str) -> Result<(), ToolError> {
+/// 写入 Unicode 文本（`CF_UNICODETEXT`）。
+///
+/// 除 `windows_clipboard` 工具外，TUI 的「鼠标拖选即复制」也复用这个入口：
+/// 同为进程内 Win32 调用，不另起子进程，中文/emoji 都不会因编码猜错而乱码。
+pub fn write_clipboard_text(text: &str) -> Result<(), ToolError> {
     let mut data: Vec<u16> = text.encode_utf16().collect();
     data.push(0);
     let bytes = data.len() * std::mem::size_of::<u16>();

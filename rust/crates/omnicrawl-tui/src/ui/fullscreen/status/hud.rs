@@ -315,10 +315,9 @@ pub fn status_summary_text(
     rendered.push(" MCP ", TEXT_MUTED);
     rendered.push(&mcp_enabled_count.max(0).to_string(), &bold_primary);
     rendered.push(" ", TEXT_MUTED);
-    // QUE 段：段内自带前后空格，内容紧排。
-    rendered.push(" QUE ", TEXT_MUTED);
-    rendered.push(&pending_count.max(0).to_string(), &bold_primary);
-    rendered.push(" ", TEXT_MUTED);
+    // 刻意差异：Python 这里还会接一段 ` QUE n`（排队消息数），Rust 侧不需要它，
+    // 故不再渲染（`pending_count` 仍传入，保留签名与 Python 对映位）。
+    let _ = pending_count;
     rendered
 }
 
@@ -401,7 +400,8 @@ mod tests {
         assert!(manual.plain().contains("MAN"));
         assert!(manual.plain().contains("THK HIGH"));
         assert!(manual.plain().contains("MCP 2"));
-        assert!(manual.plain().contains("QUE 1"));
+        // 刻意差异：底部遥测不再显示 ` QUE n`（排队消息数）。
+        assert!(!manual.plain().contains("QUE"), "{}", manual.plain());
         let chinese = status_summary_text("人工确认", 0, 0, "", "");
         assert!(chinese.plain().contains("MAN"));
         let auto = status_summary_text("完全自动批准", 0, 0, "", "");

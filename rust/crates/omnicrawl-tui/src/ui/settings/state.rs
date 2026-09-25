@@ -1109,6 +1109,8 @@ pub enum SettingsEvent {
         provider: String,
         protocol: String,
         base_url: String,
+        /// 渠道的内联密钥（可能为空）：环境变量没设时用它发探测请求。
+        api_key: String,
         api_key_env: String,
         user_agent: String,
     },
@@ -3342,6 +3344,7 @@ impl SettingsState {
                     provider: form.row.provider.clone(),
                     protocol: form.row.protocol.clone(),
                     base_url: form.row.base_url.clone(),
+                    api_key: form.row.api_key.clone(),
                     api_key_env: form.row.api_key_env.clone(),
                     user_agent: form.row.user_agent.clone(),
                 });

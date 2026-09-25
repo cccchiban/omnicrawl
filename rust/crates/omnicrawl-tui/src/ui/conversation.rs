@@ -89,7 +89,16 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
     let text = text_area(area);
     let lines = display_lines(state, text.width);
-    let window = window(&lines, text.height as usize, state.scroll_from_bottom);
+    let (start, end) = window_range(lines.len(), text.height as usize, state.scroll_from_bottom);
+    // 可见窗口内套上选区反显（鼠标拖选）；没有选区时就是原行。
+    let window: Vec<Line<'static>> = lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, rendered)| match selection_columns(state, start + offset) {
+            Some((from, to)) => highlight_columns(rendered.line.clone(), from, to),
+            None => rendered.line.clone(),
+        })
+        .collect();
     frame.render_widget(Paragraph::new(window), text);
     render_scrollbar(
         frame,
@@ -98,6 +107,125 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
         text.height as usize,
         state.scroll_from_bottom,
     );
+}
+
+/// 把行内 `[from, to)` 显示列区间染上反显样式（选区高亮）。
+///
+/// 按字符逐个判定并重新合并同色段：宽字符占两列时整字选中/不选中，不会截半个字。
+fn highlight_columns(line: Line<'static>, from: usize, to: usize) -> Line<'static> {
+    if from >= to {
+        return line;
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buffer = String::new();
+    let mut buffer_style: Option<Style> = None;
+    let mut column = 0usize;
+    for span in line.spans {
+        for character in span.content.chars() {
+            let width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+            let selected = column >= from && column < to;
+            let style = if selected {
+                span.style.add_modifier(Modifier::REVERSED)
+            } else {
+                span.style
+            };
+            if buffer_style != Some(style) {
+                if !buffer.is_empty() {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut buffer),
+                        buffer_style.unwrap_or_default(),
+                    ));
+                }
+                buffer_style = Some(style);
+            }
+            buffer.push(character);
+            if width > 0 {
+                column += width;
+            }
+        }
+    }
+    if !buffer.is_empty() {
+        spans.push(Span::styled(buffer, buffer_style.unwrap_or_default()));
+    }
+    Line::from(spans)
+}
+
+/// 选区与某条显示行的列交集（`None` = 这一行没有选区）。
+///
+/// 单行选区取两端之间；跨行时首行取「起点列到行尾」、中间行整行、末行取「行首到终点列」。
+fn selection_columns(state: &AppState, index: usize) -> Option<(usize, usize)> {
+    let selection = state.selection()?;
+    if selection.is_empty() {
+        return None;
+    }
+    let ((start_line, start_col), (end_line, end_col)) = selection.normalized();
+    if index < start_line || index > end_line {
+        return None;
+    }
+    if start_line == end_line {
+        return (end_col > start_col).then_some((start_col, end_col));
+    }
+    if index == start_line {
+        Some((start_col, usize::MAX))
+    } else if index == end_line {
+        Some((0, end_col.max(1)))
+    } else {
+        Some((0, usize::MAX))
+    }
+}
+
+/// 按显示列切出一行纯文本：`from..to`（显示列，`to` 传 `usize::MAX` 表示到行尾）。
+fn slice_columns(line: &Line<'static>, from: usize, to: usize) -> String {
+    let mut text = String::new();
+    let mut column = 0usize;
+    for span in &line.spans {
+        for character in span.content.chars() {
+            let width = unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
+            if column >= from && column < to {
+                text.push(character);
+            }
+            if width > 0 {
+                column += width;
+            }
+            if column >= to {
+                break;
+            }
+        }
+        if column >= to {
+            break;
+        }
+    }
+    text.trim_end().to_string()
+}
+
+/// 把选区还原成纯文本（写剪切板用）：逐行按显示列切片、行尾空白去掉、`\n` 连接。
+///
+/// 两端空行丢掉、中间空行保留；选出来的全是空白时返回 `None`（不往剪切板写空内容）。
+pub fn selection_text(state: &AppState, width: u16) -> Option<String> {
+    let selection = state.selection()?;
+    if selection.is_empty() {
+        return None;
+    }
+    let ((start_line, start_col), (end_line, end_col)) = selection.normalized();
+    let lines = display_lines(state, width);
+    if start_line >= lines.len() {
+        return None;
+    }
+    let last = end_line.min(lines.len().saturating_sub(1));
+    let mut parts: Vec<String> = Vec::new();
+    for index in start_line..=last {
+        let from = if index == start_line { start_col } else { 0 };
+        let to = if index == last { end_col.max(1) } else { usize::MAX };
+        parts.push(slice_columns(&lines[index].line, from, to));
+    }
+    while parts.first().is_some_and(|line| line.trim().is_empty()) {
+        parts.remove(0);
+    }
+    while parts.last().is_some_and(|line| line.trim().is_empty()) {
+        parts.pop();
+    }
+    let text = parts.join("\n");
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// 会话文本区：扣掉左右内边距与右缘滚动条格（对映 CSS `#conversation { padding: 0 1 }`
@@ -201,7 +329,7 @@ pub fn display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
 fn runtime_status_line(state: &AppState, width: usize) -> Option<DisplayLine> {
     let text = match (&state.status, state.turn.is_running(), state.paused) {
         (Some(message), _, _) => message.clone(),
-        (None, true, _) => "正在调用（跟随最新记录）".to_string(),
+        (None, true, _) => "正在调用".to_string(),
         (None, false, true) => "已暂停：输入新消息即可继续".to_string(),
         (None, false, false) => return None,
     };
@@ -306,12 +434,24 @@ pub fn hit_test(
 ) -> Option<LineHit> {
     let text = text_area(area);
     let lines = display_lines(state, text.width);
+    let index = line_index(state, area, scroll_from_bottom, row)?;
+    lines.get(index).and_then(|line| line.hit.clone())
+}
+
+/// 会话区第 `row` 行（区内相对行号）对应的显示行下标；越界返回 `None`。
+///
+/// 与 [`render`] 同一套文本区宽度与滚动计算，因此鼠标命中、选区和绘制不会错位。
+pub fn line_index(
+    state: &AppState,
+    area: Rect,
+    scroll_from_bottom: usize,
+    row: usize,
+) -> Option<usize> {
+    let text = text_area(area);
+    let lines = display_lines(state, text.width);
     let (start, end) = window_range(lines.len(), text.height as usize, scroll_from_bottom);
     let index = start.checked_add(row)?;
-    if index >= end {
-        return None;
-    }
-    lines.get(index).and_then(|line| line.hit.clone())
+    (index < end).then_some(index)
 }
 
 /// 正文采样：超出上限时保留首尾各两行有效行，中间以可点击提示行代替。
@@ -774,6 +914,68 @@ mod tests {
             .collect();
         assert_eq!(bodies.len(), 1, "同一回合的正文应累加到一条记录");
         assert_eq!(bodies[0], "第一段第二段第三段");
+    }
+
+    #[test]
+    fn slice_columns_counts_display_width_for_cjk() {
+        let line = Line::from(vec![Span::raw("中文abc")]);
+        // '中' 占列 0-1、'文' 2-3、'a' 4：取 0..4 → 两个汉字
+        assert_eq!(slice_columns(&line, 0, 4), "中文");
+        assert_eq!(slice_columns(&line, 4, usize::MAX), "abc");
+        assert_eq!(slice_columns(&line, 2, 4), "文");
+    }
+
+    #[test]
+    fn selection_text_joins_lines_and_stops_at_the_last_column() {
+        let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.apply(
+            &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
+                // 空行分段：Markdown 会把段内单换行当软换行合并成空格（与 Rich 一致）。
+                text: "第一行\n\n第二行\n\n第三行".to_string(),
+            }),
+            Instant::now(),
+        );
+        // 跨行选区：从「第一行」所在显示行的行首到「第三行」所在行的行尾
+        // （前面还有用户消息的标签行与正文行，所以按内容定位而不是写死下标）。
+        let shown = plain(&display_lines(&state, 40));
+        let start = shown
+            .iter()
+            .position(|line| line.contains("第一行"))
+            .expect("应有第一行");
+        let end = shown
+            .iter()
+            .position(|line| line.contains("第三行"))
+            .expect("应有第三行");
+        state.begin_selection(start, 0);
+        state.extend_selection(end, 99);
+        let text = selection_text(&state, 40).expect("跨行选区应抽出文本");
+        assert!(text.contains("第一行"), "{text:?}");
+        assert!(text.contains("第二行"), "{text:?}");
+        assert!(text.contains("第三行"), "{text:?}");
+        assert_eq!(text.lines().count(), 3, "{text:?}");
+        // 只按了一下没拖动：不产出文本（也就不会往剪切板写空内容）。
+        state.clear_selection();
+        state.begin_selection(1, 3);
+        assert!(selection_text(&state, 40).is_none());
+    }
+
+    #[test]
+    fn highlight_marks_only_the_selected_columns() {
+        let line = Line::from(vec![Span::raw("abcdef")]);
+        let marked = highlight_columns(line, 2, 4);
+        let reversed: String = marked
+            .spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|span| span.content.to_string())
+            .collect();
+        assert_eq!(reversed, "cd");
+        // 空区间原样返回（不拆 span）。
+        let same = highlight_columns(Line::from(vec![Span::raw("abc")]), 3, 3);
+        assert_eq!(same.spans.len(), 1);
+        assert_eq!(same.spans[0].content.to_string(), "abc");
+        assert!(!same.spans[0].style.add_modifier.contains(Modifier::REVERSED));
     }
 
     /// 起一个带正文的工具卡（`read` 之外的工具才有正文）。

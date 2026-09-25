@@ -9,6 +9,8 @@
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
 use omnicrawl_config::features::tool_output_compression::load_tool_output_compression_config;
+use omnicrawl_config::models::llm::load_llm_config;
+use omnicrawl_config::models::llm_multi::apply_model_selection;
 use omnicrawl_controllers::compression as compression_logic;
 use omnicrawl_ipc::bridge::KernelModelConfig;
 use omnicrawl_llm::{ChatRequestInput, DiscardSink, ModelRuntime};
@@ -17,17 +19,62 @@ use omnicrawl_protocol::{
 };
 use std::collections::BTreeMap;
 
-use crate::session::{build_model_runtime_with_key, read_api_key};
+use crate::session::build_model_runtime_with_key;
 
 pub struct KernelCompressor {
     runtime: Box<dyn ModelRuntime>,
     model: String,
+    /// 解析后的 Profile：只用于 prompt-cache 身份（与 Python 同一份字段）。
+    profile: String,
     system_prompt: String,
     min_chars: usize,
     max_input_chars: usize,
     max_output_chars: usize,
     timeout_seconds: f64,
     options: GenerationOptions,
+}
+
+/// 解析压缩模型：返回（要用的内核模型连接, Profile id, API Key）。
+///
+/// 主路径与模型切换同一套口径：`apply_model_selection` 支持自定义 key/alias、
+/// `profile/model_id` 与裸 model_id，能一并把基地址/协议/凭据换成被选中的那条。
+/// 以前是把整个 key 当模型名直接发给上游，`channel-2/Qwen/…` 这种带 Profile 前缀的
+/// key 就会被上游回「模型不存在或当前账号无权使用该模型」。
+///
+/// 配置里没有可读的 `[llm]`（极简配置/测试）或解析结果不可用时，退回「帧里那条连接 +
+/// 选择当模型名」，与改动前的行为一致。
+fn resolve_compression_model(
+    env: &ConfigEnvironment,
+    model: &KernelModelConfig,
+    selection: &str,
+) -> (KernelModelConfig, String, String) {
+    let resolved = load_llm_config(env).and_then(|base| apply_model_selection(env, &base, selection));
+    if let Ok(resolved) = resolved {
+        if !resolved.model.trim().is_empty() && !resolved.base_url.trim().is_empty() {
+            let mut child = model.clone(); // 超时/思考开关等旁路参数沿用主模型通道
+            child.model = resolved.model.clone();
+            child.provider = resolved.provider.clone();
+            child.protocol = resolved.protocol.clone();
+            child.base_url = resolved.base_url.clone();
+            child.api_key_env = resolved.api_key_env.clone();
+            child.user_agent = resolved.user_agent.clone();
+            child.system_prompt = String::new();
+            child.tools = Vec::new();
+            // 凭据：配置解析出来的那个（与 config 层同口径：环境变量优先、其次内联密钥）。
+            let api_key = if !resolved.api_key.trim().is_empty() {
+                resolved.api_key.clone()
+            } else {
+                std::env::var(&child.api_key_env).unwrap_or_default()
+            };
+            return (child, resolved.profile_id.clone(), api_key);
+        }
+    }
+    let mut child = model.clone();
+    child.model = selection.to_string();
+    child.system_prompt = String::new();
+    child.tools = Vec::new();
+    let api_key = std::env::var(&child.api_key_env).unwrap_or_default();
+    (child, String::new(), api_key)
 }
 
 impl KernelCompressor {
@@ -40,13 +87,11 @@ impl KernelCompressor {
         }
 
         let selection = config.model_key.trim().to_string();
-        let mut child = model.clone();
-        if !selection.is_empty() {
-            child.model = selection.clone();
+        let (child, profile, api_key) = resolve_compression_model(&env, model, &selection);
+        if api_key.trim().is_empty() {
+            eprintln!("[kernel] 工具输出压缩缺少凭据（{selection}），已跳过压缩。");
+            return None;
         }
-        child.system_prompt = String::new();
-        child.tools = Vec::new();
-        let api_key = read_api_key(&child).ok()?;
         let runtime = build_model_runtime_with_key(&child, api_key).ok()?;
 
         let effort = compression_logic::effective_reasoning_effort(
@@ -60,11 +105,8 @@ impl KernelCompressor {
 
         Some(Self {
             runtime,
-            model: if selection.is_empty() {
-                child.model.clone()
-            } else {
-                selection
-            },
+            model: child.model.clone(),
+            profile,
             system_prompt: compression_logic::system_prompt_text(),
             min_chars: config.min_chars.max(0) as usize,
             max_input_chars: config.max_input_chars.max(0) as usize,
@@ -78,7 +120,6 @@ impl KernelCompressor {
     pub fn should_compress(&self, tool_name: &str, output: &str) -> bool {
         compression_logic::should_compact(tool_name, output, self.min_chars)
     }
-
     /// 单次压缩；模型返回工具调用或空文本、请求失败都返回 `Err`，由调用方保留原文。
     pub fn compress(
         &self,
@@ -99,6 +140,7 @@ impl KernelCompressor {
                 "scope".to_string(),
                 "omnicrawl-tool-output-compression".to_string(),
             ),
+            ("profile".to_string(), self.profile.clone()),
             ("model".to_string(), self.model.clone()),
         ]);
         let input = ChatRequestInput {

@@ -7,7 +7,7 @@
 #[cfg(windows)]
 mod args;
 #[cfg(windows)]
-mod clipboard;
+pub mod clipboard;
 #[cfg(windows)]
 mod control;
 #[cfg(windows)]

@@ -1467,19 +1467,79 @@ impl App {
         }
     }
 
-    /// 鼠标事件：滚轮滚动消息区，左键按落点分派到排队预览或消息流。
+    /// 鼠标事件：滚轮滚动消息区，左键拖选复制、按落点分派到排队预览或消息流。
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         // 提问面板开着时不允许点击展开/撤回：回填内容会被提问模式吞掉
         // （与 Python `_withdraw_pending_input` 的守卫同源）。
         let interactive = self.state.waiting().is_none();
+        // 按住 Shift 的拖选留给终端自己做（Windows Terminal 支持），否则会与应用抢选择。
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
             MouseEventKind::Moved => self.update_conversation_hover(mouse.column, mouse.row),
             MouseEventKind::ScrollUp => self.state.scroll_by(-WHEEL_STEP),
             MouseEventKind::ScrollDown => self.state.scroll_by(WHEEL_STEP),
             MouseEventKind::Down(MouseButton::Left) if interactive => {
+                if let Some(point) = self.conversation_point(mouse.column, mouse.row) {
+                    if !shift {
+                        self.state.begin_selection(point.0, point.1);
+                    }
+                }
                 self.handle_click(mouse.column, mouse.row);
             }
+            MouseEventKind::Drag(MouseButton::Left) if interactive && !shift => {
+                if let Some(point) = self.conversation_point(mouse.column, mouse.row) {
+                    self.state.extend_selection(point.0, point.1);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) if interactive => self.finish_selection(),
             _ => {}
+        }
+    }
+
+    /// 屏幕坐标 → 会话流的（显示行下标, 行内显示列）；不在会话文本区时返回 `None`。
+    ///
+    /// 与渲染、命中测试共用[`ui::layout`]与会话区换算，滚动/折行/宽字符都不会错位。
+    fn conversation_point(&self, column: u16, row: u16) -> Option<(usize, usize)> {
+        let areas = ui::layout(self.viewport, &self.state);
+        let area = areas.conversation;
+        if !area.contains(Position::new(column, row)) {
+            return None;
+        }
+        let relative = (row - area.y) as usize;
+        let line = conversation::line_index(
+            &self.state,
+            area,
+            self.state.scroll_from_bottom,
+            relative,
+        )?;
+        let text = conversation::text_area(area);
+        Some((line, usize::from(column.saturating_sub(text.x))))
+    }
+
+    /// 松左键：有选区就写剪切板并清掉高亮；没拖动（空选区）就当普通点击。
+    fn finish_selection(&mut self) {
+        let Some(selection) = self.state.selection() else {
+            return;
+        };
+        if selection.is_empty() {
+            self.state.clear_selection();
+            return;
+        }
+        let width = conversation::text_area(ui::layout(self.viewport, &self.state).conversation).width;
+        let Some(text) = conversation::selection_text(&self.state, width) else {
+            self.state.clear_selection();
+            return;
+        };
+        let rows = text.lines().count();
+        match crate::clipboard::copy_text(&text) {
+            Ok(()) => {
+                self.state.clear_selection();
+                self.state
+                    .notice(format!("已复制 {rows} 行到剪切板。"));
+            }
+            Err(error) => self.state.notice(format!(
+                "复制失败：{error}（可按住 Shift 拖选，用终端自带的复制）"
+            )),
         }
     }
 
@@ -1594,7 +1654,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('c') if ctrl => {
-                self.state.composer.clear();
+                // 有选区时 Ctrl+C 复制（终端惯例）；否则维持「清空输入框」。
+                if self.state.selection().is_some() {
+                    self.finish_selection();
+                } else {
+                    self.state.composer.clear();
+                }
                 return;
             }
             KeyCode::Char('q') if ctrl => {
@@ -1626,7 +1691,10 @@ impl App {
             KeyCode::Char('j') if ctrl => self.state.composer.newline(),
             KeyCode::Char('l') if ctrl => self.state.records.clear(),
             KeyCode::Esc => {
-                if self.state.turn.is_running() {
+                // 先清选区（有选区时 Esc 不该顺手取消回合）。
+                if self.state.selection().is_some() {
+                    self.state.clear_selection();
+                } else if self.state.turn.is_running() {
                     self.cancel_turn();
                 } else {
                     self.state.composer.clear();
@@ -2319,6 +2387,7 @@ impl App {
                 provider,
                 protocol,
                 base_url,
+                api_key,
                 api_key_env,
                 user_agent,
             }) => self.start_channel_model_discovery(
@@ -2326,6 +2395,7 @@ impl App {
                 provider,
                 protocol,
                 base_url,
+                api_key,
                 api_key_env,
                 user_agent,
             ),
@@ -2334,7 +2404,9 @@ impl App {
 
     /// 后台自动检测一个渠道的模型列表（网络 I/O 不能占用界面线程）。
     ///
-    /// 凭据只从环境变量读（渠道里存的是变量名）；协议字符串先解析成内核枚举，
+    /// 凭据优先取 `api_key_env` 指向的环境变量，没设时退回渠道里的内联密钥
+    /// （渠道页新录入的那一行；否则只把密钥留在 config.toml 的用户会看到
+    /// 「缺少 API Key，无法发现模型」）；协议字符串先解析成内核枚举，
     /// 无法识别或缺少凭据时直接把原因回填给面板。
     fn start_channel_model_discovery(
         &mut self,
@@ -2342,10 +2414,15 @@ impl App {
         provider: String,
         protocol: String,
         base_url: String,
+        api_key: String,
         api_key_env: String,
         user_agent: String,
     ) {
-        let api_key = std::env::var(&api_key_env).unwrap_or_default();
+        // 与 config 层 `ProviderProfile.resolve_api_key` 同口径：环境变量优先，其次内联密钥。
+        let api_key = match std::env::var(&api_key_env) {
+            Ok(value) if !value.trim().is_empty() => value,
+            _ => api_key.trim().to_string(),
+        };
         let timeout = (self.options.tool_timeout_seconds as f64).clamp(1.0, 10.0);
         let (sender, receiver) = mpsc::channel::<ChannelModelsResult>();
         self.channel_models_task = Some(receiver);

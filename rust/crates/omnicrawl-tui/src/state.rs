@@ -369,6 +369,40 @@ impl Composer {
     }
 }
 
+/// 会话流的文本选区（鼠标拖选）。
+///
+/// 行下标是全部显示行（`ui::conversation::display_lines`）的下标，列是显示列宽，
+/// 因此滚动窗口、软折行与宽字符（CJK）都不会错位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextSelection {
+    /// 按下左键时的位置。
+    pub anchor: (usize, usize),
+    /// 当前拖到的位置（与 `anchor` 构成选区两端）。
+    pub head: (usize, usize),
+}
+
+impl TextSelection {
+    /// 归一化后的（起点, 终点）：阅读顺序，起点永远不在终点之后。
+    pub fn normalized(self) -> ((usize, usize), (usize, usize)) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+
+    /// 只按了一下没拖动（空选区）时为真。
+    pub fn is_empty(self) -> bool {
+        self.anchor == self.head
+    }
+
+    /// 选区跨的显示行数（单行选区为 1）。
+    pub fn rows(self) -> usize {
+        let ((start, _), (end, _)) = self.normalized();
+        end.saturating_sub(start) + 1
+    }
+}
+
 pub struct AppState {
     pub project: String,
     pub model: String,
@@ -420,6 +454,9 @@ pub struct AppState {
     carousel_rand: Rng,
     /// 留言页候选（编译期内嵌的 `carousel_messages.txt`，启动期读一次）。
     carousel_lines: Vec<String>,
+    /// 鼠标拖选的文本区间（`None` = 没有选区）：渲染层按它加反显高亮，
+    /// 松手时由宿主抽出文本写入剪切板。坐标是「`display_lines` 行下标 + 行内显示列」。
+    selection: Option<TextSelection>,
     /// 会话流末尾 `[ ESC ]` 提示是否被鼠标悬停（悬停时染成淡黄色）。
     pub runtime_esc_hover: bool,
     /// `/sessions` 在输入框上方打开的可选列表。
@@ -459,6 +496,7 @@ impl AppState {
             carousel_ready: false,
             carousel_rand: Rng::new(CAROUSEL_SEED),
             carousel_lines: load_carousel_message_lines(),
+            selection: None,
             runtime_esc_hover: false,
             sessions_menu: SessionsMenu::new(),
         };
@@ -765,6 +803,31 @@ impl AppState {
     /// 追加一条系统消息；不改动回合状态。
     pub fn notice(&mut self, message: String) {
         self.records.push(Record::Notice(message));
+    }
+
+    /// 当前文本选区（鼠标拖选）；没有选区时返回 `None`。
+    pub fn selection(&self) -> Option<TextSelection> {
+        self.selection
+    }
+
+    /// 按下左键：开一个新选区的锚点（`line` 为显示行下标，`column` 为行内显示列）。
+    pub fn begin_selection(&mut self, line: usize, column: usize) {
+        self.selection = Some(TextSelection {
+            anchor: (line, column),
+            head: (line, column),
+        });
+    }
+
+    /// 拖动中：把选区的另一端移到新位置。
+    pub fn extend_selection(&mut self, line: usize, column: usize) {
+        if let Some(selection) = self.selection.as_mut() {
+            selection.head = (line, column);
+        }
+    }
+
+    /// 清掉选区（Esc / 点击空白 / 复制完成后）。
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
     }
 
     /// 打开 `/sessions` 的会话选择菜单（输入框上方）。

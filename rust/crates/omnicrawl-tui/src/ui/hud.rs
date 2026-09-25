@@ -79,7 +79,8 @@ mod tests {
         assert!(text.contains("THK HIGH"), "{text}");
         assert!(text.contains("APR REV"), "{text}");
         assert!(text.contains("MCP 2"), "{text}");
-        assert!(text.contains("QUE 1"), "{text}");
+        // 刻意差异：底部遥测不再带 ` QUE n`（排队消息数）。
+        assert!(!text.contains("QUE"), "{text}");
         assert!(!text.contains('│'), "底栏改用 ⁕ 分隔，不再用竖线：{text}");
     }
 
