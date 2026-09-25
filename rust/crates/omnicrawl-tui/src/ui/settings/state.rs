@@ -329,6 +329,9 @@ pub struct ChannelRow {
     pub provider: String,
     pub protocol: String,
     pub base_url: String,
+    /// 渠道的内联密钥。只用于「是否已配置 + 掩码显示」与保存时的写回：
+    /// 界面从不渲染明文（`channel_field_value` 走 [`mask_api_key`]），输入态也从空开始。
+    pub api_key: String,
     pub api_key_env: String,
     pub model_id: String,
     pub user_agent: String,
@@ -342,6 +345,7 @@ pub enum ChannelField {
     Provider,
     Protocol,
     BaseUrl,
+    ApiKey,
     ApiKeyEnv,
     ModelId,
     UserAgent,
@@ -350,11 +354,12 @@ pub enum ChannelField {
 
 impl ChannelField {
     /// 表单里的字段顺序。
-    pub const ORDER: [ChannelField; 8] = [
+    pub const ORDER: [ChannelField; 9] = [
         ChannelField::Name,
         ChannelField::Provider,
         ChannelField::Protocol,
         ChannelField::BaseUrl,
+        ChannelField::ApiKey,
         ChannelField::ApiKeyEnv,
         ChannelField::ModelId,
         ChannelField::UserAgent,
@@ -363,13 +368,14 @@ impl ChannelField {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Name => "渠道名",
+            Self::Name => "渠道名称",
             Self::Provider => "Provider",
-            Self::Protocol => "协议",
-            Self::BaseUrl => "基地址",
+            Self::Protocol => "请求协议",
+            Self::BaseUrl => "Base URL",
+            Self::ApiKey => "API Key",
             Self::ApiKeyEnv => "API Key 环境变量",
             Self::ModelId => "模型 ID",
-            Self::UserAgent => "User-Agent",
+            Self::UserAgent => "User-Agent（可选）",
             Self::Enabled => "启用",
         }
     }
@@ -3344,7 +3350,10 @@ impl SettingsState {
             }
             field => {
                 let mut composer = Composer::default();
-                composer.insert(&channel_field_value(&form.row, field));
+                // API Key 的输入态从空开始：既不回显明文，也让「留空=不改动」成为默认动作。
+                if field != ChannelField::ApiKey {
+                    composer.insert(&channel_field_value(&form.row, field));
+                }
                 form.dropdown = None;
                 form.input = Some(composer);
             }
@@ -3862,6 +3871,8 @@ pub fn channel_field_value(row: &ChannelRow, field: ChannelField) -> String {
         ChannelField::Provider => row.provider.clone(),
         ChannelField::Protocol => row.protocol.clone(),
         ChannelField::BaseUrl => row.base_url.clone(),
+        // 明文永不进界面：只给出「是否已配置 + 末 4 位」的掩码。
+        ChannelField::ApiKey => mask_api_key(&row.api_key),
         ChannelField::ApiKeyEnv => row.api_key_env.clone(),
         ChannelField::ModelId => row.model_id.clone(),
         ChannelField::UserAgent => row.user_agent.clone(),
@@ -3882,6 +3893,13 @@ fn set_channel_field(row: &mut ChannelRow, field: ChannelField, value: String) {
         ChannelField::Provider => row.provider = value,
         ChannelField::Protocol => row.protocol = value,
         ChannelField::BaseUrl => row.base_url = value,
+        // 留空 = 不改动（与 TTS 面板同一套口径，避免误触把磁盘上的密钥抹掉）。
+        ChannelField::ApiKey => {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                row.api_key = trimmed.to_string();
+            }
+        }
         ChannelField::ApiKeyEnv => row.api_key_env = value,
         ChannelField::ModelId => row.model_id = value,
         ChannelField::UserAgent => row.user_agent = value,
@@ -4006,6 +4024,7 @@ mod tests {
                 .map(|protocol| (*protocol).to_string())
                 .unwrap_or_default(),
             base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-test-key".to_string(),
             api_key_env: "EXAMPLE_API_KEY".to_string(),
             model_id: model_id.to_string(),
             user_agent: String::new(),
@@ -4572,8 +4591,8 @@ mod tests {
         state.handle_key(KeyCode::Enter);
         state.handle_key(KeyCode::Enter); // 编辑主渠道
 
-        // 字段顺序：渠道名 / Provider / 协议 / 基地址 / 凭据变量 / 模型 ID / UA / 启用。
-        for _ in 0..5 {
+        // 字段顺序：渠道名 / Provider / 请求协议 / Base URL / API Key / 凭据变量 / 模型 ID / UA / 启用。
+        for _ in 0..6 {
             state.handle_key(KeyCode::Down);
         }
         assert_eq!(
@@ -5477,5 +5496,39 @@ mod tests {
         assert_eq!(state.tts_rows()[TTS_ROW_API_SPEED].value, "1.25");
         state.handle_key(KeyCode::Left);
         assert_eq!(state.tts_rows()[TTS_ROW_API_SPEED].value, "1");
+    }
+
+    #[test]
+    fn channel_api_key_row_masks_and_blank_input_keeps_previous_value() {
+        let mut row = channel_row("probe", "探测渠道", "openai", "gpt-5.2");
+        // 掩码显示：明文永不进界面（只给末 4 位）。
+        assert_eq!(channel_field_value(&row, ChannelField::ApiKey), "****…-key");
+        row.api_key = String::new();
+        assert_eq!(channel_field_value(&row, ChannelField::ApiKey), "（未配置）");
+        // 留空 = 不改动：误触回车不会把磁盘上的密钥抹掉。
+        row.api_key = "sk-keep-me".to_string();
+        set_channel_field(&mut row, ChannelField::ApiKey, "   ".to_string());
+        assert_eq!(row.api_key, "sk-keep-me");
+        // 非空 = 写入新值（对映 Python 渠道编辑器的 API Key 录入）。
+        set_channel_field(&mut row, ChannelField::ApiKey, " sk-new-key ".to_string());
+        assert_eq!(row.api_key, "sk-new-key");
+        assert_eq!(channel_field_value(&row, ChannelField::ApiKey), "****…-key");
+    }
+
+    #[test]
+    fn channel_api_key_field_sits_next_to_the_env_field() {
+        let order = ChannelField::ORDER;
+        assert_eq!(order.len(), 9, "渠道表单字段顺序：{order:?}");
+        let key = order
+            .iter()
+            .position(|field| *field == ChannelField::ApiKey)
+            .expect("表单里应有 API Key 行");
+        assert_eq!(
+            order[key + 1],
+            ChannelField::ApiKeyEnv,
+            "API Key 应紧邻 API Key 环境变量：{order:?}"
+        );
+        assert_eq!(ChannelField::ApiKey.label(), "API Key");
+        assert!(ChannelField::ApiKey.is_text(), "API Key 应是可输入字段");
     }
 }

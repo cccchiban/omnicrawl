@@ -58,6 +58,7 @@ fn channel(key: &str, name: &str, provider: &str, model_id: &str, enabled: bool)
         provider: provider.to_string(),
         protocol: String::new(),
         base_url: "https://api.example.com/v1".to_string(),
+        api_key: "sk-test-key".to_string(),
         api_key_env: "EXAMPLE_API_KEY".to_string(),
         model_id: model_id.to_string(),
         user_agent: String::new(),
@@ -359,8 +360,10 @@ fn channels_page_renders_list_then_form() {
     state.handle_key(KeyCode::Enter); // 进右侧面板
     state.handle_key(KeyCode::Enter); // 编辑选中渠道
     let form = text(&draw(&state, WIDTH, HEIGHT));
-    assert!(form.contains("渠道名：主渠道"), "表单字段：{form}");
+    assert!(form.contains("渠道名称：主渠道"), "表单字段：{form}");
     assert!(form.contains("Provider：openai"), "{form}");
+    // 新增的 API Key 行：只给掩码，明文不进界面。
+    assert!(form.contains("API Key：****…-key"), "密钥行应只显示掩码：{form}");
     assert!(form.contains("模型 ID：gpt-5.2"), "{form}");
     assert!(form.contains("Ctrl+S 保存"), "表单提示：{form}");
 }

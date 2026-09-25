@@ -2748,8 +2748,9 @@ impl App {
 
     /// 保存整份渠道配置：写 config.toml 与 models.toml，并让当前渠道跟着默认渠道走。
     ///
-    /// 界面上的行不带凭据：内联 `api_key` 按 key 从磁盘上的同一条渠道继承，避免保存时
-    /// 把它删掉（`save_channel_configuration` 对空 `api_key` 会移除该字段）。
+    /// 面板里填了新密钥（非空）就用新值，留空则按 key 从磁盘上的同一条渠道继承——
+    /// 既能录入内联 `api_key`（Python 渠道编辑器同能力），也不会因为没碰这一行把它抹掉
+    /// （`save_channel_configuration` 对空 `api_key` 会移除该字段）。
     fn apply_channels(&mut self, rows: &[ChannelRow], default_key: &str) -> Result<String, String> {
         let environment = ConfigEnvironment::from_process();
         let existing = load_channel_configuration(&environment, None, None)
@@ -2759,8 +2760,10 @@ impl App {
             .iter()
             .map(|row| {
                 let mut channel = channel_config_from_row(row);
-                if let Some(previous) = existing.iter().find(|item| item.key == row.key) {
-                    channel.api_key = previous.api_key.clone();
+                if channel.api_key.is_empty() {
+                    if let Some(previous) = existing.iter().find(|item| item.key == row.key) {
+                        channel.api_key = previous.api_key.clone();
+                    }
                 }
                 channel
             })
@@ -4859,6 +4862,8 @@ fn channel_row_from_config(channel: &ChannelConfig) -> ChannelRow {
         provider: channel.provider.clone(),
         protocol: channel.protocol.clone(),
         base_url: channel.base_url.clone(),
+        // 密钥只随行传递（供掩码显示与保存时写回），渲染层只会拿到掩码后的文本。
+        api_key: channel.api_key.clone(),
         api_key_env: channel.api_key_env.clone(),
         model_id: channel.model_id.clone(),
         user_agent: channel.user_agent.clone(),
@@ -4868,7 +4873,8 @@ fn channel_row_from_config(channel: &ChannelConfig) -> ChannelRow {
 
 /// 界面行 → 配置渠道。
 ///
-/// `api_key` 不在界面上（避免凭据进界面状态），保存前由调用方按 key 从磁盘继承。
+/// `api_key` 只在面板里被改过（非空）时才是新值；留空表示「不改动」，由调用方按 key
+/// 从磁盘上的同一条渠道继承（否则会把已配置的密钥抹掉）。
 fn channel_config_from_row(row: &ChannelRow) -> ChannelConfig {
     ChannelConfig {
         key: row.key.trim().to_string(),
@@ -4877,7 +4883,7 @@ fn channel_config_from_row(row: &ChannelRow) -> ChannelConfig {
         provider: row.provider.trim().to_string(),
         protocol: row.protocol.trim().to_string(),
         base_url: row.base_url.trim().to_string(),
-        api_key: String::new(),
+        api_key: row.api_key.trim().to_string(),
         model_id: row.model_id.trim().to_string(),
         enabled: row.enabled,
         api_key_env: row.api_key_env.trim().to_string(),

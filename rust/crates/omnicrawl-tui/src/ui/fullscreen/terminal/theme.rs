@@ -57,33 +57,75 @@ pub const REASONING_TEXT: &str = "bright_black";
 ///
 /// `default` / `ansi_default` 表示终端默认前景，即不设置颜色；`dim` 是样式位
 /// 而非颜色名，映射到 ratatui 的暗色修饰。
+/// Rich 风格串 → ratatui 样式。
+///
+/// 支持词法：修饰符（bold/dim/italic/underline/reverse/strike）、颜色名、`#rrggbb` 与
+/// `rgba(r,g,b,a)`，以及 Rich 的 **`on <颜色>`** 背景语法（`"on #272822"`、
+/// `"cyan on #272822"`）。最后一个很关键：对映层的行内代码与代码块正是用它表达
+/// 「暗底」，若把它当成前景色解析，代码块就变成暗底暗字（彻底看不见）。
 pub fn rich_style(spec: &str) -> Style {
     let mut style = Style::default();
+    // 上一个词是 `on`：下一个颜色落到背景上。
+    let mut background = false;
     for token in spec.split_whitespace() {
-        match token {
-            "bold" => style = style.add_modifier(Modifier::BOLD),
-            "dim" => style = style.add_modifier(Modifier::DIM),
-            "italic" => style = style.add_modifier(Modifier::ITALIC),
-            "underline" => style = style.add_modifier(Modifier::UNDERLINED),
-            "reverse" => style = style.add_modifier(Modifier::REVERSED),
-            "strike" | "strikethrough" => style = style.add_modifier(Modifier::CROSSED_OUT),
-            "default" | "ansi_default" | "transparent" | "none" => {}
-            "black" | "ansi_black" => style = style.fg(Color::Black),
-            "red" | "ansi_red" => style = style.fg(Color::Red),
-            "green" | "ansi_green" => style = style.fg(Color::Green),
-            "yellow" | "ansi_yellow" => style = style.fg(Color::Yellow),
-            "blue" | "ansi_blue" => style = style.fg(Color::Blue),
-            "magenta" | "ansi_magenta" => style = style.fg(Color::Magenta),
-            "cyan" | "ansi_cyan" => style = style.fg(Color::Cyan),
-            "white" | "ansi_white" => style = style.fg(Color::White),
-            "bright_black" | "ansi_bright_black" => style = style.fg(Color::DarkGray),
-            "bright_white" | "ansi_bright_white" => style = style.fg(Color::Gray),
-            other => {
-                if let Some(color) = parse_color(other) {
-                    style = style.fg(color);
+        if token == "on" {
+            background = true;
+            continue;
+        }
+        let color = match token {
+            "bold" => {
+                style = style.add_modifier(Modifier::BOLD);
+                continue;
+            }
+            "dim" => {
+                style = style.add_modifier(Modifier::DIM);
+                continue;
+            }
+            "italic" => {
+                style = style.add_modifier(Modifier::ITALIC);
+                continue;
+            }
+            "underline" => {
+                style = style.add_modifier(Modifier::UNDERLINED);
+                continue;
+            }
+            "reverse" => {
+                style = style.add_modifier(Modifier::REVERSED);
+                continue;
+            }
+            "strike" | "strikethrough" => {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
+                continue;
+            }
+            // `default` 类词只是在背景位置（`on default`）才表达「背景回到终端默认」；
+            // 单独出现时保持原有语义（什么都不改）。
+            "default" | "ansi_default" | "transparent" | "none" => {
+                if background {
+                    Some(Color::Reset)
+                } else {
+                    background = false;
+                    continue;
                 }
             }
+            "black" | "ansi_black" => Some(Color::Black),
+            "red" | "ansi_red" => Some(Color::Red),
+            "green" | "ansi_green" => Some(Color::Green),
+            "yellow" | "ansi_yellow" => Some(Color::Yellow),
+            "blue" | "ansi_blue" => Some(Color::Blue),
+            "magenta" | "ansi_magenta" => Some(Color::Magenta),
+            "cyan" | "ansi_cyan" => Some(Color::Cyan),
+            "white" | "ansi_white" => Some(Color::White),
+            "bright_black" | "ansi_bright_black" => Some(Color::DarkGray),
+            "bright_white" | "ansi_bright_white" => Some(Color::Gray),
+            other => parse_color(other),
+        };
+        match color {
+            Some(color) if background => style = style.bg(color),
+            Some(color) => style = style.fg(color),
+            // 认不出的词直接忽略，且不消费背景标记（`on` 后接未知词时不误当前景）。
+            None => continue,
         }
+        background = false;
     }
     style
 }
@@ -150,6 +192,27 @@ mod tests {
         );
         assert_eq!(rich_style("default"), Style::default());
         assert_eq!(rich_style("unknown_token"), Style::default());
+    }
+
+    #[test]
+    fn rich_style_supports_the_on_keyword_for_backgrounds() {
+        let dark = Color::Rgb(0x27, 0x28, 0x22);
+        // 纯背景（对映层代码块的写法）：不能落到前景上，否则就是暗底暗字。
+        assert_eq!(rich_style("on #272822"), Style::default().bg(dark));
+        assert_eq!(
+            rich_style("cyan on #272822"),
+            Style::default().fg(Color::Cyan).bg(dark)
+        );
+        assert_eq!(
+            rich_style("bright_black on #272822 italic"),
+            Style::default()
+                .fg(Color::DarkGray)
+                .bg(dark)
+                .add_modifier(Modifier::ITALIC)
+        );
+        // `on default` 回到默认背景；`on` 后接认不出的词不误当前景。
+        assert_eq!(rich_style("on default"), Style::default().bg(Color::Reset));
+        assert_eq!(rich_style("on nope"), Style::default());
     }
 
     #[test]

@@ -20,7 +20,7 @@ use ratatui::Frame;
 
 use super::{display_width, fit, truncate_styled, wrap_display};
 use crate::state::{AppState, Record, ToolCard, ToolStatus};
-use crate::ui::fullscreen::rendering::tool_diff;
+use crate::ui::fullscreen::rendering::{latex, markdown, tool_diff};
 use crate::ui::fullscreen::rendering::widgets::{self, SubAgentConversation, SubAgentProgressTree};
 use crate::ui::fullscreen::terminal::theme;
 use crate::ui::fullscreen::text::StyledText;
@@ -28,6 +28,8 @@ use crate::ui::panels;
 
 /// 工具卡正文在缩略态与展开态的行数上限（对映 Python `MAX_EXPANDED_BODY_LINES`）。
 const TOOL_BODY_LIMIT: usize = widgets::MAX_EXPANDED_BODY_LINES;
+/// 助手正文的显示前缀（对映 Python 工作台给 `AssistantMessage` 加的 `◇ `）。
+const ASSISTANT_PREFIX: &str = "◇ ";
 /// 缩略态正文保留的首部 / 尾部有效行数（对映 `HEAD_BODY_LINES` / `TAIL_BODY_LINES`）。
 const TOOL_HEAD_LINES: usize = widgets::HEAD_BODY_LINES;
 const TOOL_TAIL_LINES: usize = widgets::TAIL_BODY_LINES;
@@ -168,7 +170,7 @@ pub fn display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
         lines.push(DisplayLine::plain(Line::raw("")));
         match record {
             Record::User(text) => push_user(&mut lines, text, width),
-            Record::Assistant(text) => push_prefixed(&mut lines, "◇ ", text, width, Color::Reset),
+            Record::Assistant(text) => push_assistant(&mut lines, text, width),
             Record::Reasoning(text) => push_reasoning(
                 &mut lines,
                 text,
@@ -378,6 +380,39 @@ fn striped_line(text: &str, style: Style, stripe: Style) -> Line<'static> {
     ])
 }
 
+/// 助手正文：先 LaTeX 归一到 Unicode，再走对映层 Markdown 渲染。
+///
+/// 与 Python `AssistantMessage` 同一句——`render_markdown(format!("{display_prefix}{}",
+/// latex_to_text(body)))`，行首的 `◇ ` 也算在 Markdown 文本里。渲染出来的富文本按真实列宽
+/// 软折行（行首保留 CSS `.message { padding: 0 1 }` 的 1 格内边距），以便滚动窗口的行数
+/// 计算保持准确。
+fn push_assistant(lines: &mut Vec<DisplayLine>, text: &str, width: usize) {
+    // 正文先 LaTeX 归一（行首数学围栏要求 `$`/`$$` 从行首开始），再整段走 Markdown 渲染。
+    let body = text.strip_prefix("◇ ").unwrap_or(text);
+    let block = markdown::render_markdown(&latex::latex_to_text(body));
+    push_markdown(lines, &block, width, ASSISTANT_PREFIX);
+}
+
+/// 把一段对映层富文本铺成显示行：每行按列宽软折行，续行同样带 1 格内边距。
+///
+/// `prefix` 会捕到**第一行的行首**。这一点与 Python 略有不同：Python 把 `◇ `
+/// 直接拼在 Markdown 源码前面（`RichMarkdown("◇ " + …)`），于是首行的 `#` 不在行首，
+/// 「首行就是标题」这类语法解析不出来。这里改成渲染后再补前缀（见 README 已知差异）。
+fn push_markdown(lines: &mut Vec<DisplayLine>, block: &StyledText, width: usize, prefix: &str) {
+    let pad = display_width(MESSAGE_PAD);
+    let body = width.saturating_sub(pad).max(1);
+    for (index, line) in block.split_lines().iter().enumerate() {
+        for (row_index, row) in wrap_spans(&line.to_spans(), body, body).iter().enumerate() {
+            let mut cells: Vec<Span<'static>> = vec![Span::raw(MESSAGE_PAD.to_string())];
+            if index == 0 && row_index == 0 && !prefix.is_empty() {
+                cells.push(Span::raw(prefix.to_string()));
+            }
+            cells.extend(row.spans.iter().cloned());
+            lines.push(DisplayLine::plain(Line::from(cells)));
+        }
+    }
+}
+
 fn push_prefixed(
     lines: &mut Vec<DisplayLine>,
     prefix: &str,
@@ -444,13 +479,18 @@ fn push_reasoning(
     index: usize,
     expanded: bool,
 ) {
+    // 思考块的暗底灰字：必须写成 `on <背景色>`，否则会被当成前景色（暗底暗字）。
     let style = theme::rich_style(&format!(
-        "{} {} italic",
+        "{} on {} italic",
         theme::REASONING_TEXT,
         theme::REASONING_BACKGROUND
     ));
     let body_width = width.saturating_sub(2 * display_width(MESSAGE_PAD)).max(1);
-    let wrapped = wrap_display(text, body_width);
+    // 思考正文同样走对映层 Markdown 渲染，只是颜色统一成灰（Python `uniform_gray`）：
+    // 取渲染后的纯文本再套思考块的暗底灰字斜体样式，正文里的 `**`/`#` 等标记就会被去掉。
+    let body = markdown::uniform_gray(&latex::latex_to_text(text)).plain();
+    // Markdown 收尾常见一条空行（段落分隔）——留着会在思考块末尾多出一整行空白。
+    let wrapped = wrap_display(body.trim_end_matches('\n'), body_width);
     let folded = if expanded {
         0
     } else {
@@ -663,6 +703,79 @@ mod tests {
         display.iter().map(|line| text_of(&line.line)).collect()
     }
 
+    /// 把一段带 Markdown/LaTeX 的助手正文喂进状态机，再取实际显示行。
+    fn assistant_lines(markdown: &str) -> (AppState, Vec<DisplayLine>) {
+        let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "问题".to_string());
+        state.apply(
+            &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
+                text: markdown.to_string(),
+            }),
+            Instant::now(),
+        );
+        let lines = display_lines(&state, 60);
+        (state, lines)
+    }
+
+    #[test]
+    fn assistant_body_renders_markdown_and_latex() {
+        let (_state, display) = assistant_lines("# 标题\n\n普通 **加粗** 与 `code`，还有 $E=mc^2$。\n");
+        let rendered = plain(&display);
+        let joined = rendered.join("\n");
+        assert!(joined.contains("◇ 标题"), "首行标题要带前缀且去掉 `#`：{rendered:?}");
+        assert!(!joined.contains("**"), "加粗标记应被渲染掉：{rendered:?}");
+        assert!(joined.contains("E=mc²"), "LaTeX 应归一成 Unicode：{rendered:?}");
+        assert!(joined.contains("code"), "行内代码正文保留：{rendered:?}");
+        // 真的套上了样式（不是只把标记删掉）。
+        assert!(
+            display.iter().any(|line| line
+                .line
+                .spans
+                .iter()
+                .any(|span| span.style.add_modifier.contains(Modifier::BOLD))),
+            "标题/加粗应带 BOLD：{rendered:?}"
+        );
+        assert!(
+            display.iter().any(|line| line
+                .line
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(Color::Cyan))),
+            "行内代码应是青字：{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_deltas_accumulate_into_one_assistant_record() {
+        let mut state = AppState::new("prj".to_string(), "m".to_string(), ApprovalMode::Manual);
+        state.begin_turn("t1".to_string(), "问题".to_string());
+        let now = Instant::now();
+        for chunk in ["第一段", "第二段", "第三段"] {
+            state.apply(
+                &omnicrawl_ipc::HostEvent::Delta(omnicrawl_ipc::bridge::TextPayload {
+                    text: chunk.to_string(),
+                }),
+                now,
+            );
+            // 每收到一片就能看到已到达的内容（逐片渲染，不是攒到回合结束）。
+            let rendered = plain(&display_lines(&state, 60));
+            assert!(
+                rendered.iter().any(|line| line.contains(chunk)),
+                "分片 {chunk} 应在到达当帧就上屏：{rendered:?}"
+            );
+        }
+        let bodies: Vec<&String> = state
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                Record::Assistant(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bodies.len(), 1, "同一回合的正文应累加到一条记录");
+        assert_eq!(bodies[0], "第一段第二段第三段");
+    }
+
     /// 起一个带正文的工具卡（`read` 之外的工具才有正文）。
     fn state_with_tool(ok: bool, body_lines: usize) -> AppState {
         let mut state = AppState::new("demo".to_string(), "m".to_string(), ApprovalMode::Manual);
@@ -831,7 +944,8 @@ mod tests {
 
     #[test]
     fn reasoning_collapses_to_latest_lines_with_hint() {
-        let text: String = (1..=8).map(|index| format!("想法{index}\n")).collect();
+        // 用空行分段：Markdown 会把同一段里的换行当软换行合并成一行（与 Python `uniform_gray` 同义）。
+        let text: String = (1..=8).map(|index| format!("想法{index}\n\n")).collect();
         let mut lines = Vec::new();
         push_reasoning(&mut lines, text.trim_end(), 20, 3, false);
         let rendered = plain(&lines);

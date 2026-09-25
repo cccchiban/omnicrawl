@@ -105,7 +105,7 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 | --- | --- | --- |
 | `src/ui/fullscreen/text.rs` | Rich `Text` | `StyledText` 分段样式文本、`char_styles`、`to_spans` |
 | `src/ui/fullscreen/random.rs` | stdlib `random` | xorshift64\* 随机源（固定种子可复现） |
-| `src/ui/fullscreen/terminal/theme.rs` | `terminal/theme.py` | 取色令牌同名同值 + Rich 风格串解析 |
+| `src/ui/fullscreen/terminal/theme.rs` | `terminal/theme.py` | 取色令牌同名同值 + Rich 风格串解析（含 `on <颜色>` 背景语法：`"on #272822"` 必须落到 `bg`，否则代码块会变成暗底暗字） |
 | `src/ui/fullscreen/status/hud.rs` | `status/hud.py` | HUD 纯格式化（CTX/遥测/状态段、解密扫描帧） |
 | `src/ui/fullscreen/status/indicators.rs` | `status/indicators.py` | 轮播状态机与排队预览行（组件热区留给装配层） |
 | `src/ui/fullscreen/mod.rs` | | `round_half_even`（对映 Python 内建 `round`） |
@@ -116,7 +116,7 @@ Python 的 Textual 工作台（`omnicrawl/ui/`，18,867 行）正按目录逐层
 | --- | --- | --- |
 | `src/ui/fullscreen/rendering/difflib.rs` | stdlib `difflib` | `SequenceMatcher` 等价子集（`isjunk=None` / `autojunk=False`）：最长匹配块 + 递归队列 + 相邻块合并，opcodes 与 CPython 逐段一致（7 组对照数据集钉住） |
 | `src/ui/fullscreen/rendering/tool_diff.rs` | `rendering/tool_diff.py` | 工具卡标题（色点/原名/上下文/状态/耗时）、fetcher 正文过滤、文件变更预览（append/rewrite 预览 + 旁注行号 diff + 80 行截断）、`替换 N 处` 摘要与真实起始行号解析 |
-| `src/ui/fullscreen/rendering/widgets.rs` | `rendering/widgets.py`（部分） | 子任务进度树、任务清单、子任务会话面板；`AssistantMessage` / `ReasoningDisclosure` / `ToolDisclosure` / `ConfirmationScreen` 待补 |
+| `src/ui/fullscreen/rendering/widgets.rs` | `rendering/widgets.py`（部分） | 子任务进度树、任务清单、子任务会话面板；`AssistantMessage` / `ReasoningDisclosure` 的**渲染口径**已由活动页面直接调用（`markdown::render_markdown` + `latex::latex_to_text` / 思考段 `uniform_gray`），只剩 widget 级封装未挂载；`ToolDisclosure` 的标题与正文已接线；`ConfirmationScreen` 待补 |
 | `src/ui/fullscreen/tool_labels.rs` | `ui/tool_labels.py` | 工具显示名与图标表、状态图标、耗时格式化 |
 
 已落地（渲染批 2，工具卡与状态行）：
@@ -239,7 +239,9 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 `上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s ⁕ 模型 ⁕ THK 推理强度  APR 审批模式  MCP n  QUE n`，与 Python 的
 `#bottom-carousel` 同款式；不再有顶部两行 HUD，也不再在 HUD 里显示版本号）、
 消息流（用户 `user：` 灰斜标签 + 白色正文 + 左侧青色竖条、思考段暗底灰字斜体并折叠为最新五行、
-正文 `◇`、无边框工具卡（`●` 状态点随状态着色 + 缩进正文，正文由对映层生成：文件变更预览 / 
+助手正文 `◇` 且**走对映层 Markdown + LaTeX 渲染**（标题/加粗/列表/围栏代码高亮/行内代码青字暗底，
+`$E=mc^2$` 一律先归一成 Unicode；刻意差异：`◇ ` 前缀在渲染后捕到首行行首，Python 是把它拼进
+Markdown 源码，因此 Python 那边「首行就是标题」解析不出来，Rust 这边能）、无边框工具卡（`●` 状态点随状态着色 + 缩进正文，正文由对映层生成：文件变更预览 / 
 隐藏类正文为空 / 超宽行折行，头尾采样限五行但文件变更工具豁免）、右侧 1 格细滚动条、
 会话流内的运行状态行（Braille spinner + `[ ESC ]`））、
 悬浮圆角输入卡（上方留一行、框内左右各缩进 4 格；空输入显示占位文案 `› 输入消息或 / 命令`，
@@ -307,7 +309,7 @@ system prompt（末尾追加 `<active_mode_prompt name="plan">`）与上下文�
 | 一级项 | 状态 | 说明 |
 | --- | --- | --- |
 | 模型 | 已实现（离线版） | 候选 = config.toml 的 profiles + models.toml 条目合成的渠道（`load_channel_configuration`），显示渠道名、取值是渠道 key；选定后写 `llm.active_model`（legacy 配置写 `llm.model`）并把模型 id + 整条渠道（Provider/协议/基地址/凭据变量名）推给内核，本会话即刻生效。**未迁**：Python 那套双列选择器（左列渠道 + 右列远端自动发现的模型） |
-| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名 / Provider / 协议 / 基地址 / API Key 环境变量 / 模型 ID / User-Agent / 启用）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**未迁**：多列宽表单与鼠标交互、凭据直接录入（凭据仍走环境变量名；内联 `api_key` 保存时按 key 从磁盘继承，不会被抹掉） |
+| 模型渠道 | 已实现 | 渠道列表 + 单条渠道表单（渠道名称 / Provider / 请求协议 / Base URL / **API Key** / API Key 环境变量 / 模型 ID / User-Agent（可选） / 启用，标签与字段口径对齐 Python 渠道编辑器）：列表 `↑↓` 选、`Enter` 编辑、`N` 新建（草稿在 Ctrl+S 前不落列表）、`D` 删除（至少留一条）；表单 `↑↓`/`Tab` 换字段、`Enter` 文本字段进输入态 / 枚举展开候选 / 开关就地翻转、`Ctrl+S` 保存、`Esc` 丢弃并返回。保存走 `save_channel_configuration`（config.toml 与 models.toml 原子写 + 失败回滚），随后重新解析模型视图并把新渠道推给内核。**API Key 行**：只渲染掩码（`（未配置）` / `****` / `****…末 4 位`），输入态从空开始、**留空＝不改动**（误触不会抹掉已存密钥），填了就把内联 `api_key` 写进 config.toml（Python 编辑器同能力），宿主起内核时再把它注入子进程环境。**未迁**：多列宽表单与鼠标交互（Python 的渠道编辑器强制填 API Key，Rust 允许留空走环境变量——用户确认的差异） |
 | 上下文 | 已实现 | 两个下拉：上下文长度（32K–2048K，折算到最近档）与压缩阈值（5%–95%，5% 一档，按当前窗口换算 Token）；写回 `llm.context_window_tokens` 与 `context_compaction.trigger_context_*` |
 | 推理强度 | 已实现 | 六档（关闭/低/中/高/超高/最大）；写回 `llm.reasoning_effort`，并经 `session.settings` 推给内核的生成选项 |
 | 思考显示 | 已实现 | 开启/关闭；写回 `ui.show_thinking`，本机消息流立刻按它过滤思考段（关掉时思考段整段不出现） |
@@ -476,6 +478,12 @@ python rust/tools/gen_latex_fixture.py       # 改了 LaTeX 语义时重生成�
 python rust/tools/gen_tool_diff_fixture.py   # 改了工具卡标题/正文渲染时重生成对照数据集
 cargo test -p omnicrawl-tui
 ```
+
+分片到达节奏（排障用）：内核 `ProtocolSink` 每收到一个模型分片就发一条 `turn.delta` 并立即 flush
+（`Conn::send` 每帧 `write_all + flush`），宿主读线程逐行转发、界面每 50 ms 排空一次——**链路本身
+不做批处理**。本地复现：起一个分片间带延迟的假 SSE 端点，直接驱动内核二进制并打印 `turn.delta`
+的到达时刻（实测端点 450 ms 间隔 → 落点 94/547/1000 ms）。若界面上正文「整块一次性出现」，先怀疑
+网关把 SSE 攒成一整块，或模型先长时间思考再一次性吐正文（底行轮播的 `t/s` 会在末尾突刺）。
 
 测试分五层：
 
