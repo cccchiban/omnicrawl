@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
 use super::hit::HitAction;
+use super::picker::window_bounds;
 use super::state::{
     ChannelField, ChannelFormView, ContextField, DropdownField, Focus, Pane, SettingsState,
     ToolSwitchRow,
@@ -36,6 +37,10 @@ const DROPDOWN_MAX_ROWS: usize = 12;
 const FIELD_BLOCK_HEIGHT: u16 = 5;
 /// 表单页底部留给「1 空行 + 2 行状态 + 1 行提示」的行数。
 const FORM_TAIL_HEIGHT: u16 = 4;
+/// 压缩页内嵌选择器的搜索/提示行占 1 行。
+const PICKER_PROMPT_HEIGHT: u16 = 1;
+/// 压缩页内嵌选择器的列框高度：2 行边框 + 1 行列标题 + 最多 4 行内容。
+const PICKER_BOX_HEIGHT: u16 = 7;
 
 /// 渲染整个设置面板（铺满终端，含底部帮助行）。
 pub fn render(frame: &mut Frame, area: Rect, state: &SettingsState) {
@@ -431,20 +436,25 @@ fn dropdown_overlay_y(
     }
 }
 
+/// 表单页字段列表占的区域：扣掉底部状态/提示与（压缩页的）模型选择器。
+fn form_rows_area(area: Rect, picker_height: u16) -> Rect {
+    Rect {
+        height: area
+            .height
+            .saturating_sub(picker_height + FORM_TAIL_HEIGHT.min(area.height)),
+        ..area
+    }
+}
+
 /// 表单页字段表的窗口起点：聚焦字段始终可见。
 fn form_window_offset(state: &SettingsState, area: Rect) -> usize {
+    let rows = form_rows_area(area, picker_block_height(area, state));
     window_offset(
         state.form_focused(),
         state.form_field_count(),
-        form_visible_rows(area) as usize,
+        rows.height.max(1) as usize,
     )
 }
-
-/// 表单页能显示的字段行数：底部 4 行留给状态与提示。
-fn form_visible_rows(area: Rect) -> u16 {
-    area.height.saturating_sub(FORM_TAIL_HEIGHT).max(1)
-}
-
 /// 单选页：一个下拉框（面板不重复标题，与 Python 的 `SelectPane` 一致）+ 状态行。
 fn render_choice(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
     // `SelectCurrent:focus { border: tall $terminal-white }`：聚焦即白色粗边框。
@@ -479,16 +489,19 @@ fn render_choice(frame: &mut Frame, area: Rect, state: &SettingsState, focused: 
 
 /// 表单页：一行一个字段（`› 标签：值 ▼`），候选展开时用公共浮层。
 fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    // 压缩页的内嵌选择器先占一块：剩下多少行给字段列表（窗口计算与命中区必须同源）。
+    let picker_height = picker_block_height(area, state);
+    let rows_area = form_rows_area(area, picker_height);
     let rows = state.form_rows();
-    let visible = form_visible_rows(area) as usize;
-    let offset = form_window_offset(state, area);
+    let visible = rows_area.height.max(1) as usize;
+    let offset = window_offset(state.form_focused(), state.form_field_count(), visible);
     let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
         .skip(offset)
         .take(visible)
         .map(|(index, row)| {
-            state.record_hit(row_hit(area, index - offset), HitAction::PaneRow(index));
+            state.record_hit(row_hit(rows_area, index - offset), HitAction::PaneRow(index));
             let marker = if row.focused { "›" } else { " " };
             let value = if row.has_menu {
                 format!("{} ▼", row.value)
@@ -508,13 +521,21 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bo
         .collect();
     Paragraph::new(lines).render(
         Rect {
-            x: area.x + 1,
-            width: area.width.saturating_sub(1),
-            height: area.height.min((visible as u16).max(1)),
-            ..area
+            x: rows_area.x + 1,
+            width: rows_area.width.saturating_sub(1),
+            height: rows_area.height.min((visible as u16).max(1)),
+            ..rows_area
         },
         frame.buffer_mut(),
     );
+    if picker_height > 0 {
+        let picker_area = Rect {
+            y: rows_area.y + rows_area.height,
+            height: picker_height,
+            ..area
+        };
+        render_model_picker(frame, picker_area, state, focused);
+    }
 
     let tail = Rect {
         y: area.y + area.height.saturating_sub(FORM_TAIL_HEIGHT),
@@ -528,6 +549,204 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bo
         state.pane_hint(),
         theme::rich_style(theme::TEXT_MUTED),
     );
+}
+
+/// 压缩页里内嵌选择器占的高度；不是压缩页（或没有选择器）时为 0。
+///
+/// 终端太矮时先把选择器压到最小（只留提示行 + 边界），字段列表反而优先。
+fn picker_block_height(area: Rect, state: &SettingsState) -> u16 {
+    if state.model_picker().is_none() {
+        return 0;
+    }
+    let wanted = PICKER_PROMPT_HEIGHT + PICKER_BOX_HEIGHT;
+    let available = area.height.saturating_sub(FORM_TAIL_HEIGHT + 1);
+    wanted.min(available)
+}
+
+/// 内嵌双列模型选择器：一行搜索/提示 + 两个并列的列框（对映 Python 内嵌的 `ModelPickerPane`）。
+fn render_model_picker(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {
+    let Some(picker) = state.model_picker() else {
+        return;
+    };
+    if area.width < 8 || area.height == 0 {
+        return;
+    }
+    let prompt_area = Rect {
+        height: 1.min(area.height),
+        ..area
+    };
+    let prompt = if picker.searching() {
+        format!("搜索：{}▌", picker.search_text())
+    } else if picker.query().is_empty() {
+        "按 / 搜索" .to_string()
+    } else {
+        format!("搜索：{}（Enter 清除）", picker.query())
+    };
+    let prompt_style = if picker.searching() || !picker.query().is_empty() {
+        theme::rich_style(theme::ACCENT_WHITE)
+    } else {
+        theme::rich_style(theme::TEXT_MUTED)
+    };
+    Paragraph::new(Line::styled(
+        fit(&prompt, prompt_area.width as usize),
+        prompt_style,
+    ))
+    .render(prompt_area, frame.buffer_mut());
+
+    let boxes_area = Rect {
+        y: area.y + prompt_area.height,
+        height: area.height.saturating_sub(prompt_area.height),
+        ..area
+    };
+    if boxes_area.height < 3 || boxes_area.width < 8 {
+        return;
+    }
+    let [left, right] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .areas(boxes_area);
+    let active_column = picker.column();
+    render_picker_column(
+        frame,
+        left,
+        "渠道选择",
+        picker
+            .channel_indices(state.channel_rows())
+            .iter()
+            .map(|index| {
+                let channel = &state.channel_rows()[*index];
+                if channel.name.trim().is_empty() {
+                    channel.key.clone()
+                } else {
+                    channel.name.clone()
+                }
+            })
+            .collect(),
+        clamp_position(picker.column_position(0), picker.channel_indices(state.channel_rows()).len()),
+        picker.current_channel(state.channel_rows()),
+        focused && picker.focused() && active_column == 0,
+    );
+    render_picker_column(
+        frame,
+        right,
+        "模型",
+        picker
+            .model_indices()
+            .iter()
+            .map(|index| picker.models()[*index].clone())
+            .collect(),
+        clamp_position(picker.column_position(1), picker.model_indices().len()),
+        picker
+            .current_model()
+            .and_then(|current| picker.models().iter().position(|model| model == current)),
+        focused && picker.focused() && active_column == 1,
+    );
+}
+
+/// 一列的列框：圆角边框 + 列标题 + 窗口内条目（带前后省略行）。
+fn render_picker_column(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    items: Vec<String>,
+    selected: Option<usize>,
+    current: Option<usize>,
+    active: bool,
+) {
+    if area.width == 0 || area.height < 3 {
+        return;
+    }
+    let border_style = if active {
+        theme::rich_style(theme::ACCENT_GREEN)
+    } else {
+        theme::rich_style(theme::BORDER_STRONG)
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border_style);
+    let inner = block.inner(area);
+    block.render(area, frame.buffer_mut());
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+    // 第一行是列标题（对映 Python 列框里的 `model-column-title`）。
+    Paragraph::new(Line::styled(
+        fit(title, inner.width as usize),
+        theme::rich_style(theme::TEXT_SECONDARY).add_modifier(Modifier::BOLD),
+    ))
+    .render(
+        Rect {
+            height: 1,
+            ..inner
+        },
+        frame.buffer_mut(),
+    );
+    let list_area = Rect {
+        y: inner.y + 1,
+        height: inner.height.saturating_sub(1),
+        ..inner
+    };
+    if list_area.height == 0 {
+        return;
+    }
+    let content_rows = list_area.height as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if items.is_empty() {
+        lines.push(Line::styled(
+            fit("（空）", list_area.width as usize),
+            theme::rich_style(theme::TEXT_MUTED),
+        ));
+    } else {
+        let selected = selected.unwrap_or(0);
+        // 条目多于可视行数时，前后各留一行省略提示（与 Python 的 window_size 语义一致）。
+        let window_size = if items.len() <= content_rows {
+            content_rows
+        } else {
+            content_rows.saturating_sub(2).max(1)
+        };
+        let (start, end) = window_bounds(items.len(), selected, window_size);
+        if start > 0 {
+            lines.push(Line::styled(
+                fit(&format!("... 前面 {start} 个"), list_area.width as usize),
+                theme::rich_style(theme::TEXT_MUTED),
+            ));
+        }
+        for (index, label) in items.iter().enumerate().take(end).skip(start) {
+            let marker = if current == Some(index) {
+                "●"
+            } else if index == selected {
+                "›"
+            } else {
+                " "
+            };
+            let style = if index == selected {
+                theme::rich_style(theme::ACCENT_GREEN).add_modifier(Modifier::BOLD)
+            } else if current == Some(index) {
+                theme::rich_style(theme::TEXT_PRIMARY)
+            } else {
+                theme::rich_style(theme::TEXT_SECONDARY)
+            };
+            lines.push(Line::styled(
+                fit(&format!("{marker} {label}"), list_area.width as usize),
+                style,
+            ));
+        }
+        if end < items.len() {
+            lines.push(Line::styled(
+                fit(&format!("... 后面 {} 个", items.len() - end), list_area.width as usize),
+                theme::rich_style(theme::TEXT_MUTED),
+            ));
+        }
+    }
+    lines.truncate(content_rows);
+    Paragraph::new(lines).render(list_area, frame.buffer_mut());
+}
+
+/// 把选中位置夹到合法范围；列表为空时返回 `None`。
+fn clamp_position(position: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        None
+    } else {
+        Some(position.min(len - 1))
+    }
 }
 
 fn render_context(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bool) {

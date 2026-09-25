@@ -19,6 +19,7 @@ use std::cell::RefCell;
 use crate::state::Composer;
 
 use super::form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
+use super::picker::{self, ModelPicker, PickerKey};
 use super::hit::{HitAction, HitRegion};
 use super::{
     choice_field_options, context_field_options, cycle_subagent_option, nearest_compaction_percent,
@@ -1132,6 +1133,8 @@ const CHANNELS_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候
 const LIST_HELP: &str =
     "↑↓ 选择设置项（右侧实时预览）  Enter/→ 进入右侧  ←/Esc 返回  Esc 在左侧退出";
 const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
+/// 工具输出压缩页的提示：多一个「进模型选择器」的入口。
+const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  M 模型选择器  Ctrl+S 保存  Esc 返回";
 
 /// 按 [`FORM_KINDS`] 的顺序建好每页表单；宿主没给初值的页用空草稿。
 fn form_states(values: Vec<(FormKind, Vec<FieldValue>)>) -> Vec<FormState> {
@@ -1523,6 +1526,8 @@ pub struct SettingsState {
     channels: ChannelsState,
     /// 每个表单页一份草稿，下标与 `FormKind::index` 一致。
     forms: Vec<FormState>,
+    /// 工具输出压缩页的内嵌双列模型选择器（进该页时按当前草稿重建）。
+    picker: Option<ModelPicker>,
     /// TTS 页的草稿状态机。
     tts: TtsState,
     /// 本次渲染记录下来的可点区域：渲染只拿 `&self`，所以用 `RefCell`。
@@ -1594,6 +1599,7 @@ impl SettingsState {
                 status: CHANNELS_LIST_HINT.to_string(),
             },
             forms: form_states(values.form_values),
+            picker: None,
             tts: TtsState::new(values.tts),
             hits: RefCell::new(Vec::new()),
             hover: None,
@@ -1967,6 +1973,14 @@ impl SettingsState {
         }
     }
 
+    /// 工具输出压缩页的内嵌模型选择器（仅该页有）；不在该页时为 `None`。
+    pub fn model_picker(&self) -> Option<&ModelPicker> {
+        match self.pane {
+            Pane::Form(FormKind::ToolOutputCompression) => self.picker.as_ref(),
+            _ => None,
+        }
+    }
+
     /// 表单页的字段行（渲染层用）；不在表单页时为空。
     pub fn form_rows(&self) -> Vec<FormFieldView> {
         let Pane::Form(_) = self.pane else {
@@ -2036,6 +2050,12 @@ impl SettingsState {
             Pane::Vision => &self.vision.status,
             Pane::Channels => &self.channels.status,
             Pane::Choice(kind) => &self.choices.status[kind.index()],
+            Pane::Form(FormKind::ToolOutputCompression) => self
+                .picker
+                .as_ref()
+                .filter(|picker| picker.focused())
+                .map(|picker| picker.status())
+                .unwrap_or_else(|| self.form().map(|form| form.status()).unwrap_or("")),
             Pane::Form(_) => self.form().map(|form| form.status()).unwrap_or(""),
             Pane::Tts => &self.tts.status,
             Pane::ConfigChat | Pane::Pending => "",
@@ -2067,6 +2087,13 @@ impl SettingsState {
             }
             // Python 的单选面板只有下拉与状态行，没有提示行。
             Pane::Choice(_) => "",
+            Pane::Form(FormKind::ToolOutputCompression) => {
+                if self.picker.as_ref().is_some_and(|picker| picker.focused()) {
+                    picker::PICKER_HINT
+                } else {
+                    COMPRESSION_HINT
+                }
+            }
             Pane::Form(_) => FORM_HINT,
             Pane::Tts => TTS_HINT,
             Pane::ConfigChat => CONFIG_CHAT_HINT,
@@ -2290,6 +2317,16 @@ impl SettingsState {
 
     /// 表单页：输入态 → 字段导航两层各管各的键位；`Ctrl+S` 保存由宿主转发进来。
     fn handle_form_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        // 压缩页的内嵌模型选择器：拿到焦点时（或此刻要进去时）键位归它。
+        if self.picker.as_ref().is_some_and(|picker| picker.focused()) {
+            return self.handle_picker_key(key);
+        }
+        if self.picker.is_some() {
+            match key {
+                KeyCode::Char('m') | KeyCode::Char('M') => return self.focus_picker(),
+                _ => {}
+            }
+        }
         if self.form().is_some_and(|form| form.input().is_some()) {
             if let Some(form) = self.form_mut() {
                 form.input_key(key);
@@ -2319,7 +2356,15 @@ impl SettingsState {
                         }
                     }
                     // 候选字段选完不即时保存：仍要 `Ctrl+S`（与 Python 的表单页同义）。
-                    FieldKind::Enum(_) | FieldKind::Model => self.open_dropdown(),
+                    FieldKind::Enum(_) => self.open_dropdown(),
+                    // 压缩页的模型字段换成「进双列选择器」（对映 Python 内嵌的 ModelPickerPane）；
+                    // 其余表单页仍是渠道下拉。
+                    FieldKind::Model => {
+                        if self.picker.is_some() {
+                            return self.focus_picker();
+                        }
+                        self.open_dropdown();
+                    }
                     FieldKind::Int | FieldKind::Float | FieldKind::Text => {
                         if let Some(form) = self.form_mut() {
                             form.begin_input(index);
@@ -2341,6 +2386,66 @@ impl SettingsState {
         let form = self.form()?;
         let index = form.focused();
         Some((index, form.field(index)?))
+    }
+
+    /// 把焦点交给压缩页的模型选择器；需要时顺带请求一次模型发现。
+    fn focus_picker(&mut self) -> Option<SettingsEvent> {
+        let channels = self.channels.rows.clone();
+        {
+            let picker = self.picker.as_mut()?;
+            picker.focus(&channels);
+        }
+        if self.picker.as_ref().is_some_and(|picker| picker.wants_discovery()) {
+            return self.request_picker_discovery();
+        }
+        None
+    }
+
+    /// 请宿主发现「选择器里选中那个渠道」的可用模型。
+    fn request_picker_discovery(&mut self) -> Option<SettingsEvent> {
+        let channels = self.channels.rows.clone();
+        let picker = self.picker.as_mut()?;
+        if picker.handles_discovery() {
+            return None;
+        }
+        let channel = picker.selected_channel(&channels)?.clone();
+        picker.mark_discovering();
+        Some(SettingsEvent::DiscoverChannelModels {
+            profile_id: channel.profile_id,
+            provider: channel.provider,
+            protocol: channel.protocol,
+            base_url: channel.base_url,
+            api_key: channel.api_key,
+            api_key_env: channel.api_key_env,
+            user_agent: channel.user_agent,
+        })
+    }
+
+    /// 选择器持有焦点时的键位翻译。
+    fn handle_picker_key(&mut self, key: KeyCode) -> Option<SettingsEvent> {
+        let channels = self.channels.rows.clone();
+        let action = match self.picker.as_mut() {
+            Some(picker) => picker.handle_key(key, &channels),
+            None => return None,
+        };
+        match action {
+            PickerKey::Handled | PickerKey::Nothing | PickerKey::Blur => None,
+            PickerKey::Discover => self.request_picker_discovery(),
+            PickerKey::Confirm(token) => {
+                // 只改草稿 + 状态：写盘仍是 `Ctrl+S`（与 Python 的「选择后按 Ctrl+S 保存」同义）。
+                let message = format!("压缩模型已选择：{token}；按 Ctrl+S 保存。");
+                if let Some(index) = self.compression_model_field() {
+                    if let Some(form) = self.form_mut() {
+                        form.set_value(index, FieldValue::Text(token));
+                        form.set_status(message.clone());
+                    }
+                }
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.set_status(message);
+                }
+                None
+            }
+        }
     }
 
     /// TTS 页：输入态 → 普通态两层。输入态优先，其余键位照行表走。
@@ -2964,7 +3069,37 @@ impl SettingsState {
             // 换面板等价于重新进入：收起下拉，字段回到第一个。
             self.dropdown = None;
             self.context.field = ContextField::Window;
+            self.ensure_picker();
         }
+    }
+
+    /// 进工具输出压缩页时重建模型选择器：以草稿里的当前模型为「当前值」。
+    ///
+    /// 每次进页都重建，是为了让「当前模型」始终跟着草稿走（在别处改过之后也一致），
+    /// 代价是每次进页会重新发现一次模型（与 Python 的 `refresh_on_open=False` 不同，
+    /// 见 README 的已知差异）。
+    fn ensure_picker(&mut self) {
+        if self.pane != Pane::Form(FormKind::ToolOutputCompression) {
+            return;
+        }
+        let current = self
+            .compression_model_field()
+            .and_then(|index| {
+                self.form()
+                    .and_then(|form| form.value(index))
+                    .map(|value| value.text().to_string())
+            })
+            .unwrap_or_default();
+        let channels = self.channels.rows.clone();
+        self.picker = Some(ModelPicker::new(&current, &channels));
+    }
+
+    /// 压缩页里模型字段的下标（字段表里唯一的 [`FieldKind::Model`]）。
+    fn compression_model_field(&self) -> Option<usize> {
+        let form = self.form()?;
+        form.specs()
+            .iter()
+            .position(|spec| matches!(spec.kind, FieldKind::Model))
     }
 
     fn enter_pane(&mut self) {
@@ -3366,6 +3501,18 @@ impl SettingsState {
 
     /// 自动检测结果回填：有候选就展开下拉，否则退回手动输入并说明原因。
     pub fn set_channel_models(&mut self, models: Vec<String>, message: String) {
+        // 压缩页的内嵌选择器优先：它正在等这次发现的结果（渠道表单此时不在模型字段上）。
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.handles_discovery())
+        {
+            let channels = self.channels.rows.clone();
+            if let Some(picker) = self.picker.as_mut() {
+                picker.set_models(models, &message, &channels);
+            }
+            return;
+        }
         let Some(form) = self.channels.form.as_mut() else {
             return;
         };
@@ -4777,6 +4924,47 @@ mod tests {
         )
     }
 
+    /// 压缩页 + 两个渠道：用来驱动内嵌模型选择器。
+    fn compression_state_with_channels() -> SettingsState {
+        fn channel(key: &str, name: &str, model: &str) -> ChannelRow {
+            ChannelRow {
+                key: key.to_string(),
+                profile_id: key.to_string(),
+                name: name.to_string(),
+                provider: "openai".to_string(),
+                protocol: "openai_chat_completions".to_string(),
+                base_url: "https://example.test/v1".to_string(),
+                model_id: model.to_string(),
+                enabled: true,
+                ..ChannelRow::default()
+            }
+        }
+        SettingsState::new(
+            SettingsValues::new(128_000, 80, tool_rows())
+                .with_channels(
+                    vec![
+                        channel("channel", "主渠道", "deepseek-v4.1-flash"),
+                        channel("channel-2", "硅基流动", ""),
+                    ],
+                    "channel",
+                    ChannelRow::default(),
+                )
+                .with_form(
+                    FormKind::ToolOutputCompression,
+                    vec![
+                        FieldValue::Flag(true),
+                        FieldValue::Flag(false),
+                        FieldValue::Text("low".to_string()),
+                        FieldValue::Text("1200".to_string()),
+                        FieldValue::Text("24000".to_string()),
+                        FieldValue::Text("1500".to_string()),
+                        FieldValue::Text("60".to_string()),
+                        FieldValue::Text(String::new()),
+                    ],
+                ),
+        )
+    }
+
     /// 工具输出压缩页的初始值：停用、思考关闭、思考深度 low、四个预算与未选模型。
     fn compression_state() -> SettingsState {
         SettingsState::new(SettingsValues::new(128_000, 80, tool_rows()).with_form(
@@ -4853,6 +5041,58 @@ mod tests {
             FieldValue::Text("gpt-backup".to_string()),
             "草稿里存的是渠道 key，不是显示用的渠道名"
         );
+    }
+
+    #[test]
+    fn compression_page_picker_writes_the_profile_model_into_the_draft() {
+        let mut state = compression_state_with_channels();
+        goto(&mut state, "tool_output_compression");
+        state.handle_key(KeyCode::Enter);
+        assert_eq!(state.form_field_count(), 8);
+        assert!(state.model_picker().is_some(), "压缩页应有内嵌模型选择器");
+
+        // 走到模型字段（第 8 项）按 Enter：进选择器并自动请求一次发现。
+        for _ in 0..7 {
+            state.handle_key(KeyCode::Down);
+        }
+        let event = state.handle_key(KeyCode::Enter);
+        assert!(
+            matches!(event, Some(SettingsEvent::DiscoverChannelModels { .. })),
+            "进选择器应自动发现一次：{event:?}"
+        );
+        let picker = state.model_picker().expect("选择器");
+        assert!(picker.focused(), "焦点交给选择器");
+        assert_eq!(state.pane_hint(), super::picker::PICKER_HINT);
+        state.set_channel_models(vec!["deepseek-v4.1-flash".to_string()], String::new());
+
+        // 左列换到第二个渠道，右列挑发现回来的模型（`r` 才会请宿主再发现一次）。
+        state.handle_key(KeyCode::Left);
+        state.handle_key(KeyCode::Down);
+        let event = state.handle_key(KeyCode::Char('r'));
+        assert!(
+            matches!(event, Some(SettingsEvent::DiscoverChannelModels { .. })),
+            "按 r 要重新发现：{event:?}"
+        );
+        state.set_channel_models(vec!["Qwen/Qwen3.5-35B-A3B".to_string()], String::new());
+        state.handle_key(KeyCode::Right);
+        state.handle_key(KeyCode::Enter);
+
+        assert_eq!(
+            state.form_rows()[7].value, "channel-2/Qwen/Qwen3.5-35B-A3B",
+            "确认后写回草稿的是 profile/model_id"
+        );
+        assert!(
+            state.status().contains("压缩模型已选择"),
+            "{}",
+            state.status()
+        );
+
+        // Esc 回到字段行，草稿与内容不变；`M` 也能再进去。
+        state.handle_key(KeyCode::Esc);
+        assert!(!state.model_picker().expect("选择器").focused());
+        assert_eq!(state.pane_hint(), super::COMPRESSION_HINT);
+        assert_eq!(state.handle_key(KeyCode::Char('m')), None);
+        assert!(state.model_picker().expect("选择器").focused());
     }
 
     #[test]

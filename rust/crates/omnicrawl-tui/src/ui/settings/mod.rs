@@ -12,6 +12,7 @@
 
 pub mod form;
 pub mod hit;
+pub mod picker;
 pub mod render;
 pub mod state;
 
@@ -19,6 +20,7 @@ use omnicrawl_config::models::llm::normalize_reasoning_effort;
 
 pub use form::{FieldKind, FieldSpec, FieldValue, FormKind, FormState, FORM_KINDS};
 pub use hit::{HitAction, HitRegion};
+pub use picker::{ModelPicker, PickerKey, PICKER_HINT, PICKER_WINDOW};
 
 pub use state::{
     channel_field_value, display_value, ChannelDropdown, ChannelField, ChannelFormView, ChannelRow,

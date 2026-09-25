@@ -17,7 +17,7 @@
 | `src/clipboard.rs` | 拖选复制的写剪切板（Windows 走宿主 Win32 `CF_UNICODETEXT` 实现，其余平台 `pbcopy`/`wl-copy`/`xclip`） |
 | `../omnicrawl-tts/` | TTS 引擎已独立成 `omnicrawl-tts` crate：接口合成（OpenAI 兼容 `audio/speech`，发布默认）与可选的本地 MOSS-TTS-Nano ONNX 推理（`onnx` feature）、文本归一化、音频 I/O、声线库、模型下载与本地播放 |
 | `src/commands.rs` | 斜杠命令的 TUI 宿主接线：`CommandAgent` 能力面（`TuiHostAgent`）、候选表与插件状态行映射 |
-| `src/ui/` | 渲染：`hud.rs`、`conversation.rs`、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制） |
+| `src/ui/` | 渲染：`hud.rs`、`conversation.rs`、`composer.rs`（含输入框上方的命令菜单）、`panels.rs`；`settings/` 是设置面板（`mod.rs` 常量与路由、`state.rs` 状态机与键位、`render.rs` 绘制、`picker.rs` 压缩页的内嵌双列模型选择器） |
 | `../omnicrawl-host/` | 宿主执行层已独立成 `omnicrawl-host` crate：内核进程客户端（`kernel`）、工具批次与审批策略（`host`）、工具执行体（`tools`）、审批模式（`approval`）与无头回合运行器（`turn`）；本 crate 只做界面与接线 |
 
 ## 工具执行层
@@ -332,6 +332,26 @@ TTS 页比 Python 面板多 7 行（Python 侧没有接口合成）：**合成�
 
 面板保存时同时写 `[tts]` 与 `[tts_api]` 两段（接口段里界面上没编辑的 `response_format` /
 `timeout_seconds` 按磁盘原值保留），随后重建工具表让新后端即时生效。
+
+工具输出压缩页多一块**内嵌双列模型选择器**（对映 Python `ToolOutputCompressionSettingsPane` 里
+`selection_only=True` 的 `ModelPickerPane`）：字段行下面是一行搜索/提示行 + 左「渠道选择」右「模型」
+两个并列列框；列里只画 4 条并带「... 前面 N 个 / ... 后面 N 个」省略行（与 Python 的
+`window_size = 4` 一致），当前值标 `●`、光标位标 `›`。
+
+- 进选择器：在模型字段上按 `Enter`/`空格`，或在压缩页任意位置按 `M`；列内 `↑↓` 移动（循环）、
+  `←→` 切列（活动列换绿框）、`/`（或 `Tab`）开搜索、`r` 重新发现模型、`Enter` 确认、
+  `Esc` 回字段行（再按一次 `Esc` 才回左栏）。
+- 确认只改**草稿**，状态行写成「压缩模型已选择：…；按 Ctrl+S 保存。」——写盘仍是 `Ctrl+S`
+  （与 Python「选择后按 Ctrl+S」同义）；落盘值形如 `channel-2/Qwen/Qwen3.5-35B-A3B`，内核按
+  `apply_model_selection` 解析（支持自定义 key、`profile/model_id` 与裸 model_id）。
+- 进选择器会自动请宿主机发现一次当前渠道的模型（后台线程，不卡界面），结果经
+  `SettingsState::set_channel_models` 回填；发现失败只改状态行、保留已有候选。右列候选 = 该渠道已
+  发现的模型 + 渠道配置里的 `model_id`；换渠道时右列跟着换（发现结果不跨渠道复用）。
+- **已知差异**：右列不做 models.toml 的 custom/detected 目录归一化（Python 走 `build_catalog`）；
+  搜索是 `/` 开的输入缓冲而不是常驻 `Input`，且 `Esc` 只取消本次搜索；每次进页都会重建选择器并
+  重新发现一次（Python 是 `refresh_on_open=False`）；选择器内的鼠标点击尚未接线（其余键位完整）。
+- 未做（另一个可选项）：Python 还有的「作用域：bash / powershell / git / grep」信息行与字段
+  两两并排版式，Rust 侧仍是通用表单的一行一字段。
 | 通过对话修改设置 | 已实现 | 本行是**动作行**：`Enter`/`→` 关闭设置面板并打开配置对话弹层（与 `/settings --chat` 同一入口）。一句话经 `omnicrawl-config-chat` 的本地路由器折成命令，全部校验通过后原子写盘并同步运行态；不经过模型、不带上下文 |
 
 ### Provider 配置接线（`initialize.model`）

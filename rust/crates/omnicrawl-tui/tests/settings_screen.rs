@@ -536,6 +536,27 @@ fn compression_page_renders_budgets_and_status() {
 }
 
 #[test]
+fn compression_page_renders_the_inline_model_picker() {
+    let mut state = form_state();
+    while state.selected_key() != "tool_output_compression" {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    let screen = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(screen.contains("M 模型选择器"), "提示行里要有入口：{screen}");
+    assert!(screen.contains("渠道选择"), "左列标题：{screen}");
+    assert!(screen.contains("模型"), "右列标题：{screen}");
+    assert!(screen.contains("按 / 搜索"), "搜索提示行：{screen}");
+
+    // `M` 进选择器：左列列出渠道（当前渠道带 ● 标记），提示行换成选择器键位。
+    state.handle_key(KeyCode::Char('m'));
+    assert!(state.model_picker().is_some_and(|picker| picker.focused()));
+    let screen = text(&draw(&state, WIDTH, HEIGHT));
+    assert!(screen.contains("主渠道"), "左列列出渠道：{screen}");
+    assert!(screen.contains("切换列"), "选择器提示行：{screen}");
+}
+
+#[test]
 fn newly_migrated_form_pages_render_their_fields() {
     let mut state = form_state();
     for (key, label) in [
