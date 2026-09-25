@@ -314,19 +314,15 @@ fn command_menu_renders_directly_above_the_composer() {
         "唯一候选即选中项：{:?}",
         lines[menu_row]
     );
-    // 菜单行下面是输入卡的「上方空行」（CSS margin: 1 0 0 0）与卡片上边框，
-    // 再下面才是卡内文本行。
-    let composer_row = menu_row + 3;
+    // 菜单行下面就是输入卡的上边框，再下面才是卡内文本行（用户要求去掉会话区与输入框
+    // 之间那一行空白，`MARGIN_TOP` 已置 0）。
+    let composer_row = menu_row + 2;
     assert!(
-        lines[menu_row + 1].trim().is_empty(),
-        "菜单与输入卡之间是卡片上方的空行：{:?}",
+        lines[menu_row + 1].contains('╭'),
+        "菜单下面紧贴输入卡上边框：{:?}",
         lines[menu_row + 1]
     );
-    assert!(
-        lines[menu_row + 2].contains('╭'),
-        "输入卡上边框应在文本行之前：{:?}",
-        lines[menu_row + 2]
-    );
+
     assert!(
         lines[composer_row].contains("/sett"),
         "输入卡内容行应带输入文本：{:?}",

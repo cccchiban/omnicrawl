@@ -40,7 +40,8 @@ use omnicrawl_ipc::bridge::{
     ModelResponseAfterPayload, SessionAppendParams, SessionHistoryParams, SessionListParams,
     SessionRenameParams, SessionResumeParams, SessionSettingsParams, SubagentEventPayload,
     SubagentQueryParams, SubagentRunParams, TextPayload, TokenUsagePayload, ToolBatch,
-    ToolBatchResult, TurnCancelParams, TurnFinishedPayload, TurnSubmitParams, WorkspaceSwitchParams,
+    ToolBatchResult, ToolCallArgumentsPayload, ToolCallStartedPayload, ToolOutputCompressionPayload,
+    TurnCancelParams, TurnFinishedPayload, TurnSubmitParams, WorkspaceSwitchParams,
 };
 use omnicrawl_ipc::frame::{error_code, ErrorObject, Frame, Id};
 use omnicrawl_ipc::version::negotiate_version;
@@ -81,7 +82,7 @@ use omnicrawl_controllers::subagents::worktrees::{
 };
 use omnicrawl_session::{tool_result_message, utc_now, SessionListQuery, SessionStore};
 
-use crate::compression::KernelCompressor;
+use crate::compression::{CompressionPhase, KernelCompressor};
 use crate::subagent::{PreparedTask, SubAgentExecution, SubAgentRuntime};
 use crate::vision_proxy::KernelVisionProxy;
 
@@ -700,6 +701,20 @@ impl TurnSink for ProtocolSink {
                     message: warning.message,
                 }));
             }
+            // 工具调用随模型流一起给宿主：宿主先把卡片立起来、逐段补参数
+            // （Python 只在批次执行时才画卡片，这是 Rust 侧刻意的增量渲染）。
+            ModelStreamEvent::ToolCallStarted(started) => {
+                connection.notify(HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                    call_id: started.call_id,
+                    tool: started.name,
+                }));
+            }
+            ModelStreamEvent::ToolCallArgumentsDelta(delta) => {
+                connection.notify(HostEvent::ToolCallArguments(ToolCallArgumentsPayload {
+                    call_id: delta.call_id,
+                    delta: delta.delta,
+                }));
+            }
             _ => {}
         }
         SinkFlow::Continue
@@ -1096,7 +1111,39 @@ impl ToolBatchHost for RemoteTools {
             let cancel_source = Rc::clone(&self.conn);
             let cancelled = || cancel_source.borrow().cancel.load(Ordering::SeqCst);
             if !cancelled() {
-                compressor.apply_observations(&mut ordered, &self.task_hint, &cancelled);
+                compressor.apply_observations(
+                    &mut ordered,
+                    &self.task_hint,
+                    &cancelled,
+                    &|phase| {
+                        let event = match phase {
+                            CompressionPhase::Started {
+                                call_id,
+                                tool,
+                                before_chars,
+                            } => HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
+                                call_id: call_id.to_string(),
+                                tool: tool.to_string(),
+                                phase: "started".to_string(),
+                                before_chars,
+                                after_chars: 0,
+                            }),
+                            CompressionPhase::Finished {
+                                call_id,
+                                tool,
+                                before_chars,
+                                after_chars,
+                            } => HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
+                                call_id: call_id.to_string(),
+                                tool: tool.to_string(),
+                                phase: "finished".to_string(),
+                                before_chars,
+                                after_chars,
+                            }),
+                        };
+                        self.conn.borrow_mut().notify(event);
+                    },
+                );
             }
         }
         // `tool_result` 落盘（Python `_execute_tool_batch` 的落盘点在同一个位置）：写的是

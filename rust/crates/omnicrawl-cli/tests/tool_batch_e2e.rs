@@ -911,3 +911,55 @@ fn cancelled_turn_is_recorded_and_the_next_turn_keeps_the_context() {
         "取消也不能丢上下文：{messages}"
     );
 }
+
+
+#[test]
+fn tool_call_arguments_stream_to_the_host() {
+    // 模型流里工具调用的参数要逐段转给宿主（宿主据此增量渲染卡片）：
+    // 内核侧新增 `turn.tool_call_started` / `turn.tool_call_arguments` 两条通知。
+    let stream = tool_call_stream("read_file", r#"{"path": "a.txt"}"#);
+    let server = StubServer::spawn(vec![Reply::Raw(stream), Reply::Text(FINAL_TEXT.to_string())]);
+    let root = temp_root("tool-call-stream");
+    let mut kernel = Kernel::spawn();
+    kernel.initialize(model_config(&server), json!({"root": root_param(&root)}));
+    kernel.send(json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "turn.submit",
+        "params": {"turn_id": "turn-1", "user_text": "读文件"},
+    }));
+
+    let mut methods: Vec<String> = Vec::new();
+    let mut arguments = String::new();
+    loop {
+        let frame = kernel.next_frame();
+        if let Some(method) = frame.get("method").and_then(|value| value.as_str()) {
+            methods.push(method.to_string());
+            if method == "turn.tool_call_arguments" {
+                arguments.push_str(
+                    frame["params"]["delta"].as_str().unwrap_or_default(),
+                );
+            }
+            if method == "turn.finished" {
+                break;
+            }
+        }
+        // 收到批次就照常作答，免得内核一直等宿主。
+        if frame.get("method") == Some(&json!("tool.batch")) {
+            kernel.send(json!({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"observations": [observation_for(&frame["params"], TOOL_OUTPUT)]},
+            }));
+        }
+    }
+    assert!(
+        methods.iter().any(|method| method == "turn.tool_call_started"),
+        "应当收到工具调用开始通知：{methods:?}"
+    );
+    assert!(
+        methods.iter().any(|method| method == "turn.tool_call_arguments"),
+        "应当收到工具调用参数增量：{methods:?}"
+    );
+    assert_eq!(arguments, r#"{"path": "a.txt"}"#, "参数增量拼起来应当等于模型给的那份");
+}

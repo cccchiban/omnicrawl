@@ -23,7 +23,7 @@ use crate::state::{AppState, COMPOSER_MAX_LINES};
 /// 占位文案：`› ` 属于占位符本身（对映 Python `placeholder="› 输入消息或 / 命令"`）。
 const PLACEHOLDER: &str = "› 输入消息或 / 命令";
 /// 卡片上方与消息区之间的空行（CSS `margin: 1 0 0 0`）。
-const MARGIN_TOP: u16 = 1;
+const MARGIN_TOP: u16 = 0;
 /// 圆角边框占的行/列数，也是正文左侧的总缩进（内容紧贴边框）。
 const BORDER: u16 = 1;
 /// 正文左（右）侧的总缩进。

@@ -21,6 +21,24 @@ use std::collections::BTreeMap;
 
 use crate::session::build_model_runtime_with_key;
 
+/// 压缩的阶段事件（内核 → 宿主通知用）。
+///
+/// 只带压缩的计量事实，界面文案由宿主决定（宿主侧同款：`正在压缩…` / `已压缩 a → b`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionPhase<'a> {
+    Started {
+        call_id: &'a str,
+        tool: &'a str,
+        before_chars: usize,
+    },
+    Finished {
+        call_id: &'a str,
+        tool: &'a str,
+        before_chars: usize,
+        after_chars: usize,
+    },
+}
+
 pub struct KernelCompressor {
     runtime: Box<dyn ModelRuntime>,
     model: String,
@@ -189,11 +207,16 @@ impl KernelCompressor {
     /// 把压缩结果写回观察：模型没压小就保留原文（与 Python `_compress_one` 同规则）。
     ///
     /// 返回真正采纳的下标，供调用方记录/展示。
+    /// 压缩阶段回调：宿主据此在界面上显示「正在压缩」/「已压缩 a → b」。
+    ///
+    /// 取引用而不是闭包所有权：`apply_observations` 是 `&self` 方法，调用方要能在回调里
+    /// 借用自己（例如内核借 `Conn` 发通知）。
     pub fn apply_observations(
         &self,
         observations: &mut [omnicrawl_core::AgentLoopObservation],
         task_hint: &str,
         cancelled: &dyn Fn() -> bool,
+        on_phase: &dyn Fn(CompressionPhase<'_>),
     ) -> Vec<usize> {
         let mut applied = Vec::new();
         for (index, observation) in observations.iter_mut().enumerate() {
@@ -208,6 +231,12 @@ impl KernelCompressor {
             let summary = compression_logic::arguments_summary(&serde_json::Value::Object(
                 observation.tool_call.arguments.clone(),
             ));
+            let before_chars = output.chars().count();
+            on_phase(CompressionPhase::Started {
+                call_id: &observation.tool_call.id,
+                tool: &tool_name,
+                before_chars,
+            });
             let compacted = match self.compress(&tool_name, &summary, task_hint, &output) {
                 Ok(text) => text,
                 Err(error) => {
@@ -219,10 +248,17 @@ impl KernelCompressor {
                 eprintln!("[kernel] 工具输出压缩未缩小结果，保留原始输出：{tool_name}");
                 continue;
             }
+            let after_chars = compacted.chars().count();
+            on_phase(CompressionPhase::Finished {
+                call_id: &observation.tool_call.id,
+                tool: &tool_name,
+                before_chars,
+                after_chars,
+            });
             let full = compression_logic::compacted_display(
                 &compacted,
-                compacted.chars().count(),
-                output.chars().count(),
+                after_chars,
+                before_chars,
                 &self.model,
             );
             let tool_call = observation.tool_call.clone();

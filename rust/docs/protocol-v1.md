@@ -263,6 +263,9 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 | `turn.context_compaction` | `{post_turn_context_tokens, trigger_context_tokens, turn_id}` | 回合收尾的压缩触发点（`_trigger_context_compaction_after_turn`）；宿主据此分发 `context.compaction.after_turn` |
 | `turn.model_response_after` | `{model, content, tool_call_count}` | 模型请求返回点（`_request_agent_reply` 里 `model.response.after`）；宿主据此分发 `model.response.after` |
 | `turn.model_request_error` | `{error, model}` | 模型请求以 `AgentProtocolError` 终结（`_request_agent_reply` 里 `model.request.error`）；宿主据此分发 `model.request.error` |
+| `turn.tool_call_started` | `{call_id, tool}` | 无（Rust 侧新增）：模型开始吐一个工具调用，参数还在流里 |
+| `turn.tool_call_arguments` | `{call_id, delta}` | 无（Rust 侧新增）：工具调用参数的增量，可能是半截 JSON |
+| `turn.tool_output_compression` | `{call_id, tool, phase, before_chars, after_chars}` | 无（Rust 侧新增）：工具输出压缩的 `started` / `finished` 两个阶段 |
 | `tool.started` | `{step, call}` | `on_tool_start` |
 | `tool.finished` | `{call, result}` | `on_tool_result` |
 | `tool.output_update` | `{call, result}` | `on_tool_output_update` |
@@ -296,6 +299,14 @@ AgentLoopObservation  {"tool_call": <ToolCall>, "result": <ToolResult>,
 - 同一流内的帧顺序即事件顺序。
 - 内核等待 `tool.batch` 响应期间仍可发通知（`tool.started` 可能先于响应到达宿主）；
   同一 `call_id` 的 `tool.started` 必然先于 `tool.finished`。
+
+- **工具调用的流式渲染**（Rust 侧新增，Python 没有）：内核在**模型还在写参数**时就发
+  `turn.tool_call_started`（带 `call_id` / `tool`）与 `turn.tool_call_arguments`（参数分片），
+  宿主据此先把卡片立起来、逐段补参数（`write_file` / `Edit_file` 的内容预览也跟着长）。
+  批次真正执行时仍然是宿主自己发的 `tool.started` / `tool.finished`，两者靠 `call_id` 对齐。
+- **工具输出压缩的阶段提示**：内核压缩旁路在每个被压缩的观察前后发
+  `turn.tool_output_compression`（`phase=started` 时不带计量，`finished` 带 `before_chars` /
+  `after_chars`，单位是字符数），宿主据此在结果上方显示「正在压缩…」/「已压缩 a → b 字符」。
 - 一个连接同时只跑一个回合；第二个 `turn.submit` 回 `-32002`。
 - 通知不带 `id`；响应必须带回对应请求的 `id`，`id` 允许整数或字符串。
 

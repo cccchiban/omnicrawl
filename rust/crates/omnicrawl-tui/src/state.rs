@@ -3,7 +3,7 @@
 //! 所有状态变化都发生在主线程，事件来源只有两处：内核帧（[`AppState::apply`]）与
 //! 用户输入（输入框与面板）。渲染只读，不修改状态。
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -77,6 +77,23 @@ impl ToolCard {
             None => self.started.elapsed().as_secs_f64(),
         }
     }
+}
+
+/// 一次工具调用在「参数还在流里」阶段的侧信道状态（按 call_id 索引）。
+///
+/// 不塞进 `ToolCard` 的理由：卡片由批次执行（`tool.started`）创建，而这里的条目从模型
+/// 刚吐出 `tool.started`（`turn.tool_call_started`）就存在，两者生命周期不同；压缩提示
+/// 也要在批次执行之后继续挂在卡片上方，所以整轮都留着，回合结束再清。
+#[derive(Debug, Clone, PartialEq)]
+pub struct StreamingTool {
+    /// 累积的 arguments 原文（可能还是半截 JSON）。
+    pub text: String,
+    /// 容错解析出来的参数：流式阶段标题行与文件预览都从这里取。
+    pub arguments: serde_json::Value,
+    /// 压缩阶段提示（`正在压缩…` / `已压缩 a → b 字符`）。
+    pub compression: Option<String>,
+    /// 是否仍在写参数（批次执行开始后置 false，卡片正文改由真实载荷驱动）。
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -559,6 +576,8 @@ pub struct AppState {
     pub status: Option<String>,
     /// 输入框上方那行瞬时提示（拖选复制等）：不进会话流，超过 [`NOTICE_LINE_LINGER`] 自散。
     pub notice_line: Option<(String, Instant)>,
+    /// 本轮「参数还在流里」的工具调用（渲染流式卡片与压缩提示用）。
+    streaming_tools: HashMap<String, StreamingTool>,
     pub todos: Vec<TodoItem>,
     pub paused: bool,
     pub turn: TurnState,
@@ -622,6 +641,7 @@ impl AppState {
             scroll_from_bottom: 0,
             status: None,
             notice_line: None,
+            streaming_tools: HashMap::new(),
             todos: Vec::new(),
             paused: false,
             turn: TurnState::Idle,
@@ -898,7 +918,73 @@ impl AppState {
                 self.telemetry.output_tokens = payload.output_tokens.max(0) as u64;
                 self.telemetry.cached_input_tokens = payload.cached_input_tokens.max(0) as u64;
             }
+            HostEvent::ToolCallStarted(payload) => {
+                // 模型刚开始写这个调用的参数：卡片先立起来，参数随后逐段补
+                // （Python 只在批次执行时才画卡片，这里是 Rust 侧刻意的增量渲染）。
+                self.streaming_tools.insert(
+                    payload.call_id.clone(),
+                    StreamingTool {
+                        text: String::new(),
+                        arguments: serde_json::Value::Object(serde_json::Map::new()),
+                        compression: None,
+                        streaming: true,
+                    },
+                );
+                if self.tool_card_mut(&payload.call_id).is_none() {
+                    self.records.push(Record::Tool(ToolCard {
+                        call_id: payload.call_id.clone(),
+                        name: payload.tool.clone(),
+                        summary: String::new(),
+                        arguments: serde_json::Value::Object(serde_json::Map::new()),
+                        status: ToolStatus::Running,
+                        elapsed: None,
+                        started: now,
+                        body: Vec::new(),
+                    }));
+                }
+            }
+            HostEvent::ToolCallArguments(payload) => {
+                let parsed = {
+                    let Some(entry) = self.streaming_tools.get_mut(&payload.call_id) else {
+                        return;
+                    };
+                    entry.text.push_str(&payload.delta);
+                    entry.arguments = partial_arguments(&entry.text);
+                    entry.arguments.clone()
+                };
+                if let Some(card) = self.tool_card_mut(&payload.call_id) {
+                    card.summary = parsed
+                        .as_object()
+                        .map(host::summarize_arguments)
+                        .unwrap_or_default();
+                }
+            }
+            HostEvent::ToolOutputCompression(payload) => {
+                if let Some(entry) = self.streaming_tools.get_mut(&payload.call_id) {
+                    entry.compression = Some(match payload.phase.as_str() {
+                        "finished" => format!(
+                            "已压缩 {} → {} 字符",
+                            thousands(payload.before_chars),
+                            thousands(payload.after_chars)
+                        ),
+                        _ => "正在压缩…".to_string(),
+                    });
+                }
+            }
             HostEvent::ToolStarted(payload) => {
+                // 流式阶段已经建过卡片的（同 call_id）：就地更新，保持卡片出现的先后顺序，
+                // 用户已经看到的行也不会闪一下再重排。
+                if self.streaming_tools.contains_key(&payload.call.id) {
+                    if let Some(entry) = self.streaming_tools.get_mut(&payload.call.id) {
+                        entry.streaming = false;
+                    }
+                }
+                if let Some(card) = self.tool_card_mut(&payload.call.id) {
+                    card.name = payload.call.name.clone();
+                    card.arguments = serde_json::Value::Object(payload.call.arguments.clone());
+                    card.summary = host::summarize_arguments(&payload.call.arguments);
+                    return;
+                }
                 self.records.push(Record::Tool(ToolCard {
                     call_id: payload.call.id.clone(),
                     name: payload.call.name.clone(),
@@ -929,6 +1015,7 @@ impl AppState {
                 }
             }
             HostEvent::TurnFinished(payload) => {
+                self.streaming_tools.clear();
                 self.turn = TurnState::Idle;
                 self.turn_started = None;
                 self.status = None;
@@ -1401,6 +1488,11 @@ impl AppState {
     }
 
     /// 宿主每帧调一次：把过期的提示行真的清掉（渲染只读，不负责回收）。
+    /// 流式 / 压缩阶段的工具调用侧信道状态（渲染只读）。
+    pub fn streaming_tool(&self, call_id: &str) -> Option<&StreamingTool> {
+        self.streaming_tools.get(call_id)
+    }
+
     pub fn tick_notice_line(&mut self, now: Instant) {
         if self.notice_line.is_some() && self.notice_line_text(now).is_none() {
             self.notice_line = None;
@@ -1652,6 +1744,85 @@ impl AppState {
         card.elapsed = Some(now.saturating_duration_since(card.started));
         card.body = body_lines(&result.output);
     }
+}
+
+/// 从「可能还是半截」的 arguments 原文里尽力取出已经到达的字段。
+///
+/// 模型流里的 arguments 是分片到达的，中途必然是半截 JSON
+/// （`{"path": "a.py", "content": "第一`）。但标题行与 `write_file` / `Edit_file` 的内容预览
+/// 要跟着流一起长出来，所以这里做一次容错解析：先用 `serde_json` 正常解析，失败就按
+/// 「补上收尾」的候选逐个再试（补未闭合的字符串 / 补未闭合的对象），最后退化成
+/// 「截到最后一个完整字段」。
+fn partial_arguments(text: &str) -> serde_json::Value {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if value.is_object() {
+            return value;
+        }
+    }
+    let trimmed = text.trim_end();
+    let quote = '"';
+    let mut candidates = vec![
+        format!("{trimmed}{quote}}}"),
+        format!("{trimmed}}}"),
+    ];
+    if let Some(cut) = last_complete_field(trimmed) {
+        // 截到最后一个完整字段：末尾那个逗号要去掉，否则补出来的对象带尾逗号仍然不合法。
+        candidates.push(format!(
+            "{}}}",
+            trimmed[..cut].trim_end().trim_end_matches(',')
+        ));
+    }
+    for candidate in candidates {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&candidate) {
+            if value.is_object() {
+                return value;
+            }
+        }
+    }
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+/// 半截 JSON 里最后一个「完整顶层字段」的结束位置（逗号之后），没有就返回 None。
+///
+/// 扫描时跟踪字符串状态：字段值内部的逗号不能当分隔符。
+fn last_complete_field(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut last = None;
+    for (index, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth <= 1 => last = Some(index + 1),
+            _ => {}
+        }
+    }
+    last
+}
+
+/// 千分位（`12345` → `12,345`）：压缩前后的字符数动辄五六位，分隔开才好读。
+fn thousands(value: usize) -> String {
+    let digits = value.to_string();
+    let mut out = String::new();
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn body_lines(output: &str) -> Vec<String> {
@@ -2775,4 +2946,118 @@ mod paste_tests {
         composer.insert("（请按这个格式）");
         assert_eq!(composer.take(), format!("{}（请按这个格式）", pasted(7)));
     }
+}
+
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use serde_json::json;
+    use omnicrawl_ipc::bridge::{
+        ToolCallArgumentsPayload, ToolCallStartedPayload, ToolOutputCompressionPayload,
+    };
+
+    #[test]
+    fn partial_arguments_reads_what_has_arrived() {
+        // 完整 JSON 直接解析。
+        let full = partial_arguments(r#"{"path": "a.py", "line": 3}"#);
+        assert_eq!(full["path"], json!("a.py"));
+        assert_eq!(full["line"], json!(3));
+        // 半截：字符串还没闭合、对象也没闭合——已到达的那一段要能取出来。
+        let half = partial_arguments(HALF_JSON);
+        assert_eq!(half["path"], json!("a.py"));
+        assert_eq!(half["content"], json!("第一
+第二"));
+        // 连值都没开始的半截：只拿到前面的字段。
+        let broken = partial_arguments(r#"{"path": "a.py", "cont"#);
+        assert_eq!(broken["path"], json!("a.py"));
+        // 完全不是 JSON：给空对象（渲染退回卡片自己的参数）。
+        assert_eq!(
+            partial_arguments("not json"),
+            serde_json::Value::Object(serde_json::Map::new())
+        );
+    }
+
+    #[test]
+    fn thousands_separates_digits() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_234), "1,234");
+        assert_eq!(thousands(12_345_678), "12,345,678");
+    }
+
+    #[test]
+    fn streaming_card_grows_with_argument_deltas() {
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let now = Instant::now();
+        state.apply(
+            &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+            }),
+            now,
+        );
+        for delta in [r#"{"command": "#, r#""ls -la""#, "}"] {
+            state.apply(
+                &omnicrawl_ipc::HostEvent::ToolCallArguments(ToolCallArgumentsPayload {
+                    call_id: "call-1".to_string(),
+                    delta: delta.to_string(),
+                }),
+                now,
+            );
+        }
+        let entry = state.streaming_tool("call-1").expect("应当有侧信道状态");
+        assert!(entry.streaming, "批次执行前仍处于流式阶段");
+        assert_eq!(entry.arguments["command"], json!("ls -la"));
+        assert_eq!(entry.text, r#"{"command": "ls -la"}"#);
+        // 卡片在流式阶段就已经立起来了（标题走的是容错解析出来的参数）。
+        let lines = crate::ui::conversation::display_lines(&state, 80);
+        let title = lines
+            .iter()
+            .map(|line| {
+                line.line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .find(|text| text.contains("bash"))
+            .expect("流式阶段应当已经有工具卡");
+        assert!(title.contains("ls -la"), "标题应带上已到达的命令：{title}");
+    }
+
+    #[test]
+    fn compression_note_tracks_the_two_phases() {
+        let mut state = AppState::new("proj".to_string(), "model".to_string(), ApprovalMode::Manual);
+        let now = Instant::now();
+        state.apply(
+            &omnicrawl_ipc::HostEvent::ToolCallStarted(ToolCallStartedPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+            }),
+            now,
+        );
+        let phase = |phase: &str, before: usize, after: usize| {
+            omnicrawl_ipc::HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
+                call_id: "call-1".to_string(),
+                tool: "bash".to_string(),
+                phase: phase.to_string(),
+                before_chars: before,
+                after_chars: after,
+            })
+        };
+        state.apply(&phase("started", 12_345, 0), now);
+        assert_eq!(
+            state.streaming_tool("call-1").unwrap().compression.as_deref(),
+            Some("正在压缩…")
+        );
+        state.apply(&phase("finished", 12_345, 1_234), now);
+        assert_eq!(
+            state.streaming_tool("call-1").unwrap().compression.as_deref(),
+            Some("已压缩 12,345 → 1,234 字符")
+        );
+    }
+
+    /// 半截 JSON：字符串与对象都没闭合（模型流中断在这一刻的样子）。
+    const HALF_JSON: &str = r#"{"path": "a.py", "content": "第一\n第二"#;
 }

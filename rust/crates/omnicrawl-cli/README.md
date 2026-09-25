@@ -79,6 +79,14 @@ assistant 原文里的 `function.name`）。所以除了线上那一层，内核
 Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` 不做任何收敛），带 MCP 的
 会话在严格网关上必然失败——这是 Rust 单侧的修正，不是新增功能。
 
+## 工具调用的流式通知
+
+模型流的 `ToolCallStarted` / `ToolCallArgumentsDelta` 会转成 `turn.tool_call_started` /
+`turn.tool_call_arguments` 两条宿主通知（Python 只在批次执行时才画卡片，这是 Rust 侧刻意的
+增量渲染）：宿主先把卡片立起来，参数分片到达时逐段补，`write_file` / `Edit_file` 的内容预览
+因此能跟着模型输出一起长出来。压缩旁路另外发 `turn.tool_output_compression` 的阶段通知
+（`started` / `finished` + 压缩前后字符数），宿主据此显示「正在压缩…」/「已压缩 a → b 字符」。
+
 ## 工具输出压缩旁路
 
 `[tool_output_compression]` 启用时，内核在拿到宿主回传的整批观察后会额外跑一次压缩请求：

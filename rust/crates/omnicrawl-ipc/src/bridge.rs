@@ -67,6 +67,9 @@ pub mod method {
     pub const TURN_MODEL_RESPONSE_AFTER: &str = "turn.model_response_after";
     /// 一次模型请求以协议错误终结（宿主据此分发 `model.request.error`）。
     pub const TURN_MODEL_REQUEST_ERROR: &str = "turn.model_request_error";
+    pub const TURN_TOOL_CALL_STARTED: &str = "turn.tool_call_started";
+    pub const TURN_TOOL_CALL_ARGUMENTS: &str = "turn.tool_call_arguments";
+    pub const TURN_TOOL_OUTPUT_COMPRESSION: &str = "turn.tool_output_compression";
 
     /// 内核在发出模型请求前请宿主运行 `model.request.before` 插件 Hook。
     ///
@@ -133,6 +136,38 @@ pub struct ToolStartedPayload {
 pub struct ToolEventPayload {
     pub call: ToolCall,
     pub result: ToolResult,
+}
+
+/// 模型开始吐一个工具调用（尚未执行）。
+///
+/// 与执行期的 `tool.started` 不同：这条发生在**模型还在写参数**的时候，宿主据此先把卡片
+/// 立起来，后续用 [`ToolCallArgumentsPayload`] 逐段补参数，做到「调用随 API 流一起长大」。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallStartedPayload {
+    pub call_id: String,
+    pub tool: String,
+}
+
+/// 工具调用参数的增量（模型流里的 arguments 分片，可能是半截 JSON）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallArgumentsPayload {
+    pub call_id: String,
+    pub delta: String,
+}
+
+/// 工具输出压缩的阶段通知：`started` 表示正在压缩，`finished` 带上压缩前后的字符数。
+///
+/// 字符数用 `usize`：与内核 `compression` 旁路里 `chars().count()` 同口径（字符，不是字节）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolOutputCompressionPayload {
+    pub call_id: String,
+    pub tool: String,
+    /// `started` / `finished`。
+    pub phase: String,
+    #[serde(default)]
+    pub before_chars: usize,
+    #[serde(default)]
+    pub after_chars: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,6 +257,12 @@ pub enum HostEvent {
     ModelResponseAfter(ModelResponseAfterPayload),
     /// 一次模型请求以协议错误终结（宿主据此分发 `model.request.error`）。
     ModelRequestError(ModelRequestErrorPayload),
+    /// 模型开始吐一个工具调用（参数还在流里）。
+    ToolCallStarted(ToolCallStartedPayload),
+    /// 工具调用参数的增量。
+    ToolCallArguments(ToolCallArgumentsPayload),
+    /// 工具输出压缩的阶段通知。
+    ToolOutputCompression(ToolOutputCompressionPayload),
 }
 
 impl HostEvent {
@@ -238,6 +279,9 @@ impl HostEvent {
         method::TURN_CONTEXT_COMPACTION,
         method::TURN_MODEL_RESPONSE_AFTER,
         method::TURN_MODEL_REQUEST_ERROR,
+        method::TURN_TOOL_CALL_STARTED,
+        method::TURN_TOOL_CALL_ARGUMENTS,
+        method::TURN_TOOL_OUTPUT_COMPRESSION,
         method::TOOL_STARTED,
         method::TOOL_FINISHED,
         method::TOOL_OUTPUT_UPDATE,
@@ -263,6 +307,9 @@ impl HostEvent {
             Self::ContextCompaction(_) => method::TURN_CONTEXT_COMPACTION,
             Self::ModelResponseAfter(_) => method::TURN_MODEL_RESPONSE_AFTER,
             Self::ModelRequestError(_) => method::TURN_MODEL_REQUEST_ERROR,
+            Self::ToolCallStarted(_) => method::TURN_TOOL_CALL_STARTED,
+            Self::ToolCallArguments(_) => method::TURN_TOOL_CALL_ARGUMENTS,
+            Self::ToolOutputCompression(_) => method::TURN_TOOL_OUTPUT_COMPRESSION,
         }
     }
 
@@ -280,6 +327,9 @@ impl HostEvent {
             Self::ContextCompaction(payload) => payload_value(payload),
             Self::ModelResponseAfter(payload) => payload_value(payload),
             Self::ModelRequestError(payload) => payload_value(payload),
+            Self::ToolCallStarted(payload) => payload_value(payload),
+            Self::ToolCallArguments(payload) => payload_value(payload),
+            Self::ToolOutputCompression(payload) => payload_value(payload),
         }
     }
 
@@ -311,6 +361,11 @@ impl HostEvent {
             method::TURN_CONTEXT_COMPACTION => Ok(Self::ContextCompaction(from_params(params)?)),
             method::TURN_MODEL_RESPONSE_AFTER => Ok(Self::ModelResponseAfter(from_params(params)?)),
             method::TURN_MODEL_REQUEST_ERROR => Ok(Self::ModelRequestError(from_params(params)?)),
+            method::TURN_TOOL_CALL_STARTED => Ok(Self::ToolCallStarted(from_params(params)?)),
+            method::TURN_TOOL_CALL_ARGUMENTS => Ok(Self::ToolCallArguments(from_params(params)?)),
+            method::TURN_TOOL_OUTPUT_COMPRESSION => {
+                Ok(Self::ToolOutputCompression(from_params(params)?))
+            }
             other => Err(BridgeError::UnknownMethod(other.to_string())),
         }
     }

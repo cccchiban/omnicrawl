@@ -709,17 +709,38 @@ fn background_line(text: &str, style: Style, width: usize) -> Line<'static> {
 fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state: &AppState) {
     let expanded = state.is_tool_expanded(&card.call_id);
     let result_text = card.body.join("\n");
+    // 参数来源：还在「模型写参数」的流式阶段用侧信道的容错解析结果（可能是半截 JSON，
+    // 但已经到达的 path / command / content 足够把标题与文件预览画出来）；批次执行
+    // 之后一律用卡片自己的真实参数。
+    let streaming = state.streaming_tool(&card.call_id);
+    let arguments = match streaming {
+        Some(entry) if entry.streaming => &entry.arguments,
+        _ => &card.arguments,
+    };
     let title = tool_diff::tool_disclosure_title(
         &card.name,
-        &card.arguments,
+        arguments,
         status_label(card.status),
         card.live_elapsed_seconds(),
         expanded,
         &result_text,
     );
-    for line in title.split_lines() {
+    // 标题超宽时**换行**（不再用省略号截断），续行缩进到参数起始列——也就是
+    // `● bash ls -la` 里 `ls` 所在的那一列，参数列表能对齐着读。
+    for row in tool_title_rows(&title, width) {
         lines.push(DisplayLine::with_hit(
-            message_line(&line, width),
+            row,
+            LineHit::ToolCard {
+                call_id: card.call_id.clone(),
+            },
+        ));
+    }
+
+    // 压缩提示：灰色一行，画在工具结果上方。
+    if let Some(note) = streaming.and_then(|entry| entry.compression.as_deref()) {
+        let text = StyledText::styled(note, theme::TEXT_MUTED);
+        lines.push(DisplayLine::with_hit(
+            message_line(&text, width),
             LineHit::ToolCard {
                 call_id: card.call_id.clone(),
             },
@@ -729,7 +750,7 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     // 正文统一由对映层生成（Python `tool_disclosure_body`）：文件变更工具从参数
     // 画出 diff 预览（运行中也能看到）、read 与记忆/知识库工具正文为空、
     // fetcher 只留 URL/状态/标题、其余工具原样输出。
-    let body = tool_diff::tool_disclosure_body(&card.name, &card.arguments, &result_text);
+    let body = tool_diff::tool_disclosure_body(&card.name, arguments, &result_text);
     let (head, hidden, tail) = if expanded {
         (body.split_lines(), 0, Vec::new())
     } else {
@@ -769,6 +790,48 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
 }
 
 /// 消息内边距 + 一行富文本（工具卡标题用；样式由对映层的拼装结果给出）。
+/// 工具卡标题的显示行：超宽时换行，续行缩进到参数起始列。
+///
+/// 参数起始列从标题的富文本片段推出来：对映层拼的是 `● `（状态点）+ 工具名 + ` 参数…`
+/// （TEXT_MUTED 一段），所以「以空格开头的第一个片段」就是参数段的起点，它的列号再加 1
+/// （那个空格）就是续行该对齐的位置；推不出来时退化成只缩进状态点之后的宽度，
+/// 保证续行仍然比首行更靠里。
+fn tool_title_rows(title: &StyledText, width: usize) -> Vec<Line<'static>> {
+    let pad = MESSAGE_PAD;
+    let pad_width = display_width(pad);
+    let budget = width.saturating_sub(pad_width).max(1);
+    let hang = title_hang(title).min(budget / 2);
+    let rest = budget.saturating_sub(hang).max(1);
+    let spans = title.to_spans();
+    let rows = wrap_spans(&spans, budget, rest);
+    let mut out = Vec::with_capacity(rows.len());
+    for (index, row) in rows.into_iter().enumerate() {
+        let mut spans: Vec<Span<'static>> = vec![Span::raw(pad.to_string())];
+        if index > 0 && hang > 0 {
+            spans.push(Span::raw(" ".repeat(hang)));
+        }
+        spans.extend(row.spans);
+        out.push(Line::from(spans));
+    }
+    out
+}
+
+/// 标题里参数段的起始列（`● bash ls -la` 里 `ls` 的列号）。
+fn title_hang(title: &StyledText) -> usize {
+    let spans = title.spans();
+    let mut column = 0usize;
+    for (index, span) in spans.iter().enumerate() {
+        if index > 0 && span.text.starts_with(' ') {
+            return column + 1;
+        }
+        column += display_width(&span.text);
+    }
+    spans
+        .first()
+        .map(|span| display_width(&span.text))
+        .unwrap_or(0)
+}
+
 fn message_line(text: &StyledText, width: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = vec![Span::raw(MESSAGE_PAD.to_string())];
     spans.extend(truncate_styled(
@@ -1468,6 +1531,47 @@ mod tests {
         assert!(texts(&window(&lines, 4, 6)) == vec!["行0", "行1", "行2", "行3"]);
         assert_eq!(window_range(10, 0, 0), (0, 0));
     }
+    #[test]
+    fn tool_title_wraps_with_the_continuation_under_the_arguments() {
+        // 用户要求：标题超宽要换行，续行对齐到参数起始列（`● bash ls -la` 的 `ls` 下面）。
+        let state = state_with_named_tool(
+            "bash",
+            json!({"command": "ls -la /very/long/path/that/needs/more/room/than/thirty/columns"}),
+            "",
+        );
+        let rows: Vec<String> = display_lines(&state, 30)
+            .iter()
+            .map(|line| {
+                line.line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        let title = rows
+            .iter()
+            .position(|row| row.contains("bash"))
+            .unwrap_or_else(|| panic!("应当有工具卡标题：{rows:?}"));
+        let first = &rows[title];
+        assert!(first.starts_with(" ● bash "), "首行带状态点与工具名：{first:?}");
+        assert!(!first.contains('…'), "不再用省略号截断：{first:?}");
+        // 注意用显示宽度而不是字符下标：状态点 `●` 占两列。
+        let argument_column = display_width(
+            &first[..first
+                .find("ls -la")
+                .unwrap_or_else(|| panic!("首行应当带参数：{rows:?}"))],
+        );
+        assert!(argument_column > 3, "参数在状态点与工具名之后：{first:?}");
+        let second = &rows[title + 1];
+        let indent = second.len() - second.trim_start().len();
+        assert_eq!(
+            indent, argument_column,
+            "续行缩进要对齐到参数起始列：{rows:?}"
+        );
+        assert!(second.trim_start().starts_with('/'), "续行接着参数文本：{second:?}");
+    }
+
 }
 
 #[cfg(test)]
@@ -1509,4 +1613,5 @@ mod scrollbar_tests {
         let short = state_with_lines(2);
         assert_eq!(scroll_offset_for_row(&short, area, 0), Some(0));
     }
+
 }
