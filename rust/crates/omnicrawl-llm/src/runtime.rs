@@ -976,7 +976,7 @@ fn handle_payload(
             return SinkFlow::Cancel;
         }
     }
-    if let Some(text) = non_empty_str(delta.get("reasoning_content")) {
+    if let Some(text) = reasoning_delta_text(delta) {
         if emit(
             events,
             sink,
@@ -994,6 +994,29 @@ fn handle_payload(
         }
     }
     SinkFlow::Continue
+}
+
+/// 增量里的思考内容。
+///
+/// `reasoning_content` 是 OpenAI / DeepSeek 那一系的字段名（Python 侧也只读它），但
+/// OpenAI 兼容网关并不统一：有的用 `reasoning`，有的用 `thinking`，OpenRouter 走
+/// `reasoning_details` 数组。同一帧里可能同时出现多种（例如同时回传 content 版与
+/// details 版），所以按优先级只取**一个**，避免同一段思考被算两遍。
+fn reasoning_delta_text(delta: &Value) -> Option<&str> {
+    for key in ["reasoning_content", "reasoning", "thinking"] {
+        if let Some(text) = non_empty_str(delta.get(key)) {
+            return Some(text);
+        }
+    }
+    let details = delta.get("reasoning_details")?.as_array()?;
+    for item in details {
+        for key in ["text", "content"] {
+            if let Some(text) = non_empty_str(item.get(key)) {
+                return Some(text);
+            }
+        }
+    }
+    None
 }
 
 fn non_empty_str(value: Option<&Value>) -> Option<&str> {
@@ -1140,5 +1163,52 @@ impl Drop for StreamReader {
     fn drop(&mut self) {
         self.abandoned.store(true, Ordering::Relaxed);
         crate::stream_registry::unregister_stream(&self.handle);
+    }
+}
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn reasoning_aliases_are_recognized() {
+        // OpenAI / DeepSeek 口径。
+        assert_eq!(
+            reasoning_delta_text(&json!({"reasoning_content": "想一下"})),
+            Some("想一下")
+        );
+        // 只认非空字符串：有些网关把 reasoning 当开关用。
+        assert_eq!(reasoning_delta_text(&json!({"reasoning": true})), None);
+        assert_eq!(reasoning_delta_text(&json!({"reasoning": ""})), None);
+    }
+
+    #[test]
+    fn alternate_reasoning_keys_and_details_arrays_work() {
+        assert_eq!(
+            reasoning_delta_text(&json!({"reasoning": "换个字段名"})),
+            Some("换个字段名")
+        );
+        assert_eq!(
+            reasoning_delta_text(&json!({"thinking": "思考"})),
+            Some("思考")
+        );
+        assert_eq!(
+            reasoning_delta_text(&json!({
+                "reasoning_details": [{"type": "reasoning.text", "text": "明细"}]
+            })),
+            Some("明细")
+        );
+    }
+
+    #[test]
+    fn the_first_available_key_wins_so_thinking_is_not_counted_twice() {
+        // 同一帧里两种写法都有时只取一个（否则同一段思考会被发两遍）。
+        let delta = json!({
+            "reasoning_content": "主干",
+            "reasoning_details": [{"text": "明细"}]
+        });
+        assert_eq!(reasoning_delta_text(&delta), Some("主干"));
+        assert_eq!(reasoning_delta_text(&json!({})), None);
     }
 }

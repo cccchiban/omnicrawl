@@ -111,7 +111,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     render_scrollbar(frame, inner, total, text.height as usize, start);
 
     if state.composer.is_empty() {
-        // 占位文案：弱化色，不带光标（对映 TextArea 的 placeholder 行为）。
+        // 占位文案：弱化色；**光标照样画**（用户要求空白时也看得到插入点，
+        // 与 TextArea 在 placeholder 上仍显示光标的行为一致）。
         frame.render_widget(
             Paragraph::new(Line::styled(
                 PLACEHOLDER,
@@ -119,6 +120,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
             )),
             text,
         );
+        let line = lines.first().cloned().unwrap_or_default();
+        paint_block_cursor(frame.buffer_mut(), text, &line, 0, 0);
         return;
     }
 
