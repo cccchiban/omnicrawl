@@ -1,10 +1,12 @@
-//! 渲染层：两行 HUD、消息流、任务清单、待决面板、状态行与输入框。
+//! 渲染层：消息流、任务清单、待决面板、输入卡与底部单行轮播 HUD。
 //!
 //! 消息区在渲染前先按真实列宽软折行，滚动窗口因此按显示行精确计算，
 //! 不依赖终端自己的换行结果。
 //!
 //! `fullscreen/` 是 Python `omnicrawl/ui/fullscreen/` 的逐层对映实现（按目录
 //! 对齐、行为与视觉对齐），上述模块是该对映层完成后要退役的早期简化页面。
+//! 本层已按 Python 当前版式对齐：底部单行轮播 HUD、悬浮圆角输入卡、`user：` 标签
+//! 消息、无边框工具卡（`●` 状态点 + 缩进正文）、会话流内的运行状态行。
 
 pub mod composer;
 pub mod config_chat;
@@ -18,14 +20,21 @@ pub mod settings;
 pub mod splash;
 
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::text::Span;
 use ratatui::Frame;
 
 use crate::state::AppState;
+use crate::ui::fullscreen::terminal::theme;
+use crate::ui::fullscreen::text::StyledText;
 
-/// HUD 固定两行：一行遥测、一行项目与上下文占用。
-pub const HUD_HEIGHT: u16 = 2;
+/// 底部单行轮播 HUD 占一行（对映 CSS `#bottom-carousel { height: 1 }`）。
+pub const HUD_HEIGHT: u16 = 1;
 
 /// 一帧的各区几何：渲染与鼠标命中判定共用同一套布局计算，两者永远一致。
+///
+/// 与 Python 的 `#shell` 一致，自上而下是：会话区（吃剩余高度）→ 计划区 → 待决面板 →
+/// 排队预览 → 命令菜单 → 输入卡 → 底部轮播 HUD。运行状态行不再单占条带：
+/// 它作为会话流里的一条临时消息渲染（对映 `.runtime-status-message`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiAreas {
     pub hud: Rect,
@@ -33,7 +42,6 @@ pub struct UiAreas {
     pub todos: Rect,
     pub panel: Rect,
     pub queue: Rect,
-    pub status: Rect,
     /// 输入框上方的命令菜单（对映 Python `#composer-wrap` 里的菜单行预算）。
     pub menu: Rect,
     pub composer: Rect,
@@ -42,16 +50,15 @@ pub struct UiAreas {
 /// 按当前状态把整屏切成固定条带；消息区吃剩余高度。
 pub fn layout(area: Rect, state: &AppState) -> UiAreas {
     let width = area.width;
-    let [hud, conversation, todos, panel, queue, status, menu, composer] = Layout::vertical([
-        Constraint::Length(HUD_HEIGHT),
+    let [conversation, todos, panel, queue, menu, composer, hud] = Layout::vertical([
         // 消息区吃掉除固定条带外的全部高度；用 Fill 而不是 Min，避免多余空间落到布局末尾。
         Constraint::Fill(1),
         Constraint::Length(panels::todo_height(state)),
         Constraint::Length(panels::panel_height(state, width)),
         Constraint::Length(queue::height(state)),
-        Constraint::Length(panels::status_height(state)),
         Constraint::Length(composer::menu_height(state)),
         Constraint::Length(composer::height(state, width)),
+        Constraint::Length(HUD_HEIGHT),
     ])
     .areas(area);
     UiAreas {
@@ -60,7 +67,6 @@ pub fn layout(area: Rect, state: &AppState) -> UiAreas {
         todos,
         panel,
         queue,
-        status,
         menu,
         composer,
     }
@@ -92,14 +98,13 @@ pub fn render(
     let width = area.width;
     let regions = layout(area, state);
 
-    hud::render(frame, regions.hud, state);
     conversation::render(frame, regions.conversation, state);
     panels::render_todos(frame, regions.todos, state, width);
     panels::render_panel(frame, regions.panel, state, width);
     queue::render(frame, regions.queue, state);
-    panels::render_status(frame, regions.status, state);
     composer::render_menu(frame, regions.menu, state);
     composer::render(frame, regions.composer, state);
+    hud::render(frame, regions.hud, state);
 }
 
 /// 按显示列宽折行；CJK 与 emoji 各占自己的列宽，阶段一按列断行，不做单词级避断。
@@ -124,6 +129,55 @@ pub fn wrap_display(text: &str, width: usize) -> Vec<String> {
     }
     lines.push(current);
     lines
+}
+
+/// 按显示宽度截断富文本，保留原有样式；被截断时以弱化色的 `…` 收尾。
+///
+/// 消息流行与底部轮播行都按显示列宽切，不能按字节或字符数算——CJK 与 emoji
+/// 各占自己的列宽（对映 Python 的 `text-overflow: ellipsis`）。
+pub fn truncate_styled(text: &StyledText, width: usize) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    // 先摊平成「字符 + 样式串」，再逐字符累加宽度决定截断点。
+    let cells: Vec<(char, &str)> = text
+        .spans()
+        .iter()
+        .flat_map(|span| span.text.chars().map(move |ch| (ch, span.style.as_str())))
+        .collect();
+    let total: usize = cells
+        .iter()
+        .map(|(ch, _)| unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0))
+        .sum();
+    let truncated = total > width;
+    // 截断时留一格给省略号。
+    let budget = if truncated { width - 1 } else { width };
+    let mut used = 0usize;
+    let mut kept: Vec<(char, &str)> = Vec::new();
+    for (ch, style) in cells {
+        let cell = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cell > budget {
+            break;
+        }
+        used += cell;
+        kept.push((ch, style));
+    }
+    // 同一样式的相邻字符合并成一个 span，避免一行内出现大量碎片。
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut index = 0usize;
+    while index < kept.len() {
+        let style = kept[index].1;
+        let mut chunk = String::new();
+        while index < kept.len() && kept[index].1 == style {
+            chunk.push(kept[index].0);
+            index += 1;
+        }
+        spans.push(Span::styled(chunk, theme::rich_style(style)));
+    }
+    if truncated {
+        spans.push(Span::styled("…", theme::rich_style(theme::TEXT_MUTED)));
+    }
+    spans
 }
 
 /// 截到指定显示宽度，超出时以 `…` 收尾。

@@ -163,6 +163,8 @@ fn event_loop(
         app.tick_welcome_logo_animation(Instant::now());
         app.tick_subagent_trees();
         app.tick_tts_tasks();
+        // 底部单行轮播：遥测 → 工作区路径 → 留言，各 10s，切换时解密扫描。
+        app.tick_carousel(Instant::now());
         // 慢命令（`/workspace`、`/mcp`）的后台结果：工作区切换在这里提交。
         app.tick_slow_command();
         app.tick_config_chat();

@@ -1,324 +1,127 @@
-//! 顶部两行 HUD：内容驱动的分段 + 行尾版本号，窄屏按重要性逐段收缩。
+//! 底部单行轮播 HUD（对映 Python `#bottom-carousel`）。
 //!
-//! 分段贴齐（段内自带前后空格，段间用 `│` 分隔），宽度由内容决定；这与 Python
-//! `ui/fullscreen/status/hud.py` 的口径一致——那边同样是「不补固定宽度、超长值由
-//! `compact_hud_value` 截断」。窄屏下不靠 ratatui 裁剪，而是先按重要性丢段
-//! （版本号最后丢、工作区与模型最先缩短），保证任何宽度下都填满一行且没有半截字符。
+//! 内容与状态机都在对映层：`fullscreen/status/hud.rs` 负责分段文本（遥测 + 模型状态、
+//! 工作区路径、留言），`fullscreen/status/indicators.rs` 的 [`Carousel`] 负责「遥测 →
+//! 工作区路径 → 留言」三页各 10s 循环与换页时的解密扫描特效。本模块只做装配：
+//! 把 [`AppState::carousel_text`] 画成贴齐屏幕底缘的一行——左侧内边距与输入框卡片的
+//! 左边框对齐（对映 CSS `padding: 0 1 0 0`），超宽按显示宽度以 `…` 收尾
+//! （对映 `text-overflow: ellipsis`）。
 //!
-//! 阶段一仍然只保留有真实数据来源的分段：模型与工作区来自启动配置，上下文与用量来自
-//! 内核的 `turn.token_usage`，MCP 来自启动期发现到的启用 Server 数，队列来自排队预览。
+//! 与 Python 一致，这一行不再显示版本号：版本在启动画面与 `/version` 里给，
+//! 常驻底栏只保留会话态数据。
+//!
+//! [`Carousel`]: crate::ui::fullscreen::status::indicators::Carousel
+//! [`AppState::carousel_text`]: crate::state::AppState::carousel_text
 
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::fullscreen::status::hud::compact_hud_value;
-use super::{display_width, fit};
+use super::truncate_styled;
 use crate::state::AppState;
+use crate::ui::fullscreen::text::StyledText;
 
-/// 分隔符；Python HUD 用 ⁕，简化页沿用 `│`。
-const SEPARATOR: &str = "│";
-/// 工具段宽度上限：留出整行宽度给后面还能显示的段。
-const PRJ_LIMIT: usize = 40;
-const MDL_LIMIT: usize = 18;
+/// 底部轮播的左内边距：内容与输入框卡片内的文字同列（对映 CSS `padding: 0 1 0 0`
+/// 与 `#composer-wrap` 的左边框/内边距）。
+const LEFT_PAD: usize = 1;
 
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    let [top, bottom] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
-    frame.render_widget(Paragraph::new(line_one(state, area.width)), top);
-    frame.render_widget(Paragraph::new(line_two(state, area.width)), bottom);
-}
-
-/// 一个候补分段：越靠后被裁掉得越早。
-struct Segment {
-    text: String,
-    style: Style,
-}
-
-impl Segment {
-    fn plain(text: String) -> Self {
-        Self {
-            text,
-            style: Style::new(),
-        }
+    if area.height == 0 || area.width == 0 {
+        return;
     }
-
-    fn styled(text: String, style: Style) -> Self {
-        Self { text, style }
-    }
-
-    fn width(&self) -> usize {
-        display_width(&self.text)
-    }
+    let line = line_of(&state.carousel_text, area.width as usize);
+    frame.render_widget(Paragraph::new(line), area);
 }
 
-/// 第一行：工作区 │ 模型 │ 审批模式 │ QUE │ MCP │ … 版本号。
-pub fn line_one(state: &AppState, width: u16) -> Line<'static> {
-    let segments = vec![
-        Segment::plain(compact_hud_value(&state.project, PRJ_LIMIT)),
-        Segment::plain(compact_hud_value(&state.model, MDL_LIMIT)),
-        Segment::plain(state.approval.label().to_string()),
-        Segment::styled(
-            format!("QUE {}", state.pending_inputs.len()),
-            Style::new().add_modifier(Modifier::DIM),
-        ),
-        Segment::styled(
-            format!("MCP {}", state.mcp_servers),
-            Style::new().add_modifier(Modifier::DIM),
-        ),
-    ];
-    assemble(segments, width, &state.version)
-}
-
-/// 第二行：项目名 │ 上下文占用 │ 用量 │ tok/s │ … 版本号。
-pub fn line_two(state: &AppState, width: u16) -> Line<'static> {
-    let telemetry = &state.telemetry;
-    let segments = vec![
-        Segment::plain(compact_hud_value(&state.project, MDL_LIMIT)),
-        Segment::styled(
-            context_segment(telemetry.input_tokens, telemetry.context_window),
-            Style::new().add_modifier(Modifier::DIM),
-        ),
-        Segment::plain(format!("IN {}", format_tokens(telemetry.input_tokens))),
-        Segment::plain(format!("OUT {}", format_tokens(telemetry.output_tokens))),
-        Segment::plain(format!(
-            "CA {}",
-            format_tokens(telemetry.cached_input_tokens)
-        )),
-        Segment::plain(format!("tok/s {}", format_rate(telemetry.rate.value()))),
-    ];
-    assemble(segments, width, &state.version)
-}
-
-/// 把候选分段排成恰好 `width` 列的一行。
+/// 轮播整行 → ratatui 行：左内边距 + 逐字符按显示宽度截断（带省略号）。
 ///
-/// 规则（窄屏收缩顺序）：
-/// 1. 逐个尝试加入分段：能放下才加，放不下就跳过该段并继续试后面的短段——
-///    这样窄屏掉的是「放不下的那一段」，而不是把后面全丢掉；
-/// 2. 行尾版本号优先于任何可选段：只有放得下版本号时才继续加段，
-///    否则回退已加入的可选段腾出空间；
-/// 3. 第一段永远保留（截断到可用宽度），保证窄屏下仍有工作区/项目标识；
-/// 4. 剩余空间补在版本号左侧，行首行尾都没有多余空白。
-fn assemble(segments: Vec<Segment>, width: u16, version: &str) -> Line<'static> {
-    let width = width as usize;
-    let version_width = display_width(version);
+/// 纯函数，便于单测：给定任意 [`StyledText`] 与列宽都返回不超过该宽度的行。
+pub fn line_of(text: &StyledText, width: usize) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
-    // 版本号与它前面那一格空隙一起占用右侧，先预留出来：可选段只在预算内加入。
-    let budget = width.saturating_sub(version_width + 1);
-    for (index, segment) in segments.into_iter().enumerate() {
-        let separator = if index == 0 {
-            String::new()
-        } else {
-            SEPARATOR.to_string()
-        };
-        let cost = display_width(&separator) + segment.width();
-        if index > 0 && used + cost > budget {
-            continue;
-        }
-        if index == 0 {
-            // 第一段永远保留：按剩余预算截断（窄屏下尾部以 … 收尾）。
-            let room = budget.saturating_sub(used);
-            let text = fit(&segment.text, room);
-            used += display_width(&text);
-            spans.push(Span::styled(text, segment.style));
-            continue;
-        }
-        if !separator.is_empty() {
-            spans.push(separator_span());
-        }
-        used += cost;
-        spans.push(Span::styled(segment.text.clone(), segment.style));
+    if width == 0 {
+        return Line::from(spans);
     }
-
-    if used + version_width <= width {
-        let filler = width - used - version_width;
-        spans.push(Span::raw(" ".repeat(filler)));
-        spans.push(Span::styled(version.to_string(), Style::new().dim()));
+    spans.push(Span::raw(" ".repeat(LEFT_PAD.min(width))));
+    if width <= LEFT_PAD {
+        return Line::from(spans);
     }
-    // 版本号都放不下时（极窄终端）不再强行追加，避免行宽超过终端。
-    let rendered = Line::from(spans);
-    let fitted = display_width(&line_text(&rendered));
-    if fitted > width {
-        return Line::from(fit(&line_text(&rendered), width));
-    }
-    rendered
-}
-
-fn separator_span() -> Span<'static> {
-    Span::styled(SEPARATOR, Style::new().fg(Color::DarkGray))
-}
-
-fn line_text(line: &Line<'static>) -> String {
-    line.spans
-        .iter()
-        .map(|span| span.content.to_string())
-        .collect()
-}
-
-/// `50% ▓▓░░ 0.5M/1M`：上下文占用；总量未知时显示 `--` 而不是编造分母。
-fn context_segment(used: u64, window: Option<u64>) -> String {
-    let total = window.unwrap_or(0);
-    match (used.min(total) * 100).checked_div(total) {
-        Some(percent) => format!(
-            "{percent}% {}/{}",
-            format_tokens(used.min(total)),
-            format_tokens(total)
-        ),
-        None => format!("-- {}/--", format_tokens(used)),
-    }
-}
-
-fn format_tokens(value: u64) -> String {
-    let scale = |divisor: f64, suffix: &str| {
-        let text = format!("{:.1}", value as f64 / divisor);
-        let text = text.strip_suffix(".0").unwrap_or(&text).to_string();
-        format!("{text}{suffix}")
-    };
-    match value {
-        0..=999 => value.to_string(),
-        1_000..=999_999 => scale(1_000.0, "K"),
-        _ => scale(1_000_000.0, "M"),
-    }
-}
-
-fn format_rate(value: Option<f64>) -> String {
-    match value {
-        Some(rate) => format!("{rate:.1}"),
-        None => "--".to_string(),
-    }
+    spans.extend(truncate_styled(text, width - LEFT_PAD));
+    Line::from(spans)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::args::ApprovalMode;
-    use crate::state::Telemetry;
+    use crate::ui::display_width;
+    use crate::ui::fullscreen::status::hud::{status_summary_text, token_telemetry_text};
+    use crate::ui::fullscreen::terminal::theme;
 
-    fn state() -> AppState {
-        AppState::new(
-            "omnicrawl".to_string(),
-            "deepseek-v4-flash".to_string(),
-            ApprovalMode::Manual,
-        )
+    fn telemetry_line(width: usize) -> Line<'static> {
+        let mut text = token_telemetry_text(1_200, 300, 600, 128_000, 12.3);
+        text.append_text(&status_summary_text("review", 2, 1, "deepseek-v4", "high"));
+        line_of(&text, width)
     }
 
-    fn text_of(line: &Line<'static>) -> String {
-        line_text(line)
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect()
     }
 
     #[test]
-    fn lines_fill_exact_terminal_width_at_every_size() {
-        for width in [24u16, 32, 40, 60, 80, 110, 200] {
-            let state = state();
-            for (name, line) in [
-                ("第一行", line_one(&state, width)),
-                ("第二行", line_two(&state, width)),
-            ] {
-                let text = text_of(&line);
-                assert!(
-                    display_width(&text) <= width as usize,
-                    "{name}在宽度 {width} 下超宽：{text:?}"
-                );
-                assert!(
-                    display_width(&text) >= width as usize - 1,
-                    "{name}在宽度 {width} 下没有填满（应有版本号前的弹性留白）：{text:?}"
-                );
+    fn telemetry_page_carries_python_segments() {
+        let text = line_text(&telemetry_line(120));
+        assert!(text.contains("1.2K/128K 1%"), "{text}");
+        assert!(text.contains("t/s"), "{text}");
+        assert!(text.contains("deepseek-v4"), "{text}");
+        assert!(text.contains("THK HIGH"), "{text}");
+        assert!(text.contains("APR REV"), "{text}");
+        assert!(text.contains("MCP 2"), "{text}");
+        assert!(text.contains("QUE 1"), "{text}");
+        assert!(!text.contains('│'), "底栏改用 ⁕ 分隔，不再用竖线：{text}");
+    }
+
+    #[test]
+    fn line_starts_with_the_left_padding_and_never_exceeds_width() {
+        for width in [8usize, 20, 40, 120, 200] {
+            let line = telemetry_line(width);
+            let text = line_text(&line);
+            assert!(
+                display_width(&text) <= width,
+                "宽度 {width} 下超宽：{text:?}"
+            );
+            if width > LEFT_PAD {
+                assert!(text.starts_with(' '), "缺少左内边距：{text:?}");
             }
         }
     }
 
     #[test]
-    fn wide_rows_end_with_the_version() {
-        let state = state();
-        for width in [80u16, 130, 200] {
-            for line in [line_one(&state, width), line_two(&state, width)] {
-                let text = text_of(&line);
-                assert_eq!(display_width(&text), width as usize, "{text:?}");
-                assert!(text.ends_with(&state.version), "版本号应在行尾：{text:?}");
-            }
-        }
+    fn overlong_text_is_ellipsized() {
+        let mut text = StyledText::new();
+        text.push(&"a".repeat(60), theme::TEXT_PRIMARY);
+        let line = line_of(&text, 20);
+        let rendered = line_text(&line);
+        assert_eq!(display_width(&rendered), 20);
+        assert!(rendered.ends_with('…'), "{rendered:?}");
+        // 空宽度只保留内边距，不 panic。
+        assert!(line_text(&line_of(&text, 0)).is_empty());
     }
 
     #[test]
-    fn narrow_rows_drop_optional_segments_but_keep_the_identity() {
-        let mut state = state();
-        state.pending_inputs.push_back("排队".to_string());
-        state.mcp_servers = 3;
-
-        let narrow = text_of(&line_one(&state, 24));
-        assert!(
-            narrow.starts_with("omnicrawl"),
-            "窄屏仍要保留工作区标识：{narrow:?}"
-        );
-        assert!(
-            !narrow.contains("MCP") && !narrow.contains("QUE"),
-            "窄屏先丢尾部可选段：{narrow:?}"
-        );
-
-        let wide = text_of(&line_one(&state, 110));
-        assert!(wide.contains("QUE 1"), "{wide:?}");
-        assert!(wide.contains("MCP 3"), "{wide:?}");
-    }
-
-    #[test]
-    fn very_narrow_terminal_keeps_the_version_inside_the_row() {
-        let state = state();
-        let text = text_of(&line_one(&state, 8));
-        assert_eq!(display_width(&text), 8, "{text:?}");
-        assert!(text.ends_with(&state.version), "版本号仍要在行尾：{text:?}");
-
-        // 比版本号还窄的终端：不追加版本号，整行按预算截断，绝不超宽。
-        let tiny = text_of(&line_one(&state, 4));
-        assert!(display_width(&tiny) <= 4, "{tiny:?}");
-    }
-
-    #[test]
-    fn long_fields_are_compacted_with_head_and_tail() {
-        let mut state = state();
-        state.project = format!("{}/{}", "a".repeat(40), "b".repeat(40));
-        state.model = "m".repeat(60);
-        let text = text_of(&line_one(&state, 160));
-        assert!(text.contains('…'), "超长字段应保留首尾并在中间省略：{text}");
-        assert_eq!(display_width(&text), 160);
-    }
-
-    #[test]
-    fn context_segment_reports_usage_or_unknown_limit() {
-        let mut state = state();
-        state.telemetry = Telemetry {
-            input_tokens: 500_000,
-            output_tokens: 2_400,
-            cached_input_tokens: 7_100,
-            context_window: Some(1_000_000),
-            rate: crate::state::RateEstimator::default(),
-        };
-        let text = text_of(&line_two(&state, 120));
-        assert!(text.contains("50% 500K/1M"), "{text}");
-        assert!(text.contains("IN 500K"), "{text}");
-        assert!(text.contains("OUT 2.4K"), "{text}");
-        assert!(text.contains("CA 7.1K"), "{text}");
-        assert!(text.contains("tok/s --"), "{text}");
-
-        state.telemetry.context_window = None;
-        let unknown = text_of(&line_two(&state, 120));
-        assert!(
-            unknown.contains("-- 500K/--"),
-            "总量未知时不编造分母：{unknown}"
-        );
-    }
-
-    #[test]
-    fn token_and_rate_formatting_matches_hud_conventions() {
-        assert_eq!(format_tokens(0), "0");
-        assert_eq!(format_tokens(999), "999");
-        assert_eq!(format_tokens(1_000), "1K");
-        assert_eq!(format_tokens(18_600), "18.6K");
-        assert_eq!(format_tokens(1_000_000), "1M");
-        assert_eq!(format_tokens(2_400_000), "2.4M");
-        assert_eq!(format_rate(None), "--");
-        assert_eq!(format_rate(Some(12.34)), "12.3");
+    fn styles_survive_the_truncation() {
+        let mut text = StyledText::new();
+        text.push("问题", theme::ACCENT_RED);
+        text.push(" ", theme::TEXT_MUTED);
+        text.push("ok", theme::ACCENT_GREEN);
+        let line = line_of(&text, 40);
+        let styles: Vec<String> = line
+            .spans
+            .iter()
+            .map(|span| format!("{:?}", span.style))
+            .collect();
+        assert_eq!(line.spans.len(), 4, "内边距 + 三段样式：{styles:?}");
     }
 }

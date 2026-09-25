@@ -538,6 +538,10 @@ impl App {
                 LlmConfig::with_environment(&ConfigEnvironment::from_process())
             }
         };
+        // 上下文占用段用「CLI 显式值 → 配置」的同一套口径（与发给内核的 handshake 一致）；
+        // 只认 CLI 值会出现总量未知的 `0/1 0%`，而且与内核的实际窗口不一致。
+        let context_window = effective_context_window(options.context_window_tokens, &llm);
+        state.telemetry.context_window = u64::try_from(context_window).ok().filter(|value| *value > 0);
         // 插件运行期：启动失败只影响插件本身，工作台照常可用（诊断进对话流）。
         let plugins = Arc::new(PluginHost::from_environment(
             &ConfigEnvironment::from_process(),
@@ -815,6 +819,15 @@ impl App {
         if self.state.logo.is_playing() {
             self.state.logo.tick(now);
         }
+    }
+
+    /// 推进底部单行轮播（对映 Python 把轮播停留/帧定时器交给 Textual 的做法）。
+    ///
+    /// 页面切换与解密扫描都由 [`AppState::refresh_carousel`] 驱动；推理强度不在界面
+    /// 状态里（它属于模型配置），因此从宿主配置透传。
+    pub fn tick_carousel(&mut self, now: Instant) {
+        let reasoning_effort = self.llm.reasoning_effort.clone();
+        self.state.refresh_carousel(now, &reasoning_effort);
     }
 
     /// 推进活跃子任务进度树的运行耗时（对映 Python 的 80ms 耗时定时器）。
@@ -1422,15 +1435,15 @@ impl App {
         let relative = (row - areas.conversation.y) as usize;
         let hit = conversation::hit_test(
             &self.state,
-            areas.conversation.width,
-            areas.conversation.height as usize,
+            areas.conversation,
             self.state.scroll_from_bottom,
             relative,
         );
         match hit {
             Some(LineHit::ToolHint { call_id }) => self.state.expand_tool(&call_id),
             Some(LineHit::ToolCard { call_id }) => {
-                self.state.toggle_tool_expanded(&call_id);
+                // 对映 Python：缩略态点卡片无效，展开态点卡片才是收起。
+                self.state.collapse_tool(&call_id);
             }
             Some(LineHit::Reasoning { index }) => {
                 self.state.toggle_reasoning_expanded(index);

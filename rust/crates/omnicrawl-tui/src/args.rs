@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::features::approval::load_approval_mode;
 use omnicrawl_config::models::llm::load_llm_config;
 
 /// 阶段一的默认系统提示词；给了 `--system-prompt` 或环境变量时以它们为准。
@@ -89,7 +90,8 @@ pub const USAGE: &str = "\
   --system-prompt <文本>   系统提示词
   --session-root <目录>    会话根目录；给了就让内核自己持有会话
   --context-window <N>     HUD 上下文占用条的分母（token）
-  --approval <manual|auto> 工具审批模式（默认 manual）
+  --approval <manual|review|auto>
+                           工具审批模式（默认读 config.toml 的 [approval] mode，没配时为 review）
   --command-timeout <秒>   命令类工具默认超时（默认 360）
   --tool-timeout <秒>      单个工具执行的最长等待（默认 600）
   --native-vision          模型原生支持视觉：把 read_image 的图片注入请求
@@ -104,22 +106,23 @@ pub const USAGE: &str = "\
   --version, -V            打印版本
   --help, -h               打印本说明";
 
-/// 按「命令行 → 环境变量 → 默认值」解析参数；`env` 便于测试注入。
+/// 按「命令行 → 环境变量 → 配置文件 → 默认值」解析参数；`env` 便于测试注入。
 pub fn parse(
     args: &[String],
     env: &dyn Fn(&str) -> Option<String>,
     exe_dir: &Path,
 ) -> Result<Parsed, String> {
-    parse_with(args, env, exe_dir, &configured_model)
+    parse_with(args, env, exe_dir, &configured_model, &configured_approval)
 }
 
-/// [`parse`] 的实现。模型名的最后一级回退（读 config.toml）也作为参数注入：
-/// 测试才能在不依赖开发机真实配置的前提下覆盖「配置里也没有模型」这一分支。
+/// [`parse`] 的实现。最后一级回退（读 config.toml）也作为参数注入：
+/// 测试才能在不依赖开发机真实配置的前提下覆盖「配置里也没有/取不到」这两个分支。
 fn parse_with(
     args: &[String],
     env: &dyn Fn(&str) -> Option<String>,
     exe_dir: &Path,
-    configured: &dyn Fn() -> Result<String, String>,
+    configured_model: &dyn Fn() -> Result<String, String>,
+    configured_approval: &dyn Fn() -> Result<ApprovalMode, String>,
 ) -> Result<Parsed, String> {
     let mut kernel: Option<PathBuf> = None;
     let mut model: Option<String> = None;
@@ -229,7 +232,7 @@ fn parse_with(
         .or_else(|| non_empty(env("OPENAI_MODEL")))
     {
         Some(model) => model,
-        None => configured().map_err(|error| {
+        None => configured_model().map_err(|error| {
             format!(
                 "--model 未给出，环境变量 OMNICRAWL_MODEL / OPENAI_MODEL 也是空的，\
 且从 config.toml 取模型失败：{error}\
@@ -266,7 +269,18 @@ fn parse_with(
         session_root: session_root
             .or_else(|| non_empty(env("OMNICRAWL_SESSION_ROOT")).map(PathBuf::from)),
         context_window_tokens: context_window,
-        approval: approval.unwrap_or(ApprovalMode::Manual),
+        // 审批模式对映 Python `load_approval_mode()`：命令行给 `--approval` 时以命令行
+        // 为准，否则读 config.toml（`[approval] mode`，缺失时与 Python 一致回落「自动
+        // 审查」）。配置读不出来/取值非法时直接报错，不静默降级：审批策略静默变化
+        // 比启动失败危险得多（Python 侧同样是启动即抛）。
+        approval: match approval {
+            Some(mode) => mode,
+            None => configured_approval().map_err(|error| {
+                format!(
+                    "从 config.toml 读取审批模式失败：{error}\n可用 --approval <manual|review|auto> 覆盖。"
+                )
+            })?,
+        },
         command_timeout_seconds: command_timeout.unwrap_or(360),
         tool_timeout_seconds: tool_timeout
             .or_else(|| {
@@ -357,6 +371,16 @@ fn configured_model() -> Result<String, String> {
     Ok(model)
 }
 
+/// 从配置里取审批模式（`[approval] mode`；没配时与 Python 一样是「自动审查」）。
+///
+/// 解析（别名、默认值、报错文案）全在 `omnicrawl-config` 的 `load_approval_mode` 里，
+/// 与 Python `omnicrawl/config/features/approval.py` 逐字对映，这里只做枚举转换。
+fn configured_approval() -> Result<ApprovalMode, String> {
+    let environment = ConfigEnvironment::from_process();
+    let mode = load_approval_mode(&environment, None).map_err(|error| error.to_string())?;
+    ApprovalMode::parse(&mode)
+}
+
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|text| !text.trim().is_empty())
 }
@@ -440,10 +464,32 @@ mod tests {
         Err("测试：config.toml 里没有模型。".to_string())
     }
 
+    /// 测试默认的审批模式回退。真实链路里 `[approval]` 段缺失时是「自动审查」
+    /// （见 `omnicrawl-config` 的 `load_approval_mode`），这里同样用 review 代表
+    /// 「配置给不出更具体的信息」的那一档。
+    fn no_configured_approval() -> Result<ApprovalMode, String> {
+        Ok(ApprovalMode::Review)
+    }
+
     fn options(args: &[&str], env: &dyn Fn(&str) -> Option<String>) -> Options {
+        options_with_approval(args, env, &no_configured_approval)
+    }
+
+    /// 注入「config.toml 里写的审批模式」的版本（真实配置文件不能进断言）。
+    fn options_with_approval(
+        args: &[&str],
+        env: &dyn Fn(&str) -> Option<String>,
+        approval: &dyn Fn() -> Result<ApprovalMode, String>,
+    ) -> Options {
         let args: Vec<String> = args.iter().map(|value| value.to_string()).collect();
-        match parse_with(&args, env, Path::new("C:/tools"), &no_configured_model)
-            .expect("参数应能解析")
+        match parse_with(
+            &args,
+            env,
+            Path::new("C:/tools"),
+            &no_configured_model,
+            approval,
+        )
+        .expect("参数应能解析")
         {
             Parsed::Run(options) => *options,
             other => panic!("期望运行配置，拿到 {other:?}"),
@@ -469,7 +515,8 @@ mod tests {
         assert_eq!(options.model, "cli-model");
         assert_eq!(options.base_url, "https://cli.example/v1");
         assert_eq!(options.api_key_env, "OPENAI_API_KEY");
-        assert_eq!(options.approval, ApprovalMode::Manual);
+        // 没给 `--approval` 时取配置兜底（上文的注入值），不再是硬编码的 manual。
+        assert_eq!(options.approval, ApprovalMode::Review);
         assert_eq!(options.command_timeout_seconds, 360);
         assert_eq!(options.tool_timeout_seconds, 600);
         assert!(options.session_root.is_none());
@@ -499,6 +546,7 @@ mod tests {
             &no_env,
             Path::new("C:/tools"),
             &no_configured_model,
+            &no_configured_approval,
         )
         .expect_err("三处都没有模型名应报错");
         assert!(
@@ -512,8 +560,14 @@ mod tests {
     #[test]
     fn config_supplies_model_when_no_flag_or_env() {
         let configured = || Ok("config-model".to_string());
-        match parse_with(&[], &no_env, Path::new("C:/tools"), &configured)
-            .expect("配置里有模型就应该能启动")
+        match parse_with(
+            &[],
+            &no_env,
+            Path::new("C:/tools"),
+            &configured,
+            &no_configured_approval,
+        )
+        .expect("配置里有模型就应该能启动")
         {
             Parsed::Run(options) => assert_eq!(options.model, "config-model"),
             other => panic!("期望运行配置，拿到 {other:?}"),
@@ -534,7 +588,7 @@ mod tests {
 
     #[test]
     fn explicit_kernel_and_approval_are_honoured() {
-        let options = options(
+        let options = options_with_approval(
             &[
                 "--model",
                 "m",
@@ -544,10 +598,40 @@ mod tests {
                 "auto",
             ],
             &no_env,
+            // 配置写的是 review，命令行更具体，应以前者为准。
+            &|| Ok(ApprovalMode::Review),
         );
         assert_eq!(options.kernel, PathBuf::from("D:/k/omnicrawl.exe"));
         assert_eq!(options.approval, ApprovalMode::Auto);
         assert_eq!(options.approval.label(), "AUTO");
+    }
+
+    #[test]
+    fn config_supplies_approval_mode_when_no_flag() {
+        let options = options_with_approval(&["--model", "m"], &no_env, &|| {
+            Ok(ApprovalMode::Manual)
+        });
+        assert_eq!(options.approval, ApprovalMode::Manual);
+        assert_eq!(options.approval.label(), "MAN");
+    }
+
+    #[test]
+    fn unreadable_approval_config_is_an_error() {
+        let args: Vec<String> = ["--model", "m"]
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+        let error = parse_with(
+            &args,
+            &no_env,
+            Path::new("C:/tools"),
+            &no_configured_model,
+            &|| Err("approval.mode 仅支持 manual, auto, review，当前值：x。".to_string()),
+        )
+        .expect_err("审批模式读不出来时应当报错，不静默降级");
+        assert!(error.contains("审批模式"), "实际：{error}");
+        assert!(error.contains("approval.mode"), "实际：{error}");
+        assert!(error.contains("--approval"), "实际：{error}");
     }
 
     #[test]

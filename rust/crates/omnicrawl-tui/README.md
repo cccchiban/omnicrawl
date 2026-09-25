@@ -84,7 +84,7 @@ cargo run -p omnicrawl-tui -- --model deepseek-v4-flash --session-root ../.agent
 | `--api-key-env <变量名>` | `OPENAI_API_KEY` | 凭据只给环境变量名，不进帧 |
 | `--session-root <目录>` | 空 | 给了就让内核自己持有会话（转录与压缩） |
 | `--context-window <N>` | 空 | HUD 上下文占用条的分母 |
-| `--approval <manual\|auto>` | `manual` | `manual` 下非自持工具先弹确认 |
+| `--approval <manual\|review\|auto>` | config.toml 的 `[approval] mode`（没配时为 `review`） | 命令行给的模式优先；不给时读配置（对齐 Python `load_approval_mode`，含别名与默认值），配置读不出来或取值非法直接报错而不静默降级；`manual` 下非自持工具先弹确认 |
 | `--command-timeout <秒>` | `360` | 命令类工具默认超时（与 `MAX_COMMAND_TIMEOUT_SECONDS` 一致，上限 360） |
 | `--tool-timeout <秒>` | `$AGENT_TOOL_TIMEOUT_SECONDS` → `600` | 单批工具执行的最长等待（上限 3600）：超时把未完成的调用写成超时观察、回合继续推进，后台结果被丢弃 |
 
@@ -217,7 +217,10 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 - 启动画面的日志桥改为显式上报：Python 给 root logger 挂 `logging.Handler`（只转发 WARNING/ERROR），Rust 无 logging 框架，由 `report_startup_log` 承担——有桥时写日志框且不落 stderr（避免打乱画面），无桥时回落 stderr（管道/测试下诊断不丢）；`logo_anim` 的随机源同样是内部 xorshift64\*；
 - 终端尺寸不做环境变量回退：`shutil.get_terminal_size` 会先读 `COLUMNS`/`LINES`，Rust 直接问终端（`crossterm::terminal::size`），取不到时同样回落 80x24；
 - 欢迎 Logo 动画按「起始时刻 → 经过时间」换算帧号（Python 用 Textual 定时器计次推进）：总帧数（24）与落定时刻（1.2s）一致，首帧是进度 0 的纯乱码帧（Python 首帧为 1/24）；
-- 渲染入口（`src/ui/mod.rs::render`）已是工作台本体：HUD / 消息流 / 任务清单 / 面板 / 状态行 / 输入框与补全菜单各一模块，设置页与文件选择弹层另行接管整屏。
+- 渲染入口（`src/ui/mod.rs::render`）已是工作台本体：消息流 / 任务清单 / 面板 / 底部单行轮播 HUD / 输入卡与补全菜单各一模块，设置页与文件选择弹层另行接管整屏。
+- **页面版式已按 Python 当前版对齐**（主页面，不含设置屏）：底部单行轮播 HUD（遥测 → 工作区路径 → 留言，各 10s + 解密扫描过渡）、悬浮圆角输入卡（占位文案 `› 输入消息或 / 命令`）、用户消息的 `user：` 标签 + 青色竖条、思考块暗底、无边框工具卡（`●` 状态点 + 缩进正文）与会话流内的运行状态行；设置屏与审批/提问面板沿用原样式。
+- **工具卡正文与 Python 同一来源**：正文不再用「工具输出拆行」，而是走对映层 `tool_diff::tool_disclosure_body` —— `write_file`/`Edit_file` 从**参数**画出旁注行号 diff（运行中就能看到）且豁免五行折叠，`fetcher` 只留 URL/状态/标题，`read` 与记忆/知识库类工具正文**为空且不出现提示行**，其余工具原样输出；超宽行按显示宽度**软折行**（对映 Textual 的默认 `text-wrap`，不再截断加 `…`），空行不加缩进（对映 `_indent_body_lines`），缩略态点卡片不再展开（只提醒示行展开，与 Python `ToolDisclosure.on_click` 一致）。
+- 工具卡的两处非视觉差异：Python 在终态后按 12 块 × 30ms 释放正文（逐行出现的观感），Rust 一次铺满；Python 渲染完会清空 `arguments`/`result_text` 省内存，Rust 保留（展开/收起需要正文源）。
 
 ## 本阶段（骨架）的边界
 
@@ -232,9 +235,15 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
   `host/omnicrawl-host`，见 `packages/cli/scripts/build-host.mjs`）；Python 侧 Textual 工作台
   （`omnicrawl/ui/`、`main.py`）保留为迁移期对照，不再是默认入口。
 
-**已实现**：两行 HUD（工作区/模型/审批模式/队列，上下文占用条与 IN/OUT/CA/tok/s）、
-消息流（用户 `$`、思考段折叠为最新五行、正文 `◇`、工具卡边框随状态着色、正文头尾采样限五行）、
-单行起步按显示宽度软折行的输入框（五行上限、超出后随光标滚动）、任务清单条、状态行（Braille spinner + `[ ESC ]`）、
+**已实现**：底部单行轮播 HUD（遥测 → 工作区路径 → 留言，各 10s 循环、切换时解密扫描；遥测页是
+`上下文占用 ⁕ ↑/↓/† CH% ⁕ t/s ⁕ 模型 ⁕ THK 推理强度  APR 审批模式  MCP n  QUE n`，与 Python 的
+`#bottom-carousel` 同款式；不再有顶部两行 HUD，也不再在 HUD 里显示版本号）、
+消息流（用户 `user：` 灰斜标签 + 白色正文 + 左侧青色竖条、思考段暗底灰字斜体并折叠为最新五行、
+正文 `◇`、无边框工具卡（`●` 状态点随状态着色 + 缩进正文，正文由对映层生成：文件变更预览 / 
+隐藏类正文为空 / 超宽行折行，头尾采样限五行但文件变更工具豁免）、右侧 1 格细滚动条、
+会话流内的运行状态行（Braille spinner + `[ ESC ]`））、
+悬浮圆角输入卡（上方留一行、框内左右各缩进 4 格；空输入显示占位文案 `› 输入消息或 / 命令`，
+五行上限、超出后随光标滚动）、任务清单条（`▣/▢` 无表头）、
 审批面板与提问面板、`Esc` 取消、内核退出与终端恢复、`/undo`（请内核整轮回退，结论落消息流，
 命令本身不进模型对话）。
 
@@ -440,8 +449,8 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 6. ~~Windows 输入自愈、窄屏 HUD 弹性收缩~~（已完成）；会话与模型选择仍待做：
    自愈由 `TerminalGuard::heal_if_needed` 每秒核对一次控制台模式（目标值 = crossterm 鼠标捕获的
    `0x0098`，输出侧重开 VT 处理），恢复后重发鼠标与焦点报告序列，并对提示做一分钟限流；
-   HUD 改为内容驱动的分段（超长值经 `compact_hud_value` 保留首尾），窄屏按重要性逐段收缩、
-   版本号最后丢，任何宽度下都填满一行；
+   顶部的两行 HUD 已改为 Python 当前的底部单行轮播（见上文「已知差异」与「已实现」）：
+   超长值仍经 `compact_hud_value` 保留首尾，窄屏由轮播行的显示宽度截断（`…` 收尾）；
 7. `model.reply` 代答路径（内核自带 provider runtime 后不需要，当前显式回 `-32601`）；
 8. ~~非 Windows 平台的进程树回收~~（已完成，见下）；
 9. ~~Windows Job Object 的 kill-on-close~~（已完成）：`omnicrawl-host` 的
@@ -458,22 +467,26 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p omnicrawl-cli          # 端到端用例需要内核二进制
 python rust/tools/gen_tui_tools_fixture.py   # 改了工具语义时重生成对照数据集
 python rust/tools/gen_latex_fixture.py       # 改了 LaTeX 语义时重生成对照数据集
+python rust/tools/gen_tool_diff_fixture.py   # 改了工具卡标题/正文渲染时重生成对照数据集
 cargo test -p omnicrawl-tui
 ```
 
 测试分五层：
 
-- 模块内单测：状态聚合、输入编辑（含斜杠命令菜单的筛选、补全与参数字段）、HUD 对齐、面板高度、路径安全、命令采样、工具执行体、命令能力面与插件行映射；
+- 模块内单测：状态聚合、输入编辑（含斜杠命令菜单的筛选、补全与参数字段）、轮播装配与底部行截断、消息流各消息类型（用户标签/思考底色/工具卡无边框 + 正文来源与折叠规律）、面板高度、路径安全、命令采样、工具执行体、命令能力面与插件行映射；
 - `tests/workspace_tools_parity.rs`：与 Python 真实现的对照（声明逐字、read/write/edit 用例、采样、
   已记录的定位缺口）；
 - `tests/search_tools_parity.rs`：list / find / grep / git 的对照（mtime 钉死、落盘随机文件名归一、
   目录排序只比集合）；
 - `tests/latex_parity.rs`：LaTeX 转换层与 Python 真实现的逐字对照（107 例转换 + 9 例块级分段 +
   26 例块级公式快判，含 `$$`/`$$$`、未闭合块级、末尾反斜杠、超长公式一类边界）；
+- `tests/tool_diff_parity.rs`：工具卡渲染层与 Python 真实现的对照（14 例标题 + 11 例正文 +
+  3 例纯文本标题，每条都比对纯文本与 `(样式, 文本)` 运行段——diff 的 `+/−` 着色与
+  「read / 记忆 / 知识库正文为空」两个约束都在运行段里）；
 - `tests/host_flow.rs`：脚本化假内核驱动完整宿主流程（握手、审批、真执行、提问、拒绝、慢工具超时收口、
   后台命令监控的 start/poll/stop 三批、内核退出、斜杠命令分派：菜单补全→`/settings` 打开面板、`/quit` 退出、
   未支持命令给出原因而不发 `turn.submit`、`/tasks` 查询内核回执、`/undo` 异步下发与回执回填）；
-- `tests/render_smoke.rs`：`TestBackend` 渲染断言 HUD/消息流/面板/光标位置、滚动窗口与命令菜单（菜单紧贴输入框上方）；
+- `tests/render_smoke.rs`：`TestBackend` 渲染断言底部轮播/消息流（用户标签行、工具卡、计划条）/面板/输入卡与光标位置、滚动窗口与命令菜单（菜单紧贴输入卡上方）；
 - `tests/settings_screen.rs`：设置面板的 `TestBackend` 回归——两栏与准星边框随焦点转移、上下文候选
   下拉（含高亮底色）、工具开关行状态文本、状态行回填与内核拒绝提示、窄屏左栏收缩、极窄极矮不 panic；
 - `tests/kernel_e2e.rs`：真内核 + 本机回环模型服务端。六个用例让模型**真的请求**工具：

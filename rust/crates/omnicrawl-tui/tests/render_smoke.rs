@@ -109,49 +109,44 @@ fn chatting_state() -> AppState {
         )],
     );
     state.status = Some("正在调用".to_string());
+    // 底部轮播由宿主每帧推进；测试直接调一次，拿到当前遥测页文本。
+    state.refresh_carousel(Instant::now(), "high");
     state
 }
 
 #[test]
-fn hud_conversation_todos_and_composer_are_on_screen() {
+fn bottom_hud_conversation_todos_and_composer_are_on_screen() {
     let state = chatting_state();
     let lines = screen(&state, 110, 24);
     let text = lines.join("\n");
 
+    // 底部单行轮播：贴齐屏幕底缘，内容是遥测 + 模型状态（对映 `#bottom-carousel`）。
+    let hud = lines.last().expect("应有一行底部 HUD");
+    assert!(hud.contains("0/1M 0%"), "底栏应带上下文占用：{hud:?}");
+    assert!(hud.contains("t/s"), "底栏应带速率段：{hud:?}");
+    assert!(hud.contains("stub-model"), "底栏应带模型名：{hud:?}");
+    assert!(hud.contains("THK HIGH"), "底栏应带推理强度：{hud:?}");
+    assert!(hud.contains("MAN"), "底栏应带审批模式：{hud:?}");
+    assert!(hud.contains("MCP 0"), "底栏应带 MCP 段：{hud:?}");
+    assert!(!hud.contains('│'), "底栏改用 ⁕ 分隔：{hud:?}");
     assert!(
-        lines[0].contains("omnicrawl"),
-        "第一行应是工作区段：{:?}",
+        !lines[0].contains("stub-model"),
+        "顶部不再有 HUD：{:?}",
         lines[0]
-    );
-    assert!(
-        lines[0].contains("stub-model"),
-        "第一行应带模型名：{:?}",
-        lines[0]
-    );
-    assert!(
-        lines[0].contains("MAN"),
-        "第一行应带审批模式：{:?}",
-        lines[0]
-    );
-    assert!(
-        lines[1].contains("0/1M"),
-        "第二行应带上下文占用：{:?}",
-        lines[1]
-    );
-    assert!(
-        lines.iter().any(|line| line.ends_with(&state.version)),
-        "行尾应带版本号：{:?}",
-        lines[1]
     );
 
-    assert!(text.contains("$ 你好，帮我看看"), "缺少用户消息：{text}");
+    assert!(text.contains("user："), "缺少用户标签行：{text}");
+    assert!(text.contains("你好，帮我看看"), "缺少用户正文：{text}");
     assert!(text.contains("◇ 测试通过。"), "缺少正文：{text}");
     assert!(text.contains("思考"), "缺少思考段：{text}");
     assert!(text.contains("bash"), "缺少工具卡：{text}");
-    assert!(text.contains("✓"), "工具卡应显示成功状态：{text}");
-    assert!(text.contains("任务清单 2 项"), "缺少任务清单：{text}");
-    assert!(text.contains("○ 接审批"), "缺少未完成项：{text}");
-    assert!(text.contains("› "), "缺少输入框提示符：{text}");
+    assert!(text.contains("✓ 成功"), "工具卡应显示成功状态：{text}");
+    assert!(text.contains("▣ 写骨架"), "缺少已完成项：{text}");
+    assert!(text.contains("▢ 接审批"), "缺少未完成项：{text}");
+    assert!(
+        text.contains("› 输入消息或 / 命令"),
+        "缺少输入框占位：{text}"
+    );
     assert!(text.contains("正在调用"), "缺少状态行：{text}");
 }
 
@@ -217,9 +212,10 @@ fn cursor_sits_in_the_composer() {
         .draw(|frame| ui::render(frame, &state, None, None, None))
         .expect("渲染不应失败");
     let position = terminal.backend().cursor_position();
-    // 输入框在最后一行，光标在提示符「› 」之后、三个全角字之后。
-    assert_eq!(position.y, 11);
-    assert_eq!(position.x, 2 + 6);
+    // 输入卡在第 11 行、框内第一行：左缩进 = 边框 1 + 卡片内边距 2 + 编辑器内边距 1，
+    // 再加上三个全角字的 6 列。
+    assert_eq!(position.y, 9);
+    assert_eq!(position.x, 4 + 6);
 }
 
 #[test]
@@ -289,13 +285,22 @@ fn command_menu_renders_directly_above_the_composer() {
         "唯一候选即选中项：{:?}",
         lines[menu_row]
     );
-    let composer_row = lines
-        .iter()
-        .position(|line| line.trim_end() == "› /sett")
-        .unwrap_or_else(|| panic!("输入框应当还在：{lines:?}"));
-    assert_eq!(
-        composer_row,
-        menu_row + 1,
-        "菜单紧贴输入框上方（对映 `#composer-wrap` 里的菜单行预算）"
+    // 菜单行下面是输入卡的「上方空行」（CSS margin: 1 0 0 0）与卡片上边框，
+    // 再下面才是卡内文本行。
+    let composer_row = menu_row + 3;
+    assert!(
+        lines[menu_row + 1].trim().is_empty(),
+        "菜单与输入卡之间是卡片上方的空行：{:?}",
+        lines[menu_row + 1]
+    );
+    assert!(
+        lines[menu_row + 2].contains('╭'),
+        "输入卡上边框应在文本行之前：{:?}",
+        lines[menu_row + 2]
+    );
+    assert!(
+        lines[composer_row].contains("/sett"),
+        "输入卡内容行应带输入文本：{:?}",
+        lines[composer_row]
     );
 }

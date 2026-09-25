@@ -14,15 +14,24 @@ use omnicrawl_ipc::{HostEvent, Id};
 use crate::args::ApprovalMode;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
+use crate::ui::fullscreen::random::Rng;
 use crate::ui::fullscreen::rendering::logo_anim::LogoAnimation;
 use crate::ui::fullscreen::rendering::widgets::{SubAgentConversation, SubAgentProgressTree};
+use crate::ui::fullscreen::status::hud::load_carousel_message_lines;
 use crate::ui::fullscreen::status::indicators as queue;
+use crate::ui::fullscreen::status::indicators::{
+    Carousel, CarouselPage, CarouselSource, CarouselTick, CAROUSEL_ANIMATION_FRAME_SECONDS,
+};
+use crate::ui::fullscreen::text::StyledText;
 
 /// 相邻增量间隔超过这个时长视为待机（工具执行、模型停顿），不计入输出时长。
 const IDLE_GAP: Duration = Duration::from_secs(2);
 
 /// 输入框可见行数上限：超过后在编辑器内滚动。
 pub const COMPOSER_MAX_LINES: usize = 5;
+
+/// 轮播随机源种子：固定值让留言页与乱码帧在测试里可复现。
+const CAROUSEL_SEED: u64 = 0x0C1C_2025;
 
 /// 生成期间 FIFO 排队预览的可见条数上限与摘要长度上限。
 ///
@@ -44,10 +53,26 @@ pub struct ToolCard {
     pub call_id: String,
     pub name: String,
     pub summary: String,
+    /// 原始参数（模型给的那份）：标题行走对映层的 `tool_disclosure_title`，
+    /// 它要按参数拼出路径 / 命令 / 行数统计，因此不能只留 `summary` 文本。
+    pub arguments: serde_json::Value,
     pub status: ToolStatus,
     pub elapsed: Option<Duration>,
     started: Instant,
     pub body: Vec<String>,
+}
+
+impl ToolCard {
+    /// 当前耗时：终态用落定值，运行中按起始时刻实时算。
+    ///
+    /// 对映 Python `ToolDisclosure` 标题行的活动计时器：运行中的卡片也要显示已耗时，
+    /// 收口后不再变化（渲染保持只读，只是读了一个随时间变化的量）。
+    pub fn live_elapsed_seconds(&self) -> f64 {
+        match self.elapsed {
+            Some(duration) => duration.as_secs_f64(),
+            None => self.started.elapsed().as_secs_f64(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -379,11 +404,26 @@ pub struct AppState {
     /// 而不是进度树，对映 Python 的 `_conversation_stream_active`。
     pub subagent_stream: bool,
     batch: Option<host::PendingBatch>,
+    /// 底部单行轮播状态机（对映 Python `_carousel_*`）：遥测 → 工作区路径 → 留言
+    /// 三页各 10s 循环，换页时以解密扫描特效过渡。
+    carousel: Carousel,
+    /// 当前要显示的轮播整行（渲染只读；由 [`AppState::refresh_carousel`] 按帧推进）。
+    pub carousel_text: StyledText,
+    /// 本页进入时刻（停留计时起点）。
+    carousel_since: Instant,
+    /// 上一帧动画时刻：按 `CAROUSEL_ANIMATION_FRAME_SECONDS` 限速推进解密扫描。
+    carousel_anim_at: Option<Instant>,
+    /// 首帧是否已经装配过轮播文本。
+    carousel_ready: bool,
+    /// 轮播随机源（留言页抽取与乱码字符；固定种子便于测试复现）。
+    carousel_rand: Rng,
+    /// 留言页候选（编译期内嵌的 `carousel_messages.txt`，启动期读一次）。
+    carousel_lines: Vec<String>,
 }
 
 impl AppState {
     pub fn new(project: String, model: String, approval: ApprovalMode) -> Self {
-        Self {
+        let mut state = Self {
             project,
             model,
             approval,
@@ -407,7 +447,99 @@ impl AppState {
             expanded_reasoning: HashSet::new(),
             subagent_stream: false,
             batch: None,
+            carousel: Carousel::new(),
+            carousel_text: StyledText::new(),
+            carousel_since: Instant::now(),
+            carousel_anim_at: None,
+            carousel_ready: false,
+            carousel_rand: Rng::new(CAROUSEL_SEED),
+            carousel_lines: load_carousel_message_lines(),
+        };
+        // 首帧先把轮播文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
+        // 底部 HUD 也有内容可画（测试直接构造 AppState 时会走这条路径）。
+        state.refresh_carousel(Instant::now(), "");
+        state
+    }
+
+    /// 轮播数据源快照。<`reasoning_effort`> 不在界面状态里（它属于模型配置），
+    /// 由宿主在 tick 时传入。
+    fn carousel_source(&self, reasoning_effort: &str) -> CarouselSource {
+        CarouselSource {
+            workspace: self.project.clone(),
+            input_tokens: self.telemetry.input_tokens as i64,
+            output_tokens: self.telemetry.output_tokens as i64,
+            cached_input_tokens: self.telemetry.cached_input_tokens as i64,
+            // 总量未知时传 0：对映层与 Python 一样按 max(1) 兜底，不编造分母。
+            context_limit: self.telemetry.context_window.unwrap_or(0) as i64,
+            tokens_per_second: self.telemetry.rate.value().unwrap_or(0.0),
+            model: self.model.clone(),
+            reasoning_effort: reasoning_effort.to_string(),
+            approval_mode: self.approval.label().to_string(),
+            mcp_enabled_count: self.mcp_servers as i64,
+            pending_count: self.pending_inputs.len() as i64,
         }
+    }
+
+    /// 推进底部单行轮播：停留到点换页，动画中按帧距推进解密扫描。
+    ///
+    /// 定时器由装配层持有（对映 Python 把停留/帧定时器交给 Textual 的做法），
+    /// 这里只吃「现在几点」并更新 [`AppState::carousel_text`]。
+    pub fn refresh_carousel(&mut self, now: Instant, reasoning_effort: &str) {
+        let source = self.carousel_source(reasoning_effort);
+        if self.carousel.is_animating() {
+            let due = self
+                .carousel_anim_at
+                .map(|last| {
+                    now.duration_since(last).as_secs_f64() >= CAROUSEL_ANIMATION_FRAME_SECONDS
+                })
+                .unwrap_or(true);
+            if !due {
+                return;
+            }
+            self.carousel_anim_at = Some(now);
+            match self.carousel.animation_tick(
+                &source,
+                &self.carousel_lines,
+                &mut self.carousel_rand,
+            ) {
+                CarouselTick::Frame(text) => self.carousel_text = text,
+                CarouselTick::Settled(text) => {
+                    self.carousel_text = text;
+                    // 动画收口后重新开始本页的停留计时。
+                    self.carousel_since = now;
+                }
+            }
+            return;
+        }
+        if !self.carousel_ready {
+            self.carousel_ready = true;
+            self.carousel_since = now;
+        } else if now.duration_since(self.carousel_since).as_secs_f64()
+            >= self.carousel.page_duration()
+        {
+            let next = self.carousel.next_page();
+            self.carousel.switch_to(
+                next,
+                true,
+                &source,
+                &self.carousel_lines,
+                &mut self.carousel_rand,
+            );
+            self.carousel_anim_at = None;
+            self.carousel_since = now;
+            // 动画帧由下一帧推进，本帧仍是旧页文本（与 Python 切换当帧的可见状态一致）。
+            return;
+        }
+        // 稳态：每帧按最新遥测重建当前页（对映 Python 的 `_carousel_refresh`，
+        // 否则 token 计数要在下一次换页才会追上）。
+        self.carousel_text =
+            self.carousel
+                .display_text(&source, &self.carousel_lines, &mut self.carousel_rand);
+    }
+
+    /// 当前轮播页（测试与调试用）。
+    pub fn carousel_page(&self) -> CarouselPage {
+        self.carousel.page()
     }
 
     pub fn waiting(&self) -> Option<&Waiting> {
@@ -517,16 +649,15 @@ impl AppState {
         self.expanded_tools.insert(call_id.to_string());
     }
 
-    /// 点开着的工具卡收起；返回新状态（点击卡片其余部分触发）。
-    pub fn toggle_tool_expanded(&mut self, call_id: &str) -> bool {
+    /// 点开着的工具卡收起；返回是否真的从展开态收了回去。
+    ///
+    /// 对映 Python `ToolDisclosure.on_click`：缩略态点卡片不做任何事（展开只能
+    /// 通过提示行），所以这里没有 toggle，只有单向收起。
+    pub fn collapse_tool(&mut self, call_id: &str) -> bool {
         if call_id.is_empty() {
             return false;
         }
-        if self.expanded_tools.remove(call_id) {
-            return false;
-        }
-        self.expanded_tools.insert(call_id.to_string());
-        true
+        self.expanded_tools.remove(call_id)
     }
 
     pub fn is_tool_expanded(&self, call_id: &str) -> bool {
@@ -579,6 +710,7 @@ impl AppState {
                     call_id: payload.call.id.clone(),
                     name: payload.call.name.clone(),
                     summary: host::summarize_arguments(&payload.call.arguments),
+                    arguments: serde_json::Value::Object(payload.call.arguments.clone()),
                     status: ToolStatus::Running,
                     elapsed: None,
                     started: now,
@@ -635,6 +767,8 @@ impl AppState {
             call_id: format!("monitor:{monitor_id}"),
             name: "monitor".to_string(),
             summary: monitor_id.to_string(),
+            // Monitor 批次不是模型发起的工具调用，没有参数可拼标题。
+            arguments: serde_json::Value::Null,
             status: monitor_status(status),
             elapsed: None,
             started: Instant::now(),
@@ -740,6 +874,10 @@ impl AppState {
                         call_id: call_id.clone(),
                         name: tool.clone(),
                         summary,
+                        arguments: payload
+                            .get("arguments")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
                         status: ToolStatus::Running,
                         elapsed: None,
                         started: Instant::now(),
@@ -784,6 +922,8 @@ impl AppState {
                                     tool.clone()
                                 },
                                 summary: String::new(),
+                                // 没有配对的 tool_call_requested：没有参数可拼标题。
+                                arguments: serde_json::Value::Null,
                                 status: ToolStatus::Running,
                                 elapsed: None,
                                 started: Instant::now(),
@@ -798,7 +938,11 @@ impl AppState {
                         .unwrap_or(false);
                     let finished = replay_time(event);
                     if let Some(Record::Tool(card)) = self.records.get_mut(index) {
-                        card.status = if ok { ToolStatus::Ok } else { ToolStatus::Failed };
+                        card.status = if ok {
+                            ToolStatus::Ok
+                        } else {
+                            ToolStatus::Failed
+                        };
                         card.elapsed = replay_elapsed(started, finished);
                         card.body = body_lines(&replay_output(&payload));
                     }
@@ -808,8 +952,9 @@ impl AppState {
                         self.apply_subagent_event(name, &payload);
                     } else if other == "turn_cancelled" {
                         self.records.push(Record::Assistant(
-                            replay_text(&payload, "summary")
-                                .unwrap_or_else(|| "（上一回合被取消，未生成最终回复）".to_string()),
+                            replay_text(&payload, "summary").unwrap_or_else(|| {
+                                "（上一回合被取消，未生成最终回复）".to_string()
+                            }),
                         ));
                     } else if other == "session_interrupted" {
                         self.records
@@ -829,7 +974,11 @@ impl AppState {
             let denial = denied
                 .iter()
                 .find(|(key, _)| !call_id.is_empty() && *key == call_id)
-                .or_else(|| denied.iter().find(|(key, _)| *key == format!("tool:{tool}")));
+                .or_else(|| {
+                    denied
+                        .iter()
+                        .find(|(key, _)| *key == format!("tool:{tool}"))
+                });
             let (status, reason) = match denial {
                 Some((_, reason)) => (ToolStatus::Denied, reason.clone()),
                 None => (
@@ -1175,6 +1324,7 @@ impl AppState {
             call_id: call.id.clone(),
             name: call.name.clone(),
             summary: host::summarize_arguments(&call.arguments),
+            arguments: serde_json::Value::Object(call.arguments.clone()),
             status: ToolStatus::Running,
             elapsed: None,
             started: now,
@@ -1281,7 +1431,10 @@ fn replay_time(event: &serde_json::Value) -> Option<DateTime<Utc>> {
 }
 
 /// 回放工具卡耗时：两端时间戳齐备且顺序正确时给出差值，否则不显示耗时。
-fn replay_elapsed(started: Option<DateTime<Utc>>, finished: Option<DateTime<Utc>>) -> Option<Duration> {
+fn replay_elapsed(
+    started: Option<DateTime<Utc>>,
+    finished: Option<DateTime<Utc>>,
+) -> Option<Duration> {
     let delta = finished?.signed_duration_since(started?);
     let millis = delta.num_milliseconds();
     if millis < 0 {

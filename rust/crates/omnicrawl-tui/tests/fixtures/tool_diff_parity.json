@@ -1,0 +1,864 @@
+{
+  "source": "omnicrawl/ui/fullscreen/rendering/tool_diff.py",
+  "titles": [
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "pytest -q"
+      },
+      "status": "成功",
+      "duration_seconds": 1.5,
+      "expanded": true,
+      "result_text": "12 passed",
+      "expected_plain": "● bash pytest -q · ✓ 成功 · 1.5s",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "bash"
+        ],
+        [
+          "dim",
+          " pytest -q · ✓ 成功 · 1.5s"
+        ]
+      ]
+    },
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "pytest -q"
+      },
+      "status": "失败",
+      "duration_seconds": 0.4,
+      "expanded": true,
+      "result_text": "1 failed",
+      "expected_plain": "● bash pytest -q · ✗ 失败 · 400ms",
+      "expected_spans": [
+        [
+          "red",
+          "● "
+        ],
+        [
+          "default",
+          "bash"
+        ],
+        [
+          "dim",
+          " pytest -q · ✗ 失败 · 400ms"
+        ]
+      ]
+    },
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "sleep 30"
+      },
+      "status": "调用中",
+      "duration_seconds": 12.25,
+      "expanded": false,
+      "result_text": "",
+      "expected_plain": "● bash sleep 30 · … 调用中 · 12.2s",
+      "expected_spans": [
+        [
+          "blue",
+          "● "
+        ],
+        [
+          "default",
+          "bash"
+        ],
+        [
+          "dim",
+          " sleep 30 · … 调用中 · 12.2s"
+        ]
+      ]
+    },
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "rm -rf /"
+      },
+      "status": "等待确认",
+      "duration_seconds": 0.0,
+      "expanded": true,
+      "result_text": "",
+      "expected_plain": "● bash rm -rf / · ! 等待确认 · 0ms",
+      "expected_spans": [
+        [
+          "yellow",
+          "● "
+        ],
+        [
+          "default",
+          "bash"
+        ],
+        [
+          "dim",
+          " rm -rf / · ! 等待确认 · 0ms"
+        ]
+      ]
+    },
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "curl"
+      },
+      "status": "已取消",
+      "duration_seconds": 3.0,
+      "expanded": true,
+      "result_text": "已取消",
+      "expected_plain": "● bash curl · ↷ 已取消 · 3.0s",
+      "expected_spans": [
+        [
+          "dim",
+          "● "
+        ],
+        [
+          "default",
+          "bash"
+        ],
+        [
+          "dim",
+          " curl · ↷ 已取消 · 3.0s"
+        ]
+      ]
+    },
+    {
+      "tool": "read",
+      "arguments": {
+        "path": "a.py"
+      },
+      "status": "成功",
+      "duration_seconds": 0.1,
+      "expanded": true,
+      "result_text": "第 3-8 行\n内容",
+      "expected_plain": "● read a.py · ✓ 成功 · 100ms",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "read"
+        ],
+        [
+          "dim",
+          " a.py · ✓ 成功 · 100ms"
+        ]
+      ]
+    },
+    {
+      "tool": "list",
+      "arguments": {
+        "path": "src"
+      },
+      "status": "成功",
+      "duration_seconds": 0.2,
+      "expanded": true,
+      "result_text": "共 12 个文件",
+      "expected_plain": "● list src · 1 项 · ✓ 成功 · 200ms",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "list"
+        ],
+        [
+          "dim",
+          " src · 1 项 · ✓ 成功 · 200ms"
+        ]
+      ]
+    },
+    {
+      "tool": "grep",
+      "arguments": {
+        "path": "src",
+        "pattern": "tool_disclosure_title"
+      },
+      "status": "调用中",
+      "duration_seconds": 0.0,
+      "expanded": true,
+      "result_text": "",
+      "expected_plain": "● grep src · 目标: tool_disclosure_title · … 调用中 · 0ms",
+      "expected_spans": [
+        [
+          "blue",
+          "● "
+        ],
+        [
+          "default",
+          "grep"
+        ],
+        [
+          "dim",
+          " src · 目标: tool_disclosure_title · … 调用中 · 0ms"
+        ]
+      ]
+    },
+    {
+      "tool": "write_file",
+      "arguments": {
+        "path": "a.py",
+        "content": "行1\n行2\n行3"
+      },
+      "status": "成功",
+      "duration_seconds": 0.6,
+      "expanded": true,
+      "result_text": "已写入 a.py",
+      "expected_plain": "● write_file a.py · rewrite +3 lines · ✓ 成功 · 600ms",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "write_file"
+        ],
+        [
+          "dim",
+          " a.py · rewrite "
+        ],
+        [
+          "green",
+          "+3"
+        ],
+        [
+          "dim",
+          " lines · ✓ 成功 · 600ms"
+        ]
+      ]
+    },
+    {
+      "tool": "Edit_file",
+      "arguments": {
+        "path": "a.py",
+        "old_text": "旧行1\n旧行2\n旧行3\n旧行4\n旧行5\n旧行6",
+        "new_text": "新行1\n新行2\n旧行3\n旧行4\n旧行5\n新行6"
+      },
+      "status": "成功",
+      "duration_seconds": 0.9,
+      "expanded": true,
+      "result_text": "第 12-17 行\n  12 | 旧行1\n  13 | 旧行2\n  14 | 旧行3\n  15 | 旧行4\n  16 | 旧行5\n  17 | 旧行6\n已替换 1 处。",
+      "expected_plain": "● Edit_file a.py · +3 -3 · ✓ 成功 · 900ms",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "Edit_file"
+        ],
+        [
+          "dim",
+          " a.py · "
+        ],
+        [
+          "green",
+          "+3"
+        ],
+        [
+          "dim",
+          " "
+        ],
+        [
+          "red",
+          "-3"
+        ],
+        [
+          "dim",
+          " · ✓ 成功 · 900ms"
+        ]
+      ]
+    },
+    {
+      "tool": "ask_user",
+      "arguments": {
+        "question": "继续吗？"
+      },
+      "status": "等待回复",
+      "duration_seconds": 4.0,
+      "expanded": true,
+      "result_text": "",
+      "expected_plain": "● ↘ 等待回复... · 4.0s",
+      "expected_spans": [
+        [
+          "blue",
+          "● ↘ 等待回复..."
+        ],
+        [
+          "dim",
+          " · 4.0s"
+        ]
+      ]
+    },
+    {
+      "tool": "fathom.search",
+      "arguments": {
+        "query": "omnicrawl"
+      },
+      "status": "成功",
+      "duration_seconds": 2.0,
+      "expanded": true,
+      "result_text": "3 条结果",
+      "expected_plain": "● fathom.search · ✓ 成功 · 2.0s",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "fathom.search"
+        ],
+        [
+          "dim",
+          " · ✓ 成功 · 2.0s"
+        ]
+      ]
+    },
+    {
+      "tool": "read",
+      "arguments": {
+        "path": "D:/projects/omnicrawl/rust/crates/omnicrawl-tui/src/ui/fullscreen/rendering/tool_diff.rs"
+      },
+      "status": "成功",
+      "duration_seconds": 0.3,
+      "expanded": true,
+      "result_text": "第 1-4200 行",
+      "expected_plain": "● read D:/projects/omnicrawl/rust/crates/omnicrawl-tui… · ✓ 成功 · 300ms",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "read"
+        ],
+        [
+          "dim",
+          " D:/projects/omnicrawl/rust/crates/omnicrawl-tui… · ✓ 成功 · 300ms"
+        ]
+      ]
+    },
+    {
+      "tool": "read_image",
+      "arguments": {
+        "path": "shot.png"
+      },
+      "status": "成功",
+      "duration_seconds": 0.5,
+      "expanded": true,
+      "result_text": "已读取图片",
+      "expected_plain": "● read_image shot.png · 图片 · ✓ 成功 · 500ms",
+      "expected_spans": [
+        [
+          "green",
+          "● "
+        ],
+        [
+          "default",
+          "read_image"
+        ],
+        [
+          "dim",
+          " shot.png · 图片 · ✓ 成功 · 500ms"
+        ]
+      ]
+    }
+  ],
+  "bodies": [
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "pytest -q"
+      },
+      "result_text": "12 passed\n3 warnings",
+      "expected_plain": "12 passed\n3 warnings",
+      "expected_spans": [
+        [
+          "bright_black",
+          "12 passed\n3 warnings"
+        ]
+      ]
+    },
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "echo"
+      },
+      "result_text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expected_plain": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expected_spans": [
+        [
+          "bright_black",
+          "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        ]
+      ]
+    },
+    {
+      "tool": "read",
+      "arguments": {
+        "path": "a.py"
+      },
+      "result_text": "文件全文都不该出现在对话里",
+      "expected_plain": "",
+      "expected_spans": []
+    },
+    {
+      "tool": "memory_write",
+      "arguments": {
+        "key": "k"
+      },
+      "result_text": "已记住",
+      "expected_plain": "",
+      "expected_spans": []
+    },
+    {
+      "tool": "kb_search",
+      "arguments": {
+        "query": "q"
+      },
+      "result_text": "命中 3 条",
+      "expected_plain": "",
+      "expected_spans": []
+    },
+    {
+      "tool": "fetcher",
+      "arguments": {
+        "url": "https://example.com"
+      },
+      "result_text": "URL: https://example.com\n状态: 200\n标题: Example\n正文一大段不该显示",
+      "expected_plain": "URL: https://example.com\n状态: 200\n标题: Example\n正文一大段不该显示",
+      "expected_spans": [
+        [
+          "bright_black",
+          "URL: https://example.com\n状态: 200\n标题: Example\n正文一大段不该显示"
+        ]
+      ]
+    },
+    {
+      "tool": "write_file",
+      "arguments": {
+        "path": "a.py",
+        "content": "行1\n行2\n行3"
+      },
+      "result_text": "已写入 a.py",
+      "expected_plain": "工具：write_file\n@@ rewrite · showing new content only @@\n   1 │ + 行1\n   2 │ + 行2\n   3 │ + 行3\n结果：已写入 a.py",
+      "expected_spans": [
+        [
+          "dim",
+          "工具："
+        ],
+        [
+          "default",
+          "write_file"
+        ],
+        [
+          "",
+          "\n"
+        ],
+        [
+          "blue",
+          "@@ rewrite · showing new content only @@\n"
+        ],
+        [
+          "dim",
+          "   1 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "行1\n"
+        ],
+        [
+          "dim",
+          "   2 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "行2\n"
+        ],
+        [
+          "dim",
+          "   3 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "行3\n"
+        ],
+        [
+          "dim",
+          "结果：已写入 a.py"
+        ]
+      ]
+    },
+    {
+      "tool": "write_file",
+      "arguments": {
+        "path": "a.py",
+        "content": "附加行",
+        "mode": "append"
+      },
+      "result_text": "已追加 a.py",
+      "expected_plain": "工具：write_file\n@@ append · showing new content only @@\n   1 │ + 附加行\n结果：已追加 a.py",
+      "expected_spans": [
+        [
+          "dim",
+          "工具："
+        ],
+        [
+          "default",
+          "write_file"
+        ],
+        [
+          "",
+          "\n"
+        ],
+        [
+          "blue",
+          "@@ append · showing new content only @@\n"
+        ],
+        [
+          "dim",
+          "   1 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "附加行\n"
+        ],
+        [
+          "dim",
+          "结果：已追加 a.py"
+        ]
+      ]
+    },
+    {
+      "tool": "Edit_file",
+      "arguments": {
+        "path": "a.py",
+        "old_text": "旧行1\n旧行2\n旧行3\n旧行4\n旧行5\n旧行6",
+        "new_text": "新行1\n新行2\n旧行3\n旧行4\n旧行5\n新行6"
+      },
+      "result_text": "第 12-17 行\n  12 | 旧行1\n  13 | 旧行2\n  14 | 旧行3\n  15 | 旧行4\n  16 | 旧行5\n  17 | 旧行6\n已替换 1 处。",
+      "expected_plain": "工具：Edit_file\n@@ snippet @@\n   1 │ - 旧行1\n   2 │ - 旧行2\n   1 │ + 新行1\n   2 │ + 新行2\n   3 │   旧行3\n   4 │   旧行4\n   5 │   旧行5\n   6 │ - 旧行6\n   6 │ + 新行6\n结果：替换 1 处",
+      "expected_spans": [
+        [
+          "dim",
+          "工具："
+        ],
+        [
+          "default",
+          "Edit_file"
+        ],
+        [
+          "",
+          "\n"
+        ],
+        [
+          "blue",
+          "@@ snippet @@\n"
+        ],
+        [
+          "dim",
+          "   1 │ "
+        ],
+        [
+          "red bold",
+          "- "
+        ],
+        [
+          "red",
+          "旧行1\n"
+        ],
+        [
+          "dim",
+          "   2 │ "
+        ],
+        [
+          "red bold",
+          "- "
+        ],
+        [
+          "red",
+          "旧行2\n"
+        ],
+        [
+          "dim",
+          "   1 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "新行1\n"
+        ],
+        [
+          "dim",
+          "   2 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "新行2\n"
+        ],
+        [
+          "dim",
+          "   3 │   "
+        ],
+        [
+          "default",
+          "旧行3\n"
+        ],
+        [
+          "dim",
+          "   4 │   "
+        ],
+        [
+          "default",
+          "旧行4\n"
+        ],
+        [
+          "dim",
+          "   5 │   "
+        ],
+        [
+          "default",
+          "旧行5\n"
+        ],
+        [
+          "dim",
+          "   6 │ "
+        ],
+        [
+          "red bold",
+          "- "
+        ],
+        [
+          "red",
+          "旧行6\n"
+        ],
+        [
+          "dim",
+          "   6 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "新行6\n"
+        ],
+        [
+          "dim",
+          "结果：替换 1 处"
+        ]
+      ]
+    },
+    {
+      "tool": "Edit_file",
+      "arguments": {
+        "path": "a.py",
+        "old_text": "旧行1\n旧行2\n旧行3\n旧行4\n旧行5\n旧行6",
+        "new_text": "新行1\n新行2\n旧行3\n旧行4\n旧行5\n新行6"
+      },
+      "result_text": "",
+      "expected_plain": "工具：Edit_file\n@@ snippet @@\n   1 │ - 旧行1\n   2 │ - 旧行2\n   1 │ + 新行1\n   2 │ + 新行2\n   3 │   旧行3\n   4 │   旧行4\n   5 │   旧行5\n   6 │ - 旧行6\n   6 │ + 新行6\n",
+      "expected_spans": [
+        [
+          "dim",
+          "工具："
+        ],
+        [
+          "default",
+          "Edit_file"
+        ],
+        [
+          "",
+          "\n"
+        ],
+        [
+          "blue",
+          "@@ snippet @@\n"
+        ],
+        [
+          "dim",
+          "   1 │ "
+        ],
+        [
+          "red bold",
+          "- "
+        ],
+        [
+          "red",
+          "旧行1\n"
+        ],
+        [
+          "dim",
+          "   2 │ "
+        ],
+        [
+          "red bold",
+          "- "
+        ],
+        [
+          "red",
+          "旧行2\n"
+        ],
+        [
+          "dim",
+          "   1 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "新行1\n"
+        ],
+        [
+          "dim",
+          "   2 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "新行2\n"
+        ],
+        [
+          "dim",
+          "   3 │   "
+        ],
+        [
+          "default",
+          "旧行3\n"
+        ],
+        [
+          "dim",
+          "   4 │   "
+        ],
+        [
+          "default",
+          "旧行4\n"
+        ],
+        [
+          "dim",
+          "   5 │   "
+        ],
+        [
+          "default",
+          "旧行5\n"
+        ],
+        [
+          "dim",
+          "   6 │ "
+        ],
+        [
+          "red bold",
+          "- "
+        ],
+        [
+          "red",
+          "旧行6\n"
+        ],
+        [
+          "dim",
+          "   6 │ "
+        ],
+        [
+          "green bold",
+          "+ "
+        ],
+        [
+          "green",
+          "新行6\n"
+        ]
+      ]
+    },
+    {
+      "tool": "monitor",
+      "arguments": {
+        "command": "tail -f app.log"
+      },
+      "result_text": "批次 1：3 行新输出",
+      "expected_plain": "批次 1：3 行新输出",
+      "expected_spans": [
+        [
+          "bright_black",
+          "批次 1：3 行新输出"
+        ]
+      ]
+    }
+  ],
+  "plain_titles": [
+    {
+      "tool": "bash",
+      "arguments": {
+        "command": "pytest -q"
+      },
+      "status": "成功",
+      "duration_seconds": 1.5,
+      "expanded": false,
+      "result_text": "12 passed",
+      "expected": "● bash pytest -q · ✓ 成功 · 1.5s"
+    },
+    {
+      "tool": "read",
+      "arguments": {
+        "path": "a.py"
+      },
+      "status": "成功",
+      "duration_seconds": 0.1,
+      "expanded": false,
+      "result_text": "第 3-8 行\n内容",
+      "expected": "● read a.py · ✓ 成功 · 100ms"
+    },
+    {
+      "tool": "Edit_file",
+      "arguments": {
+        "path": "a.py",
+        "old_text": "旧行1\n旧行2\n旧行3\n旧行4\n旧行5\n旧行6",
+        "new_text": "新行1\n新行2\n旧行3\n旧行4\n旧行5\n新行6"
+      },
+      "status": "失败",
+      "duration_seconds": 2.5,
+      "expanded": false,
+      "result_text": "第 12-17 行\n  12 | 旧行1\n  13 | 旧行2\n  14 | 旧行3\n  15 | 旧行4\n  16 | 旧行5\n  17 | 旧行6\n已替换 1 处。",
+      "expected": "● Edit_file a.py · +3 -3 · ✗ 失败 · 2.5s"
+    }
+  ]
+}
