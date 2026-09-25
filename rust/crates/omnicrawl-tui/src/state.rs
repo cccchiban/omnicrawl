@@ -183,6 +183,31 @@ pub struct Composer {
     cursor: usize,
     commands: Vec<CommandOption>,
     menu: CommandMenu,
+    /// 粘贴折叠：占位符 → 原始文本（对映 Python `_compact_pastes`）。
+    /// 提交时按占位符还原，删除时整块删掉。
+    pastes: Vec<(String, String)>,
+    paste_sequence: usize,
+}
+
+/// 粘贴折叠的阈值：超过这么多行就折成一个占位符（对映 Python `_PASTE_COMPACT_LINE_THRESHOLD`）。
+pub const PASTE_COMPACT_LINE_THRESHOLD: usize = 5;
+
+/// 终端粘贴常带 CRLF/CR，先统一成 LF（对映 Python `_normalize_pasted_text`）。
+fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// 按编辑器语义数行数：末尾空行也算一行（对映 Python `_count_paste_lines`）。
+fn paste_line_count(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    text.matches('\n').count() + 1
+}
+
+/// 占位符文本（对映 Python `[粘贴 #{n} +{lines} 行]`）。
+fn paste_placeholder(sequence: usize, lines: usize) -> String {
+    format!("[粘贴 #{sequence} +{lines} 行]")
 }
 
 impl Composer {
@@ -198,6 +223,7 @@ impl Composer {
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
+        self.pastes.clear();
         self.refresh_menu();
     }
 
@@ -205,15 +231,91 @@ impl Composer {
     pub fn set_text(&mut self, text: &str) {
         self.text = text.to_string();
         self.cursor = self.text.chars().count();
+        self.prune_pastes();
         self.refresh_menu();
     }
 
     /// 取走内容并清空；提交时用。
+    ///
+    /// 返回的是**展开后**的全文：粘贴折叠块在这里还原成真实内容（对映 Python
+    /// 提交前调 `_expand_compact_paste_placeholders` 再清空映射）。
     pub fn take(&mut self) -> String {
-        let text = std::mem::take(&mut self.text);
+        let text = self.expanded_text();
+        self.text.clear();
         self.cursor = 0;
+        self.pastes.clear();
         self.refresh_menu();
         text
+    }
+
+    /// 粘贴入口：多行（> [`PASTE_COMPACT_LINE_THRESHOLD`] 行）折成一个 `[粘贴 #n +N 行]`
+    /// 占位符，原文按序号存起来、提交时还原（对映 Python `_compact_paste_if_needed`）。
+    ///
+    /// 短粘贴（含单行）与原来一样直接插进去：折起来反而更难改。
+    pub fn insert_paste(&mut self, text: &str) {
+        let normalized = normalize_paste(text);
+        let lines = paste_line_count(&normalized);
+        if lines <= PASTE_COMPACT_LINE_THRESHOLD {
+            self.insert(&normalized);
+            return;
+        }
+        self.paste_sequence += 1;
+        let placeholder = paste_placeholder(self.paste_sequence, lines);
+        self.pastes.push((placeholder.clone(), normalized));
+        self.insert(&placeholder);
+    }
+
+    /// 展开全部占位符；`take()` 与命令分派核对都读它。
+    pub fn expanded_text(&self) -> String {
+        let mut expanded = self.text.clone();
+        for (placeholder, original) in &self.pastes {
+            expanded = expanded.replace(placeholder.as_str(), original.as_str());
+        }
+        expanded
+    }
+
+    /// 字符下标 `index` 落在哪个占位符里（左闭右开），没有就是 `None`。
+    fn placeholder_span(&self, index: usize) -> Option<(usize, usize)> {
+        let chars: Vec<char> = self.text.chars().collect();
+        for (placeholder, _) in &self.pastes {
+            let needle: Vec<char> = placeholder.chars().collect();
+            if needle.is_empty() || needle.len() > chars.len() {
+                continue;
+            }
+            let found = (0..=chars.len() - needle.len())
+                .find(|start| chars[*start..*start + needle.len()] == needle[..]);
+            if let Some(start) = found {
+                if index >= start && index < start + needle.len() {
+                    return Some((start, start + needle.len()));
+                }
+            }
+        }
+        None
+    }
+
+    /// 光标落在占位符里就整块删掉：粘贴块不逐字符删（用户要求，也是与 Python 的差异点）。
+    fn remove_placeholder(&mut self, index: usize) -> bool {
+        let Some((start, end)) = self.placeholder_span(index) else {
+            return false;
+        };
+        let mut chars: Vec<char> = self.text.chars().collect();
+        chars.drain(start..end);
+        self.text = chars.into_iter().collect();
+        self.cursor = start;
+        self.prune_pastes();
+        self.refresh_menu();
+        true
+    }
+
+    /// 丢掉已经不在文本里的占位符，避免原文一直挂着占内存
+    /// （对映 Python `_prune_compact_paste_placeholders`）。
+    fn prune_pastes(&mut self) {
+        if self.pastes.is_empty() {
+            return;
+        }
+        let text = self.text.clone();
+        self.pastes
+            .retain(|(placeholder, _)| text.contains(placeholder.as_str()));
     }
 
     /// 装载命令菜单候选表（统一命令源）；运行期 Skill 上下线时由宿主重装。
@@ -261,11 +363,16 @@ impl Composer {
         if self.cursor == 0 {
             return;
         }
+        // 光标左侧落在粘贴折叠块里：整块删掉，而不是逐字符删。
+        if self.remove_placeholder(self.cursor - 1) {
+            return;
+        }
         let mut chars: Vec<char> = self.text.chars().collect();
         let at = self.cursor.min(chars.len());
         chars.remove(at - 1);
         self.text = chars.into_iter().collect();
         self.cursor = at - 1;
+        self.prune_pastes();
         self.refresh_menu();
     }
 
@@ -274,17 +381,37 @@ impl Composer {
         if self.cursor >= chars.len() {
             return;
         }
+        // 光标右侧落在粘贴折叠块里：整块删掉（含块首与块内）。
+        if self.remove_placeholder(self.cursor) {
+            return;
+        }
         chars.remove(self.cursor);
         self.text = chars.into_iter().collect();
+        self.prune_pastes();
         self.refresh_menu();
     }
 
+    /// 左右移动把占位符当一格：光标停在块首/块尾，不会停到块中间。
     pub fn move_left(&mut self) {
-        self.cursor = self.cursor.saturating_sub(1);
+        if self.cursor == 0 {
+            return;
+        }
+        match self.placeholder_span(self.cursor - 1) {
+            // 已在块首则跨出块外一格，否则跳到块首。
+            Some((start, _)) => self.cursor = if self.cursor > start { start } else { start - 1 },
+            None => self.cursor -= 1,
+        }
     }
 
     pub fn move_right(&mut self) {
-        self.cursor = (self.cursor + 1).min(self.text.chars().count());
+        let length = self.text.chars().count();
+        if self.cursor >= length {
+            return;
+        }
+        match self.placeholder_span(self.cursor) {
+            Some((_, end)) => self.cursor = end,
+            None => self.cursor += 1,
+        }
     }
 
     pub fn move_home(&mut self) {
@@ -2548,5 +2675,89 @@ mod notice_line_tests {
         assert!(state.notice_line_text(later).is_none(), "超时后不再显示");
         state.tick_notice_line(later);
         assert!(state.notice_line.is_none(), "tick 要把过期提示真的回收掉");
+    }
+}
+
+/// 粘贴折叠：多行粘贴折成 `[粘贴 #n +N 行]`，提交时还原，删除时整块删
+/// （对映 Python `editing.py` 的 `_compact_paste_if_needed` / `_expand_compact_paste_placeholders`）。
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    fn pasted(lines: usize) -> String {
+        (1..=lines)
+            .map(|index| format!("第 {index} 行"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn multiline_paste_is_folded_and_expands_on_take() {
+        let original = pasted(8);
+        let mut composer = Composer::default();
+        composer.insert_paste(&original);
+
+        assert_eq!(composer.text(), "[粘贴 #1 +8 行]", "多行粘贴要折成占位符");
+        assert_eq!(
+            composer.expanded_text(),
+            original,
+            "展开后要拿回原文（提交路径读的就是它）"
+        );
+        assert_eq!(composer.take(), original, "take 必须还原原文");
+        assert!(composer.is_empty(), "take 之后输入框要清空");
+    }
+
+    #[test]
+    fn short_paste_stays_verbatim() {
+        let mut composer = Composer::default();
+        composer.insert_paste("第一行\n第二行\n第三行");
+        assert_eq!(
+            composer.text(),
+            "第一行\n第二行\n第三行",
+            "5 行及以内不折叠（阈值对映 Python）"
+        );
+    }
+
+    #[test]
+    fn crlf_paste_is_normalized_and_counted_like_python() {
+        let mut composer = Composer::default();
+        composer.insert_paste("a\r\nb\r\nc\r\nd\r\ne\r\nf");
+        // 6 行 → 折叠；CRLF 已归一化，因此展开后是 LF。
+        assert_eq!(composer.text(), "[粘贴 #1 +6 行]");
+        assert_eq!(composer.take(), "a\nb\nc\nd\ne\nf");
+    }
+
+    #[test]
+    fn backspace_and_delete_remove_the_whole_block() {
+        let mut composer = Composer::default();
+        composer.insert_paste(&pasted(9));
+        composer.backspace();
+        assert!(composer.is_empty(), "退格要整块删，而不是逐字符删");
+
+        composer.insert_paste(&pasted(9));
+        composer.move_home();
+        composer.delete();
+        assert!(composer.is_empty(), "块首的 Delete 也要整块删");
+    }
+
+    #[test]
+    fn arrows_treat_the_block_as_a_single_cell() {
+        let mut composer = Composer::default();
+        composer.insert_paste(&pasted(9));
+        composer.move_left();
+        // 已在块首：再退格不会删到块里的字符（否则会变成残缺的占位符文本）。
+        composer.backspace();
+        assert_eq!(composer.text(), "[粘贴 #1 +9 行]");
+        composer.move_right();
+        composer.insert("尾巴");
+        assert_eq!(composer.take(), format!("{}尾巴", pasted(9)));
+    }
+
+    #[test]
+    fn typing_then_submitting_keeps_the_order() {
+        let mut composer = Composer::default();
+        composer.insert_paste(&pasted(7));
+        composer.insert("（请按这个格式）");
+        assert_eq!(composer.take(), format!("{}（请按这个格式）", pasted(7)));
     }
 }

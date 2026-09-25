@@ -234,6 +234,17 @@ Python 的「工具子进程结束就立刻核对」相当于把这一秒的窗�
 项目规范 / Skill / 运行环境，看起来就像「系统提示词没生效」；现在会在会话流里明确写出
 「上下文装配失败：…」，并且只发系统提示词与历史。
 
+**粘贴折叠**（对映 Python `editing.py` 的 `_compact_paste_if_needed`）：终端粘贴超过 5 行
+（`PASTE_COMPACT_LINE_THRESHOLD`）时，输入框里只放一个 `[粘贴 #n +N 行]` 占位符，原文按序号存着，
+**提交时还原成真实内容**（`take()` / `expanded_text()`）；行数按编辑器语义数（末尾空行也算一行），
+粘贴里的 CRLF/CR 先归一化成 LF。空粘贴与 ≤ 5 行的短粘贴仍逐字插入。
+刻意差异：Python 只做了「折起来 + 提交时展开」，**退格仍然是逐字符删**；Rust 把占位符当一格原子，
+`Backspace` / `Delete` 碰到它就整块删掉，`←` / `→` 也整块跳（用户要求，改起来更顺手）。
+
+**启动页**：准备完成后的停留从 0.5s 调到 **1s**（`SPLASH_HOLD_AFTER_DONE_SECONDS`），方便看清日志；
+插件加载诊断（如「已加载 0 个插件，0 个 Handler。」`）与工具声明数一样进启动页右侧的日志框，
+**不再写进对话流**——以前它们会作为 notice 记入消息流，把首屏的 OmniCrawl 块状 Logo 顶掉。
+
 **明确不在本阶段范围**（写在这里避免误读）：
 
 - **工具未搬完**：已实现 read / read_image / image_gen / tts_synthesize / write_file / Edit_file / bash /

@@ -1494,3 +1494,33 @@ fn handshake_carries_system_prompt_and_context_messages() {
         "运行环境那条 user 提示词要带上临时目录：{joined}"
     );
 }
+
+/// 粘贴多行 → 输入框里是折叠块；回车提交的是**还原后的原文**。
+#[test]
+fn pasted_multiline_text_is_folded_then_submitted_in_full() {
+    let mut harness = Harness::start(HANDSHAKE, ApprovalMode::Manual);
+    harness.app.handshake().expect("握手应当成功");
+    let pasted = (1..=8)
+        .map(|index| format!("第 {index} 行"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    harness.app.handle_event(Event::Paste(pasted.clone()));
+    assert_eq!(
+        harness.app.state.composer.text(),
+        "[粘贴 #1 +8 行]",
+        "多行粘贴在输入框里应显示为折叠块"
+    );
+
+    harness.press(KeyCode::Enter);
+    let submitted = harness
+        .frames()
+        .into_iter()
+        .find(|frame| frame.method() == Some("turn.submit"))
+        .expect("应发出 turn.submit");
+    assert_eq!(
+        submitted.params.clone().unwrap_or(Value::Null)["user_text"],
+        json!(pasted),
+        "提交的必须是还原后的原文"
+    );
+}

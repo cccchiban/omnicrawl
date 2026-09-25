@@ -39,9 +39,8 @@ use omnicrawl_workspace::agent_isolation::{
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// 退出时等内核自己收尾的时间。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-/// 启动准备完成后进入工作台前的停留秒数：只保留日志框的短暂可读窗口，启动速度
-/// 优先（与 Python 入口的 `SPLASH_HOLD_AFTER_DONE_SECONDS` 同值）。
-const SPLASH_HOLD_AFTER_DONE_SECONDS: f64 = 0.5;
+/// 启动准备完成后进入工作台前的停留秒数：给日志框留一段可读窗口（加载完停 1 秒）。
+const SPLASH_HOLD_AFTER_DONE_SECONDS: f64 = 1.0;
 /// 控制台输入模式自愈的核对间隔：锁屏/息屏恢复与工具子进程改写都在秒级被发现即可，
 /// 又不至于每帧都去问一次控制台（对映 Python 侧的周期看门狗）。
 const CONSOLE_HEAL_INTERVAL: Duration = Duration::from_secs(1);
@@ -162,6 +161,10 @@ fn prepare_startup(
     };
     if let Some(session) = isolation {
         app.attach_isolation_session(session);
+    }
+    // 插件加载诊断写在启动页日志框里（不进对话流，否则首屏欢迎 Logo 会被顶掉）。
+    for line in &app.startup_plugin_lines {
+        sink.write_line(&format!("插件：{line}"), LogLevel::Info);
     }
     app.attach_kernel_logs(kernel_logs);
     sink.write_line("等待内核握手", LogLevel::Info);

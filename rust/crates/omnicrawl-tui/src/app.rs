@@ -382,6 +382,8 @@ pub struct App {
     settings_request: Option<(Id, SettingsChange)>,
     /// 待回填的「提示词更新」请求（`/plan` 启用模式后下发 system prompt 与上下文消息）。
     prompt_request: Option<Id>,
+    /// 启动期插件加载诊断：由 `main.rs` 写进启动页日志框（不进对话流，避免顶掉首屏 Logo）。
+    pub startup_plugin_lines: Vec<String>,
     /// 启动期解析出来的模型/渠道视图（config.toml + models.toml + 环境变量）。
     ///
     /// 握手与设置面板都读它：`initialize.model` 的 Provider/协议/生成选项/上下文窗口
@@ -601,14 +603,14 @@ impl App {
         // 只认 CLI 值会出现总量未知的 `0/1 0%`，而且与内核的实际窗口不一致。
         let context_window = effective_context_window(options.context_window_tokens, &llm);
         state.telemetry.context_window = u64::try_from(context_window).ok().filter(|value| *value > 0);
-        // 插件运行期：启动失败只影响插件本身，工作台照常可用（诊断进对话流）。
+        // 插件运行期：启动失败只影响插件本身，工作台照常可用。
+        // 诊断不再写进对话流（那样会把首屏的欢迎 Logo 顶掉），而是交给启动页日志框：
+        // `main.rs` 的 `prepare_startup` 读 [`Self::startup_plugin_lines`] 再写进 splash。
         let plugins = Arc::new(PluginHost::from_environment(
             &ConfigEnvironment::from_process(),
             workspace,
         ));
-        for line in plugins.start() {
-            state.notice(format!("插件：{line}"));
-        }
+        let startup_plugin_lines = plugins.start();
         if plugins.active() {
             plugins.notify_app_started();
         }
@@ -652,6 +654,7 @@ impl App {
             session_close_before_sent: false,
             slow_task: None,
             scrollbar_drag: false,
+            startup_plugin_lines,
             kernel_logs: None,
             channel_models_task: None,
         })
@@ -1475,7 +1478,10 @@ impl App {
                     }
                 }
             }
-            Event::Paste(text) if self.settings.is_none() => self.state.composer.insert(&text),
+            Event::Paste(text) if self.settings.is_none() => {
+                // 多行粘贴折成 `[粘贴 #n +N 行]`（提交时还原），否则大段文本会把输入框撑爆。
+                self.state.composer.insert_paste(&text)
+            }
             Event::Resize(..) => {}
             _ => {}
         }
