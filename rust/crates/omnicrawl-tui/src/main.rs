@@ -23,9 +23,10 @@ use ratatui::Terminal;
 use omnicrawl_config::core::context::detect_project_context;
 use omnicrawl_config::core::runtime::{user_config_dir, ConfigEnvironment};
 use omnicrawl_config::features::agent_workspace::load_agent_workspace_config;
-use omnicrawl_tui::app::App;
+use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
+use omnicrawl_tui::app::{uses_external_channel, App};
 use omnicrawl_tui::args::{parse, Options, Parsed};
-use omnicrawl_tui::kernel::KernelClient;
+use omnicrawl_tui::kernel::{kernel_credentials_env, KernelClient};
 use omnicrawl_tui::ui;
 use omnicrawl_tui::ui::fullscreen::terminal::console_heal::heal_console_input_mode;
 use omnicrawl_tui::ui::splash::{self, LogLevel, StartupLogSink};
@@ -118,12 +119,30 @@ fn prepare_startup(
     sink: &StartupLogSink,
 ) -> Result<App, String> {
     sink.write_line("启动内核进程", LogLevel::Info);
-    let kernel =
-        KernelClient::spawn(&options.kernel).map_err(|error| format!("启动内核失败：{error}"))?;
+    let environment = ConfigEnvironment::from_process();
+    // 凭据注入：协议帧里只带**变量名**（`KernelModelConfig.api_key_env`），内核只从环境读密钥；
+    // 而 `config.toml` 里写的字面 `api_key` 不在环境里，必须由宿主在起进程时补进去，
+    // 否则每次回合都会以「读取环境变量 … 失败；模型请求无法鉴权」告终。
+    // 走命令行渠道（`--base-url`）时凭据本来就来自用户自己的环境变量，子进程直接继承，
+    // 这里不注入，避免把配置里的 key 送给另一个端点。
+    let kernel_env = if uses_external_channel(&options) {
+        Vec::new()
+    } else {
+        // 与 `App::new` 同样的降级口径：读不到配置就按环境变量默认值继续（App::new 会再报一次）。
+        let llm = load_llm_config(&environment)
+            .unwrap_or_else(|_| LlmConfig::with_environment(&environment));
+        kernel_credentials_env(&environment, &llm.provider, &llm.api_key_env)
+    };
+    // 内核 stderr 不再直接继承到终端（运行期报错会写在光标处、盖住底部输入框）：
+    // 逐行收进通道，由宿主把报错作为会话区提示显示（见 `App::drain_kernel_logs`）。
+    let (kernel_log_tx, kernel_logs) = std::sync::mpsc::channel::<String>();
+    let kernel = KernelClient::spawn_with_stderr_env(&options.kernel, kernel_env, move |line| {
+        let _ = kernel_log_tx.send(line.to_string());
+    })
+    .map_err(|error| format!("启动内核失败：{error}"))?;
     // 主 Agent 隔离工作区（对映 Python `entry.py` 的启动准备）：多个进程并行时各自在独立的
     // worktree / 目录副本里读写，互不写穿；创建失败仅告警并回退主工作区，不阻断启动。
     sink.write_line("准备隔离工作区", LogLevel::Info);
-    let environment = ConfigEnvironment::from_process();
     let workspace_config = load_agent_workspace_config(&environment, None).unwrap_or_default();
     let (agent_workspace, isolation) =
         prepare_isolated_workspace(IsolationOptions::new(workspace).with_config(workspace_config));
@@ -144,6 +163,7 @@ fn prepare_startup(
     if let Some(session) = isolation {
         app.attach_isolation_session(session);
     }
+    app.attach_kernel_logs(kernel_logs);
     sink.write_line("等待内核握手", LogLevel::Info);
     app.handshake()?;
     Ok(app)
@@ -185,7 +205,9 @@ fn event_loop(
             return Ok(());
         }
         if guard.heal_if_needed(Instant::now()) && guard.notice_due(Instant::now()) {
-            eprintln!("[tui] 控制台输入模式被外部重置，已恢复鼠标与键盘协议。");
+            // 不再直接写终端（会盖住底部输入框）：改成会话流里的提示行。
+            app.state
+                .notice("控制台输入模式被外部重置，已恢复鼠标与键盘协议。".to_string());
         }
         if event::poll(POLL_INTERVAL).map_err(|error| format!("读取终端事件失败：{error}"))?
         {

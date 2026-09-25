@@ -98,6 +98,9 @@
 宿主可以在回合间隙改内核持有的设置，用于设置面板即点即存：
 
 - `model`：`model` / `options` / `reasoning_effort`（只改生成选项里的这一个键）/ `tools`（静态工具声明整体替换）/ `context_window_tokens`，以及渠道字段 `provider` / `protocol` / `base_url` / `api_key_env`（切换模型渠道时整套下发，空串等同于不给，凭据本身不进帧）；
+  内核的 `read_api_key` 只按 `api_key_env` 这个**名字**读环境变量（读不到就整回合失败：
+  `读取环境变量 … 失败…模型请求无法鉴权`），所以凭据只写在 `config.toml` 时，宿主必须把它注入
+  内核子进程的环境（TUI 与本地 API 都在起内核/重起内核时做这件事）。
 - `compaction`：压缩阈值与窗口等字段，映射与 `initialize.session.compaction` 共用
   `compaction.rs::overlay_compaction_config`，两处不会漂移。
 

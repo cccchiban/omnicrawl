@@ -107,7 +107,7 @@ use omnicrawl_workspace::agent_isolation::{
 use crate::args::{ApprovalMode, Options};
 use crate::commands::{self, TuiHostAgent};
 use crate::host::{self, BatchStep, Waiting};
-use crate::kernel::KernelClient;
+use crate::kernel::{frame_api_key_env, KernelClient};
 use crate::state::{AppState, Record};
 use crate::tools::{
     AdvisorOptions, ImageGenOptions, MemoryOptions, RegistryOptions, ToolRegistry, TtsOptions,
@@ -117,6 +117,7 @@ use crate::ui::config_chat::{ConfigChatEvent, ConfigChatState};
 use crate::ui::conversation::{self, LineHit};
 use crate::ui::file_picker::{FilePickerEvent, FilePickerState};
 use crate::ui::fullscreen::input::menu::{MenuAction, MenuKey};
+use crate::ui::fullscreen::input::sessions_menu::SessionMenuItem;
 use crate::ui::queue::{self, QueueHit};
 use crate::ui::settings::{
     nearest_compaction_percent, reasoning_label, ChannelRow, FieldValue, FormKind, McpChange,
@@ -224,6 +225,37 @@ struct ToolCompletion {
     vision: Option<host::VisionPayload>,
 }
 
+/// 主通道是否走命令行给定的外部渠道（`--base-url` 非空）。
+///
+/// 这种情形下 provider / protocol / 生成选项 / 凭据变量名全由命令行决定，不再叠加
+/// `config.toml` 的渠道设置。
+pub fn uses_external_channel(options: &Options) -> bool {
+    !options.base_url.trim().is_empty()
+}
+
+/// 握手交给内核的凭据环境变量名。
+///
+/// 内核的 `read_api_key` 只看这个名字对应的环境变量，所以起内核时的凭据注入
+/// （`KernelClient::spawn_with_env`）必须用同一个名字，否则注入了也不会被读到。
+///
+/// 口径：命令行给了 `--base-url` 时用命令行那个名字；否则优先 `config.toml` 渠道里的名字，
+/// 渠道没写名字就用 Provider 默认名。
+pub fn effective_api_key_env(
+    external_channel: bool,
+    provider: &str,
+    llm_env: &str,
+    cli_env: &str,
+) -> String {
+    if external_channel {
+        return frame_api_key_env(provider, cli_env);
+    }
+    if llm_env.trim().is_empty() {
+        frame_api_key_env(provider, "")
+    } else {
+        llm_env.to_string()
+    }
+}
+
 /// 按工作区装配提示词运行时：模板 → system prompt、AGENTS.md → 项目规范、
 /// Skill 目录 → 索引。
 ///
@@ -302,6 +334,21 @@ fn build_review_options(
     })
 }
 
+/// 内核 stderr 行 → 会话区提示文案；不是报错行时返回 `None`。
+///
+/// 内核把 `[kernel] 回合失败：…` 一类诊断写到 stderr；只有这些行值得占用会话流，
+/// 常规信息（如「会话已就绪」）直接丢弃。
+fn kernel_error_notice(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let is_error = ["失败", "错误", "异常", "无法"]
+        .iter()
+        .any(|keyword| trimmed.contains(keyword));
+    is_error.then(|| trimmed.to_string())
+}
+
 pub struct App {
     pub state: AppState,
     pub options: Options,
@@ -373,6 +420,16 @@ pub struct App {
     session_close_before_sent: bool,
     /// 慢命令的宿主侧后台任务（`/workspace`、`/mcp`），每帧轮询取回结果。
     slow_task: Option<SlowTask>,
+    /// 内核 stderr 的逐行通道：运行期报错转成会话区提示，不再直接写终端盖住输入框。
+    kernel_logs: Option<Receiver<String>>,
+    /// 渠道页「模型 ID」的自动检测后台任务。
+    channel_models_task: Option<Receiver<ChannelModelsResult>>,
+}
+
+/// 渠道模型列表自动检测的产出：候选模型 ID 与失败原因。
+struct ChannelModelsResult {
+    models: Vec<String>,
+    message: String,
 }
 
 /// 后台 TTS 任务的产出（下载 / 克隆），由 UI 线程的轮询取回。
@@ -592,7 +649,14 @@ impl App {
             session_id: String::new(),
             session_close_before_sent: false,
             slow_task: None,
+            kernel_logs: None,
+            channel_models_task: None,
         })
+    }
+
+    /// 接管内核 stderr 通道：由 [`Self::drain_kernel_logs`] 把报错转成会话区提示。
+    pub fn attach_kernel_logs(&mut self, logs: Receiver<String>) {
+        self.kernel_logs = Some(logs);
     }
 
     /// 挂载主 Agent 隔离区会话：退出收尾时自动 apply + 清理。
@@ -674,7 +738,7 @@ impl App {
     /// `--model` 始终优先。提示词缓存身份在这里按稳定前缀算出来交给内核（它据此
     /// 派生 `prompt_cache_key`），与 Python `build_prompt_cache_identity` 逐字节对齐。
     pub fn handshake(&mut self) -> Result<(), String> {
-        let external_channel = !self.options.base_url.trim().is_empty();
+        let external_channel = uses_external_channel(&self.options);
         // 稳定前缀的三样来源：system prompt、工具声明、项目规范。
         // 先算好再进 `KernelModelConfig` 字面量，避免同一份内容算两遍（模板可能很大）。
         let system_prompt = self.prompt.system_prompt();
@@ -706,11 +770,12 @@ impl App {
             } else {
                 self.llm.base_url.clone()
             },
-            api_key_env: if external_channel || self.llm.api_key_env.trim().is_empty() {
-                self.options.api_key_env.clone()
-            } else {
-                self.llm.api_key_env.clone()
-            },
+            api_key_env: effective_api_key_env(
+                external_channel,
+                &self.llm.provider,
+                &self.llm.api_key_env,
+                &self.options.api_key_env,
+            ),
             user_agent: format!("omnicrawl-tui/{}", env!("CARGO_PKG_VERSION")),
             system_prompt,
             context_messages: self
@@ -847,12 +912,46 @@ impl App {
             self.handle_frame(frame);
         }
         self.drain_completions();
+        self.drain_kernel_logs();
+        self.drain_channel_models();
         self.enforce_tool_deadline();
         if self.kernel.is_closed() && !self.quit {
             self.state.fail_turn("内核进程已退出。".to_string());
             self.plugins
                 .turn_error("内核进程已退出。", None, self.current_turn_id().as_deref());
             self.quit = true;
+        }
+    }
+
+    /// 把内核 stderr 里的运行期报错转成会话区提示。
+    ///
+    /// 内核的 stderr 以前直接继承到终端，报错会写在光标处、盖住底部输入框；
+    /// 现在逐行收进通道，只有错误行（失败 / 错误 / 异常 / 无法）作为提示进会话流，
+    /// 常规日志丢弃，避免刷屏。
+    fn drain_kernel_logs(&mut self) {
+        let Some(logs) = self.kernel_logs.take() else {
+            return;
+        };
+        let mut lines: Vec<String> = Vec::new();
+        let mut disconnected = false;
+        loop {
+            match logs.try_recv() {
+                Ok(line) => lines.push(line),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        for line in lines {
+            if let Some(message) = kernel_error_notice(&line) {
+                self.state.notice(message);
+            }
+        }
+        // 内核退出时通道断开：保留 `None`，不再每帧空转。
+        if !disconnected {
+            self.kernel_logs = Some(logs);
         }
     }
 
@@ -1309,9 +1408,10 @@ impl App {
         }
         let seconds = self.options.tool_timeout_seconds;
         let ready = self.state.fill_tool_timeout(seconds);
-        eprintln!(
-            "[tui] 工具执行超过 {seconds} 秒仍未完成，已按超时回收等待（后台线程的结果会被丢弃）。"
-        );
+        // 不再直接写终端（会盖住输入框）：作为会话区提示显示。
+        self.state.notice(format!(
+            "工具执行超过 {seconds} 秒仍未完成，已按超时回收等待（后台线程的结果会被丢弃）。"
+        ));
         self.tool_deadline = None;
         if ready {
             self.flush_ready_batch();
@@ -1321,7 +1421,7 @@ impl App {
     fn respond_batch(&mut self, id: &Id, observations: Vec<omnicrawl_core::AgentLoopObservation>) {
         let result = omnicrawl_ipc::ToolBatchResult { observations }.to_result();
         if let Err(error) = self.kernel.respond(id, result) {
-            eprintln!("[tui] 回工具批次失败：{error}");
+            self.state.notice(format!("回工具批次失败：{error}"));
         }
     }
 
@@ -1373,6 +1473,7 @@ impl App {
         // （与 Python `_withdraw_pending_input` 的守卫同源）。
         let interactive = self.state.waiting().is_none();
         match mouse.kind {
+            MouseEventKind::Moved => self.update_conversation_hover(mouse.column, mouse.row),
             MouseEventKind::ScrollUp => self.state.scroll_by(-WHEEL_STEP),
             MouseEventKind::ScrollDown => self.state.scroll_by(WHEEL_STEP),
             MouseEventKind::Down(MouseButton::Left) if interactive => {
@@ -1380,6 +1481,34 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// 鼠标移动：只关心会话流里运行状态行尾的 `[ ESC ]`，命中则点亮为淡黄色。
+    ///
+    /// `[ ESC ]` 只在回合运行期间存在，空闲时直接复位，不必每移动一格就重算整段
+    /// 显示行（长会话下那是一次不便宜的折行）。
+    fn update_conversation_hover(&mut self, column: u16, row: u16) {
+        if !self.state.turn.is_running() {
+            self.state.runtime_esc_hover = false;
+            return;
+        }
+        let areas = ui::layout(self.viewport, &self.state);
+        let point = Position::new(column, row);
+        let hover = if areas.conversation.contains(point) {
+            let relative = (row - areas.conversation.y) as usize;
+            matches!(
+                conversation::hit_test(
+                    &self.state,
+                    areas.conversation,
+                    self.state.scroll_from_bottom,
+                    relative,
+                ),
+                Some(LineHit::RuntimeEsc)
+            )
+        } else {
+            false
+        };
+        self.state.runtime_esc_hover = hover;
     }
 
     /// 设置面板的鼠标事件：悬停只记录行（加亮交给渲染层），左键按命中区分派。
@@ -1448,6 +1577,15 @@ impl App {
             Some(LineHit::Reasoning { index }) => {
                 self.state.toggle_reasoning_expanded(index);
             }
+            // 点击 `[ ESC ]` 与键盘 Esc 等价：运行中取消当前回合，空闲时聚焦输入框。
+            Some(LineHit::RuntimeEsc) => {
+                if self.state.turn.is_running() {
+                    self.cancel_turn();
+                } else {
+                    self.state.composer.clear();
+                    self.state.scroll_to_bottom();
+                }
+            }
             None => {}
         }
     }
@@ -1467,6 +1605,11 @@ impl App {
         }
 
         if self.handle_waiting_key(key, ctrl) {
+            return;
+        }
+
+        // `/sessions` 菜单开着时优先吃上下键 / Enter / Esc。
+        if self.handle_sessions_menu_key(key) {
             return;
         }
 
@@ -1502,6 +1645,43 @@ impl App {
             KeyCode::PageUp => self.state.scroll_by(-PAGE_STEP),
             KeyCode::PageDown => self.state.scroll_by(PAGE_STEP),
             _ => {}
+        }
+    }
+
+    /// `/sessions` 会话菜单的选择键；返回 `true` 表示事件已被菜单消费。
+    ///
+    /// 上下键循环移动，Enter 把 `/resume <session_id>` 填回输入框（不直接执行，
+    /// 对映 Python `_handle_sessions_menu_key`），Esc 或其余按键收起菜单。
+    fn handle_sessions_menu_key(&mut self, key: KeyEvent) -> bool {
+        if !self.state.sessions_menu.is_open() {
+            return false;
+        }
+        match key.code {
+            KeyCode::Up => {
+                self.state.sessions_menu.move_selection(-1);
+                true
+            }
+            KeyCode::Down => {
+                self.state.sessions_menu.move_selection(1);
+                true
+            }
+            KeyCode::Enter => {
+                if let Some(item) = self.state.sessions_menu.selected() {
+                    let command = format!("/resume {}", item.session_id);
+                    self.state.sessions_menu.close();
+                    self.state.composer.set_text(&command);
+                }
+                true
+            }
+            KeyCode::Esc => {
+                self.state.sessions_menu.close();
+                true
+            }
+            // 其余键收起菜单，但不等同消费：让输入继续落到输入框。
+            _ => {
+                self.state.sessions_menu.close();
+                false
+            }
         }
     }
 
@@ -1630,6 +1810,13 @@ impl App {
         let Some(text) = self.state.submit() else {
             return;
         };
+        // `/sessions` 特殊处理（对映 Python `_handle_command`）：不把列表追加进对话区，
+        // 而是在输入框上方弹可导航的会话菜单。放在这里而不是命令派发层，是为了让它
+        // 在生成中（立即命令分支）与空闲时走同一条路径。
+        if text.trim() == "/sessions" {
+            self.open_sessions_menu();
+            return;
+        }
         if self.state.turn.is_running() {
             // 生成期间的命令调度按声明类型走（对映 Python 的 `is_immediate`：
             // 纯界面与只读查询当场执行，状态变更类排队等回合结束）。
@@ -1742,23 +1929,27 @@ impl App {
         if let Some(status) = result.working_status.take() {
             self.state.status = Some(status);
         }
+        // 打开类命令（`/settings`、`/settings --chat`）不追加提示：Python 在
+        // `open_settings` / `open_config_chat` 分支里直接 return，`message`（如
+        // 「打开设置面板」）从来不会进消息流；这里同样先处理再 return，
+        // 否则会多出一条「· 打开设置面板」这类纯提醒。
+        if result.clear_conversation {
+            self.state.records.clear();
+            self.state.scroll_to_bottom();
+        }
+        if result.open_config_chat {
+            self.open_config_chat();
+            return;
+        }
+        if result.open_settings {
+            self.open_settings();
+            return;
+        }
         if let Some(message) = result.message.take() {
             self.state.notice(message);
         }
         if let Some(error) = result.error.take() {
             self.state.notice(error);
-        }
-        // 配置对话（`/settings --chat`）：打开弹层，一句话 → 本地路由器 → 原子写回。
-        if result.open_config_chat {
-            self.open_config_chat();
-            return;
-        }
-        if result.clear_conversation {
-            self.state.records.clear();
-            self.state.scroll_to_bottom();
-        }
-        if result.open_settings {
-            self.open_settings();
         }
         // `refresh_context` 对内核侧上下文没有可刷新的东西：模型上下文由内核持有，
         // 宿主这里没有缓存可失效。
@@ -2123,6 +2314,83 @@ impl App {
                     }
                 }
             }
+            Some(SettingsEvent::DiscoverChannelModels {
+                profile_id,
+                provider,
+                protocol,
+                base_url,
+                api_key_env,
+                user_agent,
+            }) => self.start_channel_model_discovery(
+                profile_id,
+                provider,
+                protocol,
+                base_url,
+                api_key_env,
+                user_agent,
+            ),
+        }
+    }
+
+    /// 后台自动检测一个渠道的模型列表（网络 I/O 不能占用界面线程）。
+    ///
+    /// 凭据只从环境变量读（渠道里存的是变量名）；协议字符串先解析成内核枚举，
+    /// 无法识别或缺少凭据时直接把原因回填给面板。
+    fn start_channel_model_discovery(
+        &mut self,
+        profile_id: String,
+        provider: String,
+        protocol: String,
+        base_url: String,
+        api_key_env: String,
+        user_agent: String,
+    ) {
+        let api_key = std::env::var(&api_key_env).unwrap_or_default();
+        let timeout = (self.options.tool_timeout_seconds as f64).clamp(1.0, 10.0);
+        let (sender, receiver) = mpsc::channel::<ChannelModelsResult>();
+        self.channel_models_task = Some(receiver);
+        thread::spawn(move || {
+            let Some(parsed) = omnicrawl_protocol::Protocol::parse(&protocol) else {
+                let _ = sender.send(ChannelModelsResult {
+                    models: Vec::new(),
+                    message: format!("未知的协议：{protocol}"),
+                });
+                return;
+            };
+            let profile = omnicrawl_llm::ProviderProfile {
+                id: profile_id,
+                provider,
+                base_url,
+                api_key,
+                user_agent,
+                default_protocol: parsed.as_str().to_string(),
+            };
+            let result = omnicrawl_llm::discover_models(&profile, parsed, timeout);
+            let models: Vec<String> = result
+                .models
+                .iter()
+                .map(|model| model.model_id.clone())
+                .collect();
+            let _ = sender.send(ChannelModelsResult {
+                models,
+                message: result.message,
+            });
+        });
+    }
+
+    /// 取回渠道模型检测结果并回填到面板。
+    fn drain_channel_models(&mut self) {
+        let Some(receiver) = self.channel_models_task.take() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(result) => {
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.set_channel_models(result.models, result.message);
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => self.channel_models_task = Some(receiver),
+            Err(mpsc::TryRecvError::Disconnected) => {}
         }
     }
 
@@ -2418,7 +2686,8 @@ impl App {
             self.refresh_tts_voices();
             self.registry_options.tts = tts_options(&self.workspace);
             if let Err(error) = self.rebuild_registry() {
-                eprintln!("[tui] TTS 任务后重建工具表失败：{error}");
+                self.state
+                    .notice(format!("TTS 任务后重建工具表失败：{error}"));
             }
         }
         if let Some(settings) = self.settings.as_mut() {
@@ -2455,7 +2724,9 @@ impl App {
         match load_llm_config(&environment) {
             Ok(refreshed) => self.llm = refreshed,
             Err(error) => {
-                eprintln!("[tui] 切换渠道后重新解析模型配置失败，沿用渠道记录：{error}");
+                self.state.notice(format!(
+                    "切换渠道后重新解析模型配置失败，沿用渠道记录：{error}"
+                ));
                 self.llm.model = channel.model_id.clone();
                 self.llm.provider = channel.provider.clone();
                 self.llm.protocol = channel.protocol.clone();
@@ -2504,7 +2775,9 @@ impl App {
         // 配置侧会规范默认渠道与凭据变量名：重新解析一次模型视图并读回磁盘上的渠道。
         match load_llm_config(&environment) {
             Ok(refreshed) => self.llm = refreshed,
-            Err(error) => eprintln!("[tui] 保存渠道后重新解析模型配置失败：{error}"),
+            Err(error) => self
+                .state
+                .notice(format!("保存渠道后重新解析模型配置失败：{error}")),
         }
         self.state.model = self.llm.model.clone();
         let (reloaded, reloaded_default) = self.channel_views(&environment);
@@ -2799,7 +3072,8 @@ impl App {
         self.sync_advisor_options(&environment, &configuration);
         if let Err(error) = self.rebuild_registry() {
             if let Err(rollback) = save_advisor_config(&environment, &previous, None) {
-                eprintln!("[tui] 顾问设置回滚写盘失败：{rollback}");
+                self.state
+                    .notice(format!("顾问设置回滚写盘失败：{rollback}"));
             }
             self.registry_options.advisor = previous_options;
             return Err(error);
@@ -3032,7 +3306,8 @@ impl App {
         self.sync_image_gen_options(&configuration);
         if let Err(error) = self.rebuild_registry() {
             if let Err(rollback) = save_image_gen_configuration(&environment, &previous, None) {
-                eprintln!("[tui] 图像生成设置回滚写盘失败：{rollback}");
+                self.state
+                    .notice(format!("图像生成设置回滚写盘失败：{rollback}"));
             }
             self.registry_options.image_gen = previous_options;
             return Err(error);
@@ -3433,10 +3708,10 @@ impl App {
             Path::new(requested),
             None,
         ) {
-            eprintln!(
-                "[tui] 工作区持久化到 config.toml 失败：{}",
+            self.state.notice(format!(
+                "工作区持久化到 config.toml 失败：{}",
                 error.message()
-            );
+            ));
         }
         // 内核侧：先把新工具表与上下文消息推给内核（与新工作区的稳定前缀一致），
         // 再让它在同一会话里转录 `workspace_switched`。两者都不等回包：
@@ -3722,7 +3997,8 @@ impl App {
         let id = self.kernel.next_id();
         let frame = command.to_frame(id.clone());
         if let Err(error) = self.kernel.send_frame(&frame) {
-            eprintln!("[tui] 发送内核命令失败：{error}");
+            self.state
+                .notice(format!("发送内核命令失败：{error}"));
         }
         id
     }
@@ -3919,6 +4195,44 @@ impl App {
     fn session_request(&mut self, command: Command) -> Result<Value, String> {
         let frame = self.request_kernel(command, SESSION_COMMAND_TIMEOUT)?;
         Ok(frame.result.clone().unwrap_or(Value::Null))
+    }
+
+    /// 提交 `/sessions`：读最近会话并在输入框上方打开可导航菜单。
+    ///
+    /// 列表读取失败或没有会话时回退到对话区提示（对映 Python `_show_sessions_menu`）。
+    fn open_sessions_menu(&mut self) {
+        let entries = match self.command_session_list(false, 10) {
+            Ok(entries) => entries,
+            Err(message) => {
+                self.state.notice(format!("会话列表读取失败：{message}"));
+                return;
+            }
+        };
+        if entries.is_empty() {
+            self.state
+                .notice("当前工作区还没有可恢复会话。".to_string());
+            return;
+        }
+        let current = self.session_id.clone();
+        let items: Vec<SessionMenuItem> = entries
+            .iter()
+            .map(|entry| SessionMenuItem {
+                session_id: entry.session_id.clone(),
+                updated_at: entry
+                    .updated_at
+                    .with_timezone(&chrono::Local)
+                    .format("%m-%d %H:%M")
+                    .to_string(),
+                message_count: entry.message_count,
+                title: if entry.title.trim().is_empty() {
+                    "未命名会话".to_string()
+                } else {
+                    entry.title.clone()
+                },
+                is_current: entry.session_id == current,
+            })
+            .collect();
+        self.state.open_sessions_menu(items);
     }
 
     /// 会话列表（`/sessions` / `/archives`）：顺带把当前会话 id 对齐到内核。
@@ -5001,6 +5315,33 @@ fn mcp_manager(workspace: &Path) -> Option<Arc<McpClientManager>> {
 mod tests {
     use super::*;
     use omnicrawl_config::models::llm::provider_options_from_json;
+
+    #[test]
+    fn api_key_env_follows_channel_then_provider_default() {
+        // 命令行渠道（`--base-url`）：用命令行那个名字。
+        assert_eq!(
+            effective_api_key_env(true, "openai", "OPENAI_API_KEY", "MY_KEY"),
+            "MY_KEY"
+        );
+        // 配置渠道：优先渠道里的名字。
+        assert_eq!(
+            effective_api_key_env(false, "openai", "CHANNEL_KEY", "OPENAI_API_KEY"),
+            "CHANNEL_KEY"
+        );
+        // 渠道里没写名字：退回 Provider 默认名（不能退回空串：内核只看这个名字）。
+        assert_eq!(
+            effective_api_key_env(false, "anthropic", "  ", "OPENAI_API_KEY"),
+            "ANTHROPIC_API_KEY"
+        );
+        assert_eq!(
+            effective_api_key_env(false, "gemini", "", "OPENAI_API_KEY"),
+            "GEMINI_API_KEY"
+        );
+        assert_eq!(
+            effective_api_key_env(true, "", "", ""),
+            "OPENAI_API_KEY"
+        );
+    }
 
     #[test]
     fn undo_message_reports_rollback_and_workspace_restore() {

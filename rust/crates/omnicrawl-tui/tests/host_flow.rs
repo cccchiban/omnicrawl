@@ -711,11 +711,14 @@ fn slash_prefix_opens_menu_and_tab_completes() {
         .collect();
     assert_eq!(names, vec!["/settings", "--chat"], "{names:?}");
 
-    // 输入已是完整命令：Enter 放行提交流程，命令层给出「打开设置面板」。
+    // 输入已是完整命令：Enter 放行提交流程，命令层直接打开设置面板。
+    // 与 Python 一致，`open_settings` 分支不再追加「打开设置面板」这类纯提醒。
     harness.press(KeyCode::Enter);
     assert!(
-        notices(&harness).iter().any(|text| text == "打开设置面板"),
-        "Enter 应当执行 /settings：{:?}",
+        notices(&harness)
+            .iter()
+            .all(|text| text != "打开设置面板"),
+        "/settings 不应再追加提醒消息：{:?}",
         notices(&harness)
     );
     assert!(

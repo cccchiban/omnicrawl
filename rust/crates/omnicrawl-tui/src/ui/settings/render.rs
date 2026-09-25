@@ -341,7 +341,11 @@ fn render_channel_form(
                 format!("{} ▼（↑↓ 选择）", channel_field_value(form.row, field))
             }
             (false, _) => {
-                let suffix = if matches!(field, ChannelField::Provider | ChannelField::Protocol) {
+                // 模型 ID 也是可展开的（自动检测候选），与两个枚举字段一样带 `▼`。
+                let suffix = if matches!(
+                    field,
+                    ChannelField::Provider | ChannelField::Protocol | ChannelField::ModelId
+                ) {
                     " ▼"
                 } else {
                     ""
@@ -1072,10 +1076,19 @@ fn render_config_chat(frame: &mut Frame, area: Rect, state: &SettingsState) {
 }
 
 /// 面板底部的状态行（1 空行 + 最多 2 行文本）与提示行（1 行）。
+///
+/// 状态文本与键位提示同文时只画状态行：各页初始状态就是把提示当状态，若两行都画
+/// 就会把同一句键位说明上下各显示一遍；保留状态行而不是提示行，是因为状态行可折
+/// 到 2 行，长键位说明不会像单行提示那样被 `…` 截断。
 fn render_pane_tail(frame: &mut Frame, area: Rect, status: &str, hint: &str, hint_style: Style) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let hint = if status.trim() == hint.trim() {
+        ""
+    } else {
+        hint
+    };
     let width = area.width as usize;
     let status_height = area.height.saturating_sub(1).min(2);
     let status_area = Rect {

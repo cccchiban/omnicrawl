@@ -57,6 +57,8 @@ pub enum LineHit {
     ToolCard { call_id: String },
     /// 思考段：点击在折叠与展开之间切换（`index` 是该记录在消息流里的下标）。
     Reasoning { index: usize },
+    /// 运行状态行尾部的 `[ ESC ]`：点击等价于按键盘 Esc（取消当前回合 / 空闲时聚焦输入框）。
+    RuntimeEsc,
 }
 
 /// 显示行 + 它承载的点击目标。
@@ -219,9 +221,24 @@ fn runtime_status_line(state: &AppState, width: usize) -> Option<DisplayLine> {
     let room = width.saturating_sub(used + reserve).max(1);
     spans.push(Span::styled(fit(&text, room), style));
     if running {
-        spans.push(Span::styled(hint, style.add_modifier(Modifier::DIM)));
+        // 鼠标悬停 `[ ESC ]` 时染成淡黄色加粗（对映 Python `:hover` 的提亮效果），
+        // 离开恢复灰色 dim。
+        let hint_style = if state.runtime_esc_hover {
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            style.add_modifier(Modifier::DIM)
+        };
+        spans.push(Span::styled(hint, hint_style));
     }
-    Some(DisplayLine::plain(Line::from(spans)))
+    let line = Line::from(spans);
+    Some(if running {
+        // 只有运行中的状态行才带可点的 `[ ESC ]`。
+        DisplayLine::with_hit(line, LineHit::RuntimeEsc)
+    } else {
+        DisplayLine::plain(line)
+    })
 }
 
 /// 欢迎 Logo 的显示行：绝对定位覆盖层（对映 CSS `#welcome-logo { position: absolute;

@@ -5,7 +5,9 @@
 //! `sessions_menu.py`（会话选择菜单）。
 //!
 //! Rust 侧按文件顺序迁移：`menu` 已落斜杠命令菜单的筛选、选择与渲染；
-//! `composer` / `editing` / `sessions_menu` 随后续批次补入。
+//! `sessions_menu` 已落 `/sessions` 的输入框上方可选列表；
+//! `composer` / `editing` 随后续批次补入。
 //! Textual 的 `TextArea` 挂载与焦点由装配层承接，这里只保留纯状态与显示行。
 
 pub mod menu;
+pub mod sessions_menu;

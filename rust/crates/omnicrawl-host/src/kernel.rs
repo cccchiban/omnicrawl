@@ -10,6 +10,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use omnicrawl_config::core::bootstrap::default_api_key_env;
+use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::models::llm::load_llm_config;
 use omnicrawl_ipc::{error_code, ErrorObject, Frame, Id};
 
 pub struct KernelClient {
@@ -20,13 +23,64 @@ pub struct KernelClient {
     closed: bool,
 }
 
+/// 内核子进程要补的环境变量（`(名字, 值)`）。
+pub type KernelEnv = Vec<(String, String)>;
+
+/// 凭据 → 内核子进程环境。
+///
+/// 协议帧里只带凭据的**变量名**（`KernelModelConfig.api_key_env`），内核的 `read_api_key`
+/// 只读环境变量。而 `config.toml` 里写的字面 `api_key`（Python 侧的首选来源）并不在环境里，
+/// 所以宿主必须在起内核时把它补进子进程环境，否则「配置里有 key、环境里没有」的用法会在
+/// 每次回合上直接失败：`读取环境变量 OPENAI_API_KEY 失败…模型请求无法鉴权`。
+///
+/// 密钥仍然只走进程环境，不进协议帧。名字为空时不注入（内核会按「无凭据」处理）。
+pub fn model_credentials_env(api_key: &str, api_key_env: &str) -> KernelEnv {
+    let key = api_key.trim();
+    let name = api_key_env.trim();
+    if key.is_empty() || name.is_empty() {
+        return Vec::new();
+    }
+    vec![(name.to_string(), key.to_string())]
+}
+
+/// 从 `config.toml` 的主通道解析密钥，并按帧里的变量名补进内核环境（宿主两侧共用）。
+///
+/// `provider` / `api_key_env` 传宿主握手时交给内核的那两个值；变量名空白时用 Provider 默认名，
+/// 与帧里保持一致（否则注入了内核也不会去读）。
+pub fn kernel_credentials_env(
+    env: &ConfigEnvironment,
+    provider: &str,
+    api_key_env: &str,
+) -> KernelEnv {
+    let name = frame_api_key_env(provider, api_key_env);
+    let Ok(llm) = load_llm_config(env) else {
+        return Vec::new();
+    };
+    model_credentials_env(&llm.api_key, &name)
+}
+
+/// 帧里该告诉内核的凭据变量名：给了就用，空白时退回 Provider 默认名。
+pub fn frame_api_key_env(provider: &str, api_key_env: &str) -> String {
+    let name = api_key_env.trim();
+    if name.is_empty() {
+        default_api_key_env(provider)
+    } else {
+        name.to_string()
+    }
+}
+
 /// 内核 stderr 行的接收器：`spawn_with_stderr` 用它接住「会话已就绪」这类通知。
 type StderrSink = Box<dyn Fn(&str) + Send>;
 
 impl KernelClient {
     /// 起内核进程：stdout 交给读线程，stderr 直接继承（内核只在那里写日志）。
     pub fn spawn(program: &Path) -> io::Result<Self> {
-        Self::spawn_with(program, None)
+        Self::spawn_with(program, None, Vec::new())
+    }
+
+    /// 起内核进程，并给子进程补一组环境变量（凭据注入，见 `model_credentials_env`）。
+    pub fn spawn_with_env(program: &Path, envs: KernelEnv) -> io::Result<Self> {
+        Self::spawn_with(program, None, envs)
     }
 
     /// 起内核进程，并把 stderr 逐行交给回调。
@@ -37,16 +91,34 @@ impl KernelClient {
         program: &Path,
         sink: impl Fn(&str) + Send + 'static,
     ) -> io::Result<Self> {
-        Self::spawn_with(program, Some(Box::new(sink)))
+        Self::spawn_with(program, Some(Box::new(sink)), Vec::new())
     }
 
-    fn spawn_with(program: &Path, sink: Option<StderrSink>) -> io::Result<Self> {
+    /// 起内核进程，同时补环境变量（凭据）并接管 stderr：本地 API 两者都要。
+    pub fn spawn_with_stderr_env(
+        program: &Path,
+        envs: KernelEnv,
+        sink: impl Fn(&str) + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_with(program, Some(Box::new(sink)), envs)
+    }
+
+    fn spawn_with(
+        program: &Path,
+        sink: Option<StderrSink>,
+        envs: KernelEnv,
+    ) -> io::Result<Self> {
         let stderr = if sink.is_some() {
             Stdio::piped()
         } else {
             Stdio::inherit()
         };
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        // 凭据只经环境交给内核（协议帧只带变量名）：见 `model_credentials_env`。
+        for (name, value) in envs {
+            command.env(name, value);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
@@ -220,6 +292,27 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn credentials_env_uses_the_frame_variable_name() {
+        // 帧里给的是名字，注入的必须是同一个名字，否则内核不会去读。
+        assert_eq!(
+            model_credentials_env("sk-literal", "OPENAI_API_KEY"),
+            vec![("OPENAI_API_KEY".to_string(), "sk-literal".to_string())]
+        );
+        assert_eq!(
+            model_credentials_env(" sk ", " MY_KEY "),
+            vec![("MY_KEY".to_string(), "sk".to_string())]
+        );
+    }
+
+    #[test]
+    fn credentials_env_skips_blank_key_or_name() {
+        // 空密钥 / 空名字都不注入：内核自己会按「无凭据」处理。
+        assert!(model_credentials_env("", "OPENAI_API_KEY").is_empty());
+        assert!(model_credentials_env("   ", "OPENAI_API_KEY").is_empty());
+        assert!(model_credentials_env("sk-literal", "").is_empty());
+    }
 
     #[derive(Clone, Default)]
     struct SharedWriter(Arc<Mutex<Vec<u8>>>);

@@ -24,6 +24,9 @@ omnicrawl-extensions = { path = "../omnicrawl-extensions" }
 omnicrawl-session = { path = "../omnicrawl-session" }
 # 宿主执行层：内核客户端、工具批次与工具执行体（与本地 API 共用）。
 omnicrawl-host = { path = "../omnicrawl-host" }
+# 渠道页「模型 ID」的自动检测：按渠道的协议直接发 GET 拉取模型列表。
+omnicrawl-llm = { path = "../omnicrawl-llm" }
+omnicrawl-protocol = { path = "../omnicrawl-protocol" }
 omnicrawl-ipc = { path = "../omnicrawl-ipc" }
 omnicrawl-mcp = { path = "../omnicrawl-mcp" }
 # TTS 设置页的模型下载 / 音色克隆（引擎与下载器都在 omnicrawl-tts）。

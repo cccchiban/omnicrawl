@@ -41,20 +41,32 @@ pub fn body_width(width: u16) -> u16 {
     width.saturating_sub(2 * TEXT_OFFSET).max(1)
 }
 
-/// 命令菜单占用的行数：每项一行，超出可见上限时随选择位滚动（对映 `_resize_composer_to_text`
+/// 输入框上方菜单占用的行数：`/sessions` 会话菜单优先，其次才是命令菜单。
+///
+/// 两套菜单不会同时打开（会话菜单由提交 `/sessions` 触发，此时命令菜单已收起），
+/// 每项一行，超出可见上限时随选择位滚动（对映 `_resize_composer_to_text`
 /// 的 `menu_rows = min(len(matches), COMMAND_MENU_VISIBLE_OPTIONS)`）。
 pub fn menu_height(state: &AppState) -> u16 {
-    state.composer.menu().visible_rows() as u16
+    if state.sessions_menu.is_open() {
+        state.sessions_menu.visible_rows() as u16
+    } else {
+        state.composer.menu().visible_rows() as u16
+    }
 }
 
-/// 渲染命令菜单：选中项 `› ` + 琥珀色，其余次级色，描述段弱化。
+/// 渲染输入框上方的菜单：`/sessions` 会话列表优先，否则是斜杠命令菜单。
 ///
-/// 菜单行与 Python 一样不软折行（超宽部分裁断，对应 Textual 的 `no_wrap` + `ellipsis`）。
+/// 选中项 `› ` + 琥珀色，其余次级色，描述段弱化；菜单行与 Python 一样不软折行
+/// （超宽部分裁断，对应 Textual 的 `no_wrap` + `ellipsis`）。
 pub fn render_menu(frame: &mut Frame, area: Rect, state: &AppState) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let rendered = state.composer.menu().render();
+    let rendered = if state.sessions_menu.is_open() {
+        state.sessions_menu.render()
+    } else {
+        state.composer.menu().render()
+    };
     let lines: Vec<Line<'static>> = rendered
         .split_lines()
         .iter()

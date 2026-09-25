@@ -341,7 +341,8 @@ fn profile_api_key_env(profile: &Table, provider: &str) -> String {
     }
 }
 
-fn default_api_key_env(provider: &str) -> String {
+/// Provider 默认的凭据环境变量名（供首启向导与宿主把凭据交给内核时共用）。
+pub fn default_api_key_env(provider: &str) -> String {
     match provider {
         "anthropic" => "ANTHROPIC_API_KEY".to_string(),
         "gemini" => "GEMINI_API_KEY".to_string(),

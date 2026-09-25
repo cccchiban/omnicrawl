@@ -340,6 +340,12 @@ Provider、协议、基地址、凭据变量名、生成选项（推理强度/�
 内核按运行时默认语义发请求——这条规则让「传给测试回环服务端的那套参数」保持完全确定，
 也避免把配置里那条渠道的协议塞给另一个端点。`--model` 始终优先（它是必填项）。
 
+凭据交付：协议帧只带**变量名**（`KernelModelConfig.api_key_env`），内核的 `read_api_key` 只读环境，
+而 `config.toml` 里的字面 `api_key` 不在环境里——所以 `prepare_startup` 在起内核时把它按同一个名字
+注入子进程环境（`kernel_credentials_env`）；渠道没写 `api_key_env` 时按 Provider 默认名下发
+（`effective_api_key_env`）。走外部渠道（`--base-url`）时不注入：那种用法下凭据来自用户自己的环境变量，
+子进程直接继承。
+
 `build_prompt_cache_identity` 已接线：宿主在 `handshake()` 里按稳定前缀算出七字段身份
 （`omnicrawl-host::prompt_cache::build_prompt_cache_identity`）交给内核的 `initialize.model`。
 哈希规则与 Python 逐字节对齐（文本 → `sha256`；结构化值 → `python_dumps_compact_sorted` 后再 sha256），

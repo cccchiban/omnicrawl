@@ -29,6 +29,10 @@ MCP 由宿主进程内的管理器持有，模型目录走注入式网络端口�
 （`RegistryOptions`）与各自的 `/mcp`、`/monitors` 查询面；`kernel_program` 记下内核路径，
 供运行期重起内核（切换会话 / 工作区）。
 
+凭据交付：协议帧只带**变量名**，内核只从环境读密钥，所以起内核（及运行期重起内核）时按帧里的
+名字把 `config.toml` 解析出的字面 `api_key` 注入子进程环境（`kernel_credentials_env`）；
+帧里的名字留空时用 Provider 默认名（`frame_api_key_env`）。
+
 **`shared_store`**：`api/` 的跨进程运行状态存储。Python 用 SQLite；Rust 侧改成**单文件 JSON
 快照 + 跨进程文件锁**（workspace 没有 SQLite crate，引入 `rusqlite` 要新增依赖并编译 C 源）。
 每次操作在锁内完成「读 → 改 → 原子写回」，语义与内存后端逐条对齐；`api.workers > 1` 时由

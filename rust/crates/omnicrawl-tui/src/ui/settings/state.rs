@@ -1096,6 +1096,16 @@ pub enum SettingsEvent {
     Apply(SettingsChange),
     /// 打开配置对话弹层（「通过对话修改设置」行）：面板该让位，键盘交给弹层。
     OpenConfigChat,
+    /// 自动检测某个渠道的模型列表（宿主在后台发起，结果经
+    /// [`SettingsState::set_channel_models`] 回填进「模型 ID」下拉）。
+    DiscoverChannelModels {
+        profile_id: String,
+        provider: String,
+        protocol: String,
+        base_url: String,
+        api_key_env: String,
+        user_agent: String,
+    },
 }
 
 const TOOLS_HINT: &str = "↑↓ 选择  ←→/Enter/空格 切换  Esc 返回";
@@ -2204,10 +2214,7 @@ impl SettingsState {
                 self.move_channel_field(1);
                 None
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                self.activate_channel_field();
-                None
-            }
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_channel_field(),
             KeyCode::Esc | KeyCode::Left => {
                 self.leave_channel_form();
                 None
@@ -3280,10 +3287,11 @@ impl SettingsState {
     }
 
     /// `Enter`/空格：文本字段进编辑态、枚举展开候选、开关就地翻转。
-    fn activate_channel_field(&mut self) {
+    fn activate_channel_field(&mut self) -> Option<SettingsEvent> {
         let Some(form) = self.channels.form.as_mut() else {
-            return;
+            return None;
         };
+        let mut event = None;
         match form.field {
             ChannelField::Enabled => form.row.enabled = !form.row.enabled,
             ChannelField::Provider => {
@@ -3318,6 +3326,22 @@ impl SettingsState {
                     selected,
                 });
             }
+            // 「模型 ID」不再是纯手输：交宿主按渠道的 Provider/协议/基地址/凭据在
+            // 后台拉取模型列表，结果经 `set_channel_models` 回填成可选的候选。
+            ChannelField::ModelId => {
+                form.dropdown = None;
+                form.input = None;
+                event = Some(SettingsEvent::DiscoverChannelModels {
+                    profile_id: form.row.profile_id.clone(),
+                    provider: form.row.provider.clone(),
+                    protocol: form.row.protocol.clone(),
+                    base_url: form.row.base_url.clone(),
+                    api_key_env: form.row.api_key_env.clone(),
+                    user_agent: form.row.user_agent.clone(),
+                });
+                self.channels.status =
+                    "正在检测模型列表…（Esc 可保留手动输入，稍候可重试）".to_string();
+            }
             field => {
                 let mut composer = Composer::default();
                 composer.insert(&channel_field_value(&form.row, field));
@@ -3325,6 +3349,44 @@ impl SettingsState {
                 form.input = Some(composer);
             }
         }
+        event
+    }
+
+    /// 自动检测结果回填：有候选就展开下拉，否则退回手动输入并说明原因。
+    pub fn set_channel_models(&mut self, models: Vec<String>, message: String) {
+        let Some(form) = self.channels.form.as_mut() else {
+            return;
+        };
+        // 检测期间用户可能已经离开这个字段：结果直接丢弃。
+        if form.field != ChannelField::ModelId {
+            return;
+        }
+        if models.is_empty() {
+            let reason = if message.trim().is_empty() {
+                "未返回可用模型".to_string()
+            } else {
+                message
+            };
+            let mut composer = Composer::default();
+            composer.insert(&form.row.model_id);
+            form.dropdown = None;
+            form.input = Some(composer);
+            self.channels.status =
+                format!("未检测到模型列表（{reason}）；可直接输入模型 ID 后按 Enter。");
+            return;
+        }
+        let selected = models
+            .iter()
+            .position(|id| id == &form.row.model_id)
+            .unwrap_or(0);
+        form.input = None;
+        form.dropdown = Some(ChannelDropdown {
+            field: ChannelField::ModelId,
+            options: models,
+            selected,
+        });
+        self.channels.status =
+            "已检测到模型列表：↑↓ 选择，Enter 确认，Esc 收起。".to_string();
     }
 
     /// 枚举候选展开态：`↑`/`↓` 移动、`Enter` 确认、`Esc` 收起。
@@ -4518,12 +4580,23 @@ mod tests {
             state.channel_form().map(|form| form.field),
             Some(ChannelField::ModelId)
         );
-        state.handle_key(KeyCode::Enter); // 进输入态
+        // 「模型 ID」按 Enter 发起自动检测，而不是直接进输入态。
+        match state.handle_key(KeyCode::Enter) {
+            Some(SettingsEvent::DiscoverChannelModels { provider, .. }) => {
+                assert_eq!(provider, "openai");
+            }
+            other => panic!("应发起模型检测：{other:?}"),
+        }
+        let form = state.channel_form().expect("仍在表单");
+        assert!(form.input.is_none(), "检测期间不进入手输");
+        assert_eq!(form.field, ChannelField::ModelId);
+
+        // 检测失败：退回手输，清空模型 ID 后保存应被校验挡下。
+        state.set_channel_models(Vec::new(), "缺少 API Key".to_string());
         for _ in 0..24 {
             state.handle_key(KeyCode::Backspace); // 清空模型 ID
         }
         state.handle_key(KeyCode::Enter); // 提交空值
-
         assert_eq!(
             state.handle_ctrl_key(KeyCode::Char('s')),
             None,
@@ -4532,14 +4605,17 @@ mod tests {
         assert!(state.status().contains("模型 ID 不能为空"));
         assert!(state.channel_form().is_some(), "校验失败时保留表单");
 
-        // 补上模型 ID 再保存。
-        state.handle_key(KeyCode::Enter);
-        state.handle_key(KeyCode::Char('x'));
+        // 检测成功：展开候选，选中第二个再保存。
+        state.set_channel_models(
+            vec!["gpt-5.2".to_string(), "gpt-4o".to_string()],
+            String::new(),
+        );
+        state.handle_key(KeyCode::Down);
         state.handle_key(KeyCode::Enter);
         match state.handle_ctrl_key(KeyCode::Char('s')) {
             Some(SettingsEvent::Apply(SettingsChange::Channels { rows, default_key })) => {
                 assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0].model_id, "x");
+                assert_eq!(rows[0].model_id, "gpt-4o");
                 assert_eq!(default_key, "gpt-main");
             }
             other => panic!("应产出保存事件：{other:?}"),

@@ -72,6 +72,11 @@ NDJSON 流通信：一行一个 JSON-RPC 2.0 帧。帧形状与插件通路（`o
 
 `initialize` 的 `model` 是可选块：**给了它，内核就自己发模型请求**（工具仍由宿主执行），宿主不必再应答
 `model.reply`；不给则维持代答路径，旧宿主不受影响。凭据不进帧——`api_key_env` 只给环境变量名。
+因此**宿主必须保证这个名字在内核子进程的环境里真的有值**：`config.toml` 里的字面 `api_key`
+不在环境里，宿主起内核时要把它按这个名字补进子进程环境（`KernelClient::spawn_with_env` /
+`spawn_with_stderr_env` + `kernel_credentials_env`）；名字留空时宿主按 Provider 默认名下发
+（`frame_api_key_env`：openai → `OPENAI_API_KEY`，anthropic → `ANTHROPIC_API_KEY`，gemini → `GEMINI_API_KEY`）。
+否则内核会在每回合开始就失败：`读取环境变量 … 失败…模型请求无法鉴权`。
 
 `initialize` 的 `plugin_model_hooks`（缺省 false）是宿主对插件模型 Hook 的能力声明：声明后内核
 在每次模型请求前发 `model.hook`（见「内核 → 宿主」请求表），未声明则不发，因此只实现协议最小集

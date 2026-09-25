@@ -14,6 +14,7 @@ use omnicrawl_ipc::{HostEvent, Id};
 use crate::args::ApprovalMode;
 use crate::host::{self, BatchContext, TodoItem, Waiting};
 use crate::ui::fullscreen::input::menu::{CommandMenu, MenuAction, MenuKey};
+use crate::ui::fullscreen::input::sessions_menu::{SessionMenuItem, SessionsMenu};
 use crate::ui::fullscreen::random::Rng;
 use crate::ui::fullscreen::rendering::logo_anim::LogoAnimation;
 use crate::ui::fullscreen::rendering::widgets::{SubAgentConversation, SubAgentProgressTree};
@@ -419,6 +420,10 @@ pub struct AppState {
     carousel_rand: Rng,
     /// 留言页候选（编译期内嵌的 `carousel_messages.txt`，启动期读一次）。
     carousel_lines: Vec<String>,
+    /// 会话流末尾 `[ ESC ]` 提示是否被鼠标悬停（悬停时染成淡黄色）。
+    pub runtime_esc_hover: bool,
+    /// `/sessions` 在输入框上方打开的可选列表。
+    pub sessions_menu: SessionsMenu,
 }
 
 impl AppState {
@@ -454,6 +459,8 @@ impl AppState {
             carousel_ready: false,
             carousel_rand: Rng::new(CAROUSEL_SEED),
             carousel_lines: load_carousel_message_lines(),
+            runtime_esc_hover: false,
+            sessions_menu: SessionsMenu::new(),
         };
         // 首帧先把轮播文本装好，渲染路径保持只读：即使宿主一次都没 tick 过，
         // 底部 HUD 也有内容可画（测试直接构造 AppState 时会走这条路径）。
@@ -739,6 +746,8 @@ impl AppState {
                 self.turn = TurnState::Idle;
                 self.turn_started = None;
                 self.status = None;
+                // 状态行随回合结束消失：悬停态一并复位，避免下一回合复用旧高亮。
+                self.runtime_esc_hover = false;
                 if payload.paused {
                     self.records.push(Record::Notice(
                         "已被模型暂停：本回合不再自动继续。".to_string(),
@@ -756,6 +765,11 @@ impl AppState {
     /// 追加一条系统消息；不改动回合状态。
     pub fn notice(&mut self, message: String) {
         self.records.push(Record::Notice(message));
+    }
+
+    /// 打开 `/sessions` 的会话选择菜单（输入框上方）。
+    pub fn open_sessions_menu(&mut self, items: Vec<SessionMenuItem>) {
+        self.sessions_menu.open(items);
     }
 
     /// 追加一条后台任务日志（工具卡形状）；不改动回合状态。
