@@ -76,10 +76,20 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 连接与模型按模型切换同一套口径解析：`model_key` 支持自定义 key/alias、`profile/model_id`
 与裸 model_id，走 `apply_model_selection` 一并把模型名、基地址、协议与凭据换成被选中的那条
 （以前是把整个 key 当模型名直接发给上游，`channel-2/Qwen/…` 这种带 Profile 前缀的 key 会被
-上游回「模型不存在或当前账号无权使用该模型」）。**凭据**取配置解析出来的那个（与 config 层
-同口径：环境变量优先、其次内联密钥）；配置里没有可读的 `[llm]` 时退回「帧里那条连接 +
-选择当模型名」，与子任务的 `child_model_config` 同一做法。配置文件路径与其它配置一致：
+上游回「模型不存在或当前账号无权使用该模型」）。配置文件路径与其它配置一致：
 显式路径 > `AI_CONFIG_FILE` > 用户目录。
+
+**凭据口径（与主渠道不同，别改成「环境变量优先」）**：压缩渠道优先用它在 config.toml 里
+写下的明文 `api_key`；没写明文才回落到 `resolve_api_key`（环境变量优先 → 明文）与同名环境变量。
+原因是内核进程里的 `OPENAI_API_KEY` 是宿主为**当前主渠道**注入的（`omnicrawl-host/src/kernel.rs`
+的 `kernel_credentials_env`），而压缩渠道往往是另一家服务——用户的配置里主渠道是聚合网关、
+压缩渠道是硅基流动，两边都写着 `api_key_env = "OPENAI_API_KEY"`；若按环境变量优先，就会
+把聚合网关的 key 发给硅基流动，得到 `模型服务鉴权失败（HTTP 401）`。Python 侧读的是用户自己的
+shell 环境（同名变量通常根本没设），因此明文优先在常见配置下与它同结果；差异只在
+「仅在环境变量里轮换密钥、config.toml 里留着旧明文」时 Rust 会用明文。
+对应回归：`crates/omnicrawl-cli/tests/tool_output_compression_e2e.rs` 的
+`compression_model_key_is_resolved_through_the_profile_connection` 断言压缩请求带的是
+渠道明文 key，而主请求仍走帧里声明的环境变量名。
 
 ## 工具输出预算与落盘归档
 

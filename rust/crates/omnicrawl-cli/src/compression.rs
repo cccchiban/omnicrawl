@@ -7,10 +7,10 @@
 //! 模型连接沿用内核 `initialize.model` 给的那条（与 `subagent::child_model_config` 同一做法），
 //! 只把 model 名换成 `[tool_output_compression].model_key`；请求是旁路调用：不流式、不写会话。
 
-use omnicrawl_config::core::runtime::ConfigEnvironment;
+use omnicrawl_config::core::runtime::{get_section, load_config_data, ConfigEnvironment};
 use omnicrawl_config::features::tool_output_compression::load_tool_output_compression_config;
 use omnicrawl_config::models::llm::load_llm_config;
-use omnicrawl_config::models::llm_multi::apply_model_selection;
+use omnicrawl_config::models::llm_multi::{apply_model_selection, parse_profiles};
 use omnicrawl_controllers::compression as compression_logic;
 use omnicrawl_ipc::bridge::KernelModelConfig;
 use omnicrawl_llm::{ChatRequestInput, DiscardSink, ModelRuntime};
@@ -60,12 +60,8 @@ fn resolve_compression_model(
             child.user_agent = resolved.user_agent.clone();
             child.system_prompt = String::new();
             child.tools = Vec::new();
-            // 凭据：配置解析出来的那个（与 config 层同口径：环境变量优先、其次内联密钥）。
-            let api_key = if !resolved.api_key.trim().is_empty() {
-                resolved.api_key.clone()
-            } else {
-                std::env::var(&child.api_key_env).unwrap_or_default()
-            };
+            let api_key = profile_literal_key(env, &resolved.profile_id)
+                .unwrap_or_else(|| resolved.api_key.clone());
             return (child, resolved.profile_id.clone(), api_key);
         }
     }
@@ -75,6 +71,29 @@ fn resolve_compression_model(
     child.tools = Vec::new();
     let api_key = std::env::var(&child.api_key_env).unwrap_or_default();
     (child, String::new(), api_key)
+}
+
+/// 被选中 Profile 自己写在 config.toml 里的明文 key（没有则 `None`）。
+///
+/// 为什么不直接用 `apply_model_selection` 给出的 `resolved.api_key`：
+/// `ProviderProfile::resolve_api_key` 是**环境变量优先**，而内核进程里的 `OPENAI_API_KEY`
+/// 是宿主为「当前主渠道」注入的（`omnicrawl-host/src/kernel.rs::kernel_credentials_env`）。
+/// 压缩渠道往往是另一家服务（例如主渠道是聚合网关、压缩渠道是硅基流动），它同样写着
+/// `api_key_env = "OPENAI_API_KEY"`，于是会拿主渠道的 key 去打压缩渠道 → HTTP 401。
+/// Python 侧直接读进程环境（用户自己的 shell），纯净环境里同名变量通常根本没设，
+/// 取到的就是明文 key——所以「明文优先」在常见配置下与 Python 同结果（差异只在
+/// 「仅在环境变量里轮换密钥、config.toml 里留着旧明文」时会用明文，写进 README 了）。
+fn profile_literal_key(env: &ConfigEnvironment, profile_id: &str) -> Option<String> {
+    let profile_id = profile_id.trim();
+    if profile_id.is_empty() {
+        return None;
+    }
+    let data = load_config_data(env, None).ok()?;
+    let section = get_section(&data, "llm").ok()?;
+    parse_profiles(&section)
+        .remove(profile_id)
+        .map(|profile| profile.api_key.trim().to_string())
+        .filter(|key| !key.is_empty())
 }
 
 impl KernelCompressor {

@@ -17,6 +17,9 @@ use serde_json::{json, Value};
 
 const WAIT: Duration = Duration::from_secs(15);
 const TEST_KEY: &str = "test-key";
+/// 压缩渠道写在 config.toml 里的明文 key：刻意与 `OMNICRAWL_TEST_KEY` 的值不同，
+/// 才能验出「压缩用的是渠道自己的 key，不是宿主为主渠道注入的那个环境变量」。
+const LITERAL_KEY: &str = "literal-compression-key";
 const COMPRESSED_TEXT: &str = "精简观察：一行结论";
 const FINAL_TEXT: &str = "压缩后用精简文本继续";
 
@@ -42,6 +45,8 @@ fn tool_call_stream(name: &str, arguments: &str) -> String {
 struct StubServer {
     addr: String,
     requests: Arc<Mutex<Vec<Value>>>,
+    /// 每次请求的 `Authorization` 头，用来验证凭据确实换了渠道。
+    auths: Arc<Mutex<Vec<String>>>,
 }
 
 impl StubServer {
@@ -50,12 +55,15 @@ impl StubServer {
         let addr = listener.local_addr().expect("无法取本地地址");
         let requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);
+        let auths: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded_auths = Arc::clone(&auths);
 
         thread::spawn(move || {
             let mut main_requests = 0usize;
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
-                let raw = read_request(&mut stream);
+                let (raw, auth) = read_request(&mut stream);
+                recorded_auths.lock().expect("记录锁").push(auth);
                 let body: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
                 recorded.lock().expect("记录锁").push(body.clone());
                 let is_compression = body.to_string().contains("<<<TOOL_OUTPUT_START>>>");
@@ -82,15 +90,21 @@ impl StubServer {
         Self {
             addr: format!("http://{addr}/v1"),
             requests,
+            auths,
         }
     }
 
     fn bodies(&self) -> Vec<Value> {
         self.requests.lock().expect("记录锁").clone()
     }
+
+    fn auths(&self) -> Vec<String> {
+        self.auths.lock().expect("记录锁").clone()
+    }
 }
 
-fn read_request(stream: &mut TcpStream) -> String {
+/// 读一次请求：返回（请求体, Authorization 头）。
+fn read_request(stream: &mut TcpStream) -> (String, String) {
     let mut buffer: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 1024];
     let header_end = loop {
@@ -98,11 +112,22 @@ fn read_request(stream: &mut TcpStream) -> String {
             break index;
         }
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return String::new(),
+            Ok(0) | Err(_) => return (String::new(), String::new()),
             Ok(read) => buffer.extend_from_slice(&chunk[..read]),
         }
     };
     let head = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let auth = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("authorization") {
+                Some(value.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
     let length: usize = head
         .lines()
         .find_map(|line| {
@@ -122,7 +147,10 @@ fn read_request(stream: &mut TcpStream) -> String {
         }
     }
     let end = (body_start + length).min(buffer.len());
-    String::from_utf8_lossy(&buffer[body_start..end]).to_string()
+    (
+        String::from_utf8_lossy(&buffer[body_start..end]).to_string(),
+        auth,
+    )
 }
 
 struct Kernel {
@@ -352,6 +380,25 @@ fn compression_model_key_is_resolved_through_the_profile_connection() {
         compression["messages"].is_array(),
         "压缩请求应是一份正常对话：{compression}"
     );
+    // 凭据：压缩渠道写着 api_key_env = OMNICRAWL_TEST_KEY，而宿主为「主渠道」注入的环境变量
+    // 也是同一个名字（真实场景里是 OPENAI_API_KEY）。这里必须用渠道自己的明文 key，
+    // 否则就是把主渠道的 key 发去压缩渠道 → HTTP 401（用户报的那个错）。
+    let auths = server.auths();
+    let compression_index = server
+        .bodies()
+        .iter()
+        .position(|body| body.to_string().contains("<<<TOOL_OUTPUT_START>>>"))
+        .expect("压缩请求下标");
+    assert_eq!(
+        auths[compression_index],
+        format!("Bearer {LITERAL_KEY}"),
+        "压缩请求必须用渠道明文 key，而不是环境变量里的那个：{auths:?}"
+    );
+    assert_eq!(
+        auths[0],
+        format!("Bearer {TEST_KEY}"),
+        "主渠道请求仍走帧里声明的环境变量：{auths:?}"
+    );
     std::fs::remove_dir_all(config.parent().expect("配置目录")).ok();
 }
 
@@ -374,7 +421,8 @@ fn write_config_with_profile(name: &str, base_url: &str, min_chars: usize) -> Pa
              [llm.profiles.stub]\n\
              provider = \"openai\"\n\
              base_url = \"{base_url}\"\n\
-             api_key = \"{TEST_KEY}\"\n\
+             api_key_env = \"OMNICRAWL_TEST_KEY\"\n\
+             api_key = \"{LITERAL_KEY}\"\n\
              [tool_output_compression]\nenabled = true\nmodel_key = \"stub/sub-model-x\"\n\
              thinking_enabled = false\nreasoning_effort = \"high\"\nmin_chars = {min_chars}\n\
              max_input_chars = 4000\nmax_output_chars = 400\ntimeout_seconds = 5\n"
