@@ -3249,7 +3249,7 @@ impl App {
         let path = save_tool_output_compression_config(&environment, &configuration, None)
             .map_err(|error| format!("设置未完成：{}", error.message()))?;
         Ok(format!(
-            "工具输出压缩设置已保存到 {}（压缩在内核侧执行，重新开会话后生效）。",
+            "工具输出压缩设置已保存到 {}（压缩在内核侧随每轮工具批次重读，下一轮起生效）。",
             path.display()
         ))
     }
