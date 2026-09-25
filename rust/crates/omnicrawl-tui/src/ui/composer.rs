@@ -1,15 +1,20 @@
 //! 输入卡：白色圆角边框 + 单行起步按显示宽度软折行（对映 Python `#composer-wrap`）。
 //!
-//! 版式（CSS `#composer-wrap { height: 3; margin: 1 0 0 0; padding: 0 2;
-//! border: round $terminal-white }` + `#composer { padding: 0 1 }`）：
-//! 上方留一行与消息区分隔，卡片本体是「上边框 + 内容 + 下边框」，内容行左右各缩进
-//! 边框 1 + 卡片内边距 2 + 编辑器内边距 1 = 4 格。空输入时显示占位文案
+//! 版式：上方留一行与消息区分隔（CSS `margin: 1 0 0 0`），卡片本体是「上边框 + 内容 +
+//! 下边框」。**内容紧贴左右边框**——按用户要求去掉了 CSS 的 `padding: 0 2` 与
+//! `#composer { padding: 0 1 }`，只留 1 格边框本身。空输入时显示占位文案
 //! `› 输入消息或 / 命令`（Python 把 `› ` 写在占位符里，正文不再带提示符）。
+//!
+//! 内容超过 5 行（[`COMPOSER_MAX_LINES`]）时框内随光标滚动，右侧画一条与消息区同款的
+//! 细线滚动条；光标由我们自己画成白色粗块（`█` 风格的反白格），不依赖终端那个会闪烁的细光标。
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
 
 use super::fullscreen::terminal::theme;
@@ -19,14 +24,12 @@ use crate::state::{AppState, COMPOSER_MAX_LINES};
 const PLACEHOLDER: &str = "› 输入消息或 / 命令";
 /// 卡片上方与消息区之间的空行（CSS `margin: 1 0 0 0`）。
 const MARGIN_TOP: u16 = 1;
-/// 圆角边框占的行/列数。
+/// 圆角边框占的行/列数，也是正文左侧的总缩进（内容紧贴边框）。
 const BORDER: u16 = 1;
-/// 卡片内边距（CSS `padding: 0 2`）。
-const WRAP_PAD: u16 = 2;
-/// 编辑器内边距（CSS `#composer { padding: 0 1 }`）。
-const TEXT_PAD: u16 = 1;
 /// 正文左（右）侧的总缩进。
-const TEXT_OFFSET: u16 = BORDER + WRAP_PAD + TEXT_PAD;
+const TEXT_OFFSET: u16 = BORDER;
+/// 右侧留给细线滚动条的列数。
+const SCROLLBAR_WIDTH: u16 = 1;
 
 /// 输入卡占用的行数：上方空行 + 上下边框 + 框内换行行数（上限 [`COMPOSER_MAX_LINES`]）。
 pub fn height(state: &AppState, width: u16) -> u16 {
@@ -36,9 +39,12 @@ pub fn height(state: &AppState, width: u16) -> u16 {
     MARGIN_TOP + 2 * BORDER + content
 }
 
-/// 正文可用列宽：扣掉左右边框与两侧内边距。
+/// 正文可用列宽：扣掉左右边框与右侧滚动条列。
 pub fn body_width(width: u16) -> u16 {
-    width.saturating_sub(2 * TEXT_OFFSET).max(1)
+    width
+        .saturating_sub(2 * TEXT_OFFSET)
+        .saturating_sub(SCROLLBAR_WIDTH)
+        .max(1)
 }
 
 /// 输入框上方菜单占用的行数：`/sessions` 会话菜单优先，其次才是命令菜单。
@@ -75,7 +81,7 @@ pub fn render_menu(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// 渲染输入卡本体：圆角白框 + 框内正文（空输入时是占位文案）+ 光标。
+/// 渲染输入卡本体：圆角白框 + 框内正文（空输入时是占位文案）+ 滚动条 + 粗光标。
 pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     if area.height <= MARGIN_TOP || area.width == 0 {
         return;
@@ -92,16 +98,17 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 
     let body = body_width(area.width);
-    let (lines, cursor_row) = state.composer.visible_lines(body);
+    let (lines, cursor_row, start, total) = state.composer.visible_window(body);
     let text = Rect {
-        x: inner.x + WRAP_PAD + TEXT_PAD,
+        x: inner.x,
         y: inner.y,
-        width: inner.width.saturating_sub(2 * (WRAP_PAD + TEXT_PAD)),
+        width: inner.width.saturating_sub(SCROLLBAR_WIDTH),
         height: inner.height,
     };
     if text.width == 0 {
         return;
     }
+    render_scrollbar(frame, inner, total, text.height as usize, start);
 
     if state.composer.is_empty() {
         // 占位文案：弱化色，不带光标（对映 TextArea 的 placeholder 行为）。
@@ -119,10 +126,69 @@ pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Paragraph::new(rendered), text);
 
     let (_, column) = state.composer.cursor_position(body);
+    paint_block_cursor(
+        frame.buffer_mut(),
+        text,
+        &lines[cursor_row.min(lines.len().saturating_sub(1))],
+        cursor_row as u16,
+        column,
+    );
+}
+
+/// 内容超出可见行数时的细线滚动条（与消息区同款：透明轨道 + `█` 滑块）。
+fn render_scrollbar(frame: &mut Frame, inner: Rect, total: usize, height: usize, start: usize) {
+    if height == 0 || total <= height || inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let column = Rect {
+        x: inner.x + inner.width.saturating_sub(SCROLLBAR_WIDTH),
+        width: SCROLLBAR_WIDTH.min(inner.width),
+        ..inner
+    };
+    if column.width == 0 {
+        return;
+    }
+    let max_offset = total - height;
+    let mut scrollbar = ScrollbarState::new(max_offset).position(start.min(max_offset));
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(None)
+        .thumb_symbol("█")
+        .style(theme::rich_style(theme::SCROLLBAR));
+    frame.render_stateful_widget(bar, column, &mut scrollbar);
+}
+
+/// 画白色粗光标：光标所在那一格反白（白底黑字），宽字符连着占位格一起填。
+///
+/// 用自绘块替代终端光标，既够粗也不会闪（`Terminal::draw` 不设光标时终端光标保持隐藏）。
+fn paint_block_cursor(buffer: &mut Buffer, text: Rect, line: &str, row: u16, column: usize) {
+    let y = text.y + row;
+    if y >= text.y + text.height {
+        return;
+    }
     let x = text.x + column as u16;
-    let y = text.y + cursor_row as u16;
-    if x < text.x + text.width && y < text.y + text.height {
-        frame.set_cursor_position((x, y));
+    if x >= text.x + text.width {
+        return;
+    }
+    // 光标所在列对应的字符宽度：宽字符要连右侧占位格一起染色，否则只白一半。
+    let mut walked = 0usize;
+    let mut cells = 1u16;
+    for ch in line.chars() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if walked >= column {
+            cells = (width.max(1) as u16).min(text.width - (x - text.x));
+            break;
+        }
+        walked += width;
+    }
+    let style = Style::new().bg(Color::White).fg(Color::Black);
+    for offset in 0..cells.max(1) {
+        let cell_x = x + offset;
+        if cell_x >= text.x + text.width {
+            break;
+        }
+        buffer[(cell_x, y)].set_style(style);
     }
 }
 
@@ -155,8 +221,11 @@ mod tests {
         assert_eq!(height(&state, 40), MARGIN_TOP + 2 + 1);
 
         // 收窄到正文只剩 4 列：四个全角字折成两行，卡片跟着长高。
-        assert_eq!(body_width(4 + 2 * TEXT_OFFSET), 4);
-        assert_eq!(height(&state, 4 + 2 * TEXT_OFFSET), MARGIN_TOP + 2 + 2);
+        assert_eq!(body_width(4 + 2 * TEXT_OFFSET + SCROLLBAR_WIDTH), 4);
+        assert_eq!(
+            height(&state, 4 + 2 * TEXT_OFFSET + SCROLLBAR_WIDTH),
+            MARGIN_TOP + 2 + 2
+        );
 
         // 超过上限后在编辑器内滚动：卡片不再继续长高。
         for _ in 0..10 {
@@ -167,5 +236,12 @@ mod tests {
             height(&state, 40),
             MARGIN_TOP + 2 + COMPOSER_MAX_LINES as u16
         );
+    }
+
+    #[test]
+    fn body_starts_right_after_the_border() {
+        // 内容紧贴左右边框：正文可用宽度 = 总宽 - 2 格边框 - 1 格滚动条。
+        assert_eq!(TEXT_OFFSET, 1);
+        assert_eq!(body_width(40), 40 - 2 - SCROLLBAR_WIDTH);
     }
 }

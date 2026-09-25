@@ -1130,8 +1130,6 @@ const TTS_HINT: &str =
     "↑↓ 选择  ←→/Enter/空格 切换  B 浏览参考音频  C 克隆  D 删除音色  Enter 执行  Ctrl+S 保存  Esc 返回";
 const CHANNELS_LIST_HINT: &str = "↑↓ 选择渠道  Enter 编辑  N 新建  D 删除  Esc 返回";
 const CHANNELS_FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回列表";
-const LIST_HELP: &str =
-    "↑↓ 选择设置项（右侧实时预览）  Enter/→ 进入右侧  ←/Esc 返回  Esc 在左侧退出";
 const FORM_HINT: &str = "↑↓/Tab 换字段  Enter 编辑或展开候选  Ctrl+S 保存  Esc 返回";
 /// 工具输出压缩页的提示：多一个「进模型选择器」的入口。
 const COMPRESSION_HINT: &str = "↑↓/Tab 换字段  Enter 编辑  M 模型选择器  Ctrl+S 保存  Esc 返回";
@@ -2099,10 +2097,6 @@ impl SettingsState {
             Pane::ConfigChat => CONFIG_CHAT_HINT,
             Pane::Pending => "",
         }
-    }
-
-    pub fn help_text(&self) -> &'static str {
-        LIST_HELP
     }
 
     /// 当前表单页的草稿；不在表单页时为 `None`。
@@ -4440,7 +4434,6 @@ mod tests {
         assert_eq!(state.status(), "");
         assert_eq!(state.pane_hint(), CONFIG_CHAT_HINT);
         assert!(state.pane_hint().contains("Enter"));
-        assert!(state.help_text().contains("↑↓ 选择设置项"));
     }
 
     #[test]

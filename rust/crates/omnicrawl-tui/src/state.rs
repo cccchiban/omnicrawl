@@ -484,10 +484,23 @@ impl Composer {
 
     /// 需要展示的行与光标在其中的行号：超过行数上限时随光标滚动。
     pub fn visible_lines(&self, width: u16) -> (Vec<String>, usize) {
+        let (lines, cursor, _, _) = self.visible_window(width);
+        (lines, cursor)
+    }
+
+    /// 与 [`Self::visible_lines`] 同一个窗口，另外给出窗口起点与总行数。
+    ///
+    /// 输入卡右侧的细线滚动条要画滑块，需要知道「当前可见的是哪一段」。
+    pub fn visible_window(&self, width: u16) -> (Vec<String>, usize, usize, usize) {
         let lines = self.wrapped_lines(width);
         let (row, _) = self.cursor_position(width);
         if lines.len() <= COMPOSER_MAX_LINES {
-            return (lines, row.min(COMPOSER_MAX_LINES - 1));
+            return (
+                lines.clone(),
+                row.min(COMPOSER_MAX_LINES - 1),
+                0,
+                lines.len(),
+            );
         }
         let start = row
             .saturating_sub(COMPOSER_MAX_LINES - 1)
@@ -495,6 +508,8 @@ impl Composer {
         (
             lines[start..start + COMPOSER_MAX_LINES].to_vec(),
             row - start,
+            start,
+            lines.len(),
         )
     }
 }

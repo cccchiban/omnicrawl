@@ -3,6 +3,7 @@
 //! 协议宿主、状态机与渲染都在库侧；这里只做选内核、进全屏、收事件这三件事。
 //! 进全屏之前的启动准备由 [`omnicrawl_tui::ui::splash`] 的启动画面承载。
 
+use std::collections::VecDeque;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture,
+    EnableFocusChange, EnableMouseCapture, Event, KeyEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -27,6 +28,7 @@ use omnicrawl_config::models::llm::{load_llm_config, LlmConfig};
 use omnicrawl_tui::app::{uses_external_channel, App};
 use omnicrawl_tui::args::{parse, Options, Parsed};
 use omnicrawl_tui::kernel::{kernel_credentials_env, KernelClient};
+use omnicrawl_tui::paste;
 use omnicrawl_tui::ui;
 use omnicrawl_tui::ui::fullscreen::terminal::console_heal::heal_console_input_mode;
 use omnicrawl_tui::ui::splash::{self, LogLevel, StartupLogSink};
@@ -177,7 +179,12 @@ fn event_loop(
     app: &mut App,
     guard: &mut TerminalGuard,
 ) -> Result<(), String> {
+    // 抽干突发按键时遇到非按键事件就寄存在这里，下一轮开头先补齐。
+    let mut pending_events: VecDeque<Event> = VecDeque::new();
     loop {
+        while let Some(event) = pending_events.pop_front() {
+            app.handle_event(event);
+        }
         // 鼠标命中判定与渲染共用同一套布局：区域每帧在渲染前刷新一次。
         let size = terminal
             .size()
@@ -217,8 +224,46 @@ fn event_loop(
         if event::poll(POLL_INTERVAL).map_err(|error| format!("读取终端事件失败：{error}"))?
         {
             let event = event::read().map_err(|error| format!("读取终端事件失败：{error}"))?;
-            app.handle_event(event);
+            handle_event(app, event, &mut pending_events);
         }
+    }
+}
+
+/// 处理一个终端事件，并顺带识别「突发按键」形式的粘贴。
+///
+/// 终端支持 bracketed paste 时事件本身就是 `Event::Paste`；但 conhost 等终端不发那个序列，
+/// 粘贴会退化成一串普通按键（换行成了 `Enter`）——于是第一行被提交、后面的行逐条排队。
+/// 这里把紧跟在一个按键后的其他按键（间隔 < [`paste::BURST_GAP`]）一并抽干，像粘贴就把整串
+/// 当成一次粘贴；不像则逐条交给正常按键路径（行为与以前一致）。非按键事件原样落到
+/// `pending_events` 里，下一轮开头先耗尽，不会漏掉鼠标/尺寸事件。
+fn handle_event(app: &mut App, event: Event, pending_events: &mut VecDeque<Event>) {
+    let Event::Key(first) = event else {
+        app.handle_event(event);
+        return;
+    };
+    // 上限只是一个防呆值：防止某个异常终端无限刷按键时把事件抽干循环卡住。
+    const MAX_BURST: usize = 4096;
+    let mut burst = vec![first];
+    while burst.len() < MAX_BURST
+        && event::poll(paste::BURST_GAP).unwrap_or(false)
+    {
+        match event::read() {
+            Ok(Event::Key(next)) if next.kind == KeyEventKind::Press => burst.push(next),
+            Ok(other) => {
+                pending_events.push_back(other);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+    if paste::looks_like_paste(&burst) {
+        if let Some(text) = paste::burst_text(&burst) {
+            app.handle_event(Event::Paste(text));
+            return;
+        }
+    }
+    for key in burst {
+        app.handle_event(Event::Key(key));
     }
 }
 

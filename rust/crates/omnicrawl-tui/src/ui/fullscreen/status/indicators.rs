@@ -18,9 +18,10 @@ pub const QUEUE_PREVIEW_MAX_ROWS: usize = 3;
 /// 排队预览条每行摘要的最大字符数（对映 `QUEUE_PREVIEW_SUMMARY_LIMIT`）。
 pub const QUEUE_PREVIEW_SUMMARY_LIMIT: usize = 40;
 
-// 底部单行轮播 HUD：遥测页 10s → 工作区路径页 10s → 留言页 10s 循环。
+// 底部单行轮播 HUD：遥测（含工作区）10s → 留言页 10s 循环。
+// 刻意差异：Python 把工作区路径单独占一页（`_context_summary_text`），这里按用户要求并入
+// 遥测行尾（`⁕ 工作区 <path>`），轮播只剩两页，工作区不再单独占屏。
 pub const CAROUSEL_TELEMETRY_SECONDS: f64 = 10.0;
-pub const CAROUSEL_WORKSPACE_SECONDS: f64 = 10.0;
 pub const CAROUSEL_MESSAGE_SECONDS: f64 = 10.0;
 /// 留言页无内容时的兜底占位文本。
 pub const CAROUSEL_MESSAGE_FALLBACK: &str = "🎲 留言本空空如也，去写一条吧～";
@@ -31,7 +32,6 @@ pub const CAROUSEL_ANIMATION_FRAME_SECONDS: f64 = 0.05;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CarouselPage {
     Telemetry,
-    Workspace,
     Message,
 }
 
@@ -125,20 +125,18 @@ impl Carousel {
         self.settled_text.as_ref()
     }
 
-    /// 当前页的停留时长：遥测/工作区路径/留言各 10s。
+    /// 当前页的停留时长：遥测（含工作区）与留言各 10s。
     pub fn page_duration(&self) -> f64 {
         match self.page {
             CarouselPage::Telemetry => CAROUSEL_TELEMETRY_SECONDS,
-            CarouselPage::Workspace => CAROUSEL_WORKSPACE_SECONDS,
             CarouselPage::Message => CAROUSEL_MESSAGE_SECONDS,
         }
     }
 
-    /// 下一页类型：telemetry → workspace → message 循环。
+    /// 下一页类型：telemetry → message 循环。
     pub fn next_page(&self) -> CarouselPage {
         match self.page {
-            CarouselPage::Telemetry => CarouselPage::Workspace,
-            CarouselPage::Workspace => CarouselPage::Message,
+            CarouselPage::Telemetry => CarouselPage::Message,
             CarouselPage::Message => CarouselPage::Telemetry,
         }
     }
@@ -168,7 +166,7 @@ impl Carousel {
         }
     }
 
-    /// 按页类型装配完整内容：工作区路径页 / 遥测+模型状态页 / 留言页。
+    /// 按页类型装配完整内容：遥测+模型状态+工作区 / 留言页。
     pub fn build_page_text(
         &mut self,
         page: CarouselPage,
@@ -177,7 +175,6 @@ impl Carousel {
         rand: &mut Rng,
     ) -> StyledText {
         match page {
-            CarouselPage::Workspace => context_summary_text(&source.workspace),
             CarouselPage::Message => self.message_text(lines, rand),
             CarouselPage::Telemetry => {
                 let mut rendered = token_telemetry_text(
@@ -194,6 +191,9 @@ impl Carousel {
                     &source.model,
                     &source.reasoning_effort,
                 ));
+                // 工作区并进遥测行尾（不再单独占一页）。
+                rendered.push("⁕ 工作区 ", TEXT_MUTED);
+                rendered.append_text(&context_summary_text(&source.workspace));
                 rendered
             }
         }
@@ -416,8 +416,6 @@ mod tests {
         let mut carousel = Carousel::new();
         assert_eq!(carousel.page(), CarouselPage::Telemetry);
         assert_eq!(carousel.page_duration(), 10.0);
-        assert_eq!(carousel.next_page(), CarouselPage::Workspace);
-        carousel.page = CarouselPage::Workspace;
         assert_eq!(carousel.next_page(), CarouselPage::Message);
         carousel.page = CarouselPage::Message;
         assert_eq!(carousel.next_page(), CarouselPage::Telemetry);
@@ -425,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_page_joins_both_segments() {
+    fn telemetry_page_joins_both_segments_and_the_workspace() {
         let mut carousel = Carousel::new();
         let mut rand = Rng::new(1);
         let mut lines_holder = lines();
@@ -433,10 +431,9 @@ mod tests {
             carousel.build_page_text(CarouselPage::Telemetry, &source(), &lines_holder, &mut rand);
         assert!(text.plain().contains("t/s"));
         assert!(text.plain().contains("MAN"));
-        lines_holder.clear();
-        let workspace =
-            carousel.build_page_text(CarouselPage::Workspace, &source(), &lines_holder, &mut rand);
-        assert_eq!(workspace.plain(), "D:/work ");
+        // 工作区并进遥测行尾，不再单独占一页。
+        assert!(text.plain().contains("⁕ 工作区 D:/work"), "{}", text.plain());
+        let _ = &mut lines_holder;
     }
 
     #[test]
@@ -472,7 +469,7 @@ mod tests {
         let mut rand = Rng::new(2);
         let candidates = lines();
         let outcome = carousel.switch_to(
-            CarouselPage::Workspace,
+            CarouselPage::Message,
             false,
             &source(),
             &candidates,
@@ -480,10 +477,10 @@ mod tests {
         );
         assert_eq!(outcome, CarouselSwitch::Settled);
         assert!(!carousel.is_animating());
-        assert_eq!(carousel.page(), CarouselPage::Workspace);
-        assert_eq!(
-            carousel.settled_text().map(StyledText::plain),
-            Some("D:/work ".to_string())
+        assert_eq!(carousel.page(), CarouselPage::Message);
+        assert!(
+            carousel.settled_text().is_some(),
+            "切页后应有固定下来的正文"
         );
     }
 

@@ -46,7 +46,9 @@ const PICKER_BOX_HEIGHT: u16 = 7;
 pub fn render(frame: &mut Frame, area: Rect, state: &SettingsState) {
     // 命中区每帧重建：鼠标落点必须对应当前画出来的那一帧。
     state.begin_frame();
-    let [main, help] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    // 不再留底部的整行帮助（用户要求删除）：「↑↓ 选择…」这类提示统一画在右侧面板的
+    // 下边框上（见 [`draw_box`]），左侧列表不需要提示。
+    let main = area;
     let left_width = left_column_width(
         main.width,
         LEFT_COLUMN_WIDTH,
@@ -61,7 +63,6 @@ pub fn render(frame: &mut Frame, area: Rect, state: &SettingsState) {
 
     render_rows(frame, inset_horizontal(left, COLUMN_PADDING), state);
     render_pane(frame, inset_horizontal(right, COLUMN_PADDING), state);
-    render_help(frame, help, state);
     paint_hover(frame, state);
 }
 
@@ -86,13 +87,17 @@ fn paint_hover(frame: &mut Frame, state: &SettingsState) {
     let Some(area) = state.hover_area() else {
         return;
     };
+    // 悬停不再画下划线（用户要求），改成黄色字体。
+    let hover = theme::rich_style(theme::ACCENT_AMBER).fg;
     let buffer = frame.buffer_mut();
     let bottom = area.y.saturating_add(area.height).min(buffer.area.height);
     let right = area.x.saturating_add(area.width).min(buffer.area.width);
     for y in area.y..bottom {
         for x in area.x..right {
             let cell = &mut buffer[(x, y)];
-            cell.set_style(cell.style().add_modifier(Modifier::UNDERLINED));
+            if let Some(color) = hover {
+                cell.set_fg(color);
+            }
         }
     }
 }
@@ -130,15 +135,23 @@ fn box_inner(area: Rect, padding: u16) -> Rect {
 }
 
 /// 画一栏的圆角框；聚焦时四角换成指向框内的准星箭头。
-fn draw_box(frame: &mut Frame, area: Rect, focused: bool) {
+fn draw_box(frame: &mut Frame, area: Rect, focused: bool, hint: Option<&str>) {
     let style = if focused {
         theme::rich_style(theme::ACCENT_AMBER)
     } else {
         theme::rich_style(theme::BORDER_STRONG)
     };
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(style);
+    // 操作提示画在**下边框上**（`------- ↑↓ 选择 ←→/Enter/空格 切换 --------`），
+    // 灰色弱化：不再单占框内一行，也不再有页面底部那行全局帮助。
+    if let Some(hint) = hint.filter(|hint| !hint.trim().is_empty()) {
+        block = block.title_bottom(Line::styled(
+            format!(" {hint} "),
+            theme::rich_style(theme::TEXT_MUTED),
+        ));
+    }
     frame.render_widget(block, area);
     if focused && area.width >= 2 && area.height >= 2 {
         paint_crosshair(frame.buffer_mut(), area, style);
@@ -164,7 +177,7 @@ fn render_rows(frame: &mut Frame, area: Rect, state: &SettingsState) {
         return;
     }
     let focused = state.focus() == Focus::List;
-    draw_box(frame, area, focused);
+    draw_box(frame, area, focused, None);
     // 左栏框体自带 1 格内边距（对映 CSS 的 `#settings-left-box { padding: 1 }`）。
     let inner = box_inner(area, 1);
     if inner.width == 0 || inner.height == 0 {
@@ -196,7 +209,7 @@ fn render_pane(frame: &mut Frame, area: Rect, state: &SettingsState) {
         return;
     }
     let focused = state.focus() == Focus::Pane;
-    draw_box(frame, area, focused);
+    draw_box(frame, area, focused, Some(state.pane_hint()));
     let inner = box_inner(area, COLUMN_PADDING);
     if inner.width < 3 || inner.height < 2 {
         return;
@@ -327,7 +340,7 @@ fn render_channel_form(
     area: Rect,
     state: &SettingsState,
     form: ChannelFormView<'_>,
-    focused: bool,
+    _focused: bool,
 ) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for (index, field) in ChannelField::ORDER.iter().copied().enumerate() {
@@ -359,11 +372,8 @@ fn render_channel_form(
             }
         };
         let label = format!("{marker} {}：", field.label());
-        let label_style = if is_current && focused {
-            theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
-        } else {
-            theme::rich_style(theme::TEXT_MUTED)
-        };
+        // 右侧设置项名称统一灰色（用户要求）：焦点不再把名称染成琥珀色。
+        let label_style = theme::rich_style(theme::TEXT_MUTED);
         lines.push(Line::from(vec![
             Span::styled(label, label_style),
             Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
@@ -508,11 +518,7 @@ fn render_form(frame: &mut Frame, area: Rect, state: &SettingsState, focused: bo
             } else {
                 row.value.clone()
             };
-            let label_style = if row.focused && focused {
-                theme::rich_style(theme::ACCENT_AMBER).add_modifier(Modifier::BOLD)
-            } else {
-                theme::rich_style(theme::TEXT_MUTED)
-            };
+            let label_style = theme::rich_style(theme::TEXT_MUTED);
             Line::from(vec![
                 Span::styled(format!("{marker} {}：", row.label), label_style),
                 Span::styled(value, theme::rich_style(theme::TEXT_PRIMARY)),
@@ -1294,20 +1300,14 @@ fn render_config_chat(frame: &mut Frame, area: Rect, state: &SettingsState) {
     );
 }
 
-/// 面板底部的状态行（1 空行 + 最多 2 行文本）与提示行（1 行）。
+/// 面板底部的状态行（1 空行 + 最多 2 行文本）。
 ///
-/// 状态文本与键位提示同文时只画状态行：各页初始状态就是把提示当状态，若两行都画
-/// 就会把同一句键位说明上下各显示一遍；保留状态行而不是提示行，是因为状态行可折
-/// 到 2 行，长键位说明不会像单行提示那样被 `…` 截断。
-fn render_pane_tail(frame: &mut Frame, area: Rect, status: &str, hint: &str, hint_style: Style) {
+/// 键位提示已画在面板**下边框**上（见 [`draw_box`]），这里不再重复；保留尾部两行预算
+/// （[`FORM_TAIL_HEIGHT`]）不变，多出来的那行留空——它同时是状态行可折到 2 行的依据。
+fn render_pane_tail(frame: &mut Frame, area: Rect, status: &str, _hint: &str, _hint_style: Style) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let hint = if status.trim() == hint.trim() {
-        ""
-    } else {
-        hint
-    };
     let width = area.width as usize;
     let status_height = area.height.saturating_sub(1).min(2);
     let status_area = Rect {
@@ -1322,18 +1322,6 @@ fn render_pane_tail(frame: &mut Frame, area: Rect, status: &str, hint: &str, hin
             .map(|line| Line::styled(line, theme::rich_style(theme::ACCENT_WHITE)))
             .collect();
         Paragraph::new(lines).render(status_area, frame.buffer_mut());
-    }
-    let hint_y = status_area.y + status_height;
-    if !hint.is_empty() && hint_y < area.y + area.height {
-        let line = Line::styled(fit(hint, width), hint_style);
-        Paragraph::new(line).render(
-            Rect {
-                y: hint_y,
-                height: 1,
-                ..area
-            },
-            frame.buffer_mut(),
-        );
     }
 }
 
@@ -1393,16 +1381,6 @@ fn render_dropdown_overlay(frame: &mut Frame, area: Rect, state: &SettingsState,
         })
         .collect();
     Paragraph::new(lines).render(inner, frame.buffer_mut());
-}
-
-fn render_help(frame: &mut Frame, area: Rect, state: &SettingsState) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    // `#settings-help { padding: 0 2 }`：整行缩进 2 格。
-    let text = fit(state.help_text(), area.width.saturating_sub(2) as usize);
-    let line = Line::styled(format!("  {text}"), theme::rich_style(theme::TEXT_MUTED));
-    Paragraph::new(line).render(area, frame.buffer_mut());
 }
 
 /// 渲染辅助：窗口偏移与宽度计算，独立出来便于单测。

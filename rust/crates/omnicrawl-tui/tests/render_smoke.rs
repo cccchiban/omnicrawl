@@ -199,7 +199,7 @@ fn approval_panel_and_question_panel_take_over_bottom_area() {
 }
 
 #[test]
-fn cursor_sits_in_the_composer() {
+fn block_cursor_sits_in_the_composer() {
     let mut state = AppState::new(
         "omnicrawl".to_string(),
         "stub-model".to_string(),
@@ -211,11 +211,40 @@ fn cursor_sits_in_the_composer() {
     terminal
         .draw(|frame| ui::render(frame, &state, None, None, None))
         .expect("渲染不应失败");
-    let position = terminal.backend().cursor_position();
-    // 输入卡在第 11 行、框内第一行：左缩进 = 边框 1 + 卡片内边距 2 + 编辑器内边距 1，
-    // 再加上三个全角字的 6 列。
-    assert_eq!(position.y, 9);
-    assert_eq!(position.x, 4 + 6);
+    // 光标是自绘的白色粗块（不再设终端光标）：
+    // 输入卡正文第一行 + 左缩进（只剩 1 格边框）+ 三个全角字的 6 列。
+    let buffer = terminal.backend().buffer();
+    let cell = &buffer[(1 + 6, 9)];
+    assert_eq!(
+        cell.style().bg,
+        Some(ratatui::style::Color::White),
+        "光标格应是白底粗块：{:?}",
+        cell.style()
+    );
+    assert_eq!(
+        terminal.backend().cursor_position().y,
+        0,
+        "不再让终端自己画光标"
+    );
+}
+
+#[test]
+fn long_composer_input_shows_a_scrollbar() {
+    let mut state = AppState::new(
+        "omnicrawl".to_string(),
+        "stub-model".to_string(),
+        ApprovalMode::Manual,
+    );
+    for index in 1..=8 {
+        state.composer.insert(&format!("第{index}行"));
+        state.composer.newline();
+    }
+    let lines = screen(&state, 80, 16);
+    let bar = lines
+        .iter()
+        .filter(|line| line.contains('█'))
+        .count();
+    assert!(bar > 0, "输入超长时右侧要有细线滚动条：{lines:?}");
 }
 
 #[test]

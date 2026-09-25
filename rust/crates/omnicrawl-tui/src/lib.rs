@@ -14,5 +14,6 @@ pub mod args;
 pub mod clipboard;
 pub mod commands;
 pub mod monitor;
+pub mod paste;
 pub mod state;
 pub mod ui;

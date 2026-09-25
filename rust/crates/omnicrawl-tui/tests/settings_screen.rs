@@ -6,7 +6,7 @@
 use crossterm::event::KeyCode;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::style::{Color, Modifier};
+use ratatui::style::Color;
 use ratatui::Terminal;
 
 use omnicrawl_tui::ui::settings::render::helpers::left_column_width;
@@ -306,7 +306,8 @@ fn narrow_terminal_shrinks_left_column_and_keeps_both_boxes() {
     );
     let screen = text(&buffer);
     assert!(screen.contains("通过对话修改设置"));
-    assert!(screen.contains("↑↓ 选择设置项"), "窄屏仍显示帮助行");
+    // 页面底部那行全局帮助已删除（用户要求）；提示改画在右侧面板的下边框上。
+    assert!(!screen.contains("↑↓ 选择设置项"), "不应再有底部帮助行");
 }
 
 #[test]
@@ -668,14 +669,13 @@ fn list_row_y(state: &SettingsState, index: usize) -> u16 {
 ///
 /// 扫整行而不是看单格：中文标签占两列，其后一个「续格」的 `skip` 为真，刷新时会被
 /// 跳过（它本来就被宽字形覆盖），逐格断言会误报。
-fn row_is_underlined(state: &SettingsState, y: u16) -> bool {
+/// 给定横向范围内的该行是否有黄色字体（悬停高亮：不再用下划线）。
+///
+/// 只看悬停区域那几列：右栏的选中项本来就是琥珀色，全行扫会把别人的黄也算进来。
+fn row_is_hovered_yellow(state: &SettingsState, area: ratatui::layout::Rect) -> bool {
     let buffer = draw(state, WIDTH, HEIGHT);
-    (0..WIDTH).any(|x| {
-        buffer[(x, y)]
-            .style()
-            .add_modifier
-            .contains(Modifier::UNDERLINED)
-    })
+    (area.x..area.x.saturating_add(area.width))
+        .any(|x| buffer[(x, area.y)].style().fg == Some(Color::Yellow))
 }
 
 #[test]
@@ -747,7 +747,7 @@ fn dropdown_option_click_confirms_the_choice() {
 }
 
 #[test]
-fn hover_underlines_the_row_under_the_cursor() {
+fn hover_paints_the_row_under_the_cursor_yellow() {
     let mut state = state();
     draw(&state, WIDTH, HEIGHT);
     assert!(state.hover_area().is_none(), "未悬停时没有加亮行");
@@ -757,10 +757,47 @@ fn hover_underlines_the_row_under_the_cursor() {
     state.set_hover(Some(action));
     let area = state.hover_area().expect("悬停行应当有区域");
     assert_eq!(area.y, y);
-    assert!(row_is_underlined(&state, y), "悬停行应当加下划线");
-    assert!(!row_is_underlined(&state, y - 1), "上一行不该加亮");
-    assert!(!row_is_underlined(&state, y + 1), "下一行不该加亮");
+    assert!(row_is_hovered_yellow(&state, area), "悬停行应当是黄色字体");
+    let above = ratatui::layout::Rect { y: y - 1, ..area };
+    let below = ratatui::layout::Rect { y: y + 1, ..area };
+    assert!(!row_is_hovered_yellow(&state, above), "上一行不该加亮");
+    assert!(!row_is_hovered_yellow(&state, below), "下一行不该加亮");
 
     state.set_hover(None);
-    assert!(!row_is_underlined(&state, y), "光标移开后加亮应当消失");
+    assert!(
+        !row_is_hovered_yellow(&state, area),
+        "光标移开后加亮应当消失"
+    );
+}
+
+/// 键位提示必须画在右侧面板的**下边框**上（用户要求）：同一行既有提示文字又有 '─'，
+/// 而且不再占框内单独一行。
+#[test]
+fn pane_hint_sits_on_the_bottom_border() {
+    let mut state = state();
+    // 走到「工具」页（ROW_ORDER 第 8 项）：单选类面板本来就没有提示行，这里要挑有的。
+    for _ in 0..7 {
+        state.handle_key(KeyCode::Down);
+    }
+    state.handle_key(KeyCode::Enter);
+    assert_eq!(state.focus(), omnicrawl_tui::ui::settings::Focus::Pane);
+    let buffer = draw(&state, WIDTH, HEIGHT);
+    let hint = state.pane_hint();
+    assert!(!hint.is_empty(), "进入面板后应当有键位提示");
+
+    let line = state.pane_hint();
+    let marker = line.split_whitespace().next().unwrap_or_default().to_string();
+    assert!(
+        marker.starts_with('↑') || marker.contains('↑'),
+        "提示以方向键开头：{line}"
+    );
+    let border_row = text(&buffer)
+        .lines()
+        .find(|row| row.contains(&marker) && row.contains('─'))
+        .map(|row| row.to_string());
+    assert!(
+        border_row.is_some(),
+        "提示应当在下边框那一行：{hint:?}\n{}",
+        text(&buffer)
+    );
 }
