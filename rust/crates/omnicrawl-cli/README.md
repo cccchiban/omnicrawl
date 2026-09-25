@@ -85,7 +85,8 @@ Python 侧目前是把原名直接发出去（`tool_specs_to_openai_functions` �
 `turn.tool_call_arguments` 两条宿主通知（Python 只在批次执行时才画卡片，这是 Rust 侧刻意的
 增量渲染）：宿主先把卡片立起来，参数分片到达时逐段补，`write_file` / `Edit_file` 的内容预览
 因此能跟着模型输出一起长出来。压缩旁路另外发 `turn.tool_output_compression` 的阶段通知
-（`started` / `finished` + 压缩前后字符数），宿主据此显示「正在压缩…」/「已压缩 a → b 字符」。
+（`started` / `finished` + 压缩前后字符数，`finished` 还带**压缩后的正文**），
+宿主据此显示「已压缩 a → b 字符」并把卡片正文替换成压缩后的内容（用户要求「压缩后替换原内容」）。
 
 ## 工具输出压缩旁路
 

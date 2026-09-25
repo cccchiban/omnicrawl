@@ -36,6 +36,8 @@ pub enum CompressionPhase<'a> {
         tool: &'a str,
         before_chars: usize,
         after_chars: usize,
+        /// 压缩后的正文：宿主拿它替换卡片里的原始输出（用户要求「压缩后替换原内容」）。
+        text: &'a str,
     },
 }
 
@@ -254,6 +256,7 @@ impl KernelCompressor {
                 tool: &tool_name,
                 before_chars,
                 after_chars,
+                text: &compacted,
             });
             let full = compression_logic::compacted_display(
                 &compacted,

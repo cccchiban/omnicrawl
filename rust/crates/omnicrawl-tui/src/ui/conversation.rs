@@ -285,6 +285,19 @@ fn render_scrollbar(
 /// 末尾追加运行状态行（对映 `.message.runtime-status-message`）：它是会话流里的
 /// 最后一条临时消息，因此会随消息一起滚动。
 pub fn display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
+    let mut lines = build_display_lines(state, width);
+    // 会话区显示上限：只保留**最新的** 2000 行，更早的内容不再显示（用户要求）。
+    if lines.len() > CONVERSATION_MAX_LINES {
+        lines.drain(..lines.len() - CONVERSATION_MAX_LINES);
+    }
+    lines
+}
+
+/// 会话区显示行数上限（用户要求 2000 行，超出部分不再显示）。
+pub const CONVERSATION_MAX_LINES: usize = 2000;
+
+/// 未截断的全量显示行（[`display_lines`] 在其上做 2000 行截断）。
+fn build_display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
     if state.records.is_empty() {
         return welcome_logo_lines(state, width);
     }
@@ -315,13 +328,19 @@ pub fn display_lines(state: &AppState, width: u16) -> Vec<DisplayLine> {
         }
     }
     lines.push(DisplayLine::plain(Line::raw("")));
-    if let Some(status) = runtime_status_line(state, width) {
-        lines.push(status);
-    }
     lines
 }
 
-/// 运行状态行：spinner + 状态文本 + `[ ESC ]` 提示（对映 Python `RuntimeStatus`）。
+/// 运行状态（`⠋ 正在调用 [ ESC ]`）：交给输入区方框画在**上边框**上。
+///
+/// 按用户要求，它不再作为会话流里的一行：`display_lines` 已经不输出状态行，
+/// 输入区方框的 `title_top` 用这里的 spans（对映 Python 把运行状态显示在输入框区域）。
+pub fn runtime_status_spans(state: &AppState) -> Option<Vec<Span<'static>>> {
+    let line = runtime_status_line(state, usize::MAX)?;
+    Some(line.line.spans)
+}
+
+/// 运行状态行的构造：spinner + 状态文本 + `[ ESC ]` 提示（对映 Python `RuntimeStatus`）。
 ///
 /// 配色对映 `.message.runtime-status-message { color: $terminal-text-muted;
 /// text-style: bold }`，提示段对映 `#runtime-status-esc-hint` 的 `bold dim`。
@@ -712,9 +731,12 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
     // 参数来源：还在「模型写参数」的流式阶段用侧信道的容错解析结果（可能是半截 JSON，
     // 但已经到达的 path / command / content 足够把标题与文件预览画出来）；批次执行
     // 之后一律用卡片自己的真实参数。
+    // 只有**还在跑**的卡片才用流式阶段的半截参数做预览；一旦终态，一律用卡片自己的
+    // 真实参数与结果——否则会出现「工具调用完成了却还显示调用中/预览」的错位。
     let streaming = state.streaming_tool(&card.call_id);
+    let running = card.status == ToolStatus::Running;
     let arguments = match streaming {
-        Some(entry) if entry.streaming => &entry.arguments,
+        Some(entry) if running => &entry.arguments,
         _ => &card.arguments,
     };
     let title = tool_diff::tool_disclosure_title(
@@ -736,8 +758,12 @@ fn push_tool(lines: &mut Vec<DisplayLine>, card: &ToolCard, width: usize, state:
         ));
     }
 
-    // 压缩提示：灰色一行，画在工具结果上方。
-    if let Some(note) = streaming.and_then(|entry| entry.compression.as_deref()) {
+    // 压缩提示：灰色一行，画在工具结果上方；**工具调用完成后才显示**（用户要求），
+    // 压缩进行中先不打扰，跑完连同「已压缩 a → b 字符」一起出现。
+    if let Some(note) = streaming
+        .filter(|_| !running)
+        .and_then(|entry| entry.compression.as_deref())
+    {
         let text = StyledText::styled(note, theme::TEXT_MUTED);
         lines.push(DisplayLine::with_hit(
             message_line(&text, width),
@@ -1531,6 +1557,38 @@ mod tests {
         assert!(texts(&window(&lines, 4, 6)) == vec!["行0", "行1", "行2", "行3"]);
         assert_eq!(window_range(10, 0, 0), (0, 0));
     }
+    #[test]
+    fn conversation_shows_at_most_two_thousand_lines() {
+        let mut state = AppState::new(
+            "demo".to_string(),
+            "m".to_string(),
+            crate::args::ApprovalMode::Manual,
+        );
+        // 灌够多的记录把显示行数顶过 2000（每条记录渲染成「空行 + 内容行」两行）：
+        // 用户要求「超出 2000 行的部分不再显示」。
+        for index in 0..3000 {
+            state.records.push(Record::Notice(format!("第 {index} 行")));
+        }
+        let lines = display_lines(&state, 80);
+        assert_eq!(lines.len(), CONVERSATION_MAX_LINES, "显示行数封顶 2000");
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.to_string())
+                    .collect::<String>()
+            })
+            .collect();
+        let joined = text.join("|");
+        assert!(!joined.contains("第 0 行"), "最早的记录已经滚出上限");
+        assert!(
+            joined.contains("第 2999 行") || joined.contains("第 2998 行"),
+            "最新的记录仍在显示"
+        );
+    }
+
     #[test]
     fn tool_title_wraps_with_the_continuation_under_the_arguments() {
         // 用户要求：标题超宽要换行，续行对齐到参数起始列（`● bash ls -la` 的 `ls` 下面）。

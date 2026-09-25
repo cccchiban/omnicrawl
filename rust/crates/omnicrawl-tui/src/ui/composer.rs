@@ -1,9 +1,11 @@
-//! 输入卡：白色圆角边框 + 单行起步按显示宽度软折行（对映 Python `#composer-wrap`）。
+//! 输入区：一整组（任务清单 / 排队预览 / 瞬时提示 / 命令菜单 / 输入本体）共用**一个**方框，
+//! 对映 Python `#composer-wrap`——它把 TodoPlan、pending-queue、command-menu 与 TextArea 全
+//! 装在同一个圆角边框里，而不是让这些区间裸在屏幕上（用户要求的「被方框线条包裹」）。
 //!
-//! 版式：上方留一行与消息区分隔（CSS `margin: 1 0 0 0`），卡片本体是「上边框 + 内容 +
-//! 下边框」。**内容紧贴左右边框**——按用户要求去掉了 CSS 的 `padding: 0 2` 与
-//! `#composer { padding: 0 1 }`，只留 1 格边框本身。空输入时显示占位文案
-//! `› 输入消息或 / 命令`（Python 把 `› ` 写在占位符里，正文不再带提示符）。
+//! 版式：方框本体是「上边框 + 组内各行 + 输入行 + 下边框」。运行状态（`⠋ 正在调用 [ ESC ]`）
+//! 画在方框**上边框**上（`Block::title_top`，形如 `-------⠋ 正在调用[ESC]-------`），
+//! 不再作为会话流里的一行。**输入内容紧贴左右边框**（只留 1 格边框本身）。空输入时显示
+//! 占位文案 `› 输入消息或 / 命令`（Python 把 `› ` 写在占位符里，正文不再带提示符）。
 //!
 //! 内容超过 5 行（[`COMPOSER_MAX_LINES`]）时框内随光标滚动，右侧画一条与消息区同款的
 //! 细线滚动条；光标由我们自己画成白色粗块（`█` 风格的反白格），不依赖终端那个会闪烁的细光标。
@@ -11,7 +13,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
@@ -22,29 +24,60 @@ use crate::state::{AppState, COMPOSER_MAX_LINES};
 
 /// 占位文案：`› ` 属于占位符本身（对映 Python `placeholder="› 输入消息或 / 命令"`）。
 const PLACEHOLDER: &str = "› 输入消息或 / 命令";
-/// 卡片上方与消息区之间的空行（CSS `margin: 1 0 0 0`）。
-const MARGIN_TOP: u16 = 0;
 /// 圆角边框占的行/列数，也是正文左侧的总缩进（内容紧贴边框）。
 const BORDER: u16 = 1;
-/// 正文左（右）侧的总缩进。
-const TEXT_OFFSET: u16 = BORDER;
 /// 右侧留给细线滚动条的列数。
 const SCROLLBAR_WIDTH: u16 = 1;
 
-/// 输入卡占用的行数：上方空行 + 上下边框 + 框内换行行数（上限 [`COMPOSER_MAX_LINES`]）。
-pub fn height(state: &AppState, width: u16) -> u16 {
-    let body = body_width(width);
+/// 输入本体占用的行数：框内换行行数（下限 1 行，上限 [`COMPOSER_MAX_LINES`]）。
+///
+/// 参数是**框内可用宽度**（方框内侧宽度），不含方框与组内其它区间——那是 [`group_height`] 的事。
+pub fn height(state: &AppState, inner_width: u16) -> u16 {
+    let body = body_width(inner_width);
     let (lines, _) = state.composer.visible_lines(body);
-    let content = (lines.len().max(1) as u16).min(COMPOSER_MAX_LINES as u16);
-    MARGIN_TOP + 2 * BORDER + content
+    (lines.len().max(1) as u16).min(COMPOSER_MAX_LINES as u16)
 }
 
-/// 正文可用列宽：扣掉左右边框与右侧滚动条列。
-pub fn body_width(width: u16) -> u16 {
-    width
-        .saturating_sub(2 * TEXT_OFFSET)
-        .saturating_sub(SCROLLBAR_WIDTH)
-        .max(1)
+/// 输入区整组占用的行数：上下边框 + 任务清单 + 排队预览 + 瞬时提示 + 命令菜单 + 输入本体。
+///
+/// 组内各区间的行数沿用它们自己的计算（`panels::todo_height` / `queue::height` /
+/// `notice_line_height` / [`menu_height`]），所以布局与各自渲染永远一致。
+pub fn group_height(state: &AppState, outer_width: u16) -> u16 {
+    2 * BORDER
+        + super::panels::todo_height(state)
+        + super::queue::height(state)
+        + super::notice_line_height(state)
+        + menu_height(state)
+        + height(state, inner_width(outer_width))
+}
+
+/// 方框内侧宽度：整组宽度扣掉左右两条边框。
+pub fn inner_width(outer_width: u16) -> u16 {
+    outer_width.saturating_sub(2 * BORDER)
+}
+
+/// 方框内部区域（扣掉一圈边框）：组内各区间都排在这里面。
+pub fn box_inner(area: Rect) -> Rect {
+    box_block(None).inner(area)
+}
+
+/// 输入区方框（对映 Python `#composer-wrap` 的 `border: round $terminal-white`）。
+///
+/// `status` 是画在上边框上的运行状态（`None` = 上边框没有文字）。
+fn box_block(status: Option<Vec<Span<'static>>>) -> Block<'static> {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme::rich_style(theme::ACCENT_WHITE));
+    match status {
+        Some(spans) if !spans.is_empty() => block.title_top(Line::from(spans)),
+        _ => block,
+    }
+}
+
+/// 正文可用列宽：框内宽度扣掉右侧滚动条列（边框已由方框占掉，不再重复扣）。
+pub fn body_width(inner_width: u16) -> u16 {
+    inner_width.saturating_sub(SCROLLBAR_WIDTH).max(1)
 }
 
 /// 输入框上方菜单占用的行数：`/sessions` 会话菜单优先，其次才是命令菜单。
@@ -81,34 +114,34 @@ pub fn render_menu(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// 渲染输入卡本体：圆角白框 + 框内正文（空输入时是占位文案）+ 滚动条 + 粗光标。
-pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
-    if area.height <= MARGIN_TOP || area.width == 0 {
+/// 画输入区方框：整组共用这一个圆角白框，运行状态写在上边框上。
+pub fn render_box(frame: &mut Frame, area: Rect, state: &AppState) {
+    if area.height < 2 * BORDER || area.width < 2 * BORDER {
         return;
     }
-    let card = card_area(area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::rich_style(theme::ACCENT_WHITE));
-    let inner = block.inner(card);
-    frame.render_widget(block, card);
-    if inner.height == 0 || inner.width == 0 {
-        return;
-    }
+    let status = super::conversation::runtime_status_spans(state);
+    frame.render_widget(box_block(status), area);
+}
 
+/// 渲染输入本体：框内正文（空输入时是占位文案）+ 滚动条 + 粗光标。
+///
+/// 方框由 [`render_box`] 单独画（整组一个框），这里只写框内那几行。
+pub fn render(frame: &mut Frame, area: Rect, state: &AppState) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    // `area` 已经是方框**内部**的输入区（由 `ui::layout` 从方框里切出来），
+    // 所以这里不再画边框，正文紧贴方框左右边框。
     let body = body_width(area.width);
     let (lines, cursor_row, start, total) = state.composer.visible_window(body);
     let text = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width.saturating_sub(SCROLLBAR_WIDTH),
-        height: inner.height,
+        width: area.width.saturating_sub(SCROLLBAR_WIDTH),
+        ..area
     };
     if text.width == 0 {
         return;
     }
-    render_scrollbar(frame, inner, total, text.height as usize, start);
+    render_scrollbar(frame, area, total, text.height as usize, start);
 
     if state.composer.is_empty() {
         // 占位文案：弱化色；**光标照样画**（用户要求空白时也看得到插入点，
@@ -195,15 +228,6 @@ fn paint_block_cursor(buffer: &mut Buffer, text: Rect, line: &str, row: u16, col
     }
 }
 
-/// 卡片本体区域：扣掉卡片上方的空行。
-fn card_area(area: Rect) -> Rect {
-    Rect {
-        y: area.y + MARGIN_TOP,
-        height: area.height.saturating_sub(MARGIN_TOP),
-        ..area
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,37 +238,33 @@ mod tests {
     }
 
     #[test]
-    fn height_covers_margin_border_and_wrapped_lines() {
+    fn height_covers_the_wrapped_input_lines() {
         let state = state();
-        // 宽终端下空输入：上方空行 + 上下边框 + 一行占位 = 4 行。
-        assert_eq!(height(&state, 40), MARGIN_TOP + 2 + 1);
+        // 宽终端下空输入：一行占位（方框与组内区间不算在 height 里）。
+        assert_eq!(height(&state, 40), 1);
 
         let mut state = state;
         state.composer.insert("中文测试");
-        assert_eq!(height(&state, 40), MARGIN_TOP + 2 + 1);
+        assert_eq!(height(&state, 40), 1);
 
-        // 收窄到正文只剩 4 列：四个全角字折成两行，卡片跟着长高。
-        assert_eq!(body_width(4 + 2 * TEXT_OFFSET + SCROLLBAR_WIDTH), 4);
-        assert_eq!(
-            height(&state, 4 + 2 * TEXT_OFFSET + SCROLLBAR_WIDTH),
-            MARGIN_TOP + 2 + 2
-        );
+        // 收窄到框内只剩 5 列（4 列正文 + 滚动条）：四个全角字折成两行，跟着长高。
+        assert_eq!(body_width(4 + SCROLLBAR_WIDTH), 4);
+        assert_eq!(height(&state, 4 + SCROLLBAR_WIDTH), 2);
 
-        // 超过上限后在编辑器内滚动：卡片不再继续长高。
+        // 超过上限后在编辑器内滚动：输入本体不再继续长高。
         for _ in 0..10 {
             state.composer.newline();
             state.composer.insert("行");
         }
-        assert_eq!(
-            height(&state, 40),
-            MARGIN_TOP + 2 + COMPOSER_MAX_LINES as u16
-        );
+        assert_eq!(height(&state, 40), COMPOSER_MAX_LINES as u16);
     }
 
     #[test]
     fn body_starts_right_after_the_border() {
-        // 内容紧贴左右边框：正文可用宽度 = 总宽 - 2 格边框 - 1 格滚动条。
-        assert_eq!(TEXT_OFFSET, 1);
-        assert_eq!(body_width(40), 40 - 2 - SCROLLBAR_WIDTH);
+        // 内容紧贴方框左右边框：正文可用宽度 = 框内宽度 - 1 格滚动条。
+        assert_eq!(body_width(40), 40 - SCROLLBAR_WIDTH);
+        // 整组高度 = 两条边框 + 组内各区间 + 输入本体。
+        let state = state();
+        assert_eq!(group_height(&state, 80), 2 + height(&state, 78));
     }
 }

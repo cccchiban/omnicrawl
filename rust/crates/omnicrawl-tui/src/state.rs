@@ -960,16 +960,33 @@ impl AppState {
                 }
             }
             HostEvent::ToolOutputCompression(payload) => {
-                if let Some(entry) = self.streaming_tools.get_mut(&payload.call_id) {
-                    entry.compression = Some(match payload.phase.as_str() {
-                        "finished" => format!(
-                            "已压缩 {} → {} 字符",
-                            thousands(payload.before_chars),
-                            thousands(payload.after_chars)
-                        ),
-                        _ => "正在压缩…".to_string(),
-                    });
+                let finished = payload.phase == "finished";
+                if finished {
+                    // 压缩完成后用**压缩后的正文替换**卡片里的原始输出（用户要求）：
+                    // 卡片正文、折叠统计与「已压缩 a → b 字符」的提示都基于压缩文本。
+                    if let Some(card) = self.tool_card_mut(&payload.call_id) {
+                        card.body = body_lines(&payload.output);
+                    }
                 }
+                // 压缩发生在工具调用之后，所以这里可以放心新建侧信道条目：
+                // 卡片此时已经是终态，提示行按「完成后才显示」的规则渲染。
+                self.streaming_tools
+                    .entry(payload.call_id.clone())
+                    .or_insert_with(|| StreamingTool {
+                        text: String::new(),
+                        arguments: serde_json::Value::Object(serde_json::Map::new()),
+                        compression: None,
+                        streaming: false,
+                    })
+                    .compression = Some(if finished {
+                    format!(
+                        "已压缩 {} → {} 字符",
+                        thousands(payload.before_chars),
+                        thousands(payload.after_chars)
+                    )
+                } else {
+                    "正在压缩…".to_string()
+                });
             }
             HostEvent::ToolStarted(payload) => {
                 // 流式阶段已经建过卡片的（同 call_id）：就地更新，保持卡片出现的先后顺序，
@@ -998,6 +1015,11 @@ impl AppState {
             }
             HostEvent::ToolFinished(payload) => {
                 self.update_tool(&payload.call, &payload.result, now);
+                // 批次执行结束：清掉「仍在写参数」的标记，但**保留**侧信道条目，
+                // 压缩阶段的通知随后还要往它上面写提示（并替换卡片正文）。
+                if let Some(entry) = self.streaming_tools.get_mut(&payload.call.id) {
+                    entry.streaming = false;
+                }
             }
             HostEvent::ToolOutputUpdate(payload) => {
                 if let Some(card) = self.tool_card_mut(&payload.call.id) {
@@ -3044,6 +3066,11 @@ mod streaming_tests {
                 phase: phase.to_string(),
                 before_chars: before,
                 after_chars: after,
+                output: if phase == "finished" {
+                    "压缩后的正文".to_string()
+                } else {
+                    String::new()
+                },
             })
         };
         state.apply(&phase("started", 12_345, 0), now);
@@ -3056,6 +3083,16 @@ mod streaming_tests {
             state.streaming_tool("call-1").unwrap().compression.as_deref(),
             Some("已压缩 12,345 → 1,234 字符")
         );
+        // 压缩完成后用**压缩后的正文替换**卡片里的原始输出（用户要求）。
+        let card = match state
+            .records
+            .iter()
+            .find(|record| matches!(record, Record::Tool(_)))
+        {
+            Some(Record::Tool(card)) => card.clone(),
+            other => panic!("应当有工具卡：{other:?}"),
+        };
+        assert_eq!(card.body, vec!["压缩后的正文".to_string()]);
     }
 
     /// 半截 JSON：字符串与对象都没闭合（模型流中断在这一刻的样子）。

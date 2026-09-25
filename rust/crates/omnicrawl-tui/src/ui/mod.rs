@@ -5,8 +5,9 @@
 //!
 //! `fullscreen/` 是 Python `omnicrawl/ui/fullscreen/` 的逐层对映实现（按目录
 //! 对齐、行为与视觉对齐），上述模块是该对映层完成后要退役的早期简化页面。
-//! 本层已按 Python 当前版式对齐：底部单行轮播 HUD、悬浮圆角输入卡、`user：` 标签
-//! 消息、无边框工具卡（`●` 状态点 + 缩进正文）、会话流内的运行状态行。
+//! 本层已按 Python 当前版式对齐：底部单行轮播 HUD、输入区整组共用一个圆角方框
+//! （对映 Python `#composer-wrap`：任务清单 / 排队预览 / 提示 / 命令菜单 / 输入本体都在框内）、
+//! `user：` 标签消息、无边框工具卡（`●` 状态点 + 缩进正文）。运行状态写在方框上边框上。
 
 pub mod composer;
 pub mod config_chat;
@@ -37,9 +38,10 @@ pub const NOTICE_LINE_HEIGHT: u16 = 1;
 
 /// 一帧的各区几何：渲染与鼠标命中判定共用同一套布局计算，两者永远一致。
 ///
-/// 与 Python 的 `#shell` 一致，自上而下是：会话区（吃剩余高度）→ 计划区 → 待决面板 →
-/// 排队预览 → 命令菜单 → 输入卡 → 底部轮播 HUD。运行状态行不再单占条带：
-/// 它作为会话流里的一条临时消息渲染（对映 `.runtime-status-message`）。
+/// 与 Python 的 `#shell` 一致，自上而下是：会话区（吃剩余高度）→ 待决面板 →
+/// **输入区方框**（框内自上而下：任务清单 → 排队预览 → 瞬时提示 → 命令菜单 → 输入本体）
+/// → 底部轮播 HUD。运行状态不占条带：它写在输入区方框的上边框上
+/// （`-------⠋ 正在调用[ESC]-------`，对映 Python 把状态放在输入框区域）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiAreas {
     pub hud: Rect,
@@ -47,28 +49,37 @@ pub struct UiAreas {
     pub todos: Rect,
     pub panel: Rect,
     pub queue: Rect,
-    /// 输入框上方的命令菜单（对映 Python `#composer-wrap` 里的菜单行预算）。
-    /// 输入框上方（命令菜单之上）的瞬时提示行。
+    /// 输入区方框之内的瞬时提示行（拖选复制等）。
     pub notice: Rect,
+    /// 输入区方框之内的命令菜单（对映 Python `#composer-wrap` 里的菜单行预算）。
     pub menu: Rect,
+    /// 输入区整组的方框（对映 Python `#composer-wrap` 的圆角边框）。
+    pub composer_box: Rect,
+    /// 方框内部的输入本体区域（不含边框）。
     pub composer: Rect,
 }
 
 /// 按当前状态把整屏切成固定条带；消息区吃剩余高度。
 pub fn layout(area: Rect, state: &AppState) -> UiAreas {
     let width = area.width;
-    let [conversation, todos, panel, queue, notice, menu, composer, hud] = Layout::vertical([
+    let [conversation, panel, composer_box, hud] = Layout::vertical([
         // 消息区吃掉除固定条带外的全部高度；用 Fill 而不是 Min，避免多余空间落到布局末尾。
         Constraint::Fill(1),
-        Constraint::Length(panels::todo_height(state)),
         Constraint::Length(panels::panel_height(state, width)),
-        Constraint::Length(queue::height(state)),
-        Constraint::Length(notice_line_height(state)),
-        Constraint::Length(composer::menu_height(state)),
-        Constraint::Length(composer::height(state, width)),
+        // 输入区整组（含方框）：任务清单 / 排队预览 / 提示 / 菜单 / 输入本体都在框内。
+        Constraint::Length(composer::group_height(state, width)),
         Constraint::Length(HUD_HEIGHT),
     ])
     .areas(area);
+    // 组内各区排进方框内部（扣掉一圈边框）。
+    let [todos, queue, notice, menu, composer] = Layout::vertical([
+        Constraint::Length(panels::todo_height(state)),
+        Constraint::Length(queue::height(state)),
+        Constraint::Length(notice_line_height(state)),
+        Constraint::Length(composer::menu_height(state)),
+        Constraint::Fill(1),
+    ])
+    .areas(composer::box_inner(composer_box));
     UiAreas {
         hud,
         conversation,
@@ -77,12 +88,13 @@ pub fn layout(area: Rect, state: &AppState) -> UiAreas {
         queue,
         notice,
         menu,
+        composer_box,
         composer,
     }
 }
 
-/// 瞬时提示行的高度：有未见过的提示就占一行。
-fn notice_line_height(state: &AppState) -> u16 {
+/// 瞬时提示行的高度：有未见过的提示就占一行（输入区方框的组内高度也用它）。
+pub(crate) fn notice_line_height(state: &AppState) -> u16 {
     if state.notice_line_text(Instant::now()).is_some() {
         NOTICE_LINE_HEIGHT
     } else {
@@ -117,8 +129,10 @@ pub fn render(
     let regions = layout(area, state);
 
     conversation::render(frame, regions.conversation, state);
-    panels::render_todos(frame, regions.todos, state, width);
     panels::render_panel(frame, regions.panel, state, width);
+    // 先画输入区方框（含上边框上的运行状态），再往框内写各组内容。
+    composer::render_box(frame, regions.composer_box, state);
+    panels::render_todos(frame, regions.todos, state, width);
     queue::render(frame, regions.queue, state);
     render_notice_line(frame, regions.notice, state);
     composer::render_menu(frame, regions.menu, state);

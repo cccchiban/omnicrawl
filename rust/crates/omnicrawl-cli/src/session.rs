@@ -1127,18 +1127,21 @@ impl ToolBatchHost for RemoteTools {
                                 phase: "started".to_string(),
                                 before_chars,
                                 after_chars: 0,
+                                output: String::new(),
                             }),
                             CompressionPhase::Finished {
                                 call_id,
                                 tool,
                                 before_chars,
                                 after_chars,
+                                text,
                             } => HostEvent::ToolOutputCompression(ToolOutputCompressionPayload {
                                 call_id: call_id.to_string(),
                                 tool: tool.to_string(),
                                 phase: "finished".to_string(),
                                 before_chars,
                                 after_chars,
+                                output: text.to_string(),
                             }),
                         };
                         self.conn.borrow_mut().notify(event);

@@ -168,6 +168,9 @@ pub struct ToolOutputCompressionPayload {
     pub before_chars: usize,
     #[serde(default)]
     pub after_chars: usize,
+    /// 压缩后的正文（只有 `phase = finished` 才带）：宿主用它替换卡片里的原始输出。
+    #[serde(default)]
+    pub output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

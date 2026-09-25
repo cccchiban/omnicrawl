@@ -18,10 +18,10 @@ pub const QUEUE_PREVIEW_MAX_ROWS: usize = 3;
 /// 排队预览条每行摘要的最大字符数（对映 `QUEUE_PREVIEW_SUMMARY_LIMIT`）。
 pub const QUEUE_PREVIEW_SUMMARY_LIMIT: usize = 40;
 
-// 底部单行轮播 HUD：遥测（含工作区）10s → 留言页 10s 循环。
+// 底部单行轮播 HUD：遥测（含工作区）20s → 留言页 10s 循环（用户指定的停留时长）。
 // 刻意差异：Python 把工作区路径单独占一页（`_context_summary_text`），这里按用户要求并入
 // 遥测行尾（`⁕ 工作区 <path>`），轮播只剩两页，工作区不再单独占屏。
-pub const CAROUSEL_TELEMETRY_SECONDS: f64 = 10.0;
+pub const CAROUSEL_TELEMETRY_SECONDS: f64 = 20.0;
 pub const CAROUSEL_MESSAGE_SECONDS: f64 = 10.0;
 /// 留言页无内容时的兜底占位文本。
 pub const CAROUSEL_MESSAGE_FALLBACK: &str = "🎲 留言本空空如也，去写一条吧～";
@@ -412,10 +412,11 @@ mod tests {
     }
 
     #[test]
-    fn carousel_cycles_pages_with_ten_second_holds() {
+    fn carousel_holds_telemetry_twenty_seconds_and_message_ten() {
         let mut carousel = Carousel::new();
         assert_eq!(carousel.page(), CarouselPage::Telemetry);
-        assert_eq!(carousel.page_duration(), 10.0);
+        // 用户指定：遥测 20 秒、句子（留言）页 10 秒。
+        assert_eq!(carousel.page_duration(), 20.0);
         assert_eq!(carousel.next_page(), CarouselPage::Message);
         carousel.page = CarouselPage::Message;
         assert_eq!(carousel.next_page(), CarouselPage::Telemetry);

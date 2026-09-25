@@ -85,6 +85,18 @@ fn host_event_samples() -> Vec<(&'static str, Value)> {
             method::TURN_MODEL_REQUEST_ERROR,
             json!({"error": "Agent 模型流中断：连接重置", "model": "gpt-4o"}),
         ),
+        (
+            method::TURN_TOOL_CALL_STARTED,
+            json!({"call_id": "call-1", "tool": "bash"}),
+        ),
+        (
+            method::TURN_TOOL_CALL_ARGUMENTS,
+            json!({"call_id": "call-1", "delta": "{\"command\": \"ls\""}),
+        ),
+        (
+            method::TURN_TOOL_OUTPUT_COMPRESSION,
+            json!({"call_id": "call-1", "tool": "bash", "phase": "finished", "before_chars": 12345, "after_chars": 1234, "output": "压缩后的正文"}),
+        ),
     ]
 }
 

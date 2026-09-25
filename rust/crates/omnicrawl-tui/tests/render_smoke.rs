@@ -115,6 +115,35 @@ fn chatting_state() -> AppState {
 }
 
 #[test]
+fn input_group_is_boxed_and_the_status_sits_on_its_top_border() {
+    // 用户要求：任务清单 / 排队预览 / 提示 / 命令菜单 / 输入本体共用**一个方框**，
+    // 运行状态（`⠋ 正在调用 [ ESC ]`）写在方框上边框上，而不是留在会话流里。
+    let state = chatting_state();
+    let lines = screen(&state, 80, 14);
+    let top = lines
+        .iter()
+        .position(|line| line.contains("正在调用"))
+        .unwrap_or_else(|| panic!("状态应当出现在方框上边框上：{lines:?}"));
+    assert!(
+        lines[top].starts_with('╭') && lines[top].ends_with('╮'),
+        "状态行就是输入区方框的上边框：{:?}",
+        lines[top]
+    );
+    assert!(lines[top].contains("[ ESC ]"), "运行中仍带 ESC 提示：{:?}", lines[top]);
+    // 会话流里不再有状态行：状态只出现这一次（方框边框上那次）。
+    assert_eq!(
+        lines.iter().filter(|line| line.contains("正在调用")).count(),
+        1,
+        "状态只应出现在方框边框上：{lines:?}"
+    );
+    // 输入本体与下边框都在，内容紧贴边框。
+    assert!(
+        lines.iter().any(|line| line.contains("╰")),
+        "应当有方框下边框：{lines:?}"
+    );
+}
+
+#[test]
 fn bottom_hud_conversation_todos_and_composer_are_on_screen() {
     let state = chatting_state();
     let lines = screen(&state, 110, 24);
@@ -309,18 +338,19 @@ fn command_menu_renders_directly_above_the_composer() {
         .iter()
         .position(|line| line.contains("· 打开中文设置面板"))
         .unwrap_or_else(|| panic!("菜单项应当出现在屏幕上：{lines:?}"));
+    // 菜单行在方框之内，所以行首是边框 `│`，选中标记紧跟在它后面。
     assert!(
-        lines[menu_row].starts_with("› /settings"),
+        lines[menu_row].contains("│› /settings"),
         "唯一候选即选中项：{:?}",
         lines[menu_row]
     );
-    // 菜单行下面就是输入卡的上边框，再下面才是卡内文本行（用户要求去掉会话区与输入框
-    // 之间那一行空白，`MARGIN_TOP` 已置 0）。
-    let composer_row = menu_row + 2;
+    // 菜单**在输入区方框之内**（对映 Python `#composer-wrap`：菜单与输入共用一个框），
+    // 所以它下面一行直接就是框内的输入文本行，再下面一行才是方框下边框。
+    let composer_row = menu_row + 1;
     assert!(
-        lines[menu_row + 1].contains('╭'),
-        "菜单下面紧贴输入卡上边框：{:?}",
-        lines[menu_row + 1]
+        lines[composer_row + 1].contains('╰'),
+        "输入行下面应当是方框下边框：{:?}",
+        lines[composer_row + 1]
     );
 
     assert!(

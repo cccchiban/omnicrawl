@@ -20,6 +20,15 @@ const KERNEL_ORIGIN_EVENTS: &[&str] = &[
     method::TURN_MODEL_REQUEST_ERROR,
 ];
 
+/// **Rust 侧新增**（Python 没有对映）的事件：工具调用随模型流增量渲染、
+/// 工具输出压缩的阶段计量。Python 只在批次执行时才画卡片，也不外发压缩进度，
+/// 所以这三条没有 Python 回调可对应，断言时按「已声明但无回调」放行。
+const RUST_ONLY_EVENTS: &[&str] = &[
+    method::TURN_TOOL_CALL_STARTED,
+    method::TURN_TOOL_CALL_ARGUMENTS,
+    method::TURN_TOOL_OUTPUT_COMPRESSION,
+];
+
 /// Python 回调名 → 协议 v1 方法名。
 ///
 /// `cancel_check` 是宿主 → 内核的通知；`turn.finished` 不在表里，因为它对应
@@ -78,6 +87,9 @@ fn mapping_uses_only_declared_methods() {
             // 由回合收尾直接产生，不加回调；由下面两个内核自产事件测试覆盖。
             continue;
         }
+        if RUST_ONLY_EVENTS.contains(declared) {
+            continue;
+        }
         assert!(
             mapped.contains(declared),
             "方法 {declared} 没有对应的 Python 回调"
@@ -99,9 +111,9 @@ fn finished_event_comes_from_the_turn_result_not_a_callback() {
         .filter(|(_, mapped)| *mapped != method::TURN_CANCEL)
         .count();
     assert_eq!(
-        callback_events + KERNEL_ORIGIN_EVENTS.len(),
+        callback_events + KERNEL_ORIGIN_EVENTS.len() + RUST_ONLY_EVENTS.len(),
         HostEvent::METHODS.len(),
-        "事件数应等于（非 cancel 的回调数 + 内核自产事件数）"
+        "事件数应等于（非 cancel 的回调数 + 内核自产事件数 + Rust 侧新增事件数）"
     );
 }
 
